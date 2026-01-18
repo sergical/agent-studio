@@ -131,7 +131,7 @@ export function Dashboard() {
   const duplicates = useAppStore(state => state.duplicates);
   const projects = useAppStore(state => state.projects);
   const setActiveView = useAppStore(state => state.setActiveView);
-  const setFilterProject = useAppStore(state => state.setFilterProject);
+  const setActiveProject = useAppStore(state => state.setActiveProject);
   const lastDiscovery = useAppStore(state => state.lastDiscovery);
   
   const [showAllProjects, setShowAllProjects] = useState(false);
@@ -241,23 +241,8 @@ export function Dashboard() {
                 const nestLevel = (project as any).nestLevel || 0;
                 
                 const handleProjectClick = () => {
-                  // Set filter to this project and navigate to agents (or first entity type with items)
-                  setFilterProject(project.path);
-                  if (counts.agents > 0) {
-                    setActiveView('agents');
-                  } else if (counts.skills > 0) {
-                    setActiveView('skills');
-                  } else if (counts.commands > 0) {
-                    setActiveView('commands');
-                  } else if (counts.memory > 0) {
-                    setActiveView('memory');
-                  } else if (counts.settings > 0) {
-                    setActiveView('settings');
-                  } else if (counts.mcp > 0) {
-                    setActiveView('mcp');
-                  } else {
-                    setActiveView('settings');
-                  }
+                  // Navigate to project view for this project
+                  setActiveProject(project.path);
                 };
                 
                 return (

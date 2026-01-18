@@ -65,6 +65,7 @@ interface AppState {
   filterScope: FilterScope;
   filterProject: string | null;
   isPanelOpen: boolean;
+  theme: 'dark' | 'light';
   
   // === Toast Notifications ===
   toasts: Toast[];
@@ -95,6 +96,9 @@ interface AppState {
   setSearchQuery: (query: string) => void;
   setFilterScope: (scope: FilterScope) => void;
   setFilterProject: (path: string | null) => void;
+  setActiveProject: (projectPath: string) => void;
+  setTheme: (theme: 'dark' | 'light') => void;
+  toggleTheme: () => void;
   
   // === Entity Actions ===
   updateEntityContent: (entityType: EntityType, id: string, content: string) => void;
@@ -136,14 +140,85 @@ function buildSections(state: AppState): CommandPaletteSection[] {
     });
   };
   
-  const matchesSearch = (item: CommandPaletteItem): boolean => {
-    if (!searchQuery.trim()) return true;
-    const query = searchQuery.toLowerCase();
-    return (
-      item.name.toLowerCase().includes(query) ||
-      (item.description?.toLowerCase().includes(query) ?? false) ||
-      item.path.toLowerCase().includes(query)
-    );
+  // Simple fuzzy matching with scoring
+  const fuzzyMatch = (text: string, query: string): { matches: boolean; score: number } => {
+    if (!query) return { matches: true, score: 0 };
+    
+    const textLower = text.toLowerCase();
+    const queryLower = query.toLowerCase();
+    
+    // Exact match gets highest score
+    if (textLower === queryLower) return { matches: true, score: 100 };
+    
+    // Starts with query gets high score
+    if (textLower.startsWith(queryLower)) return { matches: true, score: 90 };
+    
+    // Contains query as substring gets medium score
+    if (textLower.includes(queryLower)) return { matches: true, score: 70 };
+    
+    // Word boundary match (query matches start of a word)
+    const words = textLower.split(/[-_\s/]+/);
+    for (const word of words) {
+      if (word.startsWith(queryLower)) return { matches: true, score: 60 };
+    }
+    
+    // Fuzzy character matching (all query chars appear in order)
+    let textIndex = 0;
+    let queryIndex = 0;
+    let matchCount = 0;
+    
+    while (textIndex < textLower.length && queryIndex < queryLower.length) {
+      if (textLower[textIndex] === queryLower[queryIndex]) {
+        matchCount++;
+        queryIndex++;
+      }
+      textIndex++;
+    }
+    
+    if (queryIndex === queryLower.length) {
+      // All query characters found in order
+      const score = Math.max(20, 50 - (textLower.length - matchCount));
+      return { matches: true, score };
+    }
+    
+    return { matches: false, score: 0 };
+  };
+  
+  const matchesSearch = (item: CommandPaletteItem): { matches: boolean; score: number } => {
+    if (!searchQuery.trim()) return { matches: true, score: 0 };
+    
+    const query = searchQuery.trim();
+    
+    // Check name (highest priority)
+    const nameMatch = fuzzyMatch(item.name, query);
+    if (nameMatch.matches) return { matches: true, score: nameMatch.score };
+    
+    // Check description
+    if (item.description) {
+      const descMatch = fuzzyMatch(item.description, query);
+      if (descMatch.matches) return { matches: true, score: descMatch.score - 10 }; // Slightly lower priority
+    }
+    
+    // Check path
+    const pathMatch = fuzzyMatch(item.path, query);
+    if (pathMatch.matches) return { matches: true, score: pathMatch.score - 20 }; // Lower priority
+    
+    return { matches: false, score: 0 };
+  };
+  
+  // Helper to filter and sort items by search score
+  const filterAndSort = (items: CommandPaletteItem[]): CommandPaletteItem[] => {
+    const withScores = items
+      .map(item => ({ item, ...matchesSearch(item) }))
+      .filter(({ matches }) => matches);
+    
+    // Sort by score (highest first), then by name
+    withScores.sort((a, b) => {
+      if (b.score !== a.score) return b.score - a.score;
+      return a.item.name.localeCompare(b.item.name);
+    });
+    
+    return withScores.map(({ item }) => item);
   };
   
   // Settings
@@ -160,7 +235,7 @@ function buildSections(state: AppState): CommandPaletteSection[] {
       isSymlink: s.is_symlink,
     }));
     
-    const filtered = items.filter(matchesSearch);
+    const filtered = filterAndSort(items);
     if (filtered.length > 0) {
       sections.push({ id: 'settings', title: 'Settings', entityType: 'settings', items: filtered });
     }
@@ -180,7 +255,7 @@ function buildSections(state: AppState): CommandPaletteSection[] {
       isSymlink: m.is_symlink,
     }));
     
-    const filtered = items.filter(matchesSearch);
+    const filtered = filterAndSort(items);
     if (filtered.length > 0) {
       sections.push({ id: 'memory', title: 'Memory', entityType: 'memory', items: filtered });
     }
@@ -201,7 +276,7 @@ function buildSections(state: AppState): CommandPaletteSection[] {
       isDuplicate: state.duplicates.some(d => d.entity_type === 'agent' && d.entities.some(e => e.id === a.id)),
     }));
     
-    const filtered = items.filter(matchesSearch);
+    const filtered = filterAndSort(items);
     if (filtered.length > 0) {
       sections.push({ id: 'agents', title: 'Agents', entityType: 'agent', items: filtered });
     }
@@ -222,7 +297,7 @@ function buildSections(state: AppState): CommandPaletteSection[] {
       isDuplicate: state.duplicates.some(d => d.entity_type === 'skill' && d.entities.some(e => e.id === s.id)),
     }));
     
-    const filtered = items.filter(matchesSearch);
+    const filtered = filterAndSort(items);
     if (filtered.length > 0) {
       sections.push({ id: 'skills', title: 'Skills', entityType: 'skill', items: filtered });
     }
@@ -243,7 +318,7 @@ function buildSections(state: AppState): CommandPaletteSection[] {
       isDuplicate: state.duplicates.some(d => d.entity_type === 'command' && d.entities.some(e => e.id === c.id)),
     }));
     
-    const filtered = items.filter(matchesSearch);
+    const filtered = filterAndSort(items);
     if (filtered.length > 0) {
       sections.push({ id: 'commands', title: 'Commands', entityType: 'command', items: filtered });
     }
@@ -263,7 +338,7 @@ function buildSections(state: AppState): CommandPaletteSection[] {
       isSymlink: p.is_symlink,
     }));
     
-    const filtered = items.filter(matchesSearch);
+    const filtered = filterAndSort(items);
     if (filtered.length > 0) {
       sections.push({ id: 'plugins', title: 'Plugins', entityType: 'plugin', items: filtered });
     }
@@ -286,7 +361,7 @@ function buildSections(state: AppState): CommandPaletteSection[] {
         path: m.source_path,
       }));
     
-    const filtered = items.filter(matchesSearch);
+    const filtered = filterAndSort(items);
     if (filtered.length > 0) {
       sections.push({ id: 'mcp', title: 'MCP Servers', entityType: 'mcp', items: filtered });
     }
@@ -309,7 +384,7 @@ function buildSections(state: AppState): CommandPaletteSection[] {
         path: h.source_path,
       }));
     
-    const filtered = items.filter(matchesSearch);
+    const filtered = filterAndSort(items);
     if (filtered.length > 0) {
       sections.push({ id: 'hooks', title: 'Hooks', entityType: 'hook', items: filtered });
     }
@@ -351,6 +426,7 @@ export const useAppStore = create<AppState>((set, get) => ({
   filterScope: 'all',
   filterProject: null,
   isPanelOpen: false,
+  theme: (typeof localStorage !== 'undefined' && localStorage.getItem('theme') as 'dark' | 'light') || 'dark',
   
   toasts: [],
   
@@ -524,6 +600,32 @@ export const useAppStore = create<AppState>((set, get) => ({
   
   setFilterProject: (path) => {
     set({ filterProject: path, _cachedSections: null });
+  },
+  
+  setActiveProject: (projectPath) => {
+    // Navigate to project view with this project pre-selected
+    set({
+      activeView: 'project',
+      filterProject: projectPath,
+      selectedEntity: null,
+      isPanelOpen: false,
+      searchQuery: '',
+      filterScope: 'all',
+      _cachedSections: null,
+    });
+  },
+  
+  setTheme: (theme) => {
+    localStorage.setItem('theme', theme);
+    document.documentElement.setAttribute('data-theme', theme);
+    set({ theme });
+  },
+  
+  toggleTheme: () => {
+    const newTheme = get().theme === 'dark' ? 'light' : 'dark';
+    localStorage.setItem('theme', newTheme);
+    document.documentElement.setAttribute('data-theme', newTheme);
+    set({ theme: newTheme });
   },
   
   // === Entity Actions ===

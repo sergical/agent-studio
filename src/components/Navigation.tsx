@@ -5,6 +5,10 @@
 import { useAppStore } from '../store/appStore';
 import type { ViewType, EntityType } from '../lib/types';
 
+interface NavigationProps {
+  onOpenShortcuts?: () => void;
+}
+
 interface NavItem {
   view: ViewType;
   label: string;
@@ -116,9 +120,13 @@ const NAV_ITEMS: NavItem[] = [
   },
 ];
 
-export function Navigation() {
+export function Navigation({ onOpenShortcuts }: NavigationProps) {
   const activeView = useAppStore(state => state.activeView);
   const setActiveView = useAppStore(state => state.setActiveView);
+  const filterProject = useAppStore(state => state.filterProject);
+  const projects = useAppStore(state => state.projects);
+  const theme = useAppStore(state => state.theme);
+  const toggleTheme = useAppStore(state => state.toggleTheme);
   
   // Select raw state arrays directly
   const settings = useAppStore(state => state.settings);
@@ -141,6 +149,17 @@ export function Navigation() {
     mcp: mcpServers.length,
   };
   
+  // Get current project info
+  const currentProject = filterProject 
+    ? projects.find(p => p.path === filterProject)
+    : null;
+  
+  // Format project name for display
+  const formatProjectName = (path: string) => {
+    const parts = path.split('/');
+    return parts[parts.length - 1] || path;
+  };
+  
   return (
     <nav className="nav-sidebar">
       <div className="nav-logo">
@@ -156,7 +175,36 @@ export function Navigation() {
           <span className="nav-item-icon">{NAV_ITEMS[0].icon}</span>
           <span>Dashboard</span>
         </button>
+        <button
+          className={`nav-item ${activeView === 'health' ? 'active' : ''}`}
+          onClick={() => setActiveView('health')}
+        >
+          <span className="nav-item-icon">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5">
+              <path d="M22 12h-4l-3 9L9 3l-3 9H2" />
+            </svg>
+          </span>
+          <span>Health</span>
+        </button>
       </div>
+      
+      {/* Active Project Section */}
+      {activeView === 'project' && currentProject && (
+        <div className="nav-section">
+          <div className="nav-section-title">Project</div>
+          <button
+            className="nav-item active"
+            style={{ cursor: 'default' }}
+          >
+            <span className="nav-item-icon">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5">
+                <path d="M22 19a2 2 0 01-2 2H4a2 2 0 01-2-2V5a2 2 0 012-2h5l2 3h9a2 2 0 012 2z" />
+              </svg>
+            </span>
+            <span className="nav-item-project-name">{formatProjectName(currentProject.path)}</span>
+          </button>
+        </div>
+      )}
       
       <div className="nav-section" style={{ flex: 1 }}>
         <div className="nav-section-title">Entities</div>
@@ -175,12 +223,33 @@ export function Navigation() {
         ))}
       </div>
       
-      {/* Keyboard hints at bottom */}
+      {/* Footer with theme toggle and shortcuts */}
       <div className="nav-footer">
-        <div className="nav-footer-hint">
-          <kbd>⌘ .</kbd>
-          <span>Shortcuts</span>
-        </div>
+        <button
+          onClick={() => toggleTheme()}
+          className="nav-footer-button"
+          title={`Switch to ${theme === 'dark' ? 'light' : 'dark'} mode`}
+        >
+          <span className="nav-footer-icon">
+            {theme === 'dark' ? (
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5">
+                <circle cx="12" cy="12" r="5" />
+                <path d="M12 1v2M12 21v2M4.22 4.22l1.42 1.42M18.36 18.36l1.42 1.42M1 12h2M21 12h2M4.22 19.78l1.42-1.42M18.36 5.64l1.42-1.42" />
+              </svg>
+            ) : (
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5">
+                <path d="M21 12.79A9 9 0 1111.21 3 7 7 0 0021 12.79z" />
+              </svg>
+            )}
+          </span>
+        </button>
+        <button
+          onClick={onOpenShortcuts}
+          className="nav-footer-button"
+          title="Keyboard shortcuts (⌘.)"
+        >
+          <kbd>⌘.</kbd>
+        </button>
       </div>
     </nav>
   );

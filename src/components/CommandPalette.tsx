@@ -87,6 +87,8 @@ export function CommandPalette({ onOpenProject, onNewAgent, onNewSkill, onNewCom
   const setSearchQuery = useAppStore(state => state.setSearchQuery);
   const filterScope = useAppStore(state => state.filterScope);
   const setFilterScope = useAppStore(state => state.setFilterScope);
+  const filterProject = useAppStore(state => state.filterProject);
+  const projects = useAppStore(state => state.projects);
   const isLoading = useAppStore(state => state.isLoading);
   const refreshDiscovery = useAppStore(state => state.refreshDiscovery);
   const getSections = useAppStore(state => state.getSections);
@@ -123,6 +125,9 @@ export function CommandPalette({ onOpenProject, onNewAgent, onNewSkill, onNewCom
     
     // If on dashboard, show nothing (dashboard has its own view)
     if (activeView === 'dashboard') return [];
+    
+    // If on project view, show ALL sections (all entity types for this project)
+    if (activeView === 'project') return allSections;
     
     // Filter to current view's entity type
     return allSections.filter(section => {
@@ -297,6 +302,13 @@ export function CommandPalette({ onOpenProject, onNewAgent, onNewSkill, onNewCom
   
   // Get title for current view
   const getViewTitle = () => {
+    if (activeView === 'project') {
+      if (filterProject) {
+        const project = projects.find(p => p.path === filterProject);
+        return project?.name || filterProject.split('/').pop() || 'Project';
+      }
+      return 'Project';
+    }
     switch (activeView) {
       case 'settings': return 'Settings';
       case 'memory': return 'Memory Files';
@@ -355,28 +367,30 @@ export function CommandPalette({ onOpenProject, onNewAgent, onNewSkill, onNewCom
             ref={searchRef}
             value={searchQuery}
             onChange={(e) => setSearchQuery(e.target.value)}
-            placeholder={`Search ${getViewTitle().toLowerCase()}...`}
+            placeholder={`Search ${activeView === 'project' ? 'project' : getViewTitle().toLowerCase()}...`}
           />
           
-          {/* Scope Filter */}
-          <div className="flex items-center gap-1 mt-2">
-            <Filter className="w-3 h-3 text-[var(--color-text-quaternary)]" />
-            <div className="flex gap-1">
-              {(['all', 'global', 'project'] as const).map((scope) => (
-                <button
-                  key={scope}
-                  onClick={() => setFilterScope(scope)}
-                  className={`text-[10px] px-2 py-0.5 rounded transition-colors ${
-                    filterScope === scope
-                      ? 'bg-[var(--color-accent-soft)] text-[var(--color-accent)]'
-                      : 'text-[var(--color-text-tertiary)] hover:text-[var(--color-text-secondary)]'
-                  }`}
-                >
-                  {scope.charAt(0).toUpperCase() + scope.slice(1)}
-                </button>
-              ))}
+          {/* Scope Filter - hidden in project view */}
+          {activeView !== 'project' && (
+            <div className="flex items-center gap-1 mt-2">
+              <Filter className="w-3 h-3 text-[var(--color-text-quaternary)]" />
+              <div className="flex gap-1">
+                {(['all', 'global', 'project'] as const).map((scope) => (
+                  <button
+                    key={scope}
+                    onClick={() => setFilterScope(scope)}
+                    className={`text-[10px] px-2 py-0.5 rounded transition-colors ${
+                      filterScope === scope
+                        ? 'bg-[var(--color-bg-active)] text-[var(--color-text-primary)]'
+                        : 'text-[var(--color-text-tertiary)] hover:text-[var(--color-text-secondary)]'
+                    }`}
+                  >
+                    {scope.charAt(0).toUpperCase() + scope.slice(1)}
+                  </button>
+                ))}
+              </div>
             </div>
-          </div>
+          )}
         </div>
         
         {/* Items List */}
@@ -387,11 +401,11 @@ export function CommandPalette({ onOpenProject, onNewAgent, onNewSkill, onNewCom
             </div>
           ) : flatItems.length === 0 ? (
             <div className="flex flex-col items-center justify-center h-32 text-center px-4">
-              {React.createElement(ENTITY_ICONS[activeView === 'agents' ? 'agent' : activeView === 'skills' ? 'skill' : activeView === 'commands' ? 'command' : 'settings'], {
+              {React.createElement(ENTITY_ICONS[activeView === 'agents' ? 'agent' : activeView === 'skills' ? 'skill' : activeView === 'commands' ? 'command' : activeView === 'project' ? 'settings' : 'settings'], {
                 className: 'w-8 h-8 text-[var(--color-text-quaternary)] mb-2'
               })}
               <p className="text-sm text-[var(--color-text-tertiary)]">
-                {searchQuery ? 'No results found' : `No ${getViewTitle().toLowerCase()} found`}
+                {searchQuery ? 'No results found' : activeView === 'project' ? 'No entities in this project' : `No ${getViewTitle().toLowerCase()} found`}
               </p>
               {newItemAction && !searchQuery && (
                 <button
@@ -401,6 +415,64 @@ export function CommandPalette({ onOpenProject, onNewAgent, onNewSkill, onNewCom
                   Create your first {activeView.replace(/s$/, '')}
                 </button>
               )}
+            </div>
+          ) : activeView === 'project' ? (
+            // Project view: Show items grouped by section with headers
+            <div className="px-2">
+              {sections.map((section) => (
+                <div key={section.id} className="mb-3">
+                  <div className="px-2 py-1.5 text-[10px] font-medium text-[var(--color-text-tertiary)] uppercase tracking-wider">
+                    {section.title}
+                  </div>
+                  <AnimatePresence mode="popLayout">
+                    {section.items.map((item) => {
+                      const globalIdx = flatItems.findIndex(i => i.id === item.id);
+                      const isNew = isNewItem(item.id);
+                      const shouldAnimate = !hasInitiallyAnimated || isNew;
+                      
+                      return (
+                        <motion.div
+                          key={item.id}
+                          data-index={globalIdx}
+                          layout
+                          initial={shouldAnimate ? { opacity: 0, y: 8 } : false}
+                          animate={{ opacity: 1, y: 0 }}
+                          exit={{ opacity: 0, x: -20, transition: { duration: 0.15 } }}
+                          transition={{ 
+                            duration: 0.2,
+                            delay: !hasInitiallyAnimated ? globalIdx * 0.02 : 0,
+                          }}
+                        >
+                          <CommandItem
+                            icon={getItemIcon(item)}
+                            iconColor={getItemIconColor(item)}
+                            label={item.name}
+                            sublabel={item.description}
+                            location={formatPath(item.path)}
+                            scope={item.scope}
+                            badge={getBadgeForItem(item)}
+                            badgeColor={getBadgeColor(item)}
+                            isSelected={isPanelOpen && selectedEntity?.id === item.id}
+                            hasChevron={true}
+                            isDeletable={['agent', 'skill', 'command'].includes(item.entityType)}
+                            isNew={isNew}
+                            onClick={() => handleSelectItem(globalIdx)}
+                            onDelete={() => {
+                              const entity = findEntityById(item.id, item.entityType);
+                              if (entity) setDeleteTarget({ item, entity });
+                            }}
+                            onContextMenu={(e) => contextMenuHandlers.onContextMenu(e, item)}
+                            onPointerDown={(e) => contextMenuHandlers.onPointerDown(e, item)}
+                            onPointerUp={contextMenuHandlers.onPointerUp}
+                            onPointerCancel={contextMenuHandlers.onPointerCancel}
+                            onPointerMove={contextMenuHandlers.onPointerMove}
+                          />
+                        </motion.div>
+                      );
+                    })}
+                  </AnimatePresence>
+                </div>
+              ))}
             </div>
           ) : (
             <div className="px-2">
@@ -428,6 +500,7 @@ export function CommandPalette({ onOpenProject, onNewAgent, onNewSkill, onNewCom
                         label={item.name}
                         sublabel={item.description}
                         location={formatPath(item.path)}
+                        scope={item.scope}
                         badge={getBadgeForItem(item)}
                         badgeColor={getBadgeColor(item)}
                         isSelected={isPanelOpen && selectedEntity?.id === item.id}

@@ -7,6 +7,7 @@ import { useEffect, useCallback, useState } from 'react';
 import { useAppStore } from './store/appStore';
 import { Navigation } from './components/Navigation';
 import { Dashboard } from './components/Dashboard';
+import { HealthCheck } from './components/HealthCheck';
 import { CommandPalette } from './components/CommandPalette';
 import { DetailPanel } from './components/DetailPanel';
 import { ToastContainer } from './components/ui/ToastContainer';
@@ -31,6 +32,12 @@ function App() {
   const [showCreateDialog, setShowCreateDialog] = useState(false);
   const [createDialogType, setCreateDialogType] = useState<CreatableEntityType>('agent');
   const isFirstLoad = lastDiscovery === null;
+  const theme = useAppStore((state) => state.theme);
+
+  // Initialize theme on mount
+  useEffect(() => {
+    document.documentElement.setAttribute('data-theme', theme);
+  }, []);
 
   // Initial discovery on mount
   useEffect(() => {
@@ -161,12 +168,14 @@ function App() {
       )}
       
       {/* Navigation Sidebar */}
-      <Navigation />
+      <Navigation onOpenShortcuts={() => setShowShortcuts(true)} />
       
       {/* Main Content Area */}
       <div className="flex flex-1 overflow-hidden">
         {activeView === 'dashboard' ? (
           <Dashboard />
+        ) : activeView === 'health' ? (
+          <HealthCheck />
         ) : (
           <>
             {/* Command Palette - Left Side */}

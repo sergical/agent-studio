@@ -10,7 +10,7 @@ import { useGlobalShortcuts } from '../hooks/useKeyboardNavigation';
 import { Panel } from './ui/Panel';
 import { ConfirmDialog } from './ui/ConfirmDialog';
 import type { DisplayableEntity, EntityType } from '../lib/types';
-import { isFlatEntity, isHookEntity, isMcpServerEntity, isPluginEntity } from '../lib/types';
+import { isFlatEntity, isHookEntity, isMcpServerEntity, isPluginEntity, isSkillEntity, isAgentEntity, isCommandEntity } from '../lib/types';
 import { 
   Code, 
   FormInput, 
@@ -18,7 +18,27 @@ import {
   Trash2,
   FileText,
   Loader2,
-  Link
+  Link,
+  Sparkles,
+  Wrench,
+  FileCode,
+  Cpu,
+  GitFork,
+  User,
+  Book,
+  FolderOpen,
+  ExternalLink,
+  Bot,
+  Shield,
+  ShieldOff,
+  ShieldCheck,
+  ShieldAlert,
+  Zap,
+  Terminal,
+  MessageSquare,
+  Ban,
+  Eye,
+  Pencil
 } from 'lucide-react';
 import { clsx } from 'clsx';
 
@@ -44,14 +64,21 @@ export function DetailPanel() {
   const removeEntity = useAppStore(state => state.removeEntity);
   const updateEntityContent = useAppStore(state => state.updateEntityContent);
   const addToast = useAppStore(state => state.addToast);
+  const theme = useAppStore(state => state.theme);
   
   const [content, setContent] = useState('');
   const [originalContent, setOriginalContent] = useState('');
   const [viewMode, setViewMode] = useState<'code' | 'form'>('code');
+  const [editMode, setEditMode] = useState(false);
   const [isDeleting, setIsDeleting] = useState(false);
   const [showDeleteConfirm, setShowDeleteConfirm] = useState(false);
   
   const hasChanges = content !== originalContent;
+  
+  // Reset edit mode when entity changes
+  useEffect(() => {
+    setEditMode(false);
+  }, [selectedEntity?.id]);
   
   // Get entity info
   const getEntityInfo = () => {
@@ -235,6 +262,9 @@ export function DetailPanel() {
   const isHook = entityInfo.type === 'hook';
   const isMcp = entityInfo.type === 'mcp';
   const isPlugin = entityInfo.type === 'plugin';
+  const isSkill = entityInfo.type === 'skill';
+  const isAgent = entityInfo.type === 'agent';
+  const isCommand = entityInfo.type === 'command';
   
   const badge = entityInfo.scope;
   const badgeColor = entityInfo.scope === 'global' ? 'var(--color-info)' : 'var(--color-success)';
@@ -263,8 +293,48 @@ export function DetailPanel() {
           </div>
         )}
         
+        {/* View/Edit Mode Toggle - for entities with special views */}
+        {(isSkill || isAgent || isCommand) && (
+          <div 
+            className="absolute left-0 right-0 flex items-center justify-between px-4 py-2 border-b border-[var(--color-border)] bg-[var(--color-bg-primary)] z-10"
+            style={{ top: entityInfo.isSymlink ? '33px' : '0' }}
+          >
+            <div className="flex items-center gap-2">
+              <button
+                onClick={() => setEditMode(false)}
+                className={clsx(
+                  'flex items-center gap-1.5 px-2.5 py-1.5 text-xs font-medium rounded-md transition-colors',
+                  !editMode
+                    ? 'bg-[var(--color-bg-elevated)] text-[var(--color-text-primary)]'
+                    : 'text-[var(--color-text-tertiary)] hover:text-[var(--color-text-secondary)]'
+                )}
+              >
+                <Eye className="w-3.5 h-3.5" />
+                View
+              </button>
+              <button
+                onClick={() => setEditMode(true)}
+                className={clsx(
+                  'flex items-center gap-1.5 px-2.5 py-1.5 text-xs font-medium rounded-md transition-colors',
+                  editMode
+                    ? 'bg-[var(--color-bg-elevated)] text-[var(--color-text-primary)]'
+                    : 'text-[var(--color-text-tertiary)] hover:text-[var(--color-text-secondary)]'
+                )}
+              >
+                <Pencil className="w-3.5 h-3.5" />
+                Edit
+              </button>
+            </div>
+            {hasChanges && (
+              <span className="text-[10px] text-[var(--color-warning)] uppercase font-medium">
+                Unsaved changes
+              </span>
+            )}
+          </div>
+        )}
+        
         {/* View Mode Toggle - for JSON files only */}
-        {isJson && !isHook && !isMcp && (
+        {isJson && !isHook && !isMcp && !isSkill && !isAgent && !isCommand && (
           <div 
             className="absolute left-0 right-0 flex items-center gap-2 px-4 py-2 border-b border-[var(--color-border)] bg-[var(--color-bg-primary)] z-10"
             style={{ top: entityInfo.isSymlink ? '33px' : '0' }}
@@ -296,13 +366,57 @@ export function DetailPanel() {
           </div>
         )}
         
-        {/* Special views for Hook, MCP, and Plugin */}
+        {/* Special views for Hook, MCP, Plugin (no edit mode) */}
         {isHook && <HookDetailView entity={selectedEntity} />}
         {isMcp && <McpDetailView entity={selectedEntity} />}
         {isPlugin && <PluginDetailView entity={selectedEntity} />}
         
-        {/* Editor Container */}
-        {!isHook && !isMcp && !isPlugin && (
+        {/* Special views with edit mode toggle */}
+        {isSkill && !editMode && <SkillDetailView entity={selectedEntity} />}
+        {isAgent && !editMode && <AgentDetailView entity={selectedEntity} />}
+        {isCommand && !editMode && <CommandDetailView entity={selectedEntity} />}
+        
+        {/* Editor for entities with edit mode */}
+        {(isSkill || isAgent || isCommand) && editMode && (
+          <div 
+            className="absolute left-0 right-0 bottom-0"
+            style={{ 
+              top: 41 + (entityInfo.isSymlink ? 33 : 0) + 'px'
+            }}
+          >
+            <Suspense fallback={<EditorSkeleton />}>
+              <Editor
+                height="100%"
+                width="100%"
+                language="markdown"
+                  theme={theme === 'dark' ? 'vs-dark' : 'light'}
+                value={content}
+                onChange={(value) => setContent(value || '')}
+                options={{
+                  minimap: { enabled: false },
+                  fontSize: 13,
+                  fontFamily: '"SF Mono", "Fira Code", "Fira Mono", monospace',
+                  lineNumbers: 'on',
+                  scrollBeyondLastLine: false,
+                  wordWrap: 'on',
+                  formatOnPaste: true,
+                  formatOnType: true,
+                  tabSize: 2,
+                  padding: { top: 16, bottom: 16 },
+                  renderLineHighlight: 'none',
+                  automaticLayout: true,
+                  scrollbar: {
+                    verticalScrollbarSize: 8,
+                    horizontalScrollbarSize: 8,
+                  },
+                }}
+              />
+            </Suspense>
+          </div>
+        )}
+        
+        {/* Editor Container for other entities */}
+        {!isHook && !isMcp && !isPlugin && !isSkill && !isAgent && !isCommand && (
           <div 
             className="absolute left-0 right-0 bottom-0"
             style={{ 
@@ -315,7 +429,7 @@ export function DetailPanel() {
                   height="100%"
                   width="100%"
                   language={isJson ? 'json' : 'markdown'}
-                  theme="vs-dark"
+                theme={theme === 'dark' ? 'vs-dark' : 'light'}
                   value={content}
                   onChange={(value) => setContent(value || '')}
                   options={{
@@ -684,6 +798,696 @@ function PluginDetailView({ entity }: { entity: DisplayableEntity }) {
             {entity.plugin_dir || entity.path}
           </code>
         </div>
+      </div>
+    </div>
+  );
+}
+
+// Skill detail view - Enhanced view with frontmatter parsing
+function SkillDetailView({ entity }: { entity: DisplayableEntity }) {
+  if (!isSkillEntity(entity)) return null;
+  
+  const frontmatter = entity.frontmatter;
+  const supportingFiles = entity.supporting_files || [];
+  
+  // Get the markdown content (strip frontmatter for display)
+  const getMarkdownContent = () => {
+    const content = entity.content || '';
+    // Match YAML frontmatter at the start of the file
+    const frontmatterMatch = content.match(/^---\n([\s\S]*?)\n---\n?([\s\S]*)$/);
+    if (frontmatterMatch) {
+      return frontmatterMatch[2].trim();
+    }
+    return content;
+  };
+  
+  const markdownContent = getMarkdownContent();
+  
+  // Normalize tools to array
+  const getAllowedTools = () => {
+    const tools = frontmatter?.['allowed-tools'];
+    if (!tools) return [];
+    if (Array.isArray(tools)) return tools;
+    return [tools];
+  };
+  
+  const allowedTools = getAllowedTools();
+  
+  // Model display
+  const getModelDisplay = (model?: string) => {
+    if (!model) return null;
+    const modelMap: Record<string, { label: string; color: string }> = {
+      'opus': { label: 'Opus', color: 'var(--color-accent)' },
+      'sonnet': { label: 'Sonnet', color: 'var(--color-info)' },
+      'haiku': { label: 'Haiku', color: 'var(--color-success)' },
+      'inherit': { label: 'Inherit', color: 'var(--color-text-tertiary)' },
+    };
+    return modelMap[model] || { label: model, color: 'var(--color-text-secondary)' };
+  };
+  
+  const modelInfo = getModelDisplay(frontmatter?.model);
+  
+  return (
+    <div className="absolute inset-x-0 bottom-0 p-4 overflow-y-auto" style={{ top: '41px' }}>
+      <div className="space-y-4">
+        {/* Skill Info */}
+        <div className="bg-[var(--color-bg-secondary)] rounded-lg border border-[var(--color-border)] p-4">
+          <div className="flex items-start gap-3 mb-3">
+            <div className="w-10 h-10 rounded-lg bg-[var(--color-success-soft)] flex items-center justify-center flex-shrink-0">
+              <Sparkles className="w-5 h-5 text-[var(--color-success)]" />
+            </div>
+            <div className="flex-1 min-w-0">
+              <h3 className="text-sm font-semibold text-[var(--color-text-primary)]">
+                {frontmatter?.name || entity.name}
+              </h3>
+              {frontmatter?.description && (
+                <p className="text-xs text-[var(--color-text-secondary)] mt-1 line-clamp-2">
+                  {frontmatter.description}
+                </p>
+              )}
+            </div>
+          </div>
+          
+          {/* Quick Stats */}
+          <div className="flex flex-wrap gap-2 mt-3 pt-3 border-t border-[var(--color-border-subtle)]">
+            {frontmatter?.['user-invocable'] && (
+              <span className="inline-flex items-center gap-1 px-2 py-1 bg-[var(--color-info-soft)] text-[var(--color-info)] rounded text-[10px] font-medium uppercase">
+                <User className="w-3 h-3" />
+                User Invocable
+              </span>
+            )}
+            {frontmatter?.context === 'fork' && (
+              <span className="inline-flex items-center gap-1 px-2 py-1 bg-[var(--color-warning-soft)] text-[var(--color-warning)] rounded text-[10px] font-medium uppercase">
+                <GitFork className="w-3 h-3" />
+                Forked Context
+              </span>
+            )}
+            {modelInfo && (
+              <span 
+                className="inline-flex items-center gap-1 px-2 py-1 rounded text-[10px] font-medium uppercase"
+                style={{ 
+                  backgroundColor: `color-mix(in srgb, ${modelInfo.color} 15%, transparent)`,
+                  color: modelInfo.color
+                }}
+              >
+                <Cpu className="w-3 h-3" />
+                {modelInfo.label}
+              </span>
+            )}
+            {frontmatter?.['disable-model-invocation'] && (
+              <span className="inline-flex items-center gap-1 px-2 py-1 bg-[var(--color-error-soft)] text-[var(--color-error)] rounded text-[10px] font-medium uppercase">
+                No Auto-Invoke
+              </span>
+            )}
+          </div>
+        </div>
+        
+        {/* Allowed Tools */}
+        {allowedTools.length > 0 && (
+          <div className="bg-[var(--color-bg-secondary)] rounded-lg border border-[var(--color-border)] p-4">
+            <h3 className="flex items-center gap-2 text-xs font-semibold uppercase tracking-wider text-[var(--color-text-tertiary)] mb-3">
+              <Wrench className="w-3.5 h-3.5" />
+              Allowed Tools ({allowedTools.length})
+            </h3>
+            <div className="flex flex-wrap gap-1.5">
+              {allowedTools.map((tool, idx) => (
+                <span
+                  key={idx}
+                  className="px-2 py-1 bg-[var(--color-bg-tertiary)] text-[var(--color-text-secondary)] rounded text-xs font-mono"
+                >
+                  {tool}
+                </span>
+              ))}
+            </div>
+          </div>
+        )}
+        
+        {/* Supporting Files */}
+        {supportingFiles.length > 0 && (
+          <div className="bg-[var(--color-bg-secondary)] rounded-lg border border-[var(--color-border)] p-4">
+            <h3 className="flex items-center gap-2 text-xs font-semibold uppercase tracking-wider text-[var(--color-text-tertiary)] mb-3">
+              <FolderOpen className="w-3.5 h-3.5" />
+              Supporting Files ({supportingFiles.length})
+            </h3>
+            <div className="space-y-1.5">
+              {supportingFiles.map((file, idx) => {
+                const fileName = file.split('/').pop() || file;
+                const isMarkdown = file.endsWith('.md');
+                const isScript = file.endsWith('.sh') || file.endsWith('.py') || file.endsWith('.js') || file.endsWith('.ts');
+                
+                return (
+                  <div
+                    key={idx}
+                    className="flex items-center gap-2 px-2.5 py-1.5 bg-[var(--color-bg-tertiary)] rounded text-xs group"
+                  >
+                    {isMarkdown ? (
+                      <Book className="w-3.5 h-3.5 text-[var(--color-info)]" />
+                    ) : isScript ? (
+                      <FileCode className="w-3.5 h-3.5 text-[var(--color-warning)]" />
+                    ) : (
+                      <FileText className="w-3.5 h-3.5 text-[var(--color-text-tertiary)]" />
+                    )}
+                    <span className="font-mono text-[var(--color-text-secondary)] truncate flex-1">
+                      {fileName}
+                    </span>
+                    <ExternalLink className="w-3 h-3 text-[var(--color-text-quaternary)] opacity-0 group-hover:opacity-100 transition-opacity" />
+                  </div>
+                );
+              })}
+            </div>
+          </div>
+        )}
+        
+        {/* Hooks */}
+        {frontmatter?.hooks && Object.keys(frontmatter.hooks).length > 0 && (
+          <div className="bg-[var(--color-bg-secondary)] rounded-lg border border-[var(--color-border)] p-4">
+            <h3 className="text-xs font-semibold uppercase tracking-wider text-[var(--color-text-tertiary)] mb-3">
+              Hooks ({Object.keys(frontmatter.hooks).length} events)
+            </h3>
+            <div className="space-y-2">
+              {Object.entries(frontmatter.hooks).map(([event, matchers]) => (
+                <div key={event} className="p-2.5 bg-[var(--color-bg-tertiary)] rounded-md">
+                  <span className="text-xs font-medium text-[var(--color-accent)]">{event}</span>
+                  {Array.isArray(matchers) && (
+                    <span className="ml-2 text-[10px] text-[var(--color-text-quaternary)]">
+                      {matchers.length} {matchers.length === 1 ? 'matcher' : 'matchers'}
+                    </span>
+                  )}
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
+        
+        {/* Metadata */}
+        {frontmatter?.metadata && Object.keys(frontmatter.metadata).length > 0 && (
+          <div className="bg-[var(--color-bg-secondary)] rounded-lg border border-[var(--color-border)] p-4">
+            <h3 className="text-xs font-semibold uppercase tracking-wider text-[var(--color-text-tertiary)] mb-3">
+              Metadata
+            </h3>
+            <div className="space-y-1.5">
+              {Object.entries(frontmatter.metadata).map(([key, value]) => (
+                <div key={key} className="flex gap-2 text-xs">
+                  <span className="text-[var(--color-text-tertiary)]">{key}:</span>
+                  <span className="text-[var(--color-text-secondary)]">{value}</span>
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
+        
+        {/* License & Compatibility */}
+        {(frontmatter?.license || frontmatter?.compatibility) && (
+          <div className="bg-[var(--color-bg-secondary)] rounded-lg border border-[var(--color-border)] p-4">
+            <h3 className="text-xs font-semibold uppercase tracking-wider text-[var(--color-text-tertiary)] mb-3">
+              Additional Info
+            </h3>
+            <div className="space-y-2">
+              {frontmatter.license && (
+                <div>
+                  <span className="text-xs text-[var(--color-text-tertiary)]">License</span>
+                  <p className="text-sm text-[var(--color-text-primary)]">{frontmatter.license}</p>
+                </div>
+              )}
+              {frontmatter.compatibility && (
+                <div>
+                  <span className="text-xs text-[var(--color-text-tertiary)]">Compatibility</span>
+                  <p className="text-sm text-[var(--color-text-primary)]">{frontmatter.compatibility}</p>
+                </div>
+              )}
+            </div>
+          </div>
+        )}
+        
+        {/* Skill Directory */}
+        <div className="bg-[var(--color-bg-secondary)] rounded-lg border border-[var(--color-border)] p-4">
+          <h3 className="text-xs font-semibold uppercase tracking-wider text-[var(--color-text-tertiary)] mb-3">
+            Skill Directory
+          </h3>
+          <code className="text-xs font-mono text-[var(--color-text-secondary)] block p-2 bg-[var(--color-bg-tertiary)] rounded break-all">
+            {entity.skill_dir}
+          </code>
+        </div>
+        
+        {/* Markdown Content Preview */}
+        {markdownContent && (
+          <div className="bg-[var(--color-bg-secondary)] rounded-lg border border-[var(--color-border)] p-4">
+            <h3 className="text-xs font-semibold uppercase tracking-wider text-[var(--color-text-tertiary)] mb-3">
+              Instructions Preview
+            </h3>
+            <div className="text-xs text-[var(--color-text-secondary)] whitespace-pre-wrap font-mono p-3 bg-[var(--color-bg-tertiary)] rounded max-h-64 overflow-y-auto">
+              {markdownContent.slice(0, 1500)}
+              {markdownContent.length > 1500 && (
+                <span className="text-[var(--color-text-quaternary)]">
+                  {'\n\n'}... ({markdownContent.length - 1500} more characters)
+                </span>
+              )}
+            </div>
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+// Agent detail view - Enhanced view with frontmatter parsing
+function AgentDetailView({ entity }: { entity: DisplayableEntity }) {
+  if (!isAgentEntity(entity)) return null;
+  
+  const frontmatter = entity.frontmatter;
+  
+  // Get the markdown content (strip frontmatter for display)
+  const getMarkdownContent = () => {
+    const content = entity.content || '';
+    const frontmatterMatch = content.match(/^---\n([\s\S]*?)\n---\n?([\s\S]*)$/);
+    if (frontmatterMatch) {
+      return frontmatterMatch[2].trim();
+    }
+    return content;
+  };
+  
+  const markdownContent = getMarkdownContent();
+  
+  // Normalize tools to array
+  const getTools = (tools?: string | string[]) => {
+    if (!tools) return [];
+    if (Array.isArray(tools)) return tools;
+    return [tools];
+  };
+  
+  const allowedTools = getTools(frontmatter?.tools);
+  const disallowedTools = getTools(frontmatter?.disallowedTools);
+  const skills = frontmatter?.skills || [];
+  
+  // Model display
+  const getModelDisplay = (model?: string) => {
+    if (!model) return null;
+    const modelMap: Record<string, { label: string; color: string }> = {
+      'opus': { label: 'Opus', color: 'var(--color-accent)' },
+      'sonnet': { label: 'Sonnet', color: 'var(--color-info)' },
+      'haiku': { label: 'Haiku', color: 'var(--color-success)' },
+      'inherit': { label: 'Inherit', color: 'var(--color-text-tertiary)' },
+    };
+    return modelMap[model] || { label: model, color: 'var(--color-text-secondary)' };
+  };
+  
+  // Permission mode display
+  const getPermissionModeDisplay = (mode?: string) => {
+    if (!mode) return null;
+    const modeMap: Record<string, { label: string; color: string; icon: typeof Shield }> = {
+      'default': { label: 'Default', color: 'var(--color-text-tertiary)', icon: Shield },
+      'acceptEdits': { label: 'Accept Edits', color: 'var(--color-success)', icon: ShieldCheck },
+      'dontAsk': { label: "Don't Ask", color: 'var(--color-warning)', icon: ShieldOff },
+      'bypassPermissions': { label: 'Bypass', color: 'var(--color-error)', icon: ShieldAlert },
+      'plan': { label: 'Plan Mode', color: 'var(--color-info)', icon: Shield },
+    };
+    return modeMap[mode] || { label: mode, color: 'var(--color-text-secondary)', icon: Shield };
+  };
+  
+  const modelInfo = getModelDisplay(frontmatter?.model);
+  const permissionInfo = getPermissionModeDisplay(frontmatter?.permissionMode);
+  
+  return (
+    <div className="absolute inset-x-0 bottom-0 p-4 overflow-y-auto" style={{ top: '41px' }}>
+      <div className="space-y-4">
+        {/* Agent Info */}
+        <div className="bg-[var(--color-bg-secondary)] rounded-lg border border-[var(--color-border)] p-4">
+          <div className="flex items-start gap-3 mb-3">
+            <div className="w-10 h-10 rounded-lg bg-[var(--color-warning-soft)] flex items-center justify-center flex-shrink-0">
+              <Bot className="w-5 h-5 text-[var(--color-warning)]" />
+            </div>
+            <div className="flex-1 min-w-0">
+              <h3 className="text-sm font-semibold text-[var(--color-text-primary)]">
+                {frontmatter?.name || entity.name}
+              </h3>
+              {frontmatter?.description && (
+                <p className="text-xs text-[var(--color-text-secondary)] mt-1 line-clamp-2">
+                  {frontmatter.description}
+                </p>
+              )}
+            </div>
+          </div>
+          
+          {/* Quick Stats */}
+          <div className="flex flex-wrap gap-2 mt-3 pt-3 border-t border-[var(--color-border-subtle)]">
+            {modelInfo && (
+              <span 
+                className="inline-flex items-center gap-1 px-2 py-1 rounded text-[10px] font-medium uppercase"
+                style={{ 
+                  backgroundColor: `color-mix(in srgb, ${modelInfo.color} 15%, transparent)`,
+                  color: modelInfo.color
+                }}
+              >
+                <Cpu className="w-3 h-3" />
+                {modelInfo.label}
+              </span>
+            )}
+            {permissionInfo && (
+              <span 
+                className="inline-flex items-center gap-1 px-2 py-1 rounded text-[10px] font-medium uppercase"
+                style={{ 
+                  backgroundColor: `color-mix(in srgb, ${permissionInfo.color} 15%, transparent)`,
+                  color: permissionInfo.color
+                }}
+              >
+                <permissionInfo.icon className="w-3 h-3" />
+                {permissionInfo.label}
+              </span>
+            )}
+            {allowedTools.length > 0 && (
+              <span className="inline-flex items-center gap-1 px-2 py-1 bg-[var(--color-success-soft)] text-[var(--color-success)] rounded text-[10px] font-medium uppercase">
+                <Wrench className="w-3 h-3" />
+                {allowedTools.length} Tools
+              </span>
+            )}
+            {disallowedTools.length > 0 && (
+              <span className="inline-flex items-center gap-1 px-2 py-1 bg-[var(--color-error-soft)] text-[var(--color-error)] rounded text-[10px] font-medium uppercase">
+                <Ban className="w-3 h-3" />
+                {disallowedTools.length} Blocked
+              </span>
+            )}
+            {skills.length > 0 && (
+              <span className="inline-flex items-center gap-1 px-2 py-1 bg-[var(--color-accent-soft)] text-[var(--color-accent)] rounded text-[10px] font-medium uppercase">
+                <Sparkles className="w-3 h-3" />
+                {skills.length} Skills
+              </span>
+            )}
+          </div>
+        </div>
+        
+        {/* Allowed Tools */}
+        {allowedTools.length > 0 && (
+          <div className="bg-[var(--color-bg-secondary)] rounded-lg border border-[var(--color-border)] p-4">
+            <h3 className="flex items-center gap-2 text-xs font-semibold uppercase tracking-wider text-[var(--color-text-tertiary)] mb-3">
+              <Wrench className="w-3.5 h-3.5" />
+              Allowed Tools ({allowedTools.length})
+            </h3>
+            <div className="flex flex-wrap gap-1.5">
+              {allowedTools.map((tool, idx) => (
+                <span
+                  key={idx}
+                  className="px-2 py-1 bg-[var(--color-success-soft)] text-[var(--color-success)] rounded text-xs font-mono"
+                >
+                  {tool}
+                </span>
+              ))}
+            </div>
+          </div>
+        )}
+        
+        {/* Disallowed Tools */}
+        {disallowedTools.length > 0 && (
+          <div className="bg-[var(--color-bg-secondary)] rounded-lg border border-[var(--color-border)] p-4">
+            <h3 className="flex items-center gap-2 text-xs font-semibold uppercase tracking-wider text-[var(--color-text-tertiary)] mb-3">
+              <Ban className="w-3.5 h-3.5" />
+              Disallowed Tools ({disallowedTools.length})
+            </h3>
+            <div className="flex flex-wrap gap-1.5">
+              {disallowedTools.map((tool, idx) => (
+                <span
+                  key={idx}
+                  className="px-2 py-1 bg-[var(--color-error-soft)] text-[var(--color-error)] rounded text-xs font-mono"
+                >
+                  {tool}
+                </span>
+              ))}
+            </div>
+          </div>
+        )}
+        
+        {/* Skills */}
+        {skills.length > 0 && (
+          <div className="bg-[var(--color-bg-secondary)] rounded-lg border border-[var(--color-border)] p-4">
+            <h3 className="flex items-center gap-2 text-xs font-semibold uppercase tracking-wider text-[var(--color-text-tertiary)] mb-3">
+              <Sparkles className="w-3.5 h-3.5" />
+              Skills ({skills.length})
+            </h3>
+            <div className="space-y-1.5">
+              {skills.map((skill, idx) => (
+                <div
+                  key={idx}
+                  className="flex items-center gap-2 px-2.5 py-1.5 bg-[var(--color-bg-tertiary)] rounded text-xs"
+                >
+                  <Sparkles className="w-3.5 h-3.5 text-[var(--color-accent)]" />
+                  <span className="text-[var(--color-text-secondary)]">{skill}</span>
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
+        
+        {/* Hooks */}
+        {frontmatter?.hooks && Object.keys(frontmatter.hooks).length > 0 && (
+          <div className="bg-[var(--color-bg-secondary)] rounded-lg border border-[var(--color-border)] p-4">
+            <h3 className="flex items-center gap-2 text-xs font-semibold uppercase tracking-wider text-[var(--color-text-tertiary)] mb-3">
+              <Zap className="w-3.5 h-3.5" />
+              Hooks ({Object.keys(frontmatter.hooks).length} events)
+            </h3>
+            <div className="space-y-2">
+              {Object.entries(frontmatter.hooks).map(([event, matchers]) => (
+                <div key={event} className="p-2.5 bg-[var(--color-bg-tertiary)] rounded-md">
+                  <span className="text-xs font-medium text-[var(--color-accent)]">{event}</span>
+                  {Array.isArray(matchers) && (
+                    <span className="ml-2 text-[10px] text-[var(--color-text-quaternary)]">
+                      {matchers.length} {matchers.length === 1 ? 'matcher' : 'matchers'}
+                    </span>
+                  )}
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
+        
+        {/* Agent File Path */}
+        <div className="bg-[var(--color-bg-secondary)] rounded-lg border border-[var(--color-border)] p-4">
+          <h3 className="text-xs font-semibold uppercase tracking-wider text-[var(--color-text-tertiary)] mb-3">
+            File Path
+          </h3>
+          <code className="text-xs font-mono text-[var(--color-text-secondary)] block p-2 bg-[var(--color-bg-tertiary)] rounded break-all">
+            {entity.path}
+          </code>
+        </div>
+        
+        {/* Markdown Content Preview */}
+        {markdownContent && (
+          <div className="bg-[var(--color-bg-secondary)] rounded-lg border border-[var(--color-border)] p-4">
+            <h3 className="text-xs font-semibold uppercase tracking-wider text-[var(--color-text-tertiary)] mb-3">
+              Instructions Preview
+            </h3>
+            <div className="text-xs text-[var(--color-text-secondary)] whitespace-pre-wrap font-mono p-3 bg-[var(--color-bg-tertiary)] rounded max-h-64 overflow-y-auto">
+              {markdownContent.slice(0, 1500)}
+              {markdownContent.length > 1500 && (
+                <span className="text-[var(--color-text-quaternary)]">
+                  {'\n\n'}... ({markdownContent.length - 1500} more characters)
+                </span>
+              )}
+            </div>
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+// Command detail view - Enhanced view for slash commands
+function CommandDetailView({ entity }: { entity: DisplayableEntity }) {
+  if (!isCommandEntity(entity)) return null;
+  
+  const frontmatter = entity.frontmatter;
+  
+  // Get the markdown content (strip frontmatter for display)
+  const getMarkdownContent = () => {
+    const content = entity.content || '';
+    const frontmatterMatch = content.match(/^---\n([\s\S]*?)\n---\n?([\s\S]*)$/);
+    if (frontmatterMatch) {
+      return frontmatterMatch[2].trim();
+    }
+    return content;
+  };
+  
+  const markdownContent = getMarkdownContent();
+  
+  // Normalize tools to array
+  const getAllowedTools = () => {
+    const tools = frontmatter?.['allowed-tools'];
+    if (!tools) return [];
+    if (Array.isArray(tools)) return tools;
+    return [tools];
+  };
+  
+  const allowedTools = getAllowedTools();
+  
+  // Model display
+  const getModelDisplay = (model?: string) => {
+    if (!model) return null;
+    const modelMap: Record<string, { label: string; color: string }> = {
+      'opus': { label: 'Opus', color: 'var(--color-accent)' },
+      'sonnet': { label: 'Sonnet', color: 'var(--color-info)' },
+      'haiku': { label: 'Haiku', color: 'var(--color-success)' },
+      'inherit': { label: 'Inherit', color: 'var(--color-text-tertiary)' },
+    };
+    return modelMap[model] || { label: model, color: 'var(--color-text-secondary)' };
+  };
+  
+  const modelInfo = getModelDisplay(frontmatter?.model);
+  
+  // Build command name with namespace
+  const commandName = entity.namespace 
+    ? `/${entity.namespace}:${entity.name.replace('.md', '')}`
+    : `/${entity.name.replace('.md', '')}`;
+  
+  return (
+    <div className="absolute inset-x-0 bottom-0 p-4 overflow-y-auto" style={{ top: '41px' }}>
+      <div className="space-y-4">
+        {/* Command Info */}
+        <div className="bg-[var(--color-bg-secondary)] rounded-lg border border-[var(--color-border)] p-4">
+          <div className="flex items-start gap-3 mb-3">
+            <div className="w-10 h-10 rounded-lg bg-[var(--color-info-soft)] flex items-center justify-center flex-shrink-0">
+              <Terminal className="w-5 h-5 text-[var(--color-info)]" />
+            </div>
+            <div className="flex-1 min-w-0">
+              <h3 className="text-sm font-semibold text-[var(--color-text-primary)] font-mono">
+                {commandName}
+                {frontmatter?.['argument-hint'] && (
+                  <span className="text-[var(--color-text-tertiary)] font-normal ml-1">
+                    {frontmatter['argument-hint']}
+                  </span>
+                )}
+              </h3>
+              {frontmatter?.description && (
+                <p className="text-xs text-[var(--color-text-secondary)] mt-1 line-clamp-2">
+                  {frontmatter.description}
+                </p>
+              )}
+            </div>
+          </div>
+          
+          {/* Quick Stats */}
+          <div className="flex flex-wrap gap-2 mt-3 pt-3 border-t border-[var(--color-border-subtle)]">
+            {entity.namespace && (
+              <span className="inline-flex items-center gap-1 px-2 py-1 bg-[var(--color-bg-tertiary)] text-[var(--color-text-secondary)] rounded text-[10px] font-medium uppercase">
+                <FolderOpen className="w-3 h-3" />
+                {entity.namespace}
+              </span>
+            )}
+            {modelInfo && (
+              <span 
+                className="inline-flex items-center gap-1 px-2 py-1 rounded text-[10px] font-medium uppercase"
+                style={{ 
+                  backgroundColor: `color-mix(in srgb, ${modelInfo.color} 15%, transparent)`,
+                  color: modelInfo.color
+                }}
+              >
+                <Cpu className="w-3 h-3" />
+                {modelInfo.label}
+              </span>
+            )}
+            {frontmatter?.context === 'fork' && (
+              <span className="inline-flex items-center gap-1 px-2 py-1 bg-[var(--color-warning-soft)] text-[var(--color-warning)] rounded text-[10px] font-medium uppercase">
+                <GitFork className="w-3 h-3" />
+                Forked Context
+              </span>
+            )}
+            {frontmatter?.agent && (
+              <span className="inline-flex items-center gap-1 px-2 py-1 bg-[var(--color-warning-soft)] text-[var(--color-warning)] rounded text-[10px] font-medium uppercase">
+                <Bot className="w-3 h-3" />
+                Uses Agent
+              </span>
+            )}
+            {frontmatter?.['disable-model-invocation'] && (
+              <span className="inline-flex items-center gap-1 px-2 py-1 bg-[var(--color-error-soft)] text-[var(--color-error)] rounded text-[10px] font-medium uppercase">
+                No Auto-Invoke
+              </span>
+            )}
+          </div>
+        </div>
+        
+        {/* Agent Reference */}
+        {frontmatter?.agent && (
+          <div className="bg-[var(--color-bg-secondary)] rounded-lg border border-[var(--color-border)] p-4">
+            <h3 className="flex items-center gap-2 text-xs font-semibold uppercase tracking-wider text-[var(--color-text-tertiary)] mb-3">
+              <Bot className="w-3.5 h-3.5" />
+              Delegated Agent
+            </h3>
+            <div className="flex items-center gap-2 px-2.5 py-2 bg-[var(--color-bg-tertiary)] rounded">
+              <Bot className="w-4 h-4 text-[var(--color-warning)]" />
+              <span className="text-sm text-[var(--color-text-primary)]">{frontmatter.agent}</span>
+            </div>
+            <p className="text-[10px] text-[var(--color-text-quaternary)] mt-2">
+              This command delegates execution to the specified agent
+            </p>
+          </div>
+        )}
+        
+        {/* Allowed Tools */}
+        {allowedTools.length > 0 && (
+          <div className="bg-[var(--color-bg-secondary)] rounded-lg border border-[var(--color-border)] p-4">
+            <h3 className="flex items-center gap-2 text-xs font-semibold uppercase tracking-wider text-[var(--color-text-tertiary)] mb-3">
+              <Wrench className="w-3.5 h-3.5" />
+              Allowed Tools ({allowedTools.length})
+            </h3>
+            <div className="flex flex-wrap gap-1.5">
+              {allowedTools.map((tool, idx) => (
+                <span
+                  key={idx}
+                  className="px-2 py-1 bg-[var(--color-bg-tertiary)] text-[var(--color-text-secondary)] rounded text-xs font-mono"
+                >
+                  {tool}
+                </span>
+              ))}
+            </div>
+          </div>
+        )}
+        
+        {/* Hooks */}
+        {frontmatter?.hooks && Object.keys(frontmatter.hooks).length > 0 && (
+          <div className="bg-[var(--color-bg-secondary)] rounded-lg border border-[var(--color-border)] p-4">
+            <h3 className="flex items-center gap-2 text-xs font-semibold uppercase tracking-wider text-[var(--color-text-tertiary)] mb-3">
+              <Zap className="w-3.5 h-3.5" />
+              Hooks ({Object.keys(frontmatter.hooks).length} events)
+            </h3>
+            <div className="space-y-2">
+              {Object.entries(frontmatter.hooks).map(([event, matchers]) => (
+                <div key={event} className="p-2.5 bg-[var(--color-bg-tertiary)] rounded-md">
+                  <span className="text-xs font-medium text-[var(--color-accent)]">{event}</span>
+                  {Array.isArray(matchers) && (
+                    <span className="ml-2 text-[10px] text-[var(--color-text-quaternary)]">
+                      {matchers.length} {matchers.length === 1 ? 'matcher' : 'matchers'}
+                    </span>
+                  )}
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
+        
+        {/* File Path */}
+        <div className="bg-[var(--color-bg-secondary)] rounded-lg border border-[var(--color-border)] p-4">
+          <h3 className="text-xs font-semibold uppercase tracking-wider text-[var(--color-text-tertiary)] mb-3">
+            File Path
+          </h3>
+          <code className="text-xs font-mono text-[var(--color-text-secondary)] block p-2 bg-[var(--color-bg-tertiary)] rounded break-all">
+            {entity.path}
+          </code>
+        </div>
+        
+        {/* Markdown Content Preview */}
+        {markdownContent && (
+          <div className="bg-[var(--color-bg-secondary)] rounded-lg border border-[var(--color-border)] p-4">
+            <h3 className="flex items-center gap-2 text-xs font-semibold uppercase tracking-wider text-[var(--color-text-tertiary)] mb-3">
+              <MessageSquare className="w-3.5 h-3.5" />
+              Prompt Template
+            </h3>
+            <div className="text-xs text-[var(--color-text-secondary)] whitespace-pre-wrap font-mono p-3 bg-[var(--color-bg-tertiary)] rounded max-h-64 overflow-y-auto">
+              {markdownContent.slice(0, 1500)}
+              {markdownContent.length > 1500 && (
+                <span className="text-[var(--color-text-quaternary)]">
+                  {'\n\n'}... ({markdownContent.length - 1500} more characters)
+                </span>
+              )}
+            </div>
+          </div>
+        )}
       </div>
     </div>
   );

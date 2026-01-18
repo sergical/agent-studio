@@ -1,16 +1,330 @@
 // ============================================================================
-// CreateEntityDialog - Modal for creating new entities
+// CreateEntityDialog - Modal for creating new entities with templates
 // ============================================================================
 
 import { useState, useEffect, useRef, useCallback } from 'react';
 import { motion, AnimatePresence } from 'motion/react';
-import { X, Plus, User, Star, Terminal, FileText, ChevronDown } from 'lucide-react';
+import { X, Plus, User, Star, Terminal, FileText, ChevronDown, Wand2 } from 'lucide-react';
 import { clsx } from 'clsx';
 import { createEntity } from '../../lib/api';
 import { useAppStore } from '../../store/appStore';
 import type { EntityType } from '../../lib/types';
 
 type CreatableEntityType = 'agent' | 'skill' | 'command' | 'memory';
+
+interface Template {
+  id: string;
+  name: string;
+  description: string;
+  content: string;
+}
+
+// Templates for each entity type
+const TEMPLATES: Record<CreatableEntityType, Template[]> = {
+  agent: [
+    {
+      id: 'basic',
+      name: 'Basic Agent',
+      description: 'Simple agent with description and default settings',
+      content: `---
+name: {{name}}
+description: A custom agent for specialized tasks
+model: sonnet
+---
+
+# {{name}}
+
+Instructions for this agent go here. Describe what the agent should do and how it should behave.
+
+## Key Responsibilities
+- List the main tasks this agent handles
+- Define the scope of work
+
+## Guidelines
+- Add specific guidelines for behavior
+- Include any constraints or rules
+`,
+    },
+    {
+      id: 'code-reviewer',
+      name: 'Code Reviewer',
+      description: 'Agent specialized for code review tasks',
+      content: `---
+name: {{name}}
+description: Reviews code for quality, security, and best practices
+model: sonnet
+tools:
+  - Read
+  - Glob
+  - Grep
+permissionMode: default
+---
+
+# {{name}}
+
+You are a code review specialist. Review code for:
+- Code quality and readability
+- Security vulnerabilities
+- Performance issues
+- Best practice violations
+
+## Review Process
+1. Understand the context and purpose of the code
+2. Check for logical errors and edge cases
+3. Identify security concerns
+4. Suggest improvements with explanations
+5. Provide actionable feedback
+
+## Guidelines
+- Be constructive and specific
+- Explain the "why" behind suggestions
+- Prioritize issues by severity
+`,
+    },
+    {
+      id: 'security',
+      name: 'Security Focused',
+      description: 'Agent with restricted permissions for sensitive work',
+      content: `---
+name: {{name}}
+description: Security-conscious agent with restricted permissions
+model: sonnet
+permissionMode: default
+disallowedTools:
+  - Bash
+  - Write
+---
+
+# {{name}}
+
+This agent operates with restricted permissions for security-sensitive tasks.
+
+## Allowed Operations
+- Reading and analyzing code
+- Providing recommendations
+- Documentation review
+
+## Restrictions
+- Cannot execute shell commands
+- Cannot modify files directly
+- Must request human approval for changes
+`,
+    },
+  ],
+  skill: [
+    {
+      id: 'basic',
+      name: 'Basic Skill',
+      description: 'Simple skill template with metadata',
+      content: `---
+name: {{name}}
+description: A reusable skill for Claude
+user-invocable: true
+---
+
+# {{name}}
+
+Instructions for this skill. Describe what knowledge or capability this skill provides.
+
+## When to Use
+- List scenarios where this skill applies
+- Define trigger conditions
+
+## How It Works
+Explain the approach or methodology this skill uses.
+`,
+    },
+    {
+      id: 'tool-focused',
+      name: 'Tool-Focused Skill',
+      description: 'Skill that uses specific tools',
+      content: `---
+name: {{name}}
+description: Skill with specific tool permissions
+allowed-tools:
+  - Read
+  - Glob
+  - Grep
+user-invocable: true
+---
+
+# {{name}}
+
+This skill has access to specific tools for its task.
+
+## Available Tools
+- **Read**: Read file contents
+- **Glob**: Find files by pattern
+- **Grep**: Search file contents
+
+## Usage Instructions
+Describe how to use this skill effectively.
+`,
+    },
+    {
+      id: 'reference',
+      name: 'Reference Guide',
+      description: 'Skill with supporting reference files',
+      content: `---
+name: {{name}}
+description: Knowledge skill with reference documentation
+user-invocable: true
+disable-model-invocation: true
+---
+
+# {{name}}
+
+This skill provides reference information.
+
+## Overview
+High-level description of the knowledge domain.
+
+## Key Concepts
+- Concept 1: Description
+- Concept 2: Description
+
+## Best Practices
+1. First best practice
+2. Second best practice
+
+## Common Patterns
+Describe common patterns and their applications.
+`,
+    },
+  ],
+  command: [
+    {
+      id: 'basic',
+      name: 'Basic Command',
+      description: 'Simple slash command',
+      content: `---
+description: A quick action command
+---
+
+Execute this task:
+$ARGUMENTS
+`,
+    },
+    {
+      id: 'with-args',
+      name: 'Command with Arguments',
+      description: 'Command that accepts arguments',
+      content: `---
+description: Command that processes input arguments
+argument-hint: "<input>"
+---
+
+Process the following input: $ARGUMENTS
+
+## Instructions
+1. Parse the provided arguments
+2. Execute the main logic
+3. Report results
+`,
+    },
+    {
+      id: 'agent-delegate',
+      name: 'Agent Delegation',
+      description: 'Command that delegates to an agent',
+      content: `---
+description: Delegates task to a specialized agent
+agent: explorer
+argument-hint: "<query>"
+---
+
+Execute this task using the explorer agent:
+$ARGUMENTS
+`,
+    },
+    {
+      id: 'code-action',
+      name: 'Code Action',
+      description: 'Command for code operations',
+      content: `---
+description: Performs code-related operations
+allowed-tools:
+  - Read
+  - Edit
+  - Glob
+  - Grep
+argument-hint: "<file-or-pattern>"
+---
+
+Perform the following code operation:
+$ARGUMENTS
+
+## Guidelines
+- Analyze before modifying
+- Preserve existing style
+- Add appropriate comments
+`,
+    },
+  ],
+  memory: [
+    {
+      id: 'basic',
+      name: 'Basic Memory',
+      description: 'Simple CLAUDE.md with key sections',
+      content: `# Project Overview
+
+Brief description of this project.
+
+## Tech Stack
+- Language/Framework
+- Key dependencies
+
+## Project Structure
+Describe the main directories and their purposes.
+
+## Development Guidelines
+- Coding conventions
+- Testing requirements
+- Documentation standards
+
+## Important Notes
+Any critical information for Claude to remember.
+`,
+    },
+    {
+      id: 'detailed',
+      name: 'Detailed Project Guide',
+      description: 'Comprehensive project documentation',
+      content: `# Project: Project Name
+
+## Overview
+Detailed description of what this project does and its main goals.
+
+## Architecture
+- Frontend: 
+- Backend: 
+- Database: 
+
+## Key Directories
+- \`src/\` - Source code
+- \`tests/\` - Test files
+- \`docs/\` - Documentation
+
+## Coding Standards
+- Follow existing patterns
+- Use TypeScript strict mode
+- Write tests for new features
+
+## Common Tasks
+- How to add a new feature
+- How to run tests
+- How to deploy
+
+## Gotchas
+- Known issues or quirks
+- Things to watch out for
+
+## Contacts
+- Lead developer: 
+- Documentation: 
+`,
+    },
+  ],
+};
 
 interface CreateEntityDialogProps {
   isOpen: boolean;
@@ -58,15 +372,21 @@ export function CreateEntityDialog({
   const [name, setName] = useState('');
   const [scope, setScope] = useState<'global' | 'project'>(initialScope);
   const [selectedProject, setSelectedProject] = useState<string | null>(projectPath || null);
+  const [selectedTemplate, setSelectedTemplate] = useState<string>('basic');
   const [isCreating, setIsCreating] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [showTypeDropdown, setShowTypeDropdown] = useState(false);
+  const [showTemplateDropdown, setShowTemplateDropdown] = useState(false);
   
   const nameInputRef = useRef<HTMLInputElement>(null);
   const projects = useAppStore(state => state.projects);
   const refreshDiscovery = useAppStore(state => state.refreshDiscovery);
   const addToast = useAppStore(state => state.addToast);
   const setActiveView = useAppStore(state => state.setActiveView);
+  
+  // Get available templates for current entity type
+  const availableTemplates = TEMPLATES[entityType] || [];
+  const currentTemplate = availableTemplates.find(t => t.id === selectedTemplate) || availableTemplates[0];
   
   // Reset form when dialog opens
   useEffect(() => {
@@ -76,10 +396,16 @@ export function CreateEntityDialog({
       setEntityType(initialEntityType || 'agent');
       setScope(projectPath ? 'project' : initialScope);
       setSelectedProject(projectPath || null);
+      setSelectedTemplate('basic');
       // Focus name input after a short delay for animation
       setTimeout(() => nameInputRef.current?.focus(), 100);
     }
   }, [isOpen, initialEntityType, initialScope, projectPath]);
+  
+  // Reset template when entity type changes
+  useEffect(() => {
+    setSelectedTemplate('basic');
+  }, [entityType]);
   
   // Keyboard handling
   const handleKeyDown = useCallback((e: KeyboardEvent) => {
@@ -107,13 +433,14 @@ export function CreateEntityDialog({
   const handleCreate = async () => {
     const trimmedName = name.trim();
     
-    if (!trimmedName) {
+    // Memory doesn't need a name
+    if (entityType !== 'memory' && !trimmedName) {
       setError('Name is required');
       return;
     }
     
     // Validate name format (alphanumeric, hyphens, underscores)
-    if (!/^[a-zA-Z0-9_-]+$/.test(trimmedName)) {
+    if (entityType !== 'memory' && !/^[a-zA-Z0-9_-]+$/.test(trimmedName)) {
       setError('Name can only contain letters, numbers, hyphens, and underscores');
       return;
     }
@@ -127,11 +454,16 @@ export function CreateEntityDialog({
     setError(null);
     
     try {
+      // Generate content from template
+      const templateContent = currentTemplate?.content || '';
+      const content = templateContent.replace(/\{\{name\}\}/g, trimmedName || 'unnamed');
+      
       await createEntity(
         entityType as EntityType,
-        trimmedName,
+        trimmedName || 'CLAUDE',
         scope,
-        scope === 'project' ? selectedProject || undefined : undefined
+        scope === 'project' ? selectedProject || undefined : undefined,
+        content
       );
       
       addToast({
@@ -275,6 +607,80 @@ export function CreateEntityDialog({
                   )}
                 </div>
               </div>
+              
+              {/* Template Selector */}
+              {availableTemplates.length > 1 && (
+                <div>
+                  <label className="block text-xs font-medium text-[var(--color-text-secondary)] mb-2">
+                    Template
+                  </label>
+                  <div className="relative">
+                    <button
+                      type="button"
+                      onClick={() => setShowTemplateDropdown(!showTemplateDropdown)}
+                      className="w-full flex items-center justify-between gap-3 px-3 py-2.5 bg-[var(--color-bg-secondary)] border border-[var(--color-border)] rounded-lg text-left hover:border-[var(--color-border-focus)] transition-colors"
+                    >
+                      <div className="flex items-center gap-3">
+                        <div className="flex items-center justify-center w-7 h-7 rounded-md bg-[var(--color-success-soft)] text-[var(--color-success)]">
+                          <Wand2 className="w-3.5 h-3.5" />
+                        </div>
+                        <div>
+                          <div className="text-sm font-medium text-[var(--color-text-primary)]">
+                            {currentTemplate?.name || 'Basic'}
+                          </div>
+                          <div className="text-xs text-[var(--color-text-tertiary)]">
+                            {currentTemplate?.description || 'Simple template'}
+                          </div>
+                        </div>
+                      </div>
+                      <ChevronDown className={clsx(
+                        'w-4 h-4 text-[var(--color-text-tertiary)] transition-transform',
+                        showTemplateDropdown && 'rotate-180'
+                      )} />
+                    </button>
+                    
+                    {showTemplateDropdown && (
+                      <motion.div
+                        initial={{ opacity: 0, y: -4 }}
+                        animate={{ opacity: 1, y: 0 }}
+                        className="absolute top-full left-0 right-0 mt-1 bg-[var(--color-bg-elevated)] border border-[var(--color-border)] rounded-lg shadow-lg z-10 overflow-hidden max-h-64 overflow-y-auto"
+                      >
+                        {availableTemplates.map(template => (
+                          <button
+                            key={template.id}
+                            type="button"
+                            onClick={() => {
+                              setSelectedTemplate(template.id);
+                              setShowTemplateDropdown(false);
+                            }}
+                            className={clsx(
+                              'w-full flex items-center gap-3 px-3 py-2.5 text-left hover:bg-[var(--color-bg-hover)] transition-colors',
+                              template.id === selectedTemplate && 'bg-[var(--color-success-softer)]'
+                            )}
+                          >
+                            <div className={clsx(
+                              'flex items-center justify-center w-7 h-7 rounded-md',
+                              template.id === selectedTemplate
+                                ? 'bg-[var(--color-success-soft)] text-[var(--color-success)]'
+                                : 'bg-[var(--color-bg-tertiary)] text-[var(--color-text-tertiary)]'
+                            )}>
+                              <Wand2 className="w-3.5 h-3.5" />
+                            </div>
+                            <div>
+                              <div className="text-sm font-medium text-[var(--color-text-primary)]">
+                                {template.name}
+                              </div>
+                              <div className="text-xs text-[var(--color-text-tertiary)]">
+                                {template.description}
+                              </div>
+                            </div>
+                          </button>
+                        ))}
+                      </motion.div>
+                    )}
+                  </div>
+                </div>
+              )}
               
               {/* Name Input */}
               {entityType !== 'memory' && (

@@ -10,6 +10,7 @@ interface CommandItemProps {
   label: string;
   sublabel?: string;
   location?: string;  // Project path or "global"
+  scope?: 'global' | 'project';
   badge?: string;
   badgeColor?: 'default' | 'claude' | 'opencode' | 'success' | 'warning';
   shortcut?: string;
@@ -36,6 +37,7 @@ export function CommandItem({
   label,
   sublabel,
   location,
+  scope,
   badge,
   badgeColor = 'default',
   shortcut,
@@ -179,11 +181,21 @@ export function CommandItem({
         )}
         
         <div className="flex-1 min-w-0">
-          <div className={clsx(
-            'text-[13px] font-medium truncate',
-            isSelected ? 'text-white' : 'text-[var(--color-text-primary)]'
-          )}>
-            {label}
+          <div className="flex items-center gap-2">
+            <span className={clsx(
+              'text-[13px] font-medium truncate',
+              isSelected ? 'text-white' : 'text-[var(--color-text-primary)]'
+            )}>
+              {label}
+            </span>
+            {scope && (
+              <span className={clsx(
+                'text-[10px] shrink-0',
+                isSelected ? 'text-white/40' : 'text-[var(--color-text-quaternary)]'
+              )}>
+                {scope === 'global' ? 'Global' : 'Project'}
+              </span>
+            )}
           </div>
           {sublabel && (
             <div className={clsx(

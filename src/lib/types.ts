@@ -282,6 +282,24 @@ export interface SymlinkInfo {
 }
 
 // ============================================================================
+// Health Check Types
+// ============================================================================
+
+export type HealthIssueSeverity = 'error' | 'warning' | 'info';
+
+export interface HealthIssue {
+  id: string;
+  severity: HealthIssueSeverity;
+  category: string;
+  title: string;
+  description: string;
+  path?: string;
+  entityType?: EntityType;
+  entityId?: string;
+  suggestion?: string;
+}
+
+// ============================================================================
 // Project Info
 // ============================================================================
 
@@ -332,6 +350,8 @@ export interface DiscoveryResult {
 
 export type ViewType = 
   | 'dashboard'
+  | 'project'
+  | 'health'
   | 'settings'
   | 'memory'
   | 'agents'
@@ -447,6 +467,21 @@ export function isMcpServerEntity(entity: DisplayableEntity): entity is McpServe
 /** Type guard for PluginEntity */
 export function isPluginEntity(entity: DisplayableEntity): entity is PluginEntity {
   return 'plugin_dir' in entity && 'has_commands' in entity && 'has_agents' in entity;
+}
+
+/** Type guard for SkillEntity */
+export function isSkillEntity(entity: DisplayableEntity): entity is SkillEntity {
+  return 'type' in entity && entity.type === 'skill' && 'skill_dir' in entity;
+}
+
+/** Type guard for AgentEntity */
+export function isAgentEntity(entity: DisplayableEntity): entity is AgentEntity {
+  return 'type' in entity && entity.type === 'agent' && 'frontmatter' in entity;
+}
+
+/** Type guard for CommandEntity */
+export function isCommandEntity(entity: DisplayableEntity): entity is CommandEntity {
+  return 'type' in entity && entity.type === 'command' && 'namespace' in entity;
 }
 
 /** Get display name for entity type */
