@@ -3,6 +3,8 @@ import { motion, useMotionValue, useTransform, useAnimation, PanInfo } from 'mot
 import { clsx } from 'clsx';
 import type { LucideIcon } from 'lucide-react';
 import { ChevronRight, Trash2 } from 'lucide-react';
+import type { ToolType } from '../../lib/types';
+import { TOOL_COLORS } from '../../lib/types';
 
 interface CommandItemProps {
   icon?: LucideIcon;
@@ -11,6 +13,7 @@ interface CommandItemProps {
   sublabel?: string;
   location?: string;  // Project path or "global"
   scope?: 'global' | 'project';
+  tool?: ToolType;  // Claude or OpenCode indicator
   badge?: string;
   badgeColor?: 'default' | 'claude' | 'opencode' | 'success' | 'warning';
   shortcut?: string;
@@ -38,6 +41,7 @@ export function CommandItem({
   sublabel,
   location,
   scope,
+  tool,
   badge,
   badgeColor = 'default',
   shortcut,
@@ -182,6 +186,14 @@ export function CommandItem({
         
         <div className="flex-1 min-w-0">
           <div className="flex items-center gap-2">
+            {/* Tool indicator dot */}
+            {tool && (
+              <span 
+                className="w-2 h-2 rounded-full shrink-0"
+                style={{ backgroundColor: TOOL_COLORS[tool] }}
+                title={tool === 'claude' ? 'Claude Code' : 'OpenCode'}
+              />
+            )}
             <span className={clsx(
               'text-[13px] font-medium truncate',
               isSelected ? 'text-white' : 'text-[var(--color-text-primary)]'

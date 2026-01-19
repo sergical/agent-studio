@@ -8,7 +8,8 @@ import { X, Plus, User, Star, Terminal, FileText, ChevronDown, Wand2 } from 'luc
 import { clsx } from 'clsx';
 import { createEntity } from '../../lib/api';
 import { useAppStore } from '../../store/appStore';
-import type { EntityType } from '../../lib/types';
+import type { EntityType, ToolType } from '../../lib/types';
+import { TOOL_COLORS, TOOL_LABELS } from '../../lib/types';
 
 type CreatableEntityType = 'agent' | 'skill' | 'command' | 'memory';
 
@@ -373,6 +374,7 @@ export function CreateEntityDialog({
   const [scope, setScope] = useState<'global' | 'project'>(initialScope);
   const [selectedProject, setSelectedProject] = useState<string | null>(projectPath || null);
   const [selectedTemplate, setSelectedTemplate] = useState<string>('basic');
+  const [selectedTool, setSelectedTool] = useState<ToolType>('claude');
   const [isCreating, setIsCreating] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [showTypeDropdown, setShowTypeDropdown] = useState(false);
@@ -397,6 +399,7 @@ export function CreateEntityDialog({
       setScope(projectPath ? 'project' : initialScope);
       setSelectedProject(projectPath || null);
       setSelectedTemplate('basic');
+      setSelectedTool('claude');
       // Focus name input after a short delay for animation
       setTimeout(() => nameInputRef.current?.focus(), 100);
     }
@@ -460,10 +463,11 @@ export function CreateEntityDialog({
       
       await createEntity(
         entityType as EntityType,
-        trimmedName || 'CLAUDE',
+        trimmedName || (selectedTool === 'opencode' ? 'AGENTS' : 'CLAUDE'),
         scope,
         scope === 'project' ? selectedProject || undefined : undefined,
-        content
+        content,
+        selectedTool
       );
       
       addToast({
@@ -704,6 +708,57 @@ export function CreateEntityDialog({
                   />
                 </div>
               )}
+              
+              {/* Tool Selector */}
+              <div>
+                <label className="block text-xs font-medium text-[var(--color-text-secondary)] mb-2">
+                  Tool
+                </label>
+                <div className="flex gap-2">
+                  <button
+                    type="button"
+                    onClick={() => setSelectedTool('claude')}
+                    className={clsx(
+                      'flex-1 flex items-center justify-center gap-2 px-3 py-2 text-sm font-medium rounded-lg border transition-colors',
+                      selectedTool === 'claude'
+                        ? 'border-2'
+                        : 'bg-[var(--color-bg-secondary)] border-[var(--color-border)] text-[var(--color-text-secondary)] hover:border-[var(--color-border-focus)]'
+                    )}
+                    style={selectedTool === 'claude' ? {
+                      backgroundColor: `${TOOL_COLORS.claude}15`,
+                      borderColor: TOOL_COLORS.claude,
+                      color: TOOL_COLORS.claude,
+                    } : undefined}
+                  >
+                    <span 
+                      className="w-2.5 h-2.5 rounded-full"
+                      style={{ backgroundColor: TOOL_COLORS.claude }}
+                    />
+                    {TOOL_LABELS.claude}
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setSelectedTool('opencode')}
+                    className={clsx(
+                      'flex-1 flex items-center justify-center gap-2 px-3 py-2 text-sm font-medium rounded-lg border transition-colors',
+                      selectedTool === 'opencode'
+                        ? 'border-2'
+                        : 'bg-[var(--color-bg-secondary)] border-[var(--color-border)] text-[var(--color-text-secondary)] hover:border-[var(--color-border-focus)]'
+                    )}
+                    style={selectedTool === 'opencode' ? {
+                      backgroundColor: `${TOOL_COLORS.opencode}15`,
+                      borderColor: TOOL_COLORS.opencode,
+                      color: TOOL_COLORS.opencode,
+                    } : undefined}
+                  >
+                    <span 
+                      className="w-2.5 h-2.5 rounded-full"
+                      style={{ backgroundColor: TOOL_COLORS.opencode }}
+                    />
+                    {TOOL_LABELS.opencode}
+                  </button>
+                </div>
+              </div>
               
               {/* Scope Selector */}
               <div>

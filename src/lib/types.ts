@@ -4,6 +4,31 @@
 // ============================================================================
 
 // ============================================================================
+// Tool Type (Claude Code vs OpenCode)
+// ============================================================================
+
+/**
+ * Discriminator for which coding assistant tool the entity belongs to
+ */
+export type ToolType = 'claude' | 'opencode';
+
+/**
+ * Tool colors for UI display
+ */
+export const TOOL_COLORS: Record<ToolType, string> = {
+  claude: '#F97316',    // Orange
+  opencode: '#1E40AF',  // Dark Blue
+};
+
+/**
+ * Tool display names
+ */
+export const TOOL_LABELS: Record<ToolType, string> = {
+  claude: 'Claude Code',
+  opencode: 'OpenCode',
+};
+
+// ============================================================================
 // Base Entity Fields (flattened into all entities)
 // ============================================================================
 
@@ -20,6 +45,7 @@ export interface BaseEntityFields {
   symlink_target: string | null;
   content: string | null;
   last_modified: number;
+  tool: ToolType;  // Which tool this entity belongs to
 }
 
 /**
@@ -42,7 +68,7 @@ export type EntityType =
 export interface SettingsEntity extends BaseEntityFields {
   type: 'settings';
   variant: 'global' | 'project' | 'local';
-  parsed: ClaudeCodeSettings | null;
+  parsed: ClaudeCodeSettings | OpenCodeSettings | null;
 }
 
 export interface ClaudeCodeSettings {
@@ -78,12 +104,94 @@ export interface ClaudeCodeSettings {
 }
 
 // ============================================================================
-// Memory Entity (CLAUDE.md files)
+// OpenCode Settings (opencode.json)
+// ============================================================================
+
+export interface OpenCodeSettings {
+  $schema?: string;
+  theme?: string;
+  model?: string;
+  small_model?: string;
+  default_agent?: string;
+  autoupdate?: boolean | 'notify';
+  share?: 'manual' | 'auto' | 'disabled';
+  tui?: {
+    scroll_speed?: number;
+    scroll_acceleration?: { enabled?: boolean };
+    diff_style?: 'auto' | 'stacked';
+  };
+  server?: {
+    port?: number;
+    hostname?: string;
+    mdns?: boolean;
+    cors?: string[];
+  };
+  tools?: Record<string, boolean>;
+  permission?: OpenCodePermissions;
+  mcp?: Record<string, OpenCodeMcpConfig>;
+  agent?: Record<string, OpenCodeAgentConfig>;
+  command?: Record<string, OpenCodeCommandConfig>;
+  instructions?: string[];
+  formatter?: Record<string, unknown>;
+  keybinds?: Record<string, string>;
+  compaction?: { auto?: boolean; prune?: boolean };
+  watcher?: { ignore?: string[] };
+  plugin?: string[];
+  disabled_providers?: string[];
+  enabled_providers?: string[];
+  experimental?: Record<string, unknown>;
+  provider?: Record<string, unknown>;
+  [key: string]: unknown;
+}
+
+export interface OpenCodePermissions {
+  edit?: 'ask' | 'allow' | 'deny';
+  bash?: 'ask' | 'allow' | 'deny' | Record<string, 'ask' | 'allow' | 'deny'>;
+  webfetch?: 'ask' | 'allow' | 'deny';
+  skill?: Record<string, 'ask' | 'allow' | 'deny'>;
+  task?: Record<string, 'ask' | 'allow' | 'deny'>;
+}
+
+export interface OpenCodeMcpConfig {
+  type: 'local' | 'remote';
+  command?: string[];
+  url?: string;
+  enabled?: boolean;
+  environment?: Record<string, string>;
+  headers?: Record<string, string>;
+  timeout?: number;
+  oauth?: false | { clientId?: string; clientSecret?: string; scope?: string };
+}
+
+export interface OpenCodeAgentConfig {
+  description: string;
+  mode?: 'primary' | 'subagent' | 'all';
+  model?: string;
+  prompt?: string;
+  temperature?: number;
+  maxSteps?: number;
+  disable?: boolean;
+  hidden?: boolean;
+  tools?: Record<string, boolean>;
+  permission?: OpenCodePermissions;
+  [key: string]: unknown;
+}
+
+export interface OpenCodeCommandConfig {
+  template: string;
+  description?: string;
+  agent?: string;
+  subtask?: boolean;
+  model?: string;
+}
+
+// ============================================================================
+// Memory Entity (CLAUDE.md / AGENTS.md files)
 // ============================================================================
 
 export interface MemoryEntity extends BaseEntityFields {
   type: 'memory';
-  variant: 'root' | 'dotclaude';
+  variant: 'root' | 'dotclaude' | 'dotopencode' | 'global';
 }
 
 // ============================================================================
@@ -167,6 +275,7 @@ export interface HookEntity {
   hooks: HookDefinition[];
   source: 'global' | 'project' | 'local';
   source_path: string;
+  tool: ToolType;  // Which tool this entity belongs to
 }
 
 export type HookEventType = 
@@ -244,15 +353,19 @@ export interface McpServerEntity {
   source_path: string;
   is_from_plugin: boolean;
   plugin_name: string | null;
+  tool: ToolType;  // Which tool this entity belongs to
 }
 
 export interface McpServerConfig {
-  type?: 'stdio' | 'http' | 'sse';
-  command?: string;
+  type?: 'stdio' | 'http' | 'sse' | 'local' | 'remote';
+  command?: string | string[];  // Claude uses string, OpenCode uses string[]
   args?: string[];
   url?: string;
   env?: Record<string, string>;
+  environment?: Record<string, string>;  // OpenCode uses 'environment'
   headers?: Record<string, string>;
+  enabled?: boolean;  // OpenCode specific
+  timeout?: number;   // OpenCode specific
 }
 
 // ============================================================================
@@ -307,9 +420,12 @@ export interface ProjectInfo {
   path: string;
   name: string;
   has_claude_dir: boolean;
+  has_opencode_dir: boolean;  // OpenCode: .opencode/ directory
   has_mcp_json: boolean;
   has_claude_md: boolean;
   has_root_claude_md: boolean;
+  has_agents_md: boolean;      // OpenCode: AGENTS.md in root
+  has_opencode_json: boolean;  // OpenCode: opencode.json config
   entity_counts: EntityCounts;
 }
 
@@ -393,6 +509,7 @@ export interface CommandPaletteItem {
   isSymlink?: boolean;
   isDuplicate?: boolean;
   precedence?: number;
+  tool: ToolType;  // Which tool this entity belongs to
 }
 
 // ============================================================================
@@ -419,6 +536,7 @@ export interface CreateEntityParams {
   projectPath?: string;
   content?: string;
   templateId?: string;
+  tool: ToolType;  // Which tool to create the entity for
 }
 
 export interface UpdateEntityParams {

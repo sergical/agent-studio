@@ -7,6 +7,16 @@ import { useState } from 'react';
 import { useAppStore } from '../store/appStore';
 import { openInFinder } from '../lib/api';
 import type { EntityType, ViewType } from '../lib/types';
+import { useHealthIssues } from '../hooks/useHealthIssues';
+import { 
+  CheckCircle2, 
+  AlertCircle, 
+  AlertTriangle, 
+  Info,
+  ChevronRight,
+  Activity
+} from 'lucide-react';
+import { clsx } from 'clsx';
 
 interface EntityConfig {
   type: EntityType;
@@ -134,6 +144,9 @@ export function Dashboard() {
   const setActiveProject = useAppStore(state => state.setActiveProject);
   const lastDiscovery = useAppStore(state => state.lastDiscovery);
   
+  // Get health issues
+  const health = useHealthIssues();
+  
   const [showAllProjects, setShowAllProjects] = useState(false);
   const [expandedDuplicate, setExpandedDuplicate] = useState<string | null>(null);
   
@@ -207,6 +220,107 @@ export function Dashboard() {
             <span className="entity-card-label">{config.label}</span>
           </button>
         ))}
+      </div>
+      
+      {/* Health Summary Section */}
+      <div className="dashboard-health-summary">
+        <div className="dashboard-health-header">
+          <div className="dashboard-health-title">
+            <Activity className="w-4 h-4" style={{ opacity: 0.5 }} />
+            <h2>Health Overview</h2>
+          </div>
+          <button 
+            className="dashboard-health-link"
+            onClick={() => setActiveView('health')}
+          >
+            View Details
+            <ChevronRight className="w-4 h-4" />
+          </button>
+        </div>
+        
+        {/* Health Stats Cards */}
+        <div className="dashboard-health-stats">
+          <div className={clsx(
+            'dashboard-health-stat',
+            health.isHealthy ? 'dashboard-health-stat--success' : 'dashboard-health-stat--neutral'
+          )}>
+            <CheckCircle2 className="w-5 h-5" />
+            <div className="dashboard-health-stat-content">
+              <span className="dashboard-health-stat-value">
+                {health.isHealthy ? 'All Clear' : health.totalCount - health.errorCount - health.warningCount}
+              </span>
+              <span className="dashboard-health-stat-label">
+                {health.isHealthy ? 'No issues' : 'Suggestions'}
+              </span>
+            </div>
+          </div>
+          
+          <div className={clsx(
+            'dashboard-health-stat',
+            health.errorCount > 0 ? 'dashboard-health-stat--error' : 'dashboard-health-stat--neutral'
+          )}>
+            <AlertCircle className="w-5 h-5" />
+            <div className="dashboard-health-stat-content">
+              <span className="dashboard-health-stat-value">{health.errorCount}</span>
+              <span className="dashboard-health-stat-label">Errors</span>
+            </div>
+          </div>
+          
+          <div className={clsx(
+            'dashboard-health-stat',
+            health.warningCount > 0 ? 'dashboard-health-stat--warning' : 'dashboard-health-stat--neutral'
+          )}>
+            <AlertTriangle className="w-5 h-5" />
+            <div className="dashboard-health-stat-content">
+              <span className="dashboard-health-stat-value">{health.warningCount}</span>
+              <span className="dashboard-health-stat-label">Warnings</span>
+            </div>
+          </div>
+          
+          <div className={clsx(
+            'dashboard-health-stat',
+            health.infoCount > 0 ? 'dashboard-health-stat--info' : 'dashboard-health-stat--neutral'
+          )}>
+            <Info className="w-5 h-5" />
+            <div className="dashboard-health-stat-content">
+              <span className="dashboard-health-stat-value">{health.infoCount}</span>
+              <span className="dashboard-health-stat-label">Suggestions</span>
+            </div>
+          </div>
+        </div>
+        
+        {/* Top Issues Preview */}
+        {health.issues.length > 0 && (
+          <div className="dashboard-health-issues">
+            {health.issues.slice(0, 3).map((issue) => (
+              <button
+                key={issue.id}
+                className={clsx(
+                  'dashboard-health-issue',
+                  `dashboard-health-issue--${issue.severity}`
+                )}
+                onClick={() => setActiveView('health')}
+              >
+                {issue.severity === 'error' && <AlertCircle className="w-4 h-4" />}
+                {issue.severity === 'warning' && <AlertTriangle className="w-4 h-4" />}
+                {issue.severity === 'info' && <Info className="w-4 h-4" />}
+                <div className="dashboard-health-issue-content">
+                  <span className="dashboard-health-issue-title">{issue.title}</span>
+                  <span className="dashboard-health-issue-category">{issue.category}</span>
+                </div>
+                <ChevronRight className="w-4 h-4" style={{ opacity: 0.5 }} />
+              </button>
+            ))}
+            {health.issues.length > 3 && (
+              <button 
+                className="dashboard-health-more"
+                onClick={() => setActiveView('health')}
+              >
+                +{health.issues.length - 3} more issues
+              </button>
+            )}
+          </div>
+        )}
       </div>
       
       {/* Two Column Layout for Info Sections */}

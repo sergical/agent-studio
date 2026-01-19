@@ -112,6 +112,81 @@ export async function deleteDirectory(path: string): Promise<void> {
 }
 
 // ============================================================================
+// Entity Actions
+// ============================================================================
+
+/**
+ * Copy an entity to a new location (global or project scope)
+ */
+export async function copyEntity(
+  sourcePath: string,
+  entityType: EntityType,
+  targetScope: 'global' | 'project',
+  targetProjectPath?: string,
+  newName?: string,
+  tool: 'claude' | 'opencode' = 'claude'
+): Promise<string> {
+  return invoke('copy_entity', { 
+    sourcePath, 
+    entityType, 
+    targetScope, 
+    targetProjectPath, 
+    newName,
+    tool 
+  });
+}
+
+/**
+ * Create a symlink to an entity in a new location
+ */
+export async function createEntitySymlink(
+  sourcePath: string,
+  entityType: EntityType,
+  targetScope: 'global' | 'project',
+  targetProjectPath?: string,
+  tool: 'claude' | 'opencode' = 'claude'
+): Promise<string> {
+  return invoke('create_entity_symlink', { 
+    sourcePath, 
+    entityType, 
+    targetScope, 
+    targetProjectPath,
+    tool 
+  });
+}
+
+/**
+ * Rename an entity (move to new name in same directory)
+ */
+export async function renameEntity(
+  sourcePath: string,
+  newName: string,
+  entityType: EntityType
+): Promise<string> {
+  return invoke('rename_entity', { sourcePath, newName, entityType });
+}
+
+/**
+ * Delete an entity (file or skill directory)
+ */
+export async function deleteEntity(
+  path: string,
+  entityType: EntityType
+): Promise<void> {
+  return invoke('delete_entity', { path, entityType });
+}
+
+/**
+ * Duplicate an entity within the same scope (creates a copy with new name)
+ */
+export async function duplicateEntity(
+  sourcePath: string,
+  entityType: EntityType
+): Promise<string> {
+  return invoke('duplicate_entity', { sourcePath, entityType });
+}
+
+// ============================================================================
 // Entity Creation
 // ============================================================================
 
@@ -120,9 +195,10 @@ export async function createEntity(
   name: string,
   scope: 'global' | 'project',
   projectPath?: string,
-  content?: string
+  content?: string,
+  tool?: 'claude' | 'opencode'
 ): Promise<string> {
-  return invoke('create_entity', { entityType, name, scope, projectPath, content });
+  return invoke('create_entity', { entityType, name, scope, projectPath, content, tool });
 }
 
 // ============================================================================

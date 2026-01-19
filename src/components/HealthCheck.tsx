@@ -2,9 +2,12 @@
 // HealthCheck - Configuration analysis and issue detection
 // ============================================================================
 
-import { useMemo } from 'react';
+import { useMemo, useState, useCallback } from 'react';
 import { useAppStore } from '../store/appStore';
-import type { HealthIssue, HealthIssueSeverity } from '../lib/types';
+import { deleteEntity, renameEntity } from '../lib/api';
+import type { HealthIssue, HealthIssueSeverity, DuplicateGroup, EntityType } from '../lib/types';
+import { RenameDialog } from './ui/RenameDialog';
+import { ConfirmDialog } from './ui/ConfirmDialog';
 import { 
   AlertTriangle, 
   AlertCircle, 
@@ -17,7 +20,11 @@ import {
   Bot,
   Terminal,
   FileText,
-  ChevronRight
+  ChevronRight,
+  ChevronDown,
+  Trash2,
+  Pencil,
+  Check,
 } from 'lucide-react';
 import { clsx } from 'clsx';
 
@@ -29,6 +36,27 @@ export function HealthCheck() {
   const commands = useAppStore(state => state.commands);
   const settings = useAppStore(state => state.settings);
   const selectEntity = useAppStore(state => state.selectEntity);
+  const refreshDiscovery = useAppStore(state => state.refreshDiscovery);
+  const addToast = useAppStore(state => state.addToast);
+  
+  // State for duplicate resolution
+  const [expandedDuplicate, setExpandedDuplicate] = useState<string | null>(null);
+  const [showRenameDialog, setShowRenameDialog] = useState(false);
+  const [showDeleteConfirm, setShowDeleteConfirm] = useState(false);
+  const [selectedDuplicateEntity, setSelectedDuplicateEntity] = useState<{
+    path: string;
+    name: string;
+    type: EntityType;
+    id: string;
+  } | null>(null);
+  const [isActionLoading, setIsActionLoading] = useState(false);
+  
+  // State for broken symlink resolution
+  const [showSymlinkDeleteConfirm, setShowSymlinkDeleteConfirm] = useState(false);
+  const [selectedSymlink, setSelectedSymlink] = useState<{
+    path: string;
+    target: string;
+  } | null>(null);
   
   // Analyze and generate health issues
   const issues = useMemo(() => {
@@ -228,6 +256,113 @@ export function HealthCheck() {
     }
   };
   
+  // Handle rename action for duplicate
+  const handleRename = useCallback(async (newName: string) => {
+    if (!selectedDuplicateEntity) return;
+    
+    setIsActionLoading(true);
+    setShowRenameDialog(false);
+    try {
+      await renameEntity(
+        selectedDuplicateEntity.path, 
+        newName, 
+        selectedDuplicateEntity.type
+      );
+      
+      addToast({
+        type: 'success',
+        title: 'Renamed',
+        message: `${selectedDuplicateEntity.name} renamed to ${newName}`,
+      });
+      
+      await refreshDiscovery();
+    } catch (err) {
+      addToast({
+        type: 'error',
+        title: 'Rename Failed',
+        message: err instanceof Error ? err.message : 'Unknown error',
+      });
+    } finally {
+      setIsActionLoading(false);
+      setSelectedDuplicateEntity(null);
+    }
+  }, [selectedDuplicateEntity, addToast, refreshDiscovery]);
+  
+  // Handle delete action for duplicate
+  const handleDelete = useCallback(async () => {
+    if (!selectedDuplicateEntity) return;
+    
+    setIsActionLoading(true);
+    setShowDeleteConfirm(false);
+    try {
+      await deleteEntity(
+        selectedDuplicateEntity.path, 
+        selectedDuplicateEntity.type
+      );
+      
+      addToast({
+        type: 'success',
+        title: 'Deleted',
+        message: `${selectedDuplicateEntity.name} deleted`,
+      });
+      
+      await refreshDiscovery();
+    } catch (err) {
+      addToast({
+        type: 'error',
+        title: 'Delete Failed',
+        message: err instanceof Error ? err.message : 'Unknown error',
+      });
+    } finally {
+      setIsActionLoading(false);
+      setSelectedDuplicateEntity(null);
+    }
+  }, [selectedDuplicateEntity, addToast, refreshDiscovery]);
+  
+  // Handle delete action for broken symlink
+  const handleDeleteSymlink = useCallback(async () => {
+    if (!selectedSymlink) return;
+    
+    setIsActionLoading(true);
+    setShowSymlinkDeleteConfirm(false);
+    try {
+      await deleteEntity(selectedSymlink.path, 'agent'); // type doesn't matter for symlinks
+      
+      addToast({
+        type: 'success',
+        title: 'Symlink Deleted',
+        message: `Broken symlink removed`,
+      });
+      
+      await refreshDiscovery();
+    } catch (err) {
+      addToast({
+        type: 'error',
+        title: 'Delete Failed',
+        message: err instanceof Error ? err.message : 'Unknown error',
+      });
+    } finally {
+      setIsActionLoading(false);
+      setSelectedSymlink(null);
+    }
+  }, [selectedSymlink, addToast, refreshDiscovery]);
+  
+  // Find broken symlink info for an issue
+  const getBrokenSymlinkInfo = (issue: HealthIssue) => {
+    if (issue.category !== 'Broken Symlinks') return null;
+    const symlinkPath = issue.path;
+    if (!symlinkPath) return null;
+    return symlinks?.find(s => s.path === symlinkPath && !s.target_exists);
+  };
+  
+  // Find duplicate info for an issue
+  const getDuplicateInfo = (issue: HealthIssue) => {
+    if (issue.category !== 'Duplicates') return null;
+    const match = issue.id.match(/^duplicate-(\w+)-(.+)$/);
+    if (!match) return null;
+    return duplicates.find(d => d.entity_type === match[1] && d.name === match[2]);
+  };
+  
   const formatPath = (path?: string) => {
     if (!path) return '';
     return path.replace(/^\/Users\/[^/]+/, '~');
@@ -306,16 +441,25 @@ export function HealthCheck() {
                 Errors ({groupedIssues.error.length})
               </h2>
               <div className="health-issues-list">
-                {groupedIssues.error.map(issue => (
-                  <IssueCard 
-                    key={issue.id} 
-                    issue={issue} 
-                    onClick={() => handleIssueClick(issue)}
-                    getCategoryIcon={getCategoryIcon}
-                    getEntityIcon={getEntityIcon}
-                    formatPath={formatPath}
-                  />
-                ))}
+                {groupedIssues.error.map(issue => {
+                  const symlinkInfo = getBrokenSymlinkInfo(issue);
+                  return (
+                    <IssueCard 
+                      key={issue.id} 
+                      issue={issue} 
+                      onClick={() => handleIssueClick(issue)}
+                      getCategoryIcon={getCategoryIcon}
+                      getEntityIcon={getEntityIcon}
+                      formatPath={formatPath}
+                      isBrokenSymlink={!!symlinkInfo}
+                      symlinkTarget={symlinkInfo?.target}
+                      onDeleteSymlink={(path, target) => {
+                        setSelectedSymlink({ path, target });
+                        setShowSymlinkDeleteConfirm(true);
+                      }}
+                    />
+                  );
+                })}
               </div>
             </div>
           )}
@@ -328,16 +472,32 @@ export function HealthCheck() {
                 Warnings ({groupedIssues.warning.length})
               </h2>
               <div className="health-issues-list">
-                {groupedIssues.warning.map(issue => (
-                  <IssueCard 
-                    key={issue.id} 
-                    issue={issue} 
-                    onClick={() => handleIssueClick(issue)}
-                    getCategoryIcon={getCategoryIcon}
-                    getEntityIcon={getEntityIcon}
-                    formatPath={formatPath}
-                  />
-                ))}
+                {groupedIssues.warning.map(issue => {
+                  const dupInfo = getDuplicateInfo(issue);
+                  return (
+                    <IssueCard 
+                      key={issue.id} 
+                      issue={issue} 
+                      onClick={() => handleIssueClick(issue)}
+                      getCategoryIcon={getCategoryIcon}
+                      getEntityIcon={getEntityIcon}
+                      formatPath={formatPath}
+                      duplicateInfo={dupInfo || undefined}
+                      isExpanded={expandedDuplicate === issue.id}
+                      onToggleExpand={() => setExpandedDuplicate(
+                        expandedDuplicate === issue.id ? null : issue.id
+                      )}
+                      onRename={(entity) => {
+                        setSelectedDuplicateEntity(entity);
+                        setShowRenameDialog(true);
+                      }}
+                      onDelete={(entity) => {
+                        setSelectedDuplicateEntity(entity);
+                        setShowDeleteConfirm(true);
+                      }}
+                    />
+                  );
+                })}
               </div>
             </div>
           )}
@@ -374,58 +534,217 @@ export function HealthCheck() {
           <p>No issues, warnings, or suggestions were found in your Claude Code configuration.</p>
         </div>
       )}
+      
+      {/* Rename Dialog */}
+      <RenameDialog
+        isOpen={showRenameDialog}
+        onClose={() => {
+          setShowRenameDialog(false);
+          setSelectedDuplicateEntity(null);
+        }}
+        onRename={handleRename}
+        currentName={selectedDuplicateEntity?.name || ''}
+        entityType={selectedDuplicateEntity?.type || 'agent'}
+        isLoading={isActionLoading}
+      />
+      
+      {/* Delete Confirmation Dialog */}
+      <ConfirmDialog
+        isOpen={showDeleteConfirm}
+        onClose={() => {
+          setShowDeleteConfirm(false);
+          setSelectedDuplicateEntity(null);
+        }}
+        onConfirm={handleDelete}
+        title={`Delete ${selectedDuplicateEntity?.type || 'entity'}`}
+        message={`Are you sure you want to delete "${selectedDuplicateEntity?.name}"? This will remove the duplicate and cannot be undone.`}
+        confirmLabel="Delete"
+        cancelLabel="Cancel"
+        variant="danger"
+        isLoading={isActionLoading}
+      />
+      
+      {/* Symlink Delete Confirmation Dialog */}
+      <ConfirmDialog
+        isOpen={showSymlinkDeleteConfirm}
+        onClose={() => {
+          setShowSymlinkDeleteConfirm(false);
+          setSelectedSymlink(null);
+        }}
+        onConfirm={handleDeleteSymlink}
+        title="Delete Broken Symlink"
+        message={`Are you sure you want to delete this broken symlink? The target "${formatPath(selectedSymlink?.target)}" no longer exists.`}
+        confirmLabel="Delete Symlink"
+        cancelLabel="Cancel"
+        variant="danger"
+        isLoading={isActionLoading}
+      />
     </div>
   );
 }
 
 // Issue Card Component
+interface IssueCardProps {
+  issue: HealthIssue;
+  onClick: () => void;
+  getCategoryIcon: (category: string) => React.ReactNode;
+  getEntityIcon: (type?: string) => React.ReactNode;
+  formatPath: (path?: string) => string;
+  // For duplicate resolution
+  duplicateInfo?: DuplicateGroup;
+  isExpanded?: boolean;
+  onToggleExpand?: () => void;
+  onRename?: (entity: { path: string; name: string; type: EntityType; id: string }) => void;
+  onDelete?: (entity: { path: string; name: string; type: EntityType; id: string }) => void;
+  // For broken symlink resolution
+  isBrokenSymlink?: boolean;
+  onDeleteSymlink?: (path: string, target: string) => void;
+  symlinkTarget?: string;
+}
+
 function IssueCard({ 
   issue, 
   onClick,
   getCategoryIcon,
   getEntityIcon,
   formatPath,
-}: { 
-  issue: HealthIssue;
-  onClick: () => void;
-  getCategoryIcon: (category: string) => React.ReactNode;
-  getEntityIcon: (type?: string) => React.ReactNode;
-  formatPath: (path?: string) => string;
-}) {
+  duplicateInfo,
+  isExpanded,
+  onToggleExpand,
+  onRename,
+  onDelete,
+  isBrokenSymlink,
+  onDeleteSymlink,
+  symlinkTarget,
+}: IssueCardProps) {
   const severityColors = {
     error: 'var(--color-error)',
     warning: 'var(--color-warning)',
     info: 'var(--color-info)',
   };
   
+  const isDuplicate = issue.category === 'Duplicates' && duplicateInfo;
+  
   return (
-    <button
-      className={clsx('health-issue-card', issue.severity)}
-      onClick={onClick}
-      disabled={!issue.entityId}
-    >
-      <div className="health-issue-icon" style={{ color: severityColors[issue.severity] }}>
-        {getCategoryIcon(issue.category)}
-      </div>
-      <div className="health-issue-content">
-        <div className="health-issue-header">
-          <span className="health-issue-title">{issue.title}</span>
-          <span className="health-issue-category">{issue.category}</span>
+    <div className={clsx('health-issue-card-wrapper', issue.severity)}>
+      <button
+        className={clsx('health-issue-card', issue.severity, isDuplicate && isExpanded && 'expanded')}
+        onClick={isDuplicate ? onToggleExpand : onClick}
+        disabled={!issue.entityId && !isDuplicate && !isBrokenSymlink}
+      >
+        <div className="health-issue-icon" style={{ color: severityColors[issue.severity] }}>
+          {getCategoryIcon(issue.category)}
         </div>
-        <p className="health-issue-description">{issue.description}</p>
-        {issue.path && (
-          <div className="health-issue-path">
-            {issue.entityType && getEntityIcon(issue.entityType)}
-            <code>{formatPath(issue.path)}</code>
+        <div className="health-issue-content">
+          <div className="health-issue-header">
+            <span className="health-issue-title">{issue.title}</span>
+            <span className="health-issue-category">{issue.category}</span>
           </div>
-        )}
-        {issue.suggestion && (
-          <p className="health-issue-suggestion">{issue.suggestion}</p>
-        )}
-      </div>
-      {issue.entityId && (
-        <ChevronRight className="w-4 h-4 text-[var(--color-text-quaternary)]" />
+          <p className="health-issue-description">{issue.description}</p>
+          {issue.path && (
+            <div className="health-issue-path">
+              {issue.entityType && getEntityIcon(issue.entityType)}
+              <code>{formatPath(issue.path)}</code>
+            </div>
+          )}
+          {issue.suggestion && !isDuplicate && !isBrokenSymlink && (
+            <p className="health-issue-suggestion">{issue.suggestion}</p>
+          )}
+          {/* Broken symlink action */}
+          {isBrokenSymlink && issue.path && (
+            <div className="health-symlink-actions">
+              <span className="health-symlink-target">
+                Target: <code>{formatPath(symlinkTarget)}</code>
+              </span>
+              <button
+                className="health-symlink-action delete"
+                onClick={(e) => {
+                  e.stopPropagation();
+                  onDeleteSymlink?.(issue.path!, symlinkTarget || '');
+                }}
+                title="Delete broken symlink"
+              >
+                <Trash2 className="w-3.5 h-3.5" />
+                Delete Symlink
+              </button>
+            </div>
+          )}
+        </div>
+        {isDuplicate ? (
+          <ChevronDown className={clsx(
+            'w-4 h-4 text-[var(--color-text-quaternary)] transition-transform',
+            isExpanded && 'rotate-180'
+          )} />
+        ) : issue.entityId && !isBrokenSymlink ? (
+          <ChevronRight className="w-4 h-4 text-[var(--color-text-quaternary)]" />
+        ) : null}
+      </button>
+      
+      {/* Duplicate entities list */}
+      {isDuplicate && isExpanded && duplicateInfo && (
+        <div className="health-duplicate-list">
+          <p className="health-duplicate-hint">
+            Click "Keep" on the version you want to keep as active, or rename/delete duplicates.
+          </p>
+          {duplicateInfo.entities
+            .sort((a, b) => a.precedence - b.precedence)
+            .map((entity, idx) => (
+              <div key={entity.id} className="health-duplicate-item">
+                <div className="health-duplicate-item-info">
+                  <div className="health-duplicate-item-header">
+                    {getEntityIcon(duplicateInfo.entity_type)}
+                    <span className="health-duplicate-item-scope">
+                      {entity.scope}
+                    </span>
+                    {idx === 0 && (
+                      <span className="health-duplicate-item-active">
+                        <Check className="w-3 h-3" />
+                        Active
+                      </span>
+                    )}
+                  </div>
+                  <code className="health-duplicate-item-path">
+                    {formatPath(entity.path)}
+                  </code>
+                </div>
+                <div className="health-duplicate-item-actions">
+                  <button
+                    className="health-duplicate-action rename"
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      onRename?.({
+                        path: entity.path,
+                        name: duplicateInfo.name,
+                        type: duplicateInfo.entity_type as EntityType,
+                        id: entity.id,
+                      });
+                    }}
+                    title="Rename to resolve duplicate"
+                  >
+                    <Pencil className="w-3.5 h-3.5" />
+                    Rename
+                  </button>
+                  <button
+                    className="health-duplicate-action delete"
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      onDelete?.({
+                        path: entity.path,
+                        name: duplicateInfo.name,
+                        type: duplicateInfo.entity_type as EntityType,
+                        id: entity.id,
+                      });
+                    }}
+                    title="Delete this duplicate"
+                  >
+                    <Trash2 className="w-3.5 h-3.5" />
+                    Delete
+                  </button>
+                </div>
+              </div>
+            ))}
+        </div>
       )}
-    </button>
+    </div>
   );
 }

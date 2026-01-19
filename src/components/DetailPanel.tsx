@@ -5,10 +5,21 @@
 import { useState, useEffect, useCallback, lazy, Suspense } from 'react';
 import { motion } from 'motion/react';
 import { useAppStore } from '../store/appStore';
-import { writeFile, deleteFile, deleteDirectory } from '../lib/api';
+import { 
+  writeFile, 
+  deleteFile, 
+  deleteDirectory, 
+  copyEntity, 
+  createEntitySymlink, 
+  renameEntity, 
+  duplicateEntity,
+  openInFinder,
+} from '../lib/api';
 import { useGlobalShortcuts } from '../hooks/useKeyboardNavigation';
 import { Panel } from './ui/Panel';
 import { ConfirmDialog } from './ui/ConfirmDialog';
+import { RenameDialog } from './ui/RenameDialog';
+import { ProjectSelectDialog } from './ui/ProjectSelectDialog';
 import type { DisplayableEntity, EntityType } from '../lib/types';
 import { isFlatEntity, isHookEntity, isMcpServerEntity, isPluginEntity, isSkillEntity, isAgentEntity, isCommandEntity } from '../lib/types';
 import { 
@@ -65,6 +76,7 @@ export function DetailPanel() {
   const updateEntityContent = useAppStore(state => state.updateEntityContent);
   const addToast = useAppStore(state => state.addToast);
   const theme = useAppStore(state => state.theme);
+  const projects = useAppStore(state => state.projects);
   
   const [content, setContent] = useState('');
   const [originalContent, setOriginalContent] = useState('');
@@ -72,6 +84,10 @@ export function DetailPanel() {
   const [editMode, setEditMode] = useState(false);
   const [isDeleting, setIsDeleting] = useState(false);
   const [showDeleteConfirm, setShowDeleteConfirm] = useState(false);
+  const [showRenameDialog, setShowRenameDialog] = useState(false);
+  const [showProjectSelect, setShowProjectSelect] = useState(false);
+  const [projectSelectAction, setProjectSelectAction] = useState<'copy' | 'symlink'>('copy');
+  const [isActionLoading, setIsActionLoading] = useState(false);
   
   const hasChanges = content !== originalContent;
   
@@ -98,6 +114,7 @@ export function DetailPanel() {
         isDeletable: false,
         isSkill: false,
         isPlugin: true,
+        tool: selectedEntity.tool,
       };
     }
     
@@ -116,6 +133,7 @@ export function DetailPanel() {
         isSkill: selectedEntity.type === 'skill',
         skillDir: selectedEntity.type === 'skill' ? (selectedEntity as any).skill_dir : undefined,
         isPlugin: false,
+        tool: selectedEntity.tool,
       };
     }
     
@@ -131,6 +149,7 @@ export function DetailPanel() {
         isDeletable: false,
         isSkill: false,
         isPlugin: false,
+        tool: selectedEntity.tool,
       };
     }
     
@@ -146,6 +165,7 @@ export function DetailPanel() {
         isDeletable: false,
         isSkill: false,
         isPlugin: false,
+        tool: selectedEntity.tool,
       };
     }
     
@@ -236,6 +256,167 @@ export function DetailPanel() {
     }
   }, [entityInfo, closePanel, removeEntity, refreshDiscovery, addToast]);
   
+  // Copy to Global handler
+  const handleCopyToGlobal = useCallback(async () => {
+    if (!entityInfo || entityInfo.scope === 'global') return;
+    
+    setIsActionLoading(true);
+    try {
+      await copyEntity(
+        entityInfo.path,
+        entityInfo.type,
+        'global',
+        undefined,
+        undefined,
+        entityInfo.tool
+      );
+      
+      addToast({
+        type: 'success',
+        title: 'Copied',
+        message: `${entityInfo.name} copied to global`,
+      });
+      
+      await refreshDiscovery();
+    } catch (err) {
+      addToast({
+        type: 'error',
+        title: 'Copy Failed',
+        message: err instanceof Error ? err.message : 'Unknown error',
+      });
+    } finally {
+      setIsActionLoading(false);
+    }
+  }, [entityInfo, refreshDiscovery, addToast]);
+  
+  // Copy to Project handler
+  const handleCopyToProject = useCallback(async (projectPath: string) => {
+    if (!entityInfo) return;
+    
+    setIsActionLoading(true);
+    setShowProjectSelect(false);
+    try {
+      await copyEntity(
+        entityInfo.path,
+        entityInfo.type,
+        'project',
+        projectPath,
+        undefined,
+        entityInfo.tool
+      );
+      
+      addToast({
+        type: 'success',
+        title: 'Copied',
+        message: `${entityInfo.name} copied to project`,
+      });
+      
+      await refreshDiscovery();
+    } catch (err) {
+      addToast({
+        type: 'error',
+        title: 'Copy Failed',
+        message: err instanceof Error ? err.message : 'Unknown error',
+      });
+    } finally {
+      setIsActionLoading(false);
+    }
+  }, [entityInfo, refreshDiscovery, addToast]);
+  
+  // Create Symlink handler
+  const handleCreateSymlink = useCallback(async (projectPath: string) => {
+    if (!entityInfo) return;
+    
+    setIsActionLoading(true);
+    setShowProjectSelect(false);
+    try {
+      const targetScope = entityInfo.scope === 'global' ? 'project' : 'global';
+      await createEntitySymlink(
+        entityInfo.path,
+        entityInfo.type,
+        targetScope,
+        targetScope === 'project' ? projectPath : undefined,
+        entityInfo.tool
+      );
+      
+      addToast({
+        type: 'success',
+        title: 'Symlink Created',
+        message: `Symlink to ${entityInfo.name} created`,
+      });
+      
+      await refreshDiscovery();
+    } catch (err) {
+      addToast({
+        type: 'error',
+        title: 'Symlink Failed',
+        message: err instanceof Error ? err.message : 'Unknown error',
+      });
+    } finally {
+      setIsActionLoading(false);
+    }
+  }, [entityInfo, refreshDiscovery, addToast]);
+  
+  // Rename handler
+  const handleRename = useCallback(async (newName: string) => {
+    if (!entityInfo) return;
+    
+    setIsActionLoading(true);
+    setShowRenameDialog(false);
+    try {
+      await renameEntity(entityInfo.path, newName, entityInfo.type);
+      
+      addToast({
+        type: 'success',
+        title: 'Renamed',
+        message: `Renamed to ${newName}`,
+      });
+      
+      closePanel();
+      await refreshDiscovery();
+    } catch (err) {
+      addToast({
+        type: 'error',
+        title: 'Rename Failed',
+        message: err instanceof Error ? err.message : 'Unknown error',
+      });
+    } finally {
+      setIsActionLoading(false);
+    }
+  }, [entityInfo, closePanel, refreshDiscovery, addToast]);
+  
+  // Duplicate handler
+  const handleDuplicate = useCallback(async () => {
+    if (!entityInfo) return;
+    
+    setIsActionLoading(true);
+    try {
+      await duplicateEntity(entityInfo.path, entityInfo.type);
+      
+      addToast({
+        type: 'success',
+        title: 'Duplicated',
+        message: `${entityInfo.name} duplicated`,
+      });
+      
+      await refreshDiscovery();
+    } catch (err) {
+      addToast({
+        type: 'error',
+        title: 'Duplicate Failed',
+        message: err instanceof Error ? err.message : 'Unknown error',
+      });
+    } finally {
+      setIsActionLoading(false);
+    }
+  }, [entityInfo, refreshDiscovery, addToast]);
+  
+  // Open in Finder handler
+  const handleOpenInFinder = useCallback(() => {
+    if (!entityInfo) return;
+    openInFinder(entityInfo.path);
+  }, [entityInfo]);
+  
   // Global save shortcut
   useGlobalShortcuts({
     onSave: handleSave,
@@ -278,10 +459,24 @@ export function DetailPanel() {
         subtitle={entityInfo.path}
         badge={badge}
         badgeColor={badgeColor}
+        tool={entityInfo.tool}
         hasChanges={hasChanges}
         onSave={handleSave}
-        canDelete={entityInfo.isDeletable}
-        onDelete={() => setShowDeleteConfirm(true)}
+        onDelete={entityInfo.isDeletable ? () => setShowDeleteConfirm(true) : undefined}
+        entityType={entityInfo.type}
+        entityScope={entityInfo.scope as 'global' | 'project'}
+        onCopyToGlobal={entityInfo.scope === 'project' ? handleCopyToGlobal : undefined}
+        onCopyToProject={entityInfo.scope === 'global' ? () => {
+          setProjectSelectAction('copy');
+          setShowProjectSelect(true);
+        } : undefined}
+        onCreateSymlink={entityInfo.scope === 'global' ? () => {
+          setProjectSelectAction('symlink');
+          setShowProjectSelect(true);
+        } : undefined}
+        onRename={entityInfo.isDeletable ? () => setShowRenameDialog(true) : undefined}
+        onDuplicate={entityInfo.isDeletable ? handleDuplicate : undefined}
+        onOpenInFinder={handleOpenInFinder}
       >
         {/* Symlink indicator */}
         {entityInfo.isSymlink && (
@@ -473,6 +668,30 @@ export function DetailPanel() {
         cancelLabel="Cancel"
         variant="danger"
         isLoading={isDeleting}
+      />
+      
+      {/* Rename Dialog */}
+      <RenameDialog
+        isOpen={showRenameDialog}
+        onClose={() => setShowRenameDialog(false)}
+        onRename={handleRename}
+        currentName={entityInfo.name}
+        entityType={entityInfo.type}
+        isLoading={isActionLoading}
+      />
+      
+      {/* Project Select Dialog */}
+      <ProjectSelectDialog
+        isOpen={showProjectSelect}
+        onClose={() => setShowProjectSelect(false)}
+        onSelect={projectSelectAction === 'copy' ? handleCopyToProject : handleCreateSymlink}
+        projects={projects}
+        title={projectSelectAction === 'copy' ? 'Copy to Project' : 'Create Symlink in Project'}
+        description={projectSelectAction === 'copy' 
+          ? `Select a project to copy "${entityInfo.name}" to`
+          : `Select a project to create a symlink to "${entityInfo.name}"`
+        }
+        isLoading={isActionLoading}
       />
     </>
   );

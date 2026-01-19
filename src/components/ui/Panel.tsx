@@ -1,5 +1,8 @@
 import { motion } from 'motion/react';
-import { X, Save, Trash2 } from 'lucide-react';
+import { X, Save } from 'lucide-react';
+import type { ToolType, EntityType } from '../../lib/types';
+import { TOOL_COLORS, TOOL_LABELS } from '../../lib/types';
+import { EntityActionsMenu } from './EntityActionsMenu';
 
 interface PanelProps {
   isOpen: boolean;
@@ -8,10 +11,19 @@ interface PanelProps {
   subtitle?: string;
   badge?: string;
   badgeColor?: string;
+  tool?: ToolType;  // Tool indicator (claude/opencode)
   hasChanges?: boolean;
   onSave?: () => void;
-  canDelete?: boolean;
   onDelete?: () => void;
+  // Entity actions
+  entityType?: EntityType;
+  entityScope?: 'global' | 'project';
+  onCopyToGlobal?: () => void;
+  onCopyToProject?: () => void;
+  onCreateSymlink?: () => void;
+  onRename?: () => void;
+  onDuplicate?: () => void;
+  onOpenInFinder?: () => void;
   children: React.ReactNode;
 }
 
@@ -22,10 +34,18 @@ export function Panel({
   subtitle,
   badge,
   badgeColor,
+  tool,
   hasChanges,
   onSave,
-  canDelete,
   onDelete,
+  entityType,
+  entityScope,
+  onCopyToGlobal,
+  onCopyToProject,
+  onCreateSymlink,
+  onRename,
+  onDuplicate,
+  onOpenInFinder,
   children,
 }: PanelProps) {
   if (!isOpen) {
@@ -45,6 +65,14 @@ export function Panel({
         <div className="flex items-center gap-3 min-w-0 flex-1">
           <div className="min-w-0 flex-1">
             <div className="flex items-center gap-2">
+              {/* Tool indicator dot */}
+              {tool && (
+                <span 
+                  className="w-2.5 h-2.5 rounded-full shrink-0"
+                  style={{ backgroundColor: TOOL_COLORS[tool] }}
+                  title={TOOL_LABELS[tool]}
+                />
+              )}
               <h2 className="text-sm font-semibold text-[var(--color-text-primary)] truncate">
                 {title}
               </h2>
@@ -76,16 +104,19 @@ export function Panel({
         </div>
         
         <div className="flex items-center gap-2 shrink-0">
-          {/* Delete button */}
-          {canDelete && onDelete && (
-            <button
-              onClick={onDelete}
-              className="flex items-center gap-1.5 px-2.5 py-1.5 text-xs font-medium text-[var(--color-error)] hover:bg-[var(--color-error-soft)] rounded-md transition-colors"
-              title="Delete"
-            >
-              <Trash2 className="w-3.5 h-3.5" />
-              <span className="hidden sm:inline">Delete</span>
-            </button>
+          {/* Entity Actions Menu */}
+          {entityType && entityScope && (
+            <EntityActionsMenu
+              entityType={entityType}
+              entityScope={entityScope}
+              onCopyToGlobal={onCopyToGlobal}
+              onCopyToProject={onCopyToProject}
+              onCreateSymlink={onCreateSymlink}
+              onRename={onRename}
+              onDuplicate={onDuplicate}
+              onDelete={onDelete}
+              onOpenInFinder={onOpenInFinder}
+            />
           )}
           
           {/* Save button */}

@@ -25,6 +25,7 @@ pub struct BaseEntity {
     pub symlink_target: Option<String>,
     pub content: Option<String>,
     pub last_modified: u64,
+    pub tool: String,  // "claude" or "opencode"
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
@@ -102,6 +103,7 @@ pub struct HookEntity {
     pub hooks: Vec<HookDefinition>,
     pub source: String,  // "global", "project", "local"
     pub source_path: String,
+    pub tool: String,  // "claude" or "opencode"
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
@@ -143,6 +145,7 @@ pub struct McpServerEntity {
     pub source_path: String,
     pub is_from_plugin: bool,
     pub plugin_name: Option<String>,
+    pub tool: String,  // "claude" or "opencode"
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
@@ -187,9 +190,12 @@ pub struct ProjectInfo {
     pub path: String,
     pub name: String,
     pub has_claude_dir: bool,
+    pub has_opencode_dir: bool,
     pub has_mcp_json: bool,
     pub has_claude_md: bool,
     pub has_root_claude_md: bool,
+    pub has_agents_md: bool,
+    pub has_opencode_json: bool,
     pub entity_counts: EntityCounts,
 }
 
@@ -361,33 +367,33 @@ pub fn discover_all(project_paths: Option<Vec<String>>) -> Result<DiscoveryResul
     let mut seen_mcp_ids = std::collections::HashSet::new();
 
     // Discover global entities
-    for s in discover_settings_internal(&global_claude_path, "global", None)? {
+    for s in discover_settings_internal(&global_claude_path, "global", None, "claude")? {
         if seen_settings_paths.insert(s.base.path.clone()) {
             all_settings.push(s);
         }
     }
-    for m in discover_memory_internal(&global_claude_path, &home, "global", None)? {
+    for m in discover_memory_internal(&global_claude_path, &home, "global", None, "claude")? {
         if seen_memory_paths.insert(m.base.path.clone()) {
             all_memory.push(m);
         }
     }
-    for a in discover_agents_internal(&global_claude_path.join("agents"), "global", None)? {
+    for a in discover_agents_internal(&global_claude_path.join("agents"), "global", None, "claude")? {
         if seen_agent_paths.insert(a.base.path.clone()) {
             all_agents.push(a);
         }
     }
-    for s in discover_skills_internal(&global_claude_path.join("skills"), "global", None)? {
+    for s in discover_skills_internal(&global_claude_path.join("skills"), "global", None, "claude")? {
         if seen_skill_paths.insert(s.base.path.clone()) {
             all_skills.push(s);
         }
     }
-    for c in discover_commands_internal(&global_claude_path.join("commands"), "global", None)? {
+    for c in discover_commands_internal(&global_claude_path.join("commands"), "global", None, "claude")? {
         if seen_command_paths.insert(c.base.path.clone()) {
             all_commands.push(c);
         }
     }
     // Discover local plugins from ~/.claude/plugins/ directory
-    for p in discover_plugins_internal(&global_claude_path.join("plugins"), "global", None)? {
+    for p in discover_plugins_internal(&global_claude_path.join("plugins"), "global", None, "claude")? {
         if seen_plugin_paths.insert(p.base.path.clone()) {
             all_plugins.push(p);
         }
@@ -398,12 +404,59 @@ pub fn discover_all(project_paths: Option<Vec<String>>) -> Result<DiscoveryResul
             all_plugins.push(p);
         }
     }
-    for h in extract_hooks_internal(&global_claude_path.join("settings.json"), "global")? {
+    for h in extract_hooks_internal(&global_claude_path.join("settings.json"), "global", "claude")? {
         if seen_hook_ids.insert(h.id.clone()) {
             all_hooks.push(h);
         }
     }
     for m in discover_mcp_from_claude_json(&home)? {
+        if seen_mcp_ids.insert(m.id.clone()) {
+            all_mcp.push(m);
+        }
+    }
+
+    // ========================================================================
+    // Discover global OpenCode entities (~/.config/opencode/)
+    // ========================================================================
+    let global_opencode_path = home.join(".config").join("opencode");
+    
+    // OpenCode settings (opencode.json / opencode.jsonc)
+    for s in discover_opencode_settings_internal(&global_opencode_path, "global", None)? {
+        if seen_settings_paths.insert(s.base.path.clone()) {
+            all_settings.push(s);
+        }
+    }
+    
+    // OpenCode memory (AGENTS.md in home or .config/opencode)
+    for m in discover_opencode_memory_internal(&global_opencode_path, &home, "global", None)? {
+        if seen_memory_paths.insert(m.base.path.clone()) {
+            all_memory.push(m);
+        }
+    }
+    
+    // OpenCode agents (~/.config/opencode/agent/)
+    for a in discover_agents_internal(&global_opencode_path.join("agent"), "global", None, "opencode")? {
+        if seen_agent_paths.insert(a.base.path.clone()) {
+            all_agents.push(a);
+        }
+    }
+    
+    // OpenCode skills (~/.config/opencode/skill/)
+    for s in discover_skills_internal(&global_opencode_path.join("skill"), "global", None, "opencode")? {
+        if seen_skill_paths.insert(s.base.path.clone()) {
+            all_skills.push(s);
+        }
+    }
+    
+    // OpenCode commands (~/.config/opencode/command/)
+    for c in discover_commands_internal(&global_opencode_path.join("command"), "global", None, "opencode")? {
+        if seen_command_paths.insert(c.base.path.clone()) {
+            all_commands.push(c);
+        }
+    }
+    
+    // OpenCode MCP servers from opencode.json
+    for m in discover_mcp_from_opencode_json(&global_opencode_path, "global", None)? {
         if seen_mcp_ids.insert(m.id.clone()) {
             all_mcp.push(m);
         }
@@ -431,55 +484,55 @@ pub fn discover_all(project_paths: Option<Vec<String>>) -> Result<DiscoveryResul
                 mcp: 0,
             };
 
-            for s in discover_settings_internal(&claude_dir, "project", Some(&project_path_str))? {
+            for s in discover_settings_internal(&claude_dir, "project", Some(&project_path_str), "claude")? {
                 if seen_settings_paths.insert(s.base.path.clone()) {
                     counts.settings += 1;
                     all_settings.push(s);
                 }
             }
 
-            for m in discover_memory_internal(&claude_dir, &project_path, "project", Some(&project_path_str))? {
+            for m in discover_memory_internal(&claude_dir, &project_path, "project", Some(&project_path_str), "claude")? {
                 if seen_memory_paths.insert(m.base.path.clone()) {
                     counts.memory += 1;
                     all_memory.push(m);
                 }
             }
 
-            for a in discover_agents_internal(&claude_dir.join("agents"), "project", Some(&project_path_str))? {
+            for a in discover_agents_internal(&claude_dir.join("agents"), "project", Some(&project_path_str), "claude")? {
                 if seen_agent_paths.insert(a.base.path.clone()) {
                     counts.agents += 1;
                     all_agents.push(a);
                 }
             }
 
-            for s in discover_skills_internal(&claude_dir.join("skills"), "project", Some(&project_path_str))? {
+            for s in discover_skills_internal(&claude_dir.join("skills"), "project", Some(&project_path_str), "claude")? {
                 if seen_skill_paths.insert(s.base.path.clone()) {
                     counts.skills += 1;
                     all_skills.push(s);
                 }
             }
 
-            for c in discover_commands_internal(&claude_dir.join("commands"), "project", Some(&project_path_str))? {
+            for c in discover_commands_internal(&claude_dir.join("commands"), "project", Some(&project_path_str), "claude")? {
                 if seen_command_paths.insert(c.base.path.clone()) {
                     counts.commands += 1;
                     all_commands.push(c);
                 }
             }
 
-            for p in discover_plugins_internal(&claude_dir.join("plugins"), "project", Some(&project_path_str))? {
+            for p in discover_plugins_internal(&claude_dir.join("plugins"), "project", Some(&project_path_str), "claude")? {
                 if seen_plugin_paths.insert(p.base.path.clone()) {
                     counts.plugins += 1;
                     all_plugins.push(p);
                 }
             }
 
-            for h in extract_hooks_internal(&claude_dir.join("settings.json"), "project")? {
+            for h in extract_hooks_internal(&claude_dir.join("settings.json"), "project", "claude")? {
                 if seen_hook_ids.insert(h.id.clone()) {
                     counts.hooks += 1;
                     all_hooks.push(h);
                 }
             }
-            for h in extract_hooks_internal(&claude_dir.join("settings.local.json"), "local")? {
+            for h in extract_hooks_internal(&claude_dir.join("settings.local.json"), "local", "claude")? {
                 if seen_hook_ids.insert(h.id.clone()) {
                     counts.hooks += 1;
                     all_hooks.push(h);
@@ -494,13 +547,83 @@ pub fn discover_all(project_paths: Option<Vec<String>>) -> Result<DiscoveryResul
                 }
             }
 
+            // ================================================================
+            // Discover OpenCode entities for this project (.opencode/)
+            // ================================================================
+            let opencode_dir = project_path.join(".opencode");
+            
+            // OpenCode settings (opencode.json in project root or .opencode/)
+            for s in discover_opencode_settings_internal(&opencode_dir, "project", Some(&project_path_str))? {
+                if seen_settings_paths.insert(s.base.path.clone()) {
+                    counts.settings += 1;
+                    all_settings.push(s);
+                }
+            }
+            // Also check for opencode.json in project root
+            for s in discover_opencode_settings_internal(&project_path, "project", Some(&project_path_str))? {
+                if seen_settings_paths.insert(s.base.path.clone()) {
+                    counts.settings += 1;
+                    all_settings.push(s);
+                }
+            }
+            
+            // OpenCode memory (AGENTS.md)
+            for m in discover_opencode_memory_internal(&opencode_dir, &project_path, "project", Some(&project_path_str))? {
+                if seen_memory_paths.insert(m.base.path.clone()) {
+                    counts.memory += 1;
+                    all_memory.push(m);
+                }
+            }
+            
+            // OpenCode agents (.opencode/agent/)
+            for a in discover_agents_internal(&opencode_dir.join("agent"), "project", Some(&project_path_str), "opencode")? {
+                if seen_agent_paths.insert(a.base.path.clone()) {
+                    counts.agents += 1;
+                    all_agents.push(a);
+                }
+            }
+            
+            // OpenCode skills (.opencode/skill/)
+            for s in discover_skills_internal(&opencode_dir.join("skill"), "project", Some(&project_path_str), "opencode")? {
+                if seen_skill_paths.insert(s.base.path.clone()) {
+                    counts.skills += 1;
+                    all_skills.push(s);
+                }
+            }
+            
+            // OpenCode commands (.opencode/command/)
+            for c in discover_commands_internal(&opencode_dir.join("command"), "project", Some(&project_path_str), "opencode")? {
+                if seen_command_paths.insert(c.base.path.clone()) {
+                    counts.commands += 1;
+                    all_commands.push(c);
+                }
+            }
+            
+            // OpenCode MCP servers from opencode.json
+            for m in discover_mcp_from_opencode_json(&opencode_dir, "project", Some(&project_path_str))? {
+                if seen_mcp_ids.insert(m.id.clone()) {
+                    counts.mcp += 1;
+                    all_mcp.push(m);
+                }
+            }
+            // Also check project root
+            for m in discover_mcp_from_opencode_json(&project_path, "project", Some(&project_path_str))? {
+                if seen_mcp_ids.insert(m.id.clone()) {
+                    counts.mcp += 1;
+                    all_mcp.push(m);
+                }
+            }
+
             projects.push(ProjectInfo {
                 path: project_path_str.clone(),
                 name: project_info.name.clone(),
                 has_claude_dir: claude_dir.exists(),
+                has_opencode_dir: opencode_dir.exists(),
                 has_mcp_json: project_path.join(".mcp.json").exists(),
                 has_claude_md: claude_dir.join("CLAUDE.md").exists(),
                 has_root_claude_md: project_path.join("CLAUDE.md").exists(),
+                has_agents_md: project_path.join("AGENTS.md").exists() || opencode_dir.join("AGENTS.md").exists(),
+                has_opencode_json: project_path.join("opencode.json").exists() || project_path.join("opencode.jsonc").exists() || opencode_dir.join("opencode.json").exists(),
                 entity_counts: counts,
             });
         }
@@ -560,7 +683,7 @@ pub fn discover_all(project_paths: Option<Vec<String>>) -> Result<DiscoveryResul
 // Entity-Specific Discovery Functions
 // ============================================================================
 
-fn discover_settings_internal(claude_dir: &PathBuf, scope: &str, project_path: Option<&str>) -> Result<Vec<SettingsEntity>, String> {
+fn discover_settings_internal(claude_dir: &PathBuf, scope: &str, project_path: Option<&str>, tool: &str) -> Result<Vec<SettingsEntity>, String> {
     let mut settings = Vec::new();
     
     if scope == "global" {
@@ -581,6 +704,7 @@ fn discover_settings_internal(claude_dir: &PathBuf, scope: &str, project_path: O
                     symlink_target,
                     content,
                     last_modified: get_last_modified(&global_settings_path),
+                    tool: tool.to_string(),
                 },
                 entity_type: "settings".to_string(),
                 variant: "global".to_string(),
@@ -606,6 +730,7 @@ fn discover_settings_internal(claude_dir: &PathBuf, scope: &str, project_path: O
                     symlink_target,
                     content,
                     last_modified: get_last_modified(&project_settings_path),
+                    tool: tool.to_string(),
                 },
                 entity_type: "settings".to_string(),
                 variant: "project".to_string(),
@@ -631,6 +756,7 @@ fn discover_settings_internal(claude_dir: &PathBuf, scope: &str, project_path: O
                     symlink_target,
                     content,
                     last_modified: get_last_modified(&local_settings_path),
+                    tool: tool.to_string(),
                 },
                 entity_type: "settings".to_string(),
                 variant: "local".to_string(),
@@ -642,7 +768,7 @@ fn discover_settings_internal(claude_dir: &PathBuf, scope: &str, project_path: O
     Ok(settings)
 }
 
-fn discover_memory_internal(claude_dir: &PathBuf, base_path: &PathBuf, scope: &str, project_path: Option<&str>) -> Result<Vec<MemoryEntity>, String> {
+fn discover_memory_internal(claude_dir: &PathBuf, base_path: &PathBuf, scope: &str, project_path: Option<&str>, tool: &str) -> Result<Vec<MemoryEntity>, String> {
     let mut memory = Vec::new();
     
     // CLAUDE.md in .claude/ directory
@@ -662,6 +788,7 @@ fn discover_memory_internal(claude_dir: &PathBuf, base_path: &PathBuf, scope: &s
                 symlink_target,
                 content,
                 last_modified: get_last_modified(&dotclaude_md_path),
+                tool: tool.to_string(),
             },
             entity_type: "memory".to_string(),
             variant: "dotclaude".to_string(),
@@ -686,6 +813,7 @@ fn discover_memory_internal(claude_dir: &PathBuf, base_path: &PathBuf, scope: &s
                     symlink_target,
                     content,
                     last_modified: get_last_modified(&root_md_path),
+                    tool: tool.to_string(),
                 },
                 entity_type: "memory".to_string(),
                 variant: "root".to_string(),
@@ -696,7 +824,7 @@ fn discover_memory_internal(claude_dir: &PathBuf, base_path: &PathBuf, scope: &s
     Ok(memory)
 }
 
-fn discover_agents_internal(agents_dir: &PathBuf, scope: &str, project_path: Option<&str>) -> Result<Vec<AgentEntity>, String> {
+fn discover_agents_internal(agents_dir: &PathBuf, scope: &str, project_path: Option<&str>, tool: &str) -> Result<Vec<AgentEntity>, String> {
     let mut agents = Vec::new();
     
     if agents_dir.exists() && agents_dir.is_dir() {
@@ -725,6 +853,7 @@ fn discover_agents_internal(agents_dir: &PathBuf, scope: &str, project_path: Opt
                             symlink_target,
                             content,
                             last_modified: get_last_modified(&path),
+                            tool: tool.to_string(),
                         },
                         entity_type: "agent".to_string(),
                         frontmatter,
@@ -737,7 +866,7 @@ fn discover_agents_internal(agents_dir: &PathBuf, scope: &str, project_path: Opt
     Ok(agents)
 }
 
-fn discover_skills_internal(skills_dir: &PathBuf, scope: &str, project_path: Option<&str>) -> Result<Vec<SkillEntity>, String> {
+fn discover_skills_internal(skills_dir: &PathBuf, scope: &str, project_path: Option<&str>, tool: &str) -> Result<Vec<SkillEntity>, String> {
     let mut skills = Vec::new();
     
     if skills_dir.exists() && skills_dir.is_dir() {
@@ -779,6 +908,7 @@ fn discover_skills_internal(skills_dir: &PathBuf, scope: &str, project_path: Opt
                                 symlink_target,
                                 content,
                                 last_modified: get_last_modified(&skill_file),
+                                tool: tool.to_string(),
                             },
                             entity_type: "skill".to_string(),
                             skill_dir: skill_dir.to_string_lossy().to_string(),
@@ -794,10 +924,10 @@ fn discover_skills_internal(skills_dir: &PathBuf, scope: &str, project_path: Opt
     Ok(skills)
 }
 
-fn discover_commands_internal(commands_dir: &PathBuf, scope: &str, project_path: Option<&str>) -> Result<Vec<CommandEntity>, String> {
+fn discover_commands_internal(commands_dir: &PathBuf, scope: &str, project_path: Option<&str>, tool: &str) -> Result<Vec<CommandEntity>, String> {
     let mut commands = Vec::new();
     
-    fn scan_commands_dir(dir: &PathBuf, scope: &str, project_path: Option<&str>, namespace: Option<&str>, commands: &mut Vec<CommandEntity>) {
+    fn scan_commands_dir(dir: &PathBuf, scope: &str, project_path: Option<&str>, namespace: Option<&str>, tool: &str, commands: &mut Vec<CommandEntity>) {
         if dir.exists() && dir.is_dir() {
             if let Ok(entries) = fs::read_dir(dir) {
                 for entry in entries.flatten() {
@@ -808,7 +938,7 @@ fn discover_commands_internal(commands_dir: &PathBuf, scope: &str, project_path:
                         let subdir_name = path.file_name()
                             .map(|s| s.to_string_lossy().to_string())
                             .unwrap_or_default();
-                        scan_commands_dir(&path, scope, project_path, Some(&subdir_name), commands);
+                        scan_commands_dir(&path, scope, project_path, Some(&subdir_name), tool, commands);
                     } else if path.extension().map_or(false, |ext| ext == "md") {
                         let (is_symlink, symlink_target) = is_symlink_with_target(&path);
                         let content = read_file_content(&path);
@@ -831,6 +961,7 @@ fn discover_commands_internal(commands_dir: &PathBuf, scope: &str, project_path:
                                 symlink_target,
                                 content,
                                 last_modified: get_last_modified(&path),
+                                tool: tool.to_string(),
                             },
                             entity_type: "command".to_string(),
                             namespace: namespace.map(String::from),
@@ -842,11 +973,11 @@ fn discover_commands_internal(commands_dir: &PathBuf, scope: &str, project_path:
         }
     }
     
-    scan_commands_dir(commands_dir, scope, project_path, None, &mut commands);
+    scan_commands_dir(commands_dir, scope, project_path, None, tool, &mut commands);
     Ok(commands)
 }
 
-fn discover_plugins_internal(plugins_dir: &PathBuf, scope: &str, project_path: Option<&str>) -> Result<Vec<PluginEntity>, String> {
+fn discover_plugins_internal(plugins_dir: &PathBuf, scope: &str, project_path: Option<&str>, tool: &str) -> Result<Vec<PluginEntity>, String> {
     let mut plugins = Vec::new();
     
     if plugins_dir.exists() && plugins_dir.is_dir() {
@@ -874,6 +1005,7 @@ fn discover_plugins_internal(plugins_dir: &PathBuf, scope: &str, project_path: O
                                 symlink_target,
                                 content: read_file_content(&manifest_path),
                                 last_modified: get_last_modified(&manifest_path),
+                                tool: tool.to_string(),
                             },
                             entity_type: "plugin".to_string(),
                             plugin_dir: plugin_dir.to_string_lossy().to_string(),
@@ -959,6 +1091,7 @@ fn discover_installed_plugins(home: &PathBuf) -> Result<Vec<PluginEntity>, Strin
                                     symlink_target: None,
                                     content: description,
                                     last_modified: 0,
+                                    tool: "claude".to_string(),
                                 },
                                 entity_type: "plugin".to_string(),
                                 plugin_dir: install_path.to_string(),
@@ -980,7 +1113,7 @@ fn discover_installed_plugins(home: &PathBuf) -> Result<Vec<PluginEntity>, Strin
     Ok(plugins)
 }
 
-fn extract_hooks_internal(settings_path: &PathBuf, source: &str) -> Result<Vec<HookEntity>, String> {
+fn extract_hooks_internal(settings_path: &PathBuf, source: &str, tool: &str) -> Result<Vec<HookEntity>, String> {
     let mut hooks = Vec::new();
     
     if settings_path.exists() {
@@ -1022,6 +1155,7 @@ fn extract_hooks_internal(settings_path: &PathBuf, source: &str) -> Result<Vec<H
                                     hooks: hook_defs,
                                     source: source.to_string(),
                                     source_path: settings_path.to_string_lossy().to_string(),
+                                    tool: tool.to_string(),
                                 });
                             }
                         }
@@ -1067,6 +1201,7 @@ fn discover_mcp_from_claude_json(home: &PathBuf) -> Result<Vec<McpServerEntity>,
                         source_path: claude_json_path.to_string_lossy().to_string(),
                         is_from_plugin: false,
                         plugin_name: None,
+                        tool: "claude".to_string(),
                     });
                 }
             }
@@ -1116,6 +1251,7 @@ fn discover_mcp_from_project(project_path: &PathBuf) -> Result<Vec<McpServerEnti
                         source_path: mcp_json_path.to_string_lossy().to_string(),
                         is_from_plugin: false,
                         plugin_name: None,
+                        tool: "claude".to_string(),
                     });
                 }
             }
@@ -1123,6 +1259,273 @@ fn discover_mcp_from_project(project_path: &PathBuf) -> Result<Vec<McpServerEnti
     }
     
     Ok(servers)
+}
+
+// ============================================================================
+// OpenCode Discovery Functions
+// ============================================================================
+
+/// Discover OpenCode settings (opencode.json / opencode.jsonc)
+fn discover_opencode_settings_internal(opencode_dir: &PathBuf, scope: &str, project_path: Option<&str>) -> Result<Vec<SettingsEntity>, String> {
+    let mut settings = Vec::new();
+    
+    // Check for opencode.json
+    let json_path = opencode_dir.join("opencode.json");
+    if json_path.exists() {
+        let (is_symlink, symlink_target) = is_symlink_with_target(&json_path);
+        let content = read_file_content(&json_path);
+        let parsed = content.as_ref().and_then(|c| serde_json::from_str(c).ok());
+        
+        settings.push(SettingsEntity {
+            base: BaseEntity {
+                id: generate_id("settings", &json_path.to_string_lossy()),
+                name: "opencode.json".to_string(),
+                path: json_path.to_string_lossy().to_string(),
+                scope: scope.to_string(),
+                project_path: project_path.map(String::from),
+                is_symlink,
+                symlink_target,
+                content,
+                last_modified: get_last_modified(&json_path),
+                tool: "opencode".to_string(),
+            },
+            entity_type: "settings".to_string(),
+            variant: if scope == "global" { "global".to_string() } else { "project".to_string() },
+            parsed,
+        });
+    }
+    
+    // Check for opencode.jsonc (JSON with comments)
+    let jsonc_path = opencode_dir.join("opencode.jsonc");
+    if jsonc_path.exists() {
+        let (is_symlink, symlink_target) = is_symlink_with_target(&jsonc_path);
+        let content = read_file_content(&jsonc_path);
+        // For JSONC, we try to strip comments before parsing
+        let parsed = content.as_ref().and_then(|c| {
+            let stripped = strip_json_comments(c);
+            serde_json::from_str(&stripped).ok()
+        });
+        
+        settings.push(SettingsEntity {
+            base: BaseEntity {
+                id: generate_id("settings", &jsonc_path.to_string_lossy()),
+                name: "opencode.jsonc".to_string(),
+                path: jsonc_path.to_string_lossy().to_string(),
+                scope: scope.to_string(),
+                project_path: project_path.map(String::from),
+                is_symlink,
+                symlink_target,
+                content,
+                last_modified: get_last_modified(&jsonc_path),
+                tool: "opencode".to_string(),
+            },
+            entity_type: "settings".to_string(),
+            variant: if scope == "global" { "global".to_string() } else { "project".to_string() },
+            parsed,
+        });
+    }
+    
+    Ok(settings)
+}
+
+/// Discover OpenCode memory files (AGENTS.md)
+fn discover_opencode_memory_internal(opencode_dir: &PathBuf, base_path: &PathBuf, scope: &str, project_path: Option<&str>) -> Result<Vec<MemoryEntity>, String> {
+    let mut memory = Vec::new();
+    
+    // AGENTS.md in .opencode/ directory
+    let dotopencode_md_path = opencode_dir.join("AGENTS.md");
+    if dotopencode_md_path.exists() {
+        let (is_symlink, symlink_target) = is_symlink_with_target(&dotopencode_md_path);
+        let content = read_file_content(&dotopencode_md_path);
+        
+        memory.push(MemoryEntity {
+            base: BaseEntity {
+                id: generate_id("memory", &dotopencode_md_path.to_string_lossy()),
+                name: "AGENTS.md".to_string(),
+                path: dotopencode_md_path.to_string_lossy().to_string(),
+                scope: scope.to_string(),
+                project_path: project_path.map(String::from),
+                is_symlink,
+                symlink_target,
+                content,
+                last_modified: get_last_modified(&dotopencode_md_path),
+                tool: "opencode".to_string(),
+            },
+            entity_type: "memory".to_string(),
+            variant: "dotopencode".to_string(),
+        });
+    }
+    
+    // AGENTS.md at project root (for projects) or home (for global)
+    let root_md_path = base_path.join("AGENTS.md");
+    if root_md_path.exists() && root_md_path != dotopencode_md_path {
+        let (is_symlink, symlink_target) = is_symlink_with_target(&root_md_path);
+        let content = read_file_content(&root_md_path);
+        
+        memory.push(MemoryEntity {
+            base: BaseEntity {
+                id: generate_id("memory", &root_md_path.to_string_lossy()),
+                name: "AGENTS.md".to_string(),
+                path: root_md_path.to_string_lossy().to_string(),
+                scope: scope.to_string(),
+                project_path: project_path.map(String::from),
+                is_symlink,
+                symlink_target,
+                content,
+                last_modified: get_last_modified(&root_md_path),
+                tool: "opencode".to_string(),
+            },
+            entity_type: "memory".to_string(),
+            variant: "root".to_string(),
+        });
+    }
+    
+    Ok(memory)
+}
+
+/// Discover MCP servers from OpenCode's opencode.json mcp configuration
+fn discover_mcp_from_opencode_json(config_dir: &PathBuf, scope: &str, project_path: Option<&str>) -> Result<Vec<McpServerEntity>, String> {
+    let mut servers = Vec::new();
+    
+    // Try opencode.json first, then opencode.jsonc
+    let json_path = config_dir.join("opencode.json");
+    let jsonc_path = config_dir.join("opencode.jsonc");
+    
+    let (config_path, config) = if json_path.exists() {
+        (json_path.clone(), parse_json_file(&json_path))
+    } else if jsonc_path.exists() {
+        let content = read_file_content(&jsonc_path);
+        let parsed = content.and_then(|c| {
+            let stripped = strip_json_comments(&c);
+            serde_json::from_str(&stripped).ok()
+        });
+        (jsonc_path.clone(), parsed)
+    } else {
+        return Ok(servers);
+    };
+    
+    if let Some(config) = config {
+        // OpenCode stores MCP servers under "mcp" key (not "mcpServers" like Claude)
+        if let Some(mcp_config) = config.get("mcp").and_then(|m| m.as_object()) {
+            for (name, server_config) in mcp_config {
+                // Determine transport type
+                let transport = server_config.get("type")
+                    .and_then(|t| t.as_str())
+                    .unwrap_or_else(|| {
+                        if server_config.get("command").is_some() { "stdio" }
+                        else if server_config.get("url").is_some() { "http" }
+                        else { "unknown" }
+                    });
+                
+                // OpenCode uses "command" as array, Claude uses string
+                let command = server_config.get("command")
+                    .and_then(|c| {
+                        if c.is_array() {
+                            c.as_array()
+                                .and_then(|arr| arr.first())
+                                .and_then(|v| v.as_str())
+                                .map(String::from)
+                        } else {
+                            c.as_str().map(String::from)
+                        }
+                    });
+                
+                let args = server_config.get("command")
+                    .and_then(|c| c.as_array())
+                    .map(|arr| arr.iter().skip(1).filter_map(|v| v.as_str().map(String::from)).collect::<Vec<_>>())
+                    .or_else(|| server_config.get("args").and_then(|a| serde_json::from_value(a.clone()).ok()));
+                
+                // OpenCode uses "environment" instead of "env"
+                let env = server_config.get("environment")
+                    .or_else(|| server_config.get("env"))
+                    .and_then(|e| serde_json::from_value(e.clone()).ok());
+                
+                servers.push(McpServerEntity {
+                    id: generate_id("mcp", &format!("opencode_{}_{}", scope, name)),
+                    entity_type: "mcp".to_string(),
+                    name: name.clone(),
+                    scope: scope.to_string(),
+                    transport: transport.to_string(),
+                    config: McpServerConfig {
+                        transport_type: Some(transport.to_string()),
+                        command,
+                        args,
+                        url: server_config.get("url").and_then(|u| u.as_str()).map(String::from),
+                        env,
+                        headers: server_config.get("headers").and_then(|h| serde_json::from_value(h.clone()).ok()),
+                    },
+                    source_path: config_path.to_string_lossy().to_string(),
+                    is_from_plugin: false,
+                    plugin_name: None,
+                    tool: "opencode".to_string(),
+                });
+            }
+        }
+    }
+    
+    Ok(servers)
+}
+
+/// Strip comments from JSONC content (simple implementation)
+fn strip_json_comments(content: &str) -> String {
+    let mut result = String::new();
+    let mut chars = content.chars().peekable();
+    let mut in_string = false;
+    let mut escape_next = false;
+    
+    while let Some(c) = chars.next() {
+        if escape_next {
+            result.push(c);
+            escape_next = false;
+            continue;
+        }
+        
+        if c == '\\' && in_string {
+            result.push(c);
+            escape_next = true;
+            continue;
+        }
+        
+        if c == '"' && !escape_next {
+            in_string = !in_string;
+            result.push(c);
+            continue;
+        }
+        
+        if !in_string && c == '/' {
+            if let Some(&next) = chars.peek() {
+                if next == '/' {
+                    // Line comment - skip until newline
+                    chars.next();
+                    while let Some(&ch) = chars.peek() {
+                        if ch == '\n' {
+                            result.push('\n');
+                            chars.next();
+                            break;
+                        }
+                        chars.next();
+                    }
+                    continue;
+                } else if next == '*' {
+                    // Block comment - skip until */
+                    chars.next();
+                    while let Some(ch) = chars.next() {
+                        if ch == '*' {
+                            if let Some(&'/') = chars.peek() {
+                                chars.next();
+                                break;
+                            }
+                        }
+                    }
+                    continue;
+                }
+            }
+        }
+        
+        result.push(c);
+    }
+    
+    result
 }
 
 fn find_duplicates_internal(
@@ -1212,42 +1615,42 @@ fn find_duplicates_internal(
 pub fn discover_settings() -> Result<Vec<SettingsEntity>, String> {
     let home = get_home_dir().ok_or("Could not find home directory")?;
     let global_claude_path = home.join(".claude");
-    discover_settings_internal(&global_claude_path, "global", None)
+    discover_settings_internal(&global_claude_path, "global", None, "claude")
 }
 
 #[tauri::command]
 pub fn discover_memory() -> Result<Vec<MemoryEntity>, String> {
     let home = get_home_dir().ok_or("Could not find home directory")?;
     let global_claude_path = home.join(".claude");
-    discover_memory_internal(&global_claude_path, &home, "global", None)
+    discover_memory_internal(&global_claude_path, &home, "global", None, "claude")
 }
 
 #[tauri::command]
 pub fn discover_agents() -> Result<Vec<AgentEntity>, String> {
     let home = get_home_dir().ok_or("Could not find home directory")?;
     let agents_dir = home.join(".claude").join("agents");
-    discover_agents_internal(&agents_dir, "global", None)
+    discover_agents_internal(&agents_dir, "global", None, "claude")
 }
 
 #[tauri::command]
 pub fn discover_skills() -> Result<Vec<SkillEntity>, String> {
     let home = get_home_dir().ok_or("Could not find home directory")?;
     let skills_dir = home.join(".claude").join("skills");
-    discover_skills_internal(&skills_dir, "global", None)
+    discover_skills_internal(&skills_dir, "global", None, "claude")
 }
 
 #[tauri::command]
 pub fn discover_commands() -> Result<Vec<CommandEntity>, String> {
     let home = get_home_dir().ok_or("Could not find home directory")?;
     let commands_dir = home.join(".claude").join("commands");
-    discover_commands_internal(&commands_dir, "global", None)
+    discover_commands_internal(&commands_dir, "global", None, "claude")
 }
 
 #[tauri::command]
 pub fn discover_plugins() -> Result<Vec<PluginEntity>, String> {
     let home = get_home_dir().ok_or("Could not find home directory")?;
     let plugins_dir = home.join(".claude").join("plugins");
-    discover_plugins_internal(&plugins_dir, "global", None)
+    discover_plugins_internal(&plugins_dir, "global", None, "claude")
 }
 
 #[tauri::command]
@@ -1259,7 +1662,7 @@ pub fn discover_mcp_servers() -> Result<Vec<McpServerEntity>, String> {
 #[tauri::command]
 pub fn extract_hooks(settings_path: String) -> Result<Vec<HookEntity>, String> {
     let path = PathBuf::from(&settings_path);
-    extract_hooks_internal(&path, "global")
+    extract_hooks_internal(&path, "global", "claude")
 }
 
 #[tauri::command]
@@ -1305,7 +1708,7 @@ pub fn scan_projects(base_paths: Vec<String>) -> Result<Vec<ProjectInfo>, String
             .unwrap_or_default();
         
         // Skip hidden directories (except at depth 0 for home dir)
-        if depth > 0 && dir_name.starts_with('.') && dir_name != ".claude" {
+        if depth > 0 && dir_name.starts_with('.') && dir_name != ".claude" && dir_name != ".opencode" {
             continue;
         }
         
@@ -1314,11 +1717,13 @@ pub fn scan_projects(base_paths: Vec<String>) -> Result<Vec<ProjectInfo>, String
             continue;
         }
         
-        // Check if this directory is a project (has .claude/ or CLAUDE.md or .mcp.json)
+        // Check if this directory is a project (has .claude/, .opencode/, CLAUDE.md, AGENTS.md, opencode.json, or .mcp.json)
         let claude_dir = path.join(".claude");
+        let opencode_dir = path.join(".opencode");
         let has_claude = claude_dir.exists() || path.join("CLAUDE.md").exists() || path.join(".mcp.json").exists();
+        let has_opencode = opencode_dir.exists() || path.join("AGENTS.md").exists() || path.join("opencode.json").exists() || path.join("opencode.jsonc").exists();
         
-        if has_claude {
+        if has_claude || has_opencode {
             let path_str = path.to_string_lossy().into_owned();
             
             // Skip if we've already seen this path (deduplication)
@@ -1335,9 +1740,12 @@ pub fn scan_projects(base_paths: Vec<String>) -> Result<Vec<ProjectInfo>, String
                 path: path_str,
                 name,
                 has_claude_dir: claude_dir.exists(),
+                has_opencode_dir: opencode_dir.exists(),
                 has_mcp_json: path.join(".mcp.json").exists(),
                 has_claude_md: claude_dir.join("CLAUDE.md").exists(),
                 has_root_claude_md: path.join("CLAUDE.md").exists(),
+                has_agents_md: path.join("AGENTS.md").exists() || opencode_dir.join("AGENTS.md").exists(),
+                has_opencode_json: path.join("opencode.json").exists() || path.join("opencode.jsonc").exists() || opencode_dir.join("opencode.json").exists(),
                 entity_counts: EntityCounts {
                     settings: 0,
                     memory: 0,
@@ -1370,9 +1778,9 @@ pub fn find_duplicates() -> Result<Vec<DuplicateGroup>, String> {
     let home = get_home_dir().ok_or("Could not find home directory")?;
     let claude_dir = home.join(".claude");
     
-    let agents = discover_agents_internal(&claude_dir.join("agents"), "global", None)?;
-    let skills = discover_skills_internal(&claude_dir.join("skills"), "global", None)?;
-    let commands = discover_commands_internal(&claude_dir.join("commands"), "global", None)?;
+    let agents = discover_agents_internal(&claude_dir.join("agents"), "global", None, "claude")?;
+    let skills = discover_skills_internal(&claude_dir.join("skills"), "global", None, "claude")?;
+    let commands = discover_commands_internal(&claude_dir.join("commands"), "global", None, "claude")?;
     
     find_duplicates_internal(&agents, &skills, &commands)
 }
@@ -1440,6 +1848,338 @@ pub fn delete_directory(path: String) -> Result<(), String> {
 }
 
 // ============================================================================
+// Entity Actions (Copy, Symlink, Rename, Delete)
+// ============================================================================
+
+/// Copy an entity to a new location (global or project scope)
+#[tauri::command]
+pub fn copy_entity(
+    source_path: String,
+    entity_type: String,
+    target_scope: String,  // "global" or "project"
+    target_project_path: Option<String>,
+    new_name: Option<String>,
+    tool: String,  // "claude" or "opencode"
+) -> Result<String, String> {
+    let source = PathBuf::from(&source_path);
+    if !source.exists() {
+        return Err("Source file does not exist".to_string());
+    }
+    
+    let home = get_home_dir().ok_or("Could not find home directory")?;
+    
+    // Determine config directory names based on tool
+    let (config_dir_name, entity_dir_name) = match (tool.as_str(), entity_type.as_str()) {
+        ("opencode", "agent") => (".opencode", "agent"),
+        ("opencode", "skill") => (".opencode", "skill"),
+        ("opencode", "command") => (".opencode", "command"),
+        ("claude", "agent") => (".claude", "agents"),
+        ("claude", "skill") => (".claude", "skills"),
+        ("claude", "command") => (".claude", "commands"),
+        _ => return Err(format!("Unknown tool/entity combination: {}/{}", tool, entity_type)),
+    };
+    
+    // Determine target directory
+    let target_dir = if target_scope == "global" {
+        if tool == "opencode" {
+            home.join(".config").join("opencode").join(entity_dir_name)
+        } else {
+            home.join(config_dir_name).join(entity_dir_name)
+        }
+    } else {
+        let project = target_project_path
+            .ok_or("Project path required for project-scoped entities")?;
+        PathBuf::from(project).join(config_dir_name).join(entity_dir_name)
+    };
+    
+    // Create target directory if it doesn't exist
+    fs::create_dir_all(&target_dir).map_err(|e| format!("Failed to create directory: {}", e))?;
+    
+    // Determine target file name
+    let source_name = source.file_name()
+        .ok_or("Invalid source path")?
+        .to_string_lossy();
+    let target_name = new_name.unwrap_or_else(|| source_name.to_string());
+    
+    // Handle skills specially (they're directories)
+    if entity_type == "skill" {
+        let source_dir = source.parent().ok_or("Invalid skill path")?;
+        let target_skill_dir = target_dir.join(&target_name);
+        
+        // Copy entire skill directory
+        copy_dir_recursive(source_dir, &target_skill_dir)?;
+        
+        return Ok(target_skill_dir.join("SKILL.md").to_string_lossy().to_string());
+    }
+    
+    // For regular files (agents, commands)
+    let target_file = target_dir.join(&target_name);
+    
+    // Read source content and write to target
+    let content = fs::read_to_string(&source)
+        .map_err(|e| format!("Failed to read source: {}", e))?;
+    fs::write(&target_file, content)
+        .map_err(|e| format!("Failed to write target: {}", e))?;
+    
+    Ok(target_file.to_string_lossy().to_string())
+}
+
+/// Helper function to recursively copy a directory
+fn copy_dir_recursive(src: &std::path::Path, dst: &PathBuf) -> Result<(), String> {
+    if !src.is_dir() {
+        return Err("Source is not a directory".to_string());
+    }
+    
+    fs::create_dir_all(dst).map_err(|e| format!("Failed to create directory: {}", e))?;
+    
+    for entry in fs::read_dir(src).map_err(|e| e.to_string())? {
+        let entry = entry.map_err(|e| e.to_string())?;
+        let src_path = entry.path();
+        let dst_path = dst.join(entry.file_name());
+        
+        if src_path.is_dir() {
+            copy_dir_recursive(&src_path, &dst_path)?;
+        } else {
+            fs::copy(&src_path, &dst_path)
+                .map_err(|e| format!("Failed to copy file: {}", e))?;
+        }
+    }
+    
+    Ok(())
+}
+
+/// Create a symlink from target to source
+#[tauri::command]
+pub fn create_entity_symlink(
+    source_path: String,
+    entity_type: String,
+    target_scope: String,  // "global" or "project"
+    target_project_path: Option<String>,
+    tool: String,  // "claude" or "opencode"
+) -> Result<String, String> {
+    let source = PathBuf::from(&source_path);
+    if !source.exists() {
+        return Err("Source file does not exist".to_string());
+    }
+    
+    let home = get_home_dir().ok_or("Could not find home directory")?;
+    
+    // Determine config directory names based on tool
+    let (config_dir_name, entity_dir_name) = match (tool.as_str(), entity_type.as_str()) {
+        ("opencode", "agent") => (".opencode", "agent"),
+        ("opencode", "skill") => (".opencode", "skill"),
+        ("opencode", "command") => (".opencode", "command"),
+        ("claude", "agent") => (".claude", "agents"),
+        ("claude", "skill") => (".claude", "skills"),
+        ("claude", "command") => (".claude", "commands"),
+        _ => return Err(format!("Unknown tool/entity combination: {}/{}", tool, entity_type)),
+    };
+    
+    // Determine target directory
+    let target_dir = if target_scope == "global" {
+        if tool == "opencode" {
+            home.join(".config").join("opencode").join(entity_dir_name)
+        } else {
+            home.join(config_dir_name).join(entity_dir_name)
+        }
+    } else {
+        let project = target_project_path
+            .ok_or("Project path required for project-scoped entities")?;
+        PathBuf::from(project).join(config_dir_name).join(entity_dir_name)
+    };
+    
+    // Create target directory if it doesn't exist
+    fs::create_dir_all(&target_dir).map_err(|e| format!("Failed to create directory: {}", e))?;
+    
+    // Determine symlink name and path
+    let link_name = if entity_type == "skill" {
+        // For skills, the symlink is the skill directory name
+        source.parent()
+            .and_then(|p| p.file_name())
+            .ok_or("Invalid skill path")?
+            .to_string_lossy()
+            .to_string()
+    } else {
+        source.file_name()
+            .ok_or("Invalid source path")?
+            .to_string_lossy()
+            .to_string()
+    };
+    
+    let link_path = target_dir.join(&link_name);
+    
+    // Check if link already exists
+    if link_path.exists() || link_path.is_symlink() {
+        return Err(format!("Target already exists: {}", link_path.display()));
+    }
+    
+    // Create symlink (source is what the link points to)
+    let symlink_source = if entity_type == "skill" {
+        source.parent().ok_or("Invalid skill path")?.to_path_buf()
+    } else {
+        source
+    };
+    
+    #[cfg(unix)]
+    {
+        std::os::unix::fs::symlink(&symlink_source, &link_path)
+            .map_err(|e| format!("Failed to create symlink: {}", e))?;
+    }
+    
+    #[cfg(windows)]
+    {
+        if symlink_source.is_dir() {
+            std::os::windows::fs::symlink_dir(&symlink_source, &link_path)
+                .map_err(|e| format!("Failed to create symlink: {}", e))?;
+        } else {
+            std::os::windows::fs::symlink_file(&symlink_source, &link_path)
+                .map_err(|e| format!("Failed to create symlink: {}", e))?;
+        }
+    }
+    
+    Ok(link_path.to_string_lossy().to_string())
+}
+
+/// Rename an entity (move to new name in same directory)
+#[tauri::command]
+pub fn rename_entity(
+    source_path: String,
+    new_name: String,
+    entity_type: String,
+) -> Result<String, String> {
+    let source = PathBuf::from(&source_path);
+    if !source.exists() {
+        return Err("Source file does not exist".to_string());
+    }
+    
+    let parent = source.parent().ok_or("Invalid source path")?;
+    
+    // Handle skills specially (rename the directory)
+    if entity_type == "skill" {
+        let skill_dir = source.parent().ok_or("Invalid skill path")?;
+        let skills_dir = skill_dir.parent().ok_or("Invalid skill directory structure")?;
+        let new_skill_dir = skills_dir.join(&new_name);
+        
+        if new_skill_dir.exists() {
+            return Err(format!("Target already exists: {}", new_skill_dir.display()));
+        }
+        
+        fs::rename(skill_dir, &new_skill_dir)
+            .map_err(|e| format!("Failed to rename skill: {}", e))?;
+        
+        return Ok(new_skill_dir.join("SKILL.md").to_string_lossy().to_string());
+    }
+    
+    // For regular files, ensure .md extension
+    let new_name = if new_name.ends_with(".md") {
+        new_name
+    } else {
+        format!("{}.md", new_name)
+    };
+    
+    let target = parent.join(&new_name);
+    
+    if target.exists() {
+        return Err(format!("Target already exists: {}", target.display()));
+    }
+    
+    fs::rename(&source, &target)
+        .map_err(|e| format!("Failed to rename: {}", e))?;
+    
+    Ok(target.to_string_lossy().to_string())
+}
+
+/// Delete an entity (file or skill directory)
+#[tauri::command]
+pub fn delete_entity(
+    path: String,
+    entity_type: String,
+) -> Result<(), String> {
+    let path = PathBuf::from(&path);
+    
+    if !path.exists() && !path.is_symlink() {
+        return Err("Entity does not exist".to_string());
+    }
+    
+    // Handle symlinks
+    if path.is_symlink() {
+        fs::remove_file(&path).map_err(|e| format!("Failed to delete symlink: {}", e))?;
+        return Ok(());
+    }
+    
+    // Handle skills (delete entire directory)
+    if entity_type == "skill" {
+        let skill_dir = path.parent().ok_or("Invalid skill path")?;
+        fs::remove_dir_all(skill_dir).map_err(|e| format!("Failed to delete skill: {}", e))?;
+        return Ok(());
+    }
+    
+    // Regular files
+    fs::remove_file(&path).map_err(|e| format!("Failed to delete: {}", e))
+}
+
+/// Duplicate an entity within the same scope (creates a copy with new name)
+#[tauri::command]
+pub fn duplicate_entity(
+    source_path: String,
+    entity_type: String,
+) -> Result<String, String> {
+    let source = PathBuf::from(&source_path);
+    if !source.exists() {
+        return Err("Source file does not exist".to_string());
+    }
+    
+    let parent = source.parent().ok_or("Invalid source path")?;
+    
+    // Generate unique name
+    let base_name = if entity_type == "skill" {
+        source.parent()
+            .and_then(|p| p.file_name())
+            .ok_or("Invalid skill path")?
+            .to_string_lossy()
+            .to_string()
+    } else {
+        source.file_stem()
+            .ok_or("Invalid source path")?
+            .to_string_lossy()
+            .to_string()
+    };
+    
+    let mut counter = 1;
+    let target_path = loop {
+        let new_name = format!("{}-copy{}", base_name, if counter == 1 { String::new() } else { counter.to_string() });
+        
+        let target = if entity_type == "skill" {
+            let skills_dir = parent.parent().ok_or("Invalid skill directory structure")?;
+            skills_dir.join(&new_name)
+        } else {
+            parent.join(format!("{}.md", new_name))
+        };
+        
+        if !target.exists() {
+            break target;
+        }
+        counter += 1;
+        if counter > 100 {
+            return Err("Could not generate unique name".to_string());
+        }
+    };
+    
+    // Copy the entity
+    if entity_type == "skill" {
+        let skill_dir = source.parent().ok_or("Invalid skill path")?;
+        copy_dir_recursive(skill_dir, &target_path)?;
+        Ok(target_path.join("SKILL.md").to_string_lossy().to_string())
+    } else {
+        let content = fs::read_to_string(&source)
+            .map_err(|e| format!("Failed to read source: {}", e))?;
+        fs::write(&target_path, content)
+            .map_err(|e| format!("Failed to write target: {}", e))?;
+        Ok(target_path.to_string_lossy().to_string())
+    }
+}
+
+// ============================================================================
 // Entity Creation
 // ============================================================================
 
@@ -1450,20 +2190,36 @@ pub fn create_entity(
     scope: String,
     project_path: Option<String>,
     content: Option<String>,
+    tool: Option<String>,  // "claude" or "opencode"
 ) -> Result<String, String> {
     let home = get_home_dir().ok_or("Could not find home directory")?;
+    let tool = tool.unwrap_or_else(|| "claude".to_string());
+    
+    // Determine base directory based on tool
+    let (config_dir_name, memory_file_name) = if tool == "opencode" {
+        (".opencode", "AGENTS.md")  // OpenCode uses .opencode and AGENTS.md
+    } else {
+        (".claude", "CLAUDE.md")    // Claude uses .claude and CLAUDE.md
+    };
     
     let base_dir = if scope == "global" {
-        home.join(".claude")
+        if tool == "opencode" {
+            // OpenCode global config is in ~/.config/opencode
+            home.join(".config").join("opencode")
+        } else {
+            home.join(config_dir_name)
+        }
     } else {
         project_path.as_ref()
-            .map(|p| PathBuf::from(p).join(".claude"))
+            .map(|p| PathBuf::from(p).join(config_dir_name))
             .ok_or("Project path required for project-scoped entities")?
     };
     
     let (file_path, file_content) = match entity_type.as_str() {
         "agent" => {
-            let path = base_dir.join("agents").join(format!("{}.md", name));
+            // OpenCode uses singular "agent", Claude uses plural "agents"
+            let agents_dir = if tool == "opencode" { "agent" } else { "agents" };
+            let path = base_dir.join(agents_dir).join(format!("{}.md", name));
             let content = content.unwrap_or_else(|| {
                 format!(
                     "---\nname: {}\ndescription: A custom agent\ntools: Read, Grep, Glob\nmodel: sonnet\n---\n\nYou are a specialized agent.\n\nWhen invoked:\n1. Analyze the task\n2. Execute appropriate actions\n3. Report results\n",
@@ -1473,7 +2229,9 @@ pub fn create_entity(
             (path, content)
         }
         "skill" => {
-            let skill_dir = base_dir.join("skills").join(&name);
+            // OpenCode uses singular "skill", Claude uses plural "skills"
+            let skills_dir = if tool == "opencode" { "skill" } else { "skills" };
+            let skill_dir = base_dir.join(skills_dir).join(&name);
             fs::create_dir_all(&skill_dir).map_err(|e| e.to_string())?;
             let path = skill_dir.join("SKILL.md");
             let content = content.unwrap_or_else(|| {
@@ -1485,7 +2243,9 @@ pub fn create_entity(
             (path, content)
         }
         "command" => {
-            let path = base_dir.join("commands").join(format!("{}.md", name));
+            // OpenCode uses singular "command", Claude uses plural "commands"
+            let commands_dir = if tool == "opencode" { "command" } else { "commands" };
+            let path = base_dir.join(commands_dir).join(format!("{}.md", name));
             let content = content.unwrap_or_else(|| {
                 format!(
                     "---\ndescription: A custom command\n---\n\n# {} Command\n\n$ARGUMENTS\n",
@@ -1496,14 +2256,16 @@ pub fn create_entity(
         }
         "memory" => {
             let path = if scope == "global" {
-                base_dir.join("CLAUDE.md")
+                base_dir.join(memory_file_name)
             } else {
                 project_path.as_ref()
-                    .map(|p| PathBuf::from(p).join("CLAUDE.md"))
+                    .map(|p| PathBuf::from(p).join(memory_file_name))
                     .ok_or("Project path required")?
             };
             let content = content.unwrap_or_else(|| {
-                "# Project Memory\n\n## Overview\n\nThis file contains project-specific context and instructions for Claude.\n\n## Guidelines\n\n- ...\n".to_string()
+                format!("# Project Memory\n\n## Overview\n\nThis file contains project-specific context and instructions for {}.\n\n## Guidelines\n\n- ...\n", 
+                    if tool == "opencode" { "OpenCode" } else { "Claude" }
+                )
             });
             (path, content)
         }

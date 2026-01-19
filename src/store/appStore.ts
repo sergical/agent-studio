@@ -24,6 +24,7 @@ import type {
   EntityType,
   CommandPaletteItem,
   CommandPaletteSection,
+  ToolType,
 } from '../lib/types';
 import { discoverAll, getHomeDirectory } from '../lib/api';
 
@@ -64,8 +65,14 @@ interface AppState {
   searchQuery: string;
   filterScope: FilterScope;
   filterProject: string | null;
+  filterTool: 'all' | ToolType;  // Filter by tool (claude/opencode)
   isPanelOpen: boolean;
   theme: 'dark' | 'light';
+  
+  // === Global Search State ===
+  isGlobalSearchOpen: boolean;
+  globalSearchQuery: string;
+  recentEntityIds: string[];  // Track recently accessed entities (max 5)
   
   // === Toast Notifications ===
   toasts: Toast[];
@@ -97,8 +104,15 @@ interface AppState {
   setFilterScope: (scope: FilterScope) => void;
   setFilterProject: (path: string | null) => void;
   setActiveProject: (projectPath: string) => void;
+  setFilterTool: (tool: 'all' | ToolType) => void;
   setTheme: (theme: 'dark' | 'light') => void;
   toggleTheme: () => void;
+  
+  // === Global Search Actions ===
+  openGlobalSearch: () => void;
+  closeGlobalSearch: () => void;
+  setGlobalSearchQuery: (query: string) => void;
+  addToRecentEntities: (id: string) => void;
   
   // === Entity Actions ===
   updateEntityContent: (entityType: EntityType, id: string, content: string) => void;
@@ -126,16 +140,17 @@ function generateToastId(): string {
 
 function buildSections(state: AppState): CommandPaletteSection[] {
   const sections: CommandPaletteSection[] = [];
-  const { filterScope, filterProject, searchQuery } = state;
+  const { filterScope, filterProject, filterTool, searchQuery } = state;
   
-  // Filter entities with flattened base fields (scope, project_path directly on entity)
-  const filterFlatEntity = <T extends { scope: string; project_path: string | null }>(
+  // Filter entities with flattened base fields (scope, project_path, tool directly on entity)
+  const filterFlatEntity = <T extends { scope: string; project_path: string | null; tool: ToolType }>(
     entities: T[]
   ): T[] => {
     return entities.filter(e => {
       if (filterScope === 'global' && e.scope !== 'global') return false;
       if (filterScope === 'project' && e.scope !== 'project') return false;
       if (filterProject && e.project_path !== filterProject) return false;
+      if (filterTool !== 'all' && e.tool !== filterTool) return false;
       return true;
     });
   };
@@ -233,6 +248,7 @@ function buildSections(state: AppState): CommandPaletteSection[] {
       entityType: 'settings' as EntityType,
       path: s.path,
       isSymlink: s.is_symlink,
+      tool: s.tool,
     }));
     
     const filtered = filterAndSort(items);
@@ -241,18 +257,19 @@ function buildSections(state: AppState): CommandPaletteSection[] {
     }
   }
   
-  // Memory (CLAUDE.md)
+  // Memory (CLAUDE.md / AGENTS.md)
   const filteredMemory = filterFlatEntity(state.memory);
   if (filteredMemory.length > 0) {
     const items: CommandPaletteItem[] = filteredMemory.map(m => ({
       id: m.id,
       name: m.name,
-      description: m.variant === 'root' ? 'Root Memory' : '.claude Memory',
+      description: m.variant === 'root' ? 'Root Memory' : m.variant === 'dotopencode' ? '.opencode Memory' : '.claude Memory',
       scope: m.scope as 'global' | 'project',
       projectName: m.project_path?.split('/').pop(),
       entityType: 'memory' as EntityType,
       path: m.path,
       isSymlink: m.is_symlink,
+      tool: m.tool,
     }));
     
     const filtered = filterAndSort(items);
@@ -274,6 +291,7 @@ function buildSections(state: AppState): CommandPaletteSection[] {
       path: a.path,
       isSymlink: a.is_symlink,
       isDuplicate: state.duplicates.some(d => d.entity_type === 'agent' && d.entities.some(e => e.id === a.id)),
+      tool: a.tool,
     }));
     
     const filtered = filterAndSort(items);
@@ -295,6 +313,7 @@ function buildSections(state: AppState): CommandPaletteSection[] {
       path: s.path,
       isSymlink: s.is_symlink,
       isDuplicate: state.duplicates.some(d => d.entity_type === 'skill' && d.entities.some(e => e.id === s.id)),
+      tool: s.tool,
     }));
     
     const filtered = filterAndSort(items);
@@ -316,6 +335,7 @@ function buildSections(state: AppState): CommandPaletteSection[] {
       path: c.path,
       isSymlink: c.is_symlink,
       isDuplicate: state.duplicates.some(d => d.entity_type === 'command' && d.entities.some(e => e.id === c.id)),
+      tool: c.tool,
     }));
     
     const filtered = filterAndSort(items);
@@ -336,6 +356,7 @@ function buildSections(state: AppState): CommandPaletteSection[] {
       entityType: 'plugin' as EntityType,
       path: p.path,
       isSymlink: p.is_symlink,
+      tool: p.tool,
     }));
     
     const filtered = filterAndSort(items);
@@ -350,6 +371,7 @@ function buildSections(state: AppState): CommandPaletteSection[] {
       .filter(m => {
         if (filterScope === 'global' && m.scope !== 'global' && m.scope !== 'user') return false;
         if (filterScope === 'project' && m.scope !== 'project') return false;
+        if (filterTool !== 'all' && m.tool !== filterTool) return false;
         return true;
       })
       .map(m => ({
@@ -359,6 +381,7 @@ function buildSections(state: AppState): CommandPaletteSection[] {
         scope: m.scope === 'project' ? 'project' : 'global',
         entityType: 'mcp' as EntityType,
         path: m.source_path,
+        tool: m.tool,
       }));
     
     const filtered = filterAndSort(items);
@@ -373,6 +396,7 @@ function buildSections(state: AppState): CommandPaletteSection[] {
       .filter(h => {
         if (filterScope === 'global' && h.source !== 'global') return false;
         if (filterScope === 'project' && h.source !== 'project' && h.source !== 'local') return false;
+        if (filterTool !== 'all' && h.tool !== filterTool) return false;
         return true;
       })
       .map(h => ({
@@ -382,6 +406,7 @@ function buildSections(state: AppState): CommandPaletteSection[] {
         scope: h.source === 'global' ? 'global' : 'project',
         entityType: 'hook' as EntityType,
         path: h.source_path,
+        tool: h.tool,
       }));
     
     const filtered = filterAndSort(items);
@@ -425,8 +450,14 @@ export const useAppStore = create<AppState>((set, get) => ({
   searchQuery: '',
   filterScope: 'all',
   filterProject: null,
+  filterTool: (typeof localStorage !== 'undefined' && localStorage.getItem('filterTool') as 'all' | ToolType) || 'all',
   isPanelOpen: false,
   theme: (typeof localStorage !== 'undefined' && localStorage.getItem('theme') as 'dark' | 'light') || 'dark',
+  
+  // === Global Search State ===
+  isGlobalSearchOpen: false,
+  globalSearchQuery: '',
+  recentEntityIds: (typeof localStorage !== 'undefined' && JSON.parse(localStorage.getItem('recentEntityIds') || '[]')) || [],
   
   toasts: [],
   
@@ -615,6 +646,11 @@ export const useAppStore = create<AppState>((set, get) => ({
     });
   },
   
+  setFilterTool: (tool) => {
+    localStorage.setItem('filterTool', tool);
+    set({ filterTool: tool, _cachedSections: null });
+  },
+  
   setTheme: (theme) => {
     localStorage.setItem('theme', theme);
     document.documentElement.setAttribute('data-theme', theme);
@@ -626,6 +662,29 @@ export const useAppStore = create<AppState>((set, get) => ({
     localStorage.setItem('theme', newTheme);
     document.documentElement.setAttribute('data-theme', newTheme);
     set({ theme: newTheme });
+  },
+  
+  // === Global Search Actions ===
+  
+  openGlobalSearch: () => {
+    set({ isGlobalSearchOpen: true, globalSearchQuery: '' });
+  },
+  
+  closeGlobalSearch: () => {
+    set({ isGlobalSearchOpen: false, globalSearchQuery: '' });
+  },
+  
+  setGlobalSearchQuery: (query) => {
+    set({ globalSearchQuery: query });
+  },
+  
+  addToRecentEntities: (id) => {
+    const { recentEntityIds } = get();
+    // Remove if already exists, then add to front
+    const filtered = recentEntityIds.filter(existingId => existingId !== id);
+    const updated = [id, ...filtered].slice(0, 5); // Keep max 5
+    localStorage.setItem('recentEntityIds', JSON.stringify(updated));
+    set({ recentEntityIds: updated });
   },
   
   // === Entity Actions ===
@@ -811,6 +870,7 @@ export const selectError = (state: AppState) => state.error;
 export const selectActiveView = (state: AppState) => state.activeView;
 export const selectSelectedEntity = (state: AppState) => state.selectedEntity;
 export const selectSearchQuery = (state: AppState) => state.searchQuery;
+export const selectFilterTool = (state: AppState) => state.filterTool;
 export const selectToasts = (state: AppState) => state.toasts;
 export const selectDuplicates = (state: AppState) => state.duplicates;
 export const selectSymlinks = (state: AppState) => state.symlinks;

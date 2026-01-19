@@ -10,6 +10,7 @@ import { Dashboard } from './components/Dashboard';
 import { HealthCheck } from './components/HealthCheck';
 import { CommandPalette } from './components/CommandPalette';
 import { DetailPanel } from './components/DetailPanel';
+import { GlobalSearch } from './components/GlobalSearch';
 import { ToastContainer } from './components/ui/ToastContainer';
 import { KeyboardShortcutsModal } from './components/ui/KeyboardShortcutsModal';
 import { CreateEntityDialog } from './components/ui/CreateEntityDialog';
@@ -27,6 +28,7 @@ function App() {
   const setHasInitiallyAnimated = useAppStore((state) => state.setHasInitiallyAnimated);
   const isLoading = useAppStore((state) => state.isLoading);
   const lastDiscovery = useAppStore((state) => state.lastDiscovery);
+  const openGlobalSearch = useAppStore((state) => state.openGlobalSearch);
   
   const [showShortcuts, setShowShortcuts] = useState(false);
   const [showCreateDialog, setShowCreateDialog] = useState(false);
@@ -75,6 +77,13 @@ function App() {
   // Keyboard shortcuts
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
+      // ⌘K - Open global search
+      if ((e.metaKey || e.ctrlKey) && e.key === 'k') {
+        e.preventDefault();
+        openGlobalSearch();
+        return;
+      }
+      
       // ⌘. - Show keyboard shortcuts
       if ((e.metaKey || e.ctrlKey) && e.key === '.') {
         e.preventDefault();
@@ -111,7 +120,7 @@ function App() {
 
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [refreshDiscovery, addToast, activeView]);
+  }, [refreshDiscovery, addToast, activeView, openGlobalSearch]);
 
   const handleAddProject = useCallback(async () => {
     try {
@@ -155,6 +164,17 @@ function App() {
     setCreateDialogType('command');
     setShowCreateDialog(true);
   }, []);
+  
+  // Listen for openCreateDialog custom event from GlobalSearch
+  useEffect(() => {
+    const handleOpenCreateDialog = (e: CustomEvent<{ type: CreatableEntityType }>) => {
+      setCreateDialogType(e.detail.type);
+      setShowCreateDialog(true);
+    };
+    
+    window.addEventListener('openCreateDialog', handleOpenCreateDialog as EventListener);
+    return () => window.removeEventListener('openCreateDialog', handleOpenCreateDialog as EventListener);
+  }, []);
 
   return (
     <div className="flex h-screen overflow-hidden bg-[var(--color-bg-primary)]">
@@ -194,6 +214,9 @@ function App() {
       
       {/* Toast Notifications */}
       <ToastContainer />
+      
+      {/* Global Search Modal (⌘K) */}
+      <GlobalSearch />
       
       {/* Keyboard Shortcuts Modal */}
       <KeyboardShortcutsModal 

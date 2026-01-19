@@ -40,6 +40,13 @@ pub fn run() {
             commands::delete_file,
             commands::delete_directory,
             
+            // Entity actions
+            commands::copy_entity,
+            commands::create_entity_symlink,
+            commands::rename_entity,
+            commands::delete_entity,
+            commands::duplicate_entity,
+            
             // Entity creation
             commands::create_entity,
             

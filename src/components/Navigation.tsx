@@ -4,6 +4,7 @@
 
 import { useAppStore } from '../store/appStore';
 import type { ViewType, EntityType } from '../lib/types';
+import { TOOL_COLORS } from '../lib/types';
 
 interface NavigationProps {
   onOpenShortcuts?: () => void;
@@ -124,6 +125,8 @@ export function Navigation({ onOpenShortcuts }: NavigationProps) {
   const activeView = useAppStore(state => state.activeView);
   const setActiveView = useAppStore(state => state.setActiveView);
   const filterProject = useAppStore(state => state.filterProject);
+  const filterTool = useAppStore(state => state.filterTool);
+  const setFilterTool = useAppStore(state => state.setFilterTool);
   const projects = useAppStore(state => state.projects);
   const theme = useAppStore(state => state.theme);
   const toggleTheme = useAppStore(state => state.toggleTheme);
@@ -221,6 +224,86 @@ export function Navigation({ onOpenShortcuts }: NavigationProps) {
             )}
           </button>
         ))}
+      </div>
+      
+      {/* Tool Filter */}
+      <div className="nav-section" style={{ paddingTop: 8 }}>
+        <div className="nav-section-title">Filter by Tool</div>
+        <div style={{ display: 'flex', gap: 4, padding: '0 12px' }}>
+          <button
+            onClick={() => setFilterTool('all')}
+            style={{
+              flex: 1,
+              padding: '5px 8px',
+              fontSize: 11,
+              fontWeight: 500,
+              borderRadius: 6,
+              border: filterTool === 'all' ? '1px solid var(--color-border-focus)' : '1px solid transparent',
+              cursor: 'pointer',
+              backgroundColor: filterTool === 'all' ? 'var(--color-bg-tertiary)' : 'transparent',
+              color: filterTool === 'all' ? 'var(--color-text-primary)' : 'var(--color-text-tertiary)',
+              transition: 'all 0.15s ease',
+            }}
+          >
+            All
+          </button>
+          <button
+            onClick={() => setFilterTool('claude')}
+            style={{
+              flex: 1,
+              padding: '5px 8px',
+              fontSize: 11,
+              fontWeight: 500,
+              borderRadius: 6,
+              border: filterTool === 'claude' ? `1px solid ${TOOL_COLORS.claude}` : '1px solid transparent',
+              cursor: 'pointer',
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'center',
+              gap: 5,
+              backgroundColor: filterTool === 'claude' ? `${TOOL_COLORS.claude}18` : 'transparent',
+              color: filterTool === 'claude' ? TOOL_COLORS.claude : 'var(--color-text-tertiary)',
+              transition: 'all 0.15s ease',
+            }}
+          >
+            <span style={{ 
+              width: 6, 
+              height: 6, 
+              borderRadius: '50%', 
+              backgroundColor: TOOL_COLORS.claude,
+              flexShrink: 0,
+            }} />
+            Claude
+          </button>
+          <button
+            onClick={() => setFilterTool('opencode')}
+            style={{
+              flex: 1,
+              padding: '5px 8px',
+              fontSize: 11,
+              fontWeight: 500,
+              borderRadius: 6,
+              border: filterTool === 'opencode' ? `1px solid ${TOOL_COLORS.opencode}` : '1px solid transparent',
+              cursor: 'pointer',
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'center',
+              gap: 5,
+              backgroundColor: filterTool === 'opencode' ? `${TOOL_COLORS.opencode}18` : 'transparent',
+              color: filterTool === 'opencode' ? TOOL_COLORS.opencode : 'var(--color-text-tertiary)',
+              transition: 'all 0.15s ease',
+            }}
+          >
+            <span style={{ 
+              width: 6, 
+              height: 6, 
+              borderRadius: '50%', 
+              backgroundColor: TOOL_COLORS.opencode,
+              flexShrink: 0,
+            }} />
+            Open
+          </button>
+        </div>
       </div>
       
       {/* Footer with theme toggle and shortcuts */}

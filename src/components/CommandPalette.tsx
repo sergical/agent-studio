@@ -450,6 +450,7 @@ export function CommandPalette({ onOpenProject, onNewAgent, onNewSkill, onNewCom
                             sublabel={item.description}
                             location={formatPath(item.path)}
                             scope={item.scope}
+                            tool={item.tool}
                             badge={getBadgeForItem(item)}
                             badgeColor={getBadgeColor(item)}
                             isSelected={isPanelOpen && selectedEntity?.id === item.id}
@@ -501,6 +502,7 @@ export function CommandPalette({ onOpenProject, onNewAgent, onNewSkill, onNewCom
                         sublabel={item.description}
                         location={formatPath(item.path)}
                         scope={item.scope}
+                        tool={item.tool}
                         badge={getBadgeForItem(item)}
                         badgeColor={getBadgeColor(item)}
                         isSelected={isPanelOpen && selectedEntity?.id === item.id}
