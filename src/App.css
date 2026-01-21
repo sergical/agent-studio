@@ -1216,6 +1216,197 @@ body {
   color: #a78bfa;
 }
 
+/* Config state indicator dot */
+.project-config-indicator {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  flex-shrink: 0;
+  margin-left: 4px;
+}
+
+/* Project card actions container */
+.project-card-actions {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  flex-shrink: 0;
+}
+
+/* Fix button styling */
+.project-card-fix {
+  color: var(--color-accent);
+}
+
+.project-card-fix:hover {
+  background: var(--color-accent-softer);
+  color: var(--color-accent);
+}
+
+.project-card-fix--loading {
+  opacity: 0.6;
+  pointer-events: none;
+}
+
+/* Dashboard section header actions */
+.dashboard-section-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+/* Fix all button in section header */
+.dashboard-fix-all-btn {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 11px;
+  font-weight: 500;
+  color: var(--color-accent);
+  background: var(--color-accent-softer);
+  border: none;
+  border-radius: var(--radius-sm);
+  padding: 4px 8px;
+  cursor: pointer;
+  transition: all 0.12s ease;
+}
+
+.dashboard-fix-all-btn:hover {
+  background: var(--color-accent);
+  color: white;
+}
+
+/* ============================================================================
+   Fix Config Modal
+   ============================================================================ */
+
+.fix-config-modal {
+  width: 480px;
+  max-height: 70vh;
+  display: flex;
+  flex-direction: column;
+}
+
+.modal-description {
+  padding: 0 20px;
+  margin-bottom: 16px;
+}
+
+.modal-description p {
+  font-size: 13px;
+  color: var(--color-text-secondary);
+  line-height: 1.5;
+}
+
+.fix-config-list {
+  flex: 1;
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+  border-top: 1px solid var(--color-border);
+  border-bottom: 1px solid var(--color-border);
+}
+
+.fix-config-list-header {
+  padding: 10px 20px;
+  background: var(--color-bg-secondary);
+  border-bottom: 1px solid var(--color-border);
+}
+
+.fix-config-select-all {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 12px;
+  color: var(--color-text-secondary);
+  cursor: pointer;
+}
+
+.fix-config-select-all input[type="checkbox"] {
+  width: 14px;
+  height: 14px;
+  accent-color: var(--color-accent);
+}
+
+.fix-config-projects {
+  flex: 1;
+  overflow-y: auto;
+  padding: 8px 0;
+}
+
+.fix-config-project {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 20px;
+  cursor: pointer;
+  transition: background 0.12s ease;
+}
+
+.fix-config-project:hover {
+  background: var(--color-bg-hover);
+}
+
+.fix-config-project--unselected {
+  opacity: 0.5;
+}
+
+.fix-config-project--success {
+  background: rgba(34, 197, 94, 0.08);
+}
+
+.fix-config-project--error {
+  background: rgba(239, 68, 68, 0.08);
+}
+
+.fix-config-project input[type="checkbox"] {
+  width: 14px;
+  height: 14px;
+  accent-color: var(--color-accent);
+  flex-shrink: 0;
+}
+
+.fix-config-project-info {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.fix-config-project-name {
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--color-text-primary);
+}
+
+.fix-config-project-action {
+  font-size: 11px;
+  color: var(--color-text-tertiary);
+}
+
+.fix-config-project-message {
+  font-size: 11px;
+  color: var(--color-text-quaternary);
+  font-style: italic;
+}
+
+.fix-config-project-status {
+  flex-shrink: 0;
+  width: 20px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.fix-config-project-status .text-green-500 {
+  color: #22c55e;
+}
+
+.fix-config-project-status .text-red-500 {
+  color: #ef4444;
+}
+
 /* ============================================================================
    Duplicates List - Expandable items
    ============================================================================ */

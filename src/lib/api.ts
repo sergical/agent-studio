@@ -19,6 +19,7 @@ import type {
   DuplicateGroup,
   SymlinkInfo,
   EntityType,
+  ConfigState,
 } from './types';
 
 // ============================================================================
@@ -85,6 +86,28 @@ export async function findDuplicates(): Promise<DuplicateGroup[]> {
 
 export async function checkSymlink(path: string): Promise<SymlinkInfo | null> {
   return invoke('check_symlink', { path });
+}
+
+// ============================================================================
+// Config State API (AGENTS.md / CLAUDE.md consistency)
+// ============================================================================
+
+/**
+ * Get the configuration state for a project (AGENTS.md / CLAUDE.md setup)
+ */
+export async function getProjectConfigState(projectPath: string): Promise<ConfigState> {
+  return invoke('get_project_config_state', { projectPath });
+}
+
+/**
+ * Fix the configuration state for a project
+ * - missing_symlink: Creates CLAUDE.md → AGENTS.md symlink
+ * - needs_migration: Moves CLAUDE.md content to AGENTS.md, creates symlink
+ * - empty: Creates empty AGENTS.md and CLAUDE.md symlink
+ * - conflict: Returns error (requires manual resolution)
+ */
+export async function fixProjectConfig(projectPath: string): Promise<string> {
+  return invoke('fix_project_config', { projectPath });
 }
 
 // ============================================================================

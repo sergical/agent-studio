@@ -185,6 +185,41 @@ pub struct EntityCounts {
     pub mcp: u32,
 }
 
+/// Status of a file: whether it's a file, symlink, or missing
+#[derive(Debug, Serialize, Deserialize, Clone, PartialEq)]
+#[serde(rename_all = "snake_case")]
+pub enum FileStatus {
+    File,
+    Symlink,
+    Missing,
+}
+
+/// Configuration state for AGENTS.md / CLAUDE.md consistency
+#[derive(Debug, Serialize, Deserialize, Clone, PartialEq)]
+#[serde(rename_all = "snake_case")]
+pub enum ConfigStateType {
+    /// AGENTS.md is file, CLAUDE.md is symlink pointing to AGENTS.md
+    Correct,
+    /// AGENTS.md exists as file, CLAUDE.md is missing - can create symlink
+    MissingSymlink,
+    /// CLAUDE.md exists with content, AGENTS.md is missing - can migrate
+    NeedsMigration,
+    /// Both AGENTS.md and CLAUDE.md exist with content - needs manual resolution
+    Conflict,
+    /// Neither file exists - can create both
+    Empty,
+}
+
+/// Detailed configuration state for a project
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct ConfigState {
+    pub agents_md_status: FileStatus,
+    pub claude_md_status: FileStatus,
+    pub claude_md_symlink_target: Option<String>,
+    pub config_state: ConfigStateType,
+    pub can_auto_fix: bool,
+}
+
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct ProjectInfo {
     pub path: String,
@@ -197,6 +232,7 @@ pub struct ProjectInfo {
     pub has_agents_md: bool,
     pub has_opencode_json: bool,
     pub entity_counts: EntityCounts,
+    pub config_state: Option<ConfigState>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -286,6 +322,71 @@ fn is_symlink_with_target(path: &PathBuf) -> (bool, Option<String>) {
         (true, target)
     } else {
         (false, None)
+    }
+}
+
+/// Detect the config state for AGENTS.md / CLAUDE.md in a project directory
+fn detect_config_state(project_path: &PathBuf) -> ConfigState {
+    let agents_md_path = project_path.join("AGENTS.md");
+    let claude_md_path = project_path.join("CLAUDE.md");
+
+    // Determine AGENTS.md status
+    let agents_md_status = if agents_md_path.is_symlink() {
+        FileStatus::Symlink
+    } else if agents_md_path.exists() {
+        FileStatus::File
+    } else {
+        FileStatus::Missing
+    };
+
+    // Determine CLAUDE.md status and symlink target
+    let (claude_md_status, claude_md_symlink_target) = if claude_md_path.is_symlink() {
+        let target = fs::read_link(&claude_md_path)
+            .map(|p| p.to_string_lossy().to_string())
+            .ok();
+        (FileStatus::Symlink, target)
+    } else if claude_md_path.exists() {
+        (FileStatus::File, None)
+    } else {
+        (FileStatus::Missing, None)
+    };
+
+    // Determine the overall config state
+    let config_state = match (&agents_md_status, &claude_md_status, &claude_md_symlink_target) {
+        // Correct: AGENTS.md is file, CLAUDE.md is symlink pointing to AGENTS.md
+        (FileStatus::File, FileStatus::Symlink, Some(target)) => {
+            // Check if symlink points to AGENTS.md (either relative or absolute)
+            if target == "AGENTS.md" || target.ends_with("/AGENTS.md") || *target == agents_md_path.to_string_lossy() {
+                ConfigStateType::Correct
+            } else {
+                // Symlink points somewhere else - treat as conflict
+                ConfigStateType::Conflict
+            }
+        }
+        // Missing symlink: AGENTS.md exists, CLAUDE.md missing
+        (FileStatus::File, FileStatus::Missing, _) => ConfigStateType::MissingSymlink,
+        // Needs migration: CLAUDE.md exists as file, AGENTS.md missing
+        (FileStatus::Missing, FileStatus::File, _) => ConfigStateType::NeedsMigration,
+        // Conflict: Both exist as files
+        (FileStatus::File, FileStatus::File, _) => ConfigStateType::Conflict,
+        // Empty: Neither exists
+        (FileStatus::Missing, FileStatus::Missing, _) => ConfigStateType::Empty,
+        // Edge cases - treat as conflict if anything weird
+        _ => ConfigStateType::Conflict,
+    };
+
+    // Can auto-fix: missing_symlink, needs_migration, or empty
+    let can_auto_fix = matches!(
+        config_state,
+        ConfigStateType::MissingSymlink | ConfigStateType::NeedsMigration | ConfigStateType::Empty
+    );
+
+    ConfigState {
+        agents_md_status,
+        claude_md_status,
+        claude_md_symlink_target,
+        config_state,
+        can_auto_fix,
     }
 }
 
@@ -625,6 +726,7 @@ pub fn discover_all(project_paths: Option<Vec<String>>) -> Result<DiscoveryResul
                 has_agents_md: project_path.join("AGENTS.md").exists() || opencode_dir.join("AGENTS.md").exists(),
                 has_opencode_json: project_path.join("opencode.json").exists() || project_path.join("opencode.jsonc").exists() || opencode_dir.join("opencode.json").exists(),
                 entity_counts: counts,
+                config_state: Some(detect_config_state(&project_path)),
             });
         }
     }
@@ -1767,6 +1869,7 @@ pub fn scan_projects(base_paths: Vec<String>) -> Result<Vec<ProjectInfo>, String
                     hooks: 0,
                     mcp: 0,
                 },
+                config_state: Some(detect_config_state(&path)),
             });
         }
         
@@ -1799,13 +1902,13 @@ pub fn find_duplicates() -> Result<Vec<DuplicateGroup>, String> {
 #[tauri::command]
 pub fn check_symlink(path: String) -> Result<Option<SymlinkInfo>, String> {
     let path_buf = PathBuf::from(&path);
-    
+
     if path_buf.is_symlink() {
         let target = fs::read_link(&path_buf)
             .map(|p| p.to_string_lossy().to_string())
             .unwrap_or_default();
         let target_exists = PathBuf::from(&target).exists();
-        
+
         Ok(Some(SymlinkInfo {
             path,
             target,
@@ -1815,6 +1918,88 @@ pub fn check_symlink(path: String) -> Result<Option<SymlinkInfo>, String> {
         }))
     } else {
         Ok(None)
+    }
+}
+
+// ============================================================================
+// Config State Commands (AGENTS.md / CLAUDE.md consistency)
+// ============================================================================
+
+#[tauri::command]
+pub fn get_project_config_state(project_path: String) -> Result<ConfigState, String> {
+    let path_buf = PathBuf::from(&project_path);
+    if !path_buf.is_dir() {
+        return Err(format!("Path is not a directory: {}", project_path));
+    }
+    Ok(detect_config_state(&path_buf))
+}
+
+#[tauri::command]
+pub fn fix_project_config(project_path: String) -> Result<String, String> {
+    let path_buf = PathBuf::from(&project_path);
+    if !path_buf.is_dir() {
+        return Err(format!("Path is not a directory: {}", project_path));
+    }
+
+    let config_state = detect_config_state(&path_buf);
+    let agents_md_path = path_buf.join("AGENTS.md");
+    let claude_md_path = path_buf.join("CLAUDE.md");
+
+    match config_state.config_state {
+        ConfigStateType::Correct => {
+            Ok("Configuration is already correct".to_string())
+        }
+        ConfigStateType::MissingSymlink => {
+            // AGENTS.md exists, create CLAUDE.md symlink
+            #[cfg(unix)]
+            {
+                std::os::unix::fs::symlink("AGENTS.md", &claude_md_path)
+                    .map_err(|e| format!("Failed to create symlink: {}", e))?;
+            }
+            #[cfg(windows)]
+            {
+                std::os::windows::fs::symlink_file("AGENTS.md", &claude_md_path)
+                    .map_err(|e| format!("Failed to create symlink: {}", e))?;
+            }
+            Ok("Created CLAUDE.md → AGENTS.md symlink".to_string())
+        }
+        ConfigStateType::NeedsMigration => {
+            // CLAUDE.md has content, AGENTS.md missing - migrate
+            // 1. Rename CLAUDE.md to AGENTS.md
+            fs::rename(&claude_md_path, &agents_md_path)
+                .map_err(|e| format!("Failed to move CLAUDE.md to AGENTS.md: {}", e))?;
+            // 2. Create CLAUDE.md symlink
+            #[cfg(unix)]
+            {
+                std::os::unix::fs::symlink("AGENTS.md", &claude_md_path)
+                    .map_err(|e| format!("Failed to create symlink: {}", e))?;
+            }
+            #[cfg(windows)]
+            {
+                std::os::windows::fs::symlink_file("AGENTS.md", &claude_md_path)
+                    .map_err(|e| format!("Failed to create symlink: {}", e))?;
+            }
+            Ok("Migrated CLAUDE.md content to AGENTS.md and created symlink".to_string())
+        }
+        ConfigStateType::Empty => {
+            // Neither file exists - create empty AGENTS.md and symlink
+            fs::write(&agents_md_path, "")
+                .map_err(|e| format!("Failed to create AGENTS.md: {}", e))?;
+            #[cfg(unix)]
+            {
+                std::os::unix::fs::symlink("AGENTS.md", &claude_md_path)
+                    .map_err(|e| format!("Failed to create symlink: {}", e))?;
+            }
+            #[cfg(windows)]
+            {
+                std::os::windows::fs::symlink_file("AGENTS.md", &claude_md_path)
+                    .map_err(|e| format!("Failed to create symlink: {}", e))?;
+            }
+            Ok("Created empty AGENTS.md and CLAUDE.md symlink".to_string())
+        }
+        ConfigStateType::Conflict => {
+            Err("Cannot auto-fix: both AGENTS.md and CLAUDE.md have content. Please resolve manually.".to_string())
+        }
     }
 }
 

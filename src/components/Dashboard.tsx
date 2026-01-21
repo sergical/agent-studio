@@ -3,19 +3,21 @@
 // ============================================================================
 
 import type { ReactNode } from 'react';
-import { useState } from 'react';
+import { useState, useMemo } from 'react';
 import { useAppStore } from '../store/appStore';
-import { openInFinder } from '../lib/api';
-import type { EntityType, ViewType } from '../lib/types';
+import { openInFinder, fixProjectConfig } from '../lib/api';
+import type { EntityType, ViewType, ConfigStateType } from '../lib/types';
 import { useHealthIssues } from '../hooks/useHealthIssues';
 import {
   AlertCircle,
   AlertTriangle,
   Info,
   ChevronRight,
-  Activity
+  Activity,
+  Wrench
 } from 'lucide-react';
 import { clsx } from 'clsx';
+import { FixConfigModal } from './FixConfigModal';
 
 interface EntityConfig {
   type: EntityType;
@@ -144,8 +146,65 @@ export function Dashboard() {
   
   // Get health issues
   const health = useHealthIssues();
-  
+  const refreshDiscovery = useAppStore(state => state.refreshDiscovery);
+  const addToast = useAppStore(state => state.addToast);
+
   const [showAllProjects, setShowAllProjects] = useState(false);
+  const [fixingProjects, setFixingProjects] = useState<Set<string>>(new Set());
+  const [showFixModal, setShowFixModal] = useState(false);
+
+  // Helper to get config state display info
+  const getConfigStateInfo = (state: ConfigStateType | undefined) => {
+    switch (state) {
+      case 'correct':
+        return { color: '#22c55e', label: 'Config OK', canFix: false };
+      case 'missing_symlink':
+        return { color: '#f59e0b', label: 'Missing CLAUDE.md symlink', canFix: true };
+      case 'needs_migration':
+        return { color: '#f59e0b', label: 'Needs migration to AGENTS.md', canFix: true };
+      case 'conflict':
+        return { color: '#ef4444', label: 'Conflict: both files have content', canFix: false };
+      case 'empty':
+        return { color: '#6b7280', label: 'No config files', canFix: true };
+      default:
+        return { color: '#6b7280', label: 'Unknown', canFix: false };
+    }
+  };
+
+  // Calculate fixable projects
+  const fixableProjects = useMemo(() => {
+    return projects.filter(p => p.config_state?.can_auto_fix);
+  }, [projects]);
+
+  // Handle single project fix
+  const handleFixProject = async (projectPath: string, e: React.MouseEvent) => {
+    e.stopPropagation();
+    if (fixingProjects.has(projectPath)) return;
+
+    setFixingProjects(prev => new Set(prev).add(projectPath));
+    try {
+      const message = await fixProjectConfig(projectPath);
+      addToast({
+        type: 'success',
+        title: 'Config fixed',
+        message,
+      });
+      // Refresh to update the UI
+      await refreshDiscovery();
+    } catch (error) {
+      addToast({
+        type: 'error',
+        title: 'Failed to fix config',
+        message: error instanceof Error ? error.message : 'Unknown error',
+      });
+    } finally {
+      setFixingProjects(prev => {
+        const next = new Set(prev);
+        next.delete(projectPath);
+        return next;
+      });
+    }
+  };
   
   const counts: Record<string, number> = {
     settings: settings.length,
@@ -317,33 +376,48 @@ export function Dashboard() {
                 </svg>
                 Projects ({projects.length})
               </h2>
-              {projects.length > 12 && (
-                <button 
-                  className="dashboard-section-toggle"
-                  onClick={() => setShowAllProjects(!showAllProjects)}
-                >
-                  {showAllProjects ? 'Show less' : `Show all ${projects.length}`}
-                </button>
-              )}
+              <div className="dashboard-section-actions">
+                {fixableProjects.length > 0 && (
+                  <button
+                    className="dashboard-fix-all-btn"
+                    onClick={() => setShowFixModal(true)}
+                    title={`Fix ${fixableProjects.length} project(s) with config issues`}
+                  >
+                    <Wrench className="w-3 h-3" />
+                    Fix {fixableProjects.length}
+                  </button>
+                )}
+                {projects.length > 12 && (
+                  <button
+                    className="dashboard-section-toggle"
+                    onClick={() => setShowAllProjects(!showAllProjects)}
+                  >
+                    {showAllProjects ? 'Show less' : `Show all ${projects.length}`}
+                  </button>
+                )}
+              </div>
             </div>
             <div className="projects-grid">
               {visibleProjects.map((project) => {
                 const counts = project.entity_counts;
-                const totalEntitiesInProject = 
-                  counts.settings + counts.memory + counts.agents + 
-                  counts.skills + counts.commands + counts.plugins + 
+                const totalEntitiesInProject =
+                  counts.settings + counts.memory + counts.agents +
+                  counts.skills + counts.commands + counts.plugins +
                   counts.hooks + counts.mcp;
-                
+
                 const nestLevel = (project as any).nestLevel || 0;
-                
+                const configState = project.config_state;
+                const configInfo = getConfigStateInfo(configState?.config_state);
+                const isFixing = fixingProjects.has(project.path);
+
                 const handleProjectClick = () => {
                   // Navigate to project view for this project
                   setActiveProject(project.path);
                 };
-                
+
                 return (
-                  <button 
-                    key={project.path} 
+                  <button
+                    key={project.path}
                     className="project-card"
                     data-nest-level={nestLevel}
                     onClick={handleProjectClick}
@@ -360,6 +434,14 @@ export function Dashboard() {
                         </svg>
                       )}
                       <div className="project-card-name">{project.name}</div>
+                      {/* Config state indicator */}
+                      {configState && configState.config_state !== 'empty' && (
+                        <span
+                          className="project-config-indicator"
+                          title={configInfo.label}
+                          style={{ backgroundColor: configInfo.color }}
+                        />
+                      )}
                     </div>
                     <div className="project-card-path">{formatPath(project.path)}</div>
                     {totalEntitiesInProject > 0 && (
@@ -370,20 +452,38 @@ export function Dashboard() {
                         {counts.mcp > 0 && <span data-type="mcp">{counts.mcp}m</span>}
                       </div>
                     )}
-                    <span
-                      className="project-card-action"
-                      onClick={(e) => {
-                        e.stopPropagation();
-                        openInFinder(project.path);
-                      }}
-                      title="Open in Finder"
-                    >
-                      <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-                        <path d="M18 13v6a2 2 0 01-2 2H5a2 2 0 01-2-2V8a2 2 0 012-2h6" />
-                        <polyline points="15,3 21,3 21,9" />
-                        <line x1="10" y1="14" x2="21" y2="3" />
-                      </svg>
-                    </span>
+                    <div className="project-card-actions">
+                      {/* Fix button - only show if fixable */}
+                      {configState?.can_auto_fix && (
+                        <span
+                          className={clsx('project-card-action', 'project-card-fix', isFixing && 'project-card-fix--loading')}
+                          onClick={(e) => handleFixProject(project.path, e)}
+                          title={`Fix: ${configInfo.label}`}
+                        >
+                          {isFixing ? (
+                            <svg className="animate-spin" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                              <path d="M21 12a9 9 0 11-6.219-8.56" />
+                            </svg>
+                          ) : (
+                            <Wrench className="w-3 h-3" />
+                          )}
+                        </span>
+                      )}
+                      <span
+                        className="project-card-action"
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          openInFinder(project.path);
+                        }}
+                        title="Open in Finder"
+                      >
+                        <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                          <path d="M18 13v6a2 2 0 01-2 2H5a2 2 0 01-2-2V8a2 2 0 012-2h6" />
+                          <polyline points="15,3 21,3 21,9" />
+                          <line x1="10" y1="14" x2="21" y2="3" />
+                        </svg>
+                      </span>
+                    </div>
                   </button>
                 );
               })}
@@ -403,6 +503,14 @@ export function Dashboard() {
           <p style={{ marginBottom: 8 }}>No configurations found yet</p>
           <p style={{ fontSize: 12, opacity: 0.6 }}>Press ⌘R to refresh or add a project directory</p>
         </div>
+      )}
+
+      {/* Fix Config Modal */}
+      {showFixModal && (
+        <FixConfigModal
+          projects={fixableProjects}
+          onClose={() => setShowFixModal(false)}
+        />
       )}
     </div>
   );

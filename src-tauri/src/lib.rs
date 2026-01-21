@@ -32,6 +32,10 @@ pub fn run() {
             // Analysis
             commands::find_duplicates,
             commands::check_symlink,
+
+            // Config state (AGENTS.md / CLAUDE.md consistency)
+            commands::get_project_config_state,
+            commands::fix_project_config,
             
             // File operations
             commands::read_file,

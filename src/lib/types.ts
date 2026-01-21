@@ -416,6 +416,26 @@ export interface HealthIssue {
 // Project Info
 // ============================================================================
 
+/** Status of a file: whether it's a file, symlink, or missing */
+export type FileStatus = 'file' | 'symlink' | 'missing';
+
+/** Configuration state type for AGENTS.md / CLAUDE.md consistency */
+export type ConfigStateType =
+  | 'correct'         // AGENTS.md is file, CLAUDE.md is symlink → AGENTS.md
+  | 'missing_symlink' // AGENTS.md exists, CLAUDE.md missing
+  | 'needs_migration' // CLAUDE.md has content, AGENTS.md missing
+  | 'conflict'        // Both files exist with content
+  | 'empty';          // Neither file exists
+
+/** Detailed configuration state for a project */
+export interface ConfigState {
+  agents_md_status: FileStatus;
+  claude_md_status: FileStatus;
+  claude_md_symlink_target: string | null;
+  config_state: ConfigStateType;
+  can_auto_fix: boolean;
+}
+
 export interface ProjectInfo {
   path: string;
   name: string;
@@ -427,6 +447,7 @@ export interface ProjectInfo {
   has_agents_md: boolean;      // OpenCode: AGENTS.md in root
   has_opencode_json: boolean;  // OpenCode: opencode.json config
   entity_counts: EntityCounts;
+  config_state: ConfigState | null;
 }
 
 export interface EntityCounts {
