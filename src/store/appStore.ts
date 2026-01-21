@@ -371,6 +371,7 @@ function buildSections(state: AppState): CommandPaletteSection[] {
       .filter(m => {
         if (filterScope === 'global' && m.scope !== 'global' && m.scope !== 'user') return false;
         if (filterScope === 'project' && m.scope !== 'project') return false;
+        if (filterProject && !m.source_path.startsWith(filterProject + '/')) return false;
         if (filterTool !== 'all' && m.tool !== filterTool) return false;
         return true;
       })
@@ -396,6 +397,7 @@ function buildSections(state: AppState): CommandPaletteSection[] {
       .filter(h => {
         if (filterScope === 'global' && h.source !== 'global') return false;
         if (filterScope === 'project' && h.source !== 'project' && h.source !== 'local') return false;
+        if (filterProject && !h.source_path.startsWith(filterProject + '/')) return false;
         if (filterTool !== 'all' && h.tool !== filterTool) return false;
         return true;
       })

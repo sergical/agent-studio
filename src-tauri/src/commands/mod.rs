@@ -1670,7 +1670,13 @@ pub fn scan_projects(base_paths: Vec<String>) -> Result<Vec<ProjectInfo>, String
     let mut projects = Vec::new();
     let mut seen_paths = std::collections::HashSet::new();
     let max_depth = 5u32;
-    
+
+    // Get the plugins directory path to exclude from scanning
+    // (plugins are not projects, but they may contain .claude directories)
+    let plugins_path = get_home_dir()
+        .map(|h| h.join(".claude").join("plugins"))
+        .unwrap_or_default();
+
     // Directories to skip entirely (won't descend into these)
     let skip_dirs: std::collections::HashSet<&str> = [
         // Build/dependency directories
@@ -1716,7 +1722,12 @@ pub fn scan_projects(base_paths: Vec<String>) -> Result<Vec<ProjectInfo>, String
         if skip_dirs.contains(dir_name.as_ref()) {
             continue;
         }
-        
+
+        // Skip paths inside ~/.claude/plugins (plugins are not projects)
+        if path.starts_with(&plugins_path) {
+            continue;
+        }
+
         // Check if this directory is a project (has .claude/, .opencode/, CLAUDE.md, AGENTS.md, opencode.json, or .mcp.json)
         let claude_dir = path.join(".claude");
         let opencode_dir = path.join(".opencode");

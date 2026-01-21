@@ -8,10 +8,9 @@ import { useAppStore } from '../store/appStore';
 import { openInFinder } from '../lib/api';
 import type { EntityType, ViewType } from '../lib/types';
 import { useHealthIssues } from '../hooks/useHealthIssues';
-import { 
-  CheckCircle2, 
-  AlertCircle, 
-  AlertTriangle, 
+import {
+  AlertCircle,
+  AlertTriangle,
   Info,
   ChevronRight,
   Activity
@@ -138,7 +137,6 @@ export function Dashboard() {
   const hooks = useAppStore(state => state.hooks);
   const plugins = useAppStore(state => state.plugins);
   const mcpServers = useAppStore(state => state.mcpServers);
-  const duplicates = useAppStore(state => state.duplicates);
   const projects = useAppStore(state => state.projects);
   const setActiveView = useAppStore(state => state.setActiveView);
   const setActiveProject = useAppStore(state => state.setActiveProject);
@@ -148,7 +146,6 @@ export function Dashboard() {
   const health = useHealthIssues();
   
   const [showAllProjects, setShowAllProjects] = useState(false);
-  const [expandedDuplicate, setExpandedDuplicate] = useState<string | null>(null);
   
   const counts: Record<string, number> = {
     settings: settings.length,
@@ -240,21 +237,6 @@ export function Dashboard() {
         
         {/* Health Stats Cards */}
         <div className="dashboard-health-stats">
-          <div className={clsx(
-            'dashboard-health-stat',
-            health.isHealthy ? 'dashboard-health-stat--success' : 'dashboard-health-stat--neutral'
-          )}>
-            <CheckCircle2 className="w-5 h-5" />
-            <div className="dashboard-health-stat-content">
-              <span className="dashboard-health-stat-value">
-                {health.isHealthy ? 'All Clear' : health.totalCount - health.errorCount - health.warningCount}
-              </span>
-              <span className="dashboard-health-stat-label">
-                {health.isHealthy ? 'No issues' : 'Suggestions'}
-              </span>
-            </div>
-          </div>
-          
           <div className={clsx(
             'dashboard-health-stat',
             health.errorCount > 0 ? 'dashboard-health-stat--error' : 'dashboard-health-stat--neutral'
@@ -409,73 +391,6 @@ export function Dashboard() {
           </div>
         )}
         
-        {/* Warnings Section */}
-        {duplicates.length > 0 && (
-          <div className="dashboard-section">
-            <h2 className="dashboard-section-title">
-              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#f59e0b" strokeWidth="2">
-                <path d="M10.29 3.86L1.82 18a2 2 0 001.71 3h16.94a2 2 0 001.71-3L13.71 3.86a2 2 0 00-3.42 0z" />
-                <line x1="12" y1="9" x2="12" y2="13" />
-                <line x1="12" y1="17" x2="12.01" y2="17" />
-              </svg>
-              Duplicates ({duplicates.length})
-            </h2>
-            <div className="duplicates-list">
-              {duplicates.map((dup) => {
-                const dupKey = `${dup.entity_type}-${dup.name}`;
-                const isExpanded = expandedDuplicate === dupKey;
-                
-                return (
-                  <div key={dupKey} className="duplicate-item">
-                    <button
-                      className="duplicate-item-header"
-                      onClick={() => setExpandedDuplicate(isExpanded ? null : dupKey)}
-                    >
-                      <span className="duplicate-item-name">{dup.name}</span>
-                      <span className="duplicate-item-meta">
-                        <span className="duplicate-item-type">{dup.entity_type}</span>
-                        <span className="duplicate-item-count">{dup.entities.length} locations</span>
-                        <svg 
-                          width="12" 
-                          height="12" 
-                          viewBox="0 0 24 24" 
-                          fill="none" 
-                          stroke="currentColor" 
-                          strokeWidth="2"
-                          style={{ 
-                            transform: isExpanded ? 'rotate(180deg)' : 'rotate(0deg)',
-                            transition: 'transform 0.15s ease'
-                          }}
-                        >
-                          <polyline points="6,9 12,15 18,9" />
-                        </svg>
-                      </span>
-                    </button>
-                    {isExpanded && (
-                      <div className="duplicate-item-locations">
-                        {dup.entities
-                          .sort((a, b) => a.precedence - b.precedence)
-                          .map((entity, idx) => (
-                            <div key={entity.id} className="duplicate-location">
-                              <span className="duplicate-location-precedence">
-                                {idx === 0 ? 'Active' : `#${idx + 1}`}
-                              </span>
-                              <span className="duplicate-location-scope">
-                                {entity.scope}
-                              </span>
-                              <span className="duplicate-location-path">
-                                {formatPath(entity.path)}
-                              </span>
-                            </div>
-                          ))}
-                      </div>
-                    )}
-                  </div>
-                );
-              })}
-            </div>
-          </div>
-        )}
       </div>
       
       {/* Empty State */}
