@@ -8,6 +8,7 @@ import { useAppStore } from './store/appStore';
 import { Navigation } from './components/Navigation';
 import { Dashboard } from './components/Dashboard';
 import { HealthCheck } from './components/HealthCheck';
+import { SkillStore } from './components/SkillStore';
 import { CommandPalette } from './components/CommandPalette';
 import { DetailPanel } from './components/DetailPanel';
 import { GlobalSearch } from './components/GlobalSearch';
@@ -196,6 +197,8 @@ function App() {
           <Dashboard />
         ) : activeView === 'health' ? (
           <HealthCheck />
+        ) : activeView === 'skillstore' ? (
+          <SkillStore />
         ) : (
           <>
             {/* Command Palette - Left Side */}
@@ -205,7 +208,7 @@ function App() {
               onNewSkill={handleNewSkill}
               onNewCommand={handleNewCommand}
             />
-            
+
             {/* Detail Panel - Right Side */}
             <DetailPanel />
           </>

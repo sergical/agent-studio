@@ -189,6 +189,18 @@ export function Navigation({ onOpenShortcuts }: NavigationProps) {
           </span>
           <span>Health</span>
         </button>
+        <button
+          className={`nav-item ${activeView === 'skillstore' ? 'active' : ''}`}
+          onClick={() => setActiveView('skillstore')}
+        >
+          <span className="nav-item-icon">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5">
+              <circle cx="12" cy="12" r="10" />
+              <path d="M8 12l2 2 4-4" />
+            </svg>
+          </span>
+          <span>Skill Store</span>
+        </button>
       </div>
       
       {/* Active Project Section */}

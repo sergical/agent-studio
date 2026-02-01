@@ -1,11 +1,14 @@
 // ============================================================================
 // Agent Studio - Rust Backend
 // Comprehensive Claude Code entity discovery and management
+// Skills.sh integration for skill discovery, installation, and management
 // ============================================================================
 
 mod commands;
+mod skills;
 
 pub use commands::*;
+pub use skills::*;
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
@@ -64,6 +67,17 @@ pub fn run() {
             commands::create_agent,
             commands::create_skill,
             commands::delete_skill,
+
+            // Skills.sh integration
+            skills::commands::search_skills,
+            skills::commands::get_popular_skills,
+            skills::commands::get_skill_details,
+            skills::commands::get_installed_skills,
+            skills::commands::is_skill_installed,
+            skills::commands::get_agent_targets,
+            skills::commands::install_skill,
+            skills::commands::remove_skill,
+            skills::commands::update_skill,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

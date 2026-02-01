@@ -2,7 +2,19 @@
 
 ## Project Overview
 
-Agent Studio is a Tauri 2.x desktop application for managing coding assistant configuration files (Claude Code, OpenCode, AGENTS.md). It uses a React 19 + TypeScript frontend with a Rust backend.
+Agent Studio is a **GUI for skills.sh** - a Tauri 2.x desktop application for discovering, installing, and managing agent skills across 41+ AI coding assistants. It also provides memory file management (AGENTS.md/CLAUDE.md consistency) and health checks.
+
+### Core Features
+1. **Skill Discovery** - Search 36,000+ skills from skills.sh
+2. **Skill Installation** - Install to global or project scope via `npx skills` CLI
+3. **Multi-Agent Support** - Claude Code, Cursor, OpenCode, Cline, Windsurf, and 36+ more
+4. **Memory Management** - AGENTS.md/CLAUDE.md consistency and symlink detection
+5. **Health Checks** - Duplicate detection, broken symlinks, configuration issues
+
+### Tech Stack
+- **Frontend**: React 19 + TypeScript + Tailwind CSS 4.x + Zustand
+- **Backend**: Tauri 2.x (Rust)
+- **Skills Integration**: skills.sh API + `npx skills` CLI
 
 ## Build & Development Commands
 
@@ -242,6 +254,58 @@ Enabled in `tsconfig.json`:
 No testing framework is currently configured. When adding tests:
 - Use Vitest for frontend (compatible with Vite)
 - Use `cargo test` for Rust backend
+
+## Skills.sh Integration
+
+Agent Studio integrates with skills.sh for skill discovery and installation.
+
+### API Endpoint
+- **Search**: `https://skills.sh/api/search?q=<query>`
+- Returns skill metadata including name, install count, top source
+
+### Lock File (`~/.agents/.skill-lock.json`)
+Tracks installed skills with their sources and hashes:
+```json
+{
+  "version": 3,
+  "skills": {
+    "skill-name": {
+      "source": "owner/repo",
+      "sourceType": "github",
+      "sourceUrl": "https://github.com/...",
+      "skillFolderHash": "abc123",
+      "installedAt": "2024-01-31T...",
+      "updatedAt": "2024-01-31T..."
+    }
+  }
+}
+```
+
+### CLI Dependency
+- Installation: Uses `npx skills add <skill>` for battle-tested install logic
+- Removal: Uses `npx skills remove <skill>`
+- Updates: Uses `npx skills update <skill>`
+- Requires Node.js 18+
+
+### Supported Agents (41 total)
+
+| Agent | Project Path | Global Path |
+|-------|--------------|-------------|
+| Claude Code | `.claude/skills/` | `~/.claude/skills/` |
+| OpenCode | `.opencode/skills/` | `~/.config/opencode/skills/` |
+| Cursor | `.cursor/skills/` | `~/.cursor/skills/` |
+| Cline | `.cline/skills/` | `~/.cline/skills/` |
+| Windsurf | `.windsurf/skills/` | `~/.windsurf/skills/` |
+| Roo Code | `.roo-code/skills/` | `~/.roo-code/skills/` |
+| Codex | `.codex/skills/` | `~/.codex/skills/` |
+| Amp | `.amp/skills/` | `~/.amp/skills/` |
+| Zed | `.zed/skills/` | `~/.zed/skills/` |
+| Void | `.void/skills/` | `~/.void/skills/` |
+| Aider | `.aider/skills/` | `~/.aider/skills/` |
+| Pear AI | `.pearai/skills/` | `~/.pearai/skills/` |
+| Continue | `.continue/skills/` | `~/.continue/skills/` |
+
+See `src-tauri/src/skills/types.rs` for the complete list of 41 agents.
 
 ## Multi-Tool Support (Claude Code & OpenCode)
 

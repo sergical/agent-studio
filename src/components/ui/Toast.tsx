@@ -60,23 +60,23 @@ const ICONS = {
 
 const COLORS = {
   success: {
-    bg: 'rgba(34, 197, 94, 0.1)',
-    border: 'rgba(34, 197, 94, 0.3)',
+    bg: 'var(--color-bg-elevated)',
+    border: 'rgba(34, 197, 94, 0.4)',
     icon: '#22c55e',
   },
   error: {
-    bg: 'rgba(239, 68, 68, 0.1)',
-    border: 'rgba(239, 68, 68, 0.3)',
+    bg: 'var(--color-bg-elevated)',
+    border: 'rgba(239, 68, 68, 0.4)',
     icon: '#ef4444',
   },
   warning: {
-    bg: 'rgba(234, 179, 8, 0.1)',
-    border: 'rgba(234, 179, 8, 0.3)',
+    bg: 'var(--color-bg-elevated)',
+    border: 'rgba(234, 179, 8, 0.4)',
     icon: '#eab308',
   },
   info: {
-    bg: 'rgba(59, 130, 246, 0.1)',
-    border: 'rgba(59, 130, 246, 0.3)',
+    bg: 'var(--color-bg-elevated)',
+    border: 'rgba(59, 130, 246, 0.4)',
     icon: '#3b82f6',
   },
 };

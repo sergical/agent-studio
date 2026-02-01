@@ -485,10 +485,11 @@ export interface DiscoveryResult {
 // UI State Types
 // ============================================================================
 
-export type ViewType = 
+export type ViewType =
   | 'dashboard'
   | 'project'
   | 'health'
+  | 'skillstore'
   | 'settings'
   | 'memory'
   | 'agents'
