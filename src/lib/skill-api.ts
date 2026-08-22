@@ -4,6 +4,7 @@
 // ============================================================================
 
 import { invoke } from "@tauri-apps/api/core";
+import { listen } from "@tauri-apps/api/event";
 import type {
   AgentTarget,
   InstallRequest,
@@ -11,6 +12,7 @@ import type {
   InstalledSkill,
   PaginatedSkillsResponse,
   SkillSearchResult,
+  SkillSnapshot,
 } from "./skill-types";
 
 // ============================================================================
@@ -73,6 +75,24 @@ export async function listSkillProjects(): Promise<string[]> {
   return invoke("list_skill_projects");
 }
 
+/**
+ * Register project paths the caller cares about (e.g. one the user just
+ * opened) so future background rebuilds always include them. Returns
+ * immediately; listen for `onSkillSnapshot` to see the result.
+ */
+export async function registerSkillProjects(paths: string[]): Promise<void> {
+  return invoke("register_skill_projects", { paths });
+}
+
+/**
+ * Un-register a project path (e.g. one the user closed) so future
+ * background rebuilds stop including it. Returns immediately; listen for
+ * `onSkillSnapshot` to see the result.
+ */
+export async function unregisterSkillProject(path: string): Promise<void> {
+  return invoke("unregister_skill_project", { path });
+}
+
 // ============================================================================
 // Agent Targets API
 // ============================================================================
@@ -107,4 +127,48 @@ export async function removeSkill(skillName: string, global: boolean): Promise<I
  */
 export async function updateSkill(skillName: string, global: boolean): Promise<InstallResult> {
   return invoke("update_skill", { skillName, global });
+}
+
+// ============================================================================
+// Background Refresh API
+// ============================================================================
+
+/**
+ * Instant read of the background refresh thread's latest snapshot, or
+ * `undefined` before the first snapshot has landed.
+ */
+export async function getSkillSnapshot(): Promise<SkillSnapshot | undefined> {
+  return invoke("get_skill_snapshot");
+}
+
+/**
+ * Ask the background refresh thread to rebuild the snapshot. Returns
+ * immediately; listen for `onSkillSnapshot` to see the result.
+ */
+export async function requestSkillRescan(): Promise<void> {
+  return invoke("request_skill_rescan");
+}
+
+/**
+ * Subscribe to `skills://snapshot`, emitted every time the background
+ * refresh thread (re)builds the snapshot. Returns an unlisten function.
+ */
+export function onSkillSnapshot(cb: (snapshot: SkillSnapshot) => void): () => void {
+  let unlisten: (() => void) | undefined;
+  let cancelled = false;
+
+  listen<SkillSnapshot>("skills://snapshot", (event) => {
+    cb(event.payload);
+  }).then((fn) => {
+    if (cancelled) {
+      fn();
+    } else {
+      unlisten = fn;
+    }
+  });
+
+  return () => {
+    cancelled = true;
+    unlisten?.();
+  };
 }

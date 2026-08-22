@@ -1,0 +1,694 @@
+// ============================================================================
+// Skills Module - Background Refresh
+// "Never stale, never blocks": a background std thread builds a
+// `SkillSnapshot` at startup, stores it in managed state, and rebuilds it
+// whenever the filesystem sources it depends on change (skill roots, plugin
+// caches, the lock file, Codex config, Claude Code transcripts). Every
+// command that needs the current skills reads the cached snapshot instead of
+// re-scanning the filesystem on the calling thread.
+// ============================================================================
+
+use std::collections::{BTreeMap, BTreeSet};
+use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{mpsc, Arc, Mutex, RwLock};
+use std::time::{Duration, Instant};
+
+use chrono::Utc;
+use notify_debouncer_mini::new_debouncer;
+use notify_debouncer_mini::notify::{RecommendedWatcher, RecursiveMode};
+use notify_debouncer_mini::Debouncer;
+use serde::{Deserialize, Serialize};
+use tauri::{AppHandle, Emitter, Manager};
+
+use super::agents;
+use super::lock_file;
+use super::project_discovery;
+use super::skill_assembly;
+use super::skill_discovery;
+use super::skill_dto::InstalledSkill;
+use super::skill_invocations::{
+    InvocationHeatmap, RefreshReport, SkillInvocationIndex, SkillInvocationStats,
+};
+
+/// Event emitted on the main window whenever the snapshot is (re)built.
+pub const SNAPSHOT_EVENT: &str = "skills://snapshot";
+
+/// Debounce window: filesystem events within this window of each other
+/// coalesce into a single rebuild.
+const DEBOUNCE: Duration = Duration::from_millis(750);
+
+/// How often the background loop wakes up to check the dirty flags, rather
+/// than blocking indefinitely on filesystem events, so `request_skill_rescan`
+/// (which only sets a flag from another thread) is picked up promptly.
+const POLL_INTERVAL: Duration = Duration::from_millis(200);
+
+/// A lingering invocations-only backlog forces a full rebuild after this long
+/// even without a skills-affecting change, so `snapshot.projects` etc. never
+/// go too stale just because only transcripts are still being indexed.
+const FULL_REBUILD_BACKLOG: Duration = Duration::from_secs(60);
+
+/// Minimum spacing between invocations-only rebuilds, so a burst of
+/// transcript writes doesn't reparse and re-emit on every debounce tick.
+const INVOCATIONS_REBUILD_INTERVAL: Duration = Duration::from_secs(5);
+
+/// Everything the frontend needs about installed skills, discovered
+/// projects, and invocation history, built together in one background pass.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SkillSnapshot {
+    pub skills: Vec<InstalledSkill>,
+    pub projects: Vec<String>,
+    pub invocations: Vec<SkillInvocationStats>,
+    pub heatmap: InvocationHeatmap,
+    pub scanned_at: String,
+}
+
+/// One filesystem path the background watcher should track, and whether
+/// `notify` should watch it recursively.
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+pub struct WatchPath {
+    pub path: PathBuf,
+    pub recursive: bool,
+}
+
+/// Managed Tauri state, shared between the background refresh thread and
+/// every command that can trigger or read a rebuild. Cheap to clone: every
+/// field is an `Arc` (or a small owned `PathBuf`), so the background thread
+/// works off its own clone rather than borrowing the managed instance.
+#[derive(Clone)]
+pub struct SkillRefreshState {
+    pub snapshot: Arc<RwLock<Option<SkillSnapshot>>>,
+    /// Held for the duration of a rebuild so the background loop and the
+    /// synchronous command-triggered rebuilds never run concurrently.
+    rebuild_lock: Arc<Mutex<()>>,
+    /// Project paths a caller (e.g. `get_installed_skills`) asked to be
+    /// included, on top of whatever `project_discovery` finds on its own.
+    extra_projects: Arc<Mutex<BTreeSet<String>>>,
+    /// Something that can affect the skills list, project list, or plugin
+    /// caches changed; the next rebuild should be a full one.
+    skills_dirty: Arc<AtomicBool>,
+    /// A Claude Code transcript changed; the next rebuild only needs to
+    /// refresh the invocation index, not rescan skill directories.
+    invocations_dirty: Arc<AtomicBool>,
+    invocation_index: Arc<Mutex<SkillInvocationIndex>>,
+    cache_path: PathBuf,
+}
+
+impl SkillRefreshState {
+    /// Add project paths to the always-included set and mark skills dirty,
+    /// so both `get_installed_skills` and `register_skill_projects` funnel
+    /// through the same bookkeeping.
+    pub(crate) fn add_extra_projects(&self, paths: impl IntoIterator<Item = String>) {
+        if let Ok(mut extra) = self.extra_projects.lock() {
+            extra.extend(paths);
+        }
+        self.skills_dirty.store(true, Ordering::SeqCst);
+    }
+
+    /// Remove a caller-registered project path so future rebuilds stop
+    /// including it, and mark skills dirty so the next background pass
+    /// reflects the removal.
+    pub(crate) fn remove_extra_project(&self, path: &str) {
+        if let Ok(mut extra) = self.extra_projects.lock() {
+            extra.remove(path);
+        }
+        self.skills_dirty.store(true, Ordering::SeqCst);
+    }
+
+    /// The caller-registered project paths, as `PathBuf`s.
+    fn extra_project_paths(&self) -> Vec<PathBuf> {
+        self.extra_projects
+            .lock()
+            .map(|guard| guard.iter().map(PathBuf::from).collect())
+            .unwrap_or_default()
+    }
+}
+
+/// Start the background refresh thread and return the state to register
+/// with `tauri::Builder::manage`.
+pub fn init(app: &AppHandle) -> SkillRefreshState {
+    let cache_path = invocation_cache_path(app);
+    let invocation_index = SkillInvocationIndex::load_or_empty(&cache_path);
+
+    let state = SkillRefreshState {
+        snapshot: Arc::new(RwLock::new(None)),
+        rebuild_lock: Arc::new(Mutex::new(())),
+        extra_projects: Arc::new(Mutex::new(BTreeSet::new())),
+        skills_dirty: Arc::new(AtomicBool::new(false)),
+        invocations_dirty: Arc::new(AtomicBool::new(false)),
+        invocation_index: Arc::new(Mutex::new(invocation_index)),
+        cache_path,
+    };
+
+    let app_handle = app.clone();
+    let loop_state = state.clone();
+    std::thread::spawn(move || run_refresh_loop(app_handle, loop_state));
+
+    state
+}
+
+/// Instant read of the current snapshot from managed state.
+#[tauri::command]
+pub fn get_skill_snapshot(state: tauri::State<SkillRefreshState>) -> Option<SkillSnapshot> {
+    state.snapshot.read().ok().and_then(|guard| guard.clone())
+}
+
+/// Ask the background thread to rebuild the snapshot. Returns immediately;
+/// the rebuild happens asynchronously and a fresh `SNAPSHOT_EVENT` follows.
+#[tauri::command]
+pub fn request_skill_rescan(state: tauri::State<SkillRefreshState>) {
+    state.skills_dirty.store(true, Ordering::SeqCst);
+}
+
+/// Register project paths the caller cares about (e.g. one the user just
+/// opened) so future rebuilds always include them, even though
+/// `project_discovery` hasn't found them via a Codex/Claude Code config yet.
+/// Returns immediately; a full rebuild follows on the background thread.
+#[tauri::command]
+pub fn register_skill_projects(paths: Vec<String>, state: tauri::State<SkillRefreshState>) {
+    state.add_extra_projects(paths);
+}
+
+/// Un-register a caller-registered project path (e.g. one the user closed)
+/// so future rebuilds stop including it. Returns immediately; a full rebuild
+/// follows on the background thread.
+#[tauri::command]
+pub fn unregister_skill_project(path: String, state: tauri::State<SkillRefreshState>) {
+    state.remove_extra_project(&path);
+}
+
+/// Build a full snapshot right now on the calling thread, store it, and emit
+/// `SNAPSHOT_EVENT`. Used both by the background loop's full-rebuild path and
+/// by commands that need the caller's next read to see fresh data (a new
+/// project's skills, or the result of an install/remove/update). Blocks on
+/// `rebuild_lock` so it never overlaps another rebuild. On error the
+/// previous snapshot is left in place.
+pub fn rebuild_snapshot_now(
+    app: &AppHandle,
+    state: &SkillRefreshState,
+) -> Result<SkillSnapshot, String> {
+    let _guard = state
+        .rebuild_lock
+        .lock()
+        .map_err(|e| format!("rebuild lock poisoned: {e}"))?;
+
+    let home = dirs::home_dir().ok_or("Could not find home directory")?;
+    let extra_projects = state.extra_project_paths();
+
+    let mut invocation_index = state
+        .invocation_index
+        .lock()
+        .map_err(|e| format!("invocation index lock poisoned: {e}"))?;
+    let (built, report) = build_snapshot(
+        &home,
+        &extra_projects,
+        &mut invocation_index,
+        &state.cache_path,
+    );
+    drop(invocation_index);
+
+    if report.incomplete {
+        state.invocations_dirty.store(true, Ordering::SeqCst);
+    }
+
+    match state.snapshot.write() {
+        Ok(mut guard) => *guard = Some(built.clone()),
+        Err(e) => return Err(format!("snapshot lock poisoned: {e}")),
+    }
+
+    app.emit(SNAPSHOT_EVENT, &built)
+        .map_err(|e| format!("failed to emit {SNAPSHOT_EVENT}: {e}"))?;
+    Ok(built)
+}
+
+/// Refresh only the invocation index and recompute stats/heatmap, reusing
+/// `skills`/`projects` from the current snapshot rather than rescanning skill
+/// directories. Cheaper than `rebuild_snapshot_now`, used for the frequent
+/// case of "a transcript changed" so a burst of agent activity doesn't
+/// trigger a full directory rescan every few seconds.
+fn rebuild_invocations_only(app: &AppHandle, state: &SkillRefreshState) -> Result<(), String> {
+    let _guard = state
+        .rebuild_lock
+        .lock()
+        .map_err(|e| format!("rebuild lock poisoned: {e}"))?;
+
+    let home = dirs::home_dir().ok_or("Could not find home directory")?;
+    let mut invocation_index = state
+        .invocation_index
+        .lock()
+        .map_err(|e| format!("invocation index lock poisoned: {e}"))?;
+    let report = invocation_index.refresh(&home.join(".claude/projects"));
+    if let Err(e) = invocation_index.save(&state.cache_path) {
+        eprintln!("skill refresh: failed to save invocation cache: {e}");
+    }
+    let invocations = invocation_index.stats();
+    let heatmap = invocation_index.heatmap(90);
+    drop(invocation_index);
+
+    if report.incomplete {
+        state.invocations_dirty.store(true, Ordering::SeqCst);
+    }
+
+    let built = {
+        let mut guard = state
+            .snapshot
+            .write()
+            .map_err(|e| format!("snapshot lock poisoned: {e}"))?;
+        let Some(snapshot) = guard.as_mut() else {
+            return Ok(()); // no full snapshot yet; the next full rebuild covers this
+        };
+        snapshot.invocations = invocations;
+        snapshot.heatmap = heatmap;
+        snapshot.scanned_at = Utc::now().to_rfc3339();
+        snapshot.clone()
+    };
+
+    app.emit(SNAPSHOT_EVENT, &built)
+        .map_err(|e| format!("failed to emit {SNAPSHOT_EVENT}: {e}"))
+}
+
+/// The cache file the invocation index is persisted to between runs.
+fn invocation_cache_path(app: &AppHandle) -> PathBuf {
+    app.path()
+        .app_data_dir()
+        .unwrap_or_else(|_| PathBuf::from("."))
+        .join("skill-invocations.json")
+}
+
+/// Runs for the app's lifetime on its own std thread (never the async
+/// runtime): starts the filesystem watcher, builds the initial snapshot, then
+/// rebuilds on change (full or invocations-only, depending on what's dirty)
+/// or on an explicit rescan request. Every error is logged with `eprintln!`
+/// and never panics the thread; a failed rebuild simply keeps the previous
+/// snapshot in place.
+fn run_refresh_loop(app: AppHandle, state: SkillRefreshState) {
+    let Some(home) = dirs::home_dir() else {
+        eprintln!("skill refresh: could not find home directory, giving up");
+        return;
+    };
+    let claude_projects_dir = home.join(".claude/projects");
+
+    let (tx, rx) = mpsc::channel();
+    let mut debouncer = match new_debouncer(DEBOUNCE, tx) {
+        Ok(d) => d,
+        Err(e) => {
+            eprintln!("skill refresh: failed to start filesystem watcher: {e}");
+            return;
+        }
+    };
+    let mut watched: BTreeSet<PathBuf> = BTreeSet::new();
+
+    // Start watching before the initial scan so a change made while the
+    // first scan is running is never missed.
+    let initial_projects = project_discovery::discover_skill_projects(&home);
+    reconcile_watchers(
+        &mut debouncer,
+        &mut watched,
+        &desired_watch_paths(&home, &initial_projects),
+    );
+
+    if let Err(e) = rebuild_snapshot_now(&app, &state) {
+        eprintln!("skill refresh: initial rebuild failed: {e}");
+    }
+    reconcile_watchers_from_snapshot(&home, &state, &mut debouncer, &mut watched);
+
+    let mut last_full_rebuild = Instant::now();
+    let mut last_invocations_rebuild = Instant::now();
+
+    loop {
+        match rx.recv_timeout(POLL_INTERVAL) {
+            Ok(Ok(events)) => {
+                for event in events {
+                    let known_transcript = state
+                        .invocation_index
+                        .lock()
+                        .map(|idx| idx.knows_file(&event.path))
+                        .unwrap_or(false);
+                    match classify_watch_event(&event.path, &claude_projects_dir, known_transcript)
+                    {
+                        WatchEventKind::Skills => state.skills_dirty.store(true, Ordering::SeqCst),
+                        WatchEventKind::Invocations => {
+                            state.invocations_dirty.store(true, Ordering::SeqCst)
+                        }
+                    }
+                }
+            }
+            Ok(Err(err)) => eprintln!("skill refresh: watch error: {err}"),
+            Err(mpsc::RecvTimeoutError::Timeout) => {}
+            Err(mpsc::RecvTimeoutError::Disconnected) => break,
+        }
+
+        let skills_dirty = state.skills_dirty.load(Ordering::SeqCst);
+        let invocations_dirty = state.invocations_dirty.load(Ordering::SeqCst);
+        let backlog_stale = invocations_dirty && last_full_rebuild.elapsed() > FULL_REBUILD_BACKLOG;
+
+        if skills_dirty || backlog_stale {
+            // Clear the flags before rebuilding so an event that arrives
+            // mid-rebuild sets them again rather than being lost.
+            state.skills_dirty.store(false, Ordering::SeqCst);
+            state.invocations_dirty.store(false, Ordering::SeqCst);
+            match rebuild_snapshot_now(&app, &state) {
+                Ok(_) => {
+                    last_full_rebuild = Instant::now();
+                    last_invocations_rebuild = Instant::now();
+                    reconcile_watchers_from_snapshot(&home, &state, &mut debouncer, &mut watched);
+                }
+                Err(e) => eprintln!("skill refresh: full rebuild failed: {e}"),
+            }
+        } else if invocations_dirty
+            && last_invocations_rebuild.elapsed() > INVOCATIONS_REBUILD_INTERVAL
+        {
+            state.invocations_dirty.store(false, Ordering::SeqCst);
+            if let Err(e) = rebuild_invocations_only(&app, &state) {
+                eprintln!("skill refresh: invocations-only rebuild failed: {e}");
+            }
+            last_invocations_rebuild = Instant::now();
+        }
+    }
+}
+
+/// Reconcile the watch set against the paths implied by the current
+/// snapshot's projects (falling back to a fresh discovery pass if there's no
+/// snapshot yet, which only happens before the very first rebuild).
+fn reconcile_watchers_from_snapshot(
+    home: &Path,
+    state: &SkillRefreshState,
+    debouncer: &mut Debouncer<RecommendedWatcher>,
+    watched: &mut BTreeSet<PathBuf>,
+) {
+    let projects: Vec<PathBuf> = state
+        .snapshot
+        .read()
+        .ok()
+        .and_then(|guard| guard.as_ref().map(|s| s.projects.clone()))
+        .unwrap_or_else(|| {
+            project_discovery::discover_skill_projects(home)
+                .into_iter()
+                .map(|p| p.to_string_lossy().to_string())
+                .collect()
+        })
+        .into_iter()
+        .map(PathBuf::from)
+        .collect();
+    reconcile_watchers(debouncer, watched, &desired_watch_paths(home, &projects));
+}
+
+/// Watch every existing path in `desired` that isn't already watched, and
+/// unwatch every currently-watched path that's no longer in `desired` (it
+/// vanished, or the project it belonged to left the desired set). Notify
+/// errors are logged, never propagated: a watch failure on one path
+/// shouldn't stop the others from being (un)watched.
+fn reconcile_watchers(
+    debouncer: &mut Debouncer<RecommendedWatcher>,
+    watched: &mut BTreeSet<PathBuf>,
+    desired: &[WatchPath],
+) {
+    let desired_paths: BTreeSet<&PathBuf> = desired.iter().map(|w| &w.path).collect();
+
+    let stale: Vec<PathBuf> = watched
+        .iter()
+        .filter(|p| !desired_paths.contains(p))
+        .cloned()
+        .collect();
+    for path in stale {
+        if let Err(e) = debouncer.watcher().unwatch(&path) {
+            eprintln!("skill refresh: failed to unwatch {}: {e}", path.display());
+        }
+        watched.remove(&path);
+    }
+
+    for wp in desired {
+        if watched.contains(&wp.path) || !wp.path.exists() {
+            continue;
+        }
+        let mode = if wp.recursive {
+            RecursiveMode::Recursive
+        } else {
+            RecursiveMode::NonRecursive
+        };
+        match debouncer.watcher().watch(&wp.path, mode) {
+            Ok(()) => {
+                watched.insert(wp.path.clone());
+            }
+            Err(e) => eprintln!("skill refresh: failed to watch {}: {e}", wp.path.display()),
+        }
+    }
+}
+
+/// Build a fresh snapshot from `home` plus `extra_projects`, refreshing the
+/// invocation index along the way. Pure aside from the filesystem reads, so
+/// it's the unit under test for "a caller-registered project's skills show
+/// up in the snapshot" without needing a running Tauri app.
+fn build_snapshot(
+    home: &Path,
+    extra_projects: &[PathBuf],
+    invocation_index: &mut SkillInvocationIndex,
+    cache_path: &Path,
+) -> (SkillSnapshot, RefreshReport) {
+    let mut project_paths: BTreeSet<PathBuf> = project_discovery::discover_skill_projects(home)
+        .into_iter()
+        .collect();
+    project_paths.extend(extra_projects.iter().cloned());
+    let project_paths: Vec<PathBuf> = project_paths.into_iter().collect();
+
+    let candidates = skill_discovery::discover_skill_candidates(home, &project_paths);
+    let lock = lock_file::read_lock_file().unwrap_or_else(|e| {
+        eprintln!("skill refresh: failed to read lock file: {e}");
+        lock_file::SkillLockFile {
+            version: 3,
+            skills: std::collections::HashMap::new(),
+        }
+    });
+    let skills = skill_assembly::assemble_installed_skills(candidates, &lock);
+
+    let report = invocation_index.refresh(&home.join(".claude/projects"));
+    if let Err(e) = invocation_index.save(cache_path) {
+        eprintln!("skill refresh: failed to save invocation cache: {e}");
+    }
+
+    let snapshot = SkillSnapshot {
+        skills,
+        projects: project_paths
+            .into_iter()
+            .map(|p| p.to_string_lossy().to_string())
+            .collect(),
+        invocations: invocation_index.stats(),
+        heatmap: invocation_index.heatmap(90),
+        scanned_at: Utc::now().to_rfc3339(),
+    };
+    (snapshot, report)
+}
+
+/// Which kind of rebuild a single filesystem-watch event implies.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum WatchEventKind {
+    /// Rebuild the full snapshot (skills, projects, plugin caches, ...).
+    Skills,
+    /// Only the invocation index needs to be refreshed.
+    Invocations,
+}
+
+/// Classify a single filesystem-watch event, given whether `path` is already
+/// a transcript the invocation index tracks. An event outside
+/// `claude_projects_dir` always needs a full rebuild - everything that lives
+/// there (skill roots, plugin caches, the lock file, project discovery
+/// sources) can change `snapshot.skills` or `snapshot.projects`. An event
+/// inside it needs a full rebuild too when it's for a path the invocation
+/// index doesn't already know about: a brand-new transcript file, or a file
+/// in a brand-new project directory, either of which can also change
+/// `snapshot.projects`. A change to an already-tracked transcript that still
+/// exists only needs the invocation index refreshed; a deleted one needs a
+/// full rebuild because project discovery may have depended on it.
+pub fn classify_watch_event(
+    path: &Path,
+    claude_projects_dir: &Path,
+    known_transcript: bool,
+) -> WatchEventKind {
+    if !path.starts_with(claude_projects_dir) {
+        return WatchEventKind::Skills;
+    }
+    // A known transcript that no longer exists was deleted or renamed: that
+    // can remove a transcript-discovered project, so it needs a full rebuild.
+    if known_transcript && path.is_file() {
+        WatchEventKind::Invocations
+    } else {
+        WatchEventKind::Skills
+    }
+}
+
+/// Every filesystem path a change to which should trigger a rebuild, given
+/// the currently known project paths: each global skill root and its parent
+/// (so a directory created later is still picked up), each native plugin
+/// cache and its parent, the lock file's and Codex config's containing
+/// directories, the Claude Code transcripts directory (recursive, since
+/// invocations and project discovery both depend on it) and its parent, and
+/// each project's first-class-agent skill directories plus the project root
+/// itself (non-recursive, so a `.claude` etc. created later is still seen).
+pub fn desired_watch_paths(home: &Path, projects: &[PathBuf]) -> Vec<WatchPath> {
+    let mut merged: BTreeMap<PathBuf, bool> = BTreeMap::new();
+    let add = |merged: &mut BTreeMap<PathBuf, bool>, path: PathBuf, recursive: bool| {
+        let entry = merged.entry(path).or_insert(false);
+        *entry = *entry || recursive;
+    };
+
+    for root in agents::skill_roots(home, &[]) {
+        if root.project_path.is_some() {
+            continue; // global roots only; project roots are handled below
+        }
+        add(&mut merged, root.path.clone(), true);
+        if let Some(parent) = root.path.parent() {
+            add(&mut merged, parent.to_path_buf(), false);
+        }
+    }
+
+    for cache_dir in [
+        home.join(".claude/plugins/cache"),
+        home.join(".codex/plugins/cache"),
+    ] {
+        if let Some(parent) = cache_dir.parent() {
+            add(&mut merged, parent.to_path_buf(), false);
+        }
+        add(&mut merged, cache_dir, true);
+    }
+
+    add(&mut merged, home.join(".agents"), false);
+    add(&mut merged, home.join(".codex"), false);
+    add(&mut merged, home.join(".claude/projects"), true);
+    add(&mut merged, home.join(".claude"), false);
+
+    for project in projects {
+        for sub in [".claude", ".codex", ".opencode", ".pi", ".agents"] {
+            add(&mut merged, project.join(sub), true);
+        }
+        add(&mut merged, project.clone(), false);
+    }
+
+    merged
+        .into_iter()
+        .map(|(path, recursive)| WatchPath { path, recursive })
+        .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::fs;
+
+    #[test]
+    fn desired_watch_paths_includes_global_roots_and_parents() {
+        let home = PathBuf::from("/home/tester");
+        let paths = desired_watch_paths(&home, &[]);
+
+        let claude_skills = home.join(".claude/skills");
+        assert!(paths.iter().any(|w| w.path == claude_skills && w.recursive));
+        assert!(paths
+            .iter()
+            .any(|w| w.path == home.join(".claude") && !w.recursive));
+    }
+
+    #[test]
+    fn desired_watch_paths_includes_project_entries() {
+        let home = PathBuf::from("/home/tester");
+        let project = PathBuf::from("/work/my-project");
+        let paths = desired_watch_paths(&home, &[project.clone()]);
+
+        assert!(paths
+            .iter()
+            .any(|w| w.path == project.join(".claude") && w.recursive));
+        assert!(paths.iter().any(|w| w.path == project && !w.recursive));
+    }
+
+    #[test]
+    fn desired_watch_paths_watches_claude_projects_recursively() {
+        let home = PathBuf::from("/home/tester");
+        let paths = desired_watch_paths(&home, &[]);
+        assert!(paths
+            .iter()
+            .any(|w| w.path == home.join(".claude/projects") && w.recursive));
+    }
+
+    #[test]
+    fn desired_watch_paths_has_no_duplicate_paths() {
+        let home = PathBuf::from("/home/tester");
+        let mut paths: Vec<PathBuf> = desired_watch_paths(&home, &[])
+            .into_iter()
+            .map(|w| w.path)
+            .collect();
+        let before = paths.len();
+        paths.sort();
+        paths.dedup();
+        assert_eq!(before, paths.len());
+    }
+
+    #[test]
+    fn classify_watch_event_outside_claude_projects_is_skills() {
+        let claude_projects = PathBuf::from("/home/tester/.claude/projects");
+        let path = PathBuf::from("/home/tester/.claude/skills/foo/SKILL.md");
+        assert_eq!(
+            classify_watch_event(&path, &claude_projects, false),
+            WatchEventKind::Skills
+        );
+    }
+
+    #[test]
+    fn classify_watch_event_new_transcript_is_skills() {
+        let claude_projects = PathBuf::from("/home/tester/.claude/projects");
+        let path = claude_projects.join("-my-project/session.jsonl");
+        assert_eq!(
+            classify_watch_event(&path, &claude_projects, false),
+            WatchEventKind::Skills
+        );
+    }
+
+    #[test]
+    fn classify_watch_event_known_transcript_is_invocations() {
+        let tmp = tempfile::tempdir().unwrap();
+        let claude_projects = tmp.path().join("projects");
+        let path = claude_projects.join("-my-project/session.jsonl");
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
+        fs::write(&path, "{}\n").unwrap();
+        assert_eq!(
+            classify_watch_event(&path, &claude_projects, true),
+            WatchEventKind::Invocations
+        );
+    }
+
+    #[test]
+    fn classify_watch_event_deleted_known_transcript_is_skills() {
+        let tmp = tempfile::tempdir().unwrap();
+        let claude_projects = tmp.path().join("projects");
+        let path = claude_projects.join("-my-project/session.jsonl");
+        assert_eq!(
+            classify_watch_event(&path, &claude_projects, true),
+            WatchEventKind::Skills
+        );
+    }
+
+    #[test]
+    fn build_snapshot_includes_caller_only_project() {
+        let tmp = tempfile::tempdir().unwrap();
+        let home = tmp.path().join("home");
+        let project = tmp.path().join("caller-project");
+        fs::create_dir_all(project.join(".claude/skills/foo")).unwrap();
+        fs::write(
+            project.join(".claude/skills/foo/SKILL.md"),
+            "---\nname: foo\ndescription: test\n---\nbody",
+        )
+        .unwrap();
+        fs::create_dir_all(&home).unwrap();
+
+        let mut invocation_index = SkillInvocationIndex::default();
+        let cache_path = tmp.path().join("cache.json");
+        let (snapshot, _report) = build_snapshot(
+            &home,
+            &[project.clone()],
+            &mut invocation_index,
+            &cache_path,
+        );
+
+        assert!(snapshot
+            .projects
+            .contains(&project.to_string_lossy().to_string()));
+        assert!(snapshot.skills.iter().any(|s| s.name == "foo"));
+    }
+}

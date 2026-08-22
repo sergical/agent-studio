@@ -265,3 +265,49 @@ export interface InstallProgressState {
   percent?: number;
   error?: string;
 }
+
+// ============================================================================
+// Invocation / Background Refresh Types
+// ============================================================================
+
+/**
+ * One recorded skill invocation, parsed from a Claude Code transcript
+ * (see skills/skill_invocations.rs).
+ */
+export interface SkillInvocation {
+  skill: string;
+  agent: string;
+  at: string;
+  project_path?: string;
+}
+
+/**
+ * Per-skill invocation summary.
+ */
+export interface SkillInvocationStats {
+  skill: string;
+  total: number;
+  last_30_days: number;
+  last_used?: string;
+  by_project: Record<string, number>;
+}
+
+/**
+ * Per-day invocation counts for the heatmap (date "YYYY-MM-DD" -> count).
+ */
+export interface InvocationHeatmap {
+  days: Record<string, number>;
+}
+
+/**
+ * Everything the background refresh thread computes in one pass: installed
+ * skills, discovered projects, and invocation history. See
+ * skills/skill_refresh.rs.
+ */
+export interface SkillSnapshot {
+  skills: InstalledSkill[];
+  projects: string[];
+  invocations: SkillInvocationStats[];
+  heatmap: InvocationHeatmap;
+  scanned_at: string;
+}

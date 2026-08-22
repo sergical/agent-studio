@@ -15,8 +15,11 @@ pub mod skill_assembly;
 pub mod skill_candidate;
 pub mod skill_discovery;
 pub mod skill_dto;
+pub mod skill_invocations;
+pub mod skill_refresh;
 
 pub use agents::*;
 pub use commands::*;
 pub use provenance::SourceKind;
 pub use skill_dto::*;
+pub use skill_refresh::{SkillRefreshState, SkillSnapshot};

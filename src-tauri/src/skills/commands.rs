@@ -3,19 +3,16 @@
 // IPC commands for skill discovery, installation, and management
 // ============================================================================
 
-use std::collections::BTreeSet;
-use std::path::PathBuf;
 use std::process::Command;
 
 use super::agents::{AgentId, AgentTarget};
 use super::api;
 use super::lock_file;
 use super::project_discovery;
-use super::skill_assembly;
-use super::skill_discovery;
 use super::skill_dto::{
     InstallRequest, InstallResult, InstalledSkill, PaginatedSkillsResponse, SkillSearchResult,
 };
+use super::skill_refresh::{self, SkillRefreshState};
 
 /// Search for skills on skills.sh
 #[tauri::command]
@@ -42,37 +39,76 @@ pub async fn get_skill_details(skill_id: String) -> Result<SkillSearchResult, St
     api::get_skill_details(&skill_id).await
 }
 
-/// Get all installed skills, merging what's found on disk for the four
-/// first-class agents (Claude Code, Codex, OpenCode, pi) with the
-/// ~/.agents/.skill-lock.json entries. Project-scoped skills are discovered
-/// for `project_discovery::discover_skill_projects` in addition to any
-/// project paths the caller passes in.
+/// Get all installed skills. Returns the background-refreshed snapshot's
+/// skills (see `skill_refresh`) when it already accounts for every path in
+/// `project_paths`; otherwise registers the missing paths and rebuilds the
+/// snapshot synchronously (so this read-after-write sees fresh data), which
+/// also covers the case where the background snapshot hasn't landed yet.
 #[tauri::command]
 pub fn get_installed_skills(
     project_paths: Option<Vec<String>>,
+    refresh_state: tauri::State<SkillRefreshState>,
+    app: tauri::AppHandle,
 ) -> Result<Vec<InstalledSkill>, String> {
-    let home = dirs::home_dir().ok_or("Could not find home directory")?;
+    let requested = project_paths.unwrap_or_default();
+    let snapshot = refresh_state.snapshot.read().ok().and_then(|g| g.clone());
 
-    let mut paths: BTreeSet<PathBuf> = project_discovery::discover_skill_projects(&home)
-        .into_iter()
-        .collect();
-    paths.extend(
-        project_paths
-            .unwrap_or_default()
-            .into_iter()
-            .map(PathBuf::from),
-    );
-    let project_paths: Vec<PathBuf> = paths.into_iter().collect();
+    if let Some(snapshot) = &snapshot {
+        if snapshot_covers_projects(&requested, &snapshot.projects) {
+            return Ok(snapshot.skills.clone());
+        }
+    }
 
-    let candidates = skill_discovery::discover_skill_candidates(&home, &project_paths);
-    let lock = lock_file::read_lock_file()?;
-    Ok(skill_assembly::assemble_installed_skills(candidates, &lock))
+    refresh_state.add_extra_projects(requested);
+    let rebuilt = skill_refresh::rebuild_snapshot_now(&app, &refresh_state)?;
+    Ok(rebuilt.skills)
+}
+
+/// Whether the *published* snapshot already accounts for every path in
+/// `requested`. Pulled out into a pure function so it can be unit tested:
+/// this must only compare against `snapshot.projects`, never against
+/// caller-registered `extra_projects`, since a path registered but not yet
+/// rebuilt into the snapshot would otherwise look "covered" while the
+/// snapshot's `skills` still doesn't include it.
+fn snapshot_covers_projects(requested: &[String], snapshot_projects: &[String]) -> bool {
+    requested.iter().all(|p| snapshot_projects.contains(p))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn snapshot_covers_projects_requires_published_membership() {
+        let snapshot_projects = vec!["/work/known".to_string()];
+
+        assert!(snapshot_covers_projects(
+            &["/work/known".to_string()],
+            &snapshot_projects
+        ));
+        // A caller-registered path that hasn't landed in the snapshot yet
+        // must NOT be treated as covered, even though it would be in
+        // `extra_projects`.
+        assert!(!snapshot_covers_projects(
+            &["/work/not-yet-rebuilt".to_string()],
+            &snapshot_projects
+        ));
+    }
 }
 
 /// List project directories discovered from Codex config and Claude Code
-/// transcripts that have a first-class agent's skill directory.
+/// transcripts that have a first-class agent's skill directory. Returns the
+/// background snapshot's project list when one exists.
 #[tauri::command]
-pub fn list_skill_projects() -> Result<Vec<String>, String> {
+pub fn list_skill_projects(
+    refresh_state: tauri::State<SkillRefreshState>,
+) -> Result<Vec<String>, String> {
+    if let Ok(guard) = refresh_state.snapshot.read() {
+        if let Some(snapshot) = guard.as_ref() {
+            return Ok(snapshot.projects.clone());
+        }
+    }
+
     let home = dirs::home_dir().ok_or("Could not find home directory")?;
     Ok(project_discovery::discover_skill_projects(&home)
         .into_iter()
@@ -105,7 +141,11 @@ pub fn get_agent_targets() -> Vec<AgentTarget> {
 
 /// Install a skill using npx skills CLI
 #[tauri::command]
-pub async fn install_skill(request: InstallRequest) -> Result<InstallResult, String> {
+pub async fn install_skill(
+    request: InstallRequest,
+    app: tauri::AppHandle,
+    refresh_state: tauri::State<'_, SkillRefreshState>,
+) -> Result<InstallResult, String> {
     // Parse skill_source - could be "owner/repo" or "owner/repo/skill-name"
     // or just "skill-name" for well-known skills
     let (repo_source, skill_name) = parse_skill_source(&request.skill_source);
@@ -163,6 +203,9 @@ pub async fn install_skill(request: InstallRequest) -> Result<InstallResult, Str
                 .to_string()
         });
 
+        if let Err(e) = skill_refresh::rebuild_snapshot_now(&app, &refresh_state) {
+            eprintln!("[install_skill] snapshot rebuild failed: {e}");
+        }
         Ok(InstallResult {
             success: true,
             skill_name: result_name,
@@ -202,7 +245,12 @@ fn parse_skill_source(source: &str) -> (String, Option<String>) {
 
 /// Remove a skill using npx skills CLI
 #[tauri::command]
-pub async fn remove_skill(skill_name: String, global: bool) -> Result<InstallResult, String> {
+pub async fn remove_skill(
+    skill_name: String,
+    global: bool,
+    app: tauri::AppHandle,
+    refresh_state: tauri::State<'_, SkillRefreshState>,
+) -> Result<InstallResult, String> {
     let mut args = vec![
         "skills".to_string(),
         "remove".to_string(),
@@ -232,6 +280,9 @@ pub async fn remove_skill(skill_name: String, global: bool) -> Result<InstallRes
     eprintln!("[remove_skill] stderr: {}", stderr);
 
     if output.status.success() {
+        if let Err(e) = skill_refresh::rebuild_snapshot_now(&app, &refresh_state) {
+            eprintln!("[remove_skill] snapshot rebuild failed: {e}");
+        }
         Ok(InstallResult {
             success: true,
             skill_name,
@@ -250,7 +301,12 @@ pub async fn remove_skill(skill_name: String, global: bool) -> Result<InstallRes
 
 /// Update a skill using npx skills CLI
 #[tauri::command]
-pub async fn update_skill(skill_name: String, global: bool) -> Result<InstallResult, String> {
+pub async fn update_skill(
+    skill_name: String,
+    global: bool,
+    app: tauri::AppHandle,
+    refresh_state: tauri::State<'_, SkillRefreshState>,
+) -> Result<InstallResult, String> {
     let mut args = vec![
         "skills".to_string(),
         "update".to_string(),
@@ -269,6 +325,9 @@ pub async fn update_skill(skill_name: String, global: bool) -> Result<InstallRes
     let stderr = String::from_utf8_lossy(&output.stderr).to_string();
 
     if output.status.success() {
+        if let Err(e) = skill_refresh::rebuild_snapshot_now(&app, &refresh_state) {
+            eprintln!("[update_skill] snapshot rebuild failed: {e}");
+        }
         Ok(InstallResult {
             success: true,
             skill_name,
