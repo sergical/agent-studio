@@ -30,6 +30,8 @@ pub fn run() {
             skills::commands::install_skill,
             skills::commands::remove_skill,
             skills::commands::update_skill,
+            skills::commands::read_installed_skill_md,
+            skills::commands::open_skill_path,
             // Background refresh / invocation snapshot
             skills::skill_refresh::get_skill_snapshot,
             skills::skill_refresh::request_skill_rescan,

@@ -50,7 +50,7 @@ export function InstallControls({
   const [selectedProject, setSelectedProjectState] = useState<string | null>(null);
 
   // Project directories the user has pointed at for project-scoped installs
-  const availableProjects = useAppStore((state) => state.projects);
+  const availableProjects = useAppStore((state) => state.userAddedProjects);
   const addProject = useAppStore((state) => state.addProject);
 
   // Persist agent preferences to localStorage whenever they change

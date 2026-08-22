@@ -3,6 +3,8 @@
 // IPC commands for skill discovery, installation, and management
 // ============================================================================
 
+use std::fs::File;
+use std::io::Read;
 use std::process::Command;
 
 use super::agents::{AgentId, AgentTarget};
@@ -297,6 +299,85 @@ pub async fn remove_skill(
             error: Some(if stderr.is_empty() { stdout } else { stderr }),
         })
     }
+}
+
+/// Maximum number of bytes read from an installed skill's SKILL.md, to keep
+/// a runaway file from blocking the UI thread on a slow disk.
+const MAX_SKILL_MD_BYTES: usize = 2 * 1024 * 1024;
+
+/// Require that `path` belongs to an installed skill in the current
+/// snapshot, so `read_installed_skill_md` / `open_skill_path` can't be used
+/// to read or open an arbitrary path on disk.
+fn require_snapshot_owns_path(
+    refresh_state: &tauri::State<SkillRefreshState>,
+    path: &std::path::Path,
+) -> Result<(), String> {
+    let snapshot = refresh_state.snapshot.read().ok().and_then(|g| g.clone());
+    match &snapshot {
+        Some(snapshot) if skill_refresh::snapshot_owns_path(snapshot, path) => Ok(()),
+        _ => Err(format!(
+            "Path is not an installed skill: {}",
+            path.display()
+        )),
+    }
+}
+
+/// Read up to 2 MiB of an installed skill's `SKILL.md` straight off disk, for
+/// the detail panel's SKILL.md viewer. Unlike `github-skill-source.ts`'s
+/// fetch-from-GitHub path, this works for manual/plugin skills that have no
+/// remote source. Restricted to `SKILL.md` files belonging to a deployment in
+/// the current snapshot, to keep this from becoming an arbitrary-file read.
+#[tauri::command]
+pub fn read_installed_skill_md(
+    path: String,
+    refresh_state: tauri::State<SkillRefreshState>,
+) -> Result<String, String> {
+    let path_buf = std::path::PathBuf::from(&path);
+    require_snapshot_owns_path(&refresh_state, &path_buf)?;
+
+    if path_buf.file_name().and_then(|n| n.to_str()) != Some("SKILL.md") {
+        return Err(format!("Path is not an installed skill: {path}"));
+    }
+    let canonical =
+        std::fs::canonicalize(&path_buf).map_err(|e| format!("Failed to open {}: {}", path, e))?;
+    let is_file = std::fs::symlink_metadata(&canonical)
+        .map(|m| m.is_file())
+        .unwrap_or(false);
+    if !is_file {
+        return Err(format!("Path is not an installed skill: {path}"));
+    }
+
+    let mut file = File::open(&path).map_err(|e| format!("Failed to open {}: {}", path, e))?;
+    let mut buf = vec![0u8; MAX_SKILL_MD_BYTES];
+    let n = file
+        .read(&mut buf)
+        .map_err(|e| format!("Failed to read {}: {}", path, e))?;
+    buf.truncate(n);
+    Ok(String::from_utf8_lossy(&buf).into_owned())
+}
+
+/// Reveal a skill's folder in Finder, or open it in the user's default
+/// editor, via macOS's `open` CLI. Restricted to paths belonging to a
+/// deployment in the current snapshot.
+#[tauri::command]
+pub fn open_skill_path(
+    path: String,
+    mode: String,
+    refresh_state: tauri::State<SkillRefreshState>,
+) -> Result<(), String> {
+    require_snapshot_owns_path(&refresh_state, std::path::Path::new(&path))?;
+
+    let flag = match mode.as_str() {
+        "reveal" => "-R",
+        "editor" => "-t",
+        other => return Err(format!("Unknown open mode: {other}")),
+    };
+
+    Command::new("open")
+        .args([flag, &path])
+        .output()
+        .map_err(|e| format!("Failed to open {}: {}", path, e))?;
+    Ok(())
 }
 
 /// Update a skill using npx skills CLI

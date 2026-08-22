@@ -24,8 +24,9 @@ pub struct SkillSearchResult {
     pub name: String,
     pub description: Option<String>,
     pub installs: u32,
-    // Deserialize "topSource" from API, serialize as "top_source" for frontend
-    #[serde(rename(deserialize = "topSource"))]
+    // Deserialize "source" from the skills.sh API, serialize as "top_source"
+    // for the frontend (see docs/agent-skill-conventions.md's search row).
+    #[serde(rename(deserialize = "source"))]
     pub top_source: Option<String>,
     pub author: Option<String>,
     pub tags: Option<Vec<String>>,

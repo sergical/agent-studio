@@ -54,7 +54,7 @@ export function SkillStore() {
   const [offset, setOffset] = useState(0);
 
   const addToast = useAppStore((state) => state.addToast);
-  const projects = useAppStore((state) => state.projects);
+  const projects = useAppStore((state) => state.userAddedProjects);
 
   const loadInitialData = useCallback(async () => {
     setIsLoading(true);

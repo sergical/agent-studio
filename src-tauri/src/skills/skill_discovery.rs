@@ -894,7 +894,7 @@ mod tests {
         let target = home.join(".agents/skills/foo");
         fs::create_dir_all(&target).unwrap();
         fs::write(
-            &target.join("SKILL.md"),
+            target.join("SKILL.md"),
             "---\ndescription: does things.\n---\nBody.\n",
         )
         .unwrap();

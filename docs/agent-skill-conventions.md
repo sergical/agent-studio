@@ -58,13 +58,13 @@ Parked skills are listed as disabled in the scanner.
 
 ## Discovery paths
 
-| Agent       | Project                               | Global                                         | Notes                                                                            |
-| ----------- | ------------------------------------- | ---------------------------------------------- | -------------------------------------------------------------------------------- |
-| Claude Code | `.claude/skills/`                     | `~/.claude/skills/`                            | also plugin cache `~/.claude/plugins/cache`; nested `.claude/skills/` in subdirs |
-| Codex       | `.codex/skills/`                      | `~/.codex/skills/`                             | also plugin cache `~/.codex/plugins/cache`                                       |
-| OpenCode    | `.opencode/skills/` (legacy `skill/`) | `~/.config/opencode/skills/` (legacy `skill/`) | walks up to the git worktree root                                                |
-| pi          | `.pi/skills/`                         | `~/.pi/agent/skills/`                          | root `.md` files with valid frontmatter count too                                |
-| shared      | `.agents/skills/`                     | `~/.agents/skills/`                            | `npx skills` target; other agents symlink here                                   |
+| Agent       | Project                               | Global                                         | Notes                                                                                  |
+| ----------- | ------------------------------------- | ---------------------------------------------- | -------------------------------------------------------------------------------------- |
+| Claude Code | `.claude/skills/`                     | `~/.claude/skills/`                            | also plugin cache `~/.claude/plugins/cache`; nested `.claude/skills/` in subdirs       |
+| Codex       | `.codex/skills/`                      | `~/.codex/skills/`                             | also plugin cache `~/.codex/plugins/cache`                                             |
+| OpenCode    | `.opencode/skills/` (legacy `skill/`) | `~/.config/opencode/skills/` (legacy `skill/`) | walks up to the git worktree root                                                      |
+| pi          | `.pi/skills/`                         | `~/.pi/agent/skills/`                          | root `.md` files with valid frontmatter count too                                      |
+| shared      | `.agents/skills/`                     | `~/.agents/skills/`                            | `npx skills` target; Codex, OpenCode, pi read it natively; Claude Code needs a symlink |
 
 ## Local data sources Agent Studio reads
 

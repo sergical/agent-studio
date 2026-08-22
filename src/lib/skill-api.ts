@@ -129,6 +129,20 @@ export async function updateSkill(skillName: string, global: boolean): Promise<I
   return invoke("update_skill", { skillName, global });
 }
 
+/**
+ * Read up to 2 MiB of an installed skill's SKILL.md straight off disk.
+ */
+export async function readInstalledSkillMd(path: string): Promise<string> {
+  return invoke("read_installed_skill_md", { path });
+}
+
+/**
+ * Reveal a skill's folder in Finder, or open it in the user's default editor.
+ */
+export async function openSkillPath(path: string, mode: "reveal" | "editor"): Promise<void> {
+  return invoke("open_skill_path", { path, mode });
+}
+
 // ============================================================================
 // Background Refresh API
 // ============================================================================

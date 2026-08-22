@@ -4,6 +4,7 @@
 // source URL, an installed GitHub skill_path, or by walking a repo's tree.
 // ============================================================================
 
+import { readInstalledSkillMd } from "./skill-api";
 import type { InstalledSkill } from "./skill-types";
 
 // Cache for GitHub repo trees - stores SKILL.md paths per repo
@@ -96,15 +97,30 @@ export interface SkillContentSource {
 
 /**
  * Resolve the raw SKILL.md content for a skill, trying (in order):
- * 1. A well-known skill's source_url (which IS the SKILL.md URL).
- * 2. An installed GitHub skill's recorded skill_path.
- * 3. The top_source treated as a direct URL.
- * 4. The top_source treated as a GitHub `owner/repo`, resolved via the Tree API.
+ * 1. Reading it straight off disk, from the skill's first deployment path.
+ * 2. A well-known skill's source_url (which IS the SKILL.md URL).
+ * 3. An installed GitHub skill's recorded skill_path.
+ * 4. The top_source treated as a direct URL.
+ * 5. The top_source treated as a GitHub `owner/repo`, resolved via the Tree API.
  */
 export async function fetchSkillMdContent(source: SkillContentSource): Promise<string | null> {
   const { name, topSource, installedInfo } = source;
 
-  // 1. For well-known skills, source_url IS the SKILL.md URL - fetch directly
+  // 1. Read from disk when we have a local deployment path (works offline,
+  // and for manual/plugin skills with no remote source at all).
+  const localPath = installedInfo?.deployments[0]?.path;
+  if (localPath) {
+    try {
+      const content = await readInstalledSkillMd(`${localPath}/SKILL.md`);
+      if (content) {
+        return content;
+      }
+    } catch {
+      // Fall through to the remote methods below.
+    }
+  }
+
+  // 2. For well-known skills, source_url IS the SKILL.md URL - fetch directly
   if (installedInfo?.source_type === "well-known" && installedInfo.source_url) {
     try {
       const response = await fetch(installedInfo.source_url);
@@ -116,7 +132,7 @@ export async function fetchSkillMdContent(source: SkillContentSource): Promise<s
     }
   }
 
-  // 2. For GitHub skills with skill_path, construct the raw URL
+  // 3. For GitHub skills with skill_path, construct the raw URL
   if (
     installedInfo?.source_type === "github" &&
     installedInfo.source_url &&
@@ -142,12 +158,12 @@ export async function fetchSkillMdContent(source: SkillContentSource): Promise<s
     }
   }
 
-  // 3. Fall back to top_source for browse tab skills (not installed)
+  // 4. Fall back to top_source for browse tab skills (not installed)
   if (!topSource) {
     return null;
   }
 
-  // 4. If source is a full URL, try fetching directly
+  // 4b. If source is a full URL, try fetching directly
   if (topSource.startsWith("http://") || topSource.startsWith("https://")) {
     try {
       const response = await fetch(topSource);
