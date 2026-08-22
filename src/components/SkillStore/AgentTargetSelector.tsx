@@ -2,11 +2,11 @@
 // AgentTargetSelector - Multi-select for agent targets
 // ============================================================================
 
-import { useState, useEffect } from 'react';
-import { Check, ChevronDown, ChevronUp } from 'lucide-react';
-import { getAgentTargets } from '../../lib/skillsApi';
-import type { AgentId, AgentTarget } from '../../lib/skillsTypes';
-import { COMMON_AGENTS } from '../../lib/skillsTypes';
+import { useState, useEffect } from "react";
+import { Check, ChevronDown, ChevronUp } from "lucide-react";
+import { getAgentTargets } from "../../lib/skill-api";
+import type { AgentId, AgentTarget } from "../../lib/skill-types";
+import { COMMON_AGENTS } from "../../lib/skill-types";
 
 interface AgentTargetSelectorProps {
   selectedAgents: AgentId[];
@@ -24,25 +24,30 @@ export function AgentTargetSelector({
   const [isLoading, setIsLoading] = useState(true);
 
   useEffect(() => {
-    loadAgents();
-  }, []);
+    let cancelled = false;
 
-  const loadAgents = async () => {
-    try {
-      const targets = await getAgentTargets();
-      setAgents(targets);
-    } catch (err) {
-      console.error('Failed to load agent targets:', err);
-    } finally {
-      setIsLoading(false);
-    }
-  };
+    getAgentTargets()
+      .then((targets) => {
+        if (!cancelled) {
+          setAgents(targets);
+        }
+      })
+      .finally(() => {
+        if (!cancelled) {
+          setIsLoading(false);
+        }
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   const toggleAgent = (agentId: AgentId) => {
     if (disabled) return;
 
     if (selectedAgents.includes(agentId)) {
-      onChange(selectedAgents.filter(id => id !== agentId));
+      onChange(selectedAgents.filter((id) => id !== agentId));
     } else {
       onChange([...selectedAgents, agentId]);
     }
@@ -50,7 +55,7 @@ export function AgentTargetSelector({
 
   const selectAll = () => {
     if (disabled) return;
-    onChange(agents.map(a => a.id));
+    onChange(agents.map((a) => a.id));
   };
 
   const selectNone = () => {
@@ -60,12 +65,12 @@ export function AgentTargetSelector({
 
   const selectCommon = () => {
     if (disabled) return;
-    onChange(COMMON_AGENTS.filter(id => agents.some(a => a.id === id)));
+    onChange(COMMON_AGENTS.filter((id) => agents.some((a) => a.id === id)));
   };
 
   // Separate common agents from others
-  const commonAgents = agents.filter(a => COMMON_AGENTS.includes(a.id));
-  const otherAgents = agents.filter(a => !COMMON_AGENTS.includes(a.id));
+  const commonAgents = agents.filter((a) => COMMON_AGENTS.includes(a.id));
+  const otherAgents = agents.filter((a) => !COMMON_AGENTS.includes(a.id));
 
   if (isLoading) {
     return (
@@ -76,7 +81,7 @@ export function AgentTargetSelector({
   }
 
   return (
-    <div className={`agent-selector ${disabled ? 'disabled' : ''}`}>
+    <div className={`agent-selector ${disabled ? "disabled" : ""}`}>
       <div className="agent-selector-header">
         <span className="agent-selector-label">
           Install to agents ({selectedAgents.length} selected)
@@ -110,11 +115,11 @@ export function AgentTargetSelector({
       </div>
 
       <div className="agent-selector-common">
-        {commonAgents.map(agent => (
+        {commonAgents.map((agent) => (
           <button
             key={agent.id}
             type="button"
-            className={`agent-chip ${selectedAgents.includes(agent.id) ? 'selected' : ''}`}
+            className={`agent-chip ${selectedAgents.includes(agent.id) ? "selected" : ""}`}
             onClick={() => toggleAgent(agent.id)}
             disabled={disabled}
           >
@@ -131,16 +136,16 @@ export function AgentTargetSelector({
         disabled={disabled}
       >
         {isExpanded ? <ChevronUp size={14} /> : <ChevronDown size={14} />}
-        <span>{isExpanded ? 'Show less' : `Show all ${agents.length} agents`}</span>
+        <span>{isExpanded ? "Show less" : `Show all ${agents.length} agents`}</span>
       </button>
 
       {isExpanded && (
         <div className="agent-selector-all">
-          {otherAgents.map(agent => (
+          {otherAgents.map((agent) => (
             <button
               key={agent.id}
               type="button"
-              className={`agent-chip ${selectedAgents.includes(agent.id) ? 'selected' : ''}`}
+              className={`agent-chip ${selectedAgents.includes(agent.id) ? "selected" : ""}`}
               onClick={() => toggleAgent(agent.id)}
               disabled={disabled}
             >

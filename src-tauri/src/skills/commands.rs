@@ -5,19 +5,30 @@
 
 use std::process::Command;
 
+use super::agents::{AgentId, AgentTarget};
 use super::api;
 use super::lock_file;
-use super::types::{AgentId, AgentTarget, InstallRequest, InstallResult, InstalledSkill, PaginatedSkillsResponse, SkillSearchResult};
+use super::scan;
+use super::skill_dto::{
+    InstallRequest, InstallResult, InstalledSkill, PaginatedSkillsResponse, SkillSearchResult,
+};
 
 /// Search for skills on skills.sh
 #[tauri::command]
-pub async fn search_skills(query: String, limit: Option<u32>, offset: Option<u32>) -> Result<PaginatedSkillsResponse, String> {
+pub async fn search_skills(
+    query: String,
+    limit: Option<u32>,
+    offset: Option<u32>,
+) -> Result<PaginatedSkillsResponse, String> {
     api::search_skills(&query, limit, offset).await
 }
 
 /// Get popular skills (sorted by install count)
 #[tauri::command]
-pub async fn get_popular_skills(limit: Option<u32>, offset: Option<u32>) -> Result<PaginatedSkillsResponse, String> {
+pub async fn get_popular_skills(
+    limit: Option<u32>,
+    offset: Option<u32>,
+) -> Result<PaginatedSkillsResponse, String> {
     api::get_popular_skills(limit, offset).await
 }
 
@@ -27,10 +38,14 @@ pub async fn get_skill_details(skill_id: String) -> Result<SkillSearchResult, St
     api::get_skill_details(&skill_id).await
 }
 
-/// Get all installed skills from the lock file
+/// Get all installed skills, merging what's found on disk for the four
+/// first-class agents (Claude Code, Codex, OpenCode, pi) with the
+/// ~/.agents/.skill-lock.json entries.
 #[tauri::command]
-pub fn get_installed_skills() -> Result<Vec<InstalledSkill>, String> {
-    lock_file::get_installed_skills()
+pub fn get_installed_skills(
+    project_paths: Option<Vec<String>>,
+) -> Result<Vec<InstalledSkill>, String> {
+    scan::scan_installed_skills(project_paths)
 }
 
 /// Check if a skill is installed
@@ -69,7 +84,7 @@ pub async fn install_skill(request: InstallRequest) -> Result<InstallResult, Str
     args.push("--yes".to_string());
 
     // Add scope flag
-    if request.scope == super::types::InstallScope::Global {
+    if request.scope == super::skill_dto::InstallScope::Global {
         args.push("--global".to_string());
     } else if let Some(ref project_path) = request.project_path {
         args.push("--cwd".to_string());
@@ -111,7 +126,7 @@ pub async fn install_skill(request: InstallRequest) -> Result<InstallResult, Str
         let result_name = skill_name.unwrap_or_else(|| {
             repo_source
                 .split('/')
-                .last()
+                .next_back()
                 .unwrap_or(&repo_source)
                 .to_string()
         });
@@ -156,7 +171,11 @@ fn parse_skill_source(source: &str) -> (String, Option<String>) {
 /// Remove a skill using npx skills CLI
 #[tauri::command]
 pub async fn remove_skill(skill_name: String, global: bool) -> Result<InstallResult, String> {
-    let mut args = vec!["skills".to_string(), "remove".to_string(), skill_name.clone()];
+    let mut args = vec![
+        "skills".to_string(),
+        "remove".to_string(),
+        skill_name.clone(),
+    ];
 
     // Add --yes for non-interactive mode (CLI has its own confirmation prompt)
     args.push("--yes".to_string());
@@ -200,7 +219,11 @@ pub async fn remove_skill(skill_name: String, global: bool) -> Result<InstallRes
 /// Update a skill using npx skills CLI
 #[tauri::command]
 pub async fn update_skill(skill_name: String, global: bool) -> Result<InstallResult, String> {
-    let mut args = vec!["skills".to_string(), "update".to_string(), skill_name.clone()];
+    let mut args = vec![
+        "skills".to_string(),
+        "update".to_string(),
+        skill_name.clone(),
+    ];
 
     if global {
         args.push("--global".to_string());

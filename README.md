@@ -7,16 +7,16 @@ A macOS desktop application for managing coding assistant configuration files in
 - **Settings Editor**: Visual and code-based editor for JSON configuration files
   - Claude Code: `~/.claude/settings.json`, `.claude/settings.json`
   - OpenCode: `~/.config/opencode/opencode.json`, `opencode.json`
-  
+
 - **Agent Manager**: Create and edit custom subagents
   - Claude Code agents: `~/.claude/agents/*.md`
   - OpenCode agents: `~/.config/opencode/agent/*.md`
   - Form-based editor with YAML frontmatter support
-  
+
 - **Skills Discovery**: Browse and manage reusable skills
   - Claude Code skills: `~/.claude/skills/*/SKILL.md`
   - OpenCode skills: `~/.config/opencode/skill/*/SKILL.md`
-  
+
 - **Template Library**: Pre-built templates for common agent types
   - Code Reviewer
   - Debugger
@@ -60,24 +60,24 @@ npm run tauri build
 
 ### Claude Code
 
-| File | Location | Description |
-|------|----------|-------------|
-| `settings.json` | `~/.claude/` | Global settings |
-| `settings.json` | `.claude/` | Project settings |
-| `settings.local.json` | `.claude/` | Local project settings |
-| `CLAUDE.md` | `~/.claude/` or project root | Memory/instructions |
-| `agents/*.md` | `~/.claude/agents/` | Custom subagents |
-| `skills/*/SKILL.md` | `~/.claude/skills/` | Custom skills |
+| File                  | Location                     | Description            |
+| --------------------- | ---------------------------- | ---------------------- |
+| `settings.json`       | `~/.claude/`                 | Global settings        |
+| `settings.json`       | `.claude/`                   | Project settings       |
+| `settings.local.json` | `.claude/`                   | Local project settings |
+| `CLAUDE.md`           | `~/.claude/` or project root | Memory/instructions    |
+| `agents/*.md`         | `~/.claude/agents/`          | Custom subagents       |
+| `skills/*/SKILL.md`   | `~/.claude/skills/`          | Custom skills          |
 
 ### OpenCode
 
-| File | Location | Description |
-|------|----------|-------------|
-| `opencode.json` | `~/.config/opencode/` | Global config |
-| `opencode.json` | Project root | Project config |
-| `AGENTS.md` | `~/.config/opencode/` or project root | Rules/instructions |
-| `agent/*.md` | `~/.config/opencode/agent/` | Custom agents |
-| `skill/*/SKILL.md` | `~/.config/opencode/skill/` | Custom skills |
+| File               | Location                              | Description        |
+| ------------------ | ------------------------------------- | ------------------ |
+| `opencode.json`    | `~/.config/opencode/`                 | Global config      |
+| `opencode.json`    | Project root                          | Project config     |
+| `AGENTS.md`        | `~/.config/opencode/` or project root | Rules/instructions |
+| `agent/*.md`       | `~/.config/opencode/agent/`           | Custom agents      |
+| `skill/*/SKILL.md` | `~/.config/opencode/skill/`           | Custom skills      |
 
 ### AGENTS.md
 

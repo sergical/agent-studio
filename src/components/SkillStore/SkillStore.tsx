@@ -2,14 +2,19 @@
 // SkillStore - Main skill discovery and management view
 // ============================================================================
 
-import { useState, useEffect, useCallback } from 'react';
-import { SkillSearchBar } from './SkillSearchBar';
-import { SkillBrowser } from './SkillBrowser';
-import { SkillDetailPanel } from './SkillDetailPanel';
-import { InstallProgressModal } from './InstallProgressModal';
-import { searchSkills, getInstalledSkills, getPopularSkills } from '../../lib/skillsApi';
-import type { SkillSearchResult, InstalledSkill, SkillWithStatus, InstallProgressState } from '../../lib/skillsTypes';
-import { useAppStore } from '../../store/appStore';
+import { useState, useEffect, useCallback } from "react";
+import { SkillSearchBar } from "./SkillSearchBar";
+import { SkillBrowser } from "./SkillBrowser";
+import { SkillDetailPanel } from "./SkillDetailPanel";
+import { InstallProgressModal } from "./InstallProgressModal";
+import { searchSkills, getInstalledSkills, getPopularSkills } from "../../lib/skill-api";
+import type {
+  SkillSearchResult,
+  InstalledSkill,
+  SkillWithStatus,
+  InstallProgressState,
+} from "../../lib/skill-types";
+import { useAppStore } from "../../store/appStore";
 
 const LIMIT = 50;
 
@@ -18,12 +23,15 @@ const LIMIT = 50;
  * e.g., "https://github.com/getsentry/skills" -> "getsentry/skills"
  * e.g., "getsentry/skills" -> "getsentry/skills"
  */
-function extractGitHubRepo(source: string | undefined, sourceUrl: string | undefined): string | undefined {
+function extractGitHubRepo(
+  source: string | undefined,
+  sourceUrl: string | undefined,
+): string | undefined {
   // Try source_url first (more reliable)
   if (sourceUrl) {
     const match = sourceUrl.match(/github\.com\/([^/]+\/[^/]+)/);
     if (match) {
-      return match[1].replace(/\.git$/, '');
+      return match[1].replace(/\.git$/, "");
     }
   }
   // Fall back to source if it looks like owner/repo
@@ -34,8 +42,8 @@ function extractGitHubRepo(source: string | undefined, sourceUrl: string | undef
 }
 
 export function SkillStore() {
-  const [activeTab, setActiveTab] = useState<'browse' | 'installed'>('browse');
-  const [searchQuery, setSearchQuery] = useState('');
+  const [activeTab, setActiveTab] = useState<"browse" | "installed">("browse");
+  const [searchQuery, setSearchQuery] = useState("");
   const [searchResults, setSearchResults] = useState<SkillWithStatus[]>([]);
   const [installedSkills, setInstalledSkills] = useState<InstalledSkill[]>([]);
   const [isLoading, setIsLoading] = useState(false);
@@ -45,20 +53,16 @@ export function SkillStore() {
   const [hasMore, setHasMore] = useState(false);
   const [offset, setOffset] = useState(0);
 
-  const addToast = useAppStore(state => state.addToast);
+  const addToast = useAppStore((state) => state.addToast);
+  const projects = useAppStore((state) => state.projects);
 
-  // Load installed and popular skills on mount
-  useEffect(() => {
-    loadInitialData();
-  }, []);
-
-  const loadInitialData = async () => {
+  const loadInitialData = useCallback(async () => {
     setIsLoading(true);
     setOffset(0);
     try {
       // Load both in parallel
       const [installed, popularResponse] = await Promise.all([
-        getInstalledSkills(),
+        getInstalledSkills(projects),
         getPopularSkills(LIMIT, 0),
       ]);
 
@@ -67,8 +71,8 @@ export function SkillStore() {
 
       // Show popular skills with installed status merged
       if (!searchQuery) {
-        const installedMap = new Map(installed.map(s => [s.name, s]));
-        const popularWithStatus: SkillWithStatus[] = popularResponse.skills.map(skill => ({
+        const installedMap = new Map(installed.map((s) => [s.name, s]));
+        const popularWithStatus: SkillWithStatus[] = popularResponse.skills.map((skill) => ({
           ...skill,
           is_installed: installedMap.has(skill.name),
           installed_info: installedMap.get(skill.name),
@@ -76,37 +80,51 @@ export function SkillStore() {
         setSearchResults(popularWithStatus);
       }
     } catch (err) {
-      console.error('Failed to load initial data:', err);
+      addToast({
+        type: "error",
+        title: "Failed to Load Skills",
+        message: err instanceof Error ? err.message : "Failed to load initial data",
+      });
     } finally {
       setIsLoading(false);
     }
-  };
+  }, [projects, searchQuery, addToast]);
 
-  const loadInstalledSkills = async () => {
+  const loadInstalledSkills = useCallback(async () => {
     try {
-      const installed = await getInstalledSkills();
+      const installed = await getInstalledSkills(projects);
       setInstalledSkills(installed);
     } catch (err) {
-      console.error('Failed to load installed skills:', err);
+      addToast({
+        type: "error",
+        title: "Failed to Load Installed Skills",
+        message: err instanceof Error ? err.message : "Unknown error",
+      });
     }
-  };
+  }, [projects, addToast]);
+
+  // Load installed and popular skills on mount
+  useEffect(() => {
+    loadInitialData();
+  }, [loadInitialData]);
 
   // Re-merge searchResults when installedSkills changes (e.g., after install/remove)
   useEffect(() => {
-    if (searchResults.length > 0 && installedSkills.length >= 0) {
-      const installedMap = new Map(installedSkills.map(s => [s.name, s]));
-      setSearchResults(prev => prev.map(skill => ({
+    setSearchResults((prev) => {
+      if (prev.length === 0) return prev;
+      const installedMap = new Map(installedSkills.map((s) => [s.name, s]));
+      return prev.map((skill) => ({
         ...skill,
         is_installed: installedMap.has(skill.name),
         installed_info: installedMap.get(skill.name),
-      })));
-    }
+      }));
+    });
   }, [installedSkills]);
 
   // Sync selectedSkill with updated searchResults (e.g., after install changes is_installed)
   useEffect(() => {
     if (selectedSkill && searchResults.length > 0) {
-      const updated = searchResults.find(s => s.name === selectedSkill.name);
+      const updated = searchResults.find((s) => s.name === selectedSkill.name);
       if (updated && updated.is_installed !== selectedSkill.is_installed) {
         setSelectedSkill(updated);
       }
@@ -115,52 +133,59 @@ export function SkillStore() {
 
   const mergeWithInstalledStatus = (
     results: SkillSearchResult[],
-    installed: InstalledSkill[]
+    installed: InstalledSkill[],
   ): SkillWithStatus[] => {
-    const installedMap = new Map(installed.map(s => [s.name, s]));
-    return results.map(skill => ({
+    const installedMap = new Map(installed.map((s) => [s.name, s]));
+    return results.map((skill) => ({
       ...skill,
       is_installed: installedMap.has(skill.name),
       installed_info: installedMap.get(skill.name),
     }));
   };
 
-  const handleSearch = useCallback(async (query: string) => {
-    setSearchQuery(query);
-    setOffset(0);
+  const handleSearch = useCallback(
+    async (query: string) => {
+      setSearchQuery(query);
+      setOffset(0);
 
-    if (!query.trim() || query.length < 2) {
-      // Show popular skills when no search query
+      if (!query.trim() || query.length < 2) {
+        // Show popular skills when no search query
+        setIsLoading(true);
+        try {
+          const response = await getPopularSkills(LIMIT, 0);
+          const resultsWithStatus = mergeWithInstalledStatus(response.skills, installedSkills);
+          setSearchResults(resultsWithStatus);
+          setHasMore(response.has_more);
+        } catch (err) {
+          addToast({
+            type: "error",
+            title: "Failed to Load Skills",
+            message: err instanceof Error ? err.message : "Failed to load popular skills",
+          });
+        } finally {
+          setIsLoading(false);
+        }
+        return;
+      }
+
       setIsLoading(true);
       try {
-        const response = await getPopularSkills(LIMIT, 0);
+        const response = await searchSkills(query, LIMIT, 0);
         const resultsWithStatus = mergeWithInstalledStatus(response.skills, installedSkills);
         setSearchResults(resultsWithStatus);
         setHasMore(response.has_more);
       } catch (err) {
-        console.error('Failed to load popular skills:', err);
+        addToast({
+          type: "error",
+          title: "Search Failed",
+          message: err instanceof Error ? err.message : "Failed to search skills",
+        });
       } finally {
         setIsLoading(false);
       }
-      return;
-    }
-
-    setIsLoading(true);
-    try {
-      const response = await searchSkills(query, LIMIT, 0);
-      const resultsWithStatus = mergeWithInstalledStatus(response.skills, installedSkills);
-      setSearchResults(resultsWithStatus);
-      setHasMore(response.has_more);
-    } catch (err) {
-      addToast({
-        type: 'error',
-        title: 'Search Failed',
-        message: err instanceof Error ? err.message : 'Failed to search skills',
-      });
-    } finally {
-      setIsLoading(false);
-    }
-  }, [installedSkills, addToast]);
+    },
+    [installedSkills, addToast],
+  );
 
   const loadMore = useCallback(async () => {
     if (isLoadingMore || !hasMore) return;
@@ -169,19 +194,20 @@ export function SkillStore() {
     const newOffset = offset + LIMIT;
 
     try {
-      const response = searchQuery.trim().length >= 2
-        ? await searchSkills(searchQuery, LIMIT, newOffset)
-        : await getPopularSkills(LIMIT, newOffset);
+      const response =
+        searchQuery.trim().length >= 2
+          ? await searchSkills(searchQuery, LIMIT, newOffset)
+          : await getPopularSkills(LIMIT, newOffset);
 
       const newResults = mergeWithInstalledStatus(response.skills, installedSkills);
-      setSearchResults(prev => [...prev, ...newResults]);
+      setSearchResults((prev) => [...prev, ...newResults]);
       setHasMore(response.has_more);
       setOffset(newOffset);
     } catch (err) {
       addToast({
-        type: 'error',
-        title: 'Load More Failed',
-        message: err instanceof Error ? err.message : 'Failed to load more skills',
+        type: "error",
+        title: "Load More Failed",
+        message: err instanceof Error ? err.message : "Failed to load more skills",
       });
     } finally {
       setIsLoadingMore(false);
@@ -192,45 +218,48 @@ export function SkillStore() {
     setInstallProgress({
       isInstalling: true,
       skillName,
-      stage: 'starting',
-      message: 'Starting installation...',
+      stage: "starting",
+      message: "Starting installation...",
     });
   }, []);
 
-  const handleInstallComplete = useCallback((result: { success: boolean; error?: string; skillName?: string }) => {
-    if (result.success) {
-      addToast({
-        type: 'success',
-        title: 'Skill Installed',
-        message: `Successfully installed ${result.skillName || 'skill'}`,
-      });
-      // Refresh installed skills - useEffect will re-merge searchResults
-      loadInstalledSkills();
-    } else {
-      addToast({
-        type: 'error',
-        title: 'Installation Failed',
-        message: result.error || 'Unknown error',
-      });
-    }
-    setInstallProgress(null);
-  }, [addToast]);
+  const handleInstallComplete = useCallback(
+    (result: { success: boolean; error?: string; skillName?: string }) => {
+      if (result.success) {
+        addToast({
+          type: "success",
+          title: "Skill Installed",
+          message: `Successfully installed ${result.skillName || "skill"}`,
+        });
+        // Refresh installed skills - useEffect will re-merge searchResults
+        loadInstalledSkills();
+      } else {
+        addToast({
+          type: "error",
+          title: "Installation Failed",
+          message: result.error || "Unknown error",
+        });
+      }
+      setInstallProgress(null);
+    },
+    [addToast, loadInstalledSkills],
+  );
 
   const handleRemoveComplete = useCallback(() => {
     addToast({
-      type: 'success',
-      title: 'Skill Removed',
-      message: 'Successfully removed skill',
+      type: "success",
+      title: "Skill Removed",
+      message: "Successfully removed skill",
     });
     // Refresh installed skills - useEffect will re-merge searchResults
     loadInstalledSkills();
     setSelectedSkill(null);
-  }, [addToast]);
+  }, [addToast, loadInstalledSkills]);
 
   // Get installed skills with full status for Installed tab
-  const installedSkillsWithStatus: SkillWithStatus[] = installedSkills.map(skill => {
+  const installedSkillsWithStatus: SkillWithStatus[] = installedSkills.map((skill) => {
     // Try to find matching skill from search results for extra metadata
-    const found = searchResults.find(s => s.name === skill.name);
+    const found = searchResults.find((s) => s.name === skill.name);
     if (found) return found;
 
     // Extract GitHub owner/repo from source_url (more reliable) or source
@@ -260,20 +289,26 @@ export function SkillStore() {
       {/* Tab Navigation */}
       <div className="skill-store-tabs">
         <button
-          className={`skill-store-tab ${activeTab === 'browse' ? 'active' : ''}`}
-          onClick={() => { setActiveTab('browse'); setSelectedSkill(null); }}
+          className={`skill-store-tab ${activeTab === "browse" ? "active" : ""}`}
+          onClick={() => {
+            setActiveTab("browse");
+            setSelectedSkill(null);
+          }}
         >
           Browse
         </button>
         <button
-          className={`skill-store-tab ${activeTab === 'installed' ? 'active' : ''}`}
-          onClick={() => { setActiveTab('installed'); setSelectedSkill(null); }}
+          className={`skill-store-tab ${activeTab === "installed" ? "active" : ""}`}
+          onClick={() => {
+            setActiveTab("installed");
+            setSelectedSkill(null);
+          }}
         >
           Installed ({installedSkills.length})
         </button>
       </div>
 
-      {activeTab === 'browse' && (
+      {activeTab === "browse" && (
         <div className="skill-store-toolbar">
           <SkillSearchBar
             value={searchQuery}
@@ -283,22 +318,22 @@ export function SkillStore() {
           />
           <div className="skill-store-filters">
             <span className="skill-store-count">
-              {searchResults.length} skill{searchResults.length !== 1 ? 's' : ''}
+              {searchResults.length} skill{searchResults.length !== 1 ? "s" : ""}
             </span>
           </div>
         </div>
       )}
 
-      {activeTab === 'installed' && (
+      {activeTab === "installed" && (
         <div className="skill-store-toolbar">
           <span className="skill-store-count">
-            {installedSkills.length} installed skill{installedSkills.length !== 1 ? 's' : ''}
+            {installedSkills.length} installed skill{installedSkills.length !== 1 ? "s" : ""}
           </span>
         </div>
       )}
 
       <div className="skill-store-content">
-        {activeTab === 'browse' ? (
+        {activeTab === "browse" ? (
           <SkillBrowser
             skills={searchResults}
             selectedSkill={selectedSkill}
@@ -308,9 +343,7 @@ export function SkillStore() {
             hasMore={hasMore}
             onLoadMore={loadMore}
             emptyMessage={
-              searchQuery
-                ? 'No skills found matching your search'
-                : 'Loading popular skills...'
+              searchQuery ? "No skills found matching your search" : "Loading popular skills..."
             }
           />
         ) : (
@@ -329,10 +362,7 @@ export function SkillStore() {
 
         {selectedSkill && (
           <>
-            <div
-              className="skill-detail-overlay"
-              onClick={() => setSelectedSkill(null)}
-            />
+            <div className="skill-detail-overlay" onClick={() => setSelectedSkill(null)} />
             <SkillDetailPanel
               skill={selectedSkill}
               onClose={() => setSelectedSkill(null)}
@@ -345,10 +375,7 @@ export function SkillStore() {
       </div>
 
       {installProgress && (
-        <InstallProgressModal
-          progress={installProgress}
-          onClose={() => setInstallProgress(null)}
-        />
+        <InstallProgressModal progress={installProgress} onClose={() => setInstallProgress(null)} />
       )}
     </div>
   );

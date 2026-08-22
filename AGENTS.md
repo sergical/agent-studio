@@ -2,16 +2,19 @@
 
 ## Project Overview
 
-Agent Studio is a **GUI for skills.sh** - a Tauri 2.x desktop application for discovering, installing, and managing agent skills across 41+ AI coding assistants. It also provides memory file management (AGENTS.md/CLAUDE.md consistency) and health checks.
+Agent Studio is a **GUI for skills.sh** - a Tauri 2.x desktop application for discovering, installing, syncing, and testing agent skills.
 
 ### Core Features
+
 1. **Skill Discovery** - Search 36,000+ skills from skills.sh
-2. **Skill Installation** - Install to global or project scope via `npx skills` CLI
-3. **Multi-Agent Support** - Claude Code, Cursor, OpenCode, Cline, Windsurf, and 36+ more
-4. **Memory Management** - AGENTS.md/CLAUDE.md consistency and symlink detection
-5. **Health Checks** - Duplicate detection, broken symlinks, configuration issues
+2. **Skill Installation** - Install/remove/update via `npx skills` CLI to global or project scope
+3. **First-Class Agents** - Claude Code, Codex, OpenCode, pi, plus a shared `.agents/skills` root
+4. **Provenance** - Every installed skill is classified as `skills-sh`, `plugin`, `dotagents`, or `manual` (precedence: dotagents > plugin > skills-sh > manual)
+5. **Native Plugin Enumeration** - Discovers skills shipped inside Claude Code (`~/.claude/plugins/cache`) and Codex (`~/.codex/plugins/cache`) plugin caches, per the agent-plugins.org manifest convention
+6. **Spec Validation** - Flags agentskills.io SKILL.md spec violations (`spec_violations`) and detects the getsentry/skillet spec pattern (`has_spec`)
 
 ### Tech Stack
+
 - **Frontend**: React 19 + TypeScript + Tailwind CSS 4.x + Zustand
 - **Backend**: Tauri 2.x (Rust)
 - **Skills Integration**: skills.sh API + `npx skills` CLI
@@ -64,43 +67,71 @@ cd src-tauri && cargo clippy
 
 ```bash
 # Type check only (no emit)
-npx tsc --noEmit
+npm run typecheck
 
-# Note: No ESLint/Prettier configured - rely on TypeScript strict mode
+# Lint (oxlint)
+npm run lint
+npm run lint:fix
+
+# Format (oxfmt)
+npm run format
+npm run format:check
+
+# Full gate: typecheck + lint + format:check + cargo fmt --check + clippy -D warnings + cargo test
+npm run check
 ```
 
 ## Tech Stack
 
-| Layer     | Technology                           |
-|-----------|--------------------------------------|
-| Framework | Tauri 2.x (macOS desktop app)        |
-| Frontend  | React 19.1, TypeScript 5.8           |
-| Styling   | Tailwind CSS 4.x                     |
-| State     | Zustand 5.x                          |
-| Editor    | Monaco Editor (@monaco-editor/react) |
-| Animation | Motion (formerly Framer Motion)      |
-| Icons     | lucide-react                         |
-| Backend   | Rust 2021 Edition                    |
+| Layer       | Technology                                                      |
+| ----------- | --------------------------------------------------------------- |
+| Framework   | Tauri 2.x (macOS desktop app)                                   |
+| Frontend    | React 19.1, TypeScript 5.8                                      |
+| Styling     | Tailwind CSS 4.x                                                |
+| State       | Zustand 5.x                                                     |
+| Linting     | oxlint (JS/TS), clippy (Rust)                                   |
+| Formatting  | oxfmt (JS/TS), rustfmt (Rust)                                   |
+| Lint plugin | anti-slop (local oxlint JS plugin in `tools/oxlint/anti-slop/`) |
+| Icons       | lucide-react                                                    |
+| Backend     | Rust 2021 Edition                                               |
 
 ## Project Structure
 
 ```
 /
-├── src/                    # React frontend
-│   ├── components/         # React components
-│   │   └── ui/            # Reusable UI components
-│   ├── hooks/             # Custom React hooks
-│   ├── lib/               # Utilities (api.ts, types.ts)
-│   ├── store/             # Zustand store (appStore.ts)
-│   ├── App.tsx            # Main app component
-│   └── main.tsx           # Entry point
-├── src-tauri/             # Rust backend
+├── src/                          # React frontend
+│   ├── components/
+│   │   ├── SkillStore/           # SkillStore, SkillBrowser, SkillDetailPanel,
+│   │   │                         # SkillDetailHeader, SkillContent, InstallControls,
+│   │   │                         # AgentTargetSelector, SkillSearchBar, InstallProgressModal
+│   │   └── ui/                   # Toast, ToastContainer
+│   ├── lib/
+│   │   ├── skill-types.ts        # Type definitions
+│   │   ├── skill-api.ts          # Tauri IPC wrappers
+│   │   └── github-skill-source.ts # GitHub SKILL.md fetch
+│   ├── store/
+│   │   └── appStore.ts           # Zustand store
+│   ├── App.tsx                   # Main app component
+│   └── main.tsx                  # Entry point
+├── src-tauri/                    # Rust backend
 │   ├── src/
-│   │   ├── commands/      # Tauri IPC commands (mod.rs)
-│   │   ├── lib.rs         # Library entry
-│   │   └── main.rs        # Rust entry point
-│   └── Cargo.toml         # Rust dependencies
-└── package.json           # npm dependencies
+│   │   ├── skills/
+│   │   │   ├── mod.rs
+│   │   │   ├── agents.rs         # AgentId, agent paths
+│   │   │   ├── api.rs            # skills.sh HTTP client
+│   │   │   ├── commands.rs       # Tauri IPC commands
+│   │   │   ├── frontmatter.rs    # SKILL.md frontmatter parsing/validation
+│   │   │   ├── lock_file.rs      # ~/.agents/.skill-lock.json
+│   │   │   ├── plugins.rs        # Native plugin cache enumeration
+│   │   │   ├── provenance.rs     # Source-kind classification
+│   │   │   ├── scan.rs           # Installed-skill directory scanner
+│   │   │   └── skill_dto.rs      # Serde DTOs sent to the frontend
+│   │   ├── lib.rs                # Library entry
+│   │   └── main.rs               # Rust entry point
+│   └── Cargo.toml                # Rust dependencies
+├── tools/
+│   └── oxlint/anti-slop/         # Local oxlint JS plugin
+└── package.json                  # npm dependencies
 ```
 
 ## Code Style Guidelines
@@ -108,15 +139,17 @@ npx tsc --noEmit
 ### TypeScript/React
 
 **Imports:** Group in order - React, external libs, internal modules, types
+
 ```typescript
-import { useEffect, useCallback, useState } from 'react';
-import { motion } from 'motion/react';
-import { X, Save } from 'lucide-react';
-import { useAppStore } from './store/appStore';
-import type { EntityType, DisplayableEntity } from './lib/types';
+import { useEffect, useCallback, useState } from "react";
+import { motion } from "motion/react";
+import { X, Save } from "lucide-react";
+import { useAppStore } from "./store/appStore";
+import type { AgentId, InstalledSkill } from "./lib/skill-types";
 ```
 
 **Components:** Use function components with explicit prop interfaces
+
 ```typescript
 interface PanelProps {
   isOpen: boolean;
@@ -131,25 +164,32 @@ export function Panel({ isOpen, onClose, title, children }: PanelProps) {
 ```
 
 **Hooks:** Prefix with `use`, return object or array consistently
+
 ```typescript
 export function useKeyboardNavigation(options: Options) { ... }
 ```
 
 **Types:** Use `interface` for objects, `type` for unions/primitives
+
 ```typescript
-export interface BaseEntityFields { id: string; name: string; }
-export type EntityType = 'settings' | 'memory' | 'agent';
-export type FilterScope = 'all' | 'global' | 'project';
+export interface BaseEntityFields {
+  id: string;
+  name: string;
+}
+export type EntityType = "settings" | "memory" | "agent";
+export type FilterScope = "all" | "global" | "project";
 ```
 
 **Type Guards:** Create explicit type guards for discriminated unions
+
 ```typescript
 export function isFlatEntity(entity: DisplayableEntity): entity is FlatEntity {
-  return 'path' in entity && 'scope' in entity;
+  return "path" in entity && "scope" in entity;
 }
 ```
 
 **File Headers:** Use comment blocks for major files
+
 ```typescript
 // ============================================================================
 // Agent Studio - Module Name
@@ -160,6 +200,7 @@ export function isFlatEntity(entity: DisplayableEntity): entity is FlatEntity {
 ### Rust
 
 **Structs:** Use `#[derive(Debug, Serialize, Deserialize, Clone)]`
+
 ```rust
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct BaseEntity {
@@ -169,6 +210,7 @@ pub struct BaseEntity {
 ```
 
 **Tauri Commands:** Use `#[tauri::command]` attribute
+
 ```rust
 #[tauri::command]
 pub fn discover_all(project_paths: Option<Vec<String>>) -> Result<DiscoveryResult, String> {
@@ -177,6 +219,7 @@ pub fn discover_all(project_paths: Option<Vec<String>>) -> Result<DiscoveryResul
 ```
 
 **Error Handling:** Return `Result<T, String>` for Tauri commands
+
 ```rust
 fn get_home_dir() -> Option<PathBuf> {
     dirs::home_dir()
@@ -199,51 +242,64 @@ fn get_home_dir() -> Option<PathBuf> {
 
 ### Naming Conventions
 
-| Type          | Convention        | Example                    |
-|---------------|-------------------|----------------------------|
-| Components    | PascalCase        | `DetailPanel`, `Toast`     |
-| Hooks         | camelCase + use   | `useKeyboardNavigation`    |
-| Types         | PascalCase        | `EntityType`, `ViewType`   |
-| Variables     | camelCase         | `selectedEntity`, `isOpen` |
-| Constants     | SCREAMING_SNAKE   | `ENTITY_TEMPLATES`         |
-| Files (TS)    | PascalCase.tsx    | `DetailPanel.tsx`          |
-| Files (Rust)  | snake_case.rs     | `mod.rs`, `lib.rs`         |
+| Type         | Convention      | Example                    |
+| ------------ | --------------- | -------------------------- |
+| Components   | PascalCase      | `DetailPanel`, `Toast`     |
+| Hooks        | camelCase + use | `useKeyboardNavigation`    |
+| Types        | PascalCase      | `EntityType`, `ViewType`   |
+| Variables    | camelCase       | `selectedEntity`, `isOpen` |
+| Constants    | SCREAMING_SNAKE | `ENTITY_TEMPLATES`         |
+| Files (TS)   | PascalCase.tsx  | `DetailPanel.tsx`          |
+| Files (Rust) | snake_case.rs   | `mod.rs`, `lib.rs`         |
+
+### Naming files
+
+No bare-role filenames (`types.ts`, `api.ts`, `utils.ts`); prefix the domain (`skill-types.ts`, `skill-api.ts`). Use `index.ts` only as a thin re-export.
 
 ### Error Handling
 
 **Frontend:** Use try-catch with toast notifications
+
 ```typescript
 try {
   await discoverAll([homeDir]);
 } catch (err) {
   addToast({
-    type: 'error',
-    title: 'Discovery Failed',
-    message: err instanceof Error ? err.message : 'Unknown error',
+    type: "error",
+    title: "Discovery Failed",
+    message: err instanceof Error ? err.message : "Unknown error",
   });
 }
 ```
 
 **Backend:** Return Result types, use `.ok_or()` for Option conversion
+
 ```rust
 let home = get_home_dir().ok_or("Could not find home directory")?;
 ```
 
 ### Key Files
 
-| Purpose              | File                                |
-|----------------------|-------------------------------------|
-| Main App             | `src/App.tsx`                       |
-| State Store          | `src/store/appStore.ts`             |
-| Type Definitions     | `src/lib/types.ts`                  |
-| API Layer            | `src/lib/api.ts`                    |
-| Tauri Commands       | `src-tauri/src/commands/mod.rs`     |
-| Tauri Config         | `src-tauri/tauri.conf.json`         |
-| TS Config            | `tsconfig.json`                     |
+| Purpose               | File                                 |
+| --------------------- | ------------------------------------ |
+| Main App              | `src/App.tsx`                        |
+| State Store           | `src/store/appStore.ts`              |
+| Skill types           | `src/lib/skill-types.ts`             |
+| Tauri IPC wrappers    | `src/lib/skill-api.ts`               |
+| GitHub SKILL.md fetch | `src/lib/github-skill-source.ts`     |
+| Tauri commands        | `src-tauri/src/skills/commands.rs`   |
+| Scanner               | `src-tauri/src/skills/scan.rs`       |
+| Provenance            | `src-tauri/src/skills/provenance.rs` |
+| Agent paths           | `src-tauri/src/skills/agents.rs`     |
+| Lint config           | `.oxlintrc.json`                     |
+| Format config         | `.oxfmtrc.json`                      |
+| Tauri Config          | `src-tauri/tauri.conf.json`          |
+| TS Config             | `tsconfig.json`                      |
 
 ### TypeScript Strictness
 
 Enabled in `tsconfig.json`:
+
 - `strict: true`
 - `noUnusedLocals: true`
 - `noUnusedParameters: true`
@@ -251,20 +307,22 @@ Enabled in `tsconfig.json`:
 
 ### Testing
 
-No testing framework is currently configured. When adding tests:
-- Use Vitest for frontend (compatible with Vite)
-- Use `cargo test` for Rust backend
+- Rust: `cargo test` in `src-tauri`, tests live in colocated `#[cfg(test)]` modules
+- Frontend: no test runner is configured yet; use Vitest (compatible with Vite) when adding tests
 
 ## Skills.sh Integration
 
 Agent Studio integrates with skills.sh for skill discovery and installation.
 
 ### API Endpoint
+
 - **Search**: `https://skills.sh/api/search?q=<query>`
 - Returns skill metadata including name, install count, top source
 
 ### Lock File (`~/.agents/.skill-lock.json`)
+
 Tracks installed skills with their sources and hashes:
+
 ```json
 {
   "version": 3,
@@ -282,78 +340,20 @@ Tracks installed skills with their sources and hashes:
 ```
 
 ### CLI Dependency
+
 - Installation: Uses `npx skills add <skill>` for battle-tested install logic
 - Removal: Uses `npx skills remove <skill>`
 - Updates: Uses `npx skills update <skill>`
 - Requires Node.js 18+
 
-### Supported Agents (41 total)
+### First-Class Agents
 
-| Agent | Project Path | Global Path |
-|-------|--------------|-------------|
-| Claude Code | `.claude/skills/` | `~/.claude/skills/` |
-| OpenCode | `.opencode/skills/` | `~/.config/opencode/skills/` |
-| Cursor | `.cursor/skills/` | `~/.cursor/skills/` |
-| Cline | `.cline/skills/` | `~/.cline/skills/` |
-| Windsurf | `.windsurf/skills/` | `~/.windsurf/skills/` |
-| Roo Code | `.roo-code/skills/` | `~/.roo-code/skills/` |
-| Codex | `.codex/skills/` | `~/.codex/skills/` |
-| Amp | `.amp/skills/` | `~/.amp/skills/` |
-| Zed | `.zed/skills/` | `~/.zed/skills/` |
-| Void | `.void/skills/` | `~/.void/skills/` |
-| Aider | `.aider/skills/` | `~/.aider/skills/` |
-| Pear AI | `.pearai/skills/` | `~/.pearai/skills/` |
-| Continue | `.continue/skills/` | `~/.continue/skills/` |
+| Agent       | Project Path                        | Global Path                                  |
+| ----------- | ----------------------------------- | -------------------------------------------- |
+| Claude Code | `.claude/skills/`                   | `~/.claude/skills/`                          |
+| Codex       | `.codex/skills/`                    | `~/.codex/skills/`                           |
+| OpenCode    | `.opencode/skills/` (also `skill/`) | `~/.config/opencode/skills/` (also `skill/`) |
+| pi          | `.pi/skills/`                       | `~/.pi/agent/skills/`                        |
+| shared      | `.agents/skills/`                   | `~/.agents/skills/`                          |
 
-See `src-tauri/src/skills/types.rs` for the complete list of 41 agents.
-
-## Multi-Tool Support (Claude Code & OpenCode)
-
-Agent Studio supports both **Claude Code** and **OpenCode** coding assistants. Each tool has its own configuration paths and file formats.
-
-### Tool Identification
-
-All entities have a `tool` field (`'claude' | 'opencode'`) to identify which tool they belong to:
-- **Claude Code**: Orange indicator (#F97316)
-- **OpenCode**: Dark Blue indicator (#1E40AF)
-
-### Configuration Paths
-
-| Tool | Scope | Path |
-|------|-------|------|
-| Claude | Global | `~/.claude/` |
-| Claude | Project | `.claude/` |
-| OpenCode | Global | `~/.config/opencode/` |
-| OpenCode | Project | `.opencode/` |
-
-### Entity Paths
-
-| Entity | Claude | OpenCode |
-|--------|--------|----------|
-| Settings | `settings.json` | `opencode.json` / `opencode.jsonc` |
-| Memory | `CLAUDE.md` | `AGENTS.md` |
-| Agents | `agents/*.md` | `agent/*.md` |
-| Skills | `skills/*/SKILL.md` | `skill/*/SKILL.md` |
-| Commands | `commands/*.md` | `command/*.md` |
-| MCP Servers | `mcpServers` in settings | `mcp` key in opencode.json |
-
-### Key Implementation Details
-
-**TypeScript Types** (`src/lib/types.ts`):
-```typescript
-export type ToolType = 'claude' | 'opencode';
-export const TOOL_COLORS: Record<ToolType, string> = {
-  claude: '#F97316',
-  opencode: '#1E40AF',
-};
-```
-
-**Filtering**: Store has `filterTool` state with localStorage persistence:
-```typescript
-filterTool: 'all' | 'claude' | 'opencode'
-```
-
-**Entity Creation**: `createEntity` API accepts a `tool` parameter to create entities in the appropriate directory structure.
-
-**Rust Discovery**: `discover_all` discovers entities from both Claude and OpenCode paths, setting the `tool` field appropriately on each entity.
-
+`npx skills` can still target the full agent list; see `src-tauri/src/skills/agents.rs` for `AgentId`.

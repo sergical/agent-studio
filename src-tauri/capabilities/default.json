@@ -3,26 +3,5 @@
   "identifier": "default",
   "description": "Capability for the main window",
   "windows": ["main"],
-  "permissions": [
-    "core:default",
-    "opener:default",
-    "fs:default",
-    "fs:allow-read-text-file",
-    "fs:allow-write-text-file",
-    "fs:allow-exists",
-    "fs:allow-create",
-    "fs:allow-remove",
-    "fs:allow-rename",
-    "fs:allow-copy-file",
-    "fs:allow-read-dir",
-    "fs:allow-mkdir",
-    "fs:scope-home",
-    "fs:allow-home-read-recursive",
-    "fs:allow-home-write-recursive",
-    "dialog:default",
-    "dialog:allow-open",
-    "dialog:allow-save",
-    "shell:default",
-    "shell:allow-open"
-  ]
+  "permissions": ["core:default", "dialog:default", "dialog:allow-open", "dialog:allow-save"]
 }

@@ -2,8 +2,8 @@
 // InstallProgressModal - Shows installation progress
 // ============================================================================
 
-import { X } from 'lucide-react';
-import type { InstallProgressState } from '../../lib/skillsTypes';
+import { X } from "lucide-react";
+import type { InstallProgressState } from "../../lib/skill-types";
 
 interface InstallProgressModalProps {
   progress: InstallProgressState;
@@ -13,7 +13,7 @@ interface InstallProgressModalProps {
 export function InstallProgressModal({ progress, onClose }: InstallProgressModalProps) {
   return (
     <div className="install-progress-overlay" onClick={onClose}>
-      <div className="install-progress-modal" onClick={e => e.stopPropagation()}>
+      <div className="install-progress-modal" onClick={(e) => e.stopPropagation()}>
         <div className="install-progress-header">
           <h3>Installing {progress.skillName}</h3>
           <button className="install-progress-close" onClick={onClose}>

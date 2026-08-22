@@ -2,8 +2,8 @@
 // SkillSearchBar - Search input for skills.sh
 // ============================================================================
 
-import { useCallback, useEffect, useRef } from 'react';
-import { Search, X, Loader } from 'lucide-react';
+import { useCallback, useEffect, useRef } from "react";
+import { Search, X, Loader } from "lucide-react";
 
 interface SkillSearchBarProps {
   value: string;
@@ -18,7 +18,7 @@ export function SkillSearchBar({
   onChange,
   onSearch,
   isLoading,
-  placeholder = 'Search skills.sh...',
+  placeholder = "Search skills.sh...",
 }: SkillSearchBarProps) {
   const inputRef = useRef<HTMLInputElement>(null);
   const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -41,24 +41,23 @@ export function SkillSearchBar({
   }, [value, onSearch]);
 
   const handleClear = useCallback(() => {
-    onChange('');
+    onChange("");
     inputRef.current?.focus();
   }, [onChange]);
 
-  const handleKeyDown = useCallback((e: React.KeyboardEvent) => {
-    if (e.key === 'Escape') {
-      handleClear();
-    }
-  }, [handleClear]);
+  const handleKeyDown = useCallback(
+    (e: React.KeyboardEvent) => {
+      if (e.key === "Escape") {
+        handleClear();
+      }
+    },
+    [handleClear],
+  );
 
   return (
     <div className="skill-search-bar">
       <div className="skill-search-icon">
-        {isLoading ? (
-          <Loader size={16} className="skill-search-spinner" />
-        ) : (
-          <Search size={16} />
-        )}
+        {isLoading ? <Loader size={16} className="skill-search-spinner" /> : <Search size={16} />}
       </div>
       <input
         ref={inputRef}
@@ -70,11 +69,7 @@ export function SkillSearchBar({
         className="skill-search-input"
       />
       {value && (
-        <button
-          className="skill-search-clear"
-          onClick={handleClear}
-          title="Clear search"
-        >
+        <button className="skill-search-clear" onClick={handleClear} title="Clear search">
           <X size={14} />
         </button>
       )}

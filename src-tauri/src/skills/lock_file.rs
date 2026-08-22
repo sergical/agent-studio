@@ -6,7 +6,32 @@
 use std::fs;
 use std::path::PathBuf;
 
-use super::types::{InstalledSkill, SkillLockFile};
+use serde::{Deserialize, Serialize};
+
+/// Installed skill entry in lock file
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct InstalledSkillEntry {
+    pub source: String,
+    #[serde(rename = "sourceType")]
+    pub source_type: String,
+    #[serde(rename = "sourceUrl")]
+    pub source_url: String,
+    #[serde(rename = "skillPath", default)]
+    pub skill_path: Option<String>,
+    #[serde(rename = "skillFolderHash")]
+    pub skill_folder_hash: String,
+    #[serde(rename = "installedAt")]
+    pub installed_at: String,
+    #[serde(rename = "updatedAt")]
+    pub updated_at: String,
+}
+
+/// Lock file structure
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SkillLockFile {
+    pub version: u32,
+    pub skills: std::collections::HashMap<String, InstalledSkillEntry>,
+}
 
 /// Get the path to the skill lock file
 pub fn get_lock_file_path() -> Result<PathBuf, String> {
@@ -26,53 +51,14 @@ pub fn read_lock_file() -> Result<SkillLockFile, String> {
         });
     }
 
-    let content = fs::read_to_string(&lock_path)
-        .map_err(|e| format!("Failed to read lock file: {}", e))?;
+    let content =
+        fs::read_to_string(&lock_path).map_err(|e| format!("Failed to read lock file: {}", e))?;
 
-    serde_json::from_str(&content)
-        .map_err(|e| format!("Failed to parse lock file: {}", e))
+    serde_json::from_str(&content).map_err(|e| format!("Failed to parse lock file: {}", e))
 }
 
-/// Get all installed skills from the lock file
-pub fn get_installed_skills() -> Result<Vec<InstalledSkill>, String> {
-    let lock_file = read_lock_file()?;
-
-    let skills: Vec<InstalledSkill> = lock_file
-        .skills
-        .into_iter()
-        .map(|(name, entry)| InstalledSkill {
-            name,
-            source: entry.source,
-            source_type: entry.source_type,
-            source_url: Some(entry.source_url),
-            skill_path: entry.skill_path,
-            installed_at: entry.installed_at,
-            updated_at: Some(entry.updated_at),
-            has_update: false, // TODO: Check for updates via API
-        })
-        .collect();
-
-    Ok(skills)
-}
-
-/// Check if a skill is installed
+/// Check whether a skill name is recorded in the lock file
 pub fn is_skill_installed(skill_name: &str) -> Result<bool, String> {
     let lock_file = read_lock_file()?;
     Ok(lock_file.skills.contains_key(skill_name))
-}
-
-/// Get details for a specific installed skill
-pub fn get_installed_skill(skill_name: &str) -> Result<Option<InstalledSkill>, String> {
-    let lock_file = read_lock_file()?;
-
-    Ok(lock_file.skills.get(skill_name).map(|entry| InstalledSkill {
-        name: skill_name.to_string(),
-        source: entry.source.clone(),
-        source_type: entry.source_type.clone(),
-        source_url: Some(entry.source_url.clone()),
-        skill_path: entry.skill_path.clone(),
-        installed_at: entry.installed_at.clone(),
-        updated_at: Some(entry.updated_at.clone()),
-        has_update: false,
-    }))
 }

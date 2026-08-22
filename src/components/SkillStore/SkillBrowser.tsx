@@ -2,8 +2,9 @@
 // SkillBrowser - Grid/list of skills from search results
 // ============================================================================
 
-import { Download, Check, ArrowUp } from 'lucide-react';
-import type { SkillWithStatus } from '../../lib/skillsTypes';
+import { Download, Check, ArrowUp, Link2, FileCheck2, AlertTriangle } from "lucide-react";
+import type { SkillWithStatus } from "../../lib/skill-types";
+import { SOURCE_KIND_LABELS } from "../../lib/skill-types";
 
 interface SkillBrowserProps {
   skills: SkillWithStatus[];
@@ -48,7 +49,7 @@ export function SkillBrowser({
   return (
     <div className="skill-browser">
       <div className="skill-browser-grid">
-        {skills.map(skill => (
+        {skills.map((skill) => (
           <SkillCard
             key={skill.id}
             skill={skill}
@@ -60,18 +61,14 @@ export function SkillBrowser({
       </div>
       {hasMore && (
         <div className="skill-browser-load-more">
-          <button
-            className="load-more-button"
-            onClick={onLoadMore}
-            disabled={isLoadingMore}
-          >
+          <button className="load-more-button" onClick={onLoadMore} disabled={isLoadingMore}>
             {isLoadingMore ? (
               <>
                 <span className="load-more-spinner" />
                 Loading...
               </>
             ) : (
-              'Load More'
+              "Load More"
             )}
           </button>
         </div>
@@ -97,7 +94,7 @@ function SkillCard({ skill, isSelected, onClick, hideInstalledIndicator = false 
 
   return (
     <button
-      className={`skill-card ${isSelected ? 'selected' : ''} ${skill.is_installed && !hideInstalledIndicator ? 'installed' : ''}`}
+      className={`skill-card ${isSelected ? "selected" : ""} ${skill.is_installed && !hideInstalledIndicator ? "installed" : ""}`}
       onClick={onClick}
     >
       <div className="skill-card-header">
@@ -117,12 +114,46 @@ function SkillCard({ skill, isSelected, onClick, hideInstalledIndicator = false 
         </div>
       </div>
 
-      {skill.top_source && (
-        <div className="skill-card-source">{skill.top_source}</div>
+      {skill.top_source && <div className="skill-card-source">{skill.top_source}</div>}
+
+      {hideInstalledIndicator && skill.installed_info && (
+        <div className="skill-card-provenance">
+          <span className={`skill-card-source-kind ${skill.installed_info.source_kind}`}>
+            {SOURCE_KIND_LABELS[skill.installed_info.source_kind]}
+          </span>
+          {skill.installed_info.has_spec && (
+            <span className="skill-card-spec" title="Ships behavior specs/evals">
+              <FileCheck2 size={11} />
+              spec
+            </span>
+          )}
+          {skill.installed_info.spec_violations.length > 0 && (
+            <span
+              className="skill-card-spec-violation"
+              title={skill.installed_info.spec_violations.join("\n")}
+            >
+              <AlertTriangle size={11} />
+              spec issues
+            </span>
+          )}
+          {skill.installed_info.deployments.map((deployment, i) => (
+            <span
+              key={`${deployment.agent}-${deployment.scope}-${i}`}
+              className="skill-card-deployment"
+            >
+              {deployment.is_symlink && <Link2 size={10} />}
+              {deployment.plugin
+                ? `${deployment.agent} · via ${deployment.plugin.name}`
+                : `${deployment.agent} · ${deployment.scope}`}
+            </span>
+          ))}
+        </div>
       )}
 
-      {skill.description && (
-        <p className="skill-card-description">{skill.description}</p>
+      {(skill.description || skill.installed_info?.description) && (
+        <p className="skill-card-description">
+          {skill.description || skill.installed_info?.description}
+        </p>
       )}
 
       <div className="skill-card-footer">
@@ -132,8 +163,10 @@ function SkillCard({ skill, isSelected, onClick, hideInstalledIndicator = false 
         </span>
         {skill.tags && skill.tags.length > 0 && (
           <div className="skill-card-tags">
-            {skill.tags.slice(0, 2).map(tag => (
-              <span key={tag} className="skill-card-tag">{tag}</span>
+            {skill.tags.slice(0, 2).map((tag) => (
+              <span key={tag} className="skill-card-tag">
+                {tag}
+              </span>
             ))}
           </div>
         )}

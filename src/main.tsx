@@ -16,19 +16,31 @@ class ErrorBoundary extends React.Component<
     return { hasError: true, error };
   }
 
-  componentDidCatch(error: Error, errorInfo: React.ErrorInfo) {
-    console.error("React Error Boundary caught:", error, errorInfo);
+  componentDidCatch(_error: Error, _errorInfo: React.ErrorInfo) {
+    // No toast store is reachable here: a crash this deep may mean the
+    // Zustand provider itself failed to mount. The fallback UI below is
+    // the only surface left to report the error on.
   }
 
   render() {
     if (this.state.hasError) {
       return (
-        <div style={{ padding: 20, color: '#ff6b6b', backgroundColor: '#1a1a1a', minHeight: '100vh', fontFamily: 'monospace' }}>
+        <div
+          style={{
+            padding: 20,
+            color: "#ff6b6b",
+            backgroundColor: "#1a1a1a",
+            minHeight: "100vh",
+            fontFamily: "monospace",
+          }}
+        >
           <h1>Something went wrong</h1>
-          <pre style={{ whiteSpace: 'pre-wrap', wordBreak: 'break-word' }}>
+          <pre style={{ whiteSpace: "pre-wrap", wordBreak: "break-word" }}>
             {this.state.error?.message}
           </pre>
-          <pre style={{ whiteSpace: 'pre-wrap', wordBreak: 'break-word', fontSize: 12, opacity: 0.7 }}>
+          <pre
+            style={{ whiteSpace: "pre-wrap", wordBreak: "break-word", fontSize: 12, opacity: 0.7 }}
+          >
             {this.state.error?.stack}
           </pre>
         </div>
@@ -39,7 +51,12 @@ class ErrorBoundary extends React.Component<
   }
 }
 
-ReactDOM.createRoot(document.getElementById("root") as HTMLElement).render(
+const rootElement = document.getElementById("root");
+if (!rootElement) {
+  throw new Error("Agent Studio root element #root is missing from index.html");
+}
+
+ReactDOM.createRoot(rootElement).render(
   <React.StrictMode>
     <ErrorBoundary>
       <App />
