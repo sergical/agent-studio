@@ -4,7 +4,7 @@
 // spec.
 // ============================================================================
 
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 
 use serde::{Deserialize, Serialize};
 
@@ -45,6 +45,40 @@ pub fn parse_frontmatter(content: &str) -> Option<SkillFrontmatter> {
         yaml_block.push('\n');
     }
     None
+}
+
+/// Every top-level frontmatter key, stringified, for the dashboard to show
+/// agent-specific extensions the typed `SkillFrontmatter` doesn't model.
+/// Malformed or missing frontmatter yields an empty map.
+pub fn frontmatter_fields(content: &str) -> BTreeMap<String, String> {
+    let mut lines = content.lines();
+    if lines.next().map(str::trim) != Some("---") {
+        return BTreeMap::new();
+    }
+    let mut yaml_block = String::new();
+    for line in lines {
+        if line.trim() == "---" {
+            break;
+        }
+        yaml_block.push_str(line);
+        yaml_block.push('\n');
+    }
+    let Ok(serde_yaml::Value::Mapping(map)) = serde_yaml::from_str(&yaml_block) else {
+        return BTreeMap::new();
+    };
+    map.into_iter()
+        .filter_map(|(k, v)| {
+            let key = k.as_str()?.to_string();
+            let value = match v {
+                serde_yaml::Value::String(s) => s,
+                other => serde_yaml::to_string(&other)
+                    .unwrap_or_default()
+                    .trim()
+                    .to_string(),
+            };
+            Some((key, value))
+        })
+        .collect()
 }
 
 /// Skill name constraints from the agentskills.io spec: 1-64 chars,
@@ -184,5 +218,21 @@ mod tests {
         let violations = validate_skill("write-tests", None, 10);
         assert!(violations.iter().any(|v| v.contains("name")));
         assert!(violations.iter().any(|v| v.contains("description")));
+    }
+
+    #[test]
+    fn frontmatter_fields_captures_every_top_level_key() {
+        let content = "---\nname: write-tests\ndescription: Writes tests.\ncustom-field: some-value\n---\nBody.";
+        let fields = frontmatter_fields(content);
+        assert_eq!(fields.get("name").map(String::as_str), Some("write-tests"));
+        assert_eq!(
+            fields.get("custom-field").map(String::as_str),
+            Some("some-value")
+        );
+    }
+
+    #[test]
+    fn frontmatter_fields_empty_without_frontmatter() {
+        assert!(frontmatter_fields("no frontmatter here").is_empty());
     }
 }

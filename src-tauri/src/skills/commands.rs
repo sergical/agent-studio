@@ -3,12 +3,16 @@
 // IPC commands for skill discovery, installation, and management
 // ============================================================================
 
+use std::collections::BTreeSet;
+use std::path::PathBuf;
 use std::process::Command;
 
 use super::agents::{AgentId, AgentTarget};
 use super::api;
 use super::lock_file;
-use super::scan;
+use super::project_discovery;
+use super::skill_assembly;
+use super::skill_discovery;
 use super::skill_dto::{
     InstallRequest, InstallResult, InstalledSkill, PaginatedSkillsResponse, SkillSearchResult,
 };
@@ -40,12 +44,40 @@ pub async fn get_skill_details(skill_id: String) -> Result<SkillSearchResult, St
 
 /// Get all installed skills, merging what's found on disk for the four
 /// first-class agents (Claude Code, Codex, OpenCode, pi) with the
-/// ~/.agents/.skill-lock.json entries.
+/// ~/.agents/.skill-lock.json entries. Project-scoped skills are discovered
+/// for `project_discovery::discover_skill_projects` in addition to any
+/// project paths the caller passes in.
 #[tauri::command]
 pub fn get_installed_skills(
     project_paths: Option<Vec<String>>,
 ) -> Result<Vec<InstalledSkill>, String> {
-    scan::scan_installed_skills(project_paths)
+    let home = dirs::home_dir().ok_or("Could not find home directory")?;
+
+    let mut paths: BTreeSet<PathBuf> = project_discovery::discover_skill_projects(&home)
+        .into_iter()
+        .collect();
+    paths.extend(
+        project_paths
+            .unwrap_or_default()
+            .into_iter()
+            .map(PathBuf::from),
+    );
+    let project_paths: Vec<PathBuf> = paths.into_iter().collect();
+
+    let candidates = skill_discovery::discover_skill_candidates(&home, &project_paths);
+    let lock = lock_file::read_lock_file()?;
+    Ok(skill_assembly::assemble_installed_skills(candidates, &lock))
+}
+
+/// List project directories discovered from Codex config and Claude Code
+/// transcripts that have a first-class agent's skill directory.
+#[tauri::command]
+pub fn list_skill_projects() -> Result<Vec<String>, String> {
+    let home = dirs::home_dir().ok_or("Could not find home directory")?;
+    Ok(project_discovery::discover_skill_projects(&home)
+        .into_iter()
+        .map(|p| p.to_string_lossy().to_string())
+        .collect())
 }
 
 /// Check if a skill is installed

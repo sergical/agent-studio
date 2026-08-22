@@ -17,6 +17,7 @@ pub fn run() {
             skills::commands::get_popular_skills,
             skills::commands::get_skill_details,
             skills::commands::get_installed_skills,
+            skills::commands::list_skill_projects,
             skills::commands::is_skill_installed,
             skills::commands::get_agent_targets,
             skills::commands::install_skill,

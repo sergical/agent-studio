@@ -310,6 +310,10 @@ Enabled in `tsconfig.json`:
 - Rust: `cargo test` in `src-tauri`, tests live in colocated `#[cfg(test)]` modules
 - Frontend: no test runner is configured yet; use Vitest (compatible with Vite) when adding tests
 
+## Reference docs
+
+- `docs/agent-skill-conventions.md` — agentskills.io spec rules, per-agent discovery paths, invocation control (explicit vs model-invocable), native disable mechanisms, and the local data sources Agent Studio reads. Check it before researching agent behavior again.
+
 ## Skills.sh Integration
 
 Agent Studio integrates with skills.sh for skill discovery and installation.

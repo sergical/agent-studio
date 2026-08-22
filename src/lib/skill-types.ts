@@ -78,7 +78,7 @@ export interface AgentTarget {
 /**
  * First-class agents featured for quick selection in the agent-target
  * picker, and the only agents whose skill directories are scanned for
- * native provenance detection (see skills/scan.rs).
+ * native provenance detection (see skills/skill_discovery.rs).
  */
 export const COMMON_AGENTS: AgentId[] = ["claude-code", "codex", "open-code", "pi"];
 
@@ -155,11 +155,19 @@ export interface Deployment {
   path: string;
   is_symlink: boolean;
   plugin?: PluginInfo;
+  /** Canonicalized symlink target, when `is_symlink` and the target resolves. */
+  symlink_target?: string;
+  /** True when `is_symlink` but the target doesn't exist. */
+  symlink_is_broken: boolean;
+  /** Set when `is_symlink` and resolving the target failed for a reason other than "doesn't exist". */
+  symlink_error?: string;
+  /** The project directory this deployment belongs to, for project-scoped deployments. */
+  project_path?: string;
 }
 
 /**
  * Installed skill, merged from the lock file and a scan of the four
- * first-class agents' skill directories (see skills/scan.rs)
+ * first-class agents' skill directories (see skills/skill_discovery.rs)
  */
 export interface InstalledSkill {
   name: string;
@@ -177,6 +185,22 @@ export interface InstalledSkill {
   description?: string;
   /** Violations of the agentskills.io SKILL.md spec. Empty means compliant. */
   spec_violations: string[];
+  /** Token count of SKILL.md's text (cl100k_base), from the first deployment. */
+  skill_md_tokens: number;
+  /** Total size in bytes of the skill folder, from the first deployment. */
+  folder_bytes: number;
+  /** Number of files in the skill folder, from the first deployment. */
+  file_count: number;
+  /** sha256 over the skill folder's contents, from the first deployment. */
+  content_hash: string;
+  /** Every distinct content_hash seen across this skill's deployments. */
+  content_hashes: string[];
+  /** RFC3339 timestamp of the newest file mtime, from the first deployment. */
+  modified_at?: string;
+  /** Every top-level SKILL.md frontmatter key, stringified, from the first deployment. */
+  frontmatter_fields: Record<string, string>;
+  /** True when the folder walk for the first deployment hit the 2,000-file / 64 MiB cap. */
+  folder_truncated: boolean;
 }
 
 // ============================================================================

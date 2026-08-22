@@ -65,6 +65,14 @@ export async function isSkillInstalled(skillName: string): Promise<boolean> {
   return invoke("is_skill_installed", { skillName });
 }
 
+/**
+ * List project directories discovered from Codex config and Claude Code
+ * transcripts that have a first-class agent's skill directory.
+ */
+export async function listSkillProjects(): Promise<string[]> {
+  return invoke("list_skill_projects");
+}
+
 // ============================================================================
 // Agent Targets API
 // ============================================================================

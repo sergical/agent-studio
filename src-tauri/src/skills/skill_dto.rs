@@ -7,6 +7,8 @@
 // in provenance.rs.
 // ============================================================================
 
+use std::collections::BTreeMap;
+
 use serde::{Deserialize, Serialize};
 
 use super::provenance::SourceKind;
@@ -72,6 +74,20 @@ pub struct Deployment {
     /// Set when this deployment is a skill shipped by a plugin.
     #[serde(default)]
     pub plugin: Option<PluginInfo>,
+    /// Canonicalized symlink target, when `is_symlink` and the target resolves.
+    #[serde(default)]
+    pub symlink_target: Option<String>,
+    /// True when `is_symlink` but the target doesn't exist.
+    #[serde(default)]
+    pub symlink_is_broken: bool,
+    /// Set when `is_symlink` and resolving the target failed for a reason
+    /// other than "doesn't exist" (permission denied, symlink loop, etc.).
+    #[serde(default)]
+    pub symlink_error: Option<String>,
+    /// The project directory this deployment belongs to, for project-scoped
+    /// deployments. `None` for global and plugin deployments.
+    #[serde(default)]
+    pub project_path: Option<String>,
 }
 
 /// Installed skill with parsed data
@@ -102,6 +118,35 @@ pub struct InstalledSkill {
     /// Empty means the skill is spec-compliant.
     #[serde(default)]
     pub spec_violations: Vec<String>,
+    /// Token count of SKILL.md's text (cl100k_base), from the first deployment.
+    #[serde(default)]
+    pub skill_md_tokens: u32,
+    /// Total size in bytes of the skill folder, from the first deployment.
+    #[serde(default)]
+    pub folder_bytes: u64,
+    /// Number of files in the skill folder, from the first deployment.
+    #[serde(default)]
+    pub file_count: u32,
+    /// sha256 over the sorted (relative path, bytes) pairs of the skill
+    /// folder, from the first deployment.
+    #[serde(default)]
+    pub content_hash: String,
+    /// Every distinct `content_hash` seen across this skill's deployments,
+    /// so the UI can flag duplicates whose content has diverged.
+    #[serde(default)]
+    pub content_hashes: Vec<String>,
+    /// RFC3339 timestamp of the newest file mtime in the skill folder, from
+    /// the first deployment.
+    #[serde(default)]
+    pub modified_at: Option<String>,
+    /// Every top-level SKILL.md frontmatter key, stringified, from the first
+    /// deployment.
+    #[serde(default)]
+    pub frontmatter_fields: BTreeMap<String, String>,
+    /// True when the folder walk for the first deployment hit the
+    /// 2,000-file / 64 MiB cap and stopped early.
+    #[serde(default)]
+    pub folder_truncated: bool,
 }
 
 // ============================================================================

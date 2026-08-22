@@ -2,8 +2,8 @@
 // Skills Module - Agent Registry
 // The 41 supported agents: identifiers, CLI names, display names, and the
 // project/global skill directories each one reads. This is the single
-// source of truth for agent paths - scan::candidate_roots derives its
-// directory list from the methods below rather than hardcoding paths.
+// source of truth for agent paths - skill_roots() derives its directory
+// list from the methods below rather than hardcoding paths.
 // ============================================================================
 
 use std::path::{Path, PathBuf};
@@ -317,4 +317,76 @@ pub struct AgentTarget {
     pub name: String,
     pub project_path: String,
     pub global_path: String,
+}
+
+// ============================================================================
+// Skill Roots - where skills live on disk
+// ============================================================================
+
+/// The four first-class agents whose skill directories are scanned for
+/// native provenance detection.
+const FIRST_CLASS_AGENTS: &[AgentId] = &[
+    AgentId::ClaudeCode,
+    AgentId::Codex,
+    AgentId::OpenCode,
+    AgentId::Pi,
+];
+
+/// One directory an agent loads skills from. Label is the display name
+/// ("Claude Code", "OpenCode", "shared" for `~/.agents/skills`). Global vs.
+/// project scope is implied by `project_path`.
+#[derive(Debug, Clone)]
+pub struct SkillRoot {
+    pub label: String,
+    pub project_path: Option<PathBuf>,
+    pub path: PathBuf,
+}
+
+/// Every global and project skill root for the first-class agents plus the
+/// shared root: each first-class agent's own directory (from `AgentId`'s
+/// path methods, the single source of truth), OpenCode's older singular
+/// `skill/` directory (kept as a fallback alongside `skills/`), and the
+/// shared `.agents/skills` root that Codex, pi, and OpenCode all read.
+pub fn skill_roots(home: &Path, project_paths: &[PathBuf]) -> Vec<SkillRoot> {
+    let mut roots = Vec::new();
+
+    for &id in FIRST_CLASS_AGENTS {
+        roots.push(SkillRoot {
+            label: id.display_name().to_string(),
+            project_path: None,
+            path: id.global_skills_dir(home),
+        });
+    }
+    roots.push(SkillRoot {
+        label: AgentId::OpenCode.display_name().to_string(),
+        project_path: None,
+        path: home.join(".config/opencode/skill"),
+    });
+    roots.push(SkillRoot {
+        label: "shared".to_string(),
+        project_path: None,
+        path: home.join(".agents/skills"),
+    });
+
+    for project in project_paths {
+        for &id in FIRST_CLASS_AGENTS {
+            roots.push(SkillRoot {
+                label: id.display_name().to_string(),
+                project_path: Some(project.clone()),
+                path: id.project_skills_dir(project),
+            });
+        }
+        roots.push(SkillRoot {
+            label: AgentId::OpenCode.display_name().to_string(),
+            project_path: Some(project.clone()),
+            path: project.join(".opencode/skill"),
+        });
+        roots.push(SkillRoot {
+            label: "shared".to_string(),
+            project_path: Some(project.clone()),
+            path: project.join(".agents/skills"),
+        });
+    }
+
+    roots
 }

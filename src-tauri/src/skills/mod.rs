@@ -9,8 +9,11 @@ pub mod commands;
 pub mod frontmatter;
 pub mod lock_file;
 pub mod plugins;
+pub mod project_discovery;
 pub mod provenance;
-pub mod scan;
+pub mod skill_assembly;
+pub mod skill_candidate;
+pub mod skill_discovery;
 pub mod skill_dto;
 
 pub use agents::*;
