@@ -1,4 +1,4 @@
-# Agent Studio
+# Skill Studio
 
 A macOS desktop application for managing coding assistant configuration files in one place. Supports Claude Code, OpenCode, and AGENTS.md configurations.
 

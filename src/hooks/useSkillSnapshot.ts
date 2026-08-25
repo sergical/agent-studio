@@ -1,5 +1,5 @@
 // ============================================================================
-// Agent Studio - useSkillSnapshot
+// Skill Studio - useSkillSnapshot
 // Subscribes to the background refresh thread's skill snapshot
 // ============================================================================
 

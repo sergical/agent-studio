@@ -1,8 +1,8 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
-  "productName": "Agent Studio",
+  "productName": "Skill Studio",
   "version": "0.1.0",
-  "identifier": "com.agentstudio.app",
+  "identifier": "com.skillstudio.app",
   "build": {
     "beforeDevCommand": "npm run dev",
     "devUrl": "http://localhost:1420",
@@ -12,7 +12,7 @@
   "app": {
     "windows": [
       {
-        "title": "Agent Studio",
+        "title": "Skill Studio",
         "width": 1200,
         "height": 800,
         "minWidth": 900,

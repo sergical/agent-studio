@@ -1,5 +1,5 @@
 // ============================================================================
-// Agent Studio - skill-stats
+// Skill Studio - skill-stats
 // Pure aggregation helpers over a SkillSnapshot: dashboard totals, top
 // skills by recent invocations, and the skill x agent deployment matrix.
 // ============================================================================

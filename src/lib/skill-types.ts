@@ -1,5 +1,5 @@
 // ============================================================================
-// Agent Studio - skill-types
+// Skill Studio - skill-types
 // Types for skills.sh integration, multi-agent support, and shared UI state
 // ============================================================================
 

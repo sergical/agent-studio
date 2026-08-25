@@ -53,7 +53,7 @@ class ErrorBoundary extends React.Component<
 
 const rootElement = document.getElementById("root");
 if (!rootElement) {
-  throw new Error("Agent Studio root element #root is missing from index.html");
+  throw new Error("Skill Studio root element #root is missing from index.html");
 }
 
 ReactDOM.createRoot(rootElement).render(

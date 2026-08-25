@@ -1,5 +1,5 @@
 // ============================================================================
-// Agent Studio - skill-api
+// Skill Studio - skill-api
 // Tauri IPC communication for skills.sh integration
 // ============================================================================
 

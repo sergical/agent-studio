@@ -1,5 +1,5 @@
 // ============================================================================
-// Agent Studio - github-skill-source
+// Skill Studio - github-skill-source
 // Resolves the raw SKILL.md content for a skill from either a well-known
 // source URL, an installed GitHub skill_path, or by walking a repo's tree.
 // ============================================================================

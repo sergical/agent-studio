@@ -1,5 +1,5 @@
 // ============================================================================
-// Agent Studio - Main Application
+// Skill Studio - Main Application
 // Shell: Sidebar + main view (Dashboard, Global, Project, or Discover) +
 // an optional installed-skill detail drawer
 // ============================================================================

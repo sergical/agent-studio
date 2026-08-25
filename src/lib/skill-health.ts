@@ -1,5 +1,5 @@
 // ============================================================================
-// Agent Studio - skill-health
+// Skill Studio - skill-health
 // Pure functions over InstalledSkill[] that flag things worth the user's
 // attention. No Tauri/DOM access here so these stay unit-testable in
 // isolation (Vitest, once a runner is wired up).

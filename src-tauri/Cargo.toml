@@ -1,12 +1,12 @@
 [package]
-name = "agent-studio"
+name = "skill-studio"
 version = "0.1.0"
 description = "Manage coding assistant configurations"
 authors = ["you"]
 edition = "2021"
 
 [lib]
-name = "agent_studio_lib"
+name = "skill_studio_lib"
 crate-type = ["staticlib", "cdylib", "rlib"]
 
 [build-dependencies]

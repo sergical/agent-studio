@@ -1,8 +1,8 @@
-# AGENTS.md - Agent Studio
+# AGENTS.md - Skill Studio
 
 ## Project Overview
 
-Agent Studio is a **GUI for skills.sh** - a Tauri 2.x desktop application for discovering, installing, syncing, and testing agent skills.
+Skill Studio is a Tauri 2.x desktop application to manage, sync, and test agent skills across Claude Code, Codex, OpenCode, and pi, with skills.sh discovery built in.
 
 ### Core Features
 
@@ -192,7 +192,7 @@ export function isFlatEntity(entity: DisplayableEntity): entity is FlatEntity {
 
 ```typescript
 // ============================================================================
-// Agent Studio - Module Name
+// Skill Studio - Module Name
 // Brief description of purpose
 // ============================================================================
 ```
@@ -312,11 +312,11 @@ Enabled in `tsconfig.json`:
 
 ## Reference docs
 
-- `docs/agent-skill-conventions.md` — agentskills.io spec rules, per-agent discovery paths, invocation control (explicit vs model-invocable), native disable mechanisms, and the local data sources Agent Studio reads. Check it before researching agent behavior again.
+- `docs/agent-skill-conventions.md` — agentskills.io spec rules, per-agent discovery paths, invocation control (explicit vs model-invocable), native disable mechanisms, and the local data sources Skill Studio reads. Check it before researching agent behavior again.
 
 ## Skills.sh Integration
 
-Agent Studio integrates with skills.sh for skill discovery and installation.
+Skill Studio integrates with skills.sh for skill discovery and installation.
 
 ### API Endpoint
 

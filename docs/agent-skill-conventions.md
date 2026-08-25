@@ -22,7 +22,7 @@ Directory layout: `SKILL.md` (required), optional `scripts/`, `references/`, `as
 The spec has **no** invocation-control fields; those are agent extensions (below).
 Reference validator: `skills-ref validate ./my-skill`.
 
-Agent Studio enforces these rules in `src-tauri/src/skills/frontmatter.rs`
+Skill Studio enforces these rules in `src-tauri/src/skills/frontmatter.rs`
 (`validate_skill`) and reports failures as `spec_violations`.
 
 ## Invocation control and disable, per agent
@@ -31,10 +31,10 @@ All four agents auto-invoke a skill by default when its description matches the 
 
 | Agent       | Explicit invocation | Restrict model auto-invoke                                                                     | Disable a skill (keep on disk)                                                   |
 | ----------- | ------------------- | ---------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------- |
-| Claude Code | `/name [args]`      | frontmatter `disable-model-invocation: true` (user only); `user-invocable: false` (model only) | none native → Agent Studio parks the folder (see below)                          |
+| Claude Code | `/name [args]`      | frontmatter `disable-model-invocation: true` (user only); `user-invocable: false` (model only) | none native → Skill Studio parks the folder (see below)                          |
 | Codex       | `$name`             | sidecar `agents/openai.yaml` → `policy.allow_implicit_invocation: false`                       | `~/.codex/config.toml` → `[[skills.config]] path = "…/SKILL.md" enabled = false` |
 | OpenCode    | `skill` tool        | `permission.skill` in `opencode.json`: per-name pattern `allow` / `deny` / `ask`               | same: `"name": "deny"` (wildcards allowed, e.g. `internal-*`)                    |
-| pi          | `/skill:name`       | frontmatter `disable-model-invocation: true`                                                   | none native → Agent Studio parks the folder                                      |
+| pi          | `/skill:name`       | frontmatter `disable-model-invocation: true`                                                   | none native → Skill Studio parks the folder                                      |
 
 Sources: https://code.claude.com/docs/en/skills · https://developers.openai.com/codex/skills ·
 https://opencode.ai/docs/skills/ · https://pi.dev/docs/latest/skills
@@ -49,9 +49,9 @@ target. Config-based controls (Codex, OpenCode) are per agent.
 (globs that gate auto-loading), `model`, `effort`, `argument-hint`, `arguments`,
 `hooks`, `shell`, `when_to_use`, `metadata`, `license`, `compatibility`.
 
-### Parking (Agent Studio's disable for agents without a native switch)
+### Parking (Skill Studio's disable for agents without a native switch)
 
-Agents discover skills purely by directory presence. Agent Studio disables a skill
+Agents discover skills purely by directory presence. Skill Studio disables a skill
 for Claude Code or pi by moving the folder or symlink to
 `~/.agents/.disabled-skills/<agent>/<scope>/<name>` and moves it back on enable.
 Parked skills are listed as disabled in the scanner.
@@ -66,7 +66,7 @@ Parked skills are listed as disabled in the scanner.
 | pi          | `.pi/skills/`                         | `~/.pi/agent/skills/`                          | root `.md` files with valid frontmatter count too                                      |
 | shared      | `.agents/skills/`                     | `~/.agents/skills/`                            | `npx skills` target; Codex, OpenCode, pi read it natively; Claude Code needs a symlink |
 
-## Local data sources Agent Studio reads
+## Local data sources Skill Studio reads
 
 | Purpose                         | Location                             | Shape                                                                                                 |
 | ------------------------------- | ------------------------------------ | ----------------------------------------------------------------------------------------------------- |

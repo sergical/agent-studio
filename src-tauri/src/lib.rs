@@ -1,5 +1,5 @@
 // ============================================================================
-// Agent Studio - Rust Backend
+// Skill Studio - Rust Backend
 // Skills.sh integration for skill discovery, installation, and management
 // ============================================================================
 

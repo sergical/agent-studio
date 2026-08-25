@@ -1,5 +1,5 @@
 // ============================================================================
-// Agent Studio - Application State Store
+// Skill Studio - Application State Store
 // Toasts, the shell's route state, and the user-added project list
 // ============================================================================
 

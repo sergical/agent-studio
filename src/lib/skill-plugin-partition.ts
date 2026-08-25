@@ -1,5 +1,5 @@
 // ============================================================================
-// Agent Studio - skill-plugin-partition
+// Skill Studio - skill-plugin-partition
 // Pure functions that separate the user's own skills from ones shipped by an
 // agent's plugin cache, so plugin-managed skills (Codex's openai-templates,
 // Claude Code plugin caches, ~200 of the 308 rows on the old dashboard) stop
