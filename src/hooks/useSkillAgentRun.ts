@@ -65,11 +65,25 @@ function applyEvent(state: SkillAgentRunState, event: SkillAgentEvent): SkillAge
 export function useSkillAgentRun() {
   const [state, setState] = useState<SkillAgentRunState>(IDLE_STATE);
   const runIdRef = useRef<string | undefined>(undefined);
+  // Resolved with the run's terminal state once it reaches "finished" or
+  // "error" - either from the streamed Finished event, or immediately if
+  // `startSkillAgentRun` itself rejects. `waitForFinish` lets a caller await
+  // one run's outcome without threading its own effect off `state.status`.
+  const finishResolverRef = useRef<((finalState: SkillAgentRunState) => void) | null>(null);
+
+  const resolveFinish = (finalState: SkillAgentRunState) => {
+    finishResolverRef.current?.(finalState);
+    finishResolverRef.current = null;
+  };
 
   useEffect(() => {
     const unlistenPromise = onSkillAgentEvent((event) => {
       if (event.run_id !== runIdRef.current) return;
-      setState((prev) => applyEvent(prev, event));
+      setState((prev) => {
+        const next = applyEvent(prev, event);
+        if (next.status === "finished" || next.status === "error") resolveFinish(next);
+        return next;
+      });
     });
     return () => {
       unlistenPromise.then((unlisten) => unlisten());
@@ -88,12 +102,22 @@ export function useSkillAgentRun() {
       await startSkillAgentRun(request, runId);
     } catch (err) {
       runIdRef.current = undefined;
-      setState((prev) => ({
-        ...prev,
-        status: "error",
-        errorMessage: err instanceof Error ? err.message : String(err),
-      }));
+      const errorMessage = err instanceof Error ? err.message : String(err);
+      setState((prev) => {
+        const next: SkillAgentRunState = { ...prev, runId, status: "error", errorMessage };
+        resolveFinish(next);
+        return next;
+      });
     }
+  }, []);
+
+  /** Resolves with the current run's terminal state once it finishes,
+   * errors, or the start itself rejected. A fresh `run()` call replaces
+   * whichever resolver is pending, same as `runIdRef` replacing the run id. */
+  const waitForFinish = useCallback((): Promise<SkillAgentRunState> => {
+    return new Promise((resolve) => {
+      finishResolverRef.current = resolve;
+    });
   }, []);
 
   const cancel = useCallback(async () => {
@@ -116,5 +140,5 @@ export function useSkillAgentRun() {
     };
   }, []);
 
-  return { run, cancel, reset, state };
+  return { run, cancel, reset, state, waitForFinish };
 }

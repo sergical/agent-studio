@@ -15,7 +15,9 @@ use std::path::{Path, PathBuf};
 use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Manager};
 
-use super::skill_agent_runner::{HarnessId, SkillAgentEvent};
+use super::skill_agent_runner::{
+    validate_run_id, validate_skill_dir_name, HarnessId, SkillAgentEvent,
+};
 
 /// How many run records (and their transcripts) are kept per skill; older
 /// ones are deleted when a new one is recorded.
@@ -85,17 +87,30 @@ pub fn record_skill_run(
     events: Vec<SkillAgentEvent>,
 ) -> Result<(), String> {
     let root = runs_root(&app)?;
-    let dir = skill_dir(&root, &record.skill_name);
+    record_run_at(&root, &record, &events)
+}
+
+/// `record_skill_run`'s logic, taking the runs root directly so it's
+/// testable without a Tauri `AppHandle`.
+fn record_run_at(
+    root: &Path,
+    record: &SkillRunRecord,
+    events: &[SkillAgentEvent],
+) -> Result<(), String> {
+    validate_skill_dir_name(&record.skill_name)?;
+    validate_run_id(&record.id)?;
+
+    let dir = skill_dir(root, &record.skill_name);
     fs::create_dir_all(&dir).map_err(|e| format!("Could not create run history dir: {e}"))?;
 
     let record_path = dir.join(format!("{}.json", record.id));
-    let record_json = serde_json::to_vec_pretty(&record)
+    let record_json = serde_json::to_vec_pretty(record)
         .map_err(|e| format!("Could not serialize run record: {e}"))?;
     fs::write(&record_path, record_json).map_err(|e| format!("Could not write run record: {e}"))?;
 
     let events_path = dir.join(format!("{}.events.jsonl", record.id));
     let mut events_text = String::new();
-    for event in &events {
+    for event in events {
         events_text.push_str(
             &serde_json::to_string(event).map_err(|e| format!("Could not serialize event: {e}"))?,
         );
@@ -103,17 +118,24 @@ pub fn record_skill_run(
     }
     fs::write(&events_path, events_text).map_err(|e| format!("Could not write run events: {e}"))?;
 
-    let summary = SkillRunSummary {
-        at: record.started_at.clone(),
-        harness: record.harness,
-        passed: record.judge.as_ref().map(|j| j.passed).or(Some(record.ok)),
-    };
-    let summary_json = serde_json::to_vec_pretty(&summary)
-        .map_err(|e| format!("Could not serialize run summary: {e}"))?;
-    fs::write(dir.join("last.json"), summary_json)
-        .map_err(|e| format!("Could not write last.json: {e}"))?;
+    // Only a "test" run's outcome belongs in the dashboard/list summary - an
+    // Ask or Audit afterward must not clobber the last test's passed/failed
+    // verdict with its own (unrelated) `ok`.
+    if record.action == SkillRunAction::Test {
+        let summary = SkillRunSummary {
+            at: record.started_at.clone(),
+            harness: record.harness,
+            // Never fall back to `record.ok`: a test with no judge verdict is
+            // "unknown", not "passed" just because the run itself didn't error.
+            passed: record.judge.as_ref().map(|j| j.passed),
+        };
+        let summary_json = serde_json::to_vec_pretty(&summary)
+            .map_err(|e| format!("Could not serialize run summary: {e}"))?;
+        fs::write(dir.join("last.json"), summary_json)
+            .map_err(|e| format!("Could not write last.json: {e}"))?;
+    }
 
-    trim_run_history(&dir, MAX_RUNS_PER_SKILL)?;
+    trim_run_history(root, &dir, MAX_RUNS_PER_SKILL)?;
     Ok(())
 }
 
@@ -122,7 +144,17 @@ pub fn record_skill_run(
 /// it's the same UUID v4/v7-ish token the frontend generates per run start -
 /// sorted lexically by file mtime instead, which is monotonic regardless of
 /// the id's own shape).
-fn trim_run_history(dir: &Path, keep: usize) -> Result<(), String> {
+fn trim_run_history(root: &Path, dir: &Path, keep: usize) -> Result<(), String> {
+    // Defense in depth: `validate_skill_dir_name` already keeps `dir` a
+    // single path segment under `root`, but this is the call that deletes
+    // files, so it re-checks containment against the canonical paths before
+    // doing so.
+    if let (Ok(canonical_root), Ok(canonical_dir)) = (fs::canonicalize(root), fs::canonicalize(dir))
+    {
+        if !canonical_dir.starts_with(&canonical_root) {
+            return Err("Refusing to trim a run history dir outside the runs root".to_string());
+        }
+    }
     let mut records: Vec<(std::time::SystemTime, PathBuf)> = fs::read_dir(dir)
         .map_err(|e| format!("Could not list run history: {e}"))?
         .filter_map(|entry| entry.ok())
@@ -162,7 +194,14 @@ fn trim_run_history(dir: &Path, keep: usize) -> Result<(), String> {
 #[tauri::command]
 pub fn list_skill_runs(app: AppHandle, skill_name: String) -> Result<Vec<SkillRunRecord>, String> {
     let root = runs_root(&app)?;
-    let dir = skill_dir(&root, &skill_name);
+    list_runs_at(&root, &skill_name)
+}
+
+/// `list_skill_runs`'s logic, taking the runs root directly so it's testable
+/// without a Tauri `AppHandle`.
+fn list_runs_at(root: &Path, skill_name: &str) -> Result<Vec<SkillRunRecord>, String> {
+    validate_skill_dir_name(skill_name)?;
+    let dir = skill_dir(root, skill_name);
     if !dir.exists() {
         return Ok(Vec::new());
     }
@@ -197,7 +236,15 @@ pub fn read_skill_run_events(
     id: String,
 ) -> Result<Vec<SkillAgentEvent>, String> {
     let root = runs_root(&app)?;
-    let path = skill_dir(&root, &skill_name).join(format!("{id}.events.jsonl"));
+    read_events_at(&root, &skill_name, &id)
+}
+
+/// `read_skill_run_events`'s logic, taking the runs root directly so it's
+/// testable without a Tauri `AppHandle`.
+fn read_events_at(root: &Path, skill_name: &str, id: &str) -> Result<Vec<SkillAgentEvent>, String> {
+    validate_skill_dir_name(skill_name)?;
+    validate_run_id(id)?;
+    let path = skill_dir(root, skill_name).join(format!("{id}.events.jsonl"));
     let text = fs::read_to_string(&path).map_err(|e| format!("Could not read run events: {e}"))?;
     text.lines()
         .filter(|line| !line.trim().is_empty())
@@ -264,7 +311,7 @@ mod tests {
             fs::write(dir.path().join(format!("run-{i}.events.jsonl")), "").unwrap();
             std::thread::sleep(std::time::Duration::from_millis(5));
         }
-        trim_run_history(dir.path(), 2).unwrap();
+        trim_run_history(dir.path(), dir.path(), 2).unwrap();
 
         let remaining: Vec<_> = fs::read_dir(dir.path())
             .unwrap()
@@ -289,5 +336,75 @@ mod tests {
         let index = read_last_test_index(root.path(), &["demo".to_string(), "other".to_string()]);
         assert_eq!(index.len(), 1);
         assert_eq!(index["demo"].passed, Some(false));
+    }
+
+    // ------------------------------------------------------------------
+    // F6: path safety
+    // ------------------------------------------------------------------
+
+    #[test]
+    fn record_run_at_refuses_a_path_traversing_skill_name() {
+        let root = tempdir().unwrap();
+        let mut record = sample_record("run-1", "2024-01-01T00:00:00Z");
+        record.skill_name = "../x".to_string();
+        let err = record_run_at(root.path(), &record, &[]).unwrap_err();
+        assert!(err.contains("Invalid skill name"));
+        assert!(fs::read_dir(root.path()).unwrap().next().is_none());
+    }
+
+    #[test]
+    fn record_run_at_refuses_a_path_traversing_id() {
+        let root = tempdir().unwrap();
+        let record = sample_record("../../id", "2024-01-01T00:00:00Z");
+        let err = record_run_at(root.path(), &record, &[]).unwrap_err();
+        assert!(err.contains("Run id"));
+    }
+
+    #[test]
+    fn list_runs_at_refuses_a_path_traversing_skill_name() {
+        let root = tempdir().unwrap();
+        assert!(list_runs_at(root.path(), "../x").is_err());
+    }
+
+    #[test]
+    fn read_events_at_refuses_path_traversal_in_skill_name_or_id() {
+        let root = tempdir().unwrap();
+        assert!(read_events_at(root.path(), "../x", "run-1").is_err());
+        assert!(read_events_at(root.path(), "demo", "../../id").is_err());
+    }
+
+    // ------------------------------------------------------------------
+    // F8: last.json semantics
+    // ------------------------------------------------------------------
+
+    #[test]
+    fn ask_after_a_failed_test_keeps_the_failed_summary() {
+        let root = tempdir().unwrap();
+        let mut failed_test = sample_record("run-1", "2024-01-01T00:00:00Z");
+        failed_test.judge = Some(SkillRunJudge {
+            passed: false,
+            sentence: "It did not do the thing.".to_string(),
+        });
+        record_run_at(root.path(), &failed_test, &[]).unwrap();
+
+        let mut ask = sample_record("run-2", "2024-01-02T00:00:00Z");
+        ask.action = SkillRunAction::Ask;
+        ask.judge = None;
+        ask.ok = true;
+        record_run_at(root.path(), &ask, &[]).unwrap();
+
+        let index = read_last_test_index(root.path(), &["demo".to_string()]);
+        assert_eq!(index["demo"].passed, Some(false));
+    }
+
+    #[test]
+    fn a_test_with_no_judge_verdict_records_passed_none() {
+        let root = tempdir().unwrap();
+        let mut record = sample_record("run-1", "2024-01-01T00:00:00Z");
+        record.judge = None;
+        record_run_at(root.path(), &record, &[]).unwrap();
+
+        let index = read_last_test_index(root.path(), &["demo".to_string()]);
+        assert_eq!(index["demo"].passed, None);
     }
 }

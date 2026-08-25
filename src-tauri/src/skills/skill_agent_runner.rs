@@ -623,7 +623,7 @@ pub struct SkillAgentRunnerState {
 
 /// A run id must be safe to use as a HashMap key and to log: short, and
 /// drawn from a small alphabet.
-fn validate_run_id(run_id: &str) -> Result<(), String> {
+pub(crate) fn validate_run_id(run_id: &str) -> Result<(), String> {
     if run_id.is_empty() || run_id.len() > 64 {
         return Err("Run id must be 1-64 characters".to_string());
     }
@@ -1157,7 +1157,7 @@ pub fn cancel_skill_agent_run(
 /// A skill (or scratch-dir agent folder) name, validated before it's used to
 /// build any path: it must stay a single, ordinary path segment so it can
 /// never escape the scratch directory it's joined onto.
-fn validate_skill_dir_name(name: &str) -> Result<&str, String> {
+pub(crate) fn validate_skill_dir_name(name: &str) -> Result<&str, String> {
     if name.is_empty() || name == "." || name == ".." {
         return Err(format!("Invalid skill name: {name:?}"));
     }

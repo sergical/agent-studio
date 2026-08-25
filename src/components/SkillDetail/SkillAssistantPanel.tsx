@@ -37,7 +37,7 @@ import {
   revealSkillRunTarget,
   skillRunTargetDiff,
 } from "../../lib/skill-run-target-api";
-import type { SkillRunTarget } from "../../lib/skill-run-target-types";
+import type { SkillRunTargetInfo } from "../../lib/skill-run-target-types";
 import { COMMON_AGENTS } from "../../lib/skill-types";
 import type { AgentId, InstalledSkill } from "../../lib/skill-types";
 import { useAppStore } from "../../store/appStore";
@@ -94,7 +94,7 @@ function buildRunRecord(
   harness: HarnessId,
   skillName: string,
   action: SkillRunAction,
-  targetKind: SkillRunTarget["kind"] | undefined,
+  targetKind: SkillRunTargetInfo["kind"] | undefined,
   judge: SkillRunJudge | undefined,
 ): SkillRunRecord {
   return {
@@ -160,18 +160,58 @@ export function SkillAssistantPanel({
   // to the run that reviewed the pre-save file.
   const auditStartContentRef = useRef<string | null>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
-  const { run, cancel, reset, state } = useSkillAgentRun();
+  const { run, cancel, reset, state, waitForFinish } = useSkillAgentRun();
   const judge = useSkillAgentRun();
 
-  const [runTarget, setRunTarget] = useState<SkillRunTarget | null>(null);
-  // The project a Worktree/InPlace target was prepared against - needed to
-  // apply the diff back, since the target itself doesn't carry it.
-  const [testProjectPath, setTestProjectPath] = useState<string | undefined>(undefined);
+  const [runTarget, setRunTarget] = useState<SkillRunTargetInfo | null>(null);
   const [runDiff, setRunDiff] = useState<string | null>(null);
   const [isDiffBusy, setIsDiffBusy] = useState(false);
-  const [testPrompt, setTestPrompt] = useState("");
+  const [testPhase, setTestPhase] = useState<"idle" | "preparing" | "running" | "judging" | "done">(
+    "idle",
+  );
   const [judgeVerdict, setJudgeVerdict] = useState<ReturnType<typeof parseJudgeVerdict>>(null);
   const recordedRunIdRef = useRef<string | undefined>(undefined);
+
+  // Bumped on every transition (skill/deployment change, harness change, New
+  // session, unmount) so an in-flight `runTest`/`runAsk`/`runAudit` can tell
+  // it's become stale and stop touching state after its next `await`.
+  const opTokenRef = useRef(0);
+  // Mirrors `runTarget` for cleanup code that runs outside React's render
+  // cycle (unmount, and the async transition handlers below) and can't rely
+  // on a state value captured by a stale closure.
+  const activeTargetRef = useRef<SkillRunTargetInfo | null>(null);
+
+  const setActiveTarget = (target: SkillRunTargetInfo | null) => {
+    activeTargetRef.current = target;
+    setRunTarget(target);
+  };
+
+  /** Ends whatever run target is still active when leaving a "Test" run
+   * unfinished: a Scratch/Worktree target is discarded (best effort, toast on
+   * failure); an InPlace target's changes are left on disk as-is, since
+   * reverting them without the user asking to would be surprising. */
+  const releaseActiveTarget = async () => {
+    const target = activeTargetRef.current;
+    activeTargetRef.current = null;
+    if (!target) return;
+    if (target.kind === "in_place") {
+      addToast({
+        type: "info",
+        title: "Test changes were kept",
+        message: `Test changes were kept in ${projectBasename(target.cwd)}`,
+      });
+      return;
+    }
+    try {
+      await discardSkillRunTarget(target.id);
+    } catch (err) {
+      addToast({
+        type: "error",
+        title: "Couldn't discard the test run",
+        message: err instanceof Error ? err.message : "Unknown error",
+      });
+    }
+  };
 
   useEffect(() => {
     // A new skill, or a different deployment's copy of the same skill, can't
@@ -179,16 +219,19 @@ export function SkillAssistantPanel({
     // against the old skill/path before the scratch dir cleanup effect below
     // (keyed on `scratchDir`) removes the folder it runs in.
     let ignore = false;
+    const token = ++opTokenRef.current;
     (async () => {
       await cancel();
-      if (ignore) return;
+      await judge.cancel();
+      await releaseActiveTarget();
+      if (ignore || opTokenRef.current !== token) return;
       setScratchDir(undefined);
       setHarness(defaultHarness);
       setProposal(null);
-      setRunTarget(null);
-      setTestProjectPath(undefined);
+      setActiveTarget(null);
       setRunDiff(null);
       setJudgeVerdict(null);
+      setTestPhase("idle");
       setShowTestForm(false);
       reset();
       judge.reset();
@@ -206,6 +249,19 @@ export function SkillAssistantPanel({
     };
   }, [scratchDir]);
 
+  // Unmount (including Escape/back navigation away from the skill page,
+  // which unmounts this panel) - fire-and-forget, nothing left to await into.
+  useEffect(() => {
+    return () => {
+      // eslint-disable-next-line react-hooks/exhaustive-deps -- staleness counter, not a DOM ref; reading it at unmount time is exactly the point.
+      opTokenRef.current++;
+      cancel().catch(() => {});
+      judge.cancel().catch(() => {});
+      releaseActiveTarget().catch(() => {});
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
   useEffect(() => {
     const el = textareaRef.current;
     if (!el) return;
@@ -217,24 +273,32 @@ export function SkillAssistantPanel({
 
   const handleSelectHarness = async (agent: AgentId) => {
     if (agent === harness) return;
+    const token = ++opTokenRef.current;
     // Stop the previous harness's run before switching out from under it.
     await cancel();
+    await judge.cancel();
+    await releaseActiveTarget();
+    if (opTokenRef.current !== token) return;
     setHarness(agent);
     setProposal(null);
-    setRunTarget(null);
-    setTestProjectPath(undefined);
+    setActiveTarget(null);
     setRunDiff(null);
     setJudgeVerdict(null);
+    setTestPhase("idle");
     reset();
   };
 
   const handleNewSession = async () => {
+    const token = ++opTokenRef.current;
     await cancel();
+    await judge.cancel();
+    await releaseActiveTarget();
+    if (opTokenRef.current !== token) return;
     setProposal(null);
-    setRunTarget(null);
-    setTestProjectPath(undefined);
+    setActiveTarget(null);
     setRunDiff(null);
     setJudgeVerdict(null);
+    setTestPhase("idle");
     reset();
   };
 
@@ -269,8 +333,9 @@ export function SkillAssistantPanel({
 
   const handleRun = async () => {
     if (!prompt.trim() || state.status === "running") return;
+    const token = opTokenRef.current;
     const dir = await ensureScratchDir();
-    if (!dir) return;
+    if (!dir || opTokenRef.current !== token) return;
 
     setRunKind("ask");
     recordedRunIdRef.current = undefined;
@@ -297,8 +362,9 @@ export function SkillAssistantPanel({
   const handleAudit = async () => {
     if (rawContent === null || !skillMdPath || isPluginManaged || state.status === "running")
       return;
+    const token = opTokenRef.current;
     const dir = await ensureScratchDir();
-    if (!dir) return;
+    if (!dir || opTokenRef.current !== token) return;
 
     setProposal(null);
     auditStartContentRef.current = rawContent;
@@ -328,8 +394,17 @@ export function SkillAssistantPanel({
     }
   };
 
+  /**
+   * Drives a whole "Test" run start-to-finish: prepare the target, run the
+   * skill in it, await its terminal state, judge that state (if it
+   * finished ok), fetch the diff for a worktree/in-place target, and record
+   * the outcome exactly once. `opTokenRef` is checked after every `await` so
+   * a transition (skill/harness change, New session, unmount) that happens
+   * mid-run makes every later step in this call a no-op.
+   */
   const handleRunTest = async (params: SkillTestRunParams) => {
     if (state.status === "running") return;
+    const token = opTokenRef.current;
     const sourcePath = sourceFolderPath(skill);
     if (!sourcePath) {
       addToast({
@@ -350,15 +425,14 @@ export function SkillAssistantPanel({
 
     setProposal(null);
     setRunDiff(null);
-    setRunTarget(null);
-    setTestProjectPath(undefined);
+    setActiveTarget(null);
     setJudgeVerdict(null);
     setRunKind("test");
-    setTestPrompt(params.prompt);
-    recordedRunIdRef.current = undefined;
+    setTestPhase("preparing");
 
+    let target: SkillRunTargetInfo;
     try {
-      const target = await prepareSkillRunTarget({
+      target = await prepareSkillRunTarget({
         kind: params.targetKind,
         skill_name: skill.name,
         skill_folder: sourcePath,
@@ -366,24 +440,111 @@ export function SkillAssistantPanel({
         fixture: params.fixture ?? null,
         project_path: params.projectPath ?? null,
       });
-      setRunTarget(target);
-      setTestProjectPath(params.projectPath);
-      // SAFETY: `harness` only ever holds a value from `HarnessSegmentedControl`,
-      // which offers exactly the four `HarnessId` agents.
-      await run({
-        harness: harness as HarnessId,
-        prompt: params.prompt,
-        cwd: target.cwd,
-        skill_name: skill.name,
-        write_access: "workspace",
-      });
     } catch (err) {
       addToast({
         type: "error",
         title: "Couldn't start the test",
         message: err instanceof Error ? err.message : "Unknown error",
       });
+      setTestPhase("idle");
+      return;
     }
+    if (opTokenRef.current !== token) {
+      // A transition raced us while `prepare` was in flight - the effect
+      // that bumped the token already released whatever target was active
+      // then, but this one was never assigned to `activeTargetRef`.
+      discardSkillRunTarget(target.id).catch(() => {});
+      return;
+    }
+    setActiveTarget(target);
+    setTestPhase("running");
+
+    // Registered before `run()` so a Finished event that arrives the instant
+    // the run starts can't be missed.
+    const finished = waitForFinish();
+    // SAFETY: `harness` only ever holds a value from `HarnessSegmentedControl`,
+    // which offers exactly the four `HarnessId` agents.
+    await run({
+      harness: harness as HarnessId,
+      prompt: params.prompt,
+      cwd: target.cwd,
+      skill_name: skill.name,
+      write_access: "workspace",
+    });
+    if (opTokenRef.current !== token) return;
+    const runState = await finished;
+    if (opTokenRef.current !== token) return;
+
+    if (runState.status !== "finished") {
+      recordSkillRun(
+        // SAFETY: `harness` only ever holds a value from `HarnessSegmentedControl`,
+        // which offers exactly the four `HarnessId` agents.
+        buildRunRecord(runState, harness as HarnessId, skill.name, "test", target.kind, undefined),
+        runState.events,
+      ).catch(() => {});
+      setTestPhase("done");
+      return;
+    }
+
+    setTestPhase("judging");
+    const toolSummary = runState.events
+      .filter((e) => e.kind.kind === "tool_call")
+      .map((e) => (e.kind.kind === "tool_call" ? e.kind.summary : ""));
+    const judgeFinished = judge.waitForFinish();
+    // SAFETY: same as above.
+    await judge.run({
+      harness: harness as HarnessId,
+      prompt: buildSkillJudgePrompt({
+        skillName: skill.name,
+        description: skill.description,
+        testPrompt: params.prompt,
+        finalText: runState.finalText ?? "",
+        toolSummary,
+      }),
+      cwd: target.cwd,
+      skill_name: skill.name,
+      write_access: "read_only",
+    });
+    if (opTokenRef.current !== token) return;
+    const judgeState = await judgeFinished;
+    if (opTokenRef.current !== token) return;
+
+    const verdict =
+      judgeState.status === "finished" && judgeState.finalText !== undefined
+        ? parseJudgeVerdict(judgeState.finalText)
+        : null;
+    setJudgeVerdict(verdict);
+
+    if (target.kind !== "scratch") {
+      setIsDiffBusy(true);
+      try {
+        setRunDiff(await skillRunTargetDiff(target.id));
+      } catch (err) {
+        addToast({
+          type: "error",
+          title: "Couldn't read the diff",
+          message: err instanceof Error ? err.message : "Unknown error",
+        });
+      } finally {
+        setIsDiffBusy(false);
+      }
+      if (opTokenRef.current !== token) return;
+    }
+
+    await recordSkillRun(
+      // SAFETY: `harness` only ever holds a value from `HarnessSegmentedControl`,
+      // which offers exactly the four `HarnessId` agents.
+      buildRunRecord(
+        runState,
+        harness as HarnessId,
+        skill.name,
+        "test",
+        target.kind,
+        verdict ?? undefined,
+      ),
+      runState.events,
+    ).catch(() => {});
+    if (opTokenRef.current === token) setTestPhase("done");
   };
 
   // Once an audit run finishes, pull the proposed rewrite (if any) out of its
@@ -409,7 +570,8 @@ export function SkillAssistantPanel({
     });
   }, [runKind, state.status, state.finalText, skillMdPath]);
 
-  // Record every finished/errored Ask or Audit run once.
+  // Record every finished/errored Ask or Audit run once. Test records itself
+  // once, inline, at the end of `runTest`.
   useEffect(() => {
     if (runKind === "test") return;
     if (state.status !== "finished" && state.status !== "error") return;
@@ -423,81 +585,6 @@ export function SkillAssistantPanel({
     ).catch(() => {});
   }, [runKind, state, skill.name, harness]);
 
-  // Once a "test" run finishes ok, start the judge turn as a fresh session
-  // over the same working directory.
-  useEffect(() => {
-    if (runKind !== "test" || state.status !== "finished" || !runTarget) return;
-    if (judge.state.status !== "idle") return;
-    const toolSummary = state.events
-      .filter((e) => e.kind.kind === "tool_call")
-      .map((e) => (e.kind.kind === "tool_call" ? e.kind.summary : ""));
-    judge
-      .run({
-        // SAFETY: `harness` only ever holds a value from `HarnessSegmentedControl`,
-        // which offers exactly the four `HarnessId` agents.
-        harness: harness as HarnessId,
-        prompt: buildSkillJudgePrompt({
-          skillName: skill.name,
-          description: skill.description,
-          testPrompt,
-          finalText: state.finalText ?? "",
-          toolSummary,
-        }),
-        cwd: runTarget.cwd,
-        skill_name: skill.name,
-        write_access: "read_only",
-      })
-      .catch(() => {});
-  }, [runKind, state, runTarget, judge, harness, skill.name, skill.description, testPrompt]);
-
-  // Once the judge finishes, fetch the diff (worktree/in place) and record
-  // the whole test run, including the judge's verdict.
-  useEffect(() => {
-    if (runKind !== "test" || !runTarget) return;
-    if (state.status !== "finished" && state.status !== "error") return;
-    if (state.status === "finished" && judge.state.status === "running") return;
-    if (!state.runId || recordedRunIdRef.current === state.runId) return;
-    recordedRunIdRef.current = state.runId;
-
-    const verdict =
-      state.status === "finished" && judge.state.finalText !== undefined
-        ? parseJudgeVerdict(judge.state.finalText)
-        : null;
-    setJudgeVerdict(verdict);
-    const judgeRecord: SkillRunJudge | undefined = verdict ?? undefined;
-
-    (async () => {
-      if (runTarget.kind !== "scratch") {
-        setIsDiffBusy(true);
-        try {
-          setRunDiff(await skillRunTargetDiff(runTarget));
-        } catch (err) {
-          addToast({
-            type: "error",
-            title: "Couldn't read the diff",
-            message: err instanceof Error ? err.message : "Unknown error",
-          });
-        } finally {
-          setIsDiffBusy(false);
-        }
-      }
-      await recordSkillRun(
-        // SAFETY: `harness` only ever holds a value from `HarnessSegmentedControl`,
-        // which offers exactly the four `HarnessId` agents.
-        buildRunRecord(
-          state,
-          harness as HarnessId,
-          skill.name,
-          "test",
-          runTarget.kind,
-          judgeRecord,
-        ),
-        state.events,
-      ).catch(() => {});
-    })();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [runKind, state, judge.state, runTarget, skill.name, harness]);
-
   const handleKeyDown = (event: React.KeyboardEvent<HTMLTextAreaElement>) => {
     if ((event.metaKey || event.ctrlKey) && event.key === "Enter") {
       event.preventDefault();
@@ -510,14 +597,12 @@ export function SkillAssistantPanel({
     setIsDiffBusy(true);
     try {
       if (runTarget.kind === "worktree") {
-        if (!testProjectPath) throw new Error("No project path recorded for this run.");
-        await applySkillRunTargetDiff(runTarget, testProjectPath);
+        await applySkillRunTargetDiff(runTarget.id);
         addToast({ type: "success", title: "Applied to project" });
       }
       // InPlace's changes are already on disk - "Keep" just dismisses the diff.
       setRunDiff(null);
-      setRunTarget(null);
-      setTestProjectPath(undefined);
+      setActiveTarget(null);
     } catch (err) {
       addToast({
         type: "error",
@@ -533,10 +618,9 @@ export function SkillAssistantPanel({
     if (!runTarget) return;
     setIsDiffBusy(true);
     try {
-      await discardSkillRunTarget(runTarget);
+      await discardSkillRunTarget(runTarget.id);
       setRunDiff(null);
-      setRunTarget(null);
-      setTestProjectPath(undefined);
+      setActiveTarget(null);
     } catch (err) {
       addToast({
         type: "error",
@@ -549,14 +633,14 @@ export function SkillAssistantPanel({
   };
 
   const handleOpenScratchFolder = () => {
-    if (runTarget?.kind === "scratch") revealSkillRunTarget(runTarget).catch(() => {});
+    if (runTarget?.kind === "scratch") revealSkillRunTarget(runTarget.id).catch(() => {});
   };
 
   const handleDeleteScratchFolder = async () => {
     if (runTarget?.kind !== "scratch") return;
     try {
-      await discardSkillRunTarget(runTarget);
-      setRunTarget(null);
+      await discardSkillRunTarget(runTarget.id);
+      setActiveTarget(null);
     } catch (err) {
       addToast({
         type: "error",
@@ -572,7 +656,7 @@ export function SkillAssistantPanel({
   const otherOwnSkills = ownSkillsView(snapshot?.skills ?? []).filter((s) => s.name !== skill.name);
   const candidateProjects = testCandidateProjects(skill, snapshot?.projects ?? []);
   const isTestRunning =
-    runKind === "test" && (state.status === "running" || judge.state.status === "running");
+    testPhase === "preparing" || testPhase === "running" || testPhase === "judging";
 
   if (showHistory) {
     return <SkillRunHistory skillName={skill.name} onClose={onCloseHistory} />;

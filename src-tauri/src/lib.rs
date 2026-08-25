@@ -17,6 +17,7 @@ pub fn run() {
             let refresh_state = skills::skill_refresh::init(app.handle());
             app.manage(refresh_state);
             app.manage(skills::skill_agent_runner::SkillAgentRunnerState::default());
+            app.manage(skills::skill_run_target::SkillRunTargetState::default());
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![

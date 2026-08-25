@@ -141,7 +141,8 @@ export function SkillTestForm({
           )}
           {targetKind === "in_place" && (
             <p className="skill-test-form-tertiary">
-              Requires a clean working tree; commit or stash first.
+              Requires a clean working tree; commit or stash first. Revert removes every change made
+              in the project since the run started.
             </p>
           )}
         </div>

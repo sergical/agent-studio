@@ -2,16 +2,23 @@
 // Skills Module - skill_run_target
 // Prepares the working directory a "Test" run executes in - a scratch
 // folder, a detached git worktree, or the project's own tree in place - and
-// the diff/apply/discard operations each kind supports afterward.
+// the diff/apply/discard operations each kind supports afterward. Prepared
+// targets are backend-owned state, keyed by an opaque id: the frontend never
+// sees a cwd it could point another command at, and every id-based command
+// re-checks that the stored cwd still lives under the root its kind expects
+// before touching disk.
 // ============================================================================
 
+use std::collections::HashMap;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::Mutex;
 
 use chrono::Utc;
 use serde::{Deserialize, Serialize};
-use tauri::{AppHandle, Manager};
+use tauri::{AppHandle, Manager, State};
 
 use super::skill_agent_runner::copy_skill_dir_for_run_target;
 
@@ -40,28 +47,147 @@ pub struct SkillRunTargetRequest {
 }
 
 /// A prepared working directory a run can execute in, and what it takes to
-/// clean it up or fold its changes back afterward.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct SkillRunTarget {
+/// clean it up or fold its changes back afterward. Stays private to the
+/// backend - the frontend only ever holds the id it was returned.
+#[derive(Debug, Clone)]
+struct PreparedRunTarget {
+    id: String,
+    kind: SkillRunTargetKind,
+    cwd: PathBuf,
+    /// Set for Scratch (the scratch dir) and Worktree (the worktree path).
+    cleanup_path: Option<PathBuf>,
+    /// The project a Worktree/InPlace target was prepared against.
+    project_path: Option<PathBuf>,
+    /// The project HEAD sha the worktree was branched from (Worktree only).
+    git_head: Option<String>,
+}
+
+/// The DTO handed back to the frontend once a target is prepared: just
+/// enough to render the "Test" UI and drive it, none of the fields a
+/// command would need to trust blindly (`cleanup_path`, `project_path`).
+#[derive(Debug, Clone, Serialize)]
+pub struct SkillRunTargetInfo {
+    pub id: String,
     pub kind: SkillRunTargetKind,
     pub cwd: String,
-    /// Set for Scratch (the scratch dir) and Worktree (the worktree path).
-    pub cleanup_path: Option<String>,
-    /// The project HEAD sha the worktree was branched from (Worktree only).
     pub git_head: Option<String>,
 }
 
-/// Prepares the working directory for a "Test" run, per `request.kind`.
+impl From<&PreparedRunTarget> for SkillRunTargetInfo {
+    fn from(target: &PreparedRunTarget) -> Self {
+        Self {
+            id: target.id.clone(),
+            kind: target.kind,
+            cwd: target.cwd.to_string_lossy().to_string(),
+            git_head: target.git_head.clone(),
+        }
+    }
+}
+
+/// Managed app state: every run target prepared and not yet discarded or
+/// (for Worktree) folded back, keyed by id.
+#[derive(Default)]
+pub struct SkillRunTargetState {
+    targets: Mutex<HashMap<String, PreparedRunTarget>>,
+}
+
+static RUN_TARGET_ID_COUNTER: AtomicU64 = AtomicU64::new(0);
+
+/// A run target id must be safe to use as a HashMap key and to log: short,
+/// and drawn from a small alphabet - the same shape `validate_run_id` in
+/// `skill_agent_runner` requires of a run id.
+fn next_run_target_id() -> String {
+    let nanos = Utc::now().timestamp_nanos_opt().unwrap_or(0);
+    let counter = RUN_TARGET_ID_COUNTER.fetch_add(1, Ordering::Relaxed);
+    format!("{nanos}-{counter}")
+}
+
+/// The canonical roots a Scratch/Worktree target's stored `cwd` must live
+/// under, resolved once per command from the app handle. Kept separate from
+/// `AppHandle` so the containment check itself (`check_containment`) is
+/// testable without a running Tauri app.
+struct RunTargetRoots {
+    scratch: PathBuf,
+    worktrees: PathBuf,
+}
+
+impl RunTargetRoots {
+    fn from_app(app: &AppHandle) -> Result<Self, String> {
+        Ok(Self {
+            scratch: scratch_root(app)?,
+            worktrees: worktree_root(app)?,
+        })
+    }
+}
+
+/// Looks `id` up in `targets` and re-validates that its stored `cwd` still
+/// lives where its kind expects, before any command mutates or reads it.
+/// Refuses a forged/unknown id and a target whose backing directory moved
+/// (or was replaced) since it was prepared, both with the same message so
+/// neither case leaks which one occurred.
+fn resolve_target(
+    targets: &Mutex<HashMap<String, PreparedRunTarget>>,
+    roots: &RunTargetRoots,
+    id: &str,
+) -> Result<PreparedRunTarget, String> {
+    let target = {
+        let map = targets
+            .lock()
+            .map_err(|_| "Unknown run target".to_string())?;
+        map.get(id).cloned().ok_or("Unknown run target")?
+    };
+    check_containment(&target, roots)?;
+    Ok(target)
+}
+
+fn check_containment(target: &PreparedRunTarget, roots: &RunTargetRoots) -> Result<(), String> {
+    let canonical_cwd =
+        fs::canonicalize(&target.cwd).map_err(|_| "Unknown run target".to_string())?;
+    match target.kind {
+        SkillRunTargetKind::Scratch => {
+            let root =
+                fs::canonicalize(&roots.scratch).map_err(|_| "Unknown run target".to_string())?;
+            if !canonical_cwd.starts_with(&root) {
+                return Err("Unknown run target".to_string());
+            }
+        }
+        SkillRunTargetKind::Worktree => {
+            let root =
+                fs::canonicalize(&roots.worktrees).map_err(|_| "Unknown run target".to_string())?;
+            if !canonical_cwd.starts_with(&root) {
+                return Err("Unknown run target".to_string());
+            }
+        }
+        SkillRunTargetKind::InPlace => {
+            if target.project_path.as_deref() != Some(target.cwd.as_path()) {
+                return Err("Unknown run target".to_string());
+            }
+        }
+    }
+    Ok(())
+}
+
+/// Prepares the working directory for a "Test" run, per `request.kind`, and
+/// stores it under a fresh id.
 #[tauri::command]
 pub fn prepare_skill_run_target(
     app: AppHandle,
+    state: State<SkillRunTargetState>,
     request: SkillRunTargetRequest,
-) -> Result<SkillRunTarget, String> {
-    match request.kind {
-        SkillRunTargetKind::Scratch => prepare_scratch(&app, &request),
-        SkillRunTargetKind::Worktree => prepare_worktree(&app, &request),
-        SkillRunTargetKind::InPlace => prepare_in_place(&request),
-    }
+) -> Result<SkillRunTargetInfo, String> {
+    let id = next_run_target_id();
+    let prepared = match request.kind {
+        SkillRunTargetKind::Scratch => prepare_scratch(&app, &request, id)?,
+        SkillRunTargetKind::Worktree => prepare_worktree(&app, &request, id)?,
+        SkillRunTargetKind::InPlace => prepare_in_place(&request, id)?,
+    };
+    let info = SkillRunTargetInfo::from(&prepared);
+    state
+        .targets
+        .lock()
+        .map_err(|_| "Could not store run target".to_string())?
+        .insert(prepared.id.clone(), prepared);
+    Ok(info)
 }
 
 // ============================================================================
@@ -126,10 +252,19 @@ fn write_fixture_files(root: &Path, fixture: &str) -> Result<(), String> {
     Ok(())
 }
 
+fn scratch_root(app: &AppHandle) -> Result<PathBuf, String> {
+    let cache_dir = app
+        .path()
+        .app_cache_dir()
+        .map_err(|e| format!("Could not resolve app cache dir: {e}"))?;
+    Ok(cache_dir.join("skill-studio").join("scratch"))
+}
+
 fn prepare_scratch(
     app: &AppHandle,
     request: &SkillRunTargetRequest,
-) -> Result<SkillRunTarget, String> {
+    id: String,
+) -> Result<PreparedRunTarget, String> {
     let mut skills = vec![(request.skill_name.clone(), request.skill_folder.clone())];
     skills.extend(request.extra_skills.iter().cloned());
     let scratch_dir = super::skill_agent_runner::create_skill_scratch_dir(app.clone(), skills)?;
@@ -138,10 +273,13 @@ fn prepare_scratch(
         write_fixture_files(Path::new(&scratch_dir), fixture)?;
     }
 
-    Ok(SkillRunTarget {
+    let cwd = PathBuf::from(scratch_dir);
+    Ok(PreparedRunTarget {
+        id,
         kind: SkillRunTargetKind::Scratch,
-        cwd: scratch_dir.clone(),
-        cleanup_path: Some(scratch_dir),
+        cwd: cwd.clone(),
+        cleanup_path: Some(cwd),
+        project_path: None,
         git_head: None,
     })
 }
@@ -169,6 +307,14 @@ fn run_git_raw(cwd: &Path, args: &[&str]) -> Result<String, String> {
     Ok(String::from_utf8_lossy(&output.stdout).to_string())
 }
 
+/// `run_git` with `paths` appended after `prefix` - used for the batched
+/// `checkout`/`clean` calls, whose path lists are only known at runtime.
+fn run_git_paths(cwd: &Path, prefix: &[&str], paths: &[String]) -> Result<String, String> {
+    let mut args: Vec<&str> = prefix.to_vec();
+    args.extend(paths.iter().map(String::as_str));
+    run_git(cwd, &args)
+}
+
 fn worktree_root(app: &AppHandle) -> Result<PathBuf, String> {
     let cache_dir = app
         .path()
@@ -180,7 +326,8 @@ fn worktree_root(app: &AppHandle) -> Result<PathBuf, String> {
 fn prepare_worktree(
     app: &AppHandle,
     request: &SkillRunTargetRequest,
-) -> Result<SkillRunTarget, String> {
+    id: String,
+) -> Result<PreparedRunTarget, String> {
     let project_path = request
         .project_path
         .as_deref()
@@ -227,12 +374,34 @@ fn prepare_worktree(
             std::os::unix::fs::symlink(&target, link_dir.join(&request.skill_name))
                 .map_err(|e| format!("Could not symlink {agent_dir}: {e}"))?;
         }
+        // Commit the setup (the copied skill folder and its per-agent
+        // symlinks) into the worktree's own detached history, so the later
+        // `diff`/`apply` - taken relative to *this* commit, not the
+        // project's original HEAD - never includes the setup files
+        // themselves. `git_head` above stays the project's original HEAD;
+        // only the worktree's own head moves.
+        run_git(&worktree_path, &["add", "-A"])?;
+        run_git(
+            &worktree_path,
+            &[
+                "-c",
+                "user.name=Skill Studio",
+                "-c",
+                "user.email=skill-studio@localhost",
+                "commit",
+                "-q",
+                "-m",
+                "skill-studio: test setup",
+            ],
+        )?;
     }
 
-    Ok(SkillRunTarget {
+    Ok(PreparedRunTarget {
+        id,
         kind: SkillRunTargetKind::Worktree,
-        cwd: worktree_path.to_string_lossy().to_string(),
-        cleanup_path: Some(worktree_path.to_string_lossy().to_string()),
+        cwd: worktree_path.clone(),
+        cleanup_path: Some(worktree_path),
+        project_path: Some(PathBuf::from(project_path)),
         git_head: Some(git_head),
     })
 }
@@ -241,7 +410,10 @@ fn prepare_worktree(
 // InPlace
 // ============================================================================
 
-fn prepare_in_place(request: &SkillRunTargetRequest) -> Result<SkillRunTarget, String> {
+fn prepare_in_place(
+    request: &SkillRunTargetRequest,
+    id: String,
+) -> Result<PreparedRunTarget, String> {
     let project_path = request
         .project_path
         .as_deref()
@@ -255,10 +427,12 @@ fn prepare_in_place(request: &SkillRunTargetRequest) -> Result<SkillRunTarget, S
         );
     }
 
-    Ok(SkillRunTarget {
+    Ok(PreparedRunTarget {
+        id,
         kind: SkillRunTargetKind::InPlace,
-        cwd: project_path.to_string(),
+        cwd: project.to_path_buf(),
         cleanup_path: None,
+        project_path: Some(project.to_path_buf()),
         git_head: None,
     })
 }
@@ -268,14 +442,20 @@ fn prepare_in_place(request: &SkillRunTargetRequest) -> Result<SkillRunTarget, S
 /// already has `open_skill_path` access to, or under the app cache, neither
 /// of which this command needs to widen access to.
 #[tauri::command]
-pub fn reveal_skill_run_target(target: SkillRunTarget) -> Result<(), String> {
+pub fn reveal_skill_run_target(
+    app: AppHandle,
+    state: State<SkillRunTargetState>,
+    target_id: String,
+) -> Result<(), String> {
+    let roots = RunTargetRoots::from_app(&app)?;
+    let target = resolve_target(&state.targets, &roots, &target_id)?;
     if target.kind != SkillRunTargetKind::Scratch {
         return Err("Only a scratch target's folder can be revealed this way".to_string());
     }
     Command::new("open")
-        .args(["-R", &target.cwd])
+        .args(["-R", &target.cwd.to_string_lossy()])
         .output()
-        .map_err(|e| format!("Failed to reveal {}: {e}", target.cwd))?;
+        .map_err(|e| format!("Failed to reveal {}: {e}", target.cwd.display()))?;
     Ok(())
 }
 
@@ -283,12 +463,10 @@ pub fn reveal_skill_run_target(target: SkillRunTarget) -> Result<(), String> {
 // Diff / apply / discard
 // ============================================================================
 
-/// The unified diff for everything that changed in `target.cwd` since it was
+/// The unified diff for everything that changed in `cwd` since it was
 /// prepared, untracked files included (via a throwaway `git add -N .`, undone
 /// right after). Empty string when the tree is clean.
-#[tauri::command]
-pub fn skill_run_target_diff(target: SkillRunTarget) -> Result<String, String> {
-    let cwd = Path::new(&target.cwd);
+fn diff_for(cwd: &Path) -> Result<String, String> {
     run_git(cwd, &["add", "-N", "."])?;
     let diff = run_git_raw(cwd, &["diff"]);
     // Always undo the intent-to-add, even if `git diff` failed.
@@ -296,74 +474,255 @@ pub fn skill_run_target_diff(target: SkillRunTarget) -> Result<String, String> {
     diff
 }
 
-/// Applies a Worktree target's diff onto `project_path` with `git apply
-/// --3way`, so the worktree's changes fold back into the project. Only
-/// meaningful for Worktree targets.
+/// The unified diff for a prepared run target, looked up by id.
 #[tauri::command]
-pub fn apply_skill_run_target_diff(
-    target: SkillRunTarget,
-    project_path: String,
-) -> Result<(), String> {
+pub fn skill_run_target_diff(
+    app: AppHandle,
+    state: State<SkillRunTargetState>,
+    target_id: String,
+) -> Result<String, String> {
+    let roots = RunTargetRoots::from_app(&app)?;
+    let target = resolve_target(&state.targets, &roots, &target_id)?;
+    diff_for(&target.cwd)
+}
+
+/// Every path `git apply --numstat <patch>` reports the patch touching.
+fn numstat_paths(project: &Path, patch: &Path) -> Result<Vec<String>, String> {
+    let out = run_git(project, &["apply", "--numstat", &patch.to_string_lossy()])?;
+    Ok(out
+        .lines()
+        .filter_map(|line| line.rsplit('\t').next())
+        .map(str::to_string)
+        .collect())
+}
+
+/// Whether `path` (relative to `project`'s root) already existed at HEAD -
+/// distinguishes a patch-introduced file (restored by deleting it) from one
+/// the patch only modified (restored from the index).
+fn existed_at_head(project: &Path, path: &str) -> bool {
+    Command::new("git")
+        .args(["cat-file", "-e", &format!("HEAD:{path}")])
+        .current_dir(project)
+        .output()
+        .map(|o| o.status.success())
+        .unwrap_or(false)
+}
+
+/// Undoes whatever a failed `git apply --3way <patch>` left behind in
+/// `project`: tracked paths go back to HEAD via `checkout --`, paths the
+/// patch introduced (absent at HEAD) are removed.
+fn restore_after_failed_apply(project: &Path, patch: &Path) -> Result<(), String> {
+    let paths = numstat_paths(project, patch)?;
+    let (tracked, introduced): (Vec<String>, Vec<String>) =
+        paths.into_iter().partition(|p| existed_at_head(project, p));
+    if !tracked.is_empty() {
+        run_git_paths(project, &["checkout", "--"], &tracked)?;
+    }
+    if !introduced.is_empty() {
+        run_git_paths(project, &["clean", "-f", "--"], &introduced)?;
+    }
+    Ok(())
+}
+
+/// Applies a Worktree target's diff onto its stored project with `git apply
+/// --3way`, so the worktree's changes fold back into the project. Refuses if
+/// the project has uncommitted changes or moved off the commit the worktree
+/// was branched from, dry-runs the apply first, and on a real apply failure
+/// restores whatever it partially wrote before reporting the error.
+fn apply_worktree_diff(target: &PreparedRunTarget) -> Result<(), String> {
     if target.kind != SkillRunTargetKind::Worktree {
         return Err("Only a worktree target's diff can be applied".to_string());
     }
-    let diff = skill_run_target_diff(target)?;
-    let tmp = std::env::temp_dir().join(format!("skill-studio-apply-{}.patch", std::process::id()));
+    let project = target.project_path.as_deref().ok_or("Unknown run target")?;
+
+    let diff = diff_for(&target.cwd)?;
+    if diff.trim().is_empty() {
+        return remove_worktree(target);
+    }
+
+    let status = run_git(project, &["status", "--porcelain", "-z"])?;
+    if !status.is_empty() {
+        return Err(
+            "Working tree has uncommitted changes. Commit or stash them before applying."
+                .to_string(),
+        );
+    }
+    let head = run_git(project, &["rev-parse", "HEAD"])?;
+    if Some(head.as_str()) != target.git_head.as_deref() {
+        return Err(
+            "The project moved to a different commit since the test started. Run the test again."
+                .to_string(),
+        );
+    }
+
+    let tmp = std::env::temp_dir().join(format!(
+        "skill-studio-apply-{}-{}.patch",
+        std::process::id(),
+        target.id
+    ));
     fs::write(&tmp, &diff).map_err(|e| format!("Could not write patch file: {e}"))?;
 
-    let result = run_git(
-        Path::new(&project_path),
-        &["apply", "--3way", &tmp.to_string_lossy()],
-    );
+    let result = (|| -> Result<(), String> {
+        run_git(
+            project,
+            &["apply", "--3way", "--check", &tmp.to_string_lossy()],
+        )
+        .map_err(|e| format!("Patch does not apply cleanly: {e}"))?;
+        run_git(project, &["apply", "--3way", &tmp.to_string_lossy()]).map_err(|apply_err| {
+            match restore_after_failed_apply(project, &tmp) {
+                Ok(()) => format!("{apply_err}\nThe project was restored."),
+                Err(restore_err) => format!("{apply_err}\nRestore failed: {restore_err}"),
+            }
+        })?;
+        Ok(())
+    })();
     let _ = fs::remove_file(&tmp);
-    result.map(|_| ())
+    result?;
+
+    remove_worktree(target)
+}
+
+/// Removes a Worktree target's checkout and directory - shared by a
+/// successful/no-op `apply` and by `discard`.
+fn remove_worktree(target: &PreparedRunTarget) -> Result<(), String> {
+    let Some(path) = &target.cleanup_path else {
+        return Ok(());
+    };
+    let path_str = path.to_string_lossy().to_string();
+    // The project path is needed as the cwd `git worktree remove` runs in;
+    // `target.cwd` *is* the worktree, so removing it from within itself
+    // would fail once the directory is gone. Run from the worktree itself
+    // for `list`/fallback `prune`, which don't need the directory to still
+    // exist; `git worktree remove` accepts an absolute path regardless of
+    // cwd as long as it's run inside *some* checkout of the same repo.
+    if run_git(path, &["worktree", "remove", "--force", &path_str]).is_err() {
+        let _ = run_git(path, &["worktree", "prune"]);
+    }
+    let _ = fs::remove_dir_all(path);
+    Ok(())
+}
+
+/// Applies a prepared Worktree target's diff back onto its project.
+#[tauri::command]
+pub fn apply_skill_run_target_diff(
+    app: AppHandle,
+    state: State<SkillRunTargetState>,
+    target_id: String,
+) -> Result<(), String> {
+    let roots = RunTargetRoots::from_app(&app)?;
+    let target = resolve_target(&state.targets, &roots, &target_id)?;
+    apply_worktree_diff(&target)?;
+    state
+        .targets
+        .lock()
+        .map_err(|_| "Could not update run target state".to_string())?
+        .remove(&target_id);
+    Ok(())
+}
+
+/// Splits a `git status --porcelain=v1 -z` entry's status code and path into
+/// the buckets `discard_in_place` needs: `checkout_paths` for anything that
+/// should come back from HEAD, `clean_files`/`clean_dirs` for anything that
+/// should simply be removed. A rename/copy (`R`/`C`) reports two
+/// NUL-separated fields - the new path, then the old one - both consumed
+/// here so the next entry isn't misread as the old path's status code. `.git`
+/// itself is never added to a bucket, but its NUL field is still consumed.
+struct DiscardPaths {
+    /// Tracked at HEAD - unstaged (if needed), then checked out back to it.
+    checkout: Vec<String>,
+    /// Staged but absent at HEAD (a plain add, or a rename/copy's new path) -
+    /// unstaging turns these untracked, so they're cleaned, not checked out.
+    staged_new: Vec<String>,
+    /// Already untracked (`??`) - cleaned as-is, no unstaging needed.
+    untracked_files: Vec<String>,
+    untracked_dirs: Vec<String>,
+}
+
+fn parse_discard_paths(porcelain_z: &str) -> DiscardPaths {
+    let fields: Vec<&str> = porcelain_z.split('\0').filter(|s| !s.is_empty()).collect();
+    let mut result = DiscardPaths {
+        checkout: Vec::new(),
+        staged_new: Vec::new(),
+        untracked_files: Vec::new(),
+        untracked_dirs: Vec::new(),
+    };
+
+    let mut i = 0;
+    while i < fields.len() {
+        let entry = fields[i];
+        i += 1;
+        if entry.len() < 3 {
+            continue;
+        }
+        let code = &entry[0..2];
+        let path = entry[3..].to_string();
+
+        let mut old_path: Option<String> = None;
+        if code.starts_with('R') || code.starts_with('C') {
+            old_path = fields.get(i).map(|s| s.to_string());
+            i += 1;
+        }
+
+        if !path.starts_with(".git") {
+            if code == "??" {
+                if let Some(dir) = path.strip_suffix('/') {
+                    result.untracked_dirs.push(dir.to_string());
+                } else {
+                    result.untracked_files.push(path);
+                }
+            } else if old_path.is_some() || code.starts_with('A') {
+                // A rename/copy's new path, or a staged-but-never-committed
+                // addition: after unstaging (below) it's untracked, so it
+                // needs cleaning, not checkout.
+                result.staged_new.push(path);
+            } else {
+                result.checkout.push(path);
+            }
+        }
+        if let Some(old_path) = old_path {
+            if !old_path.is_empty() && !old_path.starts_with(".git") {
+                result.checkout.push(old_path);
+            }
+        }
+    }
+    result
+}
+
+/// Reverts every change `git status` attributes to the run: tracked paths
+/// (staged or not) are unstaged and checked out back to HEAD; untracked
+/// files/dirs are removed. The prepare-time clean-tree check is the baseline
+/// this compares against, so every dirty path found here is the run's.
+fn discard_in_place(cwd: &Path) -> Result<(), String> {
+    let status = run_git_raw(cwd, &["status", "--porcelain=v1", "-z"])?;
+    let paths = parse_discard_paths(&status);
+
+    // `checkout --` restores from the index, so anything staged must be
+    // unstaged first, or it would just re-copy its own staged content.
+    let mut to_unstage = paths.checkout.clone();
+    to_unstage.extend(paths.staged_new.iter().cloned());
+    if !to_unstage.is_empty() {
+        run_git_paths(cwd, &["reset", "-q", "--"], &to_unstage)?;
+    }
+    if !paths.checkout.is_empty() {
+        run_git_paths(cwd, &["checkout", "--"], &paths.checkout)?;
+    }
+    let mut to_clean_files = paths.staged_new;
+    to_clean_files.extend(paths.untracked_files);
+    if !to_clean_files.is_empty() {
+        run_git_paths(cwd, &["clean", "-f", "--"], &to_clean_files)?;
+    }
+    if !paths.untracked_dirs.is_empty() {
+        run_git_paths(cwd, &["clean", "-fd", "--"], &paths.untracked_dirs)?;
+    }
+    Ok(())
 }
 
 /// Reverts (InPlace) or removes (Worktree/Scratch) whatever `prepare_skill_run_target`
 /// produced.
-#[tauri::command]
-pub fn discard_skill_run_target(target: SkillRunTarget) -> Result<(), String> {
+fn discard_target(target: &PreparedRunTarget) -> Result<(), String> {
     match target.kind {
-        SkillRunTargetKind::Worktree => {
-            let Some(path) = &target.cleanup_path else {
-                return Ok(());
-            };
-            // The project path is needed as the cwd `git worktree remove` runs
-            // in; `target.cwd` *is* the worktree, so removing it from within
-            // itself would fail once the directory is gone. Run from the
-            // worktree's parent-of-parent instead: the worktree metadata lives
-            // under the main repo's `.git/worktrees`, and `git worktree
-            // remove` accepts an absolute path regardless of cwd as long as
-            // it's run inside *some* checkout of the same repo. We use the
-            // worktree itself for `list`/fallback `prune`, which don't need
-            // the directory to still exist.
-            if run_git(Path::new(path), &["worktree", "remove", "--force", path]).is_err() {
-                let _ = run_git(Path::new(path), &["worktree", "prune"]);
-            }
-            let _ = fs::remove_dir_all(path);
-            Ok(())
-        }
-        SkillRunTargetKind::InPlace => {
-            let cwd = Path::new(&target.cwd);
-            let status = run_git(cwd, &["status", "--porcelain"])?;
-            let paths: Vec<&str> = status
-                .lines()
-                .filter_map(|line| line.get(3..))
-                .filter(|p| !p.starts_with(".git"))
-                .collect();
-            if paths.is_empty() {
-                return Ok(());
-            }
-            let mut checkout_args = vec!["checkout", "--"];
-            checkout_args.extend(paths.iter().copied());
-            // `checkout --` only covers tracked-file modifications; untracked
-            // additions need `clean -fd` scoped to the same paths.
-            let _ = run_git(cwd, &checkout_args);
-            let mut clean_args = vec!["clean", "-fd", "--"];
-            clean_args.extend(paths.iter().copied());
-            let _ = run_git(cwd, &clean_args);
-            Ok(())
-        }
+        SkillRunTargetKind::Worktree => remove_worktree(target),
+        SkillRunTargetKind::InPlace => discard_in_place(&target.cwd),
         SkillRunTargetKind::Scratch => {
             let Some(path) = &target.cleanup_path else {
                 return Ok(());
@@ -371,6 +730,24 @@ pub fn discard_skill_run_target(target: SkillRunTarget) -> Result<(), String> {
             fs::remove_dir_all(path).map_err(|e| format!("Could not remove scratch dir: {e}"))
         }
     }
+}
+
+/// Discards a prepared run target, looked up by id.
+#[tauri::command]
+pub fn discard_skill_run_target(
+    app: AppHandle,
+    state: State<SkillRunTargetState>,
+    target_id: String,
+) -> Result<(), String> {
+    let roots = RunTargetRoots::from_app(&app)?;
+    let target = resolve_target(&state.targets, &roots, &target_id)?;
+    discard_target(&target)?;
+    state
+        .targets
+        .lock()
+        .map_err(|_| "Could not update run target state".to_string())?
+        .remove(&target_id);
+    Ok(())
 }
 
 #[cfg(test)]
@@ -393,6 +770,17 @@ mod tests {
         fs::write(dir.join("README.md"), "hello\n").unwrap();
         run_git(dir, &["add", "."]).unwrap();
         run_git(dir, &["commit", "-q", "-m", "initial"]).unwrap();
+    }
+
+    fn scratch_target(id: &str, cwd: PathBuf) -> PreparedRunTarget {
+        PreparedRunTarget {
+            id: id.to_string(),
+            kind: SkillRunTargetKind::Scratch,
+            cwd: cwd.clone(),
+            cleanup_path: Some(cwd),
+            project_path: None,
+            git_head: None,
+        }
     }
 
     #[test]
@@ -428,21 +816,125 @@ mod tests {
             fixture: None,
             project_path: Some(dir.path().to_string_lossy().to_string()),
         };
-        let err = prepare_in_place(&request).unwrap_err();
+        let err = prepare_in_place(&request, "t".to_string()).unwrap_err();
         assert!(err.contains("uncommitted changes"));
     }
 
+    // ------------------------------------------------------------------
+    // F1: id-based lookup and containment
+    // ------------------------------------------------------------------
+
     #[test]
-    fn worktree_add_diff_apply_discard_round_trip() {
+    fn resolve_target_refuses_an_unknown_id() {
+        let state = SkillRunTargetState::default();
+        let roots = RunTargetRoots {
+            scratch: PathBuf::from("/nonexistent-scratch-root"),
+            worktrees: PathBuf::from("/nonexistent-worktree-root"),
+        };
+        // Every id-based command (`diff`, `apply`, `discard`, `reveal`) routes
+        // through this same lookup before doing anything else.
+        let err = resolve_target(&state.targets, &roots, "forged-id").unwrap_err();
+        assert_eq!(err, "Unknown run target");
+    }
+
+    #[test]
+    fn resolve_target_refuses_a_scratch_target_moved_outside_its_root() {
+        let scratch_root = tempdir().unwrap();
+        let moved = tempdir().unwrap();
+        let state = SkillRunTargetState::default();
+        state.targets.lock().unwrap().insert(
+            "t".to_string(),
+            scratch_target("t", moved.path().to_path_buf()),
+        );
+        let roots = RunTargetRoots {
+            scratch: scratch_root.path().to_path_buf(),
+            worktrees: PathBuf::from("/nonexistent-worktree-root"),
+        };
+        let err = resolve_target(&state.targets, &roots, "t").unwrap_err();
+        assert_eq!(err, "Unknown run target");
+    }
+
+    #[test]
+    fn resolve_target_accepts_a_scratch_target_under_its_root() {
+        let scratch_root = tempdir().unwrap();
+        let target_dir = scratch_root.path().join("run-1");
+        fs::create_dir_all(&target_dir).unwrap();
+        let state = SkillRunTargetState::default();
+        state
+            .targets
+            .lock()
+            .unwrap()
+            .insert("t".to_string(), scratch_target("t", target_dir.clone()));
+        let roots = RunTargetRoots {
+            scratch: scratch_root.path().to_path_buf(),
+            worktrees: PathBuf::from("/nonexistent-worktree-root"),
+        };
+        let resolved = resolve_target(&state.targets, &roots, "t").unwrap();
+        assert_eq!(
+            fs::canonicalize(resolved.cwd).unwrap(),
+            fs::canonicalize(target_dir).unwrap()
+        );
+    }
+
+    // ------------------------------------------------------------------
+    // F2: in-place discard
+    // ------------------------------------------------------------------
+
+    #[test]
+    fn in_place_discard_reverts_rename_new_and_modified_files() {
         if !git_available() {
             return;
         }
-        let project = tempdir().unwrap();
-        init_repo(project.path());
-        let cache = tempdir().unwrap();
+        let dir = tempdir().unwrap();
+        init_repo(dir.path());
+        fs::write(dir.path().join("mod.txt"), "orig\n").unwrap();
+        run_git(dir.path(), &["add", "."]).unwrap();
+        run_git(dir.path(), &["commit", "-q", "-m", "add mod.txt"]).unwrap();
 
-        let toplevel = run_git(project.path(), &["rev-parse", "--show-toplevel"]).unwrap();
-        let worktree_path = cache.path().join("wt");
+        // Simulate a run's edits: modify a tracked file, add a new one, and
+        // rename a tracked file - then stage everything, so `git status`
+        // reports the rename as `R` (unstaged renames aren't detected).
+        fs::write(dir.path().join("mod.txt"), "changed\n").unwrap();
+        fs::write(dir.path().join("new.txt"), "new\n").unwrap();
+        fs::rename(dir.path().join("README.md"), dir.path().join("renamed.md")).unwrap();
+        run_git(dir.path(), &["add", "-A"]).unwrap();
+
+        discard_in_place(dir.path()).unwrap();
+
+        assert_eq!(
+            fs::read_to_string(dir.path().join("mod.txt")).unwrap(),
+            "orig\n"
+        );
+        assert!(!dir.path().join("new.txt").exists());
+        assert!(dir.path().join("README.md").exists());
+        assert!(!dir.path().join("renamed.md").exists());
+        assert!(run_git(dir.path(), &["status", "--porcelain"])
+            .unwrap()
+            .is_empty());
+    }
+
+    #[test]
+    fn in_place_discard_handles_paths_with_spaces_and_quotes() {
+        if !git_available() {
+            return;
+        }
+        let dir = tempdir().unwrap();
+        init_repo(dir.path());
+        fs::write(dir.path().join("a file.txt"), "one\n").unwrap();
+        fs::write(dir.path().join("a\"quote.txt"), "two\n").unwrap();
+
+        discard_in_place(dir.path()).unwrap();
+
+        assert!(!dir.path().join("a file.txt").exists());
+        assert!(!dir.path().join("a\"quote.txt").exists());
+    }
+
+    // ------------------------------------------------------------------
+    // F3: worktree apply safety
+    // ------------------------------------------------------------------
+
+    fn add_worktree(project: &Path, worktree_path: &Path) {
+        let toplevel = run_git(project, &["rev-parse", "--show-toplevel"]).unwrap();
         run_git(
             Path::new(&toplevel),
             &[
@@ -454,23 +946,162 @@ mod tests {
             ],
         )
         .unwrap();
+    }
 
+    #[test]
+    fn apply_refuses_when_the_project_moved_off_the_stored_head() {
+        if !git_available() {
+            return;
+        }
+        let project = tempdir().unwrap();
+        init_repo(project.path());
+        let head = run_git(project.path(), &["rev-parse", "HEAD"]).unwrap();
+        let cache = tempdir().unwrap();
+        let worktree_path = cache.path().join("wt");
+        add_worktree(project.path(), &worktree_path);
         fs::write(worktree_path.join("new-file.txt"), "content\n").unwrap();
-        let target = SkillRunTarget {
+
+        // The project moves to a new commit after the worktree was taken.
+        fs::write(project.path().join("README.md"), "moved on\n").unwrap();
+        run_git(project.path(), &["commit", "-aqm", "move on"]).unwrap();
+
+        let target = PreparedRunTarget {
+            id: "t".to_string(),
             kind: SkillRunTargetKind::Worktree,
-            cwd: worktree_path.to_string_lossy().to_string(),
-            cleanup_path: Some(worktree_path.to_string_lossy().to_string()),
-            git_head: None,
+            cwd: worktree_path.clone(),
+            cleanup_path: Some(worktree_path),
+            project_path: Some(project.path().to_path_buf()),
+            git_head: Some(head),
         };
+        let err = apply_worktree_diff(&target).unwrap_err();
+        assert!(err.contains("moved to a different commit"));
+    }
 
-        let diff = skill_run_target_diff(target.clone()).unwrap();
-        assert!(diff.contains("new-file.txt"));
+    #[test]
+    fn apply_round_trip_leaves_no_worktree_behind() {
+        if !git_available() {
+            return;
+        }
+        let project = tempdir().unwrap();
+        init_repo(project.path());
+        let head = run_git(project.path(), &["rev-parse", "HEAD"]).unwrap();
+        let cache = tempdir().unwrap();
+        let worktree_path = cache.path().join("wt");
+        add_worktree(project.path(), &worktree_path);
+        fs::write(worktree_path.join("new-file.txt"), "content\n").unwrap();
 
-        apply_skill_run_target_diff(target.clone(), project.path().to_string_lossy().to_string())
-            .unwrap();
+        let target = PreparedRunTarget {
+            id: "t".to_string(),
+            kind: SkillRunTargetKind::Worktree,
+            cwd: worktree_path.clone(),
+            cleanup_path: Some(worktree_path),
+            project_path: Some(project.path().to_path_buf()),
+            git_head: Some(head),
+        };
+        apply_worktree_diff(&target).unwrap();
+
         assert!(project.path().join("new-file.txt").exists());
+        assert!(!target.cwd.exists());
+        let list = run_git(project.path(), &["worktree", "list"]).unwrap();
+        assert_eq!(list.lines().count(), 1);
+    }
 
-        discard_skill_run_target(target).unwrap();
-        assert!(!worktree_path.exists());
+    // ------------------------------------------------------------------
+    // F7: worktree baseline excludes setup files
+    // ------------------------------------------------------------------
+
+    #[test]
+    fn worktree_setup_commit_keeps_the_diff_free_of_skill_files() {
+        if !git_available() {
+            return;
+        }
+        let project = tempdir().unwrap();
+        init_repo(project.path());
+        let skill_source = tempdir().unwrap();
+        fs::write(
+            skill_source.path().join("SKILL.md"),
+            "---\nname: demo\n---\n",
+        )
+        .unwrap();
+
+        let request = SkillRunTargetRequest {
+            kind: SkillRunTargetKind::Worktree,
+            skill_name: "demo".to_string(),
+            skill_folder: skill_source.path().to_string_lossy().to_string(),
+            extra_skills: vec![],
+            fixture: None,
+            project_path: Some(project.path().to_string_lossy().to_string()),
+        };
+        let app_cache = tempdir().unwrap();
+        let target = prepare_worktree_for_test(&request, app_cache.path(), "t".to_string());
+
+        assert_eq!(diff_for(&target.cwd).unwrap(), "");
+
+        fs::write(target.cwd.join("README.md"), "edited by the agent\n").unwrap();
+        let diff = diff_for(&target.cwd).unwrap();
+        assert!(diff.contains("README.md"));
+        assert!(!diff.contains(".agents/skills/demo"));
+        assert!(!diff.contains(".claude/skills/demo"));
+    }
+
+    /// `prepare_worktree` without an `AppHandle` - builds the same layout
+    /// under a caller-supplied cache root instead of the app cache dir.
+    fn prepare_worktree_for_test(
+        request: &SkillRunTargetRequest,
+        cache_root: &Path,
+        id: String,
+    ) -> PreparedRunTarget {
+        let project_path = request.project_path.as_deref().unwrap();
+        let project = Path::new(project_path);
+        let toplevel = run_git(project, &["rev-parse", "--show-toplevel"]).unwrap();
+        let git_head = run_git(project, &["rev-parse", "HEAD"]).unwrap();
+        let worktree_path = cache_root.join("worktrees").join("wt");
+        fs::create_dir_all(worktree_path.parent().unwrap()).unwrap();
+        run_git(
+            Path::new(&toplevel),
+            &[
+                "worktree",
+                "add",
+                "--detach",
+                &worktree_path.to_string_lossy(),
+                "HEAD",
+            ],
+        )
+        .unwrap();
+        let skill_dest = worktree_path
+            .join(".agents")
+            .join("skills")
+            .join(&request.skill_name);
+        copy_skill_dir_for_run_target(Path::new(&request.skill_folder), &skill_dest).unwrap();
+        for agent_dir in [".claude/skills", ".pi/skills"] {
+            let link_dir = worktree_path.join(agent_dir);
+            fs::create_dir_all(&link_dir).unwrap();
+            let target = Path::new("../../.agents/skills").join(&request.skill_name);
+            #[cfg(unix)]
+            std::os::unix::fs::symlink(&target, link_dir.join(&request.skill_name)).unwrap();
+        }
+        run_git(&worktree_path, &["add", "-A"]).unwrap();
+        run_git(
+            &worktree_path,
+            &[
+                "-c",
+                "user.name=Skill Studio",
+                "-c",
+                "user.email=skill-studio@localhost",
+                "commit",
+                "-q",
+                "-m",
+                "skill-studio: test setup",
+            ],
+        )
+        .unwrap();
+        PreparedRunTarget {
+            id,
+            kind: SkillRunTargetKind::Worktree,
+            cwd: worktree_path.clone(),
+            cleanup_path: Some(worktree_path),
+            project_path: Some(project.to_path_buf()),
+            git_head: Some(git_head),
+        }
     }
 }
