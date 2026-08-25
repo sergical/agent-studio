@@ -5,9 +5,12 @@
 // ============================================================================
 
 import { useEffect, useRef } from "react";
+import { homeDir } from "@tauri-apps/api/path";
 import { Sidebar } from "./components/Sidebar/Sidebar";
 import { SkillDashboard } from "./components/Dashboard/SkillDashboard";
 import { SkillsScopeView } from "./components/SkillsScopeView";
+import { SkillCoverageView } from "./components/Coverage/SkillCoverageView";
+import { PluginSkillsView } from "./components/Plugins/PluginSkillsView";
 import { SkillDetail } from "./components/SkillDetail/SkillDetail";
 import { SkillStore } from "./components/SkillStore";
 import { ToastContainer } from "./components/ui/ToastContainer";
@@ -19,44 +22,68 @@ import "./App.css";
 function App() {
   const { snapshot, isLoading, requestRescan } = useSkillSnapshot();
   const activeView = useAppStore((state) => state.activeView);
-  const selectedSkillName = useAppStore((state) => state.selectedSkillName);
-  const setSelectedSkillName = useAppStore((state) => state.setSelectedSkillName);
+  const selectedSkill = useAppStore((state) => state.selectedSkill);
+  const setSelectedSkill = useAppStore((state) => state.setSelectedSkill);
   const userAddedProjects = useAppStore((state) => state.userAddedProjects);
   const excludedProjects = useAppStore((state) => state.excludedProjects);
+  const removeProject = useAppStore((state) => state.removeProject);
+  const addToast = useAppStore((state) => state.addToast);
+
+  const onSelectSkill = (name: string, deploymentPath?: string) =>
+    setSelectedSkill({ name, deploymentPath });
 
   // Re-register the user's remembered projects, and re-apply their remembered
   // exclusions, with the backend once on startup, so future background
-  // rebuilds always reflect both.
+  // rebuilds always reflect both. A legacy persisted entry equal to the home
+  // directory (the global scope, never a project) is dropped rather than
+  // sent - the backend would refuse it anyway.
   const didRegisterStartupProjects = useRef(false);
   useEffect(() => {
     if (didRegisterStartupProjects.current) return;
     didRegisterStartupProjects.current = true;
-    if (userAddedProjects.length > 0) {
-      registerSkillProjects(userAddedProjects);
-    }
-    for (const path of excludedProjects) {
-      unregisterSkillProject(path);
-    }
-  }, [userAddedProjects, excludedProjects]);
 
-  const selectedSkill = snapshot?.skills.find((s) => s.name === selectedSkillName) ?? null;
-  const invocationStats = snapshot?.invocations.find((s) => s.skill === selectedSkillName);
+    (async () => {
+      const home = await homeDir().catch(() => null);
+      const projectsToRegister = home
+        ? userAddedProjects.filter((path) => path !== home)
+        : userAddedProjects;
+      if (home) {
+        for (const path of userAddedProjects) {
+          if (path === home) removeProject(path);
+        }
+      }
+
+      if (projectsToRegister.length > 0) {
+        try {
+          await registerSkillProjects(projectsToRegister);
+        } catch (err) {
+          addToast({
+            type: "error",
+            title: "Couldn't restore tracked projects",
+            message: err instanceof Error ? err.message : "Unknown error",
+          });
+        }
+      }
+      for (const path of excludedProjects) {
+        unregisterSkillProject(path);
+      }
+    })();
+  }, [userAddedProjects, excludedProjects, removeProject, addToast]);
+
+  const selectedSkillRecord = snapshot?.skills.find((s) => s.name === selectedSkill?.name) ?? null;
+  const invocationStats = snapshot?.invocations.find((s) => s.skill === selectedSkill?.name);
 
   let main: React.ReactNode;
   if (activeView.kind === "dashboard") {
     main = (
-      <SkillDashboard
-        snapshot={snapshot}
-        isLoading={isLoading}
-        onSelectSkill={setSelectedSkillName}
-      />
+      <SkillDashboard snapshot={snapshot} isLoading={isLoading} onSelectSkill={onSelectSkill} />
     );
   } else if (activeView.kind === "global") {
     main = (
       <SkillsScopeView
         scope={{ kind: "global" }}
         snapshot={snapshot}
-        onSelectSkill={setSelectedSkillName}
+        onSelectSkill={onSelectSkill}
       />
     );
   } else if (activeView.kind === "project") {
@@ -64,9 +91,19 @@ function App() {
       <SkillsScopeView
         scope={{ kind: "project", path: activeView.path }}
         snapshot={snapshot}
-        onSelectSkill={setSelectedSkillName}
+        onSelectSkill={onSelectSkill}
       />
     );
+  } else if (activeView.kind === "plugins") {
+    main = (
+      <PluginSkillsView
+        harness={activeView.harness}
+        snapshot={snapshot}
+        onSelectSkill={onSelectSkill}
+      />
+    );
+  } else if (activeView.kind === "coverage") {
+    main = <SkillCoverageView snapshot={snapshot} onSelectSkill={onSelectSkill} />;
   } else {
     main = <SkillStore />;
   }
@@ -76,14 +113,15 @@ function App() {
       <Sidebar snapshot={snapshot} isLoading={isLoading} requestRescan={requestRescan} />
       <main className="flex-1 overflow-y-auto">{main}</main>
 
-      {activeView.kind !== "discover" && selectedSkill && (
+      {activeView.kind !== "discover" && selectedSkillRecord && (
         <>
-          <div className="skill-detail-overlay" onClick={() => setSelectedSkillName(null)} />
+          <div className="skill-detail-overlay" onClick={() => setSelectedSkill(null)} />
           <SkillDetail
-            skill={selectedSkill}
+            skill={selectedSkillRecord}
+            deploymentPath={selectedSkill?.deploymentPath}
             invocationStats={invocationStats}
-            onClose={() => setSelectedSkillName(null)}
-            onRemoveComplete={() => setSelectedSkillName(null)}
+            onClose={() => setSelectedSkill(null)}
+            onRemoveComplete={() => setSelectedSkill(null)}
           />
         </>
       )}

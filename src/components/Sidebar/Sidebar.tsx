@@ -3,9 +3,20 @@
 // ============================================================================
 
 import { useCallback, useState } from "react";
-import { open } from "@tauri-apps/plugin-dialog";
-import { FolderPlus, Globe, LayoutDashboard, RefreshCw, Search, X } from "lucide-react";
+import { homeDir } from "@tauri-apps/api/path";
+import { ask, open } from "@tauri-apps/plugin-dialog";
+import {
+  Blocks,
+  FolderPlus,
+  Globe,
+  LayoutDashboard,
+  LayoutGrid,
+  RefreshCw,
+  Search,
+  X,
+} from "lucide-react";
 import { registerSkillProjects, unregisterSkillProject } from "../../lib/skill-api";
+import { ownSkillsView, pluginHarnessCounts } from "../../lib/skill-plugin-partition";
 import { useAppStore } from "../../store/appStore";
 import type { SkillSnapshot } from "../../lib/skill-types";
 
@@ -27,18 +38,17 @@ function relativeScanTime(scannedAt: string | undefined): string {
   return `${Math.floor(hours / 24)}d ago`;
 }
 
-/** Skill count deployed at global (or plugin) scope. */
+/** Own-skill count deployed at global (or plugin) scope. */
 function globalSkillCount(snapshot: SkillSnapshot | undefined): number {
-  if (!snapshot) return 0;
-  return snapshot.skills.filter((s) =>
-    s.deployments.some((d) => d.scope === "global" || d.scope === "plugin"),
-  ).length;
+  const own = ownSkillsView(snapshot?.skills ?? []);
+  return own.filter((s) => s.deployments.some((d) => d.scope === "global" || d.scope === "plugin"))
+    .length;
 }
 
-/** Skill count deployed to a specific project directory. */
+/** Own-skill count deployed to a specific project directory. */
 function projectSkillCount(snapshot: SkillSnapshot | undefined, path: string): number {
-  if (!snapshot) return 0;
-  return snapshot.skills.filter((s) => s.deployments.some((d) => d.project_path === path)).length;
+  const own = ownSkillsView(snapshot?.skills ?? []);
+  return own.filter((s) => s.deployments.some((d) => d.project_path === path)).length;
 }
 
 /**
@@ -54,6 +64,7 @@ export function Sidebar({ snapshot, isLoading, requestRescan }: SidebarProps) {
   const excludedProjects = useAppStore((state) => state.excludedProjects);
   const addProject = useAppStore((state) => state.addProject);
   const removeProject = useAppStore((state) => state.removeProject);
+  const addToast = useAppStore((state) => state.addToast);
 
   // Every project row: user-added paths plus every path the backend
   // discovered on its own (Codex config, Claude Code transcripts), minus
@@ -72,12 +83,39 @@ export function Sidebar({ snapshot, isLoading, requestRescan }: SidebarProps) {
   const handleAddProject = useCallback(async () => {
     const selected = await open({ directory: true, multiple: false, title: "Add Project" });
     if (!selected) return;
-    addProject(selected);
-    await registerSkillProjects([selected]);
-  }, [addProject]);
+
+    const home = await homeDir().catch(() => null);
+    if (home && selected === home) {
+      addToast({
+        type: "error",
+        title: "Can't add the home directory",
+        message: "It's the global scope, not a project.",
+      });
+      return;
+    }
+
+    try {
+      // Register with the backend too - it drops the home directory from any
+      // batch on its own, but a single-path call still gets a clear error.
+      await registerSkillProjects([selected]);
+      addProject(selected);
+    } catch (err) {
+      addToast({
+        type: "error",
+        title: "Couldn't add project",
+        message: err instanceof Error ? err.message : "Unknown error",
+      });
+    }
+  }, [addProject, addToast]);
 
   const handleRemoveProject = useCallback(
     async (path: string) => {
+      const confirmed = await ask(
+        `Stop tracking ${path}? Skills in it stay on disk; you can add it again with Add project…`,
+        { title: "Stop tracking project", kind: "warning" },
+      );
+      if (!confirmed) return;
+
       removeProject(path);
       await unregisterSkillProject(path);
       if (activeView.kind === "project" && activeView.path === path) {
@@ -88,6 +126,9 @@ export function Sidebar({ snapshot, isLoading, requestRescan }: SidebarProps) {
   );
 
   const spinning = isRescanning && isLoading;
+  const pluginHarnesses = [...pluginHarnessCounts(snapshot?.skills ?? [])].sort(([a], [b]) =>
+    a.localeCompare(b),
+  );
 
   return (
     <nav className="skill-sidebar">
@@ -144,6 +185,35 @@ export function Sidebar({ snapshot, isLoading, requestRescan }: SidebarProps) {
         <button className="skill-sidebar-item skill-sidebar-add-project" onClick={handleAddProject}>
           <FolderPlus size={14} />
           <span>Add project…</span>
+        </button>
+      </div>
+
+      {pluginHarnesses.length > 0 && (
+        <div className="skill-sidebar-section">
+          <div className="skill-sidebar-section-title">Plugins</div>
+          {pluginHarnesses.map(([harness, count]) => (
+            <button
+              key={harness}
+              className={`skill-sidebar-item ${
+                activeView.kind === "plugins" && activeView.harness === harness ? "active" : ""
+              }`}
+              onClick={() => setActiveView({ kind: "plugins", harness })}
+            >
+              <Blocks size={14} />
+              <span>{harness}</span>
+              <span className="skill-sidebar-badge">{count}</span>
+            </button>
+          ))}
+        </div>
+      )}
+
+      <div className="skill-sidebar-section">
+        <button
+          className={`skill-sidebar-item ${activeView.kind === "coverage" ? "active" : ""}`}
+          onClick={() => setActiveView({ kind: "coverage" })}
+        >
+          <LayoutGrid size={14} />
+          <span>Coverage</span>
         </button>
       </div>
 

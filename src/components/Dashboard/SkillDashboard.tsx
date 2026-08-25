@@ -1,24 +1,23 @@
 // ============================================================================
-// SkillDashboard - The default view: stats, agent matrix, activity, health,
-// and the full skill list grouped by scope
+// SkillDashboard - The default view: stat cards, top skills, health, activity,
+// and agent coverage for the user's own skills. Plugin-shipped skills are
+// counted separately and have their own section (see Sidebar/Plugins).
 // ============================================================================
 
-import { useMemo, useState } from "react";
+import { useMemo } from "react";
 import {
   findBrokenSymlinks,
   findDuplicateSkills,
   findLockOnlySkills,
   findMissingFromAgents,
-  findNeverInvoked,
   findSpecViolations,
 } from "../../lib/skill-health";
-import type { HealthIssueKind } from "../../lib/skill-health";
-import { computeTotals } from "../../lib/skill-stats";
+import { ownSkillsView, pluginSkillsView } from "../../lib/skill-plugin-partition";
 import type { SkillSnapshot } from "../../lib/skill-types";
-import { HealthCard } from "./HealthCard";
+import { useAppStore } from "../../store/appStore";
+import { AgentCoverageRow } from "./AgentCoverageRow";
 import { InvocationHeatmap } from "./InvocationHeatmap";
-import { SkillAgentMatrix } from "./SkillAgentMatrix";
-import { SkillList } from "./SkillList";
+import { NeedsAttentionCard } from "./NeedsAttentionCard";
 import { StatCards } from "./StatCards";
 import { TopSkillsList } from "./TopSkillsList";
 
@@ -29,24 +28,27 @@ interface SkillDashboardProps {
 }
 
 /**
- * The dashboard: stat cards, the skill x agent matrix, an invocation
- * heatmap, top skills, a health summary, and the full skill list split by
- * scope (Global, then one collapsible section per project).
+ * The dashboard: stat cards, top skills, a health summary ("needs
+ * attention"), an invocation heatmap, and an agent coverage row - all one
+ * screen, no skill table. "Never invoked" is deliberately not surfaced here;
+ * it's noise, not something worth fixing for every skill.
  */
 export function SkillDashboard({ snapshot, isLoading, onSelectSkill }: SkillDashboardProps) {
-  const [healthFilter, setHealthFilter] = useState<HealthIssueKind | null>(null);
+  const setActiveView = useAppStore((state) => state.setActiveView);
 
-  const issues = useMemo(() => {
-    if (!snapshot) return [];
-    return [
-      ...findDuplicateSkills(snapshot.skills),
-      ...findBrokenSymlinks(snapshot.skills),
-      ...findSpecViolations(snapshot.skills),
-      ...findLockOnlySkills(snapshot.skills),
-      ...findNeverInvoked(snapshot.skills, snapshot.invocations),
-      ...findMissingFromAgents(snapshot.skills),
-    ];
-  }, [snapshot]);
+  const own = useMemo(() => ownSkillsView(snapshot?.skills ?? []), [snapshot]);
+  const plugin = useMemo(() => pluginSkillsView(snapshot?.skills ?? []), [snapshot]);
+
+  const issues = useMemo(
+    () => [
+      ...findDuplicateSkills(own),
+      ...findBrokenSymlinks(own),
+      ...findSpecViolations(own),
+      ...findLockOnlySkills(own),
+      ...findMissingFromAgents(own),
+    ],
+    [own],
+  );
 
   if (!snapshot) {
     return (
@@ -56,61 +58,40 @@ export function SkillDashboard({ snapshot, isLoading, onSelectSkill }: SkillDash
     );
   }
 
-  const totals = computeTotals(snapshot);
-  const filterNames = healthFilter
-    ? issues.filter((i) => i.kind === healthFilter).map((i) => i.skill.name)
-    : null;
-
-  const globalSkills = snapshot.skills.filter((s) =>
-    s.deployments.some((d) => d.scope === "global" || d.scope === "plugin"),
-  );
+  const invocations30d = snapshot.invocations.reduce((sum, s) => sum + s.last_30_days, 0);
 
   return (
     <div className="dashboard">
-      <StatCards totals={totals} />
-
-      <div className="dashboard-section">
-        <h3>Deployment matrix</h3>
-        <SkillAgentMatrix skills={snapshot.skills} onSelectSkill={onSelectSkill} />
-      </div>
+      <StatCards
+        ownCount={own.length}
+        pluginCount={plugin.length}
+        invocations30d={invocations30d}
+        issuesCount={issues.length}
+      />
 
       <div className="dashboard-section-row">
         <div className="dashboard-section">
-          <h3>Activity</h3>
-          <InvocationHeatmap heatmap={snapshot.heatmap} />
-        </div>
-        <div className="dashboard-section">
           <h3>Top skills (30d)</h3>
-          <TopSkillsList stats={snapshot.invocations} onSelectSkill={onSelectSkill} />
-        </div>
-      </div>
-
-      <div className="dashboard-section">
-        <h3>Health</h3>
-        <HealthCard issues={issues} activeFilter={healthFilter} onFilter={setHealthFilter} />
-      </div>
-
-      <div className="dashboard-section">
-        <SkillList
-          skills={globalSkills}
-          stats={snapshot.invocations}
-          onSelectSkill={onSelectSkill}
-          title="Global"
-          filterNames={filterNames}
-        />
-        {snapshot.projects.map((path) => (
-          <SkillList
-            key={path}
-            skills={snapshot.skills.filter((s) =>
-              s.deployments.some((d) => d.project_path === path),
-            )}
+          <TopSkillsList
+            skills={snapshot.skills}
             stats={snapshot.invocations}
             onSelectSkill={onSelectSkill}
-            title={path.split("/").filter(Boolean).pop() ?? path}
-            defaultCollapsed
-            filterNames={filterNames}
           />
-        ))}
+        </div>
+        <div className="dashboard-section">
+          <h3>Needs attention</h3>
+          <NeedsAttentionCard issues={issues} onSelectSkill={onSelectSkill} />
+        </div>
+      </div>
+
+      <div className="dashboard-section">
+        <h3>Activity</h3>
+        <InvocationHeatmap heatmap={snapshot.heatmap} />
+      </div>
+
+      <div className="dashboard-section">
+        <h3>Coverage</h3>
+        <AgentCoverageRow skills={own} onSelect={() => setActiveView({ kind: "coverage" })} />
       </div>
     </div>
   );

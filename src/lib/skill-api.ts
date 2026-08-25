@@ -137,6 +137,15 @@ export async function readInstalledSkillMd(path: string): Promise<string> {
 }
 
 /**
+ * Overwrite an installed skill's `SKILL.md` with `content`, for the detail
+ * drawer's inline editor. Refused when the file belongs to a plugin-managed
+ * deployment or falls outside the current snapshot.
+ */
+export async function writeInstalledSkillMd(path: string, content: string): Promise<void> {
+  return invoke("write_installed_skill_md", { path, content });
+}
+
+/**
  * Reveal a skill's folder in Finder, or open it in the user's default editor.
  */
 export async function openSkillPath(path: string, mode: "reveal" | "editor"): Promise<void> {

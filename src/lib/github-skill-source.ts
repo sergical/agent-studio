@@ -5,6 +5,7 @@
 // ============================================================================
 
 import { readInstalledSkillMd } from "./skill-api";
+import { skillMdPathForDeployment } from "./skill-plugin-partition";
 import type { InstalledSkill } from "./skill-types";
 
 // Cache for GitHub repo trees - stores SKILL.md paths per repo
@@ -106,12 +107,12 @@ export interface SkillContentSource {
 export async function fetchSkillMdContent(source: SkillContentSource): Promise<string | null> {
   const { name, topSource, installedInfo } = source;
 
-  // 1. Read from disk when we have a local deployment path (works offline,
-  // and for manual/plugin skills with no remote source at all).
-  const localPath = installedInfo?.deployments[0]?.path;
-  if (localPath) {
+  // 1. Read from disk when we have a local deployment (works offline, and
+  // for manual/plugin skills with no remote source at all).
+  const deployment = installedInfo?.deployments[0];
+  if (deployment) {
     try {
-      const content = await readInstalledSkillMd(`${localPath}/SKILL.md`);
+      const content = await readInstalledSkillMd(skillMdPathForDeployment(deployment));
       if (content) {
         return content;
       }

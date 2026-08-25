@@ -3,9 +3,11 @@
 // IPC commands for skill discovery, installation, and management
 // ============================================================================
 
-use std::fs::File;
-use std::io::Read;
+use std::fs::{File, OpenOptions};
+use std::io::{Read, Write};
 use std::process::Command;
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::time::SystemTime;
 
 use super::agents::{AgentId, AgentTarget};
 use super::api;
@@ -95,6 +97,151 @@ mod tests {
             &["/work/not-yet-rebuilt".to_string()],
             &snapshot_projects
         ));
+    }
+
+    /// A minimal `SkillSnapshot` with one skill deployed at `dep_dir`, with
+    /// or without a plugin deployment, for `check_skill_md_write_allowed` tests.
+    fn fixture_snapshot(
+        dep_dir: &std::path::Path,
+        plugin: Option<super::super::skill_dto::PluginInfo>,
+    ) -> skill_refresh::SkillSnapshot {
+        use super::super::provenance::SourceKind;
+        use super::super::skill_dto::{Deployment, InstalledSkill};
+        use super::super::skill_invocations::InvocationHeatmap;
+        use chrono::Utc;
+        use std::collections::BTreeMap;
+
+        skill_refresh::SkillSnapshot {
+            skills: vec![InstalledSkill {
+                name: "foo".to_string(),
+                source: "manual".to_string(),
+                source_type: "manual".to_string(),
+                source_url: None,
+                skill_path: None,
+                installed_at: Utc::now().to_rfc3339(),
+                updated_at: None,
+                has_update: false,
+                source_kind: if plugin.is_some() {
+                    SourceKind::Plugin
+                } else {
+                    SourceKind::Manual
+                },
+                deployments: vec![Deployment {
+                    agent: "Claude Code".to_string(),
+                    scope: "project".to_string(),
+                    path: dep_dir.to_string_lossy().to_string(),
+                    is_symlink: false,
+                    plugin,
+                    symlink_target: None,
+                    symlink_is_broken: false,
+                    symlink_error: None,
+                    project_path: None,
+                }],
+                has_spec: false,
+                description: None,
+                spec_violations: Vec::new(),
+                skill_md_tokens: 0,
+                folder_bytes: 0,
+                file_count: 0,
+                content_hash: String::new(),
+                content_hashes: Vec::new(),
+                modified_at: None,
+                frontmatter_fields: BTreeMap::new(),
+                folder_truncated: false,
+            }],
+            projects: Vec::new(),
+            invocations: Vec::new(),
+            heatmap: InvocationHeatmap::default(),
+            scanned_at: Utc::now().to_rfc3339(),
+        }
+    }
+
+    #[test]
+    fn write_refused_for_plugin_deployment() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dep_dir = tmp.path().join("foo");
+        std::fs::create_dir_all(&dep_dir).unwrap();
+        let skill_md = dep_dir.join("SKILL.md");
+        std::fs::write(&skill_md, "original").unwrap();
+
+        let plugin = super::super::skill_dto::PluginInfo {
+            name: "openai-templates".to_string(),
+            version: Some("1.0.0".to_string()),
+            harness: "Codex".to_string(),
+        };
+        let snapshot = fixture_snapshot(&dep_dir, Some(plugin));
+
+        let err = check_skill_md_write_allowed(Some(&snapshot), &skill_md).unwrap_err();
+        assert!(err.contains("managed by a plugin"));
+    }
+
+    #[test]
+    fn write_refused_for_non_owned_path() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dep_dir = tmp.path().join("foo");
+        std::fs::create_dir_all(&dep_dir).unwrap();
+        std::fs::write(dep_dir.join("SKILL.md"), "original").unwrap();
+        let outside = tmp.path().join("outside").join("SKILL.md");
+        std::fs::create_dir_all(outside.parent().unwrap()).unwrap();
+        std::fs::write(&outside, "original").unwrap();
+
+        let snapshot = fixture_snapshot(&dep_dir, None);
+
+        let err = check_skill_md_write_allowed(Some(&snapshot), &outside).unwrap_err();
+        assert!(err.contains("not an installed skill"));
+    }
+
+    #[test]
+    fn write_succeeds_and_round_trips() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dep_dir = tmp.path().join("foo");
+        std::fs::create_dir_all(&dep_dir).unwrap();
+        let skill_md = dep_dir.join("SKILL.md");
+        std::fs::write(&skill_md, "original").unwrap();
+
+        let snapshot = fixture_snapshot(&dep_dir, None);
+        assert!(check_skill_md_write_allowed(Some(&snapshot), &skill_md).is_ok());
+
+        atomic_write_skill_md(&skill_md, "---\nname: foo\n---\nupdated body").unwrap();
+
+        let round_tripped = std::fs::read_to_string(&skill_md).unwrap();
+        assert_eq!(round_tripped, "---\nname: foo\n---\nupdated body");
+    }
+
+    #[test]
+    fn atomic_write_round_trips_twice_in_a_row() {
+        let tmp = tempfile::tempdir().unwrap();
+        let skill_md = tmp.path().join("SKILL.md");
+        std::fs::write(&skill_md, "original").unwrap();
+
+        atomic_write_skill_md(&skill_md, "first save").unwrap();
+        assert_eq!(std::fs::read_to_string(&skill_md).unwrap(), "first save");
+
+        atomic_write_skill_md(&skill_md, "second save").unwrap();
+        assert_eq!(std::fs::read_to_string(&skill_md).unwrap(), "second save");
+    }
+
+    #[test]
+    fn atomic_write_leaves_no_temp_file_on_failed_rename() {
+        let tmp = tempfile::tempdir().unwrap();
+        // `canonical` names a directory, not a file: the rename onto it fails,
+        // and the temp file created alongside it must not survive.
+        let canonical = tmp.path().join("SKILL.md");
+        std::fs::create_dir_all(&canonical).unwrap();
+
+        let err = atomic_write_skill_md(&canonical, "content");
+        assert!(err.is_err());
+
+        let leftover_temp_files = std::fs::read_dir(tmp.path())
+            .unwrap()
+            .filter_map(|e| e.ok())
+            .filter(|e| {
+                e.file_name()
+                    .to_string_lossy()
+                    .starts_with(".SKILL.md.tmp-")
+            })
+            .count();
+        assert_eq!(leftover_temp_files, 0);
     }
 }
 
@@ -322,6 +469,27 @@ fn require_snapshot_owns_path(
     }
 }
 
+/// Resolves `path_buf` to a canonical, existing `SKILL.md` file path, without
+/// checking ownership or plugin status - callers apply those separately.
+/// Shared by `read_installed_skill_md` and `write_installed_skill_md`.
+fn canonicalize_skill_md(
+    path_buf: &std::path::Path,
+    path: &str,
+) -> Result<std::path::PathBuf, String> {
+    if path_buf.file_name().and_then(|n| n.to_str()) != Some("SKILL.md") {
+        return Err(format!("Path is not an installed skill: {path}"));
+    }
+    let canonical =
+        std::fs::canonicalize(path_buf).map_err(|e| format!("Failed to open {}: {}", path, e))?;
+    let is_file = std::fs::symlink_metadata(&canonical)
+        .map(|m| m.is_file())
+        .unwrap_or(false);
+    if !is_file {
+        return Err(format!("Path is not an installed skill: {path}"));
+    }
+    Ok(canonical)
+}
+
 /// Read up to 2 MiB of an installed skill's `SKILL.md` straight off disk, for
 /// the detail panel's SKILL.md viewer. Unlike `github-skill-source.ts`'s
 /// fetch-from-GitHub path, this works for manual/plugin skills that have no
@@ -334,18 +502,7 @@ pub fn read_installed_skill_md(
 ) -> Result<String, String> {
     let path_buf = std::path::PathBuf::from(&path);
     require_snapshot_owns_path(&refresh_state, &path_buf)?;
-
-    if path_buf.file_name().and_then(|n| n.to_str()) != Some("SKILL.md") {
-        return Err(format!("Path is not an installed skill: {path}"));
-    }
-    let canonical =
-        std::fs::canonicalize(&path_buf).map_err(|e| format!("Failed to open {}: {}", path, e))?;
-    let is_file = std::fs::symlink_metadata(&canonical)
-        .map(|m| m.is_file())
-        .unwrap_or(false);
-    if !is_file {
-        return Err(format!("Path is not an installed skill: {path}"));
-    }
+    canonicalize_skill_md(&path_buf, &path)?;
 
     let mut file = File::open(&path).map_err(|e| format!("Failed to open {}: {}", path, e))?;
     let mut buf = vec![0u8; MAX_SKILL_MD_BYTES];
@@ -354,6 +511,114 @@ pub fn read_installed_skill_md(
         .map_err(|e| format!("Failed to read {}: {}", path, e))?;
     buf.truncate(n);
     Ok(String::from_utf8_lossy(&buf).into_owned())
+}
+
+/// Refuses a `write_installed_skill_md` request that targets a path outside
+/// the current snapshot, or a `SKILL.md` owned by a plugin-managed
+/// deployment (the harness owns that file, not the user). Pulled out of the
+/// command so it's testable without a `tauri::AppHandle`.
+fn check_skill_md_write_allowed(
+    snapshot: Option<&skill_refresh::SkillSnapshot>,
+    path: &std::path::Path,
+) -> Result<(), String> {
+    let owning_deployment =
+        snapshot.and_then(|s| skill_refresh::snapshot_deployment_owning_path(s, path));
+    match owning_deployment {
+        None => Err(format!(
+            "Path is not an installed skill: {}",
+            path.display()
+        )),
+        Some(d) if d.plugin.is_some() => {
+            Err("Skill is managed by a plugin and cannot be edited here".to_string())
+        }
+        Some(_) => Ok(()),
+    }
+}
+
+/// Counter appended to the atomic-write temp filename, on top of the pid and
+/// a timestamp, so two saves landing in the same process within the same
+/// nanosecond still get distinct temp files.
+static ATOMIC_WRITE_COUNTER: AtomicU64 = AtomicU64::new(0);
+
+/// Writes `content` to `canonical` atomically: a temp file in the same
+/// directory, then a rename, so a crash mid-write can't leave a truncated
+/// `SKILL.md` behind. Pulled out of the command so it's testable with a
+/// plain tempdir, no snapshot or `tauri::AppHandle` needed.
+///
+/// The temp filename is unique per call (pid + a process-wide counter +
+/// wall-clock nanos) and created with `create_new` so a concurrent save, or a
+/// pre-existing symlink at that path, can't be interleaved or truncated.
+fn atomic_write_skill_md(canonical: &std::path::Path, content: &str) -> Result<(), String> {
+    let parent = canonical.parent().ok_or_else(|| {
+        format!(
+            "Failed to resolve parent directory of {}",
+            canonical.display()
+        )
+    })?;
+    let counter = ATOMIC_WRITE_COUNTER.fetch_add(1, Ordering::Relaxed);
+    let nanos = SystemTime::now()
+        .duration_since(SystemTime::UNIX_EPOCH)
+        .map(|d| d.as_nanos())
+        .unwrap_or(0);
+    let tmp_path = parent.join(format!(
+        ".SKILL.md.tmp-{}-{}-{}",
+        std::process::id(),
+        counter,
+        nanos
+    ));
+
+    let mut file = OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(&tmp_path)
+        .map_err(|e| format!("Failed to create {}: {}", tmp_path.display(), e))?;
+    let write_result = file
+        .write_all(content.as_bytes())
+        .and_then(|_| file.sync_all());
+    drop(file);
+    if let Err(e) = write_result {
+        let _ = std::fs::remove_file(&tmp_path);
+        return Err(format!("Failed to write {}: {}", tmp_path.display(), e));
+    }
+
+    std::fs::rename(&tmp_path, canonical).map_err(|e| {
+        let _ = std::fs::remove_file(&tmp_path);
+        format!("Failed to save {}: {}", canonical.display(), e)
+    })
+}
+
+/// Write `content` to an installed skill's `SKILL.md`, for the detail
+/// drawer's inline editor. Same ownership check as `read_installed_skill_md`,
+/// plus a refusal when the owning deployment is plugin-managed. Rebuilds the
+/// snapshot afterward so the new content and token/byte counts are reflected
+/// immediately.
+#[tauri::command]
+pub fn write_installed_skill_md(
+    path: String,
+    content: String,
+    app: tauri::AppHandle,
+    refresh_state: tauri::State<SkillRefreshState>,
+) -> Result<(), String> {
+    let path_buf = std::path::PathBuf::from(&path);
+    require_snapshot_owns_path(&refresh_state, &path_buf)?;
+    let canonical = canonicalize_skill_md(&path_buf, &path)?;
+    if content.len() > MAX_SKILL_MD_BYTES {
+        return Err(format!(
+            "SKILL.md is too large to save ({} bytes, max {})",
+            content.len(),
+            MAX_SKILL_MD_BYTES
+        ));
+    }
+
+    let snapshot = refresh_state.snapshot.read().ok().and_then(|g| g.clone());
+    check_skill_md_write_allowed(snapshot.as_ref(), &path_buf)?;
+
+    atomic_write_skill_md(&canonical, &content)?;
+
+    if let Err(e) = skill_refresh::rebuild_snapshot_now(&app, &refresh_state) {
+        eprintln!("[write_installed_skill_md] snapshot rebuild failed: {e}");
+    }
+    Ok(())
 }
 
 /// Reveal a skill's folder in Finder, or open it in the user's default

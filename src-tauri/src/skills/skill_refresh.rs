@@ -26,7 +26,7 @@ use super::lock_file;
 use super::project_discovery;
 use super::skill_assembly;
 use super::skill_discovery;
-use super::skill_dto::InstalledSkill;
+use super::skill_dto::{Deployment, InstalledSkill};
 use super::skill_invocations::{
     InvocationHeatmap, RefreshReport, SkillInvocationIndex, SkillInvocationStats,
 };
@@ -189,14 +189,50 @@ pub fn request_skill_rescan(state: tauri::State<SkillRefreshState>) {
     state.skills_dirty.store(true, Ordering::SeqCst);
 }
 
+/// True when `path` is the same directory as `home` - the global scope, not
+/// a project. Compares canonicalized paths so `~` vs. its resolved form (or
+/// a trailing slash) still matches; falls back to a direct comparison when
+/// either side can't be canonicalized (e.g. a path that doesn't exist yet).
+fn is_home_directory(path: &Path, home: &Path) -> bool {
+    match (std::fs::canonicalize(path), std::fs::canonicalize(home)) {
+        (Ok(p), Ok(h)) => p == h,
+        _ => path == home,
+    }
+}
+
+/// Drops any path in `paths` that is `home` - the global scope, not a
+/// project, even though it can contain `.claude/skills` etc. - keeping the
+/// rest. A single legacy home-dir entry (e.g. from a persisted project list)
+/// shouldn't disable every other path in the same batch. Pulled out of
+/// `register_skill_projects` so it's testable without a `tauri::State`.
+fn drop_home_directory_from_batch(paths: Vec<String>, home: &Path) -> Vec<String> {
+    paths
+        .into_iter()
+        .filter(|path| {
+            let keep = !is_home_directory(Path::new(path), home);
+            if !keep {
+                eprintln!("[register_skill_projects] dropping home directory from batch: {path}");
+            }
+            keep
+        })
+        .collect()
+}
+
 /// Register project paths the caller cares about (e.g. one the user just
 /// opened) so future rebuilds always include them, even though
 /// `project_discovery` hasn't found them via a Codex/Claude Code config yet.
-/// Returns immediately; a full rebuild follows on the background thread.
+/// Returns immediately on success; a full rebuild follows on the background
+/// thread.
 #[tauri::command]
-pub fn register_skill_projects(paths: Vec<String>, state: tauri::State<SkillRefreshState>) {
-    state.unexclude_projects(paths.clone());
-    state.add_extra_projects(paths);
+pub fn register_skill_projects(
+    paths: Vec<String>,
+    state: tauri::State<SkillRefreshState>,
+) -> Result<(), String> {
+    let home = dirs::home_dir().ok_or("Could not find home directory")?;
+    let valid = drop_home_directory_from_batch(paths, &home);
+    state.unexclude_projects(valid.clone());
+    state.add_extra_projects(valid);
+    Ok(())
 }
 
 /// Un-register a caller-registered project path (e.g. one the user closed)
@@ -313,6 +349,28 @@ pub fn snapshot_owns_path(snapshot: &SkillSnapshot, path: &Path) -> bool {
         .iter()
         .flat_map(|s| &s.deployments)
         .any(|d| {
+            let Ok(dep_path) = std::fs::canonicalize(&d.path) else {
+                return false;
+            };
+            canonical == dep_path || canonical == dep_path.join("SKILL.md")
+        })
+}
+
+/// The deployment in `snapshot` that owns `path`: its folder canonicalizes to
+/// `path`'s parent, or to `path` itself when `path` is `SKILL.md`. Used by
+/// `write_installed_skill_md` to find the deployment's `plugin` field (writes
+/// to a plugin-owned skill are refused) without re-deriving the same
+/// containment check `snapshot_owns_path` already does.
+pub fn snapshot_deployment_owning_path<'a>(
+    snapshot: &'a SkillSnapshot,
+    path: &Path,
+) -> Option<&'a Deployment> {
+    let canonical = std::fs::canonicalize(path).ok()?;
+    snapshot
+        .skills
+        .iter()
+        .flat_map(|s| &s.deployments)
+        .find(|d| {
             let Ok(dep_path) = std::fs::canonicalize(&d.path) else {
                 return false;
             };
@@ -506,6 +564,10 @@ fn build_snapshot(
     let project_paths: Vec<PathBuf> = project_paths
         .into_iter()
         .filter(|p| !excluded_projects.contains(&p.to_string_lossy().to_string()))
+        // The home directory is the global scope (it holds ~/.claude/skills,
+        // ~/.agents/skills, ...), never a project - even if a stray session
+        // transcript recorded it as a cwd.
+        .filter(|p| !is_home_directory(p, home))
         .collect();
 
     let candidates = skill_discovery::discover_skill_candidates(home, &project_paths);
@@ -779,6 +841,57 @@ mod tests {
         assert!(!snapshot
             .projects
             .contains(&project.to_string_lossy().to_string()));
+    }
+
+    #[test]
+    fn build_snapshot_excludes_home_directory_from_projects() {
+        let tmp = tempfile::tempdir().unwrap();
+        let home = tmp.path().join("home");
+        fs::create_dir_all(home.join(".claude/skills/foo")).unwrap();
+        fs::write(
+            home.join(".claude/skills/foo/SKILL.md"),
+            "---\nname: foo\ndescription: test\n---\nbody",
+        )
+        .unwrap();
+
+        let mut invocation_index = SkillInvocationIndex::default();
+        let cache_path = tmp.path().join("cache.json");
+        // The home dir sneaks in as an "extra project" here the same way a
+        // stray session transcript with cwd == home would via discovery.
+        let (snapshot, _report) = build_snapshot(
+            &home,
+            std::slice::from_ref(&home),
+            &BTreeSet::new(),
+            &mut invocation_index,
+            &cache_path,
+        );
+
+        assert!(!snapshot
+            .projects
+            .contains(&home.to_string_lossy().to_string()));
+        // The skill is still discovered - just not attributed to a project.
+        assert!(snapshot.skills.iter().any(|s| s.name == "foo"));
+        assert!(snapshot
+            .skills
+            .iter()
+            .any(|s| s.deployments.iter().all(|d| d.scope != "project")));
+    }
+
+    #[test]
+    fn register_skill_projects_drops_only_the_home_directory() {
+        let tmp = tempfile::tempdir().unwrap();
+        let home = tmp.path().join("home");
+        let valid_project = tmp.path().join("project");
+        fs::create_dir_all(&home).unwrap();
+        fs::create_dir_all(&valid_project).unwrap();
+
+        let batch = vec![
+            home.to_string_lossy().to_string(),
+            valid_project.to_string_lossy().to_string(),
+        ];
+        let result = drop_home_directory_from_batch(batch, &home);
+
+        assert_eq!(result, vec![valid_project.to_string_lossy().to_string()]);
     }
 
     /// Build a minimal `SkillSnapshot` with one skill deployed at `dep_dir`,

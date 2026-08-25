@@ -11,14 +11,30 @@ import type { Toast } from "../lib/skill-types";
 // ============================================================================
 
 /**
- * Which view the shell's `<main>` shows. `global` is every skill deployed at
- * global (or plugin) scope; `project` is one registered project directory.
+ * Which view the shell's `<main>` shows. `global` is every own skill
+ * deployed at global scope; `project` is one registered project directory;
+ * `plugins` is every skill shipped by one harness's plugin cache; `coverage`
+ * is the skill x agent deployment matrix.
  */
 export type ActiveView =
   | { kind: "dashboard" }
   | { kind: "global" }
   | { kind: "project"; path: string }
+  | { kind: "plugins"; harness: string }
+  | { kind: "coverage" }
   | { kind: "discover" };
+
+/**
+ * The detail drawer's current subject: a skill name plus, when the caller
+ * knows it, the specific deployment that was clicked (e.g. a row in the
+ * Plugins view, or a specific scope's copy of a mixed-origin skill). The
+ * drawer falls back to the skill's first own deployment, then its first
+ * deployment, when `deploymentPath` is absent.
+ */
+export interface SelectedSkill {
+  name: string;
+  deploymentPath?: string;
+}
 
 // ============================================================================
 // State Interface
@@ -33,8 +49,8 @@ interface AppState {
   // === Shell Route State ===
   activeView: ActiveView;
   setActiveView: (view: ActiveView) => void;
-  selectedSkillName: string | null;
-  setSelectedSkillName: (name: string | null) => void;
+  selectedSkill: SelectedSkill | null;
+  setSelectedSkill: (skill: SelectedSkill | null) => void;
 
   // === Project Scope Selection ===
   // Directories the user has pointed at (via a folder picker), for
@@ -113,8 +129,8 @@ export const useAppStore = create<AppState>((set, get) => ({
 
   activeView: { kind: "dashboard" },
   setActiveView: (view) => set({ activeView: view }),
-  selectedSkillName: null,
-  setSelectedSkillName: (name) => set({ selectedSkillName: name }),
+  selectedSkill: null,
+  setSelectedSkill: (skill) => set({ selectedSkill: skill }),
 
   userAddedProjects: loadPathList(PROJECT_PATHS_STORAGE_KEY),
   excludedProjects: loadPathList(EXCLUDED_PROJECT_PATHS_STORAGE_KEY),

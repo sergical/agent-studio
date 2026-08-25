@@ -1,12 +1,12 @@
 // ============================================================================
-// SkillAgentMatrix - Rows = skills, columns = agents, cell = deployment scope
+// SkillCoverageMatrix - Rows = skills, columns = agents, cell = deployment scope
 // ============================================================================
 
 import { AGENT_MATRIX_LABELS, agentMatrix } from "../../lib/skill-stats";
 import type { AgentMatrixCell } from "../../lib/skill-stats";
 import type { InstalledSkill } from "../../lib/skill-types";
 
-interface SkillAgentMatrixProps {
+interface SkillCoverageMatrixProps {
   skills: InstalledSkill[];
   onSelectSkill: (name: string) => void;
 }
@@ -19,15 +19,15 @@ const CELL_SYMBOL = {
 
 /**
  * Skill x agent deployment grid. A filled cell means the skill is deployed
- * for that agent: ● global, ○ project, ◐ both. Clicking a row selects the
- * skill in the detail panel.
+ * for that agent: ● global, ○ project, ◑ both. Clicking a row selects the
+ * skill in the detail panel. The header row stays pinned while scrolling.
  */
-export function SkillAgentMatrix({ skills, onSelectSkill }: SkillAgentMatrixProps) {
+export function SkillCoverageMatrix({ skills, onSelectSkill }: SkillCoverageMatrixProps) {
   const sorted = [...skills].sort((a, b) => a.name.localeCompare(b.name));
   const rows = agentMatrix(sorted);
 
   return (
-    <div className="dashboard-agent-matrix">
+    <div className="coverage-matrix">
       <table>
         <thead>
           <tr>
@@ -42,11 +42,11 @@ export function SkillAgentMatrix({ skills, onSelectSkill }: SkillAgentMatrixProp
         <tbody>
           {rows.map(({ skill, cells }) => (
             <tr key={skill.name} onClick={() => onSelectSkill(skill.name)}>
-              <td className="dashboard-agent-matrix-name">{skill.name}</td>
+              <td className="coverage-matrix-name">{skill.name}</td>
               {AGENT_MATRIX_LABELS.map((label) => (
                 <td
                   key={label}
-                  className={`dashboard-agent-matrix-cell ${cells[label] ?? ""}`}
+                  className={`coverage-matrix-cell ${cells[label] ?? ""}`}
                   title={cells[label] ?? "not deployed"}
                 >
                   {cells[label] ? CELL_SYMBOL[cells[label]] : ""}
