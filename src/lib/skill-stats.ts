@@ -84,9 +84,44 @@ export function formatRelativeTime(iso: string, now: Date = new Date()): string 
   return `${Math.floor(days / 365)}y ago`;
 }
 
-/** The `n` skills with the most invocations in the last 30 days, descending. */
-export function topSkills(stats: SkillInvocationStats[], n: number): SkillInvocationStats[] {
-  return [...stats].sort((a, b) => b.last_30_days - a.last_30_days).slice(0, n);
+/** The usage window selectable on the dashboard and Activity page's "By skill" table. */
+export type UsageWindow = "24h" | "7d" | "14d" | "30d";
+
+/** `UsageWindow` options in display order, for the segmented control. */
+export const USAGE_WINDOWS: { id: UsageWindow; label: string }[] = [
+  { id: "24h", label: "24 hours" },
+  { id: "7d", label: "7 days" },
+  { id: "14d", label: "14 days" },
+  { id: "30d", label: "30 days" },
+];
+
+/** A skill's invocation count for the given usage window. */
+export function invocationsInWindow(stats: SkillInvocationStats, window: UsageWindow): number {
+  switch (window) {
+    case "24h":
+      return stats.last_24_hours;
+    case "7d":
+      return stats.last_7_days;
+    case "14d":
+      return stats.last_14_days;
+    case "30d":
+      return stats.last_30_days;
+  }
+}
+
+/** The `n` skills with the most invocations in `window`, descending; ties break by name. */
+export function topSkills(
+  stats: SkillInvocationStats[],
+  n: number,
+  window: UsageWindow = "30d",
+): SkillInvocationStats[] {
+  return [...stats]
+    .sort(
+      (a, b) =>
+        invocationsInWindow(b, window) - invocationsInWindow(a, window) ||
+        a.skill.localeCompare(b.skill),
+    )
+    .slice(0, n);
 }
 
 /** Column order for `agentMatrix`, shared by the dashboard and detail panel. */

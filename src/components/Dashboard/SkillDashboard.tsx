@@ -1,6 +1,6 @@
 // ============================================================================
-// SkillDashboard - The default view: stat cards, top skills, health, activity,
-// and agent coverage for the user's own skills. Plugin-shipped skills are
+// SkillDashboard - The default view: stat cards, top skills, health, and
+// agent coverage for the user's own skills. Plugin-shipped skills are
 // counted separately and have their own section (see Sidebar/Plugins).
 // ============================================================================
 
@@ -8,11 +8,12 @@ import { useMemo } from "react";
 import { collectDashboardIssues } from "../../lib/skill-health";
 import type { HealthIssueKind } from "../../lib/skill-health";
 import { ownSkillsView } from "../../lib/skill-plugin-partition";
+import { invocationsInWindow, USAGE_WINDOWS } from "../../lib/skill-stats";
 import type { SkillSnapshot } from "../../lib/skill-types";
 import { useAppStore } from "../../store/appStore";
+import { WindowSegmentedControl } from "../ui/WindowSegmentedControl";
 import { AgentCoverageTable } from "./AgentCoverageTable";
 import { DashboardStatStrip } from "./DashboardStatStrip";
-import { InvocationHeatmap } from "./InvocationHeatmap";
 import { NeedsAttentionCard } from "./NeedsAttentionCard";
 import { TopSkillsList } from "./TopSkillsList";
 
@@ -41,13 +42,16 @@ function last30DailyCounts(days: Record<string, number>): number[] {
 
 /**
  * The dashboard: a stat strip (skill count + invocation trend), top skills
- * and a grouped health summary side by side, an invocation heatmap, and
- * agent coverage - all one screen, no skill table. "Never invoked" is
+ * and a grouped health summary side by side, and agent coverage - all one
+ * screen, no skill table. The year-long activity heatmap lives on the
+ * Activity page instead (see components/Activity). "Never invoked" is
  * deliberately not surfaced here; it's noise, not something worth fixing for
  * every skill.
  */
 export function SkillDashboard({ snapshot, isLoading, onSelectSkill }: SkillDashboardProps) {
   const setActiveView = useAppStore((state) => state.setActiveView);
+  const usageWindow = useAppStore((state) => state.usageWindow);
+  const setUsageWindow = useAppStore((state) => state.setUsageWindow);
 
   const own = useMemo(() => ownSkillsView(snapshot?.skills ?? []), [snapshot]);
   const issues = useMemo(() => collectDashboardIssues(own), [own]);
@@ -60,11 +64,11 @@ export function SkillDashboard({ snapshot, isLoading, onSelectSkill }: SkillDash
     );
   }
 
-  const invocations30d = snapshot.invocations.reduce((sum, s) => sum + s.last_30_days, 0);
-  const invocationsLastYear = Object.values(snapshot.heatmap.days).reduce(
-    (sum, count) => sum + count,
+  const invocationsForWindow = snapshot.invocations.reduce(
+    (sum, s) => sum + invocationsInWindow(s, usageWindow),
     0,
   );
+  const windowLabel = USAGE_WINDOWS.find((w) => w.id === usageWindow)?.label ?? "30 days";
   const dailyCounts = last30DailyCounts(snapshot.heatmap.days);
   const goToIssues = (issueKind?: HealthIssueKind) => setActiveView({ kind: "issues", issueKind });
 
@@ -72,16 +76,21 @@ export function SkillDashboard({ snapshot, isLoading, onSelectSkill }: SkillDash
     <div className="dashboard">
       <DashboardStatStrip
         ownCount={own.length}
-        invocations30d={invocations30d}
+        invocationsInWindow={invocationsForWindow}
+        windowLabel={windowLabel}
         dailyCounts={dailyCounts}
       />
 
       <div className="dashboard-section-row">
         <div className="dashboard-section">
-          <span className="section-label">Top skills, 30 days</span>
+          <div className="dashboard-section-header">
+            <span className="section-label">Top skills</span>
+            <WindowSegmentedControl value={usageWindow} onChange={setUsageWindow} />
+          </div>
           <TopSkillsList
             skills={snapshot.skills}
             stats={snapshot.invocations}
+            window={usageWindow}
             onSelectSkill={onSelectSkill}
           />
         </div>
@@ -97,16 +106,6 @@ export function SkillDashboard({ snapshot, isLoading, onSelectSkill }: SkillDash
             scannedAt={snapshot.scanned_at}
           />
         </div>
-      </div>
-
-      <div className="dashboard-section">
-        <div className="dashboard-section-header">
-          <span className="section-label">Activity</span>
-          <span className="dashboard-section-total">
-            {invocationsLastYear.toLocaleString()} invocations in the last year
-          </span>
-        </div>
-        <InvocationHeatmap heatmap={snapshot.heatmap} />
       </div>
 
       <div className="dashboard-section">

@@ -6,6 +6,7 @@
 import { useMemo } from "react";
 import {
   collectDashboardIssues,
+  deploymentLabel,
   HEALTH_ISSUE_KIND_LABEL,
   HEALTH_ISSUE_SEVERITY,
   groupIssuesByKind,
@@ -52,11 +53,7 @@ function issueLocation(issue: HealthIssue): string {
     return issue.detail.split(": missing from")[0] ?? "—";
   }
   const deployment = issue.skill.deployments[0];
-  if (!deployment) return "—";
-  if (deployment.scope === "project" && deployment.project_path) {
-    return deployment.project_path.split("/").filter(Boolean).pop() ?? "Global";
-  }
-  return "Global";
+  return deployment ? deploymentLabel(deployment) : "—";
 }
 
 /**

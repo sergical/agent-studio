@@ -6,6 +6,7 @@
 import { useMemo, useState } from "react";
 import { Search } from "lucide-react";
 import { formatBytes } from "../../lib/skill-stats";
+import { HarnessIcon, harnessIdFromLabel } from "../ui/HarnessIcon";
 import type { InstalledSkill, SkillInvocationStats } from "../../lib/skill-types";
 
 type SortMode = "name" | "used" | "size";
@@ -100,11 +101,15 @@ export function SkillListTable({
                 <span className="skill-list-table-name">{skill.name}</span>
                 <span className="skill-list-table-description">{skill.description ?? ""}</span>
                 <span className="skill-list-table-chips">
-                  {skill.deployments.map((d, i) => (
-                    <span key={`${d.agent}-${d.scope}-${i}`} className="skill-list-table-chip">
-                      {showPluginVersion && d.plugin?.version ? `v${d.plugin.version}` : d.agent}
-                    </span>
-                  ))}
+                  {skill.deployments.map((d, i) => {
+                    const harnessId = harnessIdFromLabel(d.agent);
+                    return (
+                      <span key={`${d.agent}-${d.scope}-${i}`} className="skill-list-table-chip">
+                        {harnessId && <HarnessIcon harness={harnessId} size={12} />}
+                        {showPluginVersion && d.plugin?.version ? `v${d.plugin.version}` : d.agent}
+                      </span>
+                    );
+                  })}
                 </span>
                 <span className="skill-list-table-stat">{stat?.last_30_days ?? 0}</span>
                 <span className="skill-list-table-stat">{formatBytes(skill.folder_bytes)}</span>

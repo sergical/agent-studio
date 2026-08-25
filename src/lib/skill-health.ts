@@ -80,7 +80,7 @@ function agentsCoveredByDeployment(agent: string): readonly string[] {
 }
 
 /** "Global" for global scope, the project directory basename for project scope. */
-function deploymentLabel(deployment: Deployment): string {
+export function deploymentLabel(deployment: Deployment): string {
   if (deployment.scope === "project" && deployment.project_path) {
     return deployment.project_path.split("/").filter(Boolean).pop() ?? "Global";
   }

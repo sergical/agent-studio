@@ -52,8 +52,8 @@
   --radius-xl: 20px;
 
   /* Z-index scale - small, so anything new only needs to pick a rung */
-  --z-drawer: 20;
-  --z-overlay: 30;
+  --z-backdrop: 20;
+  --z-drawer: 30;
   --z-toast: 40;
 } /* Light theme overrides */
 :root[data-theme="light"] {
@@ -658,7 +658,7 @@ body {
   position: fixed;
   inset: 0;
   background: rgba(0, 0, 0, 0.5);
-  z-index: var(--z-drawer);
+  z-index: var(--z-backdrop);
 } /* Skill Detail Panel - Drawer */
 .skill-detail-panel {
   position: fixed;
@@ -666,7 +666,7 @@ body {
   right: 0;
   bottom: 0;
   width: 560px;
-  z-index: var(--z-overlay);
+  z-index: var(--z-drawer);
   display: flex;
   flex-direction: column;
   background: var(--color-bg-secondary);
@@ -717,6 +717,9 @@ body {
   gap: 6px;
 }
 .skill-detail-agent-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
   font-size: 11px;
   letter-spacing: 0.02em;
   color: var(--color-text-secondary);
@@ -1457,6 +1460,31 @@ body {
   font-size: 12px;
   color: var(--color-text-tertiary);
 }
+.window-segmented-control {
+  display: flex;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-sm);
+  overflow: hidden;
+}
+.window-segmented-control-item {
+  height: 24px;
+  padding: 0 8px;
+  font-size: 11px;
+  color: var(--color-text-tertiary);
+  background: transparent;
+  border: none;
+  cursor: pointer;
+  transition:
+    background-color 0.15s,
+    color 0.15s;
+}
+.window-segmented-control-item:not(:first-child) {
+  border-left: 1px solid var(--color-border);
+}
+.window-segmented-control-item.active {
+  background: var(--color-bg-tertiary);
+  color: var(--color-text-primary);
+}
 .dashboard-section-row {
   display: grid;
   grid-template-columns: minmax(0, 3fr) minmax(0, 2fr);
@@ -1525,6 +1553,9 @@ body {
   height: 28px;
 }
 .coverage-table-agent {
+  display: flex;
+  align-items: center;
+  gap: 6px;
   font-size: 13px;
   color: var(--color-text-secondary);
 }
@@ -1580,7 +1611,7 @@ body {
 .coverage-table-view-all:hover {
   text-decoration: underline;
 } /* Invocation heatmap */
-.dashboard-heatmap-months {
+.activity-heatmap-months {
   display: grid;
   grid-template-columns: repeat(52, 1fr);
   gap: 3px;
@@ -1588,15 +1619,15 @@ body {
   font-size: 12px;
   color: var(--color-text-tertiary);
 }
-.dashboard-heatmap-month-label {
+.activity-heatmap-month-label {
   overflow: hidden;
   white-space: nowrap;
 }
-.dashboard-heatmap-body {
+.activity-heatmap-body {
   display: flex;
   gap: 6px;
 }
-.dashboard-heatmap-weekdays {
+.activity-heatmap-weekdays {
   width: 28px;
   flex-shrink: 0;
   display: flex;
@@ -1606,7 +1637,7 @@ body {
   font-size: 11px;
   color: var(--color-text-tertiary);
 }
-.dashboard-heatmap-grid {
+.activity-heatmap-grid {
   flex: 1;
   display: grid;
   grid-template-columns: repeat(52, 1fr);
@@ -1614,22 +1645,22 @@ body {
   grid-auto-flow: column;
   gap: 3px;
 }
-.dashboard-heatmap-cell {
+.activity-heatmap-cell {
   aspect-ratio: 1;
   border-radius: 2px;
   border: none;
   background: var(--color-bg-tertiary);
 }
-.dashboard-heatmap-cell.level-1 {
+.activity-heatmap-cell.level-1 {
   background: color-mix(in oklch, var(--color-accent) 30%, var(--color-bg-tertiary));
 }
-.dashboard-heatmap-cell.level-2 {
+.activity-heatmap-cell.level-2 {
   background: color-mix(in oklch, var(--color-accent) 50%, var(--color-bg-tertiary));
 }
-.dashboard-heatmap-cell.level-3 {
+.activity-heatmap-cell.level-3 {
   background: color-mix(in oklch, var(--color-accent) 75%, var(--color-bg-tertiary));
 }
-.dashboard-heatmap-cell.level-4 {
+.activity-heatmap-cell.level-4 {
   background: color-mix(in oklch, var(--color-accent) 100%, var(--color-bg-tertiary));
 } /* Top skills */
 .dashboard-top-skills {
@@ -1641,7 +1672,7 @@ body {
 }
 .dashboard-top-skills-row {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) 140px 72px 40px;
+  grid-template-columns: minmax(0, 1fr) 72px 40px;
   align-items: center;
   gap: 12px;
   height: 32px;
@@ -1678,17 +1709,6 @@ body {
   background: var(--color-bg-tertiary);
   border-radius: var(--radius-sm);
   padding: 1px 6px;
-}
-.dashboard-top-skills-bar-track {
-  height: 4px;
-  background: var(--color-bg-tertiary);
-  border-radius: 2px;
-  overflow: hidden;
-}
-.dashboard-top-skills-bar-fill {
-  height: 100%;
-  background: var(--color-accent);
-  border-radius: 2px;
 }
 .dashboard-top-skills-last-used {
   font-size: 12px;
@@ -1878,6 +1898,9 @@ body {
   min-width: 0;
 }
 .skill-list-table-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
   font-size: 11px;
   letter-spacing: 0.02em;
   color: var(--color-text-secondary);
@@ -1988,6 +2011,11 @@ body {
 .coverage-matrix-name {
   text-align: left !important;
   color: var(--color-text-primary);
+}
+.coverage-matrix-th-label {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
 }
 .coverage-matrix tbody tr {
   cursor: pointer;
@@ -2403,4 +2431,113 @@ body {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+} /* ============================================================================
+   Activity View (year heatmap, by-skill and by-project breakdowns)
+   ============================================================================ */
+.activity-view {
+  display: flex;
+  flex-direction: column;
+  gap: 24px;
+  padding: 24px 28px;
+}
+.activity-view-header {
+  display: flex;
+  align-items: baseline;
+  gap: 12px;
+}
+.activity-view-header h1 {
+  font-size: 18px;
+  font-weight: 600;
+  margin: 0;
+  color: var(--color-text-primary);
+}
+.activity-view-subline {
+  font-size: 13px;
+  color: var(--color-text-tertiary);
+}
+.activity-view-empty {
+  color: var(--color-text-tertiary);
+  font-size: 13px;
+}
+.activity-section {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+.activity-section-header {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+}
+.activity-section-total {
+  font-size: 12px;
+  color: var(--color-text-tertiary);
+}
+.activity-skill-table {
+  display: flex;
+  flex-direction: column;
+}
+.activity-skill-table-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 72px 88px 72px;
+  align-items: center;
+  gap: 12px;
+  width: 100%;
+  height: 32px;
+  padding: 0 8px;
+  background: transparent;
+  border: none;
+  border-bottom: 1px solid var(--color-border-subtle);
+  cursor: pointer;
+  text-align: left;
+  transition: background-color 0.15s;
+}
+.activity-skill-table-row:hover {
+  background: var(--color-bg-hover);
+}
+.activity-skill-table-name {
+  font-size: 13px;
+  color: var(--color-text-primary);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.activity-skill-table-last-used {
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+  color: var(--color-text-tertiary);
+  white-space: nowrap;
+}
+.activity-skill-table-count,
+.activity-skill-table-projects {
+  text-align: right;
+  font-size: 13px;
+  font-variant-numeric: tabular-nums;
+  color: var(--color-text-secondary);
+}
+.activity-project-table {
+  display: flex;
+  flex-direction: column;
+}
+.activity-project-table-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  height: 32px;
+  padding: 0 8px;
+  border-bottom: 1px solid var(--color-border-subtle);
+}
+.activity-project-table-name {
+  font-size: 13px;
+  color: var(--color-text-primary);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.activity-project-table-count {
+  font-size: 13px;
+  font-variant-numeric: tabular-nums;
+  color: var(--color-text-secondary);
 }

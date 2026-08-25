@@ -91,33 +91,33 @@ export function InvocationHeatmap({ heatmap }: InvocationHeatmapProps) {
   const invocationsThisYear = days.reduce((sum, d) => sum + d.count, 0);
 
   return (
-    <div className="dashboard-heatmap-wrap">
-      <div className="dashboard-heatmap-months" aria-hidden="true">
+    <div className="activity-heatmap-wrap">
+      <div className="activity-heatmap-months" aria-hidden="true">
         {monthLabels.map(({ weekIndex, label, span }) => (
           <span
             key={`${weekIndex}-${label}`}
-            className="dashboard-heatmap-month-label"
+            className="activity-heatmap-month-label"
             style={{ gridColumnStart: weekIndex + 1, gridColumnEnd: `span ${span}` }}
           >
             {label}
           </span>
         ))}
       </div>
-      <div className="dashboard-heatmap-body">
-        <div className="dashboard-heatmap-weekdays" aria-hidden="true">
+      <div className="activity-heatmap-body">
+        <div className="activity-heatmap-weekdays" aria-hidden="true">
           {WEEKDAY_LABELS.map((label, i) => (
             <span key={i}>{label}</span>
           ))}
         </div>
         <div
-          className="dashboard-heatmap-grid"
+          className="activity-heatmap-grid"
           role="img"
           aria-label={`Invocations per day over the last year, ${invocationsThisYear} total`}
         >
           {days.map(({ date, key, count }) => (
             <div
               key={key}
-              className={`dashboard-heatmap-cell level-${intensityLevel(count, max)}`}
+              className={`activity-heatmap-cell level-${intensityLevel(count, max)}`}
               title={
                 count > 0
                   ? `${count} invocation${count === 1 ? "" : "s"} · ${formatCellDate(date)}`

@@ -4,6 +4,7 @@
 // ============================================================================
 
 import { AGENT_MATRIX_LABELS, agentMatrix } from "../../lib/skill-stats";
+import { HarnessIcon, harnessIdFromLabel } from "../ui/HarnessIcon";
 import type { InstalledSkill } from "../../lib/skill-types";
 
 interface AgentCoverageTableProps {
@@ -48,7 +49,12 @@ export function AgentCoverageTable({ skills, onSelectMissing }: AgentCoverageTab
           const pct = total > 0 ? (covered / total) * 100 : 0;
           return (
             <div key={label} className="coverage-table-row">
-              <span className="coverage-table-agent">{label}</span>
+              <span className="coverage-table-agent">
+                {harnessIdFromLabel(label) && (
+                  <HarnessIcon harness={harnessIdFromLabel(label)!} size={13} />
+                )}
+                {label}
+              </span>
               <span className="coverage-table-bar-track">
                 <span className="coverage-table-bar-fill" style={{ width: `${pct}%` }} />
               </span>

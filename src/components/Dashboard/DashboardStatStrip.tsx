@@ -4,8 +4,11 @@
 
 interface DashboardStatStripProps {
   ownCount: number;
-  invocations30d: number;
-  /** Invocation count per day for the last 30 days, oldest first. */
+  /** Invocation count for the currently selected usage window. */
+  invocationsInWindow: number;
+  /** e.g. "24 hours", "7 days" - shown after "Invocations, " in the second cell's label. */
+  windowLabel: string;
+  /** Invocation count per day for the last 30 days, oldest first; the sparkline always covers 30 days regardless of the selected window. */
   dailyCounts: number[];
 }
 
@@ -29,7 +32,8 @@ function sparklinePoints(dailyCounts: number[]): string {
  */
 export function DashboardStatStrip({
   ownCount,
-  invocations30d,
+  invocationsInWindow,
+  windowLabel,
   dailyCounts,
 }: DashboardStatStripProps) {
   const points = sparklinePoints(dailyCounts);
@@ -43,7 +47,7 @@ export function DashboardStatStrip({
       </div>
       <div className="dashboard-stat-cell dashboard-stat-cell-sparkline">
         <span className="dashboard-stat-value-group">
-          <span className="dashboard-stat-value">{invocations30d.toLocaleString()}</span>
+          <span className="dashboard-stat-value">{invocationsInWindow.toLocaleString()}</span>
           <svg
             className="dashboard-sparkline"
             viewBox="0 0 120 28"
@@ -54,7 +58,7 @@ export function DashboardStatStrip({
             <polyline points={points} fill="none" stroke="var(--color-accent)" strokeWidth={1.5} />
           </svg>
         </span>
-        <span className="dashboard-stat-label">Invocations, 30 days</span>
+        <span className="dashboard-stat-label">Invocations, {windowLabel}</span>
       </div>
     </div>
   );

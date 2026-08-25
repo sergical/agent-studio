@@ -5,6 +5,8 @@
 
 import { create } from "zustand";
 import type { HealthIssueKind } from "../lib/skill-health";
+import { USAGE_WINDOWS } from "../lib/skill-stats";
+import type { UsageWindow } from "../lib/skill-stats";
 import type { Toast } from "../lib/skill-types";
 
 // ============================================================================
@@ -17,7 +19,8 @@ import type { Toast } from "../lib/skill-types";
  * `plugins` is every skill shipped by one harness's plugin cache; `coverage`
  * is the skill x agent deployment matrix; `issues` is every health issue
  * across own skills, optionally pre-filtered to one `issueKind` for
- * deep-linking from the dashboard.
+ * deep-linking from the dashboard; `activity` is the full invocation
+ * history (year heatmap, per-skill and per-project breakdowns).
  */
 export type ActiveView =
   | { kind: "dashboard" }
@@ -26,6 +29,7 @@ export type ActiveView =
   | { kind: "plugins"; harness: string }
   | { kind: "coverage" }
   | { kind: "issues"; issueKind?: HealthIssueKind }
+  | { kind: "activity" }
   | { kind: "discover" };
 
 /**
@@ -69,6 +73,13 @@ interface AppState {
   excludedProjects: string[];
   addProject: (path: string) => void;
   removeProject: (path: string) => void;
+
+  // === Usage Window ===
+  // The invocation window ("24h" .. "30d") shown in the dashboard's top
+  // skills list and the Activity page's "By skill" table. Shared so
+  // switching it in one place is reflected in the other.
+  usageWindow: UsageWindow;
+  setUsageWindow: (window: UsageWindow) => void;
 }
 
 // ============================================================================
@@ -83,6 +94,19 @@ function generateToastId(): string {
 const PROJECT_PATHS_STORAGE_KEY = "project-paths";
 /** localStorage key holding the remembered excluded project paths, one absolute path per line. */
 const EXCLUDED_PROJECT_PATHS_STORAGE_KEY = "excluded-project-paths";
+/** localStorage key holding the remembered usage window. */
+const USAGE_WINDOW_STORAGE_KEY = "usage-window";
+const USAGE_WINDOWS_SET: Set<string> = new Set(USAGE_WINDOWS.map((w) => w.id));
+
+function loadUsageWindow(): UsageWindow {
+  try {
+    const stored = localStorage.getItem(USAGE_WINDOW_STORAGE_KEY);
+    // SAFETY: just checked `stored` is one of the four UsageWindow literals.
+    return stored && USAGE_WINDOWS_SET.has(stored) ? (stored as UsageWindow) : "30d";
+  } catch {
+    return "30d";
+  }
+}
 
 function loadPathList(key: string): string[] {
   try {
@@ -159,6 +183,16 @@ export const useAppStore = create<AppState>((set, get) => ({
     savePathList(PROJECT_PATHS_STORAGE_KEY, updatedAdded);
     savePathList(EXCLUDED_PROJECT_PATHS_STORAGE_KEY, updatedExcluded);
     set({ userAddedProjects: updatedAdded, excludedProjects: updatedExcluded });
+  },
+
+  usageWindow: loadUsageWindow(),
+  setUsageWindow: (window) => {
+    try {
+      localStorage.setItem(USAGE_WINDOW_STORAGE_KEY, window);
+    } catch {
+      // Storage can be unavailable (quota, private mode); the window is only a convenience.
+    }
+    set({ usageWindow: window });
   },
 }));
 

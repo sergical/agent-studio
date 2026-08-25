@@ -32,9 +32,14 @@ pub struct SkillInvocation {
 pub struct SkillInvocationStats {
     pub skill: String,
     pub total: u32,
+    pub last_24_hours: u32,
+    pub last_7_days: u32,
+    pub last_14_days: u32,
     pub last_30_days: u32,
     pub last_used: Option<String>,
     pub by_project: BTreeMap<String, u32>,
+    /// Per-day invocation counts, "YYYY-MM-DD" (UTC), over the last 365 days.
+    pub by_day: BTreeMap<String, u32>,
 }
 
 /// Per-day invocation counts for the heatmap (date "YYYY-MM-DD" -> count).
@@ -346,24 +351,45 @@ impl SkillInvocationIndex {
     pub fn stats(&self) -> Vec<SkillInvocationStats> {
         struct Acc {
             total: u32,
+            last_24_hours: u32,
+            last_7_days: u32,
+            last_14_days: u32,
             last_30_days: u32,
             last_used: Option<DateTime<Utc>>,
             by_project: BTreeMap<String, u32>,
+            by_day: BTreeMap<String, u32>,
         }
 
         let now = Utc::now();
+        let cutoff_24h = now - chrono::Duration::hours(24);
+        let cutoff_7 = now - chrono::Duration::days(7);
+        let cutoff_14 = now - chrono::Duration::days(14);
         let cutoff_30 = now - chrono::Duration::days(30);
+        let cutoff_365 = now - chrono::Duration::days(365);
         let mut by_skill: BTreeMap<String, Acc> = BTreeMap::new();
 
         for transcript in self.files.values() {
             for invocation in &transcript.invocations {
                 let acc = by_skill.entry(invocation.skill.clone()).or_insert(Acc {
                     total: 0,
+                    last_24_hours: 0,
+                    last_7_days: 0,
+                    last_14_days: 0,
                     last_30_days: 0,
                     last_used: None,
                     by_project: BTreeMap::new(),
+                    by_day: BTreeMap::new(),
                 });
                 acc.total += 1;
+                if invocation.at >= cutoff_24h {
+                    acc.last_24_hours += 1;
+                }
+                if invocation.at >= cutoff_7 {
+                    acc.last_7_days += 1;
+                }
+                if invocation.at >= cutoff_14 {
+                    acc.last_14_days += 1;
+                }
                 if invocation.at >= cutoff_30 {
                     acc.last_30_days += 1;
                 }
@@ -373,6 +399,10 @@ impl SkillInvocationIndex {
                 if let Some(project) = &invocation.project_path {
                     *acc.by_project.entry(project.clone()).or_insert(0) += 1;
                 }
+                if invocation.at >= cutoff_365 {
+                    let day = invocation.at.format("%Y-%m-%d").to_string();
+                    *acc.by_day.entry(day).or_insert(0) += 1;
+                }
             }
         }
 
@@ -381,9 +411,13 @@ impl SkillInvocationIndex {
             .map(|(skill, acc)| SkillInvocationStats {
                 skill,
                 total: acc.total,
+                last_24_hours: acc.last_24_hours,
+                last_7_days: acc.last_7_days,
+                last_14_days: acc.last_14_days,
                 last_30_days: acc.last_30_days,
                 last_used: acc.last_used.map(|at| at.to_rfc3339()),
                 by_project: acc.by_project,
+                by_day: acc.by_day,
             })
             .collect()
     }
@@ -787,9 +821,14 @@ mod tests {
         let stats = index.stats();
         assert_eq!(stats.len(), 1);
         assert_eq!(stats[0].total, 3);
+        assert_eq!(stats[0].last_24_hours, 2);
+        assert_eq!(stats[0].last_7_days, 2);
+        assert_eq!(stats[0].last_14_days, 2);
         assert_eq!(stats[0].last_30_days, 2);
         assert_eq!(stats[0].by_project.get("/proj-a"), Some(&2));
         assert_eq!(stats[0].by_project.get("/proj-b"), Some(&1));
+        let today = Utc::now().format("%Y-%m-%d").to_string();
+        assert_eq!(stats[0].by_day.get(&today), Some(&2));
     }
 
     #[test]

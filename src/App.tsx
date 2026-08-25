@@ -1,12 +1,13 @@
 // ============================================================================
 // Skill Studio - Main Application
 // Shell: Sidebar + main view (Dashboard, Global, Project, Plugins, Coverage,
-// Issues, or Discover) + an optional installed-skill detail drawer
+// Issues, Activity, or Discover) + an optional installed-skill detail drawer
 // ============================================================================
 
 import { useEffect, useRef } from "react";
 import { homeDir } from "@tauri-apps/api/path";
 import { Sidebar } from "./components/Sidebar/Sidebar";
+import { SkillActivityView } from "./components/Activity/SkillActivityView";
 import { SkillDashboard } from "./components/Dashboard/SkillDashboard";
 import { SkillsScopeView } from "./components/SkillsScopeView";
 import { SkillCoverageView } from "./components/Coverage/SkillCoverageView";
@@ -113,6 +114,8 @@ function App() {
         onSelectSkill={onSelectSkill}
       />
     );
+  } else if (activeView.kind === "activity") {
+    main = <SkillActivityView snapshot={snapshot} onSelectSkill={onSelectSkill} />;
   } else {
     main = <SkillStore />;
   }

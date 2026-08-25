@@ -1,14 +1,15 @@
 // ============================================================================
 // Sidebar - Left-hand navigation: Overview, Skills (Global + projects),
-// Review (Issues + Coverage), Find
+// Review (Issues + Coverage + Activity), Find
 // ============================================================================
 
 import { useCallback, useState } from "react";
 import { homeDir } from "@tauri-apps/api/path";
 import { ask, open } from "@tauri-apps/plugin-dialog";
 import {
+  Activity as ActivityIcon,
   AlertCircle,
-  Blocks,
+  FolderGit2,
   FolderPlus,
   Globe,
   LayoutDashboard,
@@ -21,6 +22,7 @@ import { registerSkillProjects, unregisterSkillProject } from "../../lib/skill-a
 import { collectDashboardIssues } from "../../lib/skill-health";
 import { ownSkillsView, pluginHarnessCounts } from "../../lib/skill-plugin-partition";
 import { useAppStore } from "../../store/appStore";
+import { HarnessIcon, harnessIdFromLabel } from "../ui/HarnessIcon";
 import type { SkillSnapshot } from "../../lib/skill-types";
 
 interface SidebarProps {
@@ -57,8 +59,8 @@ function projectSkillCount(snapshot: SkillSnapshot | undefined, path: string): n
 /**
  * Left-hand navigation: Overview (Dashboard), Skills (Global + one row per
  * registered project, with an "Add project…" action), Review (Issues +
- * Coverage), and Find (Discover). The footer shows the snapshot's age and a
- * manual rescan button.
+ * Coverage + Activity), and Find (Discover). The footer shows the snapshot's
+ * age and a manual rescan button.
  */
 export function Sidebar({ snapshot, isLoading, requestRescan }: SidebarProps) {
   const [isRescanning, setIsRescanning] = useState(false);
@@ -206,7 +208,11 @@ export function Sidebar({ snapshot, isLoading, requestRescan }: SidebarProps) {
               }`}
               onClick={() => setActiveView({ kind: "plugins", harness })}
             >
-              <Blocks size={15} />
+              {harnessIdFromLabel(harness) ? (
+                <HarnessIcon harness={harnessIdFromLabel(harness)!} size={15} />
+              ) : (
+                <FolderGit2 size={15} />
+              )}
               <span>{harness}</span>
               {count > 0 && <span className="skill-sidebar-badge">{count}</span>}
             </button>
@@ -230,6 +236,13 @@ export function Sidebar({ snapshot, isLoading, requestRescan }: SidebarProps) {
         >
           <LayoutGrid size={15} />
           <span>Coverage</span>
+        </button>
+        <button
+          className={`skill-sidebar-item ${activeView.kind === "activity" ? "active" : ""}`}
+          onClick={() => setActiveView({ kind: "activity" })}
+        >
+          <ActivityIcon size={15} />
+          <span>Activity</span>
         </button>
       </div>
 

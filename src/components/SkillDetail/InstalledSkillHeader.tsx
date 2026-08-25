@@ -10,6 +10,7 @@ import { pluginLabelForSkill } from "../../lib/skill-plugin-partition";
 import { SOURCE_KIND_LABELS } from "../../lib/skill-types";
 import type { InstalledSkill } from "../../lib/skill-types";
 import { useAppStore } from "../../store/appStore";
+import { HarnessIcon, harnessIdFromLabel } from "../ui/HarnessIcon";
 
 interface InstalledSkillHeaderProps {
   skill: InstalledSkill;
@@ -86,11 +87,15 @@ export function InstalledSkillHeader({ skill, onClose }: InstalledSkillHeaderPro
           <span className={`skill-detail-badge source-kind ${skill.source_kind}`}>
             {sourceKindBadgeLabel(skill)}
           </span>
-          {agents.map((agent) => (
-            <span key={agent} className="skill-detail-agent-chip">
-              {agent}
-            </span>
-          ))}
+          {agents.map((agent) => {
+            const harnessId = harnessIdFromLabel(agent);
+            return (
+              <span key={agent} className="skill-detail-agent-chip">
+                {harnessId && <HarnessIcon harness={harnessId} size={12} />}
+                {agent}
+              </span>
+            );
+          })}
           {skill.spec_violations.length > 0 && (
             <span
               className="skill-detail-badge spec-violation"

@@ -289,9 +289,14 @@ export interface SkillInvocation {
 export interface SkillInvocationStats {
   skill: string;
   total: number;
+  last_24_hours: number;
+  last_7_days: number;
+  last_14_days: number;
   last_30_days: number;
   last_used?: string;
   by_project: Record<string, number>;
+  /** Per-day invocation counts, "YYYY-MM-DD" (UTC), over the last 365 days. */
+  by_day: Record<string, number>;
 }
 
 /**

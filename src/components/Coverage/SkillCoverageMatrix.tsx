@@ -5,6 +5,7 @@
 import { AGENT_MATRIX_LABELS, agentMatrix } from "../../lib/skill-stats";
 import type { AgentMatrixCell } from "../../lib/skill-stats";
 import type { InstalledSkill } from "../../lib/skill-types";
+import { HarnessIcon, harnessIdFromLabel } from "../ui/HarnessIcon";
 
 interface SkillCoverageMatrixProps {
   skills: InstalledSkill[];
@@ -32,11 +33,17 @@ export function SkillCoverageMatrix({ skills, onSelectSkill }: SkillCoverageMatr
         <thead>
           <tr>
             <th>Skill</th>
-            {AGENT_MATRIX_LABELS.map((label) => (
-              <th key={label} title={label}>
-                {label}
-              </th>
-            ))}
+            {AGENT_MATRIX_LABELS.map((label) => {
+              const harnessId = harnessIdFromLabel(label);
+              return (
+                <th key={label} title={label}>
+                  <span className="coverage-matrix-th-label">
+                    {harnessId && <HarnessIcon harness={harnessId} size={13} />}
+                    {label}
+                  </span>
+                </th>
+              );
+            })}
           </tr>
         </thead>
         <tbody>
