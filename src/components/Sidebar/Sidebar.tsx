@@ -136,7 +136,11 @@ export function Sidebar({ snapshot, isLoading, requestRescan }: SidebarProps) {
 
       removeProject(path);
       await unregisterSkillProject(path);
-      if (activeView.kind === "project" && activeView.path === path) {
+      // The removed project might be the active project view, or the view an
+      // open skill page anchors back to (its "from") - either way, that view
+      // no longer exists, so bounce to the dashboard.
+      const anchor = sidebarAnchorView(activeView);
+      if (anchor.kind === "project" && anchor.path === path) {
         setActiveView({ kind: "dashboard" });
       }
     },

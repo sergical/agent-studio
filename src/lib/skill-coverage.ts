@@ -38,13 +38,23 @@ export function agentIdFromDeploymentLabel(label: string): AgentId | "shared" | 
   }
 }
 
+/**
+ * True when a deployment's symlink doesn't resolve: either the target is
+ * confirmed missing (`symlink_is_broken`), or resolving it failed for some
+ * other reason (`symlink_error`, e.g. a permissions error or a symlink loop).
+ * Either way the deployment can't back visibility.
+ */
+export function isUnresolvedDeployment(deployment: Deployment): boolean {
+  return deployment.symlink_is_broken || deployment.symlink_error != null;
+}
+
 /** A deployment counts toward visibility only when its symlink (if any) resolves. */
 function isOwnDirDeployment(skill: InstalledSkill, agent: AgentId): boolean {
   return ownDeployments(skill).some(
     (d) =>
       agentIdFromDeploymentLabel(d.agent) === agent &&
       (d.scope === "global" || d.scope === "project") &&
-      !d.symlink_is_broken,
+      !isUnresolvedDeployment(d),
   );
 }
 
@@ -62,7 +72,7 @@ function isLinkedToSharedRoot(target: string | undefined): boolean {
 export function deploymentLinkKind(
   deployment: Deployment,
 ): "shared-root" | "linked-to-shared" | "own" | "broken" {
-  if (deployment.symlink_is_broken) return "broken";
+  if (isUnresolvedDeployment(deployment)) return "broken";
   if (deployment.agent === SHARED_AGENT_ID) return "shared-root";
   if (deployment.is_symlink && isLinkedToSharedRoot(deployment.symlink_target)) {
     return "linked-to-shared";
@@ -72,7 +82,9 @@ export function deploymentLinkKind(
 
 /** A broken shared-root deployment doesn't make a skill visible via the shared root. */
 function isSharedRootDeployment(skill: InstalledSkill): boolean {
-  return ownDeployments(skill).some((d) => d.agent === SHARED_AGENT_ID && !d.symlink_is_broken);
+  return ownDeployments(skill).some(
+    (d) => d.agent === SHARED_AGENT_ID && !isUnresolvedDeployment(d),
+  );
 }
 
 /**
@@ -206,7 +218,7 @@ function cellForAgent(skill: InstalledSkill, agent: AgentId): AgentMatrixCell {
     // The own-dir copy is broken and there's no healthy shared fallback: the
     // skill is effectively invisible to this agent, but keep the broken
     // marker in the matrix rather than reporting a plain empty cell.
-    if (ownDeployment?.symlink_is_broken) {
+    if (ownDeployment && isUnresolvedDeployment(ownDeployment)) {
       return { state: "none", isSymlink: ownDeployment.is_symlink, isBroken: true };
     }
     return EMPTY_CELL;
@@ -222,7 +234,8 @@ function cellForAgent(skill: InstalledSkill, agent: AgentId): AgentMatrixCell {
     // visible as something worth fixing, even though the skill remains
     // effectively visible to the agent via the shared root.
     isBroken:
-      (deployment?.symlink_is_broken ?? false) || (ownDeployment?.symlink_is_broken ?? false),
+      (deployment !== undefined && isUnresolvedDeployment(deployment)) ||
+      (ownDeployment !== undefined && isUnresolvedDeployment(ownDeployment)),
   };
 }
 

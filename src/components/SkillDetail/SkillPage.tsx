@@ -81,33 +81,59 @@ export function SkillPage({
   from,
 }: SkillPageProps) {
   const addToast = useAppStore((state) => state.addToast);
+  const openSkill = useAppStore((state) => state.openSkill);
+
+  const [isEditing, setIsEditing] = useState(false);
+  const [isEditorDirty, setIsEditorDirty] = useState(false);
 
   useEffect(() => {
     function onKeyDown(event: KeyboardEvent) {
-      if (event.key === "Escape") onBack();
+      if (event.key !== "Escape") return;
+      const target = event.target;
+      // Escape typed into an input, textarea, contenteditable region, or an
+      // open dialog belongs to that widget - the local handler (if any) deals
+      // with it, not page navigation.
+      if (
+        target instanceof HTMLElement &&
+        (target.tagName === "INPUT" ||
+          target.tagName === "TEXTAREA" ||
+          target.isContentEditable ||
+          target.closest("dialog") !== null)
+      ) {
+        return;
+      }
+      if (isEditing && isEditorDirty && !window.confirm("Discard unsaved changes?")) return;
+      onBack();
     }
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
-  }, [onBack]);
+  }, [onBack, isEditing, isEditorDirty]);
 
-  // The deployment this page edits: the one the caller clicked, falling back
-  // to the skill's first own deployment, then its first deployment at all (a
-  // plugin-only skill has no own deployment to fall back to).
+  // The deployment this page edits: only the one the caller clicked, when
+  // given - a stale `deploymentPath` (the copy was removed by a rescan) must
+  // not silently fall back to a different copy of the skill. With no
+  // `deploymentPath` at all, fall back to the skill's first own deployment,
+  // then its first deployment (a plugin-only skill has no own deployment).
+  const requestedDeployment =
+    skill && deploymentPath ? skill.deployments.find((d) => d.path === deploymentPath) : undefined;
+  const deploymentUnresolved = Boolean(skill && deploymentPath && !requestedDeployment);
   const deployment =
     skill &&
-    ((deploymentPath && skill.deployments.find((d) => d.path === deploymentPath)) ||
-      ownDeployments(skill)[0] ||
-      skill.deployments[0]);
+    (deploymentPath ? requestedDeployment : ownDeployments(skill)[0] || skill.deployments[0]);
   const skillMdPath = deployment ? skillMdPathForDeployment(deployment) : undefined;
   const isPluginManaged = deployment?.plugin !== undefined;
 
   const [rawContent, setRawContent] = useState<string | null>(null);
   const [isLoadingContent, setIsLoadingContent] = useState(false);
   const [loadError, setLoadError] = useState<string | null>(null);
-  const [isEditing, setIsEditing] = useState(false);
   const [isSaving, setIsSaving] = useState(false);
 
   useEffect(() => {
+    // A path change (including to/from `undefined`) can never carry over a
+    // stale draft or edit mode from a different copy of the skill.
+    setRawContent(null);
+    setIsEditing(false);
+    setIsEditorDirty(false);
     if (!skillMdPath) return;
     let cancelled = false;
     setIsLoadingContent(true);
@@ -136,6 +162,7 @@ export function SkillPage({
       await writeInstalledSkillMd(skillMdPath, content);
       setRawContent(content);
       setIsEditing(false);
+      setIsEditorDirty(false);
     } catch (err) {
       addToast({
         type: "error",
@@ -194,16 +221,38 @@ export function SkillPage({
               )}
             </div>
 
-            {isPluginManaged ? (
+            {deploymentUnresolved ? (
+              <div className="skill-detail-content-fallback">
+                <p>The copy you opened is no longer installed.</p>
+                {ownDeployments(skill).length > 0 && (
+                  <div className="skill-detail-actions-row">
+                    {ownDeployments(skill).map((d) => (
+                      <button
+                        key={d.path}
+                        className="skill-action-button"
+                        onClick={() => openSkill(skill.name, d.path)}
+                      >
+                        {d.agent} · {d.scope}
+                      </button>
+                    ))}
+                  </div>
+                )}
+              </div>
+            ) : isPluginManaged ? (
               <p className="skill-detail-content-fallback">
                 Managed by the {pluginLabelForSkill(skill) ?? "harness"} plugin.
               </p>
             ) : isEditing && rawContent !== null ? (
               <SkillMarkdownEditor
+                key={skillMdPath}
                 initialContent={rawContent}
                 isSaving={isSaving}
                 onSave={handleSave}
-                onCancel={() => setIsEditing(false)}
+                onCancel={() => {
+                  setIsEditing(false);
+                  setIsEditorDirty(false);
+                }}
+                onDirtyChange={setIsEditorDirty}
               />
             ) : isLoadingContent ? (
               <div className="skill-detail-content-loading">
