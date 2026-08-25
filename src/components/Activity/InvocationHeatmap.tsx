@@ -4,7 +4,6 @@
 
 import type { InvocationHeatmap as InvocationHeatmapData } from "../../lib/skill-types";
 
-const WEEKS = 52;
 const DAYS_PER_WEEK = 7;
 const MONTH_NAMES = [
   "Jan",
@@ -22,12 +21,8 @@ const MONTH_NAMES = [
 ];
 const WEEKDAY_LABELS = ["Mon", "", "Wed", "", "Fri", "", ""];
 
-function toDateKey(date: Date): string {
-  return date.toISOString().slice(0, 10);
-}
-
 function formatCellDate(date: Date): string {
-  return `${MONTH_NAMES[date.getMonth()]} ${date.getDate()}`;
+  return `${MONTH_NAMES[date.getUTCMonth()]} ${date.getUTCDate()}`;
 }
 
 /** Buckets a count into one of 5 intensity levels (0 = no activity). */
@@ -42,31 +37,30 @@ function intensityLevel(count: number, max: number): number {
 
 interface InvocationHeatmapProps {
   heatmap: InvocationHeatmapData;
+  /** Inclusive UTC date keys ("YYYY-MM-DD"), oldest first - from `heatmapDateRangeUtc`. */
+  dates: string[];
 }
 
 /**
- * 52-week x 7-day grid of invocation counts, oldest week first. Each cell's
- * fill intensity is relative to the busiest day in the window; hover shows
- * the exact date and count. Month labels sit above the first week of each
- * month; weekday labels sit in a gutter to the left.
+ * 52-week x 7-day grid of invocation counts, oldest week first, over the
+ * exact `dates` range the caller passes in (so its total agrees with the
+ * header and aria-label, which sum over the same list). Each cell's fill
+ * intensity is relative to the busiest day in the window; hover shows the
+ * exact date and count. Month labels sit above the first week of each month;
+ * weekday labels sit in a gutter to the left.
  */
-export function InvocationHeatmap({ heatmap }: InvocationHeatmapProps) {
-  const totalDays = WEEKS * DAYS_PER_WEEK;
-  const today = new Date();
-  today.setHours(0, 0, 0, 0);
-
-  const days: { date: Date; key: string; count: number }[] = [];
-  for (let i = totalDays - 1; i >= 0; i--) {
-    const date = new Date(today);
-    date.setDate(date.getDate() - i);
-    const key = toDateKey(date);
-    days.push({ date, key, count: heatmap.days[key] ?? 0 });
-  }
+export function InvocationHeatmap({ heatmap, dates }: InvocationHeatmapProps) {
+  const days = dates.map((key) => ({
+    date: new Date(`${key}T00:00:00Z`),
+    key,
+    count: heatmap.days[key] ?? 0,
+  }));
+  const weekCount = days.length / DAYS_PER_WEEK;
 
   const max = Math.max(0, ...days.map((d) => d.count));
 
-  const weeks: { date: Date; key: string; count: number }[][] = [];
-  for (let w = 0; w < WEEKS; w++) {
+  const weeks: (typeof days)[number][][] = [];
+  for (let w = 0; w < weekCount; w++) {
     weeks.push(days.slice(w * DAYS_PER_WEEK, (w + 1) * DAYS_PER_WEEK));
   }
 
@@ -76,7 +70,7 @@ export function InvocationHeatmap({ heatmap }: InvocationHeatmapProps) {
   const monthStarts: { weekIndex: number; label: string }[] = [];
   let lastMonth = -1;
   weeks.forEach((week, weekIndex) => {
-    const month = week[0].date.getMonth();
+    const month = week[0].date.getUTCMonth();
     if (month !== lastMonth) {
       monthStarts.push({ weekIndex, label: MONTH_NAMES[month] });
       lastMonth = month;
@@ -85,7 +79,7 @@ export function InvocationHeatmap({ heatmap }: InvocationHeatmapProps) {
   const monthLabels = monthStarts.map(({ weekIndex, label }, i) => ({
     weekIndex,
     label,
-    span: (monthStarts[i + 1]?.weekIndex ?? WEEKS) - weekIndex,
+    span: (monthStarts[i + 1]?.weekIndex ?? weekCount) - weekIndex,
   }));
 
   const invocationsThisYear = days.reduce((sum, d) => sum + d.count, 0);

@@ -38,11 +38,13 @@ export function agentIdFromDeploymentLabel(label: string): AgentId | "shared" | 
   }
 }
 
+/** A deployment counts toward visibility only when its symlink (if any) resolves. */
 function isOwnDirDeployment(skill: InstalledSkill, agent: AgentId): boolean {
   return ownDeployments(skill).some(
     (d) =>
       agentIdFromDeploymentLabel(d.agent) === agent &&
-      (d.scope === "global" || d.scope === "project"),
+      (d.scope === "global" || d.scope === "project") &&
+      !d.symlink_is_broken,
   );
 }
 
@@ -51,8 +53,9 @@ function isLinkedToSharedRoot(target: string | undefined): boolean {
   return target !== undefined && /\/\.agents\/skills\//.test(target + "/");
 }
 
+/** A broken shared-root deployment doesn't make a skill visible via the shared root. */
 function isSharedRootDeployment(skill: InstalledSkill): boolean {
-  return ownDeployments(skill).some((d) => d.agent === SHARED_AGENT_ID);
+  return ownDeployments(skill).some((d) => d.agent === SHARED_AGENT_ID && !d.symlink_is_broken);
 }
 
 /**
@@ -166,17 +169,24 @@ const EMPTY_CELL: AgentMatrixCell = { state: "none", isSymlink: false, isBroken:
 
 function cellForAgent(skill: InstalledSkill, agent: AgentId): AgentMatrixCell {
   const state = skillVisibleToAgent(skill, agent);
-  if (state === "none") return EMPTY_CELL;
-
   const own = ownDeployments(skill);
-  const deployment =
-    state === "own"
-      ? own.find(
-          (d) =>
-            agentIdFromDeploymentLabel(d.agent) === agent &&
-            (d.scope === "global" || d.scope === "project"),
-        )
-      : own.find((d) => d.agent === SHARED_AGENT_ID);
+  const ownDeployment = own.find(
+    (d) =>
+      agentIdFromDeploymentLabel(d.agent) === agent &&
+      (d.scope === "global" || d.scope === "project"),
+  );
+
+  if (state === "none") {
+    // The own-dir copy is broken and there's no healthy shared fallback: the
+    // skill is effectively invisible to this agent, but keep the broken
+    // marker in the matrix rather than reporting a plain empty cell.
+    if (ownDeployment?.symlink_is_broken) {
+      return { state: "none", isSymlink: ownDeployment.is_symlink, isBroken: true };
+    }
+    return EMPTY_CELL;
+  }
+
+  const deployment = state === "own" ? ownDeployment : own.find((d) => d.agent === SHARED_AGENT_ID);
 
   return {
     state,

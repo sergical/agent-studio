@@ -7,6 +7,7 @@
 import { useMemo } from "react";
 import {
   formatRelativeTime,
+  heatmapDateRangeUtc,
   invocationsInWindow,
   topSkills,
   USAGE_WINDOWS,
@@ -21,17 +22,26 @@ interface SkillActivityViewProps {
   onSelectSkill: (name: string) => void;
 }
 
-/** Every project path's basename summed over its own `by_project` entries, 30-day totals only. */
-function projectTotals(snapshot: SkillSnapshot): { project: string; count: number }[] {
+/**
+ * Every project's 30-day invocation total, keyed and sorted by full path so
+ * two projects with the same basename (e.g. two checkouts of the same repo)
+ * stay separate rows; `label` is the basename shown in the row.
+ */
+function projectTotals(
+  snapshot: SkillSnapshot,
+): { project: string; label: string; count: number }[] {
   const totals = new Map<string, number>();
   for (const stat of snapshot.invocations) {
-    for (const [project, count] of Object.entries(stat.by_project)) {
-      const basename = project.split("/").filter(Boolean).pop() ?? project;
-      totals.set(basename, (totals.get(basename) ?? 0) + count);
+    for (const [project, count] of Object.entries(stat.by_project_30_days)) {
+      totals.set(project, (totals.get(project) ?? 0) + count);
     }
   }
   return [...totals.entries()]
-    .map(([project, count]) => ({ project, count }))
+    .map(([project, count]) => ({
+      project,
+      label: project.split("/").filter(Boolean).pop() ?? project,
+      count,
+    }))
     .sort((a, b) => b.count - a.count || a.project.localeCompare(b.project));
 }
 
@@ -44,9 +54,13 @@ export function SkillActivityView({ snapshot, onSelectSkill }: SkillActivityView
   const usageWindow = useAppStore((state) => state.usageWindow);
   const setUsageWindow = useAppStore((state) => state.setUsageWindow);
 
+  // Computed once here and passed down to InvocationHeatmap, so the header
+  // total, the grid, and its aria-label all sum over the exact same 364-day
+  // UTC key list rather than three independently-computed ranges.
+  const heatmapDates = useMemo(() => heatmapDateRangeUtc(new Date()).dates, []);
   const invocationsLastYear = useMemo(
-    () => Object.values(snapshot?.heatmap.days ?? {}).reduce((sum, count) => sum + count, 0),
-    [snapshot],
+    () => heatmapDates.reduce((sum, key) => sum + (snapshot?.heatmap.days[key] ?? 0), 0),
+    [heatmapDates, snapshot],
   );
 
   const bySkill = useMemo(() => {
@@ -80,7 +94,7 @@ export function SkillActivityView({ snapshot, onSelectSkill }: SkillActivityView
                 {invocationsLastYear.toLocaleString()} invocations in the last year
               </span>
             </div>
-            <InvocationHeatmap heatmap={snapshot.heatmap} />
+            <InvocationHeatmap heatmap={snapshot.heatmap} dates={heatmapDates} />
           </div>
 
           <div className="activity-section">
@@ -106,7 +120,7 @@ export function SkillActivityView({ snapshot, onSelectSkill }: SkillActivityView
                       {invocationsInWindow(stat, usageWindow)}
                     </span>
                     <span className="activity-skill-table-projects">
-                      {Object.keys(stat.by_project).length}
+                      {Object.keys(stat.by_project_30_days).length}
                     </span>
                   </button>
                 ))}
@@ -117,9 +131,9 @@ export function SkillActivityView({ snapshot, onSelectSkill }: SkillActivityView
           <div className="activity-section">
             <span className="section-label">By project, 30 days</span>
             <div className="activity-project-table">
-              {byProject.map(({ project, count }) => (
-                <div key={project} className="activity-project-table-row">
-                  <span className="activity-project-table-name">{project}</span>
+              {byProject.map(({ project, label, count }) => (
+                <div key={project} className="activity-project-table-row" title={project}>
+                  <span className="activity-project-table-name">{label}</span>
                   <span className="activity-project-table-count">{count}</span>
                 </div>
               ))}

@@ -37,7 +37,8 @@ pub struct SkillInvocationStats {
     pub last_14_days: u32,
     pub last_30_days: u32,
     pub last_used: Option<String>,
-    pub by_project: BTreeMap<String, u32>,
+    /// Invocation counts by full project path, over the last 30 days only.
+    pub by_project_30_days: BTreeMap<String, u32>,
     /// Per-day invocation counts, "YYYY-MM-DD" (UTC), over the last 365 days.
     pub by_day: BTreeMap<String, u32>,
 }
@@ -347,8 +348,19 @@ impl SkillInvocationIndex {
         self.files.contains_key(path)
     }
 
-    /// Per-skill invocation totals across every cached transcript.
+    /// Per-skill invocation totals across every cached transcript, as of now.
+    /// Thin wrapper around `stats_at` so callers don't have to thread `now`
+    /// through for the common case.
     pub fn stats(&self) -> Vec<SkillInvocationStats> {
+        self.stats_at(Utc::now())
+    }
+
+    /// Per-skill invocation totals across every cached transcript, with the
+    /// rolling windows (24h/7d/14d/30d, by_project_30_days, by_day) computed
+    /// relative to `now` rather than the wall clock. Pulled out of `stats` so
+    /// window-boundary behavior (e.g. a 25h-old invocation dropping out of
+    /// the 24h bucket) is testable without waiting on real time.
+    pub fn stats_at(&self, now: DateTime<Utc>) -> Vec<SkillInvocationStats> {
         struct Acc {
             total: u32,
             last_24_hours: u32,
@@ -356,11 +368,10 @@ impl SkillInvocationIndex {
             last_14_days: u32,
             last_30_days: u32,
             last_used: Option<DateTime<Utc>>,
-            by_project: BTreeMap<String, u32>,
+            by_project_30_days: BTreeMap<String, u32>,
             by_day: BTreeMap<String, u32>,
         }
 
-        let now = Utc::now();
         let cutoff_24h = now - chrono::Duration::hours(24);
         let cutoff_7 = now - chrono::Duration::days(7);
         let cutoff_14 = now - chrono::Duration::days(14);
@@ -377,7 +388,7 @@ impl SkillInvocationIndex {
                     last_14_days: 0,
                     last_30_days: 0,
                     last_used: None,
-                    by_project: BTreeMap::new(),
+                    by_project_30_days: BTreeMap::new(),
                     by_day: BTreeMap::new(),
                 });
                 acc.total += 1;
@@ -396,8 +407,10 @@ impl SkillInvocationIndex {
                 if acc.last_used.is_none_or(|last| invocation.at > last) {
                     acc.last_used = Some(invocation.at);
                 }
-                if let Some(project) = &invocation.project_path {
-                    *acc.by_project.entry(project.clone()).or_insert(0) += 1;
+                if invocation.at >= cutoff_30 {
+                    if let Some(project) = &invocation.project_path {
+                        *acc.by_project_30_days.entry(project.clone()).or_insert(0) += 1;
+                    }
                 }
                 if invocation.at >= cutoff_365 {
                     let day = invocation.at.format("%Y-%m-%d").to_string();
@@ -416,7 +429,7 @@ impl SkillInvocationIndex {
                 last_14_days: acc.last_14_days,
                 last_30_days: acc.last_30_days,
                 last_used: acc.last_used.map(|at| at.to_rfc3339()),
-                by_project: acc.by_project,
+                by_project_30_days: acc.by_project_30_days,
                 by_day: acc.by_day,
             })
             .collect()
@@ -796,7 +809,7 @@ mod tests {
     }
 
     #[test]
-    fn stats_totals_last_30_days_and_by_project() {
+    fn stats_totals_last_30_days_and_by_project_30_days() {
         let mut index = SkillInvocationIndex::default();
         let recent = Utc::now().to_rfc3339();
         let old = (Utc::now() - chrono::Duration::days(60)).to_rfc3339();
@@ -825,10 +838,43 @@ mod tests {
         assert_eq!(stats[0].last_7_days, 2);
         assert_eq!(stats[0].last_14_days, 2);
         assert_eq!(stats[0].last_30_days, 2);
-        assert_eq!(stats[0].by_project.get("/proj-a"), Some(&2));
-        assert_eq!(stats[0].by_project.get("/proj-b"), Some(&1));
+        // The 60-day-old invocation is outside the 30-day window, so it
+        // doesn't count toward by_project_30_days even though it counts
+        // toward `total`.
+        assert_eq!(stats[0].by_project_30_days.get("/proj-a"), Some(&1));
+        assert_eq!(stats[0].by_project_30_days.get("/proj-b"), Some(&1));
         let today = Utc::now().format("%Y-%m-%d").to_string();
         assert_eq!(stats[0].by_day.get(&today), Some(&2));
+    }
+
+    #[test]
+    fn stats_at_windows_are_relative_to_the_given_now() {
+        let mut index = SkillInvocationIndex::default();
+        let now = Utc::now();
+        let twenty_five_hours_ago = (now - chrono::Duration::hours(25)).to_rfc3339();
+        let text = skill_line("write-tests", &twenty_five_hours_ago, "/proj-a");
+        index.files.insert(
+            PathBuf::from("fixture.jsonl"),
+            IndexedTranscript {
+                size: 0,
+                modified: SystemTime::UNIX_EPOCH,
+                parsed_bytes: 0,
+                invocations: parse_transcript_invocations(&text),
+                skipping_line: false,
+                tail_sample: Vec::new(),
+            },
+        );
+
+        let stats = index.stats_at(now);
+        assert_eq!(stats.len(), 1);
+        assert_eq!(
+            stats[0].last_24_hours, 0,
+            "25h-old invocation counted in 24h"
+        );
+        assert_eq!(
+            stats[0].last_7_days, 1,
+            "25h-old invocation missing from 7d"
+        );
     }
 
     #[test]

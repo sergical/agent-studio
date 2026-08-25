@@ -14,7 +14,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{mpsc, Arc, Mutex, RwLock};
 use std::time::{Duration, Instant};
 
-use chrono::Utc;
+use chrono::{DateTime, NaiveDate, Timelike, Utc};
 use notify_debouncer_mini::new_debouncer;
 use notify_debouncer_mini::notify::{RecommendedWatcher, RecursiveMode};
 use notify_debouncer_mini::Debouncer;
@@ -96,6 +96,12 @@ pub struct SkillRefreshState {
     /// refresh the invocation index, not rescan skill directories.
     invocations_dirty: Arc<AtomicBool>,
     invocation_index: Arc<Mutex<SkillInvocationIndex>>,
+    /// The (UTC date, hour) of the last snapshot rebuild - full or
+    /// invocations-only. The refresh loop compares this against the current
+    /// hour on every tick so the wall-clock-dependent invocation windows in
+    /// `SkillInvocationIndex::stats` (24h/7d/14d/30d, by_day) get rebuilt on
+    /// an hour boundary even when nothing on disk changed.
+    last_built_hour: Arc<Mutex<Option<(NaiveDate, u32)>>>,
     cache_path: PathBuf,
 }
 
@@ -150,6 +156,30 @@ impl SkillRefreshState {
             .map(|guard| guard.clone())
             .unwrap_or_default()
     }
+
+    /// Record that a rebuild just completed at `now`, so `is_hour_stale`
+    /// doesn't immediately fire again for the same hour.
+    fn mark_built_at(&self, now: DateTime<Utc>) {
+        if let Ok(mut guard) = self.last_built_hour.lock() {
+            *guard = Some(hour_key(now));
+        }
+    }
+
+    /// True when the wall-clock hour has moved on since the last rebuild (or
+    /// there's never been one), meaning the rolling invocation windows in
+    /// `stats()` may now be stale even though nothing on disk changed.
+    fn is_hour_stale(&self, now: DateTime<Utc>) -> bool {
+        self.last_built_hour
+            .lock()
+            .map(|guard| *guard != Some(hour_key(now)))
+            .unwrap_or(true)
+    }
+}
+
+/// The (UTC date, hour) `now` falls in, used to detect an hour boundary
+/// crossing between refresh-loop ticks.
+fn hour_key(now: DateTime<Utc>) -> (NaiveDate, u32) {
+    (now.date_naive(), now.hour())
 }
 
 /// Start the background refresh thread and return the state to register
@@ -166,6 +196,7 @@ pub fn init(app: &AppHandle) -> SkillRefreshState {
         skills_dirty: Arc::new(AtomicBool::new(false)),
         invocations_dirty: Arc::new(AtomicBool::new(false)),
         invocation_index: Arc::new(Mutex::new(invocation_index)),
+        last_built_hour: Arc::new(Mutex::new(None)),
         cache_path,
     };
 
@@ -283,6 +314,7 @@ pub fn rebuild_snapshot_now(
         Ok(mut guard) => *guard = Some(built.clone()),
         Err(e) => return Err(format!("snapshot lock poisoned: {e}")),
     }
+    state.mark_built_at(Utc::now());
 
     app.emit(SNAPSHOT_EVENT, &built)
         .map_err(|e| format!("failed to emit {SNAPSHOT_EVENT}: {e}"))?;
@@ -330,6 +362,7 @@ fn rebuild_invocations_only(app: &AppHandle, state: &SkillRefreshState) -> Resul
         snapshot.scanned_at = Utc::now().to_rfc3339();
         snapshot.clone()
     };
+    state.mark_built_at(Utc::now());
 
     app.emit(SNAPSHOT_EVENT, &built)
         .map_err(|e| format!("failed to emit {SNAPSHOT_EVENT}: {e}"))
@@ -472,6 +505,14 @@ fn run_refresh_loop(app: AppHandle, state: SkillRefreshState) {
             state.invocations_dirty.store(false, Ordering::SeqCst);
             if let Err(e) = rebuild_invocations_only(&app, &state) {
                 eprintln!("skill refresh: invocations-only rebuild failed: {e}");
+            }
+            last_invocations_rebuild = Instant::now();
+        } else if state.is_hour_stale(Utc::now()) {
+            // Nothing on disk changed, but the wall clock crossed an hour
+            // boundary: the rolling invocation windows need recomputing even
+            // though `skills`/`projects` don't.
+            if let Err(e) = rebuild_invocations_only(&app, &state) {
+                eprintln!("skill refresh: hourly rebuild failed: {e}");
             }
             last_invocations_rebuild = Instant::now();
         }

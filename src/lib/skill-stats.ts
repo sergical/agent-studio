@@ -110,6 +110,38 @@ export function invocationsInWindow(stats: SkillInvocationStats, window: UsageWi
   }
 }
 
+/** One "YYYY-MM-DD" key built from `date`'s UTC calendar fields, never local time. */
+function utcDateKey(date: Date): string {
+  const year = date.getUTCFullYear();
+  const month = String(date.getUTCMonth() + 1).padStart(2, "0");
+  const day = String(date.getUTCDate()).padStart(2, "0");
+  return `${year}-${month}-${day}`;
+}
+
+/** An inclusive UTC calendar-date range plus its "YYYY-MM-DD" day keys in order. */
+export interface HeatmapDateRange {
+  start: string;
+  end: string;
+  dates: string[];
+}
+
+/**
+ * One inclusive UTC calendar-date range of exactly 364 days ending on `now`'s
+ * UTC date, plus its "YYYY-MM-DD" day keys in order (oldest first). Callers
+ * that need the heatmap's grid, header total, and aria-label to agree on the
+ * exact same set of days should call this once and share the result, rather
+ * than each computing its own range.
+ */
+export function heatmapDateRangeUtc(now: Date): HeatmapDateRange {
+  const endUtcMs = Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate());
+  const dayMs = 24 * 60 * 60 * 1000;
+  const dates: string[] = [];
+  for (let i = 363; i >= 0; i--) {
+    dates.push(utcDateKey(new Date(endUtcMs - i * dayMs)));
+  }
+  return { start: dates[0], end: dates[dates.length - 1], dates };
+}
+
 /** The `n` skills with the most invocations in `window`, descending; ties break by name. */
 export function topSkills(
   stats: SkillInvocationStats[],

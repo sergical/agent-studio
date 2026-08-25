@@ -5,6 +5,7 @@
 // isolation (Vitest, once a runner is wired up).
 // ============================================================================
 
+import { ownDeployments } from "./skill-plugin-partition";
 import type { Deployment, InstalledSkill, SkillInvocationStats } from "./skill-types";
 
 /** Kind of health issue a `HealthIssue` reports. */
@@ -79,53 +80,63 @@ function agentsCoveredByDeployment(agent: string): readonly string[] {
   return FIRST_CLASS_AGENTS.some((first) => first === agent) ? [agent] : [];
 }
 
-/** "Global" for global scope, the project directory basename for project scope. */
+/**
+ * "Global" or the project directory basename, plus the deployment's agent
+ * (already a display label, e.g. "Claude Code" or "shared"), so two copies
+ * at the same scope but different agents get distinct labels, e.g.
+ * "Global · Claude Code", "Global · shared", "webvitals.com · shared".
+ */
 export function deploymentLabel(deployment: Deployment): string {
-  if (deployment.scope === "project" && deployment.project_path) {
-    return deployment.project_path.split("/").filter(Boolean).pop() ?? "Global";
-  }
-  return "Global";
+  const scope =
+    deployment.scope === "project" && deployment.project_path
+      ? (deployment.project_path.split("/").filter(Boolean).pop() ?? "Global")
+      : "Global";
+  return `${scope} · ${deployment.agent}`;
 }
 
 /**
- * Skills whose deployments disagree on content: the same skill name has more
- * than one distinct `content_hash` across its deployments (e.g. a stale copy
- * left behind by a manual edit). `detail` names the copies that differ from
- * the most common hash, and where the reference copy lives, e.g. "Differs in
- * webvitals.com, repo-architect (from Global)".
+ * Skills whose non-plugin deployments disagree on content: the same skill
+ * name has more than one distinct `content_hash` across its own copies (e.g.
+ * a stale copy left behind by a manual edit). Built from `ownDeployments` so
+ * a plugin-managed copy - which the user doesn't edit directly - never
+ * creates a false duplicate. `detail` names the copy with a strict majority
+ * as the reference and lists the copies that differ from it, e.g. "Differs
+ * in webvitals.com · shared (from Global · Claude Code)"; with no strict
+ * majority, every copy is listed instead, e.g. "Copies differ: Global ·
+ * Claude Code, webvitals.com · shared".
  */
 export function findDuplicateSkills(skills: InstalledSkill[]): HealthIssue[] {
-  return skills
-    .filter((skill) => skill.content_hashes.length > 1)
-    .map((skill) => {
-      const withHash = skill.deployments.filter((d) => d.content_hash);
+  const issues: HealthIssue[] = [];
 
-      const counts = new Map<string, number>();
-      for (const d of withHash) {
-        counts.set(d.content_hash, (counts.get(d.content_hash) ?? 0) + 1);
-      }
-      let majorityHash = withHash[0]?.content_hash ?? "";
-      let majorityCount = 0;
-      for (const [hash, count] of counts) {
-        if (count > majorityCount) {
-          majorityCount = count;
-          majorityHash = hash;
-        }
-      }
+  for (const skill of skills) {
+    const withHash = ownDeployments(skill).filter((d) => d.content_hash);
+    const distinctHashes = new Set(withHash.map((d) => d.content_hash));
+    if (distinctHashes.size <= 1) continue;
 
+    const counts = new Map<string, number>();
+    for (const d of withHash) {
+      counts.set(d.content_hash, (counts.get(d.content_hash) ?? 0) + 1);
+    }
+    const majorityHash = [...counts.entries()].find(
+      ([, count]) => count * 2 > withHash.length,
+    )?.[0];
+
+    let detail: string;
+    if (majorityHash !== undefined) {
       const majorityDeployment = withHash.find((d) => d.content_hash === majorityHash);
       const majorityLabel = majorityDeployment ? deploymentLabel(majorityDeployment) : "Global";
       const differingLabels = withHash
         .filter((d) => d.content_hash !== majorityHash)
         .map(deploymentLabel);
+      detail = `Differs in ${differingLabels.join(", ")} (from ${majorityLabel})`;
+    } else {
+      detail = `Copies differ: ${withHash.map(deploymentLabel).join(", ")}`;
+    }
 
-      const detail =
-        differingLabels.length > 0
-          ? `Differs in ${differingLabels.join(", ")} (from ${majorityLabel})`
-          : `${skill.content_hashes.length} distinct content hashes across deployments`;
+    issues.push({ kind: "duplicate", skill, detail });
+  }
 
-      return { kind: "duplicate" as const, skill, detail };
-    });
+  return issues;
 }
 
 /**
