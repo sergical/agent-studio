@@ -18,8 +18,10 @@
     "check": "npm run typecheck && npm run lint && npm run format:check && cd src-tauri && cargo fmt --check && cargo clippy -- -D warnings && cargo test"
   },
   "dependencies": {
+    "@pierre/diffs": "^1.3.6",
     "@tauri-apps/api": "^2.9.1",
     "@tauri-apps/plugin-dialog": "^2.6.0",
+    "diff": "^9.0.0",
     "lucide-react": "^0.562.0",
     "motion": "^12.26.2",
     "react": "^19.1.0",

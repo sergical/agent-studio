@@ -1,7 +1,7 @@
 // ============================================================================
 // SkillPage - Full-page view of an installed skill: header, stats line,
 // rendered/editable SKILL.md body, actions, and the collapsed details
-// section on the left; the assistant placeholder on the right
+// section on the left; the `SkillAssistantPanel` on the right
 // ============================================================================
 
 import { useEffect, useState } from "react";
@@ -70,7 +70,7 @@ function backLabel(from: ActiveView): string {
  * in the page header, then a two-column body - the stats line, the rendered
  * SKILL.md body with an inline raw-text editor, the legacy actions row
  * (remove/update for skills.sh skills), and the collapsed `SkillDetailDetails`
- * section on the left, and the `SkillAssistantPanel` placeholder on the right.
+ * section on the left, and the `SkillAssistantPanel` on the right.
  */
 export function SkillPage({
   skill,
@@ -277,7 +277,13 @@ export function SkillPage({
         </div>
 
         <div className="skill-page-column-side">
-          <SkillAssistantPanel skill={skill} />
+          <SkillAssistantPanel
+            skill={skill}
+            rawContent={rawContent}
+            skillMdPath={skillMdPath}
+            isPluginManaged={isPluginManaged}
+            onApplied={setRawContent}
+          />
         </div>
       </div>
     </div>
