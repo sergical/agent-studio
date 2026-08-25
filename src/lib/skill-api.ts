@@ -146,6 +146,20 @@ export async function writeInstalledSkillMd(path: string, content: string): Prom
 }
 
 /**
+ * Like `writeInstalledSkillMd`, but refuses (compare-and-swap) when the
+ * file's current content doesn't match `expectedContent` - the copy the
+ * caller last loaded. Used by the Audit proposal's Apply action so a save
+ * made elsewhere while the proposal was open can't be silently clobbered.
+ */
+export async function writeInstalledSkillMdIfUnchanged(
+  path: string,
+  expectedContent: string,
+  content: string,
+): Promise<void> {
+  return invoke("write_installed_skill_md_if_unchanged", { path, expectedContent, content });
+}
+
+/**
  * Reveal a skill's folder in Finder, or open it in the user's default editor.
  */
 export async function openSkillPath(path: string, mode: "reveal" | "editor"): Promise<void> {

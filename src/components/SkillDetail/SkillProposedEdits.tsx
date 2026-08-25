@@ -4,9 +4,9 @@
 // Apply footer that writes the accepted hunks back through to disk
 // ============================================================================
 
-import { useEffect, useState } from "react";
+import { useState } from "react";
 import { PatchDiff } from "@pierre/diffs/react";
-import { writeInstalledSkillMd } from "../../lib/skill-api";
+import { writeInstalledSkillMdIfUnchanged } from "../../lib/skill-api";
 import type { SkillMdHunk } from "../../lib/skill-md-diff";
 import { applyAcceptedHunks } from "../../lib/skill-md-diff";
 import { useAppStore } from "../../store/appStore";
@@ -17,18 +17,19 @@ interface SkillProposedEditsProps {
   /** The file's current content, read live from `SkillPage` - may have moved on since the audit started. */
   currentContent: string;
   skillMdPath: string;
+  /** The deployment path this proposal was made for - Apply is disabled when it no longer matches `skillMdPath`. */
+  proposalSkillMdPath: string;
   hunks: SkillMdHunk[];
   onHunksChange: (hunks: SkillMdHunk[]) => void;
   onApplied: (content: string) => void;
   onDiscard: () => void;
+  /** Called when Apply is refused because the file drifted on disk, so the caller re-reads it. */
+  onDiskChanged: () => void;
 }
 
-/** True when `document.documentElement` is explicitly light, or defers to the OS when it isn't set. */
-function isLightTheme(): boolean {
-  const attr = document.documentElement.getAttribute("data-theme");
-  if (attr === "light") return true;
-  if (attr === "dark") return false;
-  return !window.matchMedia("(prefers-color-scheme: dark)").matches;
+/** App CSS (src/App.css) is dark by default and light only under `:root[data-theme="light"]`. */
+function currentTheme(): "github-light" | "github-dark" {
+  return document.documentElement.dataset.theme === "light" ? "github-light" : "github-dark";
 }
 
 /**
@@ -40,33 +41,27 @@ export function SkillProposedEdits({
   fileAtAuditStart,
   currentContent,
   skillMdPath,
+  proposalSkillMdPath,
   hunks,
   onHunksChange,
   onApplied,
   onDiscard,
+  onDiskChanged,
 }: SkillProposedEditsProps) {
   const addToast = useAppStore((state) => state.addToast);
   const [isApplying, setIsApplying] = useState(false);
-  const [theme, setTheme] = useState(() => (isLightTheme() ? "github-light" : "github-dark"));
-
-  useEffect(() => {
-    // No theme toggle sets `data-theme` in JS yet, so only the OS scheme
-    // can change after mount; that's the only change worth watching for.
-    const media = window.matchMedia("(prefers-color-scheme: dark)");
-    const onMediaChange = () => setTheme(isLightTheme() ? "github-light" : "github-dark");
-    media.addEventListener("change", onMediaChange);
-    return () => media.removeEventListener("change", onMediaChange);
-  }, []);
+  const theme = currentTheme();
 
   const acceptedCount = hunks.filter((hunk) => hunk.accepted).length;
   const changedSinceAudit = currentContent !== fileAtAuditStart;
+  const isStaleDeployment = proposalSkillMdPath !== skillMdPath;
 
   const setAccepted = (index: number, accepted: boolean) => {
     onHunksChange(hunks.map((hunk) => (hunk.index === index ? { ...hunk, accepted } : hunk)));
   };
 
   const handleApply = async () => {
-    if (acceptedCount === 0 || isApplying) return;
+    if (acceptedCount === 0 || isApplying || isStaleDeployment) return;
     const patched = applyAcceptedHunks(currentContent, hunks);
     if (patched === null) {
       addToast({
@@ -78,15 +73,13 @@ export function SkillProposedEdits({
     }
     setIsApplying(true);
     try {
-      await writeInstalledSkillMd(skillMdPath, patched);
+      await writeInstalledSkillMdIfUnchanged(skillMdPath, currentContent, patched);
       onApplied(patched);
       addToast({ type: "success", title: "SKILL.md updated" });
     } catch (err) {
-      addToast({
-        type: "error",
-        title: "Couldn't save SKILL.md",
-        message: err instanceof Error ? err.message : "Unknown error",
-      });
+      const message = err instanceof Error ? err.message : "Unknown error";
+      addToast({ type: "error", title: "Couldn't save SKILL.md", message });
+      onDiskChanged();
     } finally {
       setIsApplying(false);
     }
@@ -101,44 +94,55 @@ export function SkillProposedEdits({
         </span>
       </div>
 
-      {hunks.map((hunk) => (
-        <div
-          key={hunk.index}
-          className="skill-proposed-hunk"
-          style={{ opacity: hunk.accepted ? 1 : 0.5 }}
-        >
-          <div className="skill-proposed-hunk-header">
-            <span className="skill-proposed-hunk-header-text">{hunk.header}</span>
-            <div className="skill-proposed-hunk-toggles">
-              <button
-                type="button"
-                className="skill-proposed-hunk-toggle"
-                aria-pressed={hunk.accepted}
-                onClick={() => setAccepted(hunk.index, true)}
-              >
-                Accept
-              </button>
-              <button
-                type="button"
-                className="skill-proposed-hunk-toggle"
-                aria-pressed={!hunk.accepted}
-                onClick={() => setAccepted(hunk.index, false)}
-              >
-                Reject
-              </button>
+      {hunks.map((hunk, index) => {
+        const headerId = `skill-hunk-${index}`;
+        return (
+          <div
+            key={hunk.index}
+            className="skill-proposed-hunk"
+            style={{ opacity: hunk.accepted ? 1 : 0.5 }}
+          >
+            <div className="skill-proposed-hunk-header" id={headerId}>
+              <span className="skill-proposed-hunk-header-text">{hunk.header}</span>
+              <div className="skill-proposed-hunk-toggles" role="group" aria-labelledby={headerId}>
+                <button
+                  type="button"
+                  className="skill-proposed-hunk-toggle"
+                  aria-pressed={hunk.accepted}
+                  aria-label={`Accept change ${index + 1} of ${hunks.length}`}
+                  onClick={() => setAccepted(hunk.index, true)}
+                >
+                  Accept
+                </button>
+                <button
+                  type="button"
+                  className="skill-proposed-hunk-toggle"
+                  aria-pressed={!hunk.accepted}
+                  aria-label={`Reject change ${index + 1} of ${hunks.length}`}
+                  onClick={() => setAccepted(hunk.index, false)}
+                >
+                  Reject
+                </button>
+              </div>
+            </div>
+            <div className="skill-proposed-hunk-body">
+              <PatchDiff
+                patch={hunk.patchText}
+                options={{ theme, disableLineNumbers: true, disableFileHeader: true }}
+              />
             </div>
           </div>
-          <div className="skill-proposed-hunk-body">
-            <PatchDiff
-              patch={hunk.patchText}
-              options={{ theme, disableLineNumbers: true, disableFileHeader: true }}
-            />
-          </div>
-        </div>
-      ))}
+        );
+      })}
 
       {changedSinceAudit && (
         <p className="skill-proposed-warning">SKILL.md changed since this audit ran.</p>
+      )}
+
+      {isStaleDeployment && (
+        <p className="skill-proposed-warning">
+          This proposal was made for a different copy of the skill.
+        </p>
       )}
 
       <div className="skill-proposed-footer">
@@ -146,7 +150,7 @@ export function SkillProposedEdits({
           type="button"
           className="skill-action-button primary"
           onClick={handleApply}
-          disabled={acceptedCount === 0 || isApplying}
+          disabled={acceptedCount === 0 || isApplying || isStaleDeployment}
         >
           Apply {acceptedCount} changes
         </button>

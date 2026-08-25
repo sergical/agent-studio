@@ -283,6 +283,14 @@ export function SkillPage({
             skillMdPath={skillMdPath}
             isPluginManaged={isPluginManaged}
             onApplied={setRawContent}
+            onDiskChanged={() => {
+              if (!skillMdPath) return;
+              readInstalledSkillMd(skillMdPath)
+                .then(setRawContent)
+                .catch((err) => {
+                  setLoadError(err instanceof Error ? err.message : "Unknown error");
+                });
+            }}
           />
         </div>
       </div>

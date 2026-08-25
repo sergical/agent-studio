@@ -9,7 +9,11 @@
 import { Suspense, lazy, useEffect, useRef, useState } from "react";
 import { useSkillAgentRun } from "../../hooks/useSkillAgentRun";
 import { createSkillScratchDir, removeSkillScratchDir } from "../../lib/skill-agent-api";
-import { buildSkillAuditPrompt, extractProposedSkillMd } from "../../lib/skill-agent-prompts";
+import {
+  buildSkillAuditPrompt,
+  extractProposedSkillMd,
+  normalizeProposalToOriginal,
+} from "../../lib/skill-agent-prompts";
 import type { HarnessId } from "../../lib/skill-agent-types";
 import { skillVisibleToAgent } from "../../lib/skill-coverage";
 import type { SkillMdHunk } from "../../lib/skill-md-diff";
@@ -30,14 +34,17 @@ interface SkillAssistantPanelProps {
   isPluginManaged: boolean;
   /** Called with the new file content once a proposal is applied, so `SkillPage`'s own copy stays in sync. */
   onApplied: (content: string) => void;
+  /** Called when Apply is refused because the file drifted on disk, so `SkillPage` re-reads it. */
+  onDiskChanged: () => void;
 }
 
 const MAX_TEXTAREA_ROWS = 8;
 
-/** One audit run's outcome: the file it reviewed and the hunks proposed against it. */
+/** One audit run's outcome: the file it reviewed, the hunks proposed against it, and the deployment it was made for. */
 interface Proposal {
   fileAtAuditStart: string;
   hunks: SkillMdHunk[];
+  skillMdPath: string;
 }
 
 /** Every first-class agent that can actually see `skill`, in `COMMON_AGENTS` order. */
@@ -69,6 +76,7 @@ export function SkillAssistantPanel({
   skillMdPath,
   isPluginManaged,
   onApplied,
+  onDiskChanged,
 }: SkillAssistantPanelProps) {
   const addToast = useAppStore((state) => state.addToast);
   const visibleAgents = visibleAgentsFor(skill);
@@ -89,9 +97,10 @@ export function SkillAssistantPanel({
   const { run, cancel, reset, state } = useSkillAgentRun();
 
   useEffect(() => {
-    // A new skill can't reuse a previous one's scratch dir or transcript.
-    // Cancel any run against the old skill before the scratch dir cleanup
-    // effect below (keyed on `scratchDir`) removes the folder it runs in.
+    // A new skill, or a different deployment's copy of the same skill, can't
+    // reuse a previous one's scratch dir or transcript. Cancel any run
+    // against the old skill/path before the scratch dir cleanup effect below
+    // (keyed on `scratchDir`) removes the folder it runs in.
     let ignore = false;
     (async () => {
       await cancel();
@@ -105,8 +114,8 @@ export function SkillAssistantPanel({
       ignore = true;
     };
     // `defaultHarness`, `cancel`, and `reset` are recomputed every render;
-    // only a skill change should re-run this.
-  }, [skill.name]); // eslint-disable-line react-hooks/exhaustive-deps
+    // only a skill or deployment change should re-run this.
+  }, [skill.name, skillMdPath]); // eslint-disable-line react-hooks/exhaustive-deps
 
   useEffect(() => {
     return () => {
@@ -194,7 +203,8 @@ export function SkillAssistantPanel({
   };
 
   const handleAudit = async () => {
-    if (rawContent === null || isPluginManaged || state.status === "running") return;
+    if (rawContent === null || !skillMdPath || isPluginManaged || state.status === "running")
+      return;
     const dir = await ensureScratchDir();
     if (!dir) return;
 
@@ -228,13 +238,25 @@ export function SkillAssistantPanel({
   // Once an audit run finishes, pull the proposed rewrite (if any) out of its
   // final text and diff it against the file as it was when the run started.
   useEffect(() => {
-    if (runKind !== "audit" || state.status !== "finished" || state.finalText === undefined) return;
+    if (
+      runKind !== "audit" ||
+      state.status !== "finished" ||
+      state.finalText === undefined ||
+      !skillMdPath
+    )
+      return;
     const fileAtAuditStart = auditStartContentRef.current;
     if (fileAtAuditStart === null) return;
-    const proposedText = extractProposedSkillMd(state.finalText);
-    if (proposedText === null || proposedText === fileAtAuditStart) return;
-    setProposal({ fileAtAuditStart, hunks: diffSkillMd(fileAtAuditStart, proposedText) });
-  }, [runKind, state.status, state.finalText]);
+    const extracted = extractProposedSkillMd(state.finalText);
+    if (extracted === null) return;
+    const proposedText = normalizeProposalToOriginal(extracted, fileAtAuditStart);
+    if (proposedText === fileAtAuditStart) return;
+    setProposal({
+      fileAtAuditStart,
+      hunks: diffSkillMd(fileAtAuditStart, proposedText),
+      skillMdPath,
+    });
+  }, [runKind, state.status, state.finalText, skillMdPath]);
 
   const handleKeyDown = (event: React.KeyboardEvent<HTMLTextAreaElement>) => {
     if ((event.metaKey || event.ctrlKey) && event.key === "Enter") {
@@ -272,6 +294,7 @@ export function SkillAssistantPanel({
             fileAtAuditStart={proposal.fileAtAuditStart}
             currentContent={rawContent}
             skillMdPath={skillMdPath}
+            proposalSkillMdPath={proposal.skillMdPath}
             hunks={proposal.hunks}
             onHunksChange={(hunks) => setProposal({ ...proposal, hunks })}
             onApplied={(content) => {
@@ -279,6 +302,7 @@ export function SkillAssistantPanel({
               setProposal(null);
             }}
             onDiscard={() => setProposal(null)}
+            onDiskChanged={onDiskChanged}
           />
         </Suspense>
       )}

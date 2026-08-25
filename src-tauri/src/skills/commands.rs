@@ -244,6 +244,28 @@ mod tests {
             .count();
         assert_eq!(leftover_temp_files, 0);
     }
+
+    #[test]
+    fn compare_and_swap_refuses_mismatch_and_leaves_file_untouched() {
+        let tmp = tempfile::tempdir().unwrap();
+        let skill_md = tmp.path().join("SKILL.md");
+        std::fs::write(&skill_md, "on disk now").unwrap();
+
+        let err =
+            write_skill_md_compare_and_swap(&skill_md, "stale copy", "new content").unwrap_err();
+        assert!(err.contains("changed on disk since it was loaded"));
+        assert_eq!(std::fs::read_to_string(&skill_md).unwrap(), "on disk now");
+    }
+
+    #[test]
+    fn compare_and_swap_writes_on_match() {
+        let tmp = tempfile::tempdir().unwrap();
+        let skill_md = tmp.path().join("SKILL.md");
+        std::fs::write(&skill_md, "on disk now").unwrap();
+
+        write_skill_md_compare_and_swap(&skill_md, "on disk now", "new content").unwrap();
+        assert_eq!(std::fs::read_to_string(&skill_md).unwrap(), "new content");
+    }
 }
 
 /// List project directories discovered from Codex config and Claude Code
@@ -588,6 +610,31 @@ fn atomic_write_skill_md(canonical: &std::path::Path, content: &str) -> Result<(
     })
 }
 
+/// Runs every check `write_installed_skill_md` and
+/// `write_installed_skill_md_if_unchanged` share - ownership, canonicalization,
+/// the size limit, and the plugin-managed refusal - and returns the canonical
+/// path to write to.
+fn validate_skill_md_write(
+    path: &str,
+    content: &str,
+    refresh_state: &tauri::State<SkillRefreshState>,
+) -> Result<std::path::PathBuf, String> {
+    let path_buf = std::path::PathBuf::from(path);
+    require_snapshot_owns_path(refresh_state, &path_buf)?;
+    let canonical = canonicalize_skill_md(&path_buf, path)?;
+    if content.len() > MAX_SKILL_MD_BYTES {
+        return Err(format!(
+            "SKILL.md is too large to save ({} bytes, max {})",
+            content.len(),
+            MAX_SKILL_MD_BYTES
+        ));
+    }
+
+    let snapshot = refresh_state.snapshot.read().ok().and_then(|g| g.clone());
+    check_skill_md_write_allowed(snapshot.as_ref(), &path_buf)?;
+    Ok(canonical)
+}
+
 /// Write `content` to an installed skill's `SKILL.md`, for the detail
 /// drawer's inline editor. Same ownership check as `read_installed_skill_md`,
 /// plus a refusal when the owning deployment is plugin-managed. Rebuilds the
@@ -600,24 +647,51 @@ pub fn write_installed_skill_md(
     app: tauri::AppHandle,
     refresh_state: tauri::State<SkillRefreshState>,
 ) -> Result<(), String> {
-    let path_buf = std::path::PathBuf::from(&path);
-    require_snapshot_owns_path(&refresh_state, &path_buf)?;
-    let canonical = canonicalize_skill_md(&path_buf, &path)?;
-    if content.len() > MAX_SKILL_MD_BYTES {
-        return Err(format!(
-            "SKILL.md is too large to save ({} bytes, max {})",
-            content.len(),
-            MAX_SKILL_MD_BYTES
-        ));
-    }
-
-    let snapshot = refresh_state.snapshot.read().ok().and_then(|g| g.clone());
-    check_skill_md_write_allowed(snapshot.as_ref(), &path_buf)?;
-
+    let canonical = validate_skill_md_write(&path, &content, &refresh_state)?;
     atomic_write_skill_md(&canonical, &content)?;
-
     if let Err(e) = skill_refresh::rebuild_snapshot_now(&app, &refresh_state) {
         eprintln!("[write_installed_skill_md] snapshot rebuild failed: {e}");
+    }
+    Ok(())
+}
+
+/// Refuses when `canonical`'s current content differs from `expected_content`
+/// (the file drifted on disk since the caller loaded it), otherwise writes
+/// atomically. Pulled out of the command so it's testable without a snapshot
+/// or `tauri::AppHandle`.
+fn write_skill_md_compare_and_swap(
+    canonical: &std::path::Path,
+    expected_content: &str,
+    content: &str,
+) -> Result<(), String> {
+    let current = std::fs::read_to_string(canonical)
+        .map_err(|e| format!("Failed to open {}: {}", canonical.display(), e))?;
+    if current != expected_content {
+        return Err(
+            "SKILL.md changed on disk since it was loaded. Reload the file and run the audit again."
+                .to_string(),
+        );
+    }
+    atomic_write_skill_md(canonical, content)
+}
+
+/// Like `write_installed_skill_md`, but refuses the write (rather than
+/// silently overwriting) when the file's current content doesn't match
+/// `expected_content` - the copy the caller last loaded. Used by the Audit
+/// proposal's Apply action so a save made elsewhere while the proposal was
+/// open can't be clobbered.
+#[tauri::command]
+pub fn write_installed_skill_md_if_unchanged(
+    path: String,
+    expected_content: String,
+    content: String,
+    app: tauri::AppHandle,
+    refresh_state: tauri::State<SkillRefreshState>,
+) -> Result<(), String> {
+    let canonical = validate_skill_md_write(&path, &content, &refresh_state)?;
+    write_skill_md_compare_and_swap(&canonical, &expected_content, &content)?;
+    if let Err(e) = skill_refresh::rebuild_snapshot_now(&app, &refresh_state) {
+        eprintln!("[write_installed_skill_md_if_unchanged] snapshot rebuild failed: {e}");
     }
     Ok(())
 }

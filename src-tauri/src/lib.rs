@@ -33,6 +33,7 @@ pub fn run() {
             skills::commands::update_skill,
             skills::commands::read_installed_skill_md,
             skills::commands::write_installed_skill_md,
+            skills::commands::write_installed_skill_md_if_unchanged,
             skills::commands::open_skill_path,
             // Background refresh / invocation snapshot
             skills::skill_refresh::get_skill_snapshot,
