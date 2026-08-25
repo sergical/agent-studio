@@ -20,7 +20,8 @@ import type { Toast } from "../lib/skill-types";
  * is the skill x agent deployment matrix; `issues` is every health issue
  * across own skills, optionally pre-filtered to one `issueKind` for
  * deep-linking from the dashboard; `activity` is the full invocation
- * history (year heatmap, per-skill and per-project breakdowns).
+ * history (year heatmap, per-skill and per-project breakdowns); `skill` is
+ * the full-page view of one installed skill, opened from any other view.
  */
 export type ActiveView =
   | { kind: "dashboard" }
@@ -30,19 +31,8 @@ export type ActiveView =
   | { kind: "coverage" }
   | { kind: "issues"; issueKind?: HealthIssueKind }
   | { kind: "activity" }
-  | { kind: "discover" };
-
-/**
- * The detail drawer's current subject: a skill name plus, when the caller
- * knows it, the specific deployment that was clicked (e.g. a row in the
- * Plugins view, or a specific scope's copy of a mixed-origin skill). The
- * drawer falls back to the skill's first own deployment, then its first
- * deployment, when `deploymentPath` is absent.
- */
-export interface SelectedSkill {
-  name: string;
-  deploymentPath?: string;
-}
+  | { kind: "discover" }
+  | { kind: "skill"; name: string; deploymentPath?: string; from: ActiveView };
 
 // ============================================================================
 // State Interface
@@ -57,8 +47,14 @@ interface AppState {
   // === Shell Route State ===
   activeView: ActiveView;
   setActiveView: (view: ActiveView) => void;
-  selectedSkill: SelectedSkill | null;
-  setSelectedSkill: (skill: SelectedSkill | null) => void;
+  /**
+   * Opens the skill page for `name` over the current view. Opening a skill
+   * from an existing skill page reuses that page's `from`, so the back
+   * button never lands on another skill page.
+   */
+  openSkill: (name: string, deploymentPath?: string) => void;
+  /** Returns to the view the current skill page was opened from. */
+  closeSkill: () => void;
 
   // === Project Scope Selection ===
   // Directories the user has pointed at (via a folder picker), for
@@ -157,8 +153,15 @@ export const useAppStore = create<AppState>((set, get) => ({
 
   activeView: { kind: "dashboard" },
   setActiveView: (view) => set({ activeView: view }),
-  selectedSkill: null,
-  setSelectedSkill: (skill) => set({ selectedSkill: skill }),
+  openSkill: (name, deploymentPath) => {
+    const current = get().activeView;
+    const from = current.kind === "skill" ? current.from : current;
+    set({ activeView: { kind: "skill", name, deploymentPath, from } });
+  },
+  closeSkill: () => {
+    const current = get().activeView;
+    if (current.kind === "skill") set({ activeView: current.from });
+  },
 
   userAddedProjects: loadPathList(PROJECT_PATHS_STORAGE_KEY),
   excludedProjects: loadPathList(EXCLUDED_PROJECT_PATHS_STORAGE_KEY),

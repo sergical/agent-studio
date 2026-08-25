@@ -20,7 +20,9 @@ interface PluginSkillsViewProps {
  * (Claude Code, Codex), not the user, so there's no install/remove here.
  */
 export function PluginSkillsView({ harness, snapshot, onSelectSkill }: PluginSkillsViewProps) {
-  const selectedSkillName = useAppStore((state) => state.selectedSkill?.name ?? null);
+  const selectedSkillName = useAppStore((state) =>
+    state.activeView.kind === "skill" ? state.activeView.name : null,
+  );
   const groups = groupPluginSkills(snapshot?.skills ?? []).filter((g) => g.harness === harness);
 
   return (

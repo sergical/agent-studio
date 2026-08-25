@@ -1,7 +1,7 @@
 // ============================================================================
 // Skill Studio - Main Application
 // Shell: Sidebar + main view (Dashboard, Global, Project, Plugins, Coverage,
-// Issues, Activity, or Discover) + an optional installed-skill detail drawer
+// Issues, Activity, Discover, or a full-page installed-skill view)
 // ============================================================================
 
 import { useEffect, useRef } from "react";
@@ -13,7 +13,7 @@ import { SkillsScopeView } from "./components/SkillsScopeView";
 import { SkillCoverageView } from "./components/Coverage/SkillCoverageView";
 import { SkillIssuesView } from "./components/Issues/SkillIssuesView";
 import { PluginSkillsView } from "./components/Plugins/PluginSkillsView";
-import { SkillDetail } from "./components/SkillDetail/SkillDetail";
+import { SkillPage } from "./components/SkillDetail/SkillPage";
 import { SkillStore } from "./components/SkillStore";
 import { ToastContainer } from "./components/ui/ToastContainer";
 import { useSkillSnapshot } from "./hooks/useSkillSnapshot";
@@ -24,15 +24,14 @@ import "./App.css";
 function App() {
   const { snapshot, isLoading, requestRescan } = useSkillSnapshot();
   const activeView = useAppStore((state) => state.activeView);
-  const selectedSkill = useAppStore((state) => state.selectedSkill);
-  const setSelectedSkill = useAppStore((state) => state.setSelectedSkill);
+  const openSkill = useAppStore((state) => state.openSkill);
+  const closeSkill = useAppStore((state) => state.closeSkill);
   const userAddedProjects = useAppStore((state) => state.userAddedProjects);
   const excludedProjects = useAppStore((state) => state.excludedProjects);
   const removeProject = useAppStore((state) => state.removeProject);
   const addToast = useAppStore((state) => state.addToast);
 
-  const onSelectSkill = (name: string, deploymentPath?: string) =>
-    setSelectedSkill({ name, deploymentPath });
+  const onSelectSkill = (name: string, deploymentPath?: string) => openSkill(name, deploymentPath);
 
   // Re-register the user's remembered projects, and re-apply their remembered
   // exclusions, with the backend once on startup, so future background
@@ -71,9 +70,6 @@ function App() {
       }
     })();
   }, [userAddedProjects, excludedProjects, removeProject, addToast]);
-
-  const selectedSkillRecord = snapshot?.skills.find((s) => s.name === selectedSkill?.name) ?? null;
-  const invocationStats = snapshot?.invocations.find((s) => s.skill === selectedSkill?.name);
 
   let main: React.ReactNode;
   if (activeView.kind === "dashboard") {
@@ -116,6 +112,19 @@ function App() {
     );
   } else if (activeView.kind === "activity") {
     main = <SkillActivityView snapshot={snapshot} onSelectSkill={onSelectSkill} />;
+  } else if (activeView.kind === "skill") {
+    const skill = snapshot?.skills.find((s) => s.name === activeView.name) ?? null;
+    const invocationStats = snapshot?.invocations.find((s) => s.skill === activeView.name);
+    main = (
+      <SkillPage
+        skill={skill}
+        deploymentPath={activeView.deploymentPath}
+        invocationStats={invocationStats}
+        onBack={closeSkill}
+        onRemoveComplete={closeSkill}
+        from={activeView.from}
+      />
+    );
   } else {
     main = <SkillStore />;
   }
@@ -124,19 +133,6 @@ function App() {
     <div className="flex h-screen overflow-hidden bg-[var(--color-bg-primary)]">
       <Sidebar snapshot={snapshot} isLoading={isLoading} requestRescan={requestRescan} />
       <main className="flex-1 overflow-y-auto">{main}</main>
-
-      {activeView.kind !== "discover" && selectedSkillRecord && (
-        <>
-          <div className="skill-detail-overlay" onClick={() => setSelectedSkill(null)} />
-          <SkillDetail
-            skill={selectedSkillRecord}
-            deploymentPath={selectedSkill?.deploymentPath}
-            invocationStats={invocationStats}
-            onClose={() => setSelectedSkill(null)}
-            onRemoveComplete={() => setSelectedSkill(null)}
-          />
-        </>
-      )}
 
       <ToastContainer />
     </div>

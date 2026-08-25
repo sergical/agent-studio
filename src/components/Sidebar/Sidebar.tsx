@@ -23,8 +23,18 @@ import { registerSkillProjects, unregisterSkillProject } from "../../lib/skill-a
 import { collectDashboardIssues } from "../../lib/skill-health";
 import { ownSkillsView, pluginHarnessCounts } from "../../lib/skill-plugin-partition";
 import { useAppStore } from "../../store/appStore";
+import type { ActiveView } from "../../store/appStore";
 import { HarnessIcon, harnessIdFromLabel } from "../ui/HarnessIcon";
 import type { SkillSnapshot } from "../../lib/skill-types";
+
+/**
+ * The row a sidebar item should highlight against: a skill page isn't a row
+ * of its own, so it anchors to the view it was opened from (Global, a
+ * project, Issues, …), which keeps that row active while the page is open.
+ */
+export function sidebarAnchorView(activeView: ActiveView): ActiveView {
+  return activeView.kind === "skill" ? activeView.from : activeView;
+}
 
 interface SidebarProps {
   snapshot: SkillSnapshot | undefined;
@@ -66,6 +76,7 @@ function projectSkillCount(snapshot: SkillSnapshot | undefined, path: string): n
 export function Sidebar({ snapshot, isLoading, requestRescan }: SidebarProps) {
   const [isRescanning, setIsRescanning] = useState(false);
   const activeView = useAppStore((state) => state.activeView);
+  const anchorView = sidebarAnchorView(activeView);
   const setActiveView = useAppStore((state) => state.setActiveView);
   const userAddedProjects = useAppStore((state) => state.userAddedProjects);
   const excludedProjects = useAppStore((state) => state.excludedProjects);
@@ -142,7 +153,7 @@ export function Sidebar({ snapshot, isLoading, requestRescan }: SidebarProps) {
     <nav className="skill-sidebar">
       <div className="skill-sidebar-section">
         <button
-          className={`skill-sidebar-item ${activeView.kind === "dashboard" ? "active" : ""}`}
+          className={`skill-sidebar-item ${anchorView.kind === "dashboard" ? "active" : ""}`}
           onClick={() => setActiveView({ kind: "dashboard" })}
         >
           <LayoutDashboard size={15} />
@@ -153,7 +164,7 @@ export function Sidebar({ snapshot, isLoading, requestRescan }: SidebarProps) {
       <div className="skill-sidebar-section">
         <div className="section-label">Skills</div>
         <button
-          className={`skill-sidebar-item ${activeView.kind === "global" ? "active" : ""}`}
+          className={`skill-sidebar-item ${anchorView.kind === "global" ? "active" : ""}`}
           onClick={() => setActiveView({ kind: "global" })}
         >
           <Globe size={15} />
@@ -170,7 +181,7 @@ export function Sidebar({ snapshot, isLoading, requestRescan }: SidebarProps) {
             <div
               key={path}
               className={`skill-sidebar-item skill-sidebar-project ${
-                activeView.kind === "project" && activeView.path === path ? "active" : ""
+                anchorView.kind === "project" && anchorView.path === path ? "active" : ""
               }`}
               title={path}
             >
@@ -206,7 +217,7 @@ export function Sidebar({ snapshot, isLoading, requestRescan }: SidebarProps) {
             <button
               key={harness}
               className={`skill-sidebar-item ${
-                activeView.kind === "plugins" && activeView.harness === harness ? "active" : ""
+                anchorView.kind === "plugins" && anchorView.harness === harness ? "active" : ""
               }`}
               onClick={() => setActiveView({ kind: "plugins", harness })}
             >
@@ -225,7 +236,7 @@ export function Sidebar({ snapshot, isLoading, requestRescan }: SidebarProps) {
       <div className="skill-sidebar-section">
         <div className="section-label">Review</div>
         <button
-          className={`skill-sidebar-item ${activeView.kind === "issues" ? "active" : ""}`}
+          className={`skill-sidebar-item ${anchorView.kind === "issues" ? "active" : ""}`}
           onClick={() => setActiveView({ kind: "issues" })}
         >
           <AlertCircle size={15} />
@@ -233,14 +244,14 @@ export function Sidebar({ snapshot, isLoading, requestRescan }: SidebarProps) {
           {issuesCount > 0 && <span className="skill-sidebar-badge">{issuesCount}</span>}
         </button>
         <button
-          className={`skill-sidebar-item ${activeView.kind === "coverage" ? "active" : ""}`}
+          className={`skill-sidebar-item ${anchorView.kind === "coverage" ? "active" : ""}`}
           onClick={() => setActiveView({ kind: "coverage" })}
         >
           <LayoutGrid size={15} />
           <span>Coverage</span>
         </button>
         <button
-          className={`skill-sidebar-item ${activeView.kind === "activity" ? "active" : ""}`}
+          className={`skill-sidebar-item ${anchorView.kind === "activity" ? "active" : ""}`}
           onClick={() => setActiveView({ kind: "activity" })}
         >
           <ActivityIcon size={15} />
@@ -251,7 +262,7 @@ export function Sidebar({ snapshot, isLoading, requestRescan }: SidebarProps) {
       <div className="skill-sidebar-section">
         <div className="section-label">Find</div>
         <button
-          className={`skill-sidebar-item ${activeView.kind === "discover" ? "active" : ""}`}
+          className={`skill-sidebar-item ${anchorView.kind === "discover" ? "active" : ""}`}
           onClick={() => setActiveView({ kind: "discover" })}
         >
           <Search size={15} />

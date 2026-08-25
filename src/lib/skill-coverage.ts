@@ -8,7 +8,7 @@
 // ============================================================================
 
 import { ownDeployments } from "./skill-plugin-partition";
-import type { AgentId, InstalledSkill } from "./skill-types";
+import type { AgentId, Deployment, InstalledSkill } from "./skill-types";
 
 /** The three first-class agents that read the shared `.agents/skills` root natively. */
 export const AGENTS_READING_SHARED_ROOT: readonly AgentId[] = ["codex", "open-code", "pi"];
@@ -51,6 +51,23 @@ function isOwnDirDeployment(skill: InstalledSkill, agent: AgentId): boolean {
 /** True when the deployment is a symlink whose target lives in a `.agents/skills` root. */
 function isLinkedToSharedRoot(target: string | undefined): boolean {
   return target !== undefined && /\/\.agents\/skills\//.test(target + "/");
+}
+
+/**
+ * Classifies a single deployment for the small link marker shown next to its
+ * harness chip: `shared-root` when it *is* the shared `.agents/skills` copy,
+ * `linked-to-shared` when it's a symlink pointing into that shared root,
+ * `broken` when its symlink target doesn't resolve, else `own`.
+ */
+export function deploymentLinkKind(
+  deployment: Deployment,
+): "shared-root" | "linked-to-shared" | "own" | "broken" {
+  if (deployment.symlink_is_broken) return "broken";
+  if (deployment.agent === SHARED_AGENT_ID) return "shared-root";
+  if (deployment.is_symlink && isLinkedToSharedRoot(deployment.symlink_target)) {
+    return "linked-to-shared";
+  }
+  return "own";
 }
 
 /** A broken shared-root deployment doesn't make a skill visible via the shared root. */

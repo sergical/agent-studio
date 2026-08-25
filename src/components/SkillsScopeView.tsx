@@ -32,7 +32,9 @@ function deploymentForScope(skill: InstalledSkill, scope: SkillsScope): string |
  * skills - those live under Plugins.
  */
 export function SkillsScopeView({ scope, snapshot, onSelectSkill }: SkillsScopeViewProps) {
-  const selectedSkillName = useAppStore((state) => state.selectedSkill?.name ?? null);
+  const selectedSkillName = useAppStore((state) =>
+    state.activeView.kind === "skill" ? state.activeView.name : null,
+  );
   const own = ownSkillsView(snapshot?.skills ?? []);
 
   const skills = own.filter((skill) =>

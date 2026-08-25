@@ -653,7 +653,63 @@ body {
   background: var(--color-bg-tertiary);
   color: var(--color-text-tertiary);
   border-radius: 4px;
-} /* Skill Detail Overlay */
+} /* ============================================================================
+   Skill Page - full-page installed-skill view (replaces the old drawer)
+   ============================================================================ */
+.skill-page {
+  max-width: 1100px;
+  margin: 0 auto;
+  padding: 24px 28px;
+  display: flex;
+  flex-direction: column;
+  gap: 20px;
+}
+.skill-page-header-row {
+  display: flex;
+  align-items: flex-start;
+  gap: 16px;
+}
+.skill-page-back {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-shrink: 0;
+  padding: 4px;
+  font-size: 12px;
+  color: var(--color-text-tertiary);
+  background: transparent;
+  border: none;
+  cursor: pointer;
+  transition: color 0.15s;
+}
+.skill-page-back:hover {
+  color: var(--color-text-primary);
+}
+.skill-page-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 360px;
+  gap: 32px;
+  align-items: start;
+}
+@media (max-width: 900px) {
+  .skill-page-grid {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+.skill-page-column-main {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+.skill-page-column-side {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+.skill-page-not-found {
+  font-size: 13px;
+  color: var(--color-text-tertiary);
+} /* Skill Detail Overlay - still used by the Discover tab's own detail panel */
 .skill-detail-overlay {
   position: fixed;
   inset: 0;
@@ -726,6 +782,12 @@ body {
   background: var(--color-bg-tertiary);
   border-radius: var(--radius-sm);
   padding: 2px 6px;
+}
+.skill-detail-agent-chip-marker {
+  color: var(--color-text-tertiary);
+}
+.skill-detail-agent-chip-marker.broken {
+  color: var(--color-error);
 }
 .skill-detail-icon-row {
   display: flex;
@@ -1500,6 +1562,65 @@ body {
   background: var(--color-bg-tertiary);
   color: var(--color-text-primary);
 }
+.harness-segmented-control {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+.harness-segmented-control-item {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  height: 26px;
+  padding: 0 10px;
+  font-size: 11px;
+  color: var(--color-text-tertiary);
+  background: var(--color-bg-tertiary);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-sm);
+  cursor: not-allowed;
+  transition:
+    background-color 0.15s,
+    color 0.15s;
+}
+.harness-segmented-control-item.active {
+  color: var(--color-text-primary);
+  border-color: var(--color-text-tertiary);
+}
+.harness-segmented-control-item.unavailable {
+  opacity: 0.4;
+}
+.skill-assistant-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding: 16px;
+  background: var(--color-bg-secondary);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-md);
+}
+.skill-assistant-panel-label {
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--color-text-tertiary);
+}
+.skill-assistant-panel-actions {
+  display: flex;
+  gap: 8px;
+}
+.skill-assistant-panel-actions .skill-action-button {
+  flex: 1;
+  padding: 8px 12px;
+  background: var(--color-bg-tertiary);
+  color: var(--color-text-secondary);
+}
+.skill-assistant-panel-note {
+  font-size: 11px;
+  color: var(--color-text-tertiary);
+  margin: 0;
+}
 .dashboard-section-row {
   display: grid;
   grid-template-columns: minmax(0, 3fr) minmax(0, 2fr);
@@ -1941,6 +2062,12 @@ body {
   border-radius: var(--radius-sm);
   padding: 2px 6px;
   white-space: nowrap;
+}
+.skill-list-table-chip-marker {
+  color: var(--color-text-tertiary);
+}
+.skill-list-table-chip-marker.broken {
+  color: var(--color-error);
 }
 .skill-list-table-stat {
   font-size: 11px;

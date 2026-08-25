@@ -4,7 +4,8 @@
 // ============================================================================
 
 import { useMemo, useState } from "react";
-import { Search } from "lucide-react";
+import { Link2, Search, Unlink } from "lucide-react";
+import { deploymentLinkKind } from "../../lib/skill-coverage";
 import { formatBytes } from "../../lib/skill-stats";
 import { HarnessIcon, harnessIdFromLabel } from "../ui/HarnessIcon";
 import type { InstalledSkill, SkillInvocationStats } from "../../lib/skill-types";
@@ -103,10 +104,24 @@ export function SkillListTable({
                 <span className="skill-list-table-chips">
                   {skill.deployments.map((d, i) => {
                     const harnessId = harnessIdFromLabel(d.agent);
+                    const linkKind = deploymentLinkKind(d);
                     return (
                       <span key={`${d.agent}-${d.scope}-${i}`} className="skill-list-table-chip">
                         {harnessId && <HarnessIcon harness={harnessId} size={12} />}
                         {showPluginVersion && d.plugin?.version ? `v${d.plugin.version}` : d.agent}
+                        {linkKind === "linked-to-shared" && (
+                          <span
+                            className="skill-list-table-chip-marker"
+                            title="Symlink to the shared folder"
+                          >
+                            <Link2 size={10} />
+                          </span>
+                        )}
+                        {linkKind === "broken" && (
+                          <span className="skill-list-table-chip-marker broken" title="Broken link">
+                            <Unlink size={10} />
+                          </span>
+                        )}
                       </span>
                     );
                   })}
