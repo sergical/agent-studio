@@ -9,6 +9,7 @@ import { ask, open } from "@tauri-apps/plugin-dialog";
 import {
   Activity as ActivityIcon,
   AlertCircle,
+  Folder,
   FolderGit2,
   FolderPlus,
   Globe,
@@ -177,6 +178,7 @@ export function Sidebar({ snapshot, isLoading, requestRescan }: SidebarProps) {
                 className="skill-sidebar-project-open"
                 onClick={() => setActiveView({ kind: "project", path })}
               >
+                <Folder size={15} className="skill-sidebar-project-icon" />
                 <span className="skill-sidebar-project-name">{basename}</span>
                 {count > 0 && <span className="skill-sidebar-badge">{count}</span>}
               </button>

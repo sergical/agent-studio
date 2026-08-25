@@ -41,13 +41,13 @@ export function SkillCoverageView({ snapshot, onSelectSkill }: SkillCoverageView
         </div>
         <div className="coverage-view-legend">
           <span>
-            <span className="coverage-legend-marker global">●</span> global
+            <span className="coverage-matrix-marker own" /> In the agent&rsquo;s folder
           </span>
           <span>
-            <span className="coverage-legend-marker project">○</span> project
+            <span className="coverage-matrix-marker shared" /> Via the shared .agents folder
           </span>
           <span>
-            <span className="coverage-legend-marker both">◑</span> both
+            <span className="coverage-matrix-marker broken" /> Broken link
           </span>
         </div>
       </div>

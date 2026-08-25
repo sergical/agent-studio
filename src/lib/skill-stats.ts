@@ -1,10 +1,11 @@
 // ============================================================================
 // Skill Studio - skill-stats
-// Pure aggregation helpers over a SkillSnapshot: dashboard totals, top
-// skills by recent invocations, and the skill x agent deployment matrix.
+// Pure aggregation helpers over a SkillSnapshot: dashboard totals and top
+// skills by recent invocations. The skill x agent matrix lives in
+// skill-coverage.ts.
 // ============================================================================
 
-import type { InstalledSkill, SkillInvocationStats, SkillSnapshot } from "./skill-types";
+import type { SkillInvocationStats, SkillSnapshot } from "./skill-types";
 
 /** Aggregate counts shown in the dashboard's stat cards. */
 export interface SkillTotals {
@@ -122,60 +123,4 @@ export function topSkills(
         a.skill.localeCompare(b.skill),
     )
     .slice(0, n);
-}
-
-/** Column order for `agentMatrix`, shared by the dashboard and detail panel. */
-export const AGENT_MATRIX_LABELS = ["Claude Code", "Codex", "OpenCode", "pi", "shared"] as const;
-
-export type AgentMatrixLabel = (typeof AGENT_MATRIX_LABELS)[number];
-
-/** Deployment coverage for one agent column in a matrix row. */
-export type AgentMatrixCell = "global" | "project" | "both" | null;
-
-/** One row of `agentMatrix`: a skill and its coverage per agent. */
-export interface AgentMatrixRow {
-  skill: InstalledSkill;
-  cells: Record<AgentMatrixLabel, AgentMatrixCell>;
-}
-
-/** Narrows a deployment's agent name to a known matrix column, if it is one. */
-function isAgentMatrixLabel(agent: string): agent is AgentMatrixLabel {
-  return AGENT_MATRIX_LABELS.some((label) => label === agent);
-}
-
-/** A matrix row's cells, all starting undeployed. */
-function emptyMatrixCells(): Record<AgentMatrixLabel, AgentMatrixCell> {
-  // SAFETY: mapping every AGENT_MATRIX_LABELS entry to `null` produces
-  // exactly the keys of Record<AgentMatrixLabel, AgentMatrixCell>.
-  return Object.fromEntries(AGENT_MATRIX_LABELS.map((label) => [label, null])) as Record<
-    AgentMatrixLabel,
-    AgentMatrixCell
-  >;
-}
-
-/**
- * Builds the skill x agent deployment matrix: for every skill, which agents
- * it's deployed to and whether that's at global scope, project scope, or
- * both. Rows follow `skills`' input order; sort before calling if needed.
- */
-export function agentMatrix(skills: InstalledSkill[]): AgentMatrixRow[] {
-  return skills.map((skill) => {
-    const cells = emptyMatrixCells();
-
-    for (const deployment of skill.deployments) {
-      if (!isAgentMatrixLabel(deployment.agent)) continue;
-      const label = deployment.agent;
-
-      const isGlobal = deployment.scope === "global" || deployment.scope === "plugin";
-      const existing = cells[label];
-      if (existing === null) {
-        cells[label] = isGlobal ? "global" : "project";
-      } else if (existing !== "both") {
-        const newValue = isGlobal ? "global" : "project";
-        cells[label] = existing === newValue ? existing : "both";
-      }
-    }
-
-    return { skill, cells };
-  });
 }

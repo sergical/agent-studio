@@ -1305,12 +1305,16 @@ body {
 }
 .skill-sidebar-section {
   padding: 0 10px 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
 }
 .skill-sidebar-section .section-label {
-  margin: 20px 12px 6px;
+  margin: 20px 10px 6px;
 }
 .skill-sidebar-item {
-  display: flex;
+  display: grid;
+  grid-template-columns: 15px minmax(0, 1fr) auto 20px;
   align-items: center;
   gap: 8px;
   width: 100%;
@@ -1332,6 +1336,13 @@ body {
   height: 15px;
   flex-shrink: 0;
 }
+/* The label column (icon and, for projects, the remove slot are their own elements). */
+.skill-sidebar-item > span:not(.skill-sidebar-badge) {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  min-width: 0;
+}
 .skill-sidebar-item:hover {
   background: var(--color-bg-hover);
   color: var(--color-text-primary);
@@ -1341,42 +1352,46 @@ body {
   color: var(--color-text-primary);
 }
 .skill-sidebar-badge {
-  margin-left: auto;
   font-size: 11px;
   font-variant-numeric: tabular-nums;
   color: var(--color-text-tertiary);
-}
-.skill-sidebar-project {
-  display: flex;
-  align-items: center;
-  padding: 0;
+  text-align: right;
 }
 .skill-sidebar-project-open {
+  grid-column: 1 / 4;
   display: flex;
   align-items: center;
   gap: 8px;
-  flex: 1;
   min-width: 0;
-  height: 30px;
-  padding: 0 10px;
+  height: 100%;
   background: transparent;
   border: none;
   color: var(--color-text-secondary);
   cursor: pointer;
   text-align: left;
 }
+.skill-sidebar-project-icon {
+  flex-shrink: 0;
+  color: var(--color-text-tertiary);
+}
 .skill-sidebar-project-name {
+  flex: 1;
+  min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
+.skill-sidebar-project-open .skill-sidebar-badge {
+  margin-left: auto;
+  flex-shrink: 0;
+}
 .skill-sidebar-project-remove {
+  grid-column: 4;
   display: flex;
   align-items: center;
   justify-content: center;
   width: 20px;
   height: 20px;
-  margin-right: 4px;
   background: transparent;
   border: none;
   color: var(--color-text-quaternary);
@@ -1547,17 +1562,35 @@ body {
 }
 .coverage-table-row {
   display: grid;
-  grid-template-columns: 110px 1fr 90px auto;
+  grid-template-columns: 190px 1fr 90px auto;
   align-items: center;
   gap: 12px;
-  height: 28px;
+  min-height: 28px;
+  padding: 6px 0;
 }
 .coverage-table-agent {
   display: flex;
-  align-items: center;
+  align-items: flex-start;
   gap: 6px;
   font-size: 13px;
   color: var(--color-text-secondary);
+}
+.coverage-table-agent svg {
+  flex-shrink: 0;
+  margin-top: 2px;
+}
+.coverage-table-agent-text {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+.coverage-table-agent-label {
+  color: var(--color-text-secondary);
+}
+.coverage-table-agent-subline {
+  font-size: 12px;
+  color: var(--color-text-tertiary);
 }
 .coverage-table-bar-track {
   height: 4px;
@@ -1967,17 +2000,9 @@ body {
   font-size: 11px;
   color: var(--color-text-tertiary);
 }
-.coverage-legend-marker {
-  margin-right: 2px;
-}
-.coverage-legend-marker.global {
-  color: var(--color-accent);
-}
-.coverage-legend-marker.project {
-  color: var(--color-success);
-}
-.coverage-legend-marker.both {
-  color: var(--color-warning);
+.coverage-view-legend .coverage-matrix-marker {
+  margin-right: 4px;
+  vertical-align: -1px;
 }
 .coverage-matrix {
   overflow: auto;
@@ -2023,14 +2048,37 @@ body {
 .coverage-matrix tbody tr:hover td {
   background: var(--color-bg-hover);
 }
-.coverage-matrix-cell.global {
-  color: var(--color-accent);
+.coverage-matrix-marker {
+  display: inline-block;
+  position: relative;
+  width: 9px;
+  height: 9px;
+  border-radius: 2px;
+  vertical-align: middle;
 }
-.coverage-matrix-cell.project {
-  color: var(--color-success);
+.coverage-matrix-marker.own {
+  background: var(--color-accent);
 }
-.coverage-matrix-cell.both {
-  color: var(--color-warning);
+.coverage-matrix-marker.shared {
+  border: 1.5px solid color-mix(in srgb, var(--color-accent) 60%, transparent);
+}
+.coverage-matrix-marker.shared::after {
+  content: "";
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  width: 3px;
+  height: 3px;
+  border-radius: 50%;
+  background: color-mix(in srgb, var(--color-accent) 60%, transparent);
+  transform: translate(-50%, -50%);
+}
+.coverage-matrix-marker.none {
+  border: 1px solid var(--color-border-subtle);
+}
+.coverage-matrix-marker.broken {
+  border-radius: 50%;
+  border: 1.5px solid var(--color-error);
 } /* ============================================================================
    Plugins View
    ============================================================================ */
