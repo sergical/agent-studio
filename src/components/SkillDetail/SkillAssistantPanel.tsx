@@ -54,11 +54,21 @@ export function SkillAssistantPanel({ skill }: SkillAssistantPanelProps) {
 
   useEffect(() => {
     // A new skill can't reuse a previous one's scratch dir or transcript.
-    setScratchDir(undefined);
-    setHarness(defaultHarness);
-    reset();
-    // `defaultHarness` and `reset` are recomputed every render; only a
-    // skill change should re-run this.
+    // Cancel any run against the old skill before the scratch dir cleanup
+    // effect below (keyed on `scratchDir`) removes the folder it runs in.
+    let ignore = false;
+    (async () => {
+      await cancel();
+      if (ignore) return;
+      setScratchDir(undefined);
+      setHarness(defaultHarness);
+      reset();
+    })();
+    return () => {
+      ignore = true;
+    };
+    // `defaultHarness`, `cancel`, and `reset` are recomputed every render;
+    // only a skill change should re-run this.
   }, [skill.name]); // eslint-disable-line react-hooks/exhaustive-deps
 
   useEffect(() => {
@@ -76,13 +86,18 @@ export function SkillAssistantPanel({ skill }: SkillAssistantPanelProps) {
     el.style.height = `${Math.min(el.scrollHeight, maxHeight)}px`;
   }, [prompt]);
 
-  const handleSelectHarness = (agent: AgentId) => {
+  const handleSelectHarness = async (agent: AgentId) => {
     if (agent === harness) return;
+    // Stop the previous harness's run before switching out from under it.
+    await cancel();
     setHarness(agent);
     reset();
   };
 
-  const handleNewSession = () => reset();
+  const handleNewSession = async () => {
+    await cancel();
+    reset();
+  };
 
   const handleRun = async () => {
     if (!prompt.trim() || state.status === "running") return;

@@ -78,9 +78,22 @@ export function useSkillAgentRun() {
 
   const run = useCallback(async (request: SkillAgentRunRequest) => {
     setState({ ...IDLE_STATE, status: "running" });
-    const runId = await startSkillAgentRun(request);
+    // Generated here and set before the invoke resolves, so an event that
+    // arrives while the harness is still spawning isn't missed by the
+    // `event.run_id !== runIdRef.current` filter above.
+    const runId = crypto.randomUUID();
     runIdRef.current = runId;
     setState((prev) => ({ ...prev, runId }));
+    try {
+      await startSkillAgentRun(request, runId);
+    } catch (err) {
+      runIdRef.current = undefined;
+      setState((prev) => ({
+        ...prev,
+        status: "error",
+        errorMessage: err instanceof Error ? err.message : String(err),
+      }));
+    }
   }, []);
 
   const cancel = useCallback(async () => {
@@ -88,9 +101,19 @@ export function useSkillAgentRun() {
     await cancelSkillAgentRun(state.runId);
   }, [state.runId]);
 
-  const reset = useCallback(() => {
+  const reset = useCallback(async () => {
+    if (runIdRef.current) {
+      await cancelSkillAgentRun(runIdRef.current).catch(() => {});
+    }
     runIdRef.current = undefined;
     setState(IDLE_STATE);
+  }, []);
+
+  useEffect(() => {
+    return () => {
+      // Fire-and-forget: the component is gone, nothing left to await into.
+      if (runIdRef.current) cancelSkillAgentRun(runIdRef.current).catch(() => {});
+    };
   }, []);
 
   return { run, cancel, reset, state };

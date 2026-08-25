@@ -11,23 +11,31 @@ use std::collections::HashMap;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
-use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::Mutex;
-use std::time::Instant;
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant};
 
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use tauri::{AppHandle, Emitter, Manager};
-use tokio::io::{AsyncBufReadExt, BufReader};
+use tokio::io::{AsyncBufRead, AsyncBufReadExt, AsyncReadExt, BufReader};
 use tokio::process::Command;
+use tokio::sync::Notify;
 
 /// Event name every `SkillAgentEvent` is emitted on.
 pub const SKILL_AGENT_EVENT: &str = "skill-agent://event";
 
 /// stderr kept per run, for the error message when a harness exits non-zero
 /// without ever producing final text.
-const STDERR_TAIL_LEN: usize = 2000;
+const STDERR_TAIL_LEN: usize = 4096;
+
+/// Hard cap on a single stdout line. A runaway harness that never emits a
+/// newline would otherwise grow this run's buffer without bound.
+const MAX_LINE_BYTES: usize = 4 * 1024 * 1024;
+
+/// How long a cancelled run gets to exit after SIGTERM before it's SIGKILLed.
+const CANCEL_GRACE: Duration = Duration::from_secs(2);
 
 /// One of the four first-class agents a skill run can target.
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Hash)]
@@ -586,17 +594,89 @@ fn find_open_code_tool(value: &Value) -> Option<(String, String)> {
     }
 }
 
+/// A run's cancellation state, shared between `cancel_skill_agent_run` and
+/// the task running it. `cancelled` makes a cancel request idempotent;
+/// `cancel` is what wakes the run task's `tokio::select!` out of reading
+/// stdout / waiting on the child.
+#[derive(Default)]
+struct RunHandle {
+    cancel: Notify,
+    cancelled: AtomicBool,
+}
+
+/// Where a completed run's transcript events go. A trait object rather than
+/// a bare `AppHandle` so the run task is testable without a real Tauri app.
+type EventSink = Box<dyn Fn(SkillAgentEvent) + Send + Sync>;
+
 /// A run in progress, and the harnesses whose absolute binary path has
 /// already been resolved once (`$SHELL -lc 'command -v <bin>'` is not
 /// cheap, and the app's own `PATH` doesn't see the user's shell config).
+/// `runs` is an `Arc` so the spawned run task can hold its own clone and
+/// deregister itself when it finishes, without borrowing `State`.
 #[derive(Default)]
 pub struct SkillAgentRunnerState {
-    runs: Mutex<HashMap<String, tokio::task::AbortHandle>>,
+    runs: Arc<Mutex<HashMap<String, Arc<RunHandle>>>>,
     binaries: Mutex<HashMap<HarnessId, PathBuf>>,
 }
 
+/// A run id must be safe to use as a HashMap key and to log: short, and
+/// drawn from a small alphabet.
+fn validate_run_id(run_id: &str) -> Result<(), String> {
+    if run_id.is_empty() || run_id.len() > 64 {
+        return Err("Run id must be 1-64 characters".to_string());
+    }
+    if !run_id
+        .chars()
+        .all(|c| c.is_ascii_alphanumeric() || c == '-')
+    {
+        return Err("Run id must contain only letters, digits, and '-'".to_string());
+    }
+    Ok(())
+}
+
+/// `stdout`'s last non-empty line, required to be an absolute, executable,
+/// regular file. Pure and separated from `resolve_binary` so the many shapes
+/// a login shell can print before/around the real path (startup banners,
+/// aliases, shell functions) are unit-testable without a real shell.
+fn pick_executable_line(stdout: &str, is_executable: impl Fn(&Path) -> bool) -> Option<PathBuf> {
+    let last = stdout
+        .lines()
+        .rev()
+        .map(str::trim)
+        .find(|l| !l.is_empty())?;
+    if !last.starts_with('/') {
+        return None;
+    }
+    let path = PathBuf::from(last);
+    if is_executable(&path) {
+        Some(path)
+    } else {
+        None
+    }
+}
+
+fn is_executable_file(path: &Path) -> bool {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        match fs::metadata(path) {
+            Ok(meta) => meta.is_file() && meta.permissions().mode() & 0o111 != 0,
+            Err(_) => false,
+        }
+    }
+    #[cfg(not(unix))]
+    {
+        fs::metadata(path).map(|m| m.is_file()).unwrap_or(false)
+    }
+}
+
 fn resolve_binary(harness: HarnessId, state: &SkillAgentRunnerState) -> Result<PathBuf, String> {
-    if let Some(cached) = state.binaries.lock().unwrap().get(&harness) {
+    if let Some(cached) = state
+        .binaries
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .get(&harness)
+    {
         return Ok(cached.clone());
     }
 
@@ -607,18 +687,121 @@ fn resolve_binary(harness: HarnessId, state: &SkillAgentRunnerState) -> Result<P
         .arg(format!("command -v {bin}"))
         .output()
         .map_err(|_| format!("{bin} is not installed or not on PATH"))?;
-    let found = String::from_utf8_lossy(&output.stdout).trim().to_string();
-    if !output.status.success() || found.is_empty() {
-        return Err(format!("{bin} is not installed or not on PATH"));
-    }
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let path = pick_executable_line(&stdout, is_executable_file)
+        .ok_or_else(|| format!("{bin} is not installed or not on PATH"))?;
 
-    let path = PathBuf::from(found);
-    state.binaries.lock().unwrap().insert(harness, path.clone());
+    state
+        .binaries
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .insert(harness, path.clone());
     Ok(path)
+}
+
+fn emit_event(sink: &EventSink, run_id: &str, seq: &AtomicU64, kind: SkillAgentEventKind) {
+    let event = SkillAgentEvent {
+        run_id: run_id.to_string(),
+        seq: seq.fetch_add(1, Ordering::SeqCst),
+        at: Utc::now(),
+        kind,
+    };
+    sink(event);
+}
+
+/// Reads newline-delimited stdout via `read_until`, capping any single line
+/// at `MAX_LINE_BYTES` so a runaway harness can't grow this run's memory
+/// without bound. A line over the cap is reported once via `on_skipped` and
+/// dropped rather than parsed; a final line with no trailing newline (EOF
+/// mid-record) still reaches `on_line`.
+async fn read_capped_lines<R, FLine, FSkip>(
+    mut reader: R,
+    mut on_line: FLine,
+    mut on_skipped: FSkip,
+) where
+    R: AsyncBufRead + Unpin,
+    FLine: FnMut(String),
+    FSkip: FnMut(),
+{
+    loop {
+        let mut buf: Vec<u8> = Vec::new();
+        let read = reader.read_until(b'\n', &mut buf).await;
+        let Ok(n) = read else { break };
+        if n == 0 {
+            break; // EOF, nothing left to read
+        }
+
+        if buf.len() > MAX_LINE_BYTES {
+            on_skipped();
+            // `read_until` already consumed through the newline unless the
+            // process closed stdout mid-line; in that case there's nothing
+            // left to drain, so only keep going if we didn't end on '\n'.
+            if buf.last() != Some(&b'\n') {
+                loop {
+                    let mut drain: Vec<u8> = Vec::new();
+                    match reader.read_until(b'\n', &mut drain).await {
+                        Ok(0) => break,
+                        Ok(_) => {
+                            if drain.last() == Some(&b'\n') {
+                                break;
+                            }
+                        }
+                        Err(_) => break,
+                    }
+                }
+            }
+            continue;
+        }
+
+        let had_newline = buf.last() == Some(&b'\n');
+        if had_newline {
+            buf.pop();
+            if buf.last() == Some(&b'\r') {
+                buf.pop();
+            }
+        }
+        on_line(String::from_utf8_lossy(&buf).to_string());
+        if !had_newline {
+            break; // EOF without a trailing newline: nothing more to read
+        }
+    }
+}
+
+/// Append `chunk` to a bounded stderr tail, keeping only the last
+/// `STDERR_TAIL_LEN` bytes. Byte-based (not `String`) so a cut can land
+/// mid-codepoint without panicking; converted lossily once at the end.
+fn push_stderr_tail(tail: &mut Vec<u8>, chunk: &[u8]) {
+    tail.extend_from_slice(chunk);
+    if tail.len() > STDERR_TAIL_LEN {
+        let excess = tail.len() - STDERR_TAIL_LEN;
+        tail.drain(0..excess);
+    }
+}
+
+/// Drains `reader` to EOF, returning only the last `STDERR_TAIL_LEN` bytes
+/// seen - enough for an error message without holding a whole noisy stderr.
+async fn drain_stderr_tail<R>(mut reader: R) -> Vec<u8>
+where
+    R: tokio::io::AsyncRead + Unpin,
+{
+    let mut tail: Vec<u8> = Vec::new();
+    let mut chunk = [0u8; 4096];
+    loop {
+        match reader.read(&mut chunk).await {
+            Ok(0) => break,
+            Ok(n) => push_stderr_tail(&mut tail, &chunk[..n]),
+            Err(_) => break,
+        }
+    }
+    tail
 }
 
 /// A run id unique within this process: a nanosecond timestamp plus a
 /// monotonic counter, so two runs started in the same tick still differ.
+/// Kept for callers that don't supply their own id (none currently do - the
+/// frontend generates run ids with `crypto.randomUUID()` - but tests still
+/// find this useful for scratch ids).
+#[cfg(test)]
 fn new_run_id() -> String {
     static COUNTER: AtomicU64 = AtomicU64::new(0);
     let n = COUNTER.fetch_add(1, Ordering::SeqCst);
@@ -628,80 +811,151 @@ fn new_run_id() -> String {
     )
 }
 
-fn emit_event(app: &AppHandle, run_id: &str, seq: &AtomicU64, kind: SkillAgentEventKind) {
-    let event = SkillAgentEvent {
-        run_id: run_id.to_string(),
-        seq: seq.fetch_add(1, Ordering::SeqCst),
-        at: Utc::now(),
-        kind,
-    };
-    let _ = app.emit(SKILL_AGENT_EVENT, &event);
-}
-
 /// Start a headless harness run for one skill: resolves the binary, spawns
 /// it, streams `Started`/`AssistantText`/`ToolCall`/`ToolResult`/`Error`
 /// events as its stdout lines parse, and always emits exactly one
-/// `Finished` when it exits (or is cancelled).
+/// `Finished` when it exits (or is cancelled). `run_id` is supplied by the
+/// caller (the frontend generates it before this call resolves) so the
+/// frontend can start listening for it before the run exists.
 #[tauri::command]
 pub async fn start_skill_agent_run(
     request: SkillAgentRunRequest,
+    run_id: String,
     app: AppHandle,
     state: tauri::State<'_, SkillAgentRunnerState>,
 ) -> Result<String, String> {
-    let binary = resolve_binary(request.harness, &state)?;
-    let run_id = new_run_id();
+    validate_run_id(&run_id)?;
 
+    let handle = Arc::new(RunHandle::default());
+    {
+        let mut runs = state.runs.lock().unwrap_or_else(|e| e.into_inner());
+        if runs.contains_key(&run_id) {
+            return Err(format!("A run with id {run_id} is already running"));
+        }
+        runs.insert(run_id.clone(), handle.clone());
+    }
+
+    let binary = match resolve_binary(request.harness, &state) {
+        Ok(binary) => binary,
+        Err(err) => {
+            state
+                .runs
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .remove(&run_id);
+            return Err(err);
+        }
+    };
+
+    let runs = state.runs.clone();
     let task_app = app.clone();
-    let task_run_id = run_id.clone();
-    let join_handle = tokio::spawn(async move {
-        run_skill_agent(task_app, task_run_id, request, binary).await;
+    let sink: EventSink = Box::new(move |event| {
+        let _ = task_app.emit(SKILL_AGENT_EVENT, &event);
     });
-    state
-        .runs
-        .lock()
-        .unwrap()
-        .insert(run_id.clone(), join_handle.abort_handle());
+
+    let spawned_run_id = run_id.clone();
+    tokio::spawn(run_and_deregister(
+        runs,
+        sink,
+        spawned_run_id,
+        request,
+        binary,
+        handle,
+    ));
 
     Ok(run_id)
 }
 
-async fn run_skill_agent(
-    app: AppHandle,
+/// Runs one harness invocation to completion and then removes its own entry
+/// from `runs`. This is the only place a run's registry entry is removed, so
+/// a run that panics before this point would leak its entry - `run_skill_agent`
+/// is written to avoid that (no mutex `.unwrap()`, no slicing).
+async fn run_and_deregister(
+    runs: Arc<Mutex<HashMap<String, Arc<RunHandle>>>>,
+    sink: EventSink,
     run_id: String,
     request: SkillAgentRunRequest,
     binary: PathBuf,
+    handle: Arc<RunHandle>,
+) {
+    run_skill_agent(&sink, &run_id, request, binary, &handle).await;
+    runs.lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .remove(&run_id);
+}
+
+async fn run_skill_agent(
+    sink: &EventSink,
+    run_id: &str,
+    request: SkillAgentRunRequest,
+    binary: PathBuf,
+    handle: &RunHandle,
 ) {
     let (program, args, env, cwd) = build_command(&request, &binary);
+    run_process(
+        sink,
+        run_id,
+        request.harness,
+        &request.skill_name,
+        &program,
+        &args,
+        &env,
+        &cwd,
+        request.session_id.as_deref(),
+        handle,
+    )
+    .await;
+}
+
+/// The task that is the sole emitter of a run's events: spawns `program`,
+/// races reading its stdout to completion (and waiting on it) against a
+/// cancel request, and always ends with exactly one `Finished` event.
+#[allow(clippy::too_many_arguments)]
+async fn run_process(
+    sink: &EventSink,
+    run_id: &str,
+    harness: HarnessId,
+    skill_name: &str,
+    program: &str,
+    args: &[String],
+    env: &[(String, String)],
+    cwd: &Path,
+    session_id: Option<&str>,
+    handle: &RunHandle,
+) {
     let command_display = format!("{program} {}", args.join(" "));
     let seq = AtomicU64::new(0);
 
-    let mut command = Command::new(&program);
+    let mut command = Command::new(program);
     command
-        .args(&args)
-        .envs(env)
-        .current_dir(&cwd)
+        .args(args)
+        .envs(env.iter().cloned())
+        .current_dir(cwd)
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .kill_on_drop(true);
+    #[cfg(unix)]
+    {
+        // Its own process group, so a cancel can signal the whole tree (a
+        // harness's own child processes), not just the immediate PID.
+        command.process_group(0);
+    }
 
     let mut child = match command.spawn() {
         Ok(child) => child,
         Err(_) => {
             emit_event(
-                &app,
-                &run_id,
+                sink,
+                run_id,
                 &seq,
                 SkillAgentEventKind::Error {
-                    message: format!(
-                        "{} is not installed or not on PATH",
-                        request.harness.bin_name()
-                    ),
+                    message: format!("{} is not installed or not on PATH", harness.bin_name()),
                 },
             );
             emit_event(
-                &app,
-                &run_id,
+                sink,
+                run_id,
                 &seq,
                 SkillAgentEventKind::Finished {
                     ok: false,
@@ -715,71 +969,106 @@ async fn run_skill_agent(
             return;
         }
     };
+    let pid = child.id();
 
     emit_event(
-        &app,
-        &run_id,
+        sink,
+        run_id,
         &seq,
         SkillAgentEventKind::Started {
             command: command_display,
-            session_id: request.session_id.clone(),
+            session_id: session_id.map(str::to_string),
         },
     );
 
     let started_at = Instant::now();
-    let stderr_tail = std::sync::Arc::new(Mutex::new(String::new()));
-    let stderr_task = child.stderr.take().map(|stderr| {
-        let tail = stderr_tail.clone();
-        tokio::spawn(async move {
-            let mut lines = BufReader::new(stderr).lines();
-            while let Ok(Some(line)) = lines.next_line().await {
-                let mut buf = tail.lock().unwrap();
-                buf.push_str(&line);
-                buf.push('\n');
-                if buf.len() > STDERR_TAIL_LEN {
-                    let cut = buf.len() - STDERR_TAIL_LEN;
-                    *buf = buf.split_off(cut);
-                }
-            }
-        })
-    });
+    let stderr_task = child
+        .stderr
+        .take()
+        .map(|stderr| tokio::spawn(drain_stderr_tail(stderr)));
 
-    let mut state = ParseState::default();
+    let mut parse_state = ParseState::default();
     let mut finished_emitted = false;
     let mut had_error = false;
 
-    if let Some(stdout) = child.stdout.take() {
-        let mut lines = BufReader::new(stdout).lines();
-        while let Ok(Some(line)) = lines.next_line().await {
-            for kind in parse_line(request.harness, &line, &request.skill_name, &mut state) {
-                match &kind {
-                    SkillAgentEventKind::Finished { .. } => finished_emitted = true,
-                    SkillAgentEventKind::Error { .. } => had_error = true,
-                    _ => {}
-                }
-                emit_event(&app, &run_id, &seq, kind);
-            }
+    let read_and_wait = async {
+        if let Some(stdout) = child.stdout.take() {
+            let reader = BufReader::new(stdout);
+            read_capped_lines(
+                reader,
+                |line| {
+                    for kind in parse_line(harness, &line, skill_name, &mut parse_state) {
+                        match &kind {
+                            SkillAgentEventKind::Finished { .. } => finished_emitted = true,
+                            SkillAgentEventKind::Error { .. } => had_error = true,
+                            _ => {}
+                        }
+                        emit_event(sink, run_id, &seq, kind);
+                    }
+                },
+                || {
+                    emit_event(
+                        sink,
+                        run_id,
+                        &seq,
+                        SkillAgentEventKind::Error {
+                            message: "Skipped one output line over 4 MiB".to_string(),
+                        },
+                    );
+                },
+            )
+            .await;
         }
+        child.wait().await
+    };
+
+    let cancelled;
+    let status = tokio::select! {
+        status = read_and_wait => {
+            cancelled = false;
+            status
+        }
+        _ = handle.cancel.notified() => {
+            cancelled = true;
+            terminate_process_group(pid, &mut child).await
+        }
+    };
+
+    let stderr_tail = match stderr_task {
+        Some(task) => task.await.unwrap_or_default(),
+        None => Vec::new(),
+    };
+
+    if cancelled {
+        emit_event(
+            sink,
+            run_id,
+            &seq,
+            SkillAgentEventKind::Finished {
+                ok: false,
+                final_text: "Cancelled".to_string(),
+                session_id: parse_state.session_id.clone(),
+                cost_usd: None,
+                duration_ms: started_at.elapsed().as_millis() as u64,
+                skill_loaded: parse_state.skill_loaded,
+            },
+        );
+        return;
     }
 
-    if let Some(task) = stderr_task {
-        let _ = task.await;
-    }
-
-    let status = child.wait().await;
     if finished_emitted {
         return;
     }
 
     let duration_ms = started_at.elapsed().as_millis() as u64;
-    let final_text = state
+    let final_text = parse_state
         .last_agent_message
         .clone()
-        .unwrap_or_else(|| state.last_text.clone());
+        .unwrap_or_else(|| parse_state.last_text.clone());
     let exit_ok = matches!(&status, Ok(s) if s.success());
 
     if !exit_ok && final_text.is_empty() {
-        let tail = stderr_tail.lock().unwrap().trim().to_string();
+        let tail = String::from_utf8_lossy(&stderr_tail).trim().to_string();
         let message = if !tail.is_empty() {
             tail
         } else {
@@ -788,67 +1077,141 @@ async fn run_skill_agent(
                 Err(e) => format!("failed to wait on process: {e}"),
             }
         };
-        emit_event(&app, &run_id, &seq, SkillAgentEventKind::Error { message });
+        emit_event(sink, run_id, &seq, SkillAgentEventKind::Error { message });
         had_error = true;
     }
 
     emit_event(
-        &app,
-        &run_id,
+        sink,
+        run_id,
         &seq,
         SkillAgentEventKind::Finished {
             ok: exit_ok && !had_error,
             final_text,
-            session_id: state.session_id.clone(),
+            session_id: parse_state.session_id.clone(),
             cost_usd: None,
             duration_ms,
-            skill_loaded: state.skill_loaded,
+            skill_loaded: parse_state.skill_loaded,
         },
     );
 }
 
-/// Kill a run's child process (via `AbortHandle::abort`, which drops the
-/// task's owned `Child` and, with `kill_on_drop(true)`, kills the OS
-/// process) and emit the run's terminating `Finished` event.
+/// Send SIGTERM to `pid`'s process group, give it `CANCEL_GRACE` to exit,
+/// then SIGKILL the group and wait for real. On non-unix this just waits.
+async fn terminate_process_group(
+    pid: Option<u32>,
+    child: &mut tokio::process::Child,
+) -> std::io::Result<std::process::ExitStatus> {
+    #[cfg(unix)]
+    if let Some(pid) = pid {
+        // SAFETY: `kill` with a negative pid signals the process group; no
+        // pointers are involved, and a signal to an already-exited group is
+        // a harmless no-op (ESRCH).
+        unsafe {
+            libc::kill(-(pid as i32), libc::SIGTERM);
+        }
+    }
+    #[cfg(not(unix))]
+    let _ = pid;
+
+    match tokio::time::timeout(CANCEL_GRACE, child.wait()).await {
+        Ok(status) => status,
+        Err(_) => {
+            #[cfg(unix)]
+            if let Some(pid) = pid {
+                unsafe {
+                    libc::kill(-(pid as i32), libc::SIGKILL);
+                }
+            }
+            child.wait().await
+        }
+    }
+}
+
+/// Signal a run's task to stop and let it produce its own terminating
+/// `Finished` event. Idempotent: a second cancel of the same run, or a
+/// cancel after the run already finished, is a no-op.
 #[tauri::command]
 pub fn cancel_skill_agent_run(
     run_id: String,
-    app: AppHandle,
     state: tauri::State<SkillAgentRunnerState>,
 ) -> Result<(), String> {
-    let handle = state.runs.lock().unwrap().remove(&run_id);
+    let handle = state
+        .runs
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .get(&run_id)
+        .cloned();
     let Some(handle) = handle else {
-        return Err(format!("No running skill agent run with id {run_id}"));
+        return Ok(());
     };
-    handle.abort();
-
-    let event = SkillAgentEvent {
-        run_id,
-        seq: u64::MAX,
-        at: Utc::now(),
-        kind: SkillAgentEventKind::Finished {
-            ok: false,
-            final_text: "Cancelled".to_string(),
-            session_id: None,
-            cost_usd: None,
-            duration_ms: 0,
-            skill_loaded: SkillLoaded::Unknown,
-        },
-    };
-    let _ = app.emit(SKILL_AGENT_EVENT, &event);
+    if handle.cancelled.swap(true, Ordering::SeqCst) {
+        return Ok(());
+    }
+    handle.cancel.notify_one();
     Ok(())
 }
 
-fn copy_dir_recursive(src: &Path, dest: &Path) -> std::io::Result<()> {
+/// A skill (or scratch-dir agent folder) name, validated before it's used to
+/// build any path: it must stay a single, ordinary path segment so it can
+/// never escape the scratch directory it's joined onto.
+fn validate_skill_dir_name(name: &str) -> Result<&str, String> {
+    if name.is_empty() || name == "." || name == ".." {
+        return Err(format!("Invalid skill name: {name:?}"));
+    }
+    if name.len() > 128 {
+        return Err(format!("Skill name too long: {name:?}"));
+    }
+    if name.contains('/') || name.contains('\\') || name.contains('\0') {
+        return Err(format!("Invalid skill name: {name:?}"));
+    }
+    Ok(name)
+}
+
+/// How deep `copy_skill_dir` will recurse into directory symlinks before
+/// giving up - bounds a symlink cycle to a finite amount of work.
+const MAX_COPY_DEPTH: u32 = 32;
+
+/// Copies `src` into `dest`, containing the walk to `src`'s own canonical
+/// subtree: a directory symlink is only followed if its target resolves
+/// inside that subtree, any entry that canonicalizes outside it is skipped,
+/// and `.git` is never copied. Regular files and file symlinks are copied by
+/// content (`fs::copy` follows symlinks).
+fn copy_skill_dir(src: &Path, dest: &Path) -> std::io::Result<()> {
+    let canonical_root = fs::canonicalize(src)?;
     fs::create_dir_all(dest)?;
+    copy_dir_contained(&canonical_root, &canonical_root, dest, 0)
+}
+
+fn copy_dir_contained(root: &Path, src: &Path, dest: &Path, depth: u32) -> std::io::Result<()> {
+    if depth > MAX_COPY_DEPTH {
+        return Ok(());
+    }
     for entry in fs::read_dir(src)? {
         let entry = entry?;
+        if entry.file_name() == ".git" {
+            continue;
+        }
         let path = entry.path();
         let dest_path = dest.join(entry.file_name());
-        // `metadata` (not `symlink_metadata`) follows symlinks, per the spec:
-        // a skill folder containing a symlinked file must copy its target.
-        if fs::metadata(&path)?.is_dir() {
-            copy_dir_recursive(&path, &dest_path)?;
+
+        // Anything that doesn't canonicalize inside `root` - a symlink
+        // escaping it, or an entry removed mid-walk - is skipped.
+        let canonical_path = match fs::canonicalize(&path) {
+            Ok(p) => p,
+            Err(_) => continue,
+        };
+        if !canonical_path.starts_with(root) {
+            continue;
+        }
+
+        let is_dir = match fs::metadata(&path) {
+            Ok(m) => m.is_dir(),
+            Err(_) => continue,
+        };
+        if is_dir {
+            fs::create_dir_all(&dest_path)?;
+            copy_dir_contained(root, &canonical_path, &dest_path, depth + 1)?;
         } else {
             fs::copy(&path, &dest_path)?;
         }
@@ -883,7 +1246,8 @@ pub fn create_skill_scratch_dir(
     fs::create_dir_all(&shared_skills).map_err(|e| format!("Could not create scratch dir: {e}"))?;
 
     for (name, folder_path) in &skills {
-        copy_dir_recursive(Path::new(folder_path), &shared_skills.join(name))
+        let name = validate_skill_dir_name(name)?;
+        copy_skill_dir(Path::new(folder_path), &shared_skills.join(name))
             .map_err(|e| format!("Could not copy skill '{name}': {e}"))?;
 
         for agent_dir in [".claude/skills", ".pi/skills"] {
@@ -909,26 +1273,36 @@ pub fn create_skill_scratch_dir(
     Ok(root.to_string_lossy().to_string())
 }
 
+/// Removes `path`, requiring it to be an immediate child of `root` (not
+/// `root` itself, and not a deeper descendant) once both are canonicalized.
+fn remove_scratch_child(root: &Path, path: &Path) -> Result<(), String> {
+    let canonical_root =
+        fs::canonicalize(root).map_err(|e| format!("Could not resolve scratch root: {e}"))?;
+    let canonical_target =
+        fs::canonicalize(path).map_err(|e| format!("Could not resolve {}: {e}", path.display()))?;
+    if canonical_target == canonical_root
+        || canonical_target.parent() != Some(canonical_root.as_path())
+    {
+        return Err("Refusing to remove a path outside the scratch folder".to_string());
+    }
+    fs::remove_dir_all(&canonical_target)
+        .map_err(|e| format!("Could not remove {}: {e}", path.display()))
+}
+
 /// Remove a scratch directory created by `create_skill_scratch_dir`. Refuses
-/// any path outside the scratch root, so a bad `path` can't delete unrelated
-/// files.
+/// any path that isn't an immediate child of the scratch root, so a bad
+/// `path` can't delete unrelated files.
 #[tauri::command]
 pub fn remove_skill_scratch_dir(app: AppHandle, path: String) -> Result<(), String> {
     let root = scratch_root(&app)?;
     fs::create_dir_all(&root).map_err(|e| format!("Could not resolve scratch root: {e}"))?;
-    let canonical_root =
-        fs::canonicalize(&root).map_err(|e| format!("Could not resolve scratch root: {e}"))?;
-    let canonical_target =
-        fs::canonicalize(&path).map_err(|e| format!("Could not resolve {path}: {e}"))?;
-    if !canonical_target.starts_with(&canonical_root) {
-        return Err("Refusing to remove a path outside the scratch root".to_string());
-    }
-    fs::remove_dir_all(&canonical_target).map_err(|e| format!("Could not remove {path}: {e}"))
+    remove_scratch_child(&root, Path::new(&path))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use tempfile::tempdir;
 
     fn request(
         harness: HarnessId,
@@ -1148,5 +1522,276 @@ mod tests {
         let line = r#"{"type":"assistant","message":{"content":[{"type":"text","text":"hi"}]}}"#;
         parse_line(HarnessId::ClaudeCode, line, "say-banana", &mut state);
         assert_eq!(state.skill_loaded, SkillLoaded::Unknown);
+    }
+
+    // -- F1: scratch dir containment --------------------------------------
+
+    #[test]
+    fn validate_skill_dir_name_rejects_traversal_and_bad_shapes() {
+        assert!(validate_skill_dir_name("../x").is_err());
+        assert!(validate_skill_dir_name("/abs").is_err());
+        assert!(validate_skill_dir_name("a/b").is_err());
+        assert!(validate_skill_dir_name("").is_err());
+        assert!(validate_skill_dir_name(".").is_err());
+        assert!(validate_skill_dir_name("..").is_err());
+        assert!(validate_skill_dir_name(&"a".repeat(129)).is_err());
+        assert!(validate_skill_dir_name("say-banana").is_ok());
+    }
+
+    #[test]
+    fn copy_skill_dir_skips_dir_symlink_pointing_outside_source() {
+        let outside = tempdir().unwrap();
+        fs::write(outside.path().join("secret.txt"), b"secret").unwrap();
+
+        let src = tempdir().unwrap();
+        fs::write(src.path().join("SKILL.md"), b"hello").unwrap();
+        #[cfg(unix)]
+        std::os::unix::fs::symlink(outside.path(), src.path().join("escape")).unwrap();
+
+        let dest = tempdir().unwrap();
+        let dest_path = dest.path().join("copied");
+        copy_skill_dir(src.path(), &dest_path).unwrap();
+
+        assert!(dest_path.join("SKILL.md").exists());
+        assert!(!dest_path.join("escape").exists());
+    }
+
+    #[test]
+    fn copy_skill_dir_terminates_on_a_symlink_cycle() {
+        let src = tempdir().unwrap();
+        fs::write(src.path().join("SKILL.md"), b"hello").unwrap();
+        #[cfg(unix)]
+        std::os::unix::fs::symlink(src.path(), src.path().join("loop")).unwrap();
+
+        let dest = tempdir().unwrap();
+        let dest_path = dest.path().join("copied");
+        // Must return (not hang) even though `loop` points back at `src`.
+        copy_skill_dir(src.path(), &dest_path).unwrap();
+        assert!(dest_path.join("SKILL.md").exists());
+    }
+
+    #[test]
+    fn remove_scratch_child_refuses_the_root_itself() {
+        let root = tempdir().unwrap();
+        let err = remove_scratch_child(root.path(), root.path()).unwrap_err();
+        assert!(err.contains("outside the scratch folder"));
+    }
+
+    #[test]
+    fn remove_scratch_child_refuses_a_grandchild() {
+        let root = tempdir().unwrap();
+        let child = root.path().join("run-1");
+        let grandchild = child.join("nested");
+        fs::create_dir_all(&grandchild).unwrap();
+        let err = remove_scratch_child(root.path(), &grandchild).unwrap_err();
+        assert!(err.contains("outside the scratch folder"));
+        assert!(grandchild.exists());
+    }
+
+    #[test]
+    fn remove_scratch_child_allows_an_immediate_child() {
+        let root = tempdir().unwrap();
+        let child = root.path().join("run-1");
+        fs::create_dir_all(&child).unwrap();
+        remove_scratch_child(root.path(), &child).unwrap();
+        assert!(!child.exists());
+    }
+
+    // -- F3/F4: exactly one Finished, cleanup on exit ----------------------
+
+    #[test]
+    fn cancel_is_idempotent_when_run_is_gone() {
+        let state = SkillAgentRunnerState::default();
+        // No entry for "missing-run" at all.
+        assert!(cancel_skill_agent_run_for_test(&state, "missing-run").is_ok());
+    }
+
+    #[test]
+    fn cancel_is_idempotent_when_already_cancelled() {
+        let state = SkillAgentRunnerState::default();
+        let handle = Arc::new(RunHandle::default());
+        state
+            .runs
+            .lock()
+            .unwrap()
+            .insert("run-1".to_string(), handle.clone());
+        assert!(cancel_skill_agent_run_for_test(&state, "run-1").is_ok());
+        assert!(handle.cancelled.load(Ordering::SeqCst));
+        // Second cancel of the same, still-registered run is a no-op.
+        assert!(cancel_skill_agent_run_for_test(&state, "run-1").is_ok());
+    }
+
+    /// `cancel_skill_agent_run` takes a `tauri::State`, which needs a running
+    /// app to construct; this exercises the same logic directly against a
+    /// bare `SkillAgentRunnerState`.
+    fn cancel_skill_agent_run_for_test(
+        state: &SkillAgentRunnerState,
+        run_id: &str,
+    ) -> Result<(), String> {
+        let handle = state
+            .runs
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .get(run_id)
+            .cloned();
+        let Some(handle) = handle else {
+            return Ok(());
+        };
+        if handle.cancelled.swap(true, Ordering::SeqCst) {
+            return Ok(());
+        }
+        handle.cancel.notify_one();
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn run_task_removes_its_entry_and_emits_exactly_one_finished() {
+        let runs: Arc<Mutex<HashMap<String, Arc<RunHandle>>>> =
+            Arc::new(Mutex::new(HashMap::new()));
+        let run_id = new_run_id();
+        let handle = Arc::new(RunHandle::default());
+        runs.lock().unwrap().insert(run_id.clone(), handle.clone());
+
+        let events: Arc<Mutex<Vec<SkillAgentEvent>>> = Arc::new(Mutex::new(Vec::new()));
+        let events_clone = events.clone();
+        let sink: EventSink = Box::new(move |event| {
+            events_clone
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .push(event);
+        });
+
+        run_and_deregister(
+            runs.clone(),
+            sink,
+            run_id.clone(),
+            request(HarnessId::ClaudeCode, WriteAccess::ReadOnly, None),
+            PathBuf::from("/bin/sh"),
+            handle,
+        )
+        .await;
+
+        assert!(runs.lock().unwrap().is_empty());
+        let finished_count = events
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|e| matches!(e.kind, SkillAgentEventKind::Finished { .. }))
+            .count();
+        assert_eq!(finished_count, 1);
+    }
+
+    // -- F5: bounded output framing -----------------------------------------
+
+    #[test]
+    fn parse_line_malformed_and_partial_records_are_ignored() {
+        for harness in [
+            HarnessId::ClaudeCode,
+            HarnessId::Codex,
+            HarnessId::OpenCode,
+            HarnessId::Pi,
+        ] {
+            let mut state = ParseState::default();
+            assert!(parse_line(harness, "not json at all", "skill", &mut state).is_empty());
+            let mut state = ParseState::default();
+            assert!(parse_line(
+                harness,
+                r#"{"type":"assistant","message":"#,
+                "skill",
+                &mut state
+            )
+            .is_empty());
+        }
+    }
+
+    #[test]
+    fn stderr_tail_survives_a_cut_through_a_multibyte_character() {
+        let mut tail: Vec<u8> = Vec::new();
+        // "é" is 2 bytes; pad so the cap lands inside its second byte.
+        let filler = vec![b'a'; STDERR_TAIL_LEN - 1];
+        push_stderr_tail(&mut tail, &filler);
+        push_stderr_tail(&mut tail, "é more text".as_bytes());
+        assert_eq!(tail.len(), STDERR_TAIL_LEN);
+        // Must not panic, and must still decode to *something*.
+        let decoded = String::from_utf8_lossy(&tail);
+        assert!(decoded.ends_with("more text"));
+    }
+
+    #[tokio::test]
+    async fn read_capped_lines_skips_an_oversized_line_and_keeps_going() {
+        let mut big = vec![b'x'; MAX_LINE_BYTES + 10];
+        big.push(b'\n');
+        big.extend_from_slice(b"{\"ok\":true}\n");
+        let reader = tokio::io::BufReader::new(&big[..]);
+
+        let mut lines = Vec::new();
+        let mut skipped = 0;
+        read_capped_lines(reader, |line| lines.push(line), || skipped += 1).await;
+
+        assert_eq!(skipped, 1);
+        assert_eq!(lines, vec![r#"{"ok":true}"#.to_string()]);
+    }
+
+    #[tokio::test]
+    async fn read_capped_lines_parses_a_final_line_without_trailing_newline() {
+        let bytes = b"{\"a\":1}\n{\"b\":2}".to_vec();
+        let reader = tokio::io::BufReader::new(&bytes[..]);
+        let mut lines = Vec::new();
+        read_capped_lines(reader, |line| lines.push(line), || {}).await;
+        assert_eq!(
+            lines,
+            vec![r#"{"a":1}"#.to_string(), r#"{"b":2}"#.to_string()]
+        );
+    }
+
+    // -- F6: binary resolution ------------------------------------------------
+
+    fn always_executable(_: &Path) -> bool {
+        true
+    }
+    fn never_executable(_: &Path) -> bool {
+        false
+    }
+
+    #[test]
+    fn pick_executable_line_skips_startup_noise() {
+        let stdout = "Welcome to zsh\nLoading dotfiles...\n/usr/local/bin/claude\n";
+        assert_eq!(
+            pick_executable_line(stdout, always_executable),
+            Some(PathBuf::from("/usr/local/bin/claude"))
+        );
+    }
+
+    #[test]
+    fn pick_executable_line_rejects_an_alias_line() {
+        let stdout = "alias claude=/usr/local/bin/claude-old\n";
+        assert_eq!(pick_executable_line(stdout, always_executable), None);
+    }
+
+    #[test]
+    fn pick_executable_line_rejects_a_shell_function() {
+        let stdout = "claude () {\n  echo hi\n}\n";
+        assert_eq!(pick_executable_line(stdout, always_executable), None);
+    }
+
+    #[test]
+    fn pick_executable_line_rejects_a_relative_name() {
+        let stdout = "claude\n";
+        assert_eq!(pick_executable_line(stdout, always_executable), None);
+    }
+
+    #[test]
+    fn pick_executable_line_rejects_a_non_executable_path() {
+        let stdout = "/usr/local/bin/claude\n";
+        assert_eq!(pick_executable_line(stdout, never_executable), None);
+    }
+
+    #[test]
+    fn pick_executable_line_accepts_a_path_with_spaces() {
+        let stdout = "/opt/my app/bin/claude\n";
+        assert_eq!(
+            pick_executable_line(stdout, always_executable),
+            Some(PathBuf::from("/opt/my app/bin/claude"))
+        );
     }
 }
