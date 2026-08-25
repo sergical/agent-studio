@@ -16,10 +16,39 @@ export const AGENTS_READING_SHARED_ROOT: readonly AgentId[] = ["codex", "open-co
 /** The `Deployment.agent` value for a deployment placed in the shared root, not any one agent's own folder. */
 const SHARED_AGENT_ID = "shared";
 
+/**
+ * Maps a `Deployment.agent` display label (the Rust side serializes
+ * `AgentId::display_name()`, e.g. "Claude Code") to the first-class agent id.
+ * `null` for the shared root and for agents outside the first-class set.
+ */
+export function agentIdFromDeploymentLabel(label: string): AgentId | "shared" | null {
+  switch (label) {
+    case "Claude Code":
+      return "claude-code";
+    case "Codex":
+      return "codex";
+    case "OpenCode":
+      return "open-code";
+    case "pi":
+      return "pi";
+    case SHARED_AGENT_ID:
+      return "shared";
+    default:
+      return null;
+  }
+}
+
 function isOwnDirDeployment(skill: InstalledSkill, agent: AgentId): boolean {
   return ownDeployments(skill).some(
-    (d) => d.agent === agent && (d.scope === "global" || d.scope === "project"),
+    (d) =>
+      agentIdFromDeploymentLabel(d.agent) === agent &&
+      (d.scope === "global" || d.scope === "project"),
   );
+}
+
+/** True when the deployment is a symlink whose target lives in a `.agents/skills` root. */
+function isLinkedToSharedRoot(target: string | undefined): boolean {
+  return target !== undefined && /\/\.agents\/skills\//.test(target + "/");
 }
 
 function isSharedRootDeployment(skill: InstalledSkill): boolean {
@@ -42,7 +71,12 @@ export function skillVisibleToAgent(
 
 /** Coverage totals for the dashboard's two-row table: Claude Code's own folder vs. the shared root. */
 export interface CoverageSummary {
-  claudeCode: { visible: number; missing: number };
+  claudeCode: {
+    visible: number;
+    missing: number;
+    /** Of the visible skills, how many are symlinks into a shared `.agents/skills` root. */
+    linkedToShared: number;
+  };
   shared: {
     visible: number;
     missing: number;
@@ -56,11 +90,21 @@ export interface CoverageSummary {
 export function summarizeCoverage(skills: InstalledSkill[]): CoverageSummary {
   const total = skills.length;
   let claudeVisible = 0;
+  let claudeLinkedToShared = 0;
   let sharedVisible = 0;
   const onlyInOwnDir: Partial<Record<AgentId, number>> = {};
 
   for (const skill of skills) {
-    if (skillVisibleToAgent(skill, "claude-code") !== "none") claudeVisible += 1;
+    if (skillVisibleToAgent(skill, "claude-code") !== "none") {
+      claudeVisible += 1;
+      const linked = ownDeployments(skill).some(
+        (d) =>
+          agentIdFromDeploymentLabel(d.agent) === "claude-code" &&
+          d.is_symlink &&
+          isLinkedToSharedRoot(d.symlink_target),
+      );
+      if (linked) claudeLinkedToShared += 1;
+    }
 
     const inSharedRoot = isSharedRootDeployment(skill);
     if (inSharedRoot) {
@@ -76,7 +120,11 @@ export function summarizeCoverage(skills: InstalledSkill[]): CoverageSummary {
   }
 
   return {
-    claudeCode: { visible: claudeVisible, missing: total - claudeVisible },
+    claudeCode: {
+      visible: claudeVisible,
+      missing: total - claudeVisible,
+      linkedToShared: claudeLinkedToShared,
+    },
     shared: { visible: sharedVisible, missing: total - sharedVisible, onlyInOwnDir },
     total,
   };
@@ -123,7 +171,11 @@ function cellForAgent(skill: InstalledSkill, agent: AgentId): AgentMatrixCell {
   const own = ownDeployments(skill);
   const deployment =
     state === "own"
-      ? own.find((d) => d.agent === agent && (d.scope === "global" || d.scope === "project"))
+      ? own.find(
+          (d) =>
+            agentIdFromDeploymentLabel(d.agent) === agent &&
+            (d.scope === "global" || d.scope === "project"),
+        )
       : own.find((d) => d.agent === SHARED_AGENT_ID);
 
   return {

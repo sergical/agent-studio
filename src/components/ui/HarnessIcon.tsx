@@ -12,27 +12,7 @@ interface HarnessIconProps {
   size?: number;
 }
 
-/**
- * Maps the human-readable agent labels used across the dashboard (deployment
- * `agent` strings, `AGENT_MATRIX_LABELS`) to the `AgentId | "shared"` this
- * component takes. `null` for anything outside the first-class agent set.
- */
-export function harnessIdFromLabel(label: string): AgentId | "shared" | null {
-  switch (label) {
-    case "Claude Code":
-      return "claude-code";
-    case "Codex":
-      return "codex";
-    case "OpenCode":
-      return "open-code";
-    case "pi":
-      return "pi";
-    case "shared":
-      return "shared";
-    default:
-      return null;
-  }
-}
+export { agentIdFromDeploymentLabel as harnessIdFromLabel } from "../../lib/skill-coverage";
 
 export function HarnessIcon({ harness, size = 16 }: HarnessIconProps) {
   switch (harness) {

@@ -115,7 +115,11 @@ export function AgentCoverageTable({ skills, onSelectMissing }: AgentCoverageTab
         <CoverageRow
           harness="claude-code"
           label="Claude Code"
-          sublines={[]}
+          sublines={
+            summary.claudeCode.linkedToShared > 0
+              ? [`${summary.claudeCode.linkedToShared} linked to the shared folder`]
+              : []
+          }
           visible={summary.claudeCode.visible}
           total={total}
           onSelectMissing={onSelectMissing}
