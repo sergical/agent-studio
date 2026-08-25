@@ -10,7 +10,7 @@ import type { AgentId } from "../../lib/skill-types";
 import { HarnessIcon } from "./HarnessIcon";
 
 /** Display label for each first-class harness, in the order the control shows them. */
-const HARNESS_LABELS = [
+export const HARNESS_LABELS = [
   ["claude-code", "Claude Code"],
   ["codex", "Codex"],
   ["open-code", "OpenCode"],

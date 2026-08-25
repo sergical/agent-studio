@@ -7,6 +7,7 @@ import {
   extractProposedSkillMd,
   fenceForMarkdown,
   normalizeProposalToOriginal,
+  parseJudgeVerdict,
 } from "./skill-agent-prompts";
 
 const HEADING = "## Proposed SKILL.md";
@@ -81,5 +82,40 @@ describe("normalizeProposalToOriginal", () => {
     const original = "line one\r\nline two\r\n";
     const normalized = normalizeProposalToOriginal("line one\nline two\n", original);
     expect(diffSkillMd(original, normalized)).toEqual([]);
+  });
+});
+
+describe("parseJudgeVerdict", () => {
+  it("parses a PASS verdict and its sentence", () => {
+    expect(parseJudgeVerdict("PASS\nIt did the thing.")).toEqual({
+      passed: true,
+      sentence: "It did the thing.",
+    });
+  });
+
+  it("parses a FAIL verdict and its sentence", () => {
+    expect(parseJudgeVerdict("FAIL\nIt never called the tool.")).toEqual({
+      passed: false,
+      sentence: "It never called the tool.",
+    });
+  });
+
+  it("is case-insensitive on the verdict line", () => {
+    expect(parseJudgeVerdict("pass\nGood.")).toEqual({ passed: true, sentence: "Good." });
+  });
+
+  it("skips leading and trailing blank lines", () => {
+    expect(parseJudgeVerdict("\n\nPASS\n\nGood.\n\n")).toEqual({
+      passed: true,
+      sentence: "Good.",
+    });
+  });
+
+  it("returns null when the first line isn't PASS or FAIL", () => {
+    expect(parseJudgeVerdict("Maybe\nUnclear.")).toBeNull();
+  });
+
+  it("returns null when there's no sentence line", () => {
+    expect(parseJudgeVerdict("PASS")).toBeNull();
   });
 });

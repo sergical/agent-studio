@@ -30,6 +30,7 @@ use super::skill_dto::{Deployment, InstalledSkill};
 use super::skill_invocations::{
     InvocationHeatmap, RefreshReport, SkillInvocationIndex, SkillInvocationStats,
 };
+use super::skill_run_history::{self, SkillRunSummary};
 
 /// Event emitted on the main window whenever the snapshot is (re)built.
 pub const SNAPSHOT_EVENT: &str = "skills://snapshot";
@@ -61,6 +62,11 @@ pub struct SkillSnapshot {
     pub invocations: Vec<SkillInvocationStats>,
     pub heatmap: InvocationHeatmap,
     pub scanned_at: String,
+    /// The newest "Test" run outcome per skill, read cheaply from
+    /// `skill_run_history::read_last_test_index` - not affected by the
+    /// invocations-only rebuild path, only refreshed on a full rebuild.
+    #[serde(default)]
+    pub last_test_by_skill: BTreeMap<String, SkillRunSummary>,
 }
 
 /// One filesystem path the background watcher should track, and whether
@@ -103,6 +109,9 @@ pub struct SkillRefreshState {
     /// an hour boundary even when nothing on disk changed.
     last_built_hour: Arc<Mutex<Option<(NaiveDate, u32)>>>,
     cache_path: PathBuf,
+    /// `<app data dir>/skill-studio/runs`, where `skill_run_history` persists
+    /// records - read on every full rebuild to fill `last_test_by_skill`.
+    runs_root: PathBuf,
 }
 
 impl SkillRefreshState {
@@ -198,6 +207,12 @@ pub fn init(app: &AppHandle) -> SkillRefreshState {
         invocation_index: Arc::new(Mutex::new(invocation_index)),
         last_built_hour: Arc::new(Mutex::new(None)),
         cache_path,
+        runs_root: app
+            .path()
+            .app_data_dir()
+            .unwrap_or_else(|_| PathBuf::from("."))
+            .join("skill-studio")
+            .join("runs"),
     };
 
     let app_handle = app.clone();
@@ -307,6 +322,7 @@ pub fn rebuild_snapshot_now(
         &excluded_projects,
         &mut invocation_index,
         &state.cache_path,
+        &state.runs_root,
         now,
     );
     drop(invocation_index);
@@ -606,6 +622,7 @@ fn build_snapshot(
     excluded_projects: &BTreeSet<String>,
     invocation_index: &mut SkillInvocationIndex,
     cache_path: &Path,
+    runs_root: &Path,
     now: DateTime<Utc>,
 ) -> (SkillSnapshot, RefreshReport) {
     let mut project_paths: BTreeSet<PathBuf> = project_discovery::discover_skill_projects(home)
@@ -636,6 +653,11 @@ fn build_snapshot(
         eprintln!("skill refresh: failed to save invocation cache: {e}");
     }
 
+    let skill_names: Vec<String> = skills.iter().map(|s| s.name.clone()).collect();
+    let last_test_by_skill = skill_run_history::read_last_test_index(runs_root, &skill_names)
+        .into_iter()
+        .collect();
+
     let snapshot = SkillSnapshot {
         skills,
         projects: project_paths
@@ -645,6 +667,7 @@ fn build_snapshot(
         invocations: invocation_index.stats_at(now),
         heatmap: invocation_index.heatmap_at(365, now),
         scanned_at: now.to_rfc3339(),
+        last_test_by_skill,
     };
     (snapshot, report)
 }
@@ -855,6 +878,7 @@ mod tests {
             &BTreeSet::new(),
             &mut invocation_index,
             &cache_path,
+            tmp.path(),
             Utc::now(),
         );
 
@@ -888,6 +912,7 @@ mod tests {
             &excluded,
             &mut invocation_index,
             &cache_path,
+            tmp.path(),
             Utc::now(),
         );
 
@@ -917,6 +942,7 @@ mod tests {
             &BTreeSet::new(),
             &mut invocation_index,
             &cache_path,
+            tmp.path(),
             Utc::now(),
         );
 
@@ -993,6 +1019,7 @@ mod tests {
             invocations: Vec::new(),
             heatmap: InvocationHeatmap::default(),
             scanned_at: Utc::now().to_rfc3339(),
+            last_test_by_skill: Default::default(),
         }
     }
 
@@ -1022,6 +1049,7 @@ mod tests {
             invocation_index: Arc::new(Mutex::new(SkillInvocationIndex::default())),
             last_built_hour: Arc::new(Mutex::new(None)),
             cache_path: PathBuf::from("/dev/null"),
+            runs_root: PathBuf::from("/dev/null"),
         }
     }
 

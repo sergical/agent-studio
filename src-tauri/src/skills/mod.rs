@@ -18,6 +18,8 @@ pub mod skill_discovery;
 pub mod skill_dto;
 pub mod skill_invocations;
 pub mod skill_refresh;
+pub mod skill_run_history;
+pub mod skill_run_target;
 
 pub use agents::*;
 pub use commands::*;

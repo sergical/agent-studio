@@ -7,6 +7,7 @@
 import { useEffect, useState } from "react";
 import { ArrowLeft } from "lucide-react";
 import ReactMarkdown from "react-markdown";
+import { useSkillSnapshot } from "../../hooks/useSkillSnapshot";
 import { readInstalledSkillMd, writeInstalledSkillMd } from "../../lib/skill-api";
 import {
   ownDeployments,
@@ -82,9 +83,11 @@ export function SkillPage({
 }: SkillPageProps) {
   const addToast = useAppStore((state) => state.addToast);
   const openSkill = useAppStore((state) => state.openSkill);
+  const { snapshot } = useSkillSnapshot();
 
   const [isEditing, setIsEditing] = useState(false);
   const [isEditorDirty, setIsEditorDirty] = useState(false);
+  const [isHistoryOpen, setIsHistoryOpen] = useState(false);
 
   useEffect(() => {
     function onKeyDown(event: KeyboardEvent) {
@@ -108,6 +111,10 @@ export function SkillPage({
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
   }, [onBack, isEditing, isEditorDirty]);
+
+  useEffect(() => {
+    setIsHistoryOpen(false);
+  }, [skill?.name]);
 
   // The deployment this page edits: only the one the caller clicked, when
   // given - a stale `deploymentPath` (the copy was removed by a rescan) must
@@ -204,7 +211,11 @@ export function SkillPage({
           <ArrowLeft size={28} />
           <span>{backLabel(from)}</span>
         </button>
-        <InstalledSkillHeader skill={skill} />
+        <InstalledSkillHeader
+          skill={skill}
+          lastTest={snapshot?.last_test_by_skill[skill.name]}
+          onOpenHistory={() => setIsHistoryOpen(true)}
+        />
       </div>
 
       <div className="skill-page-grid">
@@ -291,6 +302,8 @@ export function SkillPage({
                   setLoadError(err instanceof Error ? err.message : "Unknown error");
                 });
             }}
+            showHistory={isHistoryOpen}
+            onCloseHistory={() => setIsHistoryOpen(false)}
           />
         </div>
       </div>

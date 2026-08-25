@@ -63,6 +63,7 @@ export function SkillsScopeView({ scope, snapshot, onSelectSkill }: SkillsScopeV
         onSelectSkill={onSelectSkill}
         selectedSkillName={selectedSkillName}
         deploymentPathForSkill={(skill) => deploymentForScope(skill, scope)}
+        lastTestBySkill={snapshot?.last_test_by_skill}
       />
     </div>
   );

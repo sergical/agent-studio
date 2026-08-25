@@ -16,6 +16,8 @@ import {
 import { deploymentLinkKind } from "../../lib/skill-coverage";
 import { openSkillPath } from "../../lib/skill-api";
 import { pluginLabelForSkill } from "../../lib/skill-plugin-partition";
+import type { SkillRunSummary } from "../../lib/skill-run-history-types";
+import { formatRelativeTime } from "../../lib/skill-stats";
 import { SOURCE_KIND_LABELS } from "../../lib/skill-types";
 import type { InstalledSkill } from "../../lib/skill-types";
 import { useAppStore } from "../../store/appStore";
@@ -23,6 +25,17 @@ import { HarnessIcon, harnessIdFromLabel } from "../ui/HarnessIcon";
 
 interface InstalledSkillHeaderProps {
   skill: InstalledSkill;
+  /** The newest "Test" run recorded for this skill - `undefined` when it was never tested. */
+  lastTest?: SkillRunSummary;
+  /** Opens the "Runs" history list in the assistant panel. */
+  onOpenHistory?: () => void;
+}
+
+/** "Last test: passed 2 h ago on Codex" / "failed …" / "never tested". */
+function lastTestLabel(lastTest: SkillRunSummary | undefined): string {
+  if (!lastTest) return "Last test: never tested";
+  const outcome = lastTest.passed === undefined ? "ran" : lastTest.passed ? "passed" : "failed";
+  return `Last test: ${outcome} ${formatRelativeTime(lastTest.at)} on ${lastTest.harness}`;
 }
 
 /** "skills.sh" / "plugin: openai-templates" / ".agents" / "manual". */
@@ -56,7 +69,11 @@ function chipLinkMarker(
  * actions every installed skill supports. Enable/disable is wired up in a
  * later step; it stays disabled here.
  */
-export function InstalledSkillHeader({ skill }: InstalledSkillHeaderProps) {
+export function InstalledSkillHeader({
+  skill,
+  lastTest,
+  onOpenHistory,
+}: InstalledSkillHeaderProps) {
   const [copied, setCopied] = useState(false);
   const addToast = useAppStore((state) => state.addToast);
   const path = skill.deployments[0]?.path ?? skill.skill_path;
@@ -103,6 +120,15 @@ export function InstalledSkillHeader({ skill }: InstalledSkillHeaderProps) {
         </div>
 
         {skill.description && <p className="skill-detail-description">{skill.description}</p>}
+
+        <button
+          type="button"
+          className={`skill-detail-last-test ${lastTest?.passed === false ? "failed" : ""}`}
+          onClick={onOpenHistory}
+          disabled={!onOpenHistory}
+        >
+          {lastTestLabel(lastTest)}
+        </button>
 
         <div className="skill-detail-badge-row">
           <span className={`skill-detail-badge source-kind ${skill.source_kind}`}>

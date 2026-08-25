@@ -1887,6 +1887,196 @@ body {
   display: flex;
   gap: 8px;
 }
+/* "Test" action: inline form, judge result line, diff, and run history */
+.skill-test-form {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.skill-test-form-label {
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--color-text-tertiary);
+}
+.skill-test-form-where {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.skill-test-form-project {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.skill-test-form-project select {
+  padding: 6px 8px;
+  font-size: 12px;
+  color: var(--color-text-primary);
+  background: var(--color-bg-tertiary);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-sm);
+}
+.skill-test-form-tertiary {
+  font-size: 11px;
+  color: var(--color-text-tertiary);
+  margin: 0;
+}
+.skill-test-form-extra {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.skill-test-form-extra-search {
+  padding: 6px 8px;
+  font-size: 12px;
+  color: var(--color-text-primary);
+  background: var(--color-bg-tertiary);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-sm);
+}
+.skill-test-form-extra-list {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  max-height: 160px;
+  overflow-y: auto;
+  border: 1px solid var(--color-border-subtle);
+  border-radius: var(--radius-sm);
+  padding: 4px 8px;
+}
+.skill-test-form-extra-item {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  color: var(--color-text-secondary);
+  padding: 3px 0;
+  cursor: pointer;
+}
+.skill-test-form-fixture {
+  resize: none;
+  padding: 8px 10px;
+  font-size: 11px;
+  font-family: var(--font-mono);
+  line-height: 1.5;
+  color: var(--color-text-primary);
+  background: var(--color-bg-tertiary);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-sm);
+}
+.skill-test-result {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.skill-test-result-line {
+  font-size: 12px;
+  color: var(--color-success);
+}
+.skill-test-result-line.failed {
+  color: var(--color-error);
+}
+.skill-test-result-sentence {
+  font-size: 11px;
+  color: var(--color-text-secondary);
+  margin: 0;
+}
+.skill-run-diff {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+/* "Runs" history list */
+.skill-run-history {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 16px;
+  background: var(--color-bg-secondary);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-md);
+}
+.skill-run-history-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+.skill-run-history-back {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  align-self: flex-start;
+  background: transparent;
+  border: none;
+  padding: 0;
+  font-size: 12px;
+  color: var(--color-text-secondary);
+  cursor: pointer;
+}
+.skill-run-history-back:hover {
+  color: var(--color-text-primary);
+}
+.skill-run-history-rows {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.skill-run-history-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  height: 32px;
+  padding: 0 10px;
+  background: var(--color-bg-tertiary);
+  border: 1px solid var(--color-border-subtle);
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+  text-align: left;
+}
+.skill-run-history-row:hover {
+  background: var(--color-bg-hover);
+}
+.skill-run-history-row-time {
+  font-size: 11px;
+  color: var(--color-text-tertiary);
+  min-width: 56px;
+}
+.skill-run-history-row-action {
+  font-size: 12px;
+  color: var(--color-text-secondary);
+  flex: 1;
+}
+.skill-run-history-row-outcome {
+  font-size: 11px;
+  font-weight: 600;
+}
+.skill-run-history-row-outcome.pass {
+  color: var(--color-success);
+}
+.skill-run-history-row-outcome.fail {
+  color: var(--color-error);
+}
+/* Skill page header: "Last test: ..." line */
+.skill-detail-last-test {
+  align-self: flex-start;
+  background: transparent;
+  border: none;
+  padding: 0;
+  font-size: 12px;
+  color: var(--color-text-tertiary);
+  cursor: pointer;
+}
+.skill-detail-last-test:hover:not(:disabled) {
+  color: var(--color-text-secondary);
+}
+.skill-detail-last-test:disabled {
+  cursor: default;
+}
+.skill-detail-last-test.failed {
+  color: var(--color-warning);
+}
 .dashboard-section-row {
   display: grid;
   grid-template-columns: minmax(0, 3fr) minmax(0, 2fr);
@@ -2271,7 +2461,7 @@ body {
 }
 .skill-list-table-row {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) minmax(0, 2fr) auto auto auto;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 2fr) auto auto auto 72px;
   align-items: center;
   gap: 12px;
   width: 100%;
@@ -2341,6 +2531,28 @@ body {
   color: var(--color-text-tertiary);
   white-space: nowrap;
   text-align: right;
+}
+.skill-list-table-tested {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  font-size: 11px;
+  color: var(--color-text-tertiary);
+  white-space: nowrap;
+  text-align: right;
+  justify-content: flex-end;
+}
+.skill-list-table-tested-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  flex-shrink: 0;
+}
+.skill-list-table-tested-dot.success {
+  background: var(--color-success);
+}
+.skill-list-table-tested-dot.error {
+  background: var(--color-error);
 } /* ============================================================================
    Coverage View (skill x agent matrix)
    ============================================================================ */

@@ -6,7 +6,8 @@
 import { useMemo, useState } from "react";
 import { Link2, Search, Unlink } from "lucide-react";
 import { deploymentLinkKind } from "../../lib/skill-coverage";
-import { formatBytes } from "../../lib/skill-stats";
+import type { SkillRunSummary } from "../../lib/skill-run-history-types";
+import { formatBytes, formatRelativeTime } from "../../lib/skill-stats";
 import { HarnessIcon, harnessIdFromLabel } from "../ui/HarnessIcon";
 import type { InstalledSkill, SkillInvocationStats } from "../../lib/skill-types";
 
@@ -21,6 +22,21 @@ interface SkillListTableProps {
   showPluginVersion?: boolean;
   /** Resolves which deployment a row's click should open in the detail drawer, when the caller knows it. */
   deploymentPathForSkill?: (skill: InstalledSkill) => string | undefined;
+  /** The newest "Test" run outcome per skill name, for the "Tested" column. */
+  lastTestBySkill?: Record<string, SkillRunSummary>;
+}
+
+/** "2 h ago" with a 6px outcome dot, or "—" when the skill was never tested. */
+function TestedCell({ lastTest }: { lastTest: SkillRunSummary | undefined }) {
+  if (!lastTest) return <span className="skill-list-table-tested">—</span>;
+  return (
+    <span className="skill-list-table-tested">
+      <span
+        className={`skill-list-table-tested-dot ${lastTest.passed === false ? "error" : "success"}`}
+      />
+      {formatRelativeTime(lastTest.at)}
+    </span>
+  );
 }
 
 /**
@@ -35,6 +51,7 @@ export function SkillListTable({
   selectedSkillName = null,
   showPluginVersion = false,
   deploymentPathForSkill,
+  lastTestBySkill,
 }: SkillListTableProps) {
   const [query, setQuery] = useState("");
   const [sort, setSort] = useState<SortMode>("name");
@@ -128,6 +145,7 @@ export function SkillListTable({
                 </span>
                 <span className="skill-list-table-stat">{stat?.last_30_days ?? 0}</span>
                 <span className="skill-list-table-stat">{formatBytes(skill.folder_bytes)}</span>
+                <TestedCell lastTest={lastTestBySkill?.[skill.name]} />
               </button>
             );
           })}

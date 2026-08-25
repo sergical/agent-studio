@@ -90,8 +90,10 @@ pub struct SkillAgentRunRequest {
     pub session_id: Option<String>,
 }
 
-/// One line of a run's transcript, in emission order (`seq`).
-#[derive(Debug, Clone, Serialize)]
+/// One line of a run's transcript, in emission order (`seq`). Deserialize is
+/// needed alongside Serialize because `skill_run_history` round-trips events
+/// through its `.events.jsonl` transcript files.
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SkillAgentEvent {
     pub run_id: String,
     pub seq: u64,
@@ -100,7 +102,7 @@ pub struct SkillAgentEvent {
 }
 
 /// The discriminated union of everything a run can report.
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum SkillAgentEventKind {
     Started {
@@ -1217,6 +1219,13 @@ fn copy_dir_contained(root: &Path, src: &Path, dest: &Path, depth: u32) -> std::
         }
     }
     Ok(())
+}
+
+/// Exposes `copy_skill_dir` to `skill_run_target`, which installs a skill
+/// into a worktree the same way a scratch dir installs it into
+/// `.agents/skills/<name>`.
+pub(crate) fn copy_skill_dir_for_run_target(src: &Path, dest: &Path) -> std::io::Result<()> {
+    copy_skill_dir(src, dest)
 }
 
 fn scratch_root(app: &AppHandle) -> Result<PathBuf, String> {

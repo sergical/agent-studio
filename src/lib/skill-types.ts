@@ -318,4 +318,6 @@ export interface SkillSnapshot {
   invocations: SkillInvocationStats[];
   heatmap: InvocationHeatmap;
   scanned_at: string;
+  /** The newest "Test" run outcome per skill name - see `skill-run-history-types.ts`. */
+  last_test_by_skill: Record<string, import("./skill-run-history-types").SkillRunSummary>;
 }

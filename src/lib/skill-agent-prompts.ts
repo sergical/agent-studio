@@ -126,6 +126,70 @@ export function extractProposedSkillMd(finalText: string): string | null {
   return null;
 }
 
+/** Input for `buildSkillJudgePrompt`. */
+export interface SkillJudgePromptInput {
+  skillName: string;
+  description: string | undefined;
+  testPrompt: string;
+  finalText: string;
+  toolSummary: string[];
+}
+
+/**
+ * Builds the judge turn's prompt for the "Test" action: a fresh, read-only
+ * pass over the same skill that asks whether the run just now actually did
+ * what the skill's own description promises. Runs as a new session so the
+ * judge isn't swayed by anything the test run said about its own success.
+ */
+export function buildSkillJudgePrompt(input: SkillJudgePromptInput): string {
+  const toolLines =
+    input.toolSummary.length > 0
+      ? input.toolSummary.map((s) => `- ${s}`).join("\n")
+      : "(no tool calls)";
+  return `You are judging whether an agent skill worked, not performing the task yourself.
+
+The skill is "${input.skillName}". Its description: ${input.description ?? "(no description)"}
+
+The task given to the run under test was:
+${input.testPrompt}
+
+Its final response was:
+${input.finalText}
+
+Tools it called:
+${toolLines}
+
+Judge only whether the skill did what its description promises, given the task and the tools it called. Do not redo the task.
+
+Respond with exactly two lines:
+PASS or FAIL
+One sentence explaining your verdict.`;
+}
+
+/** One judge turn's parsed verdict, or null when the response doesn't match the two-line format. */
+export interface SkillJudgeVerdict {
+  passed: boolean;
+  sentence: string;
+}
+
+/**
+ * Parses a judge turn's response: the first non-empty line must be exactly
+ * `PASS` or `FAIL` (case-insensitive), and the next non-empty line is taken
+ * as the explanation sentence. Returns null for anything else.
+ */
+export function parseJudgeVerdict(text: string): SkillJudgeVerdict | null {
+  const lines = text
+    .split(/\r\n|\n/)
+    .map((line) => line.trim())
+    .filter((line) => line.length > 0);
+  if (lines.length < 2) return null;
+
+  const verdict = lines[0].toUpperCase();
+  if (verdict !== "PASS" && verdict !== "FAIL") return null;
+
+  return { passed: verdict === "PASS", sentence: lines[1] };
+}
+
 /**
  * Converts `proposal`'s line endings and trailing newline to match
  * `original`'s: LF unless `original` uses CRLF, and either exactly one

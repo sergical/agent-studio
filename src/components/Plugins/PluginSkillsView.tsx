@@ -45,6 +45,7 @@ export function PluginSkillsView({ harness, snapshot, onSelectSkill }: PluginSki
             stats={snapshot?.invocations ?? []}
             onSelectSkill={onSelectSkill}
             selectedSkillName={selectedSkillName}
+            lastTestBySkill={snapshot?.last_test_by_skill}
             showPluginVersion
             deploymentPathForSkill={(skill) =>
               skill.deployments.find(
