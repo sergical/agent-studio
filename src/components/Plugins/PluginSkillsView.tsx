@@ -33,7 +33,7 @@ export function PluginSkillsView({ harness, snapshot, onSelectSkill }: PluginSki
       </div>
       {groups.map((group) => (
         <div key={`${group.harness}-${group.pluginName}`} className="plugin-skills-view-group">
-          <h3 className="plugin-skills-view-group-title">
+          <h3 className="plugin-skills-view-group-title section-label">
             {group.pluginName}
             {group.version ? ` v${group.version}` : ""} · {group.skills.length} skill
             {group.skills.length !== 1 ? "s" : ""}

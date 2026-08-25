@@ -1,5 +1,5 @@
 // ============================================================================
-// AgentCoverageRow - One chip per agent, deployed-skill count, links to Coverage
+// AgentCoverageRow - One coverage line plus a link to the full Coverage view
 // ============================================================================
 
 import { AGENT_MATRIX_LABELS, agentMatrix } from "../../lib/skill-stats";
@@ -24,21 +24,27 @@ function coverageCounts(skills: InstalledSkill[]): Map<string, number> {
 }
 
 /**
- * One row of five chips ("Claude Code 41", "Codex 38", ...) summarizing
- * deployment coverage across the first-class agents plus the shared root.
- * Clicking any chip opens the full Coverage matrix.
+ * One line summarizing deployment coverage across the first-class agents
+ * plus the shared root ("Claude Code 41 · Codex 38 · ..."), followed by a
+ * text link that opens the full Coverage matrix.
  */
 export function AgentCoverageRow({ skills, onSelect }: AgentCoverageRowProps) {
   const counts = coverageCounts(skills);
 
   return (
-    <div className="dashboard-agent-coverage-row">
-      {AGENT_MATRIX_LABELS.map((label) => (
-        <button key={label} className="dashboard-agent-coverage-chip" onClick={onSelect}>
-          <span className="dashboard-agent-coverage-chip-label">{label}</span>
-          <span className="dashboard-agent-coverage-chip-count">{counts.get(label)}</span>
-        </button>
-      ))}
+    <div>
+      <p className="dashboard-coverage-line">
+        {AGENT_MATRIX_LABELS.map((label, i) => (
+          <span key={label}>
+            {i > 0 && <span className="dashboard-coverage-sep">·</span>}
+            <span className="dashboard-coverage-agent">{label}</span>
+            <span className="dashboard-coverage-count">{counts.get(label)}</span>
+          </span>
+        ))}
+      </p>
+      <button className="dashboard-coverage-link" onClick={onSelect}>
+        View coverage →
+      </button>
     </div>
   );
 }

@@ -4,30 +4,30 @@
   --font-sans: "SF Pro Display", -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
   --font-mono: "SF Mono", "JetBrains Mono", "Fira Code", monospace;
 
-  /* Dark theme - Refined, premium palette (default) */
-  --color-bg-primary: #09090b;
-  --color-bg-secondary: #111113;
-  --color-bg-tertiary: #18181b;
-  --color-bg-elevated: #1f1f23;
+  /* Dark theme - Refined, premium palette (default; the app ships dark) */
+  --color-bg-primary: #0c0c0e;
+  --color-bg-secondary: #131316;
+  --color-bg-tertiary: #1b1b1f;
+  --color-bg-elevated: #151518;
   --color-bg-hover: rgba(255, 255, 255, 0.04);
-  --color-bg-active: rgba(255, 255, 255, 0.08);
+  --color-bg-active: rgba(255, 255, 255, 0.07);
 
-  /* Borders - Subtle separation */
-  --color-border: rgba(255, 255, 255, 0.06);
-  --color-border-subtle: rgba(255, 255, 255, 0.03);
-  --color-border-focus: rgba(139, 92, 246, 0.5);
+  /* Borders - solid in dark mode, alpha in light */
+  --color-border: #26262b;
+  --color-border-subtle: #1e1e22;
+  --color-border-focus: rgba(155, 123, 245, 0.5);
 
   /* Text hierarchy */
-  --color-text-primary: #fafafa;
-  --color-text-secondary: rgba(250, 250, 250, 0.7);
-  --color-text-tertiary: rgba(250, 250, 250, 0.5);
-  --color-text-quaternary: rgba(250, 250, 250, 0.3);
+  --color-text-primary: #f4f4f5;
+  --color-text-secondary: rgba(244, 244, 245, 0.68);
+  --color-text-tertiary: rgba(244, 244, 245, 0.48);
+  --color-text-quaternary: rgba(244, 244, 245, 0.3);
 
-  /* Accent - Violet */
-  --color-accent: #8b5cf6;
-  --color-accent-hover: #a78bfa;
-  --color-accent-soft: rgba(139, 92, 246, 0.15);
-  --color-accent-softer: rgba(139, 92, 246, 0.08);
+  /* Accent - Violet, desaturated for dark */
+  --color-accent: #9b7bf5;
+  --color-accent-hover: #ad92f7;
+  --color-accent-soft: rgba(155, 123, 245, 0.16);
+  --color-accent-softer: rgba(155, 123, 245, 0.08);
 
   /* Semantic colors */
   --color-success: #10b981;
@@ -126,6 +126,22 @@ body {
 :focus-visible {
   outline: 2px solid var(--color-accent);
   outline-offset: 2px;
+} /* Reduced motion */
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    transition-duration: 0.01ms !important;
+    animation-duration: 0.01ms !important;
+  }
+} /* Section labels - uppercase, loosened tracking, used for every section
+     title on the dashboard, scope views, drawer, and sidebar groups */
+.section-label {
+  font-size: 11px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--color-text-tertiary);
+  font-weight: 500;
 } /* Custom utilities */
 @layer utilities {
   .glass {
@@ -303,7 +319,9 @@ body {
   border: none;
   border-bottom: 2px solid transparent;
   cursor: pointer;
-  transition: all 0.15s ease;
+  transition:
+    color 0.15s,
+    border-color 0.15s;
   margin-bottom: -1px;
 }
 .skill-store-tab:hover {
@@ -345,7 +363,9 @@ body {
   background: var(--color-bg-secondary);
   border: 1px solid var(--color-border);
   border-radius: var(--radius-md);
-  transition: all 0.15s ease;
+  transition:
+    border-color 0.15s,
+    box-shadow 0.15s;
 }
 .skill-search-bar:focus-within {
   border-color: var(--color-accent);
@@ -363,9 +383,12 @@ body {
   flex: 1;
   background: transparent;
   border: none;
-  outline: none;
   font-size: 13px;
   color: var(--color-text-primary);
+}
+.skill-search-input:focus-visible {
+  outline: 2px solid var(--color-border-focus);
+  outline-offset: 2px;
 }
 .skill-search-input::placeholder {
   color: var(--color-text-tertiary);
@@ -381,7 +404,9 @@ body {
   color: var(--color-text-tertiary);
   border-radius: 50%;
   cursor: pointer;
-  transition: all 0.12s ease;
+  transition:
+    background-color 0.12s,
+    color 0.12s;
 }
 .skill-search-clear:hover {
   background: var(--color-bg-hover);
@@ -433,7 +458,10 @@ body {
   font-size: 13px;
   font-weight: 500;
   cursor: pointer;
-  transition: all 0.15s ease;
+  transition:
+    background-color 0.15s,
+    border-color 0.15s,
+    color 0.15s;
 }
 .load-more-button:hover:not(:disabled) {
   background: var(--color-bg-tertiary);
@@ -462,7 +490,9 @@ body {
   border-radius: var(--radius-md);
   cursor: pointer;
   text-align: left;
-  transition: all 0.15s ease;
+  transition:
+    background-color 0.15s,
+    border-color 0.15s;
 }
 .skill-card:hover {
   border-color: var(--color-border-focus);
@@ -705,7 +735,9 @@ body {
   border: none;
   border-radius: var(--radius-sm);
   cursor: pointer;
-  transition: all 0.12s ease;
+  transition:
+    background-color 0.12s,
+    color 0.12s;
 }
 .skill-detail-icon-button:hover:not(:disabled) {
   background: var(--color-bg-hover);
@@ -802,7 +834,9 @@ body {
   color: var(--color-text-tertiary);
   border-radius: var(--radius-sm);
   cursor: pointer;
-  transition: all 0.12s ease;
+  transition:
+    background-color 0.12s,
+    color 0.12s;
 }
 .skill-detail-close:hover {
   background: var(--color-bg-hover);
@@ -865,7 +899,9 @@ body {
   border-radius: var(--radius-sm);
   color: var(--color-text-primary);
   cursor: pointer;
-  transition: all 0.12s ease;
+  transition:
+    border-color 0.12s,
+    box-shadow 0.12s;
   appearance: none;
   background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='16' height='16' viewBox='0 0 24 24' fill='none' stroke='%23a1a1aa' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpolyline points='6 9 12 15 18 9'%3E%3C/polyline%3E%3C/svg%3E");
   background-repeat: no-repeat;
@@ -876,9 +912,12 @@ body {
   border-color: var(--color-border-focus);
 }
 .skill-detail-project-select select:focus {
-  outline: none;
   border-color: var(--color-accent);
   box-shadow: 0 0 0 3px var(--color-accent-softer);
+}
+.skill-detail-project-select select:focus-visible {
+  outline: 2px solid var(--color-border-focus);
+  outline-offset: 2px;
 }
 .skill-detail-project-select option {
   background: var(--color-bg-elevated);
@@ -981,12 +1020,12 @@ body {
   padding: 16px 20px;
 }
 .skill-detail-section h4 {
-  font-size: 12px;
-  font-weight: 600;
-  color: var(--color-text-secondary);
+  font-size: 11px;
+  font-weight: 500;
+  color: var(--color-text-tertiary);
   margin: 0 0 12px;
   text-transform: uppercase;
-  letter-spacing: 0.5px;
+  letter-spacing: 0.08em;
 }
 .skill-detail-scope-toggle {
   display: flex;
@@ -1002,7 +1041,10 @@ body {
   color: var(--color-text-secondary);
   border-radius: var(--radius-sm);
   cursor: pointer;
-  transition: all 0.12s ease;
+  transition:
+    border-color 0.12s,
+    background-color 0.12s,
+    color 0.12s;
 }
 .scope-option:hover {
   border-color: var(--color-border-focus);
@@ -1030,7 +1072,9 @@ body {
   border: none;
   border-radius: var(--radius-md);
   cursor: pointer;
-  transition: all 0.12s ease;
+  transition:
+    background-color 0.12s,
+    color 0.12s;
 }
 .skill-action-button:disabled {
   opacity: 0.5;
@@ -1092,7 +1136,9 @@ body {
   border: 1px solid var(--color-border);
   border-radius: 4px;
   cursor: pointer;
-  transition: all 0.12s ease;
+  transition:
+    background-color 0.12s,
+    color 0.12s;
 }
 .agent-selector-action:hover {
   background: var(--color-bg-hover);
@@ -1116,7 +1162,7 @@ body {
   border: 1px solid var(--color-border);
   border-radius: 4px;
   cursor: pointer;
-  transition: all 0.12s ease;
+  transition: border-color 0.12s;
 }
 .agent-chip:hover {
   border-color: var(--color-border-focus);
@@ -1137,7 +1183,9 @@ body {
   border: 1px dashed var(--color-border);
   border-radius: var(--radius-sm);
   cursor: pointer;
-  transition: all 0.12s ease;
+  transition:
+    background-color 0.12s,
+    color 0.12s;
 }
 .agent-selector-expand:hover {
   background: var(--color-bg-hover);
@@ -1239,7 +1287,7 @@ body {
    Sidebar
    ============================================================================ */
 .skill-sidebar {
-  width: 220px;
+  width: 240px;
   flex-shrink: 0;
   display: flex;
   flex-direction: column;
@@ -1248,23 +1296,18 @@ body {
   overflow-y: auto;
 }
 .skill-sidebar-section {
-  padding: 12px 10px;
-  border-bottom: 1px solid var(--color-border-subtle);
+  padding: 0 10px 10px;
 }
-.skill-sidebar-section-title {
-  font-size: 10px;
-  font-weight: 600;
-  text-transform: uppercase;
-  letter-spacing: 0.06em;
-  color: var(--color-text-quaternary);
-  padding: 4px 8px;
+.skill-sidebar-section .section-label {
+  margin: 20px 12px 6px;
 }
 .skill-sidebar-item {
   display: flex;
   align-items: center;
   gap: 8px;
   width: 100%;
-  padding: 7px 8px;
+  height: 30px;
+  padding: 0 10px;
   font-size: 13px;
   color: var(--color-text-secondary);
   background: transparent;
@@ -1272,22 +1315,27 @@ body {
   border-radius: var(--radius-sm);
   cursor: pointer;
   text-align: left;
-  transition: all 0.12s ease;
+  transition:
+    background-color 0.15s,
+    color 0.15s;
+}
+.skill-sidebar-item svg {
+  width: 15px;
+  height: 15px;
+  flex-shrink: 0;
 }
 .skill-sidebar-item:hover {
   background: var(--color-bg-hover);
   color: var(--color-text-primary);
 }
 .skill-sidebar-item.active {
-  background: var(--color-accent-softer);
-  color: var(--color-accent);
+  background: var(--color-accent-soft);
+  color: var(--color-text-primary);
 }
 .skill-sidebar-badge {
   margin-left: auto;
-  font-size: 10px;
-  padding: 1px 6px;
-  border-radius: 999px;
-  background: var(--color-bg-tertiary);
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
   color: var(--color-text-tertiary);
 }
 .skill-sidebar-project {
@@ -1301,7 +1349,8 @@ body {
   gap: 8px;
   flex: 1;
   min-width: 0;
-  padding: 7px 8px;
+  height: 30px;
+  padding: 0 10px;
   background: transparent;
   border: none;
   color: var(--color-text-secondary);
@@ -1325,6 +1374,15 @@ body {
   color: var(--color-text-quaternary);
   border-radius: var(--radius-sm);
   cursor: pointer;
+  opacity: 0;
+  transition:
+    opacity 0.15s,
+    color 0.15s,
+    background-color 0.15s;
+}
+.skill-sidebar-project:hover .skill-sidebar-project-remove,
+.skill-sidebar-project:focus-within .skill-sidebar-project-remove {
+  opacity: 1;
 }
 .skill-sidebar-project-remove:hover {
   color: var(--color-error);
@@ -1365,10 +1423,12 @@ body {
    Dashboard
    ============================================================================ */
 .dashboard {
+  max-width: 1100px;
+  margin: 0 auto;
+  padding: 28px 32px;
   display: flex;
   flex-direction: column;
-  gap: 24px;
-  padding: 24px 28px;
+  gap: 36px;
 }
 .dashboard-empty {
   display: flex;
@@ -1382,106 +1442,134 @@ body {
   flex-direction: column;
   gap: 12px;
 }
-.dashboard-section h3 {
+.dashboard-section-header {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+}
+.dashboard-section-total {
   font-size: 12px;
-  font-weight: 600;
-  text-transform: uppercase;
-  letter-spacing: 0.04em;
-  color: var(--color-text-secondary);
-  margin: 0;
+  color: var(--color-text-tertiary);
 }
 .dashboard-section-row {
   display: grid;
-  grid-template-columns: 2fr 1fr;
-  gap: 24px;
-}
-.dashboard-stat-cards {
-  display: grid;
-  grid-template-columns: repeat(4, 1fr);
-  gap: 12px;
-}
-.dashboard-stat-card {
+  grid-template-columns: minmax(0, 3fr) minmax(0, 2fr);
+  gap: 40px;
+  align-items: start;
+} /* Stat strip - a single non-interactive row, no boxes, no icons */
+.dashboard-stat-strip {
   display: flex;
-  align-items: center;
-  gap: 10px;
-  padding: 14px 16px;
-  background: var(--color-bg-secondary);
-  border: 1px solid var(--color-border);
-  border-radius: var(--radius-md);
 }
-.dashboard-stat-card-icon {
-  color: var(--color-accent);
+.dashboard-stat-cell {
+  padding: 0 28px;
+  border-left: 1px solid var(--color-border);
 }
-.dashboard-stat-card-body {
-  display: flex;
-  flex-direction: column;
+.dashboard-stat-cell:first-child {
+  padding-left: 0;
+  border-left: none;
 }
-.dashboard-stat-card-value {
-  font-size: 18px;
+.dashboard-stat-value {
+  display: block;
+  font-size: 28px;
   font-weight: 600;
+  font-variant-numeric: tabular-nums;
+  letter-spacing: -0.01em;
   color: var(--color-text-primary);
 }
-.dashboard-stat-card-label {
-  font-size: 11px;
-  color: var(--color-text-tertiary);
-} /* Agent coverage row (dashboard) */
-.dashboard-agent-coverage-row {
+.dashboard-stat-value.warning {
+  color: var(--color-warning);
+}
+.dashboard-stat-label {
+  display: block;
+  margin-top: 2px;
+  font-size: 12px;
+  color: var(--color-text-secondary);
+} /* Coverage line */
+.dashboard-coverage-line {
   display: flex;
   flex-wrap: wrap;
-  gap: 8px;
+  align-items: baseline;
+  gap: 4px;
+  font-size: 13px;
 }
-.dashboard-agent-coverage-chip {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  padding: 8px 12px;
-  background: var(--color-bg-secondary);
-  border: 1px solid var(--color-border);
-  border-radius: var(--radius-md);
+.dashboard-coverage-agent {
   color: var(--color-text-secondary);
-  font-size: 12px;
+}
+.dashboard-coverage-count {
+  margin-left: 4px;
+  color: var(--color-text-primary);
+  font-variant-numeric: tabular-nums;
+}
+.dashboard-coverage-sep {
+  margin: 0 2px;
+  color: var(--color-text-quaternary);
+}
+.dashboard-coverage-link {
+  align-self: flex-start;
+  padding: 0;
+  background: none;
+  border: none;
+  font-size: 13px;
+  color: var(--color-accent);
   cursor: pointer;
-  transition: all 0.12s ease;
+  text-decoration: none;
+  transition: color 0.15s;
 }
-.dashboard-agent-coverage-chip:hover {
-  border-color: var(--color-border-focus);
-  color: var(--color-text-primary);
-}
-.dashboard-agent-coverage-chip-label {
-  color: var(--color-text-secondary);
-}
-.dashboard-agent-coverage-chip-count {
-  font-weight: 600;
-  color: var(--color-text-primary);
+.dashboard-coverage-link:hover {
+  text-decoration: underline;
 } /* Invocation heatmap */
-.dashboard-heatmap {
-  display: flex;
+.dashboard-heatmap-months {
+  display: grid;
+  grid-template-columns: repeat(52, 1fr);
   gap: 3px;
-  overflow-x: auto;
-  padding: 4px;
+  margin-left: 28px;
+  font-size: 12px;
+  color: var(--color-text-tertiary);
 }
-.dashboard-heatmap-week {
+.dashboard-heatmap-month-label {
+  overflow: hidden;
+  white-space: nowrap;
+}
+.dashboard-heatmap-body {
+  display: flex;
+  gap: 6px;
+}
+.dashboard-heatmap-weekdays {
+  width: 28px;
+  flex-shrink: 0;
   display: flex;
   flex-direction: column;
+  justify-content: space-between;
+  padding: 2px 0;
+  font-size: 11px;
+  color: var(--color-text-tertiary);
+}
+.dashboard-heatmap-grid {
+  flex: 1;
+  display: grid;
+  grid-template-columns: repeat(52, 1fr);
+  grid-template-rows: repeat(7, 1fr);
+  grid-auto-flow: column;
   gap: 3px;
 }
-.dashboard-heatmap-day {
-  width: 10px;
-  height: 10px;
+.dashboard-heatmap-cell {
+  aspect-ratio: 1;
   border-radius: 2px;
+  border: none;
   background: var(--color-bg-tertiary);
 }
-.dashboard-heatmap-day.level-1 {
-  background: var(--color-accent-softer);
+.dashboard-heatmap-cell.level-1 {
+  background: color-mix(in oklch, var(--color-accent) 30%, var(--color-bg-tertiary));
 }
-.dashboard-heatmap-day.level-2 {
-  background: rgba(139, 92, 246, 0.35);
+.dashboard-heatmap-cell.level-2 {
+  background: color-mix(in oklch, var(--color-accent) 50%, var(--color-bg-tertiary));
 }
-.dashboard-heatmap-day.level-3 {
-  background: rgba(139, 92, 246, 0.6);
+.dashboard-heatmap-cell.level-3 {
+  background: color-mix(in oklch, var(--color-accent) 75%, var(--color-bg-tertiary));
 }
-.dashboard-heatmap-day.level-4 {
-  background: var(--color-accent);
+.dashboard-heatmap-cell.level-4 {
+  background: color-mix(in oklch, var(--color-accent) 100%, var(--color-bg-tertiary));
 } /* Top skills */
 .dashboard-top-skills {
   list-style: none;
@@ -1489,55 +1577,49 @@ body {
   padding: 0;
   display: flex;
   flex-direction: column;
-  gap: 2px;
 }
 .dashboard-top-skills-row {
-  display: flex;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 160px 40px;
   align-items: center;
-  justify-content: space-between;
+  gap: 12px;
+  height: 32px;
   width: 100%;
-  gap: 8px;
-  padding: 6px 8px;
+  padding: 0 8px;
   background: transparent;
   border: none;
   border-radius: var(--radius-sm);
   cursor: pointer;
   text-align: left;
-  font-size: 12px;
+  transition: background-color 0.15s;
 }
 .dashboard-top-skills-row:hover {
   background: var(--color-bg-hover);
 }
-.dashboard-top-skills-row-top {
+.dashboard-top-skills-name-group {
   display: flex;
   align-items: center;
-  gap: 8px;
-  width: 100%;
+  gap: 6px;
+  min-width: 0;
 }
 .dashboard-top-skills-name {
+  font-size: 13px;
   color: var(--color-text-primary);
-  font-weight: 500;
   overflow: hidden;
   text-overflow: ellipsis;
-  white-space: nowrap;
-}
-.dashboard-top-skills-count {
-  margin-left: auto;
-  color: var(--color-text-tertiary);
   white-space: nowrap;
 }
 .dashboard-top-skills-plugin-tag {
   flex-shrink: 0;
   font-size: 10px;
   letter-spacing: 0.02em;
-  color: var(--color-text-secondary);
+  color: var(--color-text-tertiary);
   background: var(--color-bg-tertiary);
   border-radius: var(--radius-sm);
   padding: 1px 6px;
 }
 .dashboard-top-skills-bar-track {
-  height: 3px;
-  margin-top: 4px;
+  height: 4px;
   background: var(--color-bg-tertiary);
   border-radius: 2px;
   overflow: hidden;
@@ -1547,24 +1629,28 @@ body {
   background: var(--color-accent);
   border-radius: 2px;
 }
+.dashboard-top-skills-count {
+  text-align: right;
+  font-size: 13px;
+  font-variant-numeric: tabular-nums;
+  color: var(--color-text-secondary);
+  white-space: nowrap;
+}
 .dashboard-top-skills-empty {
   color: var(--color-text-tertiary);
-  font-size: 12px;
+  font-size: 13px;
 } /* Needs attention card */
 .dashboard-needs-attention {
   display: flex;
   flex-direction: column;
-  gap: 2px;
 }
 .dashboard-needs-attention-row {
   display: flex;
   align-items: center;
   gap: 8px;
-  padding: 6px 8px;
+  height: 32px;
+  padding: 0 8px;
   border-radius: var(--radius-sm);
-}
-.dashboard-needs-attention-row:hover {
-  background: var(--color-bg-hover);
 }
 .dashboard-needs-attention-dot {
   flex-shrink: 0;
@@ -1585,32 +1671,49 @@ body {
 .dashboard-needs-attention-message {
   flex: 1;
   min-width: 0;
-  font-size: 12px;
-  color: var(--color-text-secondary);
+  font-size: 13px;
+  color: var(--color-text-primary);
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 .dashboard-needs-attention-skill {
   flex-shrink: 0;
+  max-width: 45%;
   background: transparent;
   border: none;
   color: var(--color-text-tertiary);
   font-size: 12px;
   font-family: var(--font-mono);
   cursor: pointer;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  transition: color 0.15s;
 }
 .dashboard-needs-attention-skill:hover {
   color: var(--color-accent);
 }
 .dashboard-needs-attention-more {
-  margin: 4px 8px 0;
-  font-size: 11px;
-  color: var(--color-text-tertiary);
+  margin: 6px 8px 0;
+  padding: 0;
+  background: none;
+  border: none;
+  font-size: 12px;
+  color: var(--color-accent);
+  cursor: pointer;
+  text-decoration: none;
+  transition: color 0.15s;
+}
+.dashboard-needs-attention-more:hover {
+  text-decoration: underline;
 }
 .dashboard-needs-attention-empty {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  font-size: 13px;
   color: var(--color-text-tertiary);
-  font-size: 12px;
 } /* ============================================================================
    Skill List Table (Global, project, and Plugins views)
    ============================================================================ */
@@ -1640,9 +1743,12 @@ body {
   flex: 1;
   background: transparent;
   border: none;
-  outline: none;
   font-size: 12px;
   color: var(--color-text-primary);
+}
+.skill-list-table-search input:focus-visible {
+  outline: 2px solid var(--color-border-focus);
+  outline-offset: 2px;
 }
 .skill-list-table-sort {
   padding: 6px 10px;
@@ -1668,20 +1774,26 @@ body {
   align-items: center;
   gap: 12px;
   width: 100%;
-  padding: 10px 12px;
+  height: 36px;
+  padding: 0 12px;
   background: var(--color-bg-secondary);
   border: 1px solid var(--color-border);
   border-radius: var(--radius-md);
   cursor: pointer;
   text-align: left;
   overflow: hidden;
+  transition:
+    background-color 0.15s,
+    border-color 0.15s,
+    box-shadow 0.15s;
 }
 .skill-list-table-row:hover {
-  border-color: var(--color-border-focus);
+  background: var(--color-bg-hover);
 }
 .skill-list-table-row.selected {
   border-color: var(--color-accent);
   background: var(--color-accent-softer);
+  box-shadow: inset 2px 0 0 var(--color-accent);
 }
 .skill-list-table-name {
   font-size: 13px;
@@ -1715,6 +1827,7 @@ body {
 }
 .skill-list-table-stat {
   font-size: 11px;
+  font-variant-numeric: tabular-nums;
   color: var(--color-text-tertiary);
   white-space: nowrap;
   text-align: right;
@@ -1755,9 +1868,12 @@ body {
   flex: 1;
   background: transparent;
   border: none;
-  outline: none;
   font-size: 12px;
   color: var(--color-text-primary);
+}
+.coverage-view-filter input:focus-visible {
+  outline: 2px solid var(--color-border-focus);
+  outline-offset: 2px;
 }
 .coverage-view-legend {
   display: flex;
@@ -1792,16 +1908,20 @@ body {
 }
 .coverage-matrix th,
 .coverage-matrix td {
-  padding: 6px 10px;
+  height: 36px;
+  padding: 0 10px;
   border-bottom: 1px solid var(--color-border-subtle);
   text-align: center;
 }
 .coverage-matrix thead th {
   position: sticky;
   top: 0;
+  font-size: 11px;
+  font-weight: 500;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
   background: var(--color-bg-secondary);
   color: var(--color-text-tertiary);
-  font-weight: 500;
   z-index: 1;
 }
 .coverage-matrix-name {
@@ -1848,9 +1968,6 @@ body {
   gap: 8px;
 }
 .plugin-skills-view-group-title {
-  font-size: 13px;
-  font-weight: 600;
-  color: var(--color-text-secondary);
   margin: 0;
 }
 .plugin-skills-view-empty {
@@ -2089,18 +2206,21 @@ body {
   resize: vertical;
 }
 .skill-markdown-editor-textarea:focus {
-  outline: none;
   border-color: var(--color-accent);
+}
+.skill-markdown-editor-textarea:focus-visible {
+  outline: 2px solid var(--color-border-focus);
+  outline-offset: 2px;
 }
 .skill-detail-details {
   padding: 16px 20px;
 }
 .skill-detail-details summary {
-  font-size: 12px;
-  font-weight: 600;
-  color: var(--color-text-secondary);
+  font-size: 11px;
+  font-weight: 500;
+  color: var(--color-text-tertiary);
   text-transform: uppercase;
-  letter-spacing: 0.5px;
+  letter-spacing: 0.08em;
   cursor: pointer;
 }
 .skill-detail-details-section {
@@ -2108,9 +2228,9 @@ body {
 }
 .skill-detail-details-section h4 {
   font-size: 11px;
-  font-weight: 600;
+  font-weight: 500;
   color: var(--color-text-tertiary);
   text-transform: uppercase;
-  letter-spacing: 0.04em;
+  letter-spacing: 0.08em;
   margin: 0 0 8px;
 }

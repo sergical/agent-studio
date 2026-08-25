@@ -133,29 +133,31 @@ export function Sidebar({ snapshot, isLoading, requestRescan }: SidebarProps) {
   return (
     <nav className="skill-sidebar">
       <div className="skill-sidebar-section">
-        <div className="skill-sidebar-section-title">Overview</div>
         <button
           className={`skill-sidebar-item ${activeView.kind === "dashboard" ? "active" : ""}`}
           onClick={() => setActiveView({ kind: "dashboard" })}
         >
-          <LayoutDashboard size={14} />
+          <LayoutDashboard size={15} />
           <span>Dashboard</span>
         </button>
       </div>
 
       <div className="skill-sidebar-section">
-        <div className="skill-sidebar-section-title">Skills</div>
+        <div className="section-label">Skills</div>
         <button
           className={`skill-sidebar-item ${activeView.kind === "global" ? "active" : ""}`}
           onClick={() => setActiveView({ kind: "global" })}
         >
-          <Globe size={14} />
+          <Globe size={15} />
           <span>Global</span>
-          <span className="skill-sidebar-badge">{globalSkillCount(snapshot)}</span>
+          {globalSkillCount(snapshot) > 0 && (
+            <span className="skill-sidebar-badge">{globalSkillCount(snapshot)}</span>
+          )}
         </button>
 
         {projects.map((path) => {
           const basename = path.split("/").filter(Boolean).pop() ?? path;
+          const count = projectSkillCount(snapshot, path);
           return (
             <div
               key={path}
@@ -169,7 +171,7 @@ export function Sidebar({ snapshot, isLoading, requestRescan }: SidebarProps) {
                 onClick={() => setActiveView({ kind: "project", path })}
               >
                 <span className="skill-sidebar-project-name">{basename}</span>
-                <span className="skill-sidebar-badge">{projectSkillCount(snapshot, path)}</span>
+                {count > 0 && <span className="skill-sidebar-badge">{count}</span>}
               </button>
               <button
                 className="skill-sidebar-project-remove"
@@ -183,14 +185,14 @@ export function Sidebar({ snapshot, isLoading, requestRescan }: SidebarProps) {
         })}
 
         <button className="skill-sidebar-item skill-sidebar-add-project" onClick={handleAddProject}>
-          <FolderPlus size={14} />
+          <FolderPlus size={15} />
           <span>Add project…</span>
         </button>
       </div>
 
       {pluginHarnesses.length > 0 && (
         <div className="skill-sidebar-section">
-          <div className="skill-sidebar-section-title">Plugins</div>
+          <div className="section-label">Plugins</div>
           {pluginHarnesses.map(([harness, count]) => (
             <button
               key={harness}
@@ -199,9 +201,9 @@ export function Sidebar({ snapshot, isLoading, requestRescan }: SidebarProps) {
               }`}
               onClick={() => setActiveView({ kind: "plugins", harness })}
             >
-              <Blocks size={14} />
+              <Blocks size={15} />
               <span>{harness}</span>
-              <span className="skill-sidebar-badge">{count}</span>
+              {count > 0 && <span className="skill-sidebar-badge">{count}</span>}
             </button>
           ))}
         </div>
@@ -212,18 +214,18 @@ export function Sidebar({ snapshot, isLoading, requestRescan }: SidebarProps) {
           className={`skill-sidebar-item ${activeView.kind === "coverage" ? "active" : ""}`}
           onClick={() => setActiveView({ kind: "coverage" })}
         >
-          <LayoutGrid size={14} />
+          <LayoutGrid size={15} />
           <span>Coverage</span>
         </button>
       </div>
 
       <div className="skill-sidebar-section">
-        <div className="skill-sidebar-section-title">Find</div>
+        <div className="section-label">Find</div>
         <button
           className={`skill-sidebar-item ${activeView.kind === "discover" ? "active" : ""}`}
           onClick={() => setActiveView({ kind: "discover" })}
         >
-          <Search size={14} />
+          <Search size={15} />
           <span>Discover</span>
         </button>
       </div>

@@ -33,19 +33,19 @@ export function TopSkillsList({ skills, stats, onSelectSkill }: TopSkillsListPro
         return (
           <li key={stat.skill}>
             <button className="dashboard-top-skills-row" onClick={() => onSelectSkill(stat.skill)}>
-              <div className="dashboard-top-skills-row-top">
+              <span className="dashboard-top-skills-name-group">
                 <span className="dashboard-top-skills-name">{stat.skill}</span>
                 {pluginLabel && (
                   <span className="dashboard-top-skills-plugin-tag">{pluginLabel}</span>
                 )}
-                <span className="dashboard-top-skills-count">{stat.last_30_days}</span>
-              </div>
-              <div className="dashboard-top-skills-bar-track">
-                <div
+              </span>
+              <span className="dashboard-top-skills-bar-track">
+                <span
                   className="dashboard-top-skills-bar-fill"
                   style={{ width: `${(stat.last_30_days / max) * 100}%` }}
                 />
-              </div>
+              </span>
+              <span className="dashboard-top-skills-count">{stat.last_30_days}</span>
             </button>
           </li>
         );

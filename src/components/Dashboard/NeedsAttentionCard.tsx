@@ -3,6 +3,7 @@
 // ============================================================================
 
 import type { HealthIssue, HealthIssueKind } from "../../lib/skill-health";
+import { formatRelativeTime } from "../../lib/skill-stats";
 
 const MAX_SHOWN = 8;
 
@@ -36,17 +37,30 @@ function issueMessage(issue: HealthIssue): string {
 interface NeedsAttentionCardProps {
   issues: HealthIssue[];
   onSelectSkill: (name: string) => void;
+  /** Opens the Global view, for "{n} more" and the empty state's scan time. */
+  onSeeAll: () => void;
+  scannedAt: string | undefined;
 }
 
 /**
  * Up to 8 flagged skills, one line each: a severity dot, a one-line message,
  * and a button with the skill's name that opens the detail drawer. Excludes
  * "never invoked" (the caller shouldn't pass those in - it's noise, not
- * something worth fixing).
+ * something worth fixing). With zero issues, collapses to a single line so
+ * the section doesn't take up a full column.
  */
-export function NeedsAttentionCard({ issues, onSelectSkill }: NeedsAttentionCardProps) {
+export function NeedsAttentionCard({
+  issues,
+  onSelectSkill,
+  onSeeAll,
+  scannedAt,
+}: NeedsAttentionCardProps) {
   if (issues.length === 0) {
-    return <p className="dashboard-needs-attention-empty">Nothing needs attention</p>;
+    return (
+      <p className="dashboard-needs-attention-empty">
+        Nothing needs attention · scanned {scannedAt ? formatRelativeTime(scannedAt) : "never"}
+      </p>
+    );
   }
 
   const shown = issues.slice(0, MAX_SHOWN);
@@ -69,7 +83,11 @@ export function NeedsAttentionCard({ issues, onSelectSkill }: NeedsAttentionCard
           </button>
         </div>
       ))}
-      {remaining > 0 && <p className="dashboard-needs-attention-more">{remaining} more</p>}
+      {remaining > 0 && (
+        <button className="dashboard-needs-attention-more" onClick={onSeeAll}>
+          {remaining} more →
+        </button>
+      )}
     </div>
   );
 }

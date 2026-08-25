@@ -16,9 +16,9 @@ import { ownSkillsView, pluginSkillsView } from "../../lib/skill-plugin-partitio
 import type { SkillSnapshot } from "../../lib/skill-types";
 import { useAppStore } from "../../store/appStore";
 import { AgentCoverageRow } from "./AgentCoverageRow";
+import { DashboardStatStrip } from "./DashboardStatStrip";
 import { InvocationHeatmap } from "./InvocationHeatmap";
 import { NeedsAttentionCard } from "./NeedsAttentionCard";
-import { StatCards } from "./StatCards";
 import { TopSkillsList } from "./TopSkillsList";
 
 interface SkillDashboardProps {
@@ -59,10 +59,15 @@ export function SkillDashboard({ snapshot, isLoading, onSelectSkill }: SkillDash
   }
 
   const invocations30d = snapshot.invocations.reduce((sum, s) => sum + s.last_30_days, 0);
+  const invocationsLastYear = Object.values(snapshot.heatmap.days).reduce(
+    (sum, count) => sum + count,
+    0,
+  );
+  const goToGlobal = () => setActiveView({ kind: "global" });
 
   return (
     <div className="dashboard">
-      <StatCards
+      <DashboardStatStrip
         ownCount={own.length}
         pluginCount={plugin.length}
         invocations30d={invocations30d}
@@ -71,7 +76,7 @@ export function SkillDashboard({ snapshot, isLoading, onSelectSkill }: SkillDash
 
       <div className="dashboard-section-row">
         <div className="dashboard-section">
-          <h3>Top skills (30d)</h3>
+          <span className="section-label">Top skills, 30 days</span>
           <TopSkillsList
             skills={snapshot.skills}
             stats={snapshot.invocations}
@@ -79,18 +84,28 @@ export function SkillDashboard({ snapshot, isLoading, onSelectSkill }: SkillDash
           />
         </div>
         <div className="dashboard-section">
-          <h3>Needs attention</h3>
-          <NeedsAttentionCard issues={issues} onSelectSkill={onSelectSkill} />
+          <span className="section-label">Needs attention</span>
+          <NeedsAttentionCard
+            issues={issues}
+            onSelectSkill={onSelectSkill}
+            onSeeAll={goToGlobal}
+            scannedAt={snapshot.scanned_at}
+          />
         </div>
       </div>
 
       <div className="dashboard-section">
-        <h3>Activity</h3>
+        <div className="dashboard-section-header">
+          <span className="section-label">Activity</span>
+          <span className="dashboard-section-total">
+            {invocationsLastYear.toLocaleString()} invocations in the last year
+          </span>
+        </div>
         <InvocationHeatmap heatmap={snapshot.heatmap} />
       </div>
 
       <div className="dashboard-section">
-        <h3>Coverage</h3>
+        <span className="section-label">Coverage</span>
         <AgentCoverageRow skills={own} onSelect={() => setActiveView({ kind: "coverage" })} />
       </div>
     </div>
