@@ -11,6 +11,7 @@ pub mod lock_file;
 pub mod plugins;
 pub mod project_discovery;
 pub mod provenance;
+pub mod skill_agent_runner;
 pub mod skill_assembly;
 pub mod skill_candidate;
 pub mod skill_discovery;

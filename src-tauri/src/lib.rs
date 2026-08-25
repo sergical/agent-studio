@@ -16,6 +16,7 @@ pub fn run() {
         .setup(|app| {
             let refresh_state = skills::skill_refresh::init(app.handle());
             app.manage(refresh_state);
+            app.manage(skills::skill_agent_runner::SkillAgentRunnerState::default());
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -38,6 +39,11 @@ pub fn run() {
             skills::skill_refresh::request_skill_rescan,
             skills::skill_refresh::register_skill_projects,
             skills::skill_refresh::unregister_skill_project,
+            // Local harness runner
+            skills::skill_agent_runner::start_skill_agent_run,
+            skills::skill_agent_runner::cancel_skill_agent_run,
+            skills::skill_agent_runner::create_skill_scratch_dir,
+            skills::skill_agent_runner::remove_skill_scratch_dir,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

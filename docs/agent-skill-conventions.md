@@ -80,3 +80,49 @@ Codex session logs mention every installed SKILL.md path on every turn (the skil
 list in the instructions), so they are **not** an invocation signal. OpenCode keeps
 sessions in `~/.local/share/opencode/opencode.db` (SQLite); pi in
 `~/.pi/agent/sessions/**/*.jsonl` (`toolCall` records with `cwd`).
+
+## Headless runs
+
+Skill Studio's local harness runner (`src-tauri/src/skills/skill_agent_runner.rs`)
+starts each harness as a one-shot subprocess and parses its streaming JSON-lines
+stdout. Binaries are resolved with `$SHELL -lc 'command -v <bin>'` (fallback
+`/bin/zsh`) and cached per harness, since the app's own `PATH` doesn't see the
+user's shell config.
+
+- **Claude Code**: `claude -p "<prompt>" --output-format stream-json --verbose
+--permission-mode <mode> [--resume <id>]`. Lines:
+  `{"type":"system","subtype":"init",...,"session_id"}`;
+  `{"type":"assistant","message":{"content":[{"type":"text","text":...} |
+{"type":"tool_use","name":"Skill","input":{"skill":"say-banana"}} |
+{"type":"thinking",...}]}}`;
+  `{"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":...,"content":"Launching skill: say-banana"}]}}`;
+  `{"type":"result","subtype":"success","is_error":false,"result":"BANANA","session_id":"…","total_cost_usd":0.061,"duration_ms":…}`.
+  Ignore `system/hook_*`, `rate_limit_event`, `thinking`. Skill loaded = a
+  `tool_use` named `Skill` whose `input.skill` equals the skill name.
+- **Codex**: `codex exec --json --skip-git-repo-check -s <read-only|workspace-write>
+[-C <cwd>] "<prompt>"`; resume: `codex exec resume <thread_id> --json "<prompt>"`
+  (no `-C`; set the process cwd instead). No `-a` flag. Lines:
+  `{"type":"thread.started","thread_id":"…"}`, `turn.started`,
+  `{"type":"item.started"|"item.completed","item":{"id","type":"agent_message","text"}
+| {"type":"command_execution","command","aggregated_output","exit_code"} |
+{"type":"reasoning"} | {"type":"file_change",...} | {"type":"error","message"}}`,
+  `{"type":"turn.completed","usage":{...}}`, `turn.failed`. Skill loaded = any
+  `command_execution.command` containing `/<skill-name>/SKILL.md`, else unknown.
+  Final text = last completed `agent_message`.
+- **pi**: `pi -p --mode json "<prompt>"` (cwd = process cwd; resume `--session <id>`).
+  Lines: `{"type":"session","id":"…","cwd"}`, `message_update` with
+  `assistantMessageEvent.type=="text_delta"` and `.delta`, `tool_execution_start`
+  `{toolName, args}` / `tool_execution_end` `{toolName, result}`, `turn_end` with
+  `message.content[]` (text blocks), `agent_end`, `agent_settled`. Skill loaded = a
+  `read` tool whose `args.path` ends with or contains `/<skill-name>/SKILL.md`, else
+  unknown. Final text = concatenated text blocks of the last `turn_end`.
+- **OpenCode**: `opencode run --format json [--dir <cwd>] [--session <id>]
+"<prompt>"`; on the machine this was built against it exits 1 with a config error
+  before running, so the adapter is best-effort: parse each line as JSON, treat any
+  string field named `text` inside a `part`/`content` object as assistant text, and
+  any object naming a `tool`/`toolName` as a tool call. Final text = last text seen;
+  skill loaded = always unknown. stderr tail becomes the error message on exit != 0.
+
+Every run emits one `SkillAgentEvent` per parsed line (or per lifecycle step) on
+`"skill-agent://event"`, and always exactly one terminating `Finished` event, even
+on cancellation or a crash before any output.

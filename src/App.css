@@ -1578,10 +1578,17 @@ body {
   background: var(--color-bg-tertiary);
   border: 1px solid var(--color-border);
   border-radius: var(--radius-sm);
-  cursor: not-allowed;
+  cursor: pointer;
   transition:
     background-color 0.15s,
     color 0.15s;
+}
+.harness-segmented-control-item:disabled {
+  cursor: not-allowed;
+}
+.harness-segmented-control-item:hover:not(:disabled) {
+  background: var(--color-bg-hover);
+  color: var(--color-text-secondary);
 }
 .harness-segmented-control-item.active {
   color: var(--color-text-primary);
@@ -1620,6 +1627,178 @@ body {
   font-size: 11px;
   color: var(--color-text-tertiary);
   margin: 0;
+}
+.skill-assistant-panel-empty {
+  font-size: 12px;
+  line-height: 1.5;
+  color: var(--color-text-tertiary);
+  margin: 0;
+}
+/* Assistant transcript */
+.skill-agent-transcript {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  max-height: 60vh;
+  overflow-y: auto;
+  padding-right: 2px;
+}
+.skill-agent-text-block {
+  font-size: 13px;
+  line-height: 1.5;
+}
+.skill-agent-tool-row {
+  display: flex;
+  flex-direction: column;
+  border: 1px solid var(--color-border-subtle);
+  border-radius: var(--radius-sm);
+  background: var(--color-bg-tertiary);
+}
+.skill-agent-tool-row-header {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  height: 28px;
+  padding: 0 8px;
+  background: transparent;
+  border: none;
+  cursor: pointer;
+  text-align: left;
+  transition: background-color 0.15s;
+}
+.skill-agent-tool-row-header:hover {
+  background: var(--color-bg-hover);
+}
+.skill-agent-tool-row-chevron {
+  flex-shrink: 0;
+  color: var(--color-text-tertiary);
+  transition: transform 0.15s;
+}
+.skill-agent-tool-row-chevron.open {
+  transform: rotate(90deg);
+}
+.skill-agent-tool-row-name {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--color-text-primary);
+  flex-shrink: 0;
+}
+.skill-agent-tool-row-summary {
+  font-size: 11px;
+  color: var(--color-text-secondary);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.skill-agent-tool-row-detail {
+  margin: 0;
+  padding: 8px;
+  font-size: 11px;
+  color: var(--color-text-secondary);
+  border-top: 1px solid var(--color-border-subtle);
+  white-space: pre-wrap;
+  word-break: break-word;
+  max-height: 240px;
+  overflow-y: auto;
+}
+.skill-agent-error-block {
+  padding: 8px 10px;
+  font-size: 12px;
+  color: var(--color-error);
+  background: var(--color-error-soft);
+  border-radius: var(--radius-sm);
+  white-space: pre-wrap;
+}
+.skill-agent-pulse {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 4px 0;
+}
+.skill-agent-pulse span {
+  width: 5px;
+  height: 5px;
+  border-radius: 50%;
+  background: var(--color-text-tertiary);
+  animation: skill-agent-pulse-bounce 1.1s ease-in-out infinite;
+}
+.skill-agent-pulse span:nth-child(2) {
+  animation-delay: 0.15s;
+}
+.skill-agent-pulse span:nth-child(3) {
+  animation-delay: 0.3s;
+}
+@keyframes skill-agent-pulse-bounce {
+  0%,
+  80%,
+  100% {
+    opacity: 0.3;
+  }
+  40% {
+    opacity: 1;
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .skill-agent-pulse span {
+    animation: none;
+    opacity: 0.6;
+  }
+}
+.skill-agent-footer {
+  font-size: 11px;
+  color: var(--color-text-tertiary);
+  padding-top: 4px;
+}
+.skill-agent-footer-warning {
+  color: var(--color-warning);
+}
+.skill-agent-footer-tertiary {
+  color: var(--color-text-quaternary);
+}
+/* Assistant "Ask" box */
+.skill-assistant-ask {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.skill-assistant-ask-input {
+  resize: none;
+  padding: 8px 10px;
+  font-size: 12px;
+  line-height: 1.5;
+  color: var(--color-text-primary);
+  background: var(--color-bg-tertiary);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-sm);
+  transition: border-color 0.15s;
+}
+.skill-assistant-ask-input:focus-visible {
+  border-color: var(--color-border-focus);
+}
+.skill-assistant-ask-input:disabled {
+  opacity: 0.6;
+}
+.skill-assistant-ask-footer {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+.skill-assistant-ask-session-note {
+  font-size: 11px;
+  color: var(--color-text-tertiary);
+}
+.skill-assistant-ask-new-session {
+  background: transparent;
+  border: none;
+  padding: 0;
+  font-size: 11px;
+  color: var(--color-accent);
+  cursor: pointer;
+  transition: color 0.15s;
+}
+.skill-assistant-ask-new-session:hover {
+  color: var(--color-accent-hover);
 }
 .dashboard-section-row {
   display: grid;

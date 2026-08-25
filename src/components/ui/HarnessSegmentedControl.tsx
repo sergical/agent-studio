@@ -1,7 +1,9 @@
 // ============================================================================
 // HarnessSegmentedControl - Four-button harness toggle (Claude Code / Codex /
-// OpenCode / pi), used by SkillAssistantPanel. Placeholder only: every button
-// is disabled, "unavailable" ones are also dimmed with a title explaining why
+// OpenCode / pi), used by SkillAssistantPanel. "Unavailable" harnesses (ones
+// that don't see the current skill's own deployments) render dimmed with a
+// title explaining why, but stay selectable - the assistant runs in its own
+// scratch directory, independent of installed deployments.
 // ============================================================================
 
 import type { AgentId } from "../../lib/skill-types";
@@ -16,19 +18,24 @@ const HARNESS_LABELS = [
 ] satisfies [AgentId, string][];
 
 interface HarnessSegmentedControlProps {
-  /** The default-selected harness, highlighted like the active item elsewhere. */
+  /** The currently-selected harness, highlighted like the active item elsewhere. */
   selected: AgentId;
   /** Harnesses that actually see the skill; the rest render dimmed. */
   visibleAgents: ReadonlySet<AgentId>;
+  /** Omit to render every button disabled, as a read-only placeholder. */
+  onSelect?: (agent: AgentId) => void;
 }
 
 /**
- * Read-only harness picker: one button per first-class agent, all disabled
- * (no behavior wired up yet). `selected` gets the usual "active" styling;
- * harnesses outside `visibleAgents` get an additional dimmed style and a
- * title explaining they don't see this skill.
+ * Harness picker: one button per first-class agent. `selected` gets the
+ * usual "active" styling; harnesses outside `visibleAgents` get an
+ * additional dimmed style and a title explaining they don't see this skill.
  */
-export function HarnessSegmentedControl({ selected, visibleAgents }: HarnessSegmentedControlProps) {
+export function HarnessSegmentedControl({
+  selected,
+  visibleAgents,
+  onSelect,
+}: HarnessSegmentedControlProps) {
   return (
     <div className="harness-segmented-control">
       {HARNESS_LABELS.map(([agent, label]) => {
@@ -37,7 +44,8 @@ export function HarnessSegmentedControl({ selected, visibleAgents }: HarnessSegm
           <button
             key={agent}
             type="button"
-            disabled
+            disabled={!onSelect}
+            onClick={() => onSelect?.(agent)}
             aria-pressed={agent === selected}
             className={`harness-segmented-control-item ${agent === selected ? "active" : ""} ${
               isVisible ? "" : "unavailable"
