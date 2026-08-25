@@ -154,7 +154,7 @@ export interface Deployment {
   scope: "global" | "project" | "plugin";
   path: string;
   is_symlink: boolean;
-  plugin?: PluginInfo;
+  plugin?: PluginInfo | null;
   /** Canonicalized symlink target, when `is_symlink` and the target resolves. */
   symlink_target?: string;
   /** True when `is_symlink` but the target doesn't exist. */

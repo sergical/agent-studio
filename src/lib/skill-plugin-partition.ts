@@ -18,12 +18,12 @@ export interface PluginGroup {
 
 /** `skill`'s deployments that are not plugin-managed. */
 export function ownDeployments(skill: InstalledSkill): Deployment[] {
-  return skill.deployments.filter((d) => d.plugin === undefined);
+  return skill.deployments.filter((d) => !d.plugin);
 }
 
 /** `skill`'s deployments that are plugin-managed. */
 export function pluginDeployments(skill: InstalledSkill): Deployment[] {
-  return skill.deployments.filter((d) => d.plugin !== undefined);
+  return skill.deployments.filter((d) => Boolean(d.plugin));
 }
 
 /**
