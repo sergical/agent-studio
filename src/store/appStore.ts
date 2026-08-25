@@ -4,6 +4,7 @@
 // ============================================================================
 
 import { create } from "zustand";
+import type { HealthIssueKind } from "../lib/skill-health";
 import type { Toast } from "../lib/skill-types";
 
 // ============================================================================
@@ -14,7 +15,9 @@ import type { Toast } from "../lib/skill-types";
  * Which view the shell's `<main>` shows. `global` is every own skill
  * deployed at global scope; `project` is one registered project directory;
  * `plugins` is every skill shipped by one harness's plugin cache; `coverage`
- * is the skill x agent deployment matrix.
+ * is the skill x agent deployment matrix; `issues` is every health issue
+ * across own skills, optionally pre-filtered to one `issueKind` for
+ * deep-linking from the dashboard.
  */
 export type ActiveView =
   | { kind: "dashboard" }
@@ -22,6 +25,7 @@ export type ActiveView =
   | { kind: "project"; path: string }
   | { kind: "plugins"; harness: string }
   | { kind: "coverage" }
+  | { kind: "issues"; issueKind?: HealthIssueKind }
   | { kind: "discover" };
 
 /**

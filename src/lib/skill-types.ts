@@ -163,6 +163,8 @@ export interface Deployment {
   symlink_error?: string;
   /** The project directory this deployment belongs to, for project-scoped deployments. */
   project_path?: string;
+  /** This deployment's own sha256 content hash, empty when unreadable. */
+  content_hash: string;
 }
 
 /**

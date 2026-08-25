@@ -5,21 +5,18 @@
 // ============================================================================
 
 import { useMemo } from "react";
-import {
-  findBrokenSymlinks,
-  findDuplicateSkills,
-  findLockOnlySkills,
-  findMissingFromAgents,
-  findSpecViolations,
-} from "../../lib/skill-health";
-import { ownSkillsView, pluginSkillsView } from "../../lib/skill-plugin-partition";
+import { collectDashboardIssues } from "../../lib/skill-health";
+import type { HealthIssueKind } from "../../lib/skill-health";
+import { ownSkillsView } from "../../lib/skill-plugin-partition";
 import type { SkillSnapshot } from "../../lib/skill-types";
 import { useAppStore } from "../../store/appStore";
-import { AgentCoverageRow } from "./AgentCoverageRow";
+import { AgentCoverageTable } from "./AgentCoverageTable";
 import { DashboardStatStrip } from "./DashboardStatStrip";
 import { InvocationHeatmap } from "./InvocationHeatmap";
 import { NeedsAttentionCard } from "./NeedsAttentionCard";
 import { TopSkillsList } from "./TopSkillsList";
+
+const DAYS_IN_WINDOW = 30;
 
 interface SkillDashboardProps {
   snapshot: SkillSnapshot | undefined;
@@ -27,28 +24,33 @@ interface SkillDashboardProps {
   onSelectSkill: (name: string) => void;
 }
 
+/** Invocation counts for the last 30 days, oldest first, from the heatmap's day map. */
+function last30DailyCounts(days: Record<string, number>): number[] {
+  const today = new Date();
+  today.setHours(0, 0, 0, 0);
+
+  const counts: number[] = [];
+  for (let i = DAYS_IN_WINDOW - 1; i >= 0; i--) {
+    const date = new Date(today);
+    date.setDate(date.getDate() - i);
+    const key = date.toISOString().slice(0, 10);
+    counts.push(days[key] ?? 0);
+  }
+  return counts;
+}
+
 /**
- * The dashboard: stat cards, top skills, a health summary ("needs
- * attention"), an invocation heatmap, and an agent coverage row - all one
- * screen, no skill table. "Never invoked" is deliberately not surfaced here;
- * it's noise, not something worth fixing for every skill.
+ * The dashboard: a stat strip (skill count + invocation trend), top skills
+ * and a grouped health summary side by side, an invocation heatmap, and
+ * agent coverage - all one screen, no skill table. "Never invoked" is
+ * deliberately not surfaced here; it's noise, not something worth fixing for
+ * every skill.
  */
 export function SkillDashboard({ snapshot, isLoading, onSelectSkill }: SkillDashboardProps) {
   const setActiveView = useAppStore((state) => state.setActiveView);
 
   const own = useMemo(() => ownSkillsView(snapshot?.skills ?? []), [snapshot]);
-  const plugin = useMemo(() => pluginSkillsView(snapshot?.skills ?? []), [snapshot]);
-
-  const issues = useMemo(
-    () => [
-      ...findDuplicateSkills(own),
-      ...findBrokenSymlinks(own),
-      ...findSpecViolations(own),
-      ...findLockOnlySkills(own),
-      ...findMissingFromAgents(own),
-    ],
-    [own],
-  );
+  const issues = useMemo(() => collectDashboardIssues(own), [own]);
 
   if (!snapshot) {
     return (
@@ -63,15 +65,15 @@ export function SkillDashboard({ snapshot, isLoading, onSelectSkill }: SkillDash
     (sum, count) => sum + count,
     0,
   );
-  const goToGlobal = () => setActiveView({ kind: "global" });
+  const dailyCounts = last30DailyCounts(snapshot.heatmap.days);
+  const goToIssues = (issueKind?: HealthIssueKind) => setActiveView({ kind: "issues", issueKind });
 
   return (
     <div className="dashboard">
       <DashboardStatStrip
         ownCount={own.length}
-        pluginCount={plugin.length}
         invocations30d={invocations30d}
-        issuesCount={issues.length}
+        dailyCounts={dailyCounts}
       />
 
       <div className="dashboard-section-row">
@@ -84,11 +86,14 @@ export function SkillDashboard({ snapshot, isLoading, onSelectSkill }: SkillDash
           />
         </div>
         <div className="dashboard-section">
-          <span className="section-label">Needs attention</span>
+          <div className="dashboard-section-header">
+            <span className="section-label">Needs attention</span>
+            {issues.length > 0 && <span className="dashboard-section-total">{issues.length}</span>}
+          </div>
           <NeedsAttentionCard
             issues={issues}
-            onSelectSkill={onSelectSkill}
-            onSeeAll={goToGlobal}
+            onSelectKind={goToIssues}
+            onSeeAll={() => goToIssues()}
             scannedAt={snapshot.scanned_at}
           />
         </div>
@@ -106,7 +111,10 @@ export function SkillDashboard({ snapshot, isLoading, onSelectSkill }: SkillDash
 
       <div className="dashboard-section">
         <span className="section-label">Coverage</span>
-        <AgentCoverageRow skills={own} onSelect={() => setActiveView({ kind: "coverage" })} />
+        <AgentCoverageTable
+          skills={own}
+          onSelectMissing={() => setActiveView({ kind: "coverage" })}
+        />
       </div>
     </div>
   );

@@ -70,37 +70,50 @@ export function InvocationHeatmap({ heatmap }: InvocationHeatmapProps) {
     weeks.push(days.slice(w * DAYS_PER_WEEK, (w + 1) * DAYS_PER_WEEK));
   }
 
-  // One label per month, placed at the week that first shows that month.
-  const monthLabels: { weekIndex: number; label: string }[] = [];
+  // One label per month, placed at the week that first shows that month and
+  // spanning to the next month's first week (or the grid's end, for the
+  // last month), so the label's width tracks how many weeks it covers.
+  const monthStarts: { weekIndex: number; label: string }[] = [];
   let lastMonth = -1;
   weeks.forEach((week, weekIndex) => {
     const month = week[0].date.getMonth();
     if (month !== lastMonth) {
-      monthLabels.push({ weekIndex, label: MONTH_NAMES[month] });
+      monthStarts.push({ weekIndex, label: MONTH_NAMES[month] });
       lastMonth = month;
     }
   });
+  const monthLabels = monthStarts.map(({ weekIndex, label }, i) => ({
+    weekIndex,
+    label,
+    span: (monthStarts[i + 1]?.weekIndex ?? WEEKS) - weekIndex,
+  }));
+
+  const invocationsThisYear = days.reduce((sum, d) => sum + d.count, 0);
 
   return (
     <div className="dashboard-heatmap-wrap">
-      <div className="dashboard-heatmap-months">
-        {monthLabels.map(({ weekIndex, label }) => (
+      <div className="dashboard-heatmap-months" aria-hidden="true">
+        {monthLabels.map(({ weekIndex, label, span }) => (
           <span
             key={`${weekIndex}-${label}`}
             className="dashboard-heatmap-month-label"
-            style={{ gridColumnStart: weekIndex + 1, gridColumnEnd: "span 4" }}
+            style={{ gridColumnStart: weekIndex + 1, gridColumnEnd: `span ${span}` }}
           >
             {label}
           </span>
         ))}
       </div>
       <div className="dashboard-heatmap-body">
-        <div className="dashboard-heatmap-weekdays">
+        <div className="dashboard-heatmap-weekdays" aria-hidden="true">
           {WEEKDAY_LABELS.map((label, i) => (
             <span key={i}>{label}</span>
           ))}
         </div>
-        <div className="dashboard-heatmap-grid">
+        <div
+          className="dashboard-heatmap-grid"
+          role="img"
+          aria-label={`Invocations per day over the last year, ${invocationsThisYear} total`}
+        >
           {days.map(({ date, key, count }) => (
             <div
               key={key}
@@ -110,6 +123,7 @@ export function InvocationHeatmap({ heatmap }: InvocationHeatmapProps) {
                   ? `${count} invocation${count === 1 ? "" : "s"} · ${formatCellDate(date)}`
                   : `No invocations · ${formatCellDate(date)}`
               }
+              aria-hidden="true"
             />
           ))}
         </div>

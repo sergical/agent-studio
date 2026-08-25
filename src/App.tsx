@@ -1,7 +1,7 @@
 // ============================================================================
 // Skill Studio - Main Application
-// Shell: Sidebar + main view (Dashboard, Global, Project, or Discover) +
-// an optional installed-skill detail drawer
+// Shell: Sidebar + main view (Dashboard, Global, Project, Plugins, Coverage,
+// Issues, or Discover) + an optional installed-skill detail drawer
 // ============================================================================
 
 import { useEffect, useRef } from "react";
@@ -10,6 +10,7 @@ import { Sidebar } from "./components/Sidebar/Sidebar";
 import { SkillDashboard } from "./components/Dashboard/SkillDashboard";
 import { SkillsScopeView } from "./components/SkillsScopeView";
 import { SkillCoverageView } from "./components/Coverage/SkillCoverageView";
+import { SkillIssuesView } from "./components/Issues/SkillIssuesView";
 import { PluginSkillsView } from "./components/Plugins/PluginSkillsView";
 import { SkillDetail } from "./components/SkillDetail/SkillDetail";
 import { SkillStore } from "./components/SkillStore";
@@ -104,6 +105,14 @@ function App() {
     );
   } else if (activeView.kind === "coverage") {
     main = <SkillCoverageView snapshot={snapshot} onSelectSkill={onSelectSkill} />;
+  } else if (activeView.kind === "issues") {
+    main = (
+      <SkillIssuesView
+        snapshot={snapshot}
+        issueKind={activeView.issueKind}
+        onSelectSkill={onSelectSkill}
+      />
+    );
   } else {
     main = <SkillStore />;
   }

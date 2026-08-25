@@ -5,7 +5,7 @@
 // isolation (Vitest, once a runner is wired up).
 // ============================================================================
 
-import type { InstalledSkill, SkillInvocationStats } from "./skill-types";
+import type { Deployment, InstalledSkill, SkillInvocationStats } from "./skill-types";
 
 /** Kind of health issue a `HealthIssue` reports. */
 export type HealthIssueKind =
@@ -23,6 +23,46 @@ export interface HealthIssue {
   detail: string;
 }
 
+/**
+ * Stable display order for issue kinds, shared by the dashboard's grouped
+ * summary, the sidebar count, and the Issues view's filter chips.
+ */
+export const HEALTH_ISSUE_KIND_ORDER: HealthIssueKind[] = [
+  "duplicate",
+  "broken-symlink",
+  "spec-violation",
+  "missing-from-agents",
+  "lock-only",
+  "never-invoked",
+];
+
+/**
+ * Severity dot color for one issue kind, shared by the dashboard's grouped
+ * summary and the Issues view's table. broken-symlink and lock-only are
+ * errors (something is missing); everything else is a warning.
+ */
+export const HEALTH_ISSUE_SEVERITY = {
+  duplicate: "warning",
+  "broken-symlink": "error",
+  "spec-violation": "warning",
+  "missing-from-agents": "warning",
+  "lock-only": "error",
+  "never-invoked": "warning",
+} as const satisfies Record<HealthIssueKind, "error" | "warning">;
+
+/** Singular/plural copy for one issue kind, for chip and row labels. */
+export const HEALTH_ISSUE_KIND_LABEL = {
+  duplicate: { singular: "skill differs between copies", plural: "skills differ between copies" },
+  "broken-symlink": { singular: "broken link", plural: "broken links" },
+  "spec-violation": { singular: "skill with spec issues", plural: "skills with spec issues" },
+  "missing-from-agents": {
+    singular: "skill missing from an agent",
+    plural: "skills missing from an agent",
+  },
+  "lock-only": { singular: "skill only in the lock file", plural: "skills only in the lock file" },
+  "never-invoked": { singular: "skill never used", plural: "skills never used" },
+} as const satisfies Record<HealthIssueKind, { singular: string; plural: string }>;
+
 /** The first-class agents `findMissingFromAgents` expects full coverage across. */
 const FIRST_CLASS_AGENTS = ["Claude Code", "Codex", "OpenCode", "pi"] as const;
 
@@ -39,19 +79,53 @@ function agentsCoveredByDeployment(agent: string): readonly string[] {
   return FIRST_CLASS_AGENTS.some((first) => first === agent) ? [agent] : [];
 }
 
+/** "Global" for global scope, the project directory basename for project scope. */
+function deploymentLabel(deployment: Deployment): string {
+  if (deployment.scope === "project" && deployment.project_path) {
+    return deployment.project_path.split("/").filter(Boolean).pop() ?? "Global";
+  }
+  return "Global";
+}
+
 /**
  * Skills whose deployments disagree on content: the same skill name has more
  * than one distinct `content_hash` across its deployments (e.g. a stale copy
- * left behind by a manual edit).
+ * left behind by a manual edit). `detail` names the copies that differ from
+ * the most common hash, and where the reference copy lives, e.g. "Differs in
+ * webvitals.com, repo-architect (from Global)".
  */
 export function findDuplicateSkills(skills: InstalledSkill[]): HealthIssue[] {
   return skills
     .filter((skill) => skill.content_hashes.length > 1)
-    .map((skill) => ({
-      kind: "duplicate" as const,
-      skill,
-      detail: `${skill.content_hashes.length} distinct content hashes across deployments`,
-    }));
+    .map((skill) => {
+      const withHash = skill.deployments.filter((d) => d.content_hash);
+
+      const counts = new Map<string, number>();
+      for (const d of withHash) {
+        counts.set(d.content_hash, (counts.get(d.content_hash) ?? 0) + 1);
+      }
+      let majorityHash = withHash[0]?.content_hash ?? "";
+      let majorityCount = 0;
+      for (const [hash, count] of counts) {
+        if (count > majorityCount) {
+          majorityCount = count;
+          majorityHash = hash;
+        }
+      }
+
+      const majorityDeployment = withHash.find((d) => d.content_hash === majorityHash);
+      const majorityLabel = majorityDeployment ? deploymentLabel(majorityDeployment) : "Global";
+      const differingLabels = withHash
+        .filter((d) => d.content_hash !== majorityHash)
+        .map(deploymentLabel);
+
+      const detail =
+        differingLabels.length > 0
+          ? `Differs in ${differingLabels.join(", ")} (from ${majorityLabel})`
+          : `${skill.content_hashes.length} distinct content hashes across deployments`;
+
+      return { kind: "duplicate" as const, skill, detail };
+    });
 }
 
 /**
@@ -149,4 +223,42 @@ export function findMissingFromAgents(skills: InstalledSkill[]): HealthIssue[] {
   }
 
   return issues;
+}
+
+/**
+ * Every dashboard-worthy issue across `skills`: duplicate, broken-symlink,
+ * spec-violation, lock-only, and missing-from-agents. Deliberately excludes
+ * never-invoked - it's noise, not something worth fixing for every skill.
+ * Sorted by `HEALTH_ISSUE_KIND_ORDER` then skill name, so both the dashboard
+ * and the Issues view show a stable order.
+ */
+export function collectDashboardIssues(skills: InstalledSkill[]): HealthIssue[] {
+  const issues = [
+    ...findDuplicateSkills(skills),
+    ...findBrokenSymlinks(skills),
+    ...findSpecViolations(skills),
+    ...findLockOnlySkills(skills),
+    ...findMissingFromAgents(skills),
+  ];
+
+  return issues.sort((a, b) => {
+    const orderDiff =
+      HEALTH_ISSUE_KIND_ORDER.indexOf(a.kind) - HEALTH_ISSUE_KIND_ORDER.indexOf(b.kind);
+    return orderDiff !== 0 ? orderDiff : a.skill.name.localeCompare(b.skill.name);
+  });
+}
+
+/** `issues` bucketed by kind, in `HEALTH_ISSUE_KIND_ORDER`, omitting zero counts. */
+export function groupIssuesByKind(
+  issues: HealthIssue[],
+): { kind: HealthIssueKind; count: number }[] {
+  const counts = new Map<HealthIssueKind, number>();
+  for (const issue of issues) {
+    counts.set(issue.kind, (counts.get(issue.kind) ?? 0) + 1);
+  }
+
+  return HEALTH_ISSUE_KIND_ORDER.filter((kind) => (counts.get(kind) ?? 0) > 0).map((kind) => ({
+    kind,
+    count: counts.get(kind) ?? 0,
+  }));
 }

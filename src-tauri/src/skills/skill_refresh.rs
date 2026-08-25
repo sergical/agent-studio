@@ -921,6 +921,7 @@ mod tests {
                     symlink_is_broken: false,
                     symlink_error: None,
                     project_path: None,
+                    content_hash: String::new(),
                 }],
                 has_spec: false,
                 description: None,

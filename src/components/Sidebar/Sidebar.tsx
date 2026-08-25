@@ -1,11 +1,13 @@
 // ============================================================================
-// Sidebar - Left-hand navigation: Overview, Skills (Global + projects), Find
+// Sidebar - Left-hand navigation: Overview, Skills (Global + projects),
+// Review (Issues + Coverage), Find
 // ============================================================================
 
 import { useCallback, useState } from "react";
 import { homeDir } from "@tauri-apps/api/path";
 import { ask, open } from "@tauri-apps/plugin-dialog";
 import {
+  AlertCircle,
   Blocks,
   FolderPlus,
   Globe,
@@ -16,6 +18,7 @@ import {
   X,
 } from "lucide-react";
 import { registerSkillProjects, unregisterSkillProject } from "../../lib/skill-api";
+import { collectDashboardIssues } from "../../lib/skill-health";
 import { ownSkillsView, pluginHarnessCounts } from "../../lib/skill-plugin-partition";
 import { useAppStore } from "../../store/appStore";
 import type { SkillSnapshot } from "../../lib/skill-types";
@@ -53,8 +56,9 @@ function projectSkillCount(snapshot: SkillSnapshot | undefined, path: string): n
 
 /**
  * Left-hand navigation: Overview (Dashboard), Skills (Global + one row per
- * registered project, with an "Add project…" action), and Find (Discover).
- * The footer shows the snapshot's age and a manual rescan button.
+ * registered project, with an "Add project…" action), Review (Issues +
+ * Coverage), and Find (Discover). The footer shows the snapshot's age and a
+ * manual rescan button.
  */
 export function Sidebar({ snapshot, isLoading, requestRescan }: SidebarProps) {
   const [isRescanning, setIsRescanning] = useState(false);
@@ -129,6 +133,7 @@ export function Sidebar({ snapshot, isLoading, requestRescan }: SidebarProps) {
   const pluginHarnesses = [...pluginHarnessCounts(snapshot?.skills ?? [])].sort(([a], [b]) =>
     a.localeCompare(b),
   );
+  const issuesCount = collectDashboardIssues(ownSkillsView(snapshot?.skills ?? [])).length;
 
   return (
     <nav className="skill-sidebar">
@@ -210,6 +215,15 @@ export function Sidebar({ snapshot, isLoading, requestRescan }: SidebarProps) {
       )}
 
       <div className="skill-sidebar-section">
+        <div className="section-label">Review</div>
+        <button
+          className={`skill-sidebar-item ${activeView.kind === "issues" ? "active" : ""}`}
+          onClick={() => setActiveView({ kind: "issues" })}
+        >
+          <AlertCircle size={15} />
+          <span>Issues</span>
+          {issuesCount > 0 && <span className="skill-sidebar-badge">{issuesCount}</span>}
+        </button>
         <button
           className={`skill-sidebar-item ${activeView.kind === "coverage" ? "active" : ""}`}
           onClick={() => setActiveView({ kind: "coverage" })}

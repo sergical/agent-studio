@@ -3,10 +3,10 @@
 // ============================================================================
 
 import { pluginLabelForSkill } from "../../lib/skill-plugin-partition";
-import { topSkills } from "../../lib/skill-stats";
+import { formatRelativeTime, topSkills } from "../../lib/skill-stats";
 import type { InstalledSkill, SkillInvocationStats } from "../../lib/skill-types";
 
-const MAX_SHOWN = 8;
+const MAX_SHOWN = 10;
 
 interface TopSkillsListProps {
   /** Every skill (own and plugin), so plugin skills can still show up here tagged. */
@@ -44,6 +44,9 @@ export function TopSkillsList({ skills, stats, onSelectSkill }: TopSkillsListPro
                   className="dashboard-top-skills-bar-fill"
                   style={{ width: `${(stat.last_30_days / max) * 100}%` }}
                 />
+              </span>
+              <span className="dashboard-top-skills-last-used">
+                {stat.last_used ? formatRelativeTime(stat.last_used) : "never"}
               </span>
               <span className="dashboard-top-skills-count">{stat.last_30_days}</span>
             </button>

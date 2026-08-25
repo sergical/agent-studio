@@ -89,6 +89,11 @@ pub struct Deployment {
     /// deployments. `None` for global and plugin deployments.
     #[serde(default)]
     pub project_path: Option<String>,
+    /// This deployment's own sha256 content hash, empty when unreadable
+    /// (e.g. a broken symlink). Lets the UI point at which specific copies
+    /// of a duplicated skill differ, not just the skill as a whole.
+    #[serde(default)]
+    pub content_hash: String,
 }
 
 /// Installed skill with parsed data

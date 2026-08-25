@@ -131,6 +131,7 @@ pub fn assemble_installed_skills(
                 .project_path
                 .as_ref()
                 .map(|p| p.to_string_lossy().to_string()),
+            content_hash: candidate.content_hash.clone(),
         });
     }
 
@@ -309,5 +310,24 @@ mod tests {
 
         let skills = assemble_installed_skills(vec![a, b, c], &empty_lock());
         assert_eq!(skills[0].content_hashes.len(), 2);
+    }
+
+    #[test]
+    fn each_deployment_carries_its_own_content_hash() {
+        let mut a = candidate("my-skill", "Claude Code");
+        a.content_hash = "hash-a".to_string();
+        let mut b = candidate("my-skill", "Codex");
+        b.content_hash = "hash-b".to_string();
+
+        let skills = assemble_installed_skills(vec![a, b], &empty_lock());
+        assert_eq!(skills[0].content_hashes.len(), 2);
+
+        let by_agent: HashMap<&str, &str> = skills[0]
+            .deployments
+            .iter()
+            .map(|d| (d.agent.as_str(), d.content_hash.as_str()))
+            .collect();
+        assert_eq!(by_agent.get("Claude Code"), Some(&"hash-a"));
+        assert_eq!(by_agent.get("Codex"), Some(&"hash-b"));
     }
 }
