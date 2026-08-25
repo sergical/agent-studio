@@ -2077,8 +2077,8 @@ body {
   border: 1px solid var(--color-border-subtle);
 }
 .coverage-matrix-marker.broken {
-  border-radius: 50%;
-  border: 1.5px solid var(--color-error);
+  outline: 1.5px solid var(--color-error);
+  outline-offset: 1.5px;
 } /* ============================================================================
    Plugins View
    ============================================================================ */

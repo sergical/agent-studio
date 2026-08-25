@@ -54,10 +54,23 @@ export function SkillActivityView({ snapshot, onSelectSkill }: SkillActivityView
   const usageWindow = useAppStore((state) => state.usageWindow);
   const setUsageWindow = useAppStore((state) => state.setUsageWindow);
 
+  // Anchored to the snapshot's own scan time (not just the render time), and
+  // re-derived whenever its UTC date changes, so the grid still advances past
+  // UTC midnight instead of freezing at whatever date the component first
+  // mounted.
+  const scannedAtUtcDateKey = (snapshot?.scanned_at ? new Date(snapshot.scanned_at) : new Date())
+    .toISOString()
+    .slice(0, 10);
   // Computed once here and passed down to InvocationHeatmap, so the header
   // total, the grid, and its aria-label all sum over the exact same 364-day
-  // UTC key list rather than three independently-computed ranges.
-  const heatmapDates = useMemo(() => heatmapDateRangeUtc(new Date()).dates, []);
+  // UTC key list rather than three independently-computed ranges. Rebuilt
+  // from `scannedAtUtcDateKey` alone (midnight UTC of that date) rather than
+  // depending on a fresh `Date` instance, which changes identity every
+  // render even when the UTC date hasn't.
+  const heatmapDates = useMemo(
+    () => heatmapDateRangeUtc(new Date(`${scannedAtUtcDateKey}T00:00:00Z`)).dates,
+    [scannedAtUtcDateKey],
+  );
   const invocationsLastYear = useMemo(
     () => heatmapDates.reduce((sum, key) => sum + (snapshot?.heatmap.days[key] ?? 0), 0),
     [heatmapDates, snapshot],

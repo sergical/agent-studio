@@ -297,12 +297,17 @@ pub fn rebuild_snapshot_now(
         .invocation_index
         .lock()
         .map_err(|e| format!("invocation index lock poisoned: {e}"))?;
+    // Captured once and threaded through stats/heatmap/scanned_at/mark_built_at
+    // below, so a rebuild that straddles an hour boundary doesn't record the
+    // new hour against cutoffs computed for the old one.
+    let now = Utc::now();
     let (built, report) = build_snapshot(
         &home,
         &extra_projects,
         &excluded_projects,
         &mut invocation_index,
         &state.cache_path,
+        now,
     );
     drop(invocation_index);
 
@@ -314,7 +319,7 @@ pub fn rebuild_snapshot_now(
         Ok(mut guard) => *guard = Some(built.clone()),
         Err(e) => return Err(format!("snapshot lock poisoned: {e}")),
     }
-    state.mark_built_at(Utc::now());
+    state.mark_built_at(now);
 
     app.emit(SNAPSHOT_EVENT, &built)
         .map_err(|e| format!("failed to emit {SNAPSHOT_EVENT}: {e}"))?;
@@ -341,8 +346,12 @@ fn rebuild_invocations_only(app: &AppHandle, state: &SkillRefreshState) -> Resul
     if let Err(e) = invocation_index.save(&state.cache_path) {
         eprintln!("skill refresh: failed to save invocation cache: {e}");
     }
-    let invocations = invocation_index.stats();
-    let heatmap = invocation_index.heatmap(365);
+    // Captured once and threaded through stats/heatmap/scanned_at/mark_built_at
+    // below, so a rebuild that straddles an hour boundary doesn't record the
+    // new hour against cutoffs computed for the old one.
+    let now = Utc::now();
+    let invocations = invocation_index.stats_at(now);
+    let heatmap = invocation_index.heatmap_at(365, now);
     drop(invocation_index);
 
     if report.incomplete {
@@ -359,10 +368,10 @@ fn rebuild_invocations_only(app: &AppHandle, state: &SkillRefreshState) -> Resul
         };
         snapshot.invocations = invocations;
         snapshot.heatmap = heatmap;
-        snapshot.scanned_at = Utc::now().to_rfc3339();
+        snapshot.scanned_at = now.to_rfc3339();
         snapshot.clone()
     };
-    state.mark_built_at(Utc::now());
+    state.mark_built_at(now);
 
     app.emit(SNAPSHOT_EVENT, &built)
         .map_err(|e| format!("failed to emit {SNAPSHOT_EVENT}: {e}"))
@@ -597,6 +606,7 @@ fn build_snapshot(
     excluded_projects: &BTreeSet<String>,
     invocation_index: &mut SkillInvocationIndex,
     cache_path: &Path,
+    now: DateTime<Utc>,
 ) -> (SkillSnapshot, RefreshReport) {
     let mut project_paths: BTreeSet<PathBuf> = project_discovery::discover_skill_projects(home)
         .into_iter()
@@ -632,9 +642,9 @@ fn build_snapshot(
             .into_iter()
             .map(|p| p.to_string_lossy().to_string())
             .collect(),
-        invocations: invocation_index.stats(),
-        heatmap: invocation_index.heatmap(365),
-        scanned_at: Utc::now().to_rfc3339(),
+        invocations: invocation_index.stats_at(now),
+        heatmap: invocation_index.heatmap_at(365, now),
+        scanned_at: now.to_rfc3339(),
     };
     (snapshot, report)
 }
@@ -845,6 +855,7 @@ mod tests {
             &BTreeSet::new(),
             &mut invocation_index,
             &cache_path,
+            Utc::now(),
         );
 
         assert!(snapshot
@@ -877,6 +888,7 @@ mod tests {
             &excluded,
             &mut invocation_index,
             &cache_path,
+            Utc::now(),
         );
 
         assert!(!snapshot
@@ -905,6 +917,7 @@ mod tests {
             &BTreeSet::new(),
             &mut invocation_index,
             &cache_path,
+            Utc::now(),
         );
 
         assert!(!snapshot
@@ -994,6 +1007,39 @@ mod tests {
 
         let snapshot = fixture_snapshot(&dep_dir);
         assert!(!snapshot_owns_path(&snapshot, &outside));
+    }
+
+    /// A `SkillRefreshState` with no snapshot, for `mark_built_at`/
+    /// `is_hour_stale` tests that don't need a running Tauri app.
+    fn fixture_state() -> SkillRefreshState {
+        SkillRefreshState {
+            snapshot: Arc::new(RwLock::new(None)),
+            rebuild_lock: Arc::new(Mutex::new(())),
+            extra_projects: Arc::new(Mutex::new(BTreeSet::new())),
+            excluded_projects: Arc::new(Mutex::new(BTreeSet::new())),
+            skills_dirty: Arc::new(AtomicBool::new(false)),
+            invocations_dirty: Arc::new(AtomicBool::new(false)),
+            invocation_index: Arc::new(Mutex::new(SkillInvocationIndex::default())),
+            last_built_hour: Arc::new(Mutex::new(None)),
+            cache_path: PathBuf::from("/dev/null"),
+        }
+    }
+
+    #[test]
+    fn is_hour_stale_reports_fresh_for_the_same_captured_now() {
+        let state = fixture_state();
+        let now = Utc::now();
+        state.mark_built_at(now);
+        assert!(!state.is_hour_stale(now));
+    }
+
+    #[test]
+    fn is_hour_stale_reports_stale_an_hour_after_the_captured_now() {
+        let state = fixture_state();
+        let now = Utc::now();
+        state.mark_built_at(now);
+        let an_hour_later = now + chrono::Duration::hours(1);
+        assert!(state.is_hour_stale(an_hour_later));
     }
 
     #[test]

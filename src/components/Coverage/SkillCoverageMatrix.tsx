@@ -15,15 +15,26 @@ interface SkillCoverageMatrixProps {
 
 /** Tooltip / cell title text, shared by the header-adjacent legend and each cell. */
 function cellTitle(cell: AgentMatrixCell): string {
-  if (cell.isBroken) return "Broken link";
-  if (cell.state === "own") return "In the agent's folder";
-  if (cell.state === "shared") return "Via the shared .agents folder";
-  return "Not deployed";
+  const base =
+    cell.state === "own"
+      ? "In the agent's folder"
+      : cell.state === "shared"
+        ? "Via the shared .agents folder"
+        : "Not deployed";
+  // A broken own-directory link doesn't hide effective visibility (e.g. a
+  // healthy shared fallback), so the tooltip states both facts rather than
+  // just "Broken link".
+  return cell.isBroken ? `${base} (broken link)` : base;
 }
 
-/** The marker swatch for one cell: filled square (own), hollow dotted square (shared), ring (broken), or empty. */
+/**
+ * The marker swatch for one cell: filled square (own), hollow dotted square
+ * (shared), or empty (none), with a red ring outline layered on top when
+ * `isBroken` - the ring is the broken marker, the fill/outline underneath
+ * still shows the effective visibility state.
+ */
 function CoverageMarker({ cell }: { cell: AgentMatrixCell }) {
-  const className = cell.isBroken ? "broken" : cell.state;
+  const className = cell.isBroken ? `${cell.state} broken` : cell.state;
   return <span className={`coverage-matrix-marker ${className}`} />;
 }
 

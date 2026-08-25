@@ -437,7 +437,15 @@ impl SkillInvocationIndex {
 
     /// Per-day invocation counts over the last `days` days.
     pub fn heatmap(&self, days: u32) -> InvocationHeatmap {
-        let cutoff = Utc::now() - chrono::Duration::days(days as i64);
+        self.heatmap_at(days, Utc::now())
+    }
+
+    /// `heatmap`, but relative to a caller-supplied `now` instead of the wall
+    /// clock, so a snapshot rebuild can share one `now` across `stats_at`,
+    /// `heatmap_at`, and `scanned_at` rather than straddling an hour (or day)
+    /// boundary between separate `Utc::now()` calls.
+    pub fn heatmap_at(&self, days: u32, now: DateTime<Utc>) -> InvocationHeatmap {
+        let cutoff = now - chrono::Duration::days(days as i64);
         let mut result = BTreeMap::new();
         for transcript in self.files.values() {
             for invocation in &transcript.invocations {

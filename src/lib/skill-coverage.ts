@@ -61,7 +61,10 @@ function isSharedRootDeployment(skill: InstalledSkill): boolean {
 /**
  * Whether `agent` can actually see `skill`: "own" via a deployment in the
  * agent's own directory, "shared" via the shared root (only for agents that
- * read it), or "none".
+ * read it), or "none". This is effective visibility only - it says nothing
+ * about whether the agent's *own* deployment is a healthy link; a broken own
+ * deployment with a healthy shared fallback still reports "shared" here.
+ * `cellForAgent` layers that local-link health back on for the matrix.
  */
 export function skillVisibleToAgent(
   skill: InstalledSkill,
@@ -151,7 +154,13 @@ const AGENT_MATRIX_AGENT_IDS = {
   pi: "pi",
 } satisfies Record<AgentMatrixLabel, AgentId>;
 
-/** One matrix cell: whether the skill is visible, and whether that deployment is a (broken) symlink. */
+/**
+ * One matrix cell: whether the skill is visible (`state`), and whether the
+ * link backing that visibility is a (broken) symlink. `isBroken` also flags a
+ * broken own-directory deployment even when `state` is "shared" because a
+ * healthy shared copy still makes the skill visible - the marker exists so
+ * the matrix keeps showing the local breakage worth fixing.
+ */
 export interface AgentMatrixCell {
   state: "own" | "shared" | "none";
   isSymlink: boolean;
@@ -191,7 +200,12 @@ function cellForAgent(skill: InstalledSkill, agent: AgentId): AgentMatrixCell {
   return {
     state,
     isSymlink: deployment?.is_symlink ?? false,
-    isBroken: deployment?.symlink_is_broken ?? false,
+    // A healthy shared fallback (`state === "shared"`) doesn't hide a broken
+    // own-directory deployment - the matrix still marks it broken so it's
+    // visible as something worth fixing, even though the skill remains
+    // effectively visible to the agent via the shared root.
+    isBroken:
+      (deployment?.symlink_is_broken ?? false) || (ownDeployment?.symlink_is_broken ?? false),
   };
 }
 
