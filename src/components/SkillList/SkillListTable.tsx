@@ -1,11 +1,12 @@
 // ============================================================================
-// SkillListTable - Searchable, sortable skill rows, shared by the Global,
-// project, and Plugins views
+// SkillListTable - Searchable, sortable skill rows, rendered by SkillsView
+// with whatever it has already filtered down (scope, harness, source, issue)
 // ============================================================================
 
 import { useMemo, useRef, useState } from "react";
 import { Link2, Search, Unlink } from "lucide-react";
 import { deploymentLinkKind } from "../../lib/skill-coverage";
+import { pluginLabelForSkill } from "../../lib/skill-plugin-partition";
 import type { SkillRunSummary } from "../../lib/skill-run-history-types";
 import { formatBytes, formatRelativeTime } from "../../lib/skill-stats";
 import { HarnessIcon, harnessIdFromLabel } from "../ui/HarnessIcon";
@@ -33,6 +34,12 @@ interface SkillListTableProps {
   deploymentPathForSkill?: (skill: InstalledSkill) => string | undefined;
   /** The newest "Test" run outcome per skill name, for the "Tested" column. */
   lastTestBySkill?: Record<string, SkillRunSummary>;
+  /** False when the caller's underlying list (before any filter) is empty, for the right empty state. */
+  hasAnySkills?: boolean;
+  /** Resets the caller's filter, for the "No skills match" empty state. */
+  onClearFilters?: () => void;
+  /** Opens the add-skill sheet, for the "You haven't added a skill yet" empty state. */
+  onAddSkill?: () => void;
 }
 
 /** "2 h ago" with a 6px outcome dot, or "—" when the skill was never tested. */
@@ -61,6 +68,9 @@ export function SkillListTable({
   showPluginVersion = false,
   deploymentPathForSkill,
   lastTestBySkill,
+  hasAnySkills = true,
+  onClearFilters,
+  onAddSkill,
 }: SkillListTableProps) {
   const [query, setQuery] = useState("");
   const [sort, setSort] = useState<SortMode>("name");
@@ -167,7 +177,27 @@ export function SkillListTable({
       </div>
 
       {rows.length === 0 ? (
-        <p className="skill-list-table-empty">No skills found</p>
+        <div className="skill-list-table-empty">
+          {hasAnySkills ? (
+            <>
+              <p>No skills match</p>
+              {onClearFilters && (
+                <button className="skill-list-table-empty-action" onClick={onClearFilters}>
+                  Clear filters
+                </button>
+              )}
+            </>
+          ) : (
+            <>
+              <p>You haven't added a skill yet</p>
+              {onAddSkill && (
+                <button className="skill-list-table-empty-action" onClick={onAddSkill}>
+                  Add skill
+                </button>
+              )}
+            </>
+          )}
+        </div>
       ) : (
         <div className="skill-list-table-rows">
           {rows.map((skill, index) => {
@@ -196,6 +226,11 @@ export function SkillListTable({
                     {skill.name}
                     {skill.has_update && (
                       <span className="skill-list-table-update-chip">Update</span>
+                    )}
+                    {pluginLabelForSkill(skill) && (
+                      <span className="skill-list-table-provenance-chip">
+                        plugin · {pluginLabelForSkill(skill)}
+                      </span>
                     )}
                     {skill.parked && <span className="skill-list-table-parked-chip">Parked</span>}
                     {invocationChipLabel(skill.invocation) && (

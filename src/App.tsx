@@ -1,7 +1,7 @@
 // ============================================================================
 // Skill Studio - Main Application
-// Shell: Sidebar + main view (Dashboard, Global, Project, Plugins, Coverage,
-// Issues, Activity, Discover, or a full-page installed-skill view)
+// Shell: Sidebar + main view (Home, Skills, Activity, Packs, or a full-page
+// installed-skill view)
 // ============================================================================
 
 import { useEffect, useRef } from "react";
@@ -9,14 +9,10 @@ import { homeDir } from "@tauri-apps/api/path";
 import { AddSkillSheet } from "./components/AddSkill/AddSkillSheet";
 import { Sidebar } from "./components/Sidebar/Sidebar";
 import { SkillActivityView } from "./components/Activity/SkillActivityView";
-import { SkillDashboard } from "./components/Dashboard/SkillDashboard";
-import { SkillsScopeView } from "./components/SkillsScopeView";
-import { SkillCoverageView } from "./components/Coverage/SkillCoverageView";
-import { SkillIssuesView } from "./components/Issues/SkillIssuesView";
+import { HomeView } from "./components/Home/HomeView";
+import { SkillsView } from "./components/SkillList/SkillsView";
 import { PacksView } from "./components/Packs/PacksView";
-import { PluginSkillsView } from "./components/Plugins/PluginSkillsView";
 import { SkillPage } from "./components/SkillDetail/SkillPage";
-import { SkillStore } from "./components/SkillStore";
 import { ToastContainer } from "./components/ui/ToastContainer";
 import { useSkillSnapshot } from "./hooks/useSkillSnapshot";
 import {
@@ -104,57 +100,15 @@ function App() {
   }, [addToast]);
 
   let main: React.ReactNode;
-  if (activeView.kind === "dashboard") {
-    main = (
-      <SkillDashboard snapshot={snapshot} isLoading={isLoading} onSelectSkill={onSelectSkill} />
-    );
-  } else if (activeView.kind === "global") {
-    main = (
-      <SkillsScopeView
-        scope={{ kind: "global" }}
-        snapshot={snapshot}
-        onSelectSkill={onSelectSkill}
-      />
-    );
-  } else if (activeView.kind === "project") {
-    main = (
-      <SkillsScopeView
-        scope={{ kind: "project", path: activeView.path }}
-        snapshot={snapshot}
-        onSelectSkill={onSelectSkill}
-      />
-    );
-  } else if (activeView.kind === "plugins") {
-    main = (
-      <PluginSkillsView
-        harness={activeView.harness}
-        snapshot={snapshot}
-        onSelectSkill={onSelectSkill}
-      />
-    );
-  } else if (activeView.kind === "parked") {
-    main = (
-      <SkillsScopeView
-        scope={{ kind: "parked" }}
-        snapshot={snapshot}
-        onSelectSkill={onSelectSkill}
-      />
-    );
-  } else if (activeView.kind === "coverage") {
-    main = <SkillCoverageView snapshot={snapshot} onSelectSkill={onSelectSkill} />;
-  } else if (activeView.kind === "issues") {
-    main = (
-      <SkillIssuesView
-        snapshot={snapshot}
-        issueKind={activeView.issueKind}
-        onSelectSkill={onSelectSkill}
-      />
-    );
+  if (activeView.kind === "home") {
+    main = <HomeView snapshot={snapshot} isLoading={isLoading} onSelectSkill={onSelectSkill} />;
+  } else if (activeView.kind === "skills") {
+    main = <SkillsView snapshot={snapshot} onSelectSkill={onSelectSkill} />;
   } else if (activeView.kind === "activity") {
     main = <SkillActivityView snapshot={snapshot} onSelectSkill={onSelectSkill} />;
   } else if (activeView.kind === "packs") {
     main = <PacksView />;
-  } else if (activeView.kind === "skill") {
+  } else {
     const skill = snapshot?.skills.find((s) => s.name === activeView.name) ?? null;
     const invocationStats = snapshot?.invocations.find((s) => s.skill === activeView.name);
     main = (
@@ -167,8 +121,6 @@ function App() {
         from={activeView.from}
       />
     );
-  } else {
-    main = <SkillStore />;
   }
 
   return (

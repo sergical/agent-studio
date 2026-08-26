@@ -44,24 +44,14 @@ function stripFrontmatter(content: string): string {
 /** The back button's label: the name of the view the page was opened from. */
 function backLabel(from: ActiveView): string {
   switch (from.kind) {
-    case "dashboard":
-      return "Dashboard";
-    case "global":
-      return "Global";
-    case "project":
-      return from.path.split("/").filter(Boolean).pop() ?? from.path;
-    case "plugins":
-      return "Plugins";
-    case "parked":
-      return "Parked";
-    case "coverage":
-      return "Coverage";
-    case "issues":
-      return "Issues";
+    case "home":
+      return "Home";
+    case "skills":
+      return "Skills";
     case "activity":
       return "Activity";
-    case "discover":
-      return "Discover";
+    case "packs":
+      return "Packs";
     default:
       // `ActiveView`'s "skill" kind never nests as its own `from` (see `openSkill`).
       return "Back";

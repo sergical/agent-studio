@@ -41,7 +41,13 @@ function extractGitHubRepo(
   return undefined;
 }
 
-export function SkillStore() {
+interface SkillStoreProps {
+  /** Embedded inside `AddSkillSheet`'s "Browse skills.sh" tab: drops this
+   * view's own header, since the sheet already has one. */
+  compact?: boolean;
+}
+
+export function SkillStore({ compact = false }: SkillStoreProps = {}) {
   const [activeTab, setActiveTab] = useState<"browse" | "installed">("browse");
   const [searchQuery, setSearchQuery] = useState("");
   const [searchResults, setSearchResults] = useState<SkillWithStatus[]>([]);
@@ -276,15 +282,17 @@ export function SkillStore() {
   });
 
   return (
-    <div className="skill-store">
-      <div className="skill-store-header">
-        <h2>skills.sh</h2>
-        <p className="skill-store-subtitle">
-          <a href="https://skills.sh" target="_blank" rel="noopener noreferrer">
-            Discover and install skills
-          </a>
-        </p>
-      </div>
+    <div className={`skill-store ${compact ? "compact" : ""}`}>
+      {!compact && (
+        <div className="skill-store-header">
+          <h2>skills.sh</h2>
+          <p className="skill-store-subtitle">
+            <a href="https://skills.sh" target="_blank" rel="noopener noreferrer">
+              Discover and install skills
+            </a>
+          </p>
+        </div>
+      )}
 
       {/* Tab Navigation */}
       <div className="skill-store-tabs">

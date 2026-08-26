@@ -129,7 +129,7 @@ body {
   color: var(--color-text-primary);
 } /* Focus styles */
 :focus-visible {
-  outline: 2px solid var(--color-accent);
+  outline: 2px solid var(--color-border-focus);
   outline-offset: 2px;
 } /* Reduced motion */
 @media (prefers-reduced-motion: reduce) {
@@ -147,6 +147,49 @@ body {
   text-transform: uppercase;
   color: var(--color-text-tertiary);
   font-weight: 500;
+} /* ============================================================================
+   PageShell - the one source of page padding for every main view
+   ============================================================================ */
+.page-shell {
+  width: 100%;
+  max-width: 1200px;
+  margin: 0 auto;
+  padding: 28px 32px;
+  display: flex;
+  flex-direction: column;
+  gap: 24px;
+}
+.page-shell.narrow {
+  max-width: 720px;
+}
+.page-shell-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+}
+.page-shell-heading {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 0;
+}
+.page-shell-heading h1 {
+  font-size: 20px;
+  font-weight: 600;
+  color: var(--color-text-primary);
+  margin: 0;
+}
+.page-shell-subtitle {
+  font-size: 13px;
+  color: var(--color-text-secondary);
+  margin: 0;
+}
+.page-shell-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-shrink: 0;
 } /* Custom utilities */
 @layer utilities {
   .glass {
@@ -228,18 +271,16 @@ body {
    ============================================================================ */ /* ============================================================================
    Dashboard - Full Width Layout
    ============================================================================ */
-@media (min-width: 1600px) {
-}
-/* Dashboard Health Summary Section */ /* ============================================================================
+/* ============================================================================
    Scope Badge
    ============================================================================ */
 .scope-badge.global {
   background: var(--color-info-soft);
-  color: #60a5fa;
+  color: var(--color-info);
 }
 .scope-badge.project {
   background: var(--color-success-soft);
-  color: #34d399;
+  color: var(--color-success);
 } /* ============================================================================
    Symlink Indicator
    ============================================================================ */ /* ============================================================================
@@ -271,21 +312,7 @@ body {
    Navigation Footer
    ============================================================================ */ /* ============================================================================
    Health Check View
-   ============================================================================ */
-.health-summary-card.success {
-  border-color: rgba(16, 185, 129, 0.3);
-  background: var(--color-success-soft);
-}
-.health-summary-card.error {
-  border-color: rgba(239, 68, 68, 0.3);
-  background: var(--color-error-soft);
-}
-.health-issues-section-title.error {
-  color: var(--color-error);
-}
-.health-issue-card.error {
-  border-left: 3px solid var(--color-error);
-} /* Duplicate Resolution UI */ /* Broken Symlink Actions */ /* ============================================================================
+   ============================================================================ */ /* ============================================================================
    Skill Store Styles
    ============================================================================ */
 .skill-store {
@@ -368,6 +395,14 @@ body {
   flex: 1;
   display: flex;
   overflow: hidden;
+} /* Compact: embedded in AddSkillSheet's "Browse skills.sh" tab, narrower than a full page. */
+.skill-store.compact .skill-store-tabs,
+.skill-store.compact .skill-store-toolbar {
+  padding-left: 20px;
+  padding-right: 20px;
+}
+.skill-store.compact .skill-store-content {
+  flex-direction: column;
 } /* Search Bar */
 .skill-search-bar {
   display: flex;
@@ -589,8 +624,8 @@ body {
   background: var(--color-accent-softer);
 } /* dotagents: getsentry/dotagents symlink deployment */
 .skill-card-source-kind.dotagents {
-  color: var(--color-info, #3b82f6);
-  background: var(--color-info-soft, rgba(59, 130, 246, 0.12));
+  color: var(--color-info);
+  background: var(--color-info-soft);
 } /* plugin: shipped by an agent's plugin system */
 .skill-card-source-kind.plugin {
   color: var(--color-warning);
@@ -601,8 +636,8 @@ body {
   background: var(--color-bg-tertiary);
 } /* fork: detached from its dotagents/skills.sh ledger */
 .skill-card-source-kind.fork {
-  color: var(--color-success, #22c55e);
-  background: var(--color-success-soft, rgba(34, 197, 94, 0.12));
+  color: var(--color-success);
+  background: var(--color-success-soft);
 }
 .skill-card-spec {
   display: inline-flex;
@@ -674,7 +709,7 @@ body {
 .skill-page {
   max-width: 1100px;
   margin: 0 auto;
-  padding: 24px 28px;
+  padding: 28px 32px;
   display: flex;
   flex-direction: column;
   gap: 20px;
@@ -862,8 +897,8 @@ body {
   color: var(--color-accent);
 }
 .skill-detail-badge.source-kind.dotagents {
-  background: var(--color-info-soft, rgba(59, 130, 246, 0.12));
-  color: var(--color-info, #3b82f6);
+  background: var(--color-info-soft);
+  color: var(--color-info);
 }
 .skill-detail-badge.source-kind.plugin {
   background: var(--color-warning-soft);
@@ -874,8 +909,8 @@ body {
   color: var(--color-text-tertiary);
 }
 .skill-detail-badge.source-kind.fork {
-  background: var(--color-success-soft, rgba(34, 197, 94, 0.12));
-  color: var(--color-success, #22c55e);
+  background: var(--color-success-soft);
+  color: var(--color-success);
 }
 .skill-detail-badge.spec {
   background: var(--color-success-soft);
@@ -1467,68 +1502,50 @@ body {
   background: var(--color-accent-soft);
   color: var(--color-text-primary);
 }
-.skill-sidebar-badge {
-  font-size: 11px;
+/* Shared by the sidebar's place counts and the Skills filter bar's result
+   count, so every count in the app lines up on tabular figures. */
+.count-tabular {
   font-variant-numeric: tabular-nums;
   color: var(--color-text-tertiary);
+}
+.skill-sidebar-badge {
+  font-size: 11px;
   text-align: right;
 }
-.skill-sidebar-project-open {
-  grid-column: 1 / 4;
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  min-width: 0;
-  height: 100%;
-  background: transparent;
-  border: none;
-  color: var(--color-text-secondary);
-  cursor: pointer;
-  text-align: left;
+.skill-sidebar-search {
+  height: 32px;
+  padding: 0 10px;
+  font-size: 13px;
+  color: var(--color-text-primary);
+  background: var(--color-bg-primary);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-sm);
+  transition: border-color 0.15s;
 }
-.skill-sidebar-project-icon {
-  flex-shrink: 0;
-  color: var(--color-text-tertiary);
+.skill-sidebar-search::placeholder {
+  color: var(--color-text-quaternary);
 }
-.skill-sidebar-project-name {
-  flex: 1;
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+.skill-sidebar-search:focus-visible {
+  outline: 2px solid var(--color-border-focus);
+  outline-offset: 2px;
 }
-.skill-sidebar-project-open .skill-sidebar-badge {
-  margin-left: auto;
-  flex-shrink: 0;
-}
-.skill-sidebar-project-remove {
-  grid-column: 4;
+.skill-sidebar-add-skill {
   display: flex;
   align-items: center;
   justify-content: center;
-  width: 20px;
-  height: 20px;
-  background: transparent;
+  gap: 6px;
+  height: 30px;
+  margin-top: 6px;
+  font-size: 13px;
+  color: var(--color-text-primary);
+  background: var(--color-accent-soft);
   border: none;
-  color: var(--color-text-quaternary);
   border-radius: var(--radius-sm);
   cursor: pointer;
-  opacity: 0;
-  transition:
-    opacity 0.15s,
-    color 0.15s,
-    background-color 0.15s;
+  transition: background-color 0.15s;
 }
-.skill-sidebar-project:hover .skill-sidebar-project-remove,
-.skill-sidebar-project:focus-within .skill-sidebar-project-remove {
-  opacity: 1;
-}
-.skill-sidebar-project-remove:hover {
-  color: var(--color-error);
-  background: var(--color-error-soft);
-}
-.skill-sidebar-add-project {
-  color: var(--color-text-tertiary);
+.skill-sidebar-add-skill:hover {
+  color: var(--color-accent-hover);
 }
 .skill-sidebar-footer {
   margin-top: auto;
@@ -1559,37 +1576,232 @@ body {
 .skill-sidebar-refresh-spinning {
   animation: spin 0.8s linear infinite;
 } /* ============================================================================
-   Dashboard
+   Home
    ============================================================================ */
-.dashboard {
-  max-width: 1100px;
-  margin: 0 auto;
-  padding: 28px 32px;
-  display: flex;
-  flex-direction: column;
-  gap: 36px;
-}
-.dashboard-empty {
+.home-empty {
   display: flex;
   align-items: center;
   justify-content: center;
   height: 100%;
   color: var(--color-text-tertiary);
+} /* Summary line - one line of plain text, each number a link-styled button */
+.home-summary {
+  margin: 0;
+  font-size: 13px;
+  color: var(--color-text-secondary);
 }
-.dashboard-section {
+.home-summary-link {
+  padding: 0;
+  background: none;
+  border: none;
+  font: inherit;
+  font-variant-numeric: tabular-nums;
+  color: var(--color-text-secondary);
+  cursor: pointer;
+  transition: color 0.15s;
+}
+.home-summary-link:hover {
+  color: var(--color-accent);
+} /* One shared card style for every Home block: Needs attention, Updates, Recently used */
+.home-block {
   display: flex;
   flex-direction: column;
-  gap: 12px;
+  gap: 4px;
+  padding: 16px;
+  border: 1px solid var(--color-border-subtle);
+  border-radius: var(--radius-lg);
 }
-.dashboard-section-header {
+.home-block-header {
   display: flex;
   align-items: baseline;
   justify-content: space-between;
   gap: 12px;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--color-text-primary);
 }
-.dashboard-section-total {
+.home-block-count {
+  margin-left: 6px;
+  font-weight: 400;
+  color: var(--color-text-tertiary);
+}
+.home-block-header-action {
+  padding: 0;
+  background: none;
+  border: none;
+  font-size: 12px;
+  font-weight: 400;
+  color: var(--color-accent);
+  cursor: pointer;
+  transition: color 0.15s;
+}
+.home-block-header-action:hover:not(:disabled) {
+  text-decoration: underline;
+}
+.home-block-header-action:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+.home-block-footer-link {
+  align-self: flex-start;
+  margin-top: 6px;
+  padding: 0;
+  background: none;
+  border: none;
+  font-size: 12px;
+  color: var(--color-accent);
+  cursor: pointer;
+  transition: color 0.15s;
+}
+.home-block-footer-link:hover {
+  text-decoration: underline;
+} /* Needs attention - one row per issue, ungrouped */
+.home-needs-attention {
+  display: flex;
+  flex-direction: column;
+}
+.home-needs-attention-row {
+  display: grid;
+  grid-template-columns: 6px minmax(0, 1fr) minmax(0, 2fr) auto;
+  align-items: center;
+  gap: 10px;
+  min-height: 44px;
+  padding: 0 4px;
+  border-radius: var(--radius-sm);
+  transition: background-color 0.15s;
+}
+.home-needs-attention-row:hover {
+  background: var(--color-bg-hover);
+}
+.home-needs-attention-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--color-text-quaternary);
+}
+.home-needs-attention-dot.error {
+  background: var(--color-error);
+}
+.home-needs-attention-dot.warning {
+  background: var(--color-warning);
+}
+.home-needs-attention-name {
+  min-width: 0;
+  padding: 0;
+  background: none;
+  border: none;
+  font-size: 13px;
+  color: var(--color-text-primary);
+  text-align: left;
+  cursor: pointer;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.home-needs-attention-name:hover {
+  color: var(--color-accent);
+}
+.home-needs-attention-detail {
+  min-width: 0;
+  font-size: 12px;
+  color: var(--color-text-secondary);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.home-needs-attention-action {
+  height: 28px;
+  padding: 0 10px;
+  font-size: 12px;
+  color: var(--color-text-secondary);
+  background: var(--color-bg-tertiary);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+  white-space: nowrap;
+  transition:
+    background-color 0.15s,
+    color 0.15s;
+}
+.home-needs-attention-action:hover:not(:disabled) {
+  background: var(--color-bg-hover);
+  color: var(--color-text-primary);
+}
+.home-needs-attention-action:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+.home-needs-attention-more {
+  margin: 6px 4px 0;
+  padding: 0;
+  background: none;
+  border: none;
+  font-size: 12px;
+  color: var(--color-accent);
+  cursor: pointer;
+  transition: color 0.15s;
+}
+.home-needs-attention-more:hover {
+  text-decoration: underline;
+}
+.home-needs-attention-empty {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin: 0;
+  font-size: 13px;
+  color: var(--color-text-tertiary);
+}
+.home-needs-attention-empty-icon {
+  color: var(--color-success);
+} /* Recently used */
+.home-recently-used {
+  display: flex;
+  flex-direction: column;
+}
+.home-recently-used-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) 72px 40px;
+  align-items: center;
+  gap: 12px;
+  min-height: 44px;
+  width: 100%;
+  padding: 0 4px;
+  background: transparent;
+  border: none;
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+  text-align: left;
+  transition: background-color 0.15s;
+}
+.home-recently-used-row:hover {
+  background: var(--color-bg-hover);
+}
+.home-recently-used-name {
+  font-size: 13px;
+  color: var(--color-text-primary);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.home-recently-used-project {
   font-size: 12px;
   color: var(--color-text-tertiary);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.home-recently-used-time {
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+  color: var(--color-text-tertiary);
+  white-space: nowrap;
+}
+.home-recently-used-count {
+  text-align: right;
+  font-size: 13px;
+  color: var(--color-text-secondary);
+  white-space: nowrap;
 }
 .window-segmented-control {
   display: flex;
@@ -1650,6 +1862,220 @@ body {
 }
 .harness-segmented-control-item.unavailable {
   opacity: 0.4;
+} /* ============================================================================
+   SkillListFilterBar - the Skills view's one filter row
+   ============================================================================ */
+.skill-list-filter-bar {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.skill-list-filter-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px;
+}
+.skill-list-filter-scope {
+  display: flex;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-sm);
+  overflow: hidden;
+}
+.skill-list-filter-scope-item {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  height: 32px;
+  padding: 0 12px;
+  font-size: 12px;
+  color: var(--color-text-tertiary);
+  background: transparent;
+  border: none;
+  cursor: pointer;
+  transition:
+    background-color 0.15s,
+    color 0.15s;
+}
+.skill-list-filter-scope-item:not(:first-child) {
+  border-left: 1px solid var(--color-border);
+}
+.skill-list-filter-scope-item:hover {
+  background: var(--color-bg-hover);
+  color: var(--color-text-secondary);
+}
+.skill-list-filter-scope-item.active {
+  background: var(--color-bg-tertiary);
+  color: var(--color-text-primary);
+}
+.skill-list-filter-project-menu {
+  position: relative;
+}
+.skill-list-filter-project-menu-popup {
+  position: absolute;
+  top: calc(100% + 4px);
+  left: 0;
+  z-index: 20;
+  display: flex;
+  flex-direction: column;
+  min-width: 200px;
+  padding: 4px;
+  background: var(--color-bg-secondary);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-md);
+  box-shadow: var(--shadow-md);
+}
+.skill-list-filter-project-menu-empty {
+  padding: 6px 10px;
+  font-size: 12px;
+  color: var(--color-text-quaternary);
+}
+.skill-list-filter-project-menu-row {
+  display: flex;
+  align-items: center;
+}
+.skill-list-filter-project-menu-item {
+  flex: 1;
+  min-width: 0;
+  height: 32px;
+  padding: 0 10px;
+  font-size: 12px;
+  color: var(--color-text-secondary);
+  background: transparent;
+  border: none;
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+  text-align: left;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  transition: background-color 0.15s;
+}
+.skill-list-filter-project-menu-item:hover {
+  background: var(--color-bg-hover);
+  color: var(--color-text-primary);
+}
+.skill-list-filter-project-menu-remove {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  width: 32px;
+  height: 32px;
+  color: var(--color-text-tertiary);
+  background: transparent;
+  border: none;
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+  opacity: 0;
+  transition:
+    opacity 0.15s,
+    background-color 0.15s,
+    color 0.15s;
+}
+.skill-list-filter-project-menu-row:hover .skill-list-filter-project-menu-remove,
+.skill-list-filter-project-menu-row:focus-within .skill-list-filter-project-menu-remove {
+  opacity: 1;
+}
+.skill-list-filter-project-menu-remove:hover {
+  background: var(--color-error-soft);
+  color: var(--color-error);
+}
+.skill-list-filter-project-menu-add {
+  color: var(--color-accent);
+  border-top: 1px solid var(--color-border-subtle);
+  margin-top: 2px;
+}
+.skill-list-filter-harnesses {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+.skill-list-filter-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  height: 32px;
+  padding: 0 10px;
+  font-size: 11px;
+  color: var(--color-text-tertiary);
+  background: var(--color-bg-tertiary);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+  transition:
+    background-color 0.15s,
+    color 0.15s;
+}
+.skill-list-filter-chip:hover {
+  background: var(--color-bg-hover);
+  color: var(--color-text-secondary);
+}
+.skill-list-filter-chip.active {
+  color: var(--color-text-primary);
+  border-color: var(--color-text-tertiary);
+}
+.skill-list-filter-source select {
+  height: 32px;
+  padding: 0 10px;
+  font-size: 12px;
+  color: var(--color-text-secondary);
+  background: var(--color-bg-tertiary);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+}
+.skill-list-filter-spacer {
+  flex: 1;
+}
+.skill-list-filter-coverage-toggle {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  height: 32px;
+  font-size: 12px;
+  color: var(--color-text-secondary);
+  cursor: pointer;
+}
+.skill-list-filter-count {
+  font-size: 12px;
+  white-space: nowrap;
+}
+.skill-list-filter-active-chips {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+}
+.skill-list-filter-active-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  height: 24px;
+  padding: 0 8px;
+  font-size: 11px;
+  color: var(--color-text-secondary);
+  background: var(--color-accent-soft);
+  border: none;
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+  transition: background-color 0.15s;
+}
+.skill-list-filter-active-chip:hover {
+  background: var(--color-accent-softer);
+}
+.skill-list-filter-clear-all {
+  height: 24px;
+  padding: 0 8px;
+  font-size: 11px;
+  color: var(--color-text-tertiary);
+  background: transparent;
+  border: none;
+  cursor: pointer;
+  transition: color 0.15s;
+}
+.skill-list-filter-clear-all:hover {
+  color: var(--color-text-primary);
 }
 .skill-assistant-panel {
   display: flex;
@@ -2148,149 +2574,70 @@ body {
   background: var(--color-warning-soft);
   color: var(--color-warning);
 }
-.dashboard-section-row {
+/* Home's Updates block - one row per skill with a newer commit available */
+.home-updates {
+  display: flex;
+  flex-direction: column;
+}
+.home-updates-row {
   display: grid;
-  grid-template-columns: minmax(0, 3fr) minmax(0, 2fr);
-  gap: 40px;
-  align-items: start;
-} /* Stat strip - a single non-interactive row, no boxes, no icons */
-.dashboard-stat-strip {
-  display: flex;
-}
-.dashboard-stat-cell {
-  padding: 0 28px;
-  border-left: 1px solid var(--color-border);
-}
-.dashboard-stat-cell:first-child {
-  padding-left: 0;
-  border-left: none;
-}
-.dashboard-stat-value {
-  display: block;
-  font-size: 28px;
-  font-weight: 600;
-  font-variant-numeric: tabular-nums;
-  letter-spacing: -0.01em;
-  color: var(--color-text-primary);
-}
-.dashboard-stat-value.warning {
-  color: var(--color-warning);
-}
-.dashboard-stat-label {
-  display: block;
-  margin-top: 2px;
-  font-size: 12px;
-  color: var(--color-text-secondary);
-}
-.dashboard-stat-cell-sparkline {
-  display: flex;
-  flex-direction: column;
-}
-.dashboard-stat-value-group {
-  display: flex;
-  align-items: baseline;
-}
-.dashboard-sparkline {
-  width: 120px;
-  height: 28px;
-  margin-left: 16px;
-} /* Coverage table */
-.coverage-table-wrap {
-  display: flex;
-  flex-direction: column;
-  gap: 10px;
-}
-.coverage-table-caption {
-  font-size: 13px;
-  color: var(--color-text-tertiary);
-}
-.coverage-table {
-  display: flex;
-  flex-direction: column;
-}
-.coverage-table-row {
-  display: grid;
-  grid-template-columns: 190px 1fr 90px auto;
+  grid-template-columns: minmax(0, 1fr) auto auto;
   align-items: center;
-  gap: 12px;
-  min-height: 28px;
-  padding: 6px 0;
+  gap: 16px;
+  min-height: 44px;
+  padding: 0 4px;
 }
-.coverage-table-agent {
-  display: flex;
-  align-items: flex-start;
-  gap: 6px;
-  font-size: 13px;
-  color: var(--color-text-secondary);
-}
-.coverage-table-agent svg {
-  flex-shrink: 0;
-  margin-top: 2px;
-}
-.coverage-table-agent-text {
-  display: flex;
-  flex-direction: column;
-  gap: 2px;
-  min-width: 0;
-}
-.coverage-table-agent-label {
-  color: var(--color-text-secondary);
-}
-.coverage-table-agent-subline {
-  font-size: 12px;
-  color: var(--color-text-tertiary);
-}
-.coverage-table-bar-track {
-  height: 4px;
-  background: var(--color-bg-tertiary);
-  border-radius: 2px;
+.home-updates-name {
   overflow: hidden;
-}
-.coverage-table-bar-fill {
-  display: block;
-  height: 100%;
-  background: var(--color-accent);
-  border-radius: 2px;
-}
-.coverage-table-count {
-  text-align: right;
+  text-overflow: ellipsis;
+  white-space: nowrap;
   font-size: 13px;
-  font-variant-numeric: tabular-nums;
   color: var(--color-text-primary);
-  white-space: nowrap;
-}
-.coverage-table-missing {
-  padding: 0;
-  background: none;
+  background: transparent;
   border: none;
-  font-size: 12px;
-  color: var(--color-accent);
+  text-align: left;
   cursor: pointer;
-  text-decoration: none;
-  white-space: nowrap;
   transition: color 0.15s;
 }
-.coverage-table-missing:hover {
-  text-decoration: underline;
+.home-updates-name:hover {
+  color: var(--color-accent);
 }
-.coverage-table-all {
-  font-size: 12px;
+.home-updates-commit {
+  font-size: 11px;
   color: var(--color-text-tertiary);
   white-space: nowrap;
 }
-.coverage-table-view-all {
-  align-self: flex-start;
-  padding: 0;
-  background: none;
-  border: none;
-  font-size: 13px;
-  color: var(--color-accent);
+.home-updates-pull {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  height: 28px;
+  padding: 0 10px;
+  font-size: 12px;
+  color: var(--color-text-secondary);
+  background: var(--color-bg-tertiary);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-sm);
   cursor: pointer;
-  text-decoration: none;
-  transition: color 0.15s;
+  transition:
+    background-color 0.15s,
+    color 0.15s;
 }
-.coverage-table-view-all:hover {
-  text-decoration: underline;
+.home-updates-pull:hover:not(:disabled) {
+  background: var(--color-bg-hover);
+  color: var(--color-text-primary);
+}
+.home-updates-pull:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+.home-updates-pull .spinner {
+  width: 12px;
+  height: 12px;
+  border: 2px solid currentColor;
+  border-top-color: transparent;
+  border-radius: 50%;
+  animation: spin 0.8s linear infinite;
 } /* Invocation heatmap */
 .activity-heatmap-months {
   display: grid;
@@ -2343,139 +2690,6 @@ body {
 }
 .activity-heatmap-cell.level-4 {
   background: color-mix(in oklch, var(--color-accent) 100%, var(--color-bg-tertiary));
-} /* Top skills */
-.dashboard-top-skills {
-  list-style: none;
-  margin: 0;
-  padding: 0;
-  display: flex;
-  flex-direction: column;
-}
-.dashboard-top-skills-row {
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) 72px 40px;
-  align-items: center;
-  gap: 12px;
-  height: 32px;
-  width: 100%;
-  padding: 0 8px;
-  background: transparent;
-  border: none;
-  border-radius: var(--radius-sm);
-  cursor: pointer;
-  text-align: left;
-  transition: background-color 0.15s;
-}
-.dashboard-top-skills-row:hover {
-  background: var(--color-bg-hover);
-}
-.dashboard-top-skills-name-group {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  min-width: 0;
-}
-.dashboard-top-skills-name {
-  font-size: 13px;
-  color: var(--color-text-primary);
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-.dashboard-top-skills-plugin-tag {
-  flex-shrink: 0;
-  font-size: 10px;
-  letter-spacing: 0.02em;
-  color: var(--color-text-tertiary);
-  background: var(--color-bg-tertiary);
-  border-radius: var(--radius-sm);
-  padding: 1px 6px;
-}
-.dashboard-top-skills-last-used {
-  font-size: 12px;
-  font-variant-numeric: tabular-nums;
-  color: var(--color-text-tertiary);
-  white-space: nowrap;
-}
-.dashboard-top-skills-count {
-  text-align: right;
-  font-size: 13px;
-  font-variant-numeric: tabular-nums;
-  color: var(--color-text-secondary);
-  white-space: nowrap;
-}
-.dashboard-top-skills-empty {
-  color: var(--color-text-tertiary);
-  font-size: 13px;
-} /* Needs attention card */
-.dashboard-needs-attention {
-  display: flex;
-  flex-direction: column;
-}
-.dashboard-needs-attention-row {
-  display: grid;
-  grid-template-columns: 6px 32px 1fr;
-  align-items: center;
-  gap: 8px;
-  width: 100%;
-  height: 32px;
-  padding: 0 8px;
-  background: transparent;
-  border: none;
-  border-radius: var(--radius-sm);
-  cursor: pointer;
-  text-align: left;
-  transition: background-color 0.15s;
-}
-.dashboard-needs-attention-row:hover {
-  background: var(--color-bg-hover);
-}
-.dashboard-needs-attention-dot {
-  width: 6px;
-  height: 6px;
-  border-radius: 50%;
-  background: var(--color-text-quaternary);
-}
-.dashboard-needs-attention-dot.error {
-  background: var(--color-error);
-}
-.dashboard-needs-attention-dot.warning {
-  background: var(--color-warning);
-}
-.dashboard-needs-attention-count {
-  text-align: right;
-  font-size: 13px;
-  font-variant-numeric: tabular-nums;
-  color: var(--color-text-primary);
-}
-.dashboard-needs-attention-label {
-  min-width: 0;
-  font-size: 13px;
-  color: var(--color-text-secondary);
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-.dashboard-needs-attention-more {
-  margin: 6px 8px 0;
-  padding: 0;
-  background: none;
-  border: none;
-  font-size: 12px;
-  color: var(--color-accent);
-  cursor: pointer;
-  text-decoration: none;
-  transition: color 0.15s;
-}
-.dashboard-needs-attention-more:hover {
-  text-decoration: underline;
-}
-.dashboard-needs-attention-empty {
-  display: flex;
-  flex-direction: column;
-  gap: 4px;
-  font-size: 13px;
-  color: var(--color-text-tertiary);
 } /* ============================================================================
    Skill List Table (Global, project, and Plugins views)
    ============================================================================ */
@@ -2522,8 +2736,31 @@ body {
   cursor: pointer;
 }
 .skill-list-table-empty {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 8px;
   color: var(--color-text-tertiary);
   font-size: 12px;
+}
+.skill-list-table-empty p {
+  margin: 0;
+}
+.skill-list-table-empty-action {
+  height: 32px;
+  padding: 0 12px;
+  font-size: 12px;
+  color: var(--color-text-primary);
+  background: var(--color-bg-tertiary);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+  transition:
+    background-color 0.15s,
+    color 0.15s;
+}
+.skill-list-table-empty-action:hover {
+  background: var(--color-bg-hover);
 }
 .skill-list-table-rows {
   display: flex;
@@ -2536,7 +2773,7 @@ body {
   align-items: center;
   gap: 12px;
   width: 100%;
-  height: 36px;
+  height: 44px;
   padding: 0 12px;
   background: var(--color-bg-secondary);
   border: 1px solid var(--color-border);
@@ -2583,7 +2820,8 @@ body {
   color: var(--color-warning);
 }
 .skill-list-table-parked-chip,
-.skill-list-table-invocation-chip {
+.skill-list-table-invocation-chip,
+.skill-list-table-provenance-chip {
   display: inline-flex;
   margin-left: 6px;
   padding: 1px 6px;
@@ -2714,61 +2952,9 @@ body {
   border-radius: var(--radius-sm);
   cursor: pointer;
 } /* ============================================================================
-   Coverage View (skill x agent matrix)
+   Coverage matrix (skill x agent), embedded as the "Show coverage" column
+   group on the Skills list - see SkillsView / SkillCoverageMatrix
    ============================================================================ */
-.coverage-view {
-  display: flex;
-  flex-direction: column;
-  gap: 16px;
-  padding: 24px 28px;
-}
-.coverage-view-header {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: 16px;
-}
-.coverage-view-header h2 {
-  font-size: 18px;
-  font-weight: 600;
-  margin: 0;
-  color: var(--color-text-primary);
-}
-.coverage-view-filter {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  flex: 1;
-  max-width: 320px;
-  padding: 6px 10px;
-  background: var(--color-bg-secondary);
-  border: 1px solid var(--color-border);
-  border-radius: var(--radius-sm);
-  color: var(--color-text-tertiary);
-}
-.coverage-view-filter input {
-  flex: 1;
-  background: transparent;
-  border: none;
-  font-size: 12px;
-  color: var(--color-text-primary);
-}
-.coverage-view-filter input:focus-visible {
-  outline: 2px solid var(--color-border-focus);
-  outline-offset: 2px;
-}
-.coverage-view-legend {
-  display: flex;
-  align-items: center;
-  gap: 12px;
-  margin-left: auto;
-  font-size: 11px;
-  color: var(--color-text-tertiary);
-}
-.coverage-view-legend .coverage-matrix-marker {
-  margin-right: 4px;
-  vertical-align: -1px;
-}
 .coverage-matrix {
   overflow: auto;
   border: 1px solid var(--color-border);
@@ -2844,57 +3030,6 @@ body {
 .coverage-matrix-marker.broken {
   outline: 1.5px solid var(--color-error);
   outline-offset: 1.5px;
-} /* ============================================================================
-   Plugins View
-   ============================================================================ */
-.plugin-skills-view {
-  display: flex;
-  flex-direction: column;
-  gap: 24px;
-  padding: 24px 28px;
-}
-.plugin-skills-view-header h2 {
-  font-size: 18px;
-  font-weight: 600;
-  margin: 0 0 4px;
-  color: var(--color-text-primary);
-}
-.plugin-skills-view-note {
-  font-size: 12px;
-  color: var(--color-text-tertiary);
-  margin: 0;
-}
-.plugin-skills-view-group {
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-}
-.plugin-skills-view-group-title {
-  margin: 0;
-}
-.plugin-skills-view-empty {
-  color: var(--color-text-tertiary);
-  font-size: 13px;
-} /* ============================================================================
-   Scope View (Global / Project)
-   ============================================================================ */
-.skills-scope-view {
-  display: flex;
-  flex-direction: column;
-  gap: 16px;
-  padding: 24px 28px;
-}
-.skills-scope-view-header h2 {
-  font-size: 18px;
-  font-weight: 600;
-  margin: 0 0 4px;
-  color: var(--color-text-primary);
-}
-.skills-scope-view-path {
-  font-size: 12px;
-  font-family: var(--font-mono);
-  color: var(--color-text-tertiary);
-  margin: 0 0 4px;
 } /* ============================================================================
    Skill Detail - Facts, Deployments, Frontmatter
    ============================================================================ */
@@ -3162,160 +3297,8 @@ body {
   letter-spacing: 0.08em;
   margin: 0 0 8px;
 } /* ============================================================================
-   Issues View
-   ============================================================================ */
-.issues-view {
-  display: flex;
-  flex-direction: column;
-  gap: 16px;
-  padding: 24px 28px;
-}
-.issues-view-header {
-  display: flex;
-  align-items: baseline;
-  gap: 12px;
-}
-.issues-view-header h1 {
-  font-size: 18px;
-  font-weight: 600;
-  margin: 0;
-  color: var(--color-text-primary);
-}
-.issues-view-subline {
-  font-size: 13px;
-  color: var(--color-text-tertiary);
-}
-.issues-view-update-status {
-  margin-left: auto;
-  font-size: 12px;
-  color: var(--color-text-tertiary);
-}
-.issues-view-check-now {
-  min-height: 28px;
-  padding: 0 10px;
-  font-size: 12px;
-  color: var(--color-text-secondary);
-  background: var(--color-bg-tertiary);
-  border: none;
-  border-radius: var(--radius-sm);
-  cursor: pointer;
-}
-.issues-view-check-now:hover:not(:disabled) {
-  background: var(--color-bg-hover);
-}
-.issues-view-check-now:disabled {
-  opacity: 0.6;
-  cursor: default;
-}
-.issues-view-chips {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 8px;
-}
-.issues-view-chip {
-  display: flex;
-  align-items: center;
-  min-height: 28px;
-  padding: 0 10px;
-  font-size: 12px;
-  color: var(--color-text-secondary);
-  background: var(--color-bg-tertiary);
-  border: none;
-  border-radius: var(--radius-sm);
-  cursor: pointer;
-  transition:
-    background-color 0.15s,
-    color 0.15s;
-}
-.issues-view-chip:hover {
-  background: var(--color-bg-hover);
-}
-.issues-view-chip.active {
-  background: var(--color-accent-soft);
-  color: var(--color-text-primary);
-}
-.issues-view-empty {
-  color: var(--color-text-tertiary);
-  font-size: 13px;
-}
-.issue-table {
-  display: flex;
-  flex-direction: column;
-}
-.issue-table-row {
-  display: grid;
-  grid-template-columns: 16px minmax(0, 1fr) minmax(0, 2fr) minmax(0, 1fr);
-  align-items: center;
-  gap: 12px;
-  width: 100%;
-  height: 36px;
-  padding: 0 8px;
-  background: transparent;
-  border: none;
-  border-bottom: 1px solid var(--color-border-subtle);
-  cursor: pointer;
-  text-align: left;
-  transition: background-color 0.15s;
-}
-.issue-table-row:hover {
-  background: var(--color-bg-hover);
-}
-.issue-table-severity {
-  width: 6px;
-  height: 6px;
-  border-radius: 50%;
-  background: var(--color-text-quaternary);
-}
-.issue-table-severity.error {
-  background: var(--color-error);
-}
-.issue-table-severity.warning {
-  background: var(--color-warning);
-}
-.issue-table-skill {
-  font-size: 13px;
-  color: var(--color-text-primary);
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-.issue-table-message {
-  font-size: 13px;
-  color: var(--color-text-secondary);
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-.issue-table-where {
-  font-size: 12px;
-  color: var(--color-text-tertiary);
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-} /* ============================================================================
    Activity View (year heatmap, by-skill and by-project breakdowns)
    ============================================================================ */
-.activity-view {
-  display: flex;
-  flex-direction: column;
-  gap: 24px;
-  padding: 24px 28px;
-}
-.activity-view-header {
-  display: flex;
-  align-items: baseline;
-  gap: 12px;
-}
-.activity-view-header h1 {
-  font-size: 18px;
-  font-weight: 600;
-  margin: 0;
-  color: var(--color-text-primary);
-}
-.activity-view-subline {
-  font-size: 13px;
-  color: var(--color-text-tertiary);
-}
 .activity-view-empty {
   color: var(--color-text-tertiary);
   font-size: 13px;
@@ -3448,6 +3431,37 @@ body {
 .add-skill-sheet-close:hover {
   color: var(--color-text-primary);
   background: var(--color-bg-hover);
+}
+.add-skill-sheet-tabs {
+  display: flex;
+  border-bottom: 1px solid var(--color-border);
+}
+.add-skill-sheet-tab {
+  height: 40px;
+  padding: 0 16px;
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--color-text-tertiary);
+  background: transparent;
+  border: none;
+  border-bottom: 2px solid transparent;
+  cursor: pointer;
+  margin-bottom: -1px;
+  transition:
+    color 0.15s,
+    border-color 0.15s;
+}
+.add-skill-sheet-tab:hover {
+  color: var(--color-text-secondary);
+}
+.add-skill-sheet-tab.active {
+  color: var(--color-accent);
+  border-bottom-color: var(--color-accent);
+}
+.add-skill-sheet-browse {
+  flex: 1;
+  overflow: hidden;
+  display: flex;
 }
 .add-skill-sheet-body {
   flex: 1;
@@ -3607,21 +3621,6 @@ body {
   cursor: not-allowed;
 }
 
-.packs-view {
-  display: flex;
-  flex-direction: column;
-  gap: 12px;
-}
-.packs-view-header {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-}
-.packs-view-header h2 {
-  font-size: 16px;
-  font-weight: 600;
-  margin: 0;
-}
 .packs-view-empty {
   font-size: 12px;
   color: var(--color-text-tertiary);
@@ -3636,7 +3635,7 @@ body {
   align-items: center;
   gap: 10px;
   width: 100%;
-  height: 36px;
+  height: 44px;
   padding: 0 12px;
   background: var(--color-bg-secondary);
   border: 1px solid var(--color-border);
@@ -3644,6 +3643,7 @@ body {
   color: var(--color-text-secondary);
   cursor: pointer;
   text-align: left;
+  transition: background-color 0.15s;
 }
 .packs-view-row:hover {
   background: var(--color-bg-hover);
@@ -3679,11 +3679,6 @@ body {
   background: transparent;
   border: none;
   cursor: pointer;
-}
-.packs-detail h2 {
-  font-size: 18px;
-  font-weight: 600;
-  margin: 0;
 }
 .packs-detail-dir {
   font-size: 12px;

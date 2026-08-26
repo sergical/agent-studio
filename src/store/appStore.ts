@@ -4,7 +4,8 @@
 // ============================================================================
 
 import { create } from "zustand";
-import type { HealthIssueKind } from "../lib/skill-health";
+import { defaultSkillListFilter } from "../lib/skill-list-filter";
+import type { SkillListFilter } from "../lib/skill-list-filter";
 import { USAGE_WINDOWS } from "../lib/skill-stats";
 import type { UsageWindow } from "../lib/skill-stats";
 import type { Toast } from "../lib/skill-types";
@@ -14,26 +15,20 @@ import type { Toast } from "../lib/skill-types";
 // ============================================================================
 
 /**
- * Which view the shell's `<main>` shows. `global` is every own skill
- * deployed at global scope; `project` is one registered project directory;
- * `plugins` is every skill shipped by one harness's plugin cache; `parked`
- * is every parked (disabled globally) skill; `coverage` is the skill x agent
- * deployment matrix; `issues` is every health issue
- * across own skills, optionally pre-filtered to one `issueKind` for
- * deep-linking from the dashboard; `activity` is the full invocation
- * history (year heatmap, per-skill and per-project breakdowns); `skill` is
- * the full-page view of one installed skill, opened from any other view.
+ * Which view the shell's `<main>` shows. `home` is what needs doing across
+ * every own skill; `skills` is the unified, filterable skill list - scope
+ * (global/project/parked), harness, source, and issue all live in the
+ * store's `skillListFilter`, not on this view, so places (the sidebar) stay
+ * distinct from filters (the list) and opening a skill and coming back
+ * never loses them; `activity` is the full invocation history (year
+ * heatmap, per-skill and per-project breakdowns); `packs` is the pack list
+ * and detail; `skill` is the full-page view of one installed skill, opened
+ * from any other view.
  */
 export type ActiveView =
-  | { kind: "dashboard" }
-  | { kind: "global" }
-  | { kind: "project"; path: string }
-  | { kind: "plugins"; harness: string }
-  | { kind: "parked" }
-  | { kind: "coverage" }
-  | { kind: "issues"; issueKind?: HealthIssueKind }
+  | { kind: "home" }
+  | { kind: "skills" }
   | { kind: "activity" }
-  | { kind: "discover" }
   | { kind: "packs" }
   | { kind: "skill"; name: string; deploymentPath?: string; from: ActiveView };
 
@@ -58,6 +53,26 @@ interface AppState {
   openSkill: (name: string, deploymentPath?: string) => void;
   /** Returns to the view the current skill page was opened from. */
   closeSkill: () => void;
+
+  // === Skills List Filter ===
+  // The Skills view's filter bar state, lifted into the store so it survives
+  // opening a skill and coming back, and so the sidebar's search input and
+  // Home's deep links can drive it directly - see Sidebar.tsx and
+  // HomeView.tsx.
+  skillListFilter: SkillListFilter;
+  setSkillListFilter: (patch: Partial<SkillListFilter>) => void;
+  resetSkillListFilter: () => void;
+  /** Whether the Skills view shows the coverage matrix instead of the table. */
+  showCoverage: boolean;
+  setShowCoverage: (show: boolean) => void;
+  /**
+   * Set by Home's "projects" link; consumed (and cleared) by the filter
+   * bar's project menu on mount to focus its trigger, without auto-opening
+   * the menu itself.
+   */
+  focusProjectMenuOnce: boolean;
+  requestFocusProjectMenu: () => void;
+  clearFocusProjectMenuOnce: () => void;
 
   // === Project Scope Selection ===
   // Directories the user has pointed at (via a folder picker), for
@@ -170,7 +185,7 @@ export const useAppStore = create<AppState>((set, get) => ({
     }));
   },
 
-  activeView: { kind: "dashboard" },
+  activeView: { kind: "home" },
   setActiveView: (view) => set({ activeView: view, selectedSkillPaths: new Set() }),
   openSkill: (name, deploymentPath) => {
     const current = get().activeView;
@@ -181,6 +196,18 @@ export const useAppStore = create<AppState>((set, get) => ({
     const current = get().activeView;
     if (current.kind === "skill") set({ activeView: current.from });
   },
+
+  skillListFilter: defaultSkillListFilter(),
+  setSkillListFilter: (patch) =>
+    set((state) => ({ skillListFilter: { ...state.skillListFilter, ...patch } })),
+  resetSkillListFilter: () => set({ skillListFilter: defaultSkillListFilter() }),
+
+  showCoverage: false,
+  setShowCoverage: (show) => set({ showCoverage: show }),
+
+  focusProjectMenuOnce: false,
+  requestFocusProjectMenu: () => set({ focusProjectMenuOnce: true }),
+  clearFocusProjectMenuOnce: () => set({ focusProjectMenuOnce: false }),
 
   userAddedProjects: loadPathList(PROJECT_PATHS_STORAGE_KEY),
   excludedProjects: loadPathList(EXCLUDED_PROJECT_PATHS_STORAGE_KEY),

@@ -317,3 +317,32 @@ user's shell config.
 Every run emits one `SkillAgentEvent` per parsed line (or per lifecycle step) on
 `"skill-agent://event"`, and always exactly one terminating `Finished` event, even
 on cancellation or a crash before any output.
+
+## Navigation
+
+The app shell keeps two different jobs apart: the sidebar (`Sidebar.tsx`) holds
+_places_ - Home, Skills, Activity, Packs, and Parked - and the Skills view's
+filter bar (`SkillListFilterBar.tsx`) holds _filters_ over that one list:
+scope (all/global/project), harness, source, a coverage toggle, and a
+free-text query. There is no separate page per scope, per harness, or per
+issue kind; every one of those is a value of `SkillListFilter`
+(`src/lib/skill-list-filter.ts`), applied to the same `SkillsView`. Deep
+links (Home's "N missing" card, the sidebar's Parked row) work by handing
+`ActiveView`'s `{ kind: "skills", filter }` a partial filter, not by routing
+to a different view.
+
+Plugin-shipped skills are a _source_ of skills, not a managed primitive of
+their own: `source_kind: "plugin"` is one value of the Skills view's Source
+filter, on the same list and the same `SkillListTable`/`SkillCoverageMatrix`
+as every other skill - see `ownSkillsView`/`pluginSkillsView` in
+`skill-plugin-partition.ts`. There is no standalone "Plugins" page.
+
+Health issues (`collectDashboardIssues`, `src/lib/skill-health.ts`) are
+surfaced on Home's "Needs attention" card and reachable from the Skills view
+via `filter.issue`. The kinds are: `parked-but-reinstalled`, `duplicate`,
+`broken-symlink`, `spec-violation` (blocking agentskills.io violations only -
+see `isBlockingSpecViolation`), and `lock-only`. Two things that look like
+issues deliberately are not: a skill that has never been invoked (noise, not
+something worth fixing for every skill) and a skill with an update available
+(that's the "Updates" section on Home, a routine action, not a health
+problem).

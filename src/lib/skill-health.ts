@@ -6,18 +6,20 @@
 // ============================================================================
 
 import { ownDeployments } from "./skill-plugin-partition";
-import type { Deployment, InstalledSkill, SkillInvocationStats } from "./skill-types";
+import type { Deployment, InstalledSkill } from "./skill-types";
 
-/** Kind of health issue a `HealthIssue` reports. */
+/**
+ * Kind of health issue a `HealthIssue` reports. `update-available` is not an
+ * issue - see `skill-updates.ts`'s `skillsWithUpdates` - and neither is
+ * `never-invoked` (noise, not a problem) or `missing-from-agents` (kept as
+ * `coverageGaps` for the coverage column, not surfaced as something broken).
+ */
 export type HealthIssueKind =
   | "duplicate"
   | "broken-symlink"
+  | "parked-but-reinstalled"
   | "spec-violation"
-  | "lock-only"
-  | "never-invoked"
-  | "missing-from-agents"
-  | "update-available"
-  | "parked-but-reinstalled";
+  | "lock-only";
 
 /** One flagged condition for one skill, with a short human-readable reason. */
 export interface HealthIssue {
@@ -28,55 +30,47 @@ export interface HealthIssue {
 
 /**
  * Stable display order for issue kinds, shared by the dashboard's grouped
- * summary, the sidebar count, and the Issues view's filter chips.
+ * summary and the Skills list's issue filter.
  */
 export const HEALTH_ISSUE_KIND_ORDER: HealthIssueKind[] = [
-  "update-available",
   "parked-but-reinstalled",
   "duplicate",
   "broken-symlink",
   "spec-violation",
-  "missing-from-agents",
   "lock-only",
-  "never-invoked",
 ];
 
 /**
  * Severity dot color for one issue kind, shared by the dashboard's grouped
- * summary and the Issues view's table. broken-symlink and lock-only are
- * errors (something is missing); everything else is a warning.
+ * summary. Everything that means "this skill is broken or inconsistent" is
+ * an error; `lock-only` (known only from the lock file, nothing to load) is
+ * a warning.
  */
 export const HEALTH_ISSUE_SEVERITY = {
-  "update-available": "warning",
-  "parked-but-reinstalled": "warning",
-  duplicate: "warning",
+  "parked-but-reinstalled": "error",
+  duplicate: "error",
   "broken-symlink": "error",
-  "spec-violation": "warning",
-  "missing-from-agents": "warning",
-  "lock-only": "error",
-  "never-invoked": "warning",
+  "spec-violation": "error",
+  "lock-only": "warning",
 } as const satisfies Record<HealthIssueKind, "error" | "warning">;
 
 /** Singular/plural copy for one issue kind, for chip and row labels. */
 export const HEALTH_ISSUE_KIND_LABEL = {
-  "update-available": { singular: "update available", plural: "updates available" },
   "parked-but-reinstalled": {
     singular: "parked skill was reinstalled",
     plural: "parked skills were reinstalled",
   },
   duplicate: { singular: "skill differs between copies", plural: "skills differ between copies" },
   "broken-symlink": { singular: "broken link", plural: "broken links" },
-  "spec-violation": { singular: "skill with spec issues", plural: "skills with spec issues" },
-  "missing-from-agents": {
-    singular: "skill missing from an agent",
-    plural: "skills missing from an agent",
+  "spec-violation": {
+    singular: "skill that fails to load",
+    plural: "skills that fail to load",
   },
   "lock-only": { singular: "skill only in the lock file", plural: "skills only in the lock file" },
-  "never-invoked": { singular: "skill never used", plural: "skills never used" },
 } as const satisfies Record<HealthIssueKind, { singular: string; plural: string }>;
 
-/** The first-class agents `findMissingFromAgents` expects full coverage across. */
-const FIRST_CLASS_AGENTS = [
+/** The first-class agents `coverageGaps` expects full coverage across; also the harness chip list in `SkillListFilterBar`. */
+export const FIRST_CLASS_AGENTS = [
   "Claude Code",
   "Codex",
   "OpenCode",
@@ -176,15 +170,38 @@ export function findBrokenSymlinks(skills: InstalledSkill[]): HealthIssue[] {
 }
 
 /**
- * Skills whose SKILL.md violates one or more agentskills.io spec rules.
+ * Prefixes (from `frontmatter::validate_skill`, Rust side) of a
+ * `spec_violations` entry that stops the skill from loading at all: a
+ * missing or invalid `name`, a missing `description`, or a name/directory
+ * mismatch. Every other violation (description/compatibility length, the
+ * 500-line recommendation, conflicting invocation keys) is a spec note the
+ * skill still loads with, shown on the skill page rather than as an issue.
+ */
+const BLOCKING_SPEC_VIOLATION_PREFIXES = [
+  "missing required frontmatter field: name",
+  "missing required frontmatter field: description",
+  'name "', // covers both the invalid-name-format and name/dir-mismatch messages
+] as const;
+
+/** True when `violation` is one of `BLOCKING_SPEC_VIOLATION_PREFIXES` - see there for why. */
+export function isBlockingSpecViolation(violation: string): boolean {
+  return BLOCKING_SPEC_VIOLATION_PREFIXES.some((prefix) => violation.startsWith(prefix));
+}
+
+/**
+ * Skills whose SKILL.md violates an agentskills.io spec rule that stops it
+ * from loading - see `isBlockingSpecViolation`. A skill with only
+ * non-blocking violations (e.g. "description exceeds 1024 characters")
+ * isn't flagged here; those stay as spec notes on the skill page.
  */
 export function findSpecViolations(skills: InstalledSkill[]): HealthIssue[] {
   return skills
-    .filter((skill) => skill.spec_violations.length > 0)
-    .map((skill) => ({
+    .map((skill) => ({ skill, blocking: skill.spec_violations.filter(isBlockingSpecViolation) }))
+    .filter(({ blocking }) => blocking.length > 0)
+    .map(({ skill, blocking }) => ({
       kind: "spec-violation" as const,
       skill,
-      detail: skill.spec_violations.join("; "),
+      detail: blocking.join("; "),
     }));
 }
 
@@ -202,28 +219,23 @@ export function findLockOnlySkills(skills: InstalledSkill[]): HealthIssue[] {
 }
 
 /**
- * Deployed skills with no recorded invocation in `stats`.
+ * One skill's coverage gap at one scope: deployed to some, but not all, of
+ * the four first-class agents. Not a `HealthIssue` - a gap here isn't
+ * something broken, just a column the coverage view highlights.
  */
-export function findNeverInvoked(
-  skills: InstalledSkill[],
-  stats: SkillInvocationStats[],
-): HealthIssue[] {
-  const totals = new Map(stats.map((s) => [s.skill, s.total]));
-  return skills
-    .filter((skill) => skill.deployments.length > 0 && (totals.get(skill.name) ?? 0) === 0)
-    .map((skill) => ({
-      kind: "never-invoked" as const,
-      skill,
-      detail: "No recorded invocations",
-    }));
+export interface CoverageGap {
+  skill: InstalledSkill;
+  /** "Global", or the project path, whichever scope the gap is at. */
+  scopeLabel: string;
+  missing: string[];
 }
 
 /**
  * Skills deployed to some, but not all, of the four first-class agents at
- * the same scope (global, or a given project).
+ * the same scope (global, or a given project). See `CoverageGap`.
  */
-export function findMissingFromAgents(skills: InstalledSkill[]): HealthIssue[] {
-  const issues: HealthIssue[] = [];
+export function coverageGaps(skills: InstalledSkill[]): CoverageGap[] {
+  const gaps: CoverageGap[] = [];
 
   for (const skill of skills) {
     if (skill.parked) continue;
@@ -244,31 +256,16 @@ export function findMissingFromAgents(skills: InstalledSkill[]): HealthIssue[] {
 
     for (const [groupKey, agents] of groups) {
       if (agents.size > 0 && agents.size < FIRST_CLASS_AGENTS.length) {
-        const missing = FIRST_CLASS_AGENTS.filter((a) => !agents.has(a));
-        issues.push({
-          kind: "missing-from-agents",
+        gaps.push({
           skill,
-          detail: `${groupKey === "global" ? "Global" : groupKey.slice("project:".length)}: missing from ${missing.join(", ")}`,
+          scopeLabel: groupKey === "global" ? "Global" : groupKey.slice("project:".length),
+          missing: FIRST_CLASS_AGENTS.filter((a) => !agents.has(a)),
         });
       }
     }
   }
 
-  return issues;
-}
-
-/**
- * Skills with a newer commit available upstream, per the background update
- * check - see `skill_update_check.rs`.
- */
-export function findUpdateAvailable(skills: InstalledSkill[]): HealthIssue[] {
-  return skills
-    .filter((skill) => skill.has_update)
-    .map((skill) => ({
-      kind: "update-available" as const,
-      skill,
-      detail: "A newer commit is available upstream",
-    }));
+  return gaps;
 }
 
 /**
@@ -289,22 +286,20 @@ export function findParkedButReinstalled(skills: InstalledSkill[]): HealthIssue[
 }
 
 /**
- * Every dashboard-worthy issue across `skills`: update-available,
- * parked-but-reinstalled, duplicate, broken-symlink, spec-violation,
- * lock-only, and missing-from-agents. Deliberately excludes never-invoked -
- * it's noise, not something worth fixing for every skill. Sorted by
- * `HEALTH_ISSUE_KIND_ORDER` then skill name, so both the dashboard and the
- * Issues view show a stable order.
+ * Every dashboard-worthy issue across `skills`: parked-but-reinstalled,
+ * duplicate, broken-symlink, spec-violation, and lock-only. Excludes
+ * update-available (see `skill-updates.ts`) and coverage gaps (see
+ * `coverageGaps` above) - neither is a problem, just something to act on or
+ * a coverage-view column. Sorted by `HEALTH_ISSUE_KIND_ORDER` then skill
+ * name, so both the dashboard and the Skills view show a stable order.
  */
 export function collectDashboardIssues(skills: InstalledSkill[]): HealthIssue[] {
   const issues = [
-    ...findUpdateAvailable(skills),
     ...findParkedButReinstalled(skills),
     ...findDuplicateSkills(skills),
     ...findBrokenSymlinks(skills),
     ...findSpecViolations(skills),
     ...findLockOnlySkills(skills),
-    ...findMissingFromAgents(skills),
   ];
 
   return issues.sort((a, b) => {

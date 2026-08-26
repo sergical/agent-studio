@@ -15,6 +15,7 @@ import {
 } from "../../lib/skill-api";
 import type { PackInfo } from "../../lib/skill-types";
 import { useAppStore } from "../../store/appStore";
+import { PageShell } from "../Shell/PageShell";
 
 function formatDate(iso: string): string {
   const d = new Date(iso);
@@ -99,48 +100,53 @@ function PackDetail({
   }
 
   return (
-    <div className="packs-detail">
-      <button className="packs-detail-back" onClick={onBack}>
-        <ChevronLeft size={14} />
-        Packs
-      </button>
+    <PageShell
+      title={pack.name}
+      width="narrow"
+      actions={
+        <button className="packs-detail-back" onClick={onBack}>
+          <ChevronLeft size={14} />
+          Packs
+        </button>
+      }
+    >
+      <div className="packs-detail">
+        <p className="packs-detail-dir">{pack.dir}</p>
+        {pack.repo ? (
+          <a
+            className="packs-detail-repo"
+            href={`https://github.com/${pack.repo}`}
+            target="_blank"
+            rel="noreferrer"
+          >
+            {pack.repo}
+            <ExternalLink size={12} />
+          </a>
+        ) : (
+          <p className="packs-detail-repo packs-detail-repo-none">Local only - not published</p>
+        )}
 
-      <h2>{pack.name}</h2>
-      <p className="packs-detail-dir">{pack.dir}</p>
-      {pack.repo ? (
-        <a
-          className="packs-detail-repo"
-          href={`https://github.com/${pack.repo}`}
-          target="_blank"
-          rel="noreferrer"
-        >
-          {pack.repo}
-          <ExternalLink size={12} />
-        </a>
-      ) : (
-        <p className="packs-detail-repo packs-detail-repo-none">Local only - not published</p>
-      )}
+        <div className="packs-detail-skills">
+          {pack.skills.map((name) => (
+            <span key={name} className="packs-detail-skill-chip">
+              {name}
+            </span>
+          ))}
+        </div>
 
-      <div className="packs-detail-skills">
-        {pack.skills.map((name) => (
-          <span key={name} className="packs-detail-skill-chip">
-            {name}
-          </span>
-        ))}
+        <div className="packs-detail-actions">
+          <button disabled={busy !== null} onClick={handleUpdate}>
+            {busy === "update" ? "Updating…" : "Update pack"}
+          </button>
+          <button disabled={busy !== null} onClick={handlePublish}>
+            {busy === "publish" ? "Publishing…" : pack.repo ? "Push update" : "Publish to GitHub"}
+          </button>
+          <button className="packs-detail-delete" disabled={busy !== null} onClick={handleDelete}>
+            {busy === "delete" ? "Deleting…" : "Delete"}
+          </button>
+        </div>
       </div>
-
-      <div className="packs-detail-actions">
-        <button disabled={busy !== null} onClick={handleUpdate}>
-          {busy === "update" ? "Updating…" : "Update pack"}
-        </button>
-        <button disabled={busy !== null} onClick={handlePublish}>
-          {busy === "publish" ? "Publishing…" : pack.repo ? "Push update" : "Publish to GitHub"}
-        </button>
-        <button className="packs-detail-delete" disabled={busy !== null} onClick={handleDelete}>
-          {busy === "delete" ? "Deleting…" : "Delete"}
-        </button>
-      </div>
-    </div>
+    </PageShell>
   );
 }
 
@@ -192,14 +198,14 @@ export function PacksView() {
   }
 
   return (
-    <div className="packs-view">
-      <div className="packs-view-header">
-        <h2>Packs</h2>
+    <PageShell
+      title="Packs"
+      actions={
         <span className="skill-store-count">
           {packs?.length ?? 0} pack{(packs?.length ?? 0) !== 1 ? "s" : ""}
         </span>
-      </div>
-
+      }
+    >
       {packs === null ? (
         <p className="packs-view-empty">Loading…</p>
       ) : packs.length === 0 ? (
@@ -226,6 +232,6 @@ export function PacksView() {
           ))}
         </div>
       )}
-    </div>
+    </PageShell>
   );
 }

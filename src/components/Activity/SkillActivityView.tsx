@@ -14,6 +14,7 @@ import {
 } from "../../lib/skill-stats";
 import type { SkillSnapshot } from "../../lib/skill-types";
 import { useAppStore } from "../../store/appStore";
+import { PageShell } from "../Shell/PageShell";
 import { WindowSegmentedControl } from "../ui/WindowSegmentedControl";
 import { InvocationHeatmap } from "./InvocationHeatmap";
 
@@ -88,14 +89,10 @@ export function SkillActivityView({ snapshot, onSelectSkill }: SkillActivityView
   const hasAnyInvocations = snapshot ? snapshot.invocations.some((s) => s.total > 0) : false;
 
   return (
-    <div className="activity-view">
-      <div className="activity-view-header">
-        <h1>Activity</h1>
-        <span className="activity-view-subline">
-          From Claude Code transcripts. Codex, OpenCode and pi are not tracked yet.
-        </span>
-      </div>
-
+    <PageShell
+      title="Activity"
+      subtitle="From Claude Code transcripts. Codex, OpenCode and pi are not tracked yet."
+    >
       {!snapshot || !hasAnyInvocations ? (
         <p className="activity-view-empty">No invocations recorded yet.</p>
       ) : (
@@ -154,6 +151,6 @@ export function SkillActivityView({ snapshot, onSelectSkill }: SkillActivityView
           </div>
         </>
       )}
-    </div>
+    </PageShell>
   );
 }

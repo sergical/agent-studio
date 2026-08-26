@@ -4,9 +4,11 @@
 
 import { describe, expect, it } from "vitest";
 import {
+  coverageGaps,
   findParkedButReinstalled,
-  findUpdateAvailable,
+  findSpecViolations,
   HEALTH_ISSUE_KIND_ORDER,
+  isBlockingSpecViolation,
 } from "./skill-health";
 import type { Deployment, InstalledSkill } from "./skill-types";
 
@@ -49,27 +51,94 @@ function fixtureSkill(overrides: Partial<InstalledSkill> = {}): InstalledSkill {
   };
 }
 
-describe("findUpdateAvailable", () => {
-  it("flags skills with has_update set", () => {
-    const skills = [fixtureSkill({ has_update: true }), fixtureSkill({ name: "other" })];
-    const issues = findUpdateAvailable(skills);
-    expect(issues).toHaveLength(1);
-    expect(issues[0].kind).toBe("update-available");
-    expect(issues[0].skill.name).toBe("agent-browser");
+describe("isBlockingSpecViolation", () => {
+  it("treats a missing required field as blocking", () => {
+    expect(isBlockingSpecViolation("missing required frontmatter field: name")).toBe(true);
+    expect(isBlockingSpecViolation("missing required frontmatter field: description")).toBe(true);
   });
 
-  it("returns nothing when no skill has an update", () => {
-    expect(findUpdateAvailable([fixtureSkill()])).toEqual([]);
+  it("treats an invalid name format as blocking", () => {
+    expect(
+      isBlockingSpecViolation(
+        'name "Bad Name" must be 1-64 lowercase a-z0-9 characters and hyphens, with no leading, trailing, or consecutive hyphens',
+      ),
+    ).toBe(true);
+  });
+
+  it("treats a name/directory mismatch as blocking", () => {
+    expect(
+      isBlockingSpecViolation(
+        'name "other-name" does not match its directory name "agent-browser"',
+      ),
+    ).toBe(true);
+  });
+
+  it("treats length and style notes as non-blocking", () => {
+    expect(isBlockingSpecViolation("description exceeds 1024 characters")).toBe(false);
+    expect(isBlockingSpecViolation("compatibility exceeds 500 characters")).toBe(false);
+    expect(isBlockingSpecViolation("SKILL.md exceeds recommended 500 lines")).toBe(false);
+    expect(isBlockingSpecViolation("conflicting invocation keys")).toBe(false);
+  });
+});
+
+describe("findSpecViolations", () => {
+  it("flags a skill with a blocking violation", () => {
+    const skill = fixtureSkill({
+      spec_violations: ["missing required frontmatter field: description"],
+    });
+    const issues = findSpecViolations([skill]);
+    expect(issues).toHaveLength(1);
+    expect(issues[0].kind).toBe("spec-violation");
+    expect(issues[0].detail).toBe("missing required frontmatter field: description");
+  });
+
+  it("does not flag a skill with only non-blocking violations", () => {
+    const skill = fixtureSkill({
+      spec_violations: ["description exceeds 1024 characters", "conflicting invocation keys"],
+    });
+    expect(findSpecViolations([skill])).toEqual([]);
+  });
+
+  it("includes only the blocking violations in detail when both kinds are present", () => {
+    const skill = fixtureSkill({
+      spec_violations: [
+        "missing required frontmatter field: name",
+        "description exceeds 1024 characters",
+      ],
+    });
+    const issues = findSpecViolations([skill]);
+    expect(issues[0].detail).toBe("missing required frontmatter field: name");
+  });
+});
+
+describe("coverageGaps", () => {
+  it("flags a skill deployed to some, but not all, first-class agents at the same scope", () => {
+    const skill = fixtureSkill({
+      deployments: [fixtureDeployment({ agent: "Claude Code", scope: "global" })],
+    });
+    const gaps = coverageGaps([skill]);
+    expect(gaps).toHaveLength(1);
+    expect(gaps[0].scopeLabel).toBe("Global");
+    expect(gaps[0].missing).not.toContain("Claude Code");
+  });
+
+  it("does not flag a parked skill", () => {
+    const skill = fixtureSkill({
+      parked: true,
+      deployments: [fixtureDeployment({ agent: "Claude Code", scope: "global" })],
+    });
+    expect(coverageGaps([skill])).toEqual([]);
   });
 });
 
 describe("HEALTH_ISSUE_KIND_ORDER", () => {
-  it("includes update-available", () => {
-    expect(HEALTH_ISSUE_KIND_ORDER).toContain("update-available");
-  });
-
   it("includes parked-but-reinstalled", () => {
     expect(HEALTH_ISSUE_KIND_ORDER).toContain("parked-but-reinstalled");
+  });
+
+  it("does not include update-available or missing-from-agents", () => {
+    expect(HEALTH_ISSUE_KIND_ORDER).not.toContain("update-available");
+    expect(HEALTH_ISSUE_KIND_ORDER).not.toContain("missing-from-agents");
   });
 });
 

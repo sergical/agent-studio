@@ -9,6 +9,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { open } from "@tauri-apps/plugin-dialog";
 import { FolderPlus, X } from "lucide-react";
 import { AgentTargetSelector } from "../SkillStore/AgentTargetSelector";
+import { SkillStore } from "../SkillStore/SkillStore";
 import { addSkill, importSkillPack } from "../../lib/skill-api";
 import { agentIdFromDeploymentLabel } from "../../lib/skill-coverage";
 import { parseSkillSource } from "../../lib/skill-source-parse";
@@ -99,6 +100,7 @@ export function AddSkillSheet() {
   const addProject = useAppStore((state) => state.addProject);
   const { snapshot } = useSkillSnapshot();
 
+  const [sheetTab, setSheetTab] = useState<"manual" | "browse">("manual");
   const [source, setSource] = useState("");
   const [method, setMethod] = useState<SheetMethod>("dotagents");
   const [agents, setAgents] = useState<AgentId[]>(FALLBACK_HARNESSES);
@@ -122,6 +124,7 @@ export function AddSkillSheet() {
     // focusable elements are `HTMLElement`s, which is all this ref is used
     // to call `.focus()` on.
     previouslyFocusedRef.current = document.activeElement as HTMLElement | null;
+    setSheetTab("manual");
     setSource(prefill ?? "");
     setMethod("dotagents");
     const withASkill = agentsWithASkill(snapshot);
@@ -279,146 +282,171 @@ export function AddSkillSheet() {
           </button>
         </div>
 
-        <div className="add-skill-sheet-body">
-          <div className="add-skill-sheet-field">
-            <label htmlFor="add-skill-source">Source</label>
-            <input
-              id="add-skill-source"
-              ref={sourceInputRef}
-              type="text"
-              value={source}
-              onChange={(e) => setSource(e.target.value)}
-              placeholder="owner/repo, a GitHub URL, a skills.sh URL, or a local path"
-            />
-            <p className={`add-skill-sheet-parse ${"error" in parsed ? "error" : ""}`}>
-              {source.trim() ? parseSummary(parsed) : "Enter a source above"}
-            </p>
+        <div className="add-skill-sheet-tabs">
+          <button
+            type="button"
+            className={`add-skill-sheet-tab ${sheetTab === "manual" ? "active" : ""}`}
+            onClick={() => setSheetTab("manual")}
+          >
+            Add by source
+          </button>
+          <button
+            type="button"
+            className={`add-skill-sheet-tab ${sheetTab === "browse" ? "active" : ""}`}
+            onClick={() => setSheetTab("browse")}
+          >
+            Browse skills.sh
+          </button>
+        </div>
+
+        {sheetTab === "browse" ? (
+          <div className="add-skill-sheet-browse">
+            <SkillStore compact />
           </div>
-
-          <div className="add-skill-sheet-field">
-            <label>Method</label>
-            <div className="harness-segmented-control">
-              {ALL_SHEET_METHODS.map((m) => {
-                const disabled = methods.length > 0 && !methods.includes(m);
-                return (
-                  <button
-                    key={m}
-                    type="button"
-                    className={`harness-segmented-control-item ${method === m ? "active" : ""} ${
-                      disabled ? "unavailable" : ""
-                    }`}
-                    title={METHOD_TOOLTIPS[m]}
-                    disabled={disabled}
-                    onClick={() => setMethod(m)}
-                  >
-                    {METHOD_LABELS[m]}
-                  </button>
-                );
-              })}
-            </div>
-            {method === "dotagents" && agents.includes("grok-build") && (
-              <p className="add-skill-sheet-note">Grok Build reads the shared folder.</p>
-            )}
-          </div>
-
-          <div className="add-skill-sheet-field">
-            <AgentTargetSelector selectedAgents={agents} onChange={setAgents} />
-          </div>
-
-          {method === "pack" && (
-            <p className="add-skill-sheet-note">
-              Imports every skill in this repo's pack to the shared folder, plus any agents.toml row
-              pointing elsewhere - see the "Packs" section of the docs.
-            </p>
-          )}
-
-          {method !== "pack" && (
+        ) : (
+          <div className="add-skill-sheet-body">
             <div className="add-skill-sheet-field">
-              <label>Scope</label>
-              <div className="skill-detail-scope-toggle">
-                <button
-                  type="button"
-                  className={`scope-option ${scope === "global" ? "selected" : ""}`}
-                  onClick={() => setScope("global")}
-                >
-                  Global
-                </button>
-                <button
-                  type="button"
-                  className={`scope-option ${scope === "project" ? "selected" : ""}`}
-                  onClick={() => setScope("project")}
-                >
-                  Project
-                </button>
-              </div>
-              {scope === "project" && (
-                <div className="skill-detail-project-select-row">
-                  {userAddedProjects.length > 0 && (
-                    <select
-                      value={projectPath ?? ""}
-                      onChange={(e) => setProjectPath(e.target.value)}
-                    >
-                      {userAddedProjects.map((p) => (
-                        <option key={p} value={p}>
-                          {p.split("/").pop()} - {p}
-                        </option>
-                      ))}
-                    </select>
-                  )}
-                  <button
-                    type="button"
-                    className="skill-action-button"
-                    onClick={handleBrowseProject}
-                  >
-                    <FolderPlus size={14} />
-                    {userAddedProjects.length === 0 ? "Choose Directory" : "Add"}
-                  </button>
-                </div>
-              )}
-            </div>
-          )}
-
-          {method !== "pack" && (
-            <div className="add-skill-sheet-field">
-              <label className="add-skill-sheet-checkbox">
-                <input
-                  type="checkbox"
-                  checked={trial}
-                  onChange={(e) => setTrial(e.target.checked)}
-                />
-                Try for 24 hours
-              </label>
-              <p className="add-skill-sheet-note">
-                Removed automatically after 24 h unless you keep it.
+              <label htmlFor="add-skill-source">Source</label>
+              <input
+                id="add-skill-source"
+                ref={sourceInputRef}
+                type="text"
+                value={source}
+                onChange={(e) => setSource(e.target.value)}
+                placeholder="owner/repo, a GitHub URL, a skills.sh URL, or a local path"
+              />
+              <p className={`add-skill-sheet-parse ${"error" in parsed ? "error" : ""}`}>
+                {source.trim() ? parseSummary(parsed) : "Enter a source above"}
               </p>
             </div>
-          )}
 
-          {submitError && (
-            <p className="add-skill-sheet-error" role="alert">
-              {submitError}
-            </p>
-          )}
-        </div>
+            <div className="add-skill-sheet-field">
+              <label>Method</label>
+              <div className="harness-segmented-control">
+                {ALL_SHEET_METHODS.map((m) => {
+                  const disabled = methods.length > 0 && !methods.includes(m);
+                  return (
+                    <button
+                      key={m}
+                      type="button"
+                      className={`harness-segmented-control-item ${method === m ? "active" : ""} ${
+                        disabled ? "unavailable" : ""
+                      }`}
+                      title={METHOD_TOOLTIPS[m]}
+                      disabled={disabled}
+                      onClick={() => setMethod(m)}
+                    >
+                      {METHOD_LABELS[m]}
+                    </button>
+                  );
+                })}
+              </div>
+              {method === "dotagents" && agents.includes("grok-build") && (
+                <p className="add-skill-sheet-note">Grok Build reads the shared folder.</p>
+              )}
+            </div>
 
-        <div className="add-skill-sheet-footer">
-          <button
-            type="button"
-            className="skill-action-button"
-            onClick={closeSheet}
-            disabled={isSubmitting}
-          >
-            Cancel
-          </button>
-          <button
-            type="button"
-            className="skill-action-button primary"
-            onClick={handleSubmit}
-            disabled={!isValid || isSubmitting}
-          >
-            {isSubmitting ? "Adding…" : method === "pack" ? "Import pack" : "Add skill"}
-          </button>
-        </div>
+            <div className="add-skill-sheet-field">
+              <AgentTargetSelector selectedAgents={agents} onChange={setAgents} />
+            </div>
+
+            {method === "pack" && (
+              <p className="add-skill-sheet-note">
+                Imports every skill in this repo's pack to the shared folder, plus any agents.toml
+                row pointing elsewhere - see the "Packs" section of the docs.
+              </p>
+            )}
+
+            {method !== "pack" && (
+              <div className="add-skill-sheet-field">
+                <label>Scope</label>
+                <div className="skill-detail-scope-toggle">
+                  <button
+                    type="button"
+                    className={`scope-option ${scope === "global" ? "selected" : ""}`}
+                    onClick={() => setScope("global")}
+                  >
+                    Global
+                  </button>
+                  <button
+                    type="button"
+                    className={`scope-option ${scope === "project" ? "selected" : ""}`}
+                    onClick={() => setScope("project")}
+                  >
+                    Project
+                  </button>
+                </div>
+                {scope === "project" && (
+                  <div className="skill-detail-project-select-row">
+                    {userAddedProjects.length > 0 && (
+                      <select
+                        value={projectPath ?? ""}
+                        onChange={(e) => setProjectPath(e.target.value)}
+                      >
+                        {userAddedProjects.map((p) => (
+                          <option key={p} value={p}>
+                            {p.split("/").pop()} - {p}
+                          </option>
+                        ))}
+                      </select>
+                    )}
+                    <button
+                      type="button"
+                      className="skill-action-button"
+                      onClick={handleBrowseProject}
+                    >
+                      <FolderPlus size={14} />
+                      {userAddedProjects.length === 0 ? "Choose Directory" : "Add"}
+                    </button>
+                  </div>
+                )}
+              </div>
+            )}
+
+            {method !== "pack" && (
+              <div className="add-skill-sheet-field">
+                <label className="add-skill-sheet-checkbox">
+                  <input
+                    type="checkbox"
+                    checked={trial}
+                    onChange={(e) => setTrial(e.target.checked)}
+                  />
+                  Try for 24 hours
+                </label>
+                <p className="add-skill-sheet-note">
+                  Removed automatically after 24 h unless you keep it.
+                </p>
+              </div>
+            )}
+
+            {submitError && (
+              <p className="add-skill-sheet-error" role="alert">
+                {submitError}
+              </p>
+            )}
+          </div>
+        )}
+
+        {sheetTab === "manual" && (
+          <div className="add-skill-sheet-footer">
+            <button
+              type="button"
+              className="skill-action-button"
+              onClick={closeSheet}
+              disabled={isSubmitting}
+            >
+              Cancel
+            </button>
+            <button
+              type="button"
+              className="skill-action-button primary"
+              onClick={handleSubmit}
+              disabled={!isValid || isSubmitting}
+            >
+              {isSubmitting ? "Adding…" : method === "pack" ? "Import pack" : "Add skill"}
+            </button>
+          </div>
+        )}
       </div>
     </div>
   );
