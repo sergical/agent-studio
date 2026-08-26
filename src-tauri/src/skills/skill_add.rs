@@ -25,8 +25,9 @@ use super::skill_agent_runner::validate_skill_dir_name;
 use super::skill_dto::{
     AddSkillRequest, AddSkillResult, InstallScope, ParsedSkillSource, ParsedSkillSourceKind,
 };
-use super::skill_fork::{copy_dir_all, ForkMutationLock, RealUpstreamFetch, UpstreamFetch};
+use super::skill_fork::{ForkMutationLock, RealUpstreamFetch, UpstreamFetch};
 use super::skill_fork_registry::{AddMethod, TrialScope};
+use super::skill_fs::copy_dir_all;
 use super::skill_refresh::{self, SkillRefreshState};
 use super::skill_trial;
 use super::skill_update_check::{self, CommitLookup, GhCommitLookup};

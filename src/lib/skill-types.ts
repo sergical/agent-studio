@@ -370,6 +370,50 @@ export interface PullResult {
 }
 
 // ============================================================================
+// Share Pack Types
+// ============================================================================
+
+/**
+ * One skill to bundle into a pack: `name` is the skill's directory name,
+ * `path` is the exact deployment directory to bundle from (a row's
+ * `Deployment.path`) - see `skill_pack::PackMemberInput`.
+ */
+export interface PackMember {
+  name: string;
+  path: string;
+}
+
+/**
+ * One share pack under `~/.agents/packs/<name>`, as recorded in
+ * `~/.agents/skill-studio.json`. See `skill_pack::PackInfo`.
+ */
+export interface PackInfo {
+  name: string;
+  created_at: string;
+  dir: string;
+  /** `null`/`undefined` until `publishSkillPack` succeeds for the first time. */
+  repo?: string;
+  skills: string[];
+}
+
+/** `updateSkillPack`'s return shape - whether the rebuilt tree differed from the last commit. */
+export interface UpdatePackResult {
+  changed: boolean;
+  pack: PackInfo;
+}
+
+/**
+ * `importSkillPack`'s return shape: which names came from the repo's own
+ * `skills/` tree (`--all`) versus a `[[skills]]` row pointing elsewhere, and
+ * any per-row failures - a partial import still reports what worked.
+ */
+export interface ImportResult {
+  bundled: string[];
+  referenced: string[];
+  errors: string[];
+}
+
+// ============================================================================
 // UI State Types
 // ============================================================================
 

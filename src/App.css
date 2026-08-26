@@ -2654,6 +2654,65 @@ body {
 }
 .skill-list-table-tested-dot.error {
   background: var(--color-error);
+}
+.skill-list-table-header-checkbox {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 44px;
+  height: 32px;
+  flex-shrink: 0;
+  cursor: pointer;
+}
+.skill-list-table-row-wrap {
+  display: flex;
+  align-items: stretch;
+  gap: 0;
+}
+.skill-list-table-row-checkbox {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 44px;
+  flex-shrink: 0;
+  cursor: pointer;
+}
+.skill-list-table-row-wrap .skill-list-table-row {
+  flex: 1;
+  min-width: 0;
+}
+.skill-list-table-selection-bar {
+  position: sticky;
+  bottom: 0;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 10px 14px;
+  background: var(--color-bg-elevated);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-md);
+  box-shadow: var(--shadow-md);
+  font-size: 12px;
+  color: var(--color-text-secondary);
+}
+.skill-list-table-selection-bar-create {
+  margin-left: auto;
+  padding: 6px 12px;
+  font-size: 12px;
+  font-weight: 600;
+  background: var(--color-accent);
+  color: white;
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+}
+.skill-list-table-selection-bar-clear {
+  padding: 6px 12px;
+  font-size: 12px;
+  background: transparent;
+  color: var(--color-text-tertiary);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-sm);
+  cursor: pointer;
 } /* ============================================================================
    Coverage View (skill x agent matrix)
    ============================================================================ */
@@ -3456,4 +3515,224 @@ body {
   gap: 8px;
   padding: 16px 20px;
   border-top: 1px solid var(--color-border);
+} /* ============================================================================
+   Share Packs (multi-select "Create pack", Packs list + detail)
+   ============================================================================ */
+.pack-name-prompt-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.6);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 100;
+}
+.pack-name-prompt {
+  width: 380px;
+  padding: 20px;
+  background: var(--color-bg-elevated);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-lg);
+  box-shadow: var(--shadow-lg);
+}
+.pack-name-prompt-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 8px;
+}
+.pack-name-prompt-header h3 {
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--color-text-primary);
+  margin: 0;
+}
+.pack-name-prompt-close {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  height: 24px;
+  border: none;
+  background: transparent;
+  color: var(--color-text-tertiary);
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+}
+.pack-name-prompt-hint {
+  font-size: 12px;
+  color: var(--color-text-tertiary);
+  margin: 0 0 12px;
+}
+.pack-name-prompt-input {
+  width: 100%;
+  padding: 8px 10px;
+  font-size: 13px;
+  background: var(--color-bg-secondary);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-sm);
+  color: var(--color-text-primary);
+}
+.pack-name-prompt-error {
+  margin: 6px 0 0;
+  font-size: 12px;
+  color: var(--color-error);
+}
+.pack-name-prompt-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  margin-top: 16px;
+}
+.pack-name-prompt-cancel,
+.pack-name-prompt-submit {
+  padding: 6px 14px;
+  font-size: 12px;
+  font-weight: 600;
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+}
+.pack-name-prompt-cancel {
+  background: transparent;
+  color: var(--color-text-secondary);
+  border: 1px solid var(--color-border);
+}
+.pack-name-prompt-submit {
+  background: var(--color-accent);
+  color: white;
+  border: none;
+}
+.pack-name-prompt-submit:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.packs-view {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+.packs-view-header {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+.packs-view-header h2 {
+  font-size: 16px;
+  font-weight: 600;
+  margin: 0;
+}
+.packs-view-empty {
+  font-size: 12px;
+  color: var(--color-text-tertiary);
+}
+.packs-view-list {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.packs-view-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  height: 36px;
+  padding: 0 12px;
+  background: var(--color-bg-secondary);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-md);
+  color: var(--color-text-secondary);
+  cursor: pointer;
+  text-align: left;
+}
+.packs-view-row:hover {
+  background: var(--color-bg-hover);
+}
+.packs-view-row-name {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--color-text-primary);
+}
+.packs-view-row-count,
+.packs-view-row-repo,
+.packs-view-row-date {
+  font-size: 11px;
+  color: var(--color-text-tertiary);
+}
+.packs-view-row-repo {
+  margin-left: auto;
+}
+
+.packs-detail {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  max-width: 560px;
+}
+.packs-detail-back {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  align-self: flex-start;
+  font-size: 12px;
+  color: var(--color-text-tertiary);
+  background: transparent;
+  border: none;
+  cursor: pointer;
+}
+.packs-detail h2 {
+  font-size: 18px;
+  font-weight: 600;
+  margin: 0;
+}
+.packs-detail-dir {
+  font-size: 12px;
+  color: var(--color-text-tertiary);
+  margin: 0;
+}
+.packs-detail-repo {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  width: fit-content;
+  font-size: 12px;
+  color: var(--color-accent);
+}
+.packs-detail-repo-none {
+  color: var(--color-text-tertiary);
+}
+.packs-detail-skills {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 4px;
+}
+.packs-detail-skill-chip {
+  font-size: 11px;
+  padding: 3px 8px;
+  background: var(--color-bg-tertiary);
+  color: var(--color-text-secondary);
+  border-radius: var(--radius-sm);
+}
+.packs-detail-actions {
+  display: flex;
+  gap: 8px;
+  margin-top: 12px;
+}
+.packs-detail-actions button {
+  padding: 6px 14px;
+  font-size: 12px;
+  font-weight: 600;
+  background: var(--color-bg-secondary);
+  color: var(--color-text-primary);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+}
+.packs-detail-actions button:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+.packs-detail-delete {
+  color: var(--color-error);
 }

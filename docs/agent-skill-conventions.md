@@ -196,6 +196,56 @@ harness, `add_skill` creates one relative per-skill symlink
 `skills.sh`, since its own `--agent claude-code` deploys straight into
 Claude Code's directory.
 
+## Packs
+
+A share pack (`src-tauri/src/skills/skill_pack.rs`) bundles a chosen set of
+skill deployments into one dotagents-compatible repo under
+`~/.agents/packs/<name>/`, for handing to another machine or another person.
+Selecting rows in any `SkillListTable` and clicking "Create pack" in the
+selection bar (`src/store/appStore.ts`'s `selectedSkillPaths`, keyed by each
+row's deployment path) builds:
+
+- `skills/<name>/` - a full bundled copy of **every** member, bundled from
+  its exact selected deployment path - even one managed by dotagents,
+  skills.sh, or a fork, so the pack still works if the origin repo moves or
+  disappears.
+- `agents.toml` - a `[[skills]]` row for provenance on every **managed**
+  member (dotagents, skills.sh, or fork - only when its path is the shared
+  `~/.agents/skills/<name>` root; a project deployment or plugin-cache copy
+  is always treated as manual), with `source`, `path`, and `ref` (the fork's
+  or skills.sh's resolved `installed_commit`, falling back to a dotagents
+  declared ref, or omitted for an unpinned/wildcard entry).
+- `README.md` - generated install instructions for both `npx -y
+@sentry/dotagents add <owner>/<repo> --all` and `npx skills add
+<owner>/<repo>`.
+
+`create_skill_pack`/`update_skill_pack` commit the tree with `git`
+locally only; `update_skill_pack` rebuilds from the pack's already-recorded
+members and only commits when the tree actually changed. **Publishing is
+never automatic**: `publish_skill_pack` confirms with a native
+`tauri_plugin_dialog` message box (`PublishConfirm`) right before it shells
+out to `gh repo create ... --push` (first publish) or `git push origin HEAD`
+(every publish after `repo` is recorded) - the app never creates a repo or
+pushes on its own, and a cancelled dialog returns `Err("Publish cancelled")`
+before any `gh`/`git` call. `delete_skill_pack` only removes the local
+registry entry and directory; it never touches GitHub.
+
+Importing a pack (the Add-skill sheet's "Pack" method, shown for GitHub
+sources) reads the repo's `agents.toml` read-only via `gh api -H "Accept:
+application/vnd.github.raw" repos/<owner>/<repo>/contents/agents.toml`, then
+validates every `[[skills]]` row (name, source, path, ref) before running any
+command - one invalid row, or more than 200 rows, refuses the whole import
+with nothing installed. It then runs `npx -y @sentry/dotagents add
+<owner>/<repo> --all` for the bundled `skills/` tree, and only then one
+`dotagents add <source> --name <name> --ref <ref>` per remaining `[[skills]]`
+row - skipping any row whose name `--all` already bundled, since a pack now
+bundles every managed member alongside its row. A row that fails to resolve
+is reported but doesn't abort the rest of the import. None of this ever edits
+`~/.agents/agents.toml`, `agents.lock`, or `.skill-lock.json` directly - a
+pack only ever writes its own generated `agents.toml` under
+`~/.agents/packs/<name>/`, and imports go through the same CLIs "Add skill"
+already uses.
+
 ## Trials
 
 Checking "Try for 24 hours" on the Add-skill sheet records a `TrialRecord` in

@@ -211,19 +211,19 @@ impl CommitLookup for GhCommitLookup {
             api_path.push_str(&format!("&until={}", urlencoding::encode(until)));
         }
 
-        let output = std::process::Command::new(&self.gh_bin)
-            .arg("api")
-            .arg(&api_path)
-            .arg("--jq")
-            .arg(".[0] | [.sha, .commit.committer.date] | @tsv")
-            .output()
-            .map_err(|e| format!("Failed to run gh: {e}"))?;
+        let stdout_bytes = super::gh_cli::run_gh(
+            &self.gh_bin,
+            &[
+                "api",
+                &api_path,
+                "--jq",
+                ".[0] | [.sha, .commit.committer.date] | @tsv",
+            ],
+            None,
+        )
+        .map_err(|e| e.message())?;
 
-        if !output.status.success() {
-            return Err(String::from_utf8_lossy(&output.stderr).trim().to_string());
-        }
-
-        let stdout = String::from_utf8_lossy(&output.stdout);
+        let stdout = String::from_utf8_lossy(&stdout_bytes);
         let line = stdout.trim();
         if line.is_empty() {
             return Ok(None);

@@ -9,7 +9,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { open } from "@tauri-apps/plugin-dialog";
 import { FolderPlus, X } from "lucide-react";
 import { AgentTargetSelector } from "../SkillStore/AgentTargetSelector";
-import { addSkill } from "../../lib/skill-api";
+import { addSkill, importSkillPack } from "../../lib/skill-api";
 import { agentIdFromDeploymentLabel } from "../../lib/skill-coverage";
 import { parseSkillSource } from "../../lib/skill-source-parse";
 import type { ParsedSkillSource } from "../../lib/skill-source-parse";
@@ -34,22 +34,33 @@ const FALLBACK_HARNESSES: AgentId[] = ["claude-code", "codex"];
 
 const ALL_METHODS = ["dotagents", "skills-sh", "copy"] as const satisfies AddMethod[];
 
+/**
+ * "Pack" isn't a real `AddMethod` - it doesn't run `addSkill`, it runs
+ * `importSkillPack` against a share pack's repo (see `skill_pack.rs`'s
+ * `import_skill_pack`). Kept out of the shared `AddMethod` type so trial
+ * tracking and every other `AddMethod` switch never has to account for it.
+ */
+type SheetMethod = AddMethod | "pack";
+const ALL_SHEET_METHODS = [...ALL_METHODS, "pack"] as const satisfies SheetMethod[];
+
 const METHOD_LABELS = {
   dotagents: "dotagents",
   "skills-sh": "skills.sh",
   copy: "Copy",
-} satisfies Record<AddMethod, string>;
+  pack: "Pack",
+} satisfies Record<SheetMethod, string>;
 
 const METHOD_TOOLTIPS = {
   dotagents: "Tracked in ~/.agents/agents.toml; updates with dotagents",
   "skills-sh": "Tracked in ~/.agents/.skill-lock.json",
   copy: "Not tracked; updates unavailable",
-} satisfies Record<AddMethod, string>;
+  pack: "Import every skill in this repo's share pack",
+} satisfies Record<SheetMethod, string>;
 
 /** Which methods a parsed source supports, in the sheet's preferred order. */
-function availableMethods(parsed: ParsedSkillSource | { error: string }): AddMethod[] {
+function availableMethods(parsed: ParsedSkillSource | { error: string }): SheetMethod[] {
   if ("error" in parsed) return [];
-  if (parsed.kind === "github") return ["dotagents", "skills-sh", "copy"];
+  if (parsed.kind === "github") return ["dotagents", "skills-sh", "copy", "pack"];
   if (parsed.kind === "git") return ["dotagents"];
   return ["copy"];
 }
@@ -89,7 +100,7 @@ export function AddSkillSheet() {
   const { snapshot } = useSkillSnapshot();
 
   const [source, setSource] = useState("");
-  const [method, setMethod] = useState<AddMethod>("dotagents");
+  const [method, setMethod] = useState<SheetMethod>("dotagents");
   const [agents, setAgents] = useState<AgentId[]>(FALLBACK_HARNESSES);
   const [scope, setScope] = useState<InstallScope>("global");
   const [projectPath, setProjectPath] = useState<string | null>(null);
@@ -198,6 +209,27 @@ export function AddSkillSheet() {
     setIsSubmitting(true);
     setSubmitError(null);
     try {
+      if (method === "pack") {
+        // Pack imports always target the repo itself, not a sub-path - the
+        // sheet's Source field can point at a path within it, but a pack's
+        // own agents.toml lives at the repo root.
+        if (parsed.kind !== "github" || !parsed.repo) {
+          throw new Error("Pack import needs a GitHub repo");
+        }
+        const result = await importSkillPack(parsed.repo, agents);
+        closeSheet();
+        const total = result.bundled.length + result.referenced.length;
+        if (result.errors.length > 0) {
+          addToast({
+            type: "warning",
+            title: `Imported ${total} skill${total !== 1 ? "s" : ""}`,
+            message: result.errors.join("; "),
+          });
+        } else {
+          addToast({ type: "success", title: `Imported ${total} skill${total !== 1 ? "s" : ""}` });
+        }
+        return;
+      }
       const result = await addSkill({
         source: parsed,
         method,
@@ -266,7 +298,7 @@ export function AddSkillSheet() {
           <div className="add-skill-sheet-field">
             <label>Method</label>
             <div className="harness-segmented-control">
-              {ALL_METHODS.map((m) => {
+              {ALL_SHEET_METHODS.map((m) => {
                 const disabled = methods.length > 0 && !methods.includes(m);
                 return (
                   <button
@@ -293,55 +325,74 @@ export function AddSkillSheet() {
             <AgentTargetSelector selectedAgents={agents} onChange={setAgents} />
           </div>
 
-          <div className="add-skill-sheet-field">
-            <label>Scope</label>
-            <div className="skill-detail-scope-toggle">
-              <button
-                type="button"
-                className={`scope-option ${scope === "global" ? "selected" : ""}`}
-                onClick={() => setScope("global")}
-              >
-                Global
-              </button>
-              <button
-                type="button"
-                className={`scope-option ${scope === "project" ? "selected" : ""}`}
-                onClick={() => setScope("project")}
-              >
-                Project
-              </button>
-            </div>
-            {scope === "project" && (
-              <div className="skill-detail-project-select-row">
-                {userAddedProjects.length > 0 && (
-                  <select
-                    value={projectPath ?? ""}
-                    onChange={(e) => setProjectPath(e.target.value)}
-                  >
-                    {userAddedProjects.map((p) => (
-                      <option key={p} value={p}>
-                        {p.split("/").pop()} - {p}
-                      </option>
-                    ))}
-                  </select>
-                )}
-                <button type="button" className="skill-action-button" onClick={handleBrowseProject}>
-                  <FolderPlus size={14} />
-                  {userAddedProjects.length === 0 ? "Choose Directory" : "Add"}
+          {method === "pack" && (
+            <p className="add-skill-sheet-note">
+              Imports every skill in this repo's pack to the shared folder, plus any agents.toml row
+              pointing elsewhere - see the "Packs" section of the docs.
+            </p>
+          )}
+
+          {method !== "pack" && (
+            <div className="add-skill-sheet-field">
+              <label>Scope</label>
+              <div className="skill-detail-scope-toggle">
+                <button
+                  type="button"
+                  className={`scope-option ${scope === "global" ? "selected" : ""}`}
+                  onClick={() => setScope("global")}
+                >
+                  Global
+                </button>
+                <button
+                  type="button"
+                  className={`scope-option ${scope === "project" ? "selected" : ""}`}
+                  onClick={() => setScope("project")}
+                >
+                  Project
                 </button>
               </div>
-            )}
-          </div>
+              {scope === "project" && (
+                <div className="skill-detail-project-select-row">
+                  {userAddedProjects.length > 0 && (
+                    <select
+                      value={projectPath ?? ""}
+                      onChange={(e) => setProjectPath(e.target.value)}
+                    >
+                      {userAddedProjects.map((p) => (
+                        <option key={p} value={p}>
+                          {p.split("/").pop()} - {p}
+                        </option>
+                      ))}
+                    </select>
+                  )}
+                  <button
+                    type="button"
+                    className="skill-action-button"
+                    onClick={handleBrowseProject}
+                  >
+                    <FolderPlus size={14} />
+                    {userAddedProjects.length === 0 ? "Choose Directory" : "Add"}
+                  </button>
+                </div>
+              )}
+            </div>
+          )}
 
-          <div className="add-skill-sheet-field">
-            <label className="add-skill-sheet-checkbox">
-              <input type="checkbox" checked={trial} onChange={(e) => setTrial(e.target.checked)} />
-              Try for 24 hours
-            </label>
-            <p className="add-skill-sheet-note">
-              Removed automatically after 24 h unless you keep it.
-            </p>
-          </div>
+          {method !== "pack" && (
+            <div className="add-skill-sheet-field">
+              <label className="add-skill-sheet-checkbox">
+                <input
+                  type="checkbox"
+                  checked={trial}
+                  onChange={(e) => setTrial(e.target.checked)}
+                />
+                Try for 24 hours
+              </label>
+              <p className="add-skill-sheet-note">
+                Removed automatically after 24 h unless you keep it.
+              </p>
+            </div>
+          )}
 
           {submitError && (
             <p className="add-skill-sheet-error" role="alert">
@@ -365,7 +416,7 @@ export function AddSkillSheet() {
             onClick={handleSubmit}
             disabled={!isValid || isSubmitting}
           >
-            {isSubmitting ? "Adding…" : "Add skill"}
+            {isSubmitting ? "Adding…" : method === "pack" ? "Import pack" : "Add skill"}
           </button>
         </div>
       </div>

@@ -73,6 +73,13 @@ pub fn run() {
             skills::skill_run_history::record_skill_run,
             skills::skill_run_history::list_skill_runs,
             skills::skill_run_history::read_skill_run_events,
+            // Packs
+            skills::skill_pack::list_skill_packs,
+            skills::skill_pack::create_skill_pack,
+            skills::skill_pack::update_skill_pack,
+            skills::skill_pack::publish_skill_pack,
+            skills::skill_pack::delete_skill_pack,
+            skills::skill_pack::import_skill_pack,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

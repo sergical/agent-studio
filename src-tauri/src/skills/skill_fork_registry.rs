@@ -141,6 +141,36 @@ pub struct ClaudeLinkRemoved {
     pub link_target: PathBuf,
 }
 
+/// One skill bundled into a pack: `name` is its directory name, `path` is
+/// the exact deployment directory it was bundled from - see
+/// `skill_pack::resolve_members`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PackMember {
+    pub name: String,
+    pub path: PathBuf,
+}
+
+/// One share pack created via `skill_pack::create_skill_pack`, keyed by pack
+/// name in `ForkRegistry.packs`. `dir` and the member list are the app's own
+/// bookkeeping; the pack's `agents.toml`/`README.md`/`skills/` tree under
+/// `dir` is the actual dotagents-compatible payload - see `skill_pack`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PackRecord {
+    pub created_at: String,
+    pub dir: PathBuf,
+    /// `None` until `publish_skill_pack` succeeds for the first time.
+    #[serde(default)]
+    pub repo: Option<String>,
+    #[serde(default)]
+    pub members: Vec<PackMember>,
+    /// The pre-`members` shape: a plain skill-name list with no deployment
+    /// path. Never written by new code; `skill_pack::record_members` maps
+    /// each name to `~/.agents/skills/<name>` once `home` is known, since
+    /// serde can't do that at parse time.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub skills: Vec<String>,
+}
+
 /// `~/.agents/skill-studio.json`'s shape.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ForkRegistry {
@@ -160,6 +190,9 @@ pub struct ForkRegistry {
     /// `skill_harness_disable`.
     #[serde(default)]
     pub harness_disabled: BTreeMap<String, BTreeMap<String, ClaudeLinkRemoved>>,
+    /// Share packs created via `skill_pack`, keyed by pack name.
+    #[serde(default)]
+    pub packs: BTreeMap<String, PackRecord>,
 }
 
 fn default_version() -> u32 {
@@ -178,6 +211,7 @@ impl Default for ForkRegistry {
             trials: BTreeMap::new(),
             parked: BTreeMap::new(),
             harness_disabled: BTreeMap::new(),
+            packs: BTreeMap::new(),
         }
     }
 }

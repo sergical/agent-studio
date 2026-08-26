@@ -22,11 +22,13 @@ use super::commands::{
     dotagents_add_args, dotagents_remove_args, skills_sh_add_args, skills_sh_remove_args,
 };
 use super::dotagents_ledger;
+use super::gh_cli::{run_gh, GhError};
 use super::lock_file;
 use super::skill_fork_registry::{
     fork_snapshot_dir, read_fork_registry, trial_key, write_fork_registry, ForkRecord,
     ForkRegistry, OriginTool, TrialScope,
 };
+use super::skill_fs::copy_dir_all;
 use super::skill_refresh::{self, SkillRefreshState};
 use super::skill_update_check::{self, CommitLookup, GhCommitLookup, UpdateCheckState};
 
@@ -150,14 +152,13 @@ impl UpstreamFetch for RealUpstreamFetch {
             paths: vec![tarball_path.clone(), extract_dir.clone()],
         };
 
-        let output = Command::new(&self.gh_bin)
-            .args(["api", &format!("repos/{repo}/tarball/{commit}")])
-            .output()
-            .map_err(|e| format!("Failed to run gh: {e}"))?;
-        if !output.status.success() {
-            return Err(String::from_utf8_lossy(&output.stderr).trim().to_string());
-        }
-        fs::write(&tarball_path, &output.stdout)
+        let tarball = run_gh(
+            &self.gh_bin,
+            &["api", &format!("repos/{repo}/tarball/{commit}")],
+            None,
+        )
+        .map_err(|e: GhError| e.message())?;
+        fs::write(&tarball_path, &tarball)
             .map_err(|e| format!("Failed to write {}: {e}", tarball_path.display()))?;
 
         fs::create_dir_all(&extract_dir)
@@ -220,30 +221,6 @@ fn locate_extracted_skill_dir(extract_dir: &Path, path: &str) -> Result<PathBuf,
         return Err("Refusing to extract a path outside the tarball".to_string());
     }
     Ok(canonical_candidate)
-}
-
-/// Recursively copies `src` into `dst`, creating `dst` if needed. Symlinks
-/// are skipped - a forked skill's snapshot/upstream copies are plain trees.
-/// `pub(crate)` so `skill_add`'s "Copy" method and `skill_trial`'s trash
-/// copy can reuse it instead of duplicating a directory-copy routine.
-pub(crate) fn copy_dir_all(src: &Path, dst: &Path) -> Result<(), String> {
-    fs::create_dir_all(dst).map_err(|e| format!("Failed to create {}: {e}", dst.display()))?;
-    for entry in fs::read_dir(src).map_err(|e| format!("Failed to read {}: {e}", src.display()))? {
-        let entry = entry.map_err(|e| format!("Failed to read a directory entry: {e}"))?;
-        let file_type = entry
-            .file_type()
-            .map_err(|e| format!("Failed to stat {}: {e}", entry.path().display()))?;
-        let dest_path = dst.join(entry.file_name());
-        if file_type.is_symlink() {
-            continue;
-        } else if file_type.is_dir() {
-            copy_dir_all(&entry.path(), &dest_path)?;
-        } else {
-            fs::copy(entry.path(), &dest_path)
-                .map_err(|e| format!("Failed to copy {}: {e}", entry.path().display()))?;
-        }
-    }
-    Ok(())
 }
 
 /// Every relative file path (`/`-separated) under `dir`, skipping `.git` and

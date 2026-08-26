@@ -15,6 +15,7 @@ import {
   Globe,
   LayoutDashboard,
   LayoutGrid,
+  Package,
   PackageOpen,
   Plus,
   RefreshCw,
@@ -278,6 +279,13 @@ export function Sidebar({ snapshot, isLoading, requestRescan }: SidebarProps) {
         >
           <ActivityIcon size={15} />
           <span>Activity</span>
+        </button>
+        <button
+          className={`skill-sidebar-item ${anchorView.kind === "packs" ? "active" : ""}`}
+          onClick={() => setActiveView({ kind: "packs" })}
+        >
+          <Package size={15} />
+          <span>Packs</span>
         </button>
       </div>
 

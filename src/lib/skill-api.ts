@@ -5,21 +5,26 @@
 
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
+import type { AgentId } from "./skill-types";
 import type {
   AddSkillRequest,
   AddSkillResult,
   AgentTarget,
+  ImportResult,
   InstallRequest,
   InstallResult,
   ForkRecord,
   InstalledSkill,
   InstallScope,
   InvocationPolicy,
+  PackInfo,
+  PackMember,
   PaginatedSkillsResponse,
   PullResult,
   SkillSearchResult,
   SkillSnapshot,
   UpdateCheckSummary,
+  UpdatePackResult,
 } from "./skill-types";
 
 // ============================================================================
@@ -213,6 +218,51 @@ export async function pullForkUpstream(name: string): Promise<PullResult> {
  */
 export async function unforkSkill(name: string): Promise<void> {
   return invoke("unfork_skill", { name });
+}
+
+// ============================================================================
+// Share Packs API
+// ============================================================================
+
+/** List every pack recorded in `~/.agents/skill-studio.json`. */
+export async function listSkillPacks(): Promise<PackInfo[]> {
+  return invoke("list_skill_packs");
+}
+
+/**
+ * Build `~/.agents/packs/<name>` from `members` and commit it with git.
+ * Refused if a pack of that name (or its directory) already exists.
+ */
+export async function createSkillPack(name: string, members: PackMember[]): Promise<PackInfo> {
+  return invoke("create_skill_pack", { name, members });
+}
+
+/** Rebuild a pack's tree from its recorded skill list, committing only if it changed. */
+export async function updateSkillPack(name: string): Promise<UpdatePackResult> {
+  return invoke("update_skill_pack", { name });
+}
+
+/**
+ * Push a pack to GitHub. Creates the repo (`gh repo create ... --push`) the
+ * first time; pushes to the recorded `repo` on every call after that.
+ * Callers must confirm with the user first - this runs immediately.
+ */
+export async function publishSkillPack(name: string, visibility: string): Promise<PackInfo> {
+  return invoke("publish_skill_pack", { name, visibility });
+}
+
+/** Delete a pack locally: its registry entry and its directory. Never touches GitHub. */
+export async function deleteSkillPack(name: string): Promise<void> {
+  return invoke("delete_skill_pack", { name });
+}
+
+/**
+ * Import a pack from a GitHub repo: `dotagents add <source> --all` for its
+ * bundled skills, plus a per-row `dotagents add` for any `[[skills]]` entry
+ * in its `agents.toml` that points elsewhere.
+ */
+export async function importSkillPack(source: string, agents: AgentId[]): Promise<ImportResult> {
+  return invoke("import_skill_pack", { source, agents });
 }
 
 // ============================================================================

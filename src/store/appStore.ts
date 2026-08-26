@@ -34,6 +34,7 @@ export type ActiveView =
   | { kind: "issues"; issueKind?: HealthIssueKind }
   | { kind: "activity" }
   | { kind: "discover" }
+  | { kind: "packs" }
   | { kind: "skill"; name: string; deploymentPath?: string; from: ActiveView };
 
 // ============================================================================
@@ -83,6 +84,17 @@ interface AppState {
   addSkillSheet: { open: boolean; prefill?: string };
   openAddSkillSheet: (prefill?: string) => void;
   closeAddSkillSheet: () => void;
+
+  // === Multi-select (SkillListTable -> "Create pack") ===
+  // Keyed by the row's deployment directory path (`Deployment.path`), not by
+  // skill name - a pack member is bundled from one specific deployment, and
+  // two rows can share a name (project vs. plugin) but not a path. Cleared
+  // whenever the active view changes, so a selection made in Global doesn't
+  // linger into Project.
+  selectedSkillPaths: Set<string>;
+  toggleSkillSelection: (path: string) => void;
+  clearSkillSelection: () => void;
+  selectSkills: (paths: string[]) => void;
 }
 
 // ============================================================================
@@ -159,7 +171,7 @@ export const useAppStore = create<AppState>((set, get) => ({
   },
 
   activeView: { kind: "dashboard" },
-  setActiveView: (view) => set({ activeView: view }),
+  setActiveView: (view) => set({ activeView: view, selectedSkillPaths: new Set() }),
   openSkill: (name, deploymentPath) => {
     const current = get().activeView;
     const from = current.kind === "skill" ? current.from : current;
@@ -208,6 +220,16 @@ export const useAppStore = create<AppState>((set, get) => ({
   addSkillSheet: { open: false },
   openAddSkillSheet: (prefill) => set({ addSkillSheet: { open: true, prefill } }),
   closeAddSkillSheet: () => set({ addSkillSheet: { open: false } }),
+
+  selectedSkillPaths: new Set<string>(),
+  toggleSkillSelection: (path) => {
+    const next = new Set(get().selectedSkillPaths);
+    if (next.has(path)) next.delete(path);
+    else next.add(path);
+    set({ selectedSkillPaths: next });
+  },
+  clearSkillSelection: () => set({ selectedSkillPaths: new Set() }),
+  selectSkills: (paths) => set({ selectedSkillPaths: new Set(paths) }),
 }));
 
 // ============================================================================
@@ -217,3 +239,4 @@ export const useAppStore = create<AppState>((set, get) => ({
 export const selectToasts = (state: AppState) => state.toasts;
 export const selectProjects = (state: AppState) => state.userAddedProjects;
 export const selectActiveView = (state: AppState) => state.activeView;
+export const selectSelectedSkillPaths = (state: AppState) => state.selectedSkillPaths;

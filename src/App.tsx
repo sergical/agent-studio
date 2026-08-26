@@ -13,6 +13,7 @@ import { SkillDashboard } from "./components/Dashboard/SkillDashboard";
 import { SkillsScopeView } from "./components/SkillsScopeView";
 import { SkillCoverageView } from "./components/Coverage/SkillCoverageView";
 import { SkillIssuesView } from "./components/Issues/SkillIssuesView";
+import { PacksView } from "./components/Packs/PacksView";
 import { PluginSkillsView } from "./components/Plugins/PluginSkillsView";
 import { SkillPage } from "./components/SkillDetail/SkillPage";
 import { SkillStore } from "./components/SkillStore";
@@ -151,6 +152,8 @@ function App() {
     );
   } else if (activeView.kind === "activity") {
     main = <SkillActivityView snapshot={snapshot} onSelectSkill={onSelectSkill} />;
+  } else if (activeView.kind === "packs") {
+    main = <PacksView />;
   } else if (activeView.kind === "skill") {
     const skill = snapshot?.skills.find((s) => s.name === activeView.name) ?? null;
     const invocationStats = snapshot?.invocations.find((s) => s.skill === activeView.name);
