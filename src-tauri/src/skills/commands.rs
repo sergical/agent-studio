@@ -15,12 +15,91 @@ use super::dotagents_ledger::{self, DotagentsSkill};
 use super::lock_file;
 use super::project_discovery;
 use super::provenance::SourceKind;
+use super::skill_agent_runner::validate_skill_dir_name;
 use super::skill_dto::{
     InstallRequest, InstallResult, InstalledSkill, PaginatedSkillsResponse, SkillSearchResult,
 };
+use super::skill_fork;
+use super::skill_fork_registry;
 use super::skill_refresh::{self, SkillRefreshState};
 use super::skill_update_check;
 use tauri::Manager;
+
+/// The `npx skills add <repo> --yes [--global | --cwd <path>] [--skill
+/// <name>]` argv `install_skill` runs, minus the trailing `--agent ...`
+/// flags - pulled out so `skill_fork`'s reinstall path can build the same
+/// argv without duplicating it.
+pub(crate) fn skills_sh_add_args(
+    repo_source: &str,
+    skill_name: Option<&str>,
+    global: bool,
+    project_path: Option<&str>,
+) -> Vec<String> {
+    let mut args = vec![
+        "skills".to_string(),
+        "add".to_string(),
+        repo_source.to_string(),
+    ];
+    args.push("--yes".to_string());
+    if global {
+        args.push("--global".to_string());
+    } else if let Some(project_path) = project_path {
+        args.push("--cwd".to_string());
+        args.push(project_path.to_string());
+    }
+    if let Some(name) = skill_name {
+        args.push("--skill".to_string());
+        args.push(name.to_string());
+    }
+    args
+}
+
+/// The `npx skills remove <name> --yes [--global]` argv `remove_skill` runs -
+/// pulled out so `skill_fork`'s remove path can build the same argv without
+/// duplicating it.
+pub(crate) fn skills_sh_remove_args(skill_name: &str, global: bool) -> Vec<String> {
+    let mut args = vec![
+        "skills".to_string(),
+        "remove".to_string(),
+        skill_name.to_string(),
+        "--yes".to_string(),
+    ];
+    if global {
+        args.push("--global".to_string());
+    }
+    args
+}
+
+/// The `npx -y @sentry/dotagents add <source> --name <name> [--ref <ref>]`
+/// argv - the plain (non-re-pinning) shape of what `dotagents_update_args`
+/// builds for a named entry, reused by `skill_fork::unfork_skill` to
+/// reinstall a fork from its recorded origin.
+pub(crate) fn dotagents_add_args(source: &str, name: &str, r#ref: Option<&str>) -> Vec<String> {
+    let mut args = vec![
+        "-y".to_string(),
+        "@sentry/dotagents".to_string(),
+        "add".to_string(),
+        source.to_string(),
+        "--name".to_string(),
+        name.to_string(),
+    ];
+    if let Some(r#ref) = r#ref {
+        args.push("--ref".to_string());
+        args.push(r#ref.to_string());
+    }
+    args
+}
+
+/// The `npx -y @sentry/dotagents remove <name>` argv, reused by
+/// `skill_fork::fork_skill` to detach a dotagents-managed skill.
+pub(crate) fn dotagents_remove_args(name: &str) -> Vec<String> {
+    vec![
+        "-y".to_string(),
+        "@sentry/dotagents".to_string(),
+        "remove".to_string(),
+        name.to_string(),
+    ]
+}
 
 /// Search for skills on skills.sh
 #[tauri::command]
@@ -173,6 +252,7 @@ mod tests {
                 modified_at: None,
                 frontmatter_fields: BTreeMap::new(),
                 folder_truncated: false,
+                fork: None,
             }],
             projects: Vec::new(),
             invocations: Vec::new(),
@@ -442,24 +522,12 @@ pub async fn install_skill(
     // or just "skill-name" for well-known skills
     let (repo_source, skill_name) = parse_skill_source(&request.skill_source);
 
-    let mut args = vec!["skills".to_string(), "add".to_string(), repo_source.clone()];
-
-    // Always add --yes for non-interactive mode
-    args.push("--yes".to_string());
-
-    // Add scope flag
-    if request.scope == super::skill_dto::InstallScope::Global {
-        args.push("--global".to_string());
-    } else if let Some(ref project_path) = request.project_path {
-        args.push("--cwd".to_string());
-        args.push(project_path.clone());
-    }
-
-    // Add specific skill if we have one (for multi-skill repos)
-    if let Some(ref name) = skill_name {
-        args.push("--skill".to_string());
-        args.push(name.clone());
-    }
+    let mut args = skills_sh_add_args(
+        &repo_source,
+        skill_name.as_deref(),
+        request.scope == super::skill_dto::InstallScope::Global,
+        request.project_path.as_deref(),
+    );
 
     // Add agent targets if specified
     push_agent_args(&mut args, &request.agents)?;
@@ -541,19 +609,22 @@ pub async fn remove_skill(
     global: bool,
     app: tauri::AppHandle,
     refresh_state: tauri::State<'_, SkillRefreshState>,
+    fork_lock: tauri::State<'_, skill_fork::ForkMutationLock>,
 ) -> Result<InstallResult, String> {
-    let mut args = vec![
-        "skills".to_string(),
-        "remove".to_string(),
-        skill_name.clone(),
-    ];
-
-    // Add --yes for non-interactive mode (CLI has its own confirmation prompt)
-    args.push("--yes".to_string());
-
-    if global {
-        args.push("--global".to_string());
+    // A forked skill is a plain directory under `.agents/skills`, in no
+    // ledger the CLI could remove from - delete it directly and drop its
+    // fork-registry record and snapshot instead of shelling out.
+    let snapshot = refresh_state.snapshot.read().ok().and_then(|g| g.clone());
+    let is_fork = snapshot
+        .as_ref()
+        .and_then(|s| s.skills.iter().find(|s| s.name == skill_name))
+        .map(|s| s.source_kind)
+        == Some(SourceKind::Fork);
+    if is_fork {
+        return remove_forked_skill(skill_name, app, refresh_state, &fork_lock).await;
     }
+
+    let args = skills_sh_remove_args(&skill_name, global);
 
     // Log the command for debugging
     eprintln!("[remove_skill] Running: npx {}", args.join(" "));
@@ -592,6 +663,50 @@ pub async fn remove_skill(
             command: None,
         })
     }
+}
+
+/// `remove_skill`'s path for a forked skill: it's not in any ledger, so
+/// there's nothing for a CLI to remove - delete the directory directly and
+/// drop the fork-registry record and snapshot.
+async fn remove_forked_skill(
+    skill_name: String,
+    app: tauri::AppHandle,
+    refresh_state: tauri::State<'_, SkillRefreshState>,
+    fork_lock: &skill_fork::ForkMutationLock,
+) -> Result<InstallResult, String> {
+    let _guard = fork_lock.try_acquire()?;
+    validate_skill_dir_name(&skill_name)?;
+    let home = dirs::home_dir().ok_or("Could not find home directory")?;
+    let skill_dir = home.join(".agents").join("skills").join(&skill_name);
+    if skill_dir.exists() {
+        std::fs::remove_dir_all(&skill_dir)
+            .map_err(|e| format!("Failed to remove {}: {e}", skill_dir.display()))?;
+    }
+
+    let mut registry = skill_fork_registry::read_fork_registry(&home)?;
+    registry.forks.remove(&skill_name);
+    skill_fork_registry::write_fork_registry(&home, &registry)?;
+
+    let app_data = app
+        .path()
+        .app_data_dir()
+        .unwrap_or_else(|_| std::path::PathBuf::from("."));
+    let _ = std::fs::remove_dir_all(skill_fork_registry::fork_snapshot_dir(
+        &app_data,
+        &skill_name,
+    ));
+
+    if let Err(e) = skill_refresh::rebuild_snapshot_now(&app, &refresh_state) {
+        eprintln!("[remove_skill] snapshot rebuild failed: {e}");
+    }
+    Ok(InstallResult {
+        success: true,
+        skill_name,
+        installed_path: None,
+        error: None,
+        tool: None,
+        command: None,
+    })
 }
 
 /// Maximum number of bytes read from an installed skill's SKILL.md, to keep
@@ -919,6 +1034,9 @@ pub async fn update_skill(
     let (tool, mut args): (&str, Vec<String>) = match source_kind {
         Some(SourceKind::Manual) | Some(SourceKind::Plugin) => {
             return Err("Update is not available for manually installed skills".to_string());
+        }
+        Some(SourceKind::Fork) => {
+            return Err("Forked skills update with Pull upstream".to_string());
         }
         Some(SourceKind::Dotagents) => {
             let ledger = dotagents_ledger::read_dotagents_ledger(&home.join(".agents"))?;

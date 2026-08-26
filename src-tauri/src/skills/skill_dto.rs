@@ -12,6 +12,7 @@ use std::collections::BTreeMap;
 use serde::{Deserialize, Serialize};
 
 use super::provenance::SourceKind;
+use super::skill_fork_registry::OriginTool;
 
 // ============================================================================
 // Skills.sh API Types
@@ -96,6 +97,18 @@ pub struct Deployment {
     pub content_hash: String,
 }
 
+/// Fork provenance shown on a forked skill's detail header - see
+/// `skill_fork_registry::ForkRecord`, which this is a read-only projection
+/// of for the frontend.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ForkInfo {
+    pub origin_tool: OriginTool,
+    pub origin_source: String,
+    pub repo: String,
+    pub base_commit: String,
+    pub forked_at: String,
+}
+
 /// Installed skill with parsed data
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct InstalledSkill {
@@ -161,6 +174,9 @@ pub struct InstalledSkill {
     /// 2,000-file / 64 MiB cap and stopped early.
     #[serde(default)]
     pub folder_truncated: bool,
+    /// Set when `source_kind` is `Fork` - see `skill_fork_registry`.
+    #[serde(default)]
+    pub fork: Option<ForkInfo>,
 }
 
 // ============================================================================

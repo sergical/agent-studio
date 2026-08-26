@@ -8,7 +8,7 @@ import { useEffect, useState } from "react";
 import { ArrowLeft } from "lucide-react";
 import ReactMarkdown from "react-markdown";
 import { useSkillSnapshot } from "../../hooks/useSkillSnapshot";
-import { readInstalledSkillMd, writeInstalledSkillMd } from "../../lib/skill-api";
+import { forkSkill, readInstalledSkillMd, writeInstalledSkillMd } from "../../lib/skill-api";
 import {
   ownDeployments,
   pluginLabelForSkill,
@@ -160,12 +160,30 @@ export function SkillPage({
     };
   }, [skillMdPath]);
 
+  // A dotagents/skills.sh-managed skill would have its edits overwritten by
+  // the next sync/update - saving forks it first so the edit sticks.
+  const needsForkToSave = skill?.source_kind === "dotagents" || skill?.source_kind === "skills-sh";
+
   const handleSave = async (content: string) => {
     // Ignore a duplicate save request (e.g. Cmd+S fired while the Save
     // button's own click is already in flight).
-    if (!skillMdPath || isSaving) return;
+    if (!skill || !skillMdPath || isSaving) return;
     setIsSaving(true);
     try {
+      if (needsForkToSave) {
+        try {
+          // `skillMdPath` is only set once `deployment` resolves (see
+          // above), so it's non-null here.
+          await forkSkill(skill.name, deployment!.path);
+        } catch (err) {
+          addToast({
+            type: "error",
+            title: "Couldn't fork before saving",
+            message: err instanceof Error ? err.message : "Unknown error",
+          });
+          return;
+        }
+      }
       await writeInstalledSkillMd(skillMdPath, content);
       setRawContent(content);
       setIsEditing(false);
@@ -258,6 +276,7 @@ export function SkillPage({
                 key={skillMdPath}
                 initialContent={rawContent}
                 isSaving={isSaving}
+                saveLabel={needsForkToSave ? "Fork and save" : "Save"}
                 onSave={handleSave}
                 onCancel={() => {
                   setIsEditing(false);

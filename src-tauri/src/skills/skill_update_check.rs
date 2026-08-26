@@ -241,7 +241,7 @@ impl CommitLookup for GhCommitLookup {
 /// Resolve `gh` on `$PATH` via a login shell, the same way
 /// `skill_agent_runner::resolve_binary` finds harness binaries. `None` when
 /// `gh` isn't installed.
-fn resolve_gh_binary() -> Option<PathBuf> {
+pub(crate) fn resolve_gh_binary() -> Option<PathBuf> {
     let shell = std::env::var("SHELL").unwrap_or_else(|_| "/bin/zsh".to_string());
     let output = std::process::Command::new(&shell)
         .arg("-lc")
@@ -283,27 +283,48 @@ enum CandidateKind {
 fn build_candidates(home: &Path) -> Vec<Candidate> {
     let agents_dir = home.join(".agents");
 
+    // A fork's `base_commit` is the pinned "installed" side of the compare -
+    // exactly the shape `CandidateKind::Dotagents` already models - and a
+    // fork wins over a same-named ledger entry, same as dotagents wins over
+    // skills.sh: it's the more specific, more recently established source.
+    let fork_registry = super::skill_fork_registry::read_fork_registry_or_default(home);
+    let mut candidates: Vec<Candidate> = fork_registry
+        .forks
+        .iter()
+        .map(|(name, record)| Candidate {
+            name: name.clone(),
+            repo: record.repo.clone(),
+            path: record.path.clone(),
+            kind: CandidateKind::Dotagents {
+                installed_commit: Some(record.base_commit.clone()),
+            },
+        })
+        .collect();
+    let fork_names: std::collections::BTreeSet<String> =
+        fork_registry.forks.keys().cloned().collect();
+
     let dotagents_skills: Vec<DotagentsSkill> =
         dotagents_ledger::read_dotagents_ledger(&agents_dir).unwrap_or_else(|e| {
             eprintln!("skill update check: failed to read dotagents ledger: {e}");
             Vec::new()
         });
-    let dotagents_names: std::collections::BTreeSet<String> =
+    let mut dotagents_names: std::collections::BTreeSet<String> =
         dotagents_skills.iter().map(|s| s.name.clone()).collect();
+    dotagents_names.extend(fork_names.iter().cloned());
 
-    let mut candidates: Vec<Candidate> = dotagents_skills
-        .into_iter()
-        .filter_map(|s| {
-            s.github_repo.map(|repo| Candidate {
-                name: s.name,
-                repo,
-                path: s.path,
-                kind: CandidateKind::Dotagents {
-                    installed_commit: s.installed_commit,
-                },
-            })
+    candidates.extend(dotagents_skills.into_iter().filter_map(|s| {
+        if fork_names.contains(&s.name) {
+            return None; // fork wins
+        }
+        s.github_repo.map(|repo| Candidate {
+            name: s.name,
+            repo,
+            path: s.path,
+            kind: CandidateKind::Dotagents {
+                installed_commit: s.installed_commit,
+            },
         })
-        .collect();
+    }));
 
     let lock =
         lock_file::read_lock_file_at(&agents_dir.join(".skill-lock.json")).unwrap_or_else(|e| {
@@ -315,7 +336,7 @@ fn build_candidates(home: &Path) -> Vec<Candidate> {
         });
     for (name, entry) in lock.skills {
         if dotagents_names.contains(&name) {
-            continue; // dotagents wins
+            continue; // dotagents/fork wins
         }
         if entry.source_type != "github" {
             continue;
@@ -974,6 +995,54 @@ resolved_commit = "{commit}"
             lookup3.calls.lock().unwrap()[0].2,
             Some("2026-02-15T00:00:00Z".to_string())
         );
+    }
+
+    #[test]
+    fn forked_skill_is_a_candidate_pinned_to_its_base_commit_and_wins_over_the_ledger() {
+        use super::super::skill_fork_registry::{ForkRecord, ForkRegistry, OriginTool};
+
+        let tmp = tempfile::tempdir().unwrap();
+        let home = tmp.path().join("home");
+        let app_data = tmp.path().join("data");
+        // A ledger entry for the same name would normally win via dotagents,
+        // but the fork must take precedence and use its own base_commit.
+        write_agents_lock(
+            &home,
+            "find-bugs",
+            "getsentry/find-bugs",
+            "skills/find-bugs",
+            "z".repeat(40).as_str(),
+        );
+
+        let mut registry = ForkRegistry::default();
+        let base_commit = "a".repeat(40);
+        registry.forks.insert(
+            "find-bugs".to_string(),
+            ForkRecord {
+                forked_at: "2026-01-01T00:00:00Z".to_string(),
+                origin_tool: OriginTool::Dotagents,
+                origin_source: "getsentry/find-bugs".to_string(),
+                repo: "getsentry/find-bugs".to_string(),
+                path: "skills/find-bugs".to_string(),
+                declared_ref: None,
+                base_commit: base_commit.clone(),
+            },
+        );
+        super::super::skill_fork_registry::write_fork_registry(&home, &registry).unwrap();
+
+        let lookup = FakeLookup::with_answers(vec![Ok(Some((
+            "b".repeat(40),
+            "2026-02-01T00:00:00Z".to_string(),
+        )))]);
+        let store = run_update_check(&home, &app_data, &lookup);
+
+        assert_eq!(lookup.call_count(), 1); // one candidate, not two
+        let state = store.skills.get("find-bugs").unwrap();
+        assert_eq!(
+            state.installed_commit.as_deref(),
+            Some(base_commit.as_str())
+        );
+        assert!(has_update(state));
     }
 
     #[test]

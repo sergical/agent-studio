@@ -28,6 +28,11 @@ pub enum SourceKind {
     Plugin,
     SkillsSh,
     Manual,
+    /// Detached from its dotagents/skills.sh ledger via "Fork" so local
+    /// edits survive `sync`/`update` - see `skill_fork_registry`.
+    /// `classify_source_kind` never returns this; it's assigned afterward by
+    /// `skill_refresh::build_snapshot` from the fork registry.
+    Fork,
 }
 
 /// True when `path` resolves under a `.agents/skills/` directory, the

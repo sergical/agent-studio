@@ -125,10 +125,11 @@ export interface PaginatedSkillsResponse {
 /**
  * How a skill made it onto disk: "skills-sh" (present in the lock file),
  * "plugin" (shipped by an agent plugin, e.g. ~/.claude/plugins/*),
- * "dotagents" (symlinked in by getsentry/dotagents), or "manual" (a plain
- * directory found on disk with no other provenance signal).
+ * "dotagents" (symlinked in by getsentry/dotagents), "manual" (a plain
+ * directory found on disk with no other provenance signal), or "fork"
+ * (detached from its dotagents/skills.sh ledger via Fork - see `ForkInfo`).
  */
-export type SkillSourceKind = "skills-sh" | "plugin" | "dotagents" | "manual";
+export type SkillSourceKind = "skills-sh" | "plugin" | "dotagents" | "manual" | "fork";
 
 /** Badge label for each source_kind, shared by SkillBrowser and SkillDetailPanel. */
 export const SOURCE_KIND_LABELS = {
@@ -136,7 +137,20 @@ export const SOURCE_KIND_LABELS = {
   dotagents: "dotagents",
   plugin: "plugin",
   manual: "manual",
+  fork: "fork",
 } as const satisfies Record<SkillSourceKind, string>;
+
+/**
+ * A forked skill's origin, set when `InstalledSkill.source_kind === "fork"`.
+ * See `skill_fork_registry::ForkRecord` on the Rust side.
+ */
+export interface ForkInfo {
+  origin_tool: "dotagents" | "skills-sh";
+  origin_source: string;
+  repo: string;
+  base_commit: string;
+  forked_at: string;
+}
 
 /**
  * A plugin that shipped a skill, per the agent-plugins.org convention
@@ -210,6 +224,8 @@ export interface InstalledSkill {
   frontmatter_fields: Record<string, string>;
   /** True when the folder walk for the first deployment hit the 2,000-file / 64 MiB cap. */
   folder_truncated: boolean;
+  /** Set when `source_kind === "fork"`. */
+  fork?: ForkInfo;
 }
 
 // ============================================================================
@@ -243,6 +259,36 @@ export interface InstallResult {
   tool?: "dotagents" | "skills-sh";
   /** The exact argv `updateSkill` ran, joined with spaces, for the same toast. */
   command?: string;
+}
+
+/**
+ * `forkSkill`'s return shape - the fork record just written to
+ * `~/.agents/skill-studio.json`. See `skill_fork_registry::ForkRecord`.
+ */
+export interface ForkRecord {
+  forked_at: string;
+  origin_tool: "dotagents" | "skills-sh";
+  origin_source: string;
+  repo: string;
+  path: string;
+  declared_ref?: string;
+  base_commit: string;
+}
+
+/**
+ * `pullForkUpstream`'s return shape - a three-way merge summary. See
+ * `skill_fork::PullResult`.
+ */
+export interface PullResult {
+  from_commit: string;
+  to_commit: string;
+  merged: string[];
+  conflicts: string[];
+  added: string[];
+  removed: string[];
+  unchanged: number;
+  /** Set to "Already up to date" when nothing moved upstream; `null` otherwise. */
+  message: string | null;
 }
 
 // ============================================================================

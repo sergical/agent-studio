@@ -130,9 +130,16 @@ export function InstalledSkillHeader({
           {lastTestLabel(lastTest)}
         </button>
 
+        {skill.source_kind === "fork" && skill.fork && (
+          <p className="skill-detail-fork-line">
+            Forked from {skill.fork.origin_source} · base {shortSha(skill.fork.base_commit)} ·{" "}
+            {formatRelativeTime(skill.fork.forked_at)}
+          </p>
+        )}
+
         {skill.has_update && (
           <p className="skill-detail-update-line">
-            Update available
+            {skill.source_kind === "fork" ? "Upstream moved" : "Update available"}
             {skill.update_commit && ` · ${shortSha(skill.update_commit)}`}
             {skill.update_commit_at && ` · ${formatRelativeTime(skill.update_commit_at)}`}
           </p>

@@ -9,8 +9,10 @@ import type {
   AgentTarget,
   InstallRequest,
   InstallResult,
+  ForkRecord,
   InstalledSkill,
   PaginatedSkillsResponse,
+  PullResult,
   SkillSearchResult,
   SkillSnapshot,
   UpdateCheckSummary,
@@ -175,6 +177,38 @@ export async function writeInstalledSkillMdIfUnchanged(
  */
 export async function openSkillPath(path: string, mode: "reveal" | "editor"): Promise<void> {
   return invoke("open_skill_path", { path, mode });
+}
+
+// ============================================================================
+// Fork / Pull upstream / Un-fork API
+// ============================================================================
+
+/**
+ * Detach a dotagents- or skills.sh-managed skill from its ledger so local
+ * edits survive `sync`/`update`. `path` must be the shared-folder deployment
+ * (`~/.agents/skills/<name>`, or the Claude Code symlink to it) - the
+ * backend refuses anything else. Refused for a manual/plugin skill or a
+ * dotagents wildcard entry.
+ */
+export async function forkSkill(name: string, path: string): Promise<ForkRecord> {
+  return invoke("fork_skill", { name, path });
+}
+
+/**
+ * Three-way merge a forked skill's snapshot against its current on-disk
+ * copy and a freshly fetched upstream copy, then advance the snapshot to
+ * the new upstream commit.
+ */
+export async function pullForkUpstream(name: string): Promise<PullResult> {
+  return invoke("pull_fork_upstream", { name });
+}
+
+/**
+ * Discard a forked skill's local edits and reinstall it from its recorded
+ * origin. Callers should confirm with the user first - this runs immediately.
+ */
+export async function unforkSkill(name: string): Promise<void> {
+  return invoke("unfork_skill", { name });
 }
 
 // ============================================================================

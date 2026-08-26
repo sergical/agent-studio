@@ -704,6 +704,30 @@ fn build_snapshot(
     }
     let update_check = skill_update_check::summarize(&update_store);
 
+    // A forked skill is no longer in any ledger, so `classify_source_kind`
+    // (which only sees on-disk facts) can't tell it apart from a plain
+    // manual directory - the fork registry is the only source of truth for
+    // it. Forking only ever applies to the shared `.agents/skills` root, so
+    // a same-named project-scoped skill is left alone.
+    let fork_registry = super::skill_fork_registry::read_fork_registry_or_default(home);
+    for skill in &mut skills {
+        let Some(record) = fork_registry.forks.get(&skill.name) else {
+            continue;
+        };
+        let is_global = skill.deployments.iter().any(|d| d.scope == "global");
+        if !is_global {
+            continue;
+        }
+        skill.source_kind = super::provenance::SourceKind::Fork;
+        skill.fork = Some(super::skill_dto::ForkInfo {
+            origin_tool: record.origin_tool,
+            origin_source: record.origin_source.clone(),
+            repo: record.repo.clone(),
+            base_commit: record.base_commit.clone(),
+            forked_at: record.forked_at.clone(),
+        });
+    }
+
     let report = invocation_index.refresh(&home.join(".claude/projects"));
     if let Err(e) = invocation_index.save(cache_path) {
         eprintln!("skill refresh: failed to save invocation cache: {e}");
@@ -1160,6 +1184,7 @@ mod tests {
                 modified_at: None,
                 frontmatter_fields: BTreeMap::new(),
                 folder_truncated: false,
+                fork: None,
             }],
             projects: Vec::new(),
             invocations: Vec::new(),

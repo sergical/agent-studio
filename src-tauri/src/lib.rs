@@ -18,6 +18,7 @@ pub fn run() {
             app.manage(refresh_state);
             app.manage(skills::skill_agent_runner::SkillAgentRunnerState::default());
             app.manage(skills::skill_run_target::SkillRunTargetState::default());
+            app.manage(skills::skill_fork::ForkMutationLock::default());
             skills::skill_update_check::spawn_update_check_loop(app.handle().clone());
             Ok(())
         })
@@ -38,6 +39,10 @@ pub fn run() {
             skills::commands::write_installed_skill_md_if_unchanged,
             skills::commands::open_skill_path,
             skills::skill_update_check::check_skill_updates_now,
+            // Fork / Pull upstream / Un-fork
+            skills::skill_fork::fork_skill,
+            skills::skill_fork::pull_fork_upstream,
+            skills::skill_fork::unfork_skill,
             // Background refresh / invocation snapshot
             skills::skill_refresh::get_skill_snapshot,
             skills::skill_refresh::request_skill_rescan,

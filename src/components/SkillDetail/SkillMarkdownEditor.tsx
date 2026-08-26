@@ -12,6 +12,8 @@ interface SkillMarkdownEditorProps {
   onCancel: () => void;
   /** Notified on every dirty-state change, so the page-level Escape handler knows whether leaving needs confirmation. */
   onDirtyChange?: (isDirty: boolean) => void;
+  /** Label for the Save button while not saving - "Save" unless the caller overrides it (e.g. "Fork and save"). */
+  saveLabel?: string;
 }
 
 /**
@@ -25,6 +27,7 @@ export function SkillMarkdownEditor({
   onSave,
   onCancel,
   onDirtyChange,
+  saveLabel = "Save",
 }: SkillMarkdownEditorProps) {
   const [content, setContent] = useState(initialContent);
   const isDirty = content !== initialContent;
@@ -75,7 +78,7 @@ export function SkillMarkdownEditor({
             disabled={isSaving || !isDirty}
           >
             <Save size={14} />
-            {isSaving ? "Saving…" : "Save"}
+            {isSaving ? "Saving…" : saveLabel}
           </button>
         </div>
       </div>

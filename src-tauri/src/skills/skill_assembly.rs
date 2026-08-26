@@ -64,6 +64,7 @@ fn new_installed_skill(
         modified_at: None,
         frontmatter_fields: std::collections::BTreeMap::new(),
         folder_truncated: false,
+        fork: None,
     }
 }
 

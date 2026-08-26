@@ -74,15 +74,16 @@ Parked skills are listed as disabled in the scanner.
 
 ## Local data sources Skill Studio reads
 
-| Purpose                         | Location                             | Shape                                                                                                                                                  |
-| ------------------------------- | ------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| Installed-skill lock            | `~/.agents/.skill-lock.json`         | `{version, skills: {name: {source, sourceType, sourceUrl, skillFolderHash, installedAt, updatedAt}}}`                                                  |
-| dotagents declared skills       | `~/.agents/agents.toml`              | `[[skills]]` rows: `{name, source, path, ref?}` - `ref` absent means unpinned; no `[[skills]]` row for a lock entry means a wildcard (`--all`) install |
-| dotagents resolved skills       | `~/.agents/agents.lock`              | `[skills.<name>]` tables: `{source, resolved_path, resolved_commit}` - the commit actually on disk                                                     |
-| Skill invocations (Claude Code) | `~/.claude/projects/*/*.jsonl`       | assistant `tool_use` with `"name":"Skill","input":{"skill":"<name>"}` + timestamp + `cwd`                                                              |
-| Projects list (Codex)           | `~/.codex/config.toml`               | `[projects."/abs/path"]` sections                                                                                                                      |
-| Projects list (Claude Code)     | `~/.claude/projects/<encoded-path>/` | `cwd` field inside the transcripts (dir name encoding is lossy)                                                                                        |
-| skills.sh search                | `https://skills.sh/api/search?q=`    | `{skills: [{id, skillId, name, installs, source}]}` (`source`, not `topSource`)                                                                        |
+| Purpose                            | Location                             | Shape                                                                                                                                                  |
+| ---------------------------------- | ------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| Installed-skill lock               | `~/.agents/.skill-lock.json`         | `{version, skills: {name: {source, sourceType, sourceUrl, skillFolderHash, installedAt, updatedAt}}}`                                                  |
+| dotagents declared skills          | `~/.agents/agents.toml`              | `[[skills]]` rows: `{name, source, path, ref?}` - `ref` absent means unpinned; no `[[skills]]` row for a lock entry means a wildcard (`--all`) install |
+| dotagents resolved skills          | `~/.agents/agents.lock`              | `[skills.<name>]` tables: `{source, resolved_path, resolved_commit}` - the commit actually on disk                                                     |
+| Fork registry (Skill Studio-owned) | `~/.agents/skill-studio.json`        | `{version, forks: {name: {forked_at, origin_tool, origin_source, repo, path, declared_ref, base_commit}}, trials: {}}`                                 |
+| Skill invocations (Claude Code)    | `~/.claude/projects/*/*.jsonl`       | assistant `tool_use` with `"name":"Skill","input":{"skill":"<name>"}` + timestamp + `cwd`                                                              |
+| Projects list (Codex)              | `~/.codex/config.toml`               | `[projects."/abs/path"]` sections                                                                                                                      |
+| Projects list (Claude Code)        | `~/.claude/projects/<encoded-path>/` | `cwd` field inside the transcripts (dir name encoding is lossy)                                                                                        |
+| skills.sh search                   | `https://skills.sh/api/search?q=`    | `{skills: [{id, skillId, name, installs, source}]}` (`source`, not `topSource`)                                                                        |
 
 Codex session logs mention every installed SKILL.md path on every turn (the skill
 list in the instructions), so they are **not** an invocation signal. OpenCode keeps
@@ -104,6 +105,40 @@ through the user's own `gh` CLI login; the app stores no tokens itself, and
 "Update" runs the tool that owns the skill (`npx @sentry/dotagents add|install`
 or `npx skills update`) rather than writing to `agents.toml`, `agents.lock`, or
 `.skill-lock.json` directly.
+
+## Fork / Pull upstream / Un-fork
+
+A dotagents or skills.sh skill's local edits don't survive that CLI's own
+lifecycle: dotagents `install` overwrites the folder outright (`sync`
+preserves edits, but `install`/re-adding does not), and a folder `sync`
+finds with neither a `[[skills]]` row nor a lock table gets silently adopted
+as `source = "path:.agents/skills/<name>"` rather than kept as the skill the
+user meant to edit. "Fork" (`src-tauri/src/skills/skill_fork.rs`) detaches a
+skill from its owning ledger so edits stick: it snapshots the current folder,
+removes the skill from its ledger (`npx @sentry/dotagents remove` or
+`npx skills remove`), restores the folder if the removal deleted it, and
+records a `ForkRecord` in `~/.agents/skill-studio.json`. Wildcard dotagents
+entries (`name = "*"`, no per-skill manifest row) are refused in v1 - forking
+one by name first requires adding a named row for it, which dotagents
+doesn't offer without a fresh `add`.
+
+"Pull upstream" three-way merges the skill's last-synced snapshot (`base`),
+its current on-disk copy (`mine`), and a freshly fetched upstream copy at the
+latest commit (`theirs`), file by file: unchanged-in-mine takes theirs;
+unchanged-in-theirs keeps mine; a text file that differs on all three sides
+runs through `git merge-file -p mine base theirs`, with its conflict markers
+kept in place for the user to resolve in the editor; a binary file that
+differs on all three sides keeps mine and is flagged. Files added or removed
+upstream are added or removed locally when the local copy hadn't diverged.
+The snapshot always advances to the new upstream commit afterward, even when
+there were conflicts, so the fork's `base_commit` stays a true "last pulled"
+marker. The upstream copy is fetched read-only via
+`gh api repos/{owner}/{repo}/tarball/<sha>`, extracted with `tar`, and never
+writes back to GitHub or to the owning CLI's own files.
+
+"Un-fork" discards local edits and reinstalls the skill from its recorded
+origin (`declared_ref`, if any, for a dotagents fork), then drops the fork
+record and snapshot - the frontend confirms this destructively first.
 
 ## Headless runs
 
