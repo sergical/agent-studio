@@ -15,7 +15,7 @@ export interface Toast {
 }
 
 // ============================================================================
-// Agent Target Types (41 agents)
+// Agent Target Types (42 agents)
 // ============================================================================
 
 /**
@@ -63,7 +63,8 @@ export type AgentId =
   | "pieces"
   | "mintlify"
   | "swimm"
-  | "sweep";
+  | "sweep"
+  | "grok-build";
 
 /**
  * Agent target with paths resolved
@@ -77,10 +78,12 @@ export interface AgentTarget {
 
 /**
  * First-class agents featured for quick selection in the agent-target
- * picker, and the only agents whose skill directories are scanned for
- * native provenance detection (see skills/skill_discovery.rs).
+ * picker. These are the install targets `npx skills --agent <id>` accepts,
+ * not every harness the scanner reads: Grok Build is scanned for coverage
+ * and health but is not an `npx skills` install target, so it is excluded
+ * here (see AgentId::GrokBuild rejection in skills/commands.rs).
  */
-export const COMMON_AGENTS: AgentId[] = ["claude-code", "codex", "open-code", "pi"];
+export const COMMON_AGENTS: AgentId[] = ["claude-code", "codex", "open-code", "pi", "cursor"];
 
 // ============================================================================
 // Skills.sh API Types

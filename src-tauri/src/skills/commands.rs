@@ -78,6 +78,24 @@ fn snapshot_covers_projects(requested: &[String], snapshot_projects: &[String]) 
     requested.iter().all(|p| snapshot_projects.contains(p))
 }
 
+/// Append `--agent <cli_name>` for each requested agent, run before spawning
+/// `npx skills`. Grok Build is scanned for coverage/health but is not an
+/// install target: `npx skills` has no entry for it, it only reads
+/// `~/.agents/skills`.
+fn push_agent_args(args: &mut Vec<String>, agents: &[AgentId]) -> Result<(), String> {
+    for agent in agents {
+        if *agent == AgentId::GrokBuild {
+            return Err(
+                "Grok Build is not an npx skills install target; it reads ~/.agents/skills"
+                    .to_string(),
+            );
+        }
+        args.push("--agent".to_string());
+        args.push(agent.cli_name().to_string());
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -156,6 +174,24 @@ mod tests {
             scanned_at: Utc::now().to_rfc3339(),
             last_test_by_skill: Default::default(),
         }
+    }
+
+    #[test]
+    fn push_agent_args_rejects_grok_build() {
+        let mut args = vec!["skills".to_string(), "add".to_string()];
+        let err =
+            push_agent_args(&mut args, &[AgentId::ClaudeCode, AgentId::GrokBuild]).unwrap_err();
+        assert_eq!(
+            err,
+            "Grok Build is not an npx skills install target; it reads ~/.agents/skills"
+        );
+    }
+
+    #[test]
+    fn push_agent_args_accepts_installable_agents() {
+        let mut args = Vec::new();
+        push_agent_args(&mut args, &[AgentId::ClaudeCode, AgentId::Cursor]).unwrap();
+        assert_eq!(args, vec!["--agent", "claude-code", "--agent", "cursor"]);
     }
 
     #[test]
@@ -343,12 +379,7 @@ pub async fn install_skill(
     }
 
     // Add agent targets if specified
-    if !request.agents.is_empty() {
-        for agent in &request.agents {
-            args.push("--agent".to_string());
-            args.push(agent.cli_name().to_string());
-        }
-    }
+    push_agent_args(&mut args, &request.agents)?;
 
     // Log the command for debugging
     eprintln!("[install_skill] Running: npx {}", args.join(" "));

@@ -27,7 +27,9 @@ Skill Studio enforces these rules in `src-tauri/src/skills/frontmatter.rs`
 
 ## Invocation control and disable, per agent
 
-All four agents auto-invoke a skill by default when its description matches the task.
+Claude Code, Codex, OpenCode and pi auto-invoke a skill by default when its
+description matches the task; Cursor and Grok Build's invocation model isn't
+verified yet (see "unknown" cells below).
 
 | Agent       | Explicit invocation | Restrict model auto-invoke                                                                     | Disable a skill (keep on disk)                                                   |
 | ----------- | ------------------- | ---------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------- |
@@ -35,6 +37,8 @@ All four agents auto-invoke a skill by default when its description matches the 
 | Codex       | `$name`             | sidecar `agents/openai.yaml` → `policy.allow_implicit_invocation: false`                       | `~/.codex/config.toml` → `[[skills.config]] path = "…/SKILL.md" enabled = false` |
 | OpenCode    | `skill` tool        | `permission.skill` in `opencode.json`: per-name pattern `allow` / `deny` / `ask`               | same: `"name": "deny"` (wildcards allowed, e.g. `internal-*`)                    |
 | pi          | `/skill:name`       | frontmatter `disable-model-invocation: true`                                                   | none native → Skill Studio parks the folder                                      |
+| Cursor      | unknown             | unknown                                                                                        | no per-skill disable known                                                       |
+| Grok Build  | unknown             | unknown                                                                                        | no per-skill disable known                                                       |
 
 Sources: https://code.claude.com/docs/en/skills · https://developers.openai.com/codex/skills ·
 https://opencode.ai/docs/skills/ · https://pi.dev/docs/latest/skills
@@ -58,13 +62,15 @@ Parked skills are listed as disabled in the scanner.
 
 ## Discovery paths
 
-| Agent       | Project                               | Global                                         | Notes                                                                                  |
-| ----------- | ------------------------------------- | ---------------------------------------------- | -------------------------------------------------------------------------------------- |
-| Claude Code | `.claude/skills/`                     | `~/.claude/skills/`                            | also plugin cache `~/.claude/plugins/cache`; nested `.claude/skills/` in subdirs       |
-| Codex       | `.codex/skills/`                      | `~/.codex/skills/`                             | also plugin cache `~/.codex/plugins/cache`                                             |
-| OpenCode    | `.opencode/skills/` (legacy `skill/`) | `~/.config/opencode/skills/` (legacy `skill/`) | walks up to the git worktree root                                                      |
-| pi          | `.pi/skills/`                         | `~/.pi/agent/skills/`                          | root `.md` files with valid frontmatter count too                                      |
-| shared      | `.agents/skills/`                     | `~/.agents/skills/`                            | `npx skills` target; Codex, OpenCode, pi read it natively; Claude Code needs a symlink |
+| Agent       | Project                               | Global                                         | Notes                                                                                                           |
+| ----------- | ------------------------------------- | ---------------------------------------------- | --------------------------------------------------------------------------------------------------------------- |
+| Claude Code | `.claude/skills/`                     | `~/.claude/skills/`                            | also plugin cache `~/.claude/plugins/cache`; nested `.claude/skills/` in subdirs                                |
+| Codex       | `.codex/skills/`                      | `~/.codex/skills/`                             | also plugin cache `~/.codex/plugins/cache`                                                                      |
+| OpenCode    | `.opencode/skills/` (legacy `skill/`) | `~/.config/opencode/skills/` (legacy `skill/`) | walks up to the git worktree root                                                                               |
+| pi          | `.pi/skills/`                         | `~/.pi/agent/skills/`                          | root `.md` files with valid frontmatter count too                                                               |
+| Cursor      | `.cursor/skills/`                     | `~/.cursor/skills/`                            | also reads .agents, .claude and .codex skill dirs; plugins in ~/.cursor/plugins/{cache,local}                   |
+| Grok Build  | `.grok/skills/`                       | `~/.grok/skills/`                              | reads ~/.agents/skills; plugins in ~/.grok/plugins, marketplaces in ~/.grok/config.toml [[marketplace.sources]] |
+| shared      | `.agents/skills/`                     | `~/.agents/skills/`                            | `npx skills` target; Codex, OpenCode, pi, Cursor and Grok Build read it natively; Claude Code needs a symlink   |
 
 ## Local data sources Skill Studio reads
 
@@ -116,12 +122,21 @@ user's shell config.
   `message.content[]` (text blocks), `agent_end`, `agent_settled`. Skill loaded = a
   `read` tool whose `args.path` ends with or contains `/<skill-name>/SKILL.md`, else
   unknown. Final text = concatenated text blocks of the last `turn_end`.
-- **OpenCode**: `opencode run --format json [--dir <cwd>] [--session <id>]
-"<prompt>"`; on the machine this was built against it exits 1 with a config error
-  before running, so the adapter is best-effort: parse each line as JSON, treat any
-  string field named `text` inside a `part`/`content` object as assistant text, and
-  any object naming a `tool`/`toolName` as a tool call. Final text = last text seen;
-  skill loaded = always unknown. stderr tail becomes the error message on exit != 0.
+- **OpenCode**: `opencode2 run --standalone --format json --auto [--session <id>]
+"<prompt>"` (binary is `opencode2`, the v2 CLI; no `--dir` flag, cwd is the process
+  cwd; `--standalone` bypasses the shared `opencode2 serve --service` background
+  service, which hangs every run with no output when wedged). JSONL `type` values:
+  `step_start | text | tool | step_finish`, each carrying a `part`. Session id comes
+  from the top-level `sessionID`, first seen. `type=="text"` → assistant text from
+  `part.text`. `type=="tool"` (`part.type=="tool"`) → one tool call per
+  `part.callID`/`part.id`, deduped across the CLI's pending/running/completed
+  re-prints of the same part; skill loaded = `part.tool=="skill"` naming this run's
+  skill, or `part.tool=="read"` of that skill's `SKILL.md`. `type=="step_finish"` →
+  `part.cost`/`part.tokens`, best effort, feeds the run's `Finished` cost. Read-only
+  is not enforced for OpenCode: nine live probes of v0.0.0-beta-17498 found the CLI
+  ignores `OPENCODE_CONFIG`, and cwd-scoped permission denies for `edit`/`write`/
+  `patch`/`multiedit`/`apply_patch` never blocked `patch` from creating a file, so
+  every OpenCode run gets workspace write access regardless of the requested mode.
 
 Every run emits one `SkillAgentEvent` per parsed line (or per lifecycle step) on
 `"skill-agent://event"`, and always exactly one terminating `Finished` event, even

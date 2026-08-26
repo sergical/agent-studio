@@ -65,14 +65,21 @@ export const HEALTH_ISSUE_KIND_LABEL = {
 } as const satisfies Record<HealthIssueKind, { singular: string; plural: string }>;
 
 /** The first-class agents `findMissingFromAgents` expects full coverage across. */
-const FIRST_CLASS_AGENTS = ["Claude Code", "Codex", "OpenCode", "pi"] as const;
+const FIRST_CLASS_AGENTS = [
+  "Claude Code",
+  "Codex",
+  "OpenCode",
+  "pi",
+  "Cursor",
+  "Grok Build",
+] as const;
 
 /**
  * Agents that natively discover the shared `.agents/skills` root without a
  * symlink (Claude Code does not), so a "shared" deployment counts as
  * coverage for each of them. See docs/agent-skill-conventions.md.
  */
-const SHARED_ROOT_READERS = ["Codex", "OpenCode", "pi"] as const;
+const SHARED_ROOT_READERS = ["Codex", "OpenCode", "pi", "Cursor", "Grok Build"] as const;
 
 /** Which first-class agents one deployment gives coverage for. */
 function agentsCoveredByDeployment(agent: string): readonly string[] {

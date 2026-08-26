@@ -22,6 +22,8 @@ const SKILL_DIR_MARKERS: &[&str] = &[
     ".opencode/skills",
     ".opencode/skill",
     ".pi/skills",
+    ".cursor/skills",
+    ".grok/skills",
     ".agents/skills",
 ];
 
@@ -427,6 +429,31 @@ mod tests {
 
         let found = discover_skill_projects(home);
         assert_eq!(found, vec![project]);
+    }
+
+    #[test]
+    fn cursor_and_grok_skill_dirs_count_as_project_markers() {
+        let tmp = tempfile::tempdir().unwrap();
+        let home = tmp.path();
+        let cursor_project = home.join("cursor-project");
+        fs::create_dir_all(cursor_project.join(".cursor/skills")).unwrap();
+        let grok_project = home.join("grok-project");
+        fs::create_dir_all(grok_project.join(".grok/skills")).unwrap();
+
+        fs::create_dir_all(home.join(".codex")).unwrap();
+        fs::write(
+            home.join(".codex/config.toml"),
+            format!(
+                "[projects.\"{}\"]\ntrusted = true\n[projects.\"{}\"]\ntrusted = true\n",
+                cursor_project.to_string_lossy(),
+                grok_project.to_string_lossy()
+            ),
+        )
+        .unwrap();
+
+        let projects = discover_skill_projects(home);
+        assert!(projects.contains(&cursor_project));
+        assert!(projects.contains(&grok_project));
     }
 
     #[test]

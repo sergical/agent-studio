@@ -48,12 +48,14 @@ pub enum HarnessId {
 }
 
 impl HarnessId {
-    /// The binary name resolved on `PATH` to start this harness.
+    /// The binary name resolved on `PATH` to start this harness. `OpenCode`
+    /// resolves to `opencode2` (the v2 CLI); the variant name and its
+    /// `open-code` serde id are unchanged so history and settings still work.
     pub fn bin_name(&self) -> &'static str {
         match self {
             Self::ClaudeCode => "claude",
             Self::Codex => "codex",
-            Self::OpenCode => "opencode",
+            Self::OpenCode => "opencode2",
             Self::Pi => "pi",
         }
     }
@@ -145,6 +147,22 @@ pub struct ParseState {
     pub last_text: String,
     pub skill_loaded: SkillLoaded,
     pub last_agent_message: Option<String>,
+    /// Sum of every distinct OpenCode `step_finish.part.cost` seen, keyed by
+    /// `part.id` in `seen_step_finish_ids` below - `run_process` folds this
+    /// into the `Finished` event it synthesizes for OpenCode, since OpenCode
+    /// never emits its own terminal record the way Claude/Codex do.
+    pub cost_usd: Option<f64>,
+    /// `part.id` of every OpenCode `step_finish` already folded into
+    /// `cost_usd`, so a reprint of the same step doesn't double-count it.
+    pub seen_step_finish_ids: std::collections::HashSet<String>,
+    /// `callID`/`id` of every OpenCode tool part already turned into a
+    /// `ToolCall`, so the pending/running/completed re-prints of the same
+    /// part don't each emit their own `ToolCall`.
+    pub announced_open_code_tool_ids: std::collections::HashSet<String>,
+    /// `callID`/`id` of every OpenCode tool part already turned into a
+    /// `ToolResult` or `Error`, so a call is resolved at most once even
+    /// though the CLI keeps reprinting it after it settles.
+    pub resolved_open_code_tool_ids: std::collections::HashSet<String>,
 }
 
 /// Build the `(program, args, env, cwd)` to spawn for `request`, per the
@@ -208,16 +226,23 @@ pub fn build_command(
             args
         }
         HarnessId::OpenCode => {
+            // No `--dir` flag exists; cwd comes from `Command::current_dir`
+            // below. `--standalone` bypasses the shared `opencode2 serve
+            // --service` background service (a wedged instance otherwise
+            // hangs every run with no output). `--auto` is passed in both
+            // write modes so a non-TTY run never blocks on an "ask"
+            // permission. Read-only is not enforced here: nine live probes of
+            // v0.0.0-beta-17498 showed the CLI ignores `OPENCODE_CONFIG`, and
+            // cwd-scoped permission denies for `edit`/`write`/`patch`/etc.
+            // never blocked `patch` from creating a file, so an OpenCode run
+            // always has workspace write access regardless of `write_access`.
             let mut args = vec![
                 "run".to_string(),
+                "--standalone".to_string(),
                 "--format".to_string(),
                 "json".to_string(),
+                "--auto".to_string(),
             ];
-            if request.write_access == WriteAccess::Workspace {
-                args.push("--auto".to_string());
-            }
-            args.push("--dir".to_string());
-            args.push(request.cwd.clone());
             if let Some(session_id) = &request.session_id {
                 args.push("--session".to_string());
                 args.push(session_id.clone());
@@ -264,7 +289,7 @@ pub fn parse_line(
     match harness {
         HarnessId::ClaudeCode => parse_claude_line(&value, skill_name, state),
         HarnessId::Codex => parse_codex_line(&value, skill_name, state),
-        HarnessId::OpenCode => parse_open_code_line(&value, state),
+        HarnessId::OpenCode => parse_open_code_line(&value, skill_name, state),
         HarnessId::Pi => parse_pi_line(&value, skill_name, state),
     }
 }
@@ -535,65 +560,170 @@ fn parse_pi_line(
     events
 }
 
-/// OpenCode's format errors out before running on this machine, so this
-/// parses best-effort: any `text` string nested under a `part`/`content`
-/// object is assistant text, and any object naming a `tool`/`toolName` is a
-/// tool call. Skill-loaded detection isn't possible from this alone, so it
-/// always stays `Unknown`.
-fn parse_open_code_line(value: &Value, state: &mut ParseState) -> Vec<SkillAgentEventKind> {
+/// Parses one `opencode2 run --format json` record. Top-level `sessionID` is
+/// captured silently the first time it's seen, same as the other three
+/// adapters do for their own session/thread ids - none of them turn it into
+/// its own event either. `type == "tool"` parts are deduped on `callID`/`id`
+/// into two states (announced/resolved, see `open_code_tool_events`) so the
+/// CLI's pending/running/completed/error re-prints of the same part yield at
+/// most one `ToolCall` and one `ToolResult`/`Error`. Tool parts were never
+/// observed in the field; this follows the OpenCode SDK's documented part
+/// shape as best effort.
+fn parse_open_code_line(
+    value: &Value,
+    skill_name: &str,
+    state: &mut ParseState,
+) -> Vec<SkillAgentEventKind> {
     let mut events = Vec::new();
-    if let Some(text) = find_open_code_text(value, false) {
-        state.last_text = text.clone();
-        events.push(SkillAgentEventKind::AssistantText {
-            text,
-            is_delta: false,
-        });
+
+    if state.session_id.is_none() {
+        if let Some(session_id) = value.get("sessionID").and_then(Value::as_str) {
+            state.session_id = Some(session_id.to_string());
+        }
     }
-    if let Some((name, summary)) = find_open_code_tool(value) {
-        events.push(SkillAgentEventKind::ToolCall {
-            name,
-            summary,
-            detail: None,
-        });
+
+    let part = value.get("part");
+    let part_type = part
+        .and_then(|p| p.get("type"))
+        .and_then(Value::as_str)
+        .unwrap_or("");
+
+    match value.get("type").and_then(Value::as_str).unwrap_or("") {
+        "text" => {
+            if let Some(text) = part.and_then(|p| p.get("text")).and_then(Value::as_str) {
+                state.last_text = text.to_string();
+                events.push(SkillAgentEventKind::AssistantText {
+                    text: text.to_string(),
+                    is_delta: false,
+                });
+            }
+        }
+        "step_finish" => {
+            let part_id = part.and_then(|p| p.get("id")).and_then(Value::as_str);
+            let already_seen = match part_id {
+                Some(id) => !state.seen_step_finish_ids.insert(id.to_string()),
+                None => false,
+            };
+            if !already_seen {
+                if let Some(cost) = part.and_then(|p| p.get("cost")).and_then(Value::as_f64) {
+                    state.cost_usd = Some(state.cost_usd.unwrap_or(0.0) + cost);
+                }
+            }
+        }
+        _ if part_type == "tool" => {
+            if let Some(part) = part {
+                events.extend(open_code_tool_events(part, skill_name, state));
+            }
+        }
+        // "step_start" carries nothing new beyond the session id already
+        // captured above; anything else unrecognized is ignored.
+        _ => {}
     }
     events
 }
 
-fn find_open_code_text(value: &Value, inside_part_or_content: bool) -> Option<String> {
-    match value {
-        Value::Object(map) => {
-            if inside_part_or_content {
-                if let Some(text) = map.get("text").and_then(Value::as_str) {
-                    return Some(text.to_string());
-                }
-            }
-            map.iter().find_map(|(key, v)| {
-                let nested = inside_part_or_content || key == "part" || key == "content";
-                find_open_code_text(v, nested)
-            })
-        }
-        Value::Array(items) => items
-            .iter()
-            .find_map(|v| find_open_code_text(v, inside_part_or_content)),
-        _ => None,
-    }
-}
+/// Builds the events for one OpenCode tool part, deduped by `callID`/`id`
+/// into two independent states per call: "announced" (a `ToolCall` has been
+/// emitted) and "resolved" (a `ToolResult` or `Error` has been emitted). The
+/// CLI reprints the same call across its pending/running/completed/error
+/// states, so a call with no `callID`/`id` at all is treated as always-new
+/// (announced and resolved every time it's seen) rather than silently
+/// dropped. `state.skill_loaded` is updated on every sighting, not only the
+/// first, because `input` (the field it's read from) can arrive late - on
+/// the `completed` record rather than the first `pending` one.
+fn open_code_tool_events(
+    part: &Value,
+    skill_name: &str,
+    state: &mut ParseState,
+) -> Vec<SkillAgentEventKind> {
+    let mut events = Vec::new();
+    let Some(tool) = part.get("tool").and_then(Value::as_str).map(str::to_string) else {
+        return events;
+    };
+    let tool_state = part.get("state");
+    let input = tool_state
+        .and_then(|s| s.get("input"))
+        .cloned()
+        .unwrap_or(Value::Null);
+    let status = tool_state
+        .and_then(|s| s.get("status"))
+        .and_then(Value::as_str)
+        .unwrap_or("");
+    let call_id = part
+        .get("callID")
+        .or_else(|| part.get("id"))
+        .and_then(Value::as_str)
+        .map(str::to_string);
 
-fn find_open_code_tool(value: &Value) -> Option<(String, String)> {
-    match value {
-        Value::Object(map) => {
-            let name = map
-                .get("tool")
-                .and_then(Value::as_str)
-                .or_else(|| map.get("toolName").and_then(Value::as_str));
-            if let Some(name) = name {
-                return Some((name.to_string(), value.to_string()));
-            }
-            map.values().find_map(find_open_code_tool)
+    match tool.as_str() {
+        "skill" if input.get("name").and_then(Value::as_str) == Some(skill_name) => {
+            state.skill_loaded = SkillLoaded::Yes;
         }
-        Value::Array(items) => items.iter().find_map(find_open_code_tool),
-        _ => None,
+        "read" => {
+            let needle = format!("/{skill_name}/SKILL.md");
+            if input
+                .get("filePath")
+                .and_then(Value::as_str)
+                .is_some_and(|path| path.ends_with(&needle))
+            {
+                state.skill_loaded = SkillLoaded::Yes;
+            }
+        }
+        _ => {}
     }
+
+    let not_yet_announced = match &call_id {
+        Some(id) => state.announced_open_code_tool_ids.insert(id.clone()),
+        None => true,
+    };
+    if not_yet_announced {
+        let summary = tool_state
+            .and_then(|s| s.get("title"))
+            .and_then(Value::as_str)
+            .map(str::to_string)
+            .unwrap_or_else(|| input.to_string().chars().take(120).collect());
+        events.push(SkillAgentEventKind::ToolCall {
+            name: tool.clone(),
+            summary,
+            detail: None,
+        });
+    }
+
+    let not_yet_resolved = match &call_id {
+        Some(id) => !state.resolved_open_code_tool_ids.contains(id),
+        None => true,
+    };
+    if not_yet_resolved && (status == "completed" || status == "error") {
+        if let Some(id) = &call_id {
+            state.resolved_open_code_tool_ids.insert(id.clone());
+        }
+        if status == "completed" {
+            let summary = tool_state
+                .and_then(|s| s.get("output"))
+                .and_then(Value::as_str)
+                .map(str::to_string)
+                .or_else(|| {
+                    tool_state
+                        .and_then(|s| s.get("title"))
+                        .and_then(Value::as_str)
+                        .map(str::to_string)
+                })
+                .unwrap_or_default();
+            events.push(SkillAgentEventKind::ToolResult {
+                name: tool,
+                summary,
+            });
+        } else {
+            let message = tool_state
+                .and_then(|s| s.get("error"))
+                .and_then(Value::as_str)
+                .map(str::to_string)
+                .unwrap_or_else(|| "Unknown error".to_string());
+            events.push(SkillAgentEventKind::Error { message });
+        }
+    }
+
+    events
 }
 
 /// A run's cancellation state, shared between `cancel_skill_agent_run` and
@@ -1091,7 +1221,7 @@ async fn run_process(
             ok: exit_ok && !had_error,
             final_text,
             session_id: parse_state.session_id.clone(),
-            cost_usd: None,
+            cost_usd: parse_state.cost_usd,
             duration_ms,
             skill_loaded: parse_state.skill_loaded,
         },
@@ -1387,14 +1517,18 @@ mod tests {
     fn build_command_open_code_read_only() {
         let args = build(HarnessId::OpenCode, WriteAccess::ReadOnly, None);
         assert_eq!(args[0], "run");
-        assert!(!args.contains(&"--auto".to_string()));
-        assert!(args.contains(&"--dir".to_string()));
+        assert!(args.contains(&"--standalone".to_string()));
+        // Passed in both write modes, so a non-TTY run never blocks on ask.
+        assert!(args.contains(&"--auto".to_string()));
+        assert!(!args.contains(&"--dir".to_string()));
     }
 
     #[test]
     fn build_command_open_code_workspace() {
         let args = build(HarnessId::OpenCode, WriteAccess::Workspace, Some("sess-2"));
+        assert!(args.contains(&"--standalone".to_string()));
         assert!(args.contains(&"--auto".to_string()));
+        assert!(!args.contains(&"--dir".to_string()));
         let session_at = args.iter().position(|a| a == "--session").unwrap();
         assert_eq!(args[session_at + 1], "sess-2");
     }
@@ -1494,19 +1628,93 @@ mod tests {
     }
 
     #[test]
-    fn parse_line_open_code_finds_nested_text_and_tool() {
+    fn parse_line_open_code_captures_session_id_and_text() {
         let mut state = ParseState::default();
-        let line = r#"{"part":{"text":"BANANA"}}"#;
-        let events = parse_line(HarnessId::OpenCode, line, "say-banana", &mut state);
+        let session = r#"{"type":"step_start","timestamp":1,"sessionID":"ses_1","part":{"id":"prt_1","sessionID":"ses_1","messageID":"msg_1","type":"step-start","snapshot":"abc"}}"#;
+        assert!(parse_line(HarnessId::OpenCode, session, "say-banana", &mut state).is_empty());
+        assert_eq!(state.session_id.as_deref(), Some("ses_1"));
+
+        let text = r#"{"type":"text","timestamp":2,"sessionID":"ses_1","part":{"id":"prt_2","sessionID":"ses_1","messageID":"msg_1","type":"text","text":"BANANA","time":{"start":1,"end":2}}}"#;
+        let events = parse_line(HarnessId::OpenCode, text, "say-banana", &mut state);
         assert!(
-            matches!(&events[0], SkillAgentEventKind::AssistantText { text, .. } if text == "BANANA")
+            matches!(&events[0], SkillAgentEventKind::AssistantText { text, is_delta: false } if text == "BANANA")
         );
+        assert_eq!(state.last_text, "BANANA");
+    }
+
+    #[test]
+    fn parse_line_open_code_tool_call_and_result_are_each_emitted_once() {
+        let mut state = ParseState::default();
+        // `input` and `output` only show up on the final, `completed` record.
+        let pending = r#"{"type":"tool","sessionID":"ses_1","part":{"type":"tool","tool":"skill","callID":"call_1","state":{"status":"pending"}}}"#;
+        let events = parse_line(HarnessId::OpenCode, pending, "say-banana", &mut state);
+        assert_eq!(events.len(), 1);
+        assert!(matches!(
+            &events[0],
+            SkillAgentEventKind::ToolCall { name, detail: None, .. } if name == "skill"
+        ));
         assert_eq!(state.skill_loaded, SkillLoaded::Unknown);
 
+        let running = r#"{"type":"tool","sessionID":"ses_1","part":{"type":"tool","tool":"skill","callID":"call_1","state":{"status":"running"}}}"#;
+        assert!(parse_line(HarnessId::OpenCode, running, "say-banana", &mut state).is_empty());
+
+        let completed = r#"{"type":"tool","sessionID":"ses_1","part":{"type":"tool","tool":"skill","callID":"call_1","state":{"status":"completed","input":{"name":"say-banana"},"output":"loaded","title":"skill: say-banana"}}}"#;
+        let events = parse_line(HarnessId::OpenCode, completed, "say-banana", &mut state);
+        assert_eq!(events.len(), 1);
+        assert!(matches!(
+            &events[0],
+            SkillAgentEventKind::ToolResult { name, summary }
+                if name == "skill" && summary == "loaded"
+        ));
+        assert_eq!(state.skill_loaded, SkillLoaded::Yes);
+
+        // A reprint of the already-completed call emits neither event again.
+        let events = parse_line(HarnessId::OpenCode, completed, "say-banana", &mut state);
+        assert!(events.is_empty());
+    }
+
+    #[test]
+    fn parse_line_open_code_tool_error_emits_error_once() {
         let mut state = ParseState::default();
-        let line = r#"{"toolName":"read","path":"SKILL.md"}"#;
+        let line = r#"{"type":"tool","sessionID":"ses_1","part":{"type":"tool","tool":"bash","callID":"call_3","state":{"status":"error","error":"boom"}}}"#;
         let events = parse_line(HarnessId::OpenCode, line, "say-banana", &mut state);
-        assert!(matches!(&events[0], SkillAgentEventKind::ToolCall { name, .. } if name == "read"));
+        assert_eq!(events.len(), 2);
+        assert!(matches!(&events[0], SkillAgentEventKind::ToolCall { .. }));
+        assert!(matches!(&events[1], SkillAgentEventKind::Error { message } if message == "boom"));
+
+        // A reprint of the same error must not emit a second Error.
+        let events = parse_line(HarnessId::OpenCode, line, "say-banana", &mut state);
+        assert!(events.is_empty());
+    }
+
+    #[test]
+    fn parse_line_open_code_reports_skill_loaded_from_reading_skill_md() {
+        let mut state = ParseState::default();
+        let line = r#"{"type":"tool","sessionID":"ses_1","part":{"type":"tool","tool":"read","callID":"call_2","state":{"status":"completed","input":{"filePath":"/scratch/.agents/skills/say-banana/SKILL.md"}}}}"#;
+        parse_line(HarnessId::OpenCode, line, "say-banana", &mut state);
+        assert_eq!(state.skill_loaded, SkillLoaded::Yes);
+    }
+
+    #[test]
+    fn parse_line_open_code_step_finish_feeds_cost() {
+        let mut state = ParseState::default();
+        let line = r#"{"type":"step_finish","sessionID":"ses_1","part":{"id":"step_1","type":"step-finish","tokens":{"input":10,"output":5,"reasoning":0,"cache":{}},"cost":0.0042}}"#;
+        assert!(parse_line(HarnessId::OpenCode, line, "say-banana", &mut state).is_empty());
+        assert_eq!(state.cost_usd, Some(0.0042));
+    }
+
+    #[test]
+    fn parse_line_open_code_step_finish_accumulates_distinct_steps_once_each() {
+        let mut state = ParseState::default();
+        let step1 = r#"{"type":"step_finish","sessionID":"ses_1","part":{"id":"step_1","type":"step-finish","cost":0.01}}"#;
+        let step2 = r#"{"type":"step_finish","sessionID":"ses_1","part":{"id":"step_2","type":"step-finish","cost":0.02}}"#;
+        parse_line(HarnessId::OpenCode, step1, "say-banana", &mut state);
+        parse_line(HarnessId::OpenCode, step2, "say-banana", &mut state);
+        assert!((state.cost_usd.unwrap() - 0.03).abs() < 1e-9);
+
+        // Reprint of the same step id must not double-count.
+        parse_line(HarnessId::OpenCode, step1, "say-banana", &mut state);
+        assert!((state.cost_usd.unwrap() - 0.03).abs() < 1e-9);
     }
 
     #[test]

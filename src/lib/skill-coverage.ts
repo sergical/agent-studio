@@ -1,17 +1,24 @@
 // ============================================================================
 // Skill Studio - skill-coverage
 // Effective visibility of a skill to an agent: the shared `.agents/skills`
-// root is read natively by Codex, OpenCode and pi, so a skill deployed only
-// there is still visible to them even without a deployment in their own
-// directory. Claude Code does not read the shared root (see
-// docs/agent-skill-conventions.md line 67); it needs its own deployment.
+// root is read natively by Codex, OpenCode, pi, Cursor and Grok Build, so a
+// skill deployed only there is still visible to them even without a
+// deployment in their own directory. Claude Code does not read the shared
+// root (see docs/agent-skill-conventions.md line 67); it needs its own
+// deployment.
 // ============================================================================
 
 import { ownDeployments } from "./skill-plugin-partition";
 import type { AgentId, Deployment, InstalledSkill } from "./skill-types";
 
-/** The three first-class agents that read the shared `.agents/skills` root natively. */
-export const AGENTS_READING_SHARED_ROOT: readonly AgentId[] = ["codex", "open-code", "pi"];
+/** The five first-class agents that read the shared `.agents/skills` root natively. */
+export const AGENTS_READING_SHARED_ROOT: readonly AgentId[] = [
+  "codex",
+  "open-code",
+  "pi",
+  "cursor",
+  "grok-build",
+];
 
 /** The `Deployment.agent` value for a deployment placed in the shared root, not any one agent's own folder. */
 const SHARED_AGENT_ID = "shared";
@@ -31,6 +38,10 @@ export function agentIdFromDeploymentLabel(label: string): AgentId | "shared" | 
       return "open-code";
     case "pi":
       return "pi";
+    case "Cursor":
+      return "cursor";
+    case "Grok Build":
+      return "grok-build";
     case SHARED_AGENT_ID:
       return "shared";
     default:
@@ -171,7 +182,14 @@ export function summarizeCoverage(skills: InstalledSkill[]): CoverageSummary {
 // ============================================================================
 
 /** Column order for the per-agent columns of the coverage matrix. */
-export const AGENT_MATRIX_LABELS = ["Claude Code", "Codex", "OpenCode", "pi"] as const;
+export const AGENT_MATRIX_LABELS = [
+  "Claude Code",
+  "Codex",
+  "OpenCode",
+  "pi",
+  "Cursor",
+  "Grok Build",
+] as const;
 
 export type AgentMatrixLabel = (typeof AGENT_MATRIX_LABELS)[number];
 
@@ -181,6 +199,8 @@ const AGENT_MATRIX_AGENT_IDS = {
   Codex: "codex",
   OpenCode: "open-code",
   pi: "pi",
+  Cursor: "cursor",
+  "Grok Build": "grok-build",
 } satisfies Record<AgentMatrixLabel, AgentId>;
 
 /**

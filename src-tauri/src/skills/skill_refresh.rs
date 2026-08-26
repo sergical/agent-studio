@@ -750,7 +750,15 @@ pub fn desired_watch_paths(home: &Path, projects: &[PathBuf]) -> Vec<WatchPath> 
     add(&mut merged, home.join(".claude"), false);
 
     for project in projects {
-        for sub in [".claude", ".codex", ".opencode", ".pi", ".agents"] {
+        for sub in [
+            ".claude",
+            ".codex",
+            ".opencode",
+            ".pi",
+            ".cursor",
+            ".grok",
+            ".agents",
+        ] {
             add(&mut merged, project.join(sub), true);
         }
         add(&mut merged, project.clone(), false);
@@ -777,6 +785,12 @@ mod tests {
         assert!(paths
             .iter()
             .any(|w| w.path == home.join(".claude") && !w.recursive));
+        assert!(paths
+            .iter()
+            .any(|w| w.path == home.join(".cursor/skills") && w.recursive));
+        assert!(paths
+            .iter()
+            .any(|w| w.path == home.join(".grok/skills") && w.recursive));
     }
 
     #[test]
@@ -788,6 +802,12 @@ mod tests {
         assert!(paths
             .iter()
             .any(|w| w.path == project.join(".claude") && w.recursive));
+        assert!(paths
+            .iter()
+            .any(|w| w.path == project.join(".cursor") && w.recursive));
+        assert!(paths
+            .iter()
+            .any(|w| w.path == project.join(".grok") && w.recursive));
         assert!(paths.iter().any(|w| w.path == project && !w.recursive));
     }
 

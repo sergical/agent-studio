@@ -1,9 +1,9 @@
 // ============================================================================
 // AgentCoverageTable - Two rows: what Claude Code sees in its own folder,
-// and what the shared .agents folder makes visible to Codex, OpenCode and pi
+// and what the shared .agents folder makes visible to the other harnesses
 // ============================================================================
 
-import { summarizeCoverage } from "../../lib/skill-coverage";
+import { AGENTS_READING_SHARED_ROOT, summarizeCoverage } from "../../lib/skill-coverage";
 import { HarnessIcon } from "../ui/HarnessIcon";
 import type { AgentId, InstalledSkill } from "../../lib/skill-types";
 
@@ -19,15 +19,28 @@ const SHARED_READER_LABELS = {
   codex: "Codex",
   "open-code": "OpenCode",
   pi: "pi",
+  cursor: "Cursor",
+  "grok-build": "Grok Build",
 } satisfies Partial<Record<AgentId, string>>;
 
-/** The display label for one of the three shared-reading agents, falling back to its id. */
+/** The display label for one of the shared-reading agents, falling back to its id. */
 function sharedReaderLabel(agent: AgentId): string {
   if (agent in SHARED_READER_LABELS) {
     // SAFETY: just checked `agent` is one of SHARED_READER_LABELS' own keys.
     return SHARED_READER_LABELS[agent as keyof typeof SHARED_READER_LABELS];
   }
   return agent;
+}
+
+/** Joins items with commas and "and" before the last one, e.g. "Codex, OpenCode, pi, Cursor and Grok Build". */
+function joinWithAnd(items: string[]): string {
+  if (items.length <= 1) return items.join("");
+  return `${items.slice(0, -1).join(", ")} and ${items[items.length - 1]}`;
+}
+
+/** "Codex, OpenCode, pi, Cursor and Grok Build" - every agent that reads the shared root, for the caption and sublines. */
+function sharedRootReaderSentence(): string {
+  return joinWithAnd(AGENTS_READING_SHARED_ROOT.map(sharedReaderLabel));
 }
 
 /** "+1 only in OpenCode" / "+3 only in Codex, pi", or null when every skill in an own dir is also shared. */
@@ -108,8 +121,8 @@ export function AgentCoverageTable({ skills, onSelectMissing }: AgentCoverageTab
   return (
     <div className="coverage-table-wrap">
       <p className="coverage-table-caption">
-        Which of your {total} skills each harness can see. Claude Code reads its own folder; Codex,
-        OpenCode and pi read the shared .agents folder.
+        Which of your {total} skills each harness can see. Claude Code reads its own folder;{" "}
+        {sharedRootReaderSentence()} read the shared .agents folder.
       </p>
       <div className="coverage-table">
         <CoverageRow
@@ -129,8 +142,8 @@ export function AgentCoverageTable({ skills, onSelectMissing }: AgentCoverageTab
           label="Shared folder"
           sublines={
             onlyInOwnDir
-              ? ["Read by Codex, OpenCode and pi", onlyInOwnDir]
-              : ["Read by Codex, OpenCode and pi"]
+              ? [`Read by ${sharedRootReaderSentence()}`, onlyInOwnDir]
+              : [`Read by ${sharedRootReaderSentence()}`]
           }
           visible={summary.shared.visible}
           total={total}

@@ -649,6 +649,26 @@ mod tests {
     }
 
     #[test]
+    fn cursor_and_grok_build_global_skill_dirs_are_discovered() {
+        let tmp = tempfile::tempdir().unwrap();
+        let home = tmp.path();
+        write_skill(&home.join(".cursor/skills/x"), "x");
+        write_skill(&home.join(".grok/skills/y"), "y");
+
+        let candidates = discover_skill_candidates(home, &[]);
+        let cursor = candidates
+            .iter()
+            .find(|c| c.name == "x")
+            .expect("cursor skill found");
+        assert_eq!(cursor.root_label, "Cursor");
+        let grok = candidates
+            .iter()
+            .find(|c| c.name == "y")
+            .expect("grok build skill found");
+        assert_eq!(grok.root_label, "Grok Build");
+    }
+
+    #[test]
     fn broken_symlink_is_flagged() {
         let tmp = tempfile::tempdir().unwrap();
         let home = tmp.path();

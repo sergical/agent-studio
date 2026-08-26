@@ -1,6 +1,6 @@
 // ============================================================================
 // Skills Module - Agent Registry
-// The 41 supported agents: identifiers, CLI names, display names, and the
+// The 42 supported agents: identifiers, CLI names, display names, and the
 // project/global skill directories each one reads. This is the single
 // source of truth for agent paths - skill_roots() derives its directory
 // list from the methods below rather than hardcoding paths.
@@ -56,6 +56,7 @@ pub enum AgentId {
     Mintlify,
     Swimm,
     Sweep,
+    GrokBuild,
 }
 
 impl AgentId {
@@ -104,6 +105,10 @@ impl AgentId {
             Self::Mintlify => "mintlify",
             Self::Swimm => "swimm",
             Self::Sweep => "sweep",
+            // skills.sh does not list Grok, so this `cli_name` is never sent
+            // to `npx skills` - Grok Build skills are only ever discovered,
+            // not installed through the CLI.
+            Self::GrokBuild => "grok-build",
         }
     }
 
@@ -152,6 +157,7 @@ impl AgentId {
             Self::Mintlify => "Mintlify",
             Self::Swimm => "Swimm",
             Self::Sweep => "Sweep",
+            Self::GrokBuild => "Grok Build",
         }
     }
 
@@ -200,6 +206,7 @@ impl AgentId {
             Self::Mintlify => ".mintlify/skills",
             Self::Swimm => ".swimm/skills",
             Self::Sweep => ".sweep/skills",
+            Self::GrokBuild => ".grok/skills",
         }
     }
 
@@ -248,6 +255,7 @@ impl AgentId {
             Self::Mintlify => ".mintlify/skills",
             Self::Swimm => ".swimm/skills",
             Self::Sweep => ".sweep/skills",
+            Self::GrokBuild => ".grok/skills",
         }
     }
 
@@ -296,6 +304,7 @@ impl AgentId {
             Self::Mintlify,
             Self::Swimm,
             Self::Sweep,
+            Self::GrokBuild,
         ]
     }
 
@@ -323,13 +332,15 @@ pub struct AgentTarget {
 // Skill Roots - where skills live on disk
 // ============================================================================
 
-/// The four first-class agents whose skill directories are scanned for
+/// The six first-class agents whose skill directories are scanned for
 /// native provenance detection.
 const FIRST_CLASS_AGENTS: &[AgentId] = &[
     AgentId::ClaudeCode,
     AgentId::Codex,
     AgentId::OpenCode,
     AgentId::Pi,
+    AgentId::Cursor,
+    AgentId::GrokBuild,
 ];
 
 /// One directory an agent loads skills from. Label is the display name
@@ -346,7 +357,8 @@ pub struct SkillRoot {
 /// shared root: each first-class agent's own directory (from `AgentId`'s
 /// path methods, the single source of truth), OpenCode's older singular
 /// `skill/` directory (kept as a fallback alongside `skills/`), and the
-/// shared `.agents/skills` root that Codex, pi, and OpenCode all read.
+/// shared `.agents/skills` root that Codex, OpenCode, pi, Cursor and Grok
+/// Build all read.
 pub fn skill_roots(home: &Path, project_paths: &[PathBuf]) -> Vec<SkillRoot> {
     let mut roots = Vec::new();
 
