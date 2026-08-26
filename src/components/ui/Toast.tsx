@@ -90,6 +90,18 @@ export function Toast({ toast, onDismiss }: ToastProps) {
         <span className="toast-title">{toast.title}</span>
         {toast.message && <span className="toast-message">{toast.message}</span>}
       </div>
+      {toast.action && (
+        <button
+          className="toast-action"
+          onClick={(e) => {
+            e.stopPropagation();
+            toast.action?.onClick();
+            onDismiss(toast.id);
+          }}
+        >
+          {toast.action.label}
+        </button>
+      )}
       <button
         className="toast-dismiss"
         onClick={(e) => {

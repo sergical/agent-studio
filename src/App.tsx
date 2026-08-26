@@ -6,6 +6,7 @@
 
 import { useEffect, useRef } from "react";
 import { homeDir } from "@tauri-apps/api/path";
+import { AddSkillSheet } from "./components/AddSkill/AddSkillSheet";
 import { Sidebar } from "./components/Sidebar/Sidebar";
 import { SkillActivityView } from "./components/Activity/SkillActivityView";
 import { SkillDashboard } from "./components/Dashboard/SkillDashboard";
@@ -17,7 +18,12 @@ import { SkillPage } from "./components/SkillDetail/SkillPage";
 import { SkillStore } from "./components/SkillStore";
 import { ToastContainer } from "./components/ui/ToastContainer";
 import { useSkillSnapshot } from "./hooks/useSkillSnapshot";
-import { registerSkillProjects, unregisterSkillProject } from "./lib/skill-api";
+import {
+  onTrialExpired,
+  registerSkillProjects,
+  restoreTrashedSkill,
+  unregisterSkillProject,
+} from "./lib/skill-api";
 import { useAppStore } from "./store/appStore";
 import "./App.css";
 
@@ -70,6 +76,31 @@ function App() {
       }
     })();
   }, [userAddedProjects, excludedProjects, removeProject, addToast]);
+
+  // A trial expiring is driven by the backend's own timer, not a user
+  // action here - surface it as a toast with a Restore action rather than
+  // silently updating the snapshot.
+  useEffect(() => {
+    return onTrialExpired(({ name, trash_path }) => {
+      addToast({
+        type: "warning",
+        title: `Trial ended: ${name} moved to skills-trash`,
+        duration: 15000,
+        action: {
+          label: "Restore",
+          onClick: () => {
+            restoreTrashedSkill(trash_path).catch((err) => {
+              addToast({
+                type: "error",
+                title: "Couldn't restore skill",
+                message: err instanceof Error ? err.message : "Unknown error",
+              });
+            });
+          },
+        },
+      });
+    });
+  }, [addToast]);
 
   let main: React.ReactNode;
   if (activeView.kind === "dashboard") {
@@ -134,6 +165,7 @@ function App() {
       <Sidebar snapshot={snapshot} isLoading={isLoading} requestRescan={requestRescan} />
       <main className="flex-1 overflow-y-auto">{main}</main>
 
+      <AddSkillSheet />
       <ToastContainer />
     </div>
   );

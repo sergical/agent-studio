@@ -22,6 +22,7 @@ use super::skill_dto::{
 use super::skill_fork;
 use super::skill_fork_registry;
 use super::skill_refresh::{self, SkillRefreshState};
+use super::skill_trial;
 use super::skill_update_check;
 use tauri::Manager;
 
@@ -165,7 +166,7 @@ fn snapshot_covers_projects(requested: &[String], snapshot_projects: &[String]) 
 /// `npx skills`. Grok Build is scanned for coverage/health but is not an
 /// install target: `npx skills` has no entry for it, it only reads
 /// `~/.agents/skills`.
-fn push_agent_args(args: &mut Vec<String>, agents: &[AgentId]) -> Result<(), String> {
+pub(crate) fn push_agent_args(args: &mut Vec<String>, agents: &[AgentId]) -> Result<(), String> {
     for agent in agents {
         if *agent == AgentId::GrokBuild {
             return Err(
@@ -253,6 +254,7 @@ mod tests {
                 frontmatter_fields: BTreeMap::new(),
                 folder_truncated: false,
                 fork: None,
+                trial: None,
             }],
             projects: Vec::new(),
             invocations: Vec::new(),
@@ -611,6 +613,12 @@ pub async fn remove_skill(
     refresh_state: tauri::State<'_, SkillRefreshState>,
     fork_lock: tauri::State<'_, skill_fork::ForkMutationLock>,
 ) -> Result<InstallResult, String> {
+    // Held for the whole removal (ownership check, CLI removal or direct
+    // delete, registry update, rebuild) so a concurrent fork/pull/unfork
+    // can't race a removal - `ForkMutationLock` isn't reentrant, so
+    // `remove_forked_skill` must not acquire it again itself.
+    let _guard = fork_lock.try_acquire()?;
+
     // A forked skill is a plain directory under `.agents/skills`, in no
     // ledger the CLI could remove from - delete it directly and drop its
     // fork-registry record and snapshot instead of shelling out.
@@ -621,9 +629,14 @@ pub async fn remove_skill(
         .map(|s| s.source_kind)
         == Some(SourceKind::Fork);
     if is_fork {
-        return remove_forked_skill(skill_name, app, refresh_state, &fork_lock).await;
+        return remove_forked_skill(skill_name, app, refresh_state);
     }
 
+    let scope = if global {
+        skill_fork_registry::TrialScope::Global
+    } else {
+        skill_fork_registry::TrialScope::Project
+    };
     let args = skills_sh_remove_args(&skill_name, global);
 
     // Log the command for debugging
@@ -642,6 +655,11 @@ pub async fn remove_skill(
     eprintln!("[remove_skill] stderr: {}", stderr);
 
     if output.status.success() {
+        if let Some(home) = dirs::home_dir() {
+            if let Err(e) = skill_trial::drop_trial_record(&home, &skill_name, scope) {
+                eprintln!("[remove_skill] failed to drop trial record: {e}");
+            }
+        }
         if let Err(e) = skill_refresh::rebuild_snapshot_now(&app, &refresh_state) {
             eprintln!("[remove_skill] snapshot rebuild failed: {e}");
         }
@@ -668,13 +686,13 @@ pub async fn remove_skill(
 /// `remove_skill`'s path for a forked skill: it's not in any ledger, so
 /// there's nothing for a CLI to remove - delete the directory directly and
 /// drop the fork-registry record and snapshot.
-async fn remove_forked_skill(
+fn remove_forked_skill(
     skill_name: String,
     app: tauri::AppHandle,
     refresh_state: tauri::State<'_, SkillRefreshState>,
-    fork_lock: &skill_fork::ForkMutationLock,
 ) -> Result<InstallResult, String> {
-    let _guard = fork_lock.try_acquire()?;
+    // Callers hold `ForkMutationLock` for the whole `remove_skill` call - the
+    // mutex isn't reentrant, so this function must not acquire it again.
     validate_skill_dir_name(&skill_name)?;
     let home = dirs::home_dir().ok_or("Could not find home directory")?;
     let skill_dir = home.join(".agents").join("skills").join(&skill_name);
@@ -685,6 +703,12 @@ async fn remove_forked_skill(
 
     let mut registry = skill_fork_registry::read_fork_registry(&home)?;
     registry.forks.remove(&skill_name);
+    // Forking only ever applies to the global scope (see `skill_fork`), so
+    // a forked skill's trial, if any, is always keyed as global.
+    registry.trials.remove(&skill_fork_registry::trial_key(
+        skill_fork_registry::TrialScope::Global,
+        &skill_name,
+    ));
     skill_fork_registry::write_fork_registry(&home, &registry)?;
 
     let app_data = app

@@ -5,7 +5,8 @@
 // `agents.lock`, or `.skill-lock.json` itself, those belong to the owning
 // CLI. Tracks which skills have been detached from their ledger ("forked")
 // so local edits survive `dotagents sync` / `npx skills update`, plus a
-// `trials` bucket left empty for a later step. A missing file yields a
+// `trials` bucket for "Try for 24 hours" installs (see `skill_trial`). A
+// missing file yields a
 // default (empty) registry; an unreadable or malformed one is an error for
 // every mutating command (fork/pull/unfork/remove), since silently treating
 // it as empty would erase every recorded fork on the next write. Read-only
@@ -18,7 +19,6 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use serde::{Deserialize, Serialize};
-use serde_json::Value;
 
 /// Which CLI a forked skill was originally managed by.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -26,6 +26,66 @@ use serde_json::Value;
 pub enum OriginTool {
     Dotagents,
     SkillsSh,
+}
+
+/// How `add_skill` installed a skill - shared by `AddSkillRequest.method` and
+/// `TrialRecord.method`, since a trial's expiry step needs to know which tool
+/// (if any) owns the skill it's about to remove.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum AddMethod {
+    Dotagents,
+    SkillsSh,
+    Copy,
+}
+
+/// Which scope a trial (or an `add_skill` request) targeted.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum TrialScope {
+    Global,
+    Project,
+}
+
+/// One "Try for 24 hours" install, tracked so `skill_trial`'s expiry loop
+/// knows when to remove it and how.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TrialRecord {
+    pub started_at: String,
+    pub expires_at: String,
+    pub method: AddMethod,
+    pub scope: TrialScope,
+    #[serde(default)]
+    pub project_path: Option<String>,
+    /// The exact directory `add_skill` created for this trial - expiry
+    /// trashes and removes this path directly instead of recomputing it
+    /// from `scope`/`project_path`, which was wrong for `skills-sh` trials
+    /// (that method never writes the shared `.agents/skills` folder).
+    #[serde(default)]
+    pub skill_dir: PathBuf,
+    /// The per-skill Claude Code symlink `add_skill` created for this trial,
+    /// if any - `None` when Claude Code wasn't selected or the whole-dir
+    /// symlink already covered it.
+    #[serde(default)]
+    pub claude_link: Option<PathBuf>,
+}
+
+/// The `trials` map key for a given scope: `"global/<name>"` or
+/// `"project/<name>"` - lets the same skill name be on trial globally and in
+/// a project at the same time, and lets `keep_skill_trial`/expiry key back
+/// into the map unambiguously.
+pub fn trial_key(scope: TrialScope, name: &str) -> String {
+    match scope {
+        TrialScope::Global => format!("global/{name}"),
+        TrialScope::Project => format!("project/{name}"),
+    }
+}
+
+/// The skill name embedded in a `trials` map key, e.g. `"global/find-bugs"`
+/// -> `"find-bugs"`. Falls back to the whole key for anything that doesn't
+/// look like one `trial_key` produced (there shouldn't be any).
+pub fn name_from_trial_key(key: &str) -> &str {
+    key.split_once('/').map(|(_, name)| name).unwrap_or(key)
 }
 
 /// One forked skill's provenance, enough to reinstall it from its origin
@@ -56,18 +116,13 @@ pub struct ForkRegistry {
     pub version: u32,
     #[serde(default)]
     pub forks: BTreeMap<String, ForkRecord>,
-    /// Reserved for a later step's trial-install bookkeeping; always
-    /// round-tripped as-is so this step doesn't need to know its shape.
-    #[serde(default = "default_trials")]
-    pub trials: Value,
+    /// "Try for 24 hours" installs, keyed by skill name - see `skill_trial`.
+    #[serde(default)]
+    pub trials: BTreeMap<String, TrialRecord>,
 }
 
 fn default_version() -> u32 {
     1
-}
-
-fn default_trials() -> Value {
-    Value::Object(serde_json::Map::new())
 }
 
 // `#[derive(Default)]` would use `u32`/`Value`'s own `Default` (0 / Null)
@@ -79,7 +134,7 @@ impl Default for ForkRegistry {
         ForkRegistry {
             version: default_version(),
             forks: BTreeMap::new(),
-            trials: default_trials(),
+            trials: BTreeMap::new(),
         }
     }
 }
@@ -186,7 +241,7 @@ mod tests {
             reloaded.forks["find-bugs"].origin_tool,
             OriginTool::Dotagents
         );
-        assert_eq!(reloaded.trials, Value::Object(serde_json::Map::new()));
+        assert!(reloaded.trials.is_empty());
     }
 
     #[test]
@@ -205,6 +260,17 @@ mod tests {
         std::fs::write(tmp.path().join(".agents/skill-studio.json"), "not json").unwrap();
         let reg = read_fork_registry_or_default(tmp.path());
         assert!(reg.forks.is_empty());
+    }
+
+    #[test]
+    fn trial_key_distinguishes_global_and_project_scope() {
+        let global_key = trial_key(TrialScope::Global, "find-bugs");
+        let project_key = trial_key(TrialScope::Project, "find-bugs");
+        assert_eq!(global_key, "global/find-bugs");
+        assert_eq!(project_key, "project/find-bugs");
+        assert_ne!(global_key, project_key);
+        assert_eq!(name_from_trial_key(&global_key), "find-bugs");
+        assert_eq!(name_from_trial_key(&project_key), "find-bugs");
     }
 
     #[test]

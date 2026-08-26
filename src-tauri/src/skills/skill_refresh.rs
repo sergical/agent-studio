@@ -27,6 +27,7 @@ use super::project_discovery;
 use super::skill_assembly;
 use super::skill_discovery;
 use super::skill_dto::{Deployment, InstalledSkill};
+use super::skill_fork_registry::{trial_key, TrialScope};
 use super::skill_invocations::{
     InvocationHeatmap, RefreshReport, SkillInvocationIndex, SkillInvocationStats,
 };
@@ -728,6 +729,45 @@ fn build_snapshot(
         });
     }
 
+    // Trials aren't gated on global scope like forks are - `add_skill`
+    // supports project-scoped trials too. The `trials` map only keys on
+    // scope+name (see `trial_key`), so a global trial is matched against any
+    // global deployment and a project trial against a deployment whose
+    // `project_path` matches the one the trial was recorded for.
+    for skill in &mut skills {
+        if let Some(trial) = fork_registry
+            .trials
+            .get(&trial_key(TrialScope::Global, &skill.name))
+        {
+            if skill.deployments.iter().any(|d| d.scope == "global") {
+                skill.trial = Some(super::skill_dto::TrialInfo {
+                    expires_at: trial.expires_at.clone(),
+                    method: trial.method,
+                    scope: TrialScope::Global,
+                    project_path: None,
+                });
+                continue;
+            }
+        }
+        if let Some(trial) = fork_registry
+            .trials
+            .get(&trial_key(TrialScope::Project, &skill.name))
+        {
+            let matches = skill
+                .deployments
+                .iter()
+                .any(|d| d.project_path.as_deref() == trial.project_path.as_deref());
+            if matches {
+                skill.trial = Some(super::skill_dto::TrialInfo {
+                    expires_at: trial.expires_at.clone(),
+                    method: trial.method,
+                    scope: TrialScope::Project,
+                    project_path: trial.project_path.clone(),
+                });
+            }
+        }
+    }
+
     let report = invocation_index.refresh(&home.join(".claude/projects"));
     if let Err(e) = invocation_index.save(cache_path) {
         eprintln!("skill refresh: failed to save invocation cache: {e}");
@@ -1185,6 +1225,7 @@ mod tests {
                 frontmatter_fields: BTreeMap::new(),
                 folder_truncated: false,
                 fork: None,
+                trial: None,
             }],
             projects: Vec::new(),
             invocations: Vec::new(),

@@ -7,6 +7,7 @@ import { SkillDetailHeader } from "./SkillDetailHeader";
 import { SkillContent } from "./SkillContent";
 import { InstallControls } from "./InstallControls";
 import { getSkillDetails } from "../../lib/skill-api";
+import { useAppStore } from "../../store/appStore";
 import type { SkillWithStatus } from "../../lib/skill-types";
 
 interface SkillDetailPanelProps {
@@ -27,6 +28,7 @@ export function SkillDetailPanel({
   const [resolvedTopSource, setResolvedTopSource] = useState<string | null>(
     skill.top_source ?? null,
   );
+  const openAddSkillSheet = useAppStore((state) => state.openAddSkillSheet);
 
   // Resolve top_source - either from skill prop or by fetching details
   useEffect(() => {
@@ -57,6 +59,15 @@ export function SkillDetailPanel({
     <div className="skill-detail-panel">
       <SkillDetailHeader skill={skill} resolvedTopSource={resolvedTopSource} onClose={onClose} />
       <SkillContent skill={skill} resolvedTopSource={resolvedTopSource} />
+      <button
+        type="button"
+        className="skill-detail-add-skill-link"
+        onClick={() =>
+          openAddSkillSheet(resolvedTopSource ? `${resolvedTopSource}/${skill.name}` : skill.name)
+        }
+      >
+        Add with more options…
+      </button>
       <div className="skill-detail-divider" />
       <InstallControls
         skill={skill}

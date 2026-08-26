@@ -12,6 +12,7 @@ pub mod lock_file;
 pub mod plugins;
 pub mod project_discovery;
 pub mod provenance;
+pub mod skill_add;
 pub mod skill_agent_runner;
 pub mod skill_assembly;
 pub mod skill_candidate;
@@ -23,6 +24,7 @@ pub mod skill_invocations;
 pub mod skill_refresh;
 pub mod skill_run_history;
 pub mod skill_run_target;
+pub mod skill_trial;
 pub mod skill_update_check;
 
 pub use agents::*;

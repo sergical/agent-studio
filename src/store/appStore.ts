@@ -76,6 +76,11 @@ interface AppState {
   // switching it in one place is reflected in the other.
   usageWindow: UsageWindow;
   setUsageWindow: (window: UsageWindow) => void;
+
+  // === Add-skill Sheet ===
+  addSkillSheet: { open: boolean; prefill?: string };
+  openAddSkillSheet: (prefill?: string) => void;
+  closeAddSkillSheet: () => void;
 }
 
 // ============================================================================
@@ -197,6 +202,10 @@ export const useAppStore = create<AppState>((set, get) => ({
     }
     set({ usageWindow: window });
   },
+
+  addSkillSheet: { open: false },
+  openAddSkillSheet: (prefill) => set({ addSkillSheet: { open: true, prefill } }),
+  closeAddSkillSheet: () => set({ addSkillSheet: { open: false } }),
 }));
 
 // ============================================================================

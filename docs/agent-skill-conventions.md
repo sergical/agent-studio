@@ -74,16 +74,16 @@ Parked skills are listed as disabled in the scanner.
 
 ## Local data sources Skill Studio reads
 
-| Purpose                            | Location                             | Shape                                                                                                                                                  |
-| ---------------------------------- | ------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| Installed-skill lock               | `~/.agents/.skill-lock.json`         | `{version, skills: {name: {source, sourceType, sourceUrl, skillFolderHash, installedAt, updatedAt}}}`                                                  |
-| dotagents declared skills          | `~/.agents/agents.toml`              | `[[skills]]` rows: `{name, source, path, ref?}` - `ref` absent means unpinned; no `[[skills]]` row for a lock entry means a wildcard (`--all`) install |
-| dotagents resolved skills          | `~/.agents/agents.lock`              | `[skills.<name>]` tables: `{source, resolved_path, resolved_commit}` - the commit actually on disk                                                     |
-| Fork registry (Skill Studio-owned) | `~/.agents/skill-studio.json`        | `{version, forks: {name: {forked_at, origin_tool, origin_source, repo, path, declared_ref, base_commit}}, trials: {}}`                                 |
-| Skill invocations (Claude Code)    | `~/.claude/projects/*/*.jsonl`       | assistant `tool_use` with `"name":"Skill","input":{"skill":"<name>"}` + timestamp + `cwd`                                                              |
-| Projects list (Codex)              | `~/.codex/config.toml`               | `[projects."/abs/path"]` sections                                                                                                                      |
-| Projects list (Claude Code)        | `~/.claude/projects/<encoded-path>/` | `cwd` field inside the transcripts (dir name encoding is lossy)                                                                                        |
-| skills.sh search                   | `https://skills.sh/api/search?q=`    | `{skills: [{id, skillId, name, installs, source}]}` (`source`, not `topSource`)                                                                        |
+| Purpose                            | Location                             | Shape                                                                                                                                                                             |
+| ---------------------------------- | ------------------------------------ | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Installed-skill lock               | `~/.agents/.skill-lock.json`         | `{version, skills: {name: {source, sourceType, sourceUrl, skillFolderHash, installedAt, updatedAt}}}`                                                                             |
+| dotagents declared skills          | `~/.agents/agents.toml`              | `[[skills]]` rows: `{name, source, path, ref?}` - `ref` absent means unpinned; no `[[skills]]` row for a lock entry means a wildcard (`--all`) install                            |
+| dotagents resolved skills          | `~/.agents/agents.lock`              | `[skills.<name>]` tables: `{source, resolved_path, resolved_commit}` - the commit actually on disk                                                                                |
+| Fork registry (Skill Studio-owned) | `~/.agents/skill-studio.json`        | `{version, forks: {name: {forked_at, origin_tool, origin_source, repo, path, declared_ref, base_commit}}, trials: {name: {started_at, expires_at, method, scope, project_path}}}` |
+| Skill invocations (Claude Code)    | `~/.claude/projects/*/*.jsonl`       | assistant `tool_use` with `"name":"Skill","input":{"skill":"<name>"}` + timestamp + `cwd`                                                                                         |
+| Projects list (Codex)              | `~/.codex/config.toml`               | `[projects."/abs/path"]` sections                                                                                                                                                 |
+| Projects list (Claude Code)        | `~/.claude/projects/<encoded-path>/` | `cwd` field inside the transcripts (dir name encoding is lossy)                                                                                                                   |
+| skills.sh search                   | `https://skills.sh/api/search?q=`    | `{skills: [{id, skillId, name, installs, source}]}` (`source`, not `topSource`)                                                                                                   |
 
 Codex session logs mention every installed SKILL.md path on every turn (the skill
 list in the instructions), so they are **not** an invocation signal. OpenCode keeps
@@ -139,6 +139,44 @@ writes back to GitHub or to the owning CLI's own files.
 "Un-fork" discards local edits and reinstalls the skill from its recorded
 origin (`declared_ref`, if any, for a dotagents fork), then drops the fork
 record and snapshot - the frontend confirms this destructively first.
+
+## Add skill
+
+The "Add skill" sheet (`src/components/AddSkill/AddSkillSheet.tsx`, backend
+`skills/skill_add.rs`) accepts a free-text source - `owner/repo`,
+`owner/repo/<path>`, a `github.com` URL (bare, `/tree/<ref>/<path>`, or
+`/blob/<ref>/<path>/SKILL.md`), a `skills.sh/<owner>/<repo>/<skill>` URL,
+`git:<url>` or a bare `*.git` URL, or an absolute/`~/` local path - parsed by
+`src/lib/skill-source-parse.ts` into a `ParsedSkillSource`. One of three
+methods installs it: **dotagents** (`npx -y @sentry/dotagents add`, tracked in
+`agents.toml`/`agents.lock`), **skills.sh** (the existing `install_skill`
+path, tracked in `.skill-lock.json`; github sources only), or **Copy**
+(fetches a GitHub tarball or copies a local path straight into
+`~/.agents/skills/<name>`, untracked - no ledger, no updates). Every method
+writes only the shared folder; Claude Code reads it through `~/.claude/skills`
+the same way a whole-dir symlink normally provides, so when that path is a
+real directory (not the whole-dir symlink) and Claude Code is a selected
+harness, `add_skill` creates one relative per-skill symlink
+`~/.claude/skills/<name> -> ../../.agents/skills/<name>` - never for
+`skills.sh`, since its own `--agent claude-code` deploys straight into
+Claude Code's directory.
+
+## Trials
+
+Checking "Try for 24 hours" on the Add-skill sheet records a `TrialRecord` in
+`~/.agents/skill-studio.json`'s `trials` map (`started_at`, `expires_at`
+24 h later, `method`, `scope`, `project_path`). A background loop
+(`skill_trial::spawn_trial_expiry_loop`, 15 s after startup then every 5 min)
+copies each expired trial's folder to
+`~/.agents/skills-trash/<name>-<YYYYMMDD-HHMMSS>/` **before** removing it
+through its owning tool (or deleting it directly for Copy) - a failing
+removal never loses the folder, since the trash copy already exists and the
+trial record is kept for the next tick. The skill page's "Keep" button
+(`keep_skill_trial`) just drops the trial record. Restoring a trashed skill
+(`restore_trashed_skill`, wired to the "Restore" action on the
+`skills://trial-expired` toast) copies it back to `~/.agents/skills/<name>` as
+an untracked, manual skill and re-applies the Claude Code symlink rule.
+Removing, un-forking, or forking a trial skill also drops its trial record.
 
 ## Headless runs
 

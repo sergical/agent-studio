@@ -20,6 +20,7 @@ pub fn run() {
             app.manage(skills::skill_run_target::SkillRunTargetState::default());
             app.manage(skills::skill_fork::ForkMutationLock::default());
             skills::skill_update_check::spawn_update_check_loop(app.handle().clone());
+            skills::skill_trial::spawn_trial_expiry_loop(app.handle().clone());
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -43,6 +44,10 @@ pub fn run() {
             skills::skill_fork::fork_skill,
             skills::skill_fork::pull_fork_upstream,
             skills::skill_fork::unfork_skill,
+            // Add skill / trials
+            skills::skill_add::add_skill,
+            skills::skill_trial::keep_skill_trial,
+            skills::skill_trial::restore_trashed_skill,
             // Background refresh / invocation snapshot
             skills::skill_refresh::get_skill_snapshot,
             skills::skill_refresh::request_skill_rescan,

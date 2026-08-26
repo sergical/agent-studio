@@ -12,6 +12,8 @@ export interface Toast {
   title: string;
   message?: string;
   duration?: number;
+  /** A secondary button, e.g. trial-expiry's "Restore" - see `ToastContainer`. */
+  action?: { label: string; onClick: () => void };
 }
 
 // ============================================================================
@@ -226,6 +228,28 @@ export interface InstalledSkill {
   folder_truncated: boolean;
   /** Set when `source_kind === "fork"`. */
   fork?: ForkInfo;
+  /** Set when this skill is a "Try for 24 hours" install still within its window. */
+  trial?: TrialInfo;
+}
+
+/**
+ * A trial's remaining-time projection - see
+ * `skill_fork_registry::TrialRecord` on the Rust side.
+ */
+export interface TrialInfo {
+  expires_at: string;
+  method: AddMethod;
+  /** The trial's scope - `keepSkillTrial` needs it to key back into `trials` correctly. */
+  scope: InstallScope;
+  project_path?: string;
+}
+
+/**
+ * Hours left until `expiresAt`, rounded down, for the trial chip - see
+ * `TrialInfo`. Negative once expired.
+ */
+export function trialHoursLeft(expiresAt: string): number {
+  return Math.floor((new Date(expiresAt).getTime() - Date.now()) / (60 * 60 * 1000));
 }
 
 // ============================================================================
@@ -259,6 +283,36 @@ export interface InstallResult {
   tool?: "dotagents" | "skills-sh";
   /** The exact argv `updateSkill` ran, joined with spaces, for the same toast. */
   command?: string;
+}
+
+// ============================================================================
+// Add-skill Types
+// ============================================================================
+
+/** How `addSkill` installed a skill - see `AddSkillSheet`. */
+export type AddMethod = "dotagents" | "skills-sh" | "copy";
+
+/**
+ * `addSkill`'s request. `source` is produced verbatim by
+ * `parseSkillSource` - see `skill-source-parse.ts`.
+ */
+export interface AddSkillRequest {
+  source: import("./skill-source-parse").ParsedSkillSource;
+  method: AddMethod;
+  agents: AgentId[];
+  scope: InstallScope;
+  project_path?: string;
+  trial: boolean;
+}
+
+/** `addSkill`'s result. */
+export interface AddSkillResult {
+  name: string;
+  tool: string;
+  command: string;
+  deployments_created: string[];
+  /** Set when the install succeeded but recording the 24 h trial failed. */
+  warning?: string;
 }
 
 /**

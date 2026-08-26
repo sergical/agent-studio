@@ -15,6 +15,7 @@ import {
   Globe,
   LayoutDashboard,
   LayoutGrid,
+  Plus,
   RefreshCw,
   Search,
   X,
@@ -83,6 +84,7 @@ export function Sidebar({ snapshot, isLoading, requestRescan }: SidebarProps) {
   const addProject = useAppStore((state) => state.addProject);
   const removeProject = useAppStore((state) => state.removeProject);
   const addToast = useAppStore((state) => state.addToast);
+  const openAddSkillSheet = useAppStore((state) => state.openAddSkillSheet);
 
   // Every project row: user-added paths plus every path the backend
   // discovered on its own (Codex config, Claude Code transcripts), minus
@@ -271,6 +273,10 @@ export function Sidebar({ snapshot, isLoading, requestRescan }: SidebarProps) {
         >
           <Search size={15} />
           <span>Discover</span>
+        </button>
+        <button className="skill-sidebar-item" onClick={() => openAddSkillSheet()}>
+          <Plus size={15} />
+          <span>Add skill</span>
         </button>
       </div>
 

@@ -12,7 +12,7 @@ use std::collections::BTreeMap;
 use serde::{Deserialize, Serialize};
 
 use super::provenance::SourceKind;
-use super::skill_fork_registry::OriginTool;
+use super::skill_fork_registry::{AddMethod, OriginTool, TrialScope};
 
 // ============================================================================
 // Skills.sh API Types
@@ -177,6 +177,78 @@ pub struct InstalledSkill {
     /// Set when `source_kind` is `Fork` - see `skill_fork_registry`.
     #[serde(default)]
     pub fork: Option<ForkInfo>,
+    /// Set when this skill is a "Try for 24 hours" install still within its
+    /// window - see `skill_fork_registry::TrialRecord` and `skill_trial`.
+    #[serde(default)]
+    pub trial: Option<TrialInfo>,
+}
+
+/// A trial's remaining-time projection, read-only for the frontend - see
+/// `skill_fork_registry::TrialRecord`, which this is a projection of.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TrialInfo {
+    pub expires_at: String,
+    pub method: AddMethod,
+    /// The trial's scope - needed so `keep_skill_trial`/expiry can key back
+    /// into `trials` (`"global/<name>"` or `"project/<name>"`) correctly.
+    pub scope: TrialScope,
+    #[serde(default)]
+    pub project_path: Option<String>,
+}
+
+// ============================================================================
+// Add-skill Types
+// ============================================================================
+
+/// A parsed "Source" field from the add-skill sheet - see
+/// `src/lib/skill-source-parse.ts`'s `parseSkillSource`, which produces this
+/// exact shape on the frontend. `#[serde(rename_all = "camelCase")]` so the
+/// two sides agree on field names without either translating the other.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ParsedSkillSource {
+    pub kind: ParsedSkillSourceKind,
+    pub repo: Option<String>,
+    pub path: Option<String>,
+    #[serde(rename = "ref")]
+    pub git_ref: Option<String>,
+    pub skill_name: Option<String>,
+    pub url: Option<String>,
+    pub local_path: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum ParsedSkillSourceKind {
+    Github,
+    Git,
+    Local,
+}
+
+/// `add_skill`'s request - see `AddSkillSheet`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AddSkillRequest {
+    pub source: ParsedSkillSource,
+    pub method: AddMethod,
+    pub agents: Vec<super::agents::AgentId>,
+    pub scope: InstallScope,
+    pub project_path: Option<String>,
+    pub trial: bool,
+}
+
+/// `add_skill`'s result.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AddSkillResult {
+    pub name: String,
+    pub tool: String,
+    pub command: String,
+    pub deployments_created: Vec<String>,
+    /// Set when the install itself succeeded but a follow-up step (recording
+    /// the 24 h trial) failed - the skill is on disk and usable, it just
+    /// isn't tracked for auto-expiry. The sheet shows this as a warning
+    /// toast rather than treating the whole request as failed.
+    #[serde(default)]
+    pub warning: Option<String>,
 }
 
 // ============================================================================

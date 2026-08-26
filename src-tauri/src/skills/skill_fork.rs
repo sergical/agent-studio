@@ -24,8 +24,8 @@ use super::commands::{
 use super::dotagents_ledger;
 use super::lock_file;
 use super::skill_fork_registry::{
-    fork_snapshot_dir, read_fork_registry, write_fork_registry, ForkRecord, ForkRegistry,
-    OriginTool,
+    fork_snapshot_dir, read_fork_registry, trial_key, write_fork_registry, ForkRecord,
+    ForkRegistry, OriginTool, TrialScope,
 };
 use super::skill_refresh::{self, SkillRefreshState};
 use super::skill_update_check::{self, CommitLookup, GhCommitLookup, UpdateCheckState};
@@ -224,7 +224,9 @@ fn locate_extracted_skill_dir(extract_dir: &Path, path: &str) -> Result<PathBuf,
 
 /// Recursively copies `src` into `dst`, creating `dst` if needed. Symlinks
 /// are skipped - a forked skill's snapshot/upstream copies are plain trees.
-fn copy_dir_all(src: &Path, dst: &Path) -> Result<(), String> {
+/// `pub(crate)` so `skill_add`'s "Copy" method and `skill_trial`'s trash
+/// copy can reuse it instead of duplicating a directory-copy routine.
+pub(crate) fn copy_dir_all(src: &Path, dst: &Path) -> Result<(), String> {
     fs::create_dir_all(dst).map_err(|e| format!("Failed to create {}: {e}", dst.display()))?;
     for entry in fs::read_dir(src).map_err(|e| format!("Failed to read {}: {e}", src.display()))? {
         let entry = entry.map_err(|e| format!("Failed to read a directory entry: {e}"))?;
@@ -459,6 +461,11 @@ pub fn fork_skill_with(
     };
     let mut registry = read_fork_registry(home)?;
     registry.forks.insert(name.to_string(), record.clone());
+    // A forked skill is no longer the same "add" that started a trial - drop
+    // any trial record for it so forking doesn't leave a stale one behind.
+    // Forking only ever applies to the shared (global) `.agents/skills`
+    // root, so only the global-scoped key needs clearing.
+    registry.trials.remove(&trial_key(TrialScope::Global, name));
     if let Err(e) = write_fork_registry(home, &registry) {
         let _ = fs::remove_dir_all(&base_dir);
         return Err(e);
@@ -983,6 +990,7 @@ pub fn unfork_skill_with(
     ledger.reinstall(&record, name)?;
 
     registry.forks.remove(name);
+    registry.trials.remove(&trial_key(TrialScope::Global, name));
     write_fork_registry(home, &registry)?;
     let _ = fs::remove_dir_all(fork_snapshot_dir(app_data, name));
     Ok(())
@@ -1185,9 +1193,62 @@ mod tests {
         assert!(registry.forks.contains_key("find-bugs"));
     }
 
+    #[test]
+    fn fork_drops_a_stale_trial_record() {
+        let tmp = tempfile::tempdir().unwrap();
+        let home = tmp.path().join("home");
+        let app_data = tmp.path().join("data");
+        seed_dotagents_ledger(
+            &home,
+            "find-bugs",
+            "getsentry/find-bugs",
+            "skills/find-bugs",
+            &"a".repeat(40),
+        );
+        write_file(
+            &home.join(".agents/skills/find-bugs/SKILL.md"),
+            "---\nname: find-bugs\n---\nbody",
+        );
+        let now = chrono::Utc::now();
+        let mut registry = read_fork_registry(&home).unwrap();
+        registry.trials.insert(
+            trial_key(TrialScope::Global, "find-bugs"),
+            super::super::skill_fork_registry::TrialRecord {
+                started_at: now.to_rfc3339(),
+                expires_at: (now + chrono::Duration::hours(24)).to_rfc3339(),
+                method: super::super::skill_fork_registry::AddMethod::Dotagents,
+                scope: super::super::skill_fork_registry::TrialScope::Global,
+                project_path: None,
+                skill_dir: home.join(".agents/skills/find-bugs"),
+                claude_link: None,
+            },
+        );
+        write_fork_registry(&home, &registry).unwrap();
+
+        let ledger = FakeLedger::default();
+        let fetch = FakeFetch {
+            files: vec![("SKILL.md", "---\nname: find-bugs\n---\nupstream body")],
+        };
+        fork_skill_with(
+            &home,
+            &app_data,
+            "find-bugs",
+            &home.join(".agents/skills/find-bugs"),
+            &ledger,
+            &fetch,
+            &NeverCalledLookup,
+        )
+        .unwrap();
+
+        assert!(!read_fork_registry(&home)
+            .unwrap()
+            .trials
+            .contains_key(&trial_key(TrialScope::Global, "find-bugs")));
+    }
+
     /// Finding 1: the base snapshot must be the upstream tree fetched at
-    /// `base_commit`, not a copy of the (possibly locally edited) live tree
-    /// - otherwise a local edit made before forking would be treated as
+    /// `base_commit`, not a copy of the (possibly locally edited) live tree,
+    /// otherwise a local edit made before forking would be treated as
     /// "already synced" and silently overwritten on the next Pull.
     #[test]
     fn fork_snapshots_upstream_base_not_the_live_tree() {
@@ -1862,6 +1923,48 @@ mod tests {
         let calls = ledger.reinstall_calls.lock().unwrap();
         assert_eq!(calls.len(), 1);
         assert_eq!(calls[0].0.declared_ref.as_deref(), Some("v1.2.3"));
+    }
+
+    #[test]
+    fn unfork_drops_a_stale_trial_record() {
+        let tmp = tempfile::tempdir().unwrap();
+        let home = tmp.path().join("home");
+        let app_data = tmp.path().join("data");
+        let mut registry = read_fork_registry(&home).unwrap();
+        registry.forks.insert(
+            "find-bugs".to_string(),
+            ForkRecord {
+                forked_at: "2026-01-01T00:00:00Z".to_string(),
+                origin_tool: OriginTool::Dotagents,
+                origin_source: "getsentry/find-bugs".to_string(),
+                repo: "getsentry/find-bugs".to_string(),
+                path: "skills/find-bugs".to_string(),
+                declared_ref: None,
+                base_commit: "a".repeat(40),
+            },
+        );
+        let now = chrono::Utc::now();
+        registry.trials.insert(
+            trial_key(TrialScope::Global, "find-bugs"),
+            super::super::skill_fork_registry::TrialRecord {
+                started_at: now.to_rfc3339(),
+                expires_at: (now + chrono::Duration::hours(24)).to_rfc3339(),
+                method: super::super::skill_fork_registry::AddMethod::Copy,
+                scope: super::super::skill_fork_registry::TrialScope::Global,
+                project_path: None,
+                skill_dir: home.join(".agents/skills/find-bugs"),
+                claude_link: None,
+            },
+        );
+        write_fork_registry(&home, &registry).unwrap();
+
+        let ledger = FakeLedger::default();
+        unfork_skill_with(&home, &app_data, "find-bugs", &ledger).unwrap();
+
+        assert!(!read_fork_registry(&home)
+            .unwrap()
+            .trials
+            .contains_key(&trial_key(TrialScope::Global, "find-bugs")));
     }
 
     #[test]

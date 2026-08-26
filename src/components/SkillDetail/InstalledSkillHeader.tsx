@@ -14,14 +14,22 @@ import {
   Unlink,
 } from "lucide-react";
 import { deploymentLinkKind } from "../../lib/skill-coverage";
-import { openSkillPath } from "../../lib/skill-api";
+import { keepSkillTrial, openSkillPath } from "../../lib/skill-api";
 import { pluginLabelForSkill } from "../../lib/skill-plugin-partition";
 import type { SkillRunSummary } from "../../lib/skill-run-history-types";
 import { formatRelativeTime, shortSha } from "../../lib/skill-stats";
-import { SOURCE_KIND_LABELS } from "../../lib/skill-types";
+import { SOURCE_KIND_LABELS, trialHoursLeft } from "../../lib/skill-types";
 import type { InstalledSkill } from "../../lib/skill-types";
 import { useAppStore } from "../../store/appStore";
 import { HarnessIcon, harnessIdFromLabel } from "../ui/HarnessIcon";
+
+/** "Trial · 17 h" / "Trial · <1 h" / "Trial · expired". */
+function trialChipLabel(expiresAt: string): string {
+  const hours = trialHoursLeft(expiresAt);
+  if (hours < 0) return "Trial · expired";
+  if (hours < 1) return "Trial · <1 h";
+  return `Trial · ${hours} h`;
+}
 
 interface InstalledSkillHeaderProps {
   skill: InstalledSkill;
@@ -75,9 +83,26 @@ export function InstalledSkillHeader({
   onOpenHistory,
 }: InstalledSkillHeaderProps) {
   const [copied, setCopied] = useState(false);
+  const [isKeeping, setIsKeeping] = useState(false);
   const addToast = useAppStore((state) => state.addToast);
   const path = skill.deployments[0]?.path ?? skill.skill_path;
   const agents = [...new Set(skill.deployments.map((d) => d.agent))];
+
+  const handleKeepTrial = async () => {
+    setIsKeeping(true);
+    try {
+      await keepSkillTrial(skill.name, skill.trial?.scope ?? "global", skill.trial?.project_path);
+      addToast({ type: "success", title: `Kept ${skill.name}` });
+    } catch (err) {
+      addToast({
+        type: "error",
+        title: "Couldn't keep skill",
+        message: err instanceof Error ? err.message : "Unknown error",
+      });
+    } finally {
+      setIsKeeping(false);
+    }
+  };
 
   const handleReveal = async () => {
     if (!path) return;
@@ -180,6 +205,19 @@ export function InstalledSkillHeader({
               <AlertTriangle size={12} />
               {skill.spec_violations.length} spec issue
               {skill.spec_violations.length !== 1 ? "s" : ""}
+            </span>
+          )}
+          {skill.trial && (
+            <span className="skill-detail-badge trial">
+              {trialChipLabel(skill.trial.expires_at)}
+              <button
+                type="button"
+                className="skill-detail-trial-keep"
+                onClick={handleKeepTrial}
+                disabled={isKeeping}
+              >
+                Keep
+              </button>
             </span>
           )}
         </div>

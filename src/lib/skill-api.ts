@@ -6,11 +6,14 @@
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import type {
+  AddSkillRequest,
+  AddSkillResult,
   AgentTarget,
   InstallRequest,
   InstallResult,
   ForkRecord,
   InstalledSkill,
+  InstallScope,
   PaginatedSkillsResponse,
   PullResult,
   SkillSearchResult,
@@ -209,6 +212,64 @@ export async function pullForkUpstream(name: string): Promise<PullResult> {
  */
 export async function unforkSkill(name: string): Promise<void> {
   return invoke("unfork_skill", { name });
+}
+
+// ============================================================================
+// Add Skill / Trials API
+// ============================================================================
+
+/**
+ * Submit the Add-skill sheet: installs `request.source` via `request.method`,
+ * applying the Claude Code shared-folder symlink rule for `dotagents`/`copy`.
+ */
+export async function addSkill(request: AddSkillRequest): Promise<AddSkillResult> {
+  return invoke("add_skill", { request });
+}
+
+/**
+ * Drop `name`'s trial record so the expiry loop leaves it alone.
+ */
+export async function keepSkillTrial(
+  name: string,
+  scope: InstallScope,
+  projectPath?: string,
+): Promise<void> {
+  return invoke("keep_skill_trial", { name, scope, projectPath });
+}
+
+/**
+ * Copy a trashed skill (from a `skills://trial-expired` event's
+ * `trash_path`) back into `~/.agents/skills/<name>` as an untracked skill.
+ */
+export async function restoreTrashedSkill(trashPath: string): Promise<void> {
+  return invoke("restore_trashed_skill", { trashPath });
+}
+
+/**
+ * Subscribe to `skills://trial-expired`, emitted once per skill the trial
+ * expiry loop just moved to `~/.agents/skills-trash`. Returns an unlisten
+ * function.
+ */
+export function onTrialExpired(
+  cb: (payload: { name: string; trash_path: string }) => void,
+): () => void {
+  let unlisten: (() => void) | undefined;
+  let cancelled = false;
+
+  listen<{ name: string; trash_path: string }>("skills://trial-expired", (event) => {
+    cb(event.payload);
+  }).then((fn) => {
+    if (cancelled) {
+      fn();
+    } else {
+      unlisten = fn;
+    }
+  });
+
+  return () => {
+    cancelled = true;
+    unlisten?.();
+  };
 }
 
 // ============================================================================

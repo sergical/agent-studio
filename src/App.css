@@ -212,6 +212,17 @@ body {
   font-size: 12px;
   color: var(--color-text-secondary);
   line-height: 1.4;
+}
+.toast-action {
+  flex-shrink: 0;
+  align-self: center;
+  padding: 4px 10px;
+  font-size: 12px;
+  font-weight: 500;
+  color: var(--color-text-primary);
+  background: var(--color-bg-tertiary);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-md);
 } /* ============================================================================
    Navigation Sidebar
    ============================================================================ */ /* ============================================================================
@@ -874,6 +885,24 @@ body {
   background: var(--color-warning-soft);
   color: var(--color-warning);
 }
+.skill-detail-badge.trial {
+  background: var(--color-warning-soft);
+  color: var(--color-warning);
+}
+.skill-detail-trial-keep {
+  padding: 1px 6px;
+  font-size: 10px;
+  font-weight: 600;
+  color: inherit;
+  background: var(--color-bg-primary);
+  border: none;
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+}
+.skill-detail-trial-keep:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
 .skill-detail-spec-violations ul {
   margin: 0;
   padding-left: 18px;
@@ -1093,6 +1122,19 @@ body {
   height: 1px;
   background: var(--color-border);
   margin: 8px 0;
+}
+.skill-detail-add-skill-link {
+  align-self: flex-start;
+  margin: 0 20px;
+  padding: 0;
+  font-size: 12px;
+  color: var(--color-accent);
+  background: none;
+  border: none;
+  cursor: pointer;
+}
+.skill-detail-add-skill-link:hover {
+  text-decoration: underline;
 }
 .skill-detail-section {
   padding: 16px 20px;
@@ -3250,4 +3292,118 @@ body {
   font-size: 13px;
   font-variant-numeric: tabular-nums;
   color: var(--color-text-secondary);
+}
+
+/* Add-skill sheet */
+.add-skill-sheet-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.4);
+  display: flex;
+  justify-content: flex-end;
+  z-index: 50;
+}
+.add-skill-sheet {
+  display: flex;
+  flex-direction: column;
+  width: 420px;
+  max-width: 100%;
+  height: 100%;
+  background: var(--color-bg-secondary);
+  border-left: 1px solid var(--color-border);
+}
+.add-skill-sheet-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 16px 20px;
+  border-bottom: 1px solid var(--color-border);
+}
+.add-skill-sheet-header h3 {
+  margin: 0;
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--color-text-primary);
+}
+.add-skill-sheet-close {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 4px;
+  color: var(--color-text-tertiary);
+  background: none;
+  border: none;
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+}
+.add-skill-sheet-close:hover {
+  color: var(--color-text-primary);
+  background: var(--color-bg-hover);
+}
+.add-skill-sheet-body {
+  flex: 1;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 20px;
+  padding: 16px 20px;
+}
+.add-skill-sheet-field {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.add-skill-sheet-field label {
+  font-size: 11px;
+  font-weight: 500;
+  color: var(--color-text-tertiary);
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+}
+.add-skill-sheet-field input[type="text"],
+.add-skill-sheet-field select {
+  padding: 8px 10px;
+  font-size: 13px;
+  color: var(--color-text-primary);
+  background: var(--color-bg-tertiary);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-md);
+}
+.add-skill-sheet-parse {
+  margin: 0;
+  font-size: 12px;
+  color: var(--color-text-tertiary);
+}
+.add-skill-sheet-parse.error {
+  color: var(--color-error);
+}
+.add-skill-sheet-note {
+  margin: 0;
+  font-size: 11px;
+  color: var(--color-text-tertiary);
+}
+.add-skill-sheet-checkbox {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 13px;
+  font-weight: 400;
+  text-transform: none;
+  letter-spacing: normal;
+  color: var(--color-text-primary);
+}
+.add-skill-sheet-error {
+  margin: 0;
+  padding: 10px 12px;
+  font-size: 12px;
+  color: var(--color-error);
+  background: var(--color-error-soft, rgba(239, 68, 68, 0.1));
+  border-radius: var(--radius-md);
+}
+.add-skill-sheet-footer {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  padding: 16px 20px;
+  border-top: 1px solid var(--color-border);
 }
