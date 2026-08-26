@@ -52,6 +52,8 @@ function backLabel(from: ActiveView): string {
       return from.path.split("/").filter(Boolean).pop() ?? from.path;
     case "plugins":
       return "Plugins";
+    case "parked":
+      return "Parked";
     case "coverage":
       return "Coverage";
     case "issues":
@@ -303,7 +305,11 @@ export function SkillPage({
           <div className="skill-detail-divider" />
           <SkillDetailActions skill={skill} onRemoveComplete={onRemoveComplete} />
           <div className="skill-detail-divider" />
-          <SkillDetailDetails skill={skill} />
+          <SkillDetailDetails
+            skill={skill}
+            skillMdPath={!isPluginManaged ? skillMdPath : undefined}
+            skillMdDeployment={deployment ?? undefined}
+          />
         </div>
 
         <div className="skill-page-column-side">

@@ -72,6 +72,12 @@ pub struct SkillSnapshot {
     /// The latest background update-check result - see `skill_update_check`.
     #[serde(default)]
     pub update_check: UpdateCheckSummary,
+    /// Which OpenCode config format is present, if any - `None` when
+    /// OpenCode isn't configured, `Some(Jsonc)` when Skill Studio can only
+    /// read (not write) its per-skill disables. See
+    /// `opencode_skill_permission::detect_config_kind`.
+    #[serde(default)]
+    pub opencode_config_kind: Option<super::opencode_skill_permission::OpencodeConfigKind>,
 }
 
 /// One filesystem path the background watcher should track, and whether
@@ -651,6 +657,20 @@ struct BuildPaths<'a> {
 /// invocation index along the way. Pure aside from the filesystem reads, so
 /// it's the unit under test for "a caller-registered project's skills show
 /// up in the snapshot" without needing a running Tauri app.
+/// Codex's own `agents/openai.yaml` `policy.allow_implicit_invocation` value
+/// for the skill deployed at `skill_dir`, read straight off disk. `None`
+/// when the file is missing, isn't YAML, or doesn't set that key - this is a
+/// note-only field (see `skill_invocation`'s module docs), not something the
+/// scanner needs to fail a rebuild over.
+fn read_codex_allow_implicit_invocation(skill_dir: &Path) -> Option<bool> {
+    let content = std::fs::read_to_string(skill_dir.join("agents").join("openai.yaml")).ok()?;
+    let value: serde_yaml::Value = serde_yaml::from_str(&content).ok()?;
+    value
+        .get("policy")?
+        .get("allow_implicit_invocation")?
+        .as_bool()
+}
+
 fn build_snapshot(
     home: &Path,
     extra_projects: &[PathBuf],
@@ -768,6 +788,74 @@ fn build_snapshot(
         }
     }
 
+    // Parked skills have no deployment left for `classify_source_kind` to
+    // look at, so both the "parked" flag and the badge come straight from
+    // the registry's `parked` record instead.
+    for skill in &mut skills {
+        if let Some(record) = fork_registry.parked.get(&skill.name) {
+            skill.parked = true;
+            skill.parked_at = Some(record.parked_at.clone());
+            skill.source_kind = record.source_kind;
+        }
+    }
+
+    // Per-harness disable: Codex and OpenCode read their own config, Claude
+    // Code has no native switch so it's tracked in the registry instead -
+    // see `skill_harness_disable`.
+    let codex_disabled_paths: BTreeSet<PathBuf> =
+        super::codex_skill_config::read_disabled_skill_md_paths(home)
+            .into_iter()
+            .collect();
+    let opencode_denied: BTreeSet<String> =
+        super::opencode_skill_permission::read_denied_patterns(home)
+            .into_iter()
+            .collect();
+    for skill in &mut skills {
+        for deployment in &mut skill.deployments {
+            if deployment.agent == "Codex" {
+                let skill_md = PathBuf::from(&deployment.path).join("SKILL.md");
+                let canonical = std::fs::canonicalize(&skill_md).unwrap_or(skill_md);
+                if codex_disabled_paths.contains(&canonical) {
+                    deployment.disabled = true;
+                    deployment.disabled_by = Some(super::skill_dto::DisabledBy::CodexConfig);
+                }
+                deployment.codex_implicit_invocation =
+                    read_codex_allow_implicit_invocation(&PathBuf::from(&deployment.path));
+            } else if deployment.agent == "OpenCode" {
+                if opencode_denied.iter().any(|pattern| {
+                    super::opencode_skill_permission::pattern_matches(pattern, &skill.name)
+                }) {
+                    deployment.disabled = true;
+                    deployment.disabled_by = Some(super::skill_dto::DisabledBy::OpencodePermission);
+                }
+            } else if deployment.agent == "Claude Code"
+                && fork_registry
+                    .harness_disabled
+                    .get(&skill.name)
+                    .is_some_and(|by_harness| by_harness.contains_key("claude-code"))
+            {
+                deployment.disabled = true;
+                deployment.disabled_by = Some(super::skill_dto::DisabledBy::ClaudeLinkRemoved);
+            }
+        }
+    }
+
+    // Invocation policy comes straight from the already-parsed frontmatter
+    // fields (`frontmatter_fields` is stringified, since that's shared with
+    // the dashboard's "extra fields" display).
+    for skill in &mut skills {
+        let disable_model = skill
+            .frontmatter_fields
+            .get("disable-model-invocation")
+            .map(|v| v == "true");
+        let user_invocable = skill
+            .frontmatter_fields
+            .get("user-invocable")
+            .map(|v| v == "true");
+        skill.invocation =
+            super::frontmatter::invocation_policy_from(disable_model, user_invocable).0;
+    }
+
     let report = invocation_index.refresh(&home.join(".claude/projects"));
     if let Err(e) = invocation_index.save(cache_path) {
         eprintln!("skill refresh: failed to save invocation cache: {e}");
@@ -789,6 +877,7 @@ fn build_snapshot(
         scanned_at: now.to_rfc3339(),
         last_test_by_skill,
         update_check,
+        opencode_config_kind: super::opencode_skill_permission::detect_config_kind(home),
     };
     (snapshot, report)
 }
@@ -1032,6 +1121,60 @@ mod tests {
         assert!(snapshot.skills.iter().any(|s| s.name == "foo"));
     }
 
+    /// Regression for the "parked-but-reinstalled" case: `skill_park`'s
+    /// module docs note that `dotagents install`/`npx skills add` can
+    /// recreate the shared folder while a skill is parked - the snapshot
+    /// must still mark the skill `parked` (from the registry record) while
+    /// also surfacing the reinstalled deployment, so the frontend's health
+    /// check can flag the conflict rather than hiding it.
+    #[test]
+    fn build_snapshot_marks_parked_skills_and_surfaces_a_reinstalled_deployment() {
+        let tmp = tempfile::tempdir().unwrap();
+        let home = tmp.path().join("home");
+        fs::create_dir_all(home.join(".agents/skills-parked/find-bugs")).unwrap();
+        fs::write(
+            home.join(".agents/skills-parked/find-bugs/SKILL.md"),
+            "---\nname: find-bugs\ndescription: test\n---\nbody",
+        )
+        .unwrap();
+        fs::create_dir_all(home.join(".agents/skills/find-bugs")).unwrap();
+        fs::write(
+            home.join(".agents/skills/find-bugs/SKILL.md"),
+            "---\nname: find-bugs\ndescription: reinstalled\n---\nbody",
+        )
+        .unwrap();
+        fs::create_dir_all(home.join(".agents")).unwrap();
+        fs::write(
+            home.join(".agents/skill-studio.json"),
+            r#"{"version":1,"forks":{},"trials":{},"parked":{"find-bugs":{"parked_at":"2026-01-01T00:00:00Z","source_kind":"manual"}},"harness_disabled":{}}"#,
+        )
+        .unwrap();
+
+        let mut invocation_index = SkillInvocationIndex::default();
+        let cache_path = tmp.path().join("cache.json");
+        let (snapshot, _report) = build_snapshot(
+            &home,
+            &[],
+            &BTreeSet::new(),
+            &mut invocation_index,
+            BuildPaths {
+                cache_path: &cache_path,
+                runs_root: tmp.path(),
+                update_check_path: &tmp.path().join("update-check.json"),
+            },
+            Utc::now(),
+        );
+
+        let skill = snapshot
+            .skills
+            .iter()
+            .find(|s| s.name == "find-bugs")
+            .unwrap();
+        assert!(skill.parked);
+        assert!(skill.deployments.iter().any(|d| d.scope == "parked"));
+        assert!(skill.deployments.iter().any(|d| d.scope == "global"));
+    }
+
     #[test]
     fn build_snapshot_reads_update_check_store_at_the_production_path() {
         // Regression test: `update_check_path` is already the full file
@@ -1212,6 +1355,9 @@ mod tests {
                     symlink_error: None,
                     project_path: None,
                     content_hash: String::new(),
+                    disabled: false,
+                    disabled_by: None,
+                    codex_implicit_invocation: None,
                 }],
                 has_spec: false,
                 description: None,
@@ -1226,6 +1372,9 @@ mod tests {
                 folder_truncated: false,
                 fork: None,
                 trial: None,
+                parked: false,
+                parked_at: None,
+                invocation: super::super::frontmatter::InvocationPolicy::Both,
             }],
             projects: Vec::new(),
             invocations: Vec::new(),
@@ -1233,6 +1382,7 @@ mod tests {
             scanned_at: Utc::now().to_rfc3339(),
             last_test_by_skill: Default::default(),
             update_check: Default::default(),
+            opencode_config_kind: None,
         }
     }
 

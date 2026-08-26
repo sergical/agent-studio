@@ -379,6 +379,13 @@ pub fn skill_roots(home: &Path, project_paths: &[PathBuf]) -> Vec<SkillRoot> {
         project_path: None,
         path: home.join(".agents/skills"),
     });
+    // Parked (globally disabled) skills - see skill_park.rs. Global only:
+    // parking only ever touches the shared `.agents/skills` root.
+    roots.push(SkillRoot {
+        label: "parked".to_string(),
+        project_path: None,
+        path: home.join(".agents/skills-parked"),
+    });
 
     for project in project_paths {
         for &id in FIRST_CLASS_AGENTS {

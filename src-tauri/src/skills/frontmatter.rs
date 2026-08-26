@@ -25,6 +25,58 @@ pub struct SkillFrontmatter {
     pub metadata: Option<HashMap<String, serde_yaml::Value>>,
     #[serde(rename = "allowed-tools")]
     pub allowed_tools: Option<String>,
+    /// Claude Code / pi extension: restricts this skill to explicit
+    /// invocation only (`/name`, `/skill:name`), hiding it from the model's
+    /// own auto-invoke matching. See `InvocationPolicy`.
+    #[serde(rename = "disable-model-invocation")]
+    pub disable_model_invocation: Option<bool>,
+    /// Claude Code / pi extension: `false` restricts this skill to model
+    /// auto-invoke only, hiding it from explicit `/name` invocation. See
+    /// `InvocationPolicy`.
+    #[serde(rename = "user-invocable")]
+    pub user_invocable: Option<bool>,
+}
+
+/// The three invocation-control states a skill's frontmatter can express -
+/// see `docs/agent-skill-conventions.md`'s "Invocation control" section.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum InvocationPolicy {
+    /// Both explicit (`/name`) and model auto-invoke are available.
+    Both,
+    /// `disable-model-invocation: true` - explicit invocation only.
+    UserOnly,
+    /// `user-invocable: false` - model auto-invoke only.
+    ModelOnly,
+}
+
+/// Reads `disable-model-invocation` and `user-invocable` off `frontmatter`
+/// into an `InvocationPolicy`, plus a spec-violation note when both keys are
+/// set (they contradict each other) - `user-invocable: false` is dropped in
+/// that case and `UserOnly` wins, since a skill unusable by either a human or
+/// the model would be pointless.
+pub fn invocation_policy(frontmatter: Option<&SkillFrontmatter>) -> (InvocationPolicy, bool) {
+    invocation_policy_from(
+        frontmatter.and_then(|f| f.disable_model_invocation),
+        frontmatter.and_then(|f| f.user_invocable),
+    )
+}
+
+/// `invocation_policy`, taking the two raw key values directly rather than a
+/// `SkillFrontmatter` - used by `skill_refresh::build_snapshot`, which only
+/// has `InstalledSkill.frontmatter_fields`'s stringified form to work from.
+pub fn invocation_policy_from(
+    disable_model_invocation: Option<bool>,
+    user_invocable: Option<bool>,
+) -> (InvocationPolicy, bool) {
+    let disable_model = disable_model_invocation.unwrap_or(false);
+    let user_invocable = user_invocable.unwrap_or(true);
+    match (disable_model, user_invocable) {
+        (true, false) => (InvocationPolicy::UserOnly, true), // conflicting keys
+        (true, true) => (InvocationPolicy::UserOnly, false),
+        (false, false) => (InvocationPolicy::ModelOnly, false),
+        (false, true) => (InvocationPolicy::Both, false),
+    }
 }
 
 /// Parse SKILL.md frontmatter per the agentskills.io spec. Malformed YAML
@@ -151,6 +203,10 @@ pub fn validate_skill(
         violations.push("SKILL.md exceeds recommended 500 lines".to_string());
     }
 
+    if invocation_policy(frontmatter).1 {
+        violations.push("conflicting invocation keys".to_string());
+    }
+
     violations
 }
 
@@ -234,5 +290,51 @@ mod tests {
     #[test]
     fn frontmatter_fields_empty_without_frontmatter() {
         assert!(frontmatter_fields("no frontmatter here").is_empty());
+    }
+
+    #[test]
+    fn invocation_policy_defaults_to_both() {
+        let (policy, conflict) = invocation_policy(Some(&valid_frontmatter()));
+        assert_eq!(policy, InvocationPolicy::Both);
+        assert!(!conflict);
+    }
+
+    #[test]
+    fn invocation_policy_disable_model_invocation_is_user_only() {
+        let mut fm = valid_frontmatter();
+        fm.disable_model_invocation = Some(true);
+        let (policy, conflict) = invocation_policy(Some(&fm));
+        assert_eq!(policy, InvocationPolicy::UserOnly);
+        assert!(!conflict);
+    }
+
+    #[test]
+    fn invocation_policy_user_invocable_false_is_model_only() {
+        let mut fm = valid_frontmatter();
+        fm.user_invocable = Some(false);
+        let (policy, conflict) = invocation_policy(Some(&fm));
+        assert_eq!(policy, InvocationPolicy::ModelOnly);
+        assert!(!conflict);
+    }
+
+    #[test]
+    fn invocation_policy_conflicting_keys_favors_user_only_and_flags_conflict() {
+        let mut fm = valid_frontmatter();
+        fm.disable_model_invocation = Some(true);
+        fm.user_invocable = Some(false);
+        let (policy, conflict) = invocation_policy(Some(&fm));
+        assert_eq!(policy, InvocationPolicy::UserOnly);
+        assert!(conflict);
+    }
+
+    #[test]
+    fn validate_skill_flags_conflicting_invocation_keys() {
+        let mut fm = valid_frontmatter();
+        fm.disable_model_invocation = Some(true);
+        fm.user_invocable = Some(false);
+        let violations = validate_skill("write-tests", Some(&fm), 10);
+        assert!(violations
+            .iter()
+            .any(|v| v.contains("conflicting invocation keys")));
     }
 }

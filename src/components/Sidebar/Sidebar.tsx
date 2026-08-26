@@ -15,6 +15,7 @@ import {
   Globe,
   LayoutDashboard,
   LayoutGrid,
+  PackageOpen,
   Plus,
   RefreshCw,
   Search,
@@ -154,6 +155,7 @@ export function Sidebar({ snapshot, isLoading, requestRescan }: SidebarProps) {
     a.localeCompare(b),
   );
   const issuesCount = collectDashboardIssues(ownSkillsView(snapshot?.skills ?? [])).length;
+  const parkedCount = ownSkillsView(snapshot?.skills ?? []).filter((s) => s.parked).length;
 
   return (
     <nav className="skill-sidebar">
@@ -215,6 +217,20 @@ export function Sidebar({ snapshot, isLoading, requestRescan }: SidebarProps) {
           <span>Add project…</span>
         </button>
       </div>
+
+      {parkedCount > 0 && (
+        <div className="skill-sidebar-section">
+          <div className="section-label">Parked</div>
+          <button
+            className={`skill-sidebar-item ${anchorView.kind === "parked" ? "active" : ""}`}
+            onClick={() => setActiveView({ kind: "parked" })}
+          >
+            <PackageOpen size={15} />
+            <span>Parked</span>
+            <span className="skill-sidebar-badge">{parkedCount}</span>
+          </button>
+        </div>
+      )}
 
       {pluginHarnesses.length > 0 && (
         <div className="skill-sidebar-section">

@@ -7,8 +7,14 @@ import type { InstalledSkill, SkillSnapshot } from "../lib/skill-types";
 import { useAppStore } from "../store/appStore";
 import { SkillListTable } from "./SkillList/SkillListTable";
 
-/** Which scope `SkillsScopeView` shows: every global deployment, or one project. */
-export type SkillsScope = { kind: "global" } | { kind: "project"; path: string };
+/**
+ * Which scope `SkillsScopeView` shows: every global deployment, one project,
+ * or every parked (disabled globally - see `skill_park.rs`) skill.
+ */
+export type SkillsScope =
+  | { kind: "global" }
+  | { kind: "project"; path: string }
+  | { kind: "parked" };
 
 interface SkillsScopeViewProps {
   scope: SkillsScope;
@@ -18,18 +24,18 @@ interface SkillsScopeViewProps {
 
 /** The deployment `scope` shows for `skill`, so the detail drawer opens on that copy. */
 function deploymentForScope(skill: InstalledSkill, scope: SkillsScope): string | undefined {
-  return skill.deployments.find((d) =>
-    scope.kind === "global"
-      ? d.scope === "global" || d.scope === "plugin"
-      : d.project_path === scope.path,
-  )?.path;
+  return skill.deployments.find((d) => {
+    if (scope.kind === "global") return d.scope === "global" || d.scope === "plugin";
+    if (scope.kind === "parked") return d.scope === "parked";
+    return d.project_path === scope.path;
+  })?.path;
 }
 
 /**
  * Header (scope name, path, skill count) plus a `SkillListTable` filtered to
- * that scope: global deployments (global or plugin scope) for `global`, or
- * deployments matching `project_path` for `project`. Excludes plugin-only
- * skills - those live under Plugins.
+ * that scope: global deployments (global or plugin scope) for `global`,
+ * deployments matching `project_path` for `project`, or parked skills for
+ * `parked`. Excludes plugin-only skills - those live under Plugins.
  */
 export function SkillsScopeView({ scope, snapshot, onSelectSkill }: SkillsScopeViewProps) {
   const selectedSkillName = useAppStore((state) =>
@@ -37,16 +43,19 @@ export function SkillsScopeView({ scope, snapshot, onSelectSkill }: SkillsScopeV
   );
   const own = ownSkillsView(snapshot?.skills ?? []);
 
-  const skills = own.filter((skill) =>
-    scope.kind === "global"
-      ? skill.deployments.some((d) => d.scope === "global" || d.scope === "plugin")
-      : skill.deployments.some((d) => d.project_path === scope.path),
-  );
+  const skills = own.filter((skill) => {
+    if (scope.kind === "global")
+      return skill.deployments.some((d) => d.scope === "global" || d.scope === "plugin");
+    if (scope.kind === "parked") return skill.parked;
+    return skill.deployments.some((d) => d.project_path === scope.path);
+  });
 
   const title =
     scope.kind === "global"
       ? "Global"
-      : (scope.path.split("/").filter(Boolean).pop() ?? scope.path);
+      : scope.kind === "parked"
+        ? "Parked"
+        : (scope.path.split("/").filter(Boolean).pop() ?? scope.path);
 
   return (
     <div className="skills-scope-view">

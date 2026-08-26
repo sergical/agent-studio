@@ -14,6 +14,7 @@ import type {
   ForkRecord,
   InstalledSkill,
   InstallScope,
+  InvocationPolicy,
   PaginatedSkillsResponse,
   PullResult,
   SkillSearchResult,
@@ -270,6 +271,60 @@ export function onTrialExpired(
     cancelled = true;
     unlisten?.();
   };
+}
+
+// ============================================================================
+// Park / Per-harness disable / Invocation policy API
+// ============================================================================
+
+/**
+ * Park (disable globally): moves the shared-folder deployment to
+ * `~/.agents/skills-parked/<name>`, removing a per-skill Claude Code symlink
+ * first if one exists. Refused when `name` isn't deployed to the shared
+ * folder, or already parked.
+ */
+export async function parkSkill(name: string): Promise<void> {
+  return invoke("park_skill", { name });
+}
+
+/**
+ * Reverse `parkSkill`: moves the parked copy back to
+ * `~/.agents/skills/<name>` and restores the Claude Code symlink if one was
+ * removed. When reinstalling created a new shared-folder copy while parked,
+ * reconciles by discarding the parked copy (if byte-identical) or trashing it
+ * to `~/.agents/skills-trash`.
+ */
+export async function unparkSkill(name: string): Promise<void> {
+  return invoke("unpark_skill", { name });
+}
+
+/**
+ * Enable or disable one harness's own view of `name`, via that harness's own
+ * mechanism (Codex `config.toml`, OpenCode `opencode.json`, or - for Claude
+ * Code - removing/restoring its per-skill symlink). Refused for harnesses
+ * with no per-skill disable (pi, Cursor, Grok Build) and for Claude Code when
+ * the skill is deployed via the whole-directory symlink.
+ */
+export async function setHarnessEnabled(
+  name: string,
+  agent: string,
+  enabled: boolean,
+): Promise<void> {
+  return invoke("set_harness_enabled", { name, agent, enabled });
+}
+
+/**
+ * Rewrite `disable-model-invocation`/`user-invocable` in `path`'s SKILL.md
+ * frontmatter to match `policy`, byte-identical otherwise. Also
+ * writes/patches `agents/openai.yaml`'s `policy.allow_implicit_invocation`
+ * when the skill has a Codex deployment.
+ */
+export async function setSkillInvocation(
+  name: string,
+  path: string,
+  policy: InvocationPolicy,
+): Promise<void> {
+  return invoke("set_skill_invocation", { name, path, policy });
 }
 
 // ============================================================================

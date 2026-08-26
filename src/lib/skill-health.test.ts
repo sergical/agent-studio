@@ -3,8 +3,26 @@
 // ============================================================================
 
 import { describe, expect, it } from "vitest";
-import { findUpdateAvailable, HEALTH_ISSUE_KIND_ORDER } from "./skill-health";
-import type { InstalledSkill } from "./skill-types";
+import {
+  findParkedButReinstalled,
+  findUpdateAvailable,
+  HEALTH_ISSUE_KIND_ORDER,
+} from "./skill-health";
+import type { Deployment, InstalledSkill } from "./skill-types";
+
+/** Minimal `Deployment` fixture, overridable per test. */
+function fixtureDeployment(overrides: Partial<Deployment> = {}): Deployment {
+  return {
+    agent: "shared",
+    scope: "global",
+    path: "/home/.agents/skills/agent-browser",
+    is_symlink: false,
+    symlink_is_broken: false,
+    content_hash: "abc",
+    disabled: false,
+    ...overrides,
+  };
+}
 
 /** Minimal `InstalledSkill` fixture, overridable per test. */
 function fixtureSkill(overrides: Partial<InstalledSkill> = {}): InstalledSkill {
@@ -25,6 +43,8 @@ function fixtureSkill(overrides: Partial<InstalledSkill> = {}): InstalledSkill {
     content_hashes: [],
     frontmatter_fields: {},
     folder_truncated: false,
+    parked: false,
+    invocation: "both",
     ...overrides,
   };
 }
@@ -46,5 +66,37 @@ describe("findUpdateAvailable", () => {
 describe("HEALTH_ISSUE_KIND_ORDER", () => {
   it("includes update-available", () => {
     expect(HEALTH_ISSUE_KIND_ORDER).toContain("update-available");
+  });
+
+  it("includes parked-but-reinstalled", () => {
+    expect(HEALTH_ISSUE_KIND_ORDER).toContain("parked-but-reinstalled");
+  });
+});
+
+describe("findParkedButReinstalled", () => {
+  it("flags a parked skill whose shared-folder deployment came back", () => {
+    const skill = fixtureSkill({
+      parked: true,
+      deployments: [fixtureDeployment({ scope: "global" })],
+    });
+    const issues = findParkedButReinstalled([skill]);
+    expect(issues).toHaveLength(1);
+    expect(issues[0].kind).toBe("parked-but-reinstalled");
+  });
+
+  it("does not flag a parked skill with only its parked-copy deployment", () => {
+    const skill = fixtureSkill({
+      parked: true,
+      deployments: [fixtureDeployment({ scope: "parked" })],
+    });
+    expect(findParkedButReinstalled([skill])).toEqual([]);
+  });
+
+  it("does not flag a skill that isn't parked", () => {
+    const skill = fixtureSkill({
+      parked: false,
+      deployments: [fixtureDeployment({ scope: "global" })],
+    });
+    expect(findParkedButReinstalled([skill])).toEqual([]);
   });
 });

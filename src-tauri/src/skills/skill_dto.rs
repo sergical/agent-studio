@@ -11,8 +11,19 @@ use std::collections::BTreeMap;
 
 use serde::{Deserialize, Serialize};
 
+use super::frontmatter::InvocationPolicy;
 use super::provenance::SourceKind;
 use super::skill_fork_registry::{AddMethod, OriginTool, TrialScope};
+
+/// Which of the three disable mechanisms `Deployment.disabled` came from -
+/// see `skill_harness_disable`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum DisabledBy {
+    CodexConfig,
+    OpencodePermission,
+    ClaudeLinkRemoved,
+}
 
 // ============================================================================
 // Skills.sh API Types
@@ -95,6 +106,19 @@ pub struct Deployment {
     /// of a duplicated skill differ, not just the skill as a whole.
     #[serde(default)]
     pub content_hash: String,
+    /// True when this specific deployment is disabled for its harness (as
+    /// opposed to parked, which removes the skill from every harness at
+    /// once) - see `skill_harness_disable`.
+    #[serde(default)]
+    pub disabled: bool,
+    /// Which mechanism `disabled` came from, `None` when not disabled.
+    #[serde(default)]
+    pub disabled_by: Option<DisabledBy>,
+    /// Codex's own `agents/openai.yaml` `policy.allow_implicit_invocation`
+    /// value, read straight off disk - note-only, doesn't affect
+    /// `InstalledSkill.invocation` (that's driven by SKILL.md frontmatter).
+    #[serde(default)]
+    pub codex_implicit_invocation: Option<bool>,
 }
 
 /// Fork provenance shown on a forked skill's detail header - see
@@ -181,6 +205,22 @@ pub struct InstalledSkill {
     /// window - see `skill_fork_registry::TrialRecord` and `skill_trial`.
     #[serde(default)]
     pub trial: Option<TrialInfo>,
+    /// True when this skill is parked (disabled globally) - see
+    /// `skill_park`. Parked skills are excluded from coverage/dashboard
+    /// totals and shown in their own sidebar group instead.
+    #[serde(default)]
+    pub parked: bool,
+    /// RFC3339 timestamp of when this skill was parked, set only when `parked`.
+    #[serde(default)]
+    pub parked_at: Option<String>,
+    /// Which invocation channels this skill allows - see
+    /// `frontmatter::invocation_policy`.
+    #[serde(default = "default_invocation")]
+    pub invocation: InvocationPolicy,
+}
+
+fn default_invocation() -> InvocationPolicy {
+    InvocationPolicy::Both
 }
 
 /// A trial's remaining-time projection, read-only for the frontend - see

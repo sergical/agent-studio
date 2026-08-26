@@ -31,14 +31,14 @@ Claude Code, Codex, OpenCode and pi auto-invoke a skill by default when its
 description matches the task; Cursor and Grok Build's invocation model isn't
 verified yet (see "unknown" cells below).
 
-| Agent       | Explicit invocation | Restrict model auto-invoke                                                                     | Disable a skill (keep on disk)                                                   |
-| ----------- | ------------------- | ---------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------- |
-| Claude Code | `/name [args]`      | frontmatter `disable-model-invocation: true` (user only); `user-invocable: false` (model only) | none native → Skill Studio parks the folder (see below)                          |
-| Codex       | `$name`             | sidecar `agents/openai.yaml` → `policy.allow_implicit_invocation: false`                       | `~/.codex/config.toml` → `[[skills.config]] path = "…/SKILL.md" enabled = false` |
-| OpenCode    | `skill` tool        | `permission.skill` in `opencode.json`: per-name pattern `allow` / `deny` / `ask`               | same: `"name": "deny"` (wildcards allowed, e.g. `internal-*`)                    |
-| pi          | `/skill:name`       | frontmatter `disable-model-invocation: true`                                                   | none native → Skill Studio parks the folder                                      |
-| Cursor      | unknown             | unknown                                                                                        | no per-skill disable known                                                       |
-| Grok Build  | unknown             | unknown                                                                                        | no per-skill disable known                                                       |
+| Agent       | Explicit invocation | Restrict model auto-invoke                                                                     | Disable a skill (keep on disk)                                                                            |
+| ----------- | ------------------- | ---------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------- |
+| Claude Code | `/name [args]`      | frontmatter `disable-model-invocation: true` (user only); `user-invocable: false` (model only) | no native per-skill switch → Skill Studio removes its per-skill symlink, or parks it globally (see below) |
+| Codex       | `$name`             | sidecar `agents/openai.yaml` → `policy.allow_implicit_invocation: false`                       | `~/.codex/config.toml` → `[[skills.config]] path = "…/SKILL.md" enabled = false`                          |
+| OpenCode    | `skill` tool        | `permission.skill` in `opencode.json`: per-name pattern `allow` / `deny` / `ask`               | same: `"name": "deny"` (wildcards allowed, e.g. `internal-*`)                                             |
+| pi          | `/skill:name`       | frontmatter `disable-model-invocation: true`                                                   | no per-skill disable → Skill Studio parks the folder globally                                             |
+| Cursor      | unknown             | unknown                                                                                        | no per-skill disable → Skill Studio parks the folder globally                                             |
+| Grok Build  | unknown             | unknown                                                                                        | no per-skill disable → Skill Studio parks the folder globally                                             |
 
 Sources: https://code.claude.com/docs/en/skills · https://developers.openai.com/codex/skills ·
 https://opencode.ai/docs/skills/ · https://pi.dev/docs/latest/skills
@@ -53,12 +53,46 @@ target. Config-based controls (Codex, OpenCode) are per agent.
 (globs that gate auto-loading), `model`, `effort`, `argument-hint`, `arguments`,
 `hooks`, `shell`, `when_to_use`, `metadata`, `license`, `compatibility`.
 
-### Parking (Skill Studio's disable for agents without a native switch)
+### Parking (disable globally, for every harness)
 
-Agents discover skills purely by directory presence. Skill Studio disables a skill
-for Claude Code or pi by moving the folder or symlink to
-`~/.agents/.disabled-skills/<agent>/<scope>/<name>` and moves it back on enable.
-Parked skills are listed as disabled in the scanner.
+Parking is Skill Studio's own global disable: it moves a skill's shared-folder
+deployment from `~/.agents/skills/<name>` to `~/.agents/skills-parked/<name>`
+(a rename, not a copy), removing a per-skill Claude Code symlink first if one
+exists. Every harness that reads the shared folder loses the skill at once;
+unparking reverses both steps. The registry (`~/.agents/skill-studio.json`)
+records `parked: {name: {parked_at, source_kind, claude_link}}` so unparking
+knows whether to recreate a Claude Code link.
+
+Because parking only moves the shared folder, a `sync`/`update`/reinstall run
+while a skill is parked can recreate `~/.agents/skills/<name>` on its own -
+Skill Studio still shows the skill as parked (from the registry record), but
+flags it as `parked-but-reinstalled` until it's unparked. Unparking then
+reconciles the two copies: if the reinstalled copy is byte-identical to the
+parked one, the parked copy is simply discarded; otherwise it's moved to
+`~/.agents/skills-trash/<name>-<timestamp>` rather than silently overwriting
+either copy.
+
+### Per-harness disable (one harness at a time)
+
+Separately from parking, a single harness can be turned off for one skill
+while every other harness keeps seeing it, via that harness's own mechanism:
+
+- **Codex**: `~/.codex/config.toml` → `[[skills.config]] path = "…/SKILL.md" enabled = false`,
+  matched by the skill's canonical SKILL.md path. Skill Studio edits this with
+  `toml_edit`, preserving all other content and comments byte-for-byte.
+- **OpenCode**: `~/.config/opencode/opencode.json` → `permission.skill.<name-or-glob> = "deny"`.
+  Skill Studio refuses to parse or write `opencode.jsonc`; a project with only
+  that file is reported as unreadable rather than risking a write that drops
+  comments.
+- **Claude Code**: has no native per-skill switch, so Skill Studio tracks it in
+  the registry's own `harness_disabled: {name: {"claude-code": {link_target}}}`
+  map, and disables by removing (then later restoring) the skill's per-skill
+  symlink under `~/.claude/skills/<name>`. This only works when the skill is
+  deployed via that per-skill symlink; a skill deployed through the whole-directory
+  `~/.claude/skills → ~/.agents/skills` symlink has no per-skill link to remove.
+- **pi, Cursor, Grok Build**: no per-skill disable - these agents read the
+  shared folder directly, so the only way to disable a skill for them is to
+  park it (above), which disables it for every harness.
 
 ## Discovery paths
 
@@ -71,19 +105,20 @@ Parked skills are listed as disabled in the scanner.
 | Cursor      | `.cursor/skills/`                     | `~/.cursor/skills/`                            | also reads .agents, .claude and .codex skill dirs; plugins in ~/.cursor/plugins/{cache,local}                   |
 | Grok Build  | `.grok/skills/`                       | `~/.grok/skills/`                              | reads ~/.agents/skills; plugins in ~/.grok/plugins, marketplaces in ~/.grok/config.toml [[marketplace.sources]] |
 | shared      | `.agents/skills/`                     | `~/.agents/skills/`                            | `npx skills` target; Codex, OpenCode, pi, Cursor and Grok Build read it natively; Claude Code needs a symlink   |
+| parked      | n/a (global only)                     | `~/.agents/skills-parked/`                     | Skill Studio's own root for parked (disabled globally) skills - see "Parking" above; excluded from coverage     |
 
 ## Local data sources Skill Studio reads
 
-| Purpose                            | Location                             | Shape                                                                                                                                                                             |
-| ---------------------------------- | ------------------------------------ | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Installed-skill lock               | `~/.agents/.skill-lock.json`         | `{version, skills: {name: {source, sourceType, sourceUrl, skillFolderHash, installedAt, updatedAt}}}`                                                                             |
-| dotagents declared skills          | `~/.agents/agents.toml`              | `[[skills]]` rows: `{name, source, path, ref?}` - `ref` absent means unpinned; no `[[skills]]` row for a lock entry means a wildcard (`--all`) install                            |
-| dotagents resolved skills          | `~/.agents/agents.lock`              | `[skills.<name>]` tables: `{source, resolved_path, resolved_commit}` - the commit actually on disk                                                                                |
-| Fork registry (Skill Studio-owned) | `~/.agents/skill-studio.json`        | `{version, forks: {name: {forked_at, origin_tool, origin_source, repo, path, declared_ref, base_commit}}, trials: {name: {started_at, expires_at, method, scope, project_path}}}` |
-| Skill invocations (Claude Code)    | `~/.claude/projects/*/*.jsonl`       | assistant `tool_use` with `"name":"Skill","input":{"skill":"<name>"}` + timestamp + `cwd`                                                                                         |
-| Projects list (Codex)              | `~/.codex/config.toml`               | `[projects."/abs/path"]` sections                                                                                                                                                 |
-| Projects list (Claude Code)        | `~/.claude/projects/<encoded-path>/` | `cwd` field inside the transcripts (dir name encoding is lossy)                                                                                                                   |
-| skills.sh search                   | `https://skills.sh/api/search?q=`    | `{skills: [{id, skillId, name, installs, source}]}` (`source`, not `topSource`)                                                                                                   |
+| Purpose                            | Location                             | Shape                                                                                                                                                                                                                                                                                               |
+| ---------------------------------- | ------------------------------------ | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Installed-skill lock               | `~/.agents/.skill-lock.json`         | `{version, skills: {name: {source, sourceType, sourceUrl, skillFolderHash, installedAt, updatedAt}}}`                                                                                                                                                                                               |
+| dotagents declared skills          | `~/.agents/agents.toml`              | `[[skills]]` rows: `{name, source, path, ref?}` - `ref` absent means unpinned; no `[[skills]]` row for a lock entry means a wildcard (`--all`) install                                                                                                                                              |
+| dotagents resolved skills          | `~/.agents/agents.lock`              | `[skills.<name>]` tables: `{source, resolved_path, resolved_commit}` - the commit actually on disk                                                                                                                                                                                                  |
+| Fork registry (Skill Studio-owned) | `~/.agents/skill-studio.json`        | `{version, forks: {name: {forked_at, origin_tool, origin_source, repo, path, declared_ref, base_commit}}, trials: {name: {started_at, expires_at, method, scope, project_path}}, parked: {name: {parked_at, source_kind, claude_link?}}, harness_disabled: {name: {"claude-code": {link_target}}}}` |
+| Skill invocations (Claude Code)    | `~/.claude/projects/*/*.jsonl`       | assistant `tool_use` with `"name":"Skill","input":{"skill":"<name>"}` + timestamp + `cwd`                                                                                                                                                                                                           |
+| Projects list (Codex)              | `~/.codex/config.toml`               | `[projects."/abs/path"]` sections                                                                                                                                                                                                                                                                   |
+| Projects list (Claude Code)        | `~/.claude/projects/<encoded-path>/` | `cwd` field inside the transcripts (dir name encoding is lossy)                                                                                                                                                                                                                                     |
+| skills.sh search                   | `https://skills.sh/api/search?q=`    | `{skills: [{id, skillId, name, installs, source}]}` (`source`, not `topSource`)                                                                                                                                                                                                                     |
 
 Codex session logs mention every installed SKILL.md path on every turn (the skill
 list in the instructions), so they are **not** an invocation signal. OpenCode keeps

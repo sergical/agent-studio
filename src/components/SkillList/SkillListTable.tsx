@@ -13,6 +13,13 @@ import type { InstalledSkill, SkillInvocationStats } from "../../lib/skill-types
 
 type SortMode = "name" | "used" | "size";
 
+/** "User only" / "Model only" chip label, `null` for the default "both" policy. */
+function invocationChipLabel(invocation: InstalledSkill["invocation"]): string | null {
+  if (invocation === "user-only") return "User only";
+  if (invocation === "model-only") return "Model only";
+  return null;
+}
+
 interface SkillListTableProps {
   skills: InstalledSkill[];
   stats: SkillInvocationStats[];
@@ -119,6 +126,12 @@ export function SkillListTable({
                 <span className="skill-list-table-name">
                   {skill.name}
                   {skill.has_update && <span className="skill-list-table-update-chip">Update</span>}
+                  {skill.parked && <span className="skill-list-table-parked-chip">Parked</span>}
+                  {invocationChipLabel(skill.invocation) && (
+                    <span className="skill-list-table-invocation-chip">
+                      {invocationChipLabel(skill.invocation)}
+                    </span>
+                  )}
                 </span>
                 <span className="skill-list-table-description">{skill.description ?? ""}</span>
                 <span className="skill-list-table-chips">
@@ -126,7 +139,10 @@ export function SkillListTable({
                     const harnessId = harnessIdFromLabel(d.agent);
                     const linkKind = deploymentLinkKind(d);
                     return (
-                      <span key={`${d.agent}-${d.scope}-${i}`} className="skill-list-table-chip">
+                      <span
+                        key={`${d.agent}-${d.scope}-${i}`}
+                        className={`skill-list-table-chip ${d.disabled ? "disabled" : ""}`}
+                      >
                         {harnessId && <HarnessIcon harness={harnessId} size={12} />}
                         {showPluginVersion && d.plugin?.version ? `v${d.plugin.version}` : d.agent}
                         {linkKind === "linked-to-shared" && (
@@ -140,6 +156,11 @@ export function SkillListTable({
                         {linkKind === "broken" && (
                           <span className="skill-list-table-chip-marker broken" title="Broken link">
                             <Unlink size={10} />
+                          </span>
+                        )}
+                        {d.disabled && (
+                          <span className="skill-list-table-chip-disabled-marker" title="Disabled">
+                            Disabled
                           </span>
                         )}
                       </span>

@@ -66,6 +66,9 @@ fn new_installed_skill(
         folder_truncated: false,
         fork: None,
         trial: None,
+        parked: false,
+        parked_at: None,
+        invocation: crate::skills::frontmatter::InvocationPolicy::Both,
     }
 }
 
@@ -136,6 +139,9 @@ pub fn assemble_installed_skills(
                 .as_ref()
                 .map(|p| p.to_string_lossy().to_string()),
             content_hash: candidate.content_hash.clone(),
+            disabled: false,
+            disabled_by: None,
+            codex_implicit_invocation: None,
         });
     }
 

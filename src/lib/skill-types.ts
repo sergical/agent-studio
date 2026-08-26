@@ -166,11 +166,17 @@ export interface PluginInfo {
 }
 
 /**
+ * Which of the three per-harness disable mechanisms `Deployment.disabled`
+ * came from - see `skill_harness_disable.rs`.
+ */
+export type DisabledBy = "codex-config" | "opencode-permission" | "claude-link-removed";
+
+/**
  * A place a skill is deployed on disk for a specific agent.
  */
 export interface Deployment {
   agent: string;
-  scope: "global" | "project" | "plugin";
+  scope: "global" | "project" | "plugin" | "parked";
   path: string;
   is_symlink: boolean;
   plugin?: PluginInfo | null;
@@ -184,7 +190,19 @@ export interface Deployment {
   project_path?: string;
   /** This deployment's own sha256 content hash, empty when unreadable. */
   content_hash: string;
+  /** True when this deployment is disabled for its harness - see `DisabledBy`. */
+  disabled: boolean;
+  /** Which mechanism `disabled` came from, unset when not disabled. */
+  disabled_by?: DisabledBy;
+  /** Codex's own `agents/openai.yaml` `policy.allow_implicit_invocation` value - note-only. */
+  codex_implicit_invocation?: boolean;
 }
+
+/**
+ * Which invocation channels a skill allows - see
+ * `frontmatter::invocation_policy` on the Rust side.
+ */
+export type InvocationPolicy = "both" | "user-only" | "model-only";
 
 /**
  * Installed skill, merged from the lock file and a scan of the four
@@ -230,6 +248,12 @@ export interface InstalledSkill {
   fork?: ForkInfo;
   /** Set when this skill is a "Try for 24 hours" install still within its window. */
   trial?: TrialInfo;
+  /** True when parked (disabled globally) - see `skill_park.rs`. */
+  parked: boolean;
+  /** RFC3339 timestamp of when this skill was parked, set only when `parked`. */
+  parked_at?: string;
+  /** Which invocation channels this skill allows, from SKILL.md frontmatter. */
+  invocation: InvocationPolicy;
 }
 
 /**
@@ -433,6 +457,8 @@ export interface SkillSnapshot {
   last_test_by_skill: Record<string, import("./skill-run-history-types").SkillRunSummary>;
   /** The latest background update-check result - see `skill_update_check.rs`. */
   update_check: UpdateCheckSummary;
+  /** Which OpenCode config format is present, `undefined` when neither exists. */
+  opencode_config_kind?: "json" | "jsonc";
 }
 
 /**

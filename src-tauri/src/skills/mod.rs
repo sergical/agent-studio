@@ -5,10 +5,12 @@
 
 pub mod agents;
 pub mod api;
+pub mod codex_skill_config;
 pub mod commands;
 pub mod dotagents_ledger;
 pub mod frontmatter;
 pub mod lock_file;
+pub mod opencode_skill_permission;
 pub mod plugins;
 pub mod project_discovery;
 pub mod provenance;
@@ -20,7 +22,10 @@ pub mod skill_discovery;
 pub mod skill_dto;
 pub mod skill_fork;
 pub mod skill_fork_registry;
+pub mod skill_harness_disable;
+pub mod skill_invocation;
 pub mod skill_invocations;
+pub mod skill_park;
 pub mod skill_refresh;
 pub mod skill_run_history;
 pub mod skill_run_target;

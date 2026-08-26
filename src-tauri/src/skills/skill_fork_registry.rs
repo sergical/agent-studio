@@ -5,8 +5,11 @@
 // `agents.lock`, or `.skill-lock.json` itself, those belong to the owning
 // CLI. Tracks which skills have been detached from their ledger ("forked")
 // so local edits survive `dotagents sync` / `npx skills update`, plus a
-// `trials` bucket for "Try for 24 hours" installs (see `skill_trial`). A
-// missing file yields a
+// `trials` bucket for "Try for 24 hours" installs (see `skill_trial`), a
+// `parked` bucket for skills disabled globally (see `skill_park`), and a
+// `harness_disabled` bucket for the one per-harness disable that has no
+// native config to read back from (Claude Code - see `skill_harness_disable`).
+// A missing file yields a
 // default (empty) registry; an unreadable or malformed one is an error for
 // every mutating command (fork/pull/unfork/remove), since silently treating
 // it as empty would erase every recorded fork on the next write. Read-only
@@ -19,6 +22,8 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use serde::{Deserialize, Serialize};
+
+use super::provenance::SourceKind;
 
 /// Which CLI a forked skill was originally managed by.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -109,6 +114,33 @@ pub struct ForkRecord {
     pub base_commit: String,
 }
 
+/// One skill parked (disabled globally) via `skill_park::park_skill` - see
+/// that module for the mechanics. `source_kind` is the skill's `SourceKind`
+/// at the time it was parked, so the snapshot can still label it correctly
+/// even though a parked skill has no deployment for `classify_source_kind`
+/// to look at.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ParkedRecord {
+    pub parked_at: String,
+    pub source_kind: SourceKind,
+    /// The per-skill Claude Code symlink that was removed when parking, if
+    /// any - `unpark_skill` recreates it at this exact path.
+    #[serde(default)]
+    pub claude_link: Option<PathBuf>,
+}
+
+/// One first-class agent's per-skill disable that has no native config to
+/// read back, tracked here instead - currently only Claude Code (removing
+/// its per-skill symlink), since Codex and OpenCode read their own disable
+/// state straight from `~/.codex/config.toml` / `opencode.json`. See
+/// `skill_harness_disable`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ClaudeLinkRemoved {
+    /// The symlink's original target, so re-enabling can recreate it exactly
+    /// (relative, as `maybe_claude_code_symlink` creates it).
+    pub link_target: PathBuf,
+}
+
 /// `~/.agents/skill-studio.json`'s shape.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ForkRegistry {
@@ -119,6 +151,15 @@ pub struct ForkRegistry {
     /// "Try for 24 hours" installs, keyed by skill name - see `skill_trial`.
     #[serde(default)]
     pub trials: BTreeMap<String, TrialRecord>,
+    /// Skills parked (disabled globally) via `skill_park`, keyed by name.
+    #[serde(default)]
+    pub parked: BTreeMap<String, ParkedRecord>,
+    /// Per-harness disables that need a Skill-Studio-owned record rather than
+    /// being read back from the harness's own config, keyed by skill name
+    /// then by harness `cli_name` (currently only `"claude-code"`). See
+    /// `skill_harness_disable`.
+    #[serde(default)]
+    pub harness_disabled: BTreeMap<String, BTreeMap<String, ClaudeLinkRemoved>>,
 }
 
 fn default_version() -> u32 {
@@ -135,6 +176,8 @@ impl Default for ForkRegistry {
             version: default_version(),
             forks: BTreeMap::new(),
             trials: BTreeMap::new(),
+            parked: BTreeMap::new(),
+            harness_disabled: BTreeMap::new(),
         }
     }
 }

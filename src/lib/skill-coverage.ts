@@ -59,12 +59,19 @@ export function isUnresolvedDeployment(deployment: Deployment): boolean {
   return deployment.symlink_is_broken || deployment.symlink_error != null;
 }
 
-/** A deployment counts toward visibility only when its symlink (if any) resolves. */
+/**
+ * A deployment counts toward visibility only when its symlink (if any)
+ * resolves and it isn't disabled for its harness (see `Deployment.disabled`)
+ * or parked (see `InstalledSkill.parked`) - either way the harness doesn't
+ * actually see it.
+ */
 function isOwnDirDeployment(skill: InstalledSkill, agent: AgentId): boolean {
+  if (skill.parked) return false;
   return ownDeployments(skill).some(
     (d) =>
       agentIdFromDeploymentLabel(d.agent) === agent &&
       (d.scope === "global" || d.scope === "project") &&
+      !d.disabled &&
       !isUnresolvedDeployment(d),
   );
 }
@@ -91,10 +98,14 @@ export function deploymentLinkKind(
   return "own";
 }
 
-/** A broken shared-root deployment doesn't make a skill visible via the shared root. */
+/**
+ * A broken, disabled, or parked shared-root deployment doesn't make a skill
+ * visible via the shared root.
+ */
 function isSharedRootDeployment(skill: InstalledSkill): boolean {
+  if (skill.parked) return false;
   return ownDeployments(skill).some(
-    (d) => d.agent === SHARED_AGENT_ID && !isUnresolvedDeployment(d),
+    (d) => d.agent === SHARED_AGENT_ID && !d.disabled && !isUnresolvedDeployment(d),
   );
 }
 
@@ -132,8 +143,13 @@ export interface CoverageSummary {
   total: number;
 }
 
-/** Summarizes effective visibility over `skills` (own skills only - see `ownSkillsView`). */
-export function summarizeCoverage(skills: InstalledSkill[]): CoverageSummary {
+/**
+ * Summarizes effective visibility over `skills` (own skills only - see
+ * `ownSkillsView`). Parked skills are excluded from the totals: parking
+ * disables a skill globally, so it isn't "missing" coverage, it's off.
+ */
+export function summarizeCoverage(allSkills: InstalledSkill[]): CoverageSummary {
+  const skills = allSkills.filter((skill) => !skill.parked);
   const total = skills.length;
   let claudeVisible = 0;
   let claudeLinkedToShared = 0;

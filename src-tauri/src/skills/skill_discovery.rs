@@ -440,7 +440,12 @@ fn shared_root_has_lock_entry(root: &agents::SkillRoot) -> bool {
 }
 
 fn scope_str(root: &agents::SkillRoot) -> &'static str {
-    if root.project_path.is_some() {
+    if root.label == "parked" {
+        // Distinct from "global" so a parked skill's deployment doesn't get
+        // counted as a live global deployment in coverage totals - see
+        // `skill_park`'s module docs and skill-coverage.ts.
+        "parked"
+    } else if root.project_path.is_some() {
         "project"
     } else {
         "global"

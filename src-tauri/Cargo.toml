@@ -25,6 +25,10 @@ urlencoding = "2"
 tiktoken-rs = "0.12.0"
 sha2 = "0.11.0"
 toml = "1.1.4"
+# Format-preserving TOML edits for ~/.codex/config.toml - pinned to the
+# version already resolved transitively (see Cargo.lock) so this doesn't
+# introduce a second copy of the crate.
+toml_edit = "0.23.10"
 chrono = { version = "0.4.45", default-features = false, features = ["clock", "serde"] }
 notify = "6"
 notify-debouncer-mini = "0.4"

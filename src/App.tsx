@@ -131,6 +131,14 @@ function App() {
         onSelectSkill={onSelectSkill}
       />
     );
+  } else if (activeView.kind === "parked") {
+    main = (
+      <SkillsScopeView
+        scope={{ kind: "parked" }}
+        snapshot={snapshot}
+        onSelectSkill={onSelectSkill}
+      />
+    );
   } else if (activeView.kind === "coverage") {
     main = <SkillCoverageView snapshot={snapshot} onSelectSkill={onSelectSkill} />;
   } else if (activeView.kind === "issues") {

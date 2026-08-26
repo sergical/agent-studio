@@ -16,7 +16,8 @@ export type HealthIssueKind =
   | "lock-only"
   | "never-invoked"
   | "missing-from-agents"
-  | "update-available";
+  | "update-available"
+  | "parked-but-reinstalled";
 
 /** One flagged condition for one skill, with a short human-readable reason. */
 export interface HealthIssue {
@@ -31,6 +32,7 @@ export interface HealthIssue {
  */
 export const HEALTH_ISSUE_KIND_ORDER: HealthIssueKind[] = [
   "update-available",
+  "parked-but-reinstalled",
   "duplicate",
   "broken-symlink",
   "spec-violation",
@@ -46,6 +48,7 @@ export const HEALTH_ISSUE_KIND_ORDER: HealthIssueKind[] = [
  */
 export const HEALTH_ISSUE_SEVERITY = {
   "update-available": "warning",
+  "parked-but-reinstalled": "warning",
   duplicate: "warning",
   "broken-symlink": "error",
   "spec-violation": "warning",
@@ -57,6 +60,10 @@ export const HEALTH_ISSUE_SEVERITY = {
 /** Singular/plural copy for one issue kind, for chip and row labels. */
 export const HEALTH_ISSUE_KIND_LABEL = {
   "update-available": { singular: "update available", plural: "updates available" },
+  "parked-but-reinstalled": {
+    singular: "parked skill was reinstalled",
+    plural: "parked skills were reinstalled",
+  },
   duplicate: { singular: "skill differs between copies", plural: "skills differ between copies" },
   "broken-symlink": { singular: "broken link", plural: "broken links" },
   "spec-violation": { singular: "skill with spec issues", plural: "skills with spec issues" },
@@ -219,8 +226,11 @@ export function findMissingFromAgents(skills: InstalledSkill[]): HealthIssue[] {
   const issues: HealthIssue[] = [];
 
   for (const skill of skills) {
+    if (skill.parked) continue;
     const groups = new Map<string, Set<string>>();
     for (const deployment of skill.deployments) {
+      // A harness the user explicitly disabled isn't "missing" coverage.
+      if (deployment.disabled) continue;
       const covered = agentsCoveredByDeployment(deployment.agent);
       if (covered.length === 0) {
         continue;
@@ -262,15 +272,34 @@ export function findUpdateAvailable(skills: InstalledSkill[]): HealthIssue[] {
 }
 
 /**
- * Every dashboard-worthy issue across `skills`: update-available, duplicate,
- * broken-symlink, spec-violation, lock-only, and missing-from-agents.
- * Deliberately excludes never-invoked - it's noise, not something worth
- * fixing for every skill. Sorted by `HEALTH_ISSUE_KIND_ORDER` then skill
- * name, so both the dashboard and the Issues view show a stable order.
+ * Parked skills whose shared-folder deployment came back - see
+ * `skill_park.rs`'s "parked-but-reinstalled" note: an install or sync run
+ * while the skill was parked can recreate `~/.agents/skills/<name>` even
+ * though the parked copy is still sitting in `~/.agents/skills-parked`.
+ * Unparking reconciles the two; this issue just flags that it's needed.
+ */
+export function findParkedButReinstalled(skills: InstalledSkill[]): HealthIssue[] {
+  return skills
+    .filter((skill) => skill.parked && skill.deployments.some((d) => d.scope !== "parked"))
+    .map((skill) => ({
+      kind: "parked-but-reinstalled" as const,
+      skill,
+      detail: "Parked, but an install or sync recreated the shared-folder copy",
+    }));
+}
+
+/**
+ * Every dashboard-worthy issue across `skills`: update-available,
+ * parked-but-reinstalled, duplicate, broken-symlink, spec-violation,
+ * lock-only, and missing-from-agents. Deliberately excludes never-invoked -
+ * it's noise, not something worth fixing for every skill. Sorted by
+ * `HEALTH_ISSUE_KIND_ORDER` then skill name, so both the dashboard and the
+ * Issues view show a stable order.
  */
 export function collectDashboardIssues(skills: InstalledSkill[]): HealthIssue[] {
   const issues = [
     ...findUpdateAvailable(skills),
+    ...findParkedButReinstalled(skills),
     ...findDuplicateSkills(skills),
     ...findBrokenSymlinks(skills),
     ...findSpecViolations(skills),

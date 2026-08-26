@@ -44,6 +44,8 @@ function whatIsWrong(issue: HealthIssue): string {
       return issue.detail;
     case "update-available":
       return issue.detail;
+    case "parked-but-reinstalled":
+      return issue.detail;
   }
 }
 

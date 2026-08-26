@@ -241,6 +241,9 @@ mod tests {
                     symlink_error: None,
                     project_path: None,
                     content_hash: String::new(),
+                    disabled: false,
+                    disabled_by: None,
+                    codex_implicit_invocation: None,
                 }],
                 has_spec: false,
                 description: None,
@@ -255,6 +258,9 @@ mod tests {
                 folder_truncated: false,
                 fork: None,
                 trial: None,
+                parked: false,
+                parked_at: None,
+                invocation: super::super::frontmatter::InvocationPolicy::Both,
             }],
             projects: Vec::new(),
             invocations: Vec::new(),
@@ -262,6 +268,7 @@ mod tests {
             scanned_at: Utc::now().to_rfc3339(),
             last_test_by_skill: Default::default(),
             update_check: Default::default(),
+            opencode_config_kind: None,
         }
     }
 
@@ -740,7 +747,7 @@ const MAX_SKILL_MD_BYTES: usize = 2 * 1024 * 1024;
 /// Require that `path` belongs to an installed skill in the current
 /// snapshot, so `read_installed_skill_md` / `open_skill_path` can't be used
 /// to read or open an arbitrary path on disk.
-fn require_snapshot_owns_path(
+pub(crate) fn require_snapshot_owns_path(
     refresh_state: &tauri::State<SkillRefreshState>,
     path: &std::path::Path,
 ) -> Result<(), String> {
@@ -757,7 +764,7 @@ fn require_snapshot_owns_path(
 /// Resolves `path_buf` to a canonical, existing `SKILL.md` file path, without
 /// checking ownership or plugin status - callers apply those separately.
 /// Shared by `read_installed_skill_md` and `write_installed_skill_md`.
-fn canonicalize_skill_md(
+pub(crate) fn canonicalize_skill_md(
     path_buf: &std::path::Path,
     path: &str,
 ) -> Result<std::path::PathBuf, String> {
@@ -802,7 +809,7 @@ pub fn read_installed_skill_md(
 /// the current snapshot, or a `SKILL.md` owned by a plugin-managed
 /// deployment (the harness owns that file, not the user). Pulled out of the
 /// command so it's testable without a `tauri::AppHandle`.
-fn check_skill_md_write_allowed(
+pub(crate) fn check_skill_md_write_allowed(
     snapshot: Option<&skill_refresh::SkillSnapshot>,
     path: &std::path::Path,
 ) -> Result<(), String> {
@@ -833,7 +840,10 @@ static ATOMIC_WRITE_COUNTER: AtomicU64 = AtomicU64::new(0);
 /// The temp filename is unique per call (pid + a process-wide counter +
 /// wall-clock nanos) and created with `create_new` so a concurrent save, or a
 /// pre-existing symlink at that path, can't be interleaved or truncated.
-fn atomic_write_skill_md(canonical: &std::path::Path, content: &str) -> Result<(), String> {
+pub(crate) fn atomic_write_skill_md(
+    canonical: &std::path::Path,
+    content: &str,
+) -> Result<(), String> {
     let parent = canonical.parent().ok_or_else(|| {
         format!(
             "Failed to resolve parent directory of {}",
@@ -921,7 +931,7 @@ pub fn write_installed_skill_md(
 /// (the file drifted on disk since the caller loaded it), otherwise writes
 /// atomically. Pulled out of the command so it's testable without a snapshot
 /// or `tauri::AppHandle`.
-fn write_skill_md_compare_and_swap(
+pub(crate) fn write_skill_md_compare_and_swap(
     canonical: &std::path::Path,
     expected_content: &str,
     content: &str,

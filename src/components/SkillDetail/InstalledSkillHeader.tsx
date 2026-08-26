@@ -9,12 +9,12 @@ import {
   Copy,
   FolderOpen,
   Link2,
-  Power,
+  PackageOpen,
   TerminalSquare,
   Unlink,
 } from "lucide-react";
 import { deploymentLinkKind } from "../../lib/skill-coverage";
-import { keepSkillTrial, openSkillPath } from "../../lib/skill-api";
+import { keepSkillTrial, openSkillPath, parkSkill, unparkSkill } from "../../lib/skill-api";
 import { pluginLabelForSkill } from "../../lib/skill-plugin-partition";
 import type { SkillRunSummary } from "../../lib/skill-run-history-types";
 import { formatRelativeTime, shortSha } from "../../lib/skill-stats";
@@ -22,6 +22,14 @@ import { SOURCE_KIND_LABELS, trialHoursLeft } from "../../lib/skill-types";
 import type { InstalledSkill } from "../../lib/skill-types";
 import { useAppStore } from "../../store/appStore";
 import { HarnessIcon, harnessIdFromLabel } from "../ui/HarnessIcon";
+
+/** "Parked · Aug 25, 2026" / "Parked" when the timestamp is missing or unparseable. */
+function parkedChipLabel(parkedAt: string | undefined): string {
+  if (!parkedAt) return "Parked";
+  const date = new Date(parkedAt);
+  if (Number.isNaN(date.getTime())) return "Parked";
+  return `Parked · ${date.toLocaleDateString(undefined, { month: "short", day: "numeric", year: "numeric" })}`;
+}
 
 /** "Trial · 17 h" / "Trial · <1 h" / "Trial · expired". */
 function trialChipLabel(expiresAt: string): string {
@@ -72,10 +80,10 @@ function chipLinkMarker(
 }
 
 /**
- * Header: name, description, a badge row (source kind, agent chips, and a
- * spec-violation warning when any), and an icon-button row for the file
- * actions every installed skill supports. Enable/disable is wired up in a
- * later step; it stays disabled here.
+ * Header: name, description, a badge row (source kind, agent chips, a
+ * "Parked" chip, and a spec-violation warning when any), and an icon-button
+ * row for the file actions every installed skill supports, including
+ * park/unpark (disable globally - see `skill_park.rs`).
  */
 export function InstalledSkillHeader({
   skill,
@@ -84,9 +92,31 @@ export function InstalledSkillHeader({
 }: InstalledSkillHeaderProps) {
   const [copied, setCopied] = useState(false);
   const [isKeeping, setIsKeeping] = useState(false);
+  const [isParking, setIsParking] = useState(false);
   const addToast = useAppStore((state) => state.addToast);
   const path = skill.deployments[0]?.path ?? skill.skill_path;
   const agents = [...new Set(skill.deployments.map((d) => d.agent))];
+
+  const handleTogglePark = async () => {
+    setIsParking(true);
+    try {
+      if (skill.parked) {
+        await unparkSkill(skill.name);
+        addToast({ type: "success", title: `Unparked ${skill.name}` });
+      } else {
+        await parkSkill(skill.name);
+        addToast({ type: "success", title: `Parked ${skill.name}` });
+      }
+    } catch (err) {
+      addToast({
+        type: "error",
+        title: skill.parked ? "Couldn't unpark skill" : "Couldn't park skill",
+        message: err instanceof Error ? err.message : "Unknown error",
+      });
+    } finally {
+      setIsParking(false);
+    }
+  };
 
   const handleKeepTrial = async () => {
     setIsKeeping(true);
@@ -207,6 +237,9 @@ export function InstalledSkillHeader({
               {skill.spec_violations.length !== 1 ? "s" : ""}
             </span>
           )}
+          {skill.parked && (
+            <span className="skill-detail-badge parked">{parkedChipLabel(skill.parked_at)}</span>
+          )}
           {skill.trial && (
             <span className="skill-detail-badge trial">
               {trialChipLabel(skill.trial.expires_at)}
@@ -235,9 +268,13 @@ export function InstalledSkillHeader({
             <Copy size={14} />
             {copied ? "Copied!" : "Copy path"}
           </button>
-          <button className="skill-detail-icon-button" disabled title="Coming next">
-            <Power size={14} />
-            Enable / Disable
+          <button
+            className="skill-detail-icon-button"
+            onClick={handleTogglePark}
+            disabled={isParking}
+          >
+            <PackageOpen size={14} />
+            {skill.parked ? "Unpark" : "Park"}
           </button>
         </div>
       </div>

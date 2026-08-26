@@ -48,6 +48,11 @@ pub fn run() {
             skills::skill_add::add_skill,
             skills::skill_trial::keep_skill_trial,
             skills::skill_trial::restore_trashed_skill,
+            // Park (disable globally) / per-harness disable / invocation policy
+            skills::skill_park::park_skill,
+            skills::skill_park::unpark_skill,
+            skills::skill_harness_disable::set_harness_enabled,
+            skills::skill_invocation::set_skill_invocation,
             // Background refresh / invocation snapshot
             skills::skill_refresh::get_skill_snapshot,
             skills::skill_refresh::request_skill_rescan,
