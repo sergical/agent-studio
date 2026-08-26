@@ -3,7 +3,8 @@
 // by kind with filter chips and a flat table
 // ============================================================================
 
-import { useMemo } from "react";
+import { useMemo, useState } from "react";
+import { checkSkillUpdatesNow } from "../../lib/skill-api";
 import {
   collectDashboardIssues,
   deploymentLabel,
@@ -41,6 +42,8 @@ function whatIsWrong(issue: HealthIssue): string {
         : issue.detail;
     case "never-invoked":
       return issue.detail;
+    case "update-available":
+      return issue.detail;
   }
 }
 
@@ -56,6 +59,17 @@ function issueLocation(issue: HealthIssue): string {
   return deployment ? deploymentLabel(deployment) : "—";
 }
 
+/** "Checked ..." / "Not checked yet" / a gh problem, for the header's status line. */
+function updateCheckStatus(snapshot: SkillSnapshot | undefined): string {
+  const updateCheck = snapshot?.update_check;
+  if (!updateCheck?.checked_at) return "Not checked yet";
+  if (updateCheck.gh_status === "missing") return "gh not found";
+  if (updateCheck.gh_status === "not-logged-in") {
+    return "gh not logged in — run gh auth login";
+  }
+  return `Checked ${formatRelativeTime(updateCheck.checked_at)}`;
+}
+
 /**
  * Full-page issues list: a subline count, filter chips per issue kind (deep
  * linkable from the dashboard's grouped summary via `issueKind`), and a flat
@@ -64,6 +78,7 @@ function issueLocation(issue: HealthIssue): string {
  */
 export function SkillIssuesView({ snapshot, issueKind, onSelectSkill }: SkillIssuesViewProps) {
   const setActiveView = useAppStore((state) => state.setActiveView);
+  const [isChecking, setIsChecking] = useState(false);
 
   const own = useMemo(() => ownSkillsView(snapshot?.skills ?? []), [snapshot]);
   const allIssues = useMemo(() => collectDashboardIssues(own), [own]);
@@ -74,6 +89,15 @@ export function SkillIssuesView({ snapshot, issueKind, onSelectSkill }: SkillIss
   const setKind = (kind: HealthIssueKind | undefined) =>
     setActiveView({ kind: "issues", issueKind: kind });
 
+  const handleCheckNow = async () => {
+    setIsChecking(true);
+    try {
+      await checkSkillUpdatesNow();
+    } finally {
+      setIsChecking(false);
+    }
+  };
+
   return (
     <div className="issues-view">
       <div className="issues-view-header">
@@ -81,6 +105,10 @@ export function SkillIssuesView({ snapshot, issueKind, onSelectSkill }: SkillIss
         <span className="issues-view-subline">
           {allIssues.length} issues across {affectedSkills} of your skills
         </span>
+        <span className="issues-view-update-status">{updateCheckStatus(snapshot)}</span>
+        <button className="issues-view-check-now" onClick={handleCheckNow} disabled={isChecking}>
+          {isChecking ? "Checking…" : "Check now"}
+        </button>
       </div>
 
       <div className="issues-view-chips">

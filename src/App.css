@@ -2077,6 +2077,18 @@ body {
 .skill-detail-last-test.failed {
   color: var(--color-warning);
 }
+.skill-detail-update-line {
+  margin: 0;
+  font-size: 12px;
+  color: var(--color-warning);
+}
+.skill-detail-icon-button.update {
+  color: var(--color-warning);
+}
+.skill-detail-icon-button.update:hover:not(:disabled) {
+  background: var(--color-warning-soft);
+  color: var(--color-warning);
+}
 .dashboard-section-row {
   display: grid;
   grid-template-columns: minmax(0, 3fr) minmax(0, 2fr);
@@ -2500,6 +2512,16 @@ body {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+.skill-list-table-update-chip {
+  display: inline-flex;
+  margin-left: 6px;
+  padding: 1px 6px;
+  font-size: 10px;
+  font-weight: 600;
+  border-radius: var(--radius-sm);
+  background: var(--color-warning-soft);
+  color: var(--color-warning);
 }
 .skill-list-table-chips {
   display: flex;
@@ -2998,6 +3020,28 @@ body {
 .issues-view-subline {
   font-size: 13px;
   color: var(--color-text-tertiary);
+}
+.issues-view-update-status {
+  margin-left: auto;
+  font-size: 12px;
+  color: var(--color-text-tertiary);
+}
+.issues-view-check-now {
+  min-height: 28px;
+  padding: 0 10px;
+  font-size: 12px;
+  color: var(--color-text-secondary);
+  background: var(--color-bg-tertiary);
+  border: none;
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+}
+.issues-view-check-now:hover:not(:disabled) {
+  background: var(--color-bg-hover);
+}
+.issues-view-check-now:disabled {
+  opacity: 0.6;
+  cursor: default;
 }
 .issues-view-chips {
   display: flex;

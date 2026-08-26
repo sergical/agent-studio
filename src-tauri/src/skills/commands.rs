@@ -11,12 +11,16 @@ use std::time::SystemTime;
 
 use super::agents::{AgentId, AgentTarget};
 use super::api;
+use super::dotagents_ledger::{self, DotagentsSkill};
 use super::lock_file;
 use super::project_discovery;
+use super::provenance::SourceKind;
 use super::skill_dto::{
     InstallRequest, InstallResult, InstalledSkill, PaginatedSkillsResponse, SkillSearchResult,
 };
 use super::skill_refresh::{self, SkillRefreshState};
+use super::skill_update_check;
+use tauri::Manager;
 
 /// Search for skills on skills.sh
 #[tauri::command]
@@ -139,6 +143,8 @@ mod tests {
                 installed_at: Utc::now().to_rfc3339(),
                 updated_at: None,
                 has_update: false,
+                update_commit: None,
+                update_commit_at: None,
                 source_kind: if plugin.is_some() {
                     SourceKind::Plugin
                 } else {
@@ -173,6 +179,7 @@ mod tests {
             heatmap: InvocationHeatmap::default(),
             scanned_at: Utc::now().to_rfc3339(),
             last_test_by_skill: Default::default(),
+            update_check: Default::default(),
         }
     }
 
@@ -303,6 +310,82 @@ mod tests {
         write_skill_md_compare_and_swap(&skill_md, "on disk now", "new content").unwrap();
         assert_eq!(std::fs::read_to_string(&skill_md).unwrap(), "new content");
     }
+
+    fn dotagents_skill(
+        name: &str,
+        declared_ref: Option<&str>,
+        has_manifest_row: bool,
+    ) -> DotagentsSkill {
+        DotagentsSkill {
+            name: name.to_string(),
+            source: format!("getsentry/{name}"),
+            github_repo: Some(format!("getsentry/{name}")),
+            path: format!("skills/{name}"),
+            installed_commit: Some("a".repeat(40)),
+            declared_ref: declared_ref.map(str::to_string),
+            has_manifest_row,
+        }
+    }
+
+    #[test]
+    fn dotagents_update_args_rejects_skill_with_no_ledger_entry() {
+        let err = dotagents_update_args("manual-in-shared-root", None, None).unwrap_err();
+        assert_eq!(
+            err,
+            "Update is not available: manual-in-shared-root is not in ~/.agents/agents.lock"
+        );
+    }
+
+    #[test]
+    fn dotagents_update_args_wildcard_entry_reinstalls() {
+        let entry = dotagents_skill("find-bugs", None, false);
+        let args = dotagents_update_args("find-bugs", Some(&entry), None).unwrap();
+        assert_eq!(args, vec!["-y", "@sentry/dotagents", "install"]);
+    }
+
+    #[test]
+    fn dotagents_update_args_named_unpinned_entry_uses_add_without_ref() {
+        let entry = dotagents_skill("find-bugs", None, true);
+        let args = dotagents_update_args("find-bugs", Some(&entry), None).unwrap();
+        assert_eq!(
+            args,
+            vec![
+                "-y",
+                "@sentry/dotagents",
+                "add",
+                "getsentry/find-bugs",
+                "--name",
+                "find-bugs"
+            ]
+        );
+    }
+
+    #[test]
+    fn dotagents_update_args_pinned_entry_needs_latest_commit() {
+        let entry = dotagents_skill("find-bugs", Some("aaaa"), true);
+        let err = dotagents_update_args("find-bugs", Some(&entry), None).unwrap_err();
+        assert!(err.contains("Check now"));
+    }
+
+    #[test]
+    fn dotagents_update_args_pinned_entry_re_pins_to_latest_commit() {
+        let entry = dotagents_skill("find-bugs", Some("aaaa"), true);
+        let latest = "b".repeat(40);
+        let args = dotagents_update_args("find-bugs", Some(&entry), Some(&latest)).unwrap();
+        assert_eq!(
+            args,
+            vec![
+                "-y",
+                "@sentry/dotagents",
+                "add",
+                "getsentry/find-bugs",
+                "--name",
+                "find-bugs",
+                "--ref",
+                &latest,
+            ]
+        );
+    }
 }
 
 /// List project directories discovered from Codex config and Claude Code
@@ -415,6 +498,8 @@ pub async fn install_skill(
             skill_name: result_name,
             installed_path: None,
             error: None,
+            tool: None,
+            command: None,
         })
     } else {
         Ok(InstallResult {
@@ -422,6 +507,8 @@ pub async fn install_skill(
             skill_name: request.skill_source.clone(),
             installed_path: None,
             error: Some(if stderr.is_empty() { stdout } else { stderr }),
+            tool: None,
+            command: None,
         })
     }
 }
@@ -492,6 +579,8 @@ pub async fn remove_skill(
             skill_name,
             installed_path: None,
             error: None,
+            tool: None,
+            command: None,
         })
     } else {
         Ok(InstallResult {
@@ -499,6 +588,8 @@ pub async fn remove_skill(
             skill_name,
             installed_path: None,
             error: Some(if stderr.is_empty() { stdout } else { stderr }),
+            tool: None,
+            command: None,
         })
     }
 }
@@ -752,32 +843,127 @@ pub fn open_skill_path(
     Ok(())
 }
 
-/// Update a skill using npx skills CLI
+/// Build the `npx @sentry/dotagents ...` args for updating one
+/// dotagents-managed skill, or the error `update_skill` should return
+/// instead of running anything. `entry` is this skill's row from
+/// `agents.lock` - `None` when the skill only *looks* dotagents-managed
+/// (it's under a shared root next to an `agents.lock`) but was actually
+/// dropped in manually, since `provenance::classify_source_kind` can't tell
+/// the two apart without the ledger. `latest_commit` is only consulted for a
+/// pinned (`declared_ref.is_some()`) entry.
+fn dotagents_update_args(
+    skill_name: &str,
+    entry: Option<&DotagentsSkill>,
+    latest_commit: Option<&str>,
+) -> Result<Vec<String>, String> {
+    let Some(entry) = entry else {
+        return Err(format!(
+            "Update is not available: {skill_name} is not in ~/.agents/agents.lock"
+        ));
+    };
+
+    if !entry.has_manifest_row {
+        // Wildcard (`--all`) entry: no per-skill row to re-pin, so re-run
+        // the whole sync.
+        return Ok(vec![
+            "-y".to_string(),
+            "@sentry/dotagents".to_string(),
+            "install".to_string(),
+        ]);
+    }
+
+    let mut args = vec![
+        "-y".to_string(),
+        "@sentry/dotagents".to_string(),
+        "add".to_string(),
+        entry.source.clone(),
+        "--name".to_string(),
+        skill_name.to_string(),
+    ];
+    if entry.declared_ref.is_some() {
+        match latest_commit {
+            Some(latest) => {
+                args.push("--ref".to_string());
+                args.push(latest.to_string());
+            }
+            None => {
+                return Err(format!(
+                    "Update is not available yet: run \"Check now\" to find {skill_name}'s latest commit first"
+                ));
+            }
+        }
+    }
+    Ok(args)
+}
+
+/// Update a skill, using whichever CLI owns it: `dotagents` for a
+/// dotagents-managed skill (`add` re-pins it to the latest commit; `install`
+/// re-runs the wildcard sync for a skill with no `[[skills]]` row), `npx
+/// skills update` for a skills.sh skill. Manual/plugin skills have no owning
+/// CLI to update through, so they're rejected up front.
 #[tauri::command]
 pub async fn update_skill(
     skill_name: String,
     global: bool,
     app: tauri::AppHandle,
     refresh_state: tauri::State<'_, SkillRefreshState>,
+    update_check_state: tauri::State<'_, skill_update_check::UpdateCheckState>,
 ) -> Result<InstallResult, String> {
-    let mut args = vec![
-        "skills".to_string(),
-        "update".to_string(),
-        skill_name.clone(),
-    ];
+    let home = dirs::home_dir().ok_or("Could not find home directory")?;
+    let snapshot = refresh_state.snapshot.read().ok().and_then(|g| g.clone());
+    let source_kind = snapshot
+        .as_ref()
+        .and_then(|s| s.skills.iter().find(|s| s.name == skill_name))
+        .map(|s| s.source_kind);
 
-    if global {
+    let (tool, mut args): (&str, Vec<String>) = match source_kind {
+        Some(SourceKind::Manual) | Some(SourceKind::Plugin) => {
+            return Err("Update is not available for manually installed skills".to_string());
+        }
+        Some(SourceKind::Dotagents) => {
+            let ledger = dotagents_ledger::read_dotagents_ledger(&home.join(".agents"))?;
+            let entry = ledger.iter().find(|s| s.name == skill_name);
+            let latest_commit = if entry.is_some_and(|e| e.declared_ref.is_some()) {
+                let app_data = app
+                    .path()
+                    .app_data_dir()
+                    .unwrap_or_else(|_| std::path::PathBuf::from("."));
+                skill_update_check::read_update_check_store(&app_data)
+                    .skills
+                    .get(&skill_name)
+                    .and_then(|state| state.latest_commit.clone())
+            } else {
+                None
+            };
+            let args = dotagents_update_args(&skill_name, entry, latest_commit.as_deref())?;
+            ("dotagents", args)
+        }
+        // SkillsSh, or a skill not found in the snapshot yet - fall back to
+        // the CLI that owns everything else.
+        _ => (
+            "skills-sh",
+            vec![
+                "skills".to_string(),
+                "update".to_string(),
+                skill_name.clone(),
+            ],
+        ),
+    };
+
+    if tool == "skills-sh" && global {
         args.push("--global".to_string());
     }
 
+    let npx_command = format!("npx {}", args.join(" "));
     let output = Command::new("npx")
         .args(&args)
         .output()
-        .map_err(|e| format!("Failed to execute npx skills: {}", e))?;
+        .map_err(|e| format!("Failed to execute npx: {}", e))?;
 
     let stderr = String::from_utf8_lossy(&output.stderr).to_string();
 
     if output.status.success() {
+        skill_update_check::check_now_for_skill(&app, &update_check_state, &skill_name);
         if let Err(e) = skill_refresh::rebuild_snapshot_now(&app, &refresh_state) {
             eprintln!("[update_skill] snapshot rebuild failed: {e}");
         }
@@ -786,6 +972,8 @@ pub async fn update_skill(
             skill_name,
             installed_path: None,
             error: None,
+            tool: Some(tool.to_string()),
+            command: Some(npx_command),
         })
     } else {
         Ok(InstallResult {
@@ -793,6 +981,8 @@ pub async fn update_skill(
             skill_name,
             installed_path: None,
             error: Some(stderr),
+            tool: Some(tool.to_string()),
+            command: Some(npx_command),
         })
     }
 }

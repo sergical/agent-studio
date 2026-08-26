@@ -107,6 +107,14 @@ pub struct InstalledSkill {
     pub installed_at: String,
     pub updated_at: Option<String>,
     pub has_update: bool,
+    /// The upstream commit `has_update` compares against, from the same
+    /// `skill_update_check` state - for the detail header's "Update
+    /// available · abc1234 · 3d ago" line. `None` unless `has_update`.
+    #[serde(default)]
+    pub update_commit: Option<String>,
+    /// The committer date of `update_commit`, for the same line.
+    #[serde(default)]
+    pub update_commit_at: Option<String>,
     /// How this skill was installed - see `provenance::SourceKind`.
     pub source_kind: SourceKind,
     /// Every place this skill was found deployed on disk, one entry per
@@ -183,6 +191,14 @@ pub struct InstallResult {
     pub skill_name: String,
     pub installed_path: Option<String>,
     pub error: Option<String>,
+    /// Which CLI `update_skill` ran, for a toast that names it - "dotagents"
+    /// or "skills-sh". `None` for install/remove results, which never set it.
+    #[serde(default)]
+    pub tool: Option<String>,
+    /// The exact argv `update_skill` ran, joined with spaces, for the same
+    /// toast.
+    #[serde(default)]
+    pub command: Option<String>,
 }
 
 /// Installation progress update

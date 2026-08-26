@@ -116,7 +116,10 @@ export function SkillListTable({
                 className={`skill-list-table-row ${skill.name === selectedSkillName ? "selected" : ""}`}
                 onClick={() => onSelectSkill(skill.name, deploymentPathForSkill?.(skill))}
               >
-                <span className="skill-list-table-name">{skill.name}</span>
+                <span className="skill-list-table-name">
+                  {skill.name}
+                  {skill.has_update && <span className="skill-list-table-update-chip">Update</span>}
+                </span>
                 <span className="skill-list-table-description">{skill.description ?? ""}</span>
                 <span className="skill-list-table-chips">
                   {skill.deployments.map((d, i) => {

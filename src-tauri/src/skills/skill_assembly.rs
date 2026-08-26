@@ -49,6 +49,8 @@ fn new_installed_skill(
         installed_at,
         updated_at,
         has_update: false,
+        update_commit: None,
+        update_commit_at: None,
         source_kind,
         deployments: Vec::new(),
         has_spec: false,

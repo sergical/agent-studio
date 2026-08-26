@@ -183,6 +183,10 @@ export interface InstalledSkill {
   installed_at: string;
   updated_at?: string;
   has_update: boolean;
+  /** The upstream commit `has_update` compares against, when `has_update` is true. */
+  update_commit?: string;
+  /** The committer date of `update_commit`. */
+  update_commit_at?: string;
   source_kind: SkillSourceKind;
   deployments: Deployment[];
   has_spec: boolean;
@@ -235,6 +239,10 @@ export interface InstallResult {
   skill_name: string;
   installed_path?: string;
   error?: string;
+  /** Which CLI `updateSkill` ran - "dotagents" or "skills-sh" - for a toast that names it. */
+  tool?: "dotagents" | "skills-sh";
+  /** The exact argv `updateSkill` ran, joined with spaces, for the same toast. */
+  command?: string;
 }
 
 // ============================================================================
@@ -323,4 +331,18 @@ export interface SkillSnapshot {
   scanned_at: string;
   /** The newest "Test" run outcome per skill name - see `skill-run-history-types.ts`. */
   last_test_by_skill: Record<string, import("./skill-run-history-types").SkillRunSummary>;
+  /** The latest background update-check result - see `skill_update_check.rs`. */
+  update_check: UpdateCheckSummary;
+}
+
+/**
+ * `SkillSnapshot.update_check` and `checkSkillUpdatesNow`'s return shape: a
+ * flattened view of the backend's update-check store, plus a ready-to-display
+ * count of skills with an update available.
+ */
+export interface UpdateCheckSummary {
+  checked_at: string | null;
+  gh_status: "ok" | "missing" | "not-logged-in" | "failed";
+  message: string | null;
+  updates_available: number;
 }

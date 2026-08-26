@@ -770,7 +770,10 @@ pub(crate) fn validate_run_id(run_id: &str) -> Result<(), String> {
 /// regular file. Pure and separated from `resolve_binary` so the many shapes
 /// a login shell can print before/around the real path (startup banners,
 /// aliases, shell functions) are unit-testable without a real shell.
-fn pick_executable_line(stdout: &str, is_executable: impl Fn(&Path) -> bool) -> Option<PathBuf> {
+pub(crate) fn pick_executable_line(
+    stdout: &str,
+    is_executable: impl Fn(&Path) -> bool,
+) -> Option<PathBuf> {
     let last = stdout
         .lines()
         .rev()
@@ -787,7 +790,7 @@ fn pick_executable_line(stdout: &str, is_executable: impl Fn(&Path) -> bool) -> 
     }
 }
 
-fn is_executable_file(path: &Path) -> bool {
+pub(crate) fn is_executable_file(path: &Path) -> bool {
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;

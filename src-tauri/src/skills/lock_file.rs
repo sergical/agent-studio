@@ -41,8 +41,13 @@ pub fn get_lock_file_path() -> Result<PathBuf, String> {
 
 /// Read and parse the skill lock file
 pub fn read_lock_file() -> Result<SkillLockFile, String> {
-    let lock_path = get_lock_file_path()?;
+    read_lock_file_at(&get_lock_file_path()?)
+}
 
+/// Read and parse the skill lock file at an explicit path, so callers that
+/// need a non-default home (tests, `skill_update_check`) don't have to go
+/// through `dirs::home_dir()`.
+pub fn read_lock_file_at(lock_path: &std::path::Path) -> Result<SkillLockFile, String> {
     if !lock_path.exists() {
         // Return empty lock file if it doesn't exist
         return Ok(SkillLockFile {
@@ -52,7 +57,7 @@ pub fn read_lock_file() -> Result<SkillLockFile, String> {
     }
 
     let content =
-        fs::read_to_string(&lock_path).map_err(|e| format!("Failed to read lock file: {}", e))?;
+        fs::read_to_string(lock_path).map_err(|e| format!("Failed to read lock file: {}", e))?;
 
     serde_json::from_str(&content).map_err(|e| format!("Failed to parse lock file: {}", e))
 }

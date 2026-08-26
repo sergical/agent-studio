@@ -85,6 +85,11 @@ export function formatRelativeTime(iso: string, now: Date = new Date()): string 
   return `${Math.floor(days / 365)}y ago`;
 }
 
+/** Formats a git commit sha as its short 7-character form, e.g. for "Update available · abc1234". */
+export function shortSha(sha: string): string {
+  return sha.slice(0, 7);
+}
+
 /** The usage window selectable on the dashboard and Activity page's "By skill" table. */
 export type UsageWindow = "24h" | "7d" | "14d" | "30d";
 

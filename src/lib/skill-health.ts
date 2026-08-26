@@ -15,7 +15,8 @@ export type HealthIssueKind =
   | "spec-violation"
   | "lock-only"
   | "never-invoked"
-  | "missing-from-agents";
+  | "missing-from-agents"
+  | "update-available";
 
 /** One flagged condition for one skill, with a short human-readable reason. */
 export interface HealthIssue {
@@ -29,6 +30,7 @@ export interface HealthIssue {
  * summary, the sidebar count, and the Issues view's filter chips.
  */
 export const HEALTH_ISSUE_KIND_ORDER: HealthIssueKind[] = [
+  "update-available",
   "duplicate",
   "broken-symlink",
   "spec-violation",
@@ -43,6 +45,7 @@ export const HEALTH_ISSUE_KIND_ORDER: HealthIssueKind[] = [
  * errors (something is missing); everything else is a warning.
  */
 export const HEALTH_ISSUE_SEVERITY = {
+  "update-available": "warning",
   duplicate: "warning",
   "broken-symlink": "error",
   "spec-violation": "warning",
@@ -53,6 +56,7 @@ export const HEALTH_ISSUE_SEVERITY = {
 
 /** Singular/plural copy for one issue kind, for chip and row labels. */
 export const HEALTH_ISSUE_KIND_LABEL = {
+  "update-available": { singular: "update available", plural: "updates available" },
   duplicate: { singular: "skill differs between copies", plural: "skills differ between copies" },
   "broken-symlink": { singular: "broken link", plural: "broken links" },
   "spec-violation": { singular: "skill with spec issues", plural: "skills with spec issues" },
@@ -244,14 +248,29 @@ export function findMissingFromAgents(skills: InstalledSkill[]): HealthIssue[] {
 }
 
 /**
- * Every dashboard-worthy issue across `skills`: duplicate, broken-symlink,
- * spec-violation, lock-only, and missing-from-agents. Deliberately excludes
- * never-invoked - it's noise, not something worth fixing for every skill.
- * Sorted by `HEALTH_ISSUE_KIND_ORDER` then skill name, so both the dashboard
- * and the Issues view show a stable order.
+ * Skills with a newer commit available upstream, per the background update
+ * check - see `skill_update_check.rs`.
+ */
+export function findUpdateAvailable(skills: InstalledSkill[]): HealthIssue[] {
+  return skills
+    .filter((skill) => skill.has_update)
+    .map((skill) => ({
+      kind: "update-available" as const,
+      skill,
+      detail: "A newer commit is available upstream",
+    }));
+}
+
+/**
+ * Every dashboard-worthy issue across `skills`: update-available, duplicate,
+ * broken-symlink, spec-violation, lock-only, and missing-from-agents.
+ * Deliberately excludes never-invoked - it's noise, not something worth
+ * fixing for every skill. Sorted by `HEALTH_ISSUE_KIND_ORDER` then skill
+ * name, so both the dashboard and the Issues view show a stable order.
  */
 export function collectDashboardIssues(skills: InstalledSkill[]): HealthIssue[] {
   const issues = [
+    ...findUpdateAvailable(skills),
     ...findDuplicateSkills(skills),
     ...findBrokenSymlinks(skills),
     ...findSpecViolations(skills),

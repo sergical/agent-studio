@@ -6,6 +6,7 @@
 pub mod agents;
 pub mod api;
 pub mod commands;
+pub mod dotagents_ledger;
 pub mod frontmatter;
 pub mod lock_file;
 pub mod plugins;
@@ -20,6 +21,7 @@ pub mod skill_invocations;
 pub mod skill_refresh;
 pub mod skill_run_history;
 pub mod skill_run_target;
+pub mod skill_update_check;
 
 pub use agents::*;
 pub use commands::*;

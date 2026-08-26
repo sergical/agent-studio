@@ -74,18 +74,36 @@ Parked skills are listed as disabled in the scanner.
 
 ## Local data sources Skill Studio reads
 
-| Purpose                         | Location                             | Shape                                                                                                 |
-| ------------------------------- | ------------------------------------ | ----------------------------------------------------------------------------------------------------- |
-| Installed-skill lock            | `~/.agents/.skill-lock.json`         | `{version, skills: {name: {source, sourceType, sourceUrl, skillFolderHash, installedAt, updatedAt}}}` |
-| Skill invocations (Claude Code) | `~/.claude/projects/*/*.jsonl`       | assistant `tool_use` with `"name":"Skill","input":{"skill":"<name>"}` + timestamp + `cwd`             |
-| Projects list (Codex)           | `~/.codex/config.toml`               | `[projects."/abs/path"]` sections                                                                     |
-| Projects list (Claude Code)     | `~/.claude/projects/<encoded-path>/` | `cwd` field inside the transcripts (dir name encoding is lossy)                                       |
-| skills.sh search                | `https://skills.sh/api/search?q=`    | `{skills: [{id, skillId, name, installs, source}]}` (`source`, not `topSource`)                       |
+| Purpose                         | Location                             | Shape                                                                                                                                                  |
+| ------------------------------- | ------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| Installed-skill lock            | `~/.agents/.skill-lock.json`         | `{version, skills: {name: {source, sourceType, sourceUrl, skillFolderHash, installedAt, updatedAt}}}`                                                  |
+| dotagents declared skills       | `~/.agents/agents.toml`              | `[[skills]]` rows: `{name, source, path, ref?}` - `ref` absent means unpinned; no `[[skills]]` row for a lock entry means a wildcard (`--all`) install |
+| dotagents resolved skills       | `~/.agents/agents.lock`              | `[skills.<name>]` tables: `{source, resolved_path, resolved_commit}` - the commit actually on disk                                                     |
+| Skill invocations (Claude Code) | `~/.claude/projects/*/*.jsonl`       | assistant `tool_use` with `"name":"Skill","input":{"skill":"<name>"}` + timestamp + `cwd`                                                              |
+| Projects list (Codex)           | `~/.codex/config.toml`               | `[projects."/abs/path"]` sections                                                                                                                      |
+| Projects list (Claude Code)     | `~/.claude/projects/<encoded-path>/` | `cwd` field inside the transcripts (dir name encoding is lossy)                                                                                        |
+| skills.sh search                | `https://skills.sh/api/search?q=`    | `{skills: [{id, skillId, name, installs, source}]}` (`source`, not `topSource`)                                                                        |
 
 Codex session logs mention every installed SKILL.md path on every turn (the skill
 list in the instructions), so they are **not** an invocation signal. OpenCode keeps
 sessions in `~/.local/share/opencode/opencode.db` (SQLite); pi in
 `~/.pi/agent/sessions/**/*.jsonl` (`toolCall` records with `cwd`).
+
+## Update check
+
+`src-tauri/src/skills/skill_update_check.rs` compares each global-scope,
+GitHub-backed skill's installed commit against the newest commit `gh api`
+reports for its path, on a 6-hour timer plus a manual "Check now" (Issues
+view). For a dotagents skill the installed commit comes straight from
+`agents.lock`; for a skills.sh skill it's the newest commit at or before the
+lock entry's `updatedAt` (cached until `updatedAt` changes, so a lock entry
+that hasn't moved never re-queries its baseline). Results persist at
+`<app data dir>/skill-studio/update-check.json` so a full snapshot rebuild can
+read them without shelling out. Access is read-only (`gh api repos/.../commits`)
+through the user's own `gh` CLI login; the app stores no tokens itself, and
+"Update" runs the tool that owns the skill (`npx @sentry/dotagents add|install`
+or `npx skills update`) rather than writing to `agents.toml`, `agents.lock`, or
+`.skill-lock.json` directly.
 
 ## Headless runs
 

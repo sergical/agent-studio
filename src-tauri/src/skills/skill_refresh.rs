@@ -31,6 +31,7 @@ use super::skill_invocations::{
     InvocationHeatmap, RefreshReport, SkillInvocationIndex, SkillInvocationStats,
 };
 use super::skill_run_history::{self, SkillRunSummary};
+use super::skill_update_check::{self, UpdateCheckSummary};
 
 /// Event emitted on the main window whenever the snapshot is (re)built.
 pub const SNAPSHOT_EVENT: &str = "skills://snapshot";
@@ -67,6 +68,9 @@ pub struct SkillSnapshot {
     /// invocations-only rebuild path, only refreshed on a full rebuild.
     #[serde(default)]
     pub last_test_by_skill: BTreeMap<String, SkillRunSummary>,
+    /// The latest background update-check result - see `skill_update_check`.
+    #[serde(default)]
+    pub update_check: UpdateCheckSummary,
 }
 
 /// One filesystem path the background watcher should track, and whether
@@ -112,6 +116,10 @@ pub struct SkillRefreshState {
     /// `<app data dir>/skill-studio/runs`, where `skill_run_history` persists
     /// records - read on every full rebuild to fill `last_test_by_skill`.
     runs_root: PathBuf,
+    /// `<app data dir>/skill-studio/update-check.json`, where
+    /// `skill_update_check` persists its result - read on every full rebuild
+    /// to fill `has_update`/`update_check`.
+    update_check_path: PathBuf,
 }
 
 impl SkillRefreshState {
@@ -213,6 +221,11 @@ pub fn init(app: &AppHandle) -> SkillRefreshState {
             .unwrap_or_else(|_| PathBuf::from("."))
             .join("skill-studio")
             .join("runs"),
+        update_check_path: skill_update_check::update_check_path(
+            &app.path()
+                .app_data_dir()
+                .unwrap_or_else(|_| PathBuf::from(".")),
+        ),
     };
 
     let app_handle = app.clone();
@@ -233,6 +246,15 @@ pub fn get_skill_snapshot(state: tauri::State<SkillRefreshState>) -> Option<Skil
 #[tauri::command]
 pub fn request_skill_rescan(state: tauri::State<SkillRefreshState>) {
     state.skills_dirty.store(true, Ordering::SeqCst);
+}
+
+/// Mark the next rebuild as full, from a caller (`skill_update_check`) that
+/// only has an `AppHandle`, not a `tauri::State`. A no-op before
+/// `SkillRefreshState` is managed (there's nothing to rebuild yet).
+pub fn request_snapshot_rebuild(app: &AppHandle) {
+    if let Some(state) = app.try_state::<SkillRefreshState>() {
+        state.skills_dirty.store(true, Ordering::SeqCst);
+    }
 }
 
 /// True when `path` is the same directory as `home` - the global scope, not
@@ -321,8 +343,11 @@ pub fn rebuild_snapshot_now(
         &extra_projects,
         &excluded_projects,
         &mut invocation_index,
-        &state.cache_path,
-        &state.runs_root,
+        BuildPaths {
+            cache_path: &state.cache_path,
+            runs_root: &state.runs_root,
+            update_check_path: &state.update_check_path,
+        },
         now,
     );
     drop(invocation_index);
@@ -612,6 +637,15 @@ fn reconcile_watchers(
     }
 }
 
+/// The on-disk paths `build_snapshot` reads from, grouped so the function
+/// doesn't need one parameter per file - all three come straight from
+/// `SkillRefreshState`.
+struct BuildPaths<'a> {
+    cache_path: &'a Path,
+    runs_root: &'a Path,
+    update_check_path: &'a Path,
+}
+
 /// Build a fresh snapshot from `home` plus `extra_projects`, refreshing the
 /// invocation index along the way. Pure aside from the filesystem reads, so
 /// it's the unit under test for "a caller-registered project's skills show
@@ -621,10 +655,14 @@ fn build_snapshot(
     extra_projects: &[PathBuf],
     excluded_projects: &BTreeSet<String>,
     invocation_index: &mut SkillInvocationIndex,
-    cache_path: &Path,
-    runs_root: &Path,
+    paths: BuildPaths,
     now: DateTime<Utc>,
 ) -> (SkillSnapshot, RefreshReport) {
+    let BuildPaths {
+        cache_path,
+        runs_root,
+        update_check_path,
+    } = paths;
     let mut project_paths: BTreeSet<PathBuf> = project_discovery::discover_skill_projects(home)
         .into_iter()
         .collect();
@@ -646,7 +684,25 @@ fn build_snapshot(
             skills: std::collections::HashMap::new(),
         }
     });
-    let skills = skill_assembly::assemble_installed_skills(candidates, &lock);
+    let mut skills = skill_assembly::assemble_installed_skills(candidates, &lock);
+
+    let update_store = skill_update_check::read_update_check_store_at(update_check_path);
+    for skill in &mut skills {
+        // The update ledger only covers the home-scoped `.agents` roots, so
+        // a project-only deployment of a same-named skill never gets flagged
+        // from this data - see the module doc for why that's out of scope.
+        let is_global = skill.deployments.iter().any(|d| d.scope == "global");
+        if is_global {
+            if let Some(state) = update_store.skills.get(&skill.name) {
+                skill.has_update = skill_update_check::has_update(state);
+                if skill.has_update {
+                    skill.update_commit = state.latest_commit.clone();
+                    skill.update_commit_at = state.latest_commit_at.clone();
+                }
+            }
+        }
+    }
+    let update_check = skill_update_check::summarize(&update_store);
 
     let report = invocation_index.refresh(&home.join(".claude/projects"));
     if let Err(e) = invocation_index.save(cache_path) {
@@ -668,6 +724,7 @@ fn build_snapshot(
         heatmap: invocation_index.heatmap_at(365, now),
         scanned_at: now.to_rfc3339(),
         last_test_by_skill,
+        update_check,
     };
     (snapshot, report)
 }
@@ -897,8 +954,11 @@ mod tests {
             std::slice::from_ref(&project),
             &BTreeSet::new(),
             &mut invocation_index,
-            &cache_path,
-            tmp.path(),
+            BuildPaths {
+                cache_path: &cache_path,
+                runs_root: tmp.path(),
+                update_check_path: &tmp.path().join("update-check.json"),
+            },
             Utc::now(),
         );
 
@@ -906,6 +966,64 @@ mod tests {
             .projects
             .contains(&project.to_string_lossy().to_string()));
         assert!(snapshot.skills.iter().any(|s| s.name == "foo"));
+    }
+
+    #[test]
+    fn build_snapshot_reads_update_check_store_at_the_production_path() {
+        // Regression test: `update_check_path` is already the full file
+        // path (`<app data>/skill-studio/update-check.json`), computed the
+        // same way `skill_refresh::init` computes it. Reading it through
+        // `read_update_check_store` (which joins that suffix again) would
+        // look under a nonexistent nested path and never see this seeded
+        // state.
+        let tmp = tempfile::tempdir().unwrap();
+        let home = tmp.path().join("home");
+        let app_data = tmp.path().join("app-data");
+        fs::create_dir_all(home.join(".claude/skills/foo")).unwrap();
+        fs::write(
+            home.join(".claude/skills/foo/SKILL.md"),
+            "---\nname: foo\ndescription: test\n---\nbody",
+        )
+        .unwrap();
+
+        let update_check_path = skill_update_check::update_check_path(&app_data);
+        fs::create_dir_all(update_check_path.parent().unwrap()).unwrap();
+        let store = serde_json::json!({
+            "checked_at": Utc::now().to_rfc3339(),
+            "gh_status": { "kind": "ok" },
+            "skills": {
+                "foo": {
+                    "repo": "someorg/foo",
+                    "path": "skills/foo",
+                    "installed_commit": "a".repeat(40),
+                    "latest_commit": "b".repeat(40),
+                    "latest_commit_at": Utc::now().to_rfc3339(),
+                    "checked_at": Utc::now().to_rfc3339(),
+                    "error": null,
+                    "lock_updated_at": null,
+                }
+            }
+        });
+        fs::write(&update_check_path, serde_json::to_string(&store).unwrap()).unwrap();
+
+        let mut invocation_index = SkillInvocationIndex::default();
+        let cache_path = tmp.path().join("cache.json");
+        let (snapshot, _report) = build_snapshot(
+            &home,
+            &[],
+            &BTreeSet::new(),
+            &mut invocation_index,
+            BuildPaths {
+                cache_path: &cache_path,
+                runs_root: tmp.path(),
+                update_check_path: &update_check_path,
+            },
+            Utc::now(),
+        );
+
+        let foo = snapshot.skills.iter().find(|s| s.name == "foo").unwrap();
+        assert!(foo.has_update);
+        assert_eq!(foo.update_commit.as_deref(), Some("b".repeat(40).as_str()));
     }
 
     #[test]
@@ -931,8 +1049,11 @@ mod tests {
             std::slice::from_ref(&project),
             &excluded,
             &mut invocation_index,
-            &cache_path,
-            tmp.path(),
+            BuildPaths {
+                cache_path: &cache_path,
+                runs_root: tmp.path(),
+                update_check_path: &tmp.path().join("update-check.json"),
+            },
             Utc::now(),
         );
 
@@ -961,8 +1082,11 @@ mod tests {
             std::slice::from_ref(&home),
             &BTreeSet::new(),
             &mut invocation_index,
-            &cache_path,
-            tmp.path(),
+            BuildPaths {
+                cache_path: &cache_path,
+                runs_root: tmp.path(),
+                update_check_path: &tmp.path().join("update-check.json"),
+            },
             Utc::now(),
         );
 
@@ -1010,6 +1134,8 @@ mod tests {
                 installed_at: Utc::now().to_rfc3339(),
                 updated_at: None,
                 has_update: false,
+                update_commit: None,
+                update_commit_at: None,
                 source_kind: SourceKind::Manual,
                 deployments: vec![Deployment {
                     agent: "Claude Code".to_string(),
@@ -1040,6 +1166,7 @@ mod tests {
             heatmap: InvocationHeatmap::default(),
             scanned_at: Utc::now().to_rfc3339(),
             last_test_by_skill: Default::default(),
+            update_check: Default::default(),
         }
     }
 
@@ -1070,6 +1197,7 @@ mod tests {
             last_built_hour: Arc::new(Mutex::new(None)),
             cache_path: PathBuf::from("/dev/null"),
             runs_root: PathBuf::from("/dev/null"),
+            update_check_path: PathBuf::from("/dev/null"),
         }
     }
 

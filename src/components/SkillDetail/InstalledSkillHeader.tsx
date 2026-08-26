@@ -17,7 +17,7 @@ import { deploymentLinkKind } from "../../lib/skill-coverage";
 import { openSkillPath } from "../../lib/skill-api";
 import { pluginLabelForSkill } from "../../lib/skill-plugin-partition";
 import type { SkillRunSummary } from "../../lib/skill-run-history-types";
-import { formatRelativeTime } from "../../lib/skill-stats";
+import { formatRelativeTime, shortSha } from "../../lib/skill-stats";
 import { SOURCE_KIND_LABELS } from "../../lib/skill-types";
 import type { InstalledSkill } from "../../lib/skill-types";
 import { useAppStore } from "../../store/appStore";
@@ -129,6 +129,14 @@ export function InstalledSkillHeader({
         >
           {lastTestLabel(lastTest)}
         </button>
+
+        {skill.has_update && (
+          <p className="skill-detail-update-line">
+            Update available
+            {skill.update_commit && ` · ${shortSha(skill.update_commit)}`}
+            {skill.update_commit_at && ` · ${formatRelativeTime(skill.update_commit_at)}`}
+          </p>
+        )}
 
         <div className="skill-detail-badge-row">
           <span className={`skill-detail-badge source-kind ${skill.source_kind}`}>

@@ -13,6 +13,7 @@ import type {
   PaginatedSkillsResponse,
   SkillSearchResult,
   SkillSnapshot,
+  UpdateCheckSummary,
 } from "./skill-types";
 
 // ============================================================================
@@ -123,10 +124,20 @@ export async function removeSkill(skillName: string, global: boolean): Promise<I
 }
 
 /**
- * Update a skill using npx skills CLI
+ * Update a skill through whichever CLI owns it (dotagents or skills.sh).
+ * `result.tool`/`result.command` say what actually ran.
  */
 export async function updateSkill(skillName: string, global: boolean): Promise<InstallResult> {
   return invoke("update_skill", { skillName, global });
+}
+
+/**
+ * Run the background update check now, blocking until it finishes. Also
+ * triggers a snapshot rebuild, so `onSkillSnapshot` fires with fresh
+ * `has_update`/`update_check` data shortly after this resolves.
+ */
+export async function checkSkillUpdatesNow(): Promise<UpdateCheckSummary> {
+  return invoke("check_skill_updates_now");
 }
 
 /**
