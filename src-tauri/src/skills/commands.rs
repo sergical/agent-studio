@@ -237,6 +237,7 @@ mod tests {
                     is_symlink: false,
                     plugin,
                     symlink_target: None,
+                    resolved_path: None,
                     symlink_is_broken: false,
                     symlink_error: None,
                     project_path: None,

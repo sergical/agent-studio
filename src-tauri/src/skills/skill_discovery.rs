@@ -327,6 +327,16 @@ fn build_candidate(
     // target for symlinks), then the entry path itself.
     let plugin = plugins::find_plugin_root(skill_dir, &root.label)
         .or_else(|| plugins::find_plugin_root(entry_path, &root.label));
+    // A symlinked entry's canonical target is already carried by
+    // `symlink_target`; `resolved_path` only covers the case where
+    // `entry_path` itself isn't a symlink but an ancestor is (e.g. a whole
+    // `.claude/skills` root linked to `.agents/skills`), where `skill_dir`
+    // already holds the canonical directory.
+    let resolved_path = if is_symlink {
+        None
+    } else {
+        fs::canonicalize(skill_dir).ok().filter(|c| c != entry_path)
+    };
 
     SkillCandidate {
         name,
@@ -336,6 +346,7 @@ fn build_candidate(
         project_path: root.project_path.clone(),
         is_symlink,
         symlink_target,
+        resolved_path,
         symlink_is_broken: false,
         symlink_error,
         plugin,
@@ -378,6 +389,7 @@ fn broken_symlink_candidate(
         project_path: root.project_path.clone(),
         is_symlink: true,
         symlink_target,
+        resolved_path: None,
         symlink_is_broken,
         symlink_error,
         plugin: None,
@@ -594,6 +606,7 @@ fn discover_with_facts_cache(
             project_path: None,
             is_symlink,
             symlink_target: None,
+            resolved_path: None,
             symlink_is_broken: false,
             symlink_error: None,
             plugin: Some(plugin_skill.plugin),
@@ -784,6 +797,33 @@ mod tests {
             .as_ref()
             .expect("plugin info set via canonical target");
         assert_eq!(plugin.name, "sentry-toolkit");
+    }
+
+    #[test]
+    fn linked_skill_root_yields_resolved_path_not_symlink() {
+        // `.claude/skills` itself is a symlink to `.agents/skills` (not one
+        // skill inside it), so a skill found by walking through it is a real
+        // directory - `is_symlink` is false - but its canonical path (via
+        // `.agents/skills`) differs from the path it was found at.
+        let tmp = tempfile::tempdir().unwrap();
+        let home = tmp.path();
+        let shared_skill = home.join(".agents/skills/foo");
+        write_skill(&shared_skill, "foo");
+        fs::create_dir_all(home.join(".claude")).unwrap();
+        #[cfg(unix)]
+        std::os::unix::fs::symlink(home.join(".agents/skills"), home.join(".claude/skills"))
+            .unwrap();
+
+        let candidates = discover_skill_candidates(home, &[]);
+        let found = candidates
+            .iter()
+            .find(|c| c.root_label == "Claude Code" && c.name == "foo")
+            .expect("skill reached through the linked root found");
+        assert!(!found.is_symlink);
+        assert_eq!(
+            found.resolved_path.as_deref(),
+            Some(fs::canonicalize(&shared_skill).unwrap().as_path())
+        );
     }
 
     #[test]

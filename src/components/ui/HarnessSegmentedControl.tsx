@@ -37,7 +37,7 @@ export function HarnessSegmentedControl({
   onSelect,
 }: HarnessSegmentedControlProps) {
   return (
-    <div className="harness-segmented-control">
+    <div className="segmented harness-segmented-control" role="group" aria-label="Harness">
       {HARNESS_LABELS.map(([agent, label]) => {
         const isVisible = visibleAgents.has(agent);
         return (
@@ -47,7 +47,7 @@ export function HarnessSegmentedControl({
             disabled={!onSelect}
             onClick={() => onSelect?.(agent)}
             aria-pressed={agent === selected}
-            className={`harness-segmented-control-item ${agent === selected ? "active" : ""} ${
+            className={`segmented-item harness-segmented-control-item ${agent === selected ? "active" : ""} ${
               isVisible ? "" : "unavailable"
             }`}
             title={isVisible ? undefined : `${label} doesn't see this skill`}

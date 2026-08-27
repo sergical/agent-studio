@@ -98,7 +98,7 @@ export function Sidebar({ snapshot, isLoading, requestRescan }: SidebarProps) {
           ref={searchInputRef}
           type="search"
           aria-label="Search skills"
-          className="skill-sidebar-search"
+          className="text-control"
           placeholder="Search skills…"
           value={skillListFilter.query}
           onChange={(e) => handleSearchChange(e.target.value)}

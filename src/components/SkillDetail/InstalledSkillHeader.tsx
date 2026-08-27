@@ -1,27 +1,58 @@
 // ============================================================================
-// InstalledSkillHeader - Name, description, badges, and the icon-button row
-// (reveal, open in editor, copy path, enable/disable)
+// InstalledSkillHeader - Row 1: back button, name, one primary action, and an
+// overflow menu holding every other action. Row 2: description. Row 3: the
+// chip row (provenance, parked, trial, update available, spec notes). Row 4:
+// a quiet tabular metadata line.
 // ============================================================================
 
-import { useState } from "react";
-import {
-  AlertTriangle,
-  Copy,
-  FolderOpen,
-  Link2,
-  PackageOpen,
-  TerminalSquare,
-  Unlink,
-} from "lucide-react";
-import { deploymentLinkKind } from "../../lib/skill-coverage";
-import { keepSkillTrial, openSkillPath, parkSkill, unparkSkill } from "../../lib/skill-api";
+import { ArrowLeft, AlertTriangle, MoreHorizontal } from "lucide-react";
+import { isBlockingSpecViolation } from "../../lib/skill-health";
 import { pluginLabelForSkill } from "../../lib/skill-plugin-partition";
 import type { SkillRunSummary } from "../../lib/skill-run-history-types";
-import { formatRelativeTime, shortSha } from "../../lib/skill-stats";
+import { formatBytes, formatRelativeTime, formatTokens } from "../../lib/skill-stats";
 import { SOURCE_KIND_LABELS, trialHoursLeft } from "../../lib/skill-types";
-import type { InstalledSkill } from "../../lib/skill-types";
-import { useAppStore } from "../../store/appStore";
-import { HarnessIcon, harnessIdFromLabel } from "../ui/HarnessIcon";
+import type { InstalledSkill, SkillInvocationStats } from "../../lib/skill-types";
+import type { ActiveView } from "../../store/appStore";
+import { MenuControl, MenuItem, MenuSeparator } from "../ui/MenuControl";
+import { useSkillPageActions } from "./skill-page-actions";
+
+interface InstalledSkillHeaderProps {
+  skill: InstalledSkill;
+  from: ActiveView;
+  onBack: () => void;
+  onRemoveComplete: () => void;
+  invocationStats: SkillInvocationStats | undefined;
+  /** The newest "Test" run recorded for this skill - `undefined` when it was never tested. */
+  lastTest?: SkillRunSummary;
+  /** Opens the "Runs" history list in the assistant panel. */
+  onOpenHistory: () => void;
+}
+
+/** The back button's label: the name of the view the page was opened from. */
+function backLabel(from: ActiveView): string {
+  switch (from.kind) {
+    case "home":
+      return "Home";
+    case "skills":
+      return "Skills";
+    case "activity":
+      return "Activity";
+    case "packs":
+      return "Packs";
+    default:
+      // `ActiveView`'s "skill" kind never nests as its own `from` (see `openSkill`).
+      return "Back";
+  }
+}
+
+/** "dotagents" / "skills.sh" / "plugin · openai-templates" / "manual" / "fork". */
+function provenanceChipLabel(skill: InstalledSkill): string {
+  if (skill.source_kind === "plugin") {
+    const pluginName = pluginLabelForSkill(skill);
+    return pluginName ? `plugin · ${pluginName}` : SOURCE_KIND_LABELS.plugin;
+  }
+  return SOURCE_KIND_LABELS[skill.source_kind];
+}
 
 /** "Parked · Aug 25, 2026" / "Parked" when the timestamp is missing or unparseable. */
 function parkedChipLabel(parkedAt: string | undefined): string {
@@ -39,244 +70,188 @@ function trialChipLabel(expiresAt: string): string {
   return `Trial · ${hours} h`;
 }
 
-interface InstalledSkillHeaderProps {
-  skill: InstalledSkill;
-  /** The newest "Test" run recorded for this skill - `undefined` when it was never tested. */
-  lastTest?: SkillRunSummary;
-  /** Opens the "Runs" history list in the assistant panel. */
-  onOpenHistory?: () => void;
+/** "12 Mar 2026" - the metadata line's absolute install date, `null` for an unparseable/missing date. */
+function absoluteDate(iso: string): string | null {
+  const date = new Date(iso);
+  if (Number.isNaN(date.getTime())) return null;
+  return date.toLocaleDateString(undefined, { day: "numeric", month: "short", year: "numeric" });
 }
 
-/** "Last test: passed 2 h ago on Codex" / "failed …" / "never tested". */
-function lastTestLabel(lastTest: SkillRunSummary | undefined): string {
-  if (!lastTest) return "Last test: never tested";
+/** "passed 2 h ago on Claude Code" / "failed 2 h ago on Codex" / "ran 2 h ago on pi". */
+function lastTestLabel(lastTest: SkillRunSummary): string {
   const outcome = lastTest.passed === undefined ? "ran" : lastTest.passed ? "passed" : "failed";
-  return `Last test: ${outcome} ${formatRelativeTime(lastTest.at)} on ${lastTest.harness}`;
-}
-
-/** "skills.sh" / "plugin: openai-templates" / ".agents" / "manual". */
-function sourceKindBadgeLabel(skill: InstalledSkill): string {
-  if (skill.source_kind === "plugin") {
-    const pluginName = pluginLabelForSkill(skill);
-    return pluginName ? `plugin: ${pluginName}` : SOURCE_KIND_LABELS.plugin;
-  }
-  return SOURCE_KIND_LABELS[skill.source_kind];
+  return `last test ${outcome} ${formatRelativeTime(lastTest.at)} on ${lastTest.harness}`;
 }
 
 /**
- * The link marker for one agent's chip: worst case across every deployment
- * under that agent label (broken beats linked-to-shared beats plain own; a
- * shared-root deployment already has its own "shared" chip, so it never
- * gets an extra marker here).
- */
-function chipLinkMarker(
-  skill: InstalledSkill,
-  agent: string,
-): "broken" | "linked-to-shared" | null {
-  const kinds = skill.deployments.filter((d) => d.agent === agent).map(deploymentLinkKind);
-  if (kinds.includes("broken")) return "broken";
-  if (kinds.includes("linked-to-shared")) return "linked-to-shared";
-  return null;
-}
-
-/**
- * Header: name, description, a badge row (source kind, agent chips, a
- * "Parked" chip, and a spec-violation warning when any), and an icon-button
- * row for the file actions every installed skill supports, including
- * park/unpark (disable globally - see `skill_park.rs`).
+ * The page header: back button and name with the one primary action and an
+ * overflow menu on the right (row 1); description (row 2); provenance/parked/
+ * trial/update/spec-notes chips, with blocking violations rendered as a
+ * warning line instead of a chip (row 3); a quiet tabular metadata line
+ * (row 4).
  */
 export function InstalledSkillHeader({
   skill,
+  from,
+  onBack,
+  onRemoveComplete,
+  invocationStats,
   lastTest,
   onOpenHistory,
 }: InstalledSkillHeaderProps) {
-  const [copied, setCopied] = useState(false);
-  const [isKeeping, setIsKeeping] = useState(false);
-  const [isParking, setIsParking] = useState(false);
-  const addToast = useAppStore((state) => state.addToast);
-  const path = skill.deployments[0]?.path ?? skill.skill_path;
-  const agents = [...new Set(skill.deployments.map((d) => d.agent))];
+  const actions = useSkillPageActions(skill, onRemoveComplete);
+  const blockingViolations = skill.spec_violations.filter(isBlockingSpecViolation);
+  const nonBlockingCount = skill.spec_violations.length - blockingViolations.length;
 
-  const handleTogglePark = async () => {
-    setIsParking(true);
-    try {
-      if (skill.parked) {
-        await unparkSkill(skill.name);
-        addToast({ type: "success", title: `Unparked ${skill.name}` });
-      } else {
-        await parkSkill(skill.name);
-        addToast({ type: "success", title: `Parked ${skill.name}` });
-      }
-    } catch (err) {
-      addToast({
-        type: "error",
-        title: skill.parked ? "Couldn't unpark skill" : "Couldn't park skill",
-        message: err instanceof Error ? err.message : "Unknown error",
-      });
-    } finally {
-      setIsParking(false);
-    }
-  };
-
-  const handleKeepTrial = async () => {
-    setIsKeeping(true);
-    try {
-      await keepSkillTrial(skill.name, skill.trial?.scope ?? "global", skill.trial?.project_path);
-      addToast({ type: "success", title: `Kept ${skill.name}` });
-    } catch (err) {
-      addToast({
-        type: "error",
-        title: "Couldn't keep skill",
-        message: err instanceof Error ? err.message : "Unknown error",
-      });
-    } finally {
-      setIsKeeping(false);
-    }
-  };
-
-  const handleReveal = async () => {
-    if (!path) return;
-    try {
-      await openSkillPath(path, "reveal");
-    } catch (err) {
-      addToast({
-        type: "error",
-        title: "Couldn't reveal in Finder",
-        message: err instanceof Error ? err.message : "Unknown error",
-      });
-    }
-  };
-
-  const handleOpenEditor = async () => {
-    if (!path) return;
-    try {
-      await openSkillPath(path, "editor");
-    } catch (err) {
-      addToast({
-        type: "error",
-        title: "Couldn't open in editor",
-        message: err instanceof Error ? err.message : "Unknown error",
-      });
-    }
-  };
-
-  const handleCopyPath = async () => {
-    if (!path) return;
-    await navigator.clipboard.writeText(path);
-    setCopied(true);
-    setTimeout(() => setCopied(false), 1500);
-  };
+  const modifiedRelative = skill.modified_at ? formatRelativeTime(skill.modified_at) : undefined;
+  const installedDate = absoluteDate(skill.installed_at);
+  const metaSegments = [
+    formatBytes(skill.folder_bytes),
+    `${formatTokens(skill.skill_md_tokens)} tokens`,
+    `${invocationStats?.last_30_days ?? 0} uses in 30 days`,
+    modifiedRelative && `edited ${modifiedRelative}`,
+    skill.source && skill.source !== "local" && `source ${skill.source}`,
+    installedDate && `installed ${installedDate}`,
+  ].filter((segment): segment is string => Boolean(segment));
 
   return (
-    <div className="skill-detail-header">
-      <div className="skill-detail-header-body">
-        <div className="skill-detail-title">
-          <h2>{skill.name}</h2>
-        </div>
-
-        {skill.description && <p className="skill-detail-description">{skill.description}</p>}
-
-        <button
-          type="button"
-          className={`skill-detail-last-test ${lastTest?.passed === false ? "failed" : ""}`}
-          onClick={onOpenHistory}
-          disabled={!onOpenHistory}
-        >
-          {lastTestLabel(lastTest)}
+    <div className="skill-page-header">
+      <div className="skill-page-header-row-1">
+        <button className="skill-page-back" onClick={onBack} aria-label="Back">
+          <ArrowLeft size={16} />
+          <span>{backLabel(from)}</span>
         </button>
-
-        {skill.source_kind === "fork" && skill.fork && (
-          <p className="skill-detail-fork-line">
-            Forked from {skill.fork.origin_source} · base {shortSha(skill.fork.base_commit)} ·{" "}
-            {formatRelativeTime(skill.fork.forked_at)}
-          </p>
-        )}
-
-        {skill.has_update && (
-          <p className="skill-detail-update-line">
-            {skill.source_kind === "fork" ? "Upstream moved" : "Update available"}
-            {skill.update_commit && ` · ${shortSha(skill.update_commit)}`}
-            {skill.update_commit_at && ` · ${formatRelativeTime(skill.update_commit_at)}`}
-          </p>
-        )}
-
-        <div className="skill-detail-badge-row">
-          <span className={`skill-detail-badge source-kind ${skill.source_kind}`}>
-            {sourceKindBadgeLabel(skill)}
-          </span>
-          {agents.map((agent) => {
-            const harnessId = harnessIdFromLabel(agent);
-            const linkMarker = chipLinkMarker(skill, agent);
-            return (
-              <span key={agent} className="skill-detail-agent-chip">
-                {harnessId && <HarnessIcon harness={harnessId} size={12} />}
-                {agent}
-                {linkMarker === "linked-to-shared" && (
-                  <span
-                    className="skill-detail-agent-chip-marker"
-                    title="Symlink to the shared folder"
-                  >
-                    <Link2 size={10} />
-                  </span>
-                )}
-                {linkMarker === "broken" && (
-                  <span className="skill-detail-agent-chip-marker broken" title="Broken link">
-                    <Unlink size={10} />
-                  </span>
-                )}
-              </span>
-            );
-          })}
-          {skill.spec_violations.length > 0 && (
-            <span
-              className="skill-detail-badge spec-violation"
-              title={skill.spec_violations.join("; ")}
+        <h1 className="skill-page-name">{skill.name}</h1>
+        <div className="skill-page-header-actions">
+          {actions.primaryAction && (
+            <button
+              type="button"
+              className="skill-action-button primary"
+              onClick={actions.primaryAction.run}
+              disabled={actions.primaryAction.busy}
             >
-              <AlertTriangle size={12} />
-              {skill.spec_violations.length} spec issue
-              {skill.spec_violations.length !== 1 ? "s" : ""}
-            </span>
+              {actions.primaryAction.busy ? "Working…" : actions.primaryAction.label}
+            </button>
           )}
-          {skill.parked && (
-            <span className="skill-detail-badge parked">{parkedChipLabel(skill.parked_at)}</span>
-          )}
-          {skill.trial && (
-            <span className="skill-detail-badge trial">
-              {trialChipLabel(skill.trial.expires_at)}
-              <button
-                type="button"
-                className="skill-detail-trial-keep"
-                onClick={handleKeepTrial}
-                disabled={isKeeping}
-              >
-                Keep
-              </button>
-            </span>
-          )}
-        </div>
-
-        <div className="skill-detail-icon-row">
-          <button className="skill-detail-icon-button" onClick={handleReveal} disabled={!path}>
-            <FolderOpen size={14} />
-            Reveal in Finder
-          </button>
-          <button className="skill-detail-icon-button" onClick={handleOpenEditor} disabled={!path}>
-            <TerminalSquare size={14} />
-            Open in editor
-          </button>
-          <button className="skill-detail-icon-button" onClick={handleCopyPath} disabled={!path}>
-            <Copy size={14} />
-            {copied ? "Copied!" : "Copy path"}
-          </button>
-          <button
-            className="skill-detail-icon-button"
-            onClick={handleTogglePark}
-            disabled={isParking}
+          <MenuControl
+            triggerClassName="skill-page-overflow-trigger"
+            triggerAriaLabel="More actions"
+            trigger={<MoreHorizontal size={16} />}
+            align="end"
           >
-            <PackageOpen size={14} />
-            {skill.parked ? "Unpark" : "Park"}
-          </button>
+            <MenuItem
+              closeOnClick
+              className="menu-control-item"
+              onClick={actions.reveal}
+              disabled={!actions.path}
+            >
+              Reveal in Finder
+            </MenuItem>
+            <MenuItem
+              closeOnClick
+              className="menu-control-item"
+              onClick={actions.openEditor}
+              disabled={!actions.path}
+            >
+              Open in editor
+            </MenuItem>
+            <MenuItem
+              closeOnClick
+              className="menu-control-item"
+              onClick={actions.copyPath}
+              disabled={!actions.path}
+            >
+              Copy path
+            </MenuItem>
+            <MenuSeparator className="menu-control-separator" />
+            <MenuItem
+              closeOnClick
+              className="menu-control-item"
+              onClick={actions.parkAction.run}
+              disabled={actions.parkAction.busy}
+            >
+              {actions.parkAction.label}
+            </MenuItem>
+            {actions.forkAction && (
+              <MenuItem
+                closeOnClick
+                className="menu-control-item"
+                onClick={actions.forkAction.run}
+                disabled={actions.forkAction.busy}
+              >
+                {actions.forkAction.label}
+              </MenuItem>
+            )}
+            {actions.removeAction && (
+              <>
+                <MenuSeparator className="menu-control-separator" />
+                <MenuItem
+                  closeOnClick
+                  className="menu-control-item"
+                  data-danger=""
+                  onClick={actions.removeAction.run}
+                  disabled={actions.removeAction.busy}
+                >
+                  Remove
+                </MenuItem>
+              </>
+            )}
+          </MenuControl>
         </div>
+      </div>
+
+      {skill.description && <p className="skill-page-description">{skill.description}</p>}
+
+      <div className="skill-page-chip-row">
+        <span className={`skill-page-chip provenance ${skill.source_kind}`}>
+          {provenanceChipLabel(skill)}
+        </span>
+        {skill.parked && (
+          <span className="skill-page-chip parked">{parkedChipLabel(skill.parked_at)}</span>
+        )}
+        {skill.trial && (
+          <span className="skill-page-chip trial">
+            {trialChipLabel(skill.trial.expires_at)}
+            <button
+              type="button"
+              className="skill-detail-trial-keep"
+              onClick={actions.keepTrial.run}
+              disabled={actions.keepTrial.busy}
+            >
+              Keep
+            </button>
+          </span>
+        )}
+        {skill.has_update && (
+          <span className="skill-page-chip update-available">Update available</span>
+        )}
+        {nonBlockingCount > 0 && (
+          <span
+            className="skill-page-chip spec-notes"
+            title={skill.spec_violations.filter((v) => !isBlockingSpecViolation(v)).join("; ")}
+          >
+            {nonBlockingCount} spec note{nonBlockingCount !== 1 ? "s" : ""}
+          </span>
+        )}
+      </div>
+
+      {blockingViolations.length > 0 && (
+        <div className="skill-page-blocking-warning">
+          <AlertTriangle size={13} />
+          <span>{blockingViolations.join("; ")}</span>
+        </div>
+      )}
+
+      <div className="skill-page-meta-line">
+        {metaSegments.join(" · ")}
+        {lastTest && (
+          <>
+            {metaSegments.length > 0 && " · "}
+            <button type="button" className="skill-page-meta-link" onClick={onOpenHistory}>
+              {lastTestLabel(lastTest)}
+            </button>
+          </>
+        )}
       </div>
     </div>
   );

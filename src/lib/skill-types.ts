@@ -188,6 +188,13 @@ export interface Deployment {
   symlink_error?: string;
   /** The project directory this deployment belongs to, for project-scoped deployments. */
   project_path?: string;
+  /**
+   * Canonical path of this deployment's directory when it differs from
+   * `path` - set when any ancestor is a symlink (e.g. a `.claude/skills`
+   * root linked to `.agents/skills`), so the frontend can tell "same folder
+   * through a linked root" from a separate copy.
+   */
+  resolved_path?: string;
   /** This deployment's own sha256 content hash, empty when unreadable. */
   content_hash: string;
   /** True when this deployment is disabled for its harness - see `DisabledBy`. */

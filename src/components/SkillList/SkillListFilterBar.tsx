@@ -4,42 +4,58 @@
 // the sidebar - see the design rule in spec-ux-1.md section C.
 // ============================================================================
 
-import { useEffect, useRef, useState } from "react";
-import type { KeyboardEvent } from "react";
 import { ChevronDown, X } from "lucide-react";
 import { ask } from "@tauri-apps/plugin-dialog";
-import { FIRST_CLASS_AGENTS } from "../../lib/skill-health";
+import { harnessesPresent } from "../../lib/home-summary";
 import {
   defaultSkillListFilter,
   isProjectScope,
   type SkillListFilter,
 } from "../../lib/skill-list-filter";
-import type { SkillSourceKind } from "../../lib/skill-types";
+import { shortProjectPath } from "../../lib/skill-path-format";
+import type { SkillSnapshot, SkillSourceKind } from "../../lib/skill-types";
 import { SOURCE_KIND_LABELS } from "../../lib/skill-types";
-import { useAppStore } from "../../store/appStore";
 import { HarnessIcon, harnessIdFromLabel } from "../ui/HarnessIcon";
+import {
+  MenuControl,
+  MenuItem,
+  MenuRadioGroup,
+  MenuRadioItem,
+  MenuSeparator,
+} from "../ui/MenuControl";
+import { SelectControl } from "../ui/SelectControl";
+import { SwitchControl } from "../ui/SwitchControl";
 
-const SOURCE_OPTIONS: SkillSourceKind[] = ["dotagents", "skills-sh", "plugin", "manual", "fork"];
+const SOURCE_KINDS: SkillSourceKind[] = ["dotagents", "skills-sh", "plugin", "manual", "fork"];
 
-/** The project menu's roving-focus items, in DOM order: each project's radio then its "Stop tracking" menuitem, then "Add project…". */
-const MENU_ITEM_SELECTOR = '[role="menuitem"], [role="menuitemradio"]';
+const SOURCE_OPTIONS: { value: string; label: string }[] = [
+  { value: "", label: "Any source" },
+  ...SOURCE_KINDS.map((source) => ({ value: source, label: SOURCE_KIND_LABELS[source] })),
+];
 
 interface SkillListFilterBarProps {
   filter: SkillListFilter;
   onChange: (filter: SkillListFilter) => void;
   projects: string[];
   onAddProject: () => void;
-  /** Stops tracking `path` - "Stop tracking" on each project menu row. */
+  /** Stops tracking `path` - "Stop tracking" on the project menu's row for the selected project. */
   onRemoveProject: (path: string) => void | Promise<void>;
   showCoverage: boolean;
   onToggleCoverage: (show: boolean) => void;
   resultCount: number;
+  /** For the harness chip row - only harnesses with at least one deployment in this snapshot are shown. */
+  snapshot: SkillSnapshot | undefined;
+}
+
+/** The project menu's basename label, e.g. "/Users/x/my-app" -> "my-app". */
+function basename(path: string): string {
+  return path.split("/").filter(Boolean).pop() ?? path;
 }
 
 /** The project scope button's label: the folder name of the selected project, else "Project". */
 function projectScopeLabel(filter: SkillListFilter): string {
   if (!isProjectScope(filter.scope)) return "Project";
-  return filter.scope.project.split("/").filter(Boolean).pop() ?? filter.scope.project;
+  return basename(filter.scope.project);
 }
 
 /** How many of `filter`'s optional fields are set - the chip row only shows once more than one is active. */
@@ -61,103 +77,9 @@ export function SkillListFilterBar({
   showCoverage,
   onToggleCoverage,
   resultCount,
+  snapshot,
 }: SkillListFilterBarProps) {
-  const [projectMenuOpen, setProjectMenuOpen] = useState(false);
-  const projectMenuRef = useRef<HTMLDivElement>(null);
-  const projectMenuPopupRef = useRef<HTMLDivElement>(null);
-  const projectMenuTriggerRef = useRef<HTMLButtonElement>(null);
-  const focusProjectMenuOnce = useAppStore((state) => state.focusProjectMenuOnce);
-  const clearFocusProjectMenuOnce = useAppStore((state) => state.clearFocusProjectMenuOnce);
-
-  // Home's "projects" link asks the trigger to take focus (not to open the
-  // menu) - a keyboard user then opens it themselves with Enter/Space/Down.
-  useEffect(() => {
-    if (!focusProjectMenuOnce) return;
-    projectMenuTriggerRef.current?.focus();
-    clearFocusProjectMenuOnce();
-  }, [focusProjectMenuOnce, clearFocusProjectMenuOnce]);
-
-  // ARIA menu pattern: opening focuses the checked project (or the first
-  // item) so arrow keys have somewhere to start from.
-  useEffect(() => {
-    if (!projectMenuOpen) return;
-    const items =
-      projectMenuPopupRef.current?.querySelectorAll<HTMLButtonElement>(MENU_ITEM_SELECTOR);
-    if (!items || items.length === 0) return;
-    const checkedIndex = [...items].findIndex(
-      (item) => item.getAttribute("aria-checked") === "true",
-    );
-    items[checkedIndex >= 0 ? checkedIndex : 0]?.focus();
-  }, [projectMenuOpen]);
-
-  useEffect(() => {
-    if (!projectMenuOpen) return;
-    function onPointerDown(e: MouseEvent) {
-      // SAFETY: `e.target` on a DOM event is always a `Node` (or `null`),
-      // never a non-DOM value - `Node.contains` accepts exactly that.
-      if (!projectMenuRef.current?.contains(e.target as Node)) setProjectMenuOpen(false);
-    }
-    document.addEventListener("mousedown", onPointerDown);
-    return () => document.removeEventListener("mousedown", onPointerDown);
-  }, [projectMenuOpen]);
-
-  function closeProjectMenu(returnFocus: boolean) {
-    setProjectMenuOpen(false);
-    if (returnFocus) projectMenuTriggerRef.current?.focus();
-  }
-
-  function focusMenuItemAt(index: number) {
-    const items =
-      projectMenuPopupRef.current?.querySelectorAll<HTMLButtonElement>(MENU_ITEM_SELECTOR);
-    if (!items || items.length === 0) return;
-    items[((index % items.length) + items.length) % items.length]?.focus();
-  }
-
-  function handleTriggerKeyDown(e: KeyboardEvent<HTMLButtonElement>) {
-    if (e.key === "Enter" || e.key === " " || e.key === "ArrowDown") {
-      e.preventDefault();
-      setProjectMenuOpen(true);
-    }
-  }
-
-  /**
-   * Roving focus across the flat item list: each project row contributes
-   * two items (its `menuitemradio` and a "Stop tracking" `menuitem`), then
-   * "Add project…" - ArrowUp/Down and Home/End move between all of them.
-   */
-  function handlePopupKeyDown(e: KeyboardEvent<HTMLDivElement>) {
-    const items =
-      projectMenuPopupRef.current?.querySelectorAll<HTMLButtonElement>(MENU_ITEM_SELECTOR);
-    const currentIndex = items
-      ? [...items].findIndex((item) => item === document.activeElement)
-      : -1;
-
-    switch (e.key) {
-      case "ArrowDown":
-        e.preventDefault();
-        focusMenuItemAt(currentIndex + 1);
-        break;
-      case "ArrowUp":
-        e.preventDefault();
-        focusMenuItemAt(currentIndex - 1);
-        break;
-      case "Home":
-        e.preventDefault();
-        focusMenuItemAt(0);
-        break;
-      case "End":
-        e.preventDefault();
-        focusMenuItemAt((items?.length ?? 1) - 1);
-        break;
-      case "Escape":
-        e.preventDefault();
-        closeProjectMenu(true);
-        break;
-      case "Tab":
-        closeProjectMenu(false);
-        break;
-    }
-  }
+  const harnesses = snapshot ? harnessesPresent(snapshot) : [];
 
   function setScope(scope: SkillListFilter["scope"]) {
     onChange({ ...filter, scope });
@@ -168,7 +90,7 @@ export function SkillListFilterBar({
   }
 
   async function handleStopTracking(path: string) {
-    const folder = path.split("/").filter(Boolean).pop() ?? path;
+    const folder = basename(path);
     const confirmed = await ask(`Stop tracking ${folder}? Skills stay on disk.`, {
       title: "Stop tracking project",
       kind: "warning",
@@ -178,137 +100,104 @@ export function SkillListFilterBar({
   }
 
   const activeCount = activeFilterCount(filter);
+  const selectedProject = isProjectScope(filter.scope) ? filter.scope.project : undefined;
 
   return (
     <div className="skill-list-filter-bar">
       <div className="skill-list-filter-row">
-        <div className="skill-list-filter-scope" role="group" aria-label="Scope">
+        <div className="segmented" role="group" aria-label="Scope">
           <button
-            className={`skill-list-filter-scope-item ${filter.scope === "all" ? "active" : ""}`}
+            className="segmented-item"
+            aria-pressed={filter.scope === "all"}
             onClick={() => setScope("all")}
           >
             All
           </button>
           <button
-            className={`skill-list-filter-scope-item ${filter.scope === "global" ? "active" : ""}`}
+            className="segmented-item"
+            aria-pressed={filter.scope === "global"}
             onClick={() => setScope("global")}
           >
             Global
           </button>
-          <div className="skill-list-filter-project-menu" ref={projectMenuRef}>
-            <button
-              ref={projectMenuTriggerRef}
-              className={`skill-list-filter-scope-item ${isProjectScope(filter.scope) ? "active" : ""}`}
-              aria-haspopup="menu"
-              aria-expanded={projectMenuOpen}
-              onClick={() => setProjectMenuOpen((open) => !open)}
-              onKeyDown={handleTriggerKeyDown}
-            >
-              {projectScopeLabel(filter)}
-              <ChevronDown size={12} />
-            </button>
-            {projectMenuOpen && (
-              <div
-                ref={projectMenuPopupRef}
-                className="skill-list-filter-project-menu-popup"
-                role="menu"
-                onKeyDown={handlePopupKeyDown}
-              >
-                {projects.length === 0 && (
-                  <p className="skill-list-filter-project-menu-empty">No projects tracked yet</p>
-                )}
-                {projects.map((path) => {
-                  const basename = path.split("/").filter(Boolean).pop() ?? path;
-                  const isSelected = isProjectScope(filter.scope) && filter.scope.project === path;
-                  return (
-                    <div key={path} className="skill-list-filter-project-menu-row">
-                      <button
-                        role="menuitemradio"
-                        aria-checked={isSelected}
-                        className="skill-list-filter-project-menu-item"
-                        title={path}
-                        onClick={() => {
-                          setScope({ project: path });
-                          closeProjectMenu(true);
-                        }}
-                      >
-                        {basename}
-                      </button>
-                      <button
-                        role="menuitem"
-                        className="skill-list-filter-project-menu-remove"
-                        aria-label={`Stop tracking ${basename}`}
-                        onClick={(e) => {
-                          e.stopPropagation();
-                          handleStopTracking(path);
-                        }}
-                      >
-                        <X size={13} />
-                      </button>
-                    </div>
-                  );
-                })}
-                <button
-                  role="menuitem"
-                  className="skill-list-filter-project-menu-item skill-list-filter-project-menu-add"
-                  onClick={() => {
-                    closeProjectMenu(true);
-                    onAddProject();
-                  }}
-                >
-                  Add project…
-                </button>
-              </div>
-            )}
-          </div>
-        </div>
-
-        <div className="skill-list-filter-harnesses" role="group" aria-label="Harness">
-          {FIRST_CLASS_AGENTS.map((harness) => {
-            const harnessId = harnessIdFromLabel(harness);
-            return (
-              <button
-                key={harness}
-                className={`skill-list-filter-chip ${filter.harness === harness ? "active" : ""}`}
-                onClick={() => toggleHarness(harness)}
-                aria-pressed={filter.harness === harness}
-              >
-                {harnessId && <HarnessIcon harness={harnessId} size={12} />}
-                {harness}
-              </button>
-            );
-          })}
-        </div>
-
-        <label className="skill-list-filter-source">
-          <span className="sr-only">Source</span>
-          <select
-            value={filter.source ?? ""}
-            onChange={(e) =>
-              onChange({
-                ...filter,
-                // SAFETY: the <select>'s options are "" or a SkillSourceKind literal.
-                source: (e.target.value || undefined) as SkillSourceKind | undefined,
-              })
+          <MenuControl
+            triggerClassName="segmented-item"
+            triggerAriaLabel="Project"
+            trigger={
+              <>
+                {projectScopeLabel(filter)}
+                <ChevronDown size={12} />
+              </>
             }
           >
-            <option value="">Any source</option>
-            {SOURCE_OPTIONS.map((source) => (
-              <option key={source} value={source}>
-                {SOURCE_KIND_LABELS[source]}
-              </option>
-            ))}
-          </select>
-        </label>
+            {projects.length === 0 && <p className="menu-control-empty">No projects tracked yet</p>}
+            <MenuRadioGroup
+              value={selectedProject ?? null}
+              onValueChange={(value) => {
+                // SAFETY: every MenuRadioItem in this group carries a string project path.
+                setScope({ project: value as string });
+              }}
+            >
+              {projects.map((path) => (
+                <MenuRadioItem key={path} value={path} closeOnClick className="menu-control-item">
+                  <span className="menu-control-item-text">{basename(path)}</span>
+                  <span className="menu-control-item-secondary">{shortProjectPath(path)}</span>
+                </MenuRadioItem>
+              ))}
+            </MenuRadioGroup>
+            {selectedProject && (
+              <>
+                <MenuSeparator className="menu-control-separator" />
+                <MenuItem
+                  closeOnClick
+                  className="menu-control-item"
+                  onClick={() => handleStopTracking(selectedProject)}
+                >
+                  Stop tracking {basename(selectedProject)}…
+                </MenuItem>
+              </>
+            )}
+            <MenuSeparator className="menu-control-separator" />
+            <MenuItem closeOnClick className="menu-control-item" onClick={onAddProject}>
+              Add project…
+            </MenuItem>
+          </MenuControl>
+        </div>
+
+        {harnesses.length > 1 && (
+          <div className="skill-list-filter-harnesses" role="group" aria-label="Harness">
+            {harnesses.map((harness) => {
+              const harnessId = harnessIdFromLabel(harness);
+              return (
+                <button
+                  key={harness}
+                  className={`skill-list-filter-chip ${filter.harness === harness ? "active" : ""}`}
+                  onClick={() => toggleHarness(harness)}
+                  aria-pressed={filter.harness === harness}
+                >
+                  {harnessId && <HarnessIcon harness={harnessId} size={12} />}
+                  {harness}
+                </button>
+              );
+            })}
+          </div>
+        )}
+
+        <SelectControl
+          value={filter.source ?? ""}
+          onValueChange={(value) => {
+            // SAFETY: `value` is one of SOURCE_OPTIONS' values - "" or a SkillSourceKind literal.
+            const source = (value || undefined) as SkillSourceKind | undefined;
+            onChange({ ...filter, source });
+          }}
+          items={SOURCE_OPTIONS}
+          ariaLabel="Source"
+        />
 
         <div className="skill-list-filter-spacer" />
 
-        <label className="skill-list-filter-coverage-toggle">
-          <input
-            type="checkbox"
-            checked={showCoverage}
-            onChange={(e) => onToggleCoverage(e.target.checked)}
-          />
+        <label className="switch-label">
+          <SwitchControl checked={showCoverage} onCheckedChange={onToggleCoverage} />
           Show coverage
         </label>
 

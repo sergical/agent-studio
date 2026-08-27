@@ -89,6 +89,7 @@ mod tests {
             project_path: None,
             is_symlink: false,
             symlink_target: None,
+            resolved_path: None,
             symlink_is_broken: false,
             symlink_error: None,
             plugin: None,

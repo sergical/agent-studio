@@ -200,8 +200,6 @@ function RecentlyUsedSection({
  */
 export function HomeView({ snapshot, isLoading, onSelectSkill }: HomeViewProps) {
   const setActiveView = useAppStore((state) => state.setActiveView);
-  const setShowCoverage = useAppStore((state) => state.setShowCoverage);
-  const requestFocusProjectMenu = useAppStore((state) => state.requestFocusProjectMenu);
 
   const own = useMemo(() => ownSkillsView(snapshot?.skills ?? []), [snapshot]);
   const issues = useMemo(() => collectDashboardIssues(own), [own]);
@@ -218,35 +216,18 @@ export function HomeView({ snapshot, isLoading, onSelectSkill }: HomeViewProps) 
   }
 
   const counts = homeSummaryCounts(snapshot);
-  const goToSkills = () => setActiveView({ kind: "skills" });
-  const goToHarnesses = () => {
-    setShowCoverage(true);
-    setActiveView({ kind: "skills" });
-  };
-  const goToProjects = () => {
-    requestFocusProjectMenu();
-    setActiveView({ kind: "skills" });
-  };
   const goToActivity = () => setActiveView({ kind: "activity" });
 
   return (
     <PageShell title="Home">
       <p className="home-summary count-tabular">
-        <button className="home-summary-link" onClick={goToSkills}>
-          {counts.skillCount} skill{counts.skillCount === 1 ? "" : "s"}
-        </button>
+        {counts.skillCount} skill{counts.skillCount === 1 ? "" : "s"}
         {" · "}
-        <button className="home-summary-link" onClick={goToHarnesses}>
-          {counts.harnessCount} harness{counts.harnessCount === 1 ? "" : "es"}
-        </button>
+        {counts.harnessCount} harness{counts.harnessCount === 1 ? "" : "es"}
         {" · "}
-        <button className="home-summary-link" onClick={goToProjects}>
-          {counts.projectCount} project{counts.projectCount === 1 ? "" : "s"}
-        </button>
+        {counts.projectCount} project{counts.projectCount === 1 ? "" : "s"}
         {" · "}
-        <button className="home-summary-link" onClick={goToActivity}>
-          {counts.usesIn30Days} use{counts.usesIn30Days === 1 ? "" : "s"} in 30 days
-        </button>
+        {counts.usesIn30Days} use{counts.usesIn30Days === 1 ? "" : "s"} in 30 days
       </p>
 
       {issues.length > 0 ? (

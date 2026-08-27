@@ -46,15 +46,25 @@
   --shadow-glow: 0 0 24px rgba(139, 92, 246, 0.2);
 
   /* Radius */
+  --radius-xs: 4px;
   --radius-sm: 6px;
   --radius-md: 10px;
   --radius-lg: 14px;
   --radius-xl: 20px;
 
+  /* Shared control sizing - see spec-ux-3a.md's design rules */
+  --control-height: 32px;
+
+  /* Text drawn on a solid --color-accent fill (checkbox tick, etc.) */
+  --color-text-on-accent: #ffffff;
+
   /* Z-index scale - small, so anything new only needs to pick a rung */
   --z-backdrop: 20;
   --z-drawer: 30;
-  --z-toast: 40;
+  --z-dropdown: 100;
+  --z-modal: 200;
+  --z-tooltip: 300;
+  --z-toast: 400;
 } /* Light theme overrides */
 :root[data-theme="light"] {
   --color-bg-primary: #ffffff;
@@ -139,6 +149,228 @@ body {
     transition-duration: 0.01ms !important;
     animation-duration: 0.01ms !important;
   }
+} /* ============================================================================
+   Shared controls (src/components/ui/) - SelectControl, MenuControl,
+   CheckboxControl, SwitchControl, TooltipControl, and the .text-control
+   class for native text inputs. Every control is --control-height tall with
+   the same border, radius, and padding - see spec-ux-3a.md's design rules.
+   ============================================================================ */
+.text-control {
+  height: var(--control-height);
+  padding: 0 12px;
+  font-size: 13px;
+  color: var(--color-text-primary);
+  background: var(--color-bg-primary);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-sm);
+  transition:
+    background-color 150ms,
+    border-color 150ms,
+    color 150ms;
+}
+.text-control::placeholder {
+  color: var(--color-text-quaternary);
+}
+.text-control:focus-visible {
+  border-color: var(--color-border-focus);
+}
+.select-control-trigger {
+  display: inline-flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 6px;
+  height: var(--control-height);
+  min-width: 0;
+  padding: 0 8px 0 12px;
+  font-size: 13px;
+  color: var(--color-text-secondary);
+  background: var(--color-bg-tertiary);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+  transition:
+    background-color 150ms,
+    border-color 150ms,
+    color 150ms;
+}
+.select-control-trigger:hover {
+  background: var(--color-bg-hover);
+  color: var(--color-text-primary);
+}
+.select-control-trigger[data-popup-open] {
+  color: var(--color-text-primary);
+}
+.select-control-trigger-value {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+.select-control-trigger-icon {
+  flex-shrink: 0;
+  color: var(--color-text-tertiary);
+}
+.select-control-popup,
+.menu-control-popup {
+  z-index: var(--z-dropdown);
+  min-width: var(--anchor-width);
+  padding: 4px;
+  background: var(--color-bg-secondary);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-md);
+  box-shadow: var(--shadow-md);
+}
+.select-control-item,
+.menu-control-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  height: var(--control-height);
+  padding: 0 10px;
+  font-size: 13px;
+  color: var(--color-text-secondary);
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+  transition: background-color 150ms;
+}
+.select-control-item[data-highlighted],
+.menu-control-item[data-highlighted] {
+  background: var(--color-bg-hover);
+  color: var(--color-text-primary);
+}
+.select-control-item[data-disabled],
+.menu-control-item[data-disabled] {
+  color: var(--color-text-quaternary);
+  cursor: not-allowed;
+}
+.menu-control-item[data-danger] {
+  color: var(--color-error);
+}
+.menu-control-item[data-danger][data-highlighted] {
+  background: var(--color-error-soft);
+  color: var(--color-error);
+}
+.select-control-item-text {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.select-control-item-indicator {
+  display: inline-flex;
+  color: var(--color-accent);
+}
+.menu-control-item-text {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.menu-control-item-secondary {
+  display: block;
+  font-size: 11px;
+  color: var(--color-text-tertiary);
+}
+/* A radio item with a secondary line (the project menu's folder name +
+   shortened path) grows past the default single-line row height. */
+.menu-control-item:has(.menu-control-item-secondary) {
+  height: auto;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 2px;
+  padding: 6px 10px;
+}
+.menu-control-separator {
+  height: 1px;
+  margin: 4px 2px;
+  background: var(--color-border-subtle);
+  border: none;
+}
+.menu-control-empty {
+  padding: 6px 10px;
+  font-size: 12px;
+  color: var(--color-text-quaternary);
+}
+.checkbox-control-root {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 16px;
+  height: 16px;
+  flex-shrink: 0;
+  background: var(--color-bg-tertiary);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-xs);
+  cursor: pointer;
+  transition:
+    background-color 150ms,
+    border-color 150ms;
+}
+.checkbox-control-root[data-checked],
+.checkbox-control-root[data-indeterminate] {
+  background: var(--color-accent);
+  border-color: var(--color-accent);
+}
+.checkbox-control-root[data-disabled] {
+  cursor: not-allowed;
+  opacity: 0.5;
+}
+.checkbox-control-indicator {
+  display: inline-flex;
+  color: var(--color-text-on-accent);
+}
+.switch-control-root {
+  display: inline-flex;
+  align-items: center;
+  width: 28px;
+  height: 16px;
+  padding: 2px;
+  background: var(--color-bg-tertiary);
+  border: 1px solid var(--color-border);
+  border-radius: 999px;
+  cursor: pointer;
+  transition: background-color 150ms;
+}
+.switch-control-root[data-checked] {
+  background: var(--color-accent);
+  border-color: var(--color-accent);
+}
+.switch-control-root[data-disabled] {
+  cursor: not-allowed;
+  opacity: 0.5;
+}
+.switch-control-thumb {
+  width: 12px;
+  height: 12px;
+  background: var(--color-text-on-accent);
+  border-radius: 50%;
+  transition: translate 150ms;
+}
+.switch-control-root[data-checked] .switch-control-thumb {
+  translate: 12px 0;
+}
+.switch-label {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  height: var(--control-height);
+  font-size: 12px;
+  color: var(--color-text-secondary);
+  cursor: pointer;
+}
+.tooltip-control-popup {
+  z-index: var(--z-tooltip);
+  max-width: 260px;
+  padding: 6px 10px;
+  font-size: 12px;
+  line-height: 1.4;
+  color: var(--color-text-primary);
+  background: var(--color-bg-elevated);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-sm);
+  box-shadow: var(--shadow-md);
 } /* Section labels - uppercase, loosened tracking, used for every section
      title on the dashboard, scope views, drawer, and sidebar groups */
 .section-label {
@@ -405,46 +637,34 @@ body {
   flex-direction: column;
 } /* Search Bar */
 .skill-search-bar {
+  position: relative;
   display: flex;
   align-items: center;
-  gap: 10px;
   flex: 1;
   max-width: 400px;
-  padding: 10px 14px;
-  background: var(--color-bg-secondary);
-  border: 1px solid var(--color-border);
-  border-radius: var(--radius-md);
-  transition:
-    border-color 0.15s,
-    box-shadow 0.15s;
-}
-.skill-search-bar:focus-within {
-  border-color: var(--color-accent);
-  box-shadow: 0 0 0 3px var(--color-accent-softer);
 }
 .skill-search-icon {
+  position: absolute;
+  left: 12px;
   color: var(--color-text-tertiary);
   display: flex;
   align-items: center;
+  pointer-events: none;
 }
 .skill-search-spinner {
   animation: spin 1s linear infinite;
 }
 .skill-search-input {
-  flex: 1;
-  background: transparent;
-  border: none;
-  font-size: 13px;
-  color: var(--color-text-primary);
-}
-.skill-search-input:focus-visible {
-  outline: 2px solid var(--color-border-focus);
-  outline-offset: 2px;
+  width: 100%;
+  padding-left: 34px;
+  padding-right: 34px;
 }
 .skill-search-input::placeholder {
   color: var(--color-text-tertiary);
 }
 .skill-search-clear {
+  position: absolute;
+  right: 8px;
   display: flex;
   align-items: center;
   justify-content: center;
@@ -707,16 +927,21 @@ body {
    Skill Page - full-page installed-skill view (replaces the old drawer)
    ============================================================================ */
 .skill-page {
-  max-width: 1100px;
+  max-width: 1200px;
   margin: 0 auto;
   padding: 28px 32px;
   display: flex;
   flex-direction: column;
-  gap: 20px;
+  gap: 24px;
 }
-.skill-page-header-row {
+.skill-page-header {
   display: flex;
-  align-items: flex-start;
+  flex-direction: column;
+  gap: 8px;
+}
+.skill-page-header-row-1 {
+  display: flex;
+  align-items: center;
   gap: 16px;
 }
 .skill-page-back {
@@ -735,13 +960,92 @@ body {
 .skill-page-back:hover {
   color: var(--color-text-primary);
 }
+.skill-page-name {
+  flex: 1;
+  min-width: 0;
+  font-size: 20px;
+  font-weight: 600;
+  color: var(--color-text-primary);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.skill-page-header-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-shrink: 0;
+}
+.skill-page-overflow-trigger {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: var(--control-height);
+  height: var(--control-height);
+  color: var(--color-text-secondary);
+  background: transparent;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+  transition:
+    background-color 150ms,
+    color 150ms;
+}
+.skill-page-overflow-trigger:hover {
+  color: var(--color-text-primary);
+  background: var(--color-bg-tertiary);
+}
+.skill-page-description {
+  font-size: 13px;
+  color: var(--color-text-secondary);
+  line-height: 1.5;
+}
+.skill-page-chip-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+}
+.skill-page-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 2px 8px;
+  font-size: 11px;
+  color: var(--color-text-tertiary);
+  background: var(--color-bg-tertiary);
+  border-radius: 999px;
+}
+.skill-page-chip.parked {
+  color: var(--color-warning);
+}
+.skill-page-chip.trial {
+  color: var(--color-accent);
+}
+.skill-page-chip.update-available {
+  color: var(--color-accent);
+}
+.skill-page-chip.spec-notes {
+  cursor: default;
+}
+.skill-page-blocking-warning {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  color: var(--color-error);
+}
+.skill-page-meta-line {
+  font-size: 11px;
+  color: var(--color-text-quaternary);
+}
 .skill-page-grid {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) 360px;
+  grid-template-columns: minmax(0, 1fr) 340px;
   gap: 32px;
   align-items: start;
 }
-@media (max-width: 900px) {
+@media (max-width: 1000px) {
   .skill-page-grid {
     grid-template-columns: minmax(0, 1fr);
   }
@@ -749,6 +1053,7 @@ body {
 .skill-page-column-main {
   display: flex;
   flex-direction: column;
+  gap: 24px;
   min-width: 0;
 }
 .skill-page-column-side {
@@ -758,6 +1063,118 @@ body {
 }
 .skill-page-not-found {
   font-size: 13px;
+  color: var(--color-text-tertiary);
+}
+.skill-locations-list {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.skill-locations-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 12px;
+  min-height: 44px;
+  padding: 6px 0;
+  border-bottom: 1px solid var(--color-border-subtle);
+}
+.skill-locations-row:last-child {
+  border-bottom: none;
+}
+.skill-locations-row-main {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  font-size: 13px;
+  color: var(--color-text-primary);
+}
+.skill-locations-row-name {
+  flex-shrink: 0;
+}
+.skill-locations-row-relation {
+  display: inline-block;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 12px;
+  color: var(--color-text-tertiary);
+}
+.skill-locations-row-relation.broken {
+  color: var(--color-error);
+}
+.skill-locations-row-relation svg {
+  vertical-align: -1px;
+  margin-right: 4px;
+}
+.skill-locations-row-path {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 12px;
+  font-family: var(--font-mono);
+  color: var(--color-text-tertiary);
+  /* Truncate from the start so the meaningful tail of the path (the skill's
+     own directory) stays visible instead of the shared `~/…` prefix. */
+  direction: rtl;
+  text-align: left;
+}
+.skill-locations-row-path > span {
+  unicode-bidi: isolate;
+}
+.skill-locations-row-project {
+  flex-shrink: 0;
+  font-size: 12px;
+  color: var(--color-text-tertiary);
+}
+.skill-locations-row-controls {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex-shrink: 0;
+}
+.skill-locations-row-reveal {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  color: var(--color-text-tertiary);
+  background: transparent;
+  border: none;
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+  transition:
+    color 150ms,
+    background-color 150ms;
+}
+.skill-locations-row-reveal:hover {
+  color: var(--color-text-primary);
+  background: var(--color-bg-tertiary);
+}
+.skill-locations-footer {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin-top: 12px;
+  padding-top: 12px;
+  border-top: 1px solid var(--color-border-subtle);
+}
+.skill-locations-footer-label {
+  font-size: 11px;
+  font-weight: 500;
+  color: var(--color-text-tertiary);
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+}
+.skill-locations-footer-explanation {
+  font-size: 12px;
+  color: var(--color-text-tertiary);
+}
+.skill-locations-allowed-tools {
+  font-size: 12px;
   color: var(--color-text-tertiary);
 } /* Skill Detail Overlay - still used by the Discover tab's own detail panel */
 .skill-detail-overlay {
@@ -797,12 +1214,6 @@ body {
   padding: 20px;
   border-bottom: 1px solid var(--color-border);
 }
-.skill-detail-header-body {
-  display: flex;
-  flex-direction: column;
-  gap: 10px;
-  width: 100%;
-}
 .skill-detail-title {
   display: flex;
   align-items: flex-start;
@@ -815,65 +1226,6 @@ body {
   color: var(--color-text-primary);
   margin: 0;
   word-break: break-word;
-}
-.skill-detail-badge-row {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: 6px;
-}
-.skill-detail-agent-chip {
-  display: inline-flex;
-  align-items: center;
-  gap: 4px;
-  font-size: 11px;
-  letter-spacing: 0.02em;
-  color: var(--color-text-secondary);
-  background: var(--color-bg-tertiary);
-  border-radius: var(--radius-sm);
-  padding: 2px 6px;
-}
-.skill-detail-agent-chip-marker {
-  color: var(--color-text-tertiary);
-}
-.skill-detail-agent-chip-marker.broken {
-  color: var(--color-error);
-}
-.skill-detail-icon-row {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 6px;
-}
-.skill-detail-icon-button {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  padding: 6px 10px;
-  font-size: 12px;
-  color: var(--color-text-secondary);
-  background: var(--color-bg-tertiary);
-  border: none;
-  border-radius: var(--radius-sm);
-  cursor: pointer;
-  transition:
-    background-color 0.12s,
-    color 0.12s;
-}
-.skill-detail-icon-button:hover:not(:disabled) {
-  background: var(--color-bg-hover);
-  color: var(--color-text-primary);
-}
-.skill-detail-icon-button:disabled {
-  opacity: 0.4;
-  cursor: not-allowed;
-}
-.skill-detail-stats-line {
-  padding: 10px 20px;
-  font-family: var(--font-mono);
-  font-size: 11px;
-  letter-spacing: 0.02em;
-  color: var(--color-text-tertiary);
-  border-bottom: 1px solid var(--color-border);
 }
 .skill-detail-badge {
   display: inline-flex;
@@ -1357,7 +1709,7 @@ body {
   display: flex;
   align-items: center;
   justify-content: center;
-  z-index: 100;
+  z-index: var(--z-modal);
 }
 .install-progress-modal {
   width: 400px;
@@ -1460,6 +1812,14 @@ body {
   flex-direction: column;
   gap: 1px;
 }
+/* The first section holds the search input, flush against the top of
+   `.skill-sidebar`'s scroll container - without top padding its
+   :focus-visible ring gets clipped by `overflow-y: auto`. Verified against
+   the rendered layout: the input's outline (2px + 2px offset) needs 4px of
+   clearance above it; 12px matches the section's own horizontal padding. */
+.skill-sidebar-section:first-of-type {
+  padding-top: 12px;
+}
 .skill-sidebar-section .section-label {
   margin: 20px 10px 6px;
 }
@@ -1511,23 +1871,6 @@ body {
 .skill-sidebar-badge {
   font-size: 11px;
   text-align: right;
-}
-.skill-sidebar-search {
-  height: 32px;
-  padding: 0 10px;
-  font-size: 13px;
-  color: var(--color-text-primary);
-  background: var(--color-bg-primary);
-  border: 1px solid var(--color-border);
-  border-radius: var(--radius-sm);
-  transition: border-color 0.15s;
-}
-.skill-sidebar-search::placeholder {
-  color: var(--color-text-quaternary);
-}
-.skill-sidebar-search:focus-visible {
-  outline: 2px solid var(--color-border-focus);
-  outline-offset: 2px;
 }
 .skill-sidebar-add-skill {
   display: flex;
@@ -1584,24 +1927,11 @@ body {
   justify-content: center;
   height: 100%;
   color: var(--color-text-tertiary);
-} /* Summary line - one line of plain text, each number a link-styled button */
+} /* Summary line - one line of plain text, no links */
 .home-summary {
   margin: 0;
   font-size: 13px;
   color: var(--color-text-secondary);
-}
-.home-summary-link {
-  padding: 0;
-  background: none;
-  border: none;
-  font: inherit;
-  font-variant-numeric: tabular-nums;
-  color: var(--color-text-secondary);
-  cursor: pointer;
-  transition: color 0.15s;
-}
-.home-summary-link:hover {
-  color: var(--color-accent);
 } /* One shared card style for every Home block: Needs attention, Updates, Recently used */
 .home-block {
   display: flex;
@@ -1876,115 +2206,43 @@ body {
   align-items: center;
   gap: 10px;
 }
-.skill-list-filter-scope {
+/* Scope: a role="group" segmented control - corner-radius on the first/last
+   child rather than overflow:hidden, so a focus ring on an inner button
+   isn't clipped. */
+.segmented {
   display: flex;
-  border: 1px solid var(--color-border);
-  border-radius: var(--radius-sm);
-  overflow: hidden;
 }
-.skill-list-filter-scope-item {
+.segmented-item {
   display: inline-flex;
   align-items: center;
   gap: 4px;
-  height: 32px;
+  height: var(--control-height);
   padding: 0 12px;
-  font-size: 12px;
+  font-size: 13px;
   color: var(--color-text-tertiary);
   background: transparent;
-  border: none;
+  border: 1px solid var(--color-border);
+  border-left: none;
   cursor: pointer;
   transition:
     background-color 0.15s,
+    border-color 0.15s,
     color 0.15s;
 }
-.skill-list-filter-scope-item:not(:first-child) {
+.segmented-item:first-child {
   border-left: 1px solid var(--color-border);
+  border-radius: var(--radius-sm) 0 0 var(--radius-sm);
 }
-.skill-list-filter-scope-item:hover {
+.segmented-item:last-child {
+  border-radius: 0 var(--radius-sm) var(--radius-sm) 0;
+}
+.segmented-item:hover {
   background: var(--color-bg-hover);
   color: var(--color-text-secondary);
 }
-.skill-list-filter-scope-item.active {
+.segmented-item[aria-pressed="true"] {
   background: var(--color-bg-tertiary);
   color: var(--color-text-primary);
-}
-.skill-list-filter-project-menu {
-  position: relative;
-}
-.skill-list-filter-project-menu-popup {
-  position: absolute;
-  top: calc(100% + 4px);
-  left: 0;
-  z-index: 20;
-  display: flex;
-  flex-direction: column;
-  min-width: 200px;
-  padding: 4px;
-  background: var(--color-bg-secondary);
-  border: 1px solid var(--color-border);
-  border-radius: var(--radius-md);
-  box-shadow: var(--shadow-md);
-}
-.skill-list-filter-project-menu-empty {
-  padding: 6px 10px;
-  font-size: 12px;
-  color: var(--color-text-quaternary);
-}
-.skill-list-filter-project-menu-row {
-  display: flex;
-  align-items: center;
-}
-.skill-list-filter-project-menu-item {
-  flex: 1;
-  min-width: 0;
-  height: 32px;
-  padding: 0 10px;
-  font-size: 12px;
-  color: var(--color-text-secondary);
-  background: transparent;
-  border: none;
-  border-radius: var(--radius-sm);
-  cursor: pointer;
-  text-align: left;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  transition: background-color 0.15s;
-}
-.skill-list-filter-project-menu-item:hover {
-  background: var(--color-bg-hover);
-  color: var(--color-text-primary);
-}
-.skill-list-filter-project-menu-remove {
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  flex-shrink: 0;
-  width: 32px;
-  height: 32px;
-  color: var(--color-text-tertiary);
-  background: transparent;
-  border: none;
-  border-radius: var(--radius-sm);
-  cursor: pointer;
-  opacity: 0;
-  transition:
-    opacity 0.15s,
-    background-color 0.15s,
-    color 0.15s;
-}
-.skill-list-filter-project-menu-row:hover .skill-list-filter-project-menu-remove,
-.skill-list-filter-project-menu-row:focus-within .skill-list-filter-project-menu-remove {
-  opacity: 1;
-}
-.skill-list-filter-project-menu-remove:hover {
-  background: var(--color-error-soft);
-  color: var(--color-error);
-}
-.skill-list-filter-project-menu-add {
-  color: var(--color-accent);
-  border-top: 1px solid var(--color-border-subtle);
-  margin-top: 2px;
 }
 .skill-list-filter-harnesses {
   display: flex;
@@ -2015,27 +2273,8 @@ body {
   color: var(--color-text-primary);
   border-color: var(--color-text-tertiary);
 }
-.skill-list-filter-source select {
-  height: 32px;
-  padding: 0 10px;
-  font-size: 12px;
-  color: var(--color-text-secondary);
-  background: var(--color-bg-tertiary);
-  border: 1px solid var(--color-border);
-  border-radius: var(--radius-sm);
-  cursor: pointer;
-}
 .skill-list-filter-spacer {
   flex: 1;
-}
-.skill-list-filter-coverage-toggle {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  height: 32px;
-  font-size: 12px;
-  color: var(--color-text-secondary);
-  cursor: pointer;
 }
 .skill-list-filter-count {
   font-size: 12px;
@@ -2538,41 +2777,19 @@ body {
 .skill-run-history-row-outcome.fail {
   color: var(--color-error);
 }
-/* Skill page header: "Last test: ..." line */
-.skill-detail-last-test {
-  align-self: flex-start;
+/* Skill page header meta line: the "last test ..." segment, a link back to Runs history */
+.skill-page-meta-link {
   background: transparent;
   border: none;
   padding: 0;
+  font: inherit;
   font-size: 12px;
   color: var(--color-text-tertiary);
   cursor: pointer;
 }
-.skill-detail-last-test:hover:not(:disabled) {
+.skill-page-meta-link:hover {
   color: var(--color-text-secondary);
-}
-.skill-detail-last-test:disabled {
-  cursor: default;
-}
-.skill-detail-last-test.failed {
-  color: var(--color-warning);
-}
-.skill-detail-update-line {
-  margin: 0;
-  font-size: 12px;
-  color: var(--color-warning);
-}
-.skill-detail-fork-line {
-  margin: 0;
-  font-size: 12px;
-  color: var(--color-text-secondary);
-}
-.skill-detail-icon-button.update {
-  color: var(--color-warning);
-}
-.skill-detail-icon-button.update:hover:not(:disabled) {
-  background: var(--color-warning-soft);
-  color: var(--color-warning);
+  text-decoration: underline;
 }
 /* Home's Updates block - one row per skill with a newer commit available */
 .home-updates {
@@ -2704,36 +2921,39 @@ body {
   gap: 8px;
 }
 .skill-list-table-search {
+  position: relative;
   display: flex;
   align-items: center;
-  gap: 8px;
   flex: 1;
   max-width: 320px;
-  padding: 6px 10px;
-  background: var(--color-bg-secondary);
-  border: 1px solid var(--color-border);
-  border-radius: var(--radius-sm);
   color: var(--color-text-tertiary);
 }
+.skill-list-table-search svg {
+  position: absolute;
+  left: 12px;
+  pointer-events: none;
+}
 .skill-list-table-search input {
-  flex: 1;
+  width: 100%;
+  padding-left: 32px;
+}
+.skill-list-table-select-button {
+  height: var(--control-height);
+  padding: 0 12px;
+  font-size: 13px;
+  color: var(--color-text-secondary);
   background: transparent;
-  border: none;
-  font-size: 12px;
-  color: var(--color-text-primary);
-}
-.skill-list-table-search input:focus-visible {
-  outline: 2px solid var(--color-border-focus);
-  outline-offset: 2px;
-}
-.skill-list-table-sort {
-  padding: 6px 10px;
-  font-size: 12px;
-  background: var(--color-bg-secondary);
   border: 1px solid var(--color-border);
   border-radius: var(--radius-sm);
-  color: var(--color-text-secondary);
   cursor: pointer;
+  transition:
+    background-color 150ms,
+    border-color 150ms,
+    color 150ms;
+}
+.skill-list-table-select-button:hover {
+  background: var(--color-bg-hover);
+  color: var(--color-text-primary);
 }
 .skill-list-table-empty {
   display: flex;
@@ -2864,6 +3084,29 @@ body {
   text-transform: uppercase;
   color: var(--color-warning);
 }
+/* SkillLocationCell - one chip per relation to the shared root */
+.skill-list-location-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 11px;
+  letter-spacing: 0.02em;
+  color: var(--color-text-secondary);
+  background: var(--color-bg-tertiary);
+  border: 1px solid transparent;
+  border-radius: var(--radius-sm);
+  padding: 2px 6px;
+  white-space: nowrap;
+}
+.skill-list-location-chip.truth {
+  color: var(--color-text-primary);
+}
+.skill-list-location-chip.copy {
+  border-color: var(--color-warning);
+}
+.skill-list-location-chip.broken {
+  color: var(--color-error);
+}
 .skill-list-table-stat {
   font-size: 11px;
   font-variant-numeric: tabular-nums;
@@ -2893,15 +3136,6 @@ body {
 .skill-list-table-tested-dot.error {
   background: var(--color-error);
 }
-.skill-list-table-header-checkbox {
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  width: 44px;
-  height: 32px;
-  flex-shrink: 0;
-  cursor: pointer;
-}
 .skill-list-table-row-wrap {
   display: flex;
   align-items: stretch;
@@ -2920,8 +3154,6 @@ body {
   min-width: 0;
 }
 .skill-list-table-selection-bar {
-  position: sticky;
-  bottom: 0;
   display: flex;
   align-items: center;
   gap: 12px;
@@ -2929,7 +3161,6 @@ body {
   background: var(--color-bg-elevated);
   border: 1px solid var(--color-border);
   border-radius: var(--radius-md);
-  box-shadow: var(--shadow-md);
   font-size: 12px;
   color: var(--color-text-secondary);
 }
@@ -2939,9 +3170,13 @@ body {
   font-size: 12px;
   font-weight: 600;
   background: var(--color-accent);
-  color: white;
+  color: var(--color-text-on-accent);
   border-radius: var(--radius-sm);
   cursor: pointer;
+}
+.skill-list-table-selection-bar-create:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
 }
 .skill-list-table-selection-bar-clear {
   padding: 6px 12px;
@@ -3033,119 +3268,6 @@ body {
 } /* ============================================================================
    Skill Detail - Facts, Deployments, Frontmatter
    ============================================================================ */
-.skill-detail-description {
-  margin: 0;
-  font-size: 13px;
-  color: var(--color-text-secondary);
-}
-.skill-detail-facts-grid {
-  display: grid;
-  grid-template-columns: repeat(2, 1fr);
-  gap: 10px;
-}
-.skill-detail-fact {
-  display: flex;
-  flex-direction: column;
-  gap: 2px;
-}
-.skill-detail-fact-label {
-  font-size: 10px;
-  text-transform: uppercase;
-  letter-spacing: 0.04em;
-  color: var(--color-text-quaternary);
-}
-.skill-detail-fact-warning {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  margin-top: 8px;
-  font-size: 12px;
-  color: var(--color-warning);
-}
-.skill-detail-invocation-control {
-  display: inline-flex;
-  gap: 2px;
-  margin-bottom: 8px;
-  padding: 2px;
-  background: var(--color-bg-primary);
-  border: 1px solid var(--color-border-subtle);
-  border-radius: var(--radius-sm);
-}
-.skill-detail-invocation-option {
-  padding: 3px 10px;
-  font-size: 11px;
-  font-weight: 600;
-  color: var(--color-text-secondary);
-  background: transparent;
-  border: none;
-  border-radius: var(--radius-sm);
-  cursor: pointer;
-}
-.skill-detail-invocation-option:disabled {
-  cursor: default;
-}
-.skill-detail-invocation-option.active {
-  background: var(--color-bg-tertiary);
-  color: var(--color-text-primary);
-}
-.skill-detail-frontmatter {
-  display: flex;
-  flex-direction: column;
-  gap: 4px;
-}
-.skill-detail-frontmatter-row {
-  display: flex;
-  justify-content: space-between;
-  gap: 8px;
-  padding: 4px 8px;
-  font-size: 12px;
-  border-radius: var(--radius-sm);
-}
-.skill-detail-frontmatter-row.invocation-control {
-  background: var(--color-warning-soft);
-}
-.skill-detail-frontmatter-key {
-  color: var(--color-text-tertiary);
-  font-family: var(--font-mono);
-}
-.skill-detail-frontmatter-value {
-  color: var(--color-text-secondary);
-  text-align: right;
-  word-break: break-word;
-}
-.skill-detail-deployment-list {
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-}
-.skill-detail-deployment-row {
-  padding: 8px 10px;
-  background: var(--color-bg-primary);
-  border: 1px solid var(--color-border-subtle);
-  border-radius: var(--radius-sm);
-  display: flex;
-  flex-direction: column;
-  gap: 4px;
-  font-size: 12px;
-}
-.skill-detail-deployment-row-main {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-}
-.skill-detail-deployment-row-path {
-  font-family: var(--font-mono);
-  font-size: 11px;
-  color: var(--color-text-tertiary);
-  word-break: break-all;
-}
-.skill-detail-deployment-row-symlink {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  font-size: 11px;
-  color: var(--color-text-tertiary);
-}
 .skill-detail-actions-row {
   display: flex;
   flex-wrap: wrap;
@@ -3155,32 +3277,10 @@ body {
   flex: none;
   padding: 8px 12px;
 } /* ============================================================================
-   Skill Detail - Markdown body, editor, and collapsed Details
+   Skill Detail - Markdown body, editor, and Locations card
    ============================================================================ */
-.skill-detail-markdown-section .skill-detail-content-header {
-  justify-content: space-between;
-  text-transform: none;
-  letter-spacing: normal;
-  font-size: 12px;
-}
-.skill-detail-markdown-section .skill-detail-content-header .skill-action-button {
-  padding: 4px 10px;
-}
-.skill-detail-deployment-row-reveal {
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  margin-left: auto;
-  padding: 2px;
-  background: transparent;
-  border: none;
-  color: var(--color-text-tertiary);
-  cursor: pointer;
-}
-.skill-detail-deployment-row-reveal:hover {
-  color: var(--color-accent);
-}
 .skill-markdown {
+  max-width: 72ch;
   padding: 12px 16px;
   font-size: 13px;
   line-height: 1.6;
@@ -3190,12 +3290,36 @@ body {
 .skill-markdown h2,
 .skill-markdown h3 {
   color: var(--color-text-primary);
+  font-weight: 600;
   margin: 1.2em 0 0.5em;
+}
+.skill-markdown h1 {
+  font-size: 18px;
+}
+.skill-markdown h2 {
+  font-size: 16px;
+}
+.skill-markdown h3 {
+  font-size: 14px;
 }
 .skill-markdown h1:first-child,
 .skill-markdown h2:first-child,
 .skill-markdown h3:first-child {
   margin-top: 0;
+}
+.skill-markdown-table-wrap {
+  overflow-x: auto;
+  margin: 0 0 1em;
+}
+.skill-markdown-table-wrap table {
+  border-collapse: collapse;
+  font-size: 12px;
+}
+.skill-markdown-table-wrap th,
+.skill-markdown-table-wrap td {
+  padding: 6px 10px;
+  border: 1px solid var(--color-border-subtle);
+  text-align: left;
 }
 .skill-markdown p {
   margin: 0 0 1em;
@@ -3231,6 +3355,53 @@ body {
   border-left: 2px solid var(--color-border);
   color: var(--color-text-tertiary);
 }
+.skill-markdown-card-edit-status {
+  display: flex;
+  align-items: center;
+}
+.skill-markdown-card-error {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  color: var(--color-error);
+}
+.skill-markdown-skeleton {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 16px 20px;
+}
+.skill-markdown-skeleton-line {
+  height: 12px;
+  border-radius: 4px;
+  background: var(--color-bg-tertiary);
+  animation: skeleton-pulse 1.4s ease-in-out infinite;
+}
+.skill-markdown-skeleton-line:nth-child(2) {
+  width: 92%;
+}
+.skill-markdown-skeleton-line:nth-child(3) {
+  width: 96%;
+}
+.skill-markdown-skeleton-line:nth-child(4) {
+  width: 60%;
+}
+.skill-markdown-skeleton-line:nth-child(5) {
+  width: 88%;
+}
+.skill-markdown-skeleton-line:nth-child(6) {
+  width: 40%;
+}
+@keyframes skeleton-pulse {
+  0%,
+  100% {
+    opacity: 0.6;
+  }
+  50% {
+    opacity: 1;
+  }
+}
 .skill-markdown-editor {
   display: flex;
   flex-direction: column;
@@ -3257,46 +3428,27 @@ body {
 }
 .skill-markdown-editor-textarea {
   width: 100%;
-  min-height: 320px;
+  min-height: 60vh;
   padding: 10px 12px;
   font-family: var(--font-mono);
-  font-size: 12px;
+  font-size: 13px;
   line-height: 1.5;
   color: var(--color-text-primary);
   background: var(--color-bg-primary);
   border: 1px solid var(--color-border);
   border-radius: var(--radius-sm);
   resize: vertical;
+  transition: border-color 150ms;
 }
 .skill-markdown-editor-textarea:focus {
-  border-color: var(--color-accent);
+  border-color: var(--color-border-focus);
 }
 .skill-markdown-editor-textarea:focus-visible {
   outline: 2px solid var(--color-border-focus);
   outline-offset: 2px;
 }
-.skill-detail-details {
-  padding: 16px 20px;
-}
-.skill-detail-details summary {
-  font-size: 11px;
-  font-weight: 500;
-  color: var(--color-text-tertiary);
-  text-transform: uppercase;
-  letter-spacing: 0.08em;
-  cursor: pointer;
-}
-.skill-detail-details-section {
-  margin-top: 14px;
-}
-.skill-detail-details-section h4 {
-  font-size: 11px;
-  font-weight: 500;
-  color: var(--color-text-tertiary);
-  text-transform: uppercase;
-  letter-spacing: 0.08em;
-  margin: 0 0 8px;
-} /* ============================================================================
+
+/* ============================================================================
    Activity View (year heatmap, by-skill and by-project breakdowns)
    ============================================================================ */
 .activity-view-empty {
@@ -3393,7 +3545,7 @@ body {
   background: rgba(0, 0, 0, 0.4);
   display: flex;
   justify-content: flex-end;
-  z-index: 50;
+  z-index: var(--z-modal);
 }
 .add-skill-sheet {
   display: flex;
@@ -3483,7 +3635,6 @@ body {
   text-transform: uppercase;
   letter-spacing: 0.06em;
 }
-.add-skill-sheet-field input[type="text"],
 .add-skill-sheet-field select {
   padding: 8px 10px;
   font-size: 13px;
@@ -3539,7 +3690,7 @@ body {
   display: flex;
   align-items: center;
   justify-content: center;
-  z-index: 100;
+  z-index: var(--z-modal);
 }
 .pack-name-prompt {
   width: 380px;

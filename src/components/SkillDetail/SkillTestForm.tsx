@@ -7,6 +7,7 @@
 import { useMemo, useState } from "react";
 import type { SkillRunTargetKind } from "../../lib/skill-run-target-types";
 import type { InstalledSkill } from "../../lib/skill-types";
+import { CheckboxControl } from "../ui/CheckboxControl";
 
 export interface SkillTestRunParams {
   prompt: string;
@@ -154,7 +155,7 @@ export function SkillTestForm({
             <div className="skill-test-form-extra">
               <span className="skill-test-form-label">Also install</span>
               <input
-                className="skill-test-form-extra-search"
+                className="skill-test-form-extra-search text-control"
                 value={extraQuery}
                 onChange={(e) => setExtraQuery(e.target.value)}
                 placeholder="Filter skills…"
@@ -163,10 +164,9 @@ export function SkillTestForm({
               <div className="skill-test-form-extra-list">
                 {filteredExtraSkills.map((other) => (
                   <label key={other.name} className="skill-test-form-extra-item">
-                    <input
-                      type="checkbox"
+                    <CheckboxControl
                       checked={extraSkillNames.includes(other.name)}
-                      onChange={() => toggleExtraSkill(other.name)}
+                      onCheckedChange={() => toggleExtraSkill(other.name)}
                       disabled={isRunning}
                     />
                     {other.name}

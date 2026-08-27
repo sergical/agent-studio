@@ -7,7 +7,11 @@ import { beforeEach, describe, expect, it } from "vitest";
 import { useAppStore } from "./appStore";
 
 beforeEach(() => {
-  useAppStore.setState({ selectedSkillPaths: new Set(), activeView: { kind: "home" } });
+  useAppStore.setState({
+    selectedSkillPaths: new Set(),
+    selectionMode: false,
+    activeView: { kind: "home" },
+  });
 });
 
 describe("skill selection", () => {
@@ -36,6 +40,44 @@ describe("skill selection", () => {
   it("setActiveView clears the selection so it doesn't leak across views", () => {
     useAppStore.getState().selectSkills(["/a", "/b"]);
     useAppStore.getState().setActiveView({ kind: "skills" });
+    expect(useAppStore.getState().selectedSkillPaths).toEqual(new Set());
+  });
+});
+
+describe("selection mode", () => {
+  it("enterSelectionMode turns the table's checkboxes on", () => {
+    useAppStore.getState().enterSelectionMode();
+    expect(useAppStore.getState().selectionMode).toBe(true);
+  });
+
+  it("toggling two paths while in selection mode selects both", () => {
+    useAppStore.getState().enterSelectionMode();
+    useAppStore.getState().toggleSkillSelection("/a");
+    useAppStore.getState().toggleSkillSelection("/b");
+    expect(useAppStore.getState().selectedSkillPaths).toEqual(new Set(["/a", "/b"]));
+  });
+
+  it("exitSelectionMode clears both the mode and the selection", () => {
+    useAppStore.getState().enterSelectionMode();
+    useAppStore.getState().toggleSkillSelection("/a");
+    useAppStore.getState().exitSelectionMode();
+    expect(useAppStore.getState().selectionMode).toBe(false);
+    expect(useAppStore.getState().selectedSkillPaths).toEqual(new Set());
+  });
+
+  it("leaving the list view ends selection mode", () => {
+    useAppStore.getState().enterSelectionMode();
+    useAppStore.getState().toggleSkillSelection("/a");
+    useAppStore.getState().setActiveView({ kind: "home" });
+    expect(useAppStore.getState().selectionMode).toBe(false);
+    expect(useAppStore.getState().selectedSkillPaths).toEqual(new Set());
+  });
+
+  it("opening a skill ends selection mode", () => {
+    useAppStore.getState().enterSelectionMode();
+    useAppStore.getState().toggleSkillSelection("/a");
+    useAppStore.getState().openSkill("find-bugs");
+    expect(useAppStore.getState().selectionMode).toBe(false);
     expect(useAppStore.getState().selectedSkillPaths).toEqual(new Set());
   });
 });

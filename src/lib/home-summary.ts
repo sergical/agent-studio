@@ -50,6 +50,25 @@ export function homeSummaryCounts(snapshot: SkillSnapshot): HomeSummaryCounts {
   };
 }
 
+/**
+ * Which of `FIRST_CLASS_AGENTS` have at least one own deployment in the
+ * snapshot, in `FIRST_CLASS_AGENTS` order - reuses `homeSummaryCounts`'
+ * counting logic so Home's harness number and the filter bar's harness chips
+ * never disagree about which harnesses "count".
+ */
+export function harnessesPresent(snapshot: SkillSnapshot): string[] {
+  const own = ownSkillsView(snapshot.skills);
+  const present = new Set<string>();
+  for (const skill of own) {
+    for (const deployment of skill.deployments) {
+      if (FIRST_CLASS_AGENTS.some((agent) => agent === deployment.agent)) {
+        present.add(deployment.agent);
+      }
+    }
+  }
+  return FIRST_CLASS_AGENTS.filter((agent) => present.has(agent));
+}
+
 /** One row of Home's "Recently used" block. */
 export interface RecentlyUsedSkill {
   skill: InstalledSkill;

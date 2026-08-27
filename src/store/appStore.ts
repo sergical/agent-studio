@@ -65,15 +65,6 @@ interface AppState {
   /** Whether the Skills view shows the coverage matrix instead of the table. */
   showCoverage: boolean;
   setShowCoverage: (show: boolean) => void;
-  /**
-   * Set by Home's "projects" link; consumed (and cleared) by the filter
-   * bar's project menu on mount to focus its trigger, without auto-opening
-   * the menu itself.
-   */
-  focusProjectMenuOnce: boolean;
-  requestFocusProjectMenu: () => void;
-  clearFocusProjectMenuOnce: () => void;
-
   // === Project Scope Selection ===
   // Directories the user has pointed at (via a folder picker), for
   // project-scoped skill installs. Registered with the backend on startup
@@ -110,6 +101,11 @@ interface AppState {
   toggleSkillSelection: (path: string) => void;
   clearSkillSelection: () => void;
   selectSkills: (paths: string[]) => void;
+  /** Whether the table renders selection checkboxes at all - see SkillListTable's "Select" ghost button. */
+  selectionMode: boolean;
+  enterSelectionMode: () => void;
+  /** Also clears `selectedSkillPaths` - Cancel/Escape should leave nothing selected behind. */
+  exitSelectionMode: () => void;
 }
 
 // ============================================================================
@@ -186,11 +182,18 @@ export const useAppStore = create<AppState>((set, get) => ({
   },
 
   activeView: { kind: "home" },
-  setActiveView: (view) => set({ activeView: view, selectedSkillPaths: new Set() }),
+  // Leaving the list (a view change or opening a skill) ends selection mode,
+  // so a later return to Skills never lands in a half-finished selection.
+  setActiveView: (view) =>
+    set({ activeView: view, selectedSkillPaths: new Set(), selectionMode: false }),
   openSkill: (name, deploymentPath) => {
     const current = get().activeView;
     const from = current.kind === "skill" ? current.from : current;
-    set({ activeView: { kind: "skill", name, deploymentPath, from } });
+    set({
+      activeView: { kind: "skill", name, deploymentPath, from },
+      selectedSkillPaths: new Set(),
+      selectionMode: false,
+    });
   },
   closeSkill: () => {
     const current = get().activeView;
@@ -204,10 +207,6 @@ export const useAppStore = create<AppState>((set, get) => ({
 
   showCoverage: false,
   setShowCoverage: (show) => set({ showCoverage: show }),
-
-  focusProjectMenuOnce: false,
-  requestFocusProjectMenu: () => set({ focusProjectMenuOnce: true }),
-  clearFocusProjectMenuOnce: () => set({ focusProjectMenuOnce: false }),
 
   userAddedProjects: loadPathList(PROJECT_PATHS_STORAGE_KEY),
   excludedProjects: loadPathList(EXCLUDED_PROJECT_PATHS_STORAGE_KEY),
@@ -257,6 +256,10 @@ export const useAppStore = create<AppState>((set, get) => ({
   },
   clearSkillSelection: () => set({ selectedSkillPaths: new Set() }),
   selectSkills: (paths) => set({ selectedSkillPaths: new Set(paths) }),
+
+  selectionMode: false,
+  enterSelectionMode: () => set({ selectionMode: true }),
+  exitSelectionMode: () => set({ selectionMode: false, selectedSkillPaths: new Set() }),
 }));
 
 // ============================================================================

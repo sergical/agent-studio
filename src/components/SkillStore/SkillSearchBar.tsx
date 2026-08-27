@@ -66,7 +66,7 @@ export function SkillSearchBar({
         onChange={(e) => onChange(e.target.value)}
         onKeyDown={handleKeyDown}
         placeholder={placeholder}
-        className="skill-search-input"
+        className="skill-search-input text-control"
       />
       {value && (
         <button className="skill-search-clear" onClick={handleClear} title="Clear search">

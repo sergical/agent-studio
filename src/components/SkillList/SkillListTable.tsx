@@ -4,17 +4,29 @@
 // ============================================================================
 
 import { useMemo, useRef, useState } from "react";
-import { Link2, Search, Unlink } from "lucide-react";
-import { deploymentLinkKind } from "../../lib/skill-coverage";
+import type { KeyboardEvent } from "react";
+import { Search } from "lucide-react";
 import { pluginLabelForSkill } from "../../lib/skill-plugin-partition";
 import type { SkillRunSummary } from "../../lib/skill-run-history-types";
 import { formatBytes, formatRelativeTime } from "../../lib/skill-stats";
-import { HarnessIcon, harnessIdFromLabel } from "../ui/HarnessIcon";
 import type { InstalledSkill, PackMember, SkillInvocationStats } from "../../lib/skill-types";
 import { useAppStore } from "../../store/appStore";
 import { PackNamePrompt } from "../Packs/PackNamePrompt";
+import { CheckboxControl } from "../ui/CheckboxControl";
+import { SelectControl } from "../ui/SelectControl";
+import { SkillLocationCell } from "./SkillLocationCell";
 
 type SortMode = "name" | "used" | "size";
+
+const SORT_ITEMS: { value: SortMode; label: string }[] = [
+  { value: "name", label: "Name" },
+  { value: "used", label: "Most used" },
+  { value: "size", label: "Largest" },
+];
+
+function isSortMode(value: string): value is SortMode {
+  return value === "name" || value === "used" || value === "size";
+}
 
 /** "User only" / "Model only" chip label, `null` for the default "both" policy. */
 function invocationChipLabel(invocation: InstalledSkill["invocation"]): string | null {
@@ -56,9 +68,10 @@ function TestedCell({ lastTest }: { lastTest: SkillRunSummary | undefined }) {
 }
 
 /**
- * Toolbar (filter + sort) above a list of skill rows: name, one-line
- * description, agent chips (or plugin version chips), 30-day use count, and
- * folder size. Clicking a row selects the skill in the detail drawer.
+ * Toolbar (Select, filter, sort) above a list of skill rows: name, one-line
+ * description, location chips (or plugin version chips), 30-day use count,
+ * and folder size. Clicking a row selects the skill in the detail drawer,
+ * unless selection mode is on, where it toggles the row instead.
  */
 export function SkillListTable({
   skills,
@@ -80,8 +93,13 @@ export function SkillListTable({
   const toggleSkillSelection = useAppStore((state) => state.toggleSkillSelection);
   const clearSkillSelection = useAppStore((state) => state.clearSkillSelection);
   const selectSkills = useAppStore((state) => state.selectSkills);
+  const selectionMode = useAppStore((state) => state.selectionMode);
+  const enterSelectionMode = useAppStore((state) => state.enterSelectionMode);
+  const exitSelectionMode = useAppStore((state) => state.exitSelectionMode);
   /** Index of the last row checked by click (not shift-click), for shift-click range-select. */
   const lastCheckedIndexRef = useRef<number | null>(null);
+  /** Whether Shift was held for the row checkbox click in progress - CheckboxControl's onCheckedChange doesn't carry the native event, so this is captured a beat earlier, on pointerdown. */
+  const shiftKeyRef = useRef(false);
 
   /** The deployment path this row's selection checkbox stands for. */
   const rowPath = (skill: InstalledSkill): string | undefined =>
@@ -145,36 +163,71 @@ export function SkillListTable({
     selectSkills([...next]);
   }
 
+  function handleRowClick(index: number, skill: InstalledSkill) {
+    if (selectionMode) {
+      handleRowCheckboxClick(index, false);
+      return;
+    }
+    onSelectSkill(skill.name, deploymentPathForSkill?.(skill));
+  }
+
+  /** Escape exits selection mode, mirroring the selection bar's Cancel button. */
+  function handleTableKeyDown(e: KeyboardEvent<HTMLDivElement>) {
+    if (e.key === "Escape" && selectionMode) {
+      e.preventDefault();
+      exitSelectionMode();
+    }
+  }
+
   return (
-    <div className="skill-list-table">
+    <div className="skill-list-table" onKeyDown={handleTableKeyDown}>
       <div className="skill-list-table-toolbar">
-        <label className="skill-list-table-header-checkbox" aria-label="Select all visible skills">
-          <input
-            type="checkbox"
+        {selectionMode ? (
+          <CheckboxControl
             checked={allVisibleSelected}
+            onCheckedChange={handleHeaderCheckboxChange}
             disabled={rows.length === 0}
-            onChange={handleHeaderCheckboxChange}
+            ariaLabel="Select all visible skills"
           />
-        </label>
+        ) : (
+          <button className="skill-list-table-select-button" onClick={enterSelectionMode}>
+            Select
+          </button>
+        )}
         <div className="skill-list-table-search">
           <Search size={13} />
           <input
+            className="text-control"
             value={query}
             onChange={(e) => setQuery(e.target.value)}
             placeholder="Filter by name or description…"
           />
         </div>
-        <select
-          className="skill-list-table-sort"
+        <SelectControl
           value={sort}
-          // SAFETY: the <select>'s options are the three SortMode literals below.
-          onChange={(e) => setSort(e.target.value as SortMode)}
-        >
-          <option value="name">Name</option>
-          <option value="used">Most used</option>
-          <option value="size">Largest</option>
-        </select>
+          onValueChange={(v) => {
+            if (isSortMode(v)) setSort(v);
+          }}
+          items={SORT_ITEMS}
+          ariaLabel="Sort"
+        />
       </div>
+
+      {selectionMode && (
+        <div className="skill-list-table-selection-bar">
+          <span>{selectedPaths.size} selected</span>
+          <button
+            className="skill-list-table-selection-bar-create"
+            onClick={() => setShowPackPrompt(true)}
+            disabled={selectedPaths.size === 0}
+          >
+            Create pack
+          </button>
+          <button className="skill-list-table-selection-bar-clear" onClick={exitSelectionMode}>
+            Cancel
+          </button>
+        </div>
+      )}
 
       {rows.length === 0 ? (
         <div className="skill-list-table-empty">
@@ -204,23 +257,33 @@ export function SkillListTable({
             const stat = statsBySkill.get(skill.name);
             return (
               <div key={skill.name} className="skill-list-table-row-wrap">
-                <label
-                  className="skill-list-table-row-checkbox"
-                  aria-label={`Select ${skill.name}`}
-                >
-                  <input
-                    type="checkbox"
-                    checked={selectedPaths.has(rowPath(skill) ?? "")}
-                    onClick={(e) => handleRowCheckboxClick(index, e.shiftKey)}
-                    // The click handler above already applies the change - this
-                    // onChange only exists to keep React's controlled-input
-                    // contract happy (it fires after onClick, redundantly).
-                    onChange={() => {}}
-                  />
-                </label>
+                {selectionMode && (
+                  <label
+                    className="skill-list-table-row-checkbox"
+                    aria-label={`Select ${skill.name}`}
+                    onPointerDownCapture={(e) => {
+                      shiftKeyRef.current = e.shiftKey;
+                    }}
+                  >
+                    <CheckboxControl
+                      checked={selectedPaths.has(rowPath(skill) ?? "")}
+                      onCheckedChange={() => {
+                        handleRowCheckboxClick(index, shiftKeyRef.current);
+                        // Consumed: a later keyboard toggle must not reuse a pointer's Shift.
+                        shiftKeyRef.current = false;
+                      }}
+                    />
+                  </label>
+                )}
                 <button
                   className={`skill-list-table-row ${skill.name === selectedSkillName ? "selected" : ""}`}
-                  onClick={() => onSelectSkill(skill.name, deploymentPathForSkill?.(skill))}
+                  onClick={(e) => {
+                    if (selectionMode && e.shiftKey) {
+                      handleRowCheckboxClick(index, true);
+                      return;
+                    }
+                    handleRowClick(index, skill);
+                  }}
                 >
                   <span className="skill-list-table-name">
                     {skill.name}
@@ -240,47 +303,17 @@ export function SkillListTable({
                     )}
                   </span>
                   <span className="skill-list-table-description">{skill.description ?? ""}</span>
-                  <span className="skill-list-table-chips">
-                    {skill.deployments.map((d, i) => {
-                      const harnessId = harnessIdFromLabel(d.agent);
-                      const linkKind = deploymentLinkKind(d);
-                      return (
-                        <span
-                          key={`${d.agent}-${d.scope}-${i}`}
-                          className={`skill-list-table-chip ${d.disabled ? "disabled" : ""}`}
-                        >
-                          {harnessId && <HarnessIcon harness={harnessId} size={12} />}
-                          {showPluginVersion && d.plugin?.version
-                            ? `v${d.plugin.version}`
-                            : d.agent}
-                          {linkKind === "linked-to-shared" && (
-                            <span
-                              className="skill-list-table-chip-marker"
-                              title="Symlink to the shared folder"
-                            >
-                              <Link2 size={10} />
-                            </span>
-                          )}
-                          {linkKind === "broken" && (
-                            <span
-                              className="skill-list-table-chip-marker broken"
-                              title="Broken link"
-                            >
-                              <Unlink size={10} />
-                            </span>
-                          )}
-                          {d.disabled && (
-                            <span
-                              className="skill-list-table-chip-disabled-marker"
-                              title="Disabled"
-                            >
-                              Disabled
-                            </span>
-                          )}
+                  {showPluginVersion ? (
+                    <span className="skill-list-table-chips">
+                      {skill.deployments.map((d, i) => (
+                        <span key={`${d.agent}-${d.scope}-${i}`} className="skill-list-table-chip">
+                          {d.plugin?.version ? `v${d.plugin.version}` : d.agent}
                         </span>
-                      );
-                    })}
-                  </span>
+                      ))}
+                    </span>
+                  ) : (
+                    <SkillLocationCell skill={skill} />
+                  )}
                   <span className="skill-list-table-stat">{stat?.last_30_days ?? 0}</span>
                   <span className="skill-list-table-stat">{formatBytes(skill.folder_bytes)}</span>
                   <TestedCell lastTest={lastTestBySkill?.[skill.name]} />
@@ -288,21 +321,6 @@ export function SkillListTable({
               </div>
             );
           })}
-        </div>
-      )}
-
-      {selectedPaths.size > 0 && (
-        <div className="skill-list-table-selection-bar">
-          <span>{selectedPaths.size} selected</span>
-          <button
-            className="skill-list-table-selection-bar-create"
-            onClick={() => setShowPackPrompt(true)}
-          >
-            Create pack
-          </button>
-          <button className="skill-list-table-selection-bar-clear" onClick={clearSkillSelection}>
-            Clear
-          </button>
         </div>
       )}
 

@@ -1,28 +1,21 @@
 // ============================================================================
-// SkillPage - Full-page view of an installed skill: header, stats line,
-// rendered/editable SKILL.md body, actions, and the collapsed details
-// section on the left; the `SkillAssistantPanel` on the right
+// SkillPage - Full-page view of an installed skill: header (name, one
+// primary action, overflow menu, chips, metadata line), the "where it lives"
+// locations card, the SKILL.md card, and the assistant panel on the right.
 // ============================================================================
 
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { ArrowLeft } from "lucide-react";
-import ReactMarkdown from "react-markdown";
 import { useSkillSnapshot } from "../../hooks/useSkillSnapshot";
 import { forkSkill, readInstalledSkillMd, writeInstalledSkillMd } from "../../lib/skill-api";
-import {
-  ownDeployments,
-  pluginLabelForSkill,
-  skillMdPathForDeployment,
-} from "../../lib/skill-plugin-partition";
-import { formatBytes, formatRelativeTime, formatTokens } from "../../lib/skill-stats";
+import { ownDeployments, skillMdPathForDeployment } from "../../lib/skill-plugin-partition";
 import type { InstalledSkill, SkillInvocationStats } from "../../lib/skill-types";
 import type { ActiveView } from "../../store/appStore";
 import { useAppStore } from "../../store/appStore";
 import { InstalledSkillHeader } from "./InstalledSkillHeader";
 import { SkillAssistantPanel } from "./SkillAssistantPanel";
-import { SkillDetailActions } from "./SkillDetailActions";
-import { SkillDetailDetails } from "./SkillDetailDetails";
-import { SkillMarkdownEditor } from "./SkillMarkdownEditor";
+import { SkillLocationsCard } from "./SkillLocationsCard";
+import { SkillMarkdownCard } from "./SkillMarkdownCard";
 
 interface SkillPageProps {
   /** `null` when the skill named by the route was removed since the page opened. */
@@ -36,34 +29,11 @@ interface SkillPageProps {
   from: ActiveView;
 }
 
-/** Strips a leading `---\n...\n---\n` YAML frontmatter block, if present. */
-function stripFrontmatter(content: string): string {
-  return content.replace(/^---\n[\s\S]*?\n---\n/, "");
-}
-
-/** The back button's label: the name of the view the page was opened from. */
-function backLabel(from: ActiveView): string {
-  switch (from.kind) {
-    case "home":
-      return "Home";
-    case "skills":
-      return "Skills";
-    case "activity":
-      return "Activity";
-    case "packs":
-      return "Packs";
-    default:
-      // `ActiveView`'s "skill" kind never nests as its own `from` (see `openSkill`).
-      return "Back";
-  }
-}
-
 /**
- * Full-page view of an installed skill: a back button plus `InstalledSkillHeader`
- * in the page header, then a two-column body - the stats line, the rendered
- * SKILL.md body with an inline raw-text editor, the legacy actions row
- * (remove/update for skills.sh skills), and the collapsed `SkillDetailDetails`
- * section on the left, and the `SkillAssistantPanel` on the right.
+ * Full-page view of an installed skill: `InstalledSkillHeader` (which owns
+ * the back button, name, primary action, overflow menu, chips, and metadata
+ * line), then a two-column body - `SkillLocationsCard` and
+ * `SkillMarkdownCard` on the left, `SkillAssistantPanel` on the right.
  */
 export function SkillPage({
   skill,
@@ -120,37 +90,44 @@ export function SkillPage({
     skill &&
     (deploymentPath ? requestedDeployment : ownDeployments(skill)[0] || skill.deployments[0]);
   const skillMdPath = deployment ? skillMdPathForDeployment(deployment) : undefined;
-  const isPluginManaged = deployment?.plugin !== undefined;
+  const isPluginManaged = Boolean(deployment?.plugin);
 
   const [rawContent, setRawContent] = useState<string | null>(null);
   const [isLoadingContent, setIsLoadingContent] = useState(false);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [isSaving, setIsSaving] = useState(false);
 
+  /** The SKILL.md path the page currently shows - every async read or apply checks against it so a late result for a previous skill is dropped instead of landing on this one. */
+  const currentSkillMdPathRef = useRef<string | undefined>(undefined);
+
+  /** Reads SKILL.md at `path`; `showSkeleton` swaps the card for the loading skeleton (initial load and retry), a silent reload keeps the current content up until the read lands. */
+  const loadContent = useCallback((path: string, showSkeleton: boolean) => {
+    setLoadError(null);
+    if (showSkeleton) setIsLoadingContent(true);
+    const isCurrent = () => currentSkillMdPathRef.current === path;
+    readInstalledSkillMd(path)
+      .then((content) => {
+        if (isCurrent()) setRawContent(content);
+      })
+      .catch((err) => {
+        if (isCurrent()) setLoadError(err instanceof Error ? err.message : "Unknown error");
+      })
+      .finally(() => {
+        if (isCurrent()) setIsLoadingContent(false);
+      });
+  }, []);
+
   useEffect(() => {
     // A path change (including to/from `undefined`) can never carry over a
     // stale draft or edit mode from a different copy of the skill.
+    currentSkillMdPathRef.current = skillMdPath;
     setRawContent(null);
     setIsEditing(false);
     setIsEditorDirty(false);
-    if (!skillMdPath) return;
-    let cancelled = false;
-    setIsLoadingContent(true);
+    setIsLoadingContent(false);
     setLoadError(null);
-    readInstalledSkillMd(skillMdPath)
-      .then((content) => {
-        if (!cancelled) setRawContent(content);
-      })
-      .catch((err) => {
-        if (!cancelled) setLoadError(err instanceof Error ? err.message : "Unknown error");
-      })
-      .finally(() => {
-        if (!cancelled) setIsLoadingContent(false);
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, [skillMdPath]);
+    if (skillMdPath) loadContent(skillMdPath, true);
+  }, [skillMdPath, loadContent]);
 
   // A dotagents/skills.sh-managed skill would have its edits overwritten by
   // the next sync/update - saving forks it first so the edit sticks.
@@ -191,13 +168,24 @@ export function SkillPage({
     }
   };
 
+  const handleRetryLoad = () => {
+    if (skillMdPath) loadContent(skillMdPath, true);
+  };
+
+  /** Applies assistant-written content only while the page still shows the path it was written to. */
+  const handleApplied = (content: string) => {
+    if (skillMdPath !== undefined && currentSkillMdPathRef.current === skillMdPath) {
+      setRawContent(content);
+    }
+  };
+
   if (!skill) {
     return (
       <div className="skill-page">
-        <div className="skill-page-header-row">
+        <div className="skill-page-header-row-1">
           <button className="skill-page-back" onClick={onBack} aria-label="Back">
-            <ArrowLeft size={28} />
-            <span>{backLabel(from)}</span>
+            <ArrowLeft size={16} />
+            <span>{from.kind === "home" ? "Home" : "Back"}</span>
           </button>
         </div>
         <p className="skill-page-not-found">This skill is no longer installed.</p>
@@ -205,100 +193,47 @@ export function SkillPage({
     );
   }
 
-  const modifiedRelative =
-    skill.modified_at !== undefined ? formatRelativeTime(skill.modified_at) : "unknown";
-  const statsSegments = [
-    `${formatTokens(skill.skill_md_tokens)} tokens`,
-    formatBytes(skill.folder_bytes),
-    `${invocationStats?.last_30_days ?? 0} invocations (30d)`,
-    modifiedRelative !== "unknown" && `modified ${modifiedRelative}`,
-  ].filter((segment): segment is string => Boolean(segment));
-
   return (
     <div className="skill-page">
-      <div className="skill-page-header-row">
-        <button className="skill-page-back" onClick={onBack} aria-label="Back">
-          <ArrowLeft size={28} />
-          <span>{backLabel(from)}</span>
-        </button>
-        <InstalledSkillHeader
-          skill={skill}
-          lastTest={snapshot?.last_test_by_skill[skill.name]}
-          onOpenHistory={() => setIsHistoryOpen(true)}
-        />
-      </div>
+      <InstalledSkillHeader
+        skill={skill}
+        from={from}
+        onBack={onBack}
+        onRemoveComplete={onRemoveComplete}
+        invocationStats={invocationStats}
+        lastTest={snapshot?.last_test_by_skill[skill.name]}
+        onOpenHistory={() => setIsHistoryOpen(true)}
+      />
 
       <div className="skill-page-grid">
         <div className="skill-page-column-main">
-          <div className="skill-detail-stats-line">{statsSegments.join(" · ")}</div>
-
-          <div className="skill-detail-section skill-detail-markdown-section">
-            <div className="skill-detail-content-header">
-              <span>SKILL.md</span>
-              {!isEditing && !isPluginManaged && rawContent !== null && (
-                <button className="skill-action-button" onClick={() => setIsEditing(true)}>
-                  Edit
-                </button>
-              )}
-            </div>
-
-            {deploymentUnresolved ? (
-              <div className="skill-detail-content-fallback">
-                <p>The copy you opened is no longer installed.</p>
-                {ownDeployments(skill).length > 0 && (
-                  <div className="skill-detail-actions-row">
-                    {ownDeployments(skill).map((d) => (
-                      <button
-                        key={d.path}
-                        className="skill-action-button"
-                        onClick={() => openSkill(skill.name, d.path)}
-                      >
-                        {d.agent} · {d.scope}
-                      </button>
-                    ))}
-                  </div>
-                )}
-              </div>
-            ) : isPluginManaged ? (
-              <p className="skill-detail-content-fallback">
-                Managed by the {pluginLabelForSkill(skill) ?? "harness"} plugin.
-              </p>
-            ) : isEditing && rawContent !== null ? (
-              <SkillMarkdownEditor
-                key={skillMdPath}
-                initialContent={rawContent}
-                isSaving={isSaving}
-                saveLabel={needsForkToSave ? "Fork and save" : "Save"}
-                onSave={handleSave}
-                onCancel={() => {
-                  setIsEditing(false);
-                  setIsEditorDirty(false);
-                }}
-                onDirtyChange={setIsEditorDirty}
-              />
-            ) : isLoadingContent ? (
-              <div className="skill-detail-content-loading">
-                <span className="spinner" />
-                Loading content...
-              </div>
-            ) : loadError ? (
-              <p className="skill-detail-content-fallback">{loadError}</p>
-            ) : rawContent !== null ? (
-              <div className="skill-markdown">
-                <ReactMarkdown>{stripFrontmatter(rawContent)}</ReactMarkdown>
-              </div>
-            ) : (
-              <p className="skill-detail-content-empty">No content available</p>
-            )}
-          </div>
-
-          <div className="skill-detail-divider" />
-          <SkillDetailActions skill={skill} onRemoveComplete={onRemoveComplete} />
-          <div className="skill-detail-divider" />
-          <SkillDetailDetails
+          <SkillLocationsCard
             skill={skill}
             skillMdPath={!isPluginManaged ? skillMdPath : undefined}
             skillMdDeployment={deployment ?? undefined}
+          />
+
+          <SkillMarkdownCard
+            skill={skill}
+            isPluginManaged={isPluginManaged}
+            deploymentUnresolved={deploymentUnresolved}
+            ownDeploymentOptions={ownDeployments(skill)}
+            onSelectDeployment={(path) => openSkill(skill.name, path)}
+            rawContent={rawContent}
+            isLoadingContent={isLoadingContent}
+            loadError={loadError}
+            onRetry={handleRetryLoad}
+            isEditing={isEditing}
+            isEditorDirty={isEditorDirty}
+            onStartEdit={() => setIsEditing(true)}
+            isSaving={isSaving}
+            saveLabel={needsForkToSave ? "Fork and save" : "Save"}
+            onSave={handleSave}
+            onCancelEdit={() => {
+              setIsEditing(false);
+              setIsEditorDirty(false);
+            }}
+            onDirtyChange={setIsEditorDirty}
           />
         </div>
 
@@ -308,14 +243,9 @@ export function SkillPage({
             rawContent={rawContent}
             skillMdPath={skillMdPath}
             isPluginManaged={isPluginManaged}
-            onApplied={setRawContent}
+            onApplied={handleApplied}
             onDiskChanged={() => {
-              if (!skillMdPath) return;
-              readInstalledSkillMd(skillMdPath)
-                .then(setRawContent)
-                .catch((err) => {
-                  setLoadError(err instanceof Error ? err.message : "Unknown error");
-                });
+              if (skillMdPath) loadContent(skillMdPath, false);
             }}
             showHistory={isHistoryOpen}
             onCloseHistory={() => setIsHistoryOpen(false)}

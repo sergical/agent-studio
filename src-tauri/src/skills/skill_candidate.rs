@@ -26,6 +26,13 @@ pub struct SkillCandidate {
     pub is_symlink: bool,
     /// Canonicalized symlink target, when `is_symlink` and the target resolves.
     pub symlink_target: Option<PathBuf>,
+    /// Canonical path of this candidate's directory when it differs from
+    /// `path` - set when any ancestor (other than `path` itself) is a
+    /// symlink, e.g. a `.claude/skills` root linked to `.agents/skills`, so
+    /// the frontend can tell "same folder through a linked root" from a
+    /// separate copy. `None` for symlinked entries - `symlink_target`
+    /// already carries that.
+    pub resolved_path: Option<PathBuf>,
     /// True when `is_symlink` but the target doesn't exist.
     pub symlink_is_broken: bool,
     /// Set when `is_symlink` and resolving the target failed for a reason

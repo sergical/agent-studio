@@ -140,6 +140,7 @@ export function SkillsView({ snapshot, onSelectSkill }: SkillsViewProps) {
         showCoverage={showCoverage}
         onToggleCoverage={setShowCoverage}
         resultCount={filtered.length}
+        snapshot={snapshot}
       />
       {showCoverage ? (
         <SkillCoverageMatrix skills={filtered} onSelectSkill={onSelectSkill} />

@@ -41,11 +41,16 @@ import type { SkillRunTargetInfo } from "../../lib/skill-run-target-types";
 import { COMMON_AGENTS } from "../../lib/skill-types";
 import type { AgentId, InstalledSkill } from "../../lib/skill-types";
 import { useAppStore } from "../../store/appStore";
-import { HARNESS_LABELS, HarnessSegmentedControl } from "../ui/HarnessSegmentedControl";
+import { HarnessIcon } from "../ui/HarnessIcon";
+import { HARNESS_LABELS } from "../ui/HarnessSegmentedControl";
+import { SelectControl } from "../ui/SelectControl";
 import { SkillAgentTranscript } from "./SkillAgentTranscript";
 import { SkillRunHistory } from "./SkillRunHistory";
 import type { SkillTestRunParams } from "./SkillTestForm";
 import { SkillTestForm } from "./SkillTestForm";
+
+/** `HARNESS_LABELS` as `SelectControl` items, for the assistant panel's harness picker. */
+const HARNESS_SELECT_ITEMS = HARNESS_LABELS.map(([value, label]) => ({ value, label }));
 
 interface SkillAssistantPanelProps {
   skill: InstalledSkill;
@@ -666,10 +671,15 @@ export function SkillAssistantPanel({
     <div className="skill-assistant-panel">
       <div className="skill-assistant-panel-label">Assistant</div>
 
-      <HarnessSegmentedControl
-        selected={harness}
-        visibleAgents={new Set(visibleAgents)}
-        onSelect={handleSelectHarness}
+      <SelectControl
+        ariaLabel="Harness"
+        value={harness}
+        onValueChange={(value) => {
+          // SAFETY: `items` only ever holds a value from `HARNESS_LABELS`.
+          handleSelectHarness(value as AgentId);
+        }}
+        items={HARNESS_SELECT_ITEMS}
+        leadingIcon={<HarnessIcon harness={harness} size={14} />}
       />
 
       {hasTranscript ? (

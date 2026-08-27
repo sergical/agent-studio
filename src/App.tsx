@@ -6,6 +6,7 @@
 
 import { useEffect, useRef } from "react";
 import { homeDir } from "@tauri-apps/api/path";
+import { Tooltip } from "@base-ui/react/tooltip";
 import { AddSkillSheet } from "./components/AddSkill/AddSkillSheet";
 import { Sidebar } from "./components/Sidebar/Sidebar";
 import { SkillActivityView } from "./components/Activity/SkillActivityView";
@@ -124,13 +125,15 @@ function App() {
   }
 
   return (
-    <div className="flex h-screen overflow-hidden bg-[var(--color-bg-primary)]">
-      <Sidebar snapshot={snapshot} isLoading={isLoading} requestRescan={requestRescan} />
-      <main className="flex-1 overflow-y-auto">{main}</main>
+    <Tooltip.Provider delay={400}>
+      <div className="flex h-screen overflow-hidden bg-[var(--color-bg-primary)]">
+        <Sidebar snapshot={snapshot} isLoading={isLoading} requestRescan={requestRescan} />
+        <main className="flex-1 overflow-y-auto">{main}</main>
 
-      <AddSkillSheet />
-      <ToastContainer />
-    </div>
+        <AddSkillSheet />
+        <ToastContainer />
+      </div>
+    </Tooltip.Provider>
   );
 }
 

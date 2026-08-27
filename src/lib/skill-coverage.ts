@@ -95,7 +95,68 @@ export function deploymentLinkKind(
   if (deployment.is_symlink && isLinkedToSharedRoot(deployment.symlink_target)) {
     return "linked-to-shared";
   }
+  // A real directory (not a symlink) can still be the same folder as the
+  // shared root, reached through a linked root (e.g. a whole `.claude/skills`
+  // symlinked to `.agents/skills`) - see `Deployment.resolved_path`.
+  if (!deployment.is_symlink && isLinkedToSharedRoot(deployment.resolved_path)) {
+    return "linked-to-shared";
+  }
   return "own";
+}
+
+/** The path a link chip's tooltip/relation text should show: the symlink target, or the canonical path reached through a linked root. */
+export function deploymentLinkTarget(deployment: Deployment): string | undefined {
+  return deployment.symlink_target ?? deployment.resolved_path;
+}
+
+/** Where a skill really lives, and who links to or copies it - see `SkillLocationCell`. */
+export interface LocationSummary {
+  /** The deployment under the shared root, when the skill has one. */
+  truth: Deployment | null;
+  /** Deployments that are symlinks into the shared root. */
+  links: Deployment[];
+  /** Own deployments other than the shared-root truth - real directories, or healthy symlinks to somewhere outside the shared root. Two copies can drift. */
+  copies: Deployment[];
+  /** Deployments whose symlink doesn't resolve. */
+  broken: Deployment[];
+}
+
+/**
+ * Groups `skill`'s own deployments (see `ownDeployments`) by their relation
+ * to the shared `.agents/skills` root, for `SkillLocationCell`.
+ */
+export function locationSummary(skill: InstalledSkill): LocationSummary {
+  const summary: LocationSummary = { truth: null, links: [], copies: [], broken: [] };
+  for (const deployment of ownDeployments(skill)) {
+    switch (deploymentLinkKind(deployment)) {
+      case "shared-root":
+        summary.truth = deployment;
+        break;
+      case "linked-to-shared":
+        summary.links.push(deployment);
+        break;
+      case "broken":
+        summary.broken.push(deployment);
+        break;
+      case "own":
+        summary.copies.push(deployment);
+        break;
+    }
+  }
+  return summary;
+}
+
+/**
+ * Which of `summary.copies` have actually drifted from the truth: content
+ * hash different from the shared-root truth's, or (with no truth) from the
+ * first copy's. Same-content copies aren't a drift risk worth a warning
+ * border - see `SkillLocationCell`.
+ */
+export function driftingCopies(summary: LocationSummary): Deployment[] {
+  const referenceHash = summary.truth?.content_hash ?? summary.copies[0]?.content_hash;
+  if (referenceHash === undefined) return [];
+  const copiesToCompare = summary.truth ? summary.copies : summary.copies.slice(1);
+  return copiesToCompare.filter((copy) => copy.content_hash !== referenceHash);
 }
 
 /**

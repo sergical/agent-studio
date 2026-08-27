@@ -10,6 +10,7 @@ import { open } from "@tauri-apps/plugin-dialog";
 import { FolderPlus, X } from "lucide-react";
 import { AgentTargetSelector } from "../SkillStore/AgentTargetSelector";
 import { SkillStore } from "../SkillStore/SkillStore";
+import { CheckboxControl } from "../ui/CheckboxControl";
 import { addSkill, importSkillPack } from "../../lib/skill-api";
 import { agentIdFromDeploymentLabel } from "../../lib/skill-coverage";
 import { parseSkillSource } from "../../lib/skill-source-parse";
@@ -311,6 +312,7 @@ export function AddSkillSheet() {
                 id="add-skill-source"
                 ref={sourceInputRef}
                 type="text"
+                className="text-control"
                 value={source}
                 onChange={(e) => setSource(e.target.value)}
                 placeholder="owner/repo, a GitHub URL, a skills.sh URL, or a local path"
@@ -406,11 +408,7 @@ export function AddSkillSheet() {
             {method !== "pack" && (
               <div className="add-skill-sheet-field">
                 <label className="add-skill-sheet-checkbox">
-                  <input
-                    type="checkbox"
-                    checked={trial}
-                    onChange={(e) => setTrial(e.target.checked)}
-                  />
+                  <CheckboxControl checked={trial} onCheckedChange={setTrial} />
                   Try for 24 hours
                 </label>
                 <p className="add-skill-sheet-note">

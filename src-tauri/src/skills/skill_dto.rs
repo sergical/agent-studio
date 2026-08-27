@@ -85,22 +85,28 @@ pub struct Deployment {
     pub path: String,
     pub is_symlink: bool,
     /// Set when this deployment is a skill shipped by a plugin.
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub plugin: Option<PluginInfo>,
     /// Canonicalized symlink target, when `is_symlink` and the target resolves.
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub symlink_target: Option<String>,
     /// True when `is_symlink` but the target doesn't exist.
     #[serde(default)]
     pub symlink_is_broken: bool,
     /// Set when `is_symlink` and resolving the target failed for a reason
     /// other than "doesn't exist" (permission denied, symlink loop, etc.).
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub symlink_error: Option<String>,
     /// The project directory this deployment belongs to, for project-scoped
     /// deployments. `None` for global and plugin deployments.
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub project_path: Option<String>,
+    /// Canonical path of this deployment's directory when it differs from
+    /// `path` - set when any ancestor is a symlink (e.g. a `.claude/skills`
+    /// root linked to `.agents/skills`), so the frontend can tell "same
+    /// folder through a linked root" from a separate copy.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub resolved_path: Option<String>,
     /// This deployment's own sha256 content hash, empty when unreadable
     /// (e.g. a broken symlink). Lets the UI point at which specific copies
     /// of a duplicated skill differ, not just the skill as a whole.
@@ -188,7 +194,7 @@ pub struct InstalledSkill {
     pub content_hashes: Vec<String>,
     /// RFC3339 timestamp of the newest file mtime in the skill folder, from
     /// the first deployment.
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub modified_at: Option<String>,
     /// Every top-level SKILL.md frontmatter key, stringified, from the first
     /// deployment.
@@ -334,5 +340,6 @@ pub struct InstallResult {
 pub struct InstallProgress {
     pub stage: String,
     pub message: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub percent: Option<u8>,
 }

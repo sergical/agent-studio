@@ -132,6 +132,10 @@ pub fn assemble_installed_skills(
                 .symlink_target
                 .as_ref()
                 .map(|p| p.to_string_lossy().to_string()),
+            resolved_path: candidate
+                .resolved_path
+                .as_ref()
+                .map(|p| p.to_string_lossy().to_string()),
             symlink_is_broken: candidate.symlink_is_broken,
             symlink_error: candidate.symlink_error.clone(),
             project_path: candidate
@@ -153,7 +157,11 @@ pub fn assemble_installed_skills(
             .or_insert_with(|| new_installed_skill(name, lock, SourceKind::SkillsSh));
     }
 
-    by_name.into_values().collect()
+    let mut skills: Vec<InstalledSkill> = by_name.into_values().collect();
+    // HashMap order is random per process; a stable name order keeps every
+    // list (Home updates, Skills) from reshuffling between rescans.
+    skills.sort_by(|a, b| a.name.cmp(&b.name));
+    skills
 }
 
 #[cfg(test)]
@@ -173,6 +181,7 @@ mod tests {
             project_path: None,
             is_symlink: false,
             symlink_target: None,
+            resolved_path: None,
             symlink_is_broken: false,
             symlink_error: None,
             plugin: None,
@@ -215,6 +224,20 @@ mod tests {
         assert_eq!(skills.len(), 1);
         assert_eq!(skills[0].source_kind, SourceKind::Dotagents);
         assert_eq!(skills[0].deployments.len(), 3);
+    }
+
+    #[test]
+    fn assembled_skills_are_sorted_by_name() {
+        let skills = assemble_installed_skills(
+            vec![
+                candidate("zeta", "Codex"),
+                candidate("alpha", "Codex"),
+                candidate("mid", "pi"),
+            ],
+            &empty_lock(),
+        );
+        let names: Vec<&str> = skills.iter().map(|s| s.name.as_str()).collect();
+        assert_eq!(names, vec!["alpha", "mid", "zeta"]);
     }
 
     #[test]
