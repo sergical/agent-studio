@@ -12,11 +12,12 @@ import { homeSummaryCounts, recentlyUsedSkills } from "../../lib/home-summary";
 import { pullForkUpstream, updateSkill } from "../../lib/skill-api";
 import { collectDashboardIssues } from "../../lib/skill-health";
 import { ownSkillsView } from "../../lib/skill-plugin-partition";
-import { formatRelativeTime, shortSha } from "../../lib/skill-stats";
+import { formatRelativeTime, formatTokens, shortSha } from "../../lib/skill-stats";
 import { skillsWithUpdates } from "../../lib/skill-updates";
 import type { InstalledSkill, SkillSnapshot } from "../../lib/skill-types";
 import { useAppStore } from "../../store/appStore";
 import { PageShell } from "../Shell/PageShell";
+import { TooltipControl } from "../ui/TooltipControl";
 import { NeedsAttentionCard } from "./NeedsAttentionCard";
 
 const RECENTLY_USED_COUNT = 5;
@@ -141,6 +142,9 @@ function UpdatesSection({
               {skill.content_hash && shortSha(skill.content_hash)}
               {skill.update_commit && ` → ${shortSha(skill.update_commit)}`}
             </span>
+            <span className="home-updates-commit count-tabular" title="SKILL.md tokens">
+              {formatTokens(skill.skill_md_tokens)}
+            </span>
             <PullLatestButton skill={skill} />
           </div>
         ))}
@@ -217,11 +221,27 @@ export function HomeView({ snapshot, isLoading, onSelectSkill }: HomeViewProps) 
 
   const counts = homeSummaryCounts(snapshot);
   const goToActivity = () => setActiveView({ kind: "activity" });
+  const goToSkills = () => setActiveView({ kind: "skills" });
+  const goToPacks = () => setActiveView({ kind: "packs" });
 
   return (
     <PageShell title="Home">
       <p className="home-summary count-tabular">
-        {counts.skillCount} skill{counts.skillCount === 1 ? "" : "s"}
+        <TooltipControl content="Skills you installed or wrote">
+          <button className="home-summary-segment" onClick={goToSkills}>
+            {counts.skillCount} skill{counts.skillCount === 1 ? "" : "s"}
+          </button>
+        </TooltipControl>
+        {counts.pluginSkillCount > 0 && (
+          <>
+            {" · "}
+            <TooltipControl content="Skills that ship inside a harness plugin">
+              <button className="home-summary-segment" onClick={goToPacks}>
+                {counts.pluginSkillCount} plugin skill{counts.pluginSkillCount === 1 ? "" : "s"}
+              </button>
+            </TooltipControl>
+          </>
+        )}
         {" · "}
         {counts.harnessCount} harness{counts.harnessCount === 1 ? "" : "es"}
         {" · "}

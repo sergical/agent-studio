@@ -5,13 +5,15 @@
 // ============================================================================
 
 import { FIRST_CLASS_AGENTS } from "./skill-health";
-import { ownSkillsView } from "./skill-plugin-partition";
+import { ownSkillsView, pluginSkillsView } from "./skill-plugin-partition";
 import { invocationsInWindow } from "./skill-stats";
 import type { InstalledSkill, SkillInvocationStats, SkillSnapshot } from "./skill-types";
 
-/** The four counts on Home's summary line: "N skills · N harnesses · N projects · N uses in 30 days". */
+/** The counts on Home's summary line: "N skills · N harnesses · N projects · N uses in 30 days", plus the plugin-shipped skill count shown as a separate segment. */
 export interface HomeSummaryCounts {
   skillCount: number;
+  /** Skills that ship inside a harness plugin, not installed or written by the user - shown as a separate segment, omitted when zero. */
+  pluginSkillCount: number;
   harnessCount: number;
   projectCount: number;
   usesIn30Days: number;
@@ -20,10 +22,11 @@ export interface HomeSummaryCounts {
 /**
  * Counts for Home's summary line. `skillCount` and `harnessCount` are scoped
  * to the user's own skills (`ownSkillsView`) - plugin-shipped skills don't
- * count toward either. `harnessCount` is how many of `FIRST_CLASS_AGENTS`
- * have at least one own deployment; `projectCount` is every project the
- * snapshot tracks, own or not, since tracking a project isn't tied to
- * whether a skill happens to be deployed there yet.
+ * count toward either, but do get their own `pluginSkillCount`.
+ * `harnessCount` is how many of `FIRST_CLASS_AGENTS` have at least one own
+ * deployment; `projectCount` is every project the snapshot tracks, own or
+ * not, since tracking a project isn't tied to whether a skill happens to be
+ * deployed there yet.
  */
 export function homeSummaryCounts(snapshot: SkillSnapshot): HomeSummaryCounts {
   const own = ownSkillsView(snapshot.skills);
@@ -44,6 +47,7 @@ export function homeSummaryCounts(snapshot: SkillSnapshot): HomeSummaryCounts {
 
   return {
     skillCount: own.length,
+    pluginSkillCount: pluginSkillsView(snapshot.skills).length,
     harnessCount: harnesses.size,
     projectCount: snapshot.projects.length,
     usesIn30Days,

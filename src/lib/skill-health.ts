@@ -112,10 +112,11 @@ export function deploymentLabel(deployment: Deployment): string {
  * a stale copy left behind by a manual edit). Built from `ownDeployments` so
  * a plugin-managed copy - which the user doesn't edit directly - never
  * creates a false duplicate. `detail` names the copy with a strict majority
- * as the reference and lists the copies that differ from it, e.g. "Differs
- * in webvitals.com · shared (from Global · Claude Code)"; with no strict
- * majority, every copy is listed instead, e.g. "Copies differ: Global ·
- * Claude Code, webvitals.com · shared".
+ * as the reference and lists the copies that differ from it, e.g. "sentry ·
+ * Cursor differs from Global · shared" - the verb agrees with the number of
+ * differing copies; with no strict majority, every copy
+ * is listed instead, e.g. "2 copies differ: Global · Claude Code;
+ * webvitals.com · shared".
  */
 export function findDuplicateSkills(skills: InstalledSkill[]): HealthIssue[] {
   const issues: HealthIssue[] = [];
@@ -140,9 +141,10 @@ export function findDuplicateSkills(skills: InstalledSkill[]): HealthIssue[] {
       const differingLabels = withHash
         .filter((d) => d.content_hash !== majorityHash)
         .map(deploymentLabel);
-      detail = `Differs in ${differingLabels.join(", ")} (from ${majorityLabel})`;
+      const verb = differingLabels.length === 1 ? "differs" : "differ";
+      detail = `${differingLabels.join("; ")} ${verb} from ${majorityLabel}`;
     } else {
-      detail = `Copies differ: ${withHash.map(deploymentLabel).join(", ")}`;
+      detail = `${withHash.length} copies differ: ${withHash.map(deploymentLabel).join("; ")}`;
     }
 
     issues.push({ kind: "duplicate", skill, detail });

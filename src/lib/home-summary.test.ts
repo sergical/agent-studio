@@ -91,6 +91,7 @@ describe("homeSummaryCounts", () => {
     });
     expect(homeSummaryCounts(snapshot)).toEqual({
       skillCount: 2,
+      pluginSkillCount: 0,
       harnessCount: 2,
       projectCount: 3,
       usesIn30Days: 15,
@@ -117,6 +118,23 @@ describe("homeSummaryCounts", () => {
     const counts = homeSummaryCounts(snapshot);
     expect(counts.skillCount).toBe(1);
     expect(counts.harnessCount).toBe(0);
+  });
+
+  it("counts plugin-shipped skills separately, zero when there are none", () => {
+    const skills = [
+      fixtureSkill({ name: "own" }),
+      fixtureSkill({
+        name: "plugin-only",
+        deployments: [
+          fixtureDeployment({
+            agent: "Claude Code",
+            plugin: { name: "acme", harness: "claude-code" },
+          }),
+        ],
+      }),
+    ];
+    expect(homeSummaryCounts(fixtureSnapshot({ skills: [skills[0]] })).pluginSkillCount).toBe(0);
+    expect(homeSummaryCounts(fixtureSnapshot({ skills })).pluginSkillCount).toBe(1);
   });
 });
 

@@ -8,7 +8,7 @@ import type { KeyboardEvent } from "react";
 import { Search } from "lucide-react";
 import { pluginLabelForSkill } from "../../lib/skill-plugin-partition";
 import type { SkillRunSummary } from "../../lib/skill-run-history-types";
-import { formatBytes, formatRelativeTime } from "../../lib/skill-stats";
+import { formatBytes, formatRelativeTime, formatTokens } from "../../lib/skill-stats";
 import type { InstalledSkill, PackMember, SkillInvocationStats } from "../../lib/skill-types";
 import { useAppStore } from "../../store/appStore";
 import { PackNamePrompt } from "../Packs/PackNamePrompt";
@@ -316,6 +316,9 @@ export function SkillListTable({
                   )}
                   <span className="skill-list-table-stat">{stat?.last_30_days ?? 0}</span>
                   <span className="skill-list-table-stat">{formatBytes(skill.folder_bytes)}</span>
+                  <span className="skill-list-table-stat" title="SKILL.md tokens">
+                    {formatTokens(skill.skill_md_tokens)}
+                  </span>
                   <TestedCell lastTest={lastTestBySkill?.[skill.name]} />
                 </button>
               </div>

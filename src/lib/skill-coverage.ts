@@ -159,6 +159,132 @@ export function driftingCopies(summary: LocationSummary): Deployment[] {
   return copiesToCompare.filter((copy) => copy.content_hash !== referenceHash);
 }
 
+/** A shared-root deployment plus every deployment that links to it, for the Locations card's shared group. */
+export interface DeploymentGroup {
+  shared: Deployment;
+  linked: Deployment[];
+}
+
+/** `groupDeploymentsForDisplay`'s result: every shared group, plus every deployment left standing on its own. */
+export interface GroupedDeployments {
+  groups: DeploymentGroup[];
+  standalone: Deployment[];
+}
+
+/** Normalises a path for comparison by dropping a trailing slash, if any. */
+function withoutTrailingSlash(path: string): string {
+  return path.endsWith("/") ? path.slice(0, -1) : path;
+}
+
+/** The shared folder a `linked-to-shared` deployment's link resolves to, normalised for comparison. */
+function linkedSharedTarget(deployment: Deployment): string {
+  return withoutTrailingSlash(deploymentLinkTarget(deployment) ?? deployment.path);
+}
+
+/** A `shared-root` deployment's own folder, normalised for comparison with `linkedSharedTarget`. */
+function sharedRootTarget(shared: Deployment): string {
+  return withoutTrailingSlash(shared.resolved_path ?? shared.path);
+}
+
+/**
+ * Groups `deployments` (already in display order) by their concrete shared
+ * folder, for `SkillLocationsCard`. A skill can have more than one shared
+ * root - e.g. a global `~/.agents/skills/foo` and a project's own
+ * `<project>/.agents/skills/foo` - and `isLinkedToSharedRoot` matches either,
+ * so a `linked-to-shared` deployment must be keyed on which concrete folder
+ * it targets, not folded under whichever shared root happens to sort first.
+ * Every `shared-root` deployment starts its own group, in input order. A
+ * `linked-to-shared` deployment joins the group whose shared deployment's
+ * path it resolves to; failing that, it falls back to the shared root with
+ * the same scope/project only when exactly one such root exists - with two
+ * or more candidates there's no way to tell which one the link actually
+ * means, and a wrong nesting would tell the user a copy lives somewhere it
+ * doesn't, so the link is left standalone instead of guessed. A `broken`
+ * link is never folded into any group, even if its target would have
+ * pointed at a shared root.
+ */
+export function groupDeploymentsForDisplay(deployments: Deployment[]): GroupedDeployments {
+  const sharedRoots = deployments.filter((d) => deploymentLinkKind(d) === "shared-root");
+  const groups: DeploymentGroup[] = sharedRoots.map((shared) => ({ shared, linked: [] }));
+  const standalone: Deployment[] = [];
+
+  for (const deployment of deployments) {
+    if (deploymentLinkKind(deployment) !== "linked-to-shared") {
+      if (deploymentLinkKind(deployment) !== "shared-root") standalone.push(deployment);
+      continue;
+    }
+
+    const target = linkedSharedTarget(deployment);
+    const byPath = groups.find((g) => sharedRootTarget(g.shared) === target);
+    if (byPath) {
+      byPath.linked.push(deployment);
+      continue;
+    }
+
+    const byScope = groups.filter(
+      (g) =>
+        g.shared.scope === deployment.scope && g.shared.project_path === deployment.project_path,
+    );
+    if (byScope.length === 1) {
+      byScope[0].linked.push(deployment);
+      continue;
+    }
+
+    standalone.push(deployment);
+  }
+
+  return { groups, standalone };
+}
+
+/** `pickCompareDefaults`'s picks, either of which is unset when `candidates` is empty. */
+export interface CompareDefaults {
+  left: Deployment | undefined;
+  right: Deployment | undefined;
+}
+
+/**
+ * `SkillCompareDialog`'s default left/right picks out of its candidate
+ * deployments (own deployments with a `content_hash`): left is the copy with
+ * a strict majority content hash, if one exists, else the first candidate;
+ * right is the first candidate whose content differs from the left's, so the
+ * dialog opens already showing a real difference when one exists.
+ */
+export function pickCompareDefaults(candidates: Deployment[]): CompareDefaults {
+  if (candidates.length === 0) return { left: undefined, right: undefined };
+
+  const counts = new Map<string, number>();
+  for (const d of candidates) counts.set(d.content_hash, (counts.get(d.content_hash) ?? 0) + 1);
+  const majorityHash = [...counts.entries()].find(
+    ([, count]) => count * 2 > candidates.length,
+  )?.[0];
+
+  const left =
+    majorityHash !== undefined
+      ? candidates.find((d) => d.content_hash === majorityHash)
+      : candidates[0];
+  const right = candidates.find((d) => d !== left && d.content_hash !== left?.content_hash);
+  return { left, right };
+}
+
+/**
+ * `SkillCompareDialog`'s selected path for one side, kept stable across a
+ * background rescan: `selectedPath` stays selected as long as some candidate
+ * still has it, since that's a choice the user made and it must never be
+ * overridden while it remains valid. Once it stops existing (the deployment
+ * was removed or renamed), falls back to `fallbackPath` - the side's default
+ * pick recomputed from the current candidates.
+ */
+export function resolveCompareSelection(
+  selectedPath: string | undefined,
+  candidates: Deployment[],
+  fallbackPath: string | undefined,
+): string | undefined {
+  if (selectedPath !== undefined && candidates.some((d) => d.path === selectedPath)) {
+    return selectedPath;
+  }
+  return fallbackPath;
+}
+
 /**
  * A broken, disabled, or parked shared-root deployment doesn't make a skill
  * visible via the shared root.

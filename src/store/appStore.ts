@@ -30,7 +30,14 @@ export type ActiveView =
   | { kind: "skills" }
   | { kind: "activity" }
   | { kind: "packs" }
-  | { kind: "skill"; name: string; deploymentPath?: string; from: ActiveView };
+  | {
+      kind: "skill";
+      name: string;
+      deploymentPath?: string;
+      from: ActiveView;
+      /** Opens a dialog as soon as the page mounts - "compare" opens `SkillCompareDialog`. Cleared once the dialog opens, so re-entering the page doesn't reopen it. */
+      intent?: "compare";
+    };
 
 // ============================================================================
 // State Interface
@@ -50,9 +57,11 @@ interface AppState {
    * from an existing skill page reuses that page's `from`, so the back
    * button never lands on another skill page.
    */
-  openSkill: (name: string, deploymentPath?: string) => void;
+  openSkill: (name: string, deploymentPath?: string, intent?: "compare") => void;
   /** Returns to the view the current skill page was opened from. */
   closeSkill: () => void;
+  /** Clears the current skill view's `intent`, once its one-shot dialog has opened. */
+  clearSkillIntent: () => void;
 
   // === Skills List Filter ===
   // The Skills view's filter bar state, lifted into the store so it survives
@@ -85,6 +94,13 @@ interface AppState {
   // switching it in one place is reflected in the other.
   usageWindow: UsageWindow;
   setUsageWindow: (window: UsageWindow) => void;
+
+  // === Skill Page Assistant Panel ===
+  // Whether the skill page's assistant panel takes the full page width
+  // instead of its usual side column - kept here (not local component state)
+  // so it survives navigating between skills.
+  isAssistantExpanded: boolean;
+  setIsAssistantExpanded: (expanded: boolean) => void;
 
   // === Add-skill Sheet ===
   addSkillSheet: { open: boolean; prefill?: string };
@@ -186,11 +202,11 @@ export const useAppStore = create<AppState>((set, get) => ({
   // so a later return to Skills never lands in a half-finished selection.
   setActiveView: (view) =>
     set({ activeView: view, selectedSkillPaths: new Set(), selectionMode: false }),
-  openSkill: (name, deploymentPath) => {
+  openSkill: (name, deploymentPath, intent) => {
     const current = get().activeView;
     const from = current.kind === "skill" ? current.from : current;
     set({
-      activeView: { kind: "skill", name, deploymentPath, from },
+      activeView: { kind: "skill", name, deploymentPath, from, intent },
       selectedSkillPaths: new Set(),
       selectionMode: false,
     });
@@ -198,6 +214,12 @@ export const useAppStore = create<AppState>((set, get) => ({
   closeSkill: () => {
     const current = get().activeView;
     if (current.kind === "skill") set({ activeView: current.from });
+  },
+  clearSkillIntent: () => {
+    const current = get().activeView;
+    if (current.kind === "skill" && current.intent !== undefined) {
+      set({ activeView: { ...current, intent: undefined } });
+    }
   },
 
   skillListFilter: defaultSkillListFilter(),
@@ -242,6 +264,9 @@ export const useAppStore = create<AppState>((set, get) => ({
     }
     set({ usageWindow: window });
   },
+
+  isAssistantExpanded: false,
+  setIsAssistantExpanded: (expanded) => set({ isAssistantExpanded: expanded }),
 
   addSkillSheet: { open: false },
   openAddSkillSheet: (prefill) => set({ addSkillSheet: { open: true, prefill } }),

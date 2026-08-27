@@ -1041,11 +1041,17 @@ body {
 }
 .skill-page-grid {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) 340px;
+  grid-template-columns: minmax(0, 1fr) 420px;
   gap: 32px;
   align-items: start;
 }
-@media (max-width: 1000px) {
+.skill-page-grid.assistant-expanded {
+  grid-template-columns: minmax(0, 1fr);
+}
+.skill-page-grid.assistant-expanded .skill-page-column-side {
+  order: -1;
+}
+@media (max-width: 1100px) {
   .skill-page-grid {
     grid-template-columns: minmax(0, 1fr);
   }
@@ -1108,6 +1114,71 @@ body {
 .skill-locations-row-relation svg {
   vertical-align: -1px;
   margin-right: 4px;
+}
+.skill-locations-row.nested {
+  grid-template-columns: minmax(0, 1fr) auto;
+}
+.skill-locations-link-chip {
+  display: inline-flex;
+  flex-shrink: 0;
+  align-items: center;
+  gap: 4px;
+  font-size: 11px;
+  letter-spacing: 0.02em;
+  color: var(--color-text-secondary);
+  background: var(--color-bg-tertiary);
+  border: 1px solid var(--color-border-subtle);
+  border-radius: var(--radius-sm);
+  padding: 2px 6px;
+  white-space: nowrap;
+}
+.skill-locations-link-chip.broken {
+  color: var(--color-error);
+  border-color: var(--color-error);
+}
+.skill-locations-group {
+  border-bottom: 1px solid var(--color-border-subtle);
+}
+.skill-locations-group:last-child {
+  border-bottom: none;
+}
+.skill-locations-group-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  min-height: 44px;
+  padding: 6px 0;
+  background: none;
+  border: none;
+  font: inherit;
+  font-size: 13px;
+  color: var(--color-text-primary);
+  text-align: left;
+  cursor: pointer;
+}
+.skill-locations-group-chevron {
+  flex-shrink: 0;
+  color: var(--color-text-tertiary);
+  transition: transform 0.15s;
+}
+.skill-locations-group-chevron.open {
+  transform: rotate(90deg);
+}
+.skill-locations-group-count {
+  flex-shrink: 0;
+  margin-left: auto;
+  font-size: 12px;
+  color: var(--color-text-tertiary);
+}
+.skill-locations-group-body {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding-left: 22px;
+}
+.skill-locations-group-body .skill-locations-row:last-child {
+  border-bottom: none;
 }
 .skill-locations-row-path {
   overflow: hidden;
@@ -1573,11 +1644,12 @@ body {
   margin-top: auto;
 }
 .skill-action-button {
-  display: flex;
+  display: inline-flex;
   align-items: center;
   justify-content: center;
   gap: 8px;
-  padding: 12px 16px;
+  height: var(--control-height);
+  padding: 0 14px;
   font-size: 13px;
   font-weight: 500;
   border: none;
@@ -1927,11 +1999,23 @@ body {
   justify-content: center;
   height: 100%;
   color: var(--color-text-tertiary);
-} /* Summary line - one line of plain text, no links */
+} /* Summary line - plain text, except the skill/plugin counts, which jump to their view */
 .home-summary {
   margin: 0;
   font-size: 13px;
   color: var(--color-text-secondary);
+}
+.home-summary-segment {
+  padding: 0;
+  background: none;
+  border: none;
+  font: inherit;
+  color: var(--color-accent);
+  cursor: pointer;
+  transition: color 0.15s;
+}
+.home-summary-segment:hover {
+  text-decoration: underline;
 } /* One shared card style for every Home block: Needs attention, Updates, Recently used */
 .home-block {
   display: flex;
@@ -2332,6 +2416,31 @@ body {
   text-transform: uppercase;
   color: var(--color-text-tertiary);
 }
+.skill-assistant-panel-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+.skill-assistant-panel-expand {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 2px 6px;
+  font-size: 11px;
+  color: var(--color-text-tertiary);
+  background: none;
+  border: none;
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+}
+.skill-assistant-panel-expand:hover {
+  color: var(--color-text-primary);
+  background: var(--color-bg-tertiary);
+}
+.skill-assistant-panel-expand[aria-pressed="true"] {
+  color: var(--color-accent);
+}
 .skill-assistant-panel-actions {
   display: flex;
   gap: 8px;
@@ -2361,6 +2470,9 @@ body {
   max-height: 60vh;
   overflow-y: auto;
   padding-right: 2px;
+}
+.skill-page-grid.assistant-expanded .skill-agent-transcript {
+  max-height: 70vh;
 }
 .skill-agent-text-block {
   font-size: 13px;
@@ -2798,7 +2910,7 @@ body {
 }
 .home-updates-row {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) auto auto;
+  grid-template-columns: minmax(0, 1fr) auto auto auto;
   align-items: center;
   gap: 16px;
   min-height: 44px;
@@ -2989,7 +3101,7 @@ body {
 }
 .skill-list-table-row {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) minmax(0, 2fr) auto auto auto 72px;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 2fr) auto auto auto auto 72px;
   align-items: center;
   gap: 12px;
   width: 100%;
@@ -3539,6 +3651,89 @@ body {
 }
 
 /* Add-skill sheet */
+.skill-compare-dialog-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.5);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: var(--z-modal);
+}
+.skill-compare-dialog {
+  display: flex;
+  flex-direction: column;
+  width: min(1200px, 92vw);
+  max-height: 85vh;
+  background: var(--color-bg-elevated);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-lg);
+  box-shadow: var(--shadow-lg);
+  overflow: hidden;
+}
+.skill-compare-dialog-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 16px 20px;
+  border-bottom: 1px solid var(--color-border);
+}
+.skill-compare-dialog-header h3 {
+  margin: 0;
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--color-text-primary);
+}
+.skill-compare-dialog-close {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 4px;
+  color: var(--color-text-tertiary);
+  background: none;
+  border: none;
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+}
+.skill-compare-dialog-close:hover {
+  color: var(--color-text-primary);
+  background: var(--color-bg-hover);
+}
+.skill-compare-dialog-pickers {
+  display: flex;
+  gap: 12px;
+  padding: 12px 20px;
+  border-bottom: 1px solid var(--color-border-subtle);
+}
+.skill-compare-dialog-pickers > * {
+  flex: 1;
+}
+.skill-compare-dialog-body {
+  flex: 1;
+  overflow: auto;
+  padding: 16px 20px;
+}
+/* A wide diff is the one place in the app where a hidden horizontal scrollbar
+   costs the reader content, so this scroller keeps a visible thumb. */
+.skill-compare-dialog-body::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+.skill-compare-dialog-body::-webkit-scrollbar-thumb {
+  background: var(--color-border);
+  border-radius: 5px;
+}
+.skill-compare-dialog-body::-webkit-scrollbar-thumb:hover {
+  background: var(--color-text-tertiary);
+}
+.skill-compare-dialog-same {
+  font-size: 13px;
+  color: var(--color-text-tertiary);
+}
+.skill-compare-dialog-error {
+  font-size: 13px;
+  color: var(--color-error);
+}
 .add-skill-sheet-overlay {
   position: fixed;
   inset: 0;

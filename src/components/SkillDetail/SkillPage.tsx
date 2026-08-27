@@ -14,6 +14,7 @@ import type { ActiveView } from "../../store/appStore";
 import { useAppStore } from "../../store/appStore";
 import { InstalledSkillHeader } from "./InstalledSkillHeader";
 import { SkillAssistantPanel } from "./SkillAssistantPanel";
+import { SkillCompareDialog } from "./SkillCompareDialog";
 import { SkillLocationsCard } from "./SkillLocationsCard";
 import { SkillMarkdownCard } from "./SkillMarkdownCard";
 
@@ -45,11 +46,36 @@ export function SkillPage({
 }: SkillPageProps) {
   const addToast = useAppStore((state) => state.addToast);
   const openSkill = useAppStore((state) => state.openSkill);
+  const activeView = useAppStore((state) => state.activeView);
+  const clearSkillIntent = useAppStore((state) => state.clearSkillIntent);
+  const isAssistantExpanded = useAppStore((state) => state.isAssistantExpanded);
   const { snapshot } = useSkillSnapshot();
 
   const [isEditing, setIsEditing] = useState(false);
   const [isEditorDirty, setIsEditorDirty] = useState(false);
   const [isHistoryOpen, setIsHistoryOpen] = useState(false);
+  const [isCompareOpen, setIsCompareOpen] = useState(false);
+
+  /** The skill the compare dialog was last shown for, so a plain skill switch (no fresh compare request) closes it instead of carrying it over. */
+  const compareSkillNameRef = useRef<string | undefined>(skill?.name);
+
+  // Opening with `intent: "compare"` shows the dialog exactly once - the
+  // intent is cleared as soon as it opens, so navigating away and back to
+  // this page (without a fresh compare request) never reopens it. Both
+  // effects live together so a skill switch that also carries a fresh
+  // compare intent (the "Compare" action on another skill's duplicate issue)
+  // always ends up open, regardless of hook-declaration order.
+  useEffect(() => {
+    if (compareSkillNameRef.current !== skill?.name) {
+      compareSkillNameRef.current = skill?.name;
+      setIsCompareOpen(false);
+    }
+    if (activeView.kind === "skill" && activeView.intent === "compare") {
+      setIsCompareOpen(true);
+      clearSkillIntent();
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [activeView, skill?.name]);
 
   useEffect(() => {
     function onKeyDown(event: KeyboardEvent) {
@@ -63,7 +89,8 @@ export function SkillPage({
         (target.tagName === "INPUT" ||
           target.tagName === "TEXTAREA" ||
           target.isContentEditable ||
-          target.closest("dialog") !== null)
+          target.closest("dialog") !== null ||
+          target.closest('[role="dialog"]') !== null)
       ) {
         return;
       }
@@ -205,12 +232,13 @@ export function SkillPage({
         onOpenHistory={() => setIsHistoryOpen(true)}
       />
 
-      <div className="skill-page-grid">
+      <div className={`skill-page-grid ${isAssistantExpanded ? "assistant-expanded" : ""}`}>
         <div className="skill-page-column-main">
           <SkillLocationsCard
             skill={skill}
             skillMdPath={!isPluginManaged ? skillMdPath : undefined}
             skillMdDeployment={deployment ?? undefined}
+            onCompareCopies={() => setIsCompareOpen(true)}
           />
 
           <SkillMarkdownCard
@@ -252,6 +280,10 @@ export function SkillPage({
           />
         </div>
       </div>
+
+      {isCompareOpen && (
+        <SkillCompareDialog skill={skill} onClose={() => setIsCompareOpen(false)} />
+      )}
     </div>
   );
 }

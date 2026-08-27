@@ -5,6 +5,7 @@
 import { describe, expect, it } from "vitest";
 import {
   coverageGaps,
+  findDuplicateSkills,
   findParkedButReinstalled,
   findSpecViolations,
   HEALTH_ISSUE_KIND_ORDER,
@@ -128,6 +129,48 @@ describe("coverageGaps", () => {
       deployments: [fixtureDeployment({ agent: "Claude Code", scope: "global" })],
     });
     expect(coverageGaps([skill])).toEqual([]);
+  });
+});
+
+describe("findDuplicateSkills", () => {
+  it("names the differing copies against the strict majority", () => {
+    const skill = fixtureSkill({
+      deployments: [
+        fixtureDeployment({ agent: "shared", scope: "global", content_hash: "aaa" }),
+        fixtureDeployment({ agent: "Claude Code", scope: "global", content_hash: "aaa" }),
+        fixtureDeployment({ agent: "Cursor", scope: "global", content_hash: "bbb" }),
+      ],
+    });
+    const issues = findDuplicateSkills([skill]);
+    expect(issues).toHaveLength(1);
+    expect(issues[0].detail).toBe("Global · Cursor differs from Global · shared");
+  });
+
+  it("uses a plural verb when more than one copy differs", () => {
+    const skill = fixtureSkill({
+      deployments: [
+        fixtureDeployment({ agent: "shared", scope: "global", content_hash: "aaa" }),
+        fixtureDeployment({ agent: "Claude Code", scope: "global", content_hash: "aaa" }),
+        fixtureDeployment({ agent: "OpenCode", scope: "global", content_hash: "aaa" }),
+        fixtureDeployment({ agent: "Cursor", scope: "global", content_hash: "bbb" }),
+        fixtureDeployment({ agent: "Codex", scope: "global", content_hash: "ccc" }),
+      ],
+    });
+    const issues = findDuplicateSkills([skill]);
+    expect(issues[0].detail).toBe(
+      "Global \u00b7 Cursor; Global \u00b7 Codex differ from Global \u00b7 shared",
+    );
+  });
+
+  it("lists every copy when there is no strict majority", () => {
+    const skill = fixtureSkill({
+      deployments: [
+        fixtureDeployment({ agent: "shared", scope: "global", content_hash: "aaa" }),
+        fixtureDeployment({ agent: "Cursor", scope: "global", content_hash: "bbb" }),
+      ],
+    });
+    const issues = findDuplicateSkills([skill]);
+    expect(issues[0].detail).toBe("2 copies differ: Global · shared; Global · Cursor");
   });
 });
 

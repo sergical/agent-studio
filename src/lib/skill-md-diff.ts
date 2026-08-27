@@ -52,6 +52,22 @@ export function diffSkillMd(oldText: string, newText: string): SkillMdHunk[] {
 }
 
 /**
+ * A single read-only unified diff between `oldText` and `newText`, for
+ * `SkillCompareDialog` - unlike `diffSkillMd`, this isn't split into
+ * individually-acceptable hunks, since both sides are already-saved content,
+ * not a proposal to accept or reject.
+ */
+export function unifiedSkillMdDiff(oldText: string, newText: string): string {
+  const patch = structuredPatch("SKILL.md", "SKILL.md", oldText, newText, undefined, undefined, {
+    context: CONTEXT_LINES,
+  });
+  return formatPatch(
+    { ...patch, oldFileName: "a/SKILL.md", newFileName: "b/SKILL.md" },
+    FILE_HEADERS_ONLY,
+  );
+}
+
+/**
  * Applies only the accepted hunks to `oldText`, in order. Returns null when
  * jsdiff can't fit them - e.g. `oldText` no longer matches the context the
  * hunks were computed against.

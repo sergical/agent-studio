@@ -15,8 +15,8 @@ interface SkillRunDiffProps {
   onSecondary: () => void;
 }
 
-/** App CSS (src/App.css) is dark by default and light only under `:root[data-theme="light"]`. */
-function currentTheme(): "github-light" | "github-dark" {
+/** App CSS (src/App.css) is dark by default and light only under `:root[data-theme="light"]`. Shared with `SkillCompareDialog`, the other `PatchDiff` caller. */
+export function currentTheme(): "github-light" | "github-dark" {
   return document.documentElement.dataset.theme === "light" ? "github-light" : "github-dark";
 }
 

@@ -8,6 +8,7 @@
 // ============================================================================
 
 import { Suspense, lazy, useEffect, useRef, useState } from "react";
+import { Maximize2, Minimize2 } from "lucide-react";
 import type { SkillAgentRunState } from "../../hooks/useSkillAgentRun";
 import { useSkillAgentRun } from "../../hooks/useSkillAgentRun";
 import { useSkillSnapshot } from "../../hooks/useSkillSnapshot";
@@ -43,14 +44,28 @@ import type { AgentId, InstalledSkill } from "../../lib/skill-types";
 import { useAppStore } from "../../store/appStore";
 import { HarnessIcon } from "../ui/HarnessIcon";
 import { HARNESS_LABELS } from "../ui/HarnessSegmentedControl";
+import type { SelectControlItem } from "../ui/SelectControl";
 import { SelectControl } from "../ui/SelectControl";
 import { SkillAgentTranscript } from "./SkillAgentTranscript";
 import { SkillRunHistory } from "./SkillRunHistory";
 import type { SkillTestRunParams } from "./SkillTestForm";
 import { SkillTestForm } from "./SkillTestForm";
 
-/** `HARNESS_LABELS` as `SelectControl` items, for the assistant panel's harness picker. */
-const HARNESS_SELECT_ITEMS = HARNESS_LABELS.map(([value, label]) => ({ value, label }));
+/**
+ * `HARNESS_LABELS` as `SelectControl` items, for the assistant panel's
+ * harness picker. A run doesn't use the installed copy - it copies the skill
+ * into a fresh scratch folder (see `sourceFolderPath`) and runs there - so a
+ * harness with no deployment for `skill` still runs normally. The label
+ * still says so, since `visibleAgentsFor` is useful context, but the item
+ * stays selectable: disabling it would leave a dead end when no harness sees
+ * the skill (`defaultHarness` falls back to Claude Code either way).
+ */
+function harnessSelectItems(visibleAgents: readonly AgentId[]): SelectControlItem[] {
+  return HARNESS_LABELS.map(([value, label]) => ({
+    value,
+    label: visibleAgents.includes(value) ? label : `${label} (doesn't see this skill)`,
+  }));
+}
 
 interface SkillAssistantPanelProps {
   skill: InstalledSkill;
@@ -148,10 +163,13 @@ export function SkillAssistantPanel({
   onCloseHistory,
 }: SkillAssistantPanelProps) {
   const addToast = useAppStore((state) => state.addToast);
+  const isAssistantExpanded = useAppStore((state) => state.isAssistantExpanded);
+  const setIsAssistantExpanded = useAppStore((state) => state.setIsAssistantExpanded);
   const { snapshot } = useSkillSnapshot();
   const visibleAgents = visibleAgentsFor(skill);
   const defaultHarness: AgentId =
     (visibleAgents.includes("claude-code") ? "claude-code" : visibleAgents[0]) ?? "claude-code";
+  const harnessSelectItemsForSkill = harnessSelectItems(visibleAgents);
 
   const [harness, setHarness] = useState<AgentId>(defaultHarness);
   const [prompt, setPrompt] = useState("");
@@ -669,7 +687,19 @@ export function SkillAssistantPanel({
 
   return (
     <div className="skill-assistant-panel">
-      <div className="skill-assistant-panel-label">Assistant</div>
+      <div className="skill-assistant-panel-header">
+        <div className="skill-assistant-panel-label">Assistant</div>
+        <button
+          type="button"
+          className="skill-assistant-panel-expand"
+          onClick={() => setIsAssistantExpanded(!isAssistantExpanded)}
+          aria-pressed={isAssistantExpanded}
+          title={isAssistantExpanded ? "Collapse" : "Expand"}
+        >
+          {isAssistantExpanded ? <Minimize2 size={13} /> : <Maximize2 size={13} />}
+          {isAssistantExpanded ? "Collapse" : "Expand"}
+        </button>
+      </div>
 
       <SelectControl
         ariaLabel="Harness"
@@ -678,7 +708,7 @@ export function SkillAssistantPanel({
           // SAFETY: `items` only ever holds a value from `HARNESS_LABELS`.
           handleSelectHarness(value as AgentId);
         }}
-        items={HARNESS_SELECT_ITEMS}
+        items={harnessSelectItemsForSkill}
         leadingIcon={<HarnessIcon harness={harness} size={14} />}
       />
 

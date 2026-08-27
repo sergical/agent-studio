@@ -7,12 +7,16 @@
 // ============================================================================
 
 import { useState } from "react";
-import { AlertTriangle, FolderOpen } from "lucide-react";
+import { AlertTriangle, ChevronRight, FolderOpen, Link2 } from "lucide-react";
 import {
   agentIdFromDeploymentLabel,
   deploymentLinkKind,
   deploymentLinkTarget,
+  driftingCopies,
+  groupDeploymentsForDisplay,
+  locationSummary,
 } from "../../lib/skill-coverage";
+import type { DeploymentGroup } from "../../lib/skill-coverage";
 import {
   forkSkill,
   openSkillPath,
@@ -33,6 +37,8 @@ interface SkillLocationsCardProps {
   skillMdPath?: string;
   /** The deployment `skillMdPath` came from, for the Fork-and-save flow's `forkSkill(name, path)` call. */
   skillMdDeployment?: Deployment;
+  /** Opens `SkillCompareDialog` - shown as a "Compare copies" header button only when `driftingCopies` finds something. */
+  onCompareCopies?: () => void;
 }
 
 const INVOCATION_POLICY_OPTIONS: { value: InvocationPolicy; label: string }[] = [
@@ -56,24 +62,53 @@ function invocationPolicyExplanation(policy: InvocationPolicy, skillName: string
 /** Harnesses with a per-skill disable switch - see `skill_harness_disable.rs`. */
 const HARNESSES_WITH_PER_SKILL_DISABLE = ["codex", "open-code", "claude-code"];
 
-/** The relation text shown after a deployment's harness name - `null` for a broken link, which keeps its own warning line below. */
+/** Plain-text relation for a deployment with no link to show - a chip covers every other case, see `linkChipFor`. */
 function relationLabel(deployment: Deployment): string | null {
-  const target = deploymentLinkTarget(deployment);
   switch (deploymentLinkKind(deployment)) {
     case "shared-root":
       // The row's own name is already "Shared folder" - no need to repeat it here.
       return "source of truth";
-    case "linked-to-shared":
-      return deployment.is_symlink
-        ? `symlink → ${target ? homeRelativePath(target) : "unknown target"}`
-        : `linked folder → ${target ? homeRelativePath(target) : "unknown target"}`;
     case "own":
-      return deployment.is_symlink
-        ? `symlink → ${target ? homeRelativePath(target) : "unknown target"}`
-        : "copy";
-    case "broken":
-      return `broken link → ${deployment.symlink_target ?? "unknown target"}`;
+      return deployment.is_symlink ? null : "copy";
+    default:
+      return null;
   }
+}
+
+/** One row's link relation, as a chip - see the readability rules in spec-ux-4.md section 4. `null` when the deployment isn't a link at all (the shared root itself, or a plain own-directory copy). */
+function linkChipFor(
+  deployment: Deployment,
+): { label: string; target: string | undefined; broken: boolean } | null {
+  const kind = deploymentLinkKind(deployment);
+  if (kind === "broken") {
+    return { label: "broken link", target: deployment.symlink_target, broken: true };
+  }
+  if (kind === "linked-to-shared") {
+    return {
+      label: deployment.is_symlink ? "symlink" : "linked folder",
+      target: deploymentLinkTarget(deployment),
+      broken: false,
+    };
+  }
+  if (kind === "own" && deployment.is_symlink) {
+    return { label: "symlink", target: deploymentLinkTarget(deployment), broken: false };
+  }
+  return null;
+}
+
+/** Bordered chip for a deployment's link relation, with the full target path as its tooltip. */
+function LinkChip({ deployment }: { deployment: Deployment }) {
+  const chip = linkChipFor(deployment);
+  if (!chip) return null;
+  return (
+    <TooltipControl content={chip.target ? homeRelativePath(chip.target) : "unknown target"}>
+      <span className={`skill-locations-link-chip ${chip.broken ? "broken" : ""}`}>
+        {chip.broken && <AlertTriangle size={11} />}
+        <Link2 size={11} />
+        {chip.label}
+      </span>
+    </TooltipControl>
+  );
 }
 
 /** "Claude Code" / "Codex" / ... for a deployment's harness label, "Shared folder" for the shared root. */
@@ -109,7 +144,16 @@ function sortedDeployments(deployments: Deployment[]): Deployment[] {
   });
 }
 
-function DeploymentRow({ deployment, skill }: { deployment: Deployment; skill: InstalledSkill }) {
+function DeploymentRow({
+  deployment,
+  skill,
+  showPath = true,
+}: {
+  deployment: Deployment;
+  skill: InstalledSkill;
+  /** Nested rows under the shared group skip the path - the group header already states it. */
+  showPath?: boolean;
+}) {
   const addToast = useAppStore((state) => state.addToast);
   const [isTogglingHarness, setIsTogglingHarness] = useState(false);
   const harnessId = harnessIdFromLabel(deployment.agent);
@@ -152,19 +196,13 @@ function DeploymentRow({ deployment, skill }: { deployment: Deployment; skill: I
   };
 
   return (
-    <div className="skill-locations-row">
+    <div className={`skill-locations-row ${showPath ? "" : "nested"}`}>
       <div className="skill-locations-row-main">
         {projectName && <span className="skill-locations-row-project">{projectName}</span>}
         {harnessId && <HarnessIcon harness={harnessId} size={16} />}
         <span className="skill-locations-row-name">{harnessDisplayName(deployment)}</span>
-        {relation && (
-          <span
-            className={`skill-locations-row-relation ${deploymentLinkKind(deployment) === "broken" ? "broken" : ""}`}
-          >
-            {deploymentLinkKind(deployment) === "broken" && <AlertTriangle size={11} />}
-            {relation}
-          </span>
-        )}
+        {relation && <span className="skill-locations-row-relation">{relation}</span>}
+        <LinkChip deployment={deployment} />
         {deployment.plugin && (
           <span className="skill-locations-row-relation">
             plugin · {deployment.plugin.name}
@@ -172,11 +210,13 @@ function DeploymentRow({ deployment, skill }: { deployment: Deployment; skill: I
           </span>
         )}
       </div>
-      <TooltipControl content={deployment.path}>
-        <span className="skill-locations-row-path">
-          <span dir="ltr">{homeRelativePath(deployment.path)}</span>
-        </span>
-      </TooltipControl>
+      {showPath && (
+        <TooltipControl content={deployment.path}>
+          <span className="skill-locations-row-path">
+            <span dir="ltr">{homeRelativePath(deployment.path)}</span>
+          </span>
+        </TooltipControl>
+      )}
       <div className="skill-locations-row-controls">
         {supportsDisableSwitch && (
           <label className="switch-label">
@@ -205,14 +245,69 @@ function DeploymentRow({ deployment, skill }: { deployment: Deployment; skill: I
 }
 
 /**
- * "Where it lives": one row per deployment plus an Invocation footer row
- * (segmented Both/User only/Model only control, a one-line explanation, and
- * an `allowed-tools` chip when the frontmatter sets one).
+ * The shared folder's own row, expandable to the harnesses linked to it -
+ * "click the shared folder to see who links to it, click one of those to
+ * disable it there" from the user's feedback.
+ */
+function SharedDeploymentGroup({
+  group,
+  skill,
+}: {
+  group: DeploymentGroup;
+  skill: InstalledSkill;
+}) {
+  const [expanded, setExpanded] = useState(true);
+  return (
+    <div className="skill-locations-group">
+      <button
+        type="button"
+        className="skill-locations-group-header"
+        aria-expanded={expanded}
+        onClick={() => setExpanded((open) => !open)}
+      >
+        <ChevronRight
+          size={14}
+          className={`skill-locations-group-chevron ${expanded ? "open" : ""}`}
+        />
+        <FolderOpen size={16} />
+        <span className="skill-locations-row-name">Shared folder</span>
+        <TooltipControl content={group.shared.path}>
+          <span className="skill-locations-row-path">
+            <span dir="ltr">{homeRelativePath(group.shared.path)}</span>
+          </span>
+        </TooltipControl>
+        <span className="skill-locations-group-count">
+          used by {group.linked.length} harness{group.linked.length === 1 ? "" : "es"}
+        </span>
+      </button>
+      {expanded && (
+        <div className="skill-locations-group-body">
+          {group.linked.map((deployment, i) => (
+            <DeploymentRow
+              key={`${deployment.agent}-${deployment.scope}-${i}`}
+              deployment={deployment}
+              skill={skill}
+              showPath={false}
+            />
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+/**
+ * "Where it lives": the shared folder (when the skill has one) grouped with
+ * the harnesses linked to it, every other deployment as its own row, plus an
+ * Invocation footer row (segmented Both/User only/Model only control, a
+ * one-line explanation, and an `allowed-tools` chip when the frontmatter sets
+ * one).
  */
 export function SkillLocationsCard({
   skill,
   skillMdPath,
   skillMdDeployment,
+  onCompareCopies,
 }: SkillLocationsCardProps) {
   const addToast = useAppStore((state) => state.addToast);
   const [isSavingInvocation, setIsSavingInvocation] = useState(false);
@@ -242,9 +337,19 @@ export function SkillLocationsCard({
     }
   };
 
+  const hasDriftingCopies = driftingCopies(locationSummary(skill)).length > 0;
+  const { groups, standalone } = groupDeploymentsForDisplay(sortedDeployments(skill.deployments));
+
   return (
     <div className="home-block skill-locations-card">
-      <div className="home-block-header">Locations</div>
+      <div className="home-block-header">
+        Locations
+        {hasDriftingCopies && onCompareCopies && (
+          <button type="button" className="home-block-header-action" onClick={onCompareCopies}>
+            Compare copies
+          </button>
+        )}
+      </div>
 
       {skill.deployments.length === 0 ? (
         <p className="skill-detail-content-empty">
@@ -252,7 +357,10 @@ export function SkillLocationsCard({
         </p>
       ) : (
         <div className="skill-locations-list">
-          {sortedDeployments(skill.deployments).map((deployment, i) => (
+          {groups.map((group, i) => (
+            <SharedDeploymentGroup key={`group-${i}`} group={group} skill={skill} />
+          ))}
+          {standalone.map((deployment, i) => (
             <DeploymentRow
               key={`${deployment.agent}-${deployment.scope}-${i}`}
               deployment={deployment}

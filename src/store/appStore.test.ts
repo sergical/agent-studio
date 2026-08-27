@@ -105,3 +105,27 @@ describe("skillListFilter", () => {
     expect(useAppStore.getState().skillListFilter.scope).toBe("global");
   });
 });
+
+describe("compare intent", () => {
+  it("openSkill with a compare intent stores it on the skill view", () => {
+    useAppStore.getState().openSkill("find-bugs", undefined, "compare");
+    const view = useAppStore.getState().activeView;
+    expect(view.kind).toBe("skill");
+    expect(view.kind === "skill" && view.intent).toBe("compare");
+  });
+
+  it("clearSkillIntent removes the intent without changing the rest of the view", () => {
+    useAppStore.getState().openSkill("find-bugs", "/home/.agents/skills/find-bugs", "compare");
+    useAppStore.getState().clearSkillIntent();
+    const view = useAppStore.getState().activeView;
+    expect(view.kind).toBe("skill");
+    expect(view.kind === "skill" && view.intent).toBeUndefined();
+    expect(view.kind === "skill" && view.deploymentPath).toBe("/home/.agents/skills/find-bugs");
+  });
+
+  it("clearSkillIntent is a no-op off the skill view", () => {
+    useAppStore.getState().setActiveView({ kind: "home" });
+    useAppStore.getState().clearSkillIntent();
+    expect(useAppStore.getState().activeView).toEqual({ kind: "home" });
+  });
+});

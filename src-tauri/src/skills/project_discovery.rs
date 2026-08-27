@@ -175,6 +175,15 @@ fn claude_transcript_cwds_within(home: &Path, mut total_budget: u64) -> Vec<Path
     out
 }
 
+/// True when `path` is inside Skill Studio's own scratch root - the assistant's
+/// Test and Audit runs create a throwaway project there and Claude Code records
+/// a transcript for it, which would otherwise be adopted as one of the user's
+/// projects.
+fn is_studio_scratch_path(home: &Path, path: &Path) -> bool {
+    path.starts_with(home.join("Library/Caches/com.skillstudio.app"))
+        || path.starts_with(home.join(".cache/com.skillstudio.app"))
+}
+
 /// Union of every project directory discoverable from Codex config and
 /// Claude Code transcripts, filtered to directories that exist and have at
 /// least one first-class agent's skill dir. Sorted and deduped.
@@ -187,6 +196,7 @@ pub fn discover_skill_projects(home: &Path) -> Vec<PathBuf> {
         .into_iter()
         .filter(|p| {
             p.exists()
+                && !is_studio_scratch_path(home, p)
                 && SKILL_DIR_MARKERS
                     .iter()
                     .any(|marker| p.join(marker).exists())
@@ -474,5 +484,32 @@ mod tests {
         .unwrap();
 
         assert!(discover_skill_projects(home).is_empty());
+    }
+
+    #[test]
+    fn studio_scratch_path_is_excluded_but_a_normal_project_with_the_same_marker_is_kept() {
+        let tmp = tempfile::tempdir().unwrap();
+        let home = tmp.path();
+
+        let scratch = home
+            .join("Library/Caches/com.skillstudio.app/skill-studio/scratch/20260827-1")
+            .join(".agents/skills");
+        fs::create_dir_all(&scratch).unwrap();
+        let project = home.join("real-project");
+        fs::create_dir_all(project.join(".agents/skills")).unwrap();
+
+        fs::create_dir_all(home.join(".codex")).unwrap();
+        fs::write(
+            home.join(".codex/config.toml"),
+            format!(
+                "[projects.\"{}\"]\ntrusted = true\n[projects.\"{}\"]\ntrusted = true\n",
+                scratch.ancestors().nth(2).unwrap().to_string_lossy(),
+                project.to_string_lossy()
+            ),
+        )
+        .unwrap();
+
+        let found = discover_skill_projects(home);
+        assert_eq!(found, vec![project]);
     }
 }

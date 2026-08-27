@@ -43,6 +43,18 @@ function NeedsAttentionAction({
 }) {
   const [isUnparking, setIsUnparking] = useState(false);
   const addToast = useAppStore((state) => state.addToast);
+  const openSkill = useAppStore((state) => state.openSkill);
+
+  if (issue.kind === "duplicate") {
+    return (
+      <button
+        className="home-needs-attention-action"
+        onClick={() => openSkill(issue.skill.name, undefined, "compare")}
+      >
+        {actionLabel(issue.kind)}
+      </button>
+    );
+  }
 
   if (issue.kind !== "parked-but-reinstalled") {
     return (

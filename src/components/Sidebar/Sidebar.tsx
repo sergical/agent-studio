@@ -4,7 +4,7 @@
 // filter bar instead - see the design rule in spec-ux-1.md section B.
 // ============================================================================
 
-import { useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import type { KeyboardEvent } from "react";
 import {
   Activity as ActivityIcon,
@@ -36,7 +36,7 @@ interface SidebarProps {
   requestRescan: () => Promise<void>;
 }
 
-function relativeScanTime(scannedAt: string | undefined): string {
+export function relativeScanTime(scannedAt: string | undefined): string {
   if (!scannedAt) return "never scanned";
   const ms = Date.now() - new Date(scannedAt).getTime();
   if (ms < 0 || Number.isNaN(ms)) return "just now";
@@ -56,6 +56,14 @@ function relativeScanTime(scannedAt: string | undefined): string {
  */
 export function Sidebar({ snapshot, isLoading, requestRescan }: SidebarProps) {
   const [isRescanning, setIsRescanning] = useState(false);
+  // Forces the footer to re-render so "just now" ages into "1m ago" and
+  // beyond without waiting for the next snapshot - relativeScanTime() itself
+  // stays a pure function of scannedAt and the current clock.
+  const [, forceTick] = useState(0);
+  useEffect(() => {
+    const id = setInterval(() => forceTick((n) => n + 1), 30_000);
+    return () => clearInterval(id);
+  }, []);
   const activeView = useAppStore((state) => state.activeView);
   const anchorView = sidebarAnchorView(activeView);
   const setActiveView = useAppStore((state) => state.setActiveView);
