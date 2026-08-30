@@ -84,8 +84,8 @@
   --color-secondary-foreground: var(--color-text-primary);
   --color-muted: var(--color-bg-tertiary);
   --color-muted-foreground: var(--color-text-tertiary);
-  --color-accent: var(--color-bg-hover);
-  --color-accent-foreground: var(--color-text-primary);
+  --color-highlight: var(--color-bg-hover);
+  --color-highlight-foreground: var(--color-text-primary);
   --color-destructive: var(--color-error);
   --color-border: var(--color-border);
   --color-input: var(--color-border);
