@@ -33,7 +33,7 @@ export function SkillBrowser({
     return (
       <div className="skill-browser skill-browser-loading">
         <div className="skill-browser-spinner" />
-        <p>Searching skills.sh...</p>
+        <p>Searching skills.sh…</p>
       </div>
     );
   }
@@ -65,7 +65,7 @@ export function SkillBrowser({
             {isLoadingMore ? (
               <>
                 <span className="load-more-spinner" />
-                Loading...
+                Loading…
               </>
             ) : (
               "Load More"
@@ -151,7 +151,10 @@ function SkillCard({ skill, isSelected, onClick, hideInstalledIndicator = false 
       )}
 
       {(skill.description || skill.installed_info?.description) && (
-        <p className="skill-card-description">
+        <p
+          className="skill-card-description"
+          title={skill.description || skill.installed_info?.description}
+        >
           {skill.description || skill.installed_info?.description}
         </p>
       )}

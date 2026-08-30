@@ -51,6 +51,10 @@ pub struct SkillCandidate {
     pub folder_bytes: u64,
     pub file_count: u32,
     pub skill_md_tokens: u32,
+    /// Token count of just `"{name}: {description}"` - the prompt cost the
+    /// model actually pays per turn, as opposed to `skill_md_tokens` which
+    /// counts the whole file.
+    pub description_tokens: u32,
     /// sha256 over the sorted (relative path, bytes) pairs of the skill folder.
     pub content_hash: String,
     /// RFC3339 of the newest file mtime in the skill folder.
@@ -58,4 +62,9 @@ pub struct SkillCandidate {
     /// True when the folder walk hit the 2,000-file / 64 MiB cap and stopped
     /// early - `folder_bytes`/`file_count`/`content_hash` are partial.
     pub folder_truncated: bool,
+    /// True when the skill's directory sits inside a git working tree (a
+    /// `.git` file or directory on some ancestor). Distinguishes a
+    /// version-controlled directory from a genuinely unmanaged one - see
+    /// `provenance::SourceKind::InRepo`.
+    pub in_git_repo: bool,
 }

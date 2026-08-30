@@ -2,11 +2,12 @@
 // Skills Module - Source Provenance
 // Classifies how a skill made it onto disk: "skills-sh" (present in the lock
 // file), "plugin" (shipped by an agent plugin), "dotagents" (symlinked in by
-// getsentry/dotagents), or "manual" (a plain directory with no other
-// provenance signal). Ordered by precedence: dotagents > plugin > skills-sh
-// > manual - the lowest-precedence signal wins when a skill is deployed to
-// multiple agents with conflicting signals. Pure: works only from the facts
-// a SkillCandidate already captured, never touches the filesystem itself.
+// getsentry/dotagents), "in-repo" (a plain directory inside a git working
+// tree), or "manual" (a plain directory with no other provenance signal).
+// Ordered by precedence: dotagents > plugin > skills-sh > in-repo > manual -
+// the lowest-precedence signal wins when a skill is deployed to multiple
+// agents with conflicting signals. Pure: works only from the facts a
+// SkillCandidate already captured, never touches the filesystem itself.
 // ============================================================================
 
 use std::path::Path;
@@ -27,6 +28,9 @@ pub enum SourceKind {
     Dotagents,
     Plugin,
     SkillsSh,
+    /// A plain directory with no skill-manager provenance, but sitting
+    /// inside a git working tree - see `SkillCandidate::in_git_repo`.
+    InRepo,
     Manual,
     /// Detached from its dotagents/skills.sh ledger via "Fork" so local
     /// edits survive `sync`/`update` - see `skill_fork_registry`.
@@ -70,6 +74,10 @@ pub fn classify_source_kind(candidate: &SkillCandidate, lock: &SkillLockFile) ->
         return SourceKind::SkillsSh;
     }
 
+    if candidate.in_git_repo {
+        return SourceKind::InRepo;
+    }
+
     SourceKind::Manual
 }
 
@@ -101,9 +109,11 @@ mod tests {
             folder_bytes: 0,
             file_count: 0,
             skill_md_tokens: 0,
+            description_tokens: 0,
             content_hash: String::new(),
             modified_at: None,
             folder_truncated: false,
+            in_git_repo: false,
         }
     }
 
@@ -163,6 +173,36 @@ mod tests {
         let candidate = base_candidate("my-notes", "Claude Code");
         let kind = classify_source_kind(&candidate, &empty_lock());
         assert_eq!(kind, SourceKind::Manual);
+    }
+
+    #[test]
+    fn plain_directory_in_a_git_repo_is_in_repo() {
+        let mut candidate = base_candidate("my-notes", "Claude Code");
+        candidate.in_git_repo = true;
+        let kind = classify_source_kind(&candidate, &empty_lock());
+        assert_eq!(kind, SourceKind::InRepo);
+    }
+
+    #[test]
+    fn lock_file_entry_beats_in_git_repo() {
+        let mut candidate = base_candidate("write-tests", "Claude Code");
+        candidate.in_git_repo = true;
+        let mut lock = empty_lock();
+        lock.skills.insert(
+            "write-tests".to_string(),
+            crate::skills::lock_file::InstalledSkillEntry {
+                source: "obra/write-tests".to_string(),
+                source_type: "github".to_string(),
+                source_url: "https://github.com/obra/write-tests".to_string(),
+                skill_path: None,
+                skill_folder_hash: "abc".to_string(),
+                installed_at: "2024-01-01T00:00:00Z".to_string(),
+                updated_at: "2024-01-01T00:00:00Z".to_string(),
+            },
+        );
+
+        let kind = classify_source_kind(&candidate, &lock);
+        assert_eq!(kind, SourceKind::SkillsSh);
     }
 
     #[test]

@@ -218,6 +218,10 @@ struct SkillContentFacts {
     folder_bytes: u64,
     file_count: u32,
     skill_md_tokens: u32,
+    /// Token count of just `"{name}: {description}"` - the prompt cost the
+    /// model actually pays per turn, as opposed to `skill_md_tokens` which
+    /// counts the whole file.
+    description_tokens: u32,
     skill_md_line_count: usize,
     content_hash: String,
     modified_at: Option<String>,
@@ -247,6 +251,14 @@ fn compute_content_facts(
     let content = String::from_utf8_lossy(&bytes).into_owned();
     let skill_md_len = bytes.len() as u64;
     let frontmatter = parse_frontmatter(&content);
+    let name_for_tokens = frontmatter
+        .as_ref()
+        .and_then(|f| f.name.clone())
+        .unwrap_or_default();
+    let description_for_tokens = frontmatter
+        .as_ref()
+        .and_then(|f| f.description.clone())
+        .unwrap_or_default();
 
     // SKILL.md's own bytes count against the same folder budget: the walk
     // below re-reads/hashes it as part of the folder, so its remaining
@@ -265,6 +277,10 @@ fn compute_content_facts(
         folder_bytes: walk.total_bytes,
         file_count: walk.file_count,
         skill_md_tokens: count_tokens(&content, tokenizer),
+        description_tokens: count_tokens(
+            &format!("{name_for_tokens}: {description_for_tokens}"),
+            tokenizer,
+        ),
         skill_md_line_count: content.lines().count(),
         content_hash: content_hash(walk.hashable, MAX_FOLDER_BYTES),
         modified_at,
@@ -303,6 +319,7 @@ fn build_candidate(
     shared_root_has_lock_entry: bool,
     scope: &str,
     facts: &SkillContentFacts,
+    git_cache: &mut HashMap<PathBuf, bool>,
 ) -> SkillCandidate {
     // The lexical name this deployment was found under (e.g. a symlink
     // alias's own name), not the canonical target's directory name: it's
@@ -358,9 +375,11 @@ fn build_candidate(
         folder_bytes: facts.folder_bytes,
         file_count: facts.file_count,
         skill_md_tokens: facts.skill_md_tokens,
+        description_tokens: facts.description_tokens,
         content_hash: facts.content_hash.clone(),
         modified_at: facts.modified_at.clone(),
         folder_truncated: facts.folder_truncated,
+        in_git_repo: in_git_repo(skill_dir, git_cache),
     }
 }
 
@@ -401,9 +420,11 @@ fn broken_symlink_candidate(
         folder_bytes: 0,
         file_count: 0,
         skill_md_tokens: 0,
+        description_tokens: 0,
         content_hash: String::new(),
         modified_at: None,
         folder_truncated: false,
+        in_git_repo: false,
     }
 }
 
@@ -451,6 +472,22 @@ fn shared_root_has_lock_entry(root: &agents::SkillRoot) -> bool {
     agents_root.join("agents.toml").exists() || agents_root.join("agents.lock").exists()
 }
 
+/// Walk `dir`'s ancestors (including `dir` itself) for a `.git` entry (file
+/// or directory - a worktree's `.git` is a file), stopping at the
+/// filesystem root. Memoized per directory in `cache` so a root holding many
+/// skills doesn't re-walk the same ancestors for each one.
+fn in_git_repo(dir: &Path, cache: &mut HashMap<PathBuf, bool>) -> bool {
+    if let Some(hit) = cache.get(dir) {
+        return *hit;
+    }
+    let result = dir.join(".git").exists()
+        || dir
+            .parent()
+            .is_some_and(|parent| in_git_repo(parent, cache));
+    cache.insert(dir.to_path_buf(), result);
+    result
+}
+
 fn scope_str(root: &agents::SkillRoot) -> &'static str {
     if root.label == "parked" {
         // Distinct from "global" so a parked skill's deployment doesn't get
@@ -482,6 +519,7 @@ fn discover_with_facts_cache(
 ) {
     let mut out = Vec::new();
     let mut facts_cache: HashMap<PathBuf, Arc<SkillContentFacts>> = HashMap::new();
+    let mut git_cache: HashMap<PathBuf, bool> = HashMap::new();
     let tokenizer = tiktoken_rs::cl100k_base().ok();
 
     for root in agents::skill_roots(home, project_paths) {
@@ -518,6 +556,7 @@ fn discover_with_facts_cache(
                                 has_lock_entry,
                                 scope,
                                 &facts,
+                                &mut git_cache,
                             ));
                         }
                     }
@@ -564,6 +603,7 @@ fn discover_with_facts_cache(
                     has_lock_entry,
                     scope,
                     &facts,
+                    &mut git_cache,
                 ));
             }
         }
@@ -618,9 +658,11 @@ fn discover_with_facts_cache(
             folder_bytes: facts.folder_bytes,
             file_count: facts.file_count,
             skill_md_tokens: facts.skill_md_tokens,
+            description_tokens: facts.description_tokens,
             content_hash: facts.content_hash.clone(),
             modified_at: facts.modified_at.clone(),
             folder_truncated: facts.folder_truncated,
+            in_git_repo: in_git_repo(&plugin_skill.skill_dir, &mut git_cache),
         });
     }
 
@@ -853,6 +895,8 @@ mod tests {
         assert!(found.skill_md_tokens > 0);
         assert!(found.folder_bytes > 0);
         assert!(found.file_count > 0);
+        assert!(found.description_tokens > 0);
+        assert!(found.description_tokens < found.skill_md_tokens);
         assert!(!found.content_hash.is_empty());
         assert!(!found.folder_truncated);
     }
@@ -1086,5 +1130,44 @@ mod tests {
             .iter()
             .all(|c| c.content_hash == found[0].content_hash));
         assert_eq!(facts_cache.len(), 1);
+    }
+
+    #[test]
+    fn skill_inside_a_git_repo_is_flagged_from_a_grandparent_dot_git() {
+        let tmp = tempfile::tempdir().unwrap();
+        let home = tmp.path();
+        // The .git directory sits two levels above the skill folder, so the
+        // flag must come from walking ancestors, not just the immediate
+        // parent.
+        let repo_root = home.join("projects/my-repo");
+        fs::create_dir_all(repo_root.join(".git")).unwrap();
+        write_skill(
+            &repo_root.join(".claude/skills/tracked-skill"),
+            "tracked-skill",
+        );
+
+        let candidates = discover_skill_candidates(home, &[repo_root.clone()]);
+        let found = candidates
+            .iter()
+            .find(|c| c.name == "tracked-skill")
+            .expect("in-repo skill found");
+        assert!(found.in_git_repo);
+    }
+
+    #[test]
+    fn skill_outside_any_git_repo_is_not_flagged() {
+        let tmp = tempfile::tempdir().unwrap();
+        let home = tmp.path();
+        write_skill(
+            &home.join(".claude/skills/untracked-skill"),
+            "untracked-skill",
+        );
+
+        let candidates = discover_skill_candidates(home, &[]);
+        let found = candidates
+            .iter()
+            .find(|c| c.name == "untracked-skill")
+            .expect("skill found");
+        assert!(!found.in_git_repo);
     }
 }

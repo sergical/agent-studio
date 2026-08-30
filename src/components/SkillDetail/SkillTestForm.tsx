@@ -137,7 +137,7 @@ export function SkillTestForm({
             </select>
           ) : (
             <p className="skill-assistant-panel-note">
-              No tracked project is a git repository - only Scratch is available.
+              No tracked project is a git repository – only Scratch is available.
             </p>
           )}
           {targetKind === "in_place" && (

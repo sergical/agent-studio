@@ -52,7 +52,7 @@ export function SkillContent({ skill, resolvedTopSource }: SkillContentProps) {
         {isLoadingContent ? (
           <div className="skill-detail-content-loading">
             <span className="spinner" />
-            Loading content...
+            Loading content…
           </div>
         ) : skillContent ? (
           <pre className="skill-detail-content-text">{skillContent}</pre>

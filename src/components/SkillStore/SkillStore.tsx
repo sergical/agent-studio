@@ -225,7 +225,7 @@ export function SkillStore({ compact = false }: SkillStoreProps = {}) {
       isInstalling: true,
       skillName,
       stage: "starting",
-      message: "Starting installation...",
+      message: "Starting installation…",
     });
   }, []);
 
@@ -351,7 +351,7 @@ export function SkillStore({ compact = false }: SkillStoreProps = {}) {
             hasMore={hasMore}
             onLoadMore={loadMore}
             emptyMessage={
-              searchQuery ? "No skills found matching your search" : "Loading popular skills..."
+              searchQuery ? "No skills found matching your search" : "Loading popular skills…"
             }
           />
         ) : (

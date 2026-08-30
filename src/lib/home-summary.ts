@@ -4,7 +4,8 @@
 // separate from HomeView.tsx so they're unit-testable without React.
 // ============================================================================
 
-import { FIRST_CLASS_AGENTS } from "./skill-health";
+import { FIRST_CLASS_AGENTS, HEALTH_ISSUE_SEVERITY } from "./skill-health";
+import type { HealthIssue } from "./skill-health";
 import { ownSkillsView, pluginSkillsView } from "./skill-plugin-partition";
 import { invocationsInWindow } from "./skill-stats";
 import type { InstalledSkill, SkillInvocationStats, SkillSnapshot } from "./skill-types";
@@ -31,15 +32,6 @@ export interface HomeSummaryCounts {
 export function homeSummaryCounts(snapshot: SkillSnapshot): HomeSummaryCounts {
   const own = ownSkillsView(snapshot.skills);
 
-  const harnesses = new Set<string>();
-  for (const skill of own) {
-    for (const deployment of skill.deployments) {
-      if (FIRST_CLASS_AGENTS.some((agent) => agent === deployment.agent)) {
-        harnesses.add(deployment.agent);
-      }
-    }
-  }
-
   const usesIn30Days = snapshot.invocations.reduce(
     (sum, stat) => sum + invocationsInWindow(stat, "30d"),
     0,
@@ -48,7 +40,7 @@ export function homeSummaryCounts(snapshot: SkillSnapshot): HomeSummaryCounts {
   return {
     skillCount: own.length,
     pluginSkillCount: pluginSkillsView(snapshot.skills).length,
-    harnessCount: harnesses.size,
+    harnessCount: harnessesPresent(snapshot).length,
     projectCount: snapshot.projects.length,
     usesIn30Days,
   };
@@ -117,4 +109,107 @@ export function recentlyUsedSkills(
   return rows
     .sort((a, b) => new Date(b.lastUsed).getTime() - new Date(a.lastUsed).getTime())
     .slice(0, n);
+}
+
+/** How Home's "Invocation" segment breaks down `skills`' own (non-plugin) skills by policy. */
+export interface HomeInvocationCounts {
+  both: number;
+  modelOnly: number;
+  userOnly: number;
+}
+
+/** Counts of own skills by `invocation` policy - "both" vs "model-only" vs "user-only". */
+export function homeInvocationCounts(skills: InstalledSkill[]): HomeInvocationCounts {
+  const own = ownSkillsView(skills);
+  const counts: HomeInvocationCounts = { both: 0, modelOnly: 0, userOnly: 0 };
+  for (const skill of own) {
+    if (skill.invocation === "both") counts.both += 1;
+    else if (skill.invocation === "model-only") counts.modelOnly += 1;
+    else counts.userOnly += 1;
+  }
+  return counts;
+}
+
+/** Home's per-turn prompt cost breakdown, split into skills used vs. idle in the last 30 days. */
+export interface HomePromptCost {
+  totalTokens: number;
+  usedTokens: number;
+  usedCount: number;
+  idleTokens: number;
+  idleCount: number;
+}
+
+/**
+ * The prompt cost the model actually pays: only skills the model can invoke
+ * (`invocation` is `"both"` or `"model-only"`) contribute their
+ * `description_tokens` - a `"user-only"` skill is never in the model's
+ * context to begin with. Split into "used" (invoked at least once in the
+ * last 30 days) and "idle" (not).
+ */
+export function homePromptCost(
+  skills: InstalledSkill[],
+  invocations: SkillInvocationStats[],
+): HomePromptCost {
+  const last30DaysBySkill = new Map(invocations.map((stat) => [stat.skill, stat.last_30_days]));
+  const cost: HomePromptCost = {
+    totalTokens: 0,
+    usedTokens: 0,
+    usedCount: 0,
+    idleTokens: 0,
+    idleCount: 0,
+  };
+
+  for (const skill of skills) {
+    if (skill.invocation !== "both" && skill.invocation !== "model-only") continue;
+    cost.totalTokens += skill.description_tokens;
+    const usedIn30Days = (last30DaysBySkill.get(skill.name) ?? 0) > 0;
+    if (usedIn30Days) {
+      cost.usedTokens += skill.description_tokens;
+      cost.usedCount += 1;
+    } else {
+      cost.idleTokens += skill.description_tokens;
+      cost.idleCount += 1;
+    }
+  }
+
+  return cost;
+}
+
+/**
+ * Own skills with no invocation in the last 30 days, model-invocable
+ * (`"both"` or `"model-only"`) first, then `"user-only"`, alphabetical
+ * within each group - the order Home's "Unused" section and Learn's
+ * "unused" section list them in.
+ */
+export function unusedSkills(
+  skills: InstalledSkill[],
+  invocations: SkillInvocationStats[],
+): InstalledSkill[] {
+  const last30DaysBySkill = new Map(invocations.map((stat) => [stat.skill, stat.last_30_days]));
+  const own = ownSkillsView(skills).filter(
+    (skill) => (last30DaysBySkill.get(skill.name) ?? 0) === 0,
+  );
+
+  return own.sort((a, b) => {
+    const aModelInvocable = a.invocation !== "user-only";
+    const bModelInvocable = b.invocation !== "user-only";
+    if (aModelInvocable !== bModelInvocable) return aModelInvocable ? -1 : 1;
+    return a.name.localeCompare(b.name);
+  });
+}
+
+/** Home's "Needs attention" issues, split by severity - errors ("broken") vs. warnings. */
+export interface HomeAttentionGroups {
+  broken: HealthIssue[];
+  warnings: HealthIssue[];
+}
+
+/** Splits `issues` into `broken` (severity `"error"`) and `warnings` (severity `"warning"`). */
+export function attentionGroups(issues: HealthIssue[]): HomeAttentionGroups {
+  const groups: HomeAttentionGroups = { broken: [], warnings: [] };
+  for (const issue of issues) {
+    if (HEALTH_ISSUE_SEVERITY[issue.kind] === "error") groups.broken.push(issue);
+    else groups.warnings.push(issue);
+  }
+  return groups;
 }

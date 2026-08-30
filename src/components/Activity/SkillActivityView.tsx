@@ -122,7 +122,9 @@ export function SkillActivityView({ snapshot, onSelectSkill }: SkillActivityView
                     className="activity-skill-table-row"
                     onClick={() => onSelectSkill(stat.skill)}
                   >
-                    <span className="activity-skill-table-name">{stat.skill}</span>
+                    <span className="activity-skill-table-name" title={stat.skill}>
+                      {stat.skill}
+                    </span>
                     <span className="activity-skill-table-last-used">
                       {stat.last_used ? formatRelativeTime(stat.last_used) : "never"}
                     </span>

@@ -75,8 +75,8 @@ export function SkillsView({ snapshot, onSelectSkill }: SkillsViewProps) {
   );
   const issues = useMemo(() => collectDashboardIssues(ownSkillsView(allSkills)), [allSkills]);
   const filtered = useMemo(
-    () => applySkillListFilter(baseSkills, filter, issues),
-    [baseSkills, filter, issues],
+    () => applySkillListFilter(baseSkills, filter, issues, snapshot?.invocations),
+    [baseSkills, filter, issues, snapshot?.invocations],
   );
 
   const handleAddProject = async () => {

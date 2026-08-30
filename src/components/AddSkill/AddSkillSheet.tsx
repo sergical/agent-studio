@@ -387,7 +387,7 @@ export function AddSkillSheet() {
                       >
                         {userAddedProjects.map((p) => (
                           <option key={p} value={p}>
-                            {p.split("/").pop()} - {p}
+                            {p.split("/").pop()} – {p}
                           </option>
                         ))}
                       </select>

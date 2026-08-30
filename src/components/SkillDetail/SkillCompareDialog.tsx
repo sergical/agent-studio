@@ -13,8 +13,9 @@ import { unifiedSkillMdDiff } from "../../lib/skill-md-diff";
 import { ownDeployments, skillMdPathForDeployment } from "../../lib/skill-plugin-partition";
 import { pickCompareDefaults, resolveCompareSelection } from "../../lib/skill-coverage";
 import type { Deployment, InstalledSkill } from "../../lib/skill-types";
+import { diffTheme } from "../../lib/theme";
+import { useAppStore } from "../../store/appStore";
 import { SelectControl } from "../ui/SelectControl";
-import { currentTheme } from "./SkillRunDiff";
 
 interface SkillCompareDialogProps {
   skill: InstalledSkill;
@@ -160,6 +161,7 @@ function SkillCompareBody({
   leftState: SideState;
   rightState: SideState;
 }) {
+  const resolvedTheme = useAppStore((state) => state.resolvedTheme);
   if (leftState.status === "error") {
     return (
       <p className="skill-compare-dialog-error">
@@ -184,5 +186,5 @@ function SkillCompareBody({
     return <p className="skill-compare-dialog-same">These copies are the same.</p>;
   }
   const diff = unifiedSkillMdDiff(leftState.content, rightState.content);
-  return <PatchDiff patch={diff} options={{ theme: currentTheme() }} />;
+  return <PatchDiff patch={diff} options={{ theme: diffTheme(resolvedTheme) }} />;
 }

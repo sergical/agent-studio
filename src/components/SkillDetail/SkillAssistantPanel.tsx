@@ -8,7 +8,6 @@
 // ============================================================================
 
 import { Suspense, lazy, useEffect, useRef, useState } from "react";
-import { Maximize2, Minimize2 } from "lucide-react";
 import type { SkillAgentRunState } from "../../hooks/useSkillAgentRun";
 import { useSkillAgentRun } from "../../hooks/useSkillAgentRun";
 import { useSkillSnapshot } from "../../hooks/useSkillSnapshot";
@@ -163,8 +162,6 @@ export function SkillAssistantPanel({
   onCloseHistory,
 }: SkillAssistantPanelProps) {
   const addToast = useAppStore((state) => state.addToast);
-  const isAssistantExpanded = useAppStore((state) => state.isAssistantExpanded);
-  const setIsAssistantExpanded = useAppStore((state) => state.setIsAssistantExpanded);
   const { snapshot } = useSkillSnapshot();
   const visibleAgents = visibleAgentsFor(skill);
   const defaultHarness: AgentId =
@@ -687,20 +684,6 @@ export function SkillAssistantPanel({
 
   return (
     <div className="skill-assistant-panel">
-      <div className="skill-assistant-panel-header">
-        <div className="skill-assistant-panel-label">Assistant</div>
-        <button
-          type="button"
-          className="skill-assistant-panel-expand"
-          onClick={() => setIsAssistantExpanded(!isAssistantExpanded)}
-          aria-pressed={isAssistantExpanded}
-          title={isAssistantExpanded ? "Collapse" : "Expand"}
-        >
-          {isAssistantExpanded ? <Minimize2 size={13} /> : <Maximize2 size={13} />}
-          {isAssistantExpanded ? "Collapse" : "Expand"}
-        </button>
-      </div>
-
       <SelectControl
         ariaLabel="Harness"
         value={harness}

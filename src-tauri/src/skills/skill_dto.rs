@@ -178,6 +178,10 @@ pub struct InstalledSkill {
     /// Token count of SKILL.md's text (cl100k_base), from the first deployment.
     #[serde(default)]
     pub skill_md_tokens: u32,
+    /// Token count of just `"{name}: {description}"`, from the first
+    /// deployment - the prompt cost the model actually pays per turn.
+    #[serde(default)]
+    pub description_tokens: u32,
     /// Total size in bytes of the skill folder, from the first deployment.
     #[serde(default)]
     pub folder_bytes: u64,

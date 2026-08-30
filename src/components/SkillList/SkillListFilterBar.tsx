@@ -13,7 +13,7 @@ import {
   type SkillListFilter,
 } from "../../lib/skill-list-filter";
 import { shortProjectPath } from "../../lib/skill-path-format";
-import type { SkillSnapshot, SkillSourceKind } from "../../lib/skill-types";
+import type { InstalledSkill, SkillSnapshot, SkillSourceKind } from "../../lib/skill-types";
 import { SOURCE_KIND_LABELS } from "../../lib/skill-types";
 import { HarnessIcon, harnessIdFromLabel } from "../ui/HarnessIcon";
 import {
@@ -26,12 +26,30 @@ import {
 import { SelectControl } from "../ui/SelectControl";
 import { SwitchControl } from "../ui/SwitchControl";
 
-const SOURCE_KINDS: SkillSourceKind[] = ["dotagents", "skills-sh", "plugin", "manual", "fork"];
+const SOURCE_KINDS: SkillSourceKind[] = [
+  "dotagents",
+  "skills-sh",
+  "plugin",
+  "in-repo",
+  "manual",
+  "fork",
+];
 
 const SOURCE_OPTIONS: { value: string; label: string }[] = [
   { value: "", label: "Any source" },
   ...SOURCE_KINDS.map((source) => ({ value: source, label: SOURCE_KIND_LABELS[source] })),
 ];
+
+const INVOCATION_LABELS = {
+  both: "You or the model",
+  "model-only": "Model only",
+  "user-only": "You only",
+} as const satisfies Record<InstalledSkill["invocation"], string>;
+
+const USAGE_LABELS = {
+  "used-30d": "Used in 30 days",
+  "unused-30d": "Not used in 30 days",
+} as const satisfies Record<NonNullable<SkillListFilter["usage"]>, string>;
 
 interface SkillListFilterBarProps {
   filter: SkillListFilter;
@@ -58,12 +76,24 @@ function projectScopeLabel(filter: SkillListFilter): string {
   return basename(filter.scope.project);
 }
 
+/** One removable chip in the active-filters row: a label and an "×" that clears that field. */
+function ActiveChip({ label, onClear }: { label: string; onClear: () => void }) {
+  return (
+    <button className="skill-list-filter-active-chip" onClick={onClear}>
+      {label}
+      <X size={11} />
+    </button>
+  );
+}
+
 /** How many of `filter`'s optional fields are set - the chip row only shows once more than one is active. */
 function activeFilterCount(filter: SkillListFilter): number {
   let count = filter.scope !== "all" ? 1 : 0;
   if (filter.harness) count += 1;
   if (filter.source) count += 1;
   if (filter.issue) count += 1;
+  if (filter.invocation) count += 1;
+  if (filter.usage) count += 1;
   if (filter.query.trim()) count += 1;
   return count;
 }
@@ -140,7 +170,9 @@ export function SkillListFilterBar({
             >
               {projects.map((path) => (
                 <MenuRadioItem key={path} value={path} closeOnClick className="menu-control-item">
-                  <span className="menu-control-item-text">{basename(path)}</span>
+                  <span className="menu-control-item-text" title={basename(path)}>
+                    {basename(path)}
+                  </span>
                   <span className="menu-control-item-secondary">{shortProjectPath(path)}</span>
                 </MenuRadioItem>
               ))}
@@ -209,50 +241,52 @@ export function SkillListFilterBar({
       {activeCount > 1 && (
         <div className="skill-list-filter-active-chips">
           {filter.scope !== "all" && (
-            <button className="skill-list-filter-active-chip" onClick={() => setScope("all")}>
-              {filter.scope === "global"
-                ? "Global"
-                : filter.scope === "parked"
-                  ? "Parked"
-                  : projectScopeLabel(filter)}
-              <X size={11} />
-            </button>
+            <ActiveChip
+              label={
+                filter.scope === "global"
+                  ? "Global"
+                  : filter.scope === "parked"
+                    ? "Parked"
+                    : projectScopeLabel(filter)
+              }
+              onClear={() => setScope("all")}
+            />
           )}
           {filter.harness && (
-            <button
-              className="skill-list-filter-active-chip"
-              onClick={() => onChange({ ...filter, harness: undefined })}
-            >
-              {filter.harness}
-              <X size={11} />
-            </button>
+            <ActiveChip
+              label={filter.harness}
+              onClear={() => onChange({ ...filter, harness: undefined })}
+            />
           )}
           {filter.source && (
-            <button
-              className="skill-list-filter-active-chip"
-              onClick={() => onChange({ ...filter, source: undefined })}
-            >
-              {SOURCE_KIND_LABELS[filter.source]}
-              <X size={11} />
-            </button>
+            <ActiveChip
+              label={SOURCE_KIND_LABELS[filter.source]}
+              onClear={() => onChange({ ...filter, source: undefined })}
+            />
           )}
           {filter.issue && (
-            <button
-              className="skill-list-filter-active-chip"
-              onClick={() => onChange({ ...filter, issue: undefined })}
-            >
-              {filter.issue === "any" ? "Has issues" : filter.issue}
-              <X size={11} />
-            </button>
+            <ActiveChip
+              label={filter.issue === "any" ? "Has issues" : filter.issue}
+              onClear={() => onChange({ ...filter, issue: undefined })}
+            />
+          )}
+          {filter.invocation && (
+            <ActiveChip
+              label={INVOCATION_LABELS[filter.invocation]}
+              onClear={() => onChange({ ...filter, invocation: undefined })}
+            />
+          )}
+          {filter.usage && (
+            <ActiveChip
+              label={USAGE_LABELS[filter.usage]}
+              onClear={() => onChange({ ...filter, usage: undefined })}
+            />
           )}
           {filter.query.trim() && (
-            <button
-              className="skill-list-filter-active-chip"
-              onClick={() => onChange({ ...filter, query: "" })}
-            >
-              “{filter.query.trim()}”
-              <X size={11} />
-            </button>
+            <ActiveChip
+              label={`“${filter.query.trim()}”`}
+              onClear={() => onChange({ ...filter, query: "" })}
+            />
           )}
           <button
             className="skill-list-filter-clear-all"

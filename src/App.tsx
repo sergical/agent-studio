@@ -11,6 +11,7 @@ import { AddSkillSheet } from "./components/AddSkill/AddSkillSheet";
 import { Sidebar } from "./components/Sidebar/Sidebar";
 import { SkillActivityView } from "./components/Activity/SkillActivityView";
 import { HomeView } from "./components/Home/HomeView";
+import { LearnView } from "./components/Learn/LearnView";
 import { SkillsView } from "./components/SkillList/SkillsView";
 import { PacksView } from "./components/Packs/PacksView";
 import { SkillPage } from "./components/SkillDetail/SkillPage";
@@ -109,6 +110,8 @@ function App() {
     main = <SkillActivityView snapshot={snapshot} onSelectSkill={onSelectSkill} />;
   } else if (activeView.kind === "packs") {
     main = <PacksView />;
+  } else if (activeView.kind === "learn") {
+    main = <LearnView section={activeView.section} />;
   } else {
     const skill = snapshot?.skills.find((s) => s.name === activeView.name) ?? null;
     const invocationStats = snapshot?.invocations.find((s) => s.skill === activeView.name);

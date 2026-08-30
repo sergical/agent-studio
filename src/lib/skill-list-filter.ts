@@ -9,7 +9,7 @@
 import type { HealthIssueKind } from "./skill-health";
 import { collectDashboardIssues } from "./skill-health";
 import { pluginDeployments } from "./skill-plugin-partition";
-import type { InstalledSkill, SkillSourceKind } from "./skill-types";
+import type { InstalledSkill, SkillInvocationStats, SkillSourceKind } from "./skill-types";
 
 /** Which own skills `applySkillListFilter` considers before the other fields narrow it further. */
 export type SkillListFilterScope = "all" | "global" | "parked" | { project: string };
@@ -22,6 +22,10 @@ export interface SkillListFilter {
   source?: SkillSourceKind;
   /** `"any"` keeps every skill with at least one issue, regardless of kind - Home's "Show all N". */
   issue?: HealthIssueKind | "any";
+  /** Matches `skill.invocation` exactly. */
+  invocation?: InstalledSkill["invocation"];
+  /** Whether the skill had any invocations in the last 30 days. */
+  usage?: "used-30d" | "unused-30d";
   query: string;
 }
 
@@ -68,12 +72,14 @@ function matchesQuery(skill: InstalledSkill, query: string): boolean {
  * query. `issues` should be `collectDashboardIssues(skills)` (or equivalent)
  * from the caller, computed once and shared - passed in rather than
  * recomputed here so a caller filtering a large list repeatedly doesn't pay
- * for it more than once per render.
+ * for it more than once per render. `invocations` is `SkillSnapshot.invocations`
+ * (or equivalent), needed only when `filter.usage` is set.
  */
 export function applySkillListFilter(
   skills: InstalledSkill[],
   filter: SkillListFilter,
   issues = collectDashboardIssues(skills),
+  invocations?: SkillInvocationStats[],
 ): InstalledSkill[] {
   const skillsWithIssue = filter.issue
     ? new Set(
@@ -81,6 +87,9 @@ export function applySkillListFilter(
           .filter((i) => filter.issue === "any" || i.kind === filter.issue)
           .map((i) => i.skill.name),
       )
+    : null;
+  const usesIn30DaysBySkill = filter.usage
+    ? new Map(invocations?.map((stat) => [stat.skill, stat.last_30_days]))
     : null;
 
   return skills.filter((skill) => {
@@ -96,6 +105,12 @@ export function applySkillListFilter(
       return false;
     }
     if (skillsWithIssue && !skillsWithIssue.has(skill.name)) return false;
+    if (filter.invocation && skill.invocation !== filter.invocation) return false;
+    if (usesIn30DaysBySkill) {
+      const usedIn30Days = (usesIn30DaysBySkill.get(skill.name) ?? 0) > 0;
+      if (filter.usage === "used-30d" && !usedIn30Days) return false;
+      if (filter.usage === "unused-30d" && usedIn30Days) return false;
+    }
     if (!matchesQuery(skill, filter.query)) return false;
     return true;
   });

@@ -57,6 +57,7 @@ fn new_installed_skill(
         description: None,
         spec_violations: Vec::new(),
         skill_md_tokens: 0,
+        description_tokens: 0,
         folder_bytes: 0,
         file_count: 0,
         content_hash: String::new(),
@@ -109,6 +110,7 @@ pub fn assemble_installed_skills(
         // out the skill's real hash/tokens/description/etc.
         if !candidate.content_hash.is_empty() && record.content_hash.is_empty() {
             record.skill_md_tokens = candidate.skill_md_tokens;
+            record.description_tokens = candidate.description_tokens;
             record.folder_bytes = candidate.folder_bytes;
             record.file_count = candidate.file_count;
             record.content_hash = candidate.content_hash.clone();
@@ -193,9 +195,11 @@ mod tests {
             folder_bytes: 0,
             file_count: 0,
             skill_md_tokens: 0,
+            description_tokens: 0,
             content_hash: String::new(),
             modified_at: None,
             folder_truncated: false,
+            in_git_repo: false,
         }
     }
 
@@ -320,6 +324,7 @@ mod tests {
         let mut valid = candidate("my-skill", "Codex");
         valid.content_hash = "hash-codex".to_string();
         valid.skill_md_tokens = 42;
+        valid.description_tokens = 7;
         valid.folder_bytes = 100;
         valid.file_count = 3;
 
@@ -328,6 +333,7 @@ mod tests {
         assert_eq!(skills[0].deployments.len(), 2);
         assert_eq!(skills[0].content_hash, "hash-codex");
         assert_eq!(skills[0].skill_md_tokens, 42);
+        assert_eq!(skills[0].description_tokens, 7);
         assert_eq!(skills[0].folder_bytes, 100);
         assert_eq!(skills[0].file_count, 3);
     }

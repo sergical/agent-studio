@@ -182,52 +182,56 @@ export function SkillListTable({
   return (
     <div className="skill-list-table" onKeyDown={handleTableKeyDown}>
       <div className="skill-list-table-toolbar">
+        <div className="skill-list-table-toolbar-select-slot">
+          {selectionMode ? (
+            <CheckboxControl
+              checked={allVisibleSelected}
+              onCheckedChange={handleHeaderCheckboxChange}
+              disabled={rows.length === 0}
+              ariaLabel="Select all visible skills"
+            />
+          ) : (
+            <button className="skill-list-table-select-button" onClick={enterSelectionMode}>
+              Select
+            </button>
+          )}
+        </div>
         {selectionMode ? (
-          <CheckboxControl
-            checked={allVisibleSelected}
-            onCheckedChange={handleHeaderCheckboxChange}
-            disabled={rows.length === 0}
-            ariaLabel="Select all visible skills"
-          />
+          <div className="skill-list-table-selection-bar">
+            <span>{selectedPaths.size} selected</span>
+            <button
+              className="skill-list-table-selection-bar-create"
+              onClick={() => setShowPackPrompt(true)}
+              disabled={selectedPaths.size === 0}
+            >
+              Create pack
+            </button>
+            <button className="skill-list-table-selection-bar-clear" onClick={exitSelectionMode}>
+              Cancel
+            </button>
+          </div>
         ) : (
-          <button className="skill-list-table-select-button" onClick={enterSelectionMode}>
-            Select
-          </button>
+          <>
+            <div className="skill-list-table-search">
+              <Search size={13} />
+              <input
+                className="text-control"
+                value={query}
+                onChange={(e) => setQuery(e.target.value)}
+                placeholder="Filter by name or description…"
+              />
+            </div>
+            <SelectControl
+              value={sort}
+              onValueChange={(v) => {
+                if (isSortMode(v)) setSort(v);
+              }}
+              items={SORT_ITEMS}
+              ariaLabel="Sort"
+            />
+          </>
         )}
-        <div className="skill-list-table-search">
-          <Search size={13} />
-          <input
-            className="text-control"
-            value={query}
-            onChange={(e) => setQuery(e.target.value)}
-            placeholder="Filter by name or description…"
-          />
-        </div>
-        <SelectControl
-          value={sort}
-          onValueChange={(v) => {
-            if (isSortMode(v)) setSort(v);
-          }}
-          items={SORT_ITEMS}
-          ariaLabel="Sort"
-        />
       </div>
-
-      {selectionMode && (
-        <div className="skill-list-table-selection-bar">
-          <span>{selectedPaths.size} selected</span>
-          <button
-            className="skill-list-table-selection-bar-create"
-            onClick={() => setShowPackPrompt(true)}
-            disabled={selectedPaths.size === 0}
-          >
-            Create pack
-          </button>
-          <button className="skill-list-table-selection-bar-clear" onClick={exitSelectionMode}>
-            Cancel
-          </button>
-        </div>
-      )}
 
       {rows.length === 0 ? (
         <div className="skill-list-table-empty">
@@ -302,7 +306,9 @@ export function SkillListTable({
                       </span>
                     )}
                   </span>
-                  <span className="skill-list-table-description">{skill.description ?? ""}</span>
+                  <span className="skill-list-table-description" title={skill.description ?? ""}>
+                    {skill.description ?? ""}
+                  </span>
                   {showPluginVersion ? (
                     <span className="skill-list-table-chips">
                       {skill.deployments.map((d, i) => (

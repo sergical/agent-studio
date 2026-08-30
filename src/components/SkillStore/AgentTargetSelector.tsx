@@ -75,7 +75,7 @@ export function AgentTargetSelector({
   if (isLoading) {
     return (
       <div className="agent-selector agent-selector-loading">
-        <span>Loading agents...</span>
+        <span>Loading agents…</span>
       </div>
     );
   }

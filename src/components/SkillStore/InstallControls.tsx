@@ -194,7 +194,7 @@ export function InstallControls({
                   >
                     {availableProjects.map((p) => (
                       <option key={p} value={p}>
-                        {p.split("/").pop()} - {p}
+                        {p.split("/").pop()} – {p}
                       </option>
                     ))}
                   </select>
@@ -229,7 +229,7 @@ export function InstallControls({
             {isInstalling ? (
               <>
                 <span className="spinner" />
-                Installing...
+                Installing…
               </>
             ) : (
               <>
@@ -254,7 +254,7 @@ export function InstallControls({
           {isUpdating ? (
             <>
               <span className="spinner" />
-              Updating...
+              Updating…
             </>
           ) : (
             <>
@@ -275,7 +275,7 @@ export function InstallControls({
             {isRemoving ? (
               <>
                 <span className="spinner" />
-                Removing...
+                Removing…
               </>
             ) : (
               "Confirm Remove"

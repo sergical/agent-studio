@@ -1,6 +1,11 @@
 import React from "react";
 import ReactDOM from "react-dom/client";
 import App from "./App";
+import { stampInitialTheme } from "./lib/theme";
+
+// Stamped before React renders, so the app never flashes the wrong palette
+// on first paint.
+stampInitialTheme();
 
 // Simple error boundary for debugging
 class ErrorBoundary extends React.Component<

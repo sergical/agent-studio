@@ -39,6 +39,7 @@ function fixtureSkill(overrides: Partial<InstalledSkill> = {}): InstalledSkill {
     has_spec: false,
     spec_violations: [],
     skill_md_tokens: 0,
+    description_tokens: 0,
     folder_bytes: 0,
     file_count: 0,
     content_hash: "",

@@ -201,7 +201,11 @@ function DeploymentRow({
         {projectName && <span className="skill-locations-row-project">{projectName}</span>}
         {harnessId && <HarnessIcon harness={harnessId} size={16} />}
         <span className="skill-locations-row-name">{harnessDisplayName(deployment)}</span>
-        {relation && <span className="skill-locations-row-relation">{relation}</span>}
+        {relation && (
+          <span className="skill-locations-row-relation" title={relation}>
+            {relation}
+          </span>
+        )}
         <LinkChip deployment={deployment} />
         {deployment.plugin && (
           <span className="skill-locations-row-relation">

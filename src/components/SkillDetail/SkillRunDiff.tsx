@@ -5,6 +5,8 @@
 
 import { PatchDiff } from "@pierre/diffs/react";
 import type { SkillRunTargetKind } from "../../lib/skill-run-target-types";
+import { diffTheme } from "../../lib/theme";
+import { useAppStore } from "../../store/appStore";
 
 interface SkillRunDiffProps {
   projectLabel: string;
@@ -13,11 +15,6 @@ interface SkillRunDiffProps {
   isBusy: boolean;
   onPrimary: () => void;
   onSecondary: () => void;
-}
-
-/** App CSS (src/App.css) is dark by default and light only under `:root[data-theme="light"]`. Shared with `SkillCompareDialog`, the other `PatchDiff` caller. */
-export function currentTheme(): "github-light" | "github-dark" {
-  return document.documentElement.dataset.theme === "light" ? "github-light" : "github-dark";
 }
 
 /**
@@ -34,7 +31,8 @@ export function SkillRunDiff({
   onPrimary,
   onSecondary,
 }: SkillRunDiffProps) {
-  const theme = currentTheme();
+  const resolvedTheme = useAppStore((state) => state.resolvedTheme);
+  const theme = diffTheme(resolvedTheme);
   const primaryLabel = targetKind === "worktree" ? "Apply to project" : "Keep";
   const secondaryLabel = targetKind === "worktree" ? "Discard" : "Revert";
 

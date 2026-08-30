@@ -85,7 +85,9 @@ function ToolCallBlock({ block }: { block: Extract<TranscriptBlock, { kind: "too
           size={14}
           className={`skill-agent-tool-row-chevron ${isOpen ? "open" : ""}`}
         />
-        <span className="skill-agent-tool-row-name">{block.name}</span>
+        <span className="skill-agent-tool-row-name" title={block.name}>
+          {block.name}
+        </span>
         <span className="skill-agent-tool-row-summary">{block.summary}</span>
       </button>
       {isOpen && block.detail && <pre className="skill-agent-tool-row-detail">{block.detail}</pre>}
@@ -131,7 +133,9 @@ export function SkillAgentTranscript({ state }: SkillAgentTranscriptProps) {
         if (block.kind === "tool_result") {
           return (
             <div key={block.id} className="skill-agent-tool-row">
-              <span className="skill-agent-tool-row-name">{block.name}</span>
+              <span className="skill-agent-tool-row-name" title={block.name}>
+                {block.name}
+              </span>
               <span className="skill-agent-tool-row-summary">{block.summary}</span>
             </div>
           );

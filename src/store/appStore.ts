@@ -9,6 +9,15 @@ import type { SkillListFilter } from "../lib/skill-list-filter";
 import { USAGE_WINDOWS } from "../lib/skill-stats";
 import type { UsageWindow } from "../lib/skill-stats";
 import type { Toast } from "../lib/skill-types";
+import {
+  loadStoredTheme,
+  resolveTheme,
+  stampTheme,
+  systemPrefersDark,
+  THEME_STORAGE_KEY,
+  watchSystemTheme,
+} from "../lib/theme";
+import type { ResolvedTheme, Theme } from "../lib/theme";
 
 // ============================================================================
 // Route State
@@ -25,11 +34,15 @@ import type { Toast } from "../lib/skill-types";
  * and detail; `skill` is the full-page view of one installed skill, opened
  * from any other view.
  */
+/** One of Learn's explainer sections, deep-linkable from Home and elsewhere. */
+export type LearnSection = "broken" | "invoke" | "cost" | "unused";
+
 export type ActiveView =
   | { kind: "home" }
   | { kind: "skills" }
   | { kind: "activity" }
   | { kind: "packs" }
+  | { kind: "learn"; section?: LearnSection }
   | {
       kind: "skill";
       name: string;
@@ -95,12 +108,18 @@ interface AppState {
   usageWindow: UsageWindow;
   setUsageWindow: (window: UsageWindow) => void;
 
-  // === Skill Page Assistant Panel ===
-  // Whether the skill page's assistant panel takes the full page width
-  // instead of its usual side column - kept here (not local component state)
-  // so it survives navigating between skills.
-  isAssistantExpanded: boolean;
-  setIsAssistantExpanded: (expanded: boolean) => void;
+  // === Skill Page Assistant Drawer ===
+  // Whether the skill page's assistant panel shows as a right-hand overlay
+  // drawer - kept here (not local component state) so it survives navigating
+  // between skills. Session-only: always starts closed.
+  isAssistantOpen: boolean;
+  setIsAssistantOpen: (open: boolean) => void;
+
+  // === Theme ===
+  theme: Theme;
+  /** What's actually painted right now - resolves "system" against the OS, and follows it live. */
+  resolvedTheme: ResolvedTheme;
+  setTheme: (theme: Theme) => void;
 
   // === Add-skill Sheet ===
   addSkillSheet: { open: boolean; prefill?: string };
@@ -165,6 +184,11 @@ function savePathList(key: string, paths: string[]): void {
     // Storage can be unavailable (quota, private mode); the list is only a convenience.
   }
 }
+
+/** Cleans up the previous `watchSystemTheme` listener - re-set on every `setTheme` call, so only one is ever live. */
+let systemThemeCleanup: (() => void) | null = null;
+
+const initialTheme = loadStoredTheme();
 
 // ============================================================================
 // Store Creation
@@ -265,8 +289,30 @@ export const useAppStore = create<AppState>((set, get) => ({
     set({ usageWindow: window });
   },
 
-  isAssistantExpanded: false,
-  setIsAssistantExpanded: (expanded) => set({ isAssistantExpanded: expanded }),
+  isAssistantOpen: false,
+  setIsAssistantOpen: (open) => set({ isAssistantOpen: open }),
+
+  theme: initialTheme,
+  resolvedTheme: resolveTheme(initialTheme, systemPrefersDark()),
+  setTheme: (theme) => {
+    try {
+      localStorage.setItem(THEME_STORAGE_KEY, theme);
+    } catch {
+      // Storage can be unavailable (quota, private mode); the choice is only a convenience.
+    }
+    systemThemeCleanup?.();
+    systemThemeCleanup = null;
+    const resolved = resolveTheme(theme, systemPrefersDark());
+    stampTheme(resolved);
+    set({ theme, resolvedTheme: resolved });
+    if (theme === "system") {
+      systemThemeCleanup = watchSystemTheme((prefersDark) => {
+        const nowResolved: ResolvedTheme = prefersDark ? "dark" : "light";
+        stampTheme(nowResolved);
+        set({ resolvedTheme: nowResolved });
+      });
+    }
+  },
 
   addSkillSheet: { open: false },
   openAddSkillSheet: (prefill) => set({ addSkillSheet: { open: true, prefill } }),
@@ -286,6 +332,12 @@ export const useAppStore = create<AppState>((set, get) => ({
   enterSelectionMode: () => set({ selectionMode: true }),
   exitSelectionMode: () => set({ selectionMode: false, selectedSkillPaths: new Set() }),
 }));
+
+// Wires the live OS-follow listener when the stored preference is "system".
+// main.tsx's pre-paint stamp already painted the initial frame, so this
+// `setTheme` call re-stamps the same value (a no-op) - it exists only to
+// start the listener.
+useAppStore.getState().setTheme(useAppStore.getState().theme);
 
 // ============================================================================
 // Selectors (for performance optimization)

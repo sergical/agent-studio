@@ -1,7 +1,8 @@
 // ============================================================================
 // SkillPage - Full-page view of an installed skill: header (name, one
-// primary action, overflow menu, chips, metadata line), the "where it lives"
-// locations card, the SKILL.md card, and the assistant panel on the right.
+// primary action, an assistant trigger, overflow menu, chips, metadata
+// line), the "where it lives" locations card, the SKILL.md card, and the
+// assistant panel in a right-hand overlay drawer.
 // ============================================================================
 
 import { useCallback, useEffect, useRef, useState } from "react";
@@ -13,6 +14,7 @@ import type { InstalledSkill, SkillInvocationStats } from "../../lib/skill-types
 import type { ActiveView } from "../../store/appStore";
 import { useAppStore } from "../../store/appStore";
 import { InstalledSkillHeader } from "./InstalledSkillHeader";
+import { SkillAssistantDrawer } from "./SkillAssistantDrawer";
 import { SkillAssistantPanel } from "./SkillAssistantPanel";
 import { SkillCompareDialog } from "./SkillCompareDialog";
 import { SkillLocationsCard } from "./SkillLocationsCard";
@@ -32,9 +34,10 @@ interface SkillPageProps {
 
 /**
  * Full-page view of an installed skill: `InstalledSkillHeader` (which owns
- * the back button, name, primary action, overflow menu, chips, and metadata
- * line), then a two-column body - `SkillLocationsCard` and
- * `SkillMarkdownCard` on the left, `SkillAssistantPanel` on the right.
+ * the back button, name, primary action, assistant trigger, overflow menu,
+ * chips, and metadata line), then a single-column body - `SkillLocationsCard`
+ * and `SkillMarkdownCard` - with `SkillAssistantPanel` rendered inside a
+ * `SkillAssistantDrawer` overlay.
  */
 export function SkillPage({
   skill,
@@ -48,13 +51,15 @@ export function SkillPage({
   const openSkill = useAppStore((state) => state.openSkill);
   const activeView = useAppStore((state) => state.activeView);
   const clearSkillIntent = useAppStore((state) => state.clearSkillIntent);
-  const isAssistantExpanded = useAppStore((state) => state.isAssistantExpanded);
+  const isAssistantOpen = useAppStore((state) => state.isAssistantOpen);
+  const setIsAssistantOpen = useAppStore((state) => state.setIsAssistantOpen);
   const { snapshot } = useSkillSnapshot();
 
   const [isEditing, setIsEditing] = useState(false);
   const [isEditorDirty, setIsEditorDirty] = useState(false);
   const [isHistoryOpen, setIsHistoryOpen] = useState(false);
   const [isCompareOpen, setIsCompareOpen] = useState(false);
+  const assistantTriggerRef = useRef<HTMLButtonElement>(null);
 
   /** The skill the compare dialog was last shown for, so a plain skill switch (no fresh compare request) closes it instead of carrying it over. */
   const compareSkillNameRef = useRef<string | undefined>(skill?.name);
@@ -229,57 +234,65 @@ export function SkillPage({
         onRemoveComplete={onRemoveComplete}
         invocationStats={invocationStats}
         lastTest={snapshot?.last_test_by_skill[skill.name]}
-        onOpenHistory={() => setIsHistoryOpen(true)}
+        onOpenHistory={() => {
+          setIsHistoryOpen(true);
+          setIsAssistantOpen(true);
+        }}
+        isAssistantOpen={isAssistantOpen}
+        onOpenAssistant={() => setIsAssistantOpen(true)}
+        assistantTriggerRef={assistantTriggerRef}
       />
 
-      <div className={`skill-page-grid ${isAssistantExpanded ? "assistant-expanded" : ""}`}>
-        <div className="skill-page-column-main">
-          <SkillLocationsCard
-            skill={skill}
-            skillMdPath={!isPluginManaged ? skillMdPath : undefined}
-            skillMdDeployment={deployment ?? undefined}
-            onCompareCopies={() => setIsCompareOpen(true)}
-          />
+      <div className="skill-page-column-main">
+        <SkillLocationsCard
+          skill={skill}
+          skillMdPath={!isPluginManaged ? skillMdPath : undefined}
+          skillMdDeployment={deployment ?? undefined}
+          onCompareCopies={() => setIsCompareOpen(true)}
+        />
 
-          <SkillMarkdownCard
-            skill={skill}
-            isPluginManaged={isPluginManaged}
-            deploymentUnresolved={deploymentUnresolved}
-            ownDeploymentOptions={ownDeployments(skill)}
-            onSelectDeployment={(path) => openSkill(skill.name, path)}
-            rawContent={rawContent}
-            isLoadingContent={isLoadingContent}
-            loadError={loadError}
-            onRetry={handleRetryLoad}
-            isEditing={isEditing}
-            isEditorDirty={isEditorDirty}
-            onStartEdit={() => setIsEditing(true)}
-            isSaving={isSaving}
-            saveLabel={needsForkToSave ? "Fork and save" : "Save"}
-            onSave={handleSave}
-            onCancelEdit={() => {
-              setIsEditing(false);
-              setIsEditorDirty(false);
-            }}
-            onDirtyChange={setIsEditorDirty}
-          />
-        </div>
-
-        <div className="skill-page-column-side">
-          <SkillAssistantPanel
-            skill={skill}
-            rawContent={rawContent}
-            skillMdPath={skillMdPath}
-            isPluginManaged={isPluginManaged}
-            onApplied={handleApplied}
-            onDiskChanged={() => {
-              if (skillMdPath) loadContent(skillMdPath, false);
-            }}
-            showHistory={isHistoryOpen}
-            onCloseHistory={() => setIsHistoryOpen(false)}
-          />
-        </div>
+        <SkillMarkdownCard
+          skill={skill}
+          isPluginManaged={isPluginManaged}
+          deploymentUnresolved={deploymentUnresolved}
+          ownDeploymentOptions={ownDeployments(skill)}
+          onSelectDeployment={(path) => openSkill(skill.name, path)}
+          rawContent={rawContent}
+          isLoadingContent={isLoadingContent}
+          loadError={loadError}
+          onRetry={handleRetryLoad}
+          isEditing={isEditing}
+          isEditorDirty={isEditorDirty}
+          onStartEdit={() => setIsEditing(true)}
+          isSaving={isSaving}
+          saveLabel={needsForkToSave ? "Fork and save" : "Save"}
+          onSave={handleSave}
+          onCancelEdit={() => {
+            setIsEditing(false);
+            setIsEditorDirty(false);
+          }}
+          onDirtyChange={setIsEditorDirty}
+        />
       </div>
+
+      <SkillAssistantDrawer
+        isOpen={isAssistantOpen}
+        onClose={() => setIsAssistantOpen(false)}
+        triggerRef={assistantTriggerRef}
+      >
+        <SkillAssistantPanel
+          skill={skill}
+          rawContent={rawContent}
+          skillMdPath={skillMdPath}
+          isPluginManaged={isPluginManaged}
+          onApplied={handleApplied}
+          onDiskChanged={() => {
+            if (skillMdPath) loadContent(skillMdPath, false);
+          }}
+          showHistory={isHistoryOpen}
+          onCloseHistory={() => setIsHistoryOpen(false)}
+        />
+      </SkillAssistantDrawer>
 
       {isCompareOpen && (
         <SkillCompareDialog skill={skill} onClose={() => setIsCompareOpen(false)} />

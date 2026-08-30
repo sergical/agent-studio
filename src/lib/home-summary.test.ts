@@ -3,7 +3,15 @@
 // ============================================================================
 
 import { describe, expect, it } from "vitest";
-import { homeSummaryCounts, recentlyUsedSkills } from "./home-summary";
+import {
+  attentionGroups,
+  homeInvocationCounts,
+  homePromptCost,
+  homeSummaryCounts,
+  recentlyUsedSkills,
+  unusedSkills,
+} from "./home-summary";
+import type { HealthIssue } from "./skill-health";
 import type {
   Deployment,
   InstalledSkill,
@@ -36,6 +44,7 @@ function fixtureSkill(overrides: Partial<InstalledSkill> = {}): InstalledSkill {
     has_spec: false,
     spec_violations: [],
     skill_md_tokens: 0,
+    description_tokens: 0,
     folder_bytes: 0,
     file_count: 0,
     content_hash: "",
@@ -178,5 +187,78 @@ describe("recentlyUsedSkills", () => {
     const result = recentlyUsedSkills(skills, stats, 5);
     expect(result[0].projectLabel).toBe("repo-b");
     expect(result[0].usesIn30Days).toBe(7);
+  });
+});
+
+describe("homeInvocationCounts", () => {
+  it("counts own skills by invocation policy", () => {
+    const skills = [
+      fixtureSkill({ name: "a", invocation: "both" }),
+      fixtureSkill({ name: "b", invocation: "model-only" }),
+      fixtureSkill({ name: "c", invocation: "user-only" }),
+      fixtureSkill({ name: "d", invocation: "both" }),
+    ];
+    expect(homeInvocationCounts(skills)).toEqual({ both: 2, modelOnly: 1, userOnly: 1 });
+  });
+
+  it("excludes plugin-only skills", () => {
+    const skills = [
+      fixtureSkill({
+        name: "plugin-only",
+        invocation: "both",
+        deployments: [
+          fixtureDeployment({
+            agent: "Claude Code",
+            plugin: { name: "acme", harness: "claude-code" },
+          }),
+        ],
+      }),
+    ];
+    expect(homeInvocationCounts(skills)).toEqual({ both: 0, modelOnly: 0, userOnly: 0 });
+  });
+});
+
+describe("homePromptCost", () => {
+  it("sums description_tokens for model-invocable skills, split by 30-day use", () => {
+    const skills = [
+      fixtureSkill({ name: "used", invocation: "both", description_tokens: 10 }),
+      fixtureSkill({ name: "idle", invocation: "model-only", description_tokens: 20 }),
+      fixtureSkill({ name: "user-only", invocation: "user-only", description_tokens: 100 }),
+    ];
+    const invocations = [fixtureStats({ skill: "used", last_30_days: 3 })];
+    expect(homePromptCost(skills, invocations)).toEqual({
+      totalTokens: 30,
+      usedTokens: 10,
+      usedCount: 1,
+      idleTokens: 20,
+      idleCount: 1,
+    });
+  });
+});
+
+describe("unusedSkills", () => {
+  it("returns own skills with no 30-day use, model-invocable first then alphabetical", () => {
+    const skills = [
+      fixtureSkill({ name: "zebra", invocation: "user-only" }),
+      fixtureSkill({ name: "apple", invocation: "model-only" }),
+      fixtureSkill({ name: "mango", invocation: "both" }),
+      fixtureSkill({ name: "used-up", invocation: "both" }),
+    ];
+    const invocations = [fixtureStats({ skill: "used-up", last_30_days: 4 })];
+    const result = unusedSkills(skills, invocations);
+    expect(result.map((s) => s.name)).toEqual(["apple", "mango", "zebra"]);
+  });
+});
+
+describe("attentionGroups", () => {
+  it("splits issues into broken (error severity) and warnings", () => {
+    const skill = fixtureSkill();
+    const issues: HealthIssue[] = [
+      { kind: "broken-symlink", skill, detail: "target missing" },
+      { kind: "lock-only", skill, detail: "no deployment" },
+    ];
+    const groups = attentionGroups(issues);
+    expect(groups.broken.map((i) => i.kind)).toEqual(["broken-symlink"]);
+    expect(groups.warnings.map((i) => i.kind)).toEqual(["lock-only"]);
   });
 });

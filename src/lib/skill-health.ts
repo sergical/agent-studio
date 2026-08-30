@@ -48,7 +48,7 @@ export const HEALTH_ISSUE_KIND_ORDER: HealthIssueKind[] = [
  */
 export const HEALTH_ISSUE_SEVERITY = {
   "parked-but-reinstalled": "error",
-  duplicate: "error",
+  duplicate: "warning",
   "broken-symlink": "error",
   "spec-violation": "error",
   "lock-only": "warning",

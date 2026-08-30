@@ -4,7 +4,21 @@
 
 import { describe, expect, it } from "vitest";
 import { applySkillListFilter, defaultSkillListFilter } from "./skill-list-filter";
-import type { Deployment, InstalledSkill } from "./skill-types";
+import type { Deployment, InstalledSkill, SkillInvocationStats } from "./skill-types";
+
+function fixtureStats(overrides: Partial<SkillInvocationStats> = {}): SkillInvocationStats {
+  return {
+    skill: "find-bugs",
+    total: 0,
+    last_24_hours: 0,
+    last_7_days: 0,
+    last_14_days: 0,
+    last_30_days: 0,
+    by_project_30_days: {},
+    by_day: {},
+    ...overrides,
+  };
+}
 
 function fixtureDeployment(overrides: Partial<Deployment> = {}): Deployment {
   return {
@@ -31,6 +45,7 @@ function fixtureSkill(overrides: Partial<InstalledSkill> = {}): InstalledSkill {
     has_spec: false,
     spec_violations: [],
     skill_md_tokens: 0,
+    description_tokens: 0,
     folder_bytes: 0,
     file_count: 0,
     content_hash: "",
@@ -167,5 +182,39 @@ describe("applySkillListFilter", () => {
       skills[0],
     ]);
     expect(applySkillListFilter(skills, { scope: "all", query: "acme" })).toEqual([skills[1]]);
+  });
+
+  it("filters by invocation policy", () => {
+    const skills = [
+      fixtureSkill({ name: "both", invocation: "both" }),
+      fixtureSkill({ name: "model-only", invocation: "model-only" }),
+    ];
+    const result = applySkillListFilter(skills, {
+      scope: "all",
+      invocation: "model-only",
+      query: "",
+    });
+    expect(result.map((s) => s.name)).toEqual(["model-only"]);
+  });
+
+  it("filters by 30-day usage", () => {
+    const skills = [fixtureSkill({ name: "used" }), fixtureSkill({ name: "unused" })];
+    const invocations = [fixtureStats({ skill: "used", last_30_days: 3 })];
+
+    const usedResult = applySkillListFilter(
+      skills,
+      { scope: "all", usage: "used-30d", query: "" },
+      undefined,
+      invocations,
+    );
+    expect(usedResult.map((s) => s.name)).toEqual(["used"]);
+
+    const unusedResult = applySkillListFilter(
+      skills,
+      { scope: "all", usage: "unused-30d", query: "" },
+      undefined,
+      invocations,
+    );
+    expect(unusedResult.map((s) => s.name)).toEqual(["unused"]);
   });
 });

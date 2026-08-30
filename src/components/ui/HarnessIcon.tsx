@@ -4,17 +4,24 @@
 // comments below.
 // ============================================================================
 
-import { FolderGit2 } from "lucide-react";
+import { Folder } from "lucide-react";
 import type { AgentId } from "../../lib/skill-types";
 
 interface HarnessIconProps {
   harness: AgentId | "shared";
   size?: number;
+  /** Dims the icon via a color token (not opacity) for a disabled/parked deployment. */
+  muted?: boolean;
 }
 
 export { agentIdFromDeploymentLabel as harnessIdFromLabel } from "../../lib/skill-coverage";
 
-export function HarnessIcon({ harness, size = 16 }: HarnessIconProps) {
+export function HarnessIcon({ harness, size = 16, muted = false }: HarnessIconProps) {
+  const icon = renderIcon(harness, size);
+  return muted ? <span className="harness-icon-muted">{icon}</span> : icon;
+}
+
+function renderIcon(harness: AgentId | "shared", size: number) {
   switch (harness) {
     case "claude-code":
       // https://github.com/lobehub/lobe-icons/blob/master/packages/static-svg/icons/claudecode-mark.svg
@@ -114,7 +121,7 @@ export function HarnessIcon({ harness, size = 16 }: HarnessIconProps) {
         </svg>
       );
     case "shared":
-      return <FolderGit2 aria-hidden="true" size={size} />;
+      return <Folder aria-hidden="true" size={size} fill="currentColor" stroke="none" />;
     default:
       return null;
   }

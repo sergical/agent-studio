@@ -1,26 +1,47 @@
 // ============================================================================
-// HomeView - "What needs doing" for the user's own skills: a one-line
-// summary, needs-attention rows, updates, and recently-used skills. See the
-// design rule in spec-ux-1.md: Home holds what needs doing, not everything
-// there is to know about a skill (that's the skill page or the coverage
-// column in Skills).
+// HomeView - "What needs doing" for the user's own skills: stat tiles for
+// broken/warnings/updates, a lane card for invocation and prompt cost, and a
+// grouped inbox list (Broken, Warnings, Updates, Not used in 30 days,
+// Recently used). See popover-spec.md for the markup and copy this is built
+// from.
 // ============================================================================
 
-import { useMemo, useState } from "react";
-import { RefreshCw } from "lucide-react";
-import { homeSummaryCounts, recentlyUsedSkills } from "../../lib/home-summary";
-import { pullForkUpstream, updateSkill } from "../../lib/skill-api";
+import { useState } from "react";
+import type { ReactNode } from "react";
+import { ChevronDown } from "lucide-react";
+import {
+  attentionGroups,
+  homeInvocationCounts,
+  homePromptCost,
+  recentlyUsedSkills,
+  unusedSkills,
+} from "../../lib/home-summary";
+import { parkSkill, pullForkUpstream, updateSkill } from "../../lib/skill-api";
 import { collectDashboardIssues } from "../../lib/skill-health";
+import type { HealthIssue, HealthIssueKind } from "../../lib/skill-health";
+import { defaultSkillListFilter } from "../../lib/skill-list-filter";
 import { ownSkillsView } from "../../lib/skill-plugin-partition";
 import { formatRelativeTime, formatTokens, shortSha } from "../../lib/skill-stats";
 import { skillsWithUpdates } from "../../lib/skill-updates";
-import type { InstalledSkill, SkillSnapshot } from "../../lib/skill-types";
+import type {
+  AgentId,
+  InstalledSkill,
+  InvocationPolicy,
+  SkillSnapshot,
+} from "../../lib/skill-types";
 import { useAppStore } from "../../store/appStore";
 import { PageShell } from "../Shell/PageShell";
-import { TooltipControl } from "../ui/TooltipControl";
-import { NeedsAttentionCard } from "./NeedsAttentionCard";
+import { HarnessIcon, harnessIdFromLabel } from "../ui/HarnessIcon";
+import { InfoPopover } from "../ui/InfoPopover";
 
 const RECENTLY_USED_COUNT = 5;
+const MAX_ROWS_PER_GROUP = 6;
+
+/** The one filter that can be active at a time: a stat tile or the idle bar segment. */
+type HomeFilter = "broken" | "warn" | "upd" | "unused";
+
+/** Every inbox group, in display order - also the key `HomeFilter` narrows to. */
+type GroupId = HomeFilter | "rec";
 
 interface HomeViewProps {
   snapshot: SkillSnapshot | undefined;
@@ -28,11 +49,111 @@ interface HomeViewProps {
   onSelectSkill: (name: string) => void;
 }
 
+/** The harness marks for one skill's deployments - muted when every deployment for that harness is disabled or parked. */
+function harnessBadges(skill: InstalledSkill) {
+  const byHarness = new Map<AgentId | "shared", boolean[]>();
+  for (const deployment of skill.deployments) {
+    const id = harnessIdFromLabel(deployment.agent);
+    if (!id) continue;
+    const active = !deployment.disabled && deployment.scope !== "parked";
+    byHarness.set(id, [...(byHarness.get(id) ?? []), active]);
+  }
+  return [...byHarness.entries()].map(([id, activeFlags]) => ({
+    id,
+    muted: !activeFlags.some(Boolean),
+  }));
+}
+
+function HarnessBadges({ skill }: { skill: InstalledSkill }) {
+  const badges = harnessBadges(skill);
+  if (badges.length === 0) return null;
+  return (
+    <span className="home-row-hicons">
+      {badges.map(({ id, muted }) => (
+        <span key={id} className="home-row-hicon">
+          <HarnessIcon harness={id} size={13} muted={muted} />
+        </span>
+      ))}
+    </span>
+  );
+}
+
+/** One row of any inbox group: severity dot, name + harness marks, detail, one action. */
+function InboxRow({
+  severity,
+  skill,
+  detail,
+  action,
+  onOpen,
+}: {
+  severity?: "error" | "warning";
+  skill: InstalledSkill;
+  detail: ReactNode;
+  action: ReactNode;
+  onOpen: () => void;
+}) {
+  return (
+    <div className="home-row">
+      <span className={`dot ${severity ?? ""}`} />
+      <span className="home-row-namecell">
+        <button className="home-row-name" onClick={onOpen} title={skill.name}>
+          {skill.name}
+        </button>
+        <HarnessBadges skill={skill} />
+      </span>
+      <span className="home-row-detail">{detail}</span>
+      {action}
+    </div>
+  );
+}
+
+/** A group's sticky header: chevron, label, count, spacer, optional extra action. */
+function GroupHead({
+  label,
+  count,
+  isExpanded,
+  onToggle,
+  extra,
+}: {
+  label: string;
+  count: number;
+  isExpanded: boolean;
+  onToggle: () => void;
+  extra?: ReactNode;
+}) {
+  return (
+    <button className="home-group-head" aria-expanded={isExpanded} onClick={onToggle}>
+      <ChevronDown className="home-group-chev" size={14} />
+      {label}
+      <span className="home-group-count count-tabular">{count}</span>
+      <span className="home-group-spacer" />
+      {extra}
+    </button>
+  );
+}
+
+/** "Show all N" footer link for a group, navigating to the matching Skills/Activity filter. */
+function ShowAllLink({
+  count,
+  label,
+  onClick,
+}: {
+  count: number;
+  label: string;
+  onClick: () => void;
+}) {
+  return (
+    <div className="home-more">
+      <button className="info-popover-learn-more" onClick={onClick}>
+        {label} {count}
+      </button>
+    </div>
+  );
+}
+
 /**
  * "Pull latest" for one Updates row: a fork pulls upstream via
- * `pullForkUpstream`, any other managed skill re-syncs via `updateSkill` -
- * the same two actions `SkillDetailActions` calls, just without its full
- * remove/fork UI.
+ * `pullForkUpstream`, any other managed skill re-syncs via `updateSkill`.
  */
 function PullLatestButton({ skill }: { skill: InstalledSkill }) {
   const [isPulling, setIsPulling] = useState(false);
@@ -64,150 +185,66 @@ function PullLatestButton({ skill }: { skill: InstalledSkill }) {
   };
 
   return (
-    <button className="home-updates-pull" onClick={handlePull} disabled={isPulling}>
-      {isPulling ? <span className="spinner" /> : <RefreshCw size={13} />}
-      Pull latest
+    <button className="home-row-action" onClick={handlePull} disabled={isPulling}>
+      {isPulling ? <span className="spinner" /> : "Pull latest"}
     </button>
   );
 }
 
-/**
- * Home's "Updates" block: one row per skill with a newer commit available,
- * plus an "Update all" secondary button in the header once there's more
- * than one - sequential, ending in a single toast with the count and any
- * failures rather than one toast per skill.
- */
-function UpdatesSection({
-  skills,
-  onSelectSkill,
-}: {
-  skills: InstalledSkill[];
-  onSelectSkill: (name: string) => void;
-}) {
-  const [isUpdatingAll, setIsUpdatingAll] = useState(false);
+/** "Park" for one unused, model-invocable row - the one-click fix that stops it costing prompt tokens. */
+function ParkButton({ skill }: { skill: InstalledSkill }) {
+  const [isParking, setIsParking] = useState(false);
   const addToast = useAppStore((state) => state.addToast);
 
-  if (skills.length === 0) return null;
-
-  const handleUpdateAll = async () => {
-    setIsUpdatingAll(true);
-    let failures = 0;
+  const handlePark = async () => {
+    setIsParking(true);
     try {
-      for (const skill of skills) {
-        try {
-          if (skill.source_kind === "fork") {
-            await pullForkUpstream(skill.name);
-          } else {
-            const result = await updateSkill(skill.name, true);
-            if (!result.success) failures += 1;
-          }
-        } catch {
-          failures += 1;
-        }
-      }
-      const succeeded = skills.length - failures;
+      await parkSkill(skill.name);
+      addToast({ type: "success", title: `Parked ${skill.name}` });
+    } catch (err) {
       addToast({
-        type: failures > 0 ? "warning" : "success",
-        title: `Updated ${succeeded} of ${skills.length} skill${skills.length === 1 ? "" : "s"}`,
-        message: failures > 0 ? `${failures} failed` : undefined,
+        type: "error",
+        title: "Couldn't park skill",
+        message: err instanceof Error ? err.message : "Unknown error",
       });
     } finally {
-      setIsUpdatingAll(false);
+      setIsParking(false);
     }
   };
 
   return (
-    <div className="home-block">
-      <div className="home-block-header">
-        <span>
-          Updates <span className="home-block-count count-tabular">{skills.length}</span>
-        </span>
-        {skills.length > 1 && (
-          <button
-            className="home-block-header-action"
-            onClick={handleUpdateAll}
-            disabled={isUpdatingAll}
-          >
-            {isUpdatingAll ? "Updating…" : "Update all"}
-          </button>
-        )}
-      </div>
-      <div className="home-updates">
-        {skills.map((skill) => (
-          <div key={skill.name} className="home-updates-row">
-            <button className="home-updates-name" onClick={() => onSelectSkill(skill.name)}>
-              {skill.name}
-            </button>
-            <span className="home-updates-commit count-tabular">
-              {skill.content_hash && shortSha(skill.content_hash)}
-              {skill.update_commit && ` → ${shortSha(skill.update_commit)}`}
-            </span>
-            <span className="home-updates-commit count-tabular" title="SKILL.md tokens">
-              {formatTokens(skill.skill_md_tokens)}
-            </span>
-            <PullLatestButton skill={skill} />
-          </div>
-        ))}
-      </div>
-    </div>
+    <button className="home-row-action" onClick={handlePark} disabled={isParking}>
+      {isParking ? <span className="spinner" /> : "Park"}
+    </button>
   );
 }
 
-/** Home's "Recently used" block: the 5 skills with the latest invocation. */
-function RecentlyUsedSection({
-  snapshot,
-  onSelectSkill,
-  onSeeActivity,
-}: {
-  snapshot: SkillSnapshot;
-  onSelectSkill: (name: string) => void;
-  onSeeActivity: () => void;
-}) {
-  const rows = useMemo(
-    () => recentlyUsedSkills(snapshot.skills, snapshot.invocations, RECENTLY_USED_COUNT),
-    [snapshot],
-  );
-
-  if (rows.length === 0) return null;
-
-  return (
-    <div className="home-block">
-      <div className="home-block-header">
-        <span>Recently used</span>
-      </div>
-      <div className="home-recently-used">
-        {rows.map(({ skill, lastUsed, projectLabel, usesIn30Days }) => (
-          <button
-            key={skill.name}
-            className="home-recently-used-row"
-            onClick={() => onSelectSkill(skill.name)}
-          >
-            <span className="home-recently-used-name">{skill.name}</span>
-            <span className="home-recently-used-project">{projectLabel ?? ""}</span>
-            <span className="home-recently-used-time">{formatRelativeTime(lastUsed)}</span>
-            <span className="home-recently-used-count count-tabular">{usesIn30Days}</span>
-          </button>
-        ))}
-      </div>
-      <button className="home-block-footer-link" onClick={onSeeActivity}>
-        See all activity
-      </button>
-    </div>
-  );
+/** The row-level action label for one health issue kind - see NeedsAttentionCard's former mapping. */
+function issueActionLabel(kind: HealthIssueKind): string {
+  switch (kind) {
+    case "broken-symlink":
+      return "Fix link";
+    case "duplicate":
+      return "Compare";
+    case "parked-but-reinstalled":
+    case "spec-violation":
+    case "lock-only":
+      return "Open";
+  }
 }
 
 /**
- * Home: a one-line summary, "Needs attention", "Updates" (hidden when
- * empty), and "Recently used" (hidden when there's no invocation history) -
- * four blocks in one column, nothing else. No coverage matrix, trend chart,
- * or window control here; those live in Skills and Activity.
+ * Home: stat tiles, a lane card for invocation and prompt cost, and a
+ * grouped inbox list - the columns any of these three surfaces would
+ * otherwise leave the user to reconstruct by hand.
  */
 export function HomeView({ snapshot, isLoading, onSelectSkill }: HomeViewProps) {
   const setActiveView = useAppStore((state) => state.setActiveView);
+  const setSkillListFilter = useAppStore((state) => state.setSkillListFilter);
+  const openSkill = useAppStore((state) => state.openSkill);
 
-  const own = useMemo(() => ownSkillsView(snapshot?.skills ?? []), [snapshot]);
-  const issues = useMemo(() => collectDashboardIssues(own), [own]);
-  const updates = useMemo(() => (snapshot ? skillsWithUpdates(snapshot) : []), [snapshot]);
+  const [filter, setFilter] = useState<HomeFilter | null>(null);
+  const [collapsedGroups, setCollapsedGroups] = useState<Set<GroupId>>(() => new Set(["unused"]));
 
   if (!snapshot) {
     return (
@@ -219,58 +256,481 @@ export function HomeView({ snapshot, isLoading, onSelectSkill }: HomeViewProps) 
     );
   }
 
-  const counts = homeSummaryCounts(snapshot);
-  const goToActivity = () => setActiveView({ kind: "activity" });
-  const goToSkills = () => setActiveView({ kind: "skills" });
-  const goToPacks = () => setActiveView({ kind: "packs" });
+  const own = ownSkillsView(snapshot.skills);
+  const issues = collectDashboardIssues(own);
+  const { broken, warnings } = attentionGroups(issues);
+  const updates = skillsWithUpdates(snapshot);
+  const inv = homeInvocationCounts(own);
+  const cost = homePromptCost(own, snapshot.invocations);
+  const unused = unusedSkills(own, snapshot.invocations);
+  const recent = recentlyUsedSkills(snapshot.skills, snapshot.invocations, RECENTLY_USED_COUNT);
+
+  const invokeTotal = inv.both + inv.modelOnly + inv.userOnly;
+  const allClear = broken.length === 0 && warnings.length === 0 && updates.length === 0;
+
+  const toggleFilter = (id: HomeFilter) => setFilter((cur) => (cur === id ? null : id));
+  const isGroupVisible = (id: GroupId) => filter === null || filter === id;
+  const isGroupExpanded = (id: GroupId, count: number) =>
+    (id === "broken" ? count > 0 : !collapsedGroups.has(id)) || filter === id;
+  const toggleGroup = (id: GroupId) =>
+    setCollapsedGroups((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+
+  const goToSkills = (patch: Parameters<typeof setSkillListFilter>[0]) => {
+    setSkillListFilter({ ...defaultSkillListFilter(), ...patch });
+    setActiveView({ kind: "skills" });
+  };
+  const goToInvocation = (invocation: InvocationPolicy) => goToSkills({ invocation });
 
   return (
     <PageShell title="Home">
-      <p className="home-summary count-tabular">
-        <TooltipControl content="Skills you installed or wrote">
-          <button className="home-summary-segment" onClick={goToSkills}>
-            {counts.skillCount} skill{counts.skillCount === 1 ? "" : "s"}
+      <div className="home-stats">
+        <div className="home-stat-wrap">
+          <button
+            className={`home-stat ${broken.length > 0 ? "bad" : ""}`}
+            aria-pressed={filter === "broken"}
+            onClick={() => toggleFilter("broken")}
+          >
+            <span className="home-stat-label">Broken</span>
+            <span className="home-stat-value count-tabular">{broken.length}</span>
           </button>
-        </TooltipControl>
-        {counts.pluginSkillCount > 0 && (
-          <>
-            {" · "}
-            <TooltipControl content="Skills that ship inside a harness plugin">
-              <button className="home-summary-segment" onClick={goToPacks}>
-                {counts.pluginSkillCount} plugin skill{counts.pluginSkillCount === 1 ? "" : "s"}
-              </button>
-            </TooltipControl>
-          </>
-        )}
-        {" · "}
-        {counts.harnessCount} harness{counts.harnessCount === 1 ? "" : "es"}
-        {" · "}
-        {counts.projectCount} project{counts.projectCount === 1 ? "" : "s"}
-        {" · "}
-        {counts.usesIn30Days} use{counts.usesIn30Days === 1 ? "" : "s"} in 30 days
-      </p>
-
-      {issues.length > 0 ? (
-        <div className="home-block">
-          <div className="home-block-header">
-            <span>
-              Needs attention{" "}
-              <span className="home-block-count count-tabular">{issues.length}</span>
-            </span>
-          </div>
-          <NeedsAttentionCard issues={issues} onSelectSkill={onSelectSkill} />
+          <InfoPopover
+            label="About broken"
+            title="Broken and warnings"
+            onLearnMore={() => setActiveView({ kind: "learn", section: "broken" })}
+          >
+            An agent loads nothing, or something you did not intend: a dead link, a SKILL.md the
+            loader rejects, a parked skill that was reinstalled.
+          </InfoPopover>
         </div>
-      ) : (
-        <NeedsAttentionCard issues={issues} onSelectSkill={onSelectSkill} />
-      )}
 
-      <UpdatesSection skills={updates} onSelectSkill={onSelectSkill} />
+        <div className="home-stat-wrap">
+          <button
+            className={`home-stat ${warnings.length > 0 ? "warn" : ""}`}
+            aria-pressed={filter === "warn"}
+            onClick={() => toggleFilter("warn")}
+          >
+            <span className="home-stat-label">Warnings</span>
+            <span className="home-stat-value count-tabular">{warnings.length}</span>
+          </button>
+          <InfoPopover
+            label="About warnings"
+            title="Broken and warnings"
+            onLearnMore={() => setActiveView({ kind: "learn", section: "broken" })}
+          >
+            Everything still loads, but the state drifted: copies that differ between harnesses,
+            lock-file entries with no folder on disk.
+          </InfoPopover>
+        </div>
 
-      <RecentlyUsedSection
-        snapshot={snapshot}
-        onSelectSkill={onSelectSkill}
-        onSeeActivity={goToActivity}
-      />
+        <div className="home-stat-wrap">
+          <button
+            className="home-stat"
+            aria-pressed={filter === "upd"}
+            onClick={() => toggleFilter("upd")}
+          >
+            <span className="home-stat-label">Updates</span>
+            <span className="home-stat-value count-tabular">{updates.length}</span>
+          </button>
+        </div>
+      </div>
+
+      <section className="home-lane">
+        <div className="home-lane-row">
+          <span className="home-lane-key">
+            Who can invoke
+            <b className="count-tabular">{invokeTotal}</b>
+            <InfoPopover
+              label="About invocation"
+              title="Who can invoke a skill"
+              onLearnMore={() => setActiveView({ kind: "learn", section: "invoke" })}
+            >
+              Read from SKILL.md frontmatter. Claude Code honours both limits, pi only the you-only
+              one; Codex and OpenCode use their own config.
+            </InfoPopover>
+          </span>
+          <div className="home-lane-bar" role="group" aria-label="Who can invoke">
+            {inv.both > 0 && (
+              <button
+                className="home-lane-seg both"
+                style={{ flex: `${inv.both} 0 auto` }}
+                title="Open in Skills"
+                onClick={() => goToInvocation("both")}
+              >
+                <span className="count-tabular">{inv.both}</span> you or the model
+              </button>
+            )}
+            {inv.modelOnly > 0 && (
+              <button
+                className="home-lane-seg model"
+                style={{ flex: `${inv.modelOnly} 0 auto` }}
+                title="Open in Skills"
+                onClick={() => goToInvocation("model-only")}
+              >
+                <span className="count-tabular">{inv.modelOnly}</span> model only
+              </button>
+            )}
+            {inv.userOnly > 0 && (
+              <button
+                className="home-lane-seg user"
+                style={{ flex: `${inv.userOnly} 0 auto` }}
+                title="Open in Skills"
+                onClick={() => goToInvocation("user-only")}
+              >
+                <span className="count-tabular">{inv.userOnly}</span> you only
+              </button>
+            )}
+          </div>
+        </div>
+
+        <div className="home-lane-row">
+          <span className="home-lane-key">
+            Prompt cost
+            <b className="count-tabular">{formatTokens(cost.totalTokens)}</b>
+            <InfoPopover
+              label="About prompt cost"
+              title="Prompt cost"
+              onLearnMore={() => setActiveView({ kind: "learn", section: "cost" })}
+            >
+              Tokens of name and description the model reads every turn. Only skills the model may
+              invoke count; user-only skills cost nothing until you run them.
+            </InfoPopover>
+          </span>
+          <div className="home-lane-bar" role="group" aria-label="Prompt cost">
+            {cost.totalTokens === 0 ? (
+              <span className="home-lane-seg idle" style={{ width: "100%" }}>
+                No model-invocable skills
+              </span>
+            ) : (
+              <>
+                <button
+                  className="home-lane-seg used"
+                  style={{ width: `${(cost.usedTokens / cost.totalTokens) * 100}%` }}
+                  title="Open in Skills"
+                  onClick={() => goToSkills({ usage: "used-30d" })}
+                >
+                  <span className="count-tabular">{formatTokens(cost.usedTokens)}</span> ·{" "}
+                  <span className="count-tabular">{cost.usedCount}</span> skills used in 30 days
+                </button>
+                <button
+                  className="home-lane-seg idle"
+                  style={{ width: `${(cost.idleTokens / cost.totalTokens) * 100}%` }}
+                  aria-pressed={filter === "unused"}
+                  title="Show the skills not used in 30 days"
+                  onClick={() => toggleFilter("unused")}
+                >
+                  <span className="count-tabular">{formatTokens(cost.idleTokens)}</span> ·{" "}
+                  <span className="count-tabular">{cost.idleCount}</span> skills not used in 30 days
+                </button>
+              </>
+            )}
+          </div>
+        </div>
+      </section>
+
+      <div className="home-inbox">
+        {filter && (
+          <div className="home-filter-note">
+            Showing one group ·{" "}
+            <button className="info-popover-learn-more" onClick={() => setFilter(null)}>
+              Show everything
+            </button>
+          </div>
+        )}
+
+        {allClear && !filter && <p className="home-empty">All clear. Nothing needs attention.</p>}
+
+        {broken.length > 0 && isGroupVisible("broken") && (
+          <section className="home-group" data-group="broken">
+            <GroupHead
+              label="Broken"
+              count={broken.length}
+              isExpanded={isGroupExpanded("broken", broken.length)}
+              onToggle={() => toggleGroup("broken")}
+            />
+            {isGroupExpanded("broken", broken.length) && (
+              <div className="home-group-rows">
+                {broken.slice(0, MAX_ROWS_PER_GROUP).map((issue, i) => (
+                  <InboxRow
+                    key={`${issue.kind}-${issue.skill.name}-${i}`}
+                    severity="error"
+                    skill={issue.skill}
+                    onOpen={() => onSelectSkill(issue.skill.name)}
+                    detail={<span title={issue.detail}>{issue.detail}</span>}
+                    action={
+                      <button
+                        className="home-row-action"
+                        onClick={() => onSelectSkill(issue.skill.name)}
+                      >
+                        {issueActionLabel(issue.kind)}
+                      </button>
+                    }
+                  />
+                ))}
+                {broken.length > MAX_ROWS_PER_GROUP && (
+                  <ShowAllLink
+                    count={broken.length}
+                    label="Show all"
+                    onClick={() => goToSkills({ issue: "any" })}
+                  />
+                )}
+              </div>
+            )}
+          </section>
+        )}
+
+        {warnings.length > 0 && isGroupVisible("warn") && (
+          <section className="home-group" data-group="warn">
+            <GroupHead
+              label="Warnings"
+              count={warnings.length}
+              isExpanded={isGroupExpanded("warn", warnings.length)}
+              onToggle={() => toggleGroup("warn")}
+            />
+            {isGroupExpanded("warn", warnings.length) && (
+              <div className="home-group-rows">
+                {warnings.slice(0, MAX_ROWS_PER_GROUP).map((issue: HealthIssue, i) => (
+                  <InboxRow
+                    key={`${issue.kind}-${issue.skill.name}-${i}`}
+                    severity="warning"
+                    skill={issue.skill}
+                    onOpen={() => onSelectSkill(issue.skill.name)}
+                    detail={<span title={issue.detail}>{issue.detail}</span>}
+                    action={
+                      issue.kind === "duplicate" ? (
+                        <button
+                          className="home-row-action"
+                          onClick={() => openSkill(issue.skill.name, undefined, "compare")}
+                        >
+                          Compare
+                        </button>
+                      ) : (
+                        <button
+                          className="home-row-action"
+                          onClick={() => onSelectSkill(issue.skill.name)}
+                        >
+                          {issueActionLabel(issue.kind)}
+                        </button>
+                      )
+                    }
+                  />
+                ))}
+                {warnings.length > MAX_ROWS_PER_GROUP && (
+                  <ShowAllLink
+                    count={warnings.length}
+                    label="Show all"
+                    onClick={() => goToSkills({ issue: "any" })}
+                  />
+                )}
+              </div>
+            )}
+          </section>
+        )}
+
+        {updates.length > 0 && isGroupVisible("upd") && (
+          <UpdatesGroup
+            updates={updates}
+            isExpanded={isGroupExpanded("upd", updates.length)}
+            onToggle={() => toggleGroup("upd")}
+            onSelectSkill={onSelectSkill}
+            onShowAll={() => setActiveView({ kind: "skills" })}
+          />
+        )}
+
+        {unused.length > 0 && isGroupVisible("unused") && (
+          <section className="home-group" data-group="unused">
+            <GroupHead
+              label="Not used in the last 30 days"
+              count={unused.length}
+              isExpanded={isGroupExpanded("unused", unused.length)}
+              onToggle={() => toggleGroup("unused")}
+            />
+            {isGroupExpanded("unused", unused.length) && (
+              <div className="home-group-rows">
+                {unused.slice(0, MAX_ROWS_PER_GROUP).map((skill) => {
+                  const projectDeployment = skill.deployments.find((d) => d.project_path);
+                  const scopeLabel = projectDeployment?.project_path
+                    ? (projectDeployment.project_path.split("/").filter(Boolean).pop() ?? "Global")
+                    : "Global";
+                  const modelInvocable = skill.invocation !== "user-only";
+                  return (
+                    <InboxRow
+                      key={skill.name}
+                      skill={skill}
+                      onOpen={() => onSelectSkill(skill.name)}
+                      detail={
+                        <span
+                          title={`${scopeLabel} · installed ${formatRelativeTime(skill.installed_at)}`}
+                        >
+                          {scopeLabel} · installed {formatRelativeTime(skill.installed_at)} ·{" "}
+                          {modelInvocable ? (
+                            "description in every prompt"
+                          ) : (
+                            <span className="inv">user-only, not in the prompt</span>
+                          )}
+                        </span>
+                      }
+                      action={
+                        modelInvocable ? (
+                          <ParkButton skill={skill} />
+                        ) : (
+                          <button
+                            className="home-row-action"
+                            onClick={() => onSelectSkill(skill.name)}
+                          >
+                            Open
+                          </button>
+                        )
+                      }
+                    />
+                  );
+                })}
+                {unused.length > MAX_ROWS_PER_GROUP && (
+                  <ShowAllLink
+                    count={unused.length}
+                    label="Show all"
+                    onClick={() => goToSkills({ usage: "unused-30d" })}
+                  />
+                )}
+              </div>
+            )}
+          </section>
+        )}
+
+        {recent.length > 0 && isGroupVisible("rec") && (
+          <section className="home-group" data-group="rec">
+            <GroupHead
+              label="Recently used"
+              count={recent.length}
+              isExpanded={isGroupExpanded("rec", recent.length)}
+              onToggle={() => toggleGroup("rec")}
+            />
+            {isGroupExpanded("rec", recent.length) && (
+              <div className="home-group-rows">
+                {recent.map(({ skill, lastUsed, projectLabel, usesIn30Days }) => (
+                  <InboxRow
+                    key={skill.name}
+                    skill={skill}
+                    onOpen={() => onSelectSkill(skill.name)}
+                    detail={
+                      <span>
+                        {projectLabel ?? "Global"} · {formatRelativeTime(lastUsed)}
+                      </span>
+                    }
+                    action={
+                      <span className="home-row-action count-tabular">{usesIn30Days} uses</span>
+                    }
+                  />
+                ))}
+                <ShowAllLink
+                  count={0}
+                  label="See all activity"
+                  onClick={() => setActiveView({ kind: "activity" })}
+                />
+              </div>
+            )}
+          </section>
+        )}
+      </div>
     </PageShell>
+  );
+}
+
+/** Home's "Updates" group: one row per skill with a newer commit, "Update all" in the header. */
+function UpdatesGroup({
+  updates,
+  isExpanded,
+  onToggle,
+  onSelectSkill,
+  onShowAll,
+}: {
+  updates: InstalledSkill[];
+  isExpanded: boolean;
+  onToggle: () => void;
+  onSelectSkill: (name: string) => void;
+  onShowAll: () => void;
+}) {
+  const [isUpdatingAll, setIsUpdatingAll] = useState(false);
+  const addToast = useAppStore((state) => state.addToast);
+
+  const handleUpdateAll = async () => {
+    setIsUpdatingAll(true);
+    let failures = 0;
+    try {
+      for (const skill of updates) {
+        try {
+          if (skill.source_kind === "fork") {
+            await pullForkUpstream(skill.name);
+          } else {
+            const result = await updateSkill(skill.name, true);
+            if (!result.success) failures += 1;
+          }
+        } catch {
+          failures += 1;
+        }
+      }
+      const succeeded = updates.length - failures;
+      addToast({
+        type: failures > 0 ? "warning" : "success",
+        title: `Updated ${succeeded} of ${updates.length} skill${updates.length === 1 ? "" : "s"}`,
+        message: failures > 0 ? `${failures} failed` : undefined,
+      });
+    } finally {
+      setIsUpdatingAll(false);
+    }
+  };
+
+  return (
+    <section className="home-group" data-group="upd">
+      <GroupHead
+        label="Updates"
+        count={updates.length}
+        isExpanded={isExpanded}
+        onToggle={onToggle}
+        extra={
+          updates.length > 1 && (
+            <button
+              className="home-group-update-all"
+              onClick={(e) => {
+                e.stopPropagation();
+                handleUpdateAll();
+              }}
+              disabled={isUpdatingAll}
+            >
+              {isUpdatingAll ? "Updating…" : "Update all"}
+            </button>
+          )
+        }
+      />
+      {isExpanded && (
+        <div className="home-group-rows">
+          {updates.slice(0, MAX_ROWS_PER_GROUP).map((skill) => (
+            <InboxRow
+              key={skill.name}
+              skill={skill}
+              onOpen={() => onSelectSkill(skill.name)}
+              detail={
+                <>
+                  {skill.content_hash && skill.update_commit && (
+                    <span className="mono">
+                      {shortSha(skill.content_hash)} → {shortSha(skill.update_commit)}
+                    </span>
+                  )}{" "}
+                  <span className="mono">{formatTokens(skill.description_tokens)} tokens</span>
+                </>
+              }
+              action={<PullLatestButton skill={skill} />}
+            />
+          ))}
+          {updates.length > MAX_ROWS_PER_GROUP && (
+            <ShowAllLink count={updates.length} label="Show all" onClick={onShowAll} />
+          )}
+        </div>
+      )}
+    </section>
   );
 }

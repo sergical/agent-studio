@@ -127,17 +127,19 @@ export interface PaginatedSkillsResponse {
 /**
  * How a skill made it onto disk: "skills-sh" (present in the lock file),
  * "plugin" (shipped by an agent plugin, e.g. ~/.claude/plugins/*),
- * "dotagents" (symlinked in by getsentry/dotagents), "manual" (a plain
- * directory found on disk with no other provenance signal), or "fork"
- * (detached from its dotagents/skills.sh ledger via Fork - see `ForkInfo`).
+ * "dotagents" (symlinked in by getsentry/dotagents), "in-repo" (a plain
+ * directory inside a git working tree), "manual" (a plain directory found on
+ * disk with no other provenance signal), or "fork" (detached from its
+ * dotagents/skills.sh ledger via Fork - see `ForkInfo`).
  */
-export type SkillSourceKind = "skills-sh" | "plugin" | "dotagents" | "manual" | "fork";
+export type SkillSourceKind = "skills-sh" | "plugin" | "dotagents" | "in-repo" | "manual" | "fork";
 
 /** Badge label for each source_kind, shared by SkillBrowser and SkillDetailPanel. */
 export const SOURCE_KIND_LABELS = {
   "skills-sh": "skills.sh",
   dotagents: "dotagents",
   plugin: "plugin",
+  "in-repo": "in repo",
   manual: "manual",
   fork: "fork",
 } as const satisfies Record<SkillSourceKind, string>;
@@ -237,6 +239,8 @@ export interface InstalledSkill {
   spec_violations: string[];
   /** Token count of SKILL.md's text (cl100k_base), from the first deployment. */
   skill_md_tokens: number;
+  /** Token count of just `"name: description"`, from the first deployment - the prompt cost the model actually pays per turn. */
+  description_tokens: number;
   /** Total size in bytes of the skill folder, from the first deployment. */
   folder_bytes: number;
   /** Number of files in the skill folder, from the first deployment. */

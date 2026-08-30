@@ -18,7 +18,7 @@ export function SkillSearchBar({
   onChange,
   onSearch,
   isLoading,
-  placeholder = "Search skills.sh...",
+  placeholder = "Search skills.sh…",
 }: SkillSearchBarProps) {
   const inputRef = useRef<HTMLInputElement>(null);
   const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);

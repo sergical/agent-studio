@@ -8,14 +8,18 @@ import { useEffect, useRef, useState } from "react";
 import type { KeyboardEvent } from "react";
 import {
   Activity as ActivityIcon,
+  BookOpen,
   LayoutDashboard,
+  Moon,
   Package,
   PackageOpen,
   Plus,
+  Puzzle,
   RefreshCw,
   Search,
+  Sun,
 } from "lucide-react";
-import { ownSkillsView } from "../../lib/skill-plugin-partition";
+import { ownSkillsView, pluginSkillsView } from "../../lib/skill-plugin-partition";
 import { defaultSkillListFilter } from "../../lib/skill-list-filter";
 import { useAppStore } from "../../store/appStore";
 import type { ActiveView } from "../../store/appStore";
@@ -70,11 +74,19 @@ export function Sidebar({ snapshot, isLoading, requestRescan }: SidebarProps) {
   const skillListFilter = useAppStore((state) => state.skillListFilter);
   const setSkillListFilter = useAppStore((state) => state.setSkillListFilter);
   const openAddSkillSheet = useAppStore((state) => state.openAddSkillSheet);
+  const resolvedTheme = useAppStore((state) => state.resolvedTheme);
+  const setTheme = useAppStore((state) => state.setTheme);
   const searchInputRef = useRef<HTMLInputElement>(null);
 
   const own = ownSkillsView(snapshot?.skills ?? []);
   const skillsCount = own.length;
   const parkedCount = own.filter((s) => s.parked).length;
+  const pluginCount = pluginSkillsView(snapshot?.skills ?? []).length;
+  // Parked and Plugins are sub-sections of the skills list, so the Skills
+  // row is only "current" when neither of those partitions is selected.
+  const inParked = skillListFilter.scope === "parked";
+  const inPlugins = skillListFilter.source === "plugin";
+  const skillsActive = anchorView.kind === "skills" && !inParked && !inPlugins;
 
   // Typing while on another view switches to Skills directly in the change
   // handler, so the query always has somewhere to act - no effect-based
@@ -127,8 +139,11 @@ export function Sidebar({ snapshot, isLoading, requestRescan }: SidebarProps) {
           <span>Home</span>
         </button>
         <button
-          className={`skill-sidebar-item ${anchorView.kind === "skills" ? "active" : ""}`}
-          onClick={() => setActiveView({ kind: "skills" })}
+          className={`skill-sidebar-item ${skillsActive ? "active" : ""}`}
+          onClick={() => {
+            if (inParked || inPlugins) setSkillListFilter(defaultSkillListFilter());
+            setActiveView({ kind: "skills" });
+          }}
         >
           <Search size={15} />
           <span>Skills</span>
@@ -136,6 +151,19 @@ export function Sidebar({ snapshot, isLoading, requestRescan }: SidebarProps) {
             <span className="skill-sidebar-badge count-tabular">{skillsCount}</span>
           )}
         </button>
+        {pluginCount > 0 && (
+          <button
+            className={`skill-sidebar-item ${anchorView.kind === "skills" && inPlugins ? "active" : ""}`}
+            onClick={() => {
+              setSkillListFilter({ ...defaultSkillListFilter(), source: "plugin" });
+              setActiveView({ kind: "skills" });
+            }}
+          >
+            <Puzzle size={15} />
+            <span>Plugins</span>
+            <span className="skill-sidebar-badge count-tabular">{pluginCount}</span>
+          </button>
+        )}
         <button
           className={`skill-sidebar-item ${anchorView.kind === "activity" ? "active" : ""}`}
           onClick={() => setActiveView({ kind: "activity" })}
@@ -155,9 +183,7 @@ export function Sidebar({ snapshot, isLoading, requestRescan }: SidebarProps) {
       {parkedCount > 0 && (
         <div className="skill-sidebar-section">
           <button
-            className={`skill-sidebar-item ${
-              anchorView.kind === "skills" && skillListFilter.scope === "parked" ? "active" : ""
-            }`}
+            className={`skill-sidebar-item ${anchorView.kind === "skills" && inParked ? "active" : ""}`}
             onClick={() => {
               setSkillListFilter({ ...defaultSkillListFilter(), scope: "parked" });
               setActiveView({ kind: "skills" });
@@ -171,15 +197,39 @@ export function Sidebar({ snapshot, isLoading, requestRescan }: SidebarProps) {
       )}
 
       <div className="skill-sidebar-footer">
-        <span className="skill-sidebar-scanned-at">{relativeScanTime(snapshot?.scanned_at)}</span>
         <button
+          type="button"
           className="skill-sidebar-refresh"
           onClick={handleRefresh}
           disabled={spinning}
           title="Rescan installed skills"
         >
           <RefreshCw size={13} className={spinning ? "skill-sidebar-refresh-spinning" : ""} />
+          <span className="skill-sidebar-scanned-at">
+            {spinning ? "Scanning…" : `Scanned ${relativeScanTime(snapshot?.scanned_at)}`}
+          </span>
         </button>
+        <div className="skill-sidebar-footer-actions">
+          <button
+            type="button"
+            className="skill-sidebar-learn"
+            onClick={() => setActiveView({ kind: "learn" })}
+            aria-current={anchorView.kind === "learn" ? "page" : undefined}
+            aria-label="Learn"
+            title="Learn"
+          >
+            <BookOpen size={13} />
+          </button>
+          <button
+            type="button"
+            className="skill-sidebar-theme-toggle"
+            onClick={() => setTheme(resolvedTheme === "dark" ? "light" : "dark")}
+            aria-label={resolvedTheme === "dark" ? "Switch to light theme" : "Switch to dark theme"}
+            title={resolvedTheme === "dark" ? "Switch to light theme" : "Switch to dark theme"}
+          >
+            {resolvedTheme === "dark" ? <Moon size={13} /> : <Sun size={13} />}
+          </button>
+        </div>
       </div>
     </nav>
   );

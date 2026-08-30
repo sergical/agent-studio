@@ -5,7 +5,8 @@
 // a quiet tabular metadata line.
 // ============================================================================
 
-import { ArrowLeft, AlertTriangle, MoreHorizontal } from "lucide-react";
+import type { RefObject } from "react";
+import { ArrowLeft, AlertTriangle, MoreHorizontal, PanelRight } from "lucide-react";
 import { isBlockingSpecViolation } from "../../lib/skill-health";
 import { pluginLabelForSkill } from "../../lib/skill-plugin-partition";
 import type { SkillRunSummary } from "../../lib/skill-run-history-types";
@@ -14,6 +15,7 @@ import { SOURCE_KIND_LABELS, trialHoursLeft } from "../../lib/skill-types";
 import type { InstalledSkill, SkillInvocationStats } from "../../lib/skill-types";
 import type { ActiveView } from "../../store/appStore";
 import { MenuControl, MenuItem, MenuSeparator } from "../ui/MenuControl";
+import { SKILL_ASSISTANT_DRAWER_ID } from "./SkillAssistantDrawer";
 import { useSkillPageActions } from "./skill-page-actions";
 
 interface InstalledSkillHeaderProps {
@@ -26,6 +28,11 @@ interface InstalledSkillHeaderProps {
   lastTest?: SkillRunSummary;
   /** Opens the "Runs" history list in the assistant panel. */
   onOpenHistory: () => void;
+  /** Whether the assistant drawer is open, for the trigger's `aria-expanded`. */
+  isAssistantOpen: boolean;
+  onOpenAssistant: () => void;
+  /** So the drawer can return focus here when it closes. */
+  assistantTriggerRef: RefObject<HTMLButtonElement | null>;
 }
 
 /** The back button's label: the name of the view the page was opened from. */
@@ -98,6 +105,9 @@ export function InstalledSkillHeader({
   invocationStats,
   lastTest,
   onOpenHistory,
+  isAssistantOpen,
+  onOpenAssistant,
+  assistantTriggerRef,
 }: InstalledSkillHeaderProps) {
   const actions = useSkillPageActions(skill, onRemoveComplete);
   const blockingViolations = skill.spec_violations.filter(isBlockingSpecViolation);
@@ -133,6 +143,18 @@ export function InstalledSkillHeader({
               {actions.primaryAction.busy ? "Working…" : actions.primaryAction.label}
             </button>
           )}
+          <button
+            ref={assistantTriggerRef}
+            type="button"
+            className="skill-page-assistant-trigger"
+            onClick={onOpenAssistant}
+            aria-expanded={isAssistantOpen}
+            aria-controls={SKILL_ASSISTANT_DRAWER_ID}
+            title="Assistant"
+          >
+            <PanelRight size={16} />
+            <span>Assistant</span>
+          </button>
           <MenuControl
             triggerClassName="skill-page-overflow-trigger"
             triggerAriaLabel="More actions"

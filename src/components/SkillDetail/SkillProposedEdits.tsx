@@ -9,6 +9,7 @@ import { PatchDiff } from "@pierre/diffs/react";
 import { writeInstalledSkillMdIfUnchanged } from "../../lib/skill-api";
 import type { SkillMdHunk } from "../../lib/skill-md-diff";
 import { applyAcceptedHunks } from "../../lib/skill-md-diff";
+import { diffTheme } from "../../lib/theme";
 import { useAppStore } from "../../store/appStore";
 
 interface SkillProposedEditsProps {
@@ -25,11 +26,6 @@ interface SkillProposedEditsProps {
   onDiscard: () => void;
   /** Called when Apply is refused because the file drifted on disk, so the caller re-reads it. */
   onDiskChanged: () => void;
-}
-
-/** App CSS (src/App.css) is dark by default and light only under `:root[data-theme="light"]`. */
-function currentTheme(): "github-light" | "github-dark" {
-  return document.documentElement.dataset.theme === "light" ? "github-light" : "github-dark";
 }
 
 /**
@@ -49,8 +45,9 @@ export function SkillProposedEdits({
   onDiskChanged,
 }: SkillProposedEditsProps) {
   const addToast = useAppStore((state) => state.addToast);
+  const resolvedTheme = useAppStore((state) => state.resolvedTheme);
   const [isApplying, setIsApplying] = useState(false);
-  const theme = currentTheme();
+  const theme = diffTheme(resolvedTheme);
 
   const acceptedCount = hunks.filter((hunk) => hunk.accepted).length;
   const changedSinceAudit = currentContent !== fileAtAuditStart;

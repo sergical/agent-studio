@@ -50,7 +50,9 @@ export function SelectControl({
           <Select.Popup className="select-control-popup">
             {items.map((item) => (
               <Select.Item key={item.value} value={item.value} className="select-control-item">
-                <Select.ItemText className="select-control-item-text">{item.label}</Select.ItemText>
+                <Select.ItemText className="select-control-item-text" title={item.label}>
+                  {item.label}
+                </Select.ItemText>
                 <Select.ItemIndicator className="select-control-item-indicator">
                   <Check size={14} />
                 </Select.ItemIndicator>
