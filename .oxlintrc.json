@@ -23,6 +23,24 @@
     "anti-slop/no-unsafe-dictionary-type": "error",
     "anti-slop/no-widen-then-assert": "error",
     "anti-slop/require-safety-comment-for-type-assertion": "error",
+    // React Compiler-family rules not already reached by categories.correctness
+    // (exhaustive-deps, purity, preserve-manual-memoization, etc. are already
+    // "error" via correctness). rules-of-hooks/hooks/no-deriving-state-in-effects
+    // found zero violations in src, so they go straight to "error".
+    "react/rules-of-hooks": "error",
+    "react/hooks": "error",
+    "react/no-deriving-state-in-effects": "error",
+    // These fire on real code but the remaining findings need a human call
+    // (e.g. an effect keyed off a value only to retrigger, not to read it,
+    // or a raw useState setter deliberately named apart from a wrapped
+    // callback of the same base name), so they stay "warn" until someone
+    // works through them by hand instead of being silenced.
+    // Parked until the React pass (stage 7): most findings are manual
+    // useMemo/useCallback deps that the pass deletes now that the React
+    // Compiler is on. Promote these three to "error" there.
+    "react/exhaustive-effect-dependencies": "off",
+    "react/memo-dependencies": "off",
+    "react/hook-use-state": "off",
     // This app has no server-rendered/cached data layer: every list comes
     // from a Tauri IPC call, which is exactly the "external system" the
     // rule's own guidance says effects should synchronize with. Turning

@@ -39,7 +39,7 @@ export function LearnView({ section }: LearnViewProps) {
     const heading = headingRefs.current.get(section);
     heading?.scrollIntoView({ block: "start" });
     heading?.focus();
-  }, [section]);
+  }, [section, headingRefs]);
 
   return (
     <PageShell

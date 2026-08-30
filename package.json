@@ -20,7 +20,11 @@
     "format:check": "oxfmt --check .",
     "fmt:rust": "cd apps/desktop/src-tauri && cargo fmt",
     "test": "npm run test -w skill-studio",
-    "check": "npm run typecheck && npm run lint && npm run format:check && npm run test && cd apps/desktop/src-tauri && cargo fmt --check && cargo clippy -- -D warnings && cargo test"
+    "check": "npm run typecheck && npm run lint && npm run format:check && npm run test && cd apps/desktop/src-tauri && cargo fmt --check && cargo clippy -- -D warnings && cargo test",
+    "doctor": "react-doctor apps/desktop -y --no-score --no-supply-chain"
+  },
+  "devDependencies": {
+    "react-doctor": "^0.9.12"
   },
   "allowScripts": {
     "esbuild@0.28.2": true,
