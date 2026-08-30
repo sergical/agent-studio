@@ -213,20 +213,24 @@ export function SkillPage({
 
   if (!skill) {
     return (
-      <div className="skill-page">
-        <div className="skill-page-header-row-1">
-          <button className="skill-page-back" onClick={onBack} aria-label="Back">
+      <div className="mx-auto flex max-w-[1200px] flex-col gap-6 pt-7 pb-7 px-8">
+        <div className="flex items-center gap-4">
+          <button
+            className="flex shrink-0 items-center gap-1.5 border-0 bg-transparent p-1 text-small text-text-tertiary transition-colors hover:text-text-primary"
+            onClick={onBack}
+            aria-label="Back"
+          >
             <ArrowLeft size={16} />
             <span>{from.kind === "home" ? "Home" : "Back"}</span>
           </button>
         </div>
-        <p className="skill-page-not-found">This skill is no longer installed.</p>
+        <p className="text-body text-text-tertiary">This skill is no longer installed.</p>
       </div>
     );
   }
 
   return (
-    <div className="skill-page">
+    <div className="mx-auto flex max-w-[1200px] flex-col gap-6 pt-7 pb-7 px-8">
       <InstalledSkillHeader
         skill={skill}
         from={from}
@@ -243,7 +247,7 @@ export function SkillPage({
         assistantTriggerRef={assistantTriggerRef}
       />
 
-      <div className="skill-page-column-main">
+      <div className="flex min-w-0 flex-col gap-6">
         <SkillLocationsCard
           skill={skill}
           skillMdPath={!isPluginManaged ? skillMdPath : undefined}

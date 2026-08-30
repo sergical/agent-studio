@@ -5,6 +5,7 @@
 // ============================================================================
 
 import ReactMarkdown from "react-markdown";
+import { Button } from "@skill-studio/ui";
 import { pluginLabelForSkill } from "../../lib/skill-plugin-partition";
 import type { Deployment, InstalledSkill } from "../../lib/skill-types";
 import { SkillMarkdownEditor } from "./SkillMarkdownEditor";
@@ -37,11 +38,14 @@ function stripFrontmatter(content: string): string {
 }
 
 /** A six-line skeleton shown while SKILL.md loads, instead of a spinner. */
+/** Widths mirror the original skeleton's per-line variation, so a placeholder line doesn't read as a full sentence. */
+const SKELETON_LINE_WIDTHS = ["100%", "92%", "96%", "60%", "88%", "40%"];
+
 function MarkdownSkeleton() {
   return (
-    <div className="skill-markdown-skeleton" aria-hidden="true">
-      {Array.from({ length: 6 }, (_, i) => (
-        <div key={i} className="skill-markdown-skeleton-line" />
+    <div className="flex flex-col gap-2.5 px-5 py-4" aria-hidden="true">
+      {SKELETON_LINE_WIDTHS.map((width, i) => (
+        <div key={i} className="h-3 animate-pulse rounded-xs bg-bg-tertiary" style={{ width }} />
       ))}
     </div>
   );
@@ -69,41 +73,44 @@ export function SkillMarkdownCard({
   const canEdit = !isEditing && !isPluginManaged && !deploymentUnresolved && rawContent !== null;
 
   return (
-    <div className="home-block skill-markdown-card">
-      <div className="home-block-header">
+    <div className="flex flex-col gap-1 rounded-lg border border-border-subtle p-4">
+      <div className="flex items-baseline justify-between gap-3 text-body font-semibold text-text-primary">
         <span>SKILL.md</span>
         {isEditing ? (
-          <span className="skill-markdown-card-edit-status">
-            {isEditorDirty && <span className="skill-markdown-editor-dirty">Unsaved changes</span>}
+          <span className="flex items-center">
+            {isEditorDirty && (
+              <span className="mr-auto text-caption text-warning">Unsaved changes</span>
+            )}
           </span>
         ) : (
           canEdit && (
-            <button type="button" className="skill-action-button" onClick={onStartEdit}>
+            <Button variant="outline" size="sm" onClick={onStartEdit}>
               Edit
-            </button>
+            </Button>
           )
         )}
       </div>
 
       {deploymentUnresolved ? (
-        <div className="skill-detail-content-fallback">
+        <div className="m-0 p-3 text-body leading-[1.5] text-text-secondary">
           <p>The copy you opened is no longer installed.</p>
           {ownDeploymentOptions.length > 0 && (
-            <div className="skill-detail-actions-row">
+            <div className="flex flex-wrap gap-2">
               {ownDeploymentOptions.map((d) => (
-                <button
+                <Button
                   key={d.path}
-                  className="skill-action-button"
+                  variant="outline"
+                  size="sm"
                   onClick={() => onSelectDeployment(d.path)}
                 >
                   {d.agent} · {d.scope}
-                </button>
+                </Button>
               ))}
             </div>
           )}
         </div>
       ) : isPluginManaged ? (
-        <p className="skill-detail-content-fallback">
+        <p className="m-0 p-3 text-body leading-[1.5] text-text-secondary">
           Managed by the {pluginLabelForSkill(skill) ?? "harness"} plugin.
         </p>
       ) : isEditing && rawContent !== null ? (
@@ -118,11 +125,11 @@ export function SkillMarkdownCard({
       ) : isLoadingContent ? (
         <MarkdownSkeleton />
       ) : loadError ? (
-        <div className="skill-detail-content-fallback skill-markdown-card-error">
+        <div className="m-0 flex items-center justify-between gap-3 p-3 text-body leading-[1.5] text-error">
           <span>{loadError}</span>
-          <button type="button" className="skill-action-button" onClick={onRetry}>
+          <Button variant="outline" size="sm" onClick={onRetry}>
             Retry
-          </button>
+          </Button>
         </div>
       ) : rawContent !== null ? (
         <div className="skill-markdown">
@@ -139,7 +146,7 @@ export function SkillMarkdownCard({
           </ReactMarkdown>
         </div>
       ) : (
-        <p className="skill-detail-content-empty">No content available</p>
+        <p className="m-0 px-3 py-6 text-small text-text-tertiary">No content available</p>
       )}
     </div>
   );

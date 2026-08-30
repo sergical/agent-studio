@@ -205,14 +205,11 @@ body {
     animation-duration: 0.01ms !important;
   }
 } /* ============================================================================
-   Shared controls - SelectControl, CheckboxControl, SwitchControl, and
-   TooltipControl now style their kit/Base UI internals with Tailwind
+   Shared controls - SelectControl, CheckboxControl, SwitchControl, MenuControl,
+   and TooltipControl now style their kit/Base UI internals with Tailwind
    utilities directly (see apps/desktop/src/components/ui/). What's left here
-   is styling still reached from outside components/ui/: MenuControl's own
-   root/trigger/popup moved to utilities too, but InstalledSkillHeader still
-   builds its custom menu items against .menu-control-item/-separator
-   directly, and .text-control/.switch-label are applied straight onto
-   native inputs and switch labels elsewhere in the app.
+   is .text-control/.switch-label, applied straight onto native inputs and
+   switch labels elsewhere in the app.
    ============================================================================ */
 .text-control {
   height: var(--control-height);
@@ -232,39 +229,6 @@ body {
 }
 .text-control:focus-visible {
   border-color: var(--color-border-focus);
-}
-.menu-control-item {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  height: var(--control-height);
-  padding: 0 10px;
-  font-size: var(--text-body);
-  color: var(--color-text-secondary);
-  border-radius: var(--radius-sm);
-  cursor: pointer;
-  transition: background-color 150ms;
-}
-.menu-control-item[data-highlighted] {
-  background: var(--color-bg-hover);
-  color: var(--color-text-primary);
-}
-.menu-control-item[data-disabled] {
-  color: var(--color-text-quaternary);
-  cursor: not-allowed;
-}
-.menu-control-item[data-danger] {
-  color: var(--color-error);
-}
-.menu-control-item[data-danger][data-highlighted] {
-  background: var(--color-error-soft);
-  color: var(--color-error);
-}
-.menu-control-separator {
-  height: 1px;
-  margin: 4px 2px;
-  background: var(--color-border-subtle);
-  border: none;
 }
 .switch-label {
   display: flex;
@@ -1114,20 +1078,6 @@ body {
 .skill-detail-badge.parked {
   background: var(--color-bg-tertiary);
   color: var(--color-text-secondary);
-}
-.skill-detail-trial-keep {
-  padding: 1px 6px;
-  font-size: var(--text-caption);
-  font-weight: 600;
-  color: inherit;
-  background: var(--color-bg-primary);
-  border: none;
-  border-radius: var(--radius-sm);
-  cursor: pointer;
-}
-.skill-detail-trial-keep:disabled {
-  opacity: 0.5;
-  cursor: not-allowed;
 }
 .skill-detail-spec-violations ul {
   margin: 0;
@@ -2214,28 +2164,9 @@ body {
   background: var(--color-bg-tertiary);
   color: var(--color-text-primary);
 }
-.skill-assistant-scrim {
-  position: fixed;
-  inset: 0;
-  z-index: var(--z-backdrop);
-  background: var(--color-scrim);
-  animation: fadeInAssistantScrim 220ms ease-out;
-  display: flex;
-  justify-content: flex-end;
-}
-.skill-assistant-drawer {
-  position: relative;
-  z-index: var(--z-drawer);
-  width: min(560px, 92vw);
-  height: 100%;
-  display: flex;
-  flex-direction: column;
-  background: var(--color-bg-primary);
-  border-left: 1px solid var(--color-border);
-  overflow-y: auto;
-  transform: translateX(0);
-  animation: slideInAssistantDrawer 220ms ease-out;
-}
+/* Keyframes only - the scrim/drawer elements themselves are Tailwind
+   utilities in SkillAssistantDrawer.tsx; Tailwind v4 can reference a named
+   `animate-[…]` keyframe but can't declare one from a utility class alone. */
 @keyframes fadeInAssistantScrim {
   from {
     opacity: 0;
@@ -2252,158 +2183,7 @@ body {
     transform: translateX(0);
   }
 }
-.skill-assistant-drawer-header {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 12px;
-  padding: 16px;
-  border-bottom: 1px solid var(--color-border);
-}
-.skill-assistant-drawer-title {
-  font-size: var(--text-emphasis);
-  font-weight: 600;
-  color: var(--color-text-primary);
-}
-.skill-assistant-drawer-close {
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  width: var(--control-height);
-  height: var(--control-height);
-  color: var(--color-text-secondary);
-  background: transparent;
-  border: none;
-  border-radius: var(--radius-sm);
-  cursor: pointer;
-}
-.skill-assistant-drawer-close:hover {
-  color: var(--color-text-primary);
-  background: var(--color-bg-tertiary);
-}
-.skill-assistant-drawer-body {
-  display: flex;
-  flex-direction: column;
-  padding: 16px;
-}
-.skill-assistant-drawer-body .skill-assistant-panel {
-  border: none;
-  padding: 0;
-  background: transparent;
-}
-.skill-assistant-panel {
-  display: flex;
-  flex-direction: column;
-  gap: 12px;
-  padding: 16px;
-  background: var(--color-bg-secondary);
-  border: 1px solid var(--color-border);
-  border-radius: var(--radius-md);
-}
-.skill-assistant-panel-label {
-  font-size: var(--text-caption);
-  font-weight: 600;
-  letter-spacing: 0.04em;
-  text-transform: uppercase;
-  color: var(--color-text-tertiary);
-}
-.skill-assistant-panel-actions {
-  display: flex;
-  gap: 8px;
-}
-.skill-assistant-panel-actions .skill-action-button {
-  flex: 1;
-  padding: 8px 12px;
-  background: var(--color-bg-tertiary);
-  color: var(--color-text-secondary);
-}
-.skill-assistant-panel-note {
-  font-size: var(--text-caption);
-  color: var(--color-text-tertiary);
-  margin: 0;
-}
-.skill-assistant-panel-empty {
-  font-size: var(--text-small);
-  line-height: 1.5;
-  color: var(--color-text-tertiary);
-  margin: 0;
-  text-wrap: pretty;
-}
 /* Assistant transcript */
-.skill-agent-transcript {
-  display: flex;
-  flex-direction: column;
-  gap: 10px;
-  max-height: 60vh;
-  overflow-y: auto;
-  padding-right: 2px;
-}
-.skill-agent-text-block {
-  font-size: var(--text-body);
-  line-height: 1.5;
-}
-.skill-agent-tool-row {
-  display: flex;
-  flex-direction: column;
-  border: 1px solid var(--color-border-subtle);
-  border-radius: var(--radius-sm);
-  background: var(--color-bg-tertiary);
-}
-.skill-agent-tool-row-header {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  height: 28px;
-  padding: 0 8px;
-  background: transparent;
-  border: none;
-  cursor: pointer;
-  text-align: left;
-  transition: background-color 0.15s;
-}
-.skill-agent-tool-row-header:hover {
-  background: var(--color-bg-hover);
-}
-.skill-agent-tool-row-chevron {
-  flex-shrink: 0;
-  color: var(--color-text-tertiary);
-  transition: transform 0.15s;
-}
-.skill-agent-tool-row-chevron.open {
-  transform: rotate(90deg);
-}
-.skill-agent-tool-row-name {
-  font-family: var(--font-mono);
-  font-size: var(--text-caption);
-  color: var(--color-text-primary);
-  flex-shrink: 0;
-}
-.skill-agent-tool-row-summary {
-  font-size: var(--text-caption);
-  color: var(--color-text-secondary);
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-.skill-agent-tool-row-detail {
-  margin: 0;
-  padding: 8px;
-  font-size: var(--text-caption);
-  color: var(--color-text-secondary);
-  border-top: 1px solid var(--color-border-subtle);
-  white-space: pre-wrap;
-  word-break: break-word;
-  max-height: 240px;
-  overflow-y: auto;
-}
-.skill-agent-error-block {
-  padding: 8px 10px;
-  font-size: var(--text-small);
-  color: var(--color-error);
-  background: var(--color-error-soft);
-  border-radius: var(--radius-sm);
-  white-space: pre-wrap;
-}
 .skill-agent-pulse {
   display: flex;
   align-items: center;
@@ -2438,62 +2218,6 @@ body {
     animation: none;
     opacity: 0.6;
   }
-}
-.skill-agent-footer {
-  font-size: var(--text-caption);
-  color: var(--color-text-tertiary);
-  padding-top: 4px;
-}
-.skill-agent-footer-warning {
-  color: var(--color-warning);
-}
-.skill-agent-footer-tertiary {
-  color: var(--color-text-tertiary);
-}
-/* Assistant "Ask" box */
-.skill-assistant-ask {
-  display: flex;
-  flex-direction: column;
-  gap: 6px;
-}
-.skill-assistant-ask-input {
-  resize: none;
-  padding: 8px 10px;
-  font-size: var(--text-small);
-  line-height: 1.5;
-  color: var(--color-text-primary);
-  background: var(--color-bg-tertiary);
-  border: 1px solid var(--color-border);
-  border-radius: var(--radius-sm);
-  transition: border-color 0.15s;
-}
-.skill-assistant-ask-input:focus-visible {
-  border-color: var(--color-border-focus);
-}
-.skill-assistant-ask-input:disabled {
-  opacity: 0.6;
-}
-.skill-assistant-ask-footer {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 8px;
-}
-.skill-assistant-ask-session-note {
-  font-size: var(--text-caption);
-  color: var(--color-text-tertiary);
-}
-.skill-assistant-ask-new-session {
-  background: transparent;
-  border: none;
-  padding: 0;
-  font-size: var(--text-caption);
-  color: var(--color-accent);
-  cursor: pointer;
-  transition: color 0.15s;
-}
-.skill-assistant-ask-new-session:hover {
-  color: var(--color-accent-hover);
 }
 /* Audit action: proposed SKILL.md edits */
 .skill-proposed-edits {
@@ -2572,111 +2296,6 @@ body {
      of the library's own light/dark defaults. */
   --diffs-light-bg: var(--color-bg-secondary);
   --diffs-dark-bg: var(--color-bg-secondary);
-}
-.skill-proposed-warning {
-  font-size: var(--text-caption);
-  color: var(--color-warning);
-  margin: 0;
-}
-.skill-proposed-footer {
-  display: flex;
-  gap: 8px;
-}
-/* "Test" action: inline form, judge result line, diff, and run history */
-.skill-test-form {
-  display: flex;
-  flex-direction: column;
-  gap: 10px;
-}
-.skill-test-form-label {
-  font-size: var(--text-caption);
-  font-weight: 600;
-  letter-spacing: 0.04em;
-  text-transform: uppercase;
-  color: var(--color-text-tertiary);
-}
-.skill-test-form-where {
-  display: flex;
-  flex-direction: column;
-  gap: 6px;
-}
-.skill-test-form-project {
-  display: flex;
-  flex-direction: column;
-  gap: 6px;
-}
-.skill-test-form-project select {
-  padding: 6px 8px;
-  font-size: var(--text-small);
-  color: var(--color-text-primary);
-  background: var(--color-bg-tertiary);
-  border: 1px solid var(--color-border);
-  border-radius: var(--radius-sm);
-}
-.skill-test-form-tertiary {
-  font-size: var(--text-caption);
-  color: var(--color-text-tertiary);
-  margin: 0;
-}
-.skill-test-form-extra {
-  display: flex;
-  flex-direction: column;
-  gap: 6px;
-}
-.skill-test-form-extra-search {
-  padding: 6px 8px;
-  font-size: var(--text-small);
-  color: var(--color-text-primary);
-  background: var(--color-bg-tertiary);
-  border: 1px solid var(--color-border);
-  border-radius: var(--radius-sm);
-}
-.skill-test-form-extra-list {
-  display: flex;
-  flex-direction: column;
-  gap: 2px;
-  max-height: 160px;
-  overflow-y: auto;
-  border: 1px solid var(--color-border-subtle);
-  border-radius: var(--radius-sm);
-  padding: 4px 8px;
-}
-.skill-test-form-extra-item {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  font-size: var(--text-small);
-  color: var(--color-text-secondary);
-  padding: 3px 0;
-  cursor: pointer;
-}
-.skill-test-form-fixture {
-  resize: none;
-  padding: 8px 10px;
-  font-size: var(--text-caption);
-  font-family: var(--font-mono);
-  line-height: 1.5;
-  color: var(--color-text-primary);
-  background: var(--color-bg-tertiary);
-  border: 1px solid var(--color-border);
-  border-radius: var(--radius-sm);
-}
-.skill-test-result {
-  display: flex;
-  flex-direction: column;
-  gap: 4px;
-}
-.skill-test-result-line {
-  font-size: var(--text-small);
-  color: var(--color-success);
-}
-.skill-test-result-line.failed {
-  color: var(--color-error);
-}
-.skill-test-result-sentence {
-  font-size: var(--text-caption);
-  color: var(--color-text-secondary);
-  margin: 0;
 }
 .skill-run-diff {
   display: flex;
@@ -2837,15 +2456,7 @@ body {
 } /* ============================================================================
    Skill Detail - Facts, Deployments, Frontmatter
    ============================================================================ */
-.skill-detail-actions-row {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 8px;
-}
-.skill-detail-actions-row .skill-action-button {
-  flex: none;
-  padding: 8px 12px;
-} /* ============================================================================
+/* ============================================================================
    Skill Detail - Markdown body, editor, and Locations card
    ============================================================================ */
 .skill-markdown {
@@ -2924,99 +2535,6 @@ body {
   border-left: 2px solid var(--color-border);
   color: var(--color-text-tertiary);
 }
-.skill-markdown-card-edit-status {
-  display: flex;
-  align-items: center;
-}
-.skill-markdown-card-error {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 12px;
-  color: var(--color-error);
-}
-.skill-markdown-skeleton {
-  display: flex;
-  flex-direction: column;
-  gap: 10px;
-  padding: 16px 20px;
-}
-.skill-markdown-skeleton-line {
-  height: 12px;
-  border-radius: 4px;
-  background: var(--color-bg-tertiary);
-  animation: skeleton-pulse 1.4s ease-in-out infinite;
-}
-.skill-markdown-skeleton-line:nth-child(2) {
-  width: 92%;
-}
-.skill-markdown-skeleton-line:nth-child(3) {
-  width: 96%;
-}
-.skill-markdown-skeleton-line:nth-child(4) {
-  width: 60%;
-}
-.skill-markdown-skeleton-line:nth-child(5) {
-  width: 88%;
-}
-.skill-markdown-skeleton-line:nth-child(6) {
-  width: 40%;
-}
-@keyframes skeleton-pulse {
-  0%,
-  100% {
-    opacity: 0.6;
-  }
-  50% {
-    opacity: 1;
-  }
-}
-.skill-markdown-editor {
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-  padding: 12px 16px;
-}
-.skill-markdown-editor-toolbar {
-  display: flex;
-  align-items: center;
-  justify-content: flex-end;
-  gap: 12px;
-}
-.skill-markdown-editor-dirty {
-  margin-right: auto;
-  font-size: var(--text-caption);
-  color: var(--color-warning);
-}
-.skill-markdown-editor-actions {
-  display: flex;
-  gap: 8px;
-}
-.skill-markdown-editor-actions .skill-action-button {
-  padding: 6px 10px;
-}
-.skill-markdown-editor-textarea {
-  width: 100%;
-  min-height: 60vh;
-  padding: 10px 12px;
-  font-family: var(--font-mono);
-  font-size: var(--text-body);
-  line-height: 1.5;
-  color: var(--color-text-primary);
-  background: var(--color-bg-primary);
-  border: 1px solid var(--color-border);
-  border-radius: var(--radius-sm);
-  resize: vertical;
-  transition: border-color 150ms;
-}
-.skill-markdown-editor-textarea:focus {
-  border-color: var(--color-border-focus);
-}
-.skill-markdown-editor-textarea:focus-visible {
-  outline: 2px solid var(--color-border-focus);
-  outline-offset: 2px;
-}
-
 /* ============================================================================
    Activity View (year heatmap, by-skill and by-project breakdowns)
    ============================================================================ */
@@ -3109,68 +2627,6 @@ body {
 }
 
 /* Add-skill sheet */
-.skill-compare-dialog-overlay {
-  position: fixed;
-  inset: 0;
-  background: var(--color-scrim);
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  z-index: var(--z-modal);
-}
-.skill-compare-dialog {
-  display: flex;
-  flex-direction: column;
-  width: min(1200px, 92vw);
-  max-height: 85vh;
-  background: var(--color-bg-elevated);
-  border: 1px solid var(--color-border);
-  border-radius: var(--radius-lg);
-  box-shadow: var(--shadow-lg);
-  overflow: hidden;
-}
-.skill-compare-dialog-header {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  padding: 16px 20px;
-  border-bottom: 1px solid var(--color-border);
-}
-.skill-compare-dialog-header h3 {
-  margin: 0;
-  font-size: var(--text-emphasis);
-  font-weight: 600;
-  color: var(--color-text-primary);
-}
-.skill-compare-dialog-close {
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  padding: 4px;
-  color: var(--color-text-tertiary);
-  background: none;
-  border: none;
-  border-radius: var(--radius-sm);
-  cursor: pointer;
-}
-.skill-compare-dialog-close:hover {
-  color: var(--color-text-primary);
-  background: var(--color-bg-hover);
-}
-.skill-compare-dialog-pickers {
-  display: flex;
-  gap: 12px;
-  padding: 12px 20px;
-  border-bottom: 1px solid var(--color-border-subtle);
-}
-.skill-compare-dialog-pickers > * {
-  flex: 1;
-}
-.skill-compare-dialog-body {
-  flex: 1;
-  overflow: auto;
-  padding: 16px 20px;
-}
 /* A wide diff is the one place in the app where a hidden horizontal scrollbar
    costs the reader content, so this scroller keeps a visible thumb. */
 .skill-compare-dialog-body::-webkit-scrollbar {
@@ -3183,14 +2639,6 @@ body {
 }
 .skill-compare-dialog-body::-webkit-scrollbar-thumb:hover {
   background: var(--color-text-tertiary);
-}
-.skill-compare-dialog-same {
-  font-size: var(--text-body);
-  color: var(--color-text-tertiary);
-}
-.skill-compare-dialog-error {
-  font-size: var(--text-body);
-  color: var(--color-error);
 }
 .add-skill-sheet-overlay {
   position: fixed;

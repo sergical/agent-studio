@@ -5,6 +5,7 @@
 // ============================================================================
 
 import { useMemo, useState } from "react";
+import { Button, Textarea } from "@skill-studio/ui";
 import type { SkillRunTargetKind } from "../../lib/skill-run-target-types";
 import type { InstalledSkill } from "../../lib/skill-types";
 import { CheckboxControl } from "../ui/CheckboxControl";
@@ -92,9 +93,9 @@ export function SkillTestForm({
   };
 
   return (
-    <div className="skill-test-form">
-      <textarea
-        className="skill-assistant-ask-input"
+    <div className="flex flex-col gap-2.5">
+      <Textarea
+        className="resize-none rounded-sm border-border bg-bg-tertiary px-2.5 py-2 text-small text-text-primary focus-visible:border-border-focus focus-visible:ring-0"
         placeholder={`What should the skill do? e.g. Use the ${skill.name} skill to …`}
         rows={2}
         value={prompt}
@@ -103,8 +104,10 @@ export function SkillTestForm({
         disabled={isRunning}
       />
 
-      <div className="skill-test-form-where">
-        <span className="skill-test-form-label">Where</span>
+      <div className="flex flex-col gap-1.5">
+        <span className="text-caption font-semibold tracking-[0.04em] text-text-tertiary uppercase">
+          Where
+        </span>
         <div className="harness-segmented-control">
           {TARGET_LABELS.map(([kind, label]) => (
             <button
@@ -122,9 +125,10 @@ export function SkillTestForm({
       </div>
 
       {targetKind !== "scratch" && (
-        <div className="skill-test-form-project">
+        <div className="flex flex-col gap-1.5">
           {candidateProjects.length > 0 ? (
             <select
+              className="rounded-sm border border-border bg-bg-tertiary px-2 py-1.5 text-small text-text-primary"
               value={projectPath ?? ""}
               onChange={(e) => setProjectPath(e.target.value || undefined)}
               disabled={isRunning}
@@ -136,12 +140,12 @@ export function SkillTestForm({
               ))}
             </select>
           ) : (
-            <p className="skill-assistant-panel-note">
+            <p className="m-0 text-caption text-text-tertiary">
               No tracked project is a git repository – only Scratch is available.
             </p>
           )}
           {targetKind === "in_place" && (
-            <p className="skill-test-form-tertiary">
+            <p className="m-0 text-caption text-text-tertiary">
               Requires a clean working tree; commit or stash first. Revert removes every change made
               in the project since the run started.
             </p>
@@ -152,18 +156,23 @@ export function SkillTestForm({
       {targetKind === "scratch" && (
         <>
           {otherOwnSkills.length > 0 && (
-            <div className="skill-test-form-extra">
-              <span className="skill-test-form-label">Also install</span>
+            <div className="flex flex-col gap-1.5">
+              <span className="text-caption font-semibold tracking-[0.04em] text-text-tertiary uppercase">
+                Also install
+              </span>
               <input
-                className="skill-test-form-extra-search text-control"
+                className="text-control"
                 value={extraQuery}
                 onChange={(e) => setExtraQuery(e.target.value)}
                 placeholder="Filter skills…"
                 disabled={isRunning}
               />
-              <div className="skill-test-form-extra-list">
+              <div className="flex max-h-40 flex-col gap-0.5 overflow-y-auto rounded-sm border border-border-subtle px-2 py-1">
                 {filteredExtraSkills.map((other) => (
-                  <label key={other.name} className="skill-test-form-extra-item">
+                  <label
+                    key={other.name}
+                    className="flex cursor-pointer items-center gap-1.5 py-0.5 text-small text-text-secondary"
+                  >
                     <CheckboxControl
                       checked={extraSkillNames.includes(other.name)}
                       onCheckedChange={() => toggleExtraSkill(other.name)}
@@ -175,8 +184,8 @@ export function SkillTestForm({
               </div>
             </div>
           )}
-          <textarea
-            className="skill-test-form-fixture"
+          <Textarea
+            className="resize-none rounded-sm border-border bg-bg-tertiary px-2.5 py-2 font-mono text-caption text-text-primary focus-visible:border-border-focus focus-visible:ring-0"
             placeholder={FIXTURE_PLACEHOLDER}
             rows={4}
             value={fixture}
@@ -186,16 +195,11 @@ export function SkillTestForm({
         </>
       )}
 
-      <div className="skill-assistant-ask-footer">
+      <div className="flex items-center justify-between gap-2">
         <span />
-        <button
-          type="button"
-          className="skill-action-button primary"
-          onClick={handleRun}
-          disabled={!canRun}
-        >
+        <Button size="sm" onClick={handleRun} disabled={!canRun}>
           Run test
-        </button>
+        </Button>
       </div>
     </div>
   );

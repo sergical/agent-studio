@@ -6,6 +6,7 @@
 
 import { useState } from "react";
 import { PatchDiff } from "@pierre/diffs/react";
+import { Button } from "@skill-studio/ui";
 import { writeInstalledSkillMdIfUnchanged } from "../../lib/skill-api";
 import type { SkillMdHunk } from "../../lib/skill-md-diff";
 import { applyAcceptedHunks } from "../../lib/skill-md-diff";
@@ -83,10 +84,12 @@ export function SkillProposedEdits({
   };
 
   return (
-    <div className="skill-proposed-edits">
-      <div className="skill-proposed-header">
-        <span className="skill-proposed-label">Proposed changes</span>
-        <span className="skill-proposed-count">
+    <div className="flex flex-col gap-2.5">
+      <div className="flex items-baseline justify-between">
+        <span className="text-caption font-semibold tracking-[0.04em] text-text-tertiary uppercase">
+          Proposed changes
+        </span>
+        <span className="text-caption tabular-nums text-text-tertiary">
           {hunks.length} hunks · {acceptedCount} accepted
         </span>
       </div>
@@ -96,15 +99,20 @@ export function SkillProposedEdits({
         return (
           <div
             key={hunk.index}
-            className="skill-proposed-hunk"
+            className="flex flex-col overflow-hidden rounded-sm border border-border-subtle transition-opacity"
             style={{ opacity: hunk.accepted ? 1 : 0.5 }}
           >
-            <div className="skill-proposed-hunk-header" id={headerId}>
-              <span className="skill-proposed-hunk-header-text">{hunk.header}</span>
-              <div className="skill-proposed-hunk-toggles" role="group" aria-labelledby={headerId}>
+            <div
+              className="flex h-7 items-center justify-between gap-2 border-b border-border-subtle bg-bg-tertiary px-2"
+              id={headerId}
+            >
+              <span className="overflow-hidden text-ellipsis whitespace-nowrap font-mono text-caption text-text-secondary">
+                {hunk.header}
+              </span>
+              <div className="flex shrink-0 gap-1" role="group" aria-labelledby={headerId}>
                 <button
                   type="button"
-                  className="skill-proposed-hunk-toggle"
+                  className="h-6 cursor-pointer rounded-sm border border-border bg-transparent px-2 text-caption text-text-secondary transition-colors aria-pressed:bg-accent-soft aria-pressed:text-text-primary"
                   aria-pressed={hunk.accepted}
                   aria-label={`Accept change ${index + 1} of ${hunks.length}`}
                   onClick={() => setAccepted(hunk.index, true)}
@@ -113,7 +121,7 @@ export function SkillProposedEdits({
                 </button>
                 <button
                   type="button"
-                  className="skill-proposed-hunk-toggle"
+                  className="h-6 cursor-pointer rounded-sm border border-border bg-transparent px-2 text-caption text-text-secondary transition-colors aria-pressed:bg-accent-soft aria-pressed:text-text-primary"
                   aria-pressed={!hunk.accepted}
                   aria-label={`Reject change ${index + 1} of ${hunks.length}`}
                   onClick={() => setAccepted(hunk.index, false)}
@@ -133,32 +141,26 @@ export function SkillProposedEdits({
       })}
 
       {changedSinceAudit && (
-        <p className="skill-proposed-warning">SKILL.md changed since this audit ran.</p>
+        <p className="m-0 text-caption text-warning">SKILL.md changed since this audit ran.</p>
       )}
 
       {isStaleDeployment && (
-        <p className="skill-proposed-warning">
+        <p className="m-0 text-caption text-warning">
           This proposal was made for a different copy of the skill.
         </p>
       )}
 
-      <div className="skill-proposed-footer">
-        <button
-          type="button"
-          className="skill-action-button primary"
+      <div className="flex gap-2">
+        <Button
+          size="sm"
           onClick={handleApply}
           disabled={acceptedCount === 0 || isApplying || isStaleDeployment}
         >
           Apply {acceptedCount} changes
-        </button>
-        <button
-          type="button"
-          className="skill-action-button"
-          onClick={onDiscard}
-          disabled={isApplying}
-        >
+        </Button>
+        <Button variant="outline" size="sm" onClick={onDiscard} disabled={isApplying}>
           Discard
-        </button>
+        </Button>
       </div>
     </div>
   );

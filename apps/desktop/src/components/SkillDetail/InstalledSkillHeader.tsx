@@ -7,6 +7,7 @@
 
 import type { RefObject } from "react";
 import { ArrowLeft, AlertTriangle, MoreHorizontal, PanelRight } from "lucide-react";
+import { Button } from "@skill-studio/ui";
 import { isBlockingSpecViolation } from "../../lib/skill-health";
 import { pluginLabelForSkill } from "../../lib/skill-plugin-partition";
 import type { SkillRunSummary } from "../../lib/skill-run-history-types";
@@ -17,6 +18,13 @@ import type { ActiveView } from "../../store/appStore";
 import { MenuControl, MenuItem, MenuSeparator } from "../ui/MenuControl";
 import { SKILL_ASSISTANT_DRAWER_ID } from "./SkillAssistantDrawer";
 import { useSkillPageActions } from "./skill-page-actions";
+
+/** Reproduces the shared `.menu-control-item` look inline - see SkillListFilterBar's copy of the same class. */
+const MENU_ITEM_CLASS =
+  "flex h-(--control-height) cursor-pointer items-center gap-2 rounded-sm px-2.5 text-body text-text-secondary transition-colors data-highlighted:bg-bg-hover data-highlighted:text-text-primary data-disabled:cursor-not-allowed data-disabled:text-text-quaternary";
+const MENU_ITEM_DANGER_CLASS =
+  "flex h-(--control-height) cursor-pointer items-center gap-2 rounded-sm px-2.5 text-body text-error transition-colors data-highlighted:bg-error-soft data-highlighted:text-error";
+const MENU_SEPARATOR_CLASS = "mx-0.5 my-1 h-px border-none bg-border-subtle";
 
 interface InstalledSkillHeaderProps {
   skill: InstalledSkill;
@@ -125,28 +133,29 @@ export function InstalledSkillHeader({
   ].filter((segment): segment is string => Boolean(segment));
 
   return (
-    <div className="skill-page-header">
-      <div className="skill-page-header-row-1">
-        <button className="skill-page-back" onClick={onBack} aria-label="Back">
+    <div className="flex flex-col gap-2">
+      <div className="flex items-center gap-4">
+        <button
+          className="flex shrink-0 items-center gap-1.5 border-0 bg-transparent p-1 text-small text-text-tertiary transition-colors hover:text-text-primary"
+          onClick={onBack}
+          aria-label="Back"
+        >
           <ArrowLeft size={16} />
           <span>{backLabel(from)}</span>
         </button>
-        <h1 className="skill-page-name">{skill.name}</h1>
-        <div className="skill-page-header-actions">
+        <h1 className="min-w-0 flex-1 overflow-hidden text-ellipsis whitespace-nowrap text-title font-semibold text-text-primary">
+          {skill.name}
+        </h1>
+        <div className="flex shrink-0 items-center gap-2">
           {actions.primaryAction && (
-            <button
-              type="button"
-              className="skill-action-button primary"
-              onClick={actions.primaryAction.run}
-              disabled={actions.primaryAction.busy}
-            >
+            <Button onClick={actions.primaryAction.run} disabled={actions.primaryAction.busy}>
               {actions.primaryAction.busy ? "Working…" : actions.primaryAction.label}
-            </button>
+            </Button>
           )}
           <button
             ref={assistantTriggerRef}
             type="button"
-            className="skill-page-assistant-trigger"
+            className="flex h-(--control-height) items-center gap-1.5 rounded-sm border border-border px-3 text-body text-text-secondary transition-colors hover:bg-bg-tertiary hover:text-text-primary aria-expanded:border-border-focus aria-expanded:text-accent"
             onClick={onOpenAssistant}
             aria-expanded={isAssistantOpen}
             aria-controls={SKILL_ASSISTANT_DRAWER_ID}
@@ -156,14 +165,14 @@ export function InstalledSkillHeader({
             <span>Assistant</span>
           </button>
           <MenuControl
-            triggerClassName="skill-page-overflow-trigger"
+            triggerClassName="flex h-(--control-height) w-(--control-height) cursor-pointer items-center justify-center rounded-sm border border-border text-text-secondary transition-colors hover:bg-bg-tertiary hover:text-text-primary"
             triggerAriaLabel="More actions"
             trigger={<MoreHorizontal size={16} />}
             align="end"
           >
             <MenuItem
               closeOnClick
-              className="menu-control-item"
+              className={MENU_ITEM_CLASS}
               onClick={actions.reveal}
               disabled={!actions.path}
             >
@@ -171,7 +180,7 @@ export function InstalledSkillHeader({
             </MenuItem>
             <MenuItem
               closeOnClick
-              className="menu-control-item"
+              className={MENU_ITEM_CLASS}
               onClick={actions.openEditor}
               disabled={!actions.path}
             >
@@ -179,16 +188,16 @@ export function InstalledSkillHeader({
             </MenuItem>
             <MenuItem
               closeOnClick
-              className="menu-control-item"
+              className={MENU_ITEM_CLASS}
               onClick={actions.copyPath}
               disabled={!actions.path}
             >
               Copy path
             </MenuItem>
-            <MenuSeparator className="menu-control-separator" />
+            <MenuSeparator className={MENU_SEPARATOR_CLASS} />
             <MenuItem
               closeOnClick
-              className="menu-control-item"
+              className={MENU_ITEM_CLASS}
               onClick={actions.parkAction.run}
               disabled={actions.parkAction.busy}
             >
@@ -197,7 +206,7 @@ export function InstalledSkillHeader({
             {actions.forkAction && (
               <MenuItem
                 closeOnClick
-                className="menu-control-item"
+                className={MENU_ITEM_CLASS}
                 onClick={actions.forkAction.run}
                 disabled={actions.forkAction.busy}
               >
@@ -206,11 +215,10 @@ export function InstalledSkillHeader({
             )}
             {actions.removeAction && (
               <>
-                <MenuSeparator className="menu-control-separator" />
+                <MenuSeparator className={MENU_SEPARATOR_CLASS} />
                 <MenuItem
                   closeOnClick
-                  className="menu-control-item"
-                  data-danger=""
+                  className={MENU_ITEM_DANGER_CLASS}
                   onClick={actions.removeAction.run}
                   disabled={actions.removeAction.busy}
                 >
@@ -222,21 +230,27 @@ export function InstalledSkillHeader({
         </div>
       </div>
 
-      {skill.description && <p className="skill-page-description">{skill.description}</p>}
+      {skill.description && (
+        <p className="text-pretty text-body leading-[1.5] text-text-secondary">
+          {skill.description}
+        </p>
+      )}
 
-      <div className="skill-page-chip-row">
-        <span className={`skill-page-chip provenance ${skill.source_kind}`}>
+      <div className="flex flex-wrap items-center gap-1.5">
+        <span className="inline-flex items-center gap-1 rounded-full bg-bg-tertiary px-2 py-0.5 text-caption text-text-tertiary">
           {provenanceChipLabel(skill)}
         </span>
         {skill.parked && (
-          <span className="skill-page-chip parked">{parkedChipLabel(skill.parked_at)}</span>
+          <span className="inline-flex items-center gap-1 rounded-full bg-bg-tertiary px-2 py-0.5 text-caption text-warning">
+            {parkedChipLabel(skill.parked_at)}
+          </span>
         )}
         {skill.trial && (
-          <span className="skill-page-chip trial">
+          <span className="inline-flex items-center gap-1 rounded-full bg-bg-tertiary px-2 py-0.5 text-caption text-accent">
             {trialChipLabel(skill.trial.expires_at)}
             <button
               type="button"
-              className="skill-detail-trial-keep"
+              className="cursor-pointer rounded-sm border-0 bg-bg-primary px-1.5 py-px text-caption font-semibold text-inherit disabled:cursor-not-allowed disabled:opacity-50"
               onClick={actions.keepTrial.run}
               disabled={actions.keepTrial.busy}
             >
@@ -245,11 +259,13 @@ export function InstalledSkillHeader({
           </span>
         )}
         {skill.has_update && (
-          <span className="skill-page-chip update-available">Update available</span>
+          <span className="inline-flex items-center gap-1 rounded-full bg-bg-tertiary px-2 py-0.5 text-caption text-accent">
+            Update available
+          </span>
         )}
         {nonBlockingCount > 0 && (
           <span
-            className="skill-page-chip spec-notes"
+            className="inline-flex items-center gap-1 rounded-full bg-bg-tertiary px-2 py-0.5 text-caption text-text-tertiary"
             title={skill.spec_violations.filter((v) => !isBlockingSpecViolation(v)).join("; ")}
           >
             {nonBlockingCount} spec note{nonBlockingCount !== 1 ? "s" : ""}
@@ -258,18 +274,22 @@ export function InstalledSkillHeader({
       </div>
 
       {blockingViolations.length > 0 && (
-        <div className="skill-page-blocking-warning">
+        <div className="flex items-center gap-1.5 text-small text-error">
           <AlertTriangle size={13} />
           <span>{blockingViolations.join("; ")}</span>
         </div>
       )}
 
-      <div className="skill-page-meta-line">
+      <div className="text-small text-text-tertiary">
         {metaSegments.join(" · ")}
         {lastTest && (
           <>
             {metaSegments.length > 0 && " · "}
-            <button type="button" className="skill-page-meta-link" onClick={onOpenHistory}>
+            <button
+              type="button"
+              className="cursor-pointer border-0 bg-transparent p-0 font-inherit text-small text-text-tertiary hover:text-text-secondary hover:underline"
+              onClick={onOpenHistory}
+            >
               {lastTestLabel(lastTest)}
             </button>
           </>

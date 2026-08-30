@@ -4,6 +4,7 @@
 // ============================================================================
 
 import { PatchDiff } from "@pierre/diffs/react";
+import { Button } from "@skill-studio/ui";
 import type { SkillRunTargetKind } from "../../lib/skill-run-target-types";
 import { diffTheme } from "../../lib/theme";
 import { useAppStore } from "../../store/appStore";
@@ -37,34 +38,26 @@ export function SkillRunDiff({
   const secondaryLabel = targetKind === "worktree" ? "Discard" : "Revert";
 
   return (
-    <div className="skill-run-diff">
-      <div className="skill-proposed-header">
-        <span className="skill-proposed-label">Changes in {projectLabel}</span>
+    <div className="flex flex-col gap-2.5">
+      <div className="flex items-baseline justify-between">
+        <span className="text-caption font-semibold tracking-[0.04em] text-text-tertiary uppercase">
+          Changes in {projectLabel}
+        </span>
       </div>
       {diff.trim().length === 0 ? (
-        <p className="skill-assistant-panel-note">No changes.</p>
+        <p className="m-0 text-caption text-text-tertiary">No changes.</p>
       ) : (
         <div className="skill-proposed-hunk-body">
           <PatchDiff patch={diff} options={{ theme }} />
         </div>
       )}
-      <div className="skill-proposed-footer">
-        <button
-          type="button"
-          className="skill-action-button primary"
-          onClick={onPrimary}
-          disabled={isBusy}
-        >
+      <div className="flex gap-2">
+        <Button size="sm" onClick={onPrimary} disabled={isBusy}>
           {primaryLabel}
-        </button>
-        <button
-          type="button"
-          className="skill-action-button"
-          onClick={onSecondary}
-          disabled={isBusy}
-        >
+        </Button>
+        <Button variant="outline" size="sm" onClick={onSecondary} disabled={isBusy}>
           {secondaryLabel}
-        </button>
+        </Button>
       </div>
     </div>
   );

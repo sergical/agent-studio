@@ -8,6 +8,7 @@
 // ============================================================================
 
 import { Suspense, lazy, useEffect, useRef, useState } from "react";
+import { Button, Textarea } from "@skill-studio/ui";
 import type { SkillAgentRunState } from "../../hooks/useSkillAgentRun";
 import { useSkillAgentRun } from "../../hooks/useSkillAgentRun";
 import { useSkillSnapshot } from "../../hooks/useSkillSnapshot";
@@ -683,7 +684,7 @@ export function SkillAssistantPanel({
   }
 
   return (
-    <div className="skill-assistant-panel">
+    <div className="flex flex-col gap-3">
       <SelectControl
         ariaLabel="Harness"
         value={harness}
@@ -698,7 +699,7 @@ export function SkillAssistantPanel({
       {hasTranscript ? (
         <SkillAgentTranscript state={state} />
       ) : (
-        <p className="skill-assistant-panel-empty">
+        <p className="m-0 text-pretty text-small leading-normal text-text-tertiary">
           Ask the harness anything about this skill. It runs in a scratch folder with only this
           skill installed.
         </p>
@@ -706,14 +707,16 @@ export function SkillAssistantPanel({
 
       {runKind === "test" && (judge.state.events.length > 0 || judge.state.status !== "idle") && (
         <>
-          <div className="skill-assistant-panel-label">Judge</div>
+          <div className="text-caption font-semibold tracking-[0.04em] text-text-tertiary uppercase">
+            Judge
+          </div>
           <SkillAgentTranscript state={judge.state} />
         </>
       )}
 
       {runKind === "test" && judgeVerdict && (
-        <div className="skill-test-result">
-          <div className={`skill-test-result-line ${judgeVerdict.passed ? "" : "failed"}`}>
+        <div className="flex flex-col gap-1">
+          <div className={`text-small ${judgeVerdict.passed ? "text-success" : "text-error"}`}>
             {[
               judgeVerdict.passed ? "Passed" : "Failed",
               `skill loaded: ${state.skillLoaded ?? "unknown"}`,
@@ -726,12 +729,14 @@ export function SkillAssistantPanel({
               .filter((segment): segment is string => Boolean(segment))
               .join(" · ")}
           </div>
-          <p className="skill-test-result-sentence">{judgeVerdict.sentence}</p>
+          <p className="m-0 text-caption text-text-secondary">{judgeVerdict.sentence}</p>
         </div>
       )}
 
       {proposal && rawContent !== null && skillMdPath && (
-        <Suspense fallback={<p className="skill-assistant-panel-note">Loading changes…</p>}>
+        <Suspense
+          fallback={<p className="m-0 text-caption text-text-tertiary">Loading changes…</p>}
+        >
           <SkillProposedEdits
             fileAtAuditStart={proposal.fileAtAuditStart}
             currentContent={rawContent}
@@ -750,7 +755,9 @@ export function SkillAssistantPanel({
       )}
 
       {runTarget && runTarget.kind !== "scratch" && runDiff !== null && (
-        <Suspense fallback={<p className="skill-assistant-panel-note">Loading changes…</p>}>
+        <Suspense
+          fallback={<p className="m-0 text-caption text-text-tertiary">Loading changes…</p>}
+        >
           <SkillRunDiff
             projectLabel={projectBasename(runTarget.cwd)}
             targetKind={runTarget.kind}
@@ -763,13 +770,18 @@ export function SkillAssistantPanel({
       )}
 
       {runTarget && runTarget.kind === "scratch" && state.status !== "running" && (
-        <div className="skill-assistant-panel-actions">
-          <button type="button" className="skill-action-button" onClick={handleOpenScratchFolder}>
+        <div className="flex gap-2">
+          <Button variant="outline" size="sm" className="flex-1" onClick={handleOpenScratchFolder}>
             Open folder
-          </button>
-          <button type="button" className="skill-action-button" onClick={handleDeleteScratchFolder}>
+          </Button>
+          <Button
+            variant="outline"
+            size="sm"
+            className="flex-1"
+            onClick={handleDeleteScratchFolder}
+          >
             Delete scratch folder
-          </button>
+          </Button>
         </div>
       )}
 
@@ -782,10 +794,10 @@ export function SkillAssistantPanel({
           onRun={handleRunTest}
         />
       ) : (
-        <div className="skill-assistant-ask">
-          <textarea
+        <div className="flex flex-col gap-1.5">
+          <Textarea
             ref={textareaRef}
-            className="skill-assistant-ask-input"
+            className="resize-none rounded-sm border-border bg-bg-tertiary px-2.5 py-2 text-small text-text-primary focus-visible:border-border-focus focus-visible:ring-0"
             placeholder="Ask about this skill…"
             rows={2}
             value={prompt}
@@ -793,13 +805,13 @@ export function SkillAssistantPanel({
             onKeyDown={handleKeyDown}
             disabled={isRunning}
           />
-          <div className="skill-assistant-ask-footer">
+          <div className="flex items-center justify-between gap-2">
             {state.sessionId ? (
-              <span className="skill-assistant-ask-session-note">
+              <span className="text-caption text-text-tertiary">
                 Continues the current session ·{" "}
                 <button
                   type="button"
-                  className="skill-assistant-ask-new-session"
+                  className="cursor-pointer border-0 bg-transparent p-0 text-caption text-accent transition-colors hover:text-accent-hover"
                   onClick={handleNewSession}
                 >
                   New session
@@ -809,40 +821,37 @@ export function SkillAssistantPanel({
               <span />
             )}
             {isRunning ? (
-              <button type="button" className="skill-action-button" onClick={() => cancel()}>
+              <Button variant="outline" size="sm" onClick={() => cancel()}>
                 Cancel
-              </button>
+              </Button>
             ) : (
-              <button
-                type="button"
-                className="skill-action-button primary"
-                onClick={handleRun}
-                disabled={!prompt.trim()}
-              >
+              <Button size="sm" onClick={handleRun} disabled={!prompt.trim()}>
                 Run
-              </button>
+              </Button>
             )}
           </div>
         </div>
       )}
 
-      <div className="skill-assistant-panel-actions">
-        <button
-          type="button"
-          className="skill-action-button"
+      <div className="flex gap-2">
+        <Button
+          variant="outline"
+          size="sm"
+          className="flex-1"
           onClick={handleAudit}
           disabled={!canAudit}
         >
           Audit
-        </button>
-        <button
-          type="button"
-          className={`skill-action-button ${showTestForm ? "active" : ""}`}
+        </Button>
+        <Button
+          variant={showTestForm ? "default" : "outline"}
+          size="sm"
+          className="flex-1"
           onClick={() => setShowTestForm((open) => !open)}
           disabled={isRunning}
         >
           Test
-        </button>
+        </Button>
       </div>
     </div>
   );

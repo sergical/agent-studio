@@ -74,23 +74,29 @@ function footerLeadSegments(state: SkillAgentRunState): string[] {
 function ToolCallBlock({ block }: { block: Extract<TranscriptBlock, { kind: "tool_call" }> }) {
   const [isOpen, setIsOpen] = useState(false);
   return (
-    <div className="skill-agent-tool-row">
+    <div className="flex flex-col rounded-sm border border-border-subtle bg-bg-tertiary">
       <button
         type="button"
-        className="skill-agent-tool-row-header"
+        className="flex h-7 cursor-pointer items-center gap-1.5 border-0 bg-transparent px-2 text-left transition-colors hover:bg-bg-hover"
         onClick={() => setIsOpen((open) => !open)}
         aria-expanded={isOpen}
       >
         <ChevronRight
           size={14}
-          className={`skill-agent-tool-row-chevron ${isOpen ? "open" : ""}`}
+          className={`shrink-0 text-text-tertiary transition-transform ${isOpen ? "rotate-90" : ""}`}
         />
-        <span className="skill-agent-tool-row-name" title={block.name}>
+        <span className="shrink-0 font-mono text-caption text-text-primary" title={block.name}>
           {block.name}
         </span>
-        <span className="skill-agent-tool-row-summary">{block.summary}</span>
+        <span className="overflow-hidden text-ellipsis whitespace-nowrap text-caption text-text-secondary">
+          {block.summary}
+        </span>
       </button>
-      {isOpen && block.detail && <pre className="skill-agent-tool-row-detail">{block.detail}</pre>}
+      {isOpen && block.detail && (
+        <pre className="m-0 max-h-60 overflow-y-auto border-t border-border-subtle p-2 text-caption break-words whitespace-pre-wrap text-text-secondary">
+          {block.detail}
+        </pre>
+      )}
     </div>
   );
 }
@@ -118,11 +124,15 @@ export function SkillAgentTranscript({ state }: SkillAgentTranscriptProps) {
   };
 
   return (
-    <div className="skill-agent-transcript" ref={scrollRef} onScroll={handleScroll}>
+    <div
+      className="flex max-h-[60vh] flex-col gap-2.5 overflow-y-auto pr-0.5"
+      ref={scrollRef}
+      onScroll={handleScroll}
+    >
       {blocks.map((block) => {
         if (block.kind === "text") {
           return (
-            <div key={block.id} className="skill-agent-text-block skill-markdown">
+            <div key={block.id} className="skill-markdown text-body leading-normal">
               <ReactMarkdown>{block.text}</ReactMarkdown>
             </div>
           );
@@ -132,16 +142,27 @@ export function SkillAgentTranscript({ state }: SkillAgentTranscriptProps) {
         }
         if (block.kind === "tool_result") {
           return (
-            <div key={block.id} className="skill-agent-tool-row">
-              <span className="skill-agent-tool-row-name" title={block.name}>
+            <div
+              key={block.id}
+              className="flex h-7 items-center gap-1.5 rounded-sm border border-border-subtle bg-bg-tertiary px-2"
+            >
+              <span
+                className="shrink-0 font-mono text-caption text-text-primary"
+                title={block.name}
+              >
                 {block.name}
               </span>
-              <span className="skill-agent-tool-row-summary">{block.summary}</span>
+              <span className="overflow-hidden text-ellipsis whitespace-nowrap text-caption text-text-secondary">
+                {block.summary}
+              </span>
             </div>
           );
         }
         return (
-          <div key={block.id} className="skill-agent-error-block">
+          <div
+            key={block.id}
+            className="rounded-sm bg-error-soft px-2.5 py-2 text-small break-words whitespace-pre-wrap text-error"
+          >
             {block.message}
           </div>
         );
@@ -156,7 +177,7 @@ export function SkillAgentTranscript({ state }: SkillAgentTranscriptProps) {
       )}
 
       {(state.status === "finished" || state.status === "error") && (
-        <div className="skill-agent-footer">
+        <div className="pt-1 text-caption text-text-tertiary">
           {footerLeadSegments(state).join(" · ")}
           {state.skillLoaded !== undefined && (
             <>
@@ -164,9 +185,9 @@ export function SkillAgentTranscript({ state }: SkillAgentTranscriptProps) {
               <span
                 className={
                   state.skillLoaded === "no"
-                    ? "skill-agent-footer-warning"
+                    ? "text-warning"
                     : state.skillLoaded === "unknown"
-                      ? "skill-agent-footer-tertiary"
+                      ? "text-text-tertiary"
                       : undefined
                 }
               >

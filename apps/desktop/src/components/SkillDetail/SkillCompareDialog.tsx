@@ -4,9 +4,9 @@
 // Locations card's "Compare copies" button.
 // ============================================================================
 
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useState } from "react";
 import { PatchDiff } from "@pierre/diffs/react";
-import { X } from "lucide-react";
+import { Dialog, DialogContent, DialogTitle } from "@skill-studio/ui";
 import { readInstalledSkillMd } from "../../lib/skill-api";
 import { deploymentLabel } from "../../lib/skill-health";
 import { unifiedSkillMdDiff } from "../../lib/skill-md-diff";
@@ -83,7 +83,6 @@ export function SkillCompareDialog({ skill, onClose }: SkillCompareDialogProps) 
   const defaults = pickCompareDefaults(candidates);
   const [leftPath, setLeftPath] = useState(defaults.left?.path);
   const [rightPath, setRightPath] = useState(defaults.right?.path ?? defaults.left?.path);
-  const dialogRef = useRef<HTMLDivElement>(null);
 
   // Re-picked every render, not in an effect: a selection the user made and
   // that's still a candidate must never be overridden, but a background
@@ -102,55 +101,44 @@ export function SkillCompareDialog({ skill, onClose }: SkillCompareDialogProps) 
   const leftState = useSideContent(left);
   const rightState = useSideContent(right);
 
-  useEffect(() => {
-    dialogRef.current?.focus();
-    function onKeyDown(event: KeyboardEvent) {
-      if (event.key === "Escape") onClose();
-    }
-    window.addEventListener("keydown", onKeyDown);
-    return () => window.removeEventListener("keydown", onKeyDown);
-  }, [onClose]);
-
   const items = candidates.map((d) => ({ value: d.path, label: deploymentLabel(d) }));
 
   return (
-    <div className="skill-compare-dialog-overlay" onMouseDown={onClose}>
-      <div
-        ref={dialogRef}
-        className="skill-compare-dialog"
-        role="dialog"
-        aria-modal="true"
+    <Dialog open onOpenChange={(open) => !open && onClose()}>
+      <DialogContent
+        className="flex max-h-[85vh] w-[min(1200px,92vw)] max-w-none flex-col gap-0 rounded-lg bg-bg-elevated p-0 text-body text-text-primary shadow-lg"
         aria-label={`Compare copies of ${skill.name}`}
-        tabIndex={-1}
-        onMouseDown={(e) => e.stopPropagation()}
       >
-        <div className="skill-compare-dialog-header">
-          <h3>Compare copies of {skill.name}</h3>
-          <button type="button" className="skill-compare-dialog-close" onClick={onClose}>
-            <X size={16} />
-          </button>
+        <div className="flex items-center justify-between border-b border-border px-5 py-4">
+          <DialogTitle className="m-0 text-emphasis font-semibold text-text-primary">
+            Compare copies of {skill.name}
+          </DialogTitle>
         </div>
 
-        <div className="skill-compare-dialog-pickers">
-          <SelectControl
-            ariaLabel="Left copy"
-            value={effectiveLeftPath ?? ""}
-            onValueChange={setLeftPath}
-            items={items}
-          />
-          <SelectControl
-            ariaLabel="Right copy"
-            value={effectiveRightPath ?? ""}
-            onValueChange={setRightPath}
-            items={items}
-          />
+        <div className="flex gap-3 border-b border-border-subtle px-5 py-3">
+          <div className="flex-1">
+            <SelectControl
+              ariaLabel="Left copy"
+              value={effectiveLeftPath ?? ""}
+              onValueChange={setLeftPath}
+              items={items}
+            />
+          </div>
+          <div className="flex-1">
+            <SelectControl
+              ariaLabel="Right copy"
+              value={effectiveRightPath ?? ""}
+              onValueChange={setRightPath}
+              items={items}
+            />
+          </div>
         </div>
 
-        <div className="skill-compare-dialog-body">
+        <div className="skill-compare-dialog-body flex-1 overflow-auto px-5 py-4">
           <SkillCompareBody leftState={leftState} rightState={rightState} />
         </div>
-      </div>
-    </div>
+      </DialogContent>
+    </Dialog>
   );
 }
 
@@ -164,26 +152,26 @@ function SkillCompareBody({
   const resolvedTheme = useAppStore((state) => state.resolvedTheme);
   if (leftState.status === "error") {
     return (
-      <p className="skill-compare-dialog-error">
+      <p className="m-0 text-body text-error">
         Couldn't read {leftState.path}: {leftState.message}
       </p>
     );
   }
   if (rightState.status === "error") {
     return (
-      <p className="skill-compare-dialog-error">
+      <p className="m-0 text-body text-error">
         Couldn't read {rightState.path}: {rightState.message}
       </p>
     );
   }
   if (leftState.status === "loading" || rightState.status === "loading") {
-    return <p className="skill-assistant-panel-note">Loading…</p>;
+    return <p className="m-0 text-caption text-text-tertiary">Loading…</p>;
   }
   if (leftState.status === "missing" || rightState.status === "missing") {
-    return <p className="skill-compare-dialog-error">This copy is no longer on disk.</p>;
+    return <p className="m-0 text-body text-error">This copy is no longer on disk.</p>;
   }
   if (leftState.content === rightState.content) {
-    return <p className="skill-compare-dialog-same">These copies are the same.</p>;
+    return <p className="m-0 text-body text-text-tertiary">These copies are the same.</p>;
   }
   const diff = unifiedSkillMdDiff(leftState.content, rightState.content);
   return <PatchDiff patch={diff} options={{ theme: diffTheme(resolvedTheme) }} />;

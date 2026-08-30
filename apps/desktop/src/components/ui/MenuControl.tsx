@@ -4,8 +4,7 @@
 // MenuRadioItem, and MenuSeparator. Kept on the Base UI primitive directly
 // (not the kit's DropdownMenu): the re-exports are load-bearing for callers
 // that build their own menu items against this exact API - InstalledSkillHeader
-// still styles them with the shared .menu-control-item/-separator classes in
-// App.css, SkillListFilterBar styles its own inline with Tailwind utilities.
+// and SkillListFilterBar each style their own inline with Tailwind utilities.
 // Focus returns to the trigger on close (Base UI default).
 // ============================================================================
 

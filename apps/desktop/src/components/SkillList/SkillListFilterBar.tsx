@@ -51,7 +51,7 @@ const USAGE_LABELS = {
   "unused-30d": "Not used in 30 days",
 } as const satisfies Record<NonNullable<SkillListFilter["usage"]>, string>;
 
-/** Reproduces the shared `.menu-control-item` look inline - InstalledSkillHeader still uses that class directly, so it stays in App.css. */
+/** Reproduces the former shared `.menu-control-item` look inline - InstalledSkillHeader has its own copy of the same styling. */
 const MENU_ITEM_CLASS =
   "flex h-(--control-height) cursor-pointer items-center gap-2 rounded-sm px-2.5 text-body text-text-secondary transition-colors data-highlighted:bg-bg-hover data-highlighted:text-text-primary";
 const MENU_RADIO_ITEM_CLASS =

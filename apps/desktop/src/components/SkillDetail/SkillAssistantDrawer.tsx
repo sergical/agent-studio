@@ -50,29 +50,32 @@ export function SkillAssistantDrawer({
   if (!isOpen) return null;
 
   return (
-    <div className="skill-assistant-scrim" onMouseDown={onClose}>
+    <div
+      className="fixed inset-0 z-(--z-backdrop) flex justify-end bg-scrim animate-[fadeInAssistantScrim_220ms_ease-out]"
+      onMouseDown={onClose}
+    >
       <div
         ref={panelRef}
         id={SKILL_ASSISTANT_DRAWER_ID}
-        className="skill-assistant-drawer"
+        className="relative z-(--z-drawer) flex h-full w-[min(560px,92vw)] flex-col overflow-y-auto border-l border-border bg-bg-primary animate-[slideInAssistantDrawer_220ms_ease-out]"
         role="dialog"
         aria-modal="true"
         aria-label="Assistant"
         tabIndex={-1}
         onMouseDown={(event) => event.stopPropagation()}
       >
-        <div className="skill-assistant-drawer-header">
-          <span className="skill-assistant-drawer-title">Assistant</span>
+        <div className="flex items-center justify-between gap-3 border-b border-border p-4">
+          <span className="text-emphasis font-semibold text-text-primary">Assistant</span>
           <button
             type="button"
-            className="skill-assistant-drawer-close"
+            className="flex size-(--control-height) cursor-pointer items-center justify-center rounded-sm border-0 bg-transparent text-text-secondary transition-colors hover:bg-bg-tertiary hover:text-text-primary"
             onClick={onClose}
             aria-label="Close assistant"
           >
             <X size={16} />
           </button>
         </div>
-        <div className="skill-assistant-drawer-body">{children}</div>
+        <div className="flex flex-col p-4">{children}</div>
       </div>
     </div>
   );

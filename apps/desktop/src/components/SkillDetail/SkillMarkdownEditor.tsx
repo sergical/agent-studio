@@ -4,6 +4,7 @@
 
 import { useEffect, useRef, useState } from "react";
 import { Save, X } from "lucide-react";
+import { Button, Textarea } from "@skill-studio/ui";
 
 interface SkillMarkdownEditorProps {
   initialContent: string;
@@ -64,27 +65,23 @@ export function SkillMarkdownEditor({
   }, [content, onSave, isSaving, isDirty, onCancel]);
 
   return (
-    <div className="skill-markdown-editor">
-      <div className="skill-markdown-editor-toolbar">
-        {isDirty && <span className="skill-markdown-editor-dirty">Unsaved changes</span>}
-        <div className="skill-markdown-editor-actions">
-          <button className="skill-action-button" onClick={handleCancel} disabled={isSaving}>
+    <div className="flex flex-col gap-2 p-4">
+      <div className="flex items-center justify-end gap-3">
+        {isDirty && <span className="mr-auto text-caption text-warning">Unsaved changes</span>}
+        <div className="flex gap-2">
+          <Button variant="outline" size="sm" onClick={handleCancel} disabled={isSaving}>
             <X size={14} />
             Cancel
-          </button>
-          <button
-            className="skill-action-button primary"
-            onClick={() => onSave(content)}
-            disabled={isSaving || !isDirty}
-          >
+          </Button>
+          <Button size="sm" onClick={() => onSave(content)} disabled={isSaving || !isDirty}>
             <Save size={14} />
             {isSaving ? "Saving…" : saveLabel}
-          </button>
+          </Button>
         </div>
       </div>
-      <textarea
+      <Textarea
         ref={textareaRef}
-        className="skill-markdown-editor-textarea"
+        className="min-h-[60vh] resize-y rounded-sm border-border bg-bg-primary px-3 py-2.5 font-mono text-body text-text-primary focus-visible:border-border-focus focus-visible:ring-0"
         value={content}
         onChange={(e) => setContent(e.target.value)}
         spellCheck={false}

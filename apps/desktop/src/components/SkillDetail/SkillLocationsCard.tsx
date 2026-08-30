@@ -102,7 +102,11 @@ function LinkChip({ deployment }: { deployment: Deployment }) {
   if (!chip) return null;
   return (
     <TooltipControl content={chip.target ? homeRelativePath(chip.target) : "unknown target"}>
-      <span className={`skill-locations-link-chip ${chip.broken ? "broken" : ""}`}>
+      <span
+        className={`inline-flex shrink-0 items-center gap-1 whitespace-nowrap rounded-sm border bg-bg-tertiary px-1.5 py-0.5 text-caption tracking-[0.02em] ${
+          chip.broken ? "border-error text-error" : "border-border-subtle text-text-secondary"
+        }`}
+      >
         {chip.broken && <AlertTriangle size={11} />}
         <Link2 size={11} />
         {chip.label}
@@ -196,19 +200,28 @@ function DeploymentRow({
   };
 
   return (
-    <div className={`skill-locations-row ${showPath ? "" : "nested"}`}>
-      <div className="skill-locations-row-main">
-        {projectName && <span className="skill-locations-row-project">{projectName}</span>}
+    <div
+      className={`grid min-h-11 items-center gap-3 border-b border-border-subtle py-1.5 last:border-b-0 ${
+        showPath ? "grid-cols-[minmax(0,1fr)_minmax(0,1fr)_auto]" : "grid-cols-[minmax(0,1fr)_auto]"
+      }`}
+    >
+      <div className="flex min-w-0 items-center gap-2 text-body text-text-primary">
+        {projectName && (
+          <span className="shrink-0 text-small text-text-tertiary">{projectName}</span>
+        )}
         {harnessId && <HarnessIcon harness={harnessId} size={16} />}
-        <span className="skill-locations-row-name">{harnessDisplayName(deployment)}</span>
+        <span className="shrink-0">{harnessDisplayName(deployment)}</span>
         {relation && (
-          <span className="skill-locations-row-relation" title={relation}>
+          <span
+            className="inline-block min-w-0 overflow-hidden text-ellipsis whitespace-nowrap text-small text-text-tertiary"
+            title={relation}
+          >
             {relation}
           </span>
         )}
         <LinkChip deployment={deployment} />
         {deployment.plugin && (
-          <span className="skill-locations-row-relation">
+          <span className="inline-block min-w-0 overflow-hidden text-ellipsis whitespace-nowrap text-small text-text-tertiary">
             plugin · {deployment.plugin.name}
             {deployment.plugin.version ? ` v${deployment.plugin.version}` : ""}
           </span>
@@ -216,14 +229,19 @@ function DeploymentRow({
       </div>
       {showPath && (
         <TooltipControl content={deployment.path}>
-          <span className="skill-locations-row-path">
-            <span dir="ltr">{homeRelativePath(deployment.path)}</span>
+          <span
+            dir="rtl"
+            className="overflow-hidden text-left text-ellipsis whitespace-nowrap font-mono text-small text-text-tertiary"
+          >
+            <span dir="ltr" className="[unicode-bidi:isolate]">
+              {homeRelativePath(deployment.path)}
+            </span>
           </span>
         </TooltipControl>
       )}
-      <div className="skill-locations-row-controls">
+      <div className="flex shrink-0 items-center gap-3">
         {supportsDisableSwitch && (
-          <label className="switch-label">
+          <label className="flex h-(--control-height) cursor-pointer items-center gap-2 text-small text-text-secondary">
             <SwitchControl
               checked={!deployment.disabled}
               onCheckedChange={handleToggleEnabled}
@@ -236,7 +254,7 @@ function DeploymentRow({
         <TooltipControl content={`Reveal ${deployment.agent} copy in Finder`}>
           <button
             type="button"
-            className="skill-locations-row-reveal"
+            className="flex h-7 w-7 cursor-pointer items-center justify-center rounded-sm border-0 bg-transparent text-text-tertiary transition-colors hover:bg-bg-tertiary hover:text-text-primary"
             onClick={handleReveal}
             aria-label={`Reveal ${deployment.agent} copy in Finder`}
           >
@@ -262,30 +280,35 @@ function SharedDeploymentGroup({
 }) {
   const [expanded, setExpanded] = useState(true);
   return (
-    <div className="skill-locations-group">
+    <div className="border-b border-border-subtle last:border-b-0">
       <button
         type="button"
-        className="skill-locations-group-header"
+        className="flex min-h-11 w-full cursor-pointer items-center gap-2 border-0 bg-none py-1.5 text-left font-inherit text-body text-text-primary"
         aria-expanded={expanded}
         onClick={() => setExpanded((open) => !open)}
       >
         <ChevronRight
           size={14}
-          className={`skill-locations-group-chevron ${expanded ? "open" : ""}`}
+          className={`shrink-0 text-text-tertiary transition-transform ${expanded ? "rotate-90" : ""}`}
         />
         <FolderOpen size={16} />
-        <span className="skill-locations-row-name">Shared folder</span>
+        <span className="shrink-0">Shared folder</span>
         <TooltipControl content={group.shared.path}>
-          <span className="skill-locations-row-path">
-            <span dir="ltr">{homeRelativePath(group.shared.path)}</span>
+          <span
+            dir="rtl"
+            className="overflow-hidden text-left text-ellipsis whitespace-nowrap font-mono text-small text-text-tertiary"
+          >
+            <span dir="ltr" className="[unicode-bidi:isolate]">
+              {homeRelativePath(group.shared.path)}
+            </span>
           </span>
         </TooltipControl>
-        <span className="skill-locations-group-count">
+        <span className="ml-auto shrink-0 text-small tabular-nums text-text-tertiary">
           used by {group.linked.length} harness{group.linked.length === 1 ? "" : "es"}
         </span>
       </button>
       {expanded && (
-        <div className="skill-locations-group-body">
+        <div className="flex flex-col gap-0.5 pl-[22px]">
           {group.linked.map((deployment, i) => (
             <DeploymentRow
               key={`${deployment.agent}-${deployment.scope}-${i}`}
@@ -345,22 +368,26 @@ export function SkillLocationsCard({
   const { groups, standalone } = groupDeploymentsForDisplay(sortedDeployments(skill.deployments));
 
   return (
-    <div className="home-block skill-locations-card">
-      <div className="home-block-header">
+    <div className="flex flex-col gap-1 rounded-lg border border-border-subtle p-4">
+      <div className="flex items-baseline justify-between gap-3 text-body font-semibold text-text-primary">
         Locations
         {hasDriftingCopies && onCompareCopies && (
-          <button type="button" className="home-block-header-action" onClick={onCompareCopies}>
+          <button
+            type="button"
+            className="cursor-pointer border-0 bg-transparent p-0 text-small font-normal text-accent transition-colors hover:underline"
+            onClick={onCompareCopies}
+          >
             Compare copies
           </button>
         )}
       </div>
 
       {skill.deployments.length === 0 ? (
-        <p className="skill-detail-content-empty">
+        <p className="m-0 px-3 py-6 text-small text-text-tertiary">
           Known only from the lock file — no folder on disk.
         </p>
       ) : (
-        <div className="skill-locations-list">
+        <div className="flex flex-col gap-0.5">
           {groups.map((group, i) => (
             <SharedDeploymentGroup key={`group-${i}`} group={group} skill={skill} />
           ))}
@@ -374,15 +401,17 @@ export function SkillLocationsCard({
         </div>
       )}
 
-      <div className="skill-locations-footer">
-        <span className="skill-locations-footer-label">Invocation</span>
+      <div className="mt-3 flex flex-col gap-1.5 border-t border-border-subtle pt-3">
+        <span className="text-caption font-medium tracking-[0.08em] text-text-tertiary uppercase">
+          Invocation
+        </span>
         {skillMdPath && (
-          <div className="segmented" role="group" aria-label="Invocation">
+          <div className="flex" role="group" aria-label="Invocation">
             {INVOCATION_POLICY_OPTIONS.map((option) => (
               <button
                 key={option.value}
                 type="button"
-                className="segmented-item"
+                className="inline-flex h-(--control-height) cursor-pointer items-center gap-1 border border-l-0 border-border px-3 text-body text-text-tertiary transition-colors first:rounded-l-sm first:border-l last:rounded-r-sm hover:bg-bg-hover hover:text-text-secondary aria-pressed:bg-bg-tertiary aria-pressed:text-text-primary"
                 aria-pressed={skill.invocation === option.value}
                 onClick={() => handleSetInvocation(option.value)}
                 disabled={isSavingInvocation || skill.invocation === option.value}
@@ -392,11 +421,11 @@ export function SkillLocationsCard({
             ))}
           </div>
         )}
-        <p className="skill-locations-footer-explanation">
+        <p className="text-small text-text-tertiary">
           {invocationPolicyExplanation(skill.invocation, skill.name)}
         </p>
         {allowedTools && (
-          <div className="skill-locations-allowed-tools">Allowed tools: {allowedTools}</div>
+          <div className="text-small text-text-tertiary">Allowed tools: {allowedTools}</div>
         )}
       </div>
     </div>
