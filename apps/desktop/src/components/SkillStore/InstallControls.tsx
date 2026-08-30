@@ -10,8 +10,8 @@ import { Button } from "@skill-studio/ui";
 import { AgentTargetSelector } from "./AgentTargetSelector";
 import { installSkill, removeSkill, updateSkill } from "../../lib/skill-api";
 import { useAppStore } from "../../store/appStore";
-import type { AgentId, InstallScope, SkillWithStatus } from "../../lib/skill-types";
-import { COMMON_AGENTS } from "../../lib/skill-types";
+import type { AgentId, InstallScope, SkillWithStatus } from "@skill-studio/lib";
+import { COMMON_AGENTS } from "@skill-studio/lib";
 
 const SCOPE_OPTION_CLASS =
   "flex-1 rounded-sm border border-border bg-bg-primary px-2.5 py-2.5 text-body font-medium text-text-secondary transition-colors hover:border-border-focus";

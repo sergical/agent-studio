@@ -8,8 +8,8 @@ import { useState } from "react";
 import { PatchDiff } from "@pierre/diffs/react";
 import { Button } from "@skill-studio/ui";
 import { writeInstalledSkillMdIfUnchanged } from "../../lib/skill-api";
-import type { SkillMdHunk } from "../../lib/skill-md-diff";
-import { applyAcceptedHunks } from "../../lib/skill-md-diff";
+import type { SkillMdHunk } from "@skill-studio/lib";
+import { applyAcceptedHunks } from "@skill-studio/lib";
 import { diffTheme } from "../../lib/theme";
 import { useAppStore } from "../../store/appStore";
 

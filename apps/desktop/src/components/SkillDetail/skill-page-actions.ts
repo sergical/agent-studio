@@ -19,7 +19,7 @@ import {
   unparkSkill,
   updateSkill,
 } from "../../lib/skill-api";
-import type { InstalledSkill } from "../../lib/skill-types";
+import type { InstalledSkill } from "@skill-studio/lib";
 import { useAppStore } from "../../store/appStore";
 
 /**

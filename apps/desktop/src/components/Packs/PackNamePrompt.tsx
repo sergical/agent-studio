@@ -8,8 +8,8 @@ import { useState } from "react";
 import { X } from "lucide-react";
 import { Button, Input } from "@skill-studio/ui";
 import { createSkillPack } from "../../lib/skill-api";
-import { DEFAULT_PACK_NAME, validatePackName } from "../../lib/skill-pack-name";
-import type { PackMember } from "../../lib/skill-types";
+import { DEFAULT_PACK_NAME, validatePackName } from "@skill-studio/lib";
+import type { PackMember } from "@skill-studio/lib";
 import { useAppStore } from "../../store/appStore";
 
 interface PackNamePromptProps {

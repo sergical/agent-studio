@@ -13,7 +13,7 @@ import type {
   InstalledSkill,
   SkillWithStatus,
   InstallProgressState,
-} from "../../lib/skill-types";
+} from "@skill-studio/lib";
 import { useAppStore } from "../../store/appStore";
 
 const LIMIT = 50;

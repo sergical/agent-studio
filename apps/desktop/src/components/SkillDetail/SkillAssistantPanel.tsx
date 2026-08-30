@@ -19,18 +19,14 @@ import {
   extractProposedSkillMd,
   normalizeProposalToOriginal,
   parseJudgeVerdict,
-} from "../../lib/skill-agent-prompts";
-import type { HarnessId } from "../../lib/skill-agent-types";
-import { skillVisibleToAgent } from "../../lib/skill-coverage";
-import type { SkillMdHunk } from "../../lib/skill-md-diff";
-import { diffSkillMd } from "../../lib/skill-md-diff";
-import { ownDeployments, ownSkillsView } from "../../lib/skill-plugin-partition";
+} from "@skill-studio/lib";
+import type { HarnessId } from "@skill-studio/lib";
+import { skillVisibleToAgent } from "@skill-studio/lib";
+import type { SkillMdHunk } from "@skill-studio/lib";
+import { diffSkillMd } from "@skill-studio/lib";
+import { ownDeployments, ownSkillsView } from "@skill-studio/lib";
 import { recordSkillRun } from "../../lib/skill-run-history-api";
-import type {
-  SkillRunAction,
-  SkillRunJudge,
-  SkillRunRecord,
-} from "../../lib/skill-run-history-types";
+import type { SkillRunAction, SkillRunJudge, SkillRunRecord } from "@skill-studio/lib";
 import {
   applySkillRunTargetDiff,
   discardSkillRunTarget,
@@ -38,9 +34,9 @@ import {
   revealSkillRunTarget,
   skillRunTargetDiff,
 } from "../../lib/skill-run-target-api";
-import type { SkillRunTargetInfo } from "../../lib/skill-run-target-types";
-import { COMMON_AGENTS } from "../../lib/skill-types";
-import type { AgentId, InstalledSkill } from "../../lib/skill-types";
+import type { SkillRunTargetInfo } from "@skill-studio/lib";
+import { COMMON_AGENTS } from "@skill-studio/lib";
+import type { AgentId, InstalledSkill } from "@skill-studio/lib";
 import { useAppStore } from "../../store/appStore";
 import { HarnessIcon } from "../ui/HarnessIcon";
 import { HARNESS_LABELS } from "../ui/HarnessSegmentedControl";

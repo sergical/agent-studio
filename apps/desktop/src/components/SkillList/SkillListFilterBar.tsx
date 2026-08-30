@@ -6,15 +6,11 @@
 
 import { ChevronDown, X } from "lucide-react";
 import { ask } from "@tauri-apps/plugin-dialog";
-import { harnessesPresent } from "../../lib/home-summary";
-import {
-  defaultSkillListFilter,
-  isProjectScope,
-  type SkillListFilter,
-} from "../../lib/skill-list-filter";
-import { shortProjectPath } from "../../lib/skill-path-format";
-import type { InstalledSkill, SkillSnapshot, SkillSourceKind } from "../../lib/skill-types";
-import { SOURCE_KIND_LABELS } from "../../lib/skill-types";
+import { harnessesPresent } from "@skill-studio/lib";
+import { defaultSkillListFilter, isProjectScope, type SkillListFilter } from "@skill-studio/lib";
+import { shortProjectPath } from "@skill-studio/lib";
+import type { InstalledSkill, SkillSnapshot, SkillSourceKind } from "@skill-studio/lib";
+import { SOURCE_KIND_LABELS } from "@skill-studio/lib";
 import { HarnessIcon, harnessIdFromLabel } from "../ui/HarnessIcon";
 import {
   MenuControl,
@@ -57,6 +53,9 @@ const MENU_ITEM_CLASS =
 const MENU_RADIO_ITEM_CLASS =
   "flex h-auto flex-col items-start gap-0.5 rounded-sm px-2.5 py-1.5 text-body text-text-secondary transition-colors data-highlighted:bg-bg-hover data-highlighted:text-text-primary";
 const MENU_SEPARATOR_CLASS = "mx-0.5 my-1 h-px border-none bg-border-subtle";
+/** Reproduces the former shared `.segmented`/`.segmented-item` look inline - only used by the Scope group below. */
+const SEGMENTED_ITEM_CLASS =
+  "inline-flex h-(--control-height) items-center gap-1 border border-l-0 border-border bg-transparent px-3 text-body text-text-tertiary transition-colors duration-150 hover:bg-bg-hover hover:text-text-secondary aria-pressed:bg-bg-tertiary aria-pressed:text-text-primary";
 
 interface SkillListFilterBarProps {
   filter: SkillListFilter;
@@ -145,23 +144,27 @@ export function SkillListFilterBar({
   return (
     <div className="flex flex-col gap-2.5">
       <div className="flex flex-wrap items-center gap-2.5">
-        <div className="segmented" role="group" aria-label="Scope">
+        <div
+          className="flex [&>*:first-child]:rounded-l-sm [&>*:first-child]:border-l [&>*:last-child]:rounded-r-sm"
+          role="group"
+          aria-label="Scope"
+        >
           <button
-            className="segmented-item"
+            className={SEGMENTED_ITEM_CLASS}
             aria-pressed={filter.scope === "all"}
             onClick={() => setScope("all")}
           >
             All
           </button>
           <button
-            className="segmented-item"
+            className={SEGMENTED_ITEM_CLASS}
             aria-pressed={filter.scope === "global"}
             onClick={() => setScope("global")}
           >
             Global
           </button>
           <MenuControl
-            triggerClassName="segmented-item"
+            triggerClassName={SEGMENTED_ITEM_CLASS}
             triggerAriaLabel="Project"
             trigger={
               <>

@@ -5,7 +5,7 @@
 import { useEffect, useState } from "react";
 import { FileText } from "lucide-react";
 import { fetchSkillMdContent } from "../../lib/github-skill-source";
-import type { SkillWithStatus } from "../../lib/skill-types";
+import type { SkillWithStatus } from "@skill-studio/lib";
 
 interface SkillContentProps {
   skill: SkillWithStatus;

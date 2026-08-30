@@ -9,7 +9,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { ChevronRight } from "lucide-react";
 import ReactMarkdown from "react-markdown";
 import type { SkillAgentRunState } from "../../hooks/useSkillAgentRun";
-import type { SkillAgentEvent, SkillLoaded } from "../../lib/skill-agent-types";
+import type { SkillAgentEvent, SkillLoaded } from "@skill-studio/lib";
 
 interface SkillAgentTranscriptProps {
   state: SkillAgentRunState;

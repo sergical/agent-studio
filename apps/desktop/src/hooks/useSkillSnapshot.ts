@@ -5,7 +5,7 @@
 
 import { useCallback, useEffect, useState } from "react";
 import { getSkillSnapshot, onSkillSnapshot, requestSkillRescan } from "../lib/skill-api";
-import type { SkillSnapshot } from "../lib/skill-types";
+import type { SkillSnapshot } from "@skill-studio/lib";
 
 interface UseSkillSnapshotResult {
   snapshot: SkillSnapshot | undefined;

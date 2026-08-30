@@ -6,7 +6,7 @@
 // scratch directory, independent of installed deployments.
 // ============================================================================
 
-import type { AgentId } from "../../lib/skill-types";
+import type { AgentId } from "@skill-studio/lib";
 import { HarnessIcon } from "./HarnessIcon";
 
 /** Display label for each first-class harness, in the order the control shows them. */

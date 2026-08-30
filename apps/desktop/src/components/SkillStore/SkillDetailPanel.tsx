@@ -8,7 +8,7 @@ import { SkillContent } from "./SkillContent";
 import { InstallControls } from "./InstallControls";
 import { getSkillDetails } from "../../lib/skill-api";
 import { useAppStore } from "../../store/appStore";
-import type { SkillWithStatus } from "../../lib/skill-types";
+import type { SkillWithStatus } from "@skill-studio/lib";
 
 interface SkillDetailPanelProps {
   skill: SkillWithStatus;

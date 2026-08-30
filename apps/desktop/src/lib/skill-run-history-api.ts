@@ -5,8 +5,7 @@
 // ============================================================================
 
 import { invoke } from "@tauri-apps/api/core";
-import type { SkillAgentEvent } from "./skill-agent-types";
-import type { SkillRunRecord } from "./skill-run-history-types";
+import type { SkillAgentEvent, SkillRunRecord } from "@skill-studio/lib";
 
 /** Records one run's summary and transcript, trimming older runs for the skill. */
 export async function recordSkillRun(

@@ -12,11 +12,11 @@ import { SkillCoverageMatrix } from "../Coverage/SkillCoverageMatrix";
 import { SkillListTable } from "./SkillListTable";
 import { SkillListFilterBar } from "./SkillListFilterBar";
 import { registerSkillProjects, unregisterSkillProject } from "../../lib/skill-api";
-import { collectDashboardIssues } from "../../lib/skill-health";
-import { applySkillListFilter, isProjectScope } from "../../lib/skill-list-filter";
-import type { SkillListFilter } from "../../lib/skill-list-filter";
-import { ownSkillsView, pluginSkillsView } from "../../lib/skill-plugin-partition";
-import type { InstalledSkill, SkillSnapshot } from "../../lib/skill-types";
+import { collectDashboardIssues } from "@skill-studio/lib";
+import { applySkillListFilter, isProjectScope } from "@skill-studio/lib";
+import type { SkillListFilter } from "@skill-studio/lib";
+import { ownSkillsView, pluginSkillsView } from "@skill-studio/lib";
+import type { InstalledSkill, SkillSnapshot } from "@skill-studio/lib";
 import { useAppStore } from "../../store/appStore";
 
 /** The deployment the current scope shows for `skill`, so the detail drawer opens on that copy. */

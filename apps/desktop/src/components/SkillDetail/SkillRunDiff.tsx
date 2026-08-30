@@ -5,7 +5,7 @@
 
 import { PatchDiff } from "@pierre/diffs/react";
 import { Button } from "@skill-studio/ui";
-import type { SkillRunTargetKind } from "../../lib/skill-run-target-types";
+import type { SkillRunTargetKind } from "@skill-studio/lib";
 import { diffTheme } from "../../lib/theme";
 import { useAppStore } from "../../store/appStore";
 

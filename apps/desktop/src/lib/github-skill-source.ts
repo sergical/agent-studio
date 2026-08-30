@@ -5,8 +5,8 @@
 // ============================================================================
 
 import { readInstalledSkillMd } from "./skill-api";
-import { skillMdPathForDeployment } from "./skill-plugin-partition";
-import type { InstalledSkill } from "./skill-types";
+import { skillMdPathForDeployment } from "@skill-studio/lib";
+import type { InstalledSkill } from "@skill-studio/lib";
 
 // Cache for GitHub repo trees - stores SKILL.md paths per repo
 const repoTreeCache = new Map<string, { paths: string[]; timestamp: number }>();

@@ -6,8 +6,8 @@
 
 import ReactMarkdown from "react-markdown";
 import { Button } from "@skill-studio/ui";
-import { pluginLabelForSkill } from "../../lib/skill-plugin-partition";
-import type { Deployment, InstalledSkill } from "../../lib/skill-types";
+import { pluginLabelForSkill } from "@skill-studio/lib";
+import type { Deployment, InstalledSkill } from "@skill-studio/lib";
 import { SkillMarkdownEditor } from "./SkillMarkdownEditor";
 
 interface SkillMarkdownCardProps {

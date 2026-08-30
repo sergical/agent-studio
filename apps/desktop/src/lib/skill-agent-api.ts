@@ -7,7 +7,7 @@
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import type { UnlistenFn } from "@tauri-apps/api/event";
-import type { SkillAgentEvent, SkillAgentRunRequest } from "./skill-agent-types";
+import type { SkillAgentEvent, SkillAgentRunRequest } from "@skill-studio/lib";
 
 /** Event name every `SkillAgentEvent` is emitted on. */
 export const SKILL_AGENT_EVENT = "skill-agent://event";

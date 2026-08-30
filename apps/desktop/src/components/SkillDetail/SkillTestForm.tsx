@@ -6,8 +6,8 @@
 
 import { useMemo, useState } from "react";
 import { Button, Textarea } from "@skill-studio/ui";
-import type { SkillRunTargetKind } from "../../lib/skill-run-target-types";
-import type { InstalledSkill } from "../../lib/skill-types";
+import type { SkillRunTargetKind } from "@skill-studio/lib";
+import type { InstalledSkill } from "@skill-studio/lib";
 import { CheckboxControl } from "../ui/CheckboxControl";
 
 export interface SkillTestRunParams {
@@ -108,12 +108,14 @@ export function SkillTestForm({
         <span className="text-caption font-semibold tracking-[0.04em] text-text-tertiary uppercase">
           Where
         </span>
-        <div className="harness-segmented-control">
+        <div className="flex flex-wrap gap-1.5">
           {TARGET_LABELS.map(([kind, label]) => (
             <button
               key={kind}
               type="button"
-              className={`harness-segmented-control-item ${kind === targetKind ? "active" : ""}`}
+              className={`inline-flex h-[26px] items-center gap-1.5 rounded-sm border border-border bg-bg-tertiary px-2.5 text-caption text-text-tertiary transition-colors disabled:cursor-not-allowed enabled:hover:bg-bg-hover enabled:hover:text-text-secondary ${
+                kind === targetKind ? "border-text-tertiary text-text-primary" : ""
+              }`}
               aria-pressed={kind === targetKind}
               onClick={() => setTargetKind(kind)}
               disabled={isRunning}
@@ -161,7 +163,7 @@ export function SkillTestForm({
                 Also install
               </span>
               <input
-                className="text-control"
+                className="h-8 rounded-sm border border-border bg-bg-primary px-3 text-body text-text-primary transition-colors duration-150 placeholder:text-text-quaternary focus-visible:border-border-focus"
                 value={extraQuery}
                 onChange={(e) => setExtraQuery(e.target.value)}
                 placeholder="Filter skills…"

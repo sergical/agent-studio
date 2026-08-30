@@ -6,10 +6,10 @@
 import { useMemo, useRef, useState } from "react";
 import type { KeyboardEvent } from "react";
 import { Search } from "lucide-react";
-import { pluginLabelForSkill } from "../../lib/skill-plugin-partition";
-import type { SkillRunSummary } from "../../lib/skill-run-history-types";
-import { formatBytes, formatRelativeTime, formatTokens } from "../../lib/skill-stats";
-import type { InstalledSkill, PackMember, SkillInvocationStats } from "../../lib/skill-types";
+import { pluginLabelForSkill } from "@skill-studio/lib";
+import type { SkillRunSummary } from "@skill-studio/lib";
+import { formatBytes, formatRelativeTime, formatTokens } from "@skill-studio/lib";
+import type { InstalledSkill, PackMember, SkillInvocationStats } from "@skill-studio/lib";
 import { useAppStore } from "../../store/appStore";
 import { PackNamePrompt } from "../Packs/PackNamePrompt";
 import { CheckboxControl } from "../ui/CheckboxControl";

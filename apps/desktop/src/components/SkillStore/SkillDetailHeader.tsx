@@ -13,8 +13,8 @@ import {
   AlertTriangle,
   Link2,
 } from "lucide-react";
-import type { SkillWithStatus } from "../../lib/skill-types";
-import { SOURCE_KIND_LABELS } from "../../lib/skill-types";
+import type { SkillWithStatus } from "@skill-studio/lib";
+import { SOURCE_KIND_LABELS } from "@skill-studio/lib";
 
 interface SkillDetailHeaderProps {
   skill: SkillWithStatus;

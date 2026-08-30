@@ -15,20 +15,15 @@ import {
   homePromptCost,
   recentlyUsedSkills,
   unusedSkills,
-} from "../../lib/home-summary";
+} from "@skill-studio/lib";
 import { parkSkill, pullForkUpstream, updateSkill } from "../../lib/skill-api";
-import { collectDashboardIssues } from "../../lib/skill-health";
-import type { HealthIssue, HealthIssueKind } from "../../lib/skill-health";
-import { defaultSkillListFilter } from "../../lib/skill-list-filter";
-import { ownSkillsView } from "../../lib/skill-plugin-partition";
-import { formatRelativeTime, formatTokens, shortSha } from "../../lib/skill-stats";
-import { skillsWithUpdates } from "../../lib/skill-updates";
-import type {
-  AgentId,
-  InstalledSkill,
-  InvocationPolicy,
-  SkillSnapshot,
-} from "../../lib/skill-types";
+import { collectDashboardIssues } from "@skill-studio/lib";
+import type { HealthIssue, HealthIssueKind } from "@skill-studio/lib";
+import { defaultSkillListFilter } from "@skill-studio/lib";
+import { ownSkillsView } from "@skill-studio/lib";
+import { formatRelativeTime, formatTokens, shortSha } from "@skill-studio/lib";
+import { skillsWithUpdates } from "@skill-studio/lib";
+import type { AgentId, InstalledSkill, InvocationPolicy, SkillSnapshot } from "@skill-studio/lib";
 import { useAppStore } from "../../store/appStore";
 import { PageShell } from "../Shell/PageShell";
 import { HarnessIcon, harnessIdFromLabel } from "../ui/HarnessIcon";

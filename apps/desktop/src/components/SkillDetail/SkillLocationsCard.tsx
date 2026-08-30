@@ -15,17 +15,17 @@ import {
   driftingCopies,
   groupDeploymentsForDisplay,
   locationSummary,
-} from "../../lib/skill-coverage";
-import type { DeploymentGroup } from "../../lib/skill-coverage";
+} from "@skill-studio/lib";
+import type { DeploymentGroup } from "@skill-studio/lib";
 import {
   forkSkill,
   openSkillPath,
   setHarnessEnabled,
   setSkillInvocation,
 } from "../../lib/skill-api";
-import { FIRST_CLASS_AGENTS } from "../../lib/skill-health";
-import { homeRelativePath } from "../../lib/skill-path-format";
-import type { Deployment, InstalledSkill, InvocationPolicy } from "../../lib/skill-types";
+import { FIRST_CLASS_AGENTS } from "@skill-studio/lib";
+import { homeRelativePath } from "@skill-studio/lib";
+import type { Deployment, InstalledSkill, InvocationPolicy } from "@skill-studio/lib";
 import { useAppStore } from "../../store/appStore";
 import { HarnessIcon, harnessIdFromLabel } from "../ui/HarnessIcon";
 import { TooltipControl } from "../ui/TooltipControl";

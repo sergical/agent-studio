@@ -14,6 +14,7 @@
   "dependencies": {
     "@base-ui/react": "^1.7.0",
     "@pierre/diffs": "^1.3.6",
+    "@skill-studio/lib": "*",
     "@skill-studio/ui": "*",
     "@tauri-apps/api": "^2.11.1",
     "@tauri-apps/plugin-dialog": "^2.7.2",

@@ -11,8 +11,8 @@ import {
   invocationsInWindow,
   topSkills,
   USAGE_WINDOWS,
-} from "../../lib/skill-stats";
-import type { SkillSnapshot } from "../../lib/skill-types";
+} from "@skill-studio/lib";
+import type { SkillSnapshot } from "@skill-studio/lib";
 import { useAppStore } from "../../store/appStore";
 import { PageShell } from "../Shell/PageShell";
 import { WindowSegmentedControl } from "../ui/WindowSegmentedControl";

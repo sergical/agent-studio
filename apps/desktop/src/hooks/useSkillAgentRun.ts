@@ -6,7 +6,7 @@
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import { cancelSkillAgentRun, onSkillAgentEvent, startSkillAgentRun } from "../lib/skill-agent-api";
-import type { SkillAgentEvent, SkillAgentRunRequest, SkillLoaded } from "../lib/skill-agent-types";
+import type { SkillAgentEvent, SkillAgentRunRequest, SkillLoaded } from "@skill-studio/lib";
 
 export type SkillAgentRunStatus = "idle" | "running" | "finished" | "error";
 

@@ -3,7 +3,7 @@
 // ============================================================================
 
 import { motion } from "motion/react";
-import type { Toast as ToastType } from "../../lib/skill-types";
+import type { Toast as ToastType } from "@skill-studio/lib";
 
 interface ToastProps {
   toast: ToastType;

@@ -2,7 +2,7 @@
 // InvocationHeatmap - GitHub-style 52x7 grid of daily skill invocations
 // ============================================================================
 
-import type { InvocationHeatmap as InvocationHeatmapData } from "../../lib/skill-types";
+import type { InvocationHeatmap as InvocationHeatmapData } from "@skill-studio/lib";
 
 const DAYS_PER_WEEK = 7;
 const MONTH_NAMES = [

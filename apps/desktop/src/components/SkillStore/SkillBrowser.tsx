@@ -4,8 +4,8 @@
 
 import { Download, Check, ArrowUp, Link2, FileCheck2, AlertTriangle } from "lucide-react";
 import { Button } from "@skill-studio/ui";
-import type { SkillWithStatus } from "../../lib/skill-types";
-import { SOURCE_KIND_LABELS } from "../../lib/skill-types";
+import type { SkillWithStatus } from "@skill-studio/lib";
+import { SOURCE_KIND_LABELS } from "@skill-studio/lib";
 
 interface SkillBrowserProps {
   skills: SkillWithStatus[];

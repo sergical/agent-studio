@@ -5,7 +5,7 @@
 // ============================================================================
 
 import { Folder } from "lucide-react";
-import type { AgentId } from "../../lib/skill-types";
+import type { AgentId } from "@skill-studio/lib";
 
 interface HarnessIconProps {
   harness: AgentId | "shared";
@@ -14,7 +14,7 @@ interface HarnessIconProps {
   muted?: boolean;
 }
 
-export { agentIdFromDeploymentLabel as harnessIdFromLabel } from "../../lib/skill-coverage";
+export { agentIdFromDeploymentLabel as harnessIdFromLabel } from "@skill-studio/lib";
 
 export function HarnessIcon({ harness, size = 16, muted = false }: HarnessIconProps) {
   const icon = renderIcon(harness, size);

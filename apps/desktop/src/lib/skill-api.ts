@@ -5,10 +5,10 @@
 
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
-import type { AgentId } from "./skill-types";
 import type {
   AddSkillRequest,
   AddSkillResult,
+  AgentId,
   AgentTarget,
   ImportResult,
   InstallRequest,
@@ -25,7 +25,7 @@ import type {
   SkillSnapshot,
   UpdateCheckSummary,
   UpdatePackResult,
-} from "./skill-types";
+} from "@skill-studio/lib";
 
 // ============================================================================
 // Search API

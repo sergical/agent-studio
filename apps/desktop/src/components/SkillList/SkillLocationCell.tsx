@@ -5,9 +5,9 @@
 // ============================================================================
 
 import { Copy, FolderClosed, Link2, Unlink } from "lucide-react";
-import { deploymentLinkTarget, driftingCopies, locationSummary } from "../../lib/skill-coverage";
-import { homeRelativePath } from "../../lib/skill-path-format";
-import type { Deployment, InstalledSkill } from "../../lib/skill-types";
+import { deploymentLinkTarget, driftingCopies, locationSummary } from "@skill-studio/lib";
+import { homeRelativePath } from "@skill-studio/lib";
+import type { Deployment, InstalledSkill } from "@skill-studio/lib";
 import { TooltipControl } from "../ui/TooltipControl";
 
 interface SkillLocationCellProps {

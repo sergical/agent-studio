@@ -3,9 +3,9 @@
 // effective visibility (own folder, via the shared root, or none)
 // ============================================================================
 
-import { AGENT_MATRIX_LABELS, agentMatrix } from "../../lib/skill-coverage";
-import type { AgentMatrixCell } from "../../lib/skill-coverage";
-import type { InstalledSkill } from "../../lib/skill-types";
+import { AGENT_MATRIX_LABELS, agentMatrix } from "@skill-studio/lib";
+import type { AgentMatrixCell } from "@skill-studio/lib";
+import type { InstalledSkill } from "@skill-studio/lib";
 import { HarnessIcon, harnessIdFromLabel } from "../ui/HarnessIcon";
 
 interface SkillCoverageMatrixProps {

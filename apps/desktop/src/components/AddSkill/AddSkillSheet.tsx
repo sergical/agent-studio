@@ -13,12 +13,12 @@ import { AgentTargetSelector } from "../SkillStore/AgentTargetSelector";
 import { SkillStore } from "../SkillStore/SkillStore";
 import { CheckboxControl } from "../ui/CheckboxControl";
 import { addSkill, importSkillPack } from "../../lib/skill-api";
-import { agentIdFromDeploymentLabel } from "../../lib/skill-coverage";
-import { parseSkillSource } from "../../lib/skill-source-parse";
-import type { ParsedSkillSource } from "../../lib/skill-source-parse";
+import { agentIdFromDeploymentLabel } from "@skill-studio/lib";
+import { parseSkillSource } from "@skill-studio/lib";
+import type { ParsedSkillSource } from "@skill-studio/lib";
 import { useSkillSnapshot } from "../../hooks/useSkillSnapshot";
 import { useAppStore } from "../../store/appStore";
-import type { AddMethod, AgentId, InstallScope } from "../../lib/skill-types";
+import type { AddMethod, AgentId, InstallScope } from "@skill-studio/lib";
 
 /**
  * The six agents offered as harness defaults - `push_agent_args`'s

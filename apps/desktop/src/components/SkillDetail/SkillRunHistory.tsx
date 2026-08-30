@@ -9,8 +9,8 @@ import { ArrowLeft } from "lucide-react";
 import { Button } from "@skill-studio/ui";
 import type { SkillAgentRunState } from "../../hooks/useSkillAgentRun";
 import { listSkillRuns, readSkillRunEvents } from "../../lib/skill-run-history-api";
-import type { SkillRunAction, SkillRunRecord } from "../../lib/skill-run-history-types";
-import { formatRelativeTime } from "../../lib/skill-stats";
+import type { SkillRunAction, SkillRunRecord } from "@skill-studio/lib";
+import { formatRelativeTime } from "@skill-studio/lib";
 import { HarnessIcon } from "../ui/HarnessIcon";
 import { SkillAgentTranscript } from "./SkillAgentTranscript";
 

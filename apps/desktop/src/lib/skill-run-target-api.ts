@@ -7,7 +7,7 @@
 // ============================================================================
 
 import { invoke } from "@tauri-apps/api/core";
-import type { SkillRunTargetInfo, SkillRunTargetRequest } from "./skill-run-target-types";
+import type { SkillRunTargetInfo, SkillRunTargetRequest } from "@skill-studio/lib";
 
 /** Prepares the working directory for a "Test" run, per `request.kind`. */
 export async function prepareSkillRunTarget(

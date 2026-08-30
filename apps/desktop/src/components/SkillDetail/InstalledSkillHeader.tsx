@@ -8,12 +8,12 @@
 import type { RefObject } from "react";
 import { ArrowLeft, AlertTriangle, MoreHorizontal, PanelRight } from "lucide-react";
 import { Button } from "@skill-studio/ui";
-import { isBlockingSpecViolation } from "../../lib/skill-health";
-import { pluginLabelForSkill } from "../../lib/skill-plugin-partition";
-import type { SkillRunSummary } from "../../lib/skill-run-history-types";
-import { formatBytes, formatRelativeTime, formatTokens } from "../../lib/skill-stats";
-import { SOURCE_KIND_LABELS, trialHoursLeft } from "../../lib/skill-types";
-import type { InstalledSkill, SkillInvocationStats } from "../../lib/skill-types";
+import { isBlockingSpecViolation } from "@skill-studio/lib";
+import { pluginLabelForSkill } from "@skill-studio/lib";
+import type { SkillRunSummary } from "@skill-studio/lib";
+import { formatBytes, formatRelativeTime, formatTokens } from "@skill-studio/lib";
+import { SOURCE_KIND_LABELS, trialHoursLeft } from "@skill-studio/lib";
+import type { InstalledSkill, SkillInvocationStats } from "@skill-studio/lib";
 import type { ActiveView } from "../../store/appStore";
 import { MenuControl, MenuItem, MenuSeparator } from "../ui/MenuControl";
 import { SKILL_ASSISTANT_DRAWER_ID } from "./SkillAssistantDrawer";

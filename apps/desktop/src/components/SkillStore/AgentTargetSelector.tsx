@@ -5,8 +5,8 @@
 import { useState, useEffect } from "react";
 import { Check, ChevronDown, ChevronUp } from "lucide-react";
 import { getAgentTargets } from "../../lib/skill-api";
-import type { AgentId, AgentTarget } from "../../lib/skill-types";
-import { COMMON_AGENTS } from "../../lib/skill-types";
+import type { AgentId, AgentTarget } from "@skill-studio/lib";
+import { COMMON_AGENTS } from "@skill-studio/lib";
 
 interface AgentTargetSelectorProps {
   selectedAgents: AgentId[];

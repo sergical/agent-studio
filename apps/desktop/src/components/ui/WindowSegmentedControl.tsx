@@ -4,8 +4,8 @@
 // the Activity page's By skill table
 // ============================================================================
 
-import { USAGE_WINDOWS } from "../../lib/skill-stats";
-import type { UsageWindow } from "../../lib/skill-stats";
+import { USAGE_WINDOWS } from "@skill-studio/lib";
+import type { UsageWindow } from "@skill-studio/lib";
 
 interface WindowSegmentedControlProps {
   value: UsageWindow;

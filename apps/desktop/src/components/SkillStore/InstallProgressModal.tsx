@@ -3,7 +3,7 @@
 // ============================================================================
 
 import { Dialog, DialogContent, DialogTitle } from "@skill-studio/ui";
-import type { InstallProgressState } from "../../lib/skill-types";
+import type { InstallProgressState } from "@skill-studio/lib";
 
 interface InstallProgressModalProps {
   progress: InstallProgressState;

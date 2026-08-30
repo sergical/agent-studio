@@ -14,7 +14,7 @@ import {
   publishSkillPack,
   updateSkillPack,
 } from "../../lib/skill-api";
-import type { PackInfo } from "../../lib/skill-types";
+import type { PackInfo } from "@skill-studio/lib";
 import { useAppStore } from "../../store/appStore";
 import { PageShell } from "../Shell/PageShell";
 

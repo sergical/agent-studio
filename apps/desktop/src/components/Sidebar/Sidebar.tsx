@@ -19,11 +19,11 @@ import {
   Search,
   Sun,
 } from "lucide-react";
-import { ownSkillsView, pluginSkillsView } from "../../lib/skill-plugin-partition";
-import { defaultSkillListFilter } from "../../lib/skill-list-filter";
+import { ownSkillsView, pluginSkillsView } from "@skill-studio/lib";
+import { defaultSkillListFilter } from "@skill-studio/lib";
 import { useAppStore } from "../../store/appStore";
 import type { ActiveView } from "../../store/appStore";
-import type { SkillSnapshot } from "../../lib/skill-types";
+import type { SkillSnapshot } from "@skill-studio/lib";
 
 /**
  * The row a sidebar item should highlight against: a skill page isn't a row
@@ -127,7 +127,7 @@ export function Sidebar({ snapshot, isLoading, requestRescan }: SidebarProps) {
           ref={searchInputRef}
           type="search"
           aria-label="Search skills"
-          className="text-control"
+          className="h-8 rounded-sm border border-border bg-bg-primary px-3 text-body text-text-primary transition-colors duration-150 placeholder:text-text-quaternary focus-visible:border-border-focus"
           placeholder="Search skills…"
           value={skillListFilter.query}
           onChange={(e) => handleSearchChange(e.target.value)}
@@ -160,7 +160,9 @@ export function Sidebar({ snapshot, isLoading, requestRescan }: SidebarProps) {
           <Search size={15} />
           <span className="min-w-0 truncate">Skills</span>
           {skillsCount > 0 && (
-            <span className="count-tabular text-right text-caption">{skillsCount}</span>
+            <span className="text-right text-caption tabular-nums text-text-tertiary">
+              {skillsCount}
+            </span>
           )}
         </button>
         {pluginCount > 0 && (
@@ -173,7 +175,9 @@ export function Sidebar({ snapshot, isLoading, requestRescan }: SidebarProps) {
           >
             <Puzzle size={15} />
             <span className="min-w-0 truncate">Plugins</span>
-            <span className="count-tabular text-right text-caption">{pluginCount}</span>
+            <span className="text-right text-caption tabular-nums text-text-tertiary">
+              {pluginCount}
+            </span>
           </button>
         )}
         <button
@@ -203,7 +207,9 @@ export function Sidebar({ snapshot, isLoading, requestRescan }: SidebarProps) {
           >
             <PackageOpen size={15} />
             <span className="min-w-0 truncate">Parked</span>
-            <span className="count-tabular text-right text-caption">{parkedCount}</span>
+            <span className="text-right text-caption tabular-nums text-text-tertiary">
+              {parkedCount}
+            </span>
           </button>
         </div>
       )}

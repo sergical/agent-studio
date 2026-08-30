@@ -4,11 +4,11 @@
 // ============================================================================
 
 import { create } from "zustand";
-import { defaultSkillListFilter } from "../lib/skill-list-filter";
-import type { SkillListFilter } from "../lib/skill-list-filter";
-import { USAGE_WINDOWS } from "../lib/skill-stats";
-import type { UsageWindow } from "../lib/skill-stats";
-import type { Toast } from "../lib/skill-types";
+import { defaultSkillListFilter } from "@skill-studio/lib";
+import type { SkillListFilter } from "@skill-studio/lib";
+import { USAGE_WINDOWS } from "@skill-studio/lib";
+import type { UsageWindow } from "@skill-studio/lib";
+import type { Toast } from "@skill-studio/lib";
 import {
   loadStoredTheme,
   resolveTheme,
