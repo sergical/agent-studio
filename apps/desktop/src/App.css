@@ -1,4 +1,8 @@
 @import "tailwindcss";
+/* packages/ui lives outside apps/desktop, so Tailwind's automatic source
+   detection (which walks from this file's directory) won't find its class
+   names on its own; point it there explicitly. */
+@source "../../../packages/ui/src";
 @theme {
   /* Typography - system stack; forcing Display before kept macOS from
      serving the Text optical size at UI sizes. */
@@ -83,6 +87,10 @@
   --z-tooltip: 300;
   --z-toast: 400;
 }
+/* @skill-studio/ui's semantic tokens (--background, --primary, etc.), bridged
+   onto the tokens above so the kit inherits this theme instead of shadcn's
+   default one. Imported after @theme so the bridge can reference these. */
+@import "@skill-studio/ui/styles";
 :root {
   /* Default (and data-theme="dark"): native scrollbars, form controls, and
      window chrome match the app's dark chrome. */

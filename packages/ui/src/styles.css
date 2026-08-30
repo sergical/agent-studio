@@ -1,0 +1,103 @@
+/* ============================================================================
+ * @skill-studio/ui - Theme bridge
+ * Maps shadcn's semantic CSS variables onto the app's own App.css tokens,
+ * so the kit inherits the app's palette instead of shadcn's default one.
+ * Import this once, after App.css's @theme block, so these mappings can see
+ * the app's tokens and both light/dark overrides apply to shadcn components
+ * too.
+ * ============================================================================ */
+
+@import "tw-animate-css";
+
+/* Tailwind v4 only recognizes bare `data-foo:` variants (no brackets) when
+ * they're registered explicitly. Vendored from shadcn's Base UI registry
+ * base layer (`shadcn/dist/tailwind.css`) - every vendored component below
+ * relies on these. */
+@custom-variant data-open {
+  &:where([data-state="open"]),
+  &:where([data-open]:not([data-open="false"])) {
+    @slot;
+  }
+}
+@custom-variant data-closed {
+  &:where([data-state="closed"]),
+  &:where([data-closed]:not([data-closed="false"])) {
+    @slot;
+  }
+}
+@custom-variant data-checked {
+  &:where([data-state="checked"]),
+  &:where([data-checked]:not([data-checked="false"])) {
+    @slot;
+  }
+}
+@custom-variant data-unchecked {
+  &:where([data-state="unchecked"]),
+  &:where([data-unchecked]:not([data-unchecked="false"])) {
+    @slot;
+  }
+}
+@custom-variant data-selected {
+  &:where([data-selected="true"]) {
+    @slot;
+  }
+}
+@custom-variant data-disabled {
+  &:where([data-disabled="true"]),
+  &:where([data-disabled]:not([data-disabled="false"])) {
+    @slot;
+  }
+}
+@custom-variant data-active {
+  &:where([data-state="active"]),
+  &:where([data-active]:not([data-active="false"])) {
+    @slot;
+  }
+}
+@custom-variant data-horizontal {
+  &:where([data-orientation="horizontal"]) {
+    @slot;
+  }
+}
+@custom-variant data-vertical {
+  &:where([data-orientation="vertical"]) {
+    @slot;
+  }
+}
+
+/* The app's default (unstamped) root is dark; `data-theme="light"` is the
+ * override (see App.css). `stampInitialTheme()` always sets an explicit
+ * value before paint, but treating "no attribute" as dark keeps this variant
+ * correct for that brief pre-stamp instant too. */
+@custom-variant dark (&:is(:root:not([data-theme="light"]) *));
+
+@theme inline {
+  --color-background: var(--color-bg-primary);
+  --color-foreground: var(--color-text-primary);
+  --color-card: var(--color-bg-secondary);
+  --color-card-foreground: var(--color-text-primary);
+  --color-popover: var(--color-bg-elevated);
+  --color-popover-foreground: var(--color-text-primary);
+  --color-primary: var(--color-accent);
+  --color-primary-foreground: var(--color-text-on-accent);
+  --color-secondary: var(--color-bg-tertiary);
+  --color-secondary-foreground: var(--color-text-primary);
+  --color-muted: var(--color-bg-tertiary);
+  --color-muted-foreground: var(--color-text-tertiary);
+  --color-accent: var(--color-bg-hover);
+  --color-accent-foreground: var(--color-text-primary);
+  --color-destructive: var(--color-error);
+  --color-border: var(--color-border);
+  --color-input: var(--color-border);
+  --color-ring: var(--color-border-focus);
+
+  --radius-sm: var(--radius-xs);
+  --radius-md: var(--radius-sm);
+  --radius-lg: var(--radius-md);
+  --radius-xl: var(--radius-lg);
+  --radius-2xl: var(--radius-xl);
+  --radius-3xl: var(--radius-xl);
+  --radius-4xl: var(--radius-xl);
+
+  --font-heading: var(--font-sans);
+}

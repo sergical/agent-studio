@@ -1,5 +1,6 @@
 import React from "react";
 import ReactDOM from "react-dom/client";
+import { KitPreview } from "@skill-studio/ui";
 import App from "./App";
 import { stampInitialTheme } from "./lib/theme";
 
@@ -61,10 +62,12 @@ if (!rootElement) {
   throw new Error("Skill Studio root element #root is missing from index.html");
 }
 
+// Dev-only proof that @skill-studio/ui renders themed with the app's tokens.
+// Not a real route: visit with `#kit` while running `npm run dev`.
+const showKitPreview = import.meta.env.DEV && location.hash === "#kit";
+
 ReactDOM.createRoot(rootElement).render(
   <React.StrictMode>
-    <ErrorBoundary>
-      <App />
-    </ErrorBoundary>
+    <ErrorBoundary>{showKitPreview ? <KitPreview /> : <App />}</ErrorBoundary>
   </React.StrictMode>,
 );
