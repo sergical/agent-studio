@@ -4,7 +4,6 @@
 // places, this view holds filters (scope, harness, source, issue, query).
 // ============================================================================
 
-import { useMemo } from "react";
 import { homeDir } from "@tauri-apps/api/path";
 import { open } from "@tauri-apps/plugin-dialog";
 import { PageShell } from "../Shell/PageShell";
@@ -65,19 +64,14 @@ export function SkillsView({ snapshot, onSelectSkill }: SkillsViewProps) {
     new Set([...userAddedProjects, ...(snapshot?.projects ?? [])]),
   ).filter((path) => !excludedProjects.includes(path));
 
-  const allSkills = useMemo(() => snapshot?.skills ?? [], [snapshot]);
+  const allSkills = snapshot?.skills ?? [];
   // Source "plugin" is the one filter value that reaches outside "your
   // skills": switch the base list to the plugin-deployment view for it,
   // rather than trying to make one filter mean two different partitions.
-  const baseSkills = useMemo(
-    () => (filter.source === "plugin" ? pluginSkillsView(allSkills) : ownSkillsView(allSkills)),
-    [allSkills, filter.source],
-  );
-  const issues = useMemo(() => collectDashboardIssues(ownSkillsView(allSkills)), [allSkills]);
-  const filtered = useMemo(
-    () => applySkillListFilter(baseSkills, filter, issues, snapshot?.invocations),
-    [baseSkills, filter, issues, snapshot?.invocations],
-  );
+  const baseSkills =
+    filter.source === "plugin" ? pluginSkillsView(allSkills) : ownSkillsView(allSkills);
+  const issues = collectDashboardIssues(ownSkillsView(allSkills));
+  const filtered = applySkillListFilter(baseSkills, filter, issues, snapshot?.invocations);
 
   const handleAddProject = async () => {
     const selected = await open({ directory: true, multiple: false, title: "Add Project" });

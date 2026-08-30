@@ -4,7 +4,6 @@
 // breakdown
 // ============================================================================
 
-import { useMemo } from "react";
 import {
   formatRelativeTime,
   heatmapDateRangeUtc,
@@ -68,22 +67,20 @@ export function SkillActivityView({ snapshot, onSelectSkill }: SkillActivityView
   // from `scannedAtUtcDateKey` alone (midnight UTC of that date) rather than
   // depending on a fresh `Date` instance, which changes identity every
   // render even when the UTC date hasn't.
-  const heatmapDates = useMemo(
-    () => heatmapDateRangeUtc(new Date(`${scannedAtUtcDateKey}T00:00:00Z`)).dates,
-    [scannedAtUtcDateKey],
-  );
-  const invocationsLastYear = useMemo(
-    () => heatmapDates.reduce((sum, key) => sum + (snapshot?.heatmap.days[key] ?? 0), 0),
-    [heatmapDates, snapshot],
+  const heatmapDates = heatmapDateRangeUtc(new Date(`${scannedAtUtcDateKey}T00:00:00Z`)).dates;
+  const invocationsLastYear = heatmapDates.reduce(
+    (sum, key) => sum + (snapshot?.heatmap.days[key] ?? 0),
+    0,
   );
 
-  const bySkill = useMemo(() => {
-    if (!snapshot) return [];
-    const used = snapshot.invocations.filter((s) => invocationsInWindow(s, usageWindow) > 0);
-    return topSkills(used, used.length, usageWindow);
-  }, [snapshot, usageWindow]);
+  const usedThisWindow = snapshot?.invocations.filter(
+    (s) => invocationsInWindow(s, usageWindow) > 0,
+  );
+  const bySkill = usedThisWindow
+    ? topSkills(usedThisWindow, usedThisWindow.length, usageWindow)
+    : [];
 
-  const byProject = useMemo(() => (snapshot ? projectTotals(snapshot) : []), [snapshot]);
+  const byProject = snapshot ? projectTotals(snapshot) : [];
 
   const windowLabel = USAGE_WINDOWS.find((w) => w.id === usageWindow)?.label ?? "30 days";
   const hasAnyInvocations = snapshot ? snapshot.invocations.some((s) => s.total > 0) : false;

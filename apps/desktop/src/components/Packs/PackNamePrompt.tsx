@@ -62,6 +62,7 @@ export function PackNamePrompt({ members, onClose, onCreated }: PackNamePromptPr
           <button
             className="flex size-6 items-center justify-center rounded-sm border-0 bg-transparent text-text-tertiary"
             onClick={onClose}
+            aria-label="Close"
           >
             <X size={18} />
           </button>

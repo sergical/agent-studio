@@ -102,6 +102,7 @@ export function SkillDetailHeader({ skill, resolvedTopSource, onClose }: SkillDe
         <button
           className="flex size-8 shrink-0 items-center justify-center rounded-sm border-0 bg-transparent text-text-tertiary transition-colors hover:bg-bg-hover hover:text-text-primary"
           onClick={onClose}
+          aria-label="Close"
         >
           <X size={18} />
         </button>
@@ -129,8 +130,8 @@ export function SkillDetailHeader({ skill, resolvedTopSource, onClose }: SkillDe
             Spec violations
           </h4>
           <ul className="m-0 flex flex-col gap-1.5 pl-4.5">
-            {skill.installed_info.spec_violations.map((violation, i) => (
-              <li key={i} className="text-small text-warning">
+            {skill.installed_info.spec_violations.map((violation) => (
+              <li key={violation} className="text-small text-warning">
                 {violation}
               </li>
             ))}

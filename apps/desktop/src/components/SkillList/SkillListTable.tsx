@@ -3,7 +3,7 @@
 // with whatever it has already filtered down (scope, harness, source, issue)
 // ============================================================================
 
-import { useMemo, useRef, useState } from "react";
+import { useRef, useState } from "react";
 import type { KeyboardEvent } from "react";
 import { Search } from "lucide-react";
 import { pluginLabelForSkill } from "@skill-studio/lib";
@@ -94,7 +94,7 @@ export function SkillListTable({
   const [query, setQuery] = useState("");
   const [sort, setSort] = useState<SortMode>("name");
   const [showPackPrompt, setShowPackPrompt] = useState(false);
-  const statsBySkill = useMemo(() => new Map(stats.map((s) => [s.skill, s])), [stats]);
+  const statsBySkill = new Map(stats.map((s) => [s.skill, s]));
   const selectedPaths = useAppStore((state) => state.selectedSkillPaths);
   const toggleSkillSelection = useAppStore((state) => state.toggleSkillSelection);
   const clearSkillSelection = useAppStore((state) => state.clearSkillSelection);
@@ -111,29 +111,26 @@ export function SkillListTable({
   const rowPath = (skill: InstalledSkill): string | undefined =>
     deploymentPathForSkill?.(skill) ?? skill.deployments[0]?.path;
 
-  const rows = useMemo(() => {
-    const q = query.trim().toLowerCase();
-    const filtered = q
-      ? skills.filter(
-          (s) =>
-            s.name.toLowerCase().includes(q) || (s.description ?? "").toLowerCase().includes(q),
-        )
-      : skills;
-
-    const sorted = [...filtered];
-    if (sort === "name") {
-      sorted.sort((a, b) => a.name.localeCompare(b.name));
-    } else if (sort === "used") {
-      sorted.sort(
-        (a, b) =>
-          (statsBySkill.get(b.name)?.last_30_days ?? 0) -
-          (statsBySkill.get(a.name)?.last_30_days ?? 0),
-      );
-    } else {
-      sorted.sort((a, b) => b.folder_bytes - a.folder_bytes);
-    }
-    return sorted;
-  }, [skills, query, sort, statsBySkill]);
+  const filterQuery = query.trim().toLowerCase();
+  const filteredRows = filterQuery
+    ? skills.filter(
+        (s) =>
+          s.name.toLowerCase().includes(filterQuery) ||
+          (s.description ?? "").toLowerCase().includes(filterQuery),
+      )
+    : skills;
+  const rows = [...filteredRows];
+  if (sort === "name") {
+    rows.sort((a, b) => a.name.localeCompare(b.name));
+  } else if (sort === "used") {
+    rows.sort(
+      (a, b) =>
+        (statsBySkill.get(b.name)?.last_30_days ?? 0) -
+        (statsBySkill.get(a.name)?.last_30_days ?? 0),
+    );
+  } else {
+    rows.sort((a, b) => b.folder_bytes - a.folder_bytes);
+  }
 
   const allVisibleSelected =
     rows.length > 0 && rows.every((s) => selectedPaths.has(rowPath(s) ?? ""));

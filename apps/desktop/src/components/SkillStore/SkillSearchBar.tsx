@@ -2,7 +2,7 @@
 // SkillSearchBar - Search input for skills.sh
 // ============================================================================
 
-import { useCallback, useEffect, useRef } from "react";
+import { useEffect, useRef } from "react";
 import { Search, X, Loader } from "lucide-react";
 import { Input } from "@skill-studio/ui";
 
@@ -41,19 +41,16 @@ export function SkillSearchBar({
     };
   }, [value, onSearch]);
 
-  const handleClear = useCallback(() => {
+  const handleClear = () => {
     onChange("");
     inputRef.current?.focus();
-  }, [onChange]);
+  };
 
-  const handleKeyDown = useCallback(
-    (e: React.KeyboardEvent) => {
-      if (e.key === "Escape") {
-        handleClear();
-      }
-    },
-    [handleClear],
-  );
+  const handleKeyDown = (e: React.KeyboardEvent) => {
+    if (e.key === "Escape") {
+      handleClear();
+    }
+  };
 
   return (
     <div className="relative flex max-w-[400px] flex-1 items-center">

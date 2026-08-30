@@ -93,7 +93,15 @@ export function SkillCoverageMatrix({ skills, onSelectSkill }: SkillCoverageMatr
             <tr
               key={skill.name}
               className="group cursor-pointer"
+              tabIndex={0}
+              role="button"
               onClick={() => onSelectSkill(skill.name)}
+              onKeyDown={(e) => {
+                if (e.key === "Enter" || e.key === " ") {
+                  e.preventDefault();
+                  onSelectSkill(skill.name);
+                }
+              }}
             >
               <td className={`${CELL_CLASS} text-left text-text-primary`}>{skill.name}</td>
               <td className={`${CELL_CLASS} text-center`} title={cellTitle(shared)}>

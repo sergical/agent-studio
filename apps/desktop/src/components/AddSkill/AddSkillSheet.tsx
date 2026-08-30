@@ -285,6 +285,7 @@ export function AddSkillSheet() {
             className="flex items-center justify-center rounded-sm border-0 bg-transparent p-1 text-text-tertiary transition-colors hover:bg-bg-hover hover:text-text-primary"
             onClick={closeSheet}
             disabled={isSubmitting}
+            aria-label="Close"
           >
             <X size={16} />
           </button>
@@ -345,9 +346,11 @@ export function AddSkillSheet() {
             </div>
 
             <div className="flex flex-col gap-2">
-              <label className="text-caption font-medium tracking-[0.06em] text-text-tertiary uppercase">
+              {/* A heading for the method button group, not a form control's
+                  label - a `<label>` here would have no associated control. */}
+              <span className="text-caption font-medium tracking-[0.06em] text-text-tertiary uppercase">
                 Method
-              </label>
+              </span>
               <div className="flex flex-wrap gap-1.5">
                 {ALL_SHEET_METHODS.map((m) => {
                   const disabled = methods.length > 0 && !methods.includes(m);
@@ -387,9 +390,11 @@ export function AddSkillSheet() {
 
             {method !== "pack" && (
               <div className="flex flex-col gap-2">
-                <label className="text-caption font-medium tracking-[0.06em] text-text-tertiary uppercase">
+                {/* A heading for the scope button group, not a form control's
+                    label - a `<label>` here would have no associated control. */}
+                <span className="text-caption font-medium tracking-[0.06em] text-text-tertiary uppercase">
                   Scope
-                </label>
+                </span>
                 <div className="flex gap-2">
                   <button
                     type="button"
@@ -411,6 +416,7 @@ export function AddSkillSheet() {
                     {userAddedProjects.length > 0 && (
                       <select
                         className="flex-1 rounded-sm border border-border bg-bg-primary px-2.5 py-2.5 text-body text-text-primary"
+                        aria-label="Project directory"
                         value={projectPath ?? ""}
                         onChange={(e) => setProjectPath(e.target.value)}
                       >

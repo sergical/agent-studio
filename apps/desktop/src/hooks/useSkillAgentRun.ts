@@ -4,7 +4,7 @@
 // once per mount and filtering by this hook's own run id
 // ============================================================================
 
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { cancelSkillAgentRun, onSkillAgentEvent, startSkillAgentRun } from "../lib/skill-agent-api";
 import type { SkillAgentEvent, SkillAgentRunRequest, SkillLoaded } from "@skill-studio/lib";
 
@@ -34,6 +34,20 @@ const IDLE_STATE: SkillAgentRunState = {
   skillLoaded: undefined,
   errorMessage: undefined,
 };
+
+/**
+ * Settles the pending `waitForFinish` promise, if any. A module-level
+ * function so its identity never changes - it needs no dependency in the
+ * mount effect below, which must subscribe once, for the life of the
+ * component, not re-subscribe whenever a render-scoped closure would.
+ */
+function resolveFinish(
+  finishResolverRef: { current: ((finalState: SkillAgentRunState) => void) | null },
+  finalState: SkillAgentRunState,
+) {
+  finishResolverRef.current?.(finalState);
+  finishResolverRef.current = null;
+}
 
 /** Folds one incoming `SkillAgentEvent` into the running state. */
 function applyEvent(state: SkillAgentRunState, event: SkillAgentEvent): SkillAgentRunState {
@@ -71,17 +85,13 @@ export function useSkillAgentRun() {
   // one run's outcome without threading its own effect off `state.status`.
   const finishResolverRef = useRef<((finalState: SkillAgentRunState) => void) | null>(null);
 
-  const resolveFinish = (finalState: SkillAgentRunState) => {
-    finishResolverRef.current?.(finalState);
-    finishResolverRef.current = null;
-  };
-
   useEffect(() => {
     const unlistenPromise = onSkillAgentEvent((event) => {
       if (event.run_id !== runIdRef.current) return;
       setState((prev) => {
         const next = applyEvent(prev, event);
-        if (next.status === "finished" || next.status === "error") resolveFinish(next);
+        if (next.status === "finished" || next.status === "error")
+          resolveFinish(finishResolverRef, next);
         return next;
       });
     });
@@ -90,7 +100,7 @@ export function useSkillAgentRun() {
     };
   }, []);
 
-  const run = useCallback(async (request: SkillAgentRunRequest) => {
+  const run = async (request: SkillAgentRunRequest) => {
     setState({ ...IDLE_STATE, status: "running" });
     // Generated here and set before the invoke resolves, so an event that
     // arrives while the harness is still spawning isn't missed by the
@@ -105,33 +115,33 @@ export function useSkillAgentRun() {
       const errorMessage = err instanceof Error ? err.message : String(err);
       setState((prev) => {
         const next: SkillAgentRunState = { ...prev, runId, status: "error", errorMessage };
-        resolveFinish(next);
+        resolveFinish(finishResolverRef, next);
         return next;
       });
     }
-  }, []);
+  };
 
   /** Resolves with the current run's terminal state once it finishes,
    * errors, or the start itself rejected. A fresh `run()` call replaces
    * whichever resolver is pending, same as `runIdRef` replacing the run id. */
-  const waitForFinish = useCallback((): Promise<SkillAgentRunState> => {
+  const waitForFinish = (): Promise<SkillAgentRunState> => {
     return new Promise((resolve) => {
       finishResolverRef.current = resolve;
     });
-  }, []);
+  };
 
-  const cancel = useCallback(async () => {
+  const cancel = async () => {
     if (!state.runId) return;
     await cancelSkillAgentRun(state.runId);
-  }, [state.runId]);
+  };
 
-  const reset = useCallback(async () => {
+  const reset = async () => {
     if (runIdRef.current) {
       await cancelSkillAgentRun(runIdRef.current).catch(() => {});
     }
     runIdRef.current = undefined;
     setState(IDLE_STATE);
-  }, []);
+  };
 
   useEffect(() => {
     return () => {

@@ -35,12 +35,9 @@
     // or a raw useState setter deliberately named apart from a wrapped
     // callback of the same base name), so they stay "warn" until someone
     // works through them by hand instead of being silenced.
-    // Parked until the React pass (stage 7): most findings are manual
-    // useMemo/useCallback deps that the pass deletes now that the React
-    // Compiler is on. Promote these three to "error" there.
-    "react/exhaustive-effect-dependencies": "off",
-    "react/memo-dependencies": "off",
-    "react/hook-use-state": "off",
+    "react/exhaustive-effect-dependencies": "error",
+    "react/memo-dependencies": "error",
+    "react/hook-use-state": "error",
     // This app has no server-rendered/cached data layer: every list comes
     // from a Tauri IPC call, which is exactly the "external system" the
     // rule's own guidance says effects should synchronize with. Turning

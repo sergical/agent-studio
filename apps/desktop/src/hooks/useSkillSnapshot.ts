@@ -3,7 +3,7 @@
 // Subscribes to the background refresh thread's skill snapshot
 // ============================================================================
 
-import { useCallback, useEffect, useState } from "react";
+import { useEffect, useState } from "react";
 import { getSkillSnapshot, onSkillSnapshot, requestSkillRescan } from "../lib/skill-api";
 import type { SkillSnapshot } from "@skill-studio/lib";
 
@@ -58,13 +58,13 @@ export function useSkillSnapshot(): UseSkillSnapshotResult {
     };
   }, []);
 
-  const requestRescan = useCallback(async () => {
+  const requestRescan = async () => {
     try {
       await requestSkillRescan();
     } catch (err) {
       setError(err instanceof Error ? err.message : "Failed to request rescan");
     }
-  }, []);
+  };
 
   return { snapshot, isLoading, error, requestRescan };
 }

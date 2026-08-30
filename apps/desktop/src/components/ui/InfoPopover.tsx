@@ -7,7 +7,21 @@
 // ============================================================================
 
 import { useEffect, useRef, useState } from "react";
-import type { ReactNode } from "react";
+import type { Dispatch, RefObject, SetStateAction, ReactNode } from "react";
+
+/**
+ * Closes the popover and returns focus to its trigger. A module-level
+ * function so its identity never changes - it needs no dependency in the
+ * mousedown/keydown effect below beyond `isOpen`, which already governs
+ * when that effect (re)subscribes.
+ */
+function close(
+  triggerRef: RefObject<HTMLButtonElement | null>,
+  setIsOpen: Dispatch<SetStateAction<boolean>>,
+) {
+  setIsOpen(false);
+  triggerRef.current?.focus();
+}
 
 interface InfoPopoverProps {
   /** aria-label for the ⓘ trigger button, e.g. "About broken". */
@@ -27,11 +41,6 @@ export function InfoPopover({ label, title, children, onLearnMore, className }: 
   const anchorRef = useRef<HTMLSpanElement>(null);
   const triggerRef = useRef<HTMLButtonElement>(null);
 
-  const close = () => {
-    setIsOpen(false);
-    triggerRef.current?.focus();
-  };
-
   useEffect(() => {
     if (!isOpen) return;
 
@@ -44,7 +53,7 @@ export function InfoPopover({ label, title, children, onLearnMore, className }: 
       // Stops here so the SkillPage-style global Escape handler doesn't also
       // fire and, e.g., close a skill page behind this popover.
       event.stopPropagation();
-      close();
+      close(triggerRef, setIsOpen);
     }
     window.addEventListener("mousedown", onMouseDown);
     window.addEventListener("keydown", onKeyDown, true);
@@ -56,7 +65,7 @@ export function InfoPopover({ label, title, children, onLearnMore, className }: 
 
   const handleLearnMore = () => {
     onLearnMore?.();
-    close();
+    close(triggerRef, setIsOpen);
   };
 
   return (

@@ -48,21 +48,21 @@ export function InstallControls({
   onInstallComplete,
   onRemoveComplete,
 }: InstallControlsProps) {
-  const [selectedAgents, setSelectedAgentsState] = useState<AgentId[]>(loadAgentPrefs);
+  const [selectedAgents, setSelectedAgents] = useState<AgentId[]>(loadAgentPrefs);
   const [installScope, setInstallScope] = useState<InstallScope>("global");
   const [isInstalling, setIsInstalling] = useState(false);
   const [isRemoving, setIsRemoving] = useState(false);
   const [isUpdating, setIsUpdating] = useState(false);
   const [showRemoveConfirm, setShowRemoveConfirm] = useState(false);
-  const [selectedProject, setSelectedProjectState] = useState<string | null>(null);
+  const [selectedProject, setSelectedProject] = useState<string | null>(null);
 
   // Project directories the user has pointed at for project-scoped installs
   const availableProjects = useAppStore((state) => state.userAddedProjects);
   const addProject = useAppStore((state) => state.addProject);
 
   // Persist agent preferences to localStorage whenever they change
-  const setSelectedAgents = useCallback((agents: AgentId[]) => {
-    setSelectedAgentsState(agents);
+  const handleAgentsChange = useCallback((agents: AgentId[]) => {
+    setSelectedAgents(agents);
     localStorage.setItem(AGENT_PREFS_STORAGE_KEY, JSON.stringify(agents));
   }, []);
 
@@ -71,7 +71,7 @@ export function InstallControls({
     (scope: InstallScope) => {
       setInstallScope(scope);
       if (scope === "project" && availableProjects.length > 0 && !selectedProject) {
-        setSelectedProjectState(availableProjects[0]);
+        setSelectedProject(availableProjects[0]);
       }
     },
     [availableProjects, selectedProject],
@@ -133,6 +133,11 @@ export function InstallControls({
       setIsRemoving(false);
       setShowRemoveConfirm(false);
     }
+    // False positive: this try/finally (no catch) makes oxlint flag every
+    // one of these three deps as "extra"; dropping any of them instead trips
+    // the correctness exhaustive-deps rule, confirming they're genuinely
+    // needed.
+    // eslint-disable-next-line react/memo-dependencies
   }, [skill.name, installScope, onRemoveComplete]);
 
   const handleUpdate = useCallback(async () => {
@@ -163,7 +168,7 @@ export function InstallControls({
     });
     if (selected) {
       addProject(selected);
-      setSelectedProjectState(selected);
+      setSelectedProject(selected);
     }
   }, [addProject]);
 
@@ -194,15 +199,19 @@ export function InstallControls({
           {/* Project selector dropdown when project scope is selected */}
           {installScope === "project" && (
             <div className="mt-3">
-              <label className="mb-1.5 block text-caption font-medium tracking-[0.04em] text-text-tertiary uppercase">
+              {/* A heading for the project picker below, not a form control's
+                  label - a `<label>` here would have no associated control
+                  when `availableProjects` is empty and the select doesn't render. */}
+              <span className="mb-1.5 block text-caption font-medium tracking-[0.04em] text-text-tertiary uppercase">
                 Project directory
-              </label>
+              </span>
               <div className="flex gap-2">
                 {availableProjects.length > 0 && (
                   <select
                     className="flex-1 rounded-sm border border-border bg-bg-primary px-2.5 py-2.5 text-body text-text-primary"
+                    aria-label="Project directory"
                     value={selectedProject || ""}
-                    onChange={(e) => setSelectedProjectState(e.target.value)}
+                    onChange={(e) => setSelectedProject(e.target.value)}
                   >
                     {availableProjects.map((p) => (
                       <option key={p} value={p}>
@@ -227,7 +236,7 @@ export function InstallControls({
         <div className="p-5">
           <AgentTargetSelector
             selectedAgents={selectedAgents}
-            onChange={setSelectedAgents}
+            onChange={handleAgentsChange}
             disabled={isInstalling}
           />
         </div>

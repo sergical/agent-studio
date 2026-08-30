@@ -4,7 +4,7 @@
 // scratch-only "also install" and fixture inputs
 // ============================================================================
 
-import { useMemo, useState } from "react";
+import { useState } from "react";
 import { Button, Textarea } from "@skill-studio/ui";
 import type { SkillRunTargetKind } from "@skill-studio/lib";
 import type { InstalledSkill } from "@skill-studio/lib";
@@ -60,10 +60,10 @@ export function SkillTestForm({
   const [extraSkillNames, setExtraSkillNames] = useState<string[]>([]);
   const [fixture, setFixture] = useState("");
 
-  const filteredExtraSkills = useMemo(() => {
-    const q = extraQuery.trim().toLowerCase();
-    return q ? otherOwnSkills.filter((s) => s.name.toLowerCase().includes(q)) : otherOwnSkills;
-  }, [otherOwnSkills, extraQuery]);
+  const extraQueryTrimmed = extraQuery.trim().toLowerCase();
+  const filteredExtraSkills = extraQueryTrimmed
+    ? otherOwnSkills.filter((s) => s.name.toLowerCase().includes(extraQueryTrimmed))
+    : otherOwnSkills;
 
   const toggleExtraSkill = (name: string) => {
     setExtraSkillNames((prev) =>
@@ -131,6 +131,7 @@ export function SkillTestForm({
           {candidateProjects.length > 0 ? (
             <select
               className="rounded-sm border border-border bg-bg-tertiary px-2 py-1.5 text-small text-text-primary"
+              aria-label="Project"
               value={projectPath ?? ""}
               onChange={(e) => setProjectPath(e.target.value || undefined)}
               disabled={isRunning}

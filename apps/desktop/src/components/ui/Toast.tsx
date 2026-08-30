@@ -115,6 +115,7 @@ export function Toast({ toast, onDismiss }: ToastProps) {
           e.stopPropagation();
           onDismiss(toast.id);
         }}
+        aria-label="Dismiss"
       >
         <svg width="14" height="14" viewBox="0 0 14 14" fill="none">
           <path

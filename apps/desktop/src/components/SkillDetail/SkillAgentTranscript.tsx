@@ -5,7 +5,7 @@
 // the run finishes
 // ============================================================================
 
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { ChevronRight } from "lucide-react";
 import ReactMarkdown from "react-markdown";
 import type { SkillAgentRunState } from "../../hooks/useSkillAgentRun";
@@ -106,16 +106,23 @@ function ToolCallBlock({ block }: { block: Extract<TranscriptBlock, { kind: "too
  * new events arrive unless the user has scrolled up to read earlier output.
  */
 export function SkillAgentTranscript({ state }: SkillAgentTranscriptProps) {
-  const blocks = useMemo(() => buildBlocks(state.events), [state.events]);
+  const blocks = buildBlocks(state.events);
   const scrollRef = useRef<HTMLDivElement>(null);
   const stickToBottomRef = useRef(true);
 
   useEffect(() => {
     const el = scrollRef.current;
-    if (el && stickToBottomRef.current) {
+    // `state.events.length`, not `blocks`, is the growing-content trigger:
+    // every incoming event grows `events` by one, even a text delta that
+    // appends into an existing block rather than pushing a new one. The
+    // finished/error footer also grows the box's content without adding an
+    // event, so a status flip to either is its own trigger.
+    const hasNewContent =
+      state.events.length > 0 || state.status === "finished" || state.status === "error";
+    if (el && stickToBottomRef.current && hasNewContent) {
       el.scrollTop = el.scrollHeight;
     }
-  }, [blocks, state.status]);
+  }, [state.events.length, state.status]);
 
   const handleScroll = () => {
     const el = scrollRef.current;

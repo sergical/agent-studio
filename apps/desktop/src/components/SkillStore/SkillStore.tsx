@@ -137,17 +137,20 @@ export function SkillStore({ compact = false }: SkillStoreProps = {}) {
     }
   }, [searchResults, selectedSkill]);
 
-  const mergeWithInstalledStatus = (
-    results: SkillSearchResult[],
-    installed: InstalledSkill[],
-  ): SkillWithStatus[] => {
-    const installedMap = new Map(installed.map((s) => [s.name, s]));
-    return results.map((skill) => ({
-      ...skill,
-      is_installed: installedMap.has(skill.name),
-      installed_info: installedMap.get(skill.name),
-    }));
-  };
+  // Pure function of its own arguments - memoized with no deps so
+  // `handleSearch` and `loadMore` below can list it as a genuinely stable
+  // dependency instead of omitting it.
+  const mergeWithInstalledStatus = useCallback(
+    (results: SkillSearchResult[], installed: InstalledSkill[]): SkillWithStatus[] => {
+      const installedMap = new Map(installed.map((s) => [s.name, s]));
+      return results.map((skill) => ({
+        ...skill,
+        is_installed: installedMap.has(skill.name),
+        installed_info: installedMap.get(skill.name),
+      }));
+    },
+    [],
+  );
 
   const handleSearch = useCallback(
     async (query: string) => {
@@ -190,7 +193,7 @@ export function SkillStore({ compact = false }: SkillStoreProps = {}) {
         setIsLoading(false);
       }
     },
-    [installedSkills, addToast],
+    [installedSkills, addToast, mergeWithInstalledStatus],
   );
 
   const loadMore = useCallback(async () => {
@@ -218,7 +221,15 @@ export function SkillStore({ compact = false }: SkillStoreProps = {}) {
     } finally {
       setIsLoadingMore(false);
     }
-  }, [isLoadingMore, hasMore, offset, searchQuery, installedSkills, addToast]);
+  }, [
+    isLoadingMore,
+    hasMore,
+    offset,
+    searchQuery,
+    installedSkills,
+    addToast,
+    mergeWithInstalledStatus,
+  ]);
 
   const handleInstallStart = useCallback((skillName: string) => {
     setInstallProgress({
