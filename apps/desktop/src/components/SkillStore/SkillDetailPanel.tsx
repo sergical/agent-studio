@@ -56,19 +56,19 @@ export function SkillDetailPanel({
   }, [skill.name, skill.top_source]);
 
   return (
-    <div className="skill-detail-panel">
+    <div className="fixed top-0 right-0 bottom-0 z-(--z-drawer) flex w-[560px] animate-[slideInDrawer_0.2s_ease] flex-col overflow-y-auto border-l border-border bg-bg-secondary">
       <SkillDetailHeader skill={skill} resolvedTopSource={resolvedTopSource} onClose={onClose} />
       <SkillContent skill={skill} resolvedTopSource={resolvedTopSource} />
       <button
         type="button"
-        className="skill-detail-add-skill-link"
+        className="mx-5 self-start border-0 bg-transparent p-0 text-small text-accent hover:underline"
         onClick={() =>
           openAddSkillSheet(resolvedTopSource ? `${resolvedTopSource}/${skill.name}` : skill.name)
         }
       >
         Add with more options…
       </button>
-      <div className="skill-detail-divider" />
+      <div className="my-2 h-px bg-border" />
       <InstallControls
         skill={skill}
         resolvedTopSource={resolvedTopSource}

@@ -2,7 +2,7 @@
 // InstallProgressModal - Shows installation progress
 // ============================================================================
 
-import { X } from "lucide-react";
+import { Dialog, DialogContent, DialogTitle } from "@skill-studio/ui";
 import type { InstallProgressState } from "../../lib/skill-types";
 
 interface InstallProgressModalProps {
@@ -12,36 +12,38 @@ interface InstallProgressModalProps {
 
 export function InstallProgressModal({ progress, onClose }: InstallProgressModalProps) {
   return (
-    <div className="install-progress-overlay" onClick={onClose}>
-      <div className="install-progress-modal" onClick={(e) => e.stopPropagation()}>
-        <div className="install-progress-header">
-          <h3>Installing {progress.skillName}</h3>
-          <button className="install-progress-close" onClick={onClose}>
-            <X size={18} />
-          </button>
+    <Dialog open onOpenChange={(open) => !open && onClose()}>
+      <DialogContent
+        className="w-[400px] max-w-[calc(100%-2rem)] gap-0 rounded-lg border border-border bg-bg-elevated p-0 shadow-lg"
+        aria-label={`Installing ${progress.skillName}`}
+      >
+        <div className="flex items-center justify-between border-b border-border px-5 py-4">
+          <DialogTitle className="m-0 text-pretty text-balance text-emphasis font-semibold text-text-primary">
+            Installing {progress.skillName}
+          </DialogTitle>
         </div>
 
-        <div className="install-progress-content">
-          <div className="install-progress-spinner" />
-          <p className="install-progress-stage">{progress.stage}</p>
-          <p className="install-progress-message">{progress.message}</p>
+        <div className="flex flex-col items-center p-8 py-8">
+          <span className="mb-4 size-8 animate-spin rounded-full border-[3px] border-border border-t-accent" />
+          <p className="m-0 mb-1 text-body font-medium text-text-primary">{progress.stage}</p>
+          <p className="m-0 text-small text-text-tertiary">{progress.message}</p>
 
           {progress.percent !== undefined && (
-            <div className="install-progress-bar">
+            <div className="mt-5 h-1 w-full overflow-hidden rounded-full bg-bg-tertiary">
               <div
-                className="install-progress-bar-fill"
+                className="h-full rounded-full bg-accent transition-[width] duration-300 ease-out"
                 style={{ width: `${progress.percent}%` }}
               />
             </div>
           )}
 
           {progress.error && (
-            <div className="install-progress-error">
-              <p>{progress.error}</p>
+            <div className="mt-4 w-full rounded-sm bg-error-soft p-3">
+              <p className="m-0 text-small text-error">{progress.error}</p>
             </div>
           )}
         </div>
-      </div>
-    </div>
+      </DialogContent>
+    </Dialog>
   );
 }

@@ -8,6 +8,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { open } from "@tauri-apps/plugin-dialog";
 import { FolderPlus, X } from "lucide-react";
+import { Button, Input } from "@skill-studio/ui";
 import { AgentTargetSelector } from "../SkillStore/AgentTargetSelector";
 import { SkillStore } from "../SkillStore/SkillStore";
 import { CheckboxControl } from "../ui/CheckboxControl";
@@ -91,6 +92,10 @@ function agentsWithASkill(snapshot: ReturnType<typeof useSkillSnapshot>["snapsho
 
 const FOCUSABLE_SELECTOR =
   'a[href], button:not([disabled]), textarea:not([disabled]), input:not([disabled]), select:not([disabled]), [tabindex]:not([tabindex="-1"])';
+
+const SCOPE_OPTION_CLASS =
+  "flex-1 rounded-sm border border-border bg-bg-primary px-2.5 py-2.5 text-body font-medium text-text-secondary transition-colors hover:border-border-focus";
+const SCOPE_OPTION_SELECTED_CLASS = "border-accent bg-accent-softer text-accent";
 
 export function AddSkillSheet() {
   const { open: isOpen, prefill } = useAppStore((state) => state.addSkillSheet);
@@ -258,24 +263,26 @@ export function AddSkillSheet() {
 
   return (
     <div
-      className="add-skill-sheet-overlay"
+      className="fixed inset-0 z-(--z-modal) flex justify-end bg-scrim"
       onMouseDown={() => {
         if (!isSubmitting) closeSheet();
       }}
     >
       <div
         ref={sheetRef}
-        className="add-skill-sheet"
+        className="flex h-full w-[420px] max-w-full flex-col border-l border-border bg-bg-secondary"
         role="dialog"
         aria-modal="true"
         aria-label="Add skill"
         onMouseDown={(e) => e.stopPropagation()}
       >
-        <div className="add-skill-sheet-header">
-          <h3>Add skill</h3>
+        <div className="flex items-center justify-between border-b border-border px-5 py-4">
+          <h3 className="m-0 text-pretty text-balance text-emphasis font-semibold text-text-primary">
+            Add skill
+          </h3>
           <button
             type="button"
-            className="add-skill-sheet-close"
+            className="flex items-center justify-center rounded-sm border-0 bg-transparent p-1 text-text-tertiary transition-colors hover:bg-bg-hover hover:text-text-primary"
             onClick={closeSheet}
             disabled={isSubmitting}
           >
@@ -283,17 +290,25 @@ export function AddSkillSheet() {
           </button>
         </div>
 
-        <div className="add-skill-sheet-tabs">
+        <div className="flex border-b border-border">
           <button
             type="button"
-            className={`add-skill-sheet-tab ${sheetTab === "manual" ? "active" : ""}`}
+            className={`-mb-px h-10 border-0 border-b-2 bg-transparent px-4 text-body font-medium transition-colors ${
+              sheetTab === "manual"
+                ? "border-accent text-accent"
+                : "border-transparent text-text-tertiary hover:text-text-secondary"
+            }`}
             onClick={() => setSheetTab("manual")}
           >
             Add by source
           </button>
           <button
             type="button"
-            className={`add-skill-sheet-tab ${sheetTab === "browse" ? "active" : ""}`}
+            className={`-mb-px h-10 border-0 border-b-2 bg-transparent px-4 text-body font-medium transition-colors ${
+              sheetTab === "browse"
+                ? "border-accent text-accent"
+                : "border-transparent text-text-tertiary hover:text-text-secondary"
+            }`}
             onClick={() => setSheetTab("browse")}
           >
             Browse skills.sh
@@ -301,39 +316,48 @@ export function AddSkillSheet() {
         </div>
 
         {sheetTab === "browse" ? (
-          <div className="add-skill-sheet-browse">
+          <div className="flex flex-1 overflow-hidden">
             <SkillStore compact />
           </div>
         ) : (
-          <div className="add-skill-sheet-body">
-            <div className="add-skill-sheet-field">
-              <label htmlFor="add-skill-source">Source</label>
-              <input
+          <div className="flex flex-1 flex-col gap-5 overflow-y-auto px-5 py-4">
+            <div className="flex flex-col gap-2">
+              <label
+                htmlFor="add-skill-source"
+                className="text-caption font-medium tracking-[0.06em] text-text-tertiary uppercase"
+              >
+                Source
+              </label>
+              <Input
                 id="add-skill-source"
                 ref={sourceInputRef}
                 type="text"
-                className="text-control"
+                className="h-(--control-height) rounded-sm border-border bg-bg-primary text-body text-text-primary focus-visible:border-border-focus focus-visible:ring-0"
                 value={source}
                 onChange={(e) => setSource(e.target.value)}
                 placeholder="owner/repo, a GitHub URL, a skills.sh URL, or a local path"
               />
-              <p className={`add-skill-sheet-parse ${"error" in parsed ? "error" : ""}`}>
+              <p
+                className={`m-0 text-small ${"error" in parsed ? "text-error" : "text-text-tertiary"}`}
+              >
                 {source.trim() ? parseSummary(parsed) : "Enter a source above"}
               </p>
             </div>
 
-            <div className="add-skill-sheet-field">
-              <label>Method</label>
-              <div className="harness-segmented-control">
+            <div className="flex flex-col gap-2">
+              <label className="text-caption font-medium tracking-[0.06em] text-text-tertiary uppercase">
+                Method
+              </label>
+              <div className="flex flex-wrap gap-1.5">
                 {ALL_SHEET_METHODS.map((m) => {
                   const disabled = methods.length > 0 && !methods.includes(m);
                   return (
                     <button
                       key={m}
                       type="button"
-                      className={`harness-segmented-control-item ${method === m ? "active" : ""} ${
-                        disabled ? "unavailable" : ""
-                      }`}
+                      className={`inline-flex h-[26px] items-center gap-1.5 rounded-sm border border-border bg-bg-tertiary px-2.5 text-caption text-text-tertiary transition-colors enabled:hover:bg-bg-hover enabled:hover:text-text-secondary disabled:cursor-not-allowed ${
+                        method === m ? "border-text-tertiary text-text-primary" : ""
+                      } ${disabled ? "opacity-40" : ""}`}
                       title={METHOD_TOOLTIPS[m]}
                       disabled={disabled}
                       onClick={() => setMethod(m)}
@@ -344,44 +368,49 @@ export function AddSkillSheet() {
                 })}
               </div>
               {method === "dotagents" && agents.includes("grok-build") && (
-                <p className="add-skill-sheet-note">Grok Build reads the shared folder.</p>
+                <p className="m-0 text-caption text-text-tertiary">
+                  Grok Build reads the shared folder.
+                </p>
               )}
             </div>
 
-            <div className="add-skill-sheet-field">
+            <div className="flex flex-col gap-2">
               <AgentTargetSelector selectedAgents={agents} onChange={setAgents} />
             </div>
 
             {method === "pack" && (
-              <p className="add-skill-sheet-note">
+              <p className="m-0 text-caption text-text-tertiary">
                 Imports every skill in this repo's pack to the shared folder, plus any agents.toml
                 row pointing elsewhere - see the "Packs" section of the docs.
               </p>
             )}
 
             {method !== "pack" && (
-              <div className="add-skill-sheet-field">
-                <label>Scope</label>
-                <div className="skill-detail-scope-toggle">
+              <div className="flex flex-col gap-2">
+                <label className="text-caption font-medium tracking-[0.06em] text-text-tertiary uppercase">
+                  Scope
+                </label>
+                <div className="flex gap-2">
                   <button
                     type="button"
-                    className={`scope-option ${scope === "global" ? "selected" : ""}`}
+                    className={`${SCOPE_OPTION_CLASS} ${scope === "global" ? SCOPE_OPTION_SELECTED_CLASS : ""}`}
                     onClick={() => setScope("global")}
                   >
                     Global
                   </button>
                   <button
                     type="button"
-                    className={`scope-option ${scope === "project" ? "selected" : ""}`}
+                    className={`${SCOPE_OPTION_CLASS} ${scope === "project" ? SCOPE_OPTION_SELECTED_CLASS : ""}`}
                     onClick={() => setScope("project")}
                   >
                     Project
                   </button>
                 </div>
                 {scope === "project" && (
-                  <div className="skill-detail-project-select-row">
+                  <div className="flex gap-2">
                     {userAddedProjects.length > 0 && (
                       <select
+                        className="flex-1 rounded-sm border border-border bg-bg-primary px-2.5 py-2.5 text-body text-text-primary"
                         value={projectPath ?? ""}
                         onChange={(e) => setProjectPath(e.target.value)}
                       >
@@ -392,33 +421,33 @@ export function AddSkillSheet() {
                         ))}
                       </select>
                     )}
-                    <button
-                      type="button"
-                      className="skill-action-button"
+                    <Button
+                      variant="outline"
+                      className="h-(--control-height) gap-2 rounded-md px-3.5 text-body font-medium"
                       onClick={handleBrowseProject}
                     >
                       <FolderPlus size={14} />
                       {userAddedProjects.length === 0 ? "Choose Directory" : "Add"}
-                    </button>
+                    </Button>
                   </div>
                 )}
               </div>
             )}
 
             {method !== "pack" && (
-              <div className="add-skill-sheet-field">
-                <label className="add-skill-sheet-checkbox">
+              <div className="flex flex-col gap-2">
+                <label className="flex items-center gap-2 text-body text-text-primary">
                   <CheckboxControl checked={trial} onCheckedChange={setTrial} />
                   Try for 24 hours
                 </label>
-                <p className="add-skill-sheet-note">
+                <p className="m-0 text-caption text-text-tertiary">
                   Removed automatically after 24 h unless you keep it.
                 </p>
               </div>
             )}
 
             {submitError && (
-              <p className="add-skill-sheet-error" role="alert">
+              <p className="m-0 rounded-md bg-error-soft p-2.5 text-small text-error" role="alert">
                 {submitError}
               </p>
             )}
@@ -426,23 +455,22 @@ export function AddSkillSheet() {
         )}
 
         {sheetTab === "manual" && (
-          <div className="add-skill-sheet-footer">
-            <button
-              type="button"
-              className="skill-action-button"
+          <div className="flex justify-end gap-2 border-t border-border px-5 py-4">
+            <Button
+              variant="outline"
+              className="h-(--control-height) rounded-md px-3.5 text-body font-medium"
               onClick={closeSheet}
               disabled={isSubmitting}
             >
               Cancel
-            </button>
-            <button
-              type="button"
-              className="skill-action-button primary"
+            </Button>
+            <Button
+              className="h-(--control-height) rounded-md bg-accent px-3.5 text-body font-medium text-text-on-accent hover:bg-accent-hover"
               onClick={handleSubmit}
               disabled={!isValid || isSubmitting}
             >
               {isSubmitting ? "Adding…" : method === "pack" ? "Import pack" : "Add skill"}
-            </button>
+            </Button>
           </div>
         )}
       </div>

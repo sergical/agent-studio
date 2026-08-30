@@ -74,22 +74,22 @@ export function AgentTargetSelector({
 
   if (isLoading) {
     return (
-      <div className="agent-selector agent-selector-loading">
+      <div className="flex flex-col gap-3">
         <span>Loading agents…</span>
       </div>
     );
   }
 
   return (
-    <div className={`agent-selector ${disabled ? "disabled" : ""}`}>
-      <div className="agent-selector-header">
-        <span className="agent-selector-label">
+    <div className={`flex flex-col gap-3 ${disabled ? "pointer-events-none opacity-50" : ""}`}>
+      <div className="flex items-center justify-between gap-2">
+        <span className="text-small font-medium text-text-secondary">
           Install to agents ({selectedAgents.length} selected)
         </span>
-        <div className="agent-selector-actions">
+        <div className="flex gap-1">
           <button
             type="button"
-            className="agent-selector-action"
+            className="rounded-xs border border-border bg-transparent px-2 py-1 text-caption font-medium text-text-tertiary transition-colors hover:bg-bg-hover hover:text-text-secondary"
             onClick={selectCommon}
             disabled={disabled}
           >
@@ -97,7 +97,7 @@ export function AgentTargetSelector({
           </button>
           <button
             type="button"
-            className="agent-selector-action"
+            className="rounded-xs border border-border bg-transparent px-2 py-1 text-caption font-medium text-text-tertiary transition-colors hover:bg-bg-hover hover:text-text-secondary"
             onClick={selectAll}
             disabled={disabled}
           >
@@ -105,7 +105,7 @@ export function AgentTargetSelector({
           </button>
           <button
             type="button"
-            className="agent-selector-action"
+            className="rounded-xs border border-border bg-transparent px-2 py-1 text-caption font-medium text-text-tertiary transition-colors hover:bg-bg-hover hover:text-text-secondary"
             onClick={selectNone}
             disabled={disabled}
           >
@@ -114,12 +114,16 @@ export function AgentTargetSelector({
         </div>
       </div>
 
-      <div className="agent-selector-common">
+      <div className="flex flex-wrap gap-1.5">
         {commonAgents.map((agent) => (
           <button
             key={agent.id}
             type="button"
-            className={`agent-chip ${selectedAgents.includes(agent.id) ? "selected" : ""}`}
+            className={`flex items-center gap-1 rounded-xs border px-2.5 py-1.5 text-caption font-medium transition-colors ${
+              selectedAgents.includes(agent.id)
+                ? "border-accent bg-accent-softer text-accent"
+                : "border-border bg-bg-primary text-text-secondary hover:border-border-focus"
+            }`}
             onClick={() => toggleAgent(agent.id)}
             disabled={disabled}
           >
@@ -131,7 +135,7 @@ export function AgentTargetSelector({
 
       <button
         type="button"
-        className="agent-selector-expand"
+        className="flex items-center gap-1.5 rounded-sm border border-dashed border-border bg-transparent p-2 text-caption text-text-tertiary transition-colors hover:bg-bg-hover hover:text-text-secondary"
         onClick={() => setIsExpanded(!isExpanded)}
         disabled={disabled}
       >
@@ -140,12 +144,16 @@ export function AgentTargetSelector({
       </button>
 
       {isExpanded && (
-        <div className="agent-selector-all">
+        <div className="flex flex-wrap gap-1.5">
           {otherAgents.map((agent) => (
             <button
               key={agent.id}
               type="button"
-              className={`agent-chip ${selectedAgents.includes(agent.id) ? "selected" : ""}`}
+              className={`flex items-center gap-1 rounded-xs border px-2.5 py-1.5 text-caption font-medium transition-colors ${
+                selectedAgents.includes(agent.id)
+                  ? "border-accent bg-accent-softer text-accent"
+                  : "border-border bg-bg-primary text-text-secondary hover:border-border-focus"
+              }`}
               onClick={() => toggleAgent(agent.id)}
               disabled={disabled}
             >

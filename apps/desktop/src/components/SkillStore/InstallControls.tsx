@@ -6,11 +6,18 @@
 import { useCallback, useState } from "react";
 import { Download, Trash2, RefreshCw, FolderPlus } from "lucide-react";
 import { open } from "@tauri-apps/plugin-dialog";
+import { Button } from "@skill-studio/ui";
 import { AgentTargetSelector } from "./AgentTargetSelector";
 import { installSkill, removeSkill, updateSkill } from "../../lib/skill-api";
 import { useAppStore } from "../../store/appStore";
 import type { AgentId, InstallScope, SkillWithStatus } from "../../lib/skill-types";
 import { COMMON_AGENTS } from "../../lib/skill-types";
+
+const SCOPE_OPTION_CLASS =
+  "flex-1 rounded-sm border border-border bg-bg-primary px-2.5 py-2.5 text-body font-medium text-text-secondary transition-colors hover:border-border-focus";
+const SCOPE_OPTION_SELECTED_CLASS = "border-accent bg-accent-softer text-accent";
+const ACTION_BUTTON_CLASS =
+  "h-(--control-height) w-full justify-center gap-2 rounded-md px-3.5 text-body font-medium";
 
 const AGENT_PREFS_STORAGE_KEY = "skill-store-agent-prefs";
 
@@ -163,19 +170,21 @@ export function InstallControls({
   if (!skill.is_installed) {
     return (
       <>
-        <div className="skill-detail-section">
-          <h4>Install scope</h4>
-          <div className="skill-detail-scope-toggle">
+        <div className="p-5">
+          <h4 className="m-0 mb-3 text-caption font-medium tracking-[0.08em] text-text-tertiary uppercase">
+            Install scope
+          </h4>
+          <div className="flex gap-2">
             <button
               type="button"
-              className={`scope-option ${installScope === "global" ? "selected" : ""}`}
+              className={`${SCOPE_OPTION_CLASS} ${installScope === "global" ? SCOPE_OPTION_SELECTED_CLASS : ""}`}
               onClick={() => handleSetInstallScope("global")}
             >
               Global
             </button>
             <button
               type="button"
-              className={`scope-option ${installScope === "project" ? "selected" : ""}`}
+              className={`${SCOPE_OPTION_CLASS} ${installScope === "project" ? SCOPE_OPTION_SELECTED_CLASS : ""}`}
               onClick={() => handleSetInstallScope("project")}
             >
               Project
@@ -184,11 +193,14 @@ export function InstallControls({
 
           {/* Project selector dropdown when project scope is selected */}
           {installScope === "project" && (
-            <div className="skill-detail-project-select">
-              <label>Project directory</label>
-              <div className="skill-detail-project-select-row">
+            <div className="mt-3">
+              <label className="mb-1.5 block text-caption font-medium tracking-[0.04em] text-text-tertiary uppercase">
+                Project directory
+              </label>
+              <div className="flex gap-2">
                 {availableProjects.length > 0 && (
                   <select
+                    className="flex-1 rounded-sm border border-border bg-bg-primary px-2.5 py-2.5 text-body text-text-primary"
                     value={selectedProject || ""}
                     onChange={(e) => setSelectedProjectState(e.target.value)}
                   >
@@ -199,16 +211,20 @@ export function InstallControls({
                     ))}
                   </select>
                 )}
-                <button type="button" className="skill-action-button" onClick={handleBrowseProject}>
+                <Button
+                  variant="outline"
+                  className={ACTION_BUTTON_CLASS}
+                  onClick={handleBrowseProject}
+                >
                   <FolderPlus size={14} />
                   {availableProjects.length === 0 ? "Choose Directory" : "Add"}
-                </button>
+                </Button>
               </div>
             </div>
           )}
         </div>
 
-        <div className="skill-detail-section">
+        <div className="p-5">
           <AgentTargetSelector
             selectedAgents={selectedAgents}
             onChange={setSelectedAgents}
@@ -216,9 +232,9 @@ export function InstallControls({
           />
         </div>
 
-        <div className="skill-detail-actions">
-          <button
-            className="skill-action-button primary"
+        <div className="mt-auto flex flex-col gap-2 p-5">
+          <Button
+            className={`${ACTION_BUTTON_CLASS} bg-accent text-text-on-accent hover:bg-accent-hover`}
             onClick={handleInstall}
             disabled={
               isInstalling ||
@@ -228,7 +244,7 @@ export function InstallControls({
           >
             {isInstalling ? (
               <>
-                <span className="spinner" />
+                <span className="size-3.5 animate-spin rounded-full border-2 border-current border-t-transparent" />
                 Installing…
               </>
             ) : (
@@ -237,23 +253,23 @@ export function InstallControls({
                 Install Skill
               </>
             )}
-          </button>
+          </Button>
         </div>
       </>
     );
   }
 
   return (
-    <div className="skill-detail-actions">
+    <div className="mt-auto flex flex-col gap-2 p-5">
       {skill.installed_info?.has_update && (
-        <button
-          className="skill-action-button primary"
+        <Button
+          className={`${ACTION_BUTTON_CLASS} bg-accent text-text-on-accent hover:bg-accent-hover`}
           onClick={handleUpdate}
           disabled={isUpdating}
         >
           {isUpdating ? (
             <>
-              <span className="spinner" />
+              <span className="size-3.5 animate-spin rounded-full border-2 border-current border-t-transparent" />
               Updating…
             </>
           ) : (
@@ -262,47 +278,42 @@ export function InstallControls({
               Update Skill
             </>
           )}
-        </button>
+        </Button>
       )}
       {showRemoveConfirm ? (
-        <div style={{ display: "flex", gap: "8px" }}>
-          <button
-            className="skill-action-button danger"
+        <div className="flex gap-2">
+          <Button
+            className={`${ACTION_BUTTON_CLASS} flex-1 bg-error-soft text-error hover:bg-error hover:text-white`}
             onClick={handleRemove}
             disabled={isRemoving}
-            style={{ flex: 1 }}
           >
             {isRemoving ? (
               <>
-                <span className="spinner" />
+                <span className="size-3.5 animate-spin rounded-full border-2 border-current border-t-transparent" />
                 Removing…
               </>
             ) : (
               "Confirm Remove"
             )}
-          </button>
-          <button
-            className="skill-action-button"
+          </Button>
+          <Button
+            variant="secondary"
+            className={`${ACTION_BUTTON_CLASS} flex-1 bg-bg-tertiary text-text-secondary`}
             onClick={() => setShowRemoveConfirm(false)}
             disabled={isRemoving}
-            style={{
-              flex: 1,
-              background: "var(--color-bg-tertiary)",
-              color: "var(--color-text-secondary)",
-            }}
           >
             Cancel
-          </button>
+          </Button>
         </div>
       ) : (
-        <button
-          className="skill-action-button danger"
+        <Button
+          className={`${ACTION_BUTTON_CLASS} bg-error-soft text-error hover:bg-error hover:text-white`}
           onClick={() => setShowRemoveConfirm(true)}
           disabled={isRemoving}
         >
           <Trash2 size={16} />
           Remove Skill
-        </button>
+        </Button>
       )}
     </div>
   );

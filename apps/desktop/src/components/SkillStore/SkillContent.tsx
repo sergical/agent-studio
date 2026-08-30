@@ -43,23 +43,27 @@ export function SkillContent({ skill, resolvedTopSource }: SkillContentProps) {
   }, [resolvedTopSource, skill.name, skill.installed_info]);
 
   return (
-    <div className="skill-detail-content-section">
-      <div className="skill-detail-content-header">
+    <div className="mx-5 mb-4 overflow-hidden rounded-md border border-border">
+      <div className="flex items-center gap-1.5 border-b border-border bg-bg-tertiary px-3 py-2 text-caption font-medium tracking-[0.04em] text-text-secondary uppercase">
         <FileText size={14} />
         <span>SKILL.md</span>
       </div>
-      <div className="skill-detail-content">
+      <div className="max-h-[400px] overflow-y-auto bg-bg-secondary">
         {isLoadingContent ? (
-          <div className="skill-detail-content-loading">
-            <span className="spinner" />
+          <div className="flex items-center justify-center gap-2 p-6 text-small text-text-tertiary">
+            <span className="size-3.5 animate-spin rounded-full border-2 border-border border-t-accent" />
             Loading content…
           </div>
         ) : skillContent ? (
-          <pre className="skill-detail-content-text">{skillContent}</pre>
+          <pre className="m-0 p-3 font-mono text-small leading-[1.5] break-words whitespace-pre-wrap text-text-secondary">
+            {skillContent}
+          </pre>
         ) : skill.description ? (
-          <p className="skill-detail-content-fallback">{skill.description}</p>
+          <p className="m-0 p-3 text-body leading-[1.5] text-text-secondary">{skill.description}</p>
         ) : (
-          <p className="skill-detail-content-empty">No content available</p>
+          <p className="text-pretty m-0 p-3 py-6 text-center text-small italic text-text-tertiary">
+            No content available
+          </p>
         )}
       </div>
     </div>

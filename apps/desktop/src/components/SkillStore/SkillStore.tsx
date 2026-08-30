@@ -281,13 +281,22 @@ export function SkillStore({ compact = false }: SkillStoreProps = {}) {
     };
   });
 
+  const tabsPadding = compact ? "px-5" : "px-7";
+
   return (
-    <div className={`skill-store ${compact ? "compact" : ""}`}>
+    <div className="flex flex-1 flex-col overflow-hidden bg-bg-primary">
       {!compact && (
-        <div className="skill-store-header">
-          <h2>skills.sh</h2>
-          <p className="skill-store-subtitle">
-            <a href="https://skills.sh" target="_blank" rel="noopener noreferrer">
+        <div className="border-b border-border px-7 pt-6 pb-4">
+          <h2 className="m-0 mb-1 text-pretty text-balance text-title font-semibold text-text-primary">
+            skills.sh
+          </h2>
+          <p className="m-0 text-pretty text-body text-text-tertiary">
+            <a
+              href="https://skills.sh"
+              target="_blank"
+              rel="noopener noreferrer"
+              className="text-text-tertiary no-underline transition-colors hover:text-accent hover:underline"
+            >
               Discover and install skills
             </a>
           </p>
@@ -295,9 +304,13 @@ export function SkillStore({ compact = false }: SkillStoreProps = {}) {
       )}
 
       {/* Tab Navigation */}
-      <div className="skill-store-tabs">
+      <div className={`flex gap-0 border-b border-border bg-bg-secondary ${tabsPadding}`}>
         <button
-          className={`skill-store-tab ${activeTab === "browse" ? "active" : ""}`}
+          className={`-mb-px border-0 border-b-2 bg-transparent px-5 py-3 text-body font-medium transition-colors ${
+            activeTab === "browse"
+              ? "border-accent text-accent"
+              : "border-transparent text-text-tertiary hover:text-text-secondary"
+          }`}
           onClick={() => {
             setActiveTab("browse");
             setSelectedSkill(null);
@@ -306,7 +319,11 @@ export function SkillStore({ compact = false }: SkillStoreProps = {}) {
           Browse
         </button>
         <button
-          className={`skill-store-tab ${activeTab === "installed" ? "active" : ""}`}
+          className={`-mb-px border-0 border-b-2 bg-transparent px-5 py-3 text-body font-medium transition-colors ${
+            activeTab === "installed"
+              ? "border-accent text-accent"
+              : "border-transparent text-text-tertiary hover:text-text-secondary"
+          }`}
           onClick={() => {
             setActiveTab("installed");
             setSelectedSkill(null);
@@ -317,15 +334,15 @@ export function SkillStore({ compact = false }: SkillStoreProps = {}) {
       </div>
 
       {activeTab === "browse" && (
-        <div className="skill-store-toolbar">
+        <div className={`flex items-center gap-4 border-b border-border py-4 ${tabsPadding}`}>
           <SkillSearchBar
             value={searchQuery}
             onChange={setSearchQuery}
             onSearch={handleSearch}
             isLoading={isLoading}
           />
-          <div className="skill-store-filters">
-            <span className="skill-store-count">
+          <div className="ml-auto flex items-center gap-4">
+            <span className="text-small tabular-nums text-text-tertiary">
               {searchResults.length} skill{searchResults.length !== 1 ? "s" : ""}
             </span>
           </div>
@@ -333,14 +350,14 @@ export function SkillStore({ compact = false }: SkillStoreProps = {}) {
       )}
 
       {activeTab === "installed" && (
-        <div className="skill-store-toolbar">
-          <span className="skill-store-count">
+        <div className={`flex items-center gap-4 border-b border-border py-4 ${tabsPadding}`}>
+          <span className="text-small tabular-nums text-text-tertiary">
             {installedSkills.length} installed skill{installedSkills.length !== 1 ? "s" : ""}
           </span>
         </div>
       )}
 
-      <div className="skill-store-content">
+      <div className={`flex flex-1 overflow-hidden ${compact ? "flex-col" : ""}`}>
         {activeTab === "browse" ? (
           <SkillBrowser
             skills={searchResults}
@@ -370,7 +387,10 @@ export function SkillStore({ compact = false }: SkillStoreProps = {}) {
 
         {selectedSkill && (
           <>
-            <div className="skill-detail-overlay" onClick={() => setSelectedSkill(null)} />
+            <div
+              className="fixed inset-0 z-(--z-backdrop) bg-scrim"
+              onClick={() => setSelectedSkill(null)}
+            />
             <SkillDetailPanel
               skill={selectedSkill}
               onClose={() => setSelectedSkill(null)}
