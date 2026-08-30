@@ -111,9 +111,18 @@ export function Sidebar({ snapshot, isLoading, requestRescan }: SidebarProps) {
 
   const spinning = isRescanning && isLoading;
 
+  const itemClass = (active: boolean) =>
+    `grid h-[30px] w-full cursor-pointer grid-cols-[15px_minmax(0,1fr)_auto] items-center gap-2 rounded-sm border-0 px-2.5 text-body transition-colors ${
+      active
+        ? "bg-accent-soft text-text-primary"
+        : "bg-transparent text-text-secondary hover:bg-bg-hover hover:text-text-primary"
+    }`;
+  const iconButtonClass =
+    "flex size-6 cursor-pointer items-center justify-center rounded-sm border-0 bg-transparent text-text-tertiary transition-colors hover:bg-bg-hover hover:text-text-primary";
+
   return (
-    <nav className="skill-sidebar">
-      <div className="skill-sidebar-section">
+    <nav className="flex w-60 shrink-0 flex-col overflow-y-auto border-r border-border bg-bg-secondary">
+      <div className="flex flex-col gap-px px-2.5 pb-2.5 first:pt-3">
         <input
           ref={searchInputRef}
           type="search"
@@ -124,95 +133,98 @@ export function Sidebar({ snapshot, isLoading, requestRescan }: SidebarProps) {
           onChange={(e) => handleSearchChange(e.target.value)}
           onKeyDown={handleSearchKeyDown}
         />
-        <button className="skill-sidebar-add-skill" onClick={() => openAddSkillSheet()}>
+        <button
+          className="mt-1.5 flex h-[30px] cursor-pointer items-center justify-center gap-1.5 rounded-sm border-0 bg-accent-soft text-body text-text-primary transition-colors hover:text-accent-hover"
+          onClick={() => openAddSkillSheet()}
+        >
           <Plus size={15} />
           <span>Add skill</span>
         </button>
       </div>
 
-      <div className="skill-sidebar-section">
+      <div className="flex flex-col gap-px px-2.5 pb-2.5 first:pt-3">
         <button
-          className={`skill-sidebar-item ${anchorView.kind === "home" ? "active" : ""}`}
+          className={itemClass(anchorView.kind === "home")}
           onClick={() => setActiveView({ kind: "home" })}
         >
           <LayoutDashboard size={15} />
-          <span>Home</span>
+          <span className="min-w-0 truncate">Home</span>
         </button>
         <button
-          className={`skill-sidebar-item ${skillsActive ? "active" : ""}`}
+          className={itemClass(skillsActive)}
           onClick={() => {
             if (inParked || inPlugins) setSkillListFilter(defaultSkillListFilter());
             setActiveView({ kind: "skills" });
           }}
         >
           <Search size={15} />
-          <span>Skills</span>
+          <span className="min-w-0 truncate">Skills</span>
           {skillsCount > 0 && (
-            <span className="skill-sidebar-badge count-tabular">{skillsCount}</span>
+            <span className="count-tabular text-right text-caption">{skillsCount}</span>
           )}
         </button>
         {pluginCount > 0 && (
           <button
-            className={`skill-sidebar-item ${anchorView.kind === "skills" && inPlugins ? "active" : ""}`}
+            className={itemClass(anchorView.kind === "skills" && inPlugins)}
             onClick={() => {
               setSkillListFilter({ ...defaultSkillListFilter(), source: "plugin" });
               setActiveView({ kind: "skills" });
             }}
           >
             <Puzzle size={15} />
-            <span>Plugins</span>
-            <span className="skill-sidebar-badge count-tabular">{pluginCount}</span>
+            <span className="min-w-0 truncate">Plugins</span>
+            <span className="count-tabular text-right text-caption">{pluginCount}</span>
           </button>
         )}
         <button
-          className={`skill-sidebar-item ${anchorView.kind === "activity" ? "active" : ""}`}
+          className={itemClass(anchorView.kind === "activity")}
           onClick={() => setActiveView({ kind: "activity" })}
         >
           <ActivityIcon size={15} />
-          <span>Activity</span>
+          <span className="min-w-0 truncate">Activity</span>
         </button>
         <button
-          className={`skill-sidebar-item ${anchorView.kind === "packs" ? "active" : ""}`}
+          className={itemClass(anchorView.kind === "packs")}
           onClick={() => setActiveView({ kind: "packs" })}
         >
           <Package size={15} />
-          <span>Packs</span>
+          <span className="min-w-0 truncate">Packs</span>
         </button>
       </div>
 
       {parkedCount > 0 && (
-        <div className="skill-sidebar-section">
+        <div className="flex flex-col gap-px px-2.5 pb-2.5 first:pt-3">
           <button
-            className={`skill-sidebar-item ${anchorView.kind === "skills" && inParked ? "active" : ""}`}
+            className={itemClass(anchorView.kind === "skills" && inParked)}
             onClick={() => {
               setSkillListFilter({ ...defaultSkillListFilter(), scope: "parked" });
               setActiveView({ kind: "skills" });
             }}
           >
             <PackageOpen size={15} />
-            <span>Parked</span>
-            <span className="skill-sidebar-badge count-tabular">{parkedCount}</span>
+            <span className="min-w-0 truncate">Parked</span>
+            <span className="count-tabular text-right text-caption">{parkedCount}</span>
           </button>
         </div>
       )}
 
-      <div className="skill-sidebar-footer">
+      <div className="mt-auto flex select-none items-center justify-between gap-2 border-t border-border-subtle px-2.5 py-2">
         <button
           type="button"
-          className="skill-sidebar-refresh"
+          className="flex h-6 cursor-pointer items-center gap-1.5 rounded-sm border-0 bg-transparent px-1.5 text-caption text-text-tertiary transition-colors hover:enabled:bg-bg-hover hover:enabled:text-text-primary disabled:cursor-default"
           onClick={handleRefresh}
           disabled={spinning}
           title="Rescan installed skills"
         >
-          <RefreshCw size={13} className={spinning ? "skill-sidebar-refresh-spinning" : ""} />
-          <span className="skill-sidebar-scanned-at">
+          <RefreshCw size={13} className={spinning ? "animate-spin" : ""} />
+          <span>
             {spinning ? "Scanning…" : `Scanned ${relativeScanTime(snapshot?.scanned_at)}`}
           </span>
         </button>
-        <div className="skill-sidebar-footer-actions">
+        <div className="flex items-center gap-0.5">
           <button
             type="button"
-            className="skill-sidebar-learn"
+            className={`${iconButtonClass} aria-[current=page]:bg-accent-softer aria-[current=page]:text-accent`}
             onClick={() => setActiveView({ kind: "learn" })}
             aria-current={anchorView.kind === "learn" ? "page" : undefined}
             aria-label="Learn"
@@ -222,7 +234,7 @@ export function Sidebar({ snapshot, isLoading, requestRescan }: SidebarProps) {
           </button>
           <button
             type="button"
-            className="skill-sidebar-theme-toggle"
+            className={iconButtonClass}
             onClick={() => setTheme(resolvedTheme === "dark" ? "light" : "dark")}
             aria-label={resolvedTheme === "dark" ? "Switch to light theme" : "Switch to dark theme"}
             title={resolvedTheme === "dark" ? "Switch to light theme" : "Switch to dark theme"}

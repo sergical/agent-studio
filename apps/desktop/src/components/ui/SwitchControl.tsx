@@ -1,10 +1,10 @@
 // ============================================================================
-// SwitchControl - Base UI Switch wrapper: a 28x16 track with a 12 px thumb,
-// accent fill when checked. Used for the Skills filter bar's "Show
-// coverage" toggle.
+// SwitchControl - Kit Switch wrapper, sized "sm" (24x14 track, 12 px thumb)
+// to match the app's compact control scale, accent fill when checked. Used
+// for the Skills filter bar's "Show coverage" toggle.
 // ============================================================================
 
-import { Switch } from "@base-ui/react/switch";
+import { Switch } from "@skill-studio/ui";
 
 interface SwitchControlProps {
   checked: boolean;
@@ -20,14 +20,13 @@ export function SwitchControl({
   ariaLabel,
 }: SwitchControlProps) {
   return (
-    <Switch.Root
-      className="switch-control-root"
+    <Switch
+      size="sm"
       checked={checked}
       onCheckedChange={onCheckedChange}
       disabled={disabled}
       aria-label={ariaLabel}
-    >
-      <Switch.Thumb className="switch-control-thumb" />
-    </Switch.Root>
+      className="data-checked:bg-accent"
+    />
   );
 }

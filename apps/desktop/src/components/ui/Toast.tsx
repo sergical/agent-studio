@@ -80,19 +80,26 @@ export function Toast({ toast, onDismiss }: ToastProps) {
         background: colors.bg,
         borderColor: colors.border,
       }}
-      className="toast"
+      className="pointer-events-auto flex min-w-75 max-w-105 cursor-pointer items-start gap-3 rounded-lg border px-4 py-3.5 shadow-lg transition-transform duration-150 ease-out hover:-translate-y-0.5"
       onClick={() => onDismiss(toast.id)}
     >
-      <span className="toast-icon" style={{ color: colors.icon }}>
+      <span
+        className="mt-px flex shrink-0 items-center justify-center"
+        style={{ color: colors.icon }}
+      >
         {ICONS[toast.type]}
       </span>
-      <div className="toast-content">
-        <span className="toast-title">{toast.title}</span>
-        {toast.message && <span className="toast-message">{toast.message}</span>}
+      <div className="flex min-w-0 flex-1 flex-col gap-0.5">
+        <span className="text-body font-medium text-text-primary">{toast.title}</span>
+        {toast.message && (
+          <span className="text-wrap-pretty text-small leading-snug text-text-secondary">
+            {toast.message}
+          </span>
+        )}
       </div>
       {toast.action && (
         <button
-          className="toast-action"
+          className="shrink-0 self-center rounded-md border border-border bg-bg-tertiary px-2.5 py-1 text-small font-medium text-text-primary"
           onClick={(e) => {
             e.stopPropagation();
             toast.action?.onClick();
@@ -103,7 +110,7 @@ export function Toast({ toast, onDismiss }: ToastProps) {
         </button>
       )}
       <button
-        className="toast-dismiss"
+        className="shrink-0"
         onClick={(e) => {
           e.stopPropagation();
           onDismiss(toast.id);

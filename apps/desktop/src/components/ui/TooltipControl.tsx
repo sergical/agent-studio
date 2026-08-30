@@ -1,10 +1,11 @@
 // ============================================================================
-// TooltipControl - Base UI Tooltip wrapper: text-only content. `Tooltip.
-// Provider` (delay=400) is mounted once in App.tsx so every tooltip in the
-// app shares one open/close delay group.
+// TooltipControl - Kit Tooltip wrapper: text-only content. App.tsx's
+// `Tooltip.Provider` (delay=400) is the same underlying Base UI provider the
+// kit's Tooltip builds on, so every tooltip in the app shares one open/close
+// delay group.
 // ============================================================================
 
-import { Tooltip } from "@base-ui/react/tooltip";
+import { Tooltip, TooltipContent, TooltipTrigger } from "@skill-studio/ui";
 
 interface TooltipControlProps {
   content: string;
@@ -14,13 +15,14 @@ interface TooltipControlProps {
 /** Wraps `children` (the trigger) with a 400 ms-delayed, text-only tooltip. */
 export function TooltipControl({ content, children }: TooltipControlProps) {
   return (
-    <Tooltip.Root>
-      <Tooltip.Trigger render={children} />
-      <Tooltip.Portal>
-        <Tooltip.Positioner sideOffset={6}>
-          <Tooltip.Popup className="tooltip-control-popup">{content}</Tooltip.Popup>
-        </Tooltip.Positioner>
-      </Tooltip.Portal>
-    </Tooltip.Root>
+    <Tooltip>
+      <TooltipTrigger render={children} />
+      <TooltipContent
+        sideOffset={6}
+        className="max-w-65 bg-bg-elevated text-small text-text-primary shadow-md ring-1 ring-border"
+      >
+        {content}
+      </TooltipContent>
+    </Tooltip>
   );
 }

@@ -16,9 +16,9 @@ interface PageShellProps {
 }
 
 /**
- * `<section class="page-shell">` with a header row (title, optional
- * subtitle, actions on the right) and the content below. The only source of
- * page padding - views must not add their own.
+ * A `<section>` with a header row (title, optional subtitle, actions on the
+ * right) and the content below. The only source of page padding - views
+ * must not add their own.
  */
 export function PageShell({
   title,
@@ -28,13 +28,19 @@ export function PageShell({
   width = "default",
 }: PageShellProps) {
   return (
-    <section className={`page-shell ${width === "narrow" ? "narrow" : ""}`}>
-      <header className="page-shell-header">
-        <div className="page-shell-heading">
-          <h1>{title}</h1>
-          {subtitle && <p className="page-shell-subtitle">{subtitle}</p>}
+    <section
+      className={`mx-auto flex w-full flex-col gap-6 px-8 py-7 ${width === "narrow" ? "max-w-180" : "max-w-300"}`}
+    >
+      <header className="flex items-start justify-between gap-4">
+        <div className="flex min-w-0 flex-col gap-1">
+          <h1 className="m-0 text-title font-semibold text-wrap-balance text-text-primary">
+            {title}
+          </h1>
+          {subtitle && (
+            <p className="m-0 text-body text-wrap-pretty text-text-secondary">{subtitle}</p>
+          )}
         </div>
-        {actions && <div className="page-shell-actions">{actions}</div>}
+        {actions && <div className="flex shrink-0 items-center gap-2">{actions}</div>}
       </header>
       {children}
     </section>
