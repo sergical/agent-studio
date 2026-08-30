@@ -27,9 +27,9 @@ export function CheckboxControl({
 }: CheckboxControlProps) {
   return (
     <Checkbox.Root
-      // `checkbox-control-root` is kept as a bare hook (no rules of its own
-      // beyond the toolbar hit-area extension in App.css): the Skills table's
-      // toolbar checkbox targets it via a nested `::before` selector.
+      // `checkbox-control-root` is kept as a bare hook with no rules of its
+      // own: SkillListTable's toolbar checkbox reaches in via a descendant
+      // `[&_.checkbox-control-root]:before:*` selector to extend its hit area.
       className="checkbox-control-root relative inline-flex size-4 shrink-0 items-center justify-center rounded-xs border border-border-strong bg-transparent transition-colors not-data-[disabled]:hover:border-text-tertiary focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-border-strong data-checked:border-accent data-checked:bg-accent data-indeterminate:border-accent data-indeterminate:bg-accent data-disabled:cursor-not-allowed data-disabled:opacity-50"
       checked={checked}
       onCheckedChange={onCheckedChange}

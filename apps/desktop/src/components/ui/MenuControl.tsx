@@ -1,12 +1,12 @@
 // ============================================================================
 // MenuControl - Base UI Menu wrapper: the root, trigger, and popup shell.
 // Callers build the items with the re-exported MenuItem, MenuRadioGroup,
-// MenuRadioItem, and MenuSeparator, styled with the .menu-control-item(-*)
-// classes that live on in App.css. Kept on the Base UI primitive directly
-// (not the kit's DropdownMenu): those classes and re-exports are load-bearing
-// for out-of-scope callers (InstalledSkillHeader, SkillListFilterBar) that
-// build their own menu items against this exact API. Focus returns to the
-// trigger on close (Base UI default).
+// MenuRadioItem, and MenuSeparator. Kept on the Base UI primitive directly
+// (not the kit's DropdownMenu): the re-exports are load-bearing for callers
+// that build their own menu items against this exact API - InstalledSkillHeader
+// still styles them with the shared .menu-control-item/-separator classes in
+// App.css, SkillListFilterBar styles its own inline with Tailwind utilities.
+// Focus returns to the trigger on close (Base UI default).
 // ============================================================================
 
 import { Menu } from "@base-ui/react/menu";

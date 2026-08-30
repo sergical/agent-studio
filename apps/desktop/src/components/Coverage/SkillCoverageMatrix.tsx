@@ -33,9 +33,21 @@ function cellTitle(cell: AgentMatrixCell): string {
  * `isBroken` - the ring is the broken marker, the fill/outline underneath
  * still shows the effective visibility state.
  */
+const MARKER_BY_STATE = {
+  own: "bg-accent",
+  shared:
+    "border-[1.5px] border-accent/60 after:absolute after:top-1/2 after:left-1/2 after:size-[3px] after:-translate-x-1/2 after:-translate-y-1/2 after:rounded-full after:bg-accent/60 after:content-['']",
+  none: "border border-border-subtle",
+} satisfies Record<AgentMatrixCell["state"], string>;
+
 function CoverageMarker({ cell }: { cell: AgentMatrixCell }) {
-  const className = cell.isBroken ? `${cell.state} broken` : cell.state;
-  return <span className={`coverage-matrix-marker ${className}`} />;
+  return (
+    <span
+      className={`relative inline-block size-[9px] rounded-[2px] align-middle ${MARKER_BY_STATE[cell.state]} ${
+        cell.isBroken ? "outline outline-[1.5px] outline-offset-[1.5px] outline-error" : ""
+      }`}
+    />
+  );
 }
 
 /**
@@ -43,18 +55,22 @@ function CoverageMarker({ cell }: { cell: AgentMatrixCell }) {
  * root, then one column per first-class agent. Clicking a row selects the
  * skill in the detail panel. The header row stays pinned while scrolling.
  */
+const HEADER_CELL_CLASS =
+  "sticky top-0 z-10 h-9 border-b border-border-subtle bg-bg-secondary px-2.5 text-center text-caption font-medium tracking-[0.08em] text-text-tertiary uppercase";
+const CELL_CLASS = "h-9 border-b border-border-subtle px-2.5 group-hover:bg-bg-hover";
+
 export function SkillCoverageMatrix({ skills, onSelectSkill }: SkillCoverageMatrixProps) {
   const sorted = [...skills].sort((a, b) => a.name.localeCompare(b.name));
   const rows = agentMatrix(sorted);
 
   return (
-    <div className="coverage-matrix">
-      <table>
+    <div className="max-h-[calc(100vh-160px)] overflow-auto rounded-md border border-border">
+      <table className="w-full border-collapse text-small">
         <thead>
           <tr>
-            <th>Skill</th>
-            <th title="Shared .agents folder">
-              <span className="coverage-matrix-th-label">
+            <th className={HEADER_CELL_CLASS}>Skill</th>
+            <th className={HEADER_CELL_CLASS} title="Shared .agents folder">
+              <span className="inline-flex items-center gap-[5px]">
                 <HarnessIcon harness="shared" size={13} />
                 Shared
               </span>
@@ -62,8 +78,8 @@ export function SkillCoverageMatrix({ skills, onSelectSkill }: SkillCoverageMatr
             {AGENT_MATRIX_LABELS.map((label) => {
               const harnessId = harnessIdFromLabel(label);
               return (
-                <th key={label} title={label}>
-                  <span className="coverage-matrix-th-label">
+                <th key={label} className={HEADER_CELL_CLASS} title={label}>
+                  <span className="inline-flex items-center gap-[5px]">
                     {harnessId && <HarnessIcon harness={harnessId} size={13} />}
                     {label}
                   </span>
@@ -74,13 +90,21 @@ export function SkillCoverageMatrix({ skills, onSelectSkill }: SkillCoverageMatr
         </thead>
         <tbody>
           {rows.map(({ skill, shared, cells }) => (
-            <tr key={skill.name} onClick={() => onSelectSkill(skill.name)}>
-              <td className="coverage-matrix-name">{skill.name}</td>
-              <td className="coverage-matrix-cell" title={cellTitle(shared)}>
+            <tr
+              key={skill.name}
+              className="group cursor-pointer"
+              onClick={() => onSelectSkill(skill.name)}
+            >
+              <td className={`${CELL_CLASS} text-left text-text-primary`}>{skill.name}</td>
+              <td className={`${CELL_CLASS} text-center`} title={cellTitle(shared)}>
                 <CoverageMarker cell={shared} />
               </td>
               {AGENT_MATRIX_LABELS.map((label) => (
-                <td key={label} className="coverage-matrix-cell" title={cellTitle(cells[label])}>
+                <td
+                  key={label}
+                  className={`${CELL_CLASS} text-center`}
+                  title={cellTitle(cells[label])}
+                >
                   <CoverageMarker cell={cells[label]} />
                 </td>
               ))}

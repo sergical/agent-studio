@@ -51,6 +51,13 @@ const USAGE_LABELS = {
   "unused-30d": "Not used in 30 days",
 } as const satisfies Record<NonNullable<SkillListFilter["usage"]>, string>;
 
+/** Reproduces the shared `.menu-control-item` look inline - InstalledSkillHeader still uses that class directly, so it stays in App.css. */
+const MENU_ITEM_CLASS =
+  "flex h-(--control-height) cursor-pointer items-center gap-2 rounded-sm px-2.5 text-body text-text-secondary transition-colors data-highlighted:bg-bg-hover data-highlighted:text-text-primary";
+const MENU_RADIO_ITEM_CLASS =
+  "flex h-auto flex-col items-start gap-0.5 rounded-sm px-2.5 py-1.5 text-body text-text-secondary transition-colors data-highlighted:bg-bg-hover data-highlighted:text-text-primary";
+const MENU_SEPARATOR_CLASS = "mx-0.5 my-1 h-px border-none bg-border-subtle";
+
 interface SkillListFilterBarProps {
   filter: SkillListFilter;
   onChange: (filter: SkillListFilter) => void;
@@ -79,7 +86,10 @@ function projectScopeLabel(filter: SkillListFilter): string {
 /** One removable chip in the active-filters row: a label and an "×" that clears that field. */
 function ActiveChip({ label, onClear }: { label: string; onClear: () => void }) {
   return (
-    <button className="skill-list-filter-active-chip" onClick={onClear}>
+    <button
+      className="inline-flex h-6 cursor-pointer items-center gap-1.5 rounded-sm border-0 bg-accent-soft px-2 text-caption text-text-secondary transition-colors hover:bg-accent-softer"
+      onClick={onClear}
+    >
       {label}
       <X size={11} />
     </button>
@@ -133,8 +143,8 @@ export function SkillListFilterBar({
   const selectedProject = isProjectScope(filter.scope) ? filter.scope.project : undefined;
 
   return (
-    <div className="skill-list-filter-bar">
-      <div className="skill-list-filter-row">
+    <div className="flex flex-col gap-2.5">
+      <div className="flex flex-wrap items-center gap-2.5">
         <div className="segmented" role="group" aria-label="Scope">
           <button
             className="segmented-item"
@@ -160,7 +170,11 @@ export function SkillListFilterBar({
               </>
             }
           >
-            {projects.length === 0 && <p className="menu-control-empty">No projects tracked yet</p>}
+            {projects.length === 0 && (
+              <p className="px-2.5 py-1.5 text-pretty text-small text-text-tertiary">
+                No projects tracked yet
+              </p>
+            )}
             <MenuRadioGroup
               value={selectedProject ?? null}
               onValueChange={(value) => {
@@ -169,43 +183,53 @@ export function SkillListFilterBar({
               }}
             >
               {projects.map((path) => (
-                <MenuRadioItem key={path} value={path} closeOnClick className="menu-control-item">
-                  <span className="menu-control-item-text" title={basename(path)}>
+                <MenuRadioItem
+                  key={path}
+                  value={path}
+                  closeOnClick
+                  className={MENU_RADIO_ITEM_CLASS}
+                >
+                  <span className="truncate" title={basename(path)}>
                     {basename(path)}
                   </span>
-                  <span className="menu-control-item-secondary">{shortProjectPath(path)}</span>
+                  <span className="block text-caption text-text-tertiary">
+                    {shortProjectPath(path)}
+                  </span>
                 </MenuRadioItem>
               ))}
             </MenuRadioGroup>
             {selectedProject && (
               <>
-                <MenuSeparator className="menu-control-separator" />
+                <MenuSeparator className={MENU_SEPARATOR_CLASS} />
                 <MenuItem
                   closeOnClick
-                  className="menu-control-item"
+                  className={MENU_ITEM_CLASS}
                   onClick={() => handleStopTracking(selectedProject)}
                 >
                   Stop tracking {basename(selectedProject)}…
                 </MenuItem>
               </>
             )}
-            <MenuSeparator className="menu-control-separator" />
-            <MenuItem closeOnClick className="menu-control-item" onClick={onAddProject}>
+            <MenuSeparator className={MENU_SEPARATOR_CLASS} />
+            <MenuItem closeOnClick className={MENU_ITEM_CLASS} onClick={onAddProject}>
               Add project…
             </MenuItem>
           </MenuControl>
         </div>
 
         {harnesses.length > 1 && (
-          <div className="skill-list-filter-harnesses" role="group" aria-label="Harness">
+          <div className="flex flex-wrap gap-1.5" role="group" aria-label="Harness">
             {harnesses.map((harness) => {
               const harnessId = harnessIdFromLabel(harness);
+              const active = filter.harness === harness;
               return (
                 <button
                   key={harness}
-                  className={`skill-list-filter-chip ${filter.harness === harness ? "active" : ""}`}
+                  className={`inline-flex h-8 cursor-pointer items-center gap-1.5 rounded-sm border border-border bg-bg-tertiary px-2.5 text-caption text-text-tertiary transition-colors hover:bg-bg-hover hover:text-text-secondary ${
+                    active ? "border-text-tertiary text-text-primary" : ""
+                  }`}
                   onClick={() => toggleHarness(harness)}
-                  aria-pressed={filter.harness === harness}
+                  aria-pressed={active}
                 >
                   {harnessId && <HarnessIcon harness={harnessId} size={12} />}
                   {harness}
@@ -226,20 +250,20 @@ export function SkillListFilterBar({
           ariaLabel="Source"
         />
 
-        <div className="skill-list-filter-spacer" />
+        <div className="flex-1" />
 
-        <label className="switch-label">
+        <label className="flex h-(--control-height) cursor-pointer items-center gap-2 text-small text-text-secondary">
           <SwitchControl checked={showCoverage} onCheckedChange={onToggleCoverage} />
           Show coverage
         </label>
 
-        <span className="skill-list-filter-count count-tabular">
+        <span className="whitespace-nowrap text-small tabular-nums">
           {resultCount} skill{resultCount !== 1 ? "s" : ""}
         </span>
       </div>
 
       {activeCount > 1 && (
-        <div className="skill-list-filter-active-chips">
+        <div className="flex flex-wrap items-center gap-1.5">
           {filter.scope !== "all" && (
             <ActiveChip
               label={
@@ -289,7 +313,7 @@ export function SkillListFilterBar({
             />
           )}
           <button
-            className="skill-list-filter-clear-all"
+            className="h-6 cursor-pointer border-0 bg-transparent px-2 text-caption text-text-tertiary transition-colors hover:text-text-primary"
             onClick={() => onChange(defaultSkillListFilter())}
           >
             Clear all

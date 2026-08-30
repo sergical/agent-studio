@@ -28,6 +28,10 @@ function isSortMode(value: string): value is SortMode {
   return value === "name" || value === "used" || value === "size";
 }
 
+/** The row's own-relation and location chips (SkillLocationCell) share this base look. */
+const CHIP_CLASS =
+  "inline-flex items-center gap-1 whitespace-nowrap rounded-sm bg-bg-tertiary px-1.5 py-0.5 text-caption tracking-[0.02em] text-text-secondary";
+
 /** "User only" / "Model only" chip label, `null` for the default "both" policy. */
 function invocationChipLabel(invocation: InstalledSkill["invocation"]): string | null {
   if (invocation === "user-only") return "User only";
@@ -56,11 +60,13 @@ interface SkillListTableProps {
 
 /** "2 h ago" with a 6px outcome dot, or "—" when the skill was never tested. */
 function TestedCell({ lastTest }: { lastTest: SkillRunSummary | undefined }) {
-  if (!lastTest) return <span className="skill-list-table-tested">—</span>;
+  const testedClass =
+    "inline-flex items-center justify-end gap-[5px] whitespace-nowrap text-right text-caption text-text-tertiary";
+  if (!lastTest) return <span className={testedClass}>—</span>;
   return (
-    <span className="skill-list-table-tested">
+    <span className={testedClass}>
       <span
-        className={`skill-list-table-tested-dot ${lastTest.passed === false ? "error" : "success"}`}
+        className={`size-1.5 shrink-0 rounded-full ${lastTest.passed === false ? "bg-error" : "bg-success"}`}
       />
       {formatRelativeTime(lastTest.at)}
     </span>
@@ -180,9 +186,9 @@ export function SkillListTable({
   }
 
   return (
-    <div className="skill-list-table" onKeyDown={handleTableKeyDown}>
-      <div className="skill-list-table-toolbar">
-        <div className="skill-list-table-toolbar-select-slot">
+    <div className="flex flex-col gap-3" onKeyDown={handleTableKeyDown}>
+      <div className="flex items-center gap-2">
+        <div className="flex w-[76px] shrink-0 items-center justify-center [&_.checkbox-control-root]:before:absolute [&_.checkbox-control-root]:before:-inset-3 [&_.checkbox-control-root]:before:content-['']">
           {selectionMode ? (
             <CheckboxControl
               checked={allVisibleSelected}
@@ -191,31 +197,37 @@ export function SkillListTable({
               ariaLabel="Select all visible skills"
             />
           ) : (
-            <button className="skill-list-table-select-button" onClick={enterSelectionMode}>
+            <button
+              className="h-(--control-height) w-full cursor-pointer rounded-sm border border-border bg-transparent px-3 text-body text-text-secondary transition-colors hover:bg-bg-hover hover:text-text-primary"
+              onClick={enterSelectionMode}
+            >
               Select
             </button>
           )}
         </div>
         {selectionMode ? (
-          <div className="skill-list-table-selection-bar">
+          <div className="flex h-(--control-height) flex-1 items-center gap-3 rounded-md border border-border bg-bg-elevated px-3.5 text-small text-text-secondary">
             <span>{selectedPaths.size} selected</span>
             <button
-              className="skill-list-table-selection-bar-create"
+              className="ml-auto cursor-pointer rounded-sm bg-accent px-3 py-1.5 text-small font-semibold text-text-on-accent disabled:cursor-not-allowed disabled:opacity-50"
               onClick={() => setShowPackPrompt(true)}
               disabled={selectedPaths.size === 0}
             >
               Create pack
             </button>
-            <button className="skill-list-table-selection-bar-clear" onClick={exitSelectionMode}>
+            <button
+              className="cursor-pointer rounded-sm border border-border bg-transparent px-3 py-1.5 text-small text-text-tertiary"
+              onClick={exitSelectionMode}
+            >
               Cancel
             </button>
           </div>
         ) : (
           <>
-            <div className="skill-list-table-search">
-              <Search size={13} />
+            <div className="relative flex max-w-[320px] flex-1 items-center text-text-tertiary">
+              <Search size={13} className="pointer-events-none absolute left-3" />
               <input
-                className="text-control"
+                className="h-(--control-height) w-full rounded-sm border border-border bg-bg-primary py-0 pr-3 pl-8 text-body text-text-primary transition-colors placeholder:text-text-quaternary focus-visible:border-border-focus"
                 value={query}
                 onChange={(e) => setQuery(e.target.value)}
                 placeholder="Filter by name or description…"
@@ -234,21 +246,27 @@ export function SkillListTable({
       </div>
 
       {rows.length === 0 ? (
-        <div className="skill-list-table-empty">
+        <div className="flex flex-col items-start gap-2 text-pretty text-small text-text-tertiary">
           {hasAnySkills ? (
             <>
-              <p>No skills match</p>
+              <p className="m-0">No skills match</p>
               {onClearFilters && (
-                <button className="skill-list-table-empty-action" onClick={onClearFilters}>
+                <button
+                  className="h-8 cursor-pointer rounded-sm border border-border bg-bg-tertiary px-3 text-small text-text-primary transition-colors hover:bg-bg-hover"
+                  onClick={onClearFilters}
+                >
                   Clear filters
                 </button>
               )}
             </>
           ) : (
             <>
-              <p>You haven't added a skill yet</p>
+              <p className="m-0">You haven't added a skill yet</p>
               {onAddSkill && (
-                <button className="skill-list-table-empty-action" onClick={onAddSkill}>
+                <button
+                  className="h-8 cursor-pointer rounded-sm border border-border bg-bg-tertiary px-3 text-small text-text-primary transition-colors hover:bg-bg-hover"
+                  onClick={onAddSkill}
+                >
                   Add skill
                 </button>
               )}
@@ -256,14 +274,15 @@ export function SkillListTable({
           )}
         </div>
       ) : (
-        <div className="skill-list-table-rows">
+        <div className="flex flex-col gap-1.5">
           {rows.map((skill, index) => {
             const stat = statsBySkill.get(skill.name);
+            const selected = skill.name === selectedSkillName;
             return (
-              <div key={skill.name} className="skill-list-table-row-wrap">
+              <div key={skill.name} className="flex items-stretch">
                 {selectionMode && (
                   <label
-                    className="skill-list-table-row-checkbox"
+                    className="flex w-11 shrink-0 cursor-pointer items-center justify-center"
                     aria-label={`Select ${skill.name}`}
                     onPointerDownCapture={(e) => {
                       shiftKeyRef.current = e.shiftKey;
@@ -280,7 +299,11 @@ export function SkillListTable({
                   </label>
                 )}
                 <button
-                  className={`skill-list-table-row ${skill.name === selectedSkillName ? "selected" : ""}`}
+                  className={`grid h-11 min-w-0 flex-1 cursor-pointer items-center gap-3 overflow-hidden rounded-md border border-border bg-bg-secondary px-3 text-left transition-colors [grid-template-columns:minmax(0,1fr)_minmax(0,2fr)_auto_auto_auto_auto_72px] hover:bg-bg-hover ${
+                    selected
+                      ? "border-accent bg-accent-softer shadow-[inset_2px_0_0_var(--color-accent)]"
+                      : ""
+                  }`}
                   onClick={(e) => {
                     if (selectionMode && e.shiftKey) {
                       handleRowCheckboxClick(index, true);
@@ -289,30 +312,39 @@ export function SkillListTable({
                     handleRowClick(index, skill);
                   }}
                 >
-                  <span className="skill-list-table-name">
+                  <span className="truncate text-body font-semibold text-text-primary">
                     {skill.name}
                     {skill.has_update && (
-                      <span className="skill-list-table-update-chip">Update</span>
+                      <span className="ml-1.5 inline-flex rounded-sm bg-warning-soft px-1.5 py-px text-caption font-semibold text-warning">
+                        Update
+                      </span>
                     )}
                     {pluginLabelForSkill(skill) && (
-                      <span className="skill-list-table-provenance-chip">
+                      <span className="ml-1.5 inline-flex rounded-sm bg-bg-tertiary px-1.5 py-px text-caption font-semibold text-text-secondary">
                         plugin · {pluginLabelForSkill(skill)}
                       </span>
                     )}
-                    {skill.parked && <span className="skill-list-table-parked-chip">Parked</span>}
+                    {skill.parked && (
+                      <span className="ml-1.5 inline-flex rounded-sm bg-bg-tertiary px-1.5 py-px text-caption font-semibold text-text-secondary">
+                        Parked
+                      </span>
+                    )}
                     {invocationChipLabel(skill.invocation) && (
-                      <span className="skill-list-table-invocation-chip">
+                      <span className="ml-1.5 inline-flex rounded-sm bg-bg-tertiary px-1.5 py-px text-caption font-semibold text-text-secondary">
                         {invocationChipLabel(skill.invocation)}
                       </span>
                     )}
                   </span>
-                  <span className="skill-list-table-description" title={skill.description ?? ""}>
+                  <span
+                    className="truncate text-small text-text-tertiary"
+                    title={skill.description ?? ""}
+                  >
                     {skill.description ?? ""}
                   </span>
                   {showPluginVersion ? (
-                    <span className="skill-list-table-chips">
+                    <span className="flex min-w-0 flex-wrap gap-1">
                       {skill.deployments.map((d, i) => (
-                        <span key={`${d.agent}-${d.scope}-${i}`} className="skill-list-table-chip">
+                        <span key={`${d.agent}-${d.scope}-${i}`} className={CHIP_CLASS}>
                           {d.plugin?.version ? `v${d.plugin.version}` : d.agent}
                         </span>
                       ))}
@@ -320,9 +352,16 @@ export function SkillListTable({
                   ) : (
                     <SkillLocationCell skill={skill} />
                   )}
-                  <span className="skill-list-table-stat">{stat?.last_30_days ?? 0}</span>
-                  <span className="skill-list-table-stat">{formatBytes(skill.folder_bytes)}</span>
-                  <span className="skill-list-table-stat" title="SKILL.md tokens">
+                  <span className="whitespace-nowrap text-right text-caption tabular-nums text-text-tertiary">
+                    {stat?.last_30_days ?? 0}
+                  </span>
+                  <span className="whitespace-nowrap text-right text-caption tabular-nums text-text-tertiary">
+                    {formatBytes(skill.folder_bytes)}
+                  </span>
+                  <span
+                    className="whitespace-nowrap text-right text-caption tabular-nums text-text-tertiary"
+                    title="SKILL.md tokens"
+                  >
                     {formatTokens(skill.skill_md_tokens)}
                   </span>
                   <TestedCell lastTest={lastTestBySkill?.[skill.name]} />

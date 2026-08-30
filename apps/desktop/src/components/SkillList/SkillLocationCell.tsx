@@ -14,6 +14,10 @@ interface SkillLocationCellProps {
   skill: InstalledSkill;
 }
 
+/** The plain harness chip and each relation-to-shared-root chip share this base look. */
+const LOCATION_CHIP_CLASS =
+  "inline-flex items-center gap-1 whitespace-nowrap rounded-sm border border-transparent bg-bg-tertiary px-1.5 py-0.5 text-caption tracking-[0.02em] text-text-secondary";
+
 export function SkillLocationCell({ skill }: SkillLocationCellProps) {
   const summary = locationSummary(skill);
   const { truth, links, copies, broken } = summary;
@@ -24,16 +28,19 @@ export function SkillLocationCell({ skill }: SkillLocationCellProps) {
   if (!truth && links.length === 0 && copies.length === 1 && broken.length === 0) {
     const [only] = copies;
     return (
-      <span className="skill-list-table-chips">
-        <span className="skill-list-location-chip">{only.agent}</span>
+      <span className="flex min-w-0 flex-wrap gap-1">
+        <span className={LOCATION_CHIP_CLASS}>{only.agent}</span>
       </span>
     );
   }
 
   return (
-    <span className="skill-list-table-chips">
+    <span className="flex min-w-0 flex-wrap gap-1">
       {truth && (
-        <span className="skill-list-location-chip truth" aria-label="shared, source of truth">
+        <span
+          className={`${LOCATION_CHIP_CLASS} text-text-primary`}
+          aria-label="shared, source of truth"
+        >
           <FolderClosed size={12} />
           shared
         </span>
@@ -50,7 +57,7 @@ export function SkillLocationCell({ skill }: SkillLocationCellProps) {
             }
           >
             <span
-              className="skill-list-location-chip link"
+              className={LOCATION_CHIP_CLASS}
               aria-label={`${d.agent}, linked to the shared folder`}
             >
               <Link2 size={12} />
@@ -67,7 +74,7 @@ export function SkillLocationCell({ skill }: SkillLocationCellProps) {
             content={`Separate copy at ${homeRelativePath(d.path)} · ${isDrifting ? "content differs" : "same content"}`}
           >
             <span
-              className={`skill-list-location-chip ${isDrifting ? "copy" : ""}`}
+              className={`${LOCATION_CHIP_CLASS} ${isDrifting ? "border-warning" : ""}`}
               aria-label={`${d.agent}, separate copy`}
             >
               <Copy size={12} />
@@ -87,7 +94,7 @@ function BrokenChip({ deployment }: { deployment: Deployment }) {
   return (
     <TooltipControl content="Broken link">
       <span
-        className="skill-list-location-chip broken"
+        className={`${LOCATION_CHIP_CLASS} text-error`}
         aria-label={`${deployment.agent}, broken link`}
       >
         <Unlink size={12} />
