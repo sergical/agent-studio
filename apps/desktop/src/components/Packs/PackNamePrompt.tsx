@@ -6,6 +6,7 @@
 
 import { useState } from "react";
 import { X } from "lucide-react";
+import { Button, Input } from "@skill-studio/ui";
 import { createSkillPack } from "../../lib/skill-api";
 import { DEFAULT_PACK_NAME, validatePackName } from "../../lib/skill-pack-name";
 import type { PackMember } from "../../lib/skill-types";
@@ -46,39 +47,45 @@ export function PackNamePrompt({ members, onClose, onCreated }: PackNamePromptPr
   }
 
   return (
-    <div className="pack-name-prompt-overlay" onClick={onClose}>
-      <div className="pack-name-prompt" onClick={(e) => e.stopPropagation()}>
-        <div className="pack-name-prompt-header">
-          <h3>Create pack</h3>
-          <button className="pack-name-prompt-close" onClick={onClose}>
+    <div
+      className="fixed inset-0 z-modal flex items-center justify-center bg-scrim"
+      onClick={onClose}
+    >
+      <div
+        className="w-95 rounded-lg border border-border bg-bg-elevated p-5 shadow-lg"
+        onClick={(e) => e.stopPropagation()}
+      >
+        <div className="mb-2 flex items-center justify-between">
+          <h3 className="m-0 text-wrap-balance text-emphasis font-semibold text-text-primary">
+            Create pack
+          </h3>
+          <button
+            className="flex size-6 items-center justify-center rounded-sm border-0 bg-transparent text-text-tertiary"
+            onClick={onClose}
+          >
             <X size={18} />
           </button>
         </div>
-        <p className="pack-name-prompt-hint">
+        <p className="m-0 mb-3 text-wrap-pretty text-small text-text-tertiary">
           Bundles {members.length} skill{members.length !== 1 ? "s" : ""} into{" "}
           <code>~/.agents/packs/{name || "…"}</code>.
         </p>
-        <input
+        <Input
           autoFocus
-          className="pack-name-prompt-input"
           value={name}
           onChange={(e) => setName(e.target.value)}
           onKeyDown={(e) => {
             if (e.key === "Enter") handleSubmit();
           }}
         />
-        {error && <p className="pack-name-prompt-error">{error}</p>}
-        <div className="pack-name-prompt-actions">
-          <button className="pack-name-prompt-cancel" onClick={onClose}>
+        {error && <p className="m-0 mt-1.5 text-small text-error">{error}</p>}
+        <div className="mt-4 flex justify-end gap-2">
+          <Button variant="outline" onClick={onClose}>
             Cancel
-          </button>
-          <button
-            className="pack-name-prompt-submit"
-            disabled={!!error || submitting}
-            onClick={handleSubmit}
-          >
+          </Button>
+          <Button disabled={!!error || submitting} onClick={handleSubmit}>
             {submitting ? "Creating…" : "Create"}
-          </button>
+          </Button>
         </div>
       </div>
     </div>

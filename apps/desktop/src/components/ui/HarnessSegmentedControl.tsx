@@ -37,19 +37,22 @@ export function HarnessSegmentedControl({
   onSelect,
 }: HarnessSegmentedControlProps) {
   return (
-    <div className="segmented harness-segmented-control" role="group" aria-label="Harness">
+    <div className="flex flex-wrap gap-1.5" role="group" aria-label="Harness">
       {HARNESS_LABELS.map(([agent, label]) => {
         const isVisible = visibleAgents.has(agent);
+        const isSelected = agent === selected;
         return (
           <button
             key={agent}
             type="button"
             disabled={!onSelect}
             onClick={() => onSelect?.(agent)}
-            aria-pressed={agent === selected}
-            className={`segmented-item harness-segmented-control-item ${agent === selected ? "active" : ""} ${
-              isVisible ? "" : "unavailable"
-            }`}
+            aria-pressed={isSelected}
+            className={`inline-flex h-6.5 items-center gap-1.5 rounded-sm border px-2.5 text-caption transition-colors disabled:cursor-not-allowed ${
+              isSelected
+                ? "border-text-tertiary text-text-primary"
+                : "border-border text-text-tertiary not-disabled:hover:bg-bg-hover not-disabled:hover:text-text-secondary"
+            } bg-bg-tertiary ${isVisible ? "" : "opacity-40"}`}
             title={isVisible ? undefined : `${label} doesn't see this skill`}
           >
             <HarnessIcon harness={agent} size={12} />

@@ -18,7 +18,13 @@ export { agentIdFromDeploymentLabel as harnessIdFromLabel } from "../../lib/skil
 
 export function HarnessIcon({ harness, size = 16, muted = false }: HarnessIconProps) {
   const icon = renderIcon(harness, size);
-  return muted ? <span className="harness-icon-muted">{icon}</span> : icon;
+  return muted ? (
+    <span className="inline-flex" style={{ color: "var(--color-icon-muted)" }}>
+      {icon}
+    </span>
+  ) : (
+    icon
+  );
 }
 
 function renderIcon(harness: AgentId | "shared", size: number) {

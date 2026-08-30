@@ -14,13 +14,15 @@ interface WindowSegmentedControlProps {
 
 export function WindowSegmentedControl({ value, onChange }: WindowSegmentedControlProps) {
   return (
-    <div className="window-segmented-control">
-      {USAGE_WINDOWS.map(({ id }) => (
+    <div className="flex overflow-hidden rounded-sm border border-border">
+      {USAGE_WINDOWS.map(({ id }, i) => (
         <button
           key={id}
           type="button"
           aria-pressed={value === id}
-          className={`window-segmented-control-item ${value === id ? "active" : ""}`}
+          className={`h-6 px-2 text-caption transition-colors ${i > 0 ? "border-l border-border" : ""} ${
+            value === id ? "bg-bg-tertiary text-text-primary" : "bg-transparent text-text-tertiary"
+          }`}
           onClick={() => onChange(id)}
         >
           {id}

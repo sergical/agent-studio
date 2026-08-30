@@ -85,41 +85,57 @@ export function InvocationHeatmap({ heatmap, dates }: InvocationHeatmapProps) {
   const invocationsThisYear = days.reduce((sum, d) => sum + d.count, 0);
 
   return (
-    <div className="activity-heatmap-wrap">
-      <div className="activity-heatmap-months" aria-hidden="true">
+    <div>
+      <div
+        className="ml-7 grid grid-cols-52 gap-[3px] text-small text-text-tertiary"
+        aria-hidden="true"
+      >
         {monthLabels.map(({ weekIndex, label, span }) => (
           <span
             key={`${weekIndex}-${label}`}
-            className="activity-heatmap-month-label"
+            className="overflow-hidden whitespace-nowrap"
             style={{ gridColumnStart: weekIndex + 1, gridColumnEnd: `span ${span}` }}
           >
             {label}
           </span>
         ))}
       </div>
-      <div className="activity-heatmap-body">
-        <div className="activity-heatmap-weekdays" aria-hidden="true">
+      <div className="flex gap-1.5">
+        <div
+          className="flex w-7 shrink-0 flex-col justify-between py-0.5 text-caption text-text-tertiary"
+          aria-hidden="true"
+        >
           {WEEKDAY_LABELS.map((label, i) => (
             <span key={i}>{label}</span>
           ))}
         </div>
         <div
-          className="activity-heatmap-grid"
+          className="grid flex-1 grid-cols-52 grid-rows-7 grid-flow-col gap-[3px]"
           role="img"
           aria-label={`Invocations per day over the last year, ${invocationsThisYear} total`}
         >
-          {days.map(({ date, key, count }) => (
-            <div
-              key={key}
-              className={`activity-heatmap-cell level-${intensityLevel(count, max)}`}
-              title={
-                count > 0
-                  ? `${count} invocation${count === 1 ? "" : "s"} · ${formatCellDate(date)}`
-                  : `No invocations · ${formatCellDate(date)}`
-              }
-              aria-hidden="true"
-            />
-          ))}
+          {days.map(({ date, key, count }) => {
+            const level = intensityLevel(count, max);
+            return (
+              <div
+                key={key}
+                className="aspect-square rounded-[2px] border-0 bg-bg-tertiary"
+                style={
+                  level > 0
+                    ? {
+                        background: `color-mix(in oklch, var(--color-accent) ${level * 25}%, var(--color-bg-tertiary))`,
+                      }
+                    : undefined
+                }
+                title={
+                  count > 0
+                    ? `${count} invocation${count === 1 ? "" : "s"} · ${formatCellDate(date)}`
+                    : `No invocations · ${formatCellDate(date)}`
+                }
+                aria-hidden="true"
+              />
+            );
+          })}
         </div>
       </div>
     </div>

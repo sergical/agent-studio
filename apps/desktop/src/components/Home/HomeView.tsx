@@ -37,6 +37,14 @@ import { InfoPopover } from "../ui/InfoPopover";
 const RECENTLY_USED_COUNT = 5;
 const MAX_ROWS_PER_GROUP = 6;
 
+/** Text link style shared by every "Show all"/"Show everything"/"Learn more" affordance on Home. */
+const LINK_CLASS =
+  "inline-flex items-center gap-1 border-0 bg-none p-0 text-small text-accent hover:underline";
+
+/** One inbox row's trailing action - a text button or, on the "Recently used" rows, a plain count. */
+const ROW_ACTION_CLASS =
+  "h-9 min-w-10 border-0 bg-none p-0 text-right text-small text-text-tertiary hover:text-accent";
+
 /** The one filter that can be active at a time: a stat tile or the idle bar segment. */
 type HomeFilter = "broken" | "warn" | "upd" | "unused";
 
@@ -68,9 +76,9 @@ function HarnessBadges({ skill }: { skill: InstalledSkill }) {
   const badges = harnessBadges(skill);
   if (badges.length === 0) return null;
   return (
-    <span className="home-row-hicons">
+    <span className="inline-flex shrink-0 gap-[5px]">
       {badges.map(({ id, muted }) => (
-        <span key={id} className="home-row-hicon">
+        <span key={id} className="inline-flex text-text-tertiary">
           <HarnessIcon harness={id} size={13} muted={muted} />
         </span>
       ))}
@@ -93,15 +101,21 @@ function InboxRow({
   onOpen: () => void;
 }) {
   return (
-    <div className="home-row">
-      <span className={`dot ${severity ?? ""}`} />
-      <span className="home-row-namecell">
-        <button className="home-row-name" onClick={onOpen} title={skill.name}>
+    <div className="grid h-9 grid-cols-[6px_minmax(0,260px)_minmax(0,1fr)_auto] items-center gap-3 border-b border-border-subtle py-0 pr-3 pl-4">
+      <span
+        className={`size-1.5 shrink-0 rounded-full ${severity === "error" ? "bg-error" : severity === "warning" ? "bg-warning" : ""}`}
+      />
+      <span className="flex min-w-0 items-center gap-2">
+        <button
+          className="min-w-0 truncate border-0 bg-none p-0 text-left text-body text-text-primary hover:text-accent"
+          onClick={onOpen}
+          title={skill.name}
+        >
           {skill.name}
         </button>
         <HarnessBadges skill={skill} />
       </span>
-      <span className="home-row-detail">{detail}</span>
+      <span className="truncate text-small text-text-tertiary">{detail}</span>
       {action}
     </div>
   );
@@ -122,11 +136,17 @@ function GroupHead({
   extra?: ReactNode;
 }) {
   return (
-    <button className="home-group-head" aria-expanded={isExpanded} onClick={onToggle}>
-      <ChevronDown className="home-group-chev" size={14} />
+    <button
+      className="sticky top-0 z-1 flex h-8.5 w-full items-center gap-2 border-t border-b border-border-subtle bg-bg-secondary px-3 text-left text-small font-semibold text-text-primary"
+      aria-expanded={isExpanded}
+      onClick={onToggle}
+    >
+      <ChevronDown
+        className={`size-3.5 text-text-quaternary transition-transform ${isExpanded ? "" : "-rotate-90"}`}
+      />
       {label}
-      <span className="home-group-count count-tabular">{count}</span>
-      <span className="home-group-spacer" />
+      <span className="font-normal text-text-tertiary tabular-nums">{count}</span>
+      <span className="flex-1" />
       {extra}
     </button>
   );
@@ -143,8 +163,8 @@ function ShowAllLink({
   onClick: () => void;
 }) {
   return (
-    <div className="home-more">
-      <button className="info-popover-learn-more" onClick={onClick}>
+    <div className="flex h-9 items-center px-4">
+      <button className={LINK_CLASS} onClick={onClick}>
         {label} {count}
       </button>
     </div>
@@ -185,8 +205,12 @@ function PullLatestButton({ skill }: { skill: InstalledSkill }) {
   };
 
   return (
-    <button className="home-row-action" onClick={handlePull} disabled={isPulling}>
-      {isPulling ? <span className="spinner" /> : "Pull latest"}
+    <button className={ROW_ACTION_CLASS} onClick={handlePull} disabled={isPulling}>
+      {isPulling ? (
+        <span className="inline-block size-3 animate-spin rounded-full border-2 border-current border-t-transparent" />
+      ) : (
+        "Pull latest"
+      )}
     </button>
   );
 }
@@ -213,8 +237,12 @@ function ParkButton({ skill }: { skill: InstalledSkill }) {
   };
 
   return (
-    <button className="home-row-action" onClick={handlePark} disabled={isParking}>
-      {isParking ? <span className="spinner" /> : "Park"}
+    <button className={ROW_ACTION_CLASS} onClick={handlePark} disabled={isParking}>
+      {isParking ? (
+        <span className="inline-block size-3 animate-spin rounded-full border-2 border-current border-t-transparent" />
+      ) : (
+        "Park"
+      )}
     </button>
   );
 }
@@ -249,7 +277,7 @@ export function HomeView({ snapshot, isLoading, onSelectSkill }: HomeViewProps) 
   if (!snapshot) {
     return (
       <PageShell title="Home">
-        <p className="home-empty">
+        <p className="flex h-full items-center justify-center text-wrap-pretty text-text-tertiary">
           {isLoading ? "Scanning installed skills…" : "No skill snapshot yet."}
         </p>
       </PageShell>
@@ -288,62 +316,86 @@ export function HomeView({ snapshot, isLoading, onSelectSkill }: HomeViewProps) 
 
   return (
     <PageShell title="Home">
-      <div className="home-stats">
-        <div className="home-stat-wrap">
+      <div className="grid grid-cols-3 gap-3">
+        <div className="group/stat relative flex">
           <button
-            className={`home-stat ${broken.length > 0 ? "bad" : ""}`}
+            className={`flex flex-1 flex-col gap-1 rounded-md border border-border-subtle bg-bg-elevated px-4 py-3.5 text-left transition-[border-color,background-color,transform] duration-150 hover:border-border hover:bg-bg-hover active:scale-98 aria-pressed:border-accent aria-pressed:bg-accent-softer aria-pressed:shadow-[inset_0_0_0_1px_var(--color-accent)] ${
+              broken.length > 0 ? "[&_.home-stat-value]:text-error" : ""
+            }`}
             aria-pressed={filter === "broken"}
             onClick={() => toggleFilter("broken")}
           >
-            <span className="home-stat-label">Broken</span>
-            <span className="home-stat-value count-tabular">{broken.length}</span>
+            <span
+              className={`flex items-center gap-2 text-caption tracking-[0.06em] uppercase ${filter === "broken" ? "text-accent" : "text-text-tertiary"}`}
+            >
+              Broken
+            </span>
+            <span className="home-stat-value text-display leading-[1.1] font-semibold tracking-[-0.02em] tabular-nums">
+              {broken.length}
+            </span>
           </button>
           <InfoPopover
             label="About broken"
             title="Broken and warnings"
             onLearnMore={() => setActiveView({ kind: "learn", section: "broken" })}
+            className="absolute top-3.5 right-3.5 opacity-0 group-hover/stat:opacity-100 group-focus-within/stat:opacity-100 has-[[aria-expanded=true]]:opacity-100"
           >
             An agent loads nothing, or something you did not intend: a dead link, a SKILL.md the
             loader rejects, a parked skill that was reinstalled.
           </InfoPopover>
         </div>
 
-        <div className="home-stat-wrap">
+        <div className="group/stat relative flex">
           <button
-            className={`home-stat ${warnings.length > 0 ? "warn" : ""}`}
+            className={`flex flex-1 flex-col gap-1 rounded-md border border-border-subtle bg-bg-elevated px-4 py-3.5 text-left transition-[border-color,background-color,transform] duration-150 hover:border-border hover:bg-bg-hover active:scale-98 aria-pressed:border-accent aria-pressed:bg-accent-softer aria-pressed:shadow-[inset_0_0_0_1px_var(--color-accent)] ${
+              warnings.length > 0 ? "[&_.home-stat-value]:text-warning" : ""
+            }`}
             aria-pressed={filter === "warn"}
             onClick={() => toggleFilter("warn")}
           >
-            <span className="home-stat-label">Warnings</span>
-            <span className="home-stat-value count-tabular">{warnings.length}</span>
+            <span
+              className={`flex items-center gap-2 text-caption tracking-[0.06em] uppercase ${filter === "warn" ? "text-accent" : "text-text-tertiary"}`}
+            >
+              Warnings
+            </span>
+            <span className="home-stat-value text-display leading-[1.1] font-semibold tracking-[-0.02em] tabular-nums">
+              {warnings.length}
+            </span>
           </button>
           <InfoPopover
             label="About warnings"
             title="Broken and warnings"
             onLearnMore={() => setActiveView({ kind: "learn", section: "broken" })}
+            className="absolute top-3.5 right-3.5 opacity-0 group-hover/stat:opacity-100 group-focus-within/stat:opacity-100 has-[[aria-expanded=true]]:opacity-100"
           >
             Everything still loads, but the state drifted: copies that differ between harnesses,
             lock-file entries with no folder on disk.
           </InfoPopover>
         </div>
 
-        <div className="home-stat-wrap">
+        <div className="flex">
           <button
-            className="home-stat"
+            className="flex flex-1 flex-col gap-1 rounded-md border border-border-subtle bg-bg-elevated px-4 py-3.5 text-left transition-[border-color,background-color,transform] duration-150 hover:border-border hover:bg-bg-hover active:scale-98 aria-pressed:border-accent aria-pressed:bg-accent-softer aria-pressed:shadow-[inset_0_0_0_1px_var(--color-accent)]"
             aria-pressed={filter === "upd"}
             onClick={() => toggleFilter("upd")}
           >
-            <span className="home-stat-label">Updates</span>
-            <span className="home-stat-value count-tabular">{updates.length}</span>
+            <span
+              className={`flex items-center gap-2 text-caption tracking-[0.06em] uppercase ${filter === "upd" ? "text-accent" : "text-text-tertiary"}`}
+            >
+              Updates
+            </span>
+            <span className="text-display leading-[1.1] font-semibold tracking-[-0.02em] tabular-nums">
+              {updates.length}
+            </span>
           </button>
         </div>
       </div>
 
-      <section className="home-lane">
-        <div className="home-lane-row">
-          <span className="home-lane-key">
+      <section className="flex flex-col gap-2 rounded-md border border-border-subtle bg-bg-elevated px-4 py-3.5">
+        <div className="grid grid-cols-[210px_minmax(0,1fr)] items-baseline gap-3">
+          <span className="flex items-baseline gap-x-1 whitespace-nowrap text-small text-text-secondary">
             Who can invoke
-            <b className="count-tabular">{invokeTotal}</b>
+            <b className="ml-1 font-semibold text-text-primary tabular-nums">{invokeTotal}</b>
             <InfoPopover
               label="About invocation"
               title="Who can invoke a skill"
@@ -353,44 +405,46 @@ export function HomeView({ snapshot, isLoading, onSelectSkill }: HomeViewProps) 
               one; Codex and OpenCode use their own config.
             </InfoPopover>
           </span>
-          <div className="home-lane-bar" role="group" aria-label="Who can invoke">
+          <div className="flex h-7 gap-0.5" role="group" aria-label="Who can invoke">
             {inv.both > 0 && (
               <button
-                className="home-lane-seg both"
+                className="inline-flex items-center gap-1 overflow-hidden rounded-xs bg-accent-soft px-2.5 text-small whitespace-nowrap text-text-primary transition-[filter] hover:brightness-115 aria-pressed:shadow-[inset_0_0_0_1px_var(--color-accent)]"
                 style={{ flex: `${inv.both} 0 auto` }}
                 title="Open in Skills"
                 onClick={() => goToInvocation("both")}
               >
-                <span className="count-tabular">{inv.both}</span> you or the model
+                <span className="tabular-nums">{inv.both}</span> you or the model
               </button>
             )}
             {inv.modelOnly > 0 && (
               <button
-                className="home-lane-seg model"
+                className="inline-flex items-center gap-1 overflow-hidden rounded-xs bg-accent-softer px-2.5 text-small whitespace-nowrap text-text-secondary transition-[filter] hover:brightness-115 aria-pressed:shadow-[inset_0_0_0_1px_var(--color-accent)] aria-pressed:text-text-primary"
                 style={{ flex: `${inv.modelOnly} 0 auto` }}
                 title="Open in Skills"
                 onClick={() => goToInvocation("model-only")}
               >
-                <span className="count-tabular">{inv.modelOnly}</span> model only
+                <span className="tabular-nums">{inv.modelOnly}</span> model only
               </button>
             )}
             {inv.userOnly > 0 && (
               <button
-                className="home-lane-seg user"
+                className="inline-flex items-center gap-1 overflow-hidden rounded-xs bg-bg-tertiary px-2.5 text-small whitespace-nowrap text-text-secondary transition-[filter] hover:brightness-115 aria-pressed:shadow-[inset_0_0_0_1px_var(--color-accent)] aria-pressed:text-text-primary"
                 style={{ flex: `${inv.userOnly} 0 auto` }}
                 title="Open in Skills"
                 onClick={() => goToInvocation("user-only")}
               >
-                <span className="count-tabular">{inv.userOnly}</span> you only
+                <span className="tabular-nums">{inv.userOnly}</span> you only
               </button>
             )}
           </div>
         </div>
 
-        <div className="home-lane-row">
-          <span className="home-lane-key">
+        <div className="grid grid-cols-[210px_minmax(0,1fr)] items-baseline gap-3">
+          <span className="flex items-baseline gap-x-1 whitespace-nowrap text-small text-text-secondary">
             Prompt cost
-            <b className="count-tabular">{formatTokens(cost.totalTokens)}</b>
+            <b className="ml-1 font-semibold text-text-primary tabular-nums">
+              {formatTokens(cost.totalTokens)}
+            </b>
             <InfoPopover
               label="About prompt cost"
               title="Prompt cost"
@@ -400,31 +454,34 @@ export function HomeView({ snapshot, isLoading, onSelectSkill }: HomeViewProps) 
               invoke count; user-only skills cost nothing until you run them.
             </InfoPopover>
           </span>
-          <div className="home-lane-bar" role="group" aria-label="Prompt cost">
+          <div className="flex h-7 gap-0.5" role="group" aria-label="Prompt cost">
             {cost.totalTokens === 0 ? (
-              <span className="home-lane-seg idle" style={{ width: "100%" }}>
+              <span
+                className="inline-flex items-center gap-1 overflow-hidden rounded-xs bg-bg-tertiary px-2.5 text-small whitespace-nowrap text-text-secondary"
+                style={{ width: "100%" }}
+              >
                 No model-invocable skills
               </span>
             ) : (
               <>
                 <button
-                  className="home-lane-seg used"
+                  className="inline-flex items-center gap-1 overflow-hidden rounded-xs bg-accent-soft px-2.5 text-small whitespace-nowrap text-text-primary transition-[filter] hover:brightness-115"
                   style={{ width: `${(cost.usedTokens / cost.totalTokens) * 100}%` }}
                   title="Open in Skills"
                   onClick={() => goToSkills({ usage: "used-30d" })}
                 >
-                  <span className="count-tabular">{formatTokens(cost.usedTokens)}</span> ·{" "}
-                  <span className="count-tabular">{cost.usedCount}</span> skills used in 30 days
+                  <span className="tabular-nums">{formatTokens(cost.usedTokens)}</span> ·{" "}
+                  <span className="tabular-nums">{cost.usedCount}</span> skills used in 30 days
                 </button>
                 <button
-                  className="home-lane-seg idle"
+                  className="inline-flex items-center gap-1 overflow-hidden rounded-xs bg-bg-tertiary px-2.5 text-small whitespace-nowrap text-text-secondary transition-[filter] hover:brightness-115 aria-pressed:text-text-primary aria-pressed:shadow-[inset_0_0_0_1px_var(--color-accent)]"
                   style={{ width: `${(cost.idleTokens / cost.totalTokens) * 100}%` }}
                   aria-pressed={filter === "unused"}
                   title="Show the skills not used in 30 days"
                   onClick={() => toggleFilter("unused")}
                 >
-                  <span className="count-tabular">{formatTokens(cost.idleTokens)}</span> ·{" "}
-                  <span className="count-tabular">{cost.idleCount}</span> skills not used in 30 days
+                  <span className="tabular-nums">{formatTokens(cost.idleTokens)}</span> ·{" "}
+                  <span className="tabular-nums">{cost.idleCount}</span> skills not used in 30 days
                 </button>
               </>
             )}
@@ -432,20 +489,24 @@ export function HomeView({ snapshot, isLoading, onSelectSkill }: HomeViewProps) 
         </div>
       </section>
 
-      <div className="home-inbox">
+      <div className="flex flex-col">
         {filter && (
-          <div className="home-filter-note">
+          <div className="flex h-9 items-center gap-2.5 px-3 text-small text-text-tertiary">
             Showing one group ·{" "}
-            <button className="info-popover-learn-more" onClick={() => setFilter(null)}>
+            <button className={LINK_CLASS} onClick={() => setFilter(null)}>
               Show everything
             </button>
           </div>
         )}
 
-        {allClear && !filter && <p className="home-empty">All clear. Nothing needs attention.</p>}
+        {allClear && !filter && (
+          <p className="flex h-full items-center justify-center text-wrap-pretty text-text-tertiary">
+            All clear. Nothing needs attention.
+          </p>
+        )}
 
         {broken.length > 0 && isGroupVisible("broken") && (
-          <section className="home-group" data-group="broken">
+          <section data-group="broken">
             <GroupHead
               label="Broken"
               count={broken.length}
@@ -453,7 +514,7 @@ export function HomeView({ snapshot, isLoading, onSelectSkill }: HomeViewProps) 
               onToggle={() => toggleGroup("broken")}
             />
             {isGroupExpanded("broken", broken.length) && (
-              <div className="home-group-rows">
+              <div className="flex flex-col">
                 {broken.slice(0, MAX_ROWS_PER_GROUP).map((issue, i) => (
                   <InboxRow
                     key={`${issue.kind}-${issue.skill.name}-${i}`}
@@ -463,7 +524,7 @@ export function HomeView({ snapshot, isLoading, onSelectSkill }: HomeViewProps) 
                     detail={<span title={issue.detail}>{issue.detail}</span>}
                     action={
                       <button
-                        className="home-row-action"
+                        className={ROW_ACTION_CLASS}
                         onClick={() => onSelectSkill(issue.skill.name)}
                       >
                         {issueActionLabel(issue.kind)}
@@ -484,7 +545,7 @@ export function HomeView({ snapshot, isLoading, onSelectSkill }: HomeViewProps) 
         )}
 
         {warnings.length > 0 && isGroupVisible("warn") && (
-          <section className="home-group" data-group="warn">
+          <section data-group="warn">
             <GroupHead
               label="Warnings"
               count={warnings.length}
@@ -492,7 +553,7 @@ export function HomeView({ snapshot, isLoading, onSelectSkill }: HomeViewProps) 
               onToggle={() => toggleGroup("warn")}
             />
             {isGroupExpanded("warn", warnings.length) && (
-              <div className="home-group-rows">
+              <div className="flex flex-col">
                 {warnings.slice(0, MAX_ROWS_PER_GROUP).map((issue: HealthIssue, i) => (
                   <InboxRow
                     key={`${issue.kind}-${issue.skill.name}-${i}`}
@@ -503,14 +564,14 @@ export function HomeView({ snapshot, isLoading, onSelectSkill }: HomeViewProps) 
                     action={
                       issue.kind === "duplicate" ? (
                         <button
-                          className="home-row-action"
+                          className={ROW_ACTION_CLASS}
                           onClick={() => openSkill(issue.skill.name, undefined, "compare")}
                         >
                           Compare
                         </button>
                       ) : (
                         <button
-                          className="home-row-action"
+                          className={ROW_ACTION_CLASS}
                           onClick={() => onSelectSkill(issue.skill.name)}
                         >
                           {issueActionLabel(issue.kind)}
@@ -542,7 +603,7 @@ export function HomeView({ snapshot, isLoading, onSelectSkill }: HomeViewProps) 
         )}
 
         {unused.length > 0 && isGroupVisible("unused") && (
-          <section className="home-group" data-group="unused">
+          <section data-group="unused">
             <GroupHead
               label="Not used in the last 30 days"
               count={unused.length}
@@ -550,7 +611,7 @@ export function HomeView({ snapshot, isLoading, onSelectSkill }: HomeViewProps) 
               onToggle={() => toggleGroup("unused")}
             />
             {isGroupExpanded("unused", unused.length) && (
-              <div className="home-group-rows">
+              <div className="flex flex-col">
                 {unused.slice(0, MAX_ROWS_PER_GROUP).map((skill) => {
                   const projectDeployment = skill.deployments.find((d) => d.project_path);
                   const scopeLabel = projectDeployment?.project_path
@@ -570,7 +631,9 @@ export function HomeView({ snapshot, isLoading, onSelectSkill }: HomeViewProps) 
                           {modelInvocable ? (
                             "description in every prompt"
                           ) : (
-                            <span className="inv">user-only, not in the prompt</span>
+                            <span className="text-text-quaternary">
+                              user-only, not in the prompt
+                            </span>
                           )}
                         </span>
                       }
@@ -579,7 +642,7 @@ export function HomeView({ snapshot, isLoading, onSelectSkill }: HomeViewProps) 
                           <ParkButton skill={skill} />
                         ) : (
                           <button
-                            className="home-row-action"
+                            className={ROW_ACTION_CLASS}
                             onClick={() => onSelectSkill(skill.name)}
                           >
                             Open
@@ -602,7 +665,7 @@ export function HomeView({ snapshot, isLoading, onSelectSkill }: HomeViewProps) 
         )}
 
         {recent.length > 0 && isGroupVisible("rec") && (
-          <section className="home-group" data-group="rec">
+          <section data-group="rec">
             <GroupHead
               label="Recently used"
               count={recent.length}
@@ -610,7 +673,7 @@ export function HomeView({ snapshot, isLoading, onSelectSkill }: HomeViewProps) 
               onToggle={() => toggleGroup("rec")}
             />
             {isGroupExpanded("rec", recent.length) && (
-              <div className="home-group-rows">
+              <div className="flex flex-col">
                 {recent.map(({ skill, lastUsed, projectLabel, usesIn30Days }) => (
                   <InboxRow
                     key={skill.name}
@@ -622,7 +685,9 @@ export function HomeView({ snapshot, isLoading, onSelectSkill }: HomeViewProps) 
                       </span>
                     }
                     action={
-                      <span className="home-row-action count-tabular">{usesIn30Days} uses</span>
+                      <span className={`${ROW_ACTION_CLASS} tabular-nums`}>
+                        {usesIn30Days} uses
+                      </span>
                     }
                   />
                 ))}
@@ -685,7 +750,7 @@ function UpdatesGroup({
   };
 
   return (
-    <section className="home-group" data-group="upd">
+    <section data-group="upd">
       <GroupHead
         label="Updates"
         count={updates.length}
@@ -694,7 +759,7 @@ function UpdatesGroup({
         extra={
           updates.length > 1 && (
             <button
-              className="home-group-update-all"
+              className="border-0 bg-none p-0 text-small text-accent not-disabled:hover:underline disabled:text-text-quaternary disabled:cursor-not-allowed"
               onClick={(e) => {
                 e.stopPropagation();
                 handleUpdateAll();
@@ -707,7 +772,7 @@ function UpdatesGroup({
         }
       />
       {isExpanded && (
-        <div className="home-group-rows">
+        <div className="flex flex-col">
           {updates.slice(0, MAX_ROWS_PER_GROUP).map((skill) => (
             <InboxRow
               key={skill.name}
@@ -716,11 +781,13 @@ function UpdatesGroup({
               detail={
                 <>
                   {skill.content_hash && skill.update_commit && (
-                    <span className="mono">
+                    <span className="font-mono text-caption whitespace-nowrap text-text-tertiary">
                       {shortSha(skill.content_hash)} → {shortSha(skill.update_commit)}
                     </span>
                   )}{" "}
-                  <span className="mono">{formatTokens(skill.description_tokens)} tokens</span>
+                  <span className="font-mono text-caption whitespace-nowrap text-text-tertiary">
+                    {formatTokens(skill.description_tokens)} tokens
+                  </span>
                 </>
               }
               action={<PullLatestButton skill={skill} />}

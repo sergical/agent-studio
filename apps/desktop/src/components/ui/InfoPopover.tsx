@@ -18,9 +18,11 @@ interface InfoPopoverProps {
   children: ReactNode;
   /** Renders a "Learn more →" button when given; closes the popover after calling it. */
   onLearnMore?: () => void;
+  /** Extra classes on the anchor span - e.g. a caller's own hover-reveal positioning. */
+  className?: string;
 }
 
-export function InfoPopover({ label, title, children, onLearnMore }: InfoPopoverProps) {
+export function InfoPopover({ label, title, children, onLearnMore, className }: InfoPopoverProps) {
   const [isOpen, setIsOpen] = useState(false);
   const anchorRef = useRef<HTMLSpanElement>(null);
   const triggerRef = useRef<HTMLButtonElement>(null);
@@ -58,11 +60,13 @@ export function InfoPopover({ label, title, children, onLearnMore }: InfoPopover
   };
 
   return (
-    <span className="info-popover-anchor" ref={anchorRef}>
+    <span className={`relative inline-flex ${className ?? ""}`} ref={anchorRef}>
       <button
         ref={triggerRef}
         type="button"
-        className="info-popover-trigger"
+        className={`relative inline-flex size-3.5 border-0 bg-none p-0 align-middle text-text-quaternary transition-colors hover:text-text-secondary focus-visible:text-text-secondary ${
+          isOpen ? "text-accent" : ""
+        }`}
         aria-label={label}
         aria-expanded={isOpen}
         onClick={() => setIsOpen((open) => !open)}
@@ -72,10 +76,19 @@ export function InfoPopover({ label, title, children, onLearnMore }: InfoPopover
           <path d="M8 7.2v4M8 5h.01" strokeLinecap="round" />
         </svg>
       </button>
-      <div className="info-popover" role="dialog" aria-label={title} hidden={!isOpen}>
-        <p>{children}</p>
+      <div
+        className="absolute top-[calc(100%+8px)] left-1/2 z-tooltip flex w-70 -translate-x-1/2 flex-col items-start gap-2 rounded-sm border border-border bg-bg-elevated py-2.5 px-3 text-left text-small leading-[1.45] font-normal text-text-primary shadow-md"
+        role="dialog"
+        aria-label={title}
+        hidden={!isOpen}
+      >
+        <p className="m-0">{children}</p>
         {onLearnMore && (
-          <button type="button" className="info-popover-learn-more" onClick={handleLearnMore}>
+          <button
+            type="button"
+            className="inline-flex items-center gap-1 border-0 bg-none p-0 text-small text-accent hover:underline"
+            onClick={handleLearnMore}
+          >
             Learn more
             <span aria-hidden="true">→</span>
           </button>

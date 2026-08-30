@@ -7,6 +7,7 @@
 import { useEffect, useState } from "react";
 import { ask } from "@tauri-apps/plugin-dialog";
 import { ChevronLeft, ExternalLink, Package } from "lucide-react";
+import { Button } from "@skill-studio/ui";
 import {
   deleteSkillPack,
   listSkillPacks,
@@ -104,17 +105,20 @@ function PackDetail({
       title={pack.name}
       width="narrow"
       actions={
-        <button className="packs-detail-back" onClick={onBack}>
+        <button
+          className="inline-flex shrink-0 items-center gap-1 self-start border-0 bg-none p-0 text-small text-text-tertiary"
+          onClick={onBack}
+        >
           <ChevronLeft size={14} />
           Packs
         </button>
       }
     >
-      <div className="packs-detail">
-        <p className="packs-detail-dir">{pack.dir}</p>
+      <div className="flex max-w-140 flex-col gap-2.5">
+        <p className="m-0 text-small text-text-tertiary">{pack.dir}</p>
         {pack.repo ? (
           <a
-            className="packs-detail-repo"
+            className="inline-flex w-fit items-center gap-1 text-small text-accent"
             href={`https://github.com/${pack.repo}`}
             target="_blank"
             rel="noreferrer"
@@ -123,27 +127,30 @@ function PackDetail({
             <ExternalLink size={12} />
           </a>
         ) : (
-          <p className="packs-detail-repo packs-detail-repo-none">Local only - not published</p>
+          <p className="m-0 text-small text-text-tertiary">Local only - not published</p>
         )}
 
-        <div className="packs-detail-skills">
+        <div className="mt-1 flex flex-wrap gap-1.5">
           {pack.skills.map((name) => (
-            <span key={name} className="packs-detail-skill-chip">
+            <span
+              key={name}
+              className="rounded-sm bg-bg-tertiary px-2 py-0.75 text-caption text-text-secondary"
+            >
               {name}
             </span>
           ))}
         </div>
 
-        <div className="packs-detail-actions">
-          <button disabled={busy !== null} onClick={handleUpdate}>
+        <div className="mt-3 flex gap-2">
+          <Button variant="outline" disabled={busy !== null} onClick={handleUpdate}>
             {busy === "update" ? "Updating…" : "Update pack"}
-          </button>
-          <button disabled={busy !== null} onClick={handlePublish}>
+          </Button>
+          <Button variant="outline" disabled={busy !== null} onClick={handlePublish}>
             {busy === "publish" ? "Publishing…" : pack.repo ? "Push update" : "Publish to GitHub"}
-          </button>
-          <button className="packs-detail-delete" disabled={busy !== null} onClick={handleDelete}>
+          </Button>
+          <Button variant="destructive" disabled={busy !== null} onClick={handleDelete}>
             {busy === "delete" ? "Deleting…" : "Delete"}
-          </button>
+          </Button>
         </div>
       </div>
     </PageShell>
@@ -201,33 +208,35 @@ export function PacksView() {
     <PageShell
       title="Packs"
       actions={
-        <span className="skill-store-count">
+        <span className="text-small text-text-tertiary tabular-nums">
           {packs?.length ?? 0} pack{(packs?.length ?? 0) !== 1 ? "s" : ""}
         </span>
       }
     >
       {packs === null ? (
-        <p className="packs-view-empty">Loading…</p>
+        <p className="m-0 text-wrap-pretty text-small text-text-tertiary">Loading…</p>
       ) : packs.length === 0 ? (
-        <p className="packs-view-empty">
+        <p className="m-0 text-wrap-pretty text-small text-text-tertiary">
           No packs yet. Select skills from any list and click "Create pack" to bundle them for
           sharing.
         </p>
       ) : (
-        <div className="packs-view-list">
+        <div className="flex flex-col gap-1.5">
           {packs.map((pack) => (
             <button
               key={pack.name}
-              className="packs-view-row"
+              className="flex h-11 w-full items-center gap-2.5 rounded-md border border-border bg-bg-secondary px-3 text-left text-text-secondary transition-colors hover:bg-bg-hover"
               onClick={() => setOpenName(pack.name)}
             >
               <Package size={15} />
-              <span className="packs-view-row-name">{pack.name}</span>
-              <span className="packs-view-row-count">
+              <span className="text-body font-semibold text-text-primary">{pack.name}</span>
+              <span className="text-caption text-text-tertiary">
                 {pack.skills.length} skill{pack.skills.length !== 1 ? "s" : ""}
               </span>
-              <span className="packs-view-row-repo">{pack.repo ?? "Local only"}</span>
-              <span className="packs-view-row-date">{formatDate(pack.created_at)}</span>
+              <span className="ml-auto text-caption text-text-tertiary">
+                {pack.repo ?? "Local only"}
+              </span>
+              <span className="text-caption text-text-tertiary">{formatDate(pack.created_at)}</span>
             </button>
           ))}
         </div>

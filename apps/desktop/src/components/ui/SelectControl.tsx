@@ -37,7 +37,7 @@ export function SelectControl({
     >
       <SelectTrigger
         aria-label={ariaLabel}
-        className="h-(--control-height) w-full min-w-0 justify-between gap-1.5 rounded-sm border-border bg-bg-tertiary py-0 pr-2 pl-3 text-body text-text-secondary hover:bg-bg-hover hover:text-text-primary data-open:text-text-primary"
+        className="h-(--control-height) min-w-0 justify-between gap-1.5 rounded-sm border-border bg-bg-tertiary py-0 pr-2 pl-3 text-body text-text-secondary hover:bg-bg-hover hover:text-text-primary data-open:text-text-primary"
       >
         <span className="inline-flex min-w-0 flex-1 items-center gap-1.5 overflow-hidden">
           {leadingIcon}

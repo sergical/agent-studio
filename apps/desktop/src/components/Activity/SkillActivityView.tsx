@@ -94,44 +94,52 @@ export function SkillActivityView({ snapshot, onSelectSkill }: SkillActivityView
       subtitle="From Claude Code transcripts. Codex, OpenCode and pi are not tracked yet."
     >
       {!snapshot || !hasAnyInvocations ? (
-        <p className="activity-view-empty">No invocations recorded yet.</p>
+        <p className="text-wrap-pretty text-body text-text-tertiary">
+          No invocations recorded yet.
+        </p>
       ) : (
         <>
-          <div className="activity-section">
-            <div className="activity-section-header">
-              <span className="section-label">Activity</span>
-              <span className="activity-section-total">
+          <div className="flex flex-col gap-3">
+            <div className="flex items-baseline justify-between gap-3">
+              <span className="text-caption font-medium tracking-[0.08em] text-text-tertiary uppercase">
+                Activity
+              </span>
+              <span className="text-small text-text-tertiary">
                 {invocationsLastYear.toLocaleString()} invocations in the last year
               </span>
             </div>
             <InvocationHeatmap heatmap={snapshot.heatmap} dates={heatmapDates} />
           </div>
 
-          <div className="activity-section">
-            <div className="activity-section-header">
-              <span className="section-label">By skill</span>
+          <div className="flex flex-col gap-3">
+            <div className="flex items-baseline justify-between gap-3">
+              <span className="text-caption font-medium tracking-[0.08em] text-text-tertiary uppercase">
+                By skill
+              </span>
               <WindowSegmentedControl value={usageWindow} onChange={setUsageWindow} />
             </div>
             {bySkill.length === 0 ? (
-              <p className="activity-view-empty">No invocations in the last {windowLabel}.</p>
+              <p className="text-wrap-pretty text-body text-text-tertiary">
+                No invocations in the last {windowLabel}.
+              </p>
             ) : (
-              <div className="activity-skill-table">
+              <div className="flex flex-col">
                 {bySkill.map((stat) => (
                   <button
                     key={stat.skill}
-                    className="activity-skill-table-row"
+                    className="grid h-8 w-full grid-cols-[minmax(0,1fr)_72px_88px_72px] items-center gap-3 border-0 border-b border-border-subtle bg-transparent px-2 text-left transition-colors hover:bg-bg-hover"
                     onClick={() => onSelectSkill(stat.skill)}
                   >
-                    <span className="activity-skill-table-name" title={stat.skill}>
+                    <span className="truncate text-body text-text-primary" title={stat.skill}>
                       {stat.skill}
                     </span>
-                    <span className="activity-skill-table-last-used">
+                    <span className="text-nowrap text-small text-text-tertiary tabular-nums">
                       {stat.last_used ? formatRelativeTime(stat.last_used) : "never"}
                     </span>
-                    <span className="activity-skill-table-count">
+                    <span className="text-right text-body text-text-secondary tabular-nums">
                       {invocationsInWindow(stat, usageWindow)}
                     </span>
-                    <span className="activity-skill-table-projects">
+                    <span className="text-right text-body text-text-secondary tabular-nums">
                       {Object.keys(stat.by_project_30_days).length}
                     </span>
                   </button>
@@ -140,13 +148,19 @@ export function SkillActivityView({ snapshot, onSelectSkill }: SkillActivityView
             )}
           </div>
 
-          <div className="activity-section">
-            <span className="section-label">By project, 30 days</span>
-            <div className="activity-project-table">
+          <div className="flex flex-col gap-3">
+            <span className="text-caption font-medium tracking-[0.08em] text-text-tertiary uppercase">
+              By project, 30 days
+            </span>
+            <div className="flex flex-col">
               {byProject.map(({ project, label, count }) => (
-                <div key={project} className="activity-project-table-row" title={project}>
-                  <span className="activity-project-table-name">{label}</span>
-                  <span className="activity-project-table-count">{count}</span>
+                <div
+                  key={project}
+                  className="flex h-8 items-center justify-between gap-3 border-b border-border-subtle px-2"
+                  title={project}
+                >
+                  <span className="truncate text-body text-text-primary">{label}</span>
+                  <span className="text-body text-text-secondary tabular-nums">{count}</span>
                 </div>
               ))}
             </div>

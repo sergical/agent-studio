@@ -112,7 +112,7 @@ export function Sidebar({ snapshot, isLoading, requestRescan }: SidebarProps) {
   const spinning = isRescanning && isLoading;
 
   const itemClass = (active: boolean) =>
-    `grid h-[30px] w-full cursor-pointer grid-cols-[15px_minmax(0,1fr)_auto] items-center gap-2 rounded-sm border-0 px-2.5 text-body transition-colors ${
+    `grid h-[30px] w-full cursor-pointer grid-cols-[15px_minmax(0,1fr)_auto] items-center gap-2 rounded-sm border-0 px-2.5 text-left text-body transition-colors ${
       active
         ? "bg-accent-soft text-text-primary"
         : "bg-transparent text-text-secondary hover:bg-bg-hover hover:text-text-primary"
