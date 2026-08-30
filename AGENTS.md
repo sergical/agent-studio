@@ -45,22 +45,22 @@ npm run preview
 
 ```bash
 # Build Rust backend
-cd src-tauri && cargo build
+cd apps/desktop/src-tauri && cargo build
 
 # Run Rust tests
-cd src-tauri && cargo test
+cd apps/desktop/src-tauri && cargo test
 
 # Run a single Rust test
-cd src-tauri && cargo test test_name
+cd apps/desktop/src-tauri && cargo test test_name
 
 # Check Rust code
-cd src-tauri && cargo check
+cd apps/desktop/src-tauri && cargo check
 
 # Format Rust code
-cd src-tauri && cargo fmt
+cd apps/desktop/src-tauri && cargo fmt
 
 # Lint Rust code
-cd src-tauri && cargo clippy
+cd apps/desktop/src-tauri && cargo clippy
 ```
 
 ### Frontend Commands
@@ -99,39 +99,43 @@ npm run check
 
 ```
 /
-├── src/                          # React frontend
-│   ├── components/
-│   │   ├── SkillStore/           # SkillStore, SkillBrowser, SkillDetailPanel,
-│   │   │                         # SkillDetailHeader, SkillContent, InstallControls,
-│   │   │                         # AgentTargetSelector, SkillSearchBar, InstallProgressModal
-│   │   └── ui/                   # Toast, ToastContainer
-│   ├── lib/
-│   │   ├── skill-types.ts        # Type definitions
-│   │   ├── skill-api.ts          # Tauri IPC wrappers
-│   │   └── github-skill-source.ts # GitHub SKILL.md fetch
-│   ├── store/
-│   │   └── appStore.ts           # Zustand store
-│   ├── App.tsx                   # Main app component
-│   └── main.tsx                  # Entry point
-├── src-tauri/                    # Rust backend
-│   ├── src/
-│   │   ├── skills/
-│   │   │   ├── mod.rs
-│   │   │   ├── agents.rs         # AgentId, agent paths
-│   │   │   ├── api.rs            # skills.sh HTTP client
-│   │   │   ├── commands.rs       # Tauri IPC commands
-│   │   │   ├── frontmatter.rs    # SKILL.md frontmatter parsing/validation
-│   │   │   ├── lock_file.rs      # ~/.agents/.skill-lock.json
-│   │   │   ├── plugins.rs        # Native plugin cache enumeration
-│   │   │   ├── provenance.rs     # Source-kind classification
-│   │   │   ├── scan.rs           # Installed-skill directory scanner
-│   │   │   └── skill_dto.rs      # Serde DTOs sent to the frontend
-│   │   ├── lib.rs                # Library entry
-│   │   └── main.rs               # Rust entry point
-│   └── Cargo.toml                # Rust dependencies
+├── apps/
+│   └── desktop/                  # The Tauri app (npm package "skill-studio")
+│       ├── src/                  # React frontend
+│       │   ├── components/
+│       │   │   ├── SkillStore/   # SkillStore, SkillBrowser, SkillDetailPanel,
+│       │   │   │                 # SkillDetailHeader, SkillContent, InstallControls,
+│       │   │   │                 # AgentTargetSelector, SkillSearchBar, InstallProgressModal
+│       │   │   └── ui/           # Toast, ToastContainer
+│       │   ├── lib/
+│       │   │   ├── skill-types.ts        # Type definitions
+│       │   │   ├── skill-api.ts          # Tauri IPC wrappers
+│       │   │   └── github-skill-source.ts # GitHub SKILL.md fetch
+│       │   ├── store/
+│       │   │   └── appStore.ts   # Zustand store
+│       │   ├── App.tsx           # Main app component
+│       │   └── main.tsx          # Entry point
+│       └── src-tauri/            # Rust backend
+│           ├── src/
+│           │   ├── skills/
+│           │   │   ├── mod.rs
+│           │   │   ├── agents.rs         # AgentId, agent paths
+│           │   │   ├── api.rs            # skills.sh HTTP client
+│           │   │   ├── commands.rs       # Tauri IPC commands
+│           │   │   ├── frontmatter.rs    # SKILL.md frontmatter parsing/validation
+│           │   │   ├── lock_file.rs      # ~/.agents/.skill-lock.json
+│           │   │   ├── plugins.rs        # Native plugin cache enumeration
+│           │   │   ├── provenance.rs     # Source-kind classification
+│           │   │   ├── scan.rs           # Installed-skill directory scanner
+│           │   │   └── skill_dto.rs      # Serde DTOs sent to the frontend
+│           │   ├── lib.rs                # Library entry
+│           │   └── main.rs               # Rust entry point
+│           └── Cargo.toml                # Rust dependencies
+├── packages/
+│   └── ui/                       # Shared UI package placeholder (@skill-studio/ui)
 ├── tools/
 │   └── oxlint/anti-slop/         # Local oxlint JS plugin
-└── package.json                  # npm dependencies
+└── package.json                  # npm workspaces root
 ```
 
 ## Code Style Guidelines
@@ -235,7 +239,7 @@ fn get_home_dir() -> Option<PathBuf> {
 
 ### State Management (Zustand)
 
-- Single store in `src/store/appStore.ts`
+- Single store in `apps/desktop/src/store/appStore.ts`
 - Use selectors for performance: `useAppStore((state) => state.activeView)`
 - Group related state and actions together
 - Invalidate caches by setting `_cachedSections: null`
@@ -280,25 +284,25 @@ let home = get_home_dir().ok_or("Could not find home directory")?;
 
 ### Key Files
 
-| Purpose               | File                                 |
-| --------------------- | ------------------------------------ |
-| Main App              | `src/App.tsx`                        |
-| State Store           | `src/store/appStore.ts`              |
-| Skill types           | `src/lib/skill-types.ts`             |
-| Tauri IPC wrappers    | `src/lib/skill-api.ts`               |
-| GitHub SKILL.md fetch | `src/lib/github-skill-source.ts`     |
-| Tauri commands        | `src-tauri/src/skills/commands.rs`   |
-| Scanner               | `src-tauri/src/skills/scan.rs`       |
-| Provenance            | `src-tauri/src/skills/provenance.rs` |
-| Agent paths           | `src-tauri/src/skills/agents.rs`     |
-| Lint config           | `.oxlintrc.json`                     |
-| Format config         | `.oxfmtrc.json`                      |
-| Tauri Config          | `src-tauri/tauri.conf.json`          |
-| TS Config             | `tsconfig.json`                      |
+| Purpose               | File                                              |
+| --------------------- | ------------------------------------------------- |
+| Main App              | `apps/desktop/src/App.tsx`                        |
+| State Store           | `apps/desktop/src/store/appStore.ts`              |
+| Skill types           | `apps/desktop/src/lib/skill-types.ts`             |
+| Tauri IPC wrappers    | `apps/desktop/src/lib/skill-api.ts`               |
+| GitHub SKILL.md fetch | `apps/desktop/src/lib/github-skill-source.ts`     |
+| Tauri commands        | `apps/desktop/src-tauri/src/skills/commands.rs`   |
+| Scanner               | `apps/desktop/src-tauri/src/skills/scan.rs`       |
+| Provenance            | `apps/desktop/src-tauri/src/skills/provenance.rs` |
+| Agent paths           | `apps/desktop/src-tauri/src/skills/agents.rs`     |
+| Lint config           | `.oxlintrc.json`                                  |
+| Format config         | `.oxfmtrc.json`                                   |
+| Tauri Config          | `apps/desktop/src-tauri/tauri.conf.json`          |
+| TS Config             | `apps/desktop/tsconfig.json`                      |
 
 ### TypeScript Strictness
 
-Enabled in `tsconfig.json`:
+Enabled in `apps/desktop/tsconfig.json`:
 
 - `strict: true`
 - `noUnusedLocals: true`
@@ -307,7 +311,7 @@ Enabled in `tsconfig.json`:
 
 ### Testing
 
-- Rust: `cargo test` in `src-tauri`, tests live in colocated `#[cfg(test)]` modules
+- Rust: `cargo test` in `apps/desktop/src-tauri`, tests live in colocated `#[cfg(test)]` modules
 - Frontend: no test runner is configured yet; use Vitest (compatible with Vite) when adding tests
 
 ## Reference docs
@@ -360,4 +364,4 @@ Tracks installed skills with their sources and hashes:
 | pi          | `.pi/skills/`                       | `~/.pi/agent/skills/`                        |
 | shared      | `.agents/skills/`                   | `~/.agents/skills/`                          |
 
-`npx skills` can still target the full agent list; see `src-tauri/src/skills/agents.rs` for `AgentId`.
+`npx skills` can still target the full agent list; see `apps/desktop/src-tauri/src/skills/agents.rs` for `AgentId`.

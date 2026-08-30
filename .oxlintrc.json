@@ -33,5 +33,5 @@
   "env": {
     "builtin": true
   },
-  "ignorePatterns": ["dist", "node_modules", "src-tauri/target", "src-tauri/gen"]
+  "ignorePatterns": ["**/dist", "**/node_modules", "**/src-tauri/target", "**/src-tauri/gen"]
 }

@@ -1,48 +1,25 @@
 {
-  "name": "skill-studio",
+  "name": "skill-studio-workspace",
   "version": "0.1.0",
   "private": true,
+  "workspaces": [
+    "apps/*",
+    "packages/*"
+  ],
   "type": "module",
   "scripts": {
-    "dev": "vite",
-    "build": "tsc && vite build",
-    "preview": "vite preview",
-    "tauri": "tauri",
-    "typecheck": "tsc --noEmit",
+    "dev": "npm run dev -w skill-studio",
+    "build": "npm run build -w skill-studio",
+    "preview": "npm run preview -w skill-studio",
+    "tauri": "npm run tauri -w skill-studio --",
+    "typecheck": "npm run typecheck -w skill-studio",
     "lint": "oxlint . --deny-warnings",
     "lint:fix": "oxlint --fix .",
-    "lint:rust": "cd src-tauri && cargo clippy -- -D warnings",
+    "lint:rust": "cd apps/desktop/src-tauri && cargo clippy -- -D warnings",
     "format": "oxfmt .",
     "format:check": "oxfmt --check .",
-    "fmt:rust": "cd src-tauri && cargo fmt",
-    "test": "vitest run",
-    "check": "npm run typecheck && npm run lint && npm run format:check && npm run test && cd src-tauri && cargo fmt --check && cargo clippy -- -D warnings && cargo test"
-  },
-  "dependencies": {
-    "@base-ui/react": "^1.7.0",
-    "@pierre/diffs": "^1.3.6",
-    "@tauri-apps/api": "^2.9.1",
-    "@tauri-apps/plugin-dialog": "^2.6.0",
-    "diff": "^9.0.0",
-    "lucide-react": "^0.562.0",
-    "motion": "^12.26.2",
-    "react": "^19.1.0",
-    "react-dom": "^19.1.0",
-    "react-markdown": "^10.1.0",
-    "zustand": "^5.0.10"
-  },
-  "devDependencies": {
-    "@oxlint/plugins": "^1.80.0",
-    "@tailwindcss/vite": "^4.1.18",
-    "@tauri-apps/cli": "^2",
-    "@types/react": "^19.1.8",
-    "@types/react-dom": "^19.1.6",
-    "@vitejs/plugin-react": "^4.7.0",
-    "oxfmt": "^0.64.0",
-    "oxlint": "^1.80.0",
-    "tailwindcss": "^4.1.18",
-    "typescript": "~5.8.3",
-    "vite": "^5.4.21",
-    "vitest": "^4.1.11"
+    "fmt:rust": "cd apps/desktop/src-tauri && cargo fmt",
+    "test": "npm run test -w skill-studio",
+    "check": "npm run typecheck && npm run lint && npm run format:check && npm run test && cd apps/desktop/src-tauri && cargo fmt --check && cargo clippy -- -D warnings && cargo test"
   }
 }
