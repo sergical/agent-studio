@@ -4,10 +4,10 @@
 // error state below it.
 // ============================================================================
 
-import ReactMarkdown from "react-markdown";
 import { Button } from "@skill-studio/ui";
 import { pluginLabelForSkill } from "@skill-studio/lib";
 import type { Deployment, InstalledSkill } from "@skill-studio/lib";
+import { SkillMarkdown } from "./SkillMarkdown";
 import { SkillMarkdownEditor } from "./SkillMarkdownEditor";
 
 interface SkillMarkdownCardProps {
@@ -132,19 +132,7 @@ export function SkillMarkdownCard({
           </Button>
         </div>
       ) : rawContent !== null ? (
-        <div className="skill-markdown">
-          <ReactMarkdown
-            components={{
-              table: ({ children }) => (
-                <div className="skill-markdown-table-wrap">
-                  <table>{children}</table>
-                </div>
-              ),
-            }}
-          >
-            {stripFrontmatter(rawContent)}
-          </ReactMarkdown>
-        </div>
+        <SkillMarkdown content={stripFrontmatter(rawContent)} className="px-4 py-3" />
       ) : (
         <p className="m-0 px-3 py-6 text-small text-text-tertiary">No content available</p>
       )}

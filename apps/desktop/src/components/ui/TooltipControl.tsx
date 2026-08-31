@@ -19,7 +19,7 @@ export function TooltipControl({ content, children }: TooltipControlProps) {
       <TooltipTrigger render={children} />
       <TooltipContent
         sideOffset={6}
-        className="max-w-65 bg-bg-elevated text-small text-text-primary shadow-md ring-1 ring-border"
+        className="max-w-65 bg-bg-elevated text-small text-text-primary shadow-md ring-1 ring-border [&>[data-slot=tooltip-arrow]]:hidden"
       >
         {content}
       </TooltipContent>

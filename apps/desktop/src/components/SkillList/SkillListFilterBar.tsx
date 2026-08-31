@@ -22,14 +22,8 @@ import {
 import { SelectControl } from "../ui/SelectControl";
 import { SwitchControl } from "../ui/SwitchControl";
 
-const SOURCE_KINDS: SkillSourceKind[] = [
-  "dotagents",
-  "skills-sh",
-  "plugin",
-  "in-repo",
-  "manual",
-  "fork",
-];
+// No "plugin" here: plugin-shipped skills have their own place (PluginSkillsView).
+const SOURCE_KINDS: SkillSourceKind[] = ["dotagents", "skills-sh", "in-repo", "manual", "fork"];
 
 const SOURCE_OPTIONS: { value: string; label: string }[] = [
   { value: "", label: "Any source" },
@@ -95,7 +89,12 @@ function ActiveChip({ label, onClear }: { label: string; onClear: () => void }) 
   );
 }
 
-/** How many of `filter`'s optional fields are set - the chip row only shows once more than one is active. */
+/**
+ * How many of `filter`'s optional fields are set, not counting the query -
+ * the search box already shows the query, but every other active filter needs
+ * a chip: invocation and usage are only ever set from Home's stat tiles and
+ * have no control of their own in this bar.
+ */
 function activeFilterCount(filter: SkillListFilter): number {
   let count = filter.scope !== "all" ? 1 : 0;
   if (filter.harness) count += 1;
@@ -103,7 +102,6 @@ function activeFilterCount(filter: SkillListFilter): number {
   if (filter.issue) count += 1;
   if (filter.invocation) count += 1;
   if (filter.usage) count += 1;
-  if (filter.query.trim()) count += 1;
   return count;
 }
 
@@ -228,8 +226,8 @@ export function SkillListFilterBar({
               return (
                 <button
                   key={harness}
-                  className={`inline-flex h-8 cursor-pointer items-center gap-1.5 rounded-sm border border-border bg-bg-tertiary px-2.5 text-caption text-text-tertiary transition-colors hover:bg-bg-hover hover:text-text-secondary ${
-                    active ? "border-text-tertiary text-text-primary" : ""
+                  className={`inline-flex h-(--control-height) cursor-pointer items-center gap-1.5 rounded-sm border border-border bg-transparent px-2.5 text-caption text-text-tertiary transition-colors hover:bg-bg-hover hover:text-text-secondary ${
+                    active ? "bg-bg-tertiary text-text-primary" : ""
                   }`}
                   onClick={() => toggleHarness(harness)}
                   aria-pressed={active}
@@ -260,12 +258,12 @@ export function SkillListFilterBar({
           Show coverage
         </label>
 
-        <span className="whitespace-nowrap text-small tabular-nums">
+        <span className="whitespace-nowrap text-small tabular-nums text-text-tertiary">
           {resultCount} skill{resultCount !== 1 ? "s" : ""}
         </span>
       </div>
 
-      {activeCount > 1 && (
+      {activeCount > 0 && (
         <div className="flex flex-wrap items-center gap-1.5">
           {filter.scope !== "all" && (
             <ActiveChip
@@ -307,12 +305,6 @@ export function SkillListFilterBar({
             <ActiveChip
               label={USAGE_LABELS[filter.usage]}
               onClear={() => onChange({ ...filter, usage: undefined })}
-            />
-          )}
-          {filter.query.trim() && (
-            <ActiveChip
-              label={`“${filter.query.trim()}”`}
-              onClear={() => onChange({ ...filter, query: "" })}
             />
           )}
           <button

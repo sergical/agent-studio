@@ -106,7 +106,7 @@ export function SkillCompareDialog({ skill, onClose }: SkillCompareDialogProps) 
   return (
     <Dialog open onOpenChange={(open) => !open && onClose()}>
       <DialogContent
-        className="flex max-h-[85vh] w-[min(1200px,92vw)] max-w-none flex-col gap-0 rounded-lg bg-bg-elevated p-0 text-body text-text-primary shadow-lg"
+        className="flex max-h-[85vh] w-[min(1200px,92vw)] max-w-none flex-col gap-0 rounded-lg bg-bg-elevated p-0 text-body text-text-primary shadow-lg sm:max-w-none"
         aria-label={`Compare copies of ${skill.name}`}
       >
         <div className="flex items-center justify-between border-b border-border px-5 py-4">
@@ -174,5 +174,10 @@ function SkillCompareBody({
     return <p className="m-0 text-body text-text-tertiary">These copies are the same.</p>;
   }
   const diff = unifiedSkillMdDiff(leftState.content, rightState.content);
-  return <PatchDiff patch={diff} options={{ theme: diffTheme(resolvedTheme) }} />;
+  return (
+    <PatchDiff
+      patch={diff}
+      options={{ theme: diffTheme(resolvedTheme), disableFileHeader: true, overflow: "wrap" }}
+    />
+  );
 }

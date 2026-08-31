@@ -168,10 +168,16 @@ export interface PluginInfo {
 }
 
 /**
- * Which of the three per-harness disable mechanisms `Deployment.disabled`
- * came from - see `skill_harness_disable.rs`.
+ * Which mechanism `Deployment.disabled` came from - see
+ * `skill_harness_disable.rs`. The first three are native per-harness
+ * switches; `studio-moved` is the universal fallback that renames the
+ * deployment aside into a `.skill-studio-disabled/` holding directory.
  */
-export type DisabledBy = "codex-config" | "opencode-permission" | "claude-link-removed";
+export type DisabledBy =
+  | "codex-config"
+  | "opencode-permission"
+  | "claude-link-removed"
+  | "studio-moved";
 
 /**
  * A place a skill is deployed on disk for a specific agent.

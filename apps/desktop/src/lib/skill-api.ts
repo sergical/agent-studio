@@ -364,6 +364,21 @@ export async function setHarnessEnabled(
 }
 
 /**
+ * Enable or disable one deployment that has no native per-harness switch, by
+ * renaming its directory into (or out of) a sibling `.skill-studio-disabled/`
+ * holding directory in the same skills root - the universal fallback for
+ * plain directory copies and project-scope symlinks. Refused for shared-root
+ * and plugin-provided deployments.
+ */
+export async function setDeploymentEnabled(
+  name: string,
+  path: string,
+  enabled: boolean,
+): Promise<void> {
+  return invoke("set_deployment_enabled", { name, path, enabled });
+}
+
+/**
  * Rewrite `disable-model-invocation`/`user-invocable` in `path`'s SKILL.md
  * frontmatter to match `policy`, byte-identical otherwise. Also
  * writes/patches `agents/openai.yaml`'s `policy.allow_implicit_invocation`

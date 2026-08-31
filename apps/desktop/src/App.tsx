@@ -7,15 +7,16 @@
 import { useEffect, useRef } from "react";
 import { homeDir } from "@tauri-apps/api/path";
 import { Tooltip } from "@base-ui/react/tooltip";
+import { Toaster } from "sonner";
 import { AddSkillSheet } from "./components/AddSkill/AddSkillSheet";
 import { Sidebar } from "./components/Sidebar/Sidebar";
 import { SkillActivityView } from "./components/Activity/SkillActivityView";
 import { HomeView } from "./components/Home/HomeView";
 import { LearnView } from "./components/Learn/LearnView";
 import { SkillsView } from "./components/SkillList/SkillsView";
+import { PluginSkillsView } from "./components/SkillList/PluginSkillsView";
 import { PacksView } from "./components/Packs/PacksView";
 import { SkillPage } from "./components/SkillDetail/SkillPage";
-import { ToastContainer } from "./components/ui/ToastContainer";
 import { useSkillSnapshot } from "./hooks/useSkillSnapshot";
 import {
   onTrialExpired,
@@ -28,6 +29,7 @@ import "./App.css";
 
 function App() {
   const { snapshot, isLoading, requestRescan } = useSkillSnapshot();
+  const resolvedTheme = useAppStore((state) => state.resolvedTheme);
   const activeView = useAppStore((state) => state.activeView);
   const openSkill = useAppStore((state) => state.openSkill);
   const closeSkill = useAppStore((state) => state.closeSkill);
@@ -106,6 +108,8 @@ function App() {
     main = <HomeView snapshot={snapshot} isLoading={isLoading} onSelectSkill={onSelectSkill} />;
   } else if (activeView.kind === "skills") {
     main = <SkillsView snapshot={snapshot} onSelectSkill={onSelectSkill} />;
+  } else if (activeView.kind === "plugins") {
+    main = <PluginSkillsView snapshot={snapshot} onSelectSkill={onSelectSkill} />;
   } else if (activeView.kind === "activity") {
     main = <SkillActivityView snapshot={snapshot} onSelectSkill={onSelectSkill} />;
   } else if (activeView.kind === "packs") {
@@ -134,7 +138,21 @@ function App() {
         <main className="flex-1 overflow-y-auto">{main}</main>
 
         <AddSkillSheet />
-        <ToastContainer />
+        <Toaster
+          position="bottom-right"
+          theme={resolvedTheme}
+          toastOptions={{
+            style: {
+              background: "var(--color-bg-elevated)",
+              borderColor: "var(--color-border)",
+              color: "var(--color-text-primary)",
+            },
+            classNames: {
+              description: "text-text-secondary",
+              actionButton: "!bg-bg-tertiary !text-text-primary !border !border-border",
+            },
+          }}
+        />
       </div>
     </Tooltip.Provider>
   );

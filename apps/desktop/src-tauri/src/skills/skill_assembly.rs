@@ -10,7 +10,7 @@ use std::collections::HashMap;
 use super::lock_file::SkillLockFile;
 use super::provenance::{classify_source_kind, SourceKind};
 use super::skill_candidate::SkillCandidate;
-use super::skill_dto::{Deployment, InstalledSkill};
+use super::skill_dto::{Deployment, DisabledBy, InstalledSkill};
 
 /// Build a fresh InstalledSkill, seeding metadata from the lock file entry
 /// when one exists for this skill name, or generic "local directory"
@@ -145,8 +145,8 @@ pub fn assemble_installed_skills(
                 .as_ref()
                 .map(|p| p.to_string_lossy().to_string()),
             content_hash: candidate.content_hash.clone(),
-            disabled: false,
-            disabled_by: None,
+            disabled: candidate.studio_disabled,
+            disabled_by: candidate.studio_disabled.then_some(DisabledBy::StudioMoved),
             codex_implicit_invocation: None,
         });
     }
@@ -200,6 +200,7 @@ mod tests {
             modified_at: None,
             folder_truncated: false,
             in_git_repo: false,
+            studio_disabled: false,
         }
     }
 

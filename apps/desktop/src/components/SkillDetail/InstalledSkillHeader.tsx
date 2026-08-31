@@ -231,7 +231,7 @@ export function InstalledSkillHeader({
       </div>
 
       {skill.description && (
-        <p className="text-pretty text-body leading-[1.5] text-text-secondary">
+        <p className="max-w-[65ch] text-pretty text-body leading-[1.5] text-text-secondary">
           {skill.description}
         </p>
       )}

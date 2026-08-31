@@ -67,4 +67,9 @@ pub struct SkillCandidate {
     /// version-controlled directory from a genuinely unmanaged one - see
     /// `provenance::SourceKind::InRepo`.
     pub in_git_repo: bool,
+    /// True when this candidate was found inside a root's
+    /// `.skill-studio-disabled/` holding directory - see
+    /// `skill_harness_disable`'s universal move-aside disable. Maps to
+    /// `Deployment.disabled` + `DisabledBy::StudioMoved` in `skill_assembly`.
+    pub studio_disabled: bool,
 }

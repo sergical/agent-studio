@@ -52,6 +52,7 @@ pub fn run() {
             skills::skill_park::park_skill,
             skills::skill_park::unpark_skill,
             skills::skill_harness_disable::set_harness_enabled,
+            skills::skill_harness_disable::set_deployment_enabled,
             skills::skill_invocation::set_skill_invocation,
             // Background refresh / invocation snapshot
             skills::skill_refresh::get_skill_snapshot,

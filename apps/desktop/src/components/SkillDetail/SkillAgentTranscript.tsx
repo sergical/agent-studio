@@ -7,7 +7,7 @@
 
 import { useEffect, useRef, useState } from "react";
 import { ChevronRight } from "lucide-react";
-import ReactMarkdown from "react-markdown";
+import { SkillMarkdown } from "./SkillMarkdown";
 import type { SkillAgentRunState } from "../../hooks/useSkillAgentRun";
 import type { SkillAgentEvent, SkillLoaded } from "@skill-studio/lib";
 
@@ -139,9 +139,7 @@ export function SkillAgentTranscript({ state }: SkillAgentTranscriptProps) {
       {blocks.map((block) => {
         if (block.kind === "text") {
           return (
-            <div key={block.id} className="skill-markdown text-body leading-normal">
-              <ReactMarkdown>{block.text}</ReactMarkdown>
-            </div>
+            <SkillMarkdown key={block.id} content={block.text} className="leading-normal" />
           );
         }
         if (block.kind === "tool_call") {

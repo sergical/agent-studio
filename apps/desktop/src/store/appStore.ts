@@ -9,6 +9,7 @@ import type { SkillListFilter } from "@skill-studio/lib";
 import { USAGE_WINDOWS } from "@skill-studio/lib";
 import type { UsageWindow } from "@skill-studio/lib";
 import type { Toast } from "@skill-studio/lib";
+import { addToast } from "../lib/toast";
 import {
   loadStoredTheme,
   resolveTheme,
@@ -40,6 +41,7 @@ export type LearnSection = "broken" | "invoke" | "cost" | "unused";
 export type ActiveView =
   | { kind: "home" }
   | { kind: "skills" }
+  | { kind: "plugins" }
   | { kind: "activity" }
   | { kind: "packs" }
   | { kind: "learn"; section?: LearnSection }
@@ -58,9 +60,10 @@ export type ActiveView =
 
 interface AppState {
   // === Toast Notifications ===
-  toasts: Toast[];
+  // Toasts render via sonner (see App.tsx's `<Toaster />`); this action is
+  // kept on the store so every existing call site
+  // (`useAppStore((state) => state.addToast)`) stayed untouched.
   addToast: (toast: Omit<Toast, "id">) => string;
-  removeToast: (id: string) => void;
 
   // === Shell Route State ===
   activeView: ActiveView;
@@ -147,10 +150,6 @@ interface AppState {
 // Helper Functions
 // ============================================================================
 
-function generateToastId(): string {
-  return `toast_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
-}
-
 /** localStorage key holding the remembered user-added project paths, one absolute path per line. */
 const PROJECT_PATHS_STORAGE_KEY = "project-paths";
 /** localStorage key holding the remembered excluded project paths, one absolute path per line. */
@@ -195,31 +194,7 @@ const initialTheme = loadStoredTheme();
 // ============================================================================
 
 export const useAppStore = create<AppState>((set, get) => ({
-  toasts: [],
-
-  addToast: (toast) => {
-    const id = generateToastId();
-    const newToast: Toast = { ...toast, id };
-
-    set((state) => ({
-      toasts: [...state.toasts, newToast],
-    }));
-
-    // Auto-remove after duration
-    if (toast.duration !== 0) {
-      setTimeout(() => {
-        get().removeToast(id);
-      }, toast.duration || 4000);
-    }
-
-    return id;
-  },
-
-  removeToast: (id) => {
-    set((state) => ({
-      toasts: state.toasts.filter((t) => t.id !== id),
-    }));
-  },
+  addToast,
 
   activeView: { kind: "home" },
   // Leaving the list (a view change or opening a skill) ends selection mode,
@@ -343,7 +318,6 @@ useAppStore.getState().setTheme(useAppStore.getState().theme);
 // Selectors (for performance optimization)
 // ============================================================================
 
-export const selectToasts = (state: AppState) => state.toasts;
 export const selectProjects = (state: AppState) => state.userAddedProjects;
 export const selectActiveView = (state: AppState) => state.activeView;
 export const selectSelectedSkillPaths = (state: AppState) => state.selectedSkillPaths;

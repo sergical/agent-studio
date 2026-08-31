@@ -28,6 +28,7 @@ import { useAppStore } from "../../store/appStore";
 import { PageShell } from "../Shell/PageShell";
 import { HarnessIcon, harnessIdFromLabel } from "../ui/HarnessIcon";
 import { InfoPopover } from "../ui/InfoPopover";
+import { TooltipControl } from "../ui/TooltipControl";
 
 const RECENTLY_USED_COUNT = 5;
 const MAX_ROWS_PER_GROUP = 6;
@@ -293,8 +294,7 @@ export function HomeView({ snapshot, isLoading, onSelectSkill }: HomeViewProps) 
 
   const toggleFilter = (id: HomeFilter) => setFilter((cur) => (cur === id ? null : id));
   const isGroupVisible = (id: GroupId) => filter === null || filter === id;
-  const isGroupExpanded = (id: GroupId, count: number) =>
-    (id === "broken" ? count > 0 : !collapsedGroups.has(id)) || filter === id;
+  const isGroupExpanded = (id: GroupId) => !collapsedGroups.has(id) || filter === id;
   const toggleGroup = (id: GroupId) =>
     setCollapsedGroups((prev) => {
       const next = new Set(prev);
@@ -329,15 +329,16 @@ export function HomeView({ snapshot, isLoading, onSelectSkill }: HomeViewProps) 
               {broken.length}
             </span>
           </button>
-          <InfoPopover
-            label="About broken"
-            title="Broken and warnings"
-            onLearnMore={() => setActiveView({ kind: "learn", section: "broken" })}
-            className="absolute top-3.5 right-3.5 opacity-0 group-hover/stat:opacity-100 group-focus-within/stat:opacity-100 has-[[aria-expanded=true]]:opacity-100"
-          >
-            An agent loads nothing, or something you did not intend: a dead link, a SKILL.md the
-            loader rejects, a parked skill that was reinstalled.
-          </InfoPopover>
+          <span className="absolute top-3.5 right-3.5 opacity-0 group-hover/stat:opacity-100 group-focus-within/stat:opacity-100 has-[[aria-expanded=true]]:opacity-100">
+            <InfoPopover
+              label="About broken"
+              title="Broken and warnings"
+              onLearnMore={() => setActiveView({ kind: "learn", section: "broken" })}
+            >
+              An agent loads nothing, or something you did not intend: a dead link, a SKILL.md the
+              loader rejects, a parked skill that was reinstalled.
+            </InfoPopover>
+          </span>
         </div>
 
         <div className="group/stat relative flex">
@@ -357,15 +358,16 @@ export function HomeView({ snapshot, isLoading, onSelectSkill }: HomeViewProps) 
               {warnings.length}
             </span>
           </button>
-          <InfoPopover
-            label="About warnings"
-            title="Broken and warnings"
-            onLearnMore={() => setActiveView({ kind: "learn", section: "broken" })}
-            className="absolute top-3.5 right-3.5 opacity-0 group-hover/stat:opacity-100 group-focus-within/stat:opacity-100 has-[[aria-expanded=true]]:opacity-100"
-          >
-            Everything still loads, but the state drifted: copies that differ between harnesses,
-            lock-file entries with no folder on disk.
-          </InfoPopover>
+          <span className="absolute top-3.5 right-3.5 opacity-0 group-hover/stat:opacity-100 group-focus-within/stat:opacity-100 has-[[aria-expanded=true]]:opacity-100">
+            <InfoPopover
+              label="About warnings"
+              title="Broken and warnings"
+              onLearnMore={() => setActiveView({ kind: "learn", section: "broken" })}
+            >
+              Everything still loads, but the state drifted: copies that differ between harnesses,
+              lock-file entries with no folder on disk.
+            </InfoPopover>
+          </span>
         </div>
 
         <div className="flex">
@@ -390,8 +392,9 @@ export function HomeView({ snapshot, isLoading, onSelectSkill }: HomeViewProps) 
         <div className="grid grid-cols-[210px_minmax(0,1fr)] items-baseline gap-3">
           <span className="flex items-baseline gap-x-1 whitespace-nowrap text-small text-text-secondary">
             Who can invoke
-            <b className="ml-1 font-semibold text-text-primary tabular-nums">{invokeTotal}</b>
+            <b className="ml-1 font-normal text-text-primary tabular-nums">{invokeTotal}</b>
             <InfoPopover
+              className="self-center"
               label="About invocation"
               title="Who can invoke a skill"
               onLearnMore={() => setActiveView({ kind: "learn", section: "invoke" })}
@@ -402,34 +405,37 @@ export function HomeView({ snapshot, isLoading, onSelectSkill }: HomeViewProps) 
           </span>
           <div className="flex h-7 gap-0.5" role="group" aria-label="Who can invoke">
             {inv.both > 0 && (
-              <button
-                className="inline-flex items-center gap-1 overflow-hidden rounded-xs bg-accent-soft px-2.5 text-small whitespace-nowrap text-text-primary transition-[filter] hover:brightness-115 aria-pressed:shadow-[inset_0_0_0_1px_var(--color-accent)]"
-                style={{ flex: `${inv.both} 0 auto` }}
-                title="Open in Skills"
-                onClick={() => goToInvocation("both")}
-              >
-                <span className="tabular-nums">{inv.both}</span> you or the model
-              </button>
+              <TooltipControl content="Open in Skills">
+                <button
+                  className="inline-flex items-center gap-1 overflow-hidden rounded-xs bg-accent-soft px-2.5 text-small whitespace-nowrap text-text-primary transition-[filter] hover:brightness-115 aria-pressed:shadow-[inset_0_0_0_1px_var(--color-accent)]"
+                  style={{ flex: `${inv.both} 0 auto` }}
+                  onClick={() => goToInvocation("both")}
+                >
+                  <span className="tabular-nums">{inv.both}</span> you or the model
+                </button>
+              </TooltipControl>
             )}
             {inv.modelOnly > 0 && (
-              <button
-                className="inline-flex items-center gap-1 overflow-hidden rounded-xs bg-accent-softer px-2.5 text-small whitespace-nowrap text-text-secondary transition-[filter] hover:brightness-115 aria-pressed:shadow-[inset_0_0_0_1px_var(--color-accent)] aria-pressed:text-text-primary"
-                style={{ flex: `${inv.modelOnly} 0 auto` }}
-                title="Open in Skills"
-                onClick={() => goToInvocation("model-only")}
-              >
-                <span className="tabular-nums">{inv.modelOnly}</span> model only
-              </button>
+              <TooltipControl content="Open in Skills">
+                <button
+                  className="inline-flex items-center gap-1 overflow-hidden rounded-xs bg-accent-softer px-2.5 text-small whitespace-nowrap text-text-secondary transition-[filter] hover:brightness-115 aria-pressed:shadow-[inset_0_0_0_1px_var(--color-accent)] aria-pressed:text-text-primary"
+                  style={{ flex: `${inv.modelOnly} 0 auto` }}
+                  onClick={() => goToInvocation("model-only")}
+                >
+                  <span className="tabular-nums">{inv.modelOnly}</span> model only
+                </button>
+              </TooltipControl>
             )}
             {inv.userOnly > 0 && (
-              <button
-                className="inline-flex items-center gap-1 overflow-hidden rounded-xs bg-bg-tertiary px-2.5 text-small whitespace-nowrap text-text-secondary transition-[filter] hover:brightness-115 aria-pressed:shadow-[inset_0_0_0_1px_var(--color-accent)] aria-pressed:text-text-primary"
-                style={{ flex: `${inv.userOnly} 0 auto` }}
-                title="Open in Skills"
-                onClick={() => goToInvocation("user-only")}
-              >
-                <span className="tabular-nums">{inv.userOnly}</span> you only
-              </button>
+              <TooltipControl content="Open in Skills">
+                <button
+                  className="inline-flex items-center gap-1 overflow-hidden rounded-xs bg-bg-tertiary px-2.5 text-small whitespace-nowrap text-text-secondary transition-[filter] hover:brightness-115 aria-pressed:shadow-[inset_0_0_0_1px_var(--color-accent)] aria-pressed:text-text-primary"
+                  style={{ flex: `${inv.userOnly} 0 auto` }}
+                  onClick={() => goToInvocation("user-only")}
+                >
+                  <span className="tabular-nums">{inv.userOnly}</span> you only
+                </button>
+              </TooltipControl>
             )}
           </div>
         </div>
@@ -437,10 +443,11 @@ export function HomeView({ snapshot, isLoading, onSelectSkill }: HomeViewProps) 
         <div className="grid grid-cols-[210px_minmax(0,1fr)] items-baseline gap-3">
           <span className="flex items-baseline gap-x-1 whitespace-nowrap text-small text-text-secondary">
             Prompt cost
-            <b className="ml-1 font-semibold text-text-primary tabular-nums">
+            <b className="ml-1 font-normal text-text-primary tabular-nums">
               {formatTokens(cost.totalTokens)}
             </b>
             <InfoPopover
+              className="self-center"
               label="About prompt cost"
               title="Prompt cost"
               onLearnMore={() => setActiveView({ kind: "learn", section: "cost" })}
@@ -459,25 +466,28 @@ export function HomeView({ snapshot, isLoading, onSelectSkill }: HomeViewProps) 
               </span>
             ) : (
               <>
-                <button
-                  className="inline-flex items-center gap-1 overflow-hidden rounded-xs bg-accent-soft px-2.5 text-small whitespace-nowrap text-text-primary transition-[filter] hover:brightness-115"
-                  style={{ width: `${(cost.usedTokens / cost.totalTokens) * 100}%` }}
-                  title="Open in Skills"
-                  onClick={() => goToSkills({ usage: "used-30d" })}
-                >
-                  <span className="tabular-nums">{formatTokens(cost.usedTokens)}</span> ·{" "}
-                  <span className="tabular-nums">{cost.usedCount}</span> skills used in 30 days
-                </button>
-                <button
-                  className="inline-flex items-center gap-1 overflow-hidden rounded-xs bg-bg-tertiary px-2.5 text-small whitespace-nowrap text-text-secondary transition-[filter] hover:brightness-115 aria-pressed:text-text-primary aria-pressed:shadow-[inset_0_0_0_1px_var(--color-accent)]"
-                  style={{ width: `${(cost.idleTokens / cost.totalTokens) * 100}%` }}
-                  aria-pressed={filter === "unused"}
-                  title="Show the skills not used in 30 days"
-                  onClick={() => toggleFilter("unused")}
-                >
-                  <span className="tabular-nums">{formatTokens(cost.idleTokens)}</span> ·{" "}
-                  <span className="tabular-nums">{cost.idleCount}</span> skills not used in 30 days
-                </button>
+                <TooltipControl content="Open in Skills">
+                  <button
+                    className="inline-flex items-center gap-1 overflow-hidden rounded-xs bg-accent-soft px-2.5 text-small whitespace-nowrap text-text-primary transition-[filter] hover:brightness-115"
+                    style={{ flex: `${cost.usedTokens} 0 auto` }}
+                    onClick={() => goToSkills({ usage: "used-30d" })}
+                  >
+                    <span className="tabular-nums">{formatTokens(cost.usedTokens)}</span> ·{" "}
+                    <span className="tabular-nums">{cost.usedCount}</span> skills used in 30 days
+                  </button>
+                </TooltipControl>
+                <TooltipControl content="Show the skills not used in 30 days">
+                  <button
+                    className="inline-flex items-center gap-1 overflow-hidden rounded-xs bg-bg-tertiary px-2.5 text-small whitespace-nowrap text-text-secondary transition-[filter] hover:brightness-115 aria-pressed:text-text-primary aria-pressed:shadow-[inset_0_0_0_1px_var(--color-accent)]"
+                    style={{ flex: `${cost.idleTokens} 0 auto` }}
+                    aria-pressed={filter === "unused"}
+                    onClick={() => toggleFilter("unused")}
+                  >
+                    <span className="tabular-nums">{formatTokens(cost.idleTokens)}</span> ·{" "}
+                    <span className="tabular-nums">{cost.idleCount}</span> skills not used in 30
+                    days
+                  </button>
+                </TooltipControl>
               </>
             )}
           </div>
@@ -505,10 +515,10 @@ export function HomeView({ snapshot, isLoading, onSelectSkill }: HomeViewProps) 
             <GroupHead
               label="Broken"
               count={broken.length}
-              isExpanded={isGroupExpanded("broken", broken.length)}
+              isExpanded={isGroupExpanded("broken")}
               onToggle={() => toggleGroup("broken")}
             />
-            {isGroupExpanded("broken", broken.length) && (
+            {isGroupExpanded("broken") && (
               <div className="flex flex-col">
                 {broken.slice(0, MAX_ROWS_PER_GROUP).map((issue, i) => (
                   <InboxRow
@@ -544,10 +554,10 @@ export function HomeView({ snapshot, isLoading, onSelectSkill }: HomeViewProps) 
             <GroupHead
               label="Warnings"
               count={warnings.length}
-              isExpanded={isGroupExpanded("warn", warnings.length)}
+              isExpanded={isGroupExpanded("warn")}
               onToggle={() => toggleGroup("warn")}
             />
-            {isGroupExpanded("warn", warnings.length) && (
+            {isGroupExpanded("warn") && (
               <div className="flex flex-col">
                 {warnings.slice(0, MAX_ROWS_PER_GROUP).map((issue: HealthIssue, i) => (
                   <InboxRow
@@ -590,7 +600,7 @@ export function HomeView({ snapshot, isLoading, onSelectSkill }: HomeViewProps) 
         {updates.length > 0 && isGroupVisible("upd") && (
           <UpdatesGroup
             updates={updates}
-            isExpanded={isGroupExpanded("upd", updates.length)}
+            isExpanded={isGroupExpanded("upd")}
             onToggle={() => toggleGroup("upd")}
             onSelectSkill={onSelectSkill}
             onShowAll={() => setActiveView({ kind: "skills" })}
@@ -602,10 +612,10 @@ export function HomeView({ snapshot, isLoading, onSelectSkill }: HomeViewProps) 
             <GroupHead
               label="Not used in the last 30 days"
               count={unused.length}
-              isExpanded={isGroupExpanded("unused", unused.length)}
+              isExpanded={isGroupExpanded("unused")}
               onToggle={() => toggleGroup("unused")}
             />
-            {isGroupExpanded("unused", unused.length) && (
+            {isGroupExpanded("unused") && (
               <div className="flex flex-col">
                 {unused.slice(0, MAX_ROWS_PER_GROUP).map((skill) => {
                   const projectDeployment = skill.deployments.find((d) => d.project_path);
@@ -664,10 +674,10 @@ export function HomeView({ snapshot, isLoading, onSelectSkill }: HomeViewProps) 
             <GroupHead
               label="Recently used"
               count={recent.length}
-              isExpanded={isGroupExpanded("rec", recent.length)}
+              isExpanded={isGroupExpanded("rec")}
               onToggle={() => toggleGroup("rec")}
             />
-            {isGroupExpanded("rec", recent.length) && (
+            {isGroupExpanded("rec") && (
               <div className="flex flex-col">
                 {recent.map(({ skill, lastUsed, projectLabel, usesIn30Days }) => (
                   <InboxRow

@@ -20,46 +20,46 @@
   --text-display: 24px;
 
   /* Dark theme - Refined, premium palette (default; the app ships dark) */
-  --color-bg-primary: #0c0c0e;
-  --color-bg-secondary: #131316;
-  --color-bg-tertiary: #1b1b1f;
-  --color-bg-elevated: #151518;
-  --color-bg-hover: rgba(255, 255, 255, 0.04);
-  --color-bg-active: rgba(255, 255, 255, 0.07);
+  --color-bg-primary: oklch(0.155 0.004 285.899);
+  --color-bg-secondary: oklch(0.188 0.006 285.806);
+  --color-bg-tertiary: oklch(0.224 0.008 285.761);
+  --color-bg-elevated: oklch(0.197 0.006 285.84);
+  --color-bg-hover: oklch(1 0 0 / 0.04);
+  --color-bg-active: oklch(1 0 0 / 0.07);
 
   /* Borders - solid in dark mode, alpha in light */
-  --color-border: #26262b;
-  --color-border-subtle: #1e1e22;
-  --color-border-strong: #3a3a42;
-  --color-border-focus: rgba(155, 123, 245, 0.5);
+  --color-border: oklch(0.271 0.009 285.77);
+  --color-border-subtle: oklch(0.237 0.008 285.806);
+  --color-border-strong: oklch(0.352 0.014 285.67);
+  --color-border-focus: oklch(0.668 0.176 293.133 / 0.5);
 
   /* Text hierarchy */
-  --color-text-primary: #f4f4f5;
-  --color-text-secondary: rgba(244, 244, 245, 0.68);
-  --color-text-tertiary: rgba(244, 244, 245, 0.48);
-  --color-text-quaternary: rgba(244, 244, 245, 0.3);
+  --color-text-primary: oklch(0.967 0.001 286.375);
+  --color-text-secondary: oklch(0.967 0.001 286.375 / 0.68);
+  --color-text-tertiary: oklch(0.967 0.001 286.375 / 0.52);
+  --color-text-quaternary: oklch(0.967 0.001 286.375 / 0.3);
 
   /* Accent - Violet, desaturated for dark */
-  --color-accent: #9b7bf5;
-  --color-accent-hover: #ad92f7;
-  --color-accent-soft: rgba(155, 123, 245, 0.16);
-  --color-accent-softer: rgba(155, 123, 245, 0.08);
+  --color-accent: oklch(0.668 0.176 293.133);
+  --color-accent-hover: oklch(0.725 0.145 294.824);
+  --color-accent-soft: oklch(0.668 0.176 293.133 / 0.16);
+  --color-accent-softer: oklch(0.668 0.176 293.133 / 0.08);
 
   /* Semantic colors */
-  --color-success: #10b981;
-  --color-success-soft: rgba(16, 185, 129, 0.12);
-  --color-warning: #f59e0b;
-  --color-warning-soft: rgba(245, 158, 11, 0.12);
-  --color-error: #ef4444;
-  --color-error-soft: rgba(239, 68, 68, 0.12);
-  --color-info: #3b82f6;
-  --color-info-soft: rgba(59, 130, 246, 0.12);
+  --color-success: oklch(0.696 0.149 162.48);
+  --color-success-soft: oklch(0.696 0.149 162.48 / 0.12);
+  --color-warning: oklch(0.769 0.165 70.08);
+  --color-warning-soft: oklch(0.769 0.165 70.08 / 0.12);
+  --color-error: oklch(0.645 0.208 25.331);
+  --color-error-soft: oklch(0.645 0.208 25.331 / 0.12);
+  --color-info: oklch(0.629 0.188 259.815);
+  --color-info-soft: oklch(0.629 0.188 259.815 / 0.12);
 
   /* Shadows */
-  --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.4);
-  --shadow-md: 0 4px 12px rgba(0, 0, 0, 0.5);
-  --shadow-lg: 0 8px 32px rgba(0, 0, 0, 0.6);
-  --shadow-glow: 0 0 24px rgba(139, 92, 246, 0.2);
+  --shadow-sm: 0 1px 2px oklch(0 0 0 / 0.4);
+  --shadow-md: 0 4px 12px oklch(0 0 0 / 0.5);
+  --shadow-lg: 0 8px 32px oklch(0 0 0 / 0.6);
+  --shadow-glow: 0 0 24px oklch(0.606 0.219 292.717 / 0.2);
 
   /* Radius */
   --radius-xs: 4px;
@@ -72,12 +72,12 @@
   --control-height: 32px;
 
   /* Text drawn on a solid --color-accent fill (checkbox tick, etc.) */
-  --color-text-on-accent: #ffffff;
+  --color-text-on-accent: oklch(1 0 0);
 
   /* Dimming layer behind a drawer/dialog */
-  --color-scrim: rgba(0, 0, 0, 0.5);
-  --color-scrollbar-thumb: rgba(255, 255, 255, 0.08);
-  --color-scrollbar-thumb-hover: rgba(255, 255, 255, 0.12);
+  --color-scrim: oklch(0 0 0 / 0.5);
+  --color-scrollbar-thumb: oklch(1 0 0 / 0.08);
+  --color-scrollbar-thumb-hover: oklch(1 0 0 / 0.12);
 
   /* Z-index scale - small, so anything new only needs to pick a rung */
   --z-backdrop: 20;
@@ -91,6 +91,17 @@
    onto the tokens above so the kit inherits this theme instead of shadcn's
    default one. Imported after @theme so the bridge can reference these. */
 @import "@skill-studio/ui/styles";
+
+/* Tailwind v4's preflight leaves buttons at cursor: default; every enabled
+   control should read as clickable without a per-element cursor-pointer. */
+@layer base {
+  button:not(:disabled),
+  [role="button"]:not([aria-disabled="true"]),
+  select:not(:disabled),
+  summary {
+    cursor: pointer;
+  }
+}
 :root {
   /* Default (and data-theme="dark"): native scrollbars, form controls, and
      window chrome match the app's dark chrome. */
@@ -100,46 +111,46 @@
   --color-icon-muted: color-mix(in srgb, var(--color-text-primary) 48%, var(--color-bg-primary));
 } /* Light theme overrides */
 :root[data-theme="light"] {
-  --color-bg-primary: #ffffff;
-  --color-bg-secondary: #f4f4f5;
-  --color-bg-tertiary: #e4e4e7;
-  --color-bg-elevated: #ffffff;
-  --color-bg-hover: rgba(0, 0, 0, 0.04);
-  --color-bg-active: rgba(0, 0, 0, 0.08);
+  --color-bg-primary: oklch(1 0 0);
+  --color-bg-secondary: oklch(0.967 0.001 286.375);
+  --color-bg-tertiary: oklch(0.92 0.004 286.32);
+  --color-bg-elevated: oklch(1 0 0);
+  --color-bg-hover: oklch(0 0 0 / 0.04);
+  --color-bg-active: oklch(0 0 0 / 0.08);
 
-  --color-border: rgba(0, 0, 0, 0.08);
-  --color-border-subtle: rgba(0, 0, 0, 0.04);
-  --color-border-strong: rgba(0, 0, 0, 0.22);
-  --color-border-focus: rgba(139, 92, 246, 0.5);
+  --color-border: oklch(0 0 0 / 0.08);
+  --color-border-subtle: oklch(0 0 0 / 0.04);
+  --color-border-strong: oklch(0 0 0 / 0.22);
+  --color-border-focus: oklch(0.606 0.219 292.717 / 0.5);
 
-  --color-text-primary: #09090b;
-  --color-text-secondary: rgba(9, 9, 11, 0.7);
-  --color-text-tertiary: rgba(9, 9, 11, 0.5);
-  --color-text-quaternary: rgba(9, 9, 11, 0.3);
+  --color-text-primary: oklch(0.141 0.004 285.823);
+  --color-text-secondary: oklch(0.141 0.004 285.823 / 0.7);
+  --color-text-tertiary: oklch(0.141 0.004 285.823 / 0.58);
+  --color-text-quaternary: oklch(0.141 0.004 285.823 / 0.3);
 
-  --color-accent: #7c3aed;
-  --color-accent-hover: #6d28d9;
-  --color-accent-soft: rgba(124, 58, 237, 0.12);
-  --color-accent-softer: rgba(124, 58, 237, 0.06);
+  --color-accent: oklch(0.541 0.247 293.009);
+  --color-accent-hover: oklch(0.491 0.241 292.581);
+  --color-accent-soft: oklch(0.541 0.247 293.009 / 0.12);
+  --color-accent-softer: oklch(0.541 0.247 293.009 / 0.06);
 
-  --color-success: #059669;
-  --color-success-soft: rgba(5, 150, 105, 0.12);
-  --color-warning: #d97706;
-  --color-warning-soft: rgba(217, 119, 6, 0.12);
-  --color-error: #dc2626;
-  --color-error-soft: rgba(220, 38, 38, 0.12);
-  --color-info: #2563eb;
-  --color-info-soft: rgba(37, 99, 235, 0.12);
+  --color-success: oklch(0.514 0.109 163.225);
+  --color-success-soft: oklch(0.514 0.109 163.225 / 0.12);
+  --color-warning: oklch(0.534 0.113 70.08);
+  --color-warning-soft: oklch(0.534 0.113 70.08 / 0.12);
+  --color-error: oklch(0.544 0.215 27.325);
+  --color-error-soft: oklch(0.544 0.215 27.325 / 0.12);
+  --color-info: oklch(0.538 0.215 262.881);
+  --color-info-soft: oklch(0.538 0.215 262.881 / 0.12);
 
-  --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.08);
-  --shadow-md: 0 4px 12px rgba(0, 0, 0, 0.12);
-  --shadow-lg: 0 8px 32px rgba(0, 0, 0, 0.16);
-  --shadow-glow: 0 0 24px rgba(124, 58, 237, 0.16);
+  --shadow-sm: 0 1px 2px oklch(0 0 0 / 0.08);
+  --shadow-md: 0 4px 12px oklch(0 0 0 / 0.12);
+  --shadow-lg: 0 8px 32px oklch(0 0 0 / 0.16);
+  --shadow-glow: 0 0 24px oklch(0.541 0.247 293.009 / 0.16);
 
   /* Dimming layer behind a drawer/dialog */
-  --color-scrim: rgba(0, 0, 0, 0.3);
-  --color-scrollbar-thumb: rgba(9, 9, 11, 0.16);
-  --color-scrollbar-thumb-hover: rgba(9, 9, 11, 0.28);
+  --color-scrim: oklch(0 0 0 / 0.3);
+  --color-scrollbar-thumb: oklch(0.141 0.004 285.823 / 0.16);
+  --color-scrollbar-thumb-hover: oklch(0.141 0.004 285.823 / 0.28);
 
   color-scheme: light;
 } /* Base styles */
@@ -283,85 +294,16 @@ body {
 /* ============================================================================
    Skill Detail - Markdown body, editor, and Locations card
    ============================================================================ */
-.skill-markdown {
-  max-width: 72ch;
-  padding: 12px 16px;
-  font-size: var(--text-body);
-  line-height: 1.6;
-  color: var(--color-text-secondary);
-}
-.skill-markdown h1,
-.skill-markdown h2,
-.skill-markdown h3 {
-  color: var(--color-text-primary);
-  font-weight: 600;
-  margin: 1.2em 0 0.5em;
-}
-.skill-markdown h1 {
-  font-size: var(--text-heading-lg);
-}
-.skill-markdown h2 {
-  font-size: var(--text-heading);
-}
-.skill-markdown h3 {
-  font-size: var(--text-emphasis);
-}
-.skill-markdown h1:first-child,
-.skill-markdown h2:first-child,
-.skill-markdown h3:first-child {
-  margin-top: 0;
-}
-.skill-markdown-table-wrap {
-  overflow-x: auto;
-  margin: 0 0 1em;
-}
-.skill-markdown-table-wrap table {
-  border-collapse: collapse;
-  font-size: var(--text-small);
-}
-.skill-markdown-table-wrap th,
-.skill-markdown-table-wrap td {
-  padding: 6px 10px;
-  border: 1px solid var(--color-border-subtle);
-  text-align: left;
-}
-.skill-markdown p {
-  margin: 0 0 1em;
-}
-.skill-markdown ul,
-.skill-markdown ol {
-  margin: 0 0 1em;
-  padding-left: 20px;
-}
-.skill-markdown code {
-  font-family: var(--font-mono);
-  font-size: var(--text-small);
-  background: var(--color-bg-tertiary);
-  border-radius: 4px;
-  padding: 1px 4px;
-}
-.skill-markdown pre {
-  background: var(--color-bg-tertiary);
-  border-radius: var(--radius-sm);
-  padding: 10px 12px;
-  overflow-x: auto;
-}
-.skill-markdown pre code {
-  background: none;
-  padding: 0;
-}
-.skill-markdown a {
-  color: var(--color-accent);
-}
-.skill-markdown blockquote {
-  margin: 0 0 1em;
-  padding-left: 12px;
-  border-left: 2px solid var(--color-border);
-  color: var(--color-text-tertiary);
-}
+/* .skill-markdown rules moved to Tailwind utilities in SkillMarkdown.tsx. */
 /* Add-skill sheet */
 /* A wide diff is the one place in the app where a hidden horizontal scrollbar
    costs the reader content, so this scroller keeps a visible thumb. */
+.skill-compare-dialog-body {
+  /* Same shadow-DOM boundary crossing as .skill-proposed-hunk-body, but the
+     dialog sits on the elevated surface. */
+  --diffs-light-bg: var(--color-bg-elevated);
+  --diffs-dark-bg: var(--color-bg-elevated);
+}
 .skill-compare-dialog-body::-webkit-scrollbar {
   width: 10px;
   height: 10px;

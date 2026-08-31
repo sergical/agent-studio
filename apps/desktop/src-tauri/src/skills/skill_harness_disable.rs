@@ -1,8 +1,8 @@
 // ============================================================================
 // Skills Module - skill_harness_disable
 // Per-harness disable, distinct from `skill_park` (which disables a skill
-// everywhere by moving its shared folder aside). Three mechanisms, one per
-// harness that has a native switch, plus a refusal for the rest:
+// everywhere by moving its shared folder aside). Three native mechanisms,
+// one per harness that has one, plus a universal fallback for the rest:
 //   - Codex: `~/.codex/config.toml` `[[skills.config]] enabled = false`
 //     (codex_skill_config.rs).
 //   - OpenCode: `~/.config/opencode/opencode.json` `permission.skill.<name>
@@ -11,22 +11,151 @@
 //     per-skill symlink under `~/.claude/skills/<name>` and records the fact
 //     in the registry's `harness_disabled` bucket (skill_park.rs's
 //     `take_claude_link`/`restore_claude_link`, shared with parking).
-//   - pi, Cursor, Grok Build: no per-skill switch and no substitute exists
-//     (they read the shared folder directly), so this refuses outright
-//     rather than silently doing nothing.
+//   - Every other deployment (plain directory copies, project-scope
+//     symlinks, pi/Cursor/Grok Build): `disable_deployment_at`/
+//     `restore_deployment_at` rename the deployment's directory into a
+//     sibling `.skill-studio-disabled/` holding directory in the same skills
+//     root. Harnesses scan their skills root one level deep, so the moved
+//     entry becomes invisible to them without touching its content -
+//     `skill_discovery.rs` walks the holding directory the same way so the
+//     UI still shows it (as disabled). Shared-root and plugin-cache
+//     deployments refuse this - see `set_deployment_enabled`.
 // ============================================================================
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use super::codex_skill_config;
 use super::opencode_skill_permission;
 use super::skill_agent_runner::validate_skill_dir_name;
+use super::skill_discovery::STUDIO_DISABLED_DIR_NAME;
+use super::skill_dto::DisabledBy;
 use super::skill_fork::ForkMutationLock;
 use super::skill_fork_registry::{read_fork_registry, write_fork_registry, ClaudeLinkRemoved};
 use super::skill_park::{
     claude_link_state, restore_claude_link, take_claude_link, ClaudeLinkState,
 };
 use super::skill_refresh::{self, SkillRefreshState};
+
+/// Disable a deployment with no native per-harness switch by renaming its
+/// directory into a sibling `.skill-studio-disabled/` holding directory in
+/// its skills root (creating it if missing). Returns the moved path.
+/// Refuses if the destination already exists. A relative symlink is
+/// recreated one level deeper at the destination (target prefixed with
+/// `../`) rather than renamed as-is, so it still resolves to the same
+/// canonical target from inside the holding directory; an absolute symlink,
+/// or a plain directory, is renamed as-is.
+pub fn disable_deployment_at(path: &Path) -> Result<PathBuf, String> {
+    let name = path
+        .file_name()
+        .ok_or_else(|| format!("\"{}\" has no file name", path.display()))?;
+    let root = path
+        .parent()
+        .ok_or_else(|| format!("\"{}\" has no parent directory", path.display()))?;
+    refuse_shared_root(root)?;
+    let holding_dir = root.join(STUDIO_DISABLED_DIR_NAME);
+    std::fs::create_dir_all(&holding_dir)
+        .map_err(|e| format!("Failed to create {}: {e}", holding_dir.display()))?;
+    let dest = holding_dir.join(name);
+    move_deployment(path, &dest, |target| Path::new("..").join(target))
+}
+
+/// Restore a deployment `disable_deployment_at` moved aside, renaming it back
+/// from `<root>/.skill-studio-disabled/<name>` to `<root>/<name>`. `path`
+/// must sit directly inside a `.skill-studio-disabled` directory. Refuses if
+/// the original position is already occupied. Reverses the relative-symlink
+/// adjustment `disable_deployment_at` made, by stripping one leading `../`.
+pub fn restore_deployment_at(path: &Path) -> Result<PathBuf, String> {
+    let name = path
+        .file_name()
+        .ok_or_else(|| format!("\"{}\" has no file name", path.display()))?;
+    let holding_dir = path
+        .parent()
+        .ok_or_else(|| format!("\"{}\" has no parent directory", path.display()))?;
+    if holding_dir.file_name().and_then(|n| n.to_str()) != Some(STUDIO_DISABLED_DIR_NAME) {
+        return Err(format!(
+            "\"{}\" is not inside a {STUDIO_DISABLED_DIR_NAME} holding directory",
+            path.display()
+        ));
+    }
+    let root = holding_dir
+        .parent()
+        .ok_or_else(|| format!("\"{}\" has no parent directory", holding_dir.display()))?;
+    let dest = root.join(name);
+    move_deployment(path, &dest, |target| {
+        target.strip_prefix("..").unwrap_or(&target).to_path_buf()
+    })
+}
+
+/// Shared move for `disable_deployment_at`/`restore_deployment_at`: refuses
+/// if `dest` already exists, relinks a relative symlink one level shallower
+/// or deeper via `adjust_relative_target` so it keeps resolving to the same
+/// canonical target, and otherwise renames `path` to `dest` as-is.
+fn move_deployment(
+    path: &Path,
+    dest: &Path,
+    adjust_relative_target: impl FnOnce(PathBuf) -> PathBuf,
+) -> Result<PathBuf, String> {
+    if std::fs::symlink_metadata(dest).is_ok() {
+        return Err(format!("\"{}\" already exists", dest.display()));
+    }
+
+    let meta = std::fs::symlink_metadata(path)
+        .map_err(|e| format!("Failed to read {}: {e}", path.display()))?;
+    if meta.file_type().is_symlink() {
+        let target = std::fs::read_link(path)
+            .map_err(|e| format!("Failed to read symlink {}: {e}", path.display()))?;
+        if target.is_relative() {
+            std::fs::remove_file(path)
+                .map_err(|e| format!("Failed to remove {}: {e}", path.display()))?;
+            let adjusted = adjust_relative_target(target);
+            return create_symlink(&adjusted, dest).map(|()| dest.to_path_buf());
+        }
+    }
+
+    std::fs::rename(path, dest).map_err(|e| {
+        format!(
+            "Failed to move {} to {}: {e}",
+            path.display(),
+            dest.display()
+        )
+    })?;
+    Ok(dest.to_path_buf())
+}
+
+/// Refuse to move a deployment whose skills root physically resolves into a
+/// shared `.agents/skills` folder. The agent-label check in
+/// `set_deployment_enabled` misses this case: a harness dir that is itself a
+/// symlink into the shared root (e.g. `~/.claude/skills -> ../.agents/skills`)
+/// makes the "Claude Code" deployment's real location the shared copy, and
+/// moving it would disable the skill for every harness at once.
+fn refuse_shared_root(root: &Path) -> Result<(), String> {
+    let canonical = std::fs::canonicalize(root).unwrap_or_else(|_| root.to_path_buf());
+    let components: Vec<_> = canonical
+        .components()
+        .filter_map(|c| c.as_os_str().to_str())
+        .collect();
+    if components.windows(2).any(|w| w == [".agents", "skills"]) {
+        return Err(format!(
+            "\"{}\" resolves into the shared .agents/skills folder - disabling it here would \
+             disable the skill for every harness. Park the skill instead.",
+            root.display()
+        ));
+    }
+    Ok(())
+}
+
+fn create_symlink(target: &Path, link: &Path) -> Result<(), String> {
+    #[cfg(unix)]
+    {
+        std::os::unix::fs::symlink(target, link)
+            .map_err(|e| format!("Failed to symlink {}: {e}", link.display()))
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = (target, link);
+        Err("Symlinking is only supported on Unix".to_string())
+    }
+}
 
 /// Disables (or re-enables) `name` for Claude Code by removing (or
 /// recreating) its per-skill symlink under `~/.claude/skills/<name>`.
@@ -101,7 +230,10 @@ pub fn set_harness_enabled_with(
                 .ok_or_else(|| format!("No Codex deployment found for \"{name}\""))?;
             codex_skill_config::set_skill_disabled(home, path, !enabled)
         }
-        "opencode" => opencode_skill_permission::set_skill_denied(home, name, !enabled),
+        // The frontend's AgentId spells it "open-code"; the CLI name is "opencode".
+        "opencode" | "open-code" => {
+            opencode_skill_permission::set_skill_denied(home, name, !enabled)
+        }
         "claude-code" => set_claude_code_enabled(home, name, enabled),
         "pi" | "cursor" | "grok-build" => Err(format!(
             "{agent} has no per-skill disable - it reads the shared skills folder directly"
@@ -141,11 +273,103 @@ pub fn set_harness_enabled(
         codex_skill_md_path.as_deref(),
     );
     if result.is_ok() {
-        if let Err(e) = skill_refresh::rebuild_snapshot_now(&app, &refresh_state) {
-            eprintln!("[set_harness_enabled] snapshot rebuild failed: {e}");
+        // Surgical: mark the harness's deployments right away; the background
+        // loop's full rebuild (skills_dirty) re-derives the true state - which
+        // mechanism disabled it, and the symlink Claude Code's removal took.
+        let normalized_agent: String = agent.chars().filter(|c| *c != '-').collect();
+        if let Err(e) = skill_refresh::patch_snapshot_and_emit(&app, &refresh_state, |snapshot| {
+            let Some(skill) = snapshot.skills.iter_mut().find(|s| s.name == name) else {
+                return;
+            };
+            for deployment in &mut skill.deployments {
+                let label: String = deployment
+                    .agent
+                    .to_lowercase()
+                    .chars()
+                    .filter(|c| *c != ' ' && *c != '-')
+                    .collect();
+                if label == normalized_agent {
+                    deployment.disabled = !enabled;
+                    if enabled {
+                        deployment.disabled_by = None;
+                    }
+                }
+            }
+        }) {
+            eprintln!("[set_harness_enabled] snapshot patch failed: {e}");
         }
     }
     result
+}
+
+/// Disable (or re-enable) a deployment by moving it into (or out of) its
+/// skills root's `.skill-studio-disabled/` holding directory - the universal
+/// fallback for harnesses with no native per-skill switch (see the module
+/// doc). Refuses shared-root and plugin-provided deployments, which this
+/// mechanism can't touch: a shared-root move would disable the skill for
+/// every harness at once (that's `skill_park`'s job), and a plugin's skill
+/// dir is owned by the plugin cache, not something Skill Studio should
+/// rename.
+#[tauri::command]
+pub fn set_deployment_enabled(
+    name: String,
+    path: String,
+    enabled: bool,
+    app: tauri::AppHandle,
+    refresh_state: tauri::State<SkillRefreshState>,
+    fork_lock: tauri::State<ForkMutationLock>,
+) -> Result<(), String> {
+    let _guard = fork_lock.try_acquire()?;
+    let path_buf = PathBuf::from(&path);
+    super::commands::require_snapshot_owns_path(&refresh_state, &path_buf)?;
+
+    let snapshot = refresh_state.snapshot.read().ok().and_then(|g| g.clone());
+    let deployment = snapshot
+        .as_ref()
+        .and_then(|s| s.skills.iter().find(|s| s.name == name))
+        .and_then(|s| s.deployments.iter().find(|d| d.path == path));
+    if !enabled {
+        if let Some(deployment) = deployment {
+            if deployment.agent == "shared" {
+                return Err(
+                    "Shared-root deployments can't be disabled per harness - park the skill instead"
+                        .to_string(),
+                );
+            }
+            if deployment.plugin.is_some() {
+                return Err("Plugin-provided deployments can't be disabled".to_string());
+            }
+        }
+    }
+
+    let result = if enabled {
+        restore_deployment_at(&path_buf)
+    } else {
+        disable_deployment_at(&path_buf)
+    };
+    let new_path = result?;
+
+    // Surgical: patch the moved deployment's path and disabled state right
+    // away; the background loop's full rebuild (skills_dirty) reconciles the
+    // rest (frontmatter fields, hashes) moments later.
+    if let Err(e) = skill_refresh::patch_snapshot_and_emit(&app, &refresh_state, |snapshot| {
+        let Some(skill) = snapshot.skills.iter_mut().find(|s| s.name == name) else {
+            return;
+        };
+        let Some(deployment) = skill.deployments.iter_mut().find(|d| d.path == path) else {
+            return;
+        };
+        deployment.path = new_path.to_string_lossy().to_string();
+        deployment.disabled = !enabled;
+        deployment.disabled_by = if enabled {
+            None
+        } else {
+            Some(DisabledBy::StudioMoved)
+        };
+    }) {
+        eprintln!("[set_deployment_enabled] snapshot patch failed: {e}");
+    }
+    Ok(())
 }
 
 #[cfg(test)]
@@ -253,5 +477,89 @@ mod tests {
                 set_harness_enabled_with(tmp.path(), "find-bugs", agent, false, None).unwrap_err();
             assert!(err.contains("no per-skill disable"), "{agent}: {err}");
         }
+    }
+
+    #[test]
+    fn disable_then_restore_round_trips_a_plain_directory() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path().join(".cursor/skills");
+        write_skill(&root.join("find-bugs"), "find-bugs");
+
+        let moved = disable_deployment_at(&root.join("find-bugs")).unwrap();
+        assert_eq!(moved, root.join(".skill-studio-disabled/find-bugs"));
+        assert!(!root.join("find-bugs").exists());
+        assert!(moved.join("SKILL.md").is_file());
+
+        let restored = restore_deployment_at(&moved).unwrap();
+        assert_eq!(restored, root.join("find-bugs"));
+        assert!(restored.join("SKILL.md").is_file());
+        assert!(!moved.exists());
+    }
+
+    #[test]
+    fn disable_refuses_a_root_that_resolves_into_the_shared_folder() {
+        let tmp = tempfile::tempdir().unwrap();
+        let home = tmp.path();
+        write_skill(&home.join(".agents/skills/find-bugs"), "find-bugs");
+        fs::create_dir_all(home.join(".claude")).unwrap();
+        std::os::unix::fs::symlink("../.agents/skills", home.join(".claude/skills")).unwrap();
+
+        let err = disable_deployment_at(&home.join(".claude/skills/find-bugs")).unwrap_err();
+        assert!(err.contains("shared .agents/skills"), "{err}");
+        assert!(home.join(".agents/skills/find-bugs/SKILL.md").is_file());
+        assert!(!home.join(".agents/skills/.skill-studio-disabled").exists());
+    }
+
+    #[test]
+    fn disable_then_restore_round_trips_a_relative_symlink() {
+        let tmp = tempfile::tempdir().unwrap();
+        let home = tmp.path();
+        write_skill(&home.join(".agents/skills/find-bugs"), "find-bugs");
+        let root = home.join(".claude/skills");
+        fs::create_dir_all(&root).unwrap();
+        let link = root.join("find-bugs");
+        std::os::unix::fs::symlink("../../.agents/skills/find-bugs", &link).unwrap();
+
+        let moved = disable_deployment_at(&link).unwrap();
+        assert_eq!(moved, root.join(".skill-studio-disabled/find-bugs"));
+        // Still resolves to the same canonical target from one level deeper.
+        assert_eq!(
+            fs::canonicalize(&moved).unwrap(),
+            fs::canonicalize(home.join(".agents/skills/find-bugs")).unwrap()
+        );
+        assert_eq!(
+            fs::read_link(&moved).unwrap(),
+            std::path::PathBuf::from("../../../.agents/skills/find-bugs")
+        );
+
+        let restored = restore_deployment_at(&moved).unwrap();
+        assert_eq!(restored, link);
+        assert_eq!(
+            fs::read_link(&restored).unwrap(),
+            std::path::PathBuf::from("../../.agents/skills/find-bugs")
+        );
+    }
+
+    #[test]
+    fn disable_refuses_when_destination_already_exists() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path().join(".cursor/skills");
+        write_skill(&root.join("find-bugs"), "find-bugs");
+        write_skill(&root.join(".skill-studio-disabled/find-bugs"), "find-bugs");
+
+        let err = disable_deployment_at(&root.join("find-bugs")).unwrap_err();
+        assert!(err.contains("already exists"), "{err}");
+    }
+
+    #[test]
+    fn restore_refuses_when_original_position_is_occupied() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path().join(".cursor/skills");
+        write_skill(&root.join("find-bugs"), "find-bugs");
+        write_skill(&root.join(".skill-studio-disabled/find-bugs"), "find-bugs");
+
+        let err =
+            restore_deployment_at(&root.join(".skill-studio-disabled/find-bugs")).unwrap_err();
+        assert!(err.contains("already exists"), "{err}");
     }
 }

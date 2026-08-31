@@ -285,8 +285,15 @@ pub fn set_skill_invocation(
 
     let result = set_skill_invocation_with(&canonical, policy, has_codex_deployment);
     if result.is_ok() {
-        if let Err(e) = skill_refresh::rebuild_snapshot_now(&app, &refresh_state) {
-            eprintln!("[set_skill_invocation] snapshot rebuild failed: {e}");
+        // Surgical: flip the field the frontend renders and emit right away;
+        // the background loop's full rebuild (skills_dirty) reconciles the
+        // derived state (frontmatter fields, hashes) moments later.
+        if let Err(e) = skill_refresh::patch_snapshot_and_emit(&app, &refresh_state, |snapshot| {
+            if let Some(skill) = snapshot.skills.iter_mut().find(|s| s.name == name) {
+                skill.invocation = policy;
+            }
+        }) {
+            eprintln!("[set_skill_invocation] snapshot patch failed: {e}");
         }
     }
     result

@@ -86,7 +86,7 @@ export function InfoPopover({ label, title, children, onLearnMore, className }: 
         </svg>
       </button>
       <div
-        className="absolute top-[calc(100%+8px)] left-1/2 z-tooltip flex w-70 -translate-x-1/2 flex-col items-start gap-2 rounded-sm border border-border bg-bg-elevated py-2.5 px-3 text-left text-small leading-[1.45] font-normal text-text-primary shadow-md"
+        className="absolute top-[calc(100%+8px)] left-1/2 z-(--z-tooltip) flex w-70 -translate-x-1/2 flex-col items-start gap-2 rounded-sm border border-border bg-bg-elevated py-2.5 px-3 text-left text-small leading-[1.45] font-normal whitespace-normal text-text-primary shadow-md"
         role="dialog"
         aria-label={title}
         hidden={!isOpen}

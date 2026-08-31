@@ -164,7 +164,9 @@ export function findBrokenSymlinks(skills: InstalledSkill[]): HealthIssue[] {
       issues.push({
         kind: "broken-symlink",
         skill,
-        detail: `${deployment.agent} · ${deployment.path}`,
+        detail: deployment.symlink_target
+          ? `${deployment.agent} links to ${deployment.symlink_target}, which is missing`
+          : `${deployment.agent} · broken link at ${deployment.path}`,
       });
     }
   }

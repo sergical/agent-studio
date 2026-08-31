@@ -6,7 +6,7 @@
 // key list.
 // ============================================================================
 
-import { useState } from "react";
+import { Fragment, useState } from "react";
 import { AlertTriangle, ChevronRight, FolderOpen, Link2 } from "lucide-react";
 import {
   agentIdFromDeploymentLabel,
@@ -20,6 +20,7 @@ import type { DeploymentGroup } from "@skill-studio/lib";
 import {
   forkSkill,
   openSkillPath,
+  setDeploymentEnabled,
   setHarnessEnabled,
   setSkillInvocation,
 } from "../../lib/skill-api";
@@ -61,6 +62,32 @@ function invocationPolicyExplanation(policy: InvocationPolicy, skillName: string
 
 /** Harnesses with a per-skill disable switch - see `skill_harness_disable.rs`. */
 const HARNESSES_WITH_PER_SKILL_DISABLE = ["codex", "open-code", "claude-code"];
+
+/**
+ * Whether the Enabled switch can actually change this deployment. The disable
+ * mechanisms are global: Codex config, OpenCode permission, Claude Code's
+ * global per-skill symlink. A project-scope copy has nothing to toggle, so
+ * showing the switch there just produces an error - except when the row is
+ * already disabled, which must stay re-enableable.
+ */
+function canToggleHarness(deployment: Deployment): boolean {
+  const id = agentIdFromDeploymentLabel(deployment.agent) ?? "";
+  if (!HARNESSES_WITH_PER_SKILL_DISABLE.includes(id)) return false;
+  if (deployment.disabled) return true;
+  if (deployment.scope !== "global") return false;
+  return id !== "claude-code" || deployment.is_symlink;
+}
+
+/**
+ * Whether `setDeploymentEnabled`'s universal move-aside disable applies to
+ * this row - every harness row except the shared folder itself and
+ * plugin-provided deployments, which `skill_harness_disable.rs` refuses to
+ * move (a shared-root move would disable the skill everywhere at once, and a
+ * plugin's skill dir belongs to the plugin cache, not Skill Studio).
+ */
+function canMoveAsideDisable(deployment: Deployment): boolean {
+  return deployment.agent !== "shared" && !deployment.plugin && Boolean(deployment.path);
+}
 
 /** Plain-text relation for a deployment with no link to show - a chip covers every other case, see `linkChipFor`. */
 function relationLabel(deployment: Deployment): string | null {
@@ -162,13 +189,8 @@ function DeploymentRow({
   const [isTogglingHarness, setIsTogglingHarness] = useState(false);
   const harnessId = harnessIdFromLabel(deployment.agent);
   const relation = relationLabel(deployment);
-  const projectName =
-    deployment.scope === "project" && deployment.project_path
-      ? basename(deployment.project_path)
-      : null;
-  const supportsDisableSwitch = HARNESSES_WITH_PER_SKILL_DISABLE.includes(
-    agentIdFromDeploymentLabel(deployment.agent) ?? "",
-  );
+  const supportsNativeToggle = canToggleHarness(deployment);
+  const supportsDisableSwitch = supportsNativeToggle || canMoveAsideDisable(deployment);
 
   const handleReveal = () => {
     openSkillPath(deployment.path, "reveal").catch((err) => {
@@ -183,11 +205,20 @@ function DeploymentRow({
   const handleToggleEnabled = async (nextEnabled: boolean) => {
     setIsTogglingHarness(true);
     try {
-      await setHarnessEnabled(
-        skill.name,
-        agentIdFromDeploymentLabel(deployment.agent) ?? "",
-        nextEnabled,
-      );
+      // A deployment already move-aside disabled, or one with no native
+      // switch at all, always routes through the move-aside mechanism -
+      // even if `supportsNativeToggle` happens to be true (e.g. a global
+      // Claude Code symlink also qualifies for move-aside, but it's already
+      // disabled the native way, so re-enabling must use the same path).
+      if (deployment.disabled_by === "studio-moved" || !supportsNativeToggle) {
+        await setDeploymentEnabled(skill.name, deployment.path, nextEnabled);
+      } else {
+        await setHarnessEnabled(
+          skill.name,
+          agentIdFromDeploymentLabel(deployment.agent) ?? "",
+          nextEnabled,
+        );
+      }
     } catch (err) {
       addToast({
         type: "error",
@@ -201,14 +232,11 @@ function DeploymentRow({
 
   return (
     <div
-      className={`grid min-h-11 items-center gap-3 border-b border-border-subtle py-1.5 last:border-b-0 ${
+      className={`grid min-h-11 items-center gap-3 border-b border-border-subtle px-2 py-1.5 last:border-b-0 ${
         showPath ? "grid-cols-[minmax(0,1fr)_minmax(0,1fr)_auto]" : "grid-cols-[minmax(0,1fr)_auto]"
       }`}
     >
       <div className="flex min-w-0 items-center gap-2 text-body text-text-primary">
-        {projectName && (
-          <span className="shrink-0 text-small text-text-tertiary">{projectName}</span>
-        )}
         {harnessId && <HarnessIcon harness={harnessId} size={16} />}
         <span className="shrink-0">{harnessDisplayName(deployment)}</span>
         {relation && (
@@ -279,36 +307,56 @@ function SharedDeploymentGroup({
   skill: InstalledSkill;
 }) {
   const [expanded, setExpanded] = useState(true);
+  const hasLinks = group.linked.length > 0;
+  const headerContent = (
+    <>
+      <span className="flex min-w-0 items-center gap-2 text-body text-text-primary">
+        {hasLinks ? (
+          <ChevronRight
+            size={14}
+            className={`shrink-0 text-text-tertiary transition-transform ${expanded ? "rotate-90" : ""}`}
+          />
+        ) : (
+          <span aria-hidden="true" className="w-3.5 shrink-0" />
+        )}
+        <FolderOpen size={16} className="shrink-0" />
+        <span className="shrink-0">Shared folder</span>
+      </span>
+      <TooltipControl content={group.shared.path}>
+        <span
+          dir="rtl"
+          className="overflow-hidden text-left text-ellipsis whitespace-nowrap font-mono text-small text-text-tertiary"
+        >
+          <span dir="ltr" className="[unicode-bidi:isolate]">
+            {homeRelativePath(group.shared.path)}
+          </span>
+        </span>
+      </TooltipControl>
+      <span className="shrink-0 justify-self-end text-small tabular-nums text-text-tertiary">
+        {hasLinks
+          ? `used by ${group.linked.length} harness${group.linked.length === 1 ? "" : "es"}`
+          : "nothing links to it"}
+      </span>
+    </>
+  );
+  const gridClass =
+    "grid min-h-11 w-full grid-cols-[minmax(0,1fr)_minmax(0,1fr)_auto] items-center gap-3 px-2 py-1.5";
   return (
     <div className="border-b border-border-subtle last:border-b-0">
-      <button
-        type="button"
-        className="flex min-h-11 w-full cursor-pointer items-center gap-2 border-0 bg-none py-1.5 text-left font-inherit text-body text-text-primary"
-        aria-expanded={expanded}
-        onClick={() => setExpanded((open) => !open)}
-      >
-        <ChevronRight
-          size={14}
-          className={`shrink-0 text-text-tertiary transition-transform ${expanded ? "rotate-90" : ""}`}
-        />
-        <FolderOpen size={16} />
-        <span className="shrink-0">Shared folder</span>
-        <TooltipControl content={group.shared.path}>
-          <span
-            dir="rtl"
-            className="overflow-hidden text-left text-ellipsis whitespace-nowrap font-mono text-small text-text-tertiary"
-          >
-            <span dir="ltr" className="[unicode-bidi:isolate]">
-              {homeRelativePath(group.shared.path)}
-            </span>
-          </span>
-        </TooltipControl>
-        <span className="ml-auto shrink-0 text-small tabular-nums text-text-tertiary">
-          used by {group.linked.length} harness{group.linked.length === 1 ? "" : "es"}
-        </span>
-      </button>
-      {expanded && (
-        <div className="flex flex-col gap-0.5 pl-[22px]">
+      {hasLinks ? (
+        <button
+          type="button"
+          className={`${gridClass} cursor-pointer rounded-sm border-0 bg-none text-left font-inherit transition-colors hover:bg-bg-hover`}
+          aria-expanded={expanded}
+          onClick={() => setExpanded((open) => !open)}
+        >
+          {headerContent}
+        </button>
+      ) : (
+        <div className={gridClass}>{headerContent}</div>
+      )}
+      {hasLinks && expanded && (
+        <div className="flex flex-col pl-[22px]">
           {group.linked.map((deployment, i) => (
             <DeploymentRow
               key={`${deployment.agent}-${deployment.scope}-${i}`}
@@ -321,6 +369,34 @@ function SharedDeploymentGroup({
       )}
     </div>
   );
+}
+
+type LocationItem =
+  | { kind: "group"; group: DeploymentGroup }
+  | { kind: "row"; deployment: Deployment };
+
+/**
+ * Buckets shared groups and standalone rows by project (global first, then
+ * projects A→Z), so a project's name renders once as a section label
+ * instead of being prefixed onto every one of its rows.
+ */
+function locationSections(
+  groups: DeploymentGroup[],
+  standalone: Deployment[],
+): { label: string | null; items: LocationItem[] }[] {
+  const sections = new Map<string | null, LocationItem[]>();
+  const push = (key: string | null, item: LocationItem) => {
+    const list = sections.get(key) ?? [];
+    list.push(item);
+    sections.set(key, list);
+  };
+  const keyOf = (d: Deployment) =>
+    d.scope === "project" && d.project_path ? basename(d.project_path) : null;
+  for (const group of groups) push(keyOf(group.shared), { kind: "group", group });
+  for (const deployment of standalone) push(keyOf(deployment), { kind: "row", deployment });
+  return [...sections.entries()]
+    .sort(([a], [b]) => (a === null ? -1 : b === null ? 1 : a.localeCompare(b)))
+    .map(([label, items]) => ({ label, items }));
 }
 
 /**
@@ -366,6 +442,7 @@ export function SkillLocationsCard({
 
   const hasDriftingCopies = driftingCopies(locationSummary(skill)).length > 0;
   const { groups, standalone } = groupDeploymentsForDisplay(sortedDeployments(skill.deployments));
+  const sections = locationSections(groups, standalone);
 
   return (
     <div className="flex flex-col gap-1 rounded-lg border border-border-subtle p-4">
@@ -387,16 +464,26 @@ export function SkillLocationsCard({
           Known only from the lock file — no folder on disk.
         </p>
       ) : (
-        <div className="flex flex-col gap-0.5">
-          {groups.map((group, i) => (
-            <SharedDeploymentGroup key={`group-${i}`} group={group} skill={skill} />
-          ))}
-          {standalone.map((deployment, i) => (
-            <DeploymentRow
-              key={`${deployment.agent}-${deployment.scope}-${i}`}
-              deployment={deployment}
-              skill={skill}
-            />
+        <div className="-mx-2 flex flex-col">
+          {sections.map((section) => (
+            <Fragment key={section.label ?? "global"}>
+              {(section.label !== null || sections.length > 1) && (
+                <div className="px-2 pt-3 pb-1 text-caption font-medium tracking-[0.08em] text-text-tertiary uppercase first:pt-1">
+                  {section.label ?? "Global"}
+                </div>
+              )}
+              {section.items.map((item, i) =>
+                item.kind === "group" ? (
+                  <SharedDeploymentGroup key={`group-${i}`} group={item.group} skill={skill} />
+                ) : (
+                  <DeploymentRow
+                    key={`${item.deployment.agent}-${item.deployment.scope}-${i}`}
+                    deployment={item.deployment}
+                    skill={skill}
+                  />
+                ),
+              )}
+            </Fragment>
           ))}
         </div>
       )}

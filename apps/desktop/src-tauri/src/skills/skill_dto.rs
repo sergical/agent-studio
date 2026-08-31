@@ -15,14 +15,18 @@ use super::frontmatter::InvocationPolicy;
 use super::provenance::SourceKind;
 use super::skill_fork_registry::{AddMethod, OriginTool, TrialScope};
 
-/// Which of the three disable mechanisms `Deployment.disabled` came from -
-/// see `skill_harness_disable`.
+/// Which mechanism `Deployment.disabled` came from - see
+/// `skill_harness_disable`. The first three are native per-harness switches;
+/// `StudioMoved` is the universal fallback that renames the deployment's
+/// directory aside into a `.skill-studio-disabled/` holding directory in its
+/// skills root, for harnesses with no native switch.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum DisabledBy {
     CodexConfig,
     OpencodePermission,
     ClaudeLinkRemoved,
+    StudioMoved,
 }
 
 // ============================================================================

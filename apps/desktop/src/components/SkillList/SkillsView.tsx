@@ -14,7 +14,7 @@ import { registerSkillProjects, unregisterSkillProject } from "../../lib/skill-a
 import { collectDashboardIssues } from "@skill-studio/lib";
 import { applySkillListFilter, isProjectScope } from "@skill-studio/lib";
 import type { SkillListFilter } from "@skill-studio/lib";
-import { ownSkillsView, pluginSkillsView } from "@skill-studio/lib";
+import { ownSkillsView } from "@skill-studio/lib";
 import type { InstalledSkill, SkillSnapshot } from "@skill-studio/lib";
 import { useAppStore } from "../../store/appStore";
 
@@ -65,12 +65,10 @@ export function SkillsView({ snapshot, onSelectSkill }: SkillsViewProps) {
   ).filter((path) => !excludedProjects.includes(path));
 
   const allSkills = snapshot?.skills ?? [];
-  // Source "plugin" is the one filter value that reaches outside "your
-  // skills": switch the base list to the plugin-deployment view for it,
-  // rather than trying to make one filter mean two different partitions.
-  const baseSkills =
-    filter.source === "plugin" ? pluginSkillsView(allSkills) : ownSkillsView(allSkills);
-  const issues = collectDashboardIssues(ownSkillsView(allSkills));
+  // Plugin-shipped skills live in their own place (PluginSkillsView); this
+  // list is always the user's own skills.
+  const baseSkills = ownSkillsView(allSkills);
+  const issues = collectDashboardIssues(baseSkills);
   const filtered = applySkillListFilter(baseSkills, filter, issues, snapshot?.invocations);
 
   const handleAddProject = async () => {
@@ -145,7 +143,6 @@ export function SkillsView({ snapshot, onSelectSkill }: SkillsViewProps) {
           onSelectSkill={onSelectSkill}
           selectedSkillName={selectedSkillName}
           deploymentPathForSkill={(skill) => deploymentForScope(skill, filter.scope)}
-          lastTestBySkill={snapshot?.last_test_by_skill}
           hasAnySkills={baseSkills.length > 0}
           onClearFilters={resetSkillListFilter}
           onAddSkill={() => openAddSkillSheet()}

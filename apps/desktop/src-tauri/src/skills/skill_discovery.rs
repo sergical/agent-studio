@@ -320,6 +320,7 @@ fn build_candidate(
     scope: &str,
     facts: &SkillContentFacts,
     git_cache: &mut HashMap<PathBuf, bool>,
+    studio_disabled: bool,
 ) -> SkillCandidate {
     // The lexical name this deployment was found under (e.g. a symlink
     // alias's own name), not the canonical target's directory name: it's
@@ -380,6 +381,7 @@ fn build_candidate(
         modified_at: facts.modified_at.clone(),
         folder_truncated: facts.folder_truncated,
         in_git_repo: in_git_repo(skill_dir, git_cache),
+        studio_disabled,
     }
 }
 
@@ -388,6 +390,7 @@ fn build_candidate(
 /// `fs::read_link` target (resolved relative to the link's parent when
 /// relative), kept even though it doesn't canonicalize, so provenance can
 /// still pattern-match it (see `provenance::resolves_into_dotagents`).
+#[allow(clippy::too_many_arguments)]
 fn broken_symlink_candidate(
     entry_path: &Path,
     root: &agents::SkillRoot,
@@ -395,6 +398,7 @@ fn broken_symlink_candidate(
     symlink_target: Option<PathBuf>,
     symlink_is_broken: bool,
     symlink_error: Option<String>,
+    studio_disabled: bool,
 ) -> SkillCandidate {
     let name = entry_path
         .file_name()
@@ -425,6 +429,7 @@ fn broken_symlink_candidate(
         modified_at: None,
         folder_truncated: false,
         in_git_repo: false,
+        studio_disabled,
     }
 }
 
@@ -488,6 +493,119 @@ fn in_git_repo(dir: &Path, cache: &mut HashMap<PathBuf, bool>) -> bool {
     result
 }
 
+/// Name of the holding directory `skill_harness_disable`'s universal
+/// move-aside disable renames a deployment into, sitting as a sibling of the
+/// deployment inside its skills root. Skipped in the normal one-level pass
+/// so it's never itself treated as a skill folder, then walked separately
+/// (also one level deep) so its contents surface as disabled candidates.
+pub(crate) const STUDIO_DISABLED_DIR_NAME: &str = ".skill-studio-disabled";
+
+/// Scan one directory's immediate entries (either an agent skill root itself,
+/// or its `.skill-studio-disabled/` holding directory) for skill folders and
+/// push a candidate for each into `out`. `studio_disabled` marks every
+/// candidate found this way, so `skill_assembly` can surface them as
+/// disabled via `DisabledBy::StudioMoved`.
+#[allow(clippy::too_many_arguments)]
+fn scan_root_entries(
+    dir: &Path,
+    root: &agents::SkillRoot,
+    has_lock_entry: bool,
+    scope: &str,
+    studio_disabled: bool,
+    facts_cache: &mut HashMap<PathBuf, Arc<SkillContentFacts>>,
+    git_cache: &mut HashMap<PathBuf, bool>,
+    tokenizer: Option<&CoreBPE>,
+    out: &mut Vec<SkillCandidate>,
+) {
+    let Ok(entries) = fs::read_dir(dir) else {
+        return;
+    };
+
+    for entry in entries.flatten() {
+        let entry_path = entry.path();
+        if !studio_disabled
+            && entry_path.file_name().and_then(|n| n.to_str()) == Some(STUDIO_DISABLED_DIR_NAME)
+        {
+            continue;
+        }
+        let sym_meta = fs::symlink_metadata(&entry_path).ok();
+        let is_symlink = sym_meta
+            .as_ref()
+            .map(|m| m.file_type().is_symlink())
+            .unwrap_or(false);
+
+        if is_symlink {
+            match resolve_symlink(&entry_path) {
+                SymlinkResolution::Resolved(target) => {
+                    if !target.join("SKILL.md").is_file() {
+                        continue;
+                    }
+                    if let Some(facts) = get_or_compute_facts(facts_cache, &target, tokenizer) {
+                        out.push(build_candidate(
+                            &entry_path,
+                            &target,
+                            root,
+                            true,
+                            Some(target.clone()),
+                            None,
+                            has_lock_entry,
+                            scope,
+                            &facts,
+                            git_cache,
+                            studio_disabled,
+                        ));
+                    }
+                }
+                SymlinkResolution::Broken(raw_target) => {
+                    out.push(broken_symlink_candidate(
+                        &entry_path,
+                        root,
+                        scope,
+                        raw_target,
+                        true,
+                        None,
+                        studio_disabled,
+                    ));
+                }
+                SymlinkResolution::Error(raw_target, message) => {
+                    out.push(broken_symlink_candidate(
+                        &entry_path,
+                        root,
+                        scope,
+                        raw_target,
+                        false,
+                        Some(message),
+                        studio_disabled,
+                    ));
+                }
+            }
+            continue;
+        }
+
+        let is_dir = fs::metadata(&entry_path)
+            .map(|m| m.is_dir())
+            .unwrap_or(false);
+        if !is_dir || !entry_path.join("SKILL.md").is_file() {
+            continue;
+        }
+        if let Some(facts) = get_or_compute_facts(facts_cache, &entry_path, tokenizer) {
+            out.push(build_candidate(
+                &entry_path,
+                &entry_path,
+                root,
+                false,
+                None,
+                None,
+                has_lock_entry,
+                scope,
+                &facts,
+                git_cache,
+                studio_disabled,
+            ));
+        }
+    }
+}
+
 fn scope_str(root: &agents::SkillRoot) -> &'static str {
     if root.label == "parked" {
         // Distinct from "global" so a parked skill's deployment doesn't get
@@ -523,90 +641,35 @@ fn discover_with_facts_cache(
     let tokenizer = tiktoken_rs::cl100k_base().ok();
 
     for root in agents::skill_roots(home, project_paths) {
-        let Ok(entries) = fs::read_dir(&root.path) else {
-            continue;
-        };
         let has_lock_entry = shared_root_has_lock_entry(&root);
         let scope = scope_str(&root);
 
-        for entry in entries.flatten() {
-            let entry_path = entry.path();
-            let sym_meta = fs::symlink_metadata(&entry_path).ok();
-            let is_symlink = sym_meta
-                .as_ref()
-                .map(|m| m.file_type().is_symlink())
-                .unwrap_or(false);
-
-            if is_symlink {
-                match resolve_symlink(&entry_path) {
-                    SymlinkResolution::Resolved(target) => {
-                        if !target.join("SKILL.md").is_file() {
-                            continue;
-                        }
-                        if let Some(facts) =
-                            get_or_compute_facts(&mut facts_cache, &target, tokenizer.as_ref())
-                        {
-                            out.push(build_candidate(
-                                &entry_path,
-                                &target,
-                                &root,
-                                true,
-                                Some(target.clone()),
-                                None,
-                                has_lock_entry,
-                                scope,
-                                &facts,
-                                &mut git_cache,
-                            ));
-                        }
-                    }
-                    SymlinkResolution::Broken(raw_target) => {
-                        out.push(broken_symlink_candidate(
-                            &entry_path,
-                            &root,
-                            scope,
-                            raw_target,
-                            true,
-                            None,
-                        ));
-                    }
-                    SymlinkResolution::Error(raw_target, message) => {
-                        out.push(broken_symlink_candidate(
-                            &entry_path,
-                            &root,
-                            scope,
-                            raw_target,
-                            false,
-                            Some(message),
-                        ));
-                    }
-                }
-                continue;
-            }
-
-            let is_dir = fs::metadata(&entry_path)
-                .map(|m| m.is_dir())
-                .unwrap_or(false);
-            if !is_dir || !entry_path.join("SKILL.md").is_file() {
-                continue;
-            }
-            if let Some(facts) =
-                get_or_compute_facts(&mut facts_cache, &entry_path, tokenizer.as_ref())
-            {
-                out.push(build_candidate(
-                    &entry_path,
-                    &entry_path,
-                    &root,
-                    false,
-                    None,
-                    None,
-                    has_lock_entry,
-                    scope,
-                    &facts,
-                    &mut git_cache,
-                ));
-            }
-        }
+        scan_root_entries(
+            &root.path,
+            &root,
+            has_lock_entry,
+            scope,
+            false,
+            &mut facts_cache,
+            &mut git_cache,
+            tokenizer.as_ref(),
+            &mut out,
+        );
+        // The holding directory `skill_harness_disable`'s universal
+        // move-aside disable renames deployments into - walked the same way
+        // so its entries surface as disabled candidates rather than
+        // vanishing from the snapshot entirely.
+        scan_root_entries(
+            &root.path.join(STUDIO_DISABLED_DIR_NAME),
+            &root,
+            has_lock_entry,
+            scope,
+            true,
+            &mut facts_cache,
+            &mut git_cache,
+            tokenizer.as_ref(),
+            &mut out,
+        );
     }
 
     // Native plugin enumeration: skills bundled inside a Claude Code or
@@ -663,6 +726,7 @@ fn discover_with_facts_cache(
             modified_at: facts.modified_at.clone(),
             folder_truncated: facts.folder_truncated,
             in_git_repo: in_git_repo(&plugin_skill.skill_dir, &mut git_cache),
+            studio_disabled: false,
         });
     }
 
@@ -1152,6 +1216,31 @@ mod tests {
             .find(|c| c.name == "tracked-skill")
             .expect("in-repo skill found");
         assert!(found.in_git_repo);
+    }
+
+    #[test]
+    fn skill_moved_into_holding_dir_is_flagged_studio_disabled_without_double_counting() {
+        let tmp = tempfile::tempdir().unwrap();
+        let home = tmp.path();
+        write_skill(
+            &home
+                .join(".claude/skills")
+                .join(STUDIO_DISABLED_DIR_NAME)
+                .join("find-bugs"),
+            "find-bugs",
+        );
+
+        let candidates = discover_skill_candidates(home, &[]);
+        let matching: Vec<_> = candidates
+            .iter()
+            .filter(|c| c.name == "find-bugs")
+            .collect();
+        assert_eq!(
+            matching.len(),
+            1,
+            "holding-dir entry must not be double-counted"
+        );
+        assert!(matching[0].studio_disabled);
     }
 
     #[test]

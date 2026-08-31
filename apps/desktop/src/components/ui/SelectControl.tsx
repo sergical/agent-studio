@@ -18,6 +18,8 @@ interface SelectControlProps {
   ariaLabel: string;
   /** Rendered before the trigger's value text, e.g. a harness icon. */
   leadingIcon?: React.ReactNode;
+  /** Short label before the value, e.g. "Sort:" - names what the select controls. */
+  triggerPrefix?: string;
 }
 
 export function SelectControl({
@@ -26,6 +28,7 @@ export function SelectControl({
   items,
   ariaLabel,
   leadingIcon,
+  triggerPrefix,
 }: SelectControlProps) {
   return (
     <Select
@@ -37,14 +40,20 @@ export function SelectControl({
     >
       <SelectTrigger
         aria-label={ariaLabel}
-        className="h-(--control-height) min-w-0 justify-between gap-1.5 rounded-sm border-border bg-bg-tertiary py-0 pr-2 pl-3 text-body text-text-secondary hover:bg-bg-hover hover:text-text-primary data-open:text-text-primary"
+        className="h-(--control-height) min-w-0 justify-between gap-1.5 rounded-sm border-border bg-transparent py-0 pr-2 pl-3 text-body text-text-secondary hover:bg-bg-hover hover:text-text-primary data-open:text-text-primary"
       >
         <span className="inline-flex min-w-0 flex-1 items-center gap-1.5 overflow-hidden">
+          {triggerPrefix && <span className="shrink-0 text-text-tertiary">{triggerPrefix}</span>}
           {leadingIcon}
           <SelectValue className="truncate" />
         </span>
       </SelectTrigger>
-      <SelectContent className="min-w-(--anchor-width) gap-px rounded-md border border-border bg-bg-secondary p-1 shadow-md">
+      {/* Drop the kit's macOS-style overlay positioning (alignItemWithTrigger) and
+          its anchor-width sizing: a narrow trigger would clip longer item labels. */}
+      <SelectContent
+        alignItemWithTrigger={false}
+        className="w-auto min-w-(--anchor-width) gap-px rounded-md border border-border bg-bg-secondary p-1 shadow-md"
+      >
         {items.map((item) => (
           <SelectItem
             key={item.value}

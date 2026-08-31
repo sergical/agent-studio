@@ -21,6 +21,7 @@ import {
 } from "lucide-react";
 import { ownSkillsView, pluginSkillsView } from "@skill-studio/lib";
 import { defaultSkillListFilter } from "@skill-studio/lib";
+import { isFeatureEnabled } from "../../lib/feature-flags";
 import { useAppStore } from "../../store/appStore";
 import type { ActiveView } from "../../store/appStore";
 import type { SkillSnapshot } from "@skill-studio/lib";
@@ -82,11 +83,12 @@ export function Sidebar({ snapshot, isLoading, requestRescan }: SidebarProps) {
   const skillsCount = own.length;
   const parkedCount = own.filter((s) => s.parked).length;
   const pluginCount = pluginSkillsView(snapshot?.skills ?? []).length;
-  // Parked and Plugins are sub-sections of the skills list, so the Skills
-  // row is only "current" when neither of those partitions is selected.
+  // Parked is a sub-section of the skills list, so the Skills row is only
+  // "current" when that partition isn't selected. Plugin skills are their
+  // own place (see PluginSkillsView), not a filter on Skills.
   const inParked = skillListFilter.scope === "parked";
-  const inPlugins = skillListFilter.source === "plugin";
-  const skillsActive = anchorView.kind === "skills" && !inParked && !inPlugins;
+  const skillsActive = anchorView.kind === "skills" && !inParked;
+  const packsEnabled = isFeatureEnabled("skill-packs");
 
   // Typing while on another view switches to Skills directly in the change
   // handler, so the query always has somewhere to act - no effect-based
@@ -153,7 +155,7 @@ export function Sidebar({ snapshot, isLoading, requestRescan }: SidebarProps) {
         <button
           className={itemClass(skillsActive)}
           onClick={() => {
-            if (inParked || inPlugins) setSkillListFilter(defaultSkillListFilter());
+            if (inParked) setSkillListFilter(defaultSkillListFilter());
             setActiveView({ kind: "skills" });
           }}
         >
@@ -167,11 +169,8 @@ export function Sidebar({ snapshot, isLoading, requestRescan }: SidebarProps) {
         </button>
         {pluginCount > 0 && (
           <button
-            className={itemClass(anchorView.kind === "skills" && inPlugins)}
-            onClick={() => {
-              setSkillListFilter({ ...defaultSkillListFilter(), source: "plugin" });
-              setActiveView({ kind: "skills" });
-            }}
+            className={itemClass(anchorView.kind === "plugins")}
+            onClick={() => setActiveView({ kind: "plugins" })}
           >
             <Puzzle size={15} />
             <span className="min-w-0 truncate">Plugins</span>
@@ -187,13 +186,15 @@ export function Sidebar({ snapshot, isLoading, requestRescan }: SidebarProps) {
           <ActivityIcon size={15} />
           <span className="min-w-0 truncate">Activity</span>
         </button>
-        <button
-          className={itemClass(anchorView.kind === "packs")}
-          onClick={() => setActiveView({ kind: "packs" })}
-        >
-          <Package size={15} />
-          <span className="min-w-0 truncate">Packs</span>
-        </button>
+        {packsEnabled && (
+          <button
+            className={itemClass(anchorView.kind === "packs")}
+            onClick={() => setActiveView({ kind: "packs" })}
+          >
+            <Package size={15} />
+            <span className="min-w-0 truncate">Packs</span>
+          </button>
+        )}
       </div>
 
       {parkedCount > 0 && (

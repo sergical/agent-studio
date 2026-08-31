@@ -374,6 +374,35 @@ pub fn rebuild_snapshot_now(
     Ok(built)
 }
 
+/// Apply a surgical edit to the in-memory snapshot, emit it, and mark skills
+/// dirty so the background loop reconciles with disk within its next poll.
+/// Mutation commands whose disk change is small (one frontmatter rewrite, one
+/// symlink) use this instead of an inline `rebuild_snapshot_now`, which
+/// rescans every skill directory on the command thread and freezes the UI
+/// for however long that takes.
+pub fn patch_snapshot_and_emit(
+    app: &AppHandle,
+    state: &SkillRefreshState,
+    patch: impl FnOnce(&mut SkillSnapshot),
+) -> Result<(), String> {
+    let built = {
+        let mut guard = state
+            .snapshot
+            .write()
+            .map_err(|e| format!("snapshot lock poisoned: {e}"))?;
+        let Some(snapshot) = guard.as_mut() else {
+            // No snapshot yet - the pending full build will pick up the change.
+            state.skills_dirty.store(true, Ordering::SeqCst);
+            return Ok(());
+        };
+        patch(snapshot);
+        snapshot.clone()
+    };
+    state.skills_dirty.store(true, Ordering::SeqCst);
+    app.emit(SNAPSHOT_EVENT, &built)
+        .map_err(|e| format!("failed to emit {SNAPSHOT_EVENT}: {e}"))
+}
+
 /// Refresh only the invocation index and recompute stats/heatmap, reusing
 /// `skills`/`projects` from the current snapshot rather than rescanning skill
 /// directories. Cheaper than `rebuild_snapshot_now`, used for the frequent

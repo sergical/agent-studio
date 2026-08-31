@@ -114,6 +114,7 @@ mod tests {
             modified_at: None,
             folder_truncated: false,
             in_git_repo: false,
+            studio_disabled: false,
         }
     }
 
