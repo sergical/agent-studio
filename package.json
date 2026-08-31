@@ -26,6 +26,9 @@
   "devDependencies": {
     "react-doctor": "^0.9.12"
   },
+  "engines": {
+    "node": "^22.18.0 || >=24.11.0"
+  },
   "allowScripts": {
     "esbuild@0.28.2": true,
     "fsevents@2.3.3": true

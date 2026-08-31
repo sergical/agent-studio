@@ -87,7 +87,6 @@
   --color-highlight: var(--color-bg-hover);
   --color-highlight-foreground: var(--color-text-primary);
   --color-destructive: var(--color-error);
-  --color-border: var(--color-border);
   --color-input: var(--color-border);
   --color-ring: var(--color-border-focus);
 

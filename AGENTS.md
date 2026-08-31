@@ -352,7 +352,7 @@ Tracks installed skills with their sources and hashes:
 - Installation: Uses `npx skills add <skill>` for battle-tested install logic
 - Removal: Uses `npx skills remove <skill>`
 - Updates: Uses `npx skills update <skill>`
-- Requires Node.js 18+
+- Requires Node.js ^22.18 or >=24.11 (the `npx skills` CLI itself needs only 18+, but the build toolchain needs the newer range)
 
 ### First-Class Agents
 

@@ -32,7 +32,7 @@ The app features a dark theme with a sidebar navigation and Monaco editor integr
 
 ### Prerequisites
 
-- [Node.js](https://nodejs.org/) (v18+)
+- [Node.js](https://nodejs.org/) (^22.18 or >=24.11 — required by the Vite 8 / Babel 8 toolchain)
 - [Rust](https://rustup.rs/)
 - [Tauri CLI](https://tauri.app/start/prerequisites/)
 
