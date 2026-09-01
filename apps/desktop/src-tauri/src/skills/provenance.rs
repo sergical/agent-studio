@@ -115,6 +115,7 @@ mod tests {
             folder_truncated: false,
             in_git_repo: false,
             studio_disabled: false,
+            shared_via_whole_dir_link: false,
         }
     }
 

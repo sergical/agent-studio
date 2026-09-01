@@ -72,4 +72,8 @@ pub struct SkillCandidate {
     /// `skill_harness_disable`'s universal move-aside disable. Maps to
     /// `Deployment.disabled` + `DisabledBy::StudioMoved` in `skill_assembly`.
     pub studio_disabled: bool,
+    /// True when this candidate's skills root (its entry's parent) is itself
+    /// a symlink resolving into the shared `.agents/skills` folder - see
+    /// `Deployment.shared_via_whole_dir_link`.
+    pub shared_via_whole_dir_link: bool,
 }

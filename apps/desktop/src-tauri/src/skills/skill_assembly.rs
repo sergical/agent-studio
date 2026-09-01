@@ -147,7 +147,9 @@ pub fn assemble_installed_skills(
             content_hash: candidate.content_hash.clone(),
             disabled: candidate.studio_disabled,
             disabled_by: candidate.studio_disabled.then_some(DisabledBy::StudioMoved),
+            disabled_readers: Vec::new(),
             codex_implicit_invocation: None,
+            shared_via_whole_dir_link: candidate.shared_via_whole_dir_link,
         });
     }
 
@@ -201,6 +203,7 @@ mod tests {
             folder_truncated: false,
             in_git_repo: false,
             studio_disabled: false,
+            shared_via_whole_dir_link: false,
         }
     }
 

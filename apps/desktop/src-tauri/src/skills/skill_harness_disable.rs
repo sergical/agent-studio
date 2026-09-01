@@ -25,6 +25,8 @@
 use std::path::{Path, PathBuf};
 
 use super::codex_skill_config;
+use super::event_commands::EventStoreState;
+use super::event_store::{fingerprint_path, EventDraft, EventStatus, InverseOp};
 use super::opencode_skill_permission;
 use super::skill_agent_runner::validate_skill_dir_name;
 use super::skill_discovery::STUDIO_DISABLED_DIR_NAME;
@@ -105,10 +107,15 @@ fn move_deployment(
         let target = std::fs::read_link(path)
             .map_err(|e| format!("Failed to read symlink {}: {e}", path.display()))?;
         if target.is_relative() {
-            std::fs::remove_file(path)
-                .map_err(|e| format!("Failed to remove {}: {e}", path.display()))?;
+            // Create the adjusted destination first so a failure at any point
+            // leaves the original link in place; only then remove the source.
             let adjusted = adjust_relative_target(target);
-            return create_symlink(&adjusted, dest).map(|()| dest.to_path_buf());
+            create_symlink(&adjusted, dest)?;
+            if let Err(e) = std::fs::remove_file(path) {
+                let _ = std::fs::remove_file(dest);
+                return Err(format!("Failed to remove {}: {e}", path.display()));
+            }
+            return Ok(dest.to_path_buf());
         }
     }
 
@@ -154,6 +161,102 @@ fn create_symlink(target: &Path, link: &Path) -> Result<(), String> {
     {
         let _ = (target, link);
         Err("Symlinking is only supported on Unix".to_string())
+    }
+}
+
+/// The deterministic destination `disable_deployment_at`/`restore_deployment_at`
+/// compute for `path`, without performing the move - so the event can be
+/// recorded before the mutation runs. `enabled` selects which direction:
+/// `true` mirrors `restore_deployment_at` (moving out of the holding
+/// directory), `false` mirrors `disable_deployment_at` (moving into it).
+fn move_aside_dest(path: &Path, enabled: bool) -> Result<PathBuf, String> {
+    let name = path
+        .file_name()
+        .ok_or_else(|| format!("\"{}\" has no file name", path.display()))?;
+    if enabled {
+        let holding_dir = path
+            .parent()
+            .ok_or_else(|| format!("\"{}\" has no parent directory", path.display()))?;
+        let root = holding_dir
+            .parent()
+            .ok_or_else(|| format!("\"{}\" has no parent directory", holding_dir.display()))?;
+        Ok(root.join(name))
+    } else {
+        let root = path
+            .parent()
+            .ok_or_else(|| format!("\"{}\" has no parent directory", path.display()))?;
+        Ok(root.join(STUDIO_DISABLED_DIR_NAME).join(name))
+    }
+}
+
+/// Records the pending `move_aside_disable`/`move_aside_restore` event for a
+/// `set_deployment_enabled` move, before the move happens. `pre_fingerprint`
+/// is `path`'s fingerprint right now - the destination the inverse restores,
+/// since `path` is still at its pre-mutation position. Returns the event id
+/// and `path` (the inverse's destination), for `finish_move_aside_event`.
+fn record_move_aside_event(
+    store: &super::event_store::EventStore,
+    name: &str,
+    path: &Path,
+    enabled: bool,
+) -> Result<(String, PathBuf), String> {
+    let dest = move_aside_dest(path, enabled)?;
+    let pre_fingerprint = fingerprint_path(path);
+    let id = super::event_store::allocate_id();
+    let inverse = InverseOp::MoveBack {
+        from: dest.clone(),
+        to: path.to_path_buf(),
+        pre_fingerprint,
+        post_fingerprint: None,
+    };
+    store.record(
+        &id,
+        EventDraft {
+            kind: if enabled {
+                "move_aside_restore".to_string()
+            } else {
+                "move_aside_disable".to_string()
+            },
+            skill: name.to_string(),
+            harness: None,
+            scope: None,
+            project_path: None,
+            payload: serde_json::json!({ "from": path, "to": dest }),
+            inverse: Some(
+                serde_json::to_value(&inverse)
+                    .map_err(|e| format!("Failed to serialize inverse: {e}"))?,
+            ),
+            backup_dir: None,
+        },
+    )?;
+    Ok((id, path.to_path_buf()))
+}
+
+/// Patches the recorded event's post-fingerprint and finishes it `done` or
+/// `failed`, matching the outcome of the move `record_move_aside_event`
+/// preceded. `original` is `path`'s pre-mutation position (now absent on
+/// success - the content moved to `dest`).
+fn finish_move_aside_event(
+    store: &super::event_store::EventStore,
+    id: &str,
+    original: &Path,
+    result: &Result<PathBuf, String>,
+) {
+    match result {
+        Ok(_) => {
+            let post_fp = fingerprint_path(original);
+            if let Err(e) = store.patch_inverse_post_fingerprint(id, &post_fp) {
+                eprintln!("[set_deployment_enabled] failed to patch event {id}: {e}");
+            }
+            if let Err(e) = store.finish(id, EventStatus::Done) {
+                eprintln!("[set_deployment_enabled] failed to finish event {id}: {e}");
+            }
+        }
+        Err(_) => {
+            if let Err(e) = store.finish(id, EventStatus::Failed) {
+                eprintln!("[set_deployment_enabled] failed to finish event {id}: {e}");
+            }
+        }
     }
 }
 
@@ -212,23 +315,27 @@ fn set_claude_code_enabled(home: &Path, name: &str, enabled: bool) -> Result<(),
     }
 }
 
-/// `set_harness_enabled`'s logic, taking `home` (and, for Codex, the
-/// deployment's canonical `SKILL.md` path) directly so it's testable
-/// without a Tauri `AppHandle`. `agent` is an `AgentId::cli_name()`, e.g.
-/// `"codex"`, `"opencode"`, `"claude-code"`.
+/// `set_harness_enabled`'s logic, taking `home` (and, for Codex, every
+/// deployment path Codex can see the skill at - its own dir and any shared
+/// root) directly so it's testable without a Tauri `AppHandle`. `agent` is an
+/// `AgentId::cli_name()`, e.g. `"codex"`, `"opencode"`, `"claude-code"`.
 pub fn set_harness_enabled_with(
     home: &Path,
     name: &str,
     agent: &str,
     enabled: bool,
-    codex_skill_md_path: Option<&Path>,
+    codex_skill_md_paths: &[PathBuf],
 ) -> Result<(), String> {
     validate_skill_dir_name(name)?;
     match agent {
         "codex" => {
-            let path = codex_skill_md_path
-                .ok_or_else(|| format!("No Codex deployment found for \"{name}\""))?;
-            codex_skill_config::set_skill_disabled(home, path, !enabled)
+            if codex_skill_md_paths.is_empty() {
+                return Err(format!("No Codex-visible deployment found for \"{name}\""));
+            }
+            for path in codex_skill_md_paths {
+                codex_skill_config::set_skill_disabled(home, path, !enabled)?;
+            }
+            Ok(())
         }
         // The frontend's AgentId spells it "open-code"; the CLI name is "opencode".
         "opencode" | "open-code" => {
@@ -254,24 +361,24 @@ pub fn set_harness_enabled(
     let _guard = fork_lock.try_acquire()?;
     let home = dirs::home_dir().ok_or("Could not find home directory")?;
 
-    let codex_skill_md_path = if agent == "codex" {
+    let codex_skill_md_paths: Vec<PathBuf> = if agent == "codex" {
         let snapshot = refresh_state.snapshot.read().ok().and_then(|g| g.clone());
         snapshot
             .as_ref()
             .and_then(|s| s.skills.iter().find(|s| s.name == name))
-            .and_then(|s| s.deployments.iter().find(|d| d.agent == "Codex"))
-            .map(|d| std::path::PathBuf::from(&d.path).join("SKILL.md"))
+            .map(|s| {
+                s.deployments
+                    .iter()
+                    .filter(|d| d.agent == "Codex" || d.agent == "shared")
+                    .map(|d| PathBuf::from(&d.path).join("SKILL.md"))
+                    .collect()
+            })
+            .unwrap_or_default()
     } else {
-        None
+        Vec::new()
     };
 
-    let result = set_harness_enabled_with(
-        &home,
-        &name,
-        &agent,
-        enabled,
-        codex_skill_md_path.as_deref(),
-    );
+    let result = set_harness_enabled_with(&home, &name, &agent, enabled, &codex_skill_md_paths);
     if result.is_ok() {
         // Surgical: mark the harness's deployments right away; the background
         // loop's full rebuild (skills_dirty) re-derives the true state - which
@@ -294,6 +401,13 @@ pub fn set_harness_enabled(
                         deployment.disabled_by = None;
                     }
                 }
+                if deployment.agent == "shared" && matches!(agent.as_str(), "codex" | "open-code") {
+                    if enabled {
+                        deployment.disabled_readers.retain(|a| a != &agent);
+                    } else if !deployment.disabled_readers.contains(&agent) {
+                        deployment.disabled_readers.push(agent.clone());
+                    }
+                }
             }
         }) {
             eprintln!("[set_harness_enabled] snapshot patch failed: {e}");
@@ -311,6 +425,7 @@ pub fn set_harness_enabled(
 /// dir is owned by the plugin cache, not something Skill Studio should
 /// rename.
 #[tauri::command]
+#[allow(clippy::too_many_arguments)]
 pub fn set_deployment_enabled(
     name: String,
     path: String,
@@ -318,6 +433,7 @@ pub fn set_deployment_enabled(
     app: tauri::AppHandle,
     refresh_state: tauri::State<SkillRefreshState>,
     fork_lock: tauri::State<ForkMutationLock>,
+    event_store: tauri::State<EventStoreState>,
 ) -> Result<(), String> {
     let _guard = fork_lock.try_acquire()?;
     let path_buf = PathBuf::from(&path);
@@ -342,11 +458,32 @@ pub fn set_deployment_enabled(
         }
     }
 
+    // The event id is allocated (and the pending row recorded) before the
+    // move, from the same deterministic dest `disable_deployment_at`/
+    // `restore_deployment_at` compute internally - see the module doc's
+    // move-aside mechanism. `store_guard` may hold `None` if the event store
+    // failed to open at startup; the move still happens (the mutation isn't
+    // gated on event logging), it just isn't recorded/restorable.
+    let store_guard = event_store
+        .0
+        .lock()
+        .map_err(|e| format!("event store lock poisoned: {e}"))?;
+    let store = store_guard.as_ref();
+    let event = store
+        .map(|store| record_move_aside_event(store, &name, &path_buf, enabled))
+        .transpose()?;
+
     let result = if enabled {
         restore_deployment_at(&path_buf)
     } else {
         disable_deployment_at(&path_buf)
     };
+
+    if let (Some(store), Some((id, original))) = (store, &event) {
+        finish_move_aside_event(store, id, original, &result);
+    }
+    drop(store_guard);
+
     let new_path = result?;
 
     // Surgical: patch the moved deployment's path and disabled state right
@@ -393,13 +530,27 @@ mod tests {
         let skill_md = home.join("skills/find-bugs/SKILL.md");
         write_skill(skill_md.parent().unwrap(), "find-bugs");
 
-        set_harness_enabled_with(home, "find-bugs", "codex", false, Some(&skill_md)).unwrap();
+        set_harness_enabled_with(
+            home,
+            "find-bugs",
+            "codex",
+            false,
+            std::slice::from_ref(&skill_md),
+        )
+        .unwrap();
         assert_eq!(
             codex_skill_config::read_disabled_skill_md_paths(home),
             vec![fs::canonicalize(&skill_md).unwrap()]
         );
 
-        set_harness_enabled_with(home, "find-bugs", "codex", true, Some(&skill_md)).unwrap();
+        set_harness_enabled_with(
+            home,
+            "find-bugs",
+            "codex",
+            true,
+            std::slice::from_ref(&skill_md),
+        )
+        .unwrap();
         assert!(codex_skill_config::read_disabled_skill_md_paths(home).is_empty());
     }
 
@@ -407,8 +558,8 @@ mod tests {
     fn codex_disable_without_a_deployment_path_refuses() {
         let tmp = tempfile::tempdir().unwrap();
         let err =
-            set_harness_enabled_with(tmp.path(), "find-bugs", "codex", false, None).unwrap_err();
-        assert!(err.contains("No Codex deployment"));
+            set_harness_enabled_with(tmp.path(), "find-bugs", "codex", false, &[]).unwrap_err();
+        assert!(err.contains("No Codex-visible deployment"));
     }
 
     #[test]
@@ -416,13 +567,13 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let home = tmp.path();
 
-        set_harness_enabled_with(home, "find-bugs", "opencode", false, None).unwrap();
+        set_harness_enabled_with(home, "find-bugs", "opencode", false, &[]).unwrap();
         assert_eq!(
             opencode_skill_permission::read_denied_patterns(home),
             vec!["find-bugs".to_string()]
         );
 
-        set_harness_enabled_with(home, "find-bugs", "opencode", true, None).unwrap();
+        set_harness_enabled_with(home, "find-bugs", "opencode", true, &[]).unwrap();
         assert!(opencode_skill_permission::read_denied_patterns(home).is_empty());
     }
 
@@ -438,7 +589,7 @@ mod tests {
         )
         .unwrap();
 
-        set_harness_enabled_with(home, "find-bugs", "claude-code", false, None).unwrap();
+        set_harness_enabled_with(home, "find-bugs", "claude-code", false, &[]).unwrap();
         assert!(!home.join(".claude/skills/find-bugs").exists());
         let registry = read_fork_registry(home).unwrap();
         assert_eq!(
@@ -446,7 +597,7 @@ mod tests {
             std::path::PathBuf::from("../../.agents/skills/find-bugs")
         );
 
-        set_harness_enabled_with(home, "find-bugs", "claude-code", true, None).unwrap();
+        set_harness_enabled_with(home, "find-bugs", "claude-code", true, &[]).unwrap();
         assert!(fs::symlink_metadata(home.join(".claude/skills/find-bugs"))
             .unwrap()
             .file_type()
@@ -465,7 +616,7 @@ mod tests {
             .unwrap();
 
         let err =
-            set_harness_enabled_with(home, "find-bugs", "claude-code", false, None).unwrap_err();
+            set_harness_enabled_with(home, "find-bugs", "claude-code", false, &[]).unwrap_err();
         assert!(err.contains("whole shared folder"));
     }
 
@@ -474,7 +625,7 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         for agent in ["pi", "cursor", "grok-build"] {
             let err =
-                set_harness_enabled_with(tmp.path(), "find-bugs", agent, false, None).unwrap_err();
+                set_harness_enabled_with(tmp.path(), "find-bugs", agent, false, &[]).unwrap_err();
             assert!(err.contains("no per-skill disable"), "{agent}: {err}");
         }
     }

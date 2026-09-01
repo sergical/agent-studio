@@ -33,6 +33,10 @@ chrono = { version = "0.4.45", default-features = false, features = ["clock", "s
 notify = "6"
 notify-debouncer-mini = "0.4"
 libc = "0.2"
+# 0.37 does not exist on crates.io as of writing; 0.40.2 is the newest
+# available in the 0.3x/0.4x line, per spec's fallback instruction.
+rusqlite = { version = "0.40", features = ["bundled"] }
+ulid = "1"
 
 [dev-dependencies]
 tempfile = "3"

@@ -17,7 +17,7 @@ use super::project_discovery;
 use super::provenance::SourceKind;
 use super::skill_agent_runner::validate_skill_dir_name;
 use super::skill_dto::{
-    InstallRequest, InstallResult, InstalledSkill, PaginatedSkillsResponse, SkillSearchResult,
+    InstallRequest, InstallResult, InstalledSkill, PaginatedSkillsResponse, SkillDetails,
 };
 use super::skill_fork;
 use super::skill_fork_registry;
@@ -102,36 +102,52 @@ pub(crate) fn dotagents_remove_args(name: &str) -> Vec<String> {
     ]
 }
 
+/// Loads the skills.sh bearer token from `~/.agents/skill-studio.json`,
+/// shared by all three skills.sh commands below. `read_fork_registry`
+/// against the real home dir, same as other commands do.
+fn require_api_key() -> Result<String, String> {
+    let home = dirs::home_dir().ok_or("Could not find home directory")?;
+    let registry = skill_fork_registry::read_fork_registry(&home)?;
+    registry.skills_sh_api_key.ok_or_else(|| {
+        "No skills.sh API key configured. Add \"skills_sh_api_key\" to ~/.agents/skill-studio.json."
+            .to_string()
+    })
+}
+
 /// Search for skills on skills.sh
 #[tauri::command]
 pub async fn search_skills(
     query: String,
     limit: Option<u32>,
-    offset: Option<u32>,
 ) -> Result<PaginatedSkillsResponse, String> {
-    api::search_skills(&query, limit, offset).await
+    let api_key = require_api_key()?;
+    api::search_skills(&api_key, &query, limit).await
 }
 
 /// Get popular skills (sorted by install count)
 #[tauri::command]
 pub async fn get_popular_skills(
-    limit: Option<u32>,
-    offset: Option<u32>,
+    page: Option<u32>,
+    per_page: Option<u32>,
 ) -> Result<PaginatedSkillsResponse, String> {
-    api::get_popular_skills(limit, offset).await
+    let api_key = require_api_key()?;
+    api::get_popular_skills(&api_key, page, per_page).await
 }
 
 /// Get skill details from skills.sh
 #[tauri::command]
-pub async fn get_skill_details(skill_id: String) -> Result<SkillSearchResult, String> {
-    api::get_skill_details(&skill_id).await
+pub async fn get_skill_details(skill_id: String) -> Result<SkillDetails, String> {
+    let api_key = require_api_key()?;
+    api::get_skill_details(&api_key, &skill_id).await
 }
 
 /// Get all installed skills. Returns the background-refreshed snapshot's
 /// skills (see `skill_refresh`) when it already accounts for every path in
-/// `project_paths`; otherwise registers the missing paths and rebuilds the
-/// snapshot synchronously (so this read-after-write sees fresh data), which
-/// also covers the case where the background snapshot hasn't landed yet.
+/// `project_paths` and no mutation is pending (`skills_dirty`); otherwise
+/// registers the missing paths and rebuilds the snapshot synchronously (so
+/// this read-after-write sees fresh data), which also covers the case where
+/// the background snapshot hasn't landed yet or a mutation just landed and
+/// the background rebuild hasn't caught up.
 #[tauri::command]
 pub fn get_installed_skills(
     project_paths: Option<Vec<String>>,
@@ -142,7 +158,9 @@ pub fn get_installed_skills(
     let snapshot = refresh_state.snapshot.read().ok().and_then(|g| g.clone());
 
     if let Some(snapshot) = &snapshot {
-        if snapshot_covers_projects(&requested, &snapshot.projects) {
+        if !refresh_state.is_skills_dirty()
+            && snapshot_covers_projects(&requested, &snapshot.projects)
+        {
             return Ok(snapshot.skills.clone());
         }
     }
@@ -244,7 +262,9 @@ mod tests {
                     content_hash: String::new(),
                     disabled: false,
                     disabled_by: None,
+                    disabled_readers: Vec::new(),
                     codex_implicit_invocation: None,
+                    shared_via_whole_dir_link: false,
                 }],
                 has_spec: false,
                 description: None,
@@ -527,7 +547,6 @@ pub fn get_agent_targets() -> Vec<AgentTarget> {
 pub async fn install_skill(
     request: InstallRequest,
     app: tauri::AppHandle,
-    refresh_state: tauri::State<'_, SkillRefreshState>,
 ) -> Result<InstallResult, String> {
     // Parse skill_source - could be "owner/repo" or "owner/repo/skill-name"
     // or just "skill-name" for well-known skills
@@ -569,9 +588,7 @@ pub async fn install_skill(
                 .to_string()
         });
 
-        if let Err(e) = skill_refresh::rebuild_snapshot_now(&app, &refresh_state) {
-            eprintln!("[install_skill] snapshot rebuild failed: {e}");
-        }
+        skill_refresh::request_snapshot_rebuild(&app);
         Ok(InstallResult {
             success: true,
             skill_name: result_name,
@@ -638,7 +655,7 @@ pub async fn remove_skill(
         .map(|s| s.source_kind)
         == Some(SourceKind::Fork);
     if is_fork {
-        return remove_forked_skill(skill_name, app, refresh_state);
+        return remove_forked_skill(skill_name, app);
     }
 
     let scope = if global {
@@ -669,9 +686,7 @@ pub async fn remove_skill(
                 eprintln!("[remove_skill] failed to drop trial record: {e}");
             }
         }
-        if let Err(e) = skill_refresh::rebuild_snapshot_now(&app, &refresh_state) {
-            eprintln!("[remove_skill] snapshot rebuild failed: {e}");
-        }
+        skill_refresh::request_snapshot_rebuild(&app);
         Ok(InstallResult {
             success: true,
             skill_name,
@@ -695,11 +710,7 @@ pub async fn remove_skill(
 /// `remove_skill`'s path for a forked skill: it's not in any ledger, so
 /// there's nothing for a CLI to remove - delete the directory directly and
 /// drop the fork-registry record and snapshot.
-fn remove_forked_skill(
-    skill_name: String,
-    app: tauri::AppHandle,
-    refresh_state: tauri::State<'_, SkillRefreshState>,
-) -> Result<InstallResult, String> {
+fn remove_forked_skill(skill_name: String, app: tauri::AppHandle) -> Result<InstallResult, String> {
     // Callers hold `ForkMutationLock` for the whole `remove_skill` call - the
     // mutex isn't reentrant, so this function must not acquire it again.
     validate_skill_dir_name(&skill_name)?;
@@ -729,9 +740,7 @@ fn remove_forked_skill(
         &skill_name,
     ));
 
-    if let Err(e) = skill_refresh::rebuild_snapshot_now(&app, &refresh_state) {
-        eprintln!("[remove_skill] snapshot rebuild failed: {e}");
-    }
+    skill_refresh::request_snapshot_rebuild(&app);
     Ok(InstallResult {
         success: true,
         skill_name,
@@ -785,10 +794,11 @@ pub(crate) fn canonicalize_skill_md(
 }
 
 /// Read up to 2 MiB of an installed skill's `SKILL.md` straight off disk, for
-/// the detail panel's SKILL.md viewer. Unlike `github-skill-source.ts`'s
-/// fetch-from-GitHub path, this works for manual/plugin skills that have no
-/// remote source. Restricted to `SKILL.md` files belonging to a deployment in
-/// the current snapshot, to keep this from becoming an arbitrary-file read.
+/// the installed-skill detail page's SKILL.md viewer - works for
+/// manual/plugin skills that have no remote source, unlike the skills.sh
+/// browse panel's `getSkillDetails`. Restricted to `SKILL.md` files
+/// belonging to a deployment in the current snapshot, to keep this from
+/// becoming an arbitrary-file read.
 #[tauri::command]
 pub fn read_installed_skill_md(
     path: String,
@@ -911,9 +921,9 @@ fn validate_skill_md_write(
 
 /// Write `content` to an installed skill's `SKILL.md`, for the detail
 /// drawer's inline editor. Same ownership check as `read_installed_skill_md`,
-/// plus a refusal when the owning deployment is plugin-managed. Rebuilds the
-/// snapshot afterward so the new content and token/byte counts are reflected
-/// immediately.
+/// plus a refusal when the owning deployment is plugin-managed. Marks the
+/// snapshot dirty afterward so the background loop picks up the new content
+/// and token/byte counts, rather than rescanning every skill on this thread.
 #[tauri::command]
 pub fn write_installed_skill_md(
     path: String,
@@ -923,9 +933,7 @@ pub fn write_installed_skill_md(
 ) -> Result<(), String> {
     let canonical = validate_skill_md_write(&path, &content, &refresh_state)?;
     atomic_write_skill_md(&canonical, &content)?;
-    if let Err(e) = skill_refresh::rebuild_snapshot_now(&app, &refresh_state) {
-        eprintln!("[write_installed_skill_md] snapshot rebuild failed: {e}");
-    }
+    skill_refresh::request_snapshot_rebuild(&app);
     Ok(())
 }
 
@@ -964,9 +972,7 @@ pub fn write_installed_skill_md_if_unchanged(
 ) -> Result<(), String> {
     let canonical = validate_skill_md_write(&path, &content, &refresh_state)?;
     write_skill_md_compare_and_swap(&canonical, &expected_content, &content)?;
-    if let Err(e) = skill_refresh::rebuild_snapshot_now(&app, &refresh_state) {
-        eprintln!("[write_installed_skill_md_if_unchanged] snapshot rebuild failed: {e}");
-    }
+    skill_refresh::request_snapshot_rebuild(&app);
     Ok(())
 }
 
@@ -1118,9 +1124,7 @@ pub async fn update_skill(
 
     if output.status.success() {
         skill_update_check::check_now_for_skill(&app, &update_check_state, &skill_name);
-        if let Err(e) = skill_refresh::rebuild_snapshot_now(&app, &refresh_state) {
-            eprintln!("[update_skill] snapshot rebuild failed: {e}");
-        }
+        skill_refresh::request_snapshot_rebuild(&app);
         Ok(InstallResult {
             success: true,
             skill_name,

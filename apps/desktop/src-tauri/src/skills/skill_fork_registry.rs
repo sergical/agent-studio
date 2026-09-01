@@ -193,6 +193,9 @@ pub struct ForkRegistry {
     /// Share packs created via `skill_pack`, keyed by pack name.
     #[serde(default)]
     pub packs: BTreeMap<String, PackRecord>,
+    /// skills.sh /api/v1 bearer token; absent until the user configures one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub skills_sh_api_key: Option<String>,
 }
 
 fn default_version() -> u32 {
@@ -212,6 +215,7 @@ impl Default for ForkRegistry {
             parked: BTreeMap::new(),
             harness_disabled: BTreeMap::new(),
             packs: BTreeMap::new(),
+            skills_sh_api_key: None,
         }
     }
 }

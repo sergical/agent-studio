@@ -40,20 +40,9 @@ pub struct SkillSearchResult {
     pub name: String,
     pub description: Option<String>,
     pub installs: u32,
-    // Deserialize "source" from the skills.sh API, serialize as "top_source"
-    // for the frontend (see docs/agent-skill-conventions.md's search row).
-    #[serde(rename(deserialize = "source"))]
     pub top_source: Option<String>,
     pub author: Option<String>,
     pub tags: Option<Vec<String>>,
-}
-
-/// Response from skills.sh search API
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct SkillSearchResponse {
-    pub skills: Vec<SkillSearchResult>,
-    #[serde(rename(deserialize = "hasMore"), default)]
-    pub has_more: bool,
 }
 
 /// Paginated response to return to frontend
@@ -61,6 +50,44 @@ pub struct SkillSearchResponse {
 pub struct PaginatedSkillsResponse {
     pub skills: Vec<SkillSearchResult>,
     pub has_more: bool,
+}
+
+/// skills.sh v1 skill details, including the skill's markdown body.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SkillDetails {
+    pub id: String,
+    pub source: String,
+    pub slug: String,
+    pub installs: u32,
+    pub hash: String,
+    /// SKILL.md (or AGENTS.md fallback) contents, when the payload has one.
+    pub skill_md: Option<String>,
+}
+
+// ============================================================================
+// Event Store Types
+// ============================================================================
+
+/// One row of the event log, projected for the Activity view's History
+/// section - see `event_store::EventRow` and `event_commands::list_skill_events`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SkillEventDto {
+    pub id: String,
+    pub ts: String,
+    pub kind: String,
+    pub skill: String,
+    pub harness: Option<String>,
+    pub scope: Option<String>,
+    pub project_path: Option<String>,
+    pub status: String,
+    /// True when this event has an inverse, hasn't already been undone, and
+    /// its status is one a restore makes sense for.
+    pub restorable: bool,
+    pub reverted_by: Option<String>,
+    /// Absolute path to this event's backup directory, for a "Reveal in
+    /// Finder" action - `None` when the event backed up nothing.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub backup_path: Option<String>,
 }
 
 // ============================================================================
@@ -124,11 +151,24 @@ pub struct Deployment {
     /// Which mechanism `disabled` came from, `None` when not disabled.
     #[serde(default)]
     pub disabled_by: Option<DisabledBy>,
+    /// For a shared-root deployment (`agent == "shared"`) only: agent ids among
+    /// the native shared-root readers whose own mechanism disables this skill
+    /// (Codex config / OpenCode permission deny) - `"codex"`, `"open-code"`.
+    /// Always empty for other deployments.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub disabled_readers: Vec<String>,
     /// Codex's own `agents/openai.yaml` `policy.allow_implicit_invocation`
     /// value, read straight off disk - note-only, doesn't affect
     /// `InstalledSkill.invocation` (that's driven by SKILL.md frontmatter).
     #[serde(default)]
     pub codex_implicit_invocation: Option<bool>,
+    /// True when this deployment's skills root is itself a symlink resolving
+    /// into the shared `.agents/skills` folder (e.g. `~/.claude/skills ->
+    /// ../.agents/skills`) - a whole-dir link, not a per-skill one. Per-skill
+    /// disable is impossible here without first converting the root to
+    /// per-skill links - see `skill_materialize::explode_shared_dir`.
+    #[serde(default)]
+    pub shared_via_whole_dir_link: bool,
 }
 
 /// Fork provenance shown on a forked skill's detail header - see

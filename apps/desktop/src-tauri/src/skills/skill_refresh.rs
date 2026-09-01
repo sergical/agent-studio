@@ -127,9 +127,31 @@ pub struct SkillRefreshState {
     /// `skill_update_check` persists its result - read on every full rebuild
     /// to fill `has_update`/`update_check`.
     update_check_path: PathBuf,
+    /// `SkillContentFacts` computed by past rebuilds, keyed by canonical
+    /// skill dir - see `skill_discovery::SkillFactsCache`. Lives for the
+    /// process's whole lifetime (unlike the cache `discover_skill_candidates`
+    /// builds and discards per call) so a rebuild triggered by one small
+    /// change doesn't re-hash and re-tokenize every other skill's SKILL.md.
+    facts_cache: Arc<Mutex<skill_discovery::SkillFactsCache>>,
 }
 
 impl SkillRefreshState {
+    /// True when something that can affect the skills list, project list, or
+    /// plugin caches changed since the last rebuild and the background loop
+    /// hasn't picked it up yet - see `get_installed_skills`, which uses this
+    /// to decide whether the published snapshot is safe to read as-is.
+    pub(crate) fn is_skills_dirty(&self) -> bool {
+        self.skills_dirty.load(Ordering::SeqCst)
+    }
+
+    /// Mark the next rebuild as full, without touching the extra/excluded
+    /// project sets - the responsive path a mutation command takes instead of
+    /// an inline `rebuild_snapshot_now`. Equivalent to `request_skill_rescan`,
+    /// just callable on the state directly rather than through Tauri IPC.
+    pub(crate) fn mark_skills_dirty(&self) {
+        self.skills_dirty.store(true, Ordering::SeqCst);
+    }
+
     /// Add project paths to the always-included set and mark skills dirty,
     /// so both `get_installed_skills` and `register_skill_projects` funnel
     /// through the same bookkeeping.
@@ -233,6 +255,7 @@ pub fn init(app: &AppHandle) -> SkillRefreshState {
                 .app_data_dir()
                 .unwrap_or_else(|_| PathBuf::from(".")),
         ),
+        facts_cache: Arc::new(Mutex::new(skill_discovery::SkillFactsCache::default())),
     };
 
     let app_handle = app.clone();
@@ -260,7 +283,7 @@ pub fn request_skill_rescan(state: tauri::State<SkillRefreshState>) {
 /// `SkillRefreshState` is managed (there's nothing to rebuild yet).
 pub fn request_snapshot_rebuild(app: &AppHandle) {
     if let Some(state) = app.try_state::<SkillRefreshState>() {
-        state.skills_dirty.store(true, Ordering::SeqCst);
+        state.mark_skills_dirty();
     }
 }
 
@@ -345,11 +368,16 @@ pub fn rebuild_snapshot_now(
     // below, so a rebuild that straddles an hour boundary doesn't record the
     // new hour against cutoffs computed for the old one.
     let now = Utc::now();
+    let mut facts_cache = state
+        .facts_cache
+        .lock()
+        .map_err(|e| format!("facts cache lock poisoned: {e}"))?;
     let (built, report) = build_snapshot(
         &home,
         &extra_projects,
         &excluded_projects,
         &mut invocation_index,
+        &mut facts_cache,
         BuildPaths {
             cache_path: &state.cache_path,
             runs_root: &state.runs_root,
@@ -357,6 +385,7 @@ pub fn rebuild_snapshot_now(
         },
         now,
     );
+    drop(facts_cache);
     drop(invocation_index);
 
     if report.incomplete {
@@ -705,14 +734,17 @@ fn build_snapshot(
     extra_projects: &[PathBuf],
     excluded_projects: &BTreeSet<String>,
     invocation_index: &mut SkillInvocationIndex,
+    facts_cache: &mut skill_discovery::SkillFactsCache,
     paths: BuildPaths,
     now: DateTime<Utc>,
 ) -> (SkillSnapshot, RefreshReport) {
+    let total_start = Instant::now();
     let BuildPaths {
         cache_path,
         runs_root,
         update_check_path,
     } = paths;
+    let projects_start = Instant::now();
     let mut project_paths: BTreeSet<PathBuf> = project_discovery::discover_skill_projects(home)
         .into_iter()
         .collect();
@@ -725,8 +757,14 @@ fn build_snapshot(
         // transcript recorded it as a cwd.
         .filter(|p| !is_home_directory(p, home))
         .collect();
+    let projects_ms = projects_start.elapsed().as_millis();
 
-    let candidates = skill_discovery::discover_skill_candidates(home, &project_paths);
+    let discovery_start = Instant::now();
+    let candidates =
+        skill_discovery::discover_skill_candidates_cached(home, &project_paths, facts_cache);
+    let discovery_ms = discovery_start.elapsed().as_millis();
+    let (facts_hits, facts_total) = facts_cache.last_pass_stats();
+
     let lock = lock_file::read_lock_file().unwrap_or_else(|e| {
         eprintln!("skill refresh: failed to read lock file: {e}");
         lock_file::SkillLockFile {
@@ -865,6 +903,17 @@ fn build_snapshot(
             {
                 deployment.disabled = true;
                 deployment.disabled_by = Some(super::skill_dto::DisabledBy::ClaudeLinkRemoved);
+            } else if deployment.agent == "shared" {
+                let skill_md = PathBuf::from(&deployment.path).join("SKILL.md");
+                let canonical = std::fs::canonicalize(&skill_md).unwrap_or(skill_md);
+                if codex_disabled_paths.contains(&canonical) {
+                    deployment.disabled_readers.push("codex".to_string());
+                }
+                if opencode_denied.iter().any(|pattern| {
+                    super::opencode_skill_permission::pattern_matches(pattern, &skill.name)
+                }) {
+                    deployment.disabled_readers.push("open-code".to_string());
+                }
             }
         }
     }
@@ -885,15 +934,18 @@ fn build_snapshot(
             super::frontmatter::invocation_policy_from(disable_model, user_invocable).0;
     }
 
+    let invocations_start = Instant::now();
     let report = invocation_index.refresh(&home.join(".claude/projects"));
     if let Err(e) = invocation_index.save(cache_path) {
         eprintln!("skill refresh: failed to save invocation cache: {e}");
     }
+    let invocations_ms = invocations_start.elapsed().as_millis();
 
     let skill_names: Vec<String> = skills.iter().map(|s| s.name.clone()).collect();
     let last_test_by_skill = skill_run_history::read_last_test_index(runs_root, &skill_names)
         .into_iter()
         .collect();
+    let skill_count = skills.len();
 
     let snapshot = SkillSnapshot {
         skills,
@@ -908,6 +960,16 @@ fn build_snapshot(
         update_check,
         opencode_config_kind: super::opencode_skill_permission::detect_config_kind(home),
     };
+
+    let total_ms = total_start.elapsed().as_millis();
+    let rest_ms = total_ms
+        .saturating_sub(projects_ms)
+        .saturating_sub(discovery_ms)
+        .saturating_sub(invocations_ms);
+    eprintln!(
+        "skill refresh: full rebuild {total_ms} ms (projects {projects_ms} ms, discovery {discovery_ms} ms, invocations {invocations_ms} ms, assembly+rest {rest_ms} ms; {skill_count} skills, facts cache hits {facts_hits}/{facts_total})"
+    );
+
     (snapshot, report)
 }
 
@@ -1136,6 +1198,7 @@ mod tests {
             std::slice::from_ref(&project),
             &BTreeSet::new(),
             &mut invocation_index,
+            &mut skill_discovery::SkillFactsCache::default(),
             BuildPaths {
                 cache_path: &cache_path,
                 runs_root: tmp.path(),
@@ -1186,6 +1249,7 @@ mod tests {
             &[],
             &BTreeSet::new(),
             &mut invocation_index,
+            &mut skill_discovery::SkillFactsCache::default(),
             BuildPaths {
                 cache_path: &cache_path,
                 runs_root: tmp.path(),
@@ -1249,6 +1313,7 @@ mod tests {
             &[],
             &BTreeSet::new(),
             &mut invocation_index,
+            &mut skill_discovery::SkillFactsCache::default(),
             BuildPaths {
                 cache_path: &cache_path,
                 runs_root: tmp.path(),
@@ -1285,6 +1350,7 @@ mod tests {
             std::slice::from_ref(&project),
             &excluded,
             &mut invocation_index,
+            &mut skill_discovery::SkillFactsCache::default(),
             BuildPaths {
                 cache_path: &cache_path,
                 runs_root: tmp.path(),
@@ -1318,6 +1384,7 @@ mod tests {
             std::slice::from_ref(&home),
             &BTreeSet::new(),
             &mut invocation_index,
+            &mut skill_discovery::SkillFactsCache::default(),
             BuildPaths {
                 cache_path: &cache_path,
                 runs_root: tmp.path(),
@@ -1387,7 +1454,9 @@ mod tests {
                     content_hash: String::new(),
                     disabled: false,
                     disabled_by: None,
+                    disabled_readers: Vec::new(),
                     codex_implicit_invocation: None,
+                    shared_via_whole_dir_link: false,
                 }],
                 has_spec: false,
                 description: None,
@@ -1445,6 +1514,7 @@ mod tests {
             cache_path: PathBuf::from("/dev/null"),
             runs_root: PathBuf::from("/dev/null"),
             update_check_path: PathBuf::from("/dev/null"),
+            facts_cache: Arc::new(Mutex::new(skill_discovery::SkillFactsCache::default())),
         }
     }
 

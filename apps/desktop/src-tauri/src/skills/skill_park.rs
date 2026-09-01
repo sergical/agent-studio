@@ -416,9 +416,16 @@ pub fn park_skill(
         .unwrap_or(SourceKind::Manual);
 
     let result = park_skill_with(&home, &name, source_kind, Utc::now());
-    if result.is_ok() {
-        if let Err(e) = skill_refresh::rebuild_snapshot_now(&app, &refresh_state) {
-            eprintln!("[park_skill] snapshot rebuild failed: {e}");
+    if let Ok(record) = &result {
+        let parked_at = record.parked_at.clone();
+        if let Err(e) = skill_refresh::patch_snapshot_and_emit(&app, &refresh_state, |snapshot| {
+            let Some(skill) = snapshot.skills.iter_mut().find(|s| s.name == name) else {
+                return;
+            };
+            skill.parked = true;
+            skill.parked_at = Some(parked_at);
+        }) {
+            eprintln!("[park_skill] snapshot patch failed: {e}");
         }
     }
     result
@@ -436,8 +443,14 @@ pub fn unpark_skill(
 
     let result = unpark_skill_with(&home, &name, Utc::now());
     if result.is_ok() {
-        if let Err(e) = skill_refresh::rebuild_snapshot_now(&app, &refresh_state) {
-            eprintln!("[unpark_skill] snapshot rebuild failed: {e}");
+        if let Err(e) = skill_refresh::patch_snapshot_and_emit(&app, &refresh_state, |snapshot| {
+            let Some(skill) = snapshot.skills.iter_mut().find(|s| s.name == name) else {
+                return;
+            };
+            skill.parked = false;
+            skill.parked_at = None;
+        }) {
+            eprintln!("[unpark_skill] snapshot patch failed: {e}");
         }
     }
     result

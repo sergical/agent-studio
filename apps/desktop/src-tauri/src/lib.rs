@@ -9,6 +9,34 @@ use tauri::Manager;
 
 pub use skills::*;
 
+/// Opens the event store at `app`'s data dir (docs/spec-event-store.md) - not
+/// `~/.agents`, which stays reserved for `skill-studio.json` - and reconciles
+/// any row left `pending` by a crash. A failure at either step returns
+/// `None` rather than aborting startup; every event command surfaces that as
+/// an ordinary `Err`.
+fn open_event_store(app: &tauri::App) -> Option<skills::event_store::EventStore> {
+    let app_data = app
+        .path()
+        .app_data_dir()
+        .map_err(|e| eprintln!("[event_store] could not resolve app data dir: {e}"))
+        .ok()?;
+    let store = skills::event_store::EventStore::open(&app_data)
+        .map_err(|e| eprintln!("[event_store] failed to open: {e}"))
+        .ok()?;
+    match store.reconcile_at_startup() {
+        Ok(flipped) => {
+            for row in &flipped {
+                eprintln!(
+                    "[event_store] event {} ({}) was pending at startup - the app was quit mid-operation; flipped to interrupted",
+                    row.id, row.kind
+                );
+            }
+        }
+        Err(e) => eprintln!("[event_store] startup reconcile failed: {e}"),
+    }
+    Some(store)
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
@@ -21,6 +49,11 @@ pub fn run() {
             app.manage(skills::skill_fork::ForkMutationLock::default());
             skills::skill_update_check::spawn_update_check_loop(app.handle().clone());
             skills::skill_trial::spawn_trial_expiry_loop(app.handle().clone());
+
+            let event_store = open_event_store(app);
+            app.manage(skills::event_commands::EventStoreState(
+                std::sync::Mutex::new(event_store),
+            ));
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -54,6 +87,12 @@ pub fn run() {
             skills::skill_harness_disable::set_harness_enabled,
             skills::skill_harness_disable::set_deployment_enabled,
             skills::skill_invocation::set_skill_invocation,
+            // Event store: History and per-harness materialize disable
+            skills::event_commands::list_skill_events,
+            skills::event_commands::restore_skill_event,
+            skills::event_commands::set_shared_harness_skill_enabled,
+            skills::event_commands::distribute_skill_from_shared,
+            skills::event_commands::repair_skill_link,
             // Background refresh / invocation snapshot
             skills::skill_refresh::get_skill_snapshot,
             skills::skill_refresh::request_skill_rescan,

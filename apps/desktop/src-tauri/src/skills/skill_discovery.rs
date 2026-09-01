@@ -9,10 +9,11 @@
 
 use std::collections::{BTreeMap, HashMap};
 use std::fs;
+use std::hash::{Hash, Hasher};
 use std::io::Read as _;
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
-use std::time::SystemTime;
+use std::sync::{Arc, OnceLock};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use chrono::{DateTime, Utc};
 use sha2::{Digest, Sha256};
@@ -34,6 +35,18 @@ const MAX_FOLDER_BYTES: u64 = 64 * 1024 * 1024;
 /// against the same `MAX_FOLDER_BYTES` budget as the rest of the folder.
 const SKILL_MD_MAX_BYTES: u64 = 2 * 1024 * 1024;
 
+/// The embedded cl100k_base vocab is loaded once per process, not once per
+/// rebuild - rebuilding the BPE from scratch on every snapshot rebuild (which
+/// can happen every few seconds from the background watcher) is pure waste
+/// since the vocab never changes.
+static TOKENIZER: OnceLock<Option<CoreBPE>> = OnceLock::new();
+
+fn tokenizer() -> Option<&'static CoreBPE> {
+    TOKENIZER
+        .get_or_init(|| tiktoken_rs::cl100k_base().ok())
+        .as_ref()
+}
+
 /// A skill "ships specs" (the getsentry/skillet pattern) when it has a
 /// spec.md file or an evals/ subdirectory alongside SKILL.md.
 fn has_spec(skill_dir: &Path) -> bool {
@@ -41,12 +54,16 @@ fn has_spec(skill_dir: &Path) -> bool {
 }
 
 /// A regular file found under a skill folder, queued for hashing once the
-/// whole folder has been walked and its entries sorted. Holds only the path
-/// and size, never the file's bytes, so the walk's memory use doesn't grow
-/// with folder size.
+/// whole folder has been walked and its entries sorted. Holds only the path,
+/// size, and mtime - never the file's bytes - so the walk's memory use
+/// doesn't grow with folder size. `len`/`mtime` come straight from the same
+/// `fs::Metadata` the walk already reads for `total_bytes`/`newest`, so
+/// `folder_fingerprint` costs no extra syscalls.
 struct HashableFile {
     rel_path: PathBuf,
     abs_path: PathBuf,
+    len: u64,
+    mtime: Option<SystemTime>,
 }
 
 /// Accumulated facts from walking a skill folder.
@@ -138,6 +155,8 @@ fn walk_folder_into(
                 walk.hashable.push(HashableFile {
                     rel_path: rel_path.to_path_buf(),
                     abs_path: path.clone(),
+                    len: meta.len(),
+                    mtime: meta.modified().ok(),
                 });
             }
             if walk.file_count as usize >= max_files || walk.total_bytes >= max_bytes {
@@ -196,6 +215,31 @@ fn content_hash(mut files: Vec<HashableFile>, max_bytes: u64) -> String {
         .collect()
 }
 
+/// A cheap stand-in for a folder's content, built from `stat` alone: no file
+/// is opened or read. Two walks of the same folder produce the same
+/// fingerprint iff every file's relative path, size, and mtime match, and the
+/// walk's own summary (`file_count`/`total_bytes`/`truncated`) matches too -
+/// which is what `get_or_compute_facts` uses to decide whether a cached
+/// `SkillContentFacts` from a previous rebuild is still valid.
+fn folder_fingerprint(walk: &FolderWalk) -> u64 {
+    let mut files: Vec<&HashableFile> = walk.hashable.iter().collect();
+    files.sort_by(|a, b| a.rel_path.cmp(&b.rel_path));
+
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    for file in files {
+        file.rel_path.hash(&mut hasher);
+        file.len.hash(&mut hasher);
+        file.mtime
+            .and_then(|t| t.duration_since(UNIX_EPOCH).ok())
+            .unwrap_or(Duration::ZERO)
+            .hash(&mut hasher);
+    }
+    walk.file_count.hash(&mut hasher);
+    walk.total_bytes.hash(&mut hasher);
+    walk.truncated.hash(&mut hasher);
+    hasher.finish()
+}
+
 /// Token count of `text`, cl100k_base. `None` tokenizer (the build failed,
 /// which should never happen since the vocab is embedded) yields 0.
 fn count_tokens(text: &str, tokenizer: Option<&CoreBPE>) -> u32 {
@@ -229,14 +273,12 @@ struct SkillContentFacts {
 }
 
 /// Read SKILL.md through a bounded reader (never buffering more than
-/// `SKILL_MD_MAX_BYTES` in memory) and walk `skill_dir`, gathering every
-/// content fact. `None` when SKILL.md can't be opened. When SKILL.md exceeds
-/// the bound, `folder_truncated` is set and frontmatter is still parsed from
-/// the truncated prefix rather than failing outright.
-fn compute_content_facts(
-    skill_dir: &Path,
-    tokenizer: Option<&CoreBPE>,
-) -> Option<SkillContentFacts> {
+/// `SKILL_MD_MAX_BYTES` in memory) and walk `skill_dir`, everything
+/// `compute_content_facts_from_walk` needs but stops short of the expensive
+/// steps (hashing every file, tokenizing). `None` when SKILL.md can't be
+/// opened. The returned `FolderWalk` also feeds `folder_fingerprint`, so a
+/// cache hit in `get_or_compute_facts` never has to go further than this.
+fn walk_for_facts(skill_dir: &Path) -> Option<(FolderWalk, Vec<u8>, bool)> {
     let file = fs::File::open(skill_dir.join("SKILL.md")).ok()?;
     let mut bytes = Vec::new();
     // Read one byte past the cap so we can tell "exactly at the cap" apart
@@ -248,17 +290,7 @@ fn compute_content_facts(
     if skill_md_truncated {
         bytes.truncate(SKILL_MD_MAX_BYTES as usize);
     }
-    let content = String::from_utf8_lossy(&bytes).into_owned();
     let skill_md_len = bytes.len() as u64;
-    let frontmatter = parse_frontmatter(&content);
-    let name_for_tokens = frontmatter
-        .as_ref()
-        .and_then(|f| f.name.clone())
-        .unwrap_or_default();
-    let description_for_tokens = frontmatter
-        .as_ref()
-        .and_then(|f| f.description.clone())
-        .unwrap_or_default();
 
     // SKILL.md's own bytes count against the same folder budget: the walk
     // below re-reads/hashes it as part of the folder, so its remaining
@@ -268,9 +300,32 @@ fn compute_content_facts(
         MAX_FOLDER_FILES,
         MAX_FOLDER_BYTES.saturating_sub(skill_md_len),
     );
+    Some((walk, bytes, skill_md_truncated))
+}
+
+/// The expensive half of `compute_content_facts`: hashing every file in
+/// `walk` and tokenizing SKILL.md. Only run on a `get_or_compute_facts` cache
+/// miss - `walk_for_facts` (stat-only) already ran to produce `walk`.
+fn compute_content_facts_from_walk(
+    walk: FolderWalk,
+    skill_md_bytes: &[u8],
+    skill_md_truncated: bool,
+    skill_dir: &Path,
+    tokenizer: Option<&CoreBPE>,
+) -> SkillContentFacts {
+    let content = String::from_utf8_lossy(skill_md_bytes).into_owned();
+    let frontmatter = parse_frontmatter(&content);
+    let name_for_tokens = frontmatter
+        .as_ref()
+        .and_then(|f| f.name.clone())
+        .unwrap_or_default();
+    let description_for_tokens = frontmatter
+        .as_ref()
+        .and_then(|f| f.description.clone())
+        .unwrap_or_default();
     let modified_at = walk.newest.map(|t| DateTime::<Utc>::from(t).to_rfc3339());
 
-    Some(SkillContentFacts {
+    SkillContentFacts {
         frontmatter_fields: frontmatter_fields(&content),
         frontmatter,
         has_spec: has_spec(skill_dir),
@@ -285,23 +340,120 @@ fn compute_content_facts(
         content_hash: content_hash(walk.hashable, MAX_FOLDER_BYTES),
         modified_at,
         folder_truncated: walk.truncated || skill_md_truncated,
-    })
+    }
+}
+
+/// Read SKILL.md and walk `skill_dir`, gathering every content fact in one
+/// call - the uncached path, kept for the one test that exercises it
+/// directly. `discover_skill_candidates_cached` instead goes through
+/// `walk_for_facts` + `get_or_compute_facts` so a folder whose fingerprint
+/// hasn't changed since the last rebuild skips straight to a cache hit.
+#[cfg(test)]
+fn compute_content_facts(
+    skill_dir: &Path,
+    tokenizer: Option<&CoreBPE>,
+) -> Option<SkillContentFacts> {
+    let (walk, skill_md_bytes, skill_md_truncated) = walk_for_facts(skill_dir)?;
+    Some(compute_content_facts_from_walk(
+        walk,
+        &skill_md_bytes,
+        skill_md_truncated,
+        skill_dir,
+        tokenizer,
+    ))
+}
+
+/// One `SkillContentFacts` cache entry: the stat-only fingerprint it was
+/// computed for, and the generation (see `SkillFactsCache::begin_pass`) it
+/// was last confirmed valid in.
+struct CacheEntry {
+    fingerprint: u64,
+    facts: Arc<SkillContentFacts>,
+    last_seen: u64,
+}
+
+/// A `SkillContentFacts` cache that survives across rebuilds, keyed by
+/// canonical skill directory and validated by `folder_fingerprint` (a
+/// stat-only fingerprint of the folder) rather than by never expiring.
+/// `begin_pass`/`end_pass` bracket one `discover_skill_candidates_cached`
+/// call so an entry not touched during a pass - the skill directory it
+/// belonged to was removed - is evicted rather than pinning memory forever.
+#[derive(Default)]
+pub struct SkillFactsCache {
+    entries: HashMap<PathBuf, CacheEntry>,
+    generation: u64,
+    hits: u64,
+    total: u64,
+}
+
+impl SkillFactsCache {
+    /// Start a new pass: reset the hit/total counters `last_pass_stats`
+    /// reports, and advance the generation so `end_pass` can tell which
+    /// entries were touched this time.
+    fn begin_pass(&mut self) {
+        self.generation += 1;
+        self.hits = 0;
+        self.total = 0;
+    }
+
+    /// Drop every entry not looked up during the pass just finished - its
+    /// skill directory no longer exists (or was never visited), so keeping
+    /// its facts around would only pin memory for a skill that's gone.
+    fn end_pass(&mut self) {
+        let generation = self.generation;
+        self.entries
+            .retain(|_, entry| entry.last_seen == generation);
+    }
+
+    /// `(hits, total)` facts lookups from the most recently completed
+    /// `discover_skill_candidates_cached` pass - see `skill_refresh`'s
+    /// per-rebuild timing line.
+    pub fn last_pass_stats(&self) -> (u64, u64) {
+        (self.hits, self.total)
+    }
 }
 
 /// Look up `skill_dir`'s content facts in `cache`, computing and inserting
 /// them on a miss. Cache key is the canonicalized directory, so every root
 /// or symlink that resolves to the same directory shares one computation.
+/// A hit still walks the folder (via `walk_for_facts`) to get a fresh
+/// fingerprint to compare against - cheap, since it only stats files rather
+/// than reading or hashing them - but skips `compute_content_facts_from_walk`
+/// entirely when the fingerprint hasn't changed since it was cached.
 fn get_or_compute_facts(
-    cache: &mut HashMap<PathBuf, Arc<SkillContentFacts>>,
+    cache: &mut SkillFactsCache,
     skill_dir: &Path,
     tokenizer: Option<&CoreBPE>,
 ) -> Option<Arc<SkillContentFacts>> {
     let key = fs::canonicalize(skill_dir).unwrap_or_else(|_| skill_dir.to_path_buf());
-    if let Some(facts) = cache.get(&key) {
-        return Some(Arc::clone(facts));
+    let (walk, skill_md_bytes, skill_md_truncated) = walk_for_facts(skill_dir)?;
+    let fingerprint = folder_fingerprint(&walk);
+    let generation = cache.generation;
+
+    cache.total += 1;
+    if let Some(entry) = cache.entries.get_mut(&key) {
+        if entry.fingerprint == fingerprint {
+            entry.last_seen = generation;
+            cache.hits += 1;
+            return Some(Arc::clone(&entry.facts));
+        }
     }
-    let facts = Arc::new(compute_content_facts(skill_dir, tokenizer)?);
-    cache.insert(key, Arc::clone(&facts));
+
+    let facts = Arc::new(compute_content_facts_from_walk(
+        walk,
+        &skill_md_bytes,
+        skill_md_truncated,
+        skill_dir,
+        tokenizer,
+    ));
+    cache.entries.insert(
+        key,
+        CacheEntry {
+            fingerprint,
+            facts: Arc::clone(&facts),
+            last_seen: generation,
+        },
+    );
     Some(facts)
 }
 
@@ -355,6 +507,20 @@ fn build_candidate(
     } else {
         fs::canonicalize(skill_dir).ok().filter(|c| c != entry_path)
     };
+    // Whole-dir link: the entry itself isn't a symlink, `resolved_path` is
+    // set (some ancestor is a symlink), and that ancestor's canonicalized
+    // root ends in `.agents/skills` - same check as
+    // `skill_harness_disable::refuse_shared_root`.
+    let shared_via_whole_dir_link = !is_symlink
+        && resolved_path.is_some()
+        && entry_path.parent().is_some_and(|root| {
+            let canonical = fs::canonicalize(root).unwrap_or_else(|_| root.to_path_buf());
+            let components: Vec<_> = canonical
+                .components()
+                .filter_map(|c| c.as_os_str().to_str())
+                .collect();
+            components.windows(2).any(|w| w == [".agents", "skills"])
+        });
 
     SkillCandidate {
         name,
@@ -382,6 +548,7 @@ fn build_candidate(
         folder_truncated: facts.folder_truncated,
         in_git_repo: in_git_repo(skill_dir, git_cache),
         studio_disabled,
+        shared_via_whole_dir_link,
     }
 }
 
@@ -430,6 +597,7 @@ fn broken_symlink_candidate(
         folder_truncated: false,
         in_git_repo: false,
         studio_disabled,
+        shared_via_whole_dir_link: false,
     }
 }
 
@@ -512,7 +680,7 @@ fn scan_root_entries(
     has_lock_entry: bool,
     scope: &str,
     studio_disabled: bool,
-    facts_cache: &mut HashMap<PathBuf, Arc<SkillContentFacts>>,
+    facts_cache: &mut SkillFactsCache,
     git_cache: &mut HashMap<PathBuf, bool>,
     tokenizer: Option<&CoreBPE>,
     out: &mut Vec<SkillCandidate>,
@@ -621,24 +789,40 @@ fn scope_str(root: &agents::SkillRoot) -> &'static str {
 
 /// Discover every skill directory found by walking the agent skill roots and
 /// native plugin caches. Each result is a fact record; no classification or
-/// merging happens here.
+/// merging happens here. A thin wrapper over `discover_skill_candidates_cached`
+/// with a fresh, one-call `SkillFactsCache` - callers that rebuild repeatedly
+/// (`skill_refresh`) should keep a `SkillFactsCache` across calls instead, so
+/// a folder whose fingerprint hasn't changed skips its expensive facts
+/// recomputation.
 pub fn discover_skill_candidates(home: &Path, project_paths: &[PathBuf]) -> Vec<SkillCandidate> {
-    discover_with_facts_cache(home, project_paths).0
+    let mut cache = SkillFactsCache::default();
+    discover_skill_candidates_cached(home, project_paths, &mut cache)
 }
 
-/// `discover_skill_candidates`, plus the content-facts cache it built along
-/// the way, so tests can assert facts were computed once per canonical dir.
-fn discover_with_facts_cache(
+/// `discover_skill_candidates`, reusing `cache`'s content facts across calls:
+/// a skill folder whose `folder_fingerprint` hasn't changed since the last
+/// call skips SKILL.md tokenizing and content hashing entirely. Entries for
+/// directories not visited this pass (a deleted skill) are evicted at the
+/// end, so a long-lived cache never pins memory for skills that are gone.
+pub fn discover_skill_candidates_cached(
     home: &Path,
     project_paths: &[PathBuf],
-) -> (
-    Vec<SkillCandidate>,
-    HashMap<PathBuf, Arc<SkillContentFacts>>,
-) {
+    cache: &mut SkillFactsCache,
+) -> Vec<SkillCandidate> {
+    cache.begin_pass();
+    let out = discover_into(home, project_paths, cache);
+    cache.end_pass();
+    out
+}
+
+fn discover_into(
+    home: &Path,
+    project_paths: &[PathBuf],
+    facts_cache: &mut SkillFactsCache,
+) -> Vec<SkillCandidate> {
     let mut out = Vec::new();
-    let mut facts_cache: HashMap<PathBuf, Arc<SkillContentFacts>> = HashMap::new();
     let mut git_cache: HashMap<PathBuf, bool> = HashMap::new();
-    let tokenizer = tiktoken_rs::cl100k_base().ok();
+    let tokenizer = tokenizer();
 
     for root in agents::skill_roots(home, project_paths) {
         let has_lock_entry = shared_root_has_lock_entry(&root);
@@ -650,9 +834,9 @@ fn discover_with_facts_cache(
             has_lock_entry,
             scope,
             false,
-            &mut facts_cache,
+            facts_cache,
             &mut git_cache,
-            tokenizer.as_ref(),
+            tokenizer,
             &mut out,
         );
         // The holding directory `skill_harness_disable`'s universal
@@ -665,9 +849,9 @@ fn discover_with_facts_cache(
             has_lock_entry,
             scope,
             true,
-            &mut facts_cache,
+            facts_cache,
             &mut git_cache,
-            tokenizer.as_ref(),
+            tokenizer,
             &mut out,
         );
     }
@@ -678,11 +862,8 @@ fn discover_with_facts_cache(
         let is_symlink = fs::symlink_metadata(&plugin_skill.skill_dir)
             .map(|m| m.file_type().is_symlink())
             .unwrap_or(false);
-        let Some(facts) = get_or_compute_facts(
-            &mut facts_cache,
-            &plugin_skill.skill_dir,
-            tokenizer.as_ref(),
-        ) else {
+        let Some(facts) = get_or_compute_facts(facts_cache, &plugin_skill.skill_dir, tokenizer)
+        else {
             continue;
         };
         let dir_name = plugin_skill
@@ -727,10 +908,11 @@ fn discover_with_facts_cache(
             folder_truncated: facts.folder_truncated,
             in_git_repo: in_git_repo(&plugin_skill.skill_dir, &mut git_cache),
             studio_disabled: false,
+            shared_via_whole_dir_link: false,
         });
     }
 
-    (out, facts_cache)
+    out
 }
 
 #[cfg(test)]
@@ -1182,7 +1364,8 @@ mod tests {
             std::os::unix::fs::symlink(&real_skill, dir.join("find-bugs")).unwrap();
         }
 
-        let (candidates, facts_cache) = discover_with_facts_cache(home, &[]);
+        let mut cache = SkillFactsCache::default();
+        let candidates = discover_skill_candidates_cached(home, &[], &mut cache);
         let found: Vec<_> = candidates
             .iter()
             .filter(|c| c.name == "find-bugs")
@@ -1193,7 +1376,83 @@ mod tests {
         assert!(found
             .iter()
             .all(|c| c.content_hash == found[0].content_hash));
-        assert_eq!(facts_cache.len(), 1);
+        assert_eq!(cache.entries.len(), 1);
+    }
+
+    #[test]
+    fn cached_discovery_reuses_facts_across_passes_when_nothing_changed() {
+        let tmp = tempfile::tempdir().unwrap();
+        let home = tmp.path();
+        write_skill(&home.join(".claude/skills/find-bugs"), "find-bugs");
+
+        let mut cache = SkillFactsCache::default();
+        discover_skill_candidates_cached(home, &[], &mut cache);
+        assert_eq!(cache.last_pass_stats(), (0, 1));
+
+        let before = cache.entries.values().next().unwrap().facts.clone();
+        discover_skill_candidates_cached(home, &[], &mut cache);
+        assert_eq!(cache.last_pass_stats(), (1, 1));
+        let after = cache.entries.values().next().unwrap().facts.clone();
+        assert!(Arc::ptr_eq(&before, &after));
+    }
+
+    #[test]
+    fn editing_a_file_and_bumping_its_mtime_invalidates_the_cache_entry() {
+        let tmp = tempfile::tempdir().unwrap();
+        let home = tmp.path();
+        let skill_dir = home.join(".claude/skills/find-bugs");
+        write_skill(&skill_dir, "find-bugs");
+
+        let mut cache = SkillFactsCache::default();
+        let first = discover_skill_candidates_cached(home, &[], &mut cache);
+        let first_hash = first
+            .iter()
+            .find(|c| c.name == "find-bugs")
+            .unwrap()
+            .content_hash
+            .clone();
+
+        let skill_md = skill_dir.join("SKILL.md");
+        fs::write(
+            &skill_md,
+            "---\nname: find-bugs\ndescription: does things.\n---\nEdited body.\n",
+        )
+        .unwrap();
+        // The write above may land within the same mtime tick as the
+        // original file - bump it explicitly so the fingerprint is
+        // guaranteed to change, matching what a real edit does on a
+        // filesystem with coarser mtime resolution.
+        let file = fs::File::open(&skill_md).unwrap();
+        file.set_modified(SystemTime::now() + Duration::from_secs(5))
+            .unwrap();
+
+        let second = discover_skill_candidates_cached(home, &[], &mut cache);
+        let second_hash = second
+            .iter()
+            .find(|c| c.name == "find-bugs")
+            .unwrap()
+            .content_hash
+            .clone();
+
+        assert_eq!(cache.last_pass_stats(), (0, 1));
+        assert_ne!(first_hash, second_hash);
+    }
+
+    #[test]
+    fn deleted_skill_dir_is_evicted_from_the_cache() {
+        let tmp = tempfile::tempdir().unwrap();
+        let home = tmp.path();
+        let skill_dir = home.join(".claude/skills/find-bugs");
+        write_skill(&skill_dir, "find-bugs");
+
+        let mut cache = SkillFactsCache::default();
+        discover_skill_candidates_cached(home, &[], &mut cache);
+        assert_eq!(cache.entries.len(), 1);
+
+        fs::remove_dir_all(&skill_dir).unwrap();
+        let candidates = discover_skill_candidates_cached(home, &[], &mut cache);
+        assert!(!candidates.iter().any(|c| c.name == "find-bugs"));
+        assert!(cache.entries.is_empty());
     }
 
     #[test]
@@ -1210,7 +1469,7 @@ mod tests {
             "tracked-skill",
         );
 
-        let candidates = discover_skill_candidates(home, &[repo_root.clone()]);
+        let candidates = discover_skill_candidates(home, std::slice::from_ref(&repo_root));
         let found = candidates
             .iter()
             .find(|c| c.name == "tracked-skill")
