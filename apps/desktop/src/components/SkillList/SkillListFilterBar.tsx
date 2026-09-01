@@ -4,10 +4,10 @@
 // the sidebar - see the design rule in spec-ux-1.md section C.
 // ============================================================================
 
-import { ChevronDown, X } from "lucide-react";
+import { ChevronDown, LayoutGrid, List, ListFilter, Search, X } from "lucide-react";
 import { ask } from "@tauri-apps/plugin-dialog";
 import { harnessesPresent } from "@skill-studio/lib";
-import { defaultSkillListFilter, isProjectScope, type SkillListFilter } from "@skill-studio/lib";
+import { isProjectScope, type SkillListFilter } from "@skill-studio/lib";
 import { shortProjectPath } from "@skill-studio/lib";
 import type { InstalledSkill, SkillSnapshot, SkillSourceKind } from "@skill-studio/lib";
 import { SOURCE_KIND_LABELS } from "@skill-studio/lib";
@@ -20,7 +20,9 @@ import {
   MenuSeparator,
 } from "../ui/MenuControl";
 import { SelectControl } from "../ui/SelectControl";
-import { SwitchControl } from "../ui/SwitchControl";
+import { TooltipControl } from "../ui/TooltipControl";
+import { SORT_ITEMS, isSortMode } from "../../lib/skill-list-sort";
+import type { SortMode } from "../../lib/skill-list-sort";
 
 // No "plugin" here: plugin-shipped skills have their own place (PluginSkillsView).
 const SOURCE_KINDS: SkillSourceKind[] = ["dotagents", "skills-sh", "in-repo", "manual", "fork"];
@@ -54,6 +56,8 @@ const SEGMENTED_ITEM_CLASS =
 interface SkillListFilterBarProps {
   filter: SkillListFilter;
   onChange: (filter: SkillListFilter) => void;
+  /** "Clear all" on the active-chips row - must replace the whole filter, not merge a patch (a merge would keep the very fields being cleared). */
+  onReset: () => void;
   projects: string[];
   onAddProject: () => void;
   /** Stops tracking `path` - "Stop tracking" on the project menu's row for the selected project. */
@@ -61,7 +65,13 @@ interface SkillListFilterBarProps {
   showCoverage: boolean;
   onToggleCoverage: (show: boolean) => void;
   resultCount: number;
-  /** For the harness chip row - only harnesses with at least one deployment in this snapshot are shown. */
+  /** Free-text name/description filter, applied by `SkillListTable`. */
+  query: string;
+  onQueryChange: (query: string) => void;
+  /** Sort order, applied by `SkillListTable`. */
+  sort: SortMode;
+  onSortChange: (sort: SortMode) => void;
+  /** For the harness chips - harnesses at least one deployment gives coverage for (see `harnessesPresent`). */
   snapshot: SkillSnapshot | undefined;
 }
 
@@ -105,25 +115,31 @@ function activeFilterCount(filter: SkillListFilter): number {
   return count;
 }
 
+/** How many of the Filter menu's own fields are set, for its trigger badge. */
+function filterMenuCount(filter: SkillListFilter): number {
+  return (filter.harness ? 1 : 0) + (filter.source ? 1 : 0);
+}
+
 export function SkillListFilterBar({
   filter,
   onChange,
+  onReset,
   projects,
   onAddProject,
   onRemoveProject,
   showCoverage,
   onToggleCoverage,
   resultCount,
+  query,
+  onQueryChange,
+  sort,
+  onSortChange,
   snapshot,
 }: SkillListFilterBarProps) {
   const harnesses = snapshot ? harnessesPresent(snapshot) : [];
 
   function setScope(scope: SkillListFilter["scope"]) {
     onChange({ ...filter, scope });
-  }
-
-  function toggleHarness(harness: string) {
-    onChange({ ...filter, harness: filter.harness === harness ? undefined : harness });
   }
 
   async function handleStopTracking(path: string) {
@@ -142,6 +158,17 @@ export function SkillListFilterBar({
   return (
     <div className="flex flex-col gap-2.5">
       <div className="flex flex-wrap items-center gap-2.5">
+        <div className="relative flex w-60 items-center text-text-tertiary">
+          <Search size={13} className="pointer-events-none absolute left-3" />
+          <input
+            className="h-(--control-height) w-full rounded-sm border border-border bg-bg-primary py-0 pr-3 pl-8 text-body text-text-primary transition-colors placeholder:text-text-quaternary focus-visible:border-border-focus"
+            value={query}
+            onChange={(e) => onQueryChange(e.target.value)}
+            placeholder="Filter skills…"
+            aria-label="Filter skills"
+          />
+        </div>
+
         <div
           className="flex [&>*:first-child]:rounded-l-sm [&>*:first-child]:border-l [&>*:last-child]:rounded-r-sm"
           role="group"
@@ -218,49 +245,122 @@ export function SkillListFilterBar({
           </MenuControl>
         </div>
 
-        {harnesses.length > 1 && (
-          <div className="flex flex-wrap gap-1.5" role="group" aria-label="Harness">
-            {harnesses.map((harness) => {
-              const harnessId = harnessIdFromLabel(harness);
-              const active = filter.harness === harness;
-              return (
-                <button
-                  key={harness}
-                  className={`inline-flex h-(--control-height) cursor-pointer items-center gap-1.5 rounded-sm border border-border bg-transparent px-2.5 text-caption text-text-tertiary transition-colors hover:bg-bg-hover hover:text-text-secondary ${
-                    active ? "bg-bg-tertiary text-text-primary" : ""
-                  }`}
-                  onClick={() => toggleHarness(harness)}
-                  aria-pressed={active}
-                >
-                  {harnessId && <HarnessIcon harness={harnessId} size={12} />}
-                  {harness}
-                </button>
-              );
-            })}
-          </div>
-        )}
-
-        <SelectControl
-          value={filter.source ?? ""}
-          onValueChange={(value) => {
-            // SAFETY: `value` is one of SOURCE_OPTIONS' values - "" or a SkillSourceKind literal.
-            const source = (value || undefined) as SkillSourceKind | undefined;
-            onChange({ ...filter, source });
-          }}
-          items={SOURCE_OPTIONS}
-          ariaLabel="Source"
-        />
+        <MenuControl
+          triggerClassName="inline-flex h-(--control-height) cursor-pointer items-center gap-1.5 rounded-sm border border-border bg-transparent px-2.5 text-body text-text-tertiary transition-colors hover:bg-bg-hover hover:text-text-secondary"
+          triggerAriaLabel="Filter"
+          trigger={
+            <>
+              <ListFilter size={13} />
+              Filter
+              {filterMenuCount(filter) > 0 && (
+                <span className="rounded-full bg-accent-soft px-1.5 text-caption tabular-nums text-accent">
+                  {filterMenuCount(filter)}
+                </span>
+              )}
+            </>
+          }
+        >
+          {harnesses.length > 1 && (
+            <>
+              <p className="m-0 px-2.5 pt-1.5 pb-0.5 text-caption font-medium tracking-[0.08em] text-text-tertiary uppercase">
+                Harness
+              </p>
+              <MenuRadioGroup
+                value={filter.harness ?? ""}
+                onValueChange={(value) => {
+                  // SAFETY: every MenuRadioItem in this group carries a string - "" (Any) or a harness label.
+                  onChange({ ...filter, harness: (value as string) || undefined });
+                }}
+              >
+                <MenuRadioItem value="" closeOnClick className={MENU_ITEM_CLASS}>
+                  Any harness
+                </MenuRadioItem>
+                {harnesses.map((harness) => {
+                  const harnessId = harnessIdFromLabel(harness);
+                  return (
+                    <MenuRadioItem
+                      key={harness}
+                      value={harness}
+                      closeOnClick
+                      className={MENU_ITEM_CLASS}
+                    >
+                      {harnessId && <HarnessIcon harness={harnessId} size={13} />}
+                      {harness}
+                    </MenuRadioItem>
+                  );
+                })}
+              </MenuRadioGroup>
+              <MenuSeparator className={MENU_SEPARATOR_CLASS} />
+            </>
+          )}
+          <p className="m-0 px-2.5 pt-1.5 pb-0.5 text-caption font-medium tracking-[0.08em] text-text-tertiary uppercase">
+            Source
+          </p>
+          <MenuRadioGroup
+            value={filter.source ?? ""}
+            onValueChange={(value) => {
+              // SAFETY: every value here comes from SOURCE_OPTIONS - "" or a SkillSourceKind literal.
+              onChange({
+                ...filter,
+                source: ((value as string) || undefined) as SkillSourceKind | undefined,
+              });
+            }}
+          >
+            {SOURCE_OPTIONS.map((option) => (
+              <MenuRadioItem
+                key={option.value}
+                value={option.value}
+                closeOnClick
+                className={MENU_ITEM_CLASS}
+              >
+                {option.value === "" ? "Any source" : option.label}
+              </MenuRadioItem>
+            ))}
+          </MenuRadioGroup>
+        </MenuControl>
 
         <div className="flex-1" />
-
-        <label className="flex h-(--control-height) cursor-pointer items-center gap-2 text-small text-text-secondary">
-          <SwitchControl checked={showCoverage} onCheckedChange={onToggleCoverage} />
-          Show coverage
-        </label>
 
         <span className="whitespace-nowrap text-small tabular-nums text-text-tertiary">
           {resultCount} skill{resultCount !== 1 ? "s" : ""}
         </span>
+
+        <SelectControl
+          value={sort}
+          onValueChange={(v) => {
+            if (isSortMode(v)) onSortChange(v);
+          }}
+          items={SORT_ITEMS}
+          ariaLabel="Sort"
+          triggerPrefix="Sort:"
+        />
+
+        <div
+          className="flex [&>*:first-child]:rounded-l-sm [&>*:first-child]:border-l [&>*:last-child]:rounded-r-sm"
+          role="group"
+          aria-label="View"
+        >
+          <TooltipControl content="List">
+            <button
+              className={`${SEGMENTED_ITEM_CLASS} px-2.5`}
+              aria-pressed={!showCoverage}
+              aria-label="List view"
+              onClick={() => onToggleCoverage(false)}
+            >
+              <List size={14} />
+            </button>
+          </TooltipControl>
+          <TooltipControl content="Coverage matrix">
+            <button
+              className={`${SEGMENTED_ITEM_CLASS} px-2.5`}
+              aria-pressed={showCoverage}
+              aria-label="Coverage matrix view"
+              onClick={() => onToggleCoverage(true)}
+            >
+              <LayoutGrid size={14} />
+            </button>
+          </TooltipControl>
+        </div>
       </div>
 
       {activeCount > 0 && (
@@ -309,7 +409,7 @@ export function SkillListFilterBar({
           )}
           <button
             className="h-6 cursor-pointer border-0 bg-transparent px-2 text-caption text-text-tertiary transition-colors hover:text-text-primary"
-            onClick={() => onChange(defaultSkillListFilter())}
+            onClick={onReset}
           >
             Clear all
           </button>

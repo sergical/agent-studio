@@ -2,7 +2,7 @@
 // SkillMarkdownEditor - Full-height raw SKILL.md textarea with Save/Cancel
 // ============================================================================
 
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useEffectEvent, useRef, useState } from "react";
 import { Save, X } from "lucide-react";
 import { Button, Textarea } from "@skill-studio/ui";
 
@@ -34,35 +34,46 @@ export function SkillMarkdownEditor({
   const isDirty = content !== initialContent;
   const textareaRef = useRef<HTMLTextAreaElement>(null);
 
-  useEffect(() => {
-    onDirtyChange?.(isDirty);
-  }, [isDirty, onDirtyChange]);
+  // Notified from the change handler itself, not an effect syncing a derived
+  // value up to the parent - it only needs to fire on an actual dirty-state
+  // flip, same as the effect it replaces.
+  const handleContentChange = (value: string) => {
+    const nextDirty = value !== initialContent;
+    setContent(value);
+    if (nextDirty !== isDirty) onDirtyChange?.(nextDirty);
+  };
 
   const handleCancel = () => {
     if (isDirty && !window.confirm("Discard unsaved changes?")) return;
     onCancel();
   };
 
+  // Reads the latest content/isSaving/isDirty/onSave/onCancel without
+  // re-subscribing the listener on every keystroke.
+  const onKeyboardShortcut = useEffectEvent((e: KeyboardEvent) => {
+    if ((e.metaKey || e.ctrlKey) && e.key === "s") {
+      e.preventDefault();
+      if (isSaving || !isDirty) return;
+      onSave(content);
+      return;
+    }
+    if (e.key === "Escape") {
+      // Only Escape typed into this editor's own textarea cancels editing -
+      // Escape from any other input, contenteditable region, or an open
+      // dialog belongs to that widget, not to this editor.
+      if (e.target !== textareaRef.current) return;
+      if (isDirty) return; // Cancel button's own confirm is the only way out of dirty edits via Escape.
+      onCancel();
+    }
+  });
+
   useEffect(() => {
-    const handleKeyDown = (e: KeyboardEvent) => {
-      if ((e.metaKey || e.ctrlKey) && e.key === "s") {
-        e.preventDefault();
-        if (isSaving || !isDirty) return;
-        onSave(content);
-        return;
-      }
-      if (e.key === "Escape") {
-        // Only Escape typed into this editor's own textarea cancels editing -
-        // Escape from any other input, contenteditable region, or an open
-        // dialog belongs to that widget, not to this editor.
-        if (e.target !== textareaRef.current) return;
-        if (isDirty) return; // Cancel button's own confirm is the only way out of dirty edits via Escape.
-        onCancel();
-      }
-    };
+    function handleKeyDown(e: KeyboardEvent) {
+      onKeyboardShortcut(e);
+    }
     window.addEventListener("keydown", handleKeyDown);
     return () => window.removeEventListener("keydown", handleKeyDown);
-  }, [content, onSave, isSaving, isDirty, onCancel]);
+  }, []);
 
   return (
     <div className="flex flex-col gap-2 p-4">
@@ -83,7 +94,7 @@ export function SkillMarkdownEditor({
         ref={textareaRef}
         className="min-h-[60vh] resize-y rounded-sm border-border bg-bg-primary px-3 py-2.5 font-mono text-body text-text-primary focus-visible:border-border-focus focus-visible:ring-0"
         value={content}
-        onChange={(e) => setContent(e.target.value)}
+        onChange={(e) => handleContentChange(e.target.value)}
         spellCheck={false}
       />
     </div>

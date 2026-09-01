@@ -22,9 +22,7 @@ const PROSE = "max-w-[72ch]";
 
 export function SkillMarkdown({ content, className }: SkillMarkdownProps) {
   return (
-    <div
-      className={`text-body leading-[1.6] text-text-secondary ${className ?? ""}`}
-    >
+    <div className={`text-body leading-[1.6] text-text-secondary ${className ?? ""}`}>
       <ReactMarkdown
         remarkPlugins={[remarkGfm]}
         components={{
@@ -50,14 +48,26 @@ export function SkillMarkdown({ content, className }: SkillMarkdownProps) {
             </h3>
           ),
           p: ({ children }) => <p className={`${PROSE} m-0 mb-[1em]`}>{children}</p>,
-          ul: ({ children }) => (
-            <ul className={`${PROSE} m-0 mb-[1em] list-disc pl-5`}>{children}</ul>
+          // remark-gfm marks task lists with `contains-task-list`; those get
+          // no bullet marker (the checkbox is the marker).
+          ul: ({ children, className: listClassName }) => (
+            <ul
+              className={`${PROSE} m-0 mb-[1em] ${
+                listClassName?.includes("contains-task-list")
+                  ? "list-none pl-1 [&_input]:mr-1.5 [&_input]:align-middle"
+                  : "list-disc pl-5"
+              }`}
+            >
+              {children}
+            </ul>
           ),
           ol: ({ children }) => (
             <ol className={`${PROSE} m-0 mb-[1em] list-decimal pl-5`}>{children}</ol>
           ),
           blockquote: ({ children }) => (
-            <blockquote className={`${PROSE} m-0 mb-[1em] border-l-2 border-border pl-3 text-text-tertiary`}>
+            <blockquote
+              className={`${PROSE} m-0 mb-[1em] border-l-2 border-border pl-3 text-text-tertiary`}
+            >
               {children}
             </blockquote>
           ),
@@ -83,13 +93,20 @@ export function SkillMarkdown({ content, className }: SkillMarkdownProps) {
               <table className="border-collapse text-small">{children}</table>
             </div>
           ),
-          th: ({ children }) => (
-            <th className="border border-border-subtle px-2.5 py-1.5 text-left font-semibold text-text-primary">
+          // `style` carries GFM column alignment (text-align from `:---:`
+          // markers) - pass it through so centered/right columns survive.
+          th: ({ children, style }) => (
+            <th
+              style={style}
+              className="border border-border-subtle px-2.5 py-1.5 text-left font-semibold text-text-primary"
+            >
               {children}
             </th>
           ),
-          td: ({ children }) => (
-            <td className="border border-border-subtle px-2.5 py-1.5 text-left">{children}</td>
+          td: ({ children, style }) => (
+            <td style={style} className="border border-border-subtle px-2.5 py-1.5 text-left">
+              {children}
+            </td>
           ),
         }}
       >

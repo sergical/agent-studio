@@ -5,11 +5,15 @@
 // assistant panel in a right-hand overlay drawer.
 // ============================================================================
 
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useEffectEvent, useRef, useState } from "react";
 import { ArrowLeft } from "lucide-react";
 import { useSkillSnapshot } from "../../hooks/useSkillSnapshot";
 import { forkSkill, readInstalledSkillMd, writeInstalledSkillMd } from "../../lib/skill-api";
-import { ownDeployments, skillMdPathForDeployment } from "@skill-studio/lib";
+import {
+  isUnresolvedDeployment,
+  ownDeployments,
+  skillMdPathForDeployment,
+} from "@skill-studio/lib";
 import type { InstalledSkill, SkillInvocationStats } from "@skill-studio/lib";
 import type { ActiveView } from "../../store/appStore";
 import { useAppStore } from "../../store/appStore";
@@ -19,6 +23,7 @@ import { SkillAssistantPanel } from "./SkillAssistantPanel";
 import { SkillCompareDialog } from "./SkillCompareDialog";
 import { SkillLocationsCard } from "./SkillLocationsCard";
 import { SkillMarkdownCard } from "./SkillMarkdownCard";
+import { SkillRepairCard } from "./SkillRepairCard";
 
 interface SkillPageProps {
   /** `null` when the skill named by the route was removed since the page opened. */
@@ -64,23 +69,31 @@ export function SkillPage({
   /** The skill the compare dialog was last shown for, so a plain skill switch (no fresh compare request) closes it instead of carrying it over. */
   const compareSkillNameRef = useRef<string | undefined>(skill?.name);
 
+  // A plain skill switch (no fresh compare request) closes a dialog carried
+  // over from the previous skill - adjusted during render, per React's
+  // "storing information from previous renders" pattern, since it's a reset
+  // keyed off an identity change rather than something to synchronize.
+  if (compareSkillNameRef.current !== skill?.name) {
+    compareSkillNameRef.current = skill?.name;
+    if (isCompareOpen) setIsCompareOpen(false);
+  }
+
   // Opening with `intent: "compare"` shows the dialog exactly once - the
   // intent is cleared as soon as it opens, so navigating away and back to
-  // this page (without a fresh compare request) never reopens it. Both
-  // effects live together so a skill switch that also carries a fresh
-  // compare intent (the "Compare" action on another skill's duplicate issue)
-  // always ends up open, regardless of hook-declaration order.
+  // this page (without a fresh compare request) never reopens it.
   useEffect(() => {
-    if (compareSkillNameRef.current !== skill?.name) {
-      compareSkillNameRef.current = skill?.name;
-      setIsCompareOpen(false);
-    }
     if (activeView.kind === "skill" && activeView.intent === "compare") {
       setIsCompareOpen(true);
       clearSkillIntent();
     }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [activeView, skill?.name]);
+  }, [activeView, clearSkillIntent]);
+
+  // Reads the latest isEditing/isEditorDirty/onBack without making the
+  // listener effect below re-subscribe every time one of them changes.
+  const onEscapeBack = useEffectEvent(() => {
+    if (isEditing && isEditorDirty && !window.confirm("Discard unsaved changes?")) return;
+    onBack();
+  });
 
   useEffect(() => {
     function onKeyDown(event: KeyboardEvent) {
@@ -99,16 +112,18 @@ export function SkillPage({
       ) {
         return;
       }
-      if (isEditing && isEditorDirty && !window.confirm("Discard unsaved changes?")) return;
-      onBack();
+      onEscapeBack();
     }
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
-  }, [onBack, isEditing, isEditorDirty]);
+  }, []);
 
-  useEffect(() => {
-    setIsHistoryOpen(false);
-  }, [skill?.name]);
+  /** The skill the history drawer was last shown for, so a skill switch closes it instead of carrying it over. */
+  const historySkillNameRef = useRef<string | undefined>(skill?.name);
+  if (historySkillNameRef.current !== skill?.name) {
+    historySkillNameRef.current = skill?.name;
+    if (isHistoryOpen) setIsHistoryOpen(false);
+  }
 
   // The deployment this page edits: only the one the caller clicked, when
   // given - a stale `deploymentPath` (the copy was removed by a rescan) must
@@ -121,7 +136,13 @@ export function SkillPage({
   const deployment =
     skill &&
     (deploymentPath ? requestedDeployment : ownDeployments(skill)[0] || skill.deployments[0]);
-  const skillMdPath = deployment ? skillMdPathForDeployment(deployment) : undefined;
+  // A broken deployment symlink can't be read at all - SkillRepairCard takes
+  // over the SKILL.md card's spot instead of firing the doomed
+  // `readInstalledSkillMd` for it (see SkillMarkdownCard's old "Unknown
+  // error" + Retry state for a broken link).
+  const isDeploymentBroken = Boolean(deployment && isUnresolvedDeployment(deployment));
+  const skillMdPath =
+    deployment && !isDeploymentBroken ? skillMdPathForDeployment(deployment) : undefined;
   const isPluginManaged = Boolean(deployment?.plugin);
 
   const [rawContent, setRawContent] = useState<string | null>(null);
@@ -149,55 +170,71 @@ export function SkillPage({
       });
   }, []);
 
+  /** Set when the path change is a copy switch on the same skill - the old copy's content stays up (no skeleton), so the card keeps its height and the page doesn't jump. */
+  const lastLoadedSkillRef = useRef<string | undefined>(undefined);
+
   useEffect(() => {
     // A path change (including to/from `undefined`) can never carry over a
     // stale draft or edit mode from a different copy of the skill.
+    const isCopySwitch = skill?.name !== undefined && lastLoadedSkillRef.current === skill.name;
+    lastLoadedSkillRef.current = skill?.name;
     currentSkillMdPathRef.current = skillMdPath;
-    setRawContent(null);
+    if (!isCopySwitch) setRawContent(null);
     setIsEditing(false);
     setIsEditorDirty(false);
     setIsLoadingContent(false);
     setLoadError(null);
-    if (skillMdPath) loadContent(skillMdPath, true);
-  }, [skillMdPath, loadContent]);
+    if (skillMdPath) loadContent(skillMdPath, !isCopySwitch);
+  }, [skill?.name, skillMdPath, loadContent]);
 
   // A dotagents/skills.sh-managed skill would have its edits overwritten by
   // the next sync/update - saving forks it first so the edit sticks.
   const needsForkToSave = skill?.source_kind === "dotagents" || skill?.source_kind === "skills-sh";
 
-  const handleSave = async (content: string) => {
+  // A Promise chain, not a try/finally statement, so the compiler can still
+  // optimize this component (it doesn't support `finally` clauses yet).
+  const handleSave = (content: string) => {
     // Ignore a duplicate save request (e.g. Cmd+S fired while the Save
     // button's own click is already in flight).
     if (!skill || !skillMdPath || isSaving) return;
     setIsSaving(true);
-    try {
-      if (needsForkToSave) {
-        try {
-          // `skillMdPath` is only set once `deployment` resolves (see
-          // above), so it's non-null here.
-          await forkSkill(skill.name, deployment!.path);
-        } catch (err) {
+
+    // A fork failure already shows its own toast and must skip the write -
+    // this flag lets the generic catch below tell that case apart from a
+    // write failure without a second, redundant toast.
+    let forkFailed = false;
+    // `skillMdPath` is only set once `deployment` resolves (see above), so
+    // it's non-null here.
+    const forkIfNeeded = needsForkToSave
+      ? forkSkill(skill.name, deployment!.path).catch((err) => {
+          forkFailed = true;
           addToast({
             type: "error",
             title: "Couldn't fork before saving",
             message: err instanceof Error ? err.message : "Unknown error",
           });
-          return;
-        }
-      }
-      await writeInstalledSkillMd(skillMdPath, content);
-      setRawContent(content);
-      setIsEditing(false);
-      setIsEditorDirty(false);
-    } catch (err) {
-      addToast({
-        type: "error",
-        title: "Couldn't save SKILL.md",
-        message: err instanceof Error ? err.message : "Unknown error",
+        })
+      : Promise.resolve();
+
+    return forkIfNeeded
+      .then(() => {
+        if (forkFailed) return;
+        return writeInstalledSkillMd(skillMdPath, content).then(() => {
+          setRawContent(content);
+          setIsEditing(false);
+          setIsEditorDirty(false);
+        });
+      })
+      .catch((err) => {
+        addToast({
+          type: "error",
+          title: "Couldn't save SKILL.md",
+          message: err instanceof Error ? err.message : "Unknown error",
+        });
+      })
+      .finally(() => {
+        setIsSaving(false);
       });
-    } finally {
-      setIsSaving(false);
-    }
   };
 
   const handleRetryLoad = () => {
@@ -255,28 +292,33 @@ export function SkillPage({
           onCompareCopies={() => setIsCompareOpen(true)}
         />
 
-        <SkillMarkdownCard
-          skill={skill}
-          isPluginManaged={isPluginManaged}
-          deploymentUnresolved={deploymentUnresolved}
-          ownDeploymentOptions={ownDeployments(skill)}
-          onSelectDeployment={(path) => openSkill(skill.name, path)}
-          rawContent={rawContent}
-          isLoadingContent={isLoadingContent}
-          loadError={loadError}
-          onRetry={handleRetryLoad}
-          isEditing={isEditing}
-          isEditorDirty={isEditorDirty}
-          onStartEdit={() => setIsEditing(true)}
-          isSaving={isSaving}
-          saveLabel={needsForkToSave ? "Fork and save" : "Save"}
-          onSave={handleSave}
-          onCancelEdit={() => {
-            setIsEditing(false);
-            setIsEditorDirty(false);
-          }}
-          onDirtyChange={setIsEditorDirty}
-        />
+        {deployment && isDeploymentBroken ? (
+          <SkillRepairCard skill={skill} deployment={deployment} />
+        ) : (
+          <SkillMarkdownCard
+            skill={skill}
+            isPluginManaged={isPluginManaged}
+            deploymentUnresolved={deploymentUnresolved}
+            ownDeploymentOptions={ownDeployments(skill)}
+            deployment={deployment ?? undefined}
+            onSelectDeployment={(path) => openSkill(skill.name, path)}
+            rawContent={rawContent}
+            isLoadingContent={isLoadingContent}
+            loadError={loadError}
+            onRetry={handleRetryLoad}
+            isEditing={isEditing}
+            isEditorDirty={isEditorDirty}
+            onStartEdit={() => setIsEditing(true)}
+            isSaving={isSaving}
+            saveLabel={needsForkToSave ? "Fork and save" : "Save"}
+            onSave={handleSave}
+            onCancelEdit={() => {
+              setIsEditing(false);
+              setIsEditorDirty(false);
+            }}
+            onDirtyChange={setIsEditorDirty}
+          />
+        )}
       </div>
 
       <SkillAssistantDrawer

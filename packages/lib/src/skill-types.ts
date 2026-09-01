@@ -105,19 +105,23 @@ export interface SkillSearchResult {
 }
 
 /**
- * Response from skills.sh search API
- */
-export interface SkillSearchResponse {
-  skills: SkillSearchResult[];
-  hasMore: boolean;
-}
-
-/**
  * Paginated response from Tauri backend
  */
 export interface PaginatedSkillsResponse {
   skills: SkillSearchResult[];
   has_more: boolean;
+}
+
+/**
+ * skills.sh v1 skill details, including the skill's markdown body.
+ */
+export interface SkillDetails {
+  id: string;
+  source: string;
+  slug: string;
+  installs: number;
+  hash: string;
+  skill_md: string | null;
 }
 
 // ============================================================================
@@ -209,8 +213,16 @@ export interface Deployment {
   disabled: boolean;
   /** Which mechanism `disabled` came from, unset when not disabled. */
   disabled_by?: DisabledBy;
+  /** For the shared-root deployment only: native shared-root reader agent ids disabled via their own mechanism ("codex", "open-code"). */
+  disabled_readers?: string[];
   /** Codex's own `agents/openai.yaml` `policy.allow_implicit_invocation` value - note-only. */
   codex_implicit_invocation?: boolean;
+  /**
+   * True when this deployment's skills root is itself a symlink resolving
+   * into the shared `.agents/skills` folder (a whole-dir link, not a
+   * per-skill one) - per-skill disable needs a materialize step first.
+   */
+  shared_via_whole_dir_link?: boolean;
 }
 
 /**
@@ -532,4 +544,25 @@ export interface UpdateCheckSummary {
   gh_status: "ok" | "missing" | "not-logged-in" | "failed";
   message: string | null;
   updates_available: number;
+}
+
+/**
+ * One row of the event store's History (see docs/spec-event-store.md and
+ * `SkillEventDto` in skills/skill_dto.rs). `kind` is one of the v1 event
+ * kinds (`install`, `remove`, `unlink_harness`, `explode_shared_dir`, ...).
+ */
+export interface SkillEvent {
+  id: string;
+  ts: string;
+  kind: string;
+  skill: string;
+  harness?: string;
+  scope?: "global" | "project";
+  project_path?: string;
+  status: "pending" | "done" | "failed" | "interrupted";
+  /** True when this event has an inverse, hasn't already been undone, and its status allows a restore. */
+  restorable: boolean;
+  reverted_by?: string;
+  /** Absolute path to this event's backup directory, for a "Reveal in Finder" action. */
+  backup_path?: string;
 }

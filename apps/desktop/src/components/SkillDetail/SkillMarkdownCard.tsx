@@ -5,8 +5,9 @@
 // ============================================================================
 
 import { Button } from "@skill-studio/ui";
-import { pluginLabelForSkill } from "@skill-studio/lib";
+import { deploymentLabel, pluginLabelForSkill } from "@skill-studio/lib";
 import type { Deployment, InstalledSkill } from "@skill-studio/lib";
+import { SelectControl } from "../ui/SelectControl";
 import { SkillMarkdown } from "./SkillMarkdown";
 import { SkillMarkdownEditor } from "./SkillMarkdownEditor";
 
@@ -17,6 +18,8 @@ interface SkillMarkdownCardProps {
   deploymentUnresolved: boolean;
   /** Own deployments to offer as a fallback when `deploymentUnresolved` - each opens that copy instead. */
   ownDeploymentOptions: Deployment[];
+  /** The copy this card shows and edits - named in the header so a multi-copy skill never edits an ambiguous file. */
+  deployment?: Deployment;
   onSelectDeployment: (path: string) => void;
   rawContent: string | null;
   isLoadingContent: boolean;
@@ -56,6 +59,7 @@ export function SkillMarkdownCard({
   isPluginManaged,
   deploymentUnresolved,
   ownDeploymentOptions,
+  deployment,
   onSelectDeployment,
   rawContent,
   isLoadingContent,
@@ -74,21 +78,37 @@ export function SkillMarkdownCard({
 
   return (
     <div className="flex flex-col gap-1 rounded-lg border border-border-subtle p-4">
-      <div className="flex items-baseline justify-between gap-3 text-body font-semibold text-text-primary">
+      <div className="flex items-center justify-between gap-3 text-body font-semibold text-text-primary">
         <span>SKILL.md</span>
-        {isEditing ? (
-          <span className="flex items-center">
-            {isEditorDirty && (
-              <span className="mr-auto text-caption text-warning">Unsaved changes</span>
-            )}
-          </span>
-        ) : (
-          canEdit && (
-            <Button variant="outline" size="sm" onClick={onStartEdit}>
-              Edit
-            </Button>
-          )
-        )}
+        <span className="flex min-w-0 items-center gap-2">
+          {deployment &&
+            !deploymentUnresolved &&
+            (ownDeploymentOptions.length > 1 && !isEditing ? (
+              <SelectControl
+                ariaLabel="Copy to show and edit"
+                value={deployment.path}
+                onValueChange={onSelectDeployment}
+                items={ownDeploymentOptions.map((d) => ({
+                  value: d.path,
+                  label: deploymentLabel(d),
+                }))}
+              />
+            ) : (
+              <span
+                className="truncate text-caption font-normal text-text-tertiary"
+                title={deployment.path}
+              >
+                {deploymentLabel(deployment)}
+              </span>
+            ))}
+          {isEditing
+            ? isEditorDirty && <span className="text-caption text-warning">Unsaved changes</span>
+            : canEdit && (
+                <Button variant="outline" size="sm" onClick={onStartEdit}>
+                  Edit
+                </Button>
+              )}
+        </span>
       </div>
 
       {deploymentUnresolved ? (
@@ -103,7 +123,7 @@ export function SkillMarkdownCard({
                   size="sm"
                   onClick={() => onSelectDeployment(d.path)}
                 >
-                  {d.agent} · {d.scope}
+                  {deploymentLabel(d)}
                 </Button>
               ))}
             </div>

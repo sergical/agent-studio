@@ -138,9 +138,7 @@ export function SkillAgentTranscript({ state }: SkillAgentTranscriptProps) {
     >
       {blocks.map((block) => {
         if (block.kind === "text") {
-          return (
-            <SkillMarkdown key={block.id} content={block.text} className="leading-normal" />
-          );
+          return <SkillMarkdown key={block.id} content={block.text} className="leading-normal" />;
         }
         if (block.kind === "tool_call") {
           return <ToolCallBlock key={block.id} block={block} />;

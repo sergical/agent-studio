@@ -3,7 +3,7 @@
 // ============================================================================
 
 import { describe, expect, it } from "vitest";
-import { relativeScanTime } from "./Sidebar";
+import { relativeScanTime } from "../../lib/sidebar-nav";
 
 describe("relativeScanTime", () => {
   it("reads 'never scanned' when there is no timestamp", () => {

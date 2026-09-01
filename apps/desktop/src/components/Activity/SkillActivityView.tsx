@@ -16,6 +16,7 @@ import { useAppStore } from "../../store/appStore";
 import { PageShell } from "../Shell/PageShell";
 import { WindowSegmentedControl } from "../ui/WindowSegmentedControl";
 import { InvocationHeatmap } from "./InvocationHeatmap";
+import { SkillHistorySection } from "./SkillHistorySection";
 
 interface SkillActivityViewProps {
   snapshot: SkillSnapshot | undefined;
@@ -164,6 +165,8 @@ export function SkillActivityView({ snapshot, onSelectSkill }: SkillActivityView
           </div>
         </>
       )}
+
+      <SkillHistorySection />
     </PageShell>
   );
 }

@@ -4,7 +4,11 @@
 // separate from HomeView.tsx so they're unit-testable without React.
 // ============================================================================
 
-import { FIRST_CLASS_AGENTS, HEALTH_ISSUE_SEVERITY } from "./skill-health";
+import {
+  FIRST_CLASS_AGENTS,
+  HEALTH_ISSUE_SEVERITY,
+  agentsCoveredByDeployment,
+} from "./skill-health";
 import type { HealthIssue } from "./skill-health";
 import { ownSkillsView, pluginSkillsView } from "./skill-plugin-partition";
 import { invocationsInWindow } from "./skill-stats";
@@ -47,18 +51,19 @@ export function homeSummaryCounts(snapshot: SkillSnapshot): HomeSummaryCounts {
 }
 
 /**
- * Which of `FIRST_CLASS_AGENTS` have at least one own deployment in the
- * snapshot, in `FIRST_CLASS_AGENTS` order - reuses `homeSummaryCounts`'
- * counting logic so Home's harness number and the filter bar's harness chips
- * never disagree about which harnesses "count".
+ * Which of `FIRST_CLASS_AGENTS` at least one own deployment in the snapshot
+ * gives coverage for, in `FIRST_CLASS_AGENTS` order. Coverage, not literal
+ * deployments: a skill in the shared `.agents/skills` root is readable by
+ * every shared-root reader (Codex, OpenCode, pi, ...) even with no
+ * harness-specific deployment - see `agentsCoveredByDeployment`.
  */
 export function harnessesPresent(snapshot: SkillSnapshot): string[] {
   const own = ownSkillsView(snapshot.skills);
   const present = new Set<string>();
   for (const skill of own) {
     for (const deployment of skill.deployments) {
-      if (FIRST_CLASS_AGENTS.some((agent) => agent === deployment.agent)) {
-        present.add(deployment.agent);
+      for (const agent of agentsCoveredByDeployment(deployment.agent)) {
+        present.add(agent);
       }
     }
   }

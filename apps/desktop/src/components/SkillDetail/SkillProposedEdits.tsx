@@ -74,11 +74,11 @@ export function SkillProposedEdits({
       await writeInstalledSkillMdIfUnchanged(skillMdPath, currentContent, patched);
       onApplied(patched);
       addToast({ type: "success", title: "SKILL.md updated" });
+      setIsApplying(false);
     } catch (err) {
       const message = err instanceof Error ? err.message : "Unknown error";
       addToast({ type: "error", title: "Couldn't save SKILL.md", message });
       onDiskChanged();
-    } finally {
       setIsApplying(false);
     }
   };

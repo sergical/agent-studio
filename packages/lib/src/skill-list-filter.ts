@@ -7,7 +7,7 @@
 // ============================================================================
 
 import type { HealthIssueKind } from "./skill-health";
-import { collectDashboardIssues } from "./skill-health";
+import { agentsCoveredByDeployment, collectDashboardIssues } from "./skill-health";
 import { pluginDeployments } from "./skill-plugin-partition";
 import type { InstalledSkill, SkillInvocationStats, SkillSourceKind } from "./skill-types";
 
@@ -50,9 +50,11 @@ function matchesScope(skill: InstalledSkill, scope: SkillListFilterScope): boole
   return skill.deployments.some((d) => d.project_path === scope.project);
 }
 
-/** Whether `skill` has a deployment for the harness display label `harness`. */
+/** Whether `skill` is readable by the harness display label `harness` - coverage semantics, so a shared-root deployment matches every shared-root reader (see `agentsCoveredByDeployment`). */
 function matchesHarness(skill: InstalledSkill, harness: string): boolean {
-  return skill.deployments.some((d) => d.agent === harness);
+  return skill.deployments.some((d) =>
+    agentsCoveredByDeployment(d.agent).some((agent) => agent === harness),
+  );
 }
 
 /** Whether `skill` matches `query` in its name, description, or source repo, case-insensitive. */

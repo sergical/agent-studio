@@ -21,9 +21,9 @@ import type {
   PackMember,
   PaginatedSkillsResponse,
   PullResult,
-  SkillSearchResult,
+  SkillDetails,
+  SkillEvent,
   SkillSnapshot,
-  UpdateCheckSummary,
   UpdatePackResult,
 } from "@skill-studio/lib";
 
@@ -32,30 +32,31 @@ import type {
 // ============================================================================
 
 /**
- * Search for skills on skills.sh
+ * Search for skills on skills.sh. The v1 search endpoint has no pagination -
+ * it returns up to `limit` results in one shot.
  */
 export async function searchSkills(
   query: string,
   limit?: number,
-  offset?: number,
 ): Promise<PaginatedSkillsResponse> {
-  return invoke("search_skills", { query, limit, offset });
+  return invoke("search_skills", { query, limit });
 }
 
 /**
- * Get popular skills (sorted by install count)
+ * Get popular skills (sorted by install count), `page` 0-indexed.
  */
 export async function getPopularSkills(
-  limit?: number,
-  offset?: number,
+  page?: number,
+  perPage?: number,
 ): Promise<PaginatedSkillsResponse> {
-  return invoke("get_popular_skills", { limit, offset });
+  return invoke("get_popular_skills", { page, perPage });
 }
 
 /**
- * Get skill details from skills.sh
+ * Get skill details, including the skill's SKILL.md/AGENTS.md body, from
+ * skills.sh. `skillId` is the full `owner/repo/slug` id.
  */
-export async function getSkillDetails(skillId: string): Promise<SkillSearchResult> {
+export async function getSkillDetails(skillId: string): Promise<SkillDetails> {
   return invoke("get_skill_details", { skillId });
 }
 
@@ -70,21 +71,6 @@ export async function getSkillDetails(skillId: string): Promise<SkillSearchResul
  */
 export async function getInstalledSkills(projectPaths?: string[]): Promise<InstalledSkill[]> {
   return invoke("get_installed_skills", { projectPaths });
-}
-
-/**
- * Check if a skill is installed
- */
-export async function isSkillInstalled(skillName: string): Promise<boolean> {
-  return invoke("is_skill_installed", { skillName });
-}
-
-/**
- * List project directories discovered from Codex config and Claude Code
- * transcripts that have a first-class agent's skill directory.
- */
-export async function listSkillProjects(): Promise<string[]> {
-  return invoke("list_skill_projects");
 }
 
 /**
@@ -140,15 +126,6 @@ export async function removeSkill(skillName: string, global: boolean): Promise<I
  */
 export async function updateSkill(skillName: string, global: boolean): Promise<InstallResult> {
   return invoke("update_skill", { skillName, global });
-}
-
-/**
- * Run the background update check now, blocking until it finishes. Also
- * triggers a snapshot rebuild, so `onSkillSnapshot` fires with fresh
- * `has_update`/`update_check` data shortly after this resolves.
- */
-export async function checkSkillUpdatesNow(): Promise<UpdateCheckSummary> {
-  return invoke("check_skill_updates_now");
 }
 
 /**
@@ -390,6 +367,65 @@ export async function setSkillInvocation(
   policy: InvocationPolicy,
 ): Promise<void> {
   return invoke("set_skill_invocation", { name, path, policy });
+}
+
+// ============================================================================
+// Event Store API
+// ============================================================================
+
+/**
+ * Lists events newest-first, for the Activity view's History section.
+ * Defaults to the last 200 events across every skill.
+ */
+export async function listSkillEvents(limit?: number, skill?: string): Promise<SkillEvent[]> {
+  return invoke("list_skill_events", { limit, skill });
+}
+
+/**
+ * Undoes one event. Refused with a drift-guard message naming the drifted
+ * path unless `force` is set, in which case the current (drifted) content is
+ * itself backed up and restorable before the inverse is applied.
+ */
+export async function restoreSkillEvent(eventId: string, force: boolean): Promise<void> {
+  return invoke("restore_skill_event", { eventId, force });
+}
+
+/**
+ * The Locations card's entry point for disabling/enabling one skill under
+ * one harness that reads from the shared root. Converts a whole-dir link to
+ * per-skill links on first disable.
+ */
+export async function setSharedHarnessSkillEnabled(
+  rootPath: string,
+  skill: string,
+  harness: string,
+  enabled: boolean,
+): Promise<void> {
+  return invoke("set_shared_harness_skill_enabled", { rootPath, skill, harness, enabled });
+}
+
+/**
+ * The Locations card's "Move out of shared folder" entry point: gives every
+ * harness that reads the shared root its own real copy of `skill`, then
+ * deletes the shared copy. `rootPath` is the shared root itself (e.g.
+ * `~/.agents/skills`), not one harness's skills dir.
+ */
+export async function distributeSkillFromShared(rootPath: string, skill: string): Promise<void> {
+  return invoke("distribute_skill_from_shared", { rootPath, skill });
+}
+
+/**
+ * SkillPage's "Repair this location" entry point for a broken deployment
+ * symlink: `"remove"` deletes the dangling link, `"relink"` repoints it at
+ * `target` (a healthy deployment path of the same skill). Both are validated
+ * against the current snapshot on the Rust side.
+ */
+export async function repairSkillLink(
+  path: string,
+  action: "remove" | "relink",
+  target?: string,
+): Promise<void> {
+  return invoke("repair_skill_link", { path, action, target });
 }
 
 // ============================================================================

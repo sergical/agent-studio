@@ -24,26 +24,30 @@ export function PackNamePrompt({ members, onClose, onCreated }: PackNamePromptPr
   const addToast = useAppStore((state) => state.addToast);
   const error = validatePackName(name);
 
-  async function handleSubmit() {
+  // A Promise chain, not a try/finally statement, so the compiler can still
+  // optimize this component (it doesn't support `finally` clauses yet).
+  function handleSubmit() {
     if (error || submitting) return;
     setSubmitting(true);
-    try {
-      await createSkillPack(name, members);
-      addToast({
-        type: "success",
-        title: "Pack created",
-        message: `${name} · ${members.length} skill${members.length !== 1 ? "s" : ""}`,
+    return createSkillPack(name, members)
+      .then(() => {
+        addToast({
+          type: "success",
+          title: "Pack created",
+          message: `${name} · ${members.length} skill${members.length !== 1 ? "s" : ""}`,
+        });
+        onCreated();
+      })
+      .catch((err) => {
+        addToast({
+          type: "error",
+          title: "Couldn't create pack",
+          message: err instanceof Error ? err.message : String(err),
+        });
+      })
+      .finally(() => {
+        setSubmitting(false);
       });
-      onCreated();
-    } catch (err) {
-      addToast({
-        type: "error",
-        title: "Couldn't create pack",
-        message: err instanceof Error ? err.message : String(err),
-      });
-    } finally {
-      setSubmitting(false);
-    }
   }
 
   return (

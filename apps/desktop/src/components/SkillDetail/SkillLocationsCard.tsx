@@ -7,21 +7,25 @@
 // ============================================================================
 
 import { Fragment, useState } from "react";
+import { ask } from "@tauri-apps/plugin-dialog";
 import { AlertTriangle, ChevronRight, FolderOpen, Link2 } from "lucide-react";
 import {
   agentIdFromDeploymentLabel,
+  AGENTS_READING_SHARED_ROOT,
   deploymentLinkKind,
   deploymentLinkTarget,
   driftingCopies,
   groupDeploymentsForDisplay,
   locationSummary,
 } from "@skill-studio/lib";
-import type { DeploymentGroup } from "@skill-studio/lib";
+import type { AgentId, DeploymentGroup } from "@skill-studio/lib";
 import {
+  distributeSkillFromShared,
   forkSkill,
   openSkillPath,
   setDeploymentEnabled,
   setHarnessEnabled,
+  setSharedHarnessSkillEnabled,
   setSkillInvocation,
 } from "../../lib/skill-api";
 import { FIRST_CLASS_AGENTS } from "@skill-studio/lib";
@@ -152,6 +156,12 @@ function basename(path: string): string {
   return path.split("/").filter(Boolean).pop() ?? path;
 }
 
+/** Everything before the last path segment, for the skills root of a deployment's skill dir. */
+function dirnameOf(path: string): string {
+  const idx = path.lastIndexOf("/");
+  return idx > 0 ? path.slice(0, idx) : "/";
+}
+
 /**
  * Sorts deployments for display: global scope first, then project rows
  * grouped by project folder name (A→Z); within a group the shared root
@@ -190,7 +200,8 @@ function DeploymentRow({
   const harnessId = harnessIdFromLabel(deployment.agent);
   const relation = relationLabel(deployment);
   const supportsNativeToggle = canToggleHarness(deployment);
-  const supportsDisableSwitch = supportsNativeToggle || canMoveAsideDisable(deployment);
+  const supportsDisableSwitch =
+    supportsNativeToggle || canMoveAsideDisable(deployment) || deployment.shared_via_whole_dir_link;
 
   const handleReveal = () => {
     openSkillPath(deployment.path, "reveal").catch((err) => {
@@ -203,6 +214,40 @@ function DeploymentRow({
   };
 
   const handleToggleEnabled = async (nextEnabled: boolean) => {
+    // A harness whose skills root is itself a symlink to the whole shared
+    // folder has no per-skill switch on disk - `set_deployment_enabled` and
+    // `set_harness_enabled` both deterministically refuse it. Disabling
+    // converts the whole-dir link to per-skill links first
+    // (`explode_shared_dir`), so this is confirmed before it runs; enabling
+    // has nothing destructive to confirm.
+    if (deployment.shared_via_whole_dir_link) {
+      if (!nextEnabled) {
+        const confirmed = await ask(
+          `${harnessDisplayName(deployment)} links the whole shared folder. Skill Studio will convert it to per-skill links first, then disable just ${skill.name}.`,
+          { title: "Convert to per-skill links?", kind: "warning" },
+        );
+        if (!confirmed) return;
+      }
+      setIsTogglingHarness(true);
+      try {
+        await setSharedHarnessSkillEnabled(
+          dirnameOf(deployment.path),
+          basename(deployment.path),
+          agentIdFromDeploymentLabel(deployment.agent) ?? "",
+          nextEnabled,
+        );
+        setIsTogglingHarness(false);
+      } catch (err) {
+        addToast({
+          type: "error",
+          title: nextEnabled ? "Couldn't enable" : "Couldn't disable",
+          message: err instanceof Error ? err.message : "Unknown error",
+        });
+        setIsTogglingHarness(false);
+      }
+      return;
+    }
+
     setIsTogglingHarness(true);
     try {
       // A deployment already move-aside disabled, or one with no native
@@ -219,13 +264,13 @@ function DeploymentRow({
           nextEnabled,
         );
       }
+      setIsTogglingHarness(false);
     } catch (err) {
       addToast({
         type: "error",
         title: nextEnabled ? "Couldn't enable" : "Couldn't disable",
         message: err instanceof Error ? err.message : "Unknown error",
       });
-    } finally {
       setIsTogglingHarness(false);
     }
   };
@@ -294,6 +339,76 @@ function DeploymentRow({
   );
 }
 
+/** Display label per native shared-root reader - `HARNESS_LABELS` doesn't cover cursor/grok-build. */
+const READER_LABELS = [
+  ["codex", "Codex"],
+  ["open-code", "OpenCode"],
+  ["pi", "pi"],
+  ["cursor", "Cursor"],
+  ["grok-build", "Grok Build"],
+] satisfies [AgentId, string][];
+
+/** A harness that reads the shared folder natively - no symlink to show. Codex and OpenCode have native per-skill disable mechanisms; pi, Cursor, and Grok Build read the folder unconditionally. */
+function SharedReaderRow({
+  agentId,
+  skill,
+  shared,
+}: {
+  agentId: AgentId;
+  skill: InstalledSkill;
+  shared: Deployment;
+}) {
+  const addToast = useAppStore((state) => state.addToast);
+  const [isToggling, setIsToggling] = useState(false);
+  const label = READER_LABELS.find(([id]) => id === agentId)?.[1] ?? agentId;
+  const canToggle = agentId === "codex" || agentId === "open-code";
+  const disabled = (shared.disabled_readers ?? []).includes(agentId);
+
+  const handleToggle = async (nextEnabled: boolean) => {
+    setIsToggling(true);
+    try {
+      await setHarnessEnabled(skill.name, agentId, nextEnabled);
+      setIsToggling(false);
+    } catch (err) {
+      addToast({
+        type: "error",
+        title: nextEnabled ? "Couldn't enable" : "Couldn't disable",
+        message: err instanceof Error ? err.message : "Unknown error",
+      });
+      setIsToggling(false);
+    }
+  };
+
+  return (
+    <div className="grid min-h-11 grid-cols-[minmax(0,1fr)_auto] items-center gap-3 border-b border-border-subtle px-2 py-1.5 last:border-b-0">
+      <div className="flex min-w-0 items-center gap-2 text-body text-text-primary">
+        <HarnessIcon harness={agentId} size={16} />
+        <span className="shrink-0">{label}</span>
+        <span className="inline-block min-w-0 overflow-hidden text-ellipsis whitespace-nowrap text-small text-text-tertiary">
+          reads this folder
+        </span>
+      </div>
+      {canToggle ? (
+        <label className="flex h-(--control-height) cursor-pointer items-center gap-2 text-small text-text-secondary">
+          <SwitchControl
+            checked={!disabled}
+            onCheckedChange={handleToggle}
+            disabled={isToggling}
+            ariaLabel={`Enabled for ${label}`}
+          />
+          Enabled
+        </label>
+      ) : (
+        <TooltipControl
+          content={`${label} reads the shared folder directly - it has no per-skill off switch`}
+        >
+          <span className="text-small text-text-tertiary">always on</span>
+        </TooltipControl>
+      )}
+    </div>
+  );
+}
+
 /**
  * The shared folder's own row, expandable to the harnesses linked to it -
  * "click the shared folder to see who links to it, click one of those to
@@ -307,18 +422,37 @@ function SharedDeploymentGroup({
   skill: InstalledSkill;
 }) {
   const [expanded, setExpanded] = useState(true);
-  const hasLinks = group.linked.length > 0;
+  const addToast = useAppStore((state) => state.addToast);
+  const readers = AGENTS_READING_SHARED_ROOT.filter(
+    (id) => !group.linked.some((d) => agentIdFromDeploymentLabel(d.agent) === id),
+  );
+  const harnessCount = group.linked.length + readers.length;
+
+  const handleDistribute = async () => {
+    const confirmed = await ask(
+      `Move "${skill.name}" out of the shared folder?\n\nEach harness that reads the shared folder gets its own copy in its own skills folder, so you can turn the skill off per harness. Harnesses that already have their own copy keep it.\n\nYou can undo this later from Activity → History.`,
+      { title: "Move out of shared folder", kind: "info" },
+    );
+    if (!confirmed) return;
+    try {
+      await distributeSkillFromShared(dirnameOf(group.shared.path), skill.name);
+    } catch (err) {
+      addToast({
+        type: "error",
+        title: "Couldn't move out of shared folder",
+        message: err instanceof Error ? err.message : "Unknown error",
+      });
+    }
+  };
+
+  const toggleExpanded = () => setExpanded((open) => !open);
   const headerContent = (
     <>
       <span className="flex min-w-0 items-center gap-2 text-body text-text-primary">
-        {hasLinks ? (
-          <ChevronRight
-            size={14}
-            className={`shrink-0 text-text-tertiary transition-transform ${expanded ? "rotate-90" : ""}`}
-          />
-        ) : (
-          <span aria-hidden="true" className="w-3.5 shrink-0" />
-        )}
+        <ChevronRight
+          size={14}
+          className={`shrink-0 text-text-tertiary transition-transform ${expanded ? "rotate-90" : ""}`}
+        />
         <FolderOpen size={16} className="shrink-0" />
         <span className="shrink-0">Shared folder</span>
       </span>
@@ -332,10 +466,20 @@ function SharedDeploymentGroup({
           </span>
         </span>
       </TooltipControl>
-      <span className="shrink-0 justify-self-end text-small tabular-nums text-text-tertiary">
-        {hasLinks
-          ? `used by ${group.linked.length} harness${group.linked.length === 1 ? "" : "es"}`
-          : "nothing links to it"}
+      <span className="flex shrink-0 items-center gap-3 justify-self-end">
+        <span className="text-small tabular-nums text-text-tertiary">
+          {`used by ${harnessCount} harness${harnessCount === 1 ? "" : "es"}`}
+        </span>
+        <button
+          type="button"
+          className="cursor-pointer border-0 bg-none text-small text-accent hover:underline"
+          onClick={(e) => {
+            e.stopPropagation();
+            void handleDistribute();
+          }}
+        >
+          Move out of shared…
+        </button>
       </span>
     </>
   );
@@ -343,27 +487,33 @@ function SharedDeploymentGroup({
     "grid min-h-11 w-full grid-cols-[minmax(0,1fr)_minmax(0,1fr)_auto] items-center gap-3 px-2 py-1.5";
   return (
     <div className="border-b border-border-subtle last:border-b-0">
-      {hasLinks ? (
-        <button
-          type="button"
-          className={`${gridClass} cursor-pointer rounded-sm border-0 bg-none text-left font-inherit transition-colors hover:bg-bg-hover`}
-          aria-expanded={expanded}
-          onClick={() => setExpanded((open) => !open)}
-        >
-          {headerContent}
-        </button>
-      ) : (
-        <div className={gridClass}>{headerContent}</div>
-      )}
-      {hasLinks && expanded && (
+      <div
+        className={`${gridClass} cursor-pointer rounded-sm text-left transition-colors hover:bg-bg-hover`}
+        role="button"
+        tabIndex={0}
+        aria-expanded={expanded}
+        onClick={toggleExpanded}
+        onKeyDown={(e) => {
+          if (e.key === "Enter" || e.key === " ") {
+            e.preventDefault();
+            toggleExpanded();
+          }
+        }}
+      >
+        {headerContent}
+      </div>
+      {expanded && (
         <div className="flex flex-col pl-[22px]">
-          {group.linked.map((deployment, i) => (
+          {group.linked.map((deployment) => (
             <DeploymentRow
-              key={`${deployment.agent}-${deployment.scope}-${i}`}
+              key={deployment.path}
               deployment={deployment}
               skill={skill}
               showPath={false}
             />
+          ))}
+          {readers.map((agentId) => (
+            <SharedReaderRow key={agentId} agentId={agentId} skill={skill} shared={group.shared} />
           ))}
         </div>
       )}
@@ -421,23 +571,27 @@ export function SkillLocationsCard({
   // makes the invocation-policy change stick.
   const needsForkToSave = skill.source_kind === "dotagents" || skill.source_kind === "skills-sh";
 
-  const handleSetInvocation = async (policy: InvocationPolicy) => {
+  // A Promise chain, not a try/finally statement, so the compiler can still
+  // optimize this component (it doesn't support `finally` clauses yet).
+  const handleSetInvocation = (policy: InvocationPolicy) => {
     if (!skillMdPath || isSavingInvocation) return;
     setIsSavingInvocation(true);
-    try {
-      if (needsForkToSave && skillMdDeployment) {
-        await forkSkill(skill.name, skillMdDeployment.path);
-      }
-      await setSkillInvocation(skill.name, skillMdPath, policy);
-    } catch (err) {
-      addToast({
-        type: "error",
-        title: "Couldn't change invocation policy",
-        message: err instanceof Error ? err.message : "Unknown error",
+    const forkIfNeeded =
+      needsForkToSave && skillMdDeployment
+        ? forkSkill(skill.name, skillMdDeployment.path)
+        : Promise.resolve();
+    return forkIfNeeded
+      .then(() => setSkillInvocation(skill.name, skillMdPath, policy))
+      .catch((err) => {
+        addToast({
+          type: "error",
+          title: "Couldn't change invocation policy",
+          message: err instanceof Error ? err.message : "Unknown error",
+        });
+      })
+      .finally(() => {
+        setIsSavingInvocation(false);
       });
-    } finally {
-      setIsSavingInvocation(false);
-    }
   };
 
   const hasDriftingCopies = driftingCopies(locationSummary(skill)).length > 0;
@@ -472,12 +626,16 @@ export function SkillLocationsCard({
                   {section.label ?? "Global"}
                 </div>
               )}
-              {section.items.map((item, i) =>
+              {section.items.map((item) =>
                 item.kind === "group" ? (
-                  <SharedDeploymentGroup key={`group-${i}`} group={item.group} skill={skill} />
+                  <SharedDeploymentGroup
+                    key={item.group.shared.path}
+                    group={item.group}
+                    skill={skill}
+                  />
                 ) : (
                   <DeploymentRow
-                    key={`${item.deployment.agent}-${item.deployment.scope}-${i}`}
+                    key={item.deployment.path}
                     deployment={item.deployment}
                     skill={skill}
                   />

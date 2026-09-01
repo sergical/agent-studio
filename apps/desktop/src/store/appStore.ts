@@ -313,11 +313,3 @@ export const useAppStore = create<AppState>((set, get) => ({
 // `setTheme` call re-stamps the same value (a no-op) - it exists only to
 // start the listener.
 useAppStore.getState().setTheme(useAppStore.getState().theme);
-
-// ============================================================================
-// Selectors (for performance optimization)
-// ============================================================================
-
-export const selectProjects = (state: AppState) => state.userAddedProjects;
-export const selectActiveView = (state: AppState) => state.activeView;
-export const selectSelectedSkillPaths = (state: AppState) => state.selectedSkillPaths;

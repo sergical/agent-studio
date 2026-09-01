@@ -4,11 +4,13 @@
 // places, this view holds filters (scope, harness, source, issue, query).
 // ============================================================================
 
+import { useState } from "react";
 import { homeDir } from "@tauri-apps/api/path";
 import { open } from "@tauri-apps/plugin-dialog";
 import { PageShell } from "../Shell/PageShell";
 import { SkillCoverageMatrix } from "../Coverage/SkillCoverageMatrix";
 import { SkillListTable } from "./SkillListTable";
+import type { SortMode } from "../../lib/skill-list-sort";
 import { SkillListFilterBar } from "./SkillListFilterBar";
 import { registerSkillProjects, unregisterSkillProject } from "../../lib/skill-api";
 import { collectDashboardIssues } from "@skill-studio/lib";
@@ -50,6 +52,8 @@ export function SkillsView({ snapshot, onSelectSkill }: SkillsViewProps) {
   const resetSkillListFilter = useAppStore((state) => state.resetSkillListFilter);
   const showCoverage = useAppStore((state) => state.showCoverage);
   const setShowCoverage = useAppStore((state) => state.setShowCoverage);
+  const [query, setQuery] = useState("");
+  const [sort, setSort] = useState<SortMode>("name");
   const selectedSkillName = useAppStore((state) =>
     state.activeView.kind === "skill" ? state.activeView.name : null,
   );
@@ -60,9 +64,10 @@ export function SkillsView({ snapshot, onSelectSkill }: SkillsViewProps) {
   const addToast = useAppStore((state) => state.addToast);
   const openAddSkillSheet = useAppStore((state) => state.openAddSkillSheet);
 
+  const excludedProjectSet = new Set(excludedProjects);
   const projects = Array.from(
     new Set([...userAddedProjects, ...(snapshot?.projects ?? [])]),
-  ).filter((path) => !excludedProjects.includes(path));
+  ).filter((path) => !excludedProjectSet.has(path));
 
   const allSkills = snapshot?.skills ?? [];
   // Plugin-shipped skills live in their own place (PluginSkillsView); this
@@ -70,6 +75,14 @@ export function SkillsView({ snapshot, onSelectSkill }: SkillsViewProps) {
   const baseSkills = ownSkillsView(allSkills);
   const issues = collectDashboardIssues(baseSkills);
   const filtered = applySkillListFilter(baseSkills, filter, issues, snapshot?.invocations);
+  const trimmedQuery = query.trim().toLowerCase();
+  const rows = trimmedQuery
+    ? filtered.filter(
+        (s) =>
+          s.name.toLowerCase().includes(trimmedQuery) ||
+          (s.description ?? "").toLowerCase().includes(trimmedQuery),
+      )
+    : filtered;
 
   const handleAddProject = async () => {
     const selected = await open({ directory: true, multiple: false, title: "Add Project" });
@@ -126,25 +139,34 @@ export function SkillsView({ snapshot, onSelectSkill }: SkillsViewProps) {
       <SkillListFilterBar
         filter={filter}
         onChange={setSkillListFilter}
+        onReset={resetSkillListFilter}
         projects={projects}
         onAddProject={handleAddProject}
         onRemoveProject={handleRemoveProject}
         showCoverage={showCoverage}
         onToggleCoverage={setShowCoverage}
-        resultCount={filtered.length}
+        resultCount={rows.length}
+        query={query}
+        onQueryChange={setQuery}
+        sort={sort}
+        onSortChange={setSort}
         snapshot={snapshot}
       />
       {showCoverage ? (
-        <SkillCoverageMatrix skills={filtered} onSelectSkill={onSelectSkill} />
+        <SkillCoverageMatrix skills={rows} onSelectSkill={onSelectSkill} />
       ) : (
         <SkillListTable
-          skills={filtered}
+          skills={rows}
           stats={snapshot?.invocations ?? []}
+          sort={sort}
           onSelectSkill={onSelectSkill}
           selectedSkillName={selectedSkillName}
           deploymentPathForSkill={(skill) => deploymentForScope(skill, filter.scope)}
           hasAnySkills={baseSkills.length > 0}
-          onClearFilters={resetSkillListFilter}
+          onClearFilters={() => {
+            setQuery("");
+            resetSkillListFilter();
+          }}
           onAddSkill={() => openAddSkillSheet()}
         />
       )}

@@ -46,13 +46,13 @@ function PackDetail({
         title: result.changed ? "Pack updated" : "Already up to date",
         message: pack.name,
       });
+      setBusy(null);
     } catch (err) {
       addToast({
         type: "error",
         title: "Couldn't update pack",
         message: err instanceof Error ? err.message : String(err),
       });
-    } finally {
       setBusy(null);
     }
   }
@@ -66,6 +66,7 @@ function PackDetail({
       const updated = await publishSkillPack(pack.name, "public");
       onChanged(updated);
       addToast({ type: "success", title: "Published", message: updated.repo ?? pack.name });
+      setBusy(null);
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
       if (message === "Publish cancelled") {
@@ -73,7 +74,6 @@ function PackDetail({
       } else {
         addToast({ type: "error", title: "Couldn't publish pack", message });
       }
-    } finally {
       setBusy(null);
     }
   }

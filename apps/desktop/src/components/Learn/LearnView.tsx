@@ -30,16 +30,13 @@ const SECTIONS: { key: LearnSection; title: string }[] = [
 export function LearnView({ section }: LearnViewProps) {
   const setActiveView = useAppStore((state) => state.setActiveView);
   const headingRefs = useRef(new Map<LearnSection, HTMLHeadingElement>());
-  const headingRef = (key: LearnSection) => (el: HTMLHeadingElement | null) => {
-    if (el) headingRefs.current.set(key, el);
-  };
 
   useEffect(() => {
     if (!section) return;
     const heading = headingRefs.current.get(section);
     heading?.scrollIntoView({ block: "start" });
     heading?.focus();
-  }, [section, headingRefs]);
+  }, [section]);
 
   return (
     <PageShell
@@ -73,7 +70,9 @@ export function LearnView({ section }: LearnViewProps) {
             <h3
               className="m-0 mb-1 text-heading font-semibold text-text-primary"
               tabIndex={-1}
-              ref={headingRef("broken")}
+              ref={(el) => {
+                if (el) headingRefs.current.set("broken", el);
+              }}
             >
               Broken and warnings
             </h3>
@@ -118,7 +117,9 @@ export function LearnView({ section }: LearnViewProps) {
             <h3
               className="m-0 mb-1 text-heading font-semibold text-text-primary"
               tabIndex={-1}
-              ref={headingRef("invoke")}
+              ref={(el) => {
+                if (el) headingRefs.current.set("invoke", el);
+              }}
             >
               Who can invoke a skill
             </h3>
@@ -249,7 +250,9 @@ export function LearnView({ section }: LearnViewProps) {
             <h3
               className="m-0 mb-1 text-heading font-semibold text-text-primary"
               tabIndex={-1}
-              ref={headingRef("cost")}
+              ref={(el) => {
+                if (el) headingRefs.current.set("cost", el);
+              }}
             >
               Prompt cost
             </h3>
@@ -274,7 +277,9 @@ export function LearnView({ section }: LearnViewProps) {
             <h3
               className="m-0 mb-1 text-heading font-semibold text-text-primary"
               tabIndex={-1}
-              ref={headingRef("unused")}
+              ref={(el) => {
+                if (el) headingRefs.current.set("unused", el);
+              }}
             >
               Not used in the last 30 days
             </h3>

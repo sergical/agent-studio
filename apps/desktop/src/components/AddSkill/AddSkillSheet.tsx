@@ -5,7 +5,7 @@
 // "Try for 24 hours" trial. Submits to the `add_skill` Tauri command.
 // ============================================================================
 
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useReducer, useRef } from "react";
 import { open } from "@tauri-apps/plugin-dialog";
 import { FolderPlus, X } from "lucide-react";
 import { Button, Input } from "@skill-studio/ui";
@@ -97,6 +97,232 @@ const SCOPE_OPTION_CLASS =
   "flex-1 rounded-sm border border-border bg-bg-primary px-2.5 py-2.5 text-body font-medium text-text-secondary transition-colors hover:border-border-focus";
 const SCOPE_OPTION_SELECTED_CLASS = "border-accent bg-accent-softer text-accent";
 
+/**
+ * Every field on the sheet's manual-add form - reset together each time the
+ * sheet opens (see the `reset` action), so a `useReducer` replaces what used
+ * to be nine separate `useState` calls all cleared by the same effect.
+ */
+interface FormState {
+  sheetTab: "manual" | "browse";
+  source: string;
+  methodChoice: SheetMethod;
+  agents: AgentId[];
+  scope: InstallScope;
+  projectPath: string | null;
+  trial: boolean;
+  isSubmitting: boolean;
+  submitError: string | null;
+}
+
+function initialFormState(): FormState {
+  return {
+    sheetTab: "manual",
+    source: "",
+    methodChoice: "dotagents",
+    agents: FALLBACK_HARNESSES,
+    scope: "global",
+    projectPath: null,
+    trial: false,
+    isSubmitting: false,
+    submitError: null,
+  };
+}
+
+type FormAction =
+  | { type: "reset"; prefill: string; agents: AgentId[]; projectPath: string | null }
+  | { type: "set_tab"; tab: FormState["sheetTab"] }
+  | { type: "set_source"; source: string }
+  | { type: "set_method"; method: SheetMethod }
+  | { type: "set_agents"; agents: AgentId[] }
+  | { type: "set_scope"; scope: InstallScope }
+  | { type: "set_project_path"; path: string | null }
+  | { type: "set_trial"; trial: boolean }
+  | { type: "submit_start" }
+  | { type: "submit_error"; error: string }
+  | { type: "submit_end" };
+
+function formReducer(state: FormState, action: FormAction): FormState {
+  switch (action.type) {
+    case "reset":
+      return {
+        ...initialFormState(),
+        source: action.prefill,
+        agents: action.agents,
+        projectPath: action.projectPath,
+      };
+    case "set_tab":
+      return { ...state, sheetTab: action.tab };
+    case "set_source":
+      return { ...state, source: action.source };
+    case "set_method":
+      return { ...state, methodChoice: action.method };
+    case "set_agents":
+      return { ...state, agents: action.agents };
+    case "set_scope":
+      return { ...state, scope: action.scope };
+    case "set_project_path":
+      return { ...state, projectPath: action.path };
+    case "set_trial":
+      return { ...state, trial: action.trial };
+    case "submit_start":
+      return { ...state, isSubmitting: true, submitError: null };
+    case "submit_error":
+      return { ...state, isSubmitting: false, submitError: action.error };
+    case "submit_end":
+      return { ...state, isSubmitting: false };
+  }
+}
+
+/** Source field + live parse feedback. */
+function SourceField({
+  source,
+  parsed,
+  onChange,
+  inputRef,
+}: {
+  source: string;
+  parsed: ParsedSkillSource | { error: string };
+  onChange: (value: string) => void;
+  inputRef: React.RefObject<HTMLInputElement | null>;
+}) {
+  return (
+    <div className="flex flex-col gap-2">
+      <label
+        htmlFor="add-skill-source"
+        className="text-caption font-medium tracking-[0.06em] text-text-tertiary uppercase"
+      >
+        Source
+      </label>
+      <Input
+        id="add-skill-source"
+        ref={inputRef}
+        type="text"
+        className="h-(--control-height) rounded-sm border-border bg-bg-primary text-body text-text-primary focus-visible:border-border-focus focus-visible:ring-0"
+        value={source}
+        onChange={(e) => onChange(e.target.value)}
+        placeholder="owner/repo, a GitHub URL, a skills.sh URL, or a local path"
+      />
+      <p className={`m-0 text-small ${"error" in parsed ? "text-error" : "text-text-tertiary"}`}>
+        {source.trim() ? parseSummary(parsed) : "Enter a source above"}
+      </p>
+    </div>
+  );
+}
+
+/** The Method segmented control - which choices are enabled comes from `availableMethods(parsed)`. */
+function MethodPicker({
+  method,
+  methods,
+  agents,
+  onChange,
+}: {
+  method: SheetMethod;
+  methods: SheetMethod[];
+  agents: AgentId[];
+  onChange: (method: SheetMethod) => void;
+}) {
+  return (
+    <div className="flex flex-col gap-2">
+      {/* A heading for the method button group, not a form control's
+          label - a `<label>` here would have no associated control. */}
+      <span className="text-caption font-medium tracking-[0.06em] text-text-tertiary uppercase">
+        Method
+      </span>
+      <div className="flex flex-wrap gap-1.5">
+        {ALL_SHEET_METHODS.map((m) => {
+          const disabled = methods.length > 0 && !methods.includes(m);
+          return (
+            <button
+              key={m}
+              type="button"
+              className={`inline-flex h-[26px] items-center gap-1.5 rounded-sm border border-border bg-bg-tertiary px-2.5 text-caption text-text-tertiary transition-colors enabled:hover:bg-bg-hover enabled:hover:text-text-secondary disabled:cursor-not-allowed ${
+                method === m ? "border-text-tertiary text-text-primary" : ""
+              } ${disabled ? "opacity-40" : ""}`}
+              title={METHOD_TOOLTIPS[m]}
+              disabled={disabled}
+              onClick={() => onChange(m)}
+            >
+              {METHOD_LABELS[m]}
+            </button>
+          );
+        })}
+      </div>
+      {method === "dotagents" && agents.includes("grok-build") && (
+        <p className="m-0 text-caption text-text-tertiary">Grok Build reads the shared folder.</p>
+      )}
+    </div>
+  );
+}
+
+/** Global/Project scope toggle, plus the project picker and "Choose Directory"/"Add" button. */
+function ScopePicker({
+  scope,
+  projectPath,
+  userAddedProjects,
+  onScopeChange,
+  onProjectPathChange,
+  onBrowseProject,
+}: {
+  scope: InstallScope;
+  projectPath: string | null;
+  userAddedProjects: string[];
+  onScopeChange: (scope: InstallScope) => void;
+  onProjectPathChange: (path: string) => void;
+  onBrowseProject: () => void;
+}) {
+  return (
+    <div className="flex flex-col gap-2">
+      {/* A heading for the scope button group, not a form control's
+          label - a `<label>` here would have no associated control. */}
+      <span className="text-caption font-medium tracking-[0.06em] text-text-tertiary uppercase">
+        Scope
+      </span>
+      <div className="flex gap-2">
+        <button
+          type="button"
+          className={`${SCOPE_OPTION_CLASS} ${scope === "global" ? SCOPE_OPTION_SELECTED_CLASS : ""}`}
+          onClick={() => onScopeChange("global")}
+        >
+          Global
+        </button>
+        <button
+          type="button"
+          className={`${SCOPE_OPTION_CLASS} ${scope === "project" ? SCOPE_OPTION_SELECTED_CLASS : ""}`}
+          onClick={() => onScopeChange("project")}
+        >
+          Project
+        </button>
+      </div>
+      {scope === "project" && (
+        <div className="flex gap-2">
+          {userAddedProjects.length > 0 && (
+            <select
+              className="flex-1 rounded-sm border border-border bg-bg-primary px-2.5 py-2.5 text-body text-text-primary"
+              aria-label="Project directory"
+              value={projectPath ?? ""}
+              onChange={(e) => onProjectPathChange(e.target.value)}
+            >
+              {userAddedProjects.map((p) => (
+                <option key={p} value={p}>
+                  {p.split("/").pop()} – {p}
+                </option>
+              ))}
+            </select>
+          )}
+          <Button
+            variant="outline"
+            className="h-(--control-height) gap-2 rounded-md px-3.5 text-body font-medium"
+            onClick={onBrowseProject}
+          >
+            <FolderPlus size={14} />
+            {userAddedProjects.length === 0 ? "Choose Directory" : "Add"}
+          </Button>
+        </div>
+      )}
+    </div>
+  );
+}
+
 export function AddSkillSheet() {
   const { open: isOpen, prefill } = useAppStore((state) => state.addSkillSheet);
   const closeAddSkillSheet = useAppStore((state) => state.closeAddSkillSheet);
@@ -106,15 +332,18 @@ export function AddSkillSheet() {
   const addProject = useAppStore((state) => state.addProject);
   const { snapshot } = useSkillSnapshot();
 
-  const [sheetTab, setSheetTab] = useState<"manual" | "browse">("manual");
-  const [source, setSource] = useState("");
-  const [method, setMethod] = useState<SheetMethod>("dotagents");
-  const [agents, setAgents] = useState<AgentId[]>(FALLBACK_HARNESSES);
-  const [scope, setScope] = useState<InstallScope>("global");
-  const [projectPath, setProjectPath] = useState<string | null>(null);
-  const [trial, setTrial] = useState(false);
-  const [isSubmitting, setIsSubmitting] = useState(false);
-  const [submitError, setSubmitError] = useState<string | null>(null);
+  const [form, dispatch] = useReducer(formReducer, undefined, initialFormState);
+  const {
+    sheetTab,
+    source,
+    methodChoice,
+    agents,
+    scope,
+    projectPath,
+    trial,
+    isSubmitting,
+    submitError,
+  } = form;
 
   const sheetRef = useRef<HTMLDivElement>(null);
   const sourceInputRef = useRef<HTMLInputElement>(null);
@@ -130,17 +359,14 @@ export function AddSkillSheet() {
     // focusable elements are `HTMLElement`s, which is all this ref is used
     // to call `.focus()` on.
     previouslyFocusedRef.current = document.activeElement as HTMLElement | null;
-    setSheetTab("manual");
-    setSource(prefill ?? "");
-    setMethod("dotagents");
     const withASkill = agentsWithASkill(snapshot);
     const active = DEFAULT_HARNESS_CANDIDATES.filter((id) => withASkill.has(id));
-    setAgents(active.length > 0 ? active : FALLBACK_HARNESSES);
-    setScope("global");
-    setProjectPath(userAddedProjects[0] ?? null);
-    setTrial(false);
-    setIsSubmitting(false);
-    setSubmitError(null);
+    dispatch({
+      type: "reset",
+      prefill: prefill ?? "",
+      agents: active.length > 0 ? active : FALLBACK_HARNESSES,
+      projectPath: userAddedProjects[0] ?? null,
+    });
     // Autofocus the Source field once the sheet has mounted.
     const id = window.setTimeout(() => sourceInputRef.current?.focus(), 0);
     return () => window.clearTimeout(id);
@@ -155,16 +381,14 @@ export function AddSkillSheet() {
     previouslyFocusedRef.current?.focus();
   };
 
-  const parsed = useMemo(() => parseSkillSource(source), [source]);
-  const methods = useMemo(() => availableMethods(parsed), [parsed]);
+  const parsed = parseSkillSource(source);
+  const methods = availableMethods(parsed);
 
   // Keep the selected method valid as the source changes - e.g. switching
-  // from a github source to a local path forces "Copy".
-  useEffect(() => {
-    if (methods.length > 0 && !methods.includes(method)) {
-      setMethod(methods[0]);
-    }
-  }, [methods, method]);
+  // from a github source to a local path forces "Copy". Derived during
+  // render instead of synced back with an effect, since `methods` is
+  // itself derived from `source`.
+  const method = methods.length > 0 && !methods.includes(methodChoice) ? methods[0] : methodChoice;
 
   // Escape closes the sheet, unless it's typed into a nested widget that
   // wants it for its own purposes (mirrors SkillPage's handler).
@@ -209,23 +433,26 @@ export function AddSkillSheet() {
     const selected = await open({ directory: true, multiple: false, title: "Select Project" });
     if (selected) {
       addProject(selected);
-      setProjectPath(selected);
+      dispatch({ type: "set_project_path", path: selected });
     }
   };
 
   const handleSubmit = async () => {
     if ("error" in parsed || !isValid) return;
-    setIsSubmitting(true);
-    setSubmitError(null);
+    // Pack imports always target the repo itself, not a sub-path - the
+    // sheet's Source field can point at a path within it, but a pack's own
+    // agents.toml lives at the repo root. Checked before the try below since
+    // the compiler can't follow a `throw` thrown from inside its own catch.
+    const packRepo = parsed.kind === "github" ? parsed.repo : undefined;
+    if (method === "pack" && !packRepo) {
+      dispatch({ type: "submit_error", error: "Pack import needs a GitHub repo" });
+      return;
+    }
+    dispatch({ type: "submit_start" });
     try {
       if (method === "pack") {
-        // Pack imports always target the repo itself, not a sub-path - the
-        // sheet's Source field can point at a path within it, but a pack's
-        // own agents.toml lives at the repo root.
-        if (parsed.kind !== "github" || !parsed.repo) {
-          throw new Error("Pack import needs a GitHub repo");
-        }
-        const result = await importSkillPack(parsed.repo, agents);
+        // SAFETY: the `!packRepo` guard above already returned otherwise.
+        const result = await importSkillPack(packRepo!, agents);
         closeSheet();
         const total = result.bundled.length + result.referenced.length;
         if (result.errors.length > 0) {
@@ -237,6 +464,7 @@ export function AddSkillSheet() {
         } else {
           addToast({ type: "success", title: `Imported ${total} skill${total !== 1 ? "s" : ""}` });
         }
+        dispatch({ type: "submit_end" });
         return;
       }
       const result = await addSkill({
@@ -254,27 +482,32 @@ export function AddSkillSheet() {
         addToast({ type: "success", title: `Added ${result.name}` });
       }
       openSkill(result.name);
+      dispatch({ type: "submit_end" });
     } catch (err) {
-      setSubmitError(err instanceof Error ? err.message : "Unknown error");
-    } finally {
-      setIsSubmitting(false);
+      dispatch({
+        type: "submit_error",
+        error: err instanceof Error ? err.message : "Unknown error",
+      });
     }
   };
 
   return (
-    <div
-      className="fixed inset-0 z-(--z-modal) flex justify-end bg-scrim"
-      onMouseDown={() => {
-        if (!isSubmitting) closeSheet();
-      }}
-    >
+    <div className="fixed inset-0 z-(--z-modal) flex justify-end">
+      {/* Decorative scrim: a pointer affordance duplicating the Escape/Cancel
+          path above, so it's aria-hidden rather than a focusable control. */}
+      <div
+        className="absolute inset-0 bg-scrim"
+        aria-hidden="true"
+        onMouseDown={() => {
+          if (!isSubmitting) closeSheet();
+        }}
+      />
       <div
         ref={sheetRef}
-        className="flex h-full w-[420px] max-w-full flex-col border-l border-border bg-bg-secondary"
+        className="relative flex h-full w-[420px] max-w-full flex-col border-l border-border bg-bg-secondary"
         role="dialog"
         aria-modal="true"
         aria-label="Add skill"
-        onMouseDown={(e) => e.stopPropagation()}
       >
         <div className="flex items-center justify-between border-b border-border px-5 py-4">
           <h3 className="m-0 text-pretty text-balance text-emphasis font-semibold text-text-primary">
@@ -299,7 +532,7 @@ export function AddSkillSheet() {
                 ? "border-accent text-accent"
                 : "border-transparent text-text-tertiary hover:text-text-secondary"
             }`}
-            onClick={() => setSheetTab("manual")}
+            onClick={() => dispatch({ type: "set_tab", tab: "manual" })}
           >
             Add by source
           </button>
@@ -310,7 +543,7 @@ export function AddSkillSheet() {
                 ? "border-accent text-accent"
                 : "border-transparent text-text-tertiary hover:text-text-secondary"
             }`}
-            onClick={() => setSheetTab("browse")}
+            onClick={() => dispatch({ type: "set_tab", tab: "browse" })}
           >
             Browse skills.sh
           </button>
@@ -322,63 +555,25 @@ export function AddSkillSheet() {
           </div>
         ) : (
           <div className="flex flex-1 flex-col gap-5 overflow-y-auto px-5 py-4">
+            <SourceField
+              source={source}
+              parsed={parsed}
+              onChange={(value) => dispatch({ type: "set_source", source: value })}
+              inputRef={sourceInputRef}
+            />
+
+            <MethodPicker
+              method={method}
+              methods={methods}
+              agents={agents}
+              onChange={(m) => dispatch({ type: "set_method", method: m })}
+            />
+
             <div className="flex flex-col gap-2">
-              <label
-                htmlFor="add-skill-source"
-                className="text-caption font-medium tracking-[0.06em] text-text-tertiary uppercase"
-              >
-                Source
-              </label>
-              <Input
-                id="add-skill-source"
-                ref={sourceInputRef}
-                type="text"
-                className="h-(--control-height) rounded-sm border-border bg-bg-primary text-body text-text-primary focus-visible:border-border-focus focus-visible:ring-0"
-                value={source}
-                onChange={(e) => setSource(e.target.value)}
-                placeholder="owner/repo, a GitHub URL, a skills.sh URL, or a local path"
+              <AgentTargetSelector
+                selectedAgents={agents}
+                onChange={(next) => dispatch({ type: "set_agents", agents: next })}
               />
-              <p
-                className={`m-0 text-small ${"error" in parsed ? "text-error" : "text-text-tertiary"}`}
-              >
-                {source.trim() ? parseSummary(parsed) : "Enter a source above"}
-              </p>
-            </div>
-
-            <div className="flex flex-col gap-2">
-              {/* A heading for the method button group, not a form control's
-                  label - a `<label>` here would have no associated control. */}
-              <span className="text-caption font-medium tracking-[0.06em] text-text-tertiary uppercase">
-                Method
-              </span>
-              <div className="flex flex-wrap gap-1.5">
-                {ALL_SHEET_METHODS.map((m) => {
-                  const disabled = methods.length > 0 && !methods.includes(m);
-                  return (
-                    <button
-                      key={m}
-                      type="button"
-                      className={`inline-flex h-[26px] items-center gap-1.5 rounded-sm border border-border bg-bg-tertiary px-2.5 text-caption text-text-tertiary transition-colors enabled:hover:bg-bg-hover enabled:hover:text-text-secondary disabled:cursor-not-allowed ${
-                        method === m ? "border-text-tertiary text-text-primary" : ""
-                      } ${disabled ? "opacity-40" : ""}`}
-                      title={METHOD_TOOLTIPS[m]}
-                      disabled={disabled}
-                      onClick={() => setMethod(m)}
-                    >
-                      {METHOD_LABELS[m]}
-                    </button>
-                  );
-                })}
-              </div>
-              {method === "dotagents" && agents.includes("grok-build") && (
-                <p className="m-0 text-caption text-text-tertiary">
-                  Grok Build reads the shared folder.
-                </p>
-              )}
-            </div>
-
-            <div className="flex flex-col gap-2">
-              <AgentTargetSelector selectedAgents={agents} onChange={setAgents} />
             </div>
 
             {method === "pack" && (
@@ -389,61 +584,23 @@ export function AddSkillSheet() {
             )}
 
             {method !== "pack" && (
-              <div className="flex flex-col gap-2">
-                {/* A heading for the scope button group, not a form control's
-                    label - a `<label>` here would have no associated control. */}
-                <span className="text-caption font-medium tracking-[0.06em] text-text-tertiary uppercase">
-                  Scope
-                </span>
-                <div className="flex gap-2">
-                  <button
-                    type="button"
-                    className={`${SCOPE_OPTION_CLASS} ${scope === "global" ? SCOPE_OPTION_SELECTED_CLASS : ""}`}
-                    onClick={() => setScope("global")}
-                  >
-                    Global
-                  </button>
-                  <button
-                    type="button"
-                    className={`${SCOPE_OPTION_CLASS} ${scope === "project" ? SCOPE_OPTION_SELECTED_CLASS : ""}`}
-                    onClick={() => setScope("project")}
-                  >
-                    Project
-                  </button>
-                </div>
-                {scope === "project" && (
-                  <div className="flex gap-2">
-                    {userAddedProjects.length > 0 && (
-                      <select
-                        className="flex-1 rounded-sm border border-border bg-bg-primary px-2.5 py-2.5 text-body text-text-primary"
-                        aria-label="Project directory"
-                        value={projectPath ?? ""}
-                        onChange={(e) => setProjectPath(e.target.value)}
-                      >
-                        {userAddedProjects.map((p) => (
-                          <option key={p} value={p}>
-                            {p.split("/").pop()} – {p}
-                          </option>
-                        ))}
-                      </select>
-                    )}
-                    <Button
-                      variant="outline"
-                      className="h-(--control-height) gap-2 rounded-md px-3.5 text-body font-medium"
-                      onClick={handleBrowseProject}
-                    >
-                      <FolderPlus size={14} />
-                      {userAddedProjects.length === 0 ? "Choose Directory" : "Add"}
-                    </Button>
-                  </div>
-                )}
-              </div>
+              <ScopePicker
+                scope={scope}
+                projectPath={projectPath}
+                userAddedProjects={userAddedProjects}
+                onScopeChange={(next) => dispatch({ type: "set_scope", scope: next })}
+                onProjectPathChange={(path) => dispatch({ type: "set_project_path", path })}
+                onBrowseProject={handleBrowseProject}
+              />
             )}
 
             {method !== "pack" && (
               <div className="flex flex-col gap-2">
                 <label className="flex items-center gap-2 text-body text-text-primary">
-                  <CheckboxControl checked={trial} onCheckedChange={setTrial} />
+                  <CheckboxControl
+                    checked={trial}
+                    onCheckedChange={(next) => dispatch({ type: "set_trial", trial: next })}
+                  />
                   Try for 24 hours
                 </label>
                 <p className="m-0 text-caption text-text-tertiary">

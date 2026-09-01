@@ -87,7 +87,7 @@ export const FIRST_CLASS_AGENTS = [
 const SHARED_ROOT_READERS = ["Codex", "OpenCode", "pi", "Cursor", "Grok Build"] as const;
 
 /** Which first-class agents one deployment gives coverage for. */
-function agentsCoveredByDeployment(agent: string): readonly string[] {
+export function agentsCoveredByDeployment(agent: string): readonly string[] {
   if (agent === "shared") return SHARED_ROOT_READERS;
   return FIRST_CLASS_AGENTS.some((first) => first === agent) ? [agent] : [];
 }
@@ -96,14 +96,15 @@ function agentsCoveredByDeployment(agent: string): readonly string[] {
  * "Global" or the project directory basename, plus the deployment's agent
  * (already a display label, e.g. "Claude Code" or "shared"), so two copies
  * at the same scope but different agents get distinct labels, e.g.
- * "Global · Claude Code", "Global · shared", "webvitals.com · shared".
+ * "Global · Claude Code", "Global · Shared folder", "webvitals.com · Shared folder".
  */
 export function deploymentLabel(deployment: Deployment): string {
   const scope =
     deployment.scope === "project" && deployment.project_path
       ? (deployment.project_path.split("/").filter(Boolean).pop() ?? "Global")
       : "Global";
-  return `${scope} · ${deployment.agent}`;
+  const agent = deployment.agent === "shared" ? "Shared folder" : deployment.agent;
+  return `${scope} · ${agent}`;
 }
 
 /**

@@ -71,6 +71,7 @@ export function AgentTargetSelector({
   // Separate common agents from others
   const commonAgents = agents.filter((a) => COMMON_AGENTS.includes(a.id));
   const otherAgents = agents.filter((a) => !COMMON_AGENTS.includes(a.id));
+  const selectedAgentSet = new Set(selectedAgents);
 
   if (isLoading) {
     return (
@@ -120,14 +121,14 @@ export function AgentTargetSelector({
             key={agent.id}
             type="button"
             className={`flex items-center gap-1 rounded-xs border px-2.5 py-1.5 text-caption font-medium transition-colors ${
-              selectedAgents.includes(agent.id)
+              selectedAgentSet.has(agent.id)
                 ? "border-accent bg-accent-softer text-accent"
                 : "border-border bg-bg-primary text-text-secondary hover:border-border-focus"
             }`}
             onClick={() => toggleAgent(agent.id)}
             disabled={disabled}
           >
-            {selectedAgents.includes(agent.id) && <Check size={12} />}
+            {selectedAgentSet.has(agent.id) && <Check size={12} />}
             <span>{agent.name}</span>
           </button>
         ))}
@@ -150,14 +151,14 @@ export function AgentTargetSelector({
               key={agent.id}
               type="button"
               className={`flex items-center gap-1 rounded-xs border px-2.5 py-1.5 text-caption font-medium transition-colors ${
-                selectedAgents.includes(agent.id)
+                selectedAgentSet.has(agent.id)
                   ? "border-accent bg-accent-softer text-accent"
                   : "border-border bg-bg-primary text-text-secondary hover:border-border-focus"
               }`}
               onClick={() => toggleAgent(agent.id)}
               disabled={disabled}
             >
-              {selectedAgents.includes(agent.id) && <Check size={12} />}
+              {selectedAgentSet.has(agent.id) && <Check size={12} />}
               <span>{agent.name}</span>
             </button>
           ))}

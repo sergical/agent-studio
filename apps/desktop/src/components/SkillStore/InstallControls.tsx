@@ -3,7 +3,7 @@
 // install/remove/update actions for a skill
 // ============================================================================
 
-import { useCallback, useState } from "react";
+import { useState } from "react";
 import { Download, Trash2, RefreshCw, FolderPlus } from "lucide-react";
 import { open } from "@tauri-apps/plugin-dialog";
 import { Button } from "@skill-studio/ui";
@@ -19,10 +19,14 @@ const SCOPE_OPTION_SELECTED_CLASS = "border-accent bg-accent-softer text-accent"
 const ACTION_BUTTON_CLASS =
   "h-(--control-height) w-full justify-center gap-2 rounded-md px-3.5 text-body font-medium";
 
-const AGENT_PREFS_STORAGE_KEY = "skill-store-agent-prefs";
+const AGENT_PREFS_STORAGE_KEY = "skill-store-agent-prefs.v1";
+/** Pre-versioning key name, read once as a migration fallback so existing prefs aren't lost. */
+const AGENT_PREFS_STORAGE_KEY_LEGACY = "skill-store-agent-prefs";
 
 function loadAgentPrefs(): AgentId[] {
-  const saved = localStorage.getItem(AGENT_PREFS_STORAGE_KEY);
+  const saved =
+    localStorage.getItem(AGENT_PREFS_STORAGE_KEY) ??
+    localStorage.getItem(AGENT_PREFS_STORAGE_KEY_LEGACY);
   if (saved) {
     try {
       return JSON.parse(saved);
@@ -61,23 +65,20 @@ export function InstallControls({
   const addProject = useAppStore((state) => state.addProject);
 
   // Persist agent preferences to localStorage whenever they change
-  const handleAgentsChange = useCallback((agents: AgentId[]) => {
+  const handleAgentsChange = (agents: AgentId[]) => {
     setSelectedAgents(agents);
     localStorage.setItem(AGENT_PREFS_STORAGE_KEY, JSON.stringify(agents));
-  }, []);
+  };
 
   // Auto-select first project when switching to project scope
-  const handleSetInstallScope = useCallback(
-    (scope: InstallScope) => {
-      setInstallScope(scope);
-      if (scope === "project" && availableProjects.length > 0 && !selectedProject) {
-        setSelectedProject(availableProjects[0]);
-      }
-    },
-    [availableProjects, selectedProject],
-  );
+  const handleSetInstallScope = (scope: InstallScope) => {
+    setInstallScope(scope);
+    if (scope === "project" && availableProjects.length > 0 && !selectedProject) {
+      setSelectedProject(availableProjects[0]);
+    }
+  };
 
-  const handleInstall = useCallback(async () => {
+  const handleInstall = () => {
     if (selectedAgents.length === 0) {
       return;
     }
@@ -90,77 +91,74 @@ export function InstallControls({
     setIsInstalling(true);
     onInstallStart(skill.name);
 
-    try {
-      // Build skill source: repo/skill-name for multi-skill repos, or just the source
-      const repoSource = skill.top_source || resolvedTopSource;
-      // If we have a repo source and skill name differs from repo, include both
-      const skillSource = repoSource ? `${repoSource}/${skill.name}` : skill.name;
+    // Build skill source: repo/skill-name for multi-skill repos, or just the source
+    const repoSource = skill.top_source || resolvedTopSource;
+    // If we have a repo source and skill name differs from repo, include both
+    const skillSource = repoSource ? `${repoSource}/${skill.name}` : skill.name;
 
-      const result = await installSkill({
-        skill_source: skillSource,
-        scope: installScope,
-        agents: selectedAgents,
-        project_path: installScope === "project" ? (selectedProject ?? undefined) : undefined,
+    installSkill({
+      skill_source: skillSource,
+      scope: installScope,
+      agents: selectedAgents,
+      project_path: installScope === "project" ? (selectedProject ?? undefined) : undefined,
+    })
+      .then((result) => {
+        onInstallComplete({ success: result.success, error: result.error, skillName: skill.name });
+      })
+      .catch((err) => {
+        onInstallComplete({
+          success: false,
+          error: err instanceof Error ? err.message : "Unknown error",
+          skillName: skill.name,
+        });
+      })
+      .finally(() => {
+        setIsInstalling(false);
       });
-      onInstallComplete({ success: result.success, error: result.error, skillName: skill.name });
-    } catch (err) {
-      onInstallComplete({
-        success: false,
-        error: err instanceof Error ? err.message : "Unknown error",
-        skillName: skill.name,
-      });
-    } finally {
-      setIsInstalling(false);
-    }
-  }, [
-    skill,
-    resolvedTopSource,
-    selectedAgents,
-    installScope,
-    selectedProject,
-    onInstallStart,
-    onInstallComplete,
-  ]);
+  };
 
-  const handleRemove = useCallback(async () => {
+  const handleRemove = () => {
     setIsRemoving(true);
-    try {
-      const result = await removeSkill(skill.name, installScope === "global");
-      if (result.success) {
-        onRemoveComplete();
-      }
-    } finally {
-      setIsRemoving(false);
-      setShowRemoveConfirm(false);
-    }
-    // False positive: this try/finally (no catch) makes oxlint flag every
-    // one of these three deps as "extra"; dropping any of them instead trips
-    // the correctness exhaustive-deps rule, confirming they're genuinely
-    // needed.
-    // eslint-disable-next-line react/memo-dependencies
-  }, [skill.name, installScope, onRemoveComplete]);
-
-  const handleUpdate = useCallback(async () => {
-    setIsUpdating(true);
-    try {
-      const result = await updateSkill(skill.name, installScope === "global");
-      if (result.success) {
-        onInstallComplete({ success: true, skillName: skill.name });
-      } else {
-        onInstallComplete({ success: false, error: result.error, skillName: skill.name });
-      }
-    } catch (err) {
-      onInstallComplete({
-        success: false,
-        error: err instanceof Error ? err.message : "Unknown error",
-        skillName: skill.name,
+    // A `Promise.finally` call, not a `try/finally` statement: `removeSkill`
+    // throwing (no catch here, same as before) still runs the cleanup
+    // before the rejection propagates.
+    return removeSkill(skill.name, installScope === "global")
+      .then((result) => {
+        if (result.success) {
+          onRemoveComplete();
+        }
+      })
+      .finally(() => {
+        setIsRemoving(false);
+        setShowRemoveConfirm(false);
       });
-    } finally {
-      setIsUpdating(false);
-    }
-  }, [skill.name, installScope, onInstallComplete]);
+  };
 
-  const handleBrowseProject = useCallback(async () => {
+  // A Promise chain, not a try/finally statement, so the compiler can still
+  // optimize this component (it doesn't support `finally` clauses yet).
+  const handleUpdate = () => {
+    setIsUpdating(true);
+    return updateSkill(skill.name, installScope === "global")
+      .then((result) => {
+        if (result.success) {
+          onInstallComplete({ success: true, skillName: skill.name });
+        } else {
+          onInstallComplete({ success: false, error: result.error, skillName: skill.name });
+        }
+      })
+      .catch((err) => {
+        onInstallComplete({
+          success: false,
+          error: err instanceof Error ? err.message : "Unknown error",
+          skillName: skill.name,
+        });
+      })
+      .finally(() => {
+        setIsUpdating(false);
+      });
+  };
+
+  const handleBrowseProject = async () => {
     const selected = await open({
       directory: true,
       multiple: false,
@@ -170,7 +168,7 @@ export function InstallControls({
       addProject(selected);
       setSelectedProject(selected);
     }
-  }, [addProject]);
+  };
 
   if (!skill.is_installed) {
     return (

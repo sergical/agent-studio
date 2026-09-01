@@ -2,7 +2,7 @@
 // SkillSearchBar - Search input for skills.sh
 // ============================================================================
 
-import { useEffect, useRef } from "react";
+import { useEffect, useEffectEvent, useRef } from "react";
 import { Search, X, Loader } from "lucide-react";
 import { Input } from "@skill-studio/ui";
 
@@ -24,6 +24,13 @@ export function SkillSearchBar({
   const inputRef = useRef<HTMLInputElement>(null);
   const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
+  // Reads the latest `onSearch` without resetting the debounce timer below
+  // when the caller passes a new `onSearch` identity without `value` itself
+  // having changed.
+  const onDebouncedSearch = useEffectEvent((query: string) => {
+    onSearch(query);
+  });
+
   // Debounced search
   useEffect(() => {
     if (debounceRef.current) {
@@ -31,7 +38,7 @@ export function SkillSearchBar({
     }
 
     debounceRef.current = setTimeout(() => {
-      onSearch(value);
+      onDebouncedSearch(value);
     }, 300);
 
     return () => {
@@ -39,7 +46,7 @@ export function SkillSearchBar({
         clearTimeout(debounceRef.current);
       }
     };
-  }, [value, onSearch]);
+  }, [value]);
 
   const handleClear = () => {
     onChange("");

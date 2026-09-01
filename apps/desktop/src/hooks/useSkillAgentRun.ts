@@ -4,7 +4,7 @@
 // once per mount and filtering by this hook's own run id
 // ============================================================================
 
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { cancelSkillAgentRun, onSkillAgentEvent, startSkillAgentRun } from "../lib/skill-agent-api";
 import type { SkillAgentEvent, SkillAgentRunRequest, SkillLoaded } from "@skill-studio/lib";
 
@@ -78,6 +78,15 @@ function applyEvent(state: SkillAgentRunState, event: SkillAgentEvent): SkillAge
  */
 export function useSkillAgentRun() {
   const [state, setState] = useState<SkillAgentRunState>(IDLE_STATE);
+  // Mirrors `state` so the event listener and `run()` can read the latest
+  // value synchronously without a functional `setState` updater - a plain
+  // updater would need to run `resolveFinish` (a side effect) from inside
+  // itself to settle `waitForFinish` off the very state it just computed.
+  const stateRef = useRef<SkillAgentRunState>(IDLE_STATE);
+  const setBoth = useCallback((next: SkillAgentRunState) => {
+    stateRef.current = next;
+    setState(next);
+  }, []);
   const runIdRef = useRef<string | undefined>(undefined);
   // Resolved with the run's terminal state once it reaches "finished" or
   // "error" - either from the streamed Finished event, or immediately if
@@ -88,36 +97,37 @@ export function useSkillAgentRun() {
   useEffect(() => {
     const unlistenPromise = onSkillAgentEvent((event) => {
       if (event.run_id !== runIdRef.current) return;
-      setState((prev) => {
-        const next = applyEvent(prev, event);
-        if (next.status === "finished" || next.status === "error")
-          resolveFinish(finishResolverRef, next);
-        return next;
-      });
+      const next = applyEvent(stateRef.current, event);
+      setBoth(next);
+      if (next.status === "finished" || next.status === "error")
+        resolveFinish(finishResolverRef, next);
     });
     return () => {
       unlistenPromise.then((unlisten) => unlisten());
     };
-  }, []);
+  }, [setBoth]);
 
   const run = async (request: SkillAgentRunRequest) => {
-    setState({ ...IDLE_STATE, status: "running" });
+    setBoth({ ...IDLE_STATE, status: "running" });
     // Generated here and set before the invoke resolves, so an event that
     // arrives while the harness is still spawning isn't missed by the
     // `event.run_id !== runIdRef.current` filter above.
     const runId = crypto.randomUUID();
     runIdRef.current = runId;
-    setState((prev) => ({ ...prev, runId }));
+    setBoth({ ...stateRef.current, runId });
     try {
       await startSkillAgentRun(request, runId);
     } catch (err) {
       runIdRef.current = undefined;
       const errorMessage = err instanceof Error ? err.message : String(err);
-      setState((prev) => {
-        const next: SkillAgentRunState = { ...prev, runId, status: "error", errorMessage };
-        resolveFinish(finishResolverRef, next);
-        return next;
-      });
+      const next: SkillAgentRunState = {
+        ...stateRef.current,
+        runId,
+        status: "error",
+        errorMessage,
+      };
+      setBoth(next);
+      resolveFinish(finishResolverRef, next);
     }
   };
 
@@ -140,7 +150,7 @@ export function useSkillAgentRun() {
       await cancelSkillAgentRun(runIdRef.current).catch(() => {});
     }
     runIdRef.current = undefined;
-    setState(IDLE_STATE);
+    setBoth(IDLE_STATE);
   };
 
   useEffect(() => {

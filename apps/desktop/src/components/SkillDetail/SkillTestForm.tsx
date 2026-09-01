@@ -64,6 +64,7 @@ export function SkillTestForm({
   const filteredExtraSkills = extraQueryTrimmed
     ? otherOwnSkills.filter((s) => s.name.toLowerCase().includes(extraQueryTrimmed))
     : otherOwnSkills;
+  const extraSkillNameSet = new Set(extraSkillNames);
 
   const toggleExtraSkill = (name: string) => {
     setExtraSkillNames((prev) =>
@@ -168,6 +169,7 @@ export function SkillTestForm({
                 value={extraQuery}
                 onChange={(e) => setExtraQuery(e.target.value)}
                 placeholder="Filter skills…"
+                aria-label="Filter skills"
                 disabled={isRunning}
               />
               <div className="flex max-h-40 flex-col gap-0.5 overflow-y-auto rounded-sm border border-border-subtle px-2 py-1">
@@ -177,7 +179,7 @@ export function SkillTestForm({
                     className="flex cursor-pointer items-center gap-1.5 py-0.5 text-small text-text-secondary"
                   >
                     <CheckboxControl
-                      checked={extraSkillNames.includes(other.name)}
+                      checked={extraSkillNameSet.has(other.name)}
                       onCheckedChange={() => toggleExtraSkill(other.name)}
                       disabled={isRunning}
                     />

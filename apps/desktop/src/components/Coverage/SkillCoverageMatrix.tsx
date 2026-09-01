@@ -7,6 +7,7 @@ import { AGENT_MATRIX_LABELS, agentMatrix } from "@skill-studio/lib";
 import type { AgentMatrixCell } from "@skill-studio/lib";
 import type { InstalledSkill } from "@skill-studio/lib";
 import { HarnessIcon, harnessIdFromLabel } from "../ui/HarnessIcon";
+import { TooltipControl } from "../ui/TooltipControl";
 
 interface SkillCoverageMatrixProps {
   skills: InstalledSkill[];
@@ -69,20 +70,25 @@ export function SkillCoverageMatrix({ skills, onSelectSkill }: SkillCoverageMatr
         <thead>
           <tr>
             <th className={HEADER_CELL_CLASS}>Skill</th>
-            <th className={HEADER_CELL_CLASS} title="Shared .agents folder">
-              <span className="inline-flex items-center gap-[5px]">
-                <HarnessIcon harness="shared" size={13} />
-                Shared
-              </span>
+            <th className={HEADER_CELL_CLASS}>
+              <TooltipControl content="Shared .agents folder">
+                <span
+                  aria-label="Shared .agents folder"
+                  className="inline-flex items-center justify-center"
+                >
+                  <HarnessIcon harness="shared" size={15} />
+                </span>
+              </TooltipControl>
             </th>
             {AGENT_MATRIX_LABELS.map((label) => {
               const harnessId = harnessIdFromLabel(label);
               return (
-                <th key={label} className={HEADER_CELL_CLASS} title={label}>
-                  <span className="inline-flex items-center gap-[5px]">
-                    {harnessId && <HarnessIcon harness={harnessId} size={13} />}
-                    {label}
-                  </span>
+                <th key={label} className={HEADER_CELL_CLASS}>
+                  <TooltipControl content={label}>
+                    <span aria-label={label} className="inline-flex items-center justify-center">
+                      {harnessId ? <HarnessIcon harness={harnessId} size={15} /> : label}
+                    </span>
+                  </TooltipControl>
                 </th>
               );
             })}

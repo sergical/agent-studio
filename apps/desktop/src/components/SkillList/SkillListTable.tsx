@@ -5,28 +5,15 @@
 
 import { useRef, useState } from "react";
 import type { KeyboardEvent } from "react";
-import { Search } from "lucide-react";
 import { formatTokens, pluginLabelForSkill } from "@skill-studio/lib";
 import type { InstalledSkill, PackMember, SkillInvocationStats } from "@skill-studio/lib";
 import { isFeatureEnabled } from "../../lib/feature-flags";
+import type { SortMode } from "../../lib/skill-list-sort";
 import { useAppStore } from "../../store/appStore";
 import { PackNamePrompt } from "../Packs/PackNamePrompt";
 import { CheckboxControl } from "../ui/CheckboxControl";
-import { SelectControl } from "../ui/SelectControl";
 import { SkillLocationCell } from "./SkillLocationCell";
 import { TooltipControl } from "../ui/TooltipControl";
-
-type SortMode = "name" | "used" | "size";
-
-const SORT_ITEMS: { value: SortMode; label: string }[] = [
-  { value: "name", label: "Name" },
-  { value: "used", label: "Most used" },
-  { value: "size", label: "Largest" },
-];
-
-function isSortMode(value: string): value is SortMode {
-  return value === "name" || value === "used" || value === "size";
-}
 
 /** "User only" / "Model only" chip label, `null` for the default "both" policy. */
 function invocationChipLabel(invocation: InstalledSkill["invocation"]): string | null {
@@ -38,6 +25,8 @@ function invocationChipLabel(invocation: InstalledSkill["invocation"]): string |
 interface SkillListTableProps {
   skills: InstalledSkill[];
   stats: SkillInvocationStats[];
+  /** Sort order - the Sort select lives in `SkillListFilterBar`; the search box there narrows `skills` before it reaches this table. */
+  sort: SortMode;
   onSelectSkill: (name: string, deploymentPath?: string) => void;
   selectedSkillName?: string | null;
   /** Resolves which deployment a row's click should open in the detail drawer, when the caller knows it. */
@@ -60,6 +49,7 @@ interface SkillListTableProps {
 export function SkillListTable({
   skills,
   stats,
+  sort,
   onSelectSkill,
   selectedSkillName = null,
   deploymentPathForSkill,
@@ -67,8 +57,6 @@ export function SkillListTable({
   onClearFilters,
   onAddSkill,
 }: SkillListTableProps) {
-  const [query, setQuery] = useState("");
-  const [sort, setSort] = useState<SortMode>("name");
   const [showPackPrompt, setShowPackPrompt] = useState(false);
   const packsEnabled = isFeatureEnabled("skill-packs");
   const statsBySkill = new Map(stats.map((s) => [s.skill, s]));
@@ -88,15 +76,7 @@ export function SkillListTable({
   const rowPath = (skill: InstalledSkill): string | undefined =>
     deploymentPathForSkill?.(skill) ?? skill.deployments[0]?.path;
 
-  const filterQuery = query.trim().toLowerCase();
-  const filteredRows = filterQuery
-    ? skills.filter(
-        (s) =>
-          s.name.toLowerCase().includes(filterQuery) ||
-          (s.description ?? "").toLowerCase().includes(filterQuery),
-      )
-    : skills;
-  const rows = [...filteredRows];
+  const rows = [...skills];
   if (sort === "name") {
     rows.sort((a, b) => a.name.localeCompare(b.name));
   } else if (sort === "used") {
@@ -161,65 +141,45 @@ export function SkillListTable({
 
   return (
     <div className="flex flex-col gap-3" onKeyDown={handleTableKeyDown}>
-      <div className="flex items-center gap-2">
-        {selectionMode ? (
-          <>
-            {/* The header checkbox sits in the same w-11 rail as the row
-                checkboxes below, so entering selection mode doesn't shift it. */}
-            <div className="flex w-11 shrink-0 items-center justify-center [&_.checkbox-control-root]:before:absolute [&_.checkbox-control-root]:before:-inset-3 [&_.checkbox-control-root]:before:content-['']">
-              <CheckboxControl
-                checked={allVisibleSelected}
-                onCheckedChange={handleHeaderCheckboxChange}
-                disabled={rows.length === 0}
-                ariaLabel="Select all visible skills"
-              />
-            </div>
-            <span className="text-small text-text-secondary">{selectedPaths.size} selected</span>
-            <button
-              className="ml-auto cursor-pointer rounded-sm bg-accent px-3 py-1.5 text-small font-semibold text-text-on-accent disabled:cursor-not-allowed disabled:opacity-50"
-              onClick={() => setShowPackPrompt(true)}
-              disabled={selectedPaths.size === 0}
-            >
-              Create pack
-            </button>
-            <button
-              className="cursor-pointer rounded-sm border border-border bg-transparent px-3 py-1.5 text-small text-text-tertiary"
-              onClick={exitSelectionMode}
-            >
-              Cancel
-            </button>
-          </>
-        ) : (
-          <>
-            {packsEnabled && (
+      {(selectionMode || packsEnabled) && (
+        <div className="flex items-center gap-2">
+          {selectionMode ? (
+            <>
+              {/* The header checkbox sits in the same w-11 rail as the row
+                  checkboxes below, so entering selection mode doesn't shift it. */}
+              <div className="flex w-11 shrink-0 items-center justify-center [&_.checkbox-control-root]:before:absolute [&_.checkbox-control-root]:before:-inset-3 [&_.checkbox-control-root]:before:content-['']">
+                <CheckboxControl
+                  checked={allVisibleSelected}
+                  onCheckedChange={handleHeaderCheckboxChange}
+                  disabled={rows.length === 0}
+                  ariaLabel="Select all visible skills"
+                />
+              </div>
+              <span className="text-small text-text-secondary">{selectedPaths.size} selected</span>
               <button
-                className="h-(--control-height) shrink-0 cursor-pointer rounded-sm border border-border bg-transparent px-3 text-body text-text-secondary transition-colors hover:bg-bg-hover hover:text-text-primary"
-                onClick={enterSelectionMode}
+                className="ml-auto cursor-pointer rounded-sm bg-accent px-3 py-1.5 text-small font-semibold text-text-on-accent disabled:cursor-not-allowed disabled:opacity-50"
+                onClick={() => setShowPackPrompt(true)}
+                disabled={selectedPaths.size === 0}
               >
-                Select
+                Create pack
               </button>
-            )}
-            <div className="relative flex max-w-[320px] flex-1 items-center text-text-tertiary">
-              <Search size={13} className="pointer-events-none absolute left-3" />
-              <input
-                className="h-(--control-height) w-full rounded-sm border border-border bg-bg-primary py-0 pr-3 pl-8 text-body text-text-primary transition-colors placeholder:text-text-quaternary focus-visible:border-border-focus"
-                value={query}
-                onChange={(e) => setQuery(e.target.value)}
-                placeholder="Filter by name or description…"
-              />
-            </div>
-            <SelectControl
-              value={sort}
-              onValueChange={(v) => {
-                if (isSortMode(v)) setSort(v);
-              }}
-              items={SORT_ITEMS}
-              ariaLabel="Sort"
-              triggerPrefix="Sort:"
-            />
-          </>
-        )}
-      </div>
+              <button
+                className="cursor-pointer rounded-sm border border-border bg-transparent px-3 py-1.5 text-small text-text-tertiary"
+                onClick={exitSelectionMode}
+              >
+                Cancel
+              </button>
+            </>
+          ) : (
+            <button
+              className="h-(--control-height) shrink-0 cursor-pointer rounded-sm border border-border bg-transparent px-3 text-body text-text-secondary transition-colors hover:bg-bg-hover hover:text-text-primary"
+              onClick={enterSelectionMode}
+            >
+              Select
+            </button>
+          )}
+        </div>
+      )}
 
       {rows.length === 0 ? (
         <div className="flex flex-col items-start gap-2 text-pretty text-small text-text-tertiary">
@@ -253,7 +213,7 @@ export function SkillListTable({
         <div className="flex flex-col gap-1.5">
           <div className="flex items-stretch">
             {selectionMode && <span className="w-11 shrink-0" />}
-            <div className="grid min-w-0 flex-1 items-center gap-3 border border-transparent px-3 [grid-template-columns:minmax(0,1.2fr)_minmax(0,1.8fr)_auto_48px_64px]">
+            <div className="grid min-w-0 flex-1 items-center gap-3 border border-transparent px-3 [grid-template-columns:minmax(0,1.2fr)_minmax(0,1.8fr)_140px_48px_64px]">
               <span />
               <span />
               <span />
@@ -289,7 +249,7 @@ export function SkillListTable({
                   </label>
                 )}
                 <button
-                  className={`grid h-11 min-w-0 flex-1 cursor-pointer items-center gap-3 overflow-hidden rounded-md border border-border bg-bg-secondary px-3 text-left transition-colors [grid-template-columns:minmax(0,1.2fr)_minmax(0,1.8fr)_auto_48px_64px] hover:bg-bg-hover active:bg-bg-active ${
+                  className={`grid h-11 min-w-0 flex-1 cursor-pointer items-center gap-3 overflow-hidden rounded-md border border-border bg-bg-secondary px-3 text-left transition-colors [grid-template-columns:minmax(0,1.2fr)_minmax(0,1.8fr)_140px_48px_64px] hover:bg-bg-hover active:bg-bg-active ${
                     selected
                       ? "border-accent bg-accent-softer shadow-[inset_2px_0_0_var(--color-accent)]"
                       : ""

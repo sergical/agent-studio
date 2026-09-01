@@ -110,9 +110,9 @@ export function SkillDetailHeader({ skill, resolvedTopSource, onClose }: SkillDe
 
       {skill.installed_info && skill.installed_info.deployments.length > 0 && (
         <div className="flex flex-wrap gap-1.5 px-5 pb-3">
-          {skill.installed_info.deployments.map((deployment, i) => (
+          {skill.installed_info.deployments.map((deployment) => (
             <span
-              key={`${deployment.agent}-${deployment.scope}-${i}`}
+              key={deployment.path}
               className="inline-flex items-center gap-1 rounded-sm bg-bg-tertiary px-2 py-[3px] text-caption text-text-tertiary"
             >
               {deployment.is_symlink && <Link2 size={11} />}

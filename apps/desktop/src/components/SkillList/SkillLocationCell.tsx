@@ -33,13 +33,14 @@ export function SkillLocationCell({ skill }: SkillLocationCellProps) {
   const summary = locationSummary(skill);
   const { truth, links, copies, broken } = summary;
   const drifting = driftingCopies(summary);
+  const driftingPaths = new Set(drifting.map((d) => d.path));
 
   // No shared-root copy and exactly one own directory: nothing to compare it
   // against, so it's just the harness mark, no relation glyph.
   if (!truth && links.length === 0 && copies.length === 1 && broken.length === 0) {
     const [only] = copies;
     return (
-      <span className="flex min-w-0 gap-1">
+      <span className="flex min-w-0 items-center gap-1 overflow-hidden">
         <TooltipControl content={`${only.agent} · ${homeRelativePath(only.path)}`}>
           <span className={LOCATION_CHIP_CLASS} aria-label={only.agent}>
             <AgentMark agent={only.agent} />
@@ -50,7 +51,7 @@ export function SkillLocationCell({ skill }: SkillLocationCellProps) {
   }
 
   return (
-    <span className="flex min-w-0 gap-1">
+    <span className="flex min-w-0 items-center gap-1 overflow-hidden">
       {truth && (
         <TooltipControl content="Shared folder · source of truth">
           <span
@@ -61,11 +62,11 @@ export function SkillLocationCell({ skill }: SkillLocationCellProps) {
           </span>
         </TooltipControl>
       )}
-      {links.map((d, i) => {
+      {links.map((d) => {
         const target = deploymentLinkTarget(d);
         return (
           <TooltipControl
-            key={`link-${d.agent}-${i}`}
+            key={d.path}
             content={
               d.is_symlink
                 ? `${d.agent} · symlink → ${target ? homeRelativePath(target) : "unknown target"}`
@@ -82,11 +83,11 @@ export function SkillLocationCell({ skill }: SkillLocationCellProps) {
           </TooltipControl>
         );
       })}
-      {copies.map((d, i) => {
-        const isDrifting = drifting.includes(d);
+      {copies.map((d) => {
+        const isDrifting = driftingPaths.has(d.path);
         return (
           <TooltipControl
-            key={`copy-${d.agent}-${i}`}
+            key={d.path}
             content={`${d.agent} · separate copy at ${homeRelativePath(d.path)} · ${isDrifting ? "content differs" : "same content"}`}
           >
             <span
@@ -99,8 +100,8 @@ export function SkillLocationCell({ skill }: SkillLocationCellProps) {
           </TooltipControl>
         );
       })}
-      {broken.map((d, i) => (
-        <BrokenChip key={`broken-${d.agent}-${i}`} deployment={d} />
+      {broken.map((d) => (
+        <BrokenChip key={d.path} deployment={d} />
       ))}
     </span>
   );

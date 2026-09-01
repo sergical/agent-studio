@@ -165,9 +165,9 @@ function SkillCard({ skill, isSelected, onClick, hideInstalledIndicator = false 
               spec issues
             </span>
           )}
-          {skill.installed_info.deployments.map((deployment, i) => (
+          {skill.installed_info.deployments.map((deployment) => (
             <span
-              key={`${deployment.agent}-${deployment.scope}-${i}`}
+              key={deployment.path}
               className="inline-flex items-center gap-[3px] rounded-sm bg-bg-tertiary px-1.5 py-0.5 text-caption text-text-tertiary"
             >
               {deployment.is_symlink && <Link2 size={10} />}
