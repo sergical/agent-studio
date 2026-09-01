@@ -46,6 +46,7 @@ function useSideContent(deployment: Deployment | undefined): SideState {
 
   useEffect(() => {
     if (!path) {
+      // react-doctor-disable-next-line react-hooks-js/set-state-in-effect -- syncs from an external source: this mirrors the async readInstalledSkillMd load below, keyed on the same path identity
       setState({ status: "missing" });
       return;
     }

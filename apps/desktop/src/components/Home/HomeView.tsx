@@ -845,8 +845,10 @@ function UpdatesGroup({
     for (const skill of updates) {
       try {
         if (skill.source_kind === "fork") {
+          // react-doctor-disable-next-line react-doctor/async-await-in-loop -- update-all runs sequentially on purpose; concurrent `npx skills update` calls race on ~/.agents/.skill-lock.json
           await pullForkUpstream(skill.name);
         } else {
+          // react-doctor-disable-next-line react-doctor/async-await-in-loop -- update-all runs sequentially on purpose; concurrent `npx skills update` calls race on ~/.agents/.skill-lock.json
           const result = await updateSkill(skill.name, true);
           if (!result.success) failures += 1;
         }

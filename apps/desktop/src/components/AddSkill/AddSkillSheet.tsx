@@ -5,7 +5,8 @@
 // "Try for 24 hours" trial. Submits to the `add_skill` Tauri command.
 // ============================================================================
 
-import { useEffect, useReducer, useRef } from "react";
+import { useEffect, useEffectEvent, useReducer, useRef } from "react";
+import type { Dispatch } from "react";
 import { open } from "@tauri-apps/plugin-dialog";
 import { FolderPlus, X } from "lucide-react";
 import { Button, Input } from "@skill-studio/ui";
@@ -89,9 +90,6 @@ function agentsWithASkill(snapshot: ReturnType<typeof useSkillSnapshot>["snapsho
   }
   return seen;
 }
-
-const FOCUSABLE_SELECTOR =
-  'a[href], button:not([disabled]), textarea:not([disabled]), input:not([disabled]), select:not([disabled]), [tabindex]:not([tabindex="-1"])';
 
 const SCOPE_OPTION_CLASS =
   "flex-1 rounded-sm border border-border bg-bg-primary px-2.5 py-2.5 text-body font-medium text-text-secondary transition-colors hover:border-border-focus";
@@ -323,119 +321,37 @@ function ScopePicker({
   );
 }
 
-export function AddSkillSheet() {
-  const { open: isOpen, prefill } = useAppStore((state) => state.addSkillSheet);
-  const closeAddSkillSheet = useAppStore((state) => state.closeAddSkillSheet);
-  const openSkill = useAppStore((state) => state.openSkill);
-  const addToast = useAppStore((state) => state.addToast);
-  const userAddedProjects = useAppStore((state) => state.userAddedProjects);
-  const addProject = useAppStore((state) => state.addProject);
-  const { snapshot } = useSkillSnapshot();
-
-  const [form, dispatch] = useReducer(formReducer, undefined, initialFormState);
+/**
+ * Owns `handleSubmit` and the derived `isValid` flag: both close over the
+ * same handful of form fields plus the three callbacks that fire on success,
+ * so pulling them out of `AddSkillSheet` keeps that component's body to the
+ * dialog shell and its own effects.
+ */
+function useAddSkillSubmit(input: {
+  parsed: ParsedSkillSource | { error: string };
+  method: SheetMethod;
+  agents: AgentId[];
+  scope: InstallScope;
+  projectPath: string | null;
+  trial: boolean;
+  dispatch: Dispatch<FormAction>;
+  closeSheet: () => void;
+  openSkill: (name: string) => void;
+  addToast: ReturnType<typeof useAppStore.getState>["addToast"];
+}) {
   const {
-    sheetTab,
-    source,
-    methodChoice,
+    parsed,
+    method,
     agents,
     scope,
     projectPath,
     trial,
-    isSubmitting,
-    submitError,
-  } = form;
-
-  const sheetRef = useRef<HTMLDivElement>(null);
-  const sourceInputRef = useRef<HTMLInputElement>(null);
-  // The element that had focus right before the sheet opened, so a normal
-  // close (Cancel/X/Escape/backdrop click) can hand focus back to it.
-  const previouslyFocusedRef = useRef<HTMLElement | null>(null);
-
-  // Reset the form to its defaults, prefilled from the caller, each time the
-  // sheet opens - a stale field from a previous open would be confusing.
-  useEffect(() => {
-    if (!isOpen) return;
-    // SAFETY: `document.activeElement` is always an `Element` or `null`; DOM
-    // focusable elements are `HTMLElement`s, which is all this ref is used
-    // to call `.focus()` on.
-    previouslyFocusedRef.current = document.activeElement as HTMLElement | null;
-    const withASkill = agentsWithASkill(snapshot);
-    const active = DEFAULT_HARNESS_CANDIDATES.filter((id) => withASkill.has(id));
-    dispatch({
-      type: "reset",
-      prefill: prefill ?? "",
-      agents: active.length > 0 ? active : FALLBACK_HARNESSES,
-      projectPath: userAddedProjects[0] ?? null,
-    });
-    // Autofocus the Source field once the sheet has mounted.
-    const id = window.setTimeout(() => sourceInputRef.current?.focus(), 0);
-    return () => window.clearTimeout(id);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [isOpen, prefill]);
-
-  // A normal close restores focus to whatever had it before the sheet
-  // opened - never called while a submit is in flight (an install already
-  // succeeded shouldn't be interrupted by an accidental Escape/backdrop click).
-  const closeSheet = () => {
-    closeAddSkillSheet();
-    previouslyFocusedRef.current?.focus();
-  };
-
-  const parsed = parseSkillSource(source);
-  const methods = availableMethods(parsed);
-
-  // Keep the selected method valid as the source changes - e.g. switching
-  // from a github source to a local path forces "Copy". Derived during
-  // render instead of synced back with an effect, since `methods` is
-  // itself derived from `source`.
-  const method = methods.length > 0 && !methods.includes(methodChoice) ? methods[0] : methodChoice;
-
-  // Escape closes the sheet, unless it's typed into a nested widget that
-  // wants it for its own purposes (mirrors SkillPage's handler).
-  useEffect(() => {
-    if (!isOpen) return;
-    function onKeyDown(event: KeyboardEvent) {
-      if (event.key === "Escape") {
-        if (isSubmitting) return;
-        closeSheet();
-        return;
-      }
-      // Hand-rolled focus trap: Tab/Shift+Tab cycle within the sheet only,
-      // since a new dependency isn't available for this.
-      if (event.key !== "Tab" || !sheetRef.current) return;
-      const focusable = Array.from(
-        sheetRef.current.querySelectorAll<HTMLElement>(FOCUSABLE_SELECTOR),
-      ).filter((el) => el.offsetParent !== null);
-      if (focusable.length === 0) return;
-      const first = focusable[0];
-      const last = focusable[focusable.length - 1];
-      const active = document.activeElement;
-      if (event.shiftKey) {
-        if (active === first || !sheetRef.current.contains(active)) {
-          event.preventDefault();
-          last.focus();
-        }
-      } else if (active === last || !sheetRef.current.contains(active)) {
-        event.preventDefault();
-        first.focus();
-      }
-    }
-    window.addEventListener("keydown", onKeyDown);
-    return () => window.removeEventListener("keydown", onKeyDown);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [isOpen, isSubmitting]);
-
-  if (!isOpen) return null;
-
+    dispatch,
+    closeSheet,
+    openSkill,
+    addToast,
+  } = input;
   const isValid = !("error" in parsed) && (scope !== "project" || !!projectPath);
-
-  const handleBrowseProject = async () => {
-    const selected = await open({ directory: true, multiple: false, title: "Select Project" });
-    if (selected) {
-      addProject(selected);
-      dispatch({ type: "set_project_path", path: selected });
-    }
-  };
 
   const handleSubmit = async () => {
     if ("error" in parsed || !isValid) return;
@@ -491,152 +407,321 @@ export function AddSkillSheet() {
     }
   };
 
+  return { isValid, handleSubmit };
+}
+
+/** The "Add by source" tab's form fields, everything below the Method picker. */
+function ManualTabFields({
+  method,
+  agents,
+  scope,
+  projectPath,
+  userAddedProjects,
+  trial,
+  submitError,
+  dispatch,
+  onBrowseProject,
+}: {
+  method: SheetMethod;
+  agents: AgentId[];
+  scope: InstallScope;
+  projectPath: string | null;
+  userAddedProjects: string[];
+  trial: boolean;
+  submitError: string | null;
+  dispatch: Dispatch<FormAction>;
+  onBrowseProject: () => void;
+}) {
   return (
-    <div className="fixed inset-0 z-(--z-modal) flex justify-end">
-      {/* Decorative scrim: a pointer affordance duplicating the Escape/Cancel
-          path above, so it's aria-hidden rather than a focusable control. */}
-      <div
-        className="absolute inset-0 bg-scrim"
-        aria-hidden="true"
-        onMouseDown={() => {
-          if (!isSubmitting) closeSheet();
-        }}
-      />
-      <div
-        ref={sheetRef}
-        className="relative flex h-full w-[420px] max-w-full flex-col border-l border-border bg-bg-secondary"
-        role="dialog"
-        aria-modal="true"
-        aria-label="Add skill"
-      >
-        <div className="flex items-center justify-between border-b border-border px-5 py-4">
-          <h3 className="m-0 text-pretty text-balance text-emphasis font-semibold text-text-primary">
-            Add skill
-          </h3>
-          <button
-            type="button"
-            className="flex items-center justify-center rounded-sm border-0 bg-transparent p-1 text-text-tertiary transition-colors hover:bg-bg-hover hover:text-text-primary"
-            onClick={closeSheet}
-            disabled={isSubmitting}
-            aria-label="Close"
-          >
-            <X size={16} />
-          </button>
-        </div>
-
-        <div className="flex border-b border-border">
-          <button
-            type="button"
-            className={`-mb-px h-10 border-0 border-b-2 bg-transparent px-4 text-body font-medium transition-colors ${
-              sheetTab === "manual"
-                ? "border-accent text-accent"
-                : "border-transparent text-text-tertiary hover:text-text-secondary"
-            }`}
-            onClick={() => dispatch({ type: "set_tab", tab: "manual" })}
-          >
-            Add by source
-          </button>
-          <button
-            type="button"
-            className={`-mb-px h-10 border-0 border-b-2 bg-transparent px-4 text-body font-medium transition-colors ${
-              sheetTab === "browse"
-                ? "border-accent text-accent"
-                : "border-transparent text-text-tertiary hover:text-text-secondary"
-            }`}
-            onClick={() => dispatch({ type: "set_tab", tab: "browse" })}
-          >
-            Browse skills.sh
-          </button>
-        </div>
-
-        {sheetTab === "browse" ? (
-          <div className="flex flex-1 overflow-hidden">
-            <SkillStore compact />
-          </div>
-        ) : (
-          <div className="flex flex-1 flex-col gap-5 overflow-y-auto px-5 py-4">
-            <SourceField
-              source={source}
-              parsed={parsed}
-              onChange={(value) => dispatch({ type: "set_source", source: value })}
-              inputRef={sourceInputRef}
-            />
-
-            <MethodPicker
-              method={method}
-              methods={methods}
-              agents={agents}
-              onChange={(m) => dispatch({ type: "set_method", method: m })}
-            />
-
-            <div className="flex flex-col gap-2">
-              <AgentTargetSelector
-                selectedAgents={agents}
-                onChange={(next) => dispatch({ type: "set_agents", agents: next })}
-              />
-            </div>
-
-            {method === "pack" && (
-              <p className="m-0 text-caption text-text-tertiary">
-                Imports every skill in this repo's pack to the shared folder, plus any agents.toml
-                row pointing elsewhere - see the "Packs" section of the docs.
-              </p>
-            )}
-
-            {method !== "pack" && (
-              <ScopePicker
-                scope={scope}
-                projectPath={projectPath}
-                userAddedProjects={userAddedProjects}
-                onScopeChange={(next) => dispatch({ type: "set_scope", scope: next })}
-                onProjectPathChange={(path) => dispatch({ type: "set_project_path", path })}
-                onBrowseProject={handleBrowseProject}
-              />
-            )}
-
-            {method !== "pack" && (
-              <div className="flex flex-col gap-2">
-                <label className="flex items-center gap-2 text-body text-text-primary">
-                  <CheckboxControl
-                    checked={trial}
-                    onCheckedChange={(next) => dispatch({ type: "set_trial", trial: next })}
-                  />
-                  Try for 24 hours
-                </label>
-                <p className="m-0 text-caption text-text-tertiary">
-                  Removed automatically after 24 h unless you keep it.
-                </p>
-              </div>
-            )}
-
-            {submitError && (
-              <p className="m-0 rounded-md bg-error-soft p-2.5 text-small text-error" role="alert">
-                {submitError}
-              </p>
-            )}
-          </div>
-        )}
-
-        {sheetTab === "manual" && (
-          <div className="flex justify-end gap-2 border-t border-border px-5 py-4">
-            <Button
-              variant="outline"
-              className="h-(--control-height) rounded-md px-3.5 text-body font-medium"
-              onClick={closeSheet}
-              disabled={isSubmitting}
-            >
-              Cancel
-            </Button>
-            <Button
-              className="h-(--control-height) rounded-md bg-accent px-3.5 text-body font-medium text-text-on-accent hover:bg-accent-hover"
-              onClick={handleSubmit}
-              disabled={!isValid || isSubmitting}
-            >
-              {isSubmitting ? "Adding…" : method === "pack" ? "Import pack" : "Add skill"}
-            </Button>
-          </div>
-        )}
+    <>
+      <div className="flex flex-col gap-2">
+        <AgentTargetSelector
+          selectedAgents={agents}
+          onChange={(next) => dispatch({ type: "set_agents", agents: next })}
+        />
       </div>
+
+      {method === "pack" && (
+        <p className="m-0 text-caption text-text-tertiary">
+          Imports every skill in this repo's pack to the shared folder, plus any agents.toml row
+          pointing elsewhere - see the "Packs" section of the docs.
+        </p>
+      )}
+
+      {method !== "pack" && (
+        <ScopePicker
+          scope={scope}
+          projectPath={projectPath}
+          userAddedProjects={userAddedProjects}
+          onScopeChange={(next) => dispatch({ type: "set_scope", scope: next })}
+          onProjectPathChange={(path) => dispatch({ type: "set_project_path", path })}
+          onBrowseProject={onBrowseProject}
+        />
+      )}
+
+      {method !== "pack" && (
+        <div className="flex flex-col gap-2">
+          <label className="flex items-center gap-2 text-body text-text-primary">
+            <CheckboxControl
+              checked={trial}
+              onCheckedChange={(next) => dispatch({ type: "set_trial", trial: next })}
+            />
+            Try for 24 hours
+          </label>
+          <p className="m-0 text-caption text-text-tertiary">
+            Removed automatically after 24 h unless you keep it.
+          </p>
+        </div>
+      )}
+
+      {submitError && (
+        <p className="m-0 rounded-md bg-error-soft p-2.5 text-small text-error" role="alert">
+          {submitError}
+        </p>
+      )}
+    </>
+  );
+}
+
+/** Cancel/submit footer, shown only on the "Add by source" tab. */
+function ManualTabFooter({
+  method,
+  isValid,
+  isSubmitting,
+  onCancel,
+  onSubmit,
+}: {
+  method: SheetMethod;
+  isValid: boolean;
+  isSubmitting: boolean;
+  onCancel: () => void;
+  onSubmit: () => void;
+}) {
+  return (
+    <div className="flex justify-end gap-2 border-t border-border px-5 py-4">
+      <Button
+        variant="outline"
+        className="h-(--control-height) rounded-md px-3.5 text-body font-medium"
+        onClick={onCancel}
+        disabled={isSubmitting}
+      >
+        Cancel
+      </Button>
+      <Button
+        className="h-(--control-height) rounded-md bg-accent px-3.5 text-body font-medium text-text-on-accent hover:bg-accent-hover"
+        onClick={onSubmit}
+        disabled={!isValid || isSubmitting}
+      >
+        {isSubmitting ? "Adding…" : method === "pack" ? "Import pack" : "Add skill"}
+      </Button>
     </div>
+  );
+}
+
+export function AddSkillSheet() {
+  const { open: isOpen, prefill } = useAppStore((state) => state.addSkillSheet);
+  const closeAddSkillSheet = useAppStore((state) => state.closeAddSkillSheet);
+  const openSkill = useAppStore((state) => state.openSkill);
+  const addToast = useAppStore((state) => state.addToast);
+  const userAddedProjects = useAppStore((state) => state.userAddedProjects);
+  const addProject = useAppStore((state) => state.addProject);
+  const { snapshot } = useSkillSnapshot();
+
+  const [form, dispatch] = useReducer(formReducer, undefined, initialFormState);
+  const {
+    sheetTab,
+    source,
+    methodChoice,
+    agents,
+    scope,
+    projectPath,
+    trial,
+    isSubmitting,
+    submitError,
+  } = form;
+
+  const dialogRef = useRef<HTMLDialogElement>(null);
+  const sourceInputRef = useRef<HTMLInputElement>(null);
+
+  // Reset the form to its defaults, prefilled from the caller, each time the
+  // sheet opens - a stale field from a previous open would be confusing.
+  useEffect(() => {
+    if (!isOpen) return;
+    const withASkill = agentsWithASkill(snapshot);
+    const active = DEFAULT_HARNESS_CANDIDATES.filter((id) => withASkill.has(id));
+    dispatch({
+      type: "reset",
+      prefill: prefill ?? "",
+      agents: active.length > 0 ? active : FALLBACK_HARNESSES,
+      projectPath: userAddedProjects[0] ?? null,
+    });
+    // Autofocus the Source field once the sheet has mounted.
+    const id = window.setTimeout(() => sourceInputRef.current?.focus(), 0);
+    return () => window.clearTimeout(id);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [isOpen, prefill]);
+
+  // `showModal()`/`close()` give us the focus trap, Escape handling, and
+  // top-layer stacking for free, plus automatic focus restoration to
+  // whatever had focus before the sheet opened - the same approach as
+  // SkillDetail/SkillAssistantDrawer.
+  useEffect(() => {
+    const dialog = dialogRef.current;
+    if (!dialog) return;
+    if (isOpen && !dialog.open) {
+      dialog.showModal();
+    } else if (!isOpen && dialog.open) {
+      dialog.close();
+    }
+  }, [isOpen]);
+
+  const closeSheet = () => {
+    closeAddSkillSheet();
+  };
+
+  // A mousedown that lands on the `<dialog>` element itself (not its
+  // content) is a click on the backdrop area, since the dialog box is sized
+  // to the sheet. Attached imperatively since `<dialog>` isn't an
+  // interactive element.
+  const onBackdropMouseDown = useEffectEvent((event: MouseEvent) => {
+    if (event.target === dialogRef.current && !isSubmitting) closeSheet();
+  });
+
+  useEffect(() => {
+    const dialog = dialogRef.current;
+    if (!isOpen || !dialog) return;
+    dialog.addEventListener("mousedown", onBackdropMouseDown);
+    return () => dialog.removeEventListener("mousedown", onBackdropMouseDown);
+  }, [isOpen]);
+
+  const parsed = parseSkillSource(source);
+  const methods = availableMethods(parsed);
+
+  // Keep the selected method valid as the source changes - e.g. switching
+  // from a github source to a local path forces "Copy". Derived during
+  // render instead of synced back with an effect, since `methods` is
+  // itself derived from `source`.
+  const method = methods.length > 0 && !methods.includes(methodChoice) ? methods[0] : methodChoice;
+
+  const { isValid, handleSubmit } = useAddSkillSubmit({
+    parsed,
+    method,
+    agents,
+    scope,
+    projectPath,
+    trial,
+    dispatch,
+    closeSheet,
+    openSkill,
+    addToast,
+  });
+
+  const handleBrowseProject = async () => {
+    const selected = await open({ directory: true, multiple: false, title: "Select Project" });
+    if (selected) {
+      addProject(selected);
+      dispatch({ type: "set_project_path", path: selected });
+    }
+  };
+
+  if (!isOpen) return null;
+
+  return (
+    <dialog
+      ref={dialogRef}
+      className="fixed top-0 right-0 bottom-0 z-(--z-modal) m-0 flex h-full max-h-none w-[420px] max-w-full flex-col rounded-none border-0 border-l border-border bg-bg-secondary p-0 backdrop:bg-scrim"
+      aria-label="Add skill"
+      // The native `cancel` event fires on Escape before `close`; handling it
+      // here keeps the same single `closeSheet` path the backdrop click uses.
+      onCancel={(e) => {
+        e.preventDefault();
+        if (!isSubmitting) closeSheet();
+      }}
+      onClose={closeSheet}
+    >
+      <div className="flex items-center justify-between border-b border-border px-5 py-4">
+        <h3 className="m-0 text-pretty text-balance text-emphasis font-semibold text-text-primary">
+          Add skill
+        </h3>
+        <button
+          type="button"
+          className="flex items-center justify-center rounded-sm border-0 bg-transparent p-1 text-text-tertiary transition-colors hover:bg-bg-hover hover:text-text-primary"
+          onClick={closeSheet}
+          disabled={isSubmitting}
+          aria-label="Close"
+        >
+          <X size={16} />
+        </button>
+      </div>
+
+      <div className="flex border-b border-border">
+        <button
+          type="button"
+          className={`-mb-px h-10 border-0 border-b-2 bg-transparent px-4 text-body font-medium transition-colors ${
+            sheetTab === "manual"
+              ? "border-accent text-accent"
+              : "border-transparent text-text-tertiary hover:text-text-secondary"
+          }`}
+          onClick={() => dispatch({ type: "set_tab", tab: "manual" })}
+        >
+          Add by source
+        </button>
+        <button
+          type="button"
+          className={`-mb-px h-10 border-0 border-b-2 bg-transparent px-4 text-body font-medium transition-colors ${
+            sheetTab === "browse"
+              ? "border-accent text-accent"
+              : "border-transparent text-text-tertiary hover:text-text-secondary"
+          }`}
+          onClick={() => dispatch({ type: "set_tab", tab: "browse" })}
+        >
+          Browse skills.sh
+        </button>
+      </div>
+
+      {sheetTab === "browse" ? (
+        <div className="flex flex-1 overflow-hidden">
+          <SkillStore compact />
+        </div>
+      ) : (
+        <div className="flex flex-1 flex-col gap-5 overflow-y-auto px-5 py-4">
+          <SourceField
+            source={source}
+            parsed={parsed}
+            onChange={(value) => dispatch({ type: "set_source", source: value })}
+            inputRef={sourceInputRef}
+          />
+
+          <MethodPicker
+            method={method}
+            methods={methods}
+            agents={agents}
+            onChange={(m) => dispatch({ type: "set_method", method: m })}
+          />
+
+          <ManualTabFields
+            method={method}
+            agents={agents}
+            scope={scope}
+            projectPath={projectPath}
+            userAddedProjects={userAddedProjects}
+            trial={trial}
+            submitError={submitError}
+            dispatch={dispatch}
+            onBrowseProject={handleBrowseProject}
+          />
+        </div>
+      )}
+
+      {sheetTab === "manual" && (
+        <ManualTabFooter
+          method={method}
+          isValid={isValid}
+          isSubmitting={isSubmitting}
+          onCancel={closeSheet}
+          onSubmit={handleSubmit}
+        />
+      )}
+    </dialog>
   );
 }

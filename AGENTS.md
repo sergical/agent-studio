@@ -77,7 +77,10 @@ npm run lint:fix
 npm run format
 npm run format:check
 
-# Full gate: typecheck + lint + format:check + cargo fmt --check + clippy -D warnings + cargo test
+# React health check (react-doctor)
+npm run doctor
+
+# Full gate: typecheck + lint + format:check + doctor + cargo fmt --check + clippy -D warnings + cargo test
 npm run check
 ```
 

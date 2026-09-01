@@ -44,6 +44,7 @@ export function SkillDetailPanel({
   useEffect(() => {
     let cancelled = false;
 
+    // react-doctor-disable-next-line react-hooks-js/set-state-in-effect -- syncs from an external source: the getSkillDetails Tauri call below
     setIsLoadingDetails(true);
     getSkillDetails(skill.id)
       .then((fetched) => {

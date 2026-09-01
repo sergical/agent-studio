@@ -643,6 +643,167 @@ function useRunDiffActions({
   return { handleApplyDiff, handleDiscardDiff, handleOpenScratchFolder, handleDeleteScratchFolder };
 }
 
+interface UseAssistantActionsParams {
+  skill: InstalledSkill;
+  rawContent: string | null;
+  skillMdPath: string | undefined;
+  isPluginManaged: boolean;
+  harness: AgentId;
+  prompt: string;
+  state: SkillAgentRunState;
+  run: (request: Parameters<ReturnType<typeof useSkillAgentRun>["run"]>[0]) => Promise<void>;
+  waitForFinish: () => Promise<SkillAgentRunState>;
+  judge: ReturnType<typeof useSkillAgentRun>;
+  opTokenRef: RefObject<number>;
+  ensureScratchDir: () => Promise<string | undefined>;
+  activeTargetRef: RefObject<SkillRunTargetInfo | null>;
+  setActiveTarget: (target: SkillRunTargetInfo | null) => void;
+  dispatchRunSession: React.Dispatch<RunSessionAction>;
+  auditStartContentRef: RefObject<string | null>;
+  recordedRunIdRef: RefObject<string | undefined>;
+  otherOwnSkills: InstalledSkill[];
+  addToast: (toast: Omit<Toast, "id">) => string;
+}
+
+/**
+ * Owns the panel's three run kinds - Ask, Audit, and Test. Pulled out of
+ * `SkillAssistantPanel` since all three close over the same handful of
+ * session refs/dispatchers, keeping the component's own body to its state
+ * setup, effects, and render.
+ */
+function useAssistantActions({
+  skill,
+  rawContent,
+  skillMdPath,
+  isPluginManaged,
+  harness,
+  prompt,
+  state,
+  run,
+  waitForFinish,
+  judge,
+  opTokenRef,
+  ensureScratchDir,
+  activeTargetRef,
+  setActiveTarget,
+  dispatchRunSession,
+  auditStartContentRef,
+  recordedRunIdRef,
+  otherOwnSkills,
+  addToast,
+}: UseAssistantActionsParams) {
+  const handleRun = async () => {
+    if (!prompt.trim() || state.status === "running") return;
+    const token = opTokenRef.current;
+    const dir = await ensureScratchDir();
+    if (!dir || opTokenRef.current !== token) return;
+
+    dispatchRunSession({ type: "set_run_kind", kind: "ask" });
+    recordedRunIdRef.current = undefined;
+    try {
+      // SAFETY: `harness` only ever holds a value from `HarnessSegmentedControl`,
+      // which offers exactly the four `HarnessId` agents.
+      await run({
+        harness: harness as HarnessId,
+        prompt,
+        cwd: dir,
+        skill_name: skill.name,
+        write_access: "workspace",
+        session_id: state.sessionId,
+      });
+    } catch (err) {
+      addToast({
+        type: "error",
+        title: "Couldn't start the run",
+        message: err instanceof Error ? err.message : "Unknown error",
+      });
+    }
+  };
+
+  const handleAudit = async () => {
+    if (rawContent === null || !skillMdPath || isPluginManaged || state.status === "running")
+      return;
+    const token = opTokenRef.current;
+    const dir = await ensureScratchDir();
+    if (!dir || opTokenRef.current !== token) return;
+
+    auditStartContentRef.current = rawContent;
+    dispatchRunSession({ type: "start_audit" });
+    recordedRunIdRef.current = undefined;
+    try {
+      // SAFETY: `harness` only ever holds a value from `HarnessSegmentedControl`,
+      // which offers exactly the four `HarnessId` agents.
+      await run({
+        harness: harness as HarnessId,
+        prompt: buildSkillAuditPrompt({
+          skillName: skill.name,
+          skillMd: rawContent,
+          harness,
+          deployments: skill.deployments.map((d) => `${d.agent} · ${d.scope}`),
+        }),
+        cwd: dir,
+        skill_name: skill.name,
+        write_access: "read_only",
+      });
+    } catch (err) {
+      addToast({
+        type: "error",
+        title: "Couldn't start the audit",
+        message: err instanceof Error ? err.message : "Unknown error",
+      });
+    }
+  };
+
+  /**
+   * Validates a "Test" run's target inputs, then hands off to
+   * `runSkillTestFlow` for the actual prepare/run/judge/diff/record
+   * sequence - see that function for why `opTokenRef` gets threaded through.
+   */
+  const handleRunTest = async (params: SkillTestRunParams) => {
+    if (state.status === "running") return;
+    const token = opTokenRef.current;
+    const sourcePath = sourceFolderPath(skill);
+    if (!sourcePath) {
+      addToast({
+        type: "error",
+        title: "Can't run the test",
+        message: "This skill has no folder on disk to run against.",
+      });
+      return;
+    }
+
+    const extraSkills: [string, string][] = params.extraSkillNames
+      .map((name): [string, string] | undefined => {
+        const folder = otherOwnSkills.find((s) => s.name === name)?.deployments[0]?.path;
+        return folder ? [name, folder] : undefined;
+      })
+      .filter((entry): entry is [string, string] => entry !== undefined);
+
+    activeTargetRef.current = null;
+    dispatchRunSession({ type: "start_test" });
+
+    // SAFETY: `harness` only ever holds a value from `HarnessSegmentedControl`,
+    // which offers exactly the four `HarnessId` agents.
+    await runSkillTestFlow({
+      skill,
+      params,
+      sourcePath,
+      extraSkills,
+      harness: harness as HarnessId,
+      token,
+      opTokenRef,
+      setActiveTarget,
+      dispatchRunSession,
+      run,
+      waitForFinish,
+      judge,
+      addToast,
+    });
+  };
+
+  return { handleRun, handleAudit, handleRunTest };
+}
+
 interface TestJudgePanelProps {
   judgeState: SkillAgentRunState;
   runState: SkillAgentRunState;
@@ -838,115 +999,29 @@ export function SkillAssistantPanel({
     el.style.height = `${Math.min(el.scrollHeight, maxHeight)}px`;
   }, [prompt]);
 
-  const handleRun = async () => {
-    if (!prompt.trim() || state.status === "running") return;
-    const token = opTokenRef.current;
-    const dir = await ensureScratchDir();
-    if (!dir || opTokenRef.current !== token) return;
+  const otherOwnSkills = ownSkillsView(snapshot?.skills ?? []).filter((s) => s.name !== skill.name);
 
-    dispatchRunSession({ type: "set_run_kind", kind: "ask" });
-    recordedRunIdRef.current = undefined;
-    try {
-      // SAFETY: `harness` only ever holds a value from `HarnessSegmentedControl`,
-      // which offers exactly the four `HarnessId` agents.
-      await run({
-        harness: harness as HarnessId,
-        prompt,
-        cwd: dir,
-        skill_name: skill.name,
-        write_access: "workspace",
-        session_id: state.sessionId,
-      });
-    } catch (err) {
-      addToast({
-        type: "error",
-        title: "Couldn't start the run",
-        message: err instanceof Error ? err.message : "Unknown error",
-      });
-    }
-  };
-
-  const handleAudit = async () => {
-    if (rawContent === null || !skillMdPath || isPluginManaged || state.status === "running")
-      return;
-    const token = opTokenRef.current;
-    const dir = await ensureScratchDir();
-    if (!dir || opTokenRef.current !== token) return;
-
-    auditStartContentRef.current = rawContent;
-    dispatchRunSession({ type: "start_audit" });
-    recordedRunIdRef.current = undefined;
-    try {
-      // SAFETY: `harness` only ever holds a value from `HarnessSegmentedControl`,
-      // which offers exactly the four `HarnessId` agents.
-      await run({
-        harness: harness as HarnessId,
-        prompt: buildSkillAuditPrompt({
-          skillName: skill.name,
-          skillMd: rawContent,
-          harness,
-          deployments: skill.deployments.map((d) => `${d.agent} · ${d.scope}`),
-        }),
-        cwd: dir,
-        skill_name: skill.name,
-        write_access: "read_only",
-      });
-    } catch (err) {
-      addToast({
-        type: "error",
-        title: "Couldn't start the audit",
-        message: err instanceof Error ? err.message : "Unknown error",
-      });
-    }
-  };
-
-  /**
-   * Validates a "Test" run's target inputs, then hands off to
-   * `runSkillTestFlow` for the actual prepare/run/judge/diff/record
-   * sequence - see that function for why `opTokenRef` gets threaded through.
-   */
-  const handleRunTest = async (params: SkillTestRunParams) => {
-    if (state.status === "running") return;
-    const token = opTokenRef.current;
-    const sourcePath = sourceFolderPath(skill);
-    if (!sourcePath) {
-      addToast({
-        type: "error",
-        title: "Can't run the test",
-        message: "This skill has no folder on disk to run against.",
-      });
-      return;
-    }
-
-    const otherOwn = ownSkillsView(snapshot?.skills ?? []).filter((s) => s.name !== skill.name);
-    const extraSkills: [string, string][] = params.extraSkillNames
-      .map((name): [string, string] | undefined => {
-        const folder = otherOwn.find((s) => s.name === name)?.deployments[0]?.path;
-        return folder ? [name, folder] : undefined;
-      })
-      .filter((entry): entry is [string, string] => entry !== undefined);
-
-    activeTargetRef.current = null;
-    dispatchRunSession({ type: "start_test" });
-
-    // SAFETY: `harness` only ever holds a value from `HarnessSegmentedControl`,
-    // which offers exactly the four `HarnessId` agents.
-    await runSkillTestFlow({
-      skill,
-      params,
-      sourcePath,
-      extraSkills,
-      harness: harness as HarnessId,
-      token,
-      opTokenRef,
-      setActiveTarget,
-      dispatchRunSession,
-      run,
-      waitForFinish,
-      judge,
-      addToast,
-    });
-  };
+  const { handleRun, handleAudit, handleRunTest } = useAssistantActions({
+    skill,
+    rawContent,
+    skillMdPath,
+    isPluginManaged,
+    harness,
+    prompt,
+    state,
+    run,
+    waitForFinish,
+    judge,
+    opTokenRef,
+    ensureScratchDir,
+    activeTargetRef,
+    setActiveTarget,
+    dispatchRunSession,
+    auditStartContentRef,
+    recordedRunIdRef,
+    otherOwnSkills,
+    addToast,
+  });
 
   // Once an audit run finishes, pull the proposed rewrite (if any) out of its
   // final text and diff it against the file as it was when the run started.
@@ -1008,7 +1083,6 @@ export function SkillAssistantPanel({
   const isRunning = state.status === "running" || isPreparing;
   const hasTranscript = state.events.length > 0;
   const canAudit = rawContent !== null && !isPluginManaged && !isRunning;
-  const otherOwnSkills = ownSkillsView(snapshot?.skills ?? []).filter((s) => s.name !== skill.name);
   const candidateProjects = testCandidateProjects(skill, snapshot?.projects ?? []);
   const isTestRunning =
     testPhase === "preparing" || testPhase === "running" || testPhase === "judging";

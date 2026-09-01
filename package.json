@@ -20,10 +20,11 @@
     "format:check": "oxfmt --check .",
     "fmt:rust": "cd apps/desktop/src-tauri && cargo fmt",
     "test": "npm run test -w skill-studio && npm run test -w @skill-studio/lib",
-    "check": "npm run typecheck && npm run lint && npm run format:check && npm run test && cd apps/desktop/src-tauri && cargo fmt --check && cargo clippy -- -D warnings && cargo test",
-    "doctor": "react-doctor apps/desktop -y --no-score --no-supply-chain"
+    "check": "npm run typecheck && npm run lint && npm run format:check && npm run doctor && npm run test && cd apps/desktop/src-tauri && cargo fmt --check && cargo clippy -- -D warnings && cargo test",
+    "doctor": "react-doctor apps/desktop -y --no-score --no-supply-chain --blocking warning"
   },
   "devDependencies": {
+    "@oxlint/plugins": "^1.80.0",
     "react-doctor": "^0.9.12"
   },
   "engines": {

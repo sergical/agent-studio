@@ -2,7 +2,7 @@
 // SkillStore - Main skill discovery and management view
 // ============================================================================
 
-import { useState, useEffect, useCallback, useMemo, useRef } from "react";
+import { useState, useEffect, useCallback, useRef } from "react";
 import { SkillSearchBar } from "./SkillSearchBar";
 import { SkillBrowser } from "./SkillBrowser";
 import { SkillDetailPanel } from "./SkillDetailPanel";
@@ -145,7 +145,10 @@ function useSkillStoreData(
   // install/remove) can't leave this stale behind a second effect.
   const [rawResults, setRawResults] = useState<SkillSearchResult[]>([]);
   const [installedSkills, setInstalledSkills] = useState<InstalledSkill[]>([]);
-  const [isLoading, setIsLoading] = useState(false);
+  // Starts true: the mount effect below fetches immediately, so the first
+  // render already reflects that instead of flipping it on synchronously
+  // inside the effect (which the compiler flags as an avoidable extra render).
+  const [isLoading, setIsLoading] = useState(true);
   const [isLoadingMore, setIsLoadingMore] = useState(false);
   const [hasMore, setHasMore] = useState(false);
   // Never read during render - only `loadMore`'s paging math needs it, so a
@@ -154,8 +157,11 @@ function useSkillStoreData(
 
   // A Promise chain, not a try/finally statement, so the compiler can still
   // optimize this component (it doesn't support `finally` clauses yet).
+  // Kept memoized (not stripped like the other handlers below): the mount
+  // effect further down depends on this callback's identity to run exactly
+  // once instead of on every render.
+  // react-doctor-disable-next-line react-doctor/react-compiler-no-manual-memoization -- the mount effect below depends on this callback's identity to run exactly once
   const loadInitialData = useCallback(() => {
-    setIsLoading(true);
     pageRef.current = 0;
     // Load both in parallel
     return Promise.all([getInstalledSkills(projects), getPopularSkills(0, LIMIT)])
@@ -176,7 +182,7 @@ function useSkillStoreData(
       });
   }, [projects, searchQuery, addToast]);
 
-  const loadInstalledSkills = useCallback(async () => {
+  const loadInstalledSkills = async () => {
     try {
       const installed = await getInstalledSkills(projects);
       setInstalledSkills(installed);
@@ -187,7 +193,7 @@ function useSkillStoreData(
         message: err instanceof Error ? err.message : "Unknown error",
       });
     }
-  }, [projects, addToast]);
+  };
 
   // Load installed and popular skills on mount
   useEffect(() => {
@@ -197,63 +203,57 @@ function useSkillStoreData(
   // Every result merged with the current installed status - recomputed
   // whenever either input changes, so an install/remove refreshing
   // `installedSkills` shows up here with no second effect to keep in sync.
-  const searchResultsWithStatus = useMemo(
-    () => mergeWithInstalledStatus(rawResults, installedSkills),
-    [rawResults, installedSkills],
-  );
+  const searchResultsWithStatus = mergeWithInstalledStatus(rawResults, installedSkills);
 
   // A Promise chain, not a try/finally statement, so the compiler can still
   // optimize this component (it doesn't support `finally` clauses yet).
-  const handleSearch = useCallback(
-    (query: string) => {
-      setSearchQuery(query);
-      pageRef.current = 0;
+  const handleSearch = (query: string) => {
+    setSearchQuery(query);
+    pageRef.current = 0;
 
-      if (!query.trim() || query.length < 2) {
-        // Show popular skills when no search query
-        setIsLoading(true);
-        return getPopularSkills(0, LIMIT)
-          .then((response) => {
-            setRawResults(response.skills);
-            setHasMore(response.has_more);
-          })
-          .catch((err) => {
-            addToast({
-              type: "error",
-              title: "Failed to Load Skills",
-              message: err instanceof Error ? err.message : "Failed to load popular skills",
-            });
-          })
-          .finally(() => {
-            setIsLoading(false);
-          });
-      }
-
+    if (!query.trim() || query.length < 2) {
+      // Show popular skills when no search query
       setIsLoading(true);
-      // The v1 search endpoint has no pagination - a single call returns
-      // everything up to LIMIT.
-      return searchSkills(query, LIMIT)
+      return getPopularSkills(0, LIMIT)
         .then((response) => {
           setRawResults(response.skills);
-          setHasMore(false);
+          setHasMore(response.has_more);
         })
         .catch((err) => {
           addToast({
             type: "error",
-            title: "Search Failed",
-            message: err instanceof Error ? err.message : "Failed to search skills",
+            title: "Failed to Load Skills",
+            message: err instanceof Error ? err.message : "Failed to load popular skills",
           });
         })
         .finally(() => {
           setIsLoading(false);
         });
-    },
-    [addToast],
-  );
+    }
+
+    setIsLoading(true);
+    // The v1 search endpoint has no pagination - a single call returns
+    // everything up to LIMIT.
+    return searchSkills(query, LIMIT)
+      .then((response) => {
+        setRawResults(response.skills);
+        setHasMore(false);
+      })
+      .catch((err) => {
+        addToast({
+          type: "error",
+          title: "Search Failed",
+          message: err instanceof Error ? err.message : "Failed to search skills",
+        });
+      })
+      .finally(() => {
+        setIsLoading(false);
+      });
+  };
 
   // A Promise chain, not a try/finally statement, so the compiler can still
   // optimize this component (it doesn't support `finally` clauses yet).
-  const loadMore = useCallback(() => {
+  const loadMore = () => {
     // hasMore is always false while a search is active (the v1 search API
     // returns everything up to LIMIT in one shot), so this only ever pages
     // through popular skills.
@@ -278,7 +278,7 @@ function useSkillStoreData(
       .finally(() => {
         setIsLoadingMore(false);
       });
-  }, [isLoadingMore, hasMore, addToast]);
+  };
 
   return {
     searchQuery,
@@ -324,38 +324,39 @@ export function SkillStore({ compact = false }: SkillStoreProps = {}) {
     loadInstalledSkills,
   } = useSkillStoreData(projects, addToast);
 
-  const handleInstallStart = useCallback((skillName: string) => {
+  const handleInstallStart = (skillName: string) => {
     setInstallProgress({
       isInstalling: true,
       skillName,
       stage: "starting",
       message: "Starting installation…",
     });
-  }, []);
+  };
 
-  const handleInstallComplete = useCallback(
-    (result: { success: boolean; error?: string; skillName?: string }) => {
-      if (result.success) {
-        addToast({
-          type: "success",
-          title: "Skill Installed",
-          message: `Successfully installed ${result.skillName || "skill"}`,
-        });
-        // Refresh installed skills - `searchResultsWithStatus` re-derives from it.
-        loadInstalledSkills();
-      } else {
-        addToast({
-          type: "error",
-          title: "Installation Failed",
-          message: result.error || "Unknown error",
-        });
-      }
-      setInstallProgress(null);
-    },
-    [addToast, loadInstalledSkills],
-  );
+  const handleInstallComplete = (result: {
+    success: boolean;
+    error?: string;
+    skillName?: string;
+  }) => {
+    if (result.success) {
+      addToast({
+        type: "success",
+        title: "Skill Installed",
+        message: `Successfully installed ${result.skillName || "skill"}`,
+      });
+      // Refresh installed skills - `searchResultsWithStatus` re-derives from it.
+      loadInstalledSkills();
+    } else {
+      addToast({
+        type: "error",
+        title: "Installation Failed",
+        message: result.error || "Unknown error",
+      });
+    }
+    setInstallProgress(null);
+  };
 
-  const handleRemoveComplete = useCallback(() => {
+  const handleRemoveComplete = () => {
     addToast({
       type: "success",
       title: "Skill Removed",
@@ -364,7 +365,7 @@ export function SkillStore({ compact = false }: SkillStoreProps = {}) {
     // Refresh installed skills - `installedSkillsWithStatus`/`searchResultsWithStatus` re-derive from it.
     loadInstalledSkills();
     setSelectedSkillName(null);
-  }, [addToast, loadInstalledSkills]);
+  };
 
   // Get installed skills with full status for Installed tab
   const installedSkillsWithStatus: SkillWithStatus[] = installedSkills.map((skill) => {
@@ -436,10 +437,7 @@ export function SkillStore({ compact = false }: SkillStoreProps = {}) {
             skills={searchResultsWithStatus}
             selectedSkill={selectedSkill}
             onSelectSkill={(skill) => setSelectedSkillName(skill.name)}
-            isLoading={isLoading}
-            isLoadingMore={isLoadingMore}
-            hasMore={hasMore}
-            onLoadMore={loadMore}
+            mode={{ kind: "browse", isLoading, isLoadingMore, hasMore, onLoadMore: loadMore }}
             emptyMessage={
               searchQuery ? "No skills found matching your search" : "Loading popular skills…"
             }
@@ -449,12 +447,8 @@ export function SkillStore({ compact = false }: SkillStoreProps = {}) {
             skills={installedSkillsWithStatus}
             selectedSkill={selectedSkill}
             onSelectSkill={(skill) => setSelectedSkillName(skill.name)}
-            isLoading={false}
-            isLoadingMore={false}
-            hasMore={false}
-            onLoadMore={() => {}}
+            mode={{ kind: "installed" }}
             emptyMessage="No skills installed yet"
-            hideInstalledIndicator
           />
         )}
 

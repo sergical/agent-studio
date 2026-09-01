@@ -55,7 +55,12 @@ export function SkillTestForm({
 }: SkillTestFormProps) {
   const [prompt, setPrompt] = useState("");
   const [targetKind, setTargetKind] = useState<SkillRunTargetKind>("scratch");
-  const [projectPath, setProjectPath] = useState<string | undefined>(candidateProjects[0]);
+  // `undefined` means "no explicit pick yet" - the effective value below
+  // falls back to the first candidate, so a `candidateProjects` change (a
+  // different skill/deployment) is never masked by a stale copy, while a
+  // user pick still sticks once made.
+  const [projectPathOverride, setProjectPathOverride] = useState<string | undefined>(undefined);
+  const projectPath = projectPathOverride ?? candidateProjects[0];
   const [extraQuery, setExtraQuery] = useState("");
   const [extraSkillNames, setExtraSkillNames] = useState<string[]>([]);
   const [fixture, setFixture] = useState("");
@@ -134,7 +139,7 @@ export function SkillTestForm({
               className="rounded-sm border border-border bg-bg-tertiary px-2 py-1.5 text-small text-text-primary"
               aria-label="Project"
               value={projectPath ?? ""}
-              onChange={(e) => setProjectPath(e.target.value || undefined)}
+              onChange={(e) => setProjectPathOverride(e.target.value || undefined)}
               disabled={isRunning}
             >
               {candidateProjects.map((path) => (

@@ -83,6 +83,7 @@ export function useSkillAgentRun() {
   // updater would need to run `resolveFinish` (a side effect) from inside
   // itself to settle `waitForFinish` off the very state it just computed.
   const stateRef = useRef<SkillAgentRunState>(IDLE_STATE);
+  // react-doctor-disable-next-line react-doctor/react-compiler-no-manual-memoization -- the mount effect below depends on this callback's identity to subscribe once for the component's life
   const setBoth = useCallback((next: SkillAgentRunState) => {
     stateRef.current = next;
     setState(next);

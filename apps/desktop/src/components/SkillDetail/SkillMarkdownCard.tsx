@@ -11,6 +11,16 @@ import { SelectControl } from "../ui/SelectControl";
 import { SkillMarkdown } from "./SkillMarkdown";
 import { SkillMarkdownEditor } from "./SkillMarkdownEditor";
 
+/**
+ * Whether the card is showing SKILL.md or editing it, and (while editing)
+ * the draft's dirty/saving status - one variant instead of three separate
+ * `isEditing`/`isEditorDirty`/`isSaving` booleans, since a dirty or saving
+ * draft only ever means anything while `kind` is `"editing"`.
+ */
+export type SkillMarkdownEditState =
+  | { kind: "viewing" }
+  | { kind: "editing"; isDirty: boolean; isSaving: boolean };
+
 interface SkillMarkdownCardProps {
   skill: InstalledSkill;
   isPluginManaged: boolean;
@@ -25,10 +35,8 @@ interface SkillMarkdownCardProps {
   isLoadingContent: boolean;
   loadError: string | null;
   onRetry: () => void;
-  isEditing: boolean;
-  isEditorDirty: boolean;
+  editState: SkillMarkdownEditState;
   onStartEdit: () => void;
-  isSaving: boolean;
   saveLabel: string;
   onSave: (content: string) => void;
   onCancelEdit: () => void;
@@ -65,15 +73,14 @@ export function SkillMarkdownCard({
   isLoadingContent,
   loadError,
   onRetry,
-  isEditing,
-  isEditorDirty,
+  editState,
   onStartEdit,
-  isSaving,
   saveLabel,
   onSave,
   onCancelEdit,
   onDirtyChange,
 }: SkillMarkdownCardProps) {
+  const isEditing = editState.kind === "editing";
   const canEdit = !isEditing && !isPluginManaged && !deploymentUnresolved && rawContent !== null;
 
   return (
@@ -101,8 +108,10 @@ export function SkillMarkdownCard({
                 {deploymentLabel(deployment)}
               </span>
             ))}
-          {isEditing
-            ? isEditorDirty && <span className="text-caption text-warning">Unsaved changes</span>
+          {editState.kind === "editing"
+            ? editState.isDirty && (
+                <span className="text-caption text-warning">Unsaved changes</span>
+              )
             : canEdit && (
                 <Button variant="outline" size="sm" onClick={onStartEdit}>
                   Edit
@@ -133,10 +142,10 @@ export function SkillMarkdownCard({
         <p className="m-0 p-3 text-body leading-[1.5] text-text-secondary">
           Managed by the {pluginLabelForSkill(skill) ?? "harness"} plugin.
         </p>
-      ) : isEditing && rawContent !== null ? (
+      ) : editState.kind === "editing" && rawContent !== null ? (
         <SkillMarkdownEditor
           initialContent={rawContent}
-          isSaving={isSaving}
+          isSaving={editState.isSaving}
           saveLabel={saveLabel}
           onSave={onSave}
           onCancel={onCancelEdit}

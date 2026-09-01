@@ -446,61 +446,54 @@ function SharedDeploymentGroup({
   };
 
   const toggleExpanded = () => setExpanded((open) => !open);
-  const headerContent = (
-    <>
-      <span className="flex min-w-0 items-center gap-2 text-body text-text-primary">
-        <ChevronRight
-          size={14}
-          className={`shrink-0 text-text-tertiary transition-transform ${expanded ? "rotate-90" : ""}`}
-        />
-        <FolderOpen size={16} className="shrink-0" />
-        <span className="shrink-0">Shared folder</span>
-      </span>
-      <TooltipControl content={group.shared.path}>
-        <span
-          dir="rtl"
-          className="overflow-hidden text-left text-ellipsis whitespace-nowrap font-mono text-small text-text-tertiary"
-        >
-          <span dir="ltr" className="[unicode-bidi:isolate]">
-            {homeRelativePath(group.shared.path)}
-          </span>
-        </span>
-      </TooltipControl>
-      <span className="flex shrink-0 items-center gap-3 justify-self-end">
-        <span className="text-small tabular-nums text-text-tertiary">
-          {`used by ${harnessCount} harness${harnessCount === 1 ? "" : "es"}`}
-        </span>
-        <button
-          type="button"
-          className="cursor-pointer border-0 bg-none text-small text-accent hover:underline"
-          onClick={(e) => {
-            e.stopPropagation();
-            void handleDistribute();
-          }}
-        >
-          Move out of shared…
-        </button>
-      </span>
-    </>
-  );
   const gridClass =
     "grid min-h-11 w-full grid-cols-[minmax(0,1fr)_minmax(0,1fr)_auto] items-center gap-3 px-2 py-1.5";
   return (
     <div className="border-b border-border-subtle last:border-b-0">
-      <div
-        className={`${gridClass} cursor-pointer rounded-sm text-left transition-colors hover:bg-bg-hover`}
-        role="button"
-        tabIndex={0}
-        aria-expanded={expanded}
-        onClick={toggleExpanded}
-        onKeyDown={(e) => {
-          if (e.key === "Enter" || e.key === " ") {
-            e.preventDefault();
-            toggleExpanded();
-          }
-        }}
-      >
-        {headerContent}
+      {/* A real <button> can't contain the "Move out of shared…" button below
+          it (nested interactive controls are invalid HTML), so the toggle
+          only spans the label/path columns; the count and its button sit in
+          the third grid column, outside the button. */}
+      <div className={`${gridClass} rounded-sm transition-colors hover:bg-bg-hover`}>
+        <button
+          type="button"
+          className="col-span-2 flex min-w-0 cursor-pointer items-center gap-3 border-0 bg-none p-0 text-left"
+          aria-expanded={expanded}
+          onClick={toggleExpanded}
+        >
+          <span className="flex min-w-0 items-center gap-2 text-body text-text-primary">
+            <ChevronRight
+              size={14}
+              className={`shrink-0 text-text-tertiary transition-transform ${expanded ? "rotate-90" : ""}`}
+            />
+            <FolderOpen size={16} className="shrink-0" />
+            <span className="shrink-0">Shared folder</span>
+          </span>
+          <TooltipControl content={group.shared.path}>
+            <span
+              dir="rtl"
+              className="overflow-hidden text-left text-ellipsis whitespace-nowrap font-mono text-small text-text-tertiary"
+            >
+              <span dir="ltr" className="[unicode-bidi:isolate]">
+                {homeRelativePath(group.shared.path)}
+              </span>
+            </span>
+          </TooltipControl>
+        </button>
+        <span className="flex shrink-0 items-center gap-3 justify-self-end">
+          <span className="text-small tabular-nums text-text-tertiary">
+            {`used by ${harnessCount} harness${harnessCount === 1 ? "" : "es"}`}
+          </span>
+          <button
+            type="button"
+            className="cursor-pointer border-0 bg-none text-small text-accent hover:underline"
+            onClick={() => {
+              void handleDistribute();
+            }}
+          >
+            Move out of shared…
+          </button>
+        </span>
       </div>
       {expanded && (
         <div className="flex flex-col pl-[22px]">

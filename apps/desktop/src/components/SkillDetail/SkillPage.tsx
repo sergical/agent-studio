@@ -37,6 +37,136 @@ interface SkillPageProps {
   from: ActiveView;
 }
 
+interface UseSkillMdContentParams {
+  skill: InstalledSkill | null;
+  skillMdPath: string | undefined;
+  deployment: { path: string } | undefined;
+  addToast: ReturnType<typeof useAppStore.getState>["addToast"];
+}
+
+/**
+ * Owns SKILL.md's raw content, its loading/error/saving state, and the fork-
+ * before-save flow - all keyed on `skillMdPath`. Pulled out of `SkillPage`
+ * since every piece here (state, the load effect, save, retry, apply) closes
+ * over the same `currentSkillMdPathRef` staleness check.
+ */
+function useSkillMdContent({ skill, skillMdPath, deployment, addToast }: UseSkillMdContentParams) {
+  const [rawContent, setRawContent] = useState<string | null>(null);
+  const [isLoadingContent, setIsLoadingContent] = useState(false);
+  const [loadError, setLoadError] = useState<string | null>(null);
+  const [isSaving, setIsSaving] = useState(false);
+
+  /** The SKILL.md path the page currently shows - every async read or apply checks against it so a late result for a previous skill is dropped instead of landing on this one. */
+  const currentSkillMdPathRef = useRef<string | undefined>(undefined);
+
+  /** Reads SKILL.md at `path`; `showSkeleton` swaps the card for the loading skeleton (initial load and retry), a silent reload keeps the current content up until the read lands. */
+  const loadContent = useCallback((path: string, showSkeleton: boolean) => {
+    setLoadError(null);
+    if (showSkeleton) setIsLoadingContent(true);
+    const isCurrent = () => currentSkillMdPathRef.current === path;
+    readInstalledSkillMd(path)
+      .then((content) => {
+        if (isCurrent()) setRawContent(content);
+      })
+      .catch((err) => {
+        if (isCurrent()) setLoadError(err instanceof Error ? err.message : "Unknown error");
+      })
+      .finally(() => {
+        if (isCurrent()) setIsLoadingContent(false);
+      });
+  }, []);
+
+  /** Set when the path change is a copy switch on the same skill - the old copy's content stays up (no skeleton), so the card keeps its height and the page doesn't jump. */
+  const lastLoadedSkillRef = useRef<string | undefined>(undefined);
+
+  useEffect(() => {
+    // A path change (including to/from `undefined`) can never carry over a
+    // stale draft or edit mode from a different copy of the skill.
+    const isCopySwitch = skill?.name !== undefined && lastLoadedSkillRef.current === skill.name;
+    lastLoadedSkillRef.current = skill?.name;
+    currentSkillMdPathRef.current = skillMdPath;
+    // react-doctor-disable-next-line react-hooks-js/set-state-in-effect -- syncs an async load: skillMdPath changing kicks off loadContent below, an external Tauri read
+    if (!isCopySwitch) setRawContent(null);
+    // react-doctor-disable-next-line react-hooks-js/set-state-in-effect -- resets load state before the same external load below fires for the new path
+    setIsLoadingContent(false);
+    // react-doctor-disable-next-line react-hooks-js/set-state-in-effect -- resets load state before the same external load below fires for the new path
+    setLoadError(null);
+    if (skillMdPath) loadContent(skillMdPath, !isCopySwitch);
+  }, [skill?.name, skillMdPath, loadContent]);
+
+  // A dotagents/skills.sh-managed skill would have its edits overwritten by
+  // the next sync/update - saving forks it first so the edit sticks.
+  const needsForkToSave = skill?.source_kind === "dotagents" || skill?.source_kind === "skills-sh";
+
+  // A Promise chain, not a try/finally statement, so the compiler can still
+  // optimize this component (it doesn't support `finally` clauses yet).
+  const handleSave = (content: string, onSaved: () => void) => {
+    // Ignore a duplicate save request (e.g. Cmd+S fired while the Save
+    // button's own click is already in flight).
+    if (!skill || !skillMdPath || isSaving) return;
+    setIsSaving(true);
+
+    // A fork failure already shows its own toast and must skip the write -
+    // this flag lets the generic catch below tell that case apart from a
+    // write failure without a second, redundant toast.
+    let forkFailed = false;
+    // `skillMdPath` is only set once `deployment` resolves (see above), so
+    // it's non-null here.
+    const forkIfNeeded = needsForkToSave
+      ? forkSkill(skill.name, deployment!.path).catch((err) => {
+          forkFailed = true;
+          addToast({
+            type: "error",
+            title: "Couldn't fork before saving",
+            message: err instanceof Error ? err.message : "Unknown error",
+          });
+        })
+      : Promise.resolve();
+
+    return forkIfNeeded
+      .then(() => {
+        if (forkFailed) return;
+        return writeInstalledSkillMd(skillMdPath, content).then(() => {
+          setRawContent(content);
+          onSaved();
+        });
+      })
+      .catch((err) => {
+        addToast({
+          type: "error",
+          title: "Couldn't save SKILL.md",
+          message: err instanceof Error ? err.message : "Unknown error",
+        });
+      })
+      .finally(() => {
+        setIsSaving(false);
+      });
+  };
+
+  const handleRetryLoad = () => {
+    if (skillMdPath) loadContent(skillMdPath, true);
+  };
+
+  /** Applies assistant-written content only while the page still shows the path it was written to. */
+  const handleApplied = (content: string) => {
+    if (skillMdPath !== undefined && currentSkillMdPathRef.current === skillMdPath) {
+      setRawContent(content);
+    }
+  };
+
+  return {
+    rawContent,
+    isLoadingContent,
+    loadError,
+    isSaving,
+    needsForkToSave,
+    loadContent,
+    handleSave,
+    handleRetryLoad,
+    handleApplied,
+  };
+}
+
 /**
  * Full-page view of an installed skill: `InstalledSkillHeader` (which owns
  * the back button, name, primary action, assistant trigger, overflow menu,
@@ -74,6 +204,7 @@ export function SkillPage({
   // "storing information from previous renders" pattern, since it's a reset
   // keyed off an identity change rather than something to synchronize.
   if (compareSkillNameRef.current !== skill?.name) {
+    // react-doctor-disable-next-line react-doctor/no-ref-current-in-render -- adjust-during-render, per React docs "storing information from previous renders"
     compareSkillNameRef.current = skill?.name;
     if (isCompareOpen) setIsCompareOpen(false);
   }
@@ -83,6 +214,7 @@ export function SkillPage({
   // this page (without a fresh compare request) never reopens it.
   useEffect(() => {
     if (activeView.kind === "skill" && activeView.intent === "compare") {
+      // react-doctor-disable-next-line react-hooks-js/set-state-in-effect -- syncs from an external source (the app's navigation intent), not a value derivable at render
       setIsCompareOpen(true);
       clearSkillIntent();
     }
@@ -121,6 +253,7 @@ export function SkillPage({
   /** The skill the history drawer was last shown for, so a skill switch closes it instead of carrying it over. */
   const historySkillNameRef = useRef<string | undefined>(skill?.name);
   if (historySkillNameRef.current !== skill?.name) {
+    // react-doctor-disable-next-line react-doctor/no-ref-current-in-render -- adjust-during-render, per React docs "storing information from previous renders"
     historySkillNameRef.current = skill?.name;
     if (isHistoryOpen) setIsHistoryOpen(false);
   }
@@ -145,107 +278,46 @@ export function SkillPage({
     deployment && !isDeploymentBroken ? skillMdPathForDeployment(deployment) : undefined;
   const isPluginManaged = Boolean(deployment?.plugin);
 
-  const [rawContent, setRawContent] = useState<string | null>(null);
-  const [isLoadingContent, setIsLoadingContent] = useState(false);
-  const [loadError, setLoadError] = useState<string | null>(null);
-  const [isSaving, setIsSaving] = useState(false);
+  const {
+    rawContent,
+    isLoadingContent,
+    loadError,
+    isSaving,
+    needsForkToSave,
+    loadContent,
+    handleSave: saveContent,
+    handleRetryLoad,
+    handleApplied,
+  } = useSkillMdContent({ skill, skillMdPath, deployment: deployment || undefined, addToast });
 
-  /** The SKILL.md path the page currently shows - every async read or apply checks against it so a late result for a previous skill is dropped instead of landing on this one. */
-  const currentSkillMdPathRef = useRef<string | undefined>(undefined);
+  // A skill switch can't carry over a draft or edit mode from a different
+  // skill - adjusted during render (same single-ref pattern as
+  // `compareSkillNameRef`/`historySkillNameRef` above), keyed off the same
+  // identity `useSkillMdContent`'s own reset uses.
+  const editSkillNameRef = useRef<string | undefined>(skill?.name);
+  if (editSkillNameRef.current !== skill?.name) {
+    // react-doctor-disable-next-line react-doctor/no-ref-current-in-render -- adjust-during-render, per React docs "storing information from previous renders"
+    editSkillNameRef.current = skill?.name;
+    if (isEditing) setIsEditing(false);
+    if (isEditorDirty) setIsEditorDirty(false);
+  }
 
-  /** Reads SKILL.md at `path`; `showSkeleton` swaps the card for the loading skeleton (initial load and retry), a silent reload keeps the current content up until the read lands. */
-  const loadContent = useCallback((path: string, showSkeleton: boolean) => {
-    setLoadError(null);
-    if (showSkeleton) setIsLoadingContent(true);
-    const isCurrent = () => currentSkillMdPathRef.current === path;
-    readInstalledSkillMd(path)
-      .then((content) => {
-        if (isCurrent()) setRawContent(content);
-      })
-      .catch((err) => {
-        if (isCurrent()) setLoadError(err instanceof Error ? err.message : "Unknown error");
-      })
-      .finally(() => {
-        if (isCurrent()) setIsLoadingContent(false);
-      });
-  }, []);
+  // A deployment/path change (same skill, different copy) can't carry over a
+  // draft or edit mode either - same adjust-during-render idiom, keyed off
+  // the path instead of the skill name.
+  const editSkillMdPathRef = useRef<string | undefined>(skillMdPath);
+  if (editSkillMdPathRef.current !== skillMdPath) {
+    // react-doctor-disable-next-line react-doctor/no-ref-current-in-render -- adjust-during-render, per React docs "storing information from previous renders"
+    editSkillMdPathRef.current = skillMdPath;
+    if (isEditing) setIsEditing(false);
+    if (isEditorDirty) setIsEditorDirty(false);
+  }
 
-  /** Set when the path change is a copy switch on the same skill - the old copy's content stays up (no skeleton), so the card keeps its height and the page doesn't jump. */
-  const lastLoadedSkillRef = useRef<string | undefined>(undefined);
-
-  useEffect(() => {
-    // A path change (including to/from `undefined`) can never carry over a
-    // stale draft or edit mode from a different copy of the skill.
-    const isCopySwitch = skill?.name !== undefined && lastLoadedSkillRef.current === skill.name;
-    lastLoadedSkillRef.current = skill?.name;
-    currentSkillMdPathRef.current = skillMdPath;
-    if (!isCopySwitch) setRawContent(null);
-    setIsEditing(false);
-    setIsEditorDirty(false);
-    setIsLoadingContent(false);
-    setLoadError(null);
-    if (skillMdPath) loadContent(skillMdPath, !isCopySwitch);
-  }, [skill?.name, skillMdPath, loadContent]);
-
-  // A dotagents/skills.sh-managed skill would have its edits overwritten by
-  // the next sync/update - saving forks it first so the edit sticks.
-  const needsForkToSave = skill?.source_kind === "dotagents" || skill?.source_kind === "skills-sh";
-
-  // A Promise chain, not a try/finally statement, so the compiler can still
-  // optimize this component (it doesn't support `finally` clauses yet).
   const handleSave = (content: string) => {
-    // Ignore a duplicate save request (e.g. Cmd+S fired while the Save
-    // button's own click is already in flight).
-    if (!skill || !skillMdPath || isSaving) return;
-    setIsSaving(true);
-
-    // A fork failure already shows its own toast and must skip the write -
-    // this flag lets the generic catch below tell that case apart from a
-    // write failure without a second, redundant toast.
-    let forkFailed = false;
-    // `skillMdPath` is only set once `deployment` resolves (see above), so
-    // it's non-null here.
-    const forkIfNeeded = needsForkToSave
-      ? forkSkill(skill.name, deployment!.path).catch((err) => {
-          forkFailed = true;
-          addToast({
-            type: "error",
-            title: "Couldn't fork before saving",
-            message: err instanceof Error ? err.message : "Unknown error",
-          });
-        })
-      : Promise.resolve();
-
-    return forkIfNeeded
-      .then(() => {
-        if (forkFailed) return;
-        return writeInstalledSkillMd(skillMdPath, content).then(() => {
-          setRawContent(content);
-          setIsEditing(false);
-          setIsEditorDirty(false);
-        });
-      })
-      .catch((err) => {
-        addToast({
-          type: "error",
-          title: "Couldn't save SKILL.md",
-          message: err instanceof Error ? err.message : "Unknown error",
-        });
-      })
-      .finally(() => {
-        setIsSaving(false);
-      });
-  };
-
-  const handleRetryLoad = () => {
-    if (skillMdPath) loadContent(skillMdPath, true);
-  };
-
-  /** Applies assistant-written content only while the page still shows the path it was written to. */
-  const handleApplied = (content: string) => {
-    if (skillMdPath !== undefined && currentSkillMdPathRef.current === skillMdPath) {
-      setRawContent(content);
-    }
+    saveContent(content, () => {
+      setIsEditing(false);
+      setIsEditorDirty(false);
+    });
   };
 
   if (!skill) {
@@ -306,10 +378,12 @@ export function SkillPage({
             isLoadingContent={isLoadingContent}
             loadError={loadError}
             onRetry={handleRetryLoad}
-            isEditing={isEditing}
-            isEditorDirty={isEditorDirty}
+            editState={
+              isEditing
+                ? { kind: "editing", isDirty: isEditorDirty, isSaving }
+                : { kind: "viewing" }
+            }
             onStartEdit={() => setIsEditing(true)}
-            isSaving={isSaving}
             saveLabel={needsForkToSave ? "Fork and save" : "Save"}
             onSave={handleSave}
             onCancelEdit={() => {

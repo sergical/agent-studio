@@ -7,29 +7,42 @@ import { Button } from "@skill-studio/ui";
 import type { SkillWithStatus } from "@skill-studio/lib";
 import { SOURCE_KIND_LABELS } from "@skill-studio/lib";
 
+/**
+ * The Browse tab pages through skills.sh and shows an install indicator per
+ * card; the Installed tab always shows everything it has (no pagination) and
+ * hides that indicator, since every card there is already installed. One
+ * discriminated prop keeps those two states from combining into invalid
+ * on/off pairs (e.g. `isLoadingMore` true while `hideInstalledIndicator` is
+ * also true) that no call site ever actually produces.
+ */
+export type SkillBrowserMode =
+  | {
+      kind: "browse";
+      isLoading: boolean;
+      isLoadingMore: boolean;
+      hasMore: boolean;
+      onLoadMore: () => void;
+    }
+  | { kind: "installed" };
+
 interface SkillBrowserProps {
   skills: SkillWithStatus[];
   selectedSkill: SkillWithStatus | null;
   onSelectSkill: (skill: SkillWithStatus) => void;
-  isLoading: boolean;
-  isLoadingMore: boolean;
-  hasMore: boolean;
-  onLoadMore: () => void;
   emptyMessage: string;
-  hideInstalledIndicator?: boolean;
+  mode: SkillBrowserMode;
 }
 
 export function SkillBrowser({
   skills,
   selectedSkill,
   onSelectSkill,
-  isLoading,
-  isLoadingMore,
-  hasMore,
-  onLoadMore,
   emptyMessage,
-  hideInstalledIndicator = false,
+  mode,
 }: SkillBrowserProps) {
+  const isLoading = mode.kind === "browse" && mode.isLoading;
+  const hideInstalledIndicator = mode.kind === "installed";
+
   if (isLoading && skills.length === 0) {
     return (
       <div className="flex h-[200px] flex-col items-center justify-center text-pretty text-body text-text-tertiary">
@@ -60,15 +73,15 @@ export function SkillBrowser({
           />
         ))}
       </div>
-      {hasMore && (
+      {mode.kind === "browse" && mode.hasMore && (
         <div className="flex justify-center pt-6 pb-2">
           <Button
             variant="outline"
             className="h-auto rounded-md border-border bg-bg-secondary px-6 py-2.5 text-body font-medium text-text-secondary hover:border-border-focus hover:bg-bg-tertiary hover:text-text-primary"
-            onClick={onLoadMore}
-            disabled={isLoadingMore}
+            onClick={mode.onLoadMore}
+            disabled={mode.isLoadingMore}
           >
-            {isLoadingMore ? (
+            {mode.isLoadingMore ? (
               <>
                 <span className="size-3.5 animate-spin rounded-full border-2 border-border border-t-accent" />
                 Loading…
