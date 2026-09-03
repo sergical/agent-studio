@@ -1,5 +1,5 @@
 const logo = {
-  src: "./variants/skill-studio-icon-imagegen-v11-sparkles-centered-transparent.png",
+  src: "../../public/skill-studio-logo.png",
   alt: "Skill Studio logo",
 };
 
