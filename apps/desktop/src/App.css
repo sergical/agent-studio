@@ -31,7 +31,7 @@
   --color-border: oklch(0.271 0.009 285.77);
   --color-border-subtle: oklch(0.237 0.008 285.806);
   --color-border-strong: oklch(0.352 0.014 285.67);
-  --color-border-focus: oklch(0.668 0.176 293.133 / 0.5);
+  --color-border-focus: oklch(0.55 0.014 285.67);
 
   /* Text hierarchy */
   --color-text-primary: oklch(0.967 0.001 286.375);
@@ -80,10 +80,10 @@
   --color-scrollbar-thumb-hover: oklch(1 0 0 / 0.12);
 
   /* Z-index scale - small, so anything new only needs to pick a rung */
-  --z-backdrop: 20;
-  --z-drawer: 30;
   --z-dropdown: 100;
   --z-modal: 200;
+  /* Floating layers that must sit above an open dialog. */
+  --z-popover: 250;
   --z-tooltip: 300;
   --z-toast: 400;
 }
@@ -95,6 +95,14 @@
 /* Tailwind v4's preflight leaves buttons at cursor: default; every enabled
    control should read as clickable without a per-element cursor-pointer. */
 @layer base {
+  /* Tailwind 4 defaults border-color to currentColor; the kit's `border-*`
+     utilities assume the shadcn preflight rule that points it at the token. */
+  *,
+  ::before,
+  ::after {
+    border-color: var(--color-border);
+  }
+
   button:not(:disabled),
   [role="button"]:not([aria-disabled="true"]),
   select:not(:disabled),
@@ -121,7 +129,7 @@
   --color-border: oklch(0 0 0 / 0.08);
   --color-border-subtle: oklch(0 0 0 / 0.04);
   --color-border-strong: oklch(0 0 0 / 0.22);
-  --color-border-focus: oklch(0.606 0.219 292.717 / 0.5);
+  --color-border-focus: oklch(0 0 0 / 0.4);
 
   --color-text-primary: oklch(0.141 0.004 285.823);
   --color-text-secondary: oklch(0.141 0.004 285.823 / 0.7);
@@ -200,7 +208,7 @@ body {
 } /* Focus styles. The resting outline-color matters even though the outline
      is invisible until focus: Tailwind's transition-colors animates
      outline-color, so without it the ring flashes in at currentColor
-     (white in dark mode) and fades to purple. */
+     (white in dark mode) and fades to the neutral focus grey. */
 :where(*) {
   outline-color: var(--color-border-focus);
 }
@@ -222,33 +230,19 @@ body {
     animation-duration: 0.01ms !important;
   }
 } /* Monaco editor overrides */
-/* Keyframe only - the drawer element itself is Tailwind utilities in
-   SkillDetailPanel.tsx; referenced via animate-[slideInDrawer_0.2s_ease]. */
-@keyframes slideInDrawer {
+/* Keyframe only - the drawer rows themselves are Tailwind utilities in
+   SkillLocationScope.tsx; referenced via
+   animate-[locationRowIn_160ms_ease-out_both]. Tailwind can reference a named
+   keyframe from a utility class but can't declare one from a utility class
+   alone. */
+@keyframes locationRowIn {
   from {
-    transform: translateX(100%);
-  }
-  to {
-    transform: translateX(0);
-  }
-}
-/* Keyframes only - the scrim/drawer elements themselves are Tailwind
-   utilities in SkillAssistantDrawer.tsx; Tailwind v4 can reference a named
-   `animate-[…]` keyframe but can't declare one from a utility class alone. */
-@keyframes fadeInAssistantScrim {
-  from {
+    transform: translateX(-6px);
     opacity: 0;
   }
   to {
-    opacity: 1;
-  }
-}
-@keyframes slideInAssistantDrawer {
-  from {
-    transform: translateX(100%);
-  }
-  to {
     transform: translateX(0);
+    opacity: 1;
   }
 }
 /* Assistant transcript */

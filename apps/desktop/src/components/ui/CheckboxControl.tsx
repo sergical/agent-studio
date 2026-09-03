@@ -1,18 +1,19 @@
 // ============================================================================
-// CheckboxControl - Base UI Checkbox wrapper: a 16 px box, accent fill when
-// checked, indeterminate support. Pass `ariaLabel` for a standalone checkbox,
-// or wrap it in a caller's own <label> and omit both.
-// Built on the Base UI primitive directly rather than the kit's Checkbox: the
-// kit always renders a fixed check icon and ignores `indeterminate`, so it
-// can't show the Minus glyph this control needs.
+// CheckboxControl - thin wrapper over the kit's Checkbox: a 16 px box, accent
+// fill when checked or indeterminate. Pass `ariaLabel` for a standalone
+// checkbox, or wrap it in a caller's own <label> and omit both.
 // ============================================================================
 
-import { Checkbox } from "@base-ui/react/checkbox";
-import { Check, Minus } from "lucide-react";
+import { Checkbox } from "@skill-studio/ui";
+import type { ComponentProps } from "react";
+
+type CheckboxChangeEventDetails = Parameters<
+  NonNullable<ComponentProps<typeof Checkbox>["onCheckedChange"]>
+>[1];
 
 interface CheckboxControlProps {
   checked: boolean;
-  onCheckedChange: (checked: boolean) => void;
+  onCheckedChange: (checked: boolean, eventDetails: CheckboxChangeEventDetails) => void;
   indeterminate?: boolean;
   disabled?: boolean;
   ariaLabel?: string;
@@ -26,7 +27,7 @@ export function CheckboxControl({
   ariaLabel,
 }: CheckboxControlProps) {
   return (
-    <Checkbox.Root
+    <Checkbox
       // `checkbox-control-root` is kept as a bare hook with no rules of its
       // own: SkillListTable's toolbar checkbox reaches in via a descendant
       // `[&_.checkbox-control-root]:before:*` selector to extend its hit area.
@@ -36,10 +37,6 @@ export function CheckboxControl({
       indeterminate={indeterminate}
       disabled={disabled}
       aria-label={ariaLabel}
-    >
-      <Checkbox.Indicator className="inline-flex text-text-on-accent" keepMounted={false}>
-        {indeterminate ? <Minus size={12} /> : <Check size={12} />}
-      </Checkbox.Indicator>
-    </Checkbox.Root>
+    />
   );
 }

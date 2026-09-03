@@ -57,6 +57,25 @@ pub trait UpstreamFetch {
         commit: &str,
         into: &Path,
     ) -> Result<(), String>;
+
+    /// Downloads `repo` at `commit` once so several folders can be copied
+    /// out of it without refetching - see `add_skills`, which installs a
+    /// whole picker's worth of skills from one tarball. `Ok(None)` means
+    /// this implementation has no bulk mode and the caller falls back to
+    /// one `fetch_skill_dir` per folder.
+    fn open_repo(
+        &self,
+        _repo: &str,
+        _commit: &str,
+    ) -> Result<Option<Box<dyn RepoSnapshot>>, String> {
+        Ok(None)
+    }
+}
+
+/// A repo already downloaded and extracted at one commit; `copy_dir` pulls
+/// one folder out of it.
+pub trait RepoSnapshot {
+    fn copy_dir(&self, path: &str, into: &Path) -> Result<(), String>;
 }
 
 /// Real `LedgerTool`, shelling out to `npx`.
@@ -142,13 +161,25 @@ impl UpstreamFetch for RealUpstreamFetch {
         commit: &str,
         into: &Path,
     ) -> Result<(), String> {
+        self.download(repo, commit)?.copy_dir(path, into)
+    }
+
+    fn open_repo(&self, repo: &str, commit: &str) -> Result<Option<Box<dyn RepoSnapshot>>, String> {
+        Ok(Some(Box::new(self.download(repo, commit)?)))
+    }
+}
+
+impl RealUpstreamFetch {
+    /// One `gh api .../tarball/<sha>` download, extracted to a scratch
+    /// directory that is removed when the returned snapshot drops.
+    fn download(&self, repo: &str, commit: &str) -> Result<ExtractedRepo, String> {
         fs::create_dir_all(&self.cache_dir)
             .map_err(|e| format!("Failed to create {}: {e}", self.cache_dir.display()))?;
 
         let unique = format!("{}-{}", std::process::id(), commit);
         let tarball_path = self.cache_dir.join(format!("fork-pull-{unique}.tar.gz"));
         let extract_dir = self.cache_dir.join(format!("fork-pull-extract-{unique}"));
-        let _cleanup = TempCleanup {
+        let cleanup = TempCleanup {
             paths: vec![tarball_path.clone(), extract_dir.clone()],
         };
 
@@ -178,7 +209,23 @@ impl UpstreamFetch for RealUpstreamFetch {
                 .to_string());
         }
 
-        let source_dir = locate_extracted_skill_dir(&extract_dir, path)?;
+        Ok(ExtractedRepo {
+            extract_dir,
+            _cleanup: cleanup,
+        })
+    }
+}
+
+/// A tarball already extracted under `extract_dir`, kept alive for as long
+/// as folders are still being copied out of it.
+struct ExtractedRepo {
+    extract_dir: PathBuf,
+    _cleanup: TempCleanup,
+}
+
+impl RepoSnapshot for ExtractedRepo {
+    fn copy_dir(&self, path: &str, into: &Path) -> Result<(), String> {
+        let source_dir = locate_extracted_skill_dir(&self.extract_dir, path)?;
         copy_dir_all(&source_dir, into)
     }
 }

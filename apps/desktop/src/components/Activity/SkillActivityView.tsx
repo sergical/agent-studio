@@ -14,6 +14,7 @@ import {
 import type { SkillSnapshot } from "@skill-studio/lib";
 import { useAppStore } from "../../store/appStore";
 import { PageShell } from "../Shell/PageShell";
+import { TooltipControl } from "../ui/TooltipControl";
 import { WindowSegmentedControl } from "../ui/WindowSegmentedControl";
 import { InvocationHeatmap } from "./InvocationHeatmap";
 import { SkillHistorySection } from "./SkillHistorySection";
@@ -152,14 +153,12 @@ export function SkillActivityView({ snapshot, onSelectSkill }: SkillActivityView
             </span>
             <div className="flex flex-col">
               {byProject.map(({ project, label, count }) => (
-                <div
-                  key={project}
-                  className="flex h-8 items-center justify-between gap-3 border-b border-border-subtle px-2"
-                  title={project}
-                >
-                  <span className="truncate text-body text-text-primary">{label}</span>
-                  <span className="text-body text-text-secondary tabular-nums">{count}</span>
-                </div>
+                <TooltipControl key={project} content={[{ text: project, mono: true }]}>
+                  <div className="flex h-8 items-center justify-between gap-3 border-b border-border-subtle px-2">
+                    <span className="truncate text-body text-text-primary">{label}</span>
+                    <span className="text-body text-text-secondary tabular-nums">{count}</span>
+                  </div>
+                </TooltipControl>
               ))}
             </div>
           </div>

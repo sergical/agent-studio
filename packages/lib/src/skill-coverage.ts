@@ -9,6 +9,7 @@
 // ============================================================================
 
 import { ownDeployments } from "./skill-plugin-partition";
+import { homeRelativePath, parentDirectory } from "./skill-path-format";
 import type { AgentId, Deployment, InstalledSkill } from "./skill-types";
 
 /** The five first-class agents that read the shared `.agents/skills` root natively. */
@@ -109,6 +110,29 @@ export function deploymentLinkTarget(deployment: Deployment): string | undefined
   return deployment.symlink_target ?? deployment.resolved_path;
 }
 
+/**
+ * A short, human relation between a deployment and the shared root, for the
+ * Locations card's rows. Distinguishes a per-skill symlink (still toggleable
+ * per harness) from a whole-dir link (`shared_via_whole_dir_link` - every
+ * skill under that root moves together until it's materialized into
+ * per-skill links, see `skill_materialize`).
+ */
+export function deploymentRelationText(deployment: Deployment): string {
+  if (deployment.shared_via_whole_dir_link) {
+    return `reads this folder via ${homeRelativePath(parentDirectory(deployment.path))}`;
+  }
+  switch (deploymentLinkKind(deployment)) {
+    case "shared-root":
+      return "lives here";
+    case "linked-to-shared":
+      return "symlink";
+    case "broken":
+      return "broken link";
+    case "own":
+      return "copy";
+  }
+}
+
 /** Where a skill really lives, and who links to or copies it - see `SkillLocationCell`. */
 export interface LocationSummary {
   /** The deployment under the shared root, when the skill has one. */
@@ -159,7 +183,7 @@ export function driftingCopies(summary: LocationSummary): Deployment[] {
   return copiesToCompare.filter((copy) => copy.content_hash !== referenceHash);
 }
 
-/** A shared-root deployment plus every deployment that links to it, for the Locations card's shared group. */
+/** A shared-root deployment plus every harness that reads it through a whole-root link, for the Locations card's shared group. */
 export interface DeploymentGroup {
   shared: Deployment;
   linked: Deployment[];
@@ -188,20 +212,19 @@ function sharedRootTarget(shared: Deployment): string {
 
 /**
  * Groups `deployments` (already in display order) by their concrete shared
- * folder, for `SkillLocationsCard`. A skill can have more than one shared
- * root - e.g. a global `~/.agents/skills/foo` and a project's own
- * `<project>/.agents/skills/foo` - and `isLinkedToSharedRoot` matches either,
- * so a `linked-to-shared` deployment must be keyed on which concrete folder
- * it targets, not folded under whichever shared root happens to sort first.
- * Every `shared-root` deployment starts its own group, in input order. A
- * `linked-to-shared` deployment joins the group whose shared deployment's
- * path it resolves to; failing that, it falls back to the shared root with
- * the same scope/project only when exactly one such root exists - with two
- * or more candidates there's no way to tell which one the link actually
- * means, and a wrong nesting would tell the user a copy lives somewhere it
- * doesn't, so the link is left standalone instead of guessed. A `broken`
- * link is never folded into any group, even if its target would have
- * pointed at a shared root.
+ * folder, for `SkillLocationsCard`. Every `shared-root` deployment starts its
+ * own group, in input order, and the only members are harnesses that read
+ * that folder through a whole-root link (`shared_via_whole_dir_link`) -
+ * everything else, per-skill symlinks included, stays a standalone row.
+ *
+ * A skill can have more than one shared root - e.g. a global
+ * `~/.agents/skills/foo` and a project's own `<project>/.agents/skills/foo` -
+ * so a member is keyed on which concrete folder it resolves to, not folded
+ * under whichever shared root happens to sort first. Failing a path match it
+ * falls back to the shared root with the same scope/project only when exactly
+ * one such root exists: with two or more candidates there's no way to tell
+ * which one it means, and a wrong nesting would tell the user a copy lives
+ * somewhere it doesn't.
  */
 export function groupDeploymentsForDisplay(deployments: Deployment[]): GroupedDeployments {
   const sharedRoots = deployments.filter((d) => deploymentLinkKind(d) === "shared-root");
@@ -209,7 +232,12 @@ export function groupDeploymentsForDisplay(deployments: Deployment[]): GroupedDe
   const standalone: Deployment[] = [];
 
   for (const deployment of deployments) {
-    if (deploymentLinkKind(deployment) !== "linked-to-shared") {
+    // Only a harness whose whole skills root points at the shared folder
+    // belongs inside the group: it has no folder of its own, it just reads
+    // this one. A per-skill symlink is a location in its own right - it can
+    // be removed, repointed, or left dangling without touching the shared
+    // folder - so it stays a row of its own.
+    if (!deployment.shared_via_whole_dir_link) {
       if (deploymentLinkKind(deployment) !== "shared-root") standalone.push(deployment);
       continue;
     }

@@ -21,6 +21,15 @@ export function ownDeployments(skill: InstalledSkill): Deployment[] {
   return skill.deployments.filter((d) => !d.plugin);
 }
 
+/**
+ * `skill`'s deployments that hold a physical SKILL.md - the only ones worth
+ * editing. A per-skill symlink or a whole-root link just points at another
+ * deployment's file, so editing "through" it would silently edit that one.
+ */
+export function editableDeployments(skill: InstalledSkill): Deployment[] {
+  return ownDeployments(skill).filter((d) => !d.is_symlink && !d.shared_via_whole_dir_link);
+}
+
 /** `skill`'s deployments that are plugin-managed. */
 export function pluginDeployments(skill: InstalledSkill): Deployment[] {
   return skill.deployments.filter((d) => Boolean(d.plugin));

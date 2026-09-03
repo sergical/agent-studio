@@ -1,40 +1,65 @@
 // ============================================================================
 // AddSkillSheet - Right-side sheet for adding a skill from a source string:
-// parses the Source field live, offers a Method segmented control, reuses
-// AgentTargetSelector for Harnesses, a Global/Project Scope, and an optional
-// "Try for 24 hours" trial. Submits to the `add_skill` Tauri command.
+// parses the Source field live, lists the skill folders a GitHub source
+// actually holds (one skill, or a picker for a folder of them), offers a
+// Method segmented control, reuses AgentTargetSelector for Harnesses, a
+// Global/Project Scope, and an optional "Try for 24 hours" trial. Submits to
+// the `add_skills` Tauri command for GitHub sources, `add_skill` otherwise.
 // ============================================================================
 
-import { useEffect, useEffectEvent, useReducer, useRef } from "react";
+import { useEffect, useReducer, useRef, useState } from "react";
 import type { Dispatch } from "react";
 import { open } from "@tauri-apps/plugin-dialog";
-import { FolderPlus, X } from "lucide-react";
-import { Button, Input } from "@skill-studio/ui";
-import { AgentTargetSelector } from "../SkillStore/AgentTargetSelector";
+import { Folder, FolderPlus } from "lucide-react";
+import {
+  Button,
+  Drawer,
+  DrawerContent,
+  Input,
+  Tabs,
+  TabsContent,
+  TabsList,
+  TabsTrigger,
+  ToggleGroup,
+  ToggleGroupItem,
+} from "@skill-studio/ui";
+import {
+  AgentTargetSelector,
+  installDisabledHarnesses,
+  installTargetAgents,
+} from "../SkillStore/AgentTargetSelector";
+import { ProjectDirectorySelect } from "../SkillStore/ProjectDirectorySelect";
+import { ScopeToggleGroup } from "../SkillStore/ScopeToggleGroup";
 import { SkillStore } from "../SkillStore/SkillStore";
 import { CheckboxControl } from "../ui/CheckboxControl";
-import { addSkill, importSkillPack } from "../../lib/skill-api";
-import { agentIdFromDeploymentLabel } from "@skill-studio/lib";
+import {
+  addSkill,
+  addSkills,
+  getAddMethodDefaults,
+  importSkillPack,
+  listGithubSkills,
+} from "../../lib/skill-api";
+import { singleSelectToggleValue } from "../../lib/single-select-toggle-group";
 import { parseSkillSource } from "@skill-studio/lib";
 import type { ParsedSkillSource } from "@skill-studio/lib";
-import { useSkillSnapshot } from "../../hooks/useSkillSnapshot";
+import { isFeatureEnabled } from "../../lib/feature-flags";
 import { useAppStore } from "../../store/appStore";
-import type { AddMethod, AgentId, InstallScope } from "@skill-studio/lib";
+import type {
+  AddMethod,
+  AddMethodDefaults,
+  AgentId,
+  GithubSkillEntry,
+  GithubSkillListing,
+  InstallScope,
+} from "@skill-studio/lib";
 
-/**
- * The six agents offered as harness defaults - `push_agent_args`'s
- * install-target list plus Grok Build, which reads the shared root directly
- * and is filtered out of the skills.sh argv rather than being disallowed.
- */
-const DEFAULT_HARNESS_CANDIDATES: AgentId[] = [
-  "claude-code",
-  "codex",
-  "open-code",
-  "pi",
-  "cursor",
-  "grok-build",
-];
-const FALLBACK_HARNESSES: AgentId[] = ["claude-code", "codex"];
+const SHEET_TAB_CLASS =
+  "text-body font-medium text-text-tertiary after:bg-accent data-active:text-accent hover:text-text-secondary";
+
+/** The uppercase field-group heading used above the Source, Skills, Method,
+ * and Scope sections. */
+const SECTION_LABEL_CLASS =
+  "text-caption font-medium tracking-[0.08em] text-text-tertiary uppercase";
 
 const ALL_METHODS = ["dotagents", "skills-sh", "copy"] as const satisfies AddMethod[];
 
@@ -46,6 +71,11 @@ const ALL_METHODS = ["dotagents", "skills-sh", "copy"] as const satisfies AddMet
  */
 type SheetMethod = AddMethod | "pack";
 const ALL_SHEET_METHODS = [...ALL_METHODS, "pack"] as const satisfies SheetMethod[];
+
+/** Pack import stays hidden until the `skill-packs` flag ships. */
+function sheetMethods(): readonly SheetMethod[] {
+  return isFeatureEnabled("skill-packs") ? ALL_SHEET_METHODS : ALL_METHODS;
+}
 
 const METHOD_LABELS = {
   dotagents: "dotagents",
@@ -61,11 +91,29 @@ const METHOD_TOOLTIPS = {
   pack: "Import every skill in this repo's share pack",
 } satisfies Record<SheetMethod, string>;
 
-/** Which methods a parsed source supports, in the sheet's preferred order. */
-function availableMethods(parsed: ParsedSkillSource | { error: string }): SheetMethod[] {
+/**
+ * Which methods a parsed source supports, in the sheet's preferred order -
+ * the first entry in each list is also that source kind's default, so the
+ * "clamp to a valid method" derivation below doubles as "reset to the
+ * default when the source kind changes". Dropping "dotagents" entirely when
+ * it can't run (rather than just disabling it) keeps a stale pick from a
+ * previous source silently surviving a switch to one where it's unusable.
+ * A GitHub source with `has_skill_lock` still defaults to dotagents when
+ * it's installed - the sheet has no reason to prefer skills.sh just because
+ * it's been used here before.
+ */
+function availableMethods(
+  parsed: ParsedSkillSource | { error: string },
+  defaults: AddMethodDefaults | null,
+): SheetMethod[] {
   if ("error" in parsed) return [];
-  if (parsed.kind === "github") return ["dotagents", "skills-sh", "copy", "pack"];
-  if (parsed.kind === "git") return ["dotagents"];
+  const dotagentsInstalled = defaults?.dotagents_installed ?? true;
+  if (parsed.kind === "github") {
+    return dotagentsInstalled
+      ? ["dotagents", "skills-sh", "copy", "pack"]
+      : ["skills-sh", "copy", "pack"];
+  }
+  if (parsed.kind === "git") return dotagentsInstalled ? ["dotagents"] : [];
   return ["copy"];
 }
 
@@ -79,22 +127,6 @@ function parseSummary(parsed: ParsedSkillSource | { error: string }): string {
   return `local · ${parsed.localPath}`;
 }
 
-/** Every AgentId with at least one deployed skill in the snapshot, from the six candidates. */
-function agentsWithASkill(snapshot: ReturnType<typeof useSkillSnapshot>["snapshot"]): Set<AgentId> {
-  const seen = new Set<AgentId>();
-  for (const skill of snapshot?.skills ?? []) {
-    for (const deployment of skill.deployments) {
-      const id = agentIdFromDeploymentLabel(deployment.agent);
-      if (id && id !== "shared") seen.add(id);
-    }
-  }
-  return seen;
-}
-
-const SCOPE_OPTION_CLASS =
-  "flex-1 rounded-sm border border-border bg-bg-primary px-2.5 py-2.5 text-body font-medium text-text-secondary transition-colors hover:border-border-focus";
-const SCOPE_OPTION_SELECTED_CLASS = "border-accent bg-accent-softer text-accent";
-
 /**
  * Every field on the sheet's manual-add form - reset together each time the
  * sheet opens (see the `reset` action), so a `useReducer` replaces what used
@@ -104,7 +136,12 @@ interface FormState {
   sheetTab: "manual" | "browse";
   source: string;
   methodChoice: SheetMethod;
-  agents: AgentId[];
+  /** The installed readers of the shared folder left switched on. `null`
+   * until `getAddMethodDefaults` answers, which is what seeds it. */
+  enabledReaders: AgentId[] | null;
+  /** Whether Claude Code's own skills dir gets linked into the shared
+   * folder for this install. See `installTargetAgents`. */
+  claudeLink: boolean;
   scope: InstallScope;
   projectPath: string | null;
   trial: boolean;
@@ -117,7 +154,8 @@ function initialFormState(): FormState {
     sheetTab: "manual",
     source: "",
     methodChoice: "dotagents",
-    agents: FALLBACK_HARNESSES,
+    enabledReaders: null,
+    claudeLink: true,
     scope: "global",
     projectPath: null,
     trial: false,
@@ -127,11 +165,13 @@ function initialFormState(): FormState {
 }
 
 type FormAction =
-  | { type: "reset"; prefill: string; agents: AgentId[]; projectPath: string | null }
+  | { type: "reset"; prefill: string; projectPath: string | null }
   | { type: "set_tab"; tab: FormState["sheetTab"] }
   | { type: "set_source"; source: string }
   | { type: "set_method"; method: SheetMethod }
-  | { type: "set_agents"; agents: AgentId[] }
+  | { type: "set_readers"; readers: AgentId[] }
+  | { type: "set_reader_enabled"; agent: AgentId; enabled: boolean }
+  | { type: "set_claude_link"; claudeLink: boolean }
   | { type: "set_scope"; scope: InstallScope }
   | { type: "set_project_path"; path: string | null }
   | { type: "set_trial"; trial: boolean }
@@ -145,7 +185,6 @@ function formReducer(state: FormState, action: FormAction): FormState {
       return {
         ...initialFormState(),
         source: action.prefill,
-        agents: action.agents,
         projectPath: action.projectPath,
       };
     case "set_tab":
@@ -154,8 +193,17 @@ function formReducer(state: FormState, action: FormAction): FormState {
       return { ...state, source: action.source };
     case "set_method":
       return { ...state, methodChoice: action.method };
-    case "set_agents":
-      return { ...state, agents: action.agents };
+    case "set_readers":
+      return { ...state, enabledReaders: action.readers };
+    case "set_reader_enabled":
+      return {
+        ...state,
+        enabledReaders: action.enabled
+          ? [...(state.enabledReaders ?? []), action.agent]
+          : (state.enabledReaders ?? []).filter((id) => id !== action.agent),
+      };
+    case "set_claude_link":
+      return { ...state, claudeLink: action.claudeLink };
     case "set_scope":
       return { ...state, scope: action.scope };
     case "set_project_path":
@@ -183,12 +231,13 @@ function SourceField({
   onChange: (value: string) => void;
   inputRef: React.RefObject<HTMLInputElement | null>;
 }) {
+  // Parse errors stay neutral while the user is still typing; they turn red
+  // only after the field loses focus, so a fresh sheet never opens "dirty".
+  const [touched, setTouched] = useState(false);
+  const showError = touched && source.trim().length > 0 && "error" in parsed;
   return (
     <div className="flex flex-col gap-2">
-      <label
-        htmlFor="add-skill-source"
-        className="text-caption font-medium tracking-[0.06em] text-text-tertiary uppercase"
-      >
+      <label htmlFor="add-skill-source" className={SECTION_LABEL_CLASS}>
         Source
       </label>
       <Input
@@ -198,56 +247,259 @@ function SourceField({
         className="h-(--control-height) rounded-sm border-border bg-bg-primary text-body text-text-primary focus-visible:border-border-focus focus-visible:ring-0"
         value={source}
         onChange={(e) => onChange(e.target.value)}
+        onBlur={() => setTouched(true)}
         placeholder="owner/repo, a GitHub URL, a skills.sh URL, or a local path"
       />
-      <p className={`m-0 text-small ${"error" in parsed ? "text-error" : "text-text-tertiary"}`}>
-        {source.trim() ? parseSummary(parsed) : "Enter a source above"}
+      <p className={`m-0 text-small ${showError ? "text-error" : "text-text-tertiary"}`}>
+        {source.trim() ? parseSummary(parsed) : "Paste a repo, URL, or path to get started."}
       </p>
     </div>
   );
 }
 
-/** The Method segmented control - which choices are enabled comes from `availableMethods(parsed)`. */
+// ============================================================================
+// GitHub skill listing - which folders a source actually holds
+// ============================================================================
+
+/** How long after the last keystroke the listing request goes out. */
+const LISTING_DEBOUNCE_MS = 400;
+
+interface ListingState {
+  status: "idle" | "loading" | "ready" | "error";
+  listing: GithubSkillListing | null;
+  error: string | null;
+}
+
+const IDLE_LISTING: ListingState = { status: "idle", listing: null, error: null };
+
+/** The repo, path, and ref a GitHub source lists under, or `null` when the
+ * source isn't one this sheet lists (a parse error, git, or local). */
+function listingTarget(parsed: ParsedSkillSource | { error: string }) {
+  if ("error" in parsed || parsed.kind !== "github" || !parsed.repo) return null;
+  return { repo: parsed.repo, path: parsed.path, ref: parsed.ref };
+}
+
+/**
+ * Lists `parsed`'s skill folders once the source field settles, keeping the
+ * result per repo/path/ref so retyping the same source costs nothing. A
+ * newer request always wins: `requestId` invalidates whatever an older one
+ * resolves with.
+ */
+function useGithubSkillListing(
+  parsed: ParsedSkillSource | { error: string },
+  enabled: boolean,
+): ListingState & { retry: () => void } {
+  const target = enabled ? listingTarget(parsed) : null;
+  const repo = target?.repo;
+  const path = target?.path;
+  const ref = target?.ref;
+  const key = target ? `${repo}|${path ?? ""}|${ref ?? ""}` : null;
+
+  const [state, setState] = useState<ListingState>(IDLE_LISTING);
+  const [retryKey, setRetryKey] = useState<string | null>(null);
+  const cacheRef = useRef(new Map<string, GithubSkillListing>());
+  const requestIdRef = useRef(0);
+  const forceRefresh = key !== null && retryKey === key;
+
+  useEffect(() => {
+    if (!key || !repo) {
+      setState(IDLE_LISTING);
+      return;
+    }
+    const cached = forceRefresh ? undefined : cacheRef.current.get(key);
+    if (cached) {
+      setState({ status: "ready", listing: cached, error: null });
+      return;
+    }
+    const requestId = ++requestIdRef.current;
+    setState({ status: "loading", listing: null, error: null });
+    const timer = setTimeout(async () => {
+      try {
+        const listing = await listGithubSkills(repo, path, ref, forceRefresh);
+        if (requestIdRef.current !== requestId) return;
+        cacheRef.current.set(key, listing);
+        setState({ status: "ready", listing, error: null });
+      } catch (err) {
+        if (requestIdRef.current !== requestId) return;
+        setState({
+          status: "error",
+          listing: null,
+          error: err instanceof Error ? err.message : "Could not reach GitHub",
+        });
+      }
+    }, LISTING_DEBOUNCE_MS);
+    return () => clearTimeout(timer);
+  }, [key, repo, path, ref, forceRefresh]);
+
+  return { ...state, retry: () => setRetryKey(key) };
+}
+
+/** One picker row: name, then its repo-relative path as a caption. */
+function SkillRow({ entry, trailing }: { entry: GithubSkillEntry; trailing?: string }) {
+  return (
+    <span className="flex min-w-0 flex-1 items-baseline gap-2">
+      <span className="truncate text-body text-text-primary">{entry.name}</span>
+      <span className="truncate text-caption text-text-tertiary">
+        {trailing ?? (entry.path || "repo root")}
+      </span>
+    </span>
+  );
+}
+
+/**
+ * What a GitHub source resolves to, under the Source field: a skeleton while
+ * the listing runs, a retryable error, one row for a single skill, or a
+ * checkbox list with a select-all header for a folder of them.
+ */
+function GithubSkillPicker({
+  state,
+  selectedPaths,
+  onSelectedPathsChange,
+}: {
+  state: ListingState & { retry: () => void };
+  selectedPaths: string[];
+  onSelectedPathsChange: (paths: string[]) => void;
+}) {
+  if (state.status === "idle") return null;
+
+  if (state.status === "loading") {
+    return (
+      <div className="flex flex-col gap-2">
+        <span className={SECTION_LABEL_CLASS}>Skills</span>
+        <div className="h-9 animate-pulse rounded-sm bg-bg-tertiary" />
+      </div>
+    );
+  }
+
+  if (state.status === "error" || !state.listing) {
+    return (
+      <div className="flex flex-col gap-2">
+        <span className={SECTION_LABEL_CLASS}>Skills</span>
+        <p className="m-0 flex h-9 items-center gap-2 text-caption text-error">
+          {state.error ?? "Could not list this repo's skills"}
+          <button
+            type="button"
+            className="text-caption font-medium text-accent underline"
+            onClick={state.retry}
+          >
+            Retry
+          </button>
+        </p>
+      </div>
+    );
+  }
+
+  const { skills, truncated } = state.listing;
+  const allSelected = selectedPaths.length === skills.length;
+
+  return (
+    <div className="flex flex-col gap-2">
+      <span className={SECTION_LABEL_CLASS}>Skills</span>
+
+      {skills.length === 0 && (
+        <p className="m-0 flex h-9 items-center text-caption text-text-tertiary">
+          No SKILL.md found in this repo or path.
+        </p>
+      )}
+
+      {skills.length === 1 && (
+        <div className="flex h-9 items-center gap-2">
+          <Folder size={14} className="shrink-0 text-text-tertiary" />
+          <SkillRow entry={skills[0]} />
+        </div>
+      )}
+
+      {skills.length > 1 && (
+        <>
+          <div className="flex h-9 items-center justify-between gap-2">
+            <span className="text-caption text-text-tertiary">{skills.length} skills</span>
+            <button
+              type="button"
+              className="text-caption font-medium text-accent"
+              onClick={() =>
+                onSelectedPathsChange(allSelected ? [] : skills.map((skill) => skill.path))
+              }
+            >
+              {allSelected ? "Select none" : "Select all"}
+            </button>
+          </div>
+          <ul className="m-0 flex list-none flex-col p-0">
+            {skills.map((skill) => (
+              <li key={skill.path} className="flex h-9 items-center gap-2">
+                <label className="flex min-w-0 flex-1 items-center gap-2">
+                  <CheckboxControl
+                    checked={selectedPaths.includes(skill.path)}
+                    onCheckedChange={(checked) =>
+                      onSelectedPathsChange(
+                        checked
+                          ? [...selectedPaths, skill.path]
+                          : selectedPaths.filter((path) => path !== skill.path),
+                      )
+                    }
+                  />
+                  <SkillRow entry={skill} />
+                </label>
+              </li>
+            ))}
+          </ul>
+        </>
+      )}
+
+      {truncated && (
+        <p className="m-0 text-caption text-text-tertiary">
+          Large repo: showing the first {skills.length} skills GitHub returned
+        </p>
+      )}
+    </div>
+  );
+}
+
+/**
+ * The Method segmented control - which choices are enabled comes from
+ * `availableMethods(parsed, defaults)`. `noMethodsAvailable` disables every
+ * option (a parsed git source with dotagents missing, its only method);
+ * `caption` always shows one line - either that unavailability explanation
+ * or the picked method's own tooltip text.
+ */
 function MethodPicker({
   method,
   methods,
-  agents,
+  noMethodsAvailable,
+  caption,
   onChange,
 }: {
   method: SheetMethod;
   methods: SheetMethod[];
-  agents: AgentId[];
+  noMethodsAvailable: boolean;
+  caption: string;
   onChange: (method: SheetMethod) => void;
 }) {
   return (
     <div className="flex flex-col gap-2">
       {/* A heading for the method button group, not a form control's
           label - a `<label>` here would have no associated control. */}
-      <span className="text-caption font-medium tracking-[0.06em] text-text-tertiary uppercase">
-        Method
-      </span>
-      <div className="flex flex-wrap gap-1.5">
-        {ALL_SHEET_METHODS.map((m) => {
-          const disabled = methods.length > 0 && !methods.includes(m);
+      <span className={SECTION_LABEL_CLASS}>Method</span>
+      <ToggleGroup
+        variant="segmented"
+        aria-label="Install method"
+        value={[method]}
+        onValueChange={(next) => singleSelectToggleValue<SheetMethod>(next, onChange)}
+      >
+        {sheetMethods().map((m) => {
+          const disabled = noMethodsAvailable || (methods.length > 0 && !methods.includes(m));
           return (
-            <button
+            <ToggleGroupItem
               key={m}
-              type="button"
-              className={`inline-flex h-[26px] items-center gap-1.5 rounded-sm border border-border bg-bg-tertiary px-2.5 text-caption text-text-tertiary transition-colors enabled:hover:bg-bg-hover enabled:hover:text-text-secondary disabled:cursor-not-allowed ${
-                method === m ? "border-text-tertiary text-text-primary" : ""
-              } ${disabled ? "opacity-40" : ""}`}
-              title={METHOD_TOOLTIPS[m]}
+              value={m}
               disabled={disabled}
-              onClick={() => onChange(m)}
+              className="h-[26px] px-3 text-small"
             >
               {METHOD_LABELS[m]}
-            </button>
+            </ToggleGroupItem>
           );
         })}
-      </div>
-      {method === "dotagents" && agents.includes("grok-build") && (
-        <p className="m-0 text-caption text-text-tertiary">Grok Build reads the shared folder.</p>
-      )}
+      </ToggleGroup>
+      <p className="m-0 text-caption text-text-tertiary">{caption}</p>
     </div>
   );
 }
@@ -272,40 +524,18 @@ function ScopePicker({
     <div className="flex flex-col gap-2">
       {/* A heading for the scope button group, not a form control's
           label - a `<label>` here would have no associated control. */}
-      <span className="text-caption font-medium tracking-[0.06em] text-text-tertiary uppercase">
-        Scope
-      </span>
-      <div className="flex gap-2">
-        <button
-          type="button"
-          className={`${SCOPE_OPTION_CLASS} ${scope === "global" ? SCOPE_OPTION_SELECTED_CLASS : ""}`}
-          onClick={() => onScopeChange("global")}
-        >
-          Global
-        </button>
-        <button
-          type="button"
-          className={`${SCOPE_OPTION_CLASS} ${scope === "project" ? SCOPE_OPTION_SELECTED_CLASS : ""}`}
-          onClick={() => onScopeChange("project")}
-        >
-          Project
-        </button>
-      </div>
+      <span className={SECTION_LABEL_CLASS}>Scope</span>
+      <ScopeToggleGroup scope={scope} onScopeChange={onScopeChange} />
       {scope === "project" && (
         <div className="flex gap-2">
           {userAddedProjects.length > 0 && (
-            <select
-              className="flex-1 rounded-sm border border-border bg-bg-primary px-2.5 py-2.5 text-body text-text-primary"
-              aria-label="Project directory"
-              value={projectPath ?? ""}
-              onChange={(e) => onProjectPathChange(e.target.value)}
-            >
-              {userAddedProjects.map((p) => (
-                <option key={p} value={p}>
-                  {p.split("/").pop()} – {p}
-                </option>
-              ))}
-            </select>
+            <div className="flex-1">
+              <ProjectDirectorySelect
+                projects={userAddedProjects}
+                value={projectPath ?? undefined}
+                onChange={onProjectPathChange}
+              />
+            </div>
           )}
           <Button
             variant="outline"
@@ -313,7 +543,7 @@ function ScopePicker({
             onClick={onBrowseProject}
           >
             <FolderPlus size={14} />
-            {userAddedProjects.length === 0 ? "Choose Directory" : "Add"}
+            {userAddedProjects.length === 0 ? "Choose directory" : "Add"}
           </Button>
         </div>
       )}
@@ -331,9 +561,13 @@ function useAddSkillSubmit(input: {
   parsed: ParsedSkillSource | { error: string };
   method: SheetMethod;
   agents: AgentId[];
+  disabledHarnesses: AgentId[];
   scope: InstallScope;
   projectPath: string | null;
   trial: boolean;
+  /** The picked GitHub skill folders, or `null` for a source that isn't
+   * listed (local, git, or a pack import). */
+  githubEntries: GithubSkillEntry[] | null;
   dispatch: Dispatch<FormAction>;
   closeSheet: () => void;
   openSkill: (name: string) => void;
@@ -343,15 +577,20 @@ function useAddSkillSubmit(input: {
     parsed,
     method,
     agents,
+    disabledHarnesses,
     scope,
     projectPath,
     trial,
+    githubEntries,
     dispatch,
     closeSheet,
     openSkill,
     addToast,
   } = input;
-  const isValid = !("error" in parsed) && (scope !== "project" || !!projectPath);
+  const isValid =
+    !("error" in parsed) &&
+    (scope !== "project" || !!projectPath) &&
+    (githubEntries === null || githubEntries.length > 0);
 
   const handleSubmit = async () => {
     if ("error" in parsed || !isValid) return;
@@ -383,12 +622,54 @@ function useAddSkillSubmit(input: {
         dispatch({ type: "submit_end" });
         return;
       }
+      const projectArg = scope === "project" ? (projectPath ?? undefined) : undefined;
+      if (githubEntries) {
+        const outcomes = await addSkills({
+          source: parsed,
+          skills: githubEntries,
+          method,
+          agents,
+          disabled_harnesses: disabledHarnesses,
+          scope,
+          project_path: projectArg,
+          trial,
+        });
+        const installed = outcomes.filter((outcome) => outcome.result);
+        const failed = outcomes.filter((outcome) => outcome.error);
+        if (installed.length === 0) {
+          dispatch({
+            type: "submit_error",
+            error: failed.map((f) => `${f.name}: ${f.error}`).join("; ") || "Nothing was installed",
+          });
+          return;
+        }
+        closeSheet();
+        addToast({
+          type: "success",
+          title: `Added ${installed.length} skill${installed.length !== 1 ? "s" : ""}`,
+          message: installed
+            .map((outcome) => outcome.result?.warning)
+            .filter(Boolean)
+            .join("; "),
+        });
+        if (failed.length > 0) {
+          addToast({
+            type: "error",
+            title: `${failed.length} skill${failed.length !== 1 ? "s" : ""} failed`,
+            message: failed.map((f) => `${f.name}: ${f.error}`).join("; "),
+          });
+        }
+        if (installed.length === 1) openSkill(installed[0].name);
+        dispatch({ type: "submit_end" });
+        return;
+      }
       const result = await addSkill({
         source: parsed,
         method,
         agents,
+        disabled_harnesses: disabledHarnesses,
         scope,
-        project_path: scope === "project" ? (projectPath ?? undefined) : undefined,
+        project_path: projectArg,
         trial,
       });
       closeSheet();
@@ -413,7 +694,6 @@ function useAddSkillSubmit(input: {
 /** The "Add by source" tab's form fields, everything below the Method picker. */
 function ManualTabFields({
   method,
-  agents,
   scope,
   projectPath,
   userAddedProjects,
@@ -421,9 +701,14 @@ function ManualTabFields({
   submitError,
   dispatch,
   onBrowseProject,
+  installedReaders,
+  enabledReaders,
+  onReaderEnabledChange,
+  claudeReadsShared,
+  claudeLink,
+  onClaudeLinkChange,
 }: {
   method: SheetMethod;
-  agents: AgentId[];
   scope: InstallScope;
   projectPath: string | null;
   userAddedProjects: string[];
@@ -431,16 +716,15 @@ function ManualTabFields({
   submitError: string | null;
   dispatch: Dispatch<FormAction>;
   onBrowseProject: () => void;
+  installedReaders: AgentId[];
+  enabledReaders: AgentId[];
+  onReaderEnabledChange: (agent: AgentId, enabled: boolean) => void;
+  claudeReadsShared: boolean;
+  claudeLink: boolean;
+  onClaudeLinkChange: (on: boolean) => void;
 }) {
   return (
     <>
-      <div className="flex flex-col gap-2">
-        <AgentTargetSelector
-          selectedAgents={agents}
-          onChange={(next) => dispatch({ type: "set_agents", agents: next })}
-        />
-      </div>
-
       {method === "pack" && (
         <p className="m-0 text-caption text-text-tertiary">
           Imports every skill in this repo's pack to the shared folder, plus any agents.toml row
@@ -458,6 +742,16 @@ function ManualTabFields({
           onBrowseProject={onBrowseProject}
         />
       )}
+
+      <AgentTargetSelector
+        readers={installedReaders}
+        enabledReaders={enabledReaders}
+        onReaderEnabledChange={onReaderEnabledChange}
+        claudeReadsShared={claudeReadsShared}
+        claudeLink={claudeLink}
+        onClaudeLinkChange={onClaudeLinkChange}
+        scope={method === "pack" ? "global" : scope}
+      />
 
       {method !== "pack" && (
         <div className="flex flex-col gap-2">
@@ -486,12 +780,14 @@ function ManualTabFields({
 /** Cancel/submit footer, shown only on the "Add by source" tab. */
 function ManualTabFooter({
   method,
+  submitLabel,
   isValid,
   isSubmitting,
   onCancel,
   onSubmit,
 }: {
   method: SheetMethod;
+  submitLabel: string;
   isValid: boolean;
   isSubmitting: boolean;
   onCancel: () => void;
@@ -512,7 +808,7 @@ function ManualTabFooter({
         onClick={onSubmit}
         disabled={!isValid || isSubmitting}
       >
-        {isSubmitting ? "Adding…" : method === "pack" ? "Import pack" : "Add skill"}
+        {isSubmitting ? "Adding…" : method === "pack" ? "Import pack" : submitLabel}
       </Button>
     </div>
   );
@@ -525,14 +821,14 @@ export function AddSkillSheet() {
   const addToast = useAppStore((state) => state.addToast);
   const userAddedProjects = useAppStore((state) => state.userAddedProjects);
   const addProject = useAppStore((state) => state.addProject);
-  const { snapshot } = useSkillSnapshot();
 
   const [form, dispatch] = useReducer(formReducer, undefined, initialFormState);
   const {
     sheetTab,
     source,
     methodChoice,
-    agents,
+    enabledReaders: pickedReaders,
+    claudeLink,
     scope,
     projectPath,
     trial,
@@ -540,81 +836,107 @@ export function AddSkillSheet() {
     submitError,
   } = form;
 
-  const dialogRef = useRef<HTMLDialogElement>(null);
   const sourceInputRef = useRef<HTMLInputElement>(null);
+
+  // What dotagents/skills.sh/the shared folder look like on this machine -
+  // fetched once when the sheet opens, so the Method and Harnesses defaults
+  // below reflect this machine instead of a generic guess.
+  const [defaults, setDefaults] = useState<AddMethodDefaults | null>(null);
 
   // Reset the form to its defaults, prefilled from the caller, each time the
   // sheet opens - a stale field from a previous open would be confusing.
   useEffect(() => {
     if (!isOpen) return;
-    const withASkill = agentsWithASkill(snapshot);
-    const active = DEFAULT_HARNESS_CANDIDATES.filter((id) => withASkill.has(id));
-    dispatch({
-      type: "reset",
-      prefill: prefill ?? "",
-      agents: active.length > 0 ? active : FALLBACK_HARNESSES,
-      projectPath: userAddedProjects[0] ?? null,
-    });
-    // Autofocus the Source field once the sheet has mounted.
-    const id = window.setTimeout(() => sourceInputRef.current?.focus(), 0);
-    return () => window.clearTimeout(id);
+    dispatch({ type: "reset", prefill: prefill ?? "", projectPath: userAddedProjects[0] ?? null });
+    getAddMethodDefaults()
+      .then((next) => {
+        setDefaults(next);
+        dispatch({
+          type: "set_readers",
+          readers: next.installed_harnesses.filter((id) => id !== "claude-code"),
+        });
+      })
+      .catch(() => setDefaults(null));
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [isOpen, prefill]);
-
-  // `showModal()`/`close()` give us the focus trap, Escape handling, and
-  // top-layer stacking for free, plus automatic focus restoration to
-  // whatever had focus before the sheet opened - the same approach as
-  // SkillDetail/SkillAssistantDrawer.
-  useEffect(() => {
-    const dialog = dialogRef.current;
-    if (!dialog) return;
-    if (isOpen && !dialog.open) {
-      dialog.showModal();
-    } else if (!isOpen && dialog.open) {
-      dialog.close();
-    }
-  }, [isOpen]);
 
   const closeSheet = () => {
     closeAddSkillSheet();
   };
 
-  // A mousedown that lands on the `<dialog>` element itself (not its
-  // content) is a click on the backdrop area, since the dialog box is sized
-  // to the sheet. Attached imperatively since `<dialog>` isn't an
-  // interactive element.
-  const onBackdropMouseDown = useEffectEvent((event: MouseEvent) => {
-    if (event.target === dialogRef.current && !isSubmitting) closeSheet();
-  });
-
-  useEffect(() => {
-    const dialog = dialogRef.current;
-    if (!isOpen || !dialog) return;
-    dialog.addEventListener("mousedown", onBackdropMouseDown);
-    return () => dialog.removeEventListener("mousedown", onBackdropMouseDown);
-  }, [isOpen]);
-
   const parsed = parseSkillSource(source);
-  const methods = availableMethods(parsed);
+  const methods = availableMethods(parsed, defaults);
+  const noMethodsAvailable = !("error" in parsed) && methods.length === 0;
 
   // Keep the selected method valid as the source changes - e.g. switching
   // from a github source to a local path forces "Copy". Derived during
-  // render instead of synced back with an effect, since `methods` is
-  // itself derived from `source`.
+  // render instead of synced back with an effect, since `methods` is itself
+  // derived from `source` and `defaults`; falling back to `methods[0]`
+  // (each list's preferred choice, first) also re-defaults the method
+  // whenever the source's kind changes out from under a user's own pick.
   const method = methods.length > 0 && !methods.includes(methodChoice) ? methods[0] : methodChoice;
+  const methodCaption =
+    !("error" in parsed) && parsed.kind === "git" && noMethodsAvailable
+      ? "Git URLs need dotagents (not installed)"
+      : METHOD_TOOLTIPS[method];
+
+  const installedReaders = (defaults?.installed_harnesses ?? []).filter(
+    (id) => id !== "claude-code",
+  );
+  const claudeReadsShared = defaults?.claude_reads_shared_folder ?? false;
+  // Every installed reader starts on; `pickedReaders` only holds a choice
+  // once the user has made one, so the list survives `defaults` arriving
+  // after the sheet opened. Kept in `installedReaders`' order (`AgentId`'s
+  // declaration order) rather than the order the switches were flipped in.
+  const enabledReaders =
+    pickedReaders === null
+      ? installedReaders
+      : installedReaders.filter((id) => pickedReaders.includes(id));
+  const agents = installTargetAgents(enabledReaders, claudeLink);
+  const disabledHarnesses = installDisabledHarnesses(
+    installedReaders,
+    enabledReaders,
+    claudeReadsShared,
+    claudeLink,
+  );
+
+  // A GitHub source is resolved to its actual skill folders before install -
+  // a pasted `/tree/.../skills` URL can hold many of them. Pack imports read
+  // the repo's own agents.toml instead, so they skip the listing.
+  const listingEnabled = !("error" in parsed) && parsed.kind === "github" && method !== "pack";
+  const listingState = useGithubSkillListing(parsed, listingEnabled);
+  const listedSkills = listingState.listing?.skills ?? [];
+
+  const [selectedPaths, setSelectedPaths] = useState<string[]>([]);
+  // Every listed skill starts checked; a new listing resets the selection.
+  useEffect(() => {
+    setSelectedPaths(listedSkills.map((skill) => skill.path));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [listingState.listing]);
+
+  const githubEntries = listingEnabled
+    ? listedSkills.filter((skill) => selectedPaths.includes(skill.path))
+    : null;
 
   const { isValid, handleSubmit } = useAddSkillSubmit({
     parsed,
     method,
     agents,
+    disabledHarnesses,
     scope,
     projectPath,
     trial,
+    githubEntries,
     dispatch,
     closeSheet,
     openSkill,
     addToast,
   });
+  const listingBlocks = listingEnabled && listingState.status !== "ready";
+  const submitLabel =
+    githubEntries && githubEntries.length > 1
+      ? `Install ${githubEntries.length} skills`
+      : "Add skill";
 
   const handleBrowseProject = async () => {
     const selected = await open({ directory: true, multiple: false, title: "Select Project" });
@@ -624,104 +946,100 @@ export function AddSkillSheet() {
     }
   };
 
-  if (!isOpen) return null;
-
   return (
-    <dialog
-      ref={dialogRef}
-      className="fixed top-0 right-0 bottom-0 z-(--z-modal) m-0 flex h-full max-h-none w-[420px] max-w-full flex-col rounded-none border-0 border-l border-border bg-bg-secondary p-0 backdrop:bg-scrim"
-      aria-label="Add skill"
-      // The native `cancel` event fires on Escape before `close`; handling it
-      // here keeps the same single `closeSheet` path the backdrop click uses.
-      onCancel={(e) => {
-        e.preventDefault();
-        if (!isSubmitting) closeSheet();
+    <Drawer
+      open={isOpen}
+      onOpenChange={(open) => {
+        if (!open && !isSubmitting) closeSheet();
       }}
-      onClose={closeSheet}
     >
-      <div className="flex items-center justify-between border-b border-border px-5 py-4">
-        <h3 className="m-0 text-pretty text-balance text-emphasis font-semibold text-text-primary">
-          Add skill
-        </h3>
-        <button
-          type="button"
-          className="flex items-center justify-center rounded-sm border-0 bg-transparent p-1 text-text-tertiary transition-colors hover:bg-bg-hover hover:text-text-primary"
-          onClick={closeSheet}
-          disabled={isSubmitting}
-          aria-label="Close"
-        >
-          <X size={16} />
-        </button>
-      </div>
-
-      <div className="flex border-b border-border">
-        <button
-          type="button"
-          className={`-mb-px h-10 border-0 border-b-2 bg-transparent px-4 text-body font-medium transition-colors ${
-            sheetTab === "manual"
-              ? "border-accent text-accent"
-              : "border-transparent text-text-tertiary hover:text-text-secondary"
-          }`}
-          onClick={() => dispatch({ type: "set_tab", tab: "manual" })}
-        >
-          Add by source
-        </button>
-        <button
-          type="button"
-          className={`-mb-px h-10 border-0 border-b-2 bg-transparent px-4 text-body font-medium transition-colors ${
-            sheetTab === "browse"
-              ? "border-accent text-accent"
-              : "border-transparent text-text-tertiary hover:text-text-secondary"
-          }`}
-          onClick={() => dispatch({ type: "set_tab", tab: "browse" })}
-        >
-          Browse skills.sh
-        </button>
-      </div>
-
-      {sheetTab === "browse" ? (
-        <div className="flex flex-1 overflow-hidden">
-          <SkillStore compact />
+      <DrawerContent
+        side="right"
+        className="w-[420px] bg-bg-secondary"
+        aria-label="Add skill"
+        initialFocus={sourceInputRef}
+      >
+        <div className="flex items-center justify-between border-b border-border px-5 py-4">
+          <h3 className="m-0 text-balance text-emphasis font-semibold text-text-primary">
+            Add skill
+          </h3>
         </div>
-      ) : (
-        <div className="flex flex-1 flex-col gap-5 overflow-y-auto px-5 py-4">
-          <SourceField
-            source={source}
-            parsed={parsed}
-            onChange={(value) => dispatch({ type: "set_source", source: value })}
-            inputRef={sourceInputRef}
-          />
 
-          <MethodPicker
+        <Tabs
+          value={sheetTab}
+          onValueChange={(tab) => dispatch({ type: "set_tab", tab })}
+          className="flex flex-1 flex-col gap-0 overflow-hidden"
+        >
+          <TabsList variant="line">
+            <TabsTrigger value="manual" className={SHEET_TAB_CLASS}>
+              Add by source
+            </TabsTrigger>
+            <TabsTrigger value="browse" className={SHEET_TAB_CLASS}>
+              Browse skills.sh
+            </TabsTrigger>
+          </TabsList>
+
+          <TabsContent value="browse" className="flex flex-1 overflow-hidden">
+            <SkillStore compact />
+          </TabsContent>
+
+          <TabsContent
+            value="manual"
+            className="flex flex-1 flex-col gap-5 overflow-y-auto px-5 py-4"
+          >
+            <SourceField
+              source={source}
+              parsed={parsed}
+              onChange={(value) => dispatch({ type: "set_source", source: value })}
+              inputRef={sourceInputRef}
+            />
+
+            <GithubSkillPicker
+              state={listingState}
+              selectedPaths={selectedPaths}
+              onSelectedPathsChange={setSelectedPaths}
+            />
+
+            <MethodPicker
+              method={method}
+              methods={methods}
+              noMethodsAvailable={noMethodsAvailable}
+              caption={methodCaption}
+              onChange={(m) => dispatch({ type: "set_method", method: m })}
+            />
+
+            <ManualTabFields
+              method={method}
+              scope={scope}
+              projectPath={projectPath}
+              userAddedProjects={userAddedProjects}
+              trial={trial}
+              submitError={submitError}
+              dispatch={dispatch}
+              onBrowseProject={handleBrowseProject}
+              installedReaders={installedReaders}
+              enabledReaders={enabledReaders}
+              onReaderEnabledChange={(agent, enabled) =>
+                dispatch({ type: "set_reader_enabled", agent, enabled })
+              }
+              claudeReadsShared={claudeReadsShared}
+              claudeLink={claudeLink}
+              onClaudeLinkChange={(on) => dispatch({ type: "set_claude_link", claudeLink: on })}
+            />
+          </TabsContent>
+        </Tabs>
+
+        {sheetTab === "manual" && (
+          <ManualTabFooter
             method={method}
-            methods={methods}
-            agents={agents}
-            onChange={(m) => dispatch({ type: "set_method", method: m })}
+            submitLabel={submitLabel}
+            isValid={isValid && !listingBlocks}
+            isSubmitting={isSubmitting}
+            onCancel={closeSheet}
+            onSubmit={handleSubmit}
           />
-
-          <ManualTabFields
-            method={method}
-            agents={agents}
-            scope={scope}
-            projectPath={projectPath}
-            userAddedProjects={userAddedProjects}
-            trial={trial}
-            submitError={submitError}
-            dispatch={dispatch}
-            onBrowseProject={handleBrowseProject}
-          />
-        </div>
-      )}
-
-      {sheetTab === "manual" && (
-        <ManualTabFooter
-          method={method}
-          isValid={isValid}
-          isSubmitting={isSubmitting}
-          onCancel={closeSheet}
-          onSubmit={handleSubmit}
-        />
-      )}
-    </dialog>
+        )}
+      </DrawerContent>
+    </Drawer>
   );
 }

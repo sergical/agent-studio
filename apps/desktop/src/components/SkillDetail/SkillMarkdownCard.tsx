@@ -8,6 +8,7 @@ import { Button } from "@skill-studio/ui";
 import { deploymentLabel, pluginLabelForSkill } from "@skill-studio/lib";
 import type { Deployment, InstalledSkill } from "@skill-studio/lib";
 import { SelectControl } from "../ui/SelectControl";
+import { TooltipControl } from "../ui/TooltipControl";
 import { SkillMarkdown } from "./SkillMarkdown";
 import { SkillMarkdownEditor } from "./SkillMarkdownEditor";
 
@@ -101,12 +102,11 @@ export function SkillMarkdownCard({
                 }))}
               />
             ) : (
-              <span
-                className="truncate text-caption font-normal text-text-tertiary"
-                title={deployment.path}
-              >
-                {deploymentLabel(deployment)}
-              </span>
+              <TooltipControl content={[{ text: deployment.path, mono: true }]}>
+                <span className="truncate text-caption font-normal text-text-tertiary">
+                  {deploymentLabel(deployment)}
+                </span>
+              </TooltipControl>
             ))}
           {editState.kind === "editing"
             ? editState.isDirty && (

@@ -5,10 +5,12 @@
 // ============================================================================
 
 import { useState } from "react";
-import { Button, Textarea } from "@skill-studio/ui";
+import { Button, Textarea, ToggleGroup, ToggleGroupItem } from "@skill-studio/ui";
 import type { SkillRunTargetKind } from "@skill-studio/lib";
 import type { InstalledSkill } from "@skill-studio/lib";
+import { ProjectDirectorySelect } from "../SkillStore/ProjectDirectorySelect";
 import { CheckboxControl } from "../ui/CheckboxControl";
+import { singleSelectToggleValue } from "../../lib/single-select-toggle-group";
 
 export interface SkillTestRunParams {
   prompt: string;
@@ -114,40 +116,35 @@ export function SkillTestForm({
         <span className="text-caption font-semibold tracking-[0.04em] text-text-tertiary uppercase">
           Where
         </span>
-        <div className="flex flex-wrap gap-1.5">
+        <ToggleGroup
+          variant="segmented"
+          aria-label="Where"
+          value={[targetKind]}
+          onValueChange={(next) => singleSelectToggleValue<SkillRunTargetKind>(next, setTargetKind)}
+        >
           {TARGET_LABELS.map(([kind, label]) => (
-            <button
+            <ToggleGroupItem
               key={kind}
-              type="button"
-              className={`inline-flex h-[26px] items-center gap-1.5 rounded-sm border border-border bg-bg-tertiary px-2.5 text-caption text-text-tertiary transition-colors disabled:cursor-not-allowed enabled:hover:bg-bg-hover enabled:hover:text-text-secondary ${
-                kind === targetKind ? "border-text-tertiary text-text-primary" : ""
-              }`}
-              aria-pressed={kind === targetKind}
-              onClick={() => setTargetKind(kind)}
+              value={kind}
+              className="h-[26px] px-2.5"
               disabled={isRunning}
             >
               {label}
-            </button>
+            </ToggleGroupItem>
           ))}
-        </div>
+        </ToggleGroup>
       </div>
 
       {targetKind !== "scratch" && (
         <div className="flex flex-col gap-1.5">
           {candidateProjects.length > 0 ? (
-            <select
-              className="rounded-sm border border-border bg-bg-tertiary px-2 py-1.5 text-small text-text-primary"
-              aria-label="Project"
-              value={projectPath ?? ""}
-              onChange={(e) => setProjectPathOverride(e.target.value || undefined)}
+            <ProjectDirectorySelect
+              projects={candidateProjects}
+              value={projectPath}
+              onChange={setProjectPathOverride}
+              ariaLabel="Project"
               disabled={isRunning}
-            >
-              {candidateProjects.map((path) => (
-                <option key={path} value={path}>
-                  {path}
-                </option>
-              ))}
-            </select>
+            />
           ) : (
             <p className="m-0 text-caption text-text-tertiary">
               No tracked project is a git repository – only Scratch is available.

@@ -13,7 +13,10 @@ export interface ParsedSkillSource {
   path?: string;
   /** A pinned ref (branch, tag, or commit) from a `/tree/<ref>/...` or `/blob/<ref>/...` URL. */
   ref?: string;
-  /** The skill's directory name, when it could be determined from `path`. */
+  /** The skill's directory name, only when `path` is known to point at one
+   * skill (a `/blob/<ref>/<path>/SKILL.md` or a skills.sh URL). A `/tree/`
+   * URL or a bare path can just as well be a folder of many skills, so it
+   * leaves this unset and the sheet lists the repo instead. */
   skillName?: string;
   /** The clone URL, for kind "git". */
   url?: string;
@@ -60,8 +63,11 @@ export function parseSkillSource(input: string): ParsedSkillSource | { error: st
       path = path.slice(0, -"/SKILL.md".length);
     }
     if (!path) return { error: PARSE_ERROR };
-    const skillName = path.split("/").filter(Boolean).pop();
-    return { kind: "github", repo, path, ref, skillName };
+    if (treeOrBlob === "blob") {
+      const skillName = path.split("/").filter(Boolean).pop();
+      return { kind: "github", repo, path, ref, skillName };
+    }
+    return { kind: "github", repo, path, ref };
   }
 
   const skillsShUrl = trimmed.match(/^https:\/\/skills\.sh\/([^/]+)\/([^/]+)\/(.+?)\/?$/);
@@ -80,8 +86,7 @@ export function parseSkillSource(input: string): ParsedSkillSource | { error: st
     const repo = `${owner}/${repoName}`;
     const path = rest.replace(/^\//, "");
     if (!path) return { kind: "github", repo };
-    const skillName = path.split("/").filter(Boolean).pop();
-    return { kind: "github", repo, path, skillName };
+    return { kind: "github", repo, path };
   }
 
   return { error: PARSE_ERROR };

@@ -9,6 +9,7 @@
 import { useState } from "react";
 import type { ReactNode } from "react";
 import { ChevronDown } from "lucide-react";
+import { Collapsible, CollapsiblePanel, CollapsibleTrigger } from "@skill-studio/ui";
 import {
   attentionGroups,
   homeInvocationCounts,
@@ -34,6 +35,7 @@ import { useAppStore } from "../../store/appStore";
 import { PageShell } from "../Shell/PageShell";
 import { HarnessIcon, harnessIdFromLabel } from "../ui/HarnessIcon";
 import { InfoPopover } from "../ui/InfoPopover";
+import { MaterializeRootDialog } from "../ui/MaterializeRootDialog";
 import { TooltipControl } from "../ui/TooltipControl";
 
 const RECENTLY_USED_COUNT = 5;
@@ -123,34 +125,16 @@ function InboxRow({
   );
 }
 
-/** A group's sticky header: chevron, label, count, spacer, optional extra action. */
-function GroupHead({
-  label,
-  count,
-  isExpanded,
-  onToggle,
-  extra,
-}: {
-  label: string;
-  count: number;
-  isExpanded: boolean;
-  onToggle: () => void;
-  extra?: ReactNode;
-}) {
+/** A group's sticky header: chevron, label, count, spacer, optional extra action. Sits inside a `Collapsible`, whose `data-panel-open` drives the chevron. */
+function GroupHead({ label, count, extra }: { label: string; count: number; extra?: ReactNode }) {
   return (
-    <button
-      className="sticky top-0 z-1 flex h-8.5 w-full items-center gap-2 border-t border-b border-border-subtle bg-bg-secondary px-3 text-left text-small font-semibold text-text-primary"
-      aria-expanded={isExpanded}
-      onClick={onToggle}
-    >
-      <ChevronDown
-        className={`size-3.5 text-text-quaternary transition-transform ${isExpanded ? "" : "-rotate-90"}`}
-      />
+    <CollapsibleTrigger className="group/head sticky top-0 z-1 flex h-8.5 w-full items-center gap-2 border-t border-b border-border-subtle bg-bg-secondary px-3 text-left text-small font-semibold text-text-primary">
+      <ChevronDown className="size-3.5 shrink-0 -rotate-90 text-text-quaternary transition-transform group-data-panel-open/head:rotate-0" />
       {label}
       <span className="font-normal text-text-tertiary tabular-nums">{count}</span>
       <span className="flex-1" />
       {extra}
-    </button>
+    </CollapsibleTrigger>
   );
 }
 
@@ -256,11 +240,51 @@ function issueActionLabel(kind: HealthIssueKind): string {
       return "Fix link";
     case "duplicate":
       return "Compare";
+    case "linked-root":
+      return "Convert to per-skill links";
     case "parked-but-reinstalled":
     case "spec-violation":
     case "lock-only":
       return "Open";
   }
+}
+
+/** The Warnings group's per-row action - "Compare" for a duplicate, the Convert dialog opener for a linked root, else the generic Open. */
+function WarningRowAction({
+  issue,
+  onCompare,
+  onConvertLinkedRoot,
+  onOpen,
+}: {
+  issue: HealthIssue;
+  onCompare: () => void;
+  onConvertLinkedRoot: (harness: string, harnessLabel: string, root: string) => void;
+  onOpen: () => void;
+}) {
+  if (issue.kind === "duplicate") {
+    return (
+      <button className={ROW_ACTION_CLASS} onClick={onCompare}>
+        Compare
+      </button>
+    );
+  }
+  if (issue.kind === "linked-root" && issue.harness && issue.root) {
+    const { harness, root } = issue;
+    const harnessLabel = issue.harnessLabel ?? harness;
+    return (
+      <button
+        className={ROW_ACTION_CLASS}
+        onClick={() => onConvertLinkedRoot(harness, harnessLabel, root)}
+      >
+        {issueActionLabel(issue.kind)}
+      </button>
+    );
+  }
+  return (
+    <button className={ROW_ACTION_CLASS} onClick={onOpen}>
+      {issueActionLabel(issue.kind)}
+    </button>
+  );
 }
 
 /**
@@ -542,6 +566,11 @@ export function HomeView({ snapshot, isLoading, onSelectSkill }: HomeViewProps) 
 
   const [filter, setFilter] = useState<HomeFilter | null>(null);
   const [collapsedGroups, setCollapsedGroups] = useState<Set<GroupId>>(() => new Set(["unused"]));
+  const [linkedRootDialog, setLinkedRootDialog] = useState<{
+    harness: string;
+    harnessLabel: string;
+    root: string;
+  } | null>(null);
 
   if (!snapshot) {
     if (isLoading) {
@@ -623,14 +652,13 @@ export function HomeView({ snapshot, isLoading, onSelectSkill }: HomeViewProps) 
         )}
 
         {broken.length > 0 && isGroupVisible("broken") && (
-          <section data-group="broken">
-            <GroupHead
-              label="Broken"
-              count={broken.length}
-              isExpanded={isGroupExpanded("broken")}
-              onToggle={() => toggleGroup("broken")}
-            />
-            {isGroupExpanded("broken") && (
+          <Collapsible
+            data-group="broken"
+            open={isGroupExpanded("broken")}
+            onOpenChange={() => toggleGroup("broken")}
+          >
+            <GroupHead label="Broken" count={broken.length} />
+            <CollapsiblePanel>
               <div className="flex flex-col">
                 {broken.slice(0, MAX_ROWS_PER_GROUP).map((issue) => (
                   <InboxRow
@@ -657,19 +685,18 @@ export function HomeView({ snapshot, isLoading, onSelectSkill }: HomeViewProps) 
                   />
                 )}
               </div>
-            )}
-          </section>
+            </CollapsiblePanel>
+          </Collapsible>
         )}
 
         {warnings.length > 0 && isGroupVisible("warn") && (
-          <section data-group="warn">
-            <GroupHead
-              label="Warnings"
-              count={warnings.length}
-              isExpanded={isGroupExpanded("warn")}
-              onToggle={() => toggleGroup("warn")}
-            />
-            {isGroupExpanded("warn") && (
+          <Collapsible
+            data-group="warn"
+            open={isGroupExpanded("warn")}
+            onOpenChange={() => toggleGroup("warn")}
+          >
+            <GroupHead label="Warnings" count={warnings.length} />
+            <CollapsiblePanel>
               <div className="flex flex-col">
                 {warnings.slice(0, MAX_ROWS_PER_GROUP).map((issue: HealthIssue) => (
                   <InboxRow
@@ -679,21 +706,14 @@ export function HomeView({ snapshot, isLoading, onSelectSkill }: HomeViewProps) 
                     onOpen={() => onSelectSkill(issue.skill.name)}
                     detail={<span title={issue.detail}>{issue.detail}</span>}
                     action={
-                      issue.kind === "duplicate" ? (
-                        <button
-                          className={ROW_ACTION_CLASS}
-                          onClick={() => openSkill(issue.skill.name, undefined, "compare")}
-                        >
-                          Compare
-                        </button>
-                      ) : (
-                        <button
-                          className={ROW_ACTION_CLASS}
-                          onClick={() => onSelectSkill(issue.skill.name)}
-                        >
-                          {issueActionLabel(issue.kind)}
-                        </button>
-                      )
+                      <WarningRowAction
+                        issue={issue}
+                        onCompare={() => openSkill(issue.skill.name, undefined, "compare")}
+                        onConvertLinkedRoot={(harness, harnessLabel, root) =>
+                          setLinkedRootDialog({ harness, harnessLabel, root })
+                        }
+                        onOpen={() => onSelectSkill(issue.skill.name)}
+                      />
                     }
                   />
                 ))}
@@ -705,8 +725,8 @@ export function HomeView({ snapshot, isLoading, onSelectSkill }: HomeViewProps) 
                   />
                 )}
               </div>
-            )}
-          </section>
+            </CollapsiblePanel>
+          </Collapsible>
         )}
 
         {updates.length > 0 && isGroupVisible("upd") && (
@@ -720,14 +740,13 @@ export function HomeView({ snapshot, isLoading, onSelectSkill }: HomeViewProps) 
         )}
 
         {unused.length > 0 && isGroupVisible("unused") && (
-          <section data-group="unused">
-            <GroupHead
-              label="Not used in the last 30 days"
-              count={unused.length}
-              isExpanded={isGroupExpanded("unused")}
-              onToggle={() => toggleGroup("unused")}
-            />
-            {isGroupExpanded("unused") && (
+          <Collapsible
+            data-group="unused"
+            open={isGroupExpanded("unused")}
+            onOpenChange={() => toggleGroup("unused")}
+          >
+            <GroupHead label="Not used in the last 30 days" count={unused.length} />
+            <CollapsiblePanel>
               <div className="flex flex-col">
                 {unused.slice(0, MAX_ROWS_PER_GROUP).map((skill) => {
                   const projectDeployment = skill.deployments.find((d) => d.project_path);
@@ -777,19 +796,18 @@ export function HomeView({ snapshot, isLoading, onSelectSkill }: HomeViewProps) 
                   />
                 )}
               </div>
-            )}
-          </section>
+            </CollapsiblePanel>
+          </Collapsible>
         )}
 
         {recent.length > 0 && isGroupVisible("rec") && (
-          <section data-group="rec">
-            <GroupHead
-              label="Recently used"
-              count={recent.length}
-              isExpanded={isGroupExpanded("rec")}
-              onToggle={() => toggleGroup("rec")}
-            />
-            {isGroupExpanded("rec") && (
+          <Collapsible
+            data-group="rec"
+            open={isGroupExpanded("rec")}
+            onOpenChange={() => toggleGroup("rec")}
+          >
+            <GroupHead label="Recently used" count={recent.length} />
+            <CollapsiblePanel>
               <div className="flex flex-col">
                 {recent.map(({ skill, lastUsed, projectLabel, usesIn30Days }) => (
                   <InboxRow
@@ -814,10 +832,19 @@ export function HomeView({ snapshot, isLoading, onSelectSkill }: HomeViewProps) 
                   onClick={() => setActiveView({ kind: "activity" })}
                 />
               </div>
-            )}
-          </section>
+            </CollapsiblePanel>
+          </Collapsible>
         )}
       </div>
+
+      {linkedRootDialog && (
+        <MaterializeRootDialog
+          harness={linkedRootDialog.harness}
+          harnessLabel={linkedRootDialog.harnessLabel}
+          root={linkedRootDialog.root}
+          onClose={() => setLinkedRootDialog(null)}
+        />
+      )}
     </PageShell>
   );
 }
@@ -866,12 +893,10 @@ function UpdatesGroup({
   };
 
   return (
-    <section data-group="upd">
+    <Collapsible data-group="upd" open={isExpanded} onOpenChange={onToggle}>
       <GroupHead
         label="Updates"
         count={updates.length}
-        isExpanded={isExpanded}
-        onToggle={onToggle}
         extra={
           updates.length > 1 && (
             <button
@@ -887,7 +912,7 @@ function UpdatesGroup({
           )
         }
       />
-      {isExpanded && (
+      <CollapsiblePanel>
         <div className="flex flex-col">
           {updates.slice(0, MAX_ROWS_PER_GROUP).map((skill) => (
             <InboxRow
@@ -913,7 +938,7 @@ function UpdatesGroup({
             <ShowAllLink count={updates.length} label="Show all" onClick={onShowAll} />
           )}
         </div>
-      )}
-    </section>
+      </CollapsiblePanel>
+    </Collapsible>
   );
 }

@@ -20,6 +20,7 @@ interface SelectControlProps {
   leadingIcon?: React.ReactNode;
   /** Short label before the value, e.g. "Sort:" - names what the select controls. */
   triggerPrefix?: string;
+  disabled?: boolean;
 }
 
 export function SelectControl({
@@ -29,11 +30,13 @@ export function SelectControl({
   ariaLabel,
   leadingIcon,
   triggerPrefix,
+  disabled,
 }: SelectControlProps) {
   return (
     <Select
       items={items}
       value={value}
+      disabled={disabled}
       onValueChange={(next) => {
         if (next != null) onValueChange(next);
       }}

@@ -5,8 +5,15 @@
 // ============================================================================
 
 import { useState } from "react";
-import { X } from "lucide-react";
-import { Button, Input } from "@skill-studio/ui";
+import {
+  Button,
+  Dialog,
+  DialogContent,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+  Input,
+} from "@skill-studio/ui";
 import { createSkillPack } from "../../lib/skill-api";
 import { DEFAULT_PACK_NAME, validatePackName } from "@skill-studio/lib";
 import type { PackMember } from "@skill-studio/lib";
@@ -51,27 +58,12 @@ export function PackNamePrompt({ members, onClose, onCreated }: PackNamePromptPr
   }
 
   return (
-    <div
-      className="fixed inset-0 z-modal flex items-center justify-center bg-scrim"
-      onClick={onClose}
-    >
-      <div
-        className="w-95 rounded-lg border border-border bg-bg-elevated p-5 shadow-lg"
-        onClick={(e) => e.stopPropagation()}
-      >
-        <div className="mb-2 flex items-center justify-between">
-          <h3 className="m-0 text-wrap-balance text-emphasis font-semibold text-text-primary">
-            Create pack
-          </h3>
-          <button
-            className="flex size-6 items-center justify-center rounded-sm border-0 bg-transparent text-text-tertiary"
-            onClick={onClose}
-            aria-label="Close"
-          >
-            <X size={18} />
-          </button>
-        </div>
-        <p className="m-0 mb-3 text-wrap-pretty text-small text-text-tertiary">
+    <Dialog open onOpenChange={(open) => !open && onClose()}>
+      <DialogContent className="w-95 max-w-[calc(100%-2rem)]" aria-label="Create pack">
+        <DialogHeader>
+          <DialogTitle>Create pack</DialogTitle>
+        </DialogHeader>
+        <p className="m-0 text-wrap-pretty text-small text-text-tertiary">
           Bundles {members.length} skill{members.length !== 1 ? "s" : ""} into{" "}
           <code>~/.agents/packs/{name || "…"}</code>.
         </p>
@@ -84,15 +76,15 @@ export function PackNamePrompt({ members, onClose, onCreated }: PackNamePromptPr
           }}
         />
         {error && <p className="m-0 mt-1.5 text-small text-error">{error}</p>}
-        <div className="mt-4 flex justify-end gap-2">
+        <DialogFooter>
           <Button variant="outline" onClick={onClose}>
             Cancel
           </Button>
           <Button disabled={!!error || submitting} onClick={handleSubmit}>
             {submitting ? "Creating…" : "Create"}
           </Button>
-        </div>
-      </div>
-    </div>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
   );
 }

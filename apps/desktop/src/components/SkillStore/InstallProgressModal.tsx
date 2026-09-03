@@ -2,7 +2,7 @@
 // InstallProgressModal - Shows installation progress
 // ============================================================================
 
-import { Dialog, DialogContent, DialogTitle } from "@skill-studio/ui";
+import { Dialog, DialogContent, DialogTitle, Progress } from "@skill-studio/ui";
 import type { InstallProgressState } from "@skill-studio/lib";
 
 interface InstallProgressModalProps {
@@ -28,14 +28,7 @@ export function InstallProgressModal({ progress, onClose }: InstallProgressModal
           <p className="m-0 mb-1 text-body font-medium text-text-primary">{progress.stage}</p>
           <p className="m-0 text-small text-text-tertiary">{progress.message}</p>
 
-          {progress.percent !== undefined && (
-            <div className="mt-5 h-1 w-full overflow-hidden rounded-full bg-bg-tertiary">
-              <div
-                className="h-full rounded-full bg-accent transition-[width] duration-300 ease-out"
-                style={{ width: `${progress.percent}%` }}
-              />
-            </div>
-          )}
+          {progress.percent !== undefined && <Progress value={progress.percent} className="mt-5" />}
 
           {progress.error && (
             <div className="mt-4 w-full rounded-sm bg-error-soft p-3">

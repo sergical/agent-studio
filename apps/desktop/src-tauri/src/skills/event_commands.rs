@@ -12,6 +12,7 @@
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 
+use super::agents::AgentId;
 use super::event_store::{EventRow, EventStore};
 use super::skill_agent_runner::validate_skill_dir_name;
 use super::skill_dto::{Deployment, SkillEventDto};
@@ -127,14 +128,89 @@ pub fn set_shared_harness_skill_enabled(
     if enabled {
         skill_materialize::relink_harness(store, &root, &skill, &harness)?;
     } else {
+        // No longer converts a whole-dir link implicitly (that used to run
+        // silently on first disable) - the frontend routes that case through
+        // the explicit `materialize_harness_root` dialog first (Locations
+        // card / Home repair card) and only calls this once the root is
+        // already per-skill links.
         let is_whole_dir_link = std::fs::symlink_metadata(&root)
             .map(|m| m.file_type().is_symlink())
             .unwrap_or(false);
         if is_whole_dir_link {
-            skill_materialize::explode_shared_dir(store, &root, &harness)?;
+            return Err(format!(
+                "{} is a link to the shared folder; convert it to per-skill links first",
+                root.display()
+            ));
         }
         skill_materialize::unlink_harness(store, &root, &skill, &harness)?;
     }
+    drop(guard);
+
+    skill_refresh::request_snapshot_rebuild(&app);
+    Ok(())
+}
+
+/// `materialize_harness_root`'s guard against a renderer-supplied
+/// `(harness, root)` pair that doesn't match a real whole-directory link:
+/// the snapshot must record a global deployment for `harness` at exactly
+/// `root` with `shared_via_whole_dir_link` set.
+fn validate_materialize_request(
+    snapshot: &SkillSnapshot,
+    harness: &str,
+    root: &str,
+) -> Result<(), String> {
+    let display = AgentId::all()
+        .into_iter()
+        .find(|agent| agent.cli_name() == harness)
+        .map(|agent| agent.display_name().to_string())
+        .unwrap_or_else(|| harness.to_string());
+    let owns = snapshot.skills.iter().any(|skill| {
+        skill.deployments.iter().any(|d| {
+            d.agent == display
+                && d.path == root
+                && d.scope == "global"
+                && d.shared_via_whole_dir_link
+        })
+    });
+    if owns {
+        Ok(())
+    } else {
+        Err(format!(
+            "{root} is not a recorded whole-directory link for {harness}"
+        ))
+    }
+}
+
+/// Converts a harness's whole-dir link to the shared skills root into a real
+/// directory of per-skill links, as an explicit, named action - the
+/// Locations card's Convert dialog and Home's linked-root repair card, both
+/// of which must ask before doing this (see the module doc). Refuses when
+/// `root` isn't a symlink whose canonical target ends in `.agents/skills`, or
+/// when the snapshot has no matching whole-dir-link deployment for `harness`.
+#[tauri::command]
+pub fn materialize_harness_root(
+    app: tauri::AppHandle,
+    harness: String,
+    root: String,
+    refresh_state: tauri::State<SkillRefreshState>,
+    fork_lock: tauri::State<ForkMutationLock>,
+    event_store: tauri::State<EventStoreState>,
+) -> Result<(), String> {
+    let _guard = fork_lock.try_acquire()?;
+    let root_path = PathBuf::from(&root);
+    skill_materialize::validate_materialize_root(&root_path)?;
+
+    let snapshot = refresh_state
+        .snapshot
+        .read()
+        .map_err(|e| format!("snapshot lock poisoned: {e}"))?
+        .clone()
+        .ok_or("No skill snapshot available")?;
+    validate_materialize_request(&snapshot, &harness, &root)?;
+
+    let guard = locked_store(&event_store)?;
+    let store = guard.as_ref().ok_or("Event store is unavailable")?;
+    skill_materialize::explode_shared_dir(store, &root_path, &harness)?;
     drop(guard);
 
     skill_refresh::request_snapshot_rebuild(&app);
@@ -353,6 +429,8 @@ mod tests {
                 disabled_readers: Vec::new(),
                 codex_implicit_invocation: None,
                 shared_via_whole_dir_link: false,
+                spec_violations: Vec::new(),
+                invocation: super::super::frontmatter::InvocationPolicy::Both,
             }
         }
 
@@ -399,6 +477,46 @@ mod tests {
             update_check: Default::default(),
             opencode_config_kind: None,
         }
+    }
+
+    /// A snapshot with one global, whole-dir-linked Claude Code deployment,
+    /// for `validate_materialize_request` tests.
+    fn fixture_materialize_snapshot(root: &Path) -> SkillSnapshot {
+        let mut snapshot = fixture_snapshot(root, root);
+        snapshot.skills[0].deployments[0].scope = "global".to_string();
+        snapshot.skills[0].deployments[0].symlink_is_broken = false;
+        snapshot.skills[0].deployments[0].shared_via_whole_dir_link = true;
+        snapshot.skills[0].deployments.truncate(1);
+        snapshot
+    }
+
+    #[test]
+    fn validate_materialize_request_accepts_a_recorded_whole_dir_link() {
+        let root = PathBuf::from("/home/.claude/skills");
+        let snapshot = fixture_materialize_snapshot(&root);
+        assert!(
+            validate_materialize_request(&snapshot, "claude-code", "/home/.claude/skills").is_ok()
+        );
+    }
+
+    #[test]
+    fn validate_materialize_request_rejects_a_root_not_in_the_snapshot() {
+        let root = PathBuf::from("/home/.claude/skills");
+        let snapshot = fixture_materialize_snapshot(&root);
+        let err = validate_materialize_request(&snapshot, "claude-code", "/home/.codex/skills")
+            .unwrap_err();
+        assert!(err.contains("/home/.codex/skills"), "{err}");
+    }
+
+    #[test]
+    fn validate_materialize_request_rejects_a_harness_root_mismatch() {
+        let root = PathBuf::from("/home/.claude/skills");
+        let snapshot = fixture_materialize_snapshot(&root);
+        // The root is recorded for Claude Code, not Codex - the two must
+        // agree, not just each independently point at something real.
+        let err =
+            validate_materialize_request(&snapshot, "codex", "/home/.claude/skills").unwrap_err();
+        assert!(err.contains("codex"), "{err}");
     }
 
     #[test]

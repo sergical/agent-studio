@@ -6,12 +6,13 @@
 
 import { useEffect, useRef } from "react";
 import { homeDir } from "@tauri-apps/api/path";
-import { Tooltip } from "@base-ui/react/tooltip";
+import { TooltipProvider } from "@skill-studio/ui";
 import { Toaster } from "sonner";
 import { AddSkillSheet } from "./components/AddSkill/AddSkillSheet";
 import { Sidebar } from "./components/Sidebar/Sidebar";
 import { SkillActivityView } from "./components/Activity/SkillActivityView";
 import { HomeView } from "./components/Home/HomeView";
+import { SettingsView } from "./components/Settings/SettingsView";
 import { LearnView } from "./components/Learn/LearnView";
 import { SkillsView } from "./components/SkillList/SkillsView";
 import { PluginSkillsView } from "./components/SkillList/PluginSkillsView";
@@ -116,6 +117,8 @@ function App() {
     main = <PacksView />;
   } else if (activeView.kind === "learn") {
     main = <LearnView section={activeView.section} />;
+  } else if (activeView.kind === "settings") {
+    main = <SettingsView />;
   } else {
     const skill = snapshot?.skills.find((s) => s.name === activeView.name) ?? null;
     const invocationStats = snapshot?.invocations.find((s) => s.skill === activeView.name);
@@ -132,7 +135,7 @@ function App() {
   }
 
   return (
-    <Tooltip.Provider delay={400}>
+    <TooltipProvider delay={400}>
       <div className="flex h-screen overflow-hidden bg-[var(--color-bg-primary)]">
         <Sidebar snapshot={snapshot} isLoading={isLoading} requestRescan={requestRescan} />
         <main className="flex-1 overflow-y-auto">{main}</main>
@@ -154,7 +157,7 @@ function App() {
           }}
         />
       </div>
-    </Tooltip.Provider>
+    </TooltipProvider>
   );
 }
 

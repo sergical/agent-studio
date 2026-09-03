@@ -13,12 +13,11 @@ describe("parseSkillSource", () => {
     });
   });
 
-  it("parses owner/repo/<path> and derives the skill name from the last segment", () => {
+  it("parses owner/repo/<path> without guessing a skill name", () => {
     expect(parseSkillSource("getsentry/find-bugs/skills/find-bugs")).toEqual({
       kind: "github",
       repo: "getsentry/find-bugs",
       path: "skills/find-bugs",
-      skillName: "find-bugs",
     });
   });
 
@@ -29,7 +28,7 @@ describe("parseSkillSource", () => {
     });
   });
 
-  it("parses a github.com /tree/<ref>/<path> URL", () => {
+  it("parses a github.com /tree/<ref>/<path> URL without guessing a skill name", () => {
     expect(
       parseSkillSource("https://github.com/getsentry/find-bugs/tree/v2/skills/find-bugs"),
     ).toEqual({
@@ -37,7 +36,15 @@ describe("parseSkillSource", () => {
       repo: "getsentry/find-bugs",
       path: "skills/find-bugs",
       ref: "v2",
-      skillName: "find-bugs",
+    });
+  });
+
+  it("leaves a /tree/<ref>/skills folder URL as a folder, not one skill", () => {
+    expect(parseSkillSource("https://github.com/kentcdodds/kcd-skills/tree/main/skills")).toEqual({
+      kind: "github",
+      repo: "kentcdodds/kcd-skills",
+      path: "skills",
+      ref: "main",
     });
   });
 

@@ -6,14 +6,18 @@
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import type {
+  AddMethodDefaults,
+  AddSkillOutcome,
   AddSkillRequest,
   AddSkillResult,
+  AddSkillsRequest,
   AgentId,
   AgentTarget,
   ImportResult,
   InstallRequest,
   InstallResult,
   ForkRecord,
+  GithubSkillListing,
   InstalledSkill,
   InstallScope,
   InvocationPolicy,
@@ -23,6 +27,7 @@ import type {
   PullResult,
   SkillDetails,
   SkillEvent,
+  SkillsShAccessInfo,
   SkillSnapshot,
   UpdatePackResult,
 } from "@skill-studio/lib";
@@ -30,6 +35,23 @@ import type {
 // ============================================================================
 // Search API
 // ============================================================================
+
+/**
+ * Whether discovery goes straight to skills.sh with a developer-override key
+ * (`mode: "direct"`) or through the local Skill Studio server (`mode:
+ * "server"`, with its URL). Never returns the key itself.
+ */
+export async function getSkillsShAccess(): Promise<SkillsShAccessInfo> {
+  return invoke("get_skills_sh_access");
+}
+
+/**
+ * Save `key` as the skills.sh API key. Trimmed and rejected server-side if
+ * empty.
+ */
+export async function setSkillsShApiKey(key: string): Promise<void> {
+  return invoke("set_skills_sh_api_key", { key });
+}
 
 /**
  * Search for skills on skills.sh. The v1 search endpoint has no pagination -
@@ -114,10 +136,15 @@ export async function installSkill(request: InstallRequest): Promise<InstallResu
 }
 
 /**
- * Remove a skill using npx skills CLI
+ * Remove a skill using npx skills CLI. `projectPath` is `null` for a global
+ * removal, or the project directory to remove from - validated on the Rust
+ * side against the current snapshot and used as the CLI's working directory.
  */
-export async function removeSkill(skillName: string, global: boolean): Promise<InstallResult> {
-  return invoke("remove_skill", { skillName, global });
+export async function removeSkill(
+  skillName: string,
+  projectPath: string | null,
+): Promise<InstallResult> {
+  return invoke("remove_skill", { skillName, projectPath });
 }
 
 /**
@@ -163,6 +190,28 @@ export async function writeInstalledSkillMdIfUnchanged(
  */
 export async function openSkillPath(path: string, mode: "reveal" | "editor"): Promise<void> {
   return invoke("open_skill_path", { path, mode });
+}
+
+/** One editor offered by the Settings picker - see the Rust `skill_editor`. */
+export interface EditorOption {
+  /** The macOS application name `open -a` takes, without `.app`. */
+  app_name: string;
+  label: string;
+}
+
+/** The known code editors actually installed on this machine. */
+export async function listInstalledEditors(): Promise<EditorOption[]> {
+  return invoke("list_installed_editors");
+}
+
+/** The app "Open in editor" uses, or `null` for the system default. */
+export async function getPreferredEditor(): Promise<string | null> {
+  return invoke("get_preferred_editor");
+}
+
+/** `null` restores the system default. An editor that is not installed is refused. */
+export async function setPreferredEditor(appName: string | null): Promise<void> {
+  return invoke("set_preferred_editor", { appName });
 }
 
 // ============================================================================
@@ -252,6 +301,38 @@ export async function importSkillPack(source: string, agents: AgentId[]): Promis
  */
 export async function addSkill(request: AddSkillRequest): Promise<AddSkillResult> {
   return invoke("add_skill", { request });
+}
+
+/**
+ * Installs every skill in `request.skills` from one source. The promise
+ * rejects only when nothing could be attempted; a single skill's failure
+ * comes back as that entry's `error`.
+ */
+export async function addSkills(request: AddSkillsRequest): Promise<AddSkillOutcome[]> {
+  return invoke("add_skills", { request });
+}
+
+/**
+ * Which skill folders a GitHub repo (or `path` within it) contains, so the
+ * Add-skill sheet can install one skill or offer a picker. Results are
+ * cached per repo and ref in the backend; `refresh` bypasses that cache.
+ */
+export async function listGithubSkills(
+  repo: string,
+  path?: string,
+  gitRef?: string,
+  refresh?: boolean,
+): Promise<GithubSkillListing> {
+  return invoke("list_github_skills", { repo, path, gitRef, refresh });
+}
+
+/**
+ * Whether dotagents can run, whether skills.sh has been used before, and
+ * which first-class agents are installed - fetched once when the Add Skill
+ * sheet opens to pick its Method and Harnesses defaults.
+ */
+export async function getAddMethodDefaults(): Promise<AddMethodDefaults> {
+  return invoke("get_add_method_defaults");
 }
 
 /**
@@ -392,8 +473,9 @@ export async function restoreSkillEvent(eventId: string, force: boolean): Promis
 
 /**
  * The Locations card's entry point for disabling/enabling one skill under
- * one harness that reads from the shared root. Converts a whole-dir link to
- * per-skill links on first disable.
+ * one harness that reads from the shared root. Refuses when `harness`'s root
+ * is still a whole-dir link to the shared folder - call
+ * `materializeHarnessRoot` first (the Convert dialog).
  */
 export async function setSharedHarnessSkillEnabled(
   rootPath: string,
@@ -405,13 +487,13 @@ export async function setSharedHarnessSkillEnabled(
 }
 
 /**
- * The Locations card's "Move out of shared folder" entry point: gives every
- * harness that reads the shared root its own real copy of `skill`, then
- * deletes the shared copy. `rootPath` is the shared root itself (e.g.
- * `~/.agents/skills`), not one harness's skills dir.
+ * Converts a harness's whole-dir link to the shared skills root into a real
+ * directory of per-skill links, as an explicit, named action - the
+ * Locations card's Convert dialog and Home's linked-root repair card. Recorded
+ * in Activity and can be undone from there.
  */
-export async function distributeSkillFromShared(rootPath: string, skill: string): Promise<void> {
-  return invoke("distribute_skill_from_shared", { rootPath, skill });
+export async function materializeHarnessRoot(harness: string, root: string): Promise<void> {
+  return invoke("materialize_harness_root", { harness, root });
 }
 
 /**

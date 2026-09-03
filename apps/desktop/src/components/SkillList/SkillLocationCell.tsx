@@ -7,7 +7,12 @@
 // ============================================================================
 
 import { Copy, Link2, Unlink } from "lucide-react";
-import { deploymentLinkTarget, driftingCopies, locationSummary } from "@skill-studio/lib";
+import {
+  deploymentLinkTarget,
+  deploymentRelationText,
+  driftingCopies,
+  locationSummary,
+} from "@skill-studio/lib";
 import { homeRelativePath } from "@skill-studio/lib";
 import type { Deployment, InstalledSkill } from "@skill-studio/lib";
 import { HarnessIcon, harnessIdFromLabel } from "../ui/HarnessIcon";
@@ -70,7 +75,7 @@ export function SkillLocationCell({ skill }: SkillLocationCellProps) {
             content={
               d.is_symlink
                 ? `${d.agent} · symlink → ${target ? homeRelativePath(target) : "unknown target"}`
-                : `${d.agent} · linked folder → ${target ? homeRelativePath(target) : "unknown target"}`
+                : `${d.agent} · ${deploymentRelationText(d)}`
             }
           >
             <span

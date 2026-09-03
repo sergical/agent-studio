@@ -4,7 +4,7 @@
 // ============================================================================
 
 use std::fs;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 
@@ -33,10 +33,16 @@ pub struct SkillLockFile {
     pub skills: std::collections::HashMap<String, InstalledSkillEntry>,
 }
 
-/// Get the path to the skill lock file
+/// `~/.agents/.skill-lock.json` - the path every reader of the shared lock
+/// file, real or a test's temp home, resolves against.
+pub fn lock_file_path(home: &Path) -> PathBuf {
+    home.join(".agents").join(".skill-lock.json")
+}
+
+/// Get the path to the skill lock file, against the real home dir.
 pub fn get_lock_file_path() -> Result<PathBuf, String> {
     let home = dirs::home_dir().ok_or("Could not find home directory")?;
-    Ok(home.join(".agents").join(".skill-lock.json"))
+    Ok(lock_file_path(&home))
 }
 
 /// Read and parse the skill lock file

@@ -1,15 +1,81 @@
 // ============================================================================
 // Skills Module - API Client
-// HTTP client for skills.sh's authenticated /api/v1 surface. Every request
-// carries `Authorization: Bearer <api_key>` - see `skill_fork_registry`'s
-// `skills_sh_api_key` field for where the key comes from.
+// HTTP client for skills.sh's authenticated /api/v1 surface. skills.sh API
+// keys aren't per-account, so the desktop app can't ship one: every request
+// either carries `Authorization: Bearer <api_key>` straight to skills.sh (a
+// developer-override key from `skill_fork_registry`'s `skills_sh_api_key`) or
+// goes unauthenticated to the local Skill Studio server, which holds the real
+// key - see `SkillsShAccess`/`resolve_skills_sh_access`.
 // ============================================================================
+
+use std::path::Path;
 
 use serde::Deserialize;
 
 use super::skill_dto::{PaginatedSkillsResponse, SkillDetails, SkillSearchResult};
+use super::skill_fork_registry;
 
 const SKILLS_API_BASE: &str = "https://skills.sh/api/v1";
+
+/// The local Skill Studio server's default base URL, used when
+/// `~/.agents/skill-studio.json` has no `skills_sh_api_key` and no
+/// `server_url` override - see `apps/server`.
+const DEFAULT_SERVER_URL: &str = "http://127.0.0.1:8787";
+
+/// Which credentials and base URL a discovery request uses - resolved once
+/// per call by `resolve_skills_sh_access`. `Direct` is the developer override
+/// (a `skills_sh_api_key` configured in `~/.agents/skill-studio.json`), sent
+/// straight to skills.sh; `Server` is the default, routed through the local
+/// Skill Studio server (which holds the real key) with no Authorization
+/// header at all.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SkillsShAccess {
+    Direct { api_key: String },
+    Server { base_url: String },
+}
+
+impl SkillsShAccess {
+    /// The `/api/v1`-suffixed base every request path is built from.
+    fn base(&self) -> &str {
+        match self {
+            SkillsShAccess::Direct { .. } => SKILLS_API_BASE,
+            SkillsShAccess::Server { base_url } => base_url,
+        }
+    }
+
+    /// `base_url` with the `/api/v1` suffix stripped back off, for the
+    /// "server not reachable at <url>" message - only meaningful for
+    /// `Server`.
+    fn server_root(&self) -> &str {
+        match self {
+            SkillsShAccess::Direct { .. } => "",
+            SkillsShAccess::Server { base_url } => {
+                base_url.strip_suffix("/api/v1").unwrap_or(base_url)
+            }
+        }
+    }
+}
+
+/// Resolves which access mode a discovery request should use: a non-empty
+/// `skills_sh_api_key` in `~/.agents/skill-studio.json` wins (`Direct`,
+/// straight to skills.sh); otherwise `Server`, routed through the local Skill
+/// Studio server at `server_url` (or `DEFAULT_SERVER_URL`).
+pub fn resolve_skills_sh_access(home: &Path) -> Result<SkillsShAccess, String> {
+    let registry = skill_fork_registry::read_fork_registry(home)?;
+    if let Some(api_key) = registry
+        .skills_sh_api_key
+        .filter(|key| !key.trim().is_empty())
+    {
+        return Ok(SkillsShAccess::Direct { api_key });
+    }
+    let server_url = registry
+        .server_url
+        .filter(|url| !url.trim().is_empty())
+        .unwrap_or_else(|| DEFAULT_SERVER_URL.to_string());
+    Ok(SkillsShAccess::Server {
+        base_url: format!("{}/api/v1", server_url.trim_end_matches('/')),
+    })
+}
 
 /// One skill as returned by the `/skills` and `/skills/search` list
 /// endpoints - there is no `description` field in v1 (there wasn't one in
@@ -105,22 +171,42 @@ fn status_error(status: reqwest::StatusCode) -> String {
     }
 }
 
-fn client_with_auth(
-    api_key: &str,
+/// Builds the client and headers for `access`: `Direct` carries a bearer
+/// `Authorization` header, `Server` carries none - the server it talks to
+/// holds the real key.
+fn client_for(
+    access: &SkillsShAccess,
 ) -> Result<(reqwest::Client, reqwest::header::HeaderMap), String> {
     let mut headers = reqwest::header::HeaderMap::new();
-    let mut auth_value = reqwest::header::HeaderValue::from_str(&format!("Bearer {api_key}"))
-        .map_err(|e| format!("Invalid API key: {e}"))?;
-    auth_value.set_sensitive(true);
-    headers.insert(reqwest::header::AUTHORIZATION, auth_value);
+    if let SkillsShAccess::Direct { api_key } = access {
+        let mut auth_value = reqwest::header::HeaderValue::from_str(&format!("Bearer {api_key}"))
+            .map_err(|e| format!("Invalid API key: {e}"))?;
+        auth_value.set_sensitive(true);
+        headers.insert(reqwest::header::AUTHORIZATION, auth_value);
+    }
     Ok((reqwest::Client::new(), headers))
+}
+
+/// Maps a transport-level failure to reach `access`'s base URL (the request
+/// never got a response at all) - distinct from `status_error`, which maps a
+/// response that did come back but wasn't a success. `Server` mode names the
+/// local server explicitly, since "connection refused" otherwise reads like a
+/// skills.sh outage.
+fn connection_error(access: &SkillsShAccess, e: reqwest::Error) -> String {
+    match access {
+        SkillsShAccess::Server { .. } => format!(
+            "Skill Studio server not reachable at {}. Start it with `npm run dev:server`.",
+            access.server_root()
+        ),
+        SkillsShAccess::Direct { .. } => format!("Failed to reach skills.sh: {e}"),
+    }
 }
 
 /// Search for skills on skills.sh. The v1 search endpoint has no pagination:
 /// it returns up to `limit` results in one shot, so `has_more` is always
 /// `false`.
 pub async fn search_skills(
-    api_key: &str,
+    access: &SkillsShAccess,
     query: &str,
     limit: Option<u32>,
 ) -> Result<PaginatedSkillsResponse, String> {
@@ -128,17 +214,19 @@ pub async fn search_skills(
     let limit = limit.unwrap_or(50);
     let url = format!(
         "{}/skills/search?q={}&limit={}",
-        SKILLS_API_BASE, encoded_query, limit
+        access.base(),
+        encoded_query,
+        limit
     );
 
-    let (client, headers) = client_with_auth(api_key)?;
+    let (client, headers) = client_for(access)?;
     let response = client
         .get(&url)
         .headers(headers)
         .header("User-Agent", "AgentStudio/0.1.0")
         .send()
         .await
-        .map_err(|e| format!("Failed to fetch skills: {}", e))?;
+        .map_err(|e| connection_error(access, e))?;
 
     if !response.status().is_success() {
         return Err(status_error(response.status()));
@@ -157,7 +245,7 @@ pub async fn search_skills(
 
 /// Get popular skills (all-time, sorted by install count).
 pub async fn get_popular_skills(
-    api_key: &str,
+    access: &SkillsShAccess,
     page: Option<u32>,
     per_page: Option<u32>,
 ) -> Result<PaginatedSkillsResponse, String> {
@@ -165,17 +253,19 @@ pub async fn get_popular_skills(
     let per_page = per_page.unwrap_or(50);
     let url = format!(
         "{}/skills?view=all-time&page={}&per_page={}",
-        SKILLS_API_BASE, page, per_page
+        access.base(),
+        page,
+        per_page
     );
 
-    let (client, headers) = client_with_auth(api_key)?;
+    let (client, headers) = client_for(access)?;
     let response = client
         .get(&url)
         .headers(headers)
         .header("User-Agent", "AgentStudio/0.1.0")
         .send()
         .await
-        .map_err(|e| format!("Failed to fetch popular skills: {}", e))?;
+        .map_err(|e| connection_error(access, e))?;
 
     if !response.status().is_success() {
         return Err(status_error(response.status()));
@@ -197,7 +287,10 @@ pub async fn get_popular_skills(
 /// id - appended to the URL path as-is (not url-encoded, since the API wants
 /// its slashes literal), after validating it can't be used to escape the
 /// intended path.
-pub async fn get_skill_details(api_key: &str, skill_id: &str) -> Result<SkillDetails, String> {
+pub async fn get_skill_details(
+    access: &SkillsShAccess,
+    skill_id: &str,
+) -> Result<SkillDetails, String> {
     if skill_id.is_empty()
         || skill_id.starts_with('/')
         || skill_id.contains("..")
@@ -206,16 +299,16 @@ pub async fn get_skill_details(api_key: &str, skill_id: &str) -> Result<SkillDet
         return Err(format!("Invalid skill id: {skill_id}"));
     }
 
-    let url = format!("{}/skills/{}", SKILLS_API_BASE, skill_id);
+    let url = format!("{}/skills/{}", access.base(), skill_id);
 
-    let (client, headers) = client_with_auth(api_key)?;
+    let (client, headers) = client_for(access)?;
     let response = client
         .get(&url)
         .headers(headers)
         .header("User-Agent", "AgentStudio/0.1.0")
         .send()
         .await
-        .map_err(|e| format!("Failed to fetch skill details: {}", e))?;
+        .map_err(|e| connection_error(access, e))?;
 
     if !response.status().is_success() {
         return Err(status_error(response.status()));
@@ -281,5 +374,74 @@ mod tests {
     fn pick_skill_md_matches_nested_path() {
         let files = vec![file("skills/find-bugs/SKILL.md", "skill")];
         assert_eq!(pick_skill_md(&files), Some("skill".to_string()));
+    }
+
+    #[test]
+    fn resolve_skills_sh_access_defaults_to_the_local_server() {
+        let tmp = tempfile::tempdir().unwrap();
+        let access = resolve_skills_sh_access(tmp.path()).unwrap();
+        assert_eq!(
+            access,
+            SkillsShAccess::Server {
+                base_url: "http://127.0.0.1:8787/api/v1".to_string()
+            }
+        );
+    }
+
+    #[test]
+    fn resolve_skills_sh_access_uses_a_configured_server_url() {
+        let tmp = tempfile::tempdir().unwrap();
+        let mut registry = skill_fork_registry::read_fork_registry(tmp.path()).unwrap();
+        registry.server_url = Some("http://localhost:9999/".to_string());
+        skill_fork_registry::write_fork_registry(tmp.path(), &registry).unwrap();
+
+        let access = resolve_skills_sh_access(tmp.path()).unwrap();
+        assert_eq!(
+            access,
+            SkillsShAccess::Server {
+                base_url: "http://localhost:9999/api/v1".to_string()
+            }
+        );
+    }
+
+    #[test]
+    fn resolve_skills_sh_access_prefers_a_configured_api_key() {
+        let tmp = tempfile::tempdir().unwrap();
+        let mut registry = skill_fork_registry::read_fork_registry(tmp.path()).unwrap();
+        registry.skills_sh_api_key = Some("sk-test-key".to_string());
+        registry.server_url = Some("http://localhost:9999".to_string());
+        skill_fork_registry::write_fork_registry(tmp.path(), &registry).unwrap();
+
+        let access = resolve_skills_sh_access(tmp.path()).unwrap();
+        assert_eq!(
+            access,
+            SkillsShAccess::Direct {
+                api_key: "sk-test-key".to_string()
+            }
+        );
+    }
+
+    #[test]
+    fn resolve_skills_sh_access_ignores_a_blank_api_key() {
+        let tmp = tempfile::tempdir().unwrap();
+        let mut registry = skill_fork_registry::read_fork_registry(tmp.path()).unwrap();
+        registry.skills_sh_api_key = Some("   ".to_string());
+        skill_fork_registry::write_fork_registry(tmp.path(), &registry).unwrap();
+
+        let access = resolve_skills_sh_access(tmp.path()).unwrap();
+        assert_eq!(
+            access,
+            SkillsShAccess::Server {
+                base_url: "http://127.0.0.1:8787/api/v1".to_string()
+            }
+        );
+    }
+
+    #[test]
+    fn server_root_strips_the_api_v1_suffix() {
+        let access = SkillsShAccess::Server {
+            base_url: "http://127.0.0.1:8787/api/v1".to_string(),
+        };
+        assert_eq!(access.server_root(), "http://127.0.0.1:8787");
     }
 }

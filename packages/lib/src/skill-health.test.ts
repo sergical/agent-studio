@@ -6,6 +6,7 @@ import { describe, expect, it } from "vitest";
 import {
   coverageGaps,
   findDuplicateSkills,
+  findLinkedRootIssues,
   findParkedButReinstalled,
   findSpecViolations,
   HEALTH_ISSUE_KIND_ORDER,
@@ -172,6 +173,60 @@ describe("findDuplicateSkills", () => {
     });
     const issues = findDuplicateSkills([skill]);
     expect(issues[0].detail).toBe("2 copies differ: Global · Shared folder; Global · Cursor");
+  });
+});
+
+describe("findLinkedRootIssues", () => {
+  it("dedupes across several skills sharing one whole-dir-linked root and ignores project scope", () => {
+    const linkedGlobal = (name: string) =>
+      fixtureSkill({
+        name,
+        deployments: [
+          fixtureDeployment({
+            agent: "Claude Code",
+            scope: "global",
+            path: `/home/.claude/skills/${name}`,
+            shared_via_whole_dir_link: true,
+          }),
+          // A project copy under the same agent must never contribute its own
+          // issue - only a global root can be the shared whole-dir link.
+          fixtureDeployment({
+            agent: "Claude Code",
+            scope: "project",
+            path: `/repo/.claude/skills/${name}`,
+            shared_via_whole_dir_link: true,
+          }),
+        ],
+      });
+    const skills = [
+      linkedGlobal("agent-browser"),
+      linkedGlobal("find-bugs"),
+      linkedGlobal("motion"),
+    ];
+
+    const issues = findLinkedRootIssues(skills);
+    expect(issues).toHaveLength(1);
+    expect(issues[0].kind).toBe("linked-root");
+    // `harness` is the agent id the backend commands key on; the display
+    // label rides along separately for the Convert dialog's copy.
+    expect(issues[0].harness).toBe("claude-code");
+    expect(issues[0].harnessLabel).toBe("Claude Code");
+    expect(issues[0].root).toBe("/home/.claude/skills");
+  });
+
+  it("does not flag a per-skill symlink into the shared root", () => {
+    const skill = fixtureSkill({
+      deployments: [
+        fixtureDeployment({
+          agent: "Claude Code",
+          scope: "global",
+          is_symlink: true,
+          symlink_target: "/home/.agents/skills/agent-browser",
+          shared_via_whole_dir_link: false,
+        }),
+      ],
+    });
+    expect(findLinkedRootIssues([skill])).toEqual([]);
   });
 });
 

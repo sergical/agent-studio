@@ -3,6 +3,7 @@
 // ============================================================================
 
 import { useState, useEffect, useCallback, useRef } from "react";
+import { Button, Drawer, Tabs, TabsContent, TabsList, TabsTrigger } from "@skill-studio/ui";
 import { SkillSearchBar } from "./SkillSearchBar";
 import { SkillBrowser } from "./SkillBrowser";
 import { SkillDetailPanel } from "./SkillDetailPanel";
@@ -54,77 +55,44 @@ function mergeWithInstalledStatus(
   }));
 }
 
-/** Tab strip (Browse/Installed) plus each tab's toolbar row: the search bar and result count for Browse, just a count for Installed. */
-function SkillStoreTabs({
-  activeTab,
-  onTabChange,
+const TAB_TRIGGER_CLASS =
+  "text-body font-medium text-text-tertiary after:bg-accent data-active:text-accent hover:text-text-secondary";
+
+/** Tab strip (Browse/Installed): a bare `TabsList` - each tab's toolbar row and results live in that tab's own `TabsContent`, below. */
+function SkillStoreTabList({
   installedCount,
   tabsPadding,
-  searchQuery,
-  onSearchQueryChange,
-  onSearch,
-  isSearching,
-  resultCount,
 }: {
-  activeTab: "browse" | "installed";
-  onTabChange: (tab: "browse" | "installed") => void;
   installedCount: number;
   tabsPadding: string;
-  searchQuery: string;
-  onSearchQueryChange: (value: string) => void;
-  onSearch: (query: string) => void;
-  isSearching: boolean;
-  resultCount: number;
 }) {
   return (
-    <>
-      <div className={`flex gap-0 border-b border-border bg-bg-secondary ${tabsPadding}`}>
-        <button
-          className={`-mb-px border-0 border-b-2 bg-transparent px-5 py-3 text-body font-medium transition-colors ${
-            activeTab === "browse"
-              ? "border-accent text-accent"
-              : "border-transparent text-text-tertiary hover:text-text-secondary"
-          }`}
-          onClick={() => onTabChange("browse")}
-        >
-          Browse
-        </button>
-        <button
-          className={`-mb-px border-0 border-b-2 bg-transparent px-5 py-3 text-body font-medium transition-colors ${
-            activeTab === "installed"
-              ? "border-accent text-accent"
-              : "border-transparent text-text-tertiary hover:text-text-secondary"
-          }`}
-          onClick={() => onTabChange("installed")}
-        >
-          Installed ({installedCount})
-        </button>
-      </div>
+    <TabsList variant="line" className={`${tabsPadding} bg-bg-secondary`}>
+      <TabsTrigger value="browse" className={TAB_TRIGGER_CLASS}>
+        Browse
+      </TabsTrigger>
+      <TabsTrigger value="installed" className={TAB_TRIGGER_CLASS}>
+        Installed ({installedCount})
+      </TabsTrigger>
+    </TabsList>
+  );
+}
 
-      {activeTab === "browse" && (
-        <div className={`flex items-center gap-4 border-b border-border py-4 ${tabsPadding}`}>
-          <SkillSearchBar
-            value={searchQuery}
-            onChange={onSearchQueryChange}
-            onSearch={onSearch}
-            isLoading={isSearching}
-          />
-          <div className="ml-auto flex items-center gap-4">
-            <span className="text-small tabular-nums text-text-tertiary">
-              {resultCount} skill{resultCount !== 1 ? "s" : ""}
-            </span>
-          </div>
-        </div>
-      )}
-
-      {activeTab === "installed" && (
-        <div className={`flex items-center gap-4 border-b border-border py-4 ${tabsPadding}`}>
-          <span className="text-small tabular-nums text-text-tertiary">
-            {installedCount} installed skill{installedCount !== 1 ? "s" : ""}
-          </span>
-        </div>
-      )}
-    </>
+/**
+ * Shown in place of Browse's results when a fetch fails - most commonly the
+ * Skill Studio server not running (see `api::SkillsShAccess::Server`'s
+ * connection-error message). `min-h` matches `SkillBrowser`'s own
+ * loading/empty states so retrying doesn't shift the sheet around it.
+ */
+function BrowseErrorEmptyState({ error, onRetry }: { error: string; onRetry: () => void }) {
+  return (
+    <div className="flex min-h-[280px] flex-1 flex-col items-center justify-center gap-3 p-8 text-center">
+      <h3 className="m-0 text-body font-semibold text-text-primary">
+        Browsing isn't available right now
+      </h3>
+      <p className="m-0 max-w-sm text-small text-text-tertiary">{error}</p>
+      <Button onClick={onRetry}>Try again</Button>
+    </div>
   );
 }
 
@@ -151,6 +119,11 @@ function useSkillStoreData(
   const [isLoading, setIsLoading] = useState(true);
   const [isLoadingMore, setIsLoadingMore] = useState(false);
   const [hasMore, setHasMore] = useState(false);
+  // Set when the results area itself couldn't be loaded (most commonly the
+  // Skill Studio server not running) - replaces the results area with
+  // `BrowseErrorEmptyState` instead of a toast, since there's nothing to show
+  // behind it. Cleared at the start of every new attempt.
+  const [browseError, setBrowseError] = useState<string | null>(null);
   // Never read during render - only `loadMore`'s paging math needs it, so a
   // ref avoids a re-render on every page bump.
   const pageRef = useRef(0);
@@ -163,24 +136,21 @@ function useSkillStoreData(
   // react-doctor-disable-next-line react-doctor/react-compiler-no-manual-memoization -- the mount effect below depends on this callback's identity to run exactly once
   const loadInitialData = useCallback(() => {
     pageRef.current = 0;
+    setBrowseError(null);
     // Load both in parallel
     return Promise.all([getInstalledSkills(projects), getPopularSkills(0, LIMIT)])
       .then(([installed, popularResponse]) => {
         setInstalledSkills(installed);
         setHasMore(popularResponse.has_more);
-        if (!searchQuery) setRawResults(popularResponse.skills);
+        setRawResults(popularResponse.skills);
       })
       .catch((err) => {
-        addToast({
-          type: "error",
-          title: "Failed to Load Skills",
-          message: err instanceof Error ? err.message : "Failed to load initial data",
-        });
+        setBrowseError(err instanceof Error ? err.message : "Failed to load skills");
       })
       .finally(() => {
         setIsLoading(false);
       });
-  }, [projects, searchQuery, addToast]);
+  }, [projects]);
 
   const loadInstalledSkills = async () => {
     try {
@@ -195,7 +165,7 @@ function useSkillStoreData(
     }
   };
 
-  // Load installed and popular skills on mount
+  // Load installed and popular skills on mount.
   useEffect(() => {
     loadInitialData();
   }, [loadInitialData]);
@@ -210,28 +180,24 @@ function useSkillStoreData(
   const handleSearch = (query: string) => {
     setSearchQuery(query);
     pageRef.current = 0;
+    setBrowseError(null);
+    setIsLoading(true);
 
     if (!query.trim() || query.length < 2) {
       // Show popular skills when no search query
-      setIsLoading(true);
       return getPopularSkills(0, LIMIT)
         .then((response) => {
           setRawResults(response.skills);
           setHasMore(response.has_more);
         })
         .catch((err) => {
-          addToast({
-            type: "error",
-            title: "Failed to Load Skills",
-            message: err instanceof Error ? err.message : "Failed to load popular skills",
-          });
+          setBrowseError(err instanceof Error ? err.message : "Failed to load popular skills");
         })
         .finally(() => {
           setIsLoading(false);
         });
     }
 
-    setIsLoading(true);
     // The v1 search endpoint has no pagination - a single call returns
     // everything up to LIMIT.
     return searchSkills(query, LIMIT)
@@ -240,16 +206,16 @@ function useSkillStoreData(
         setHasMore(false);
       })
       .catch((err) => {
-        addToast({
-          type: "error",
-          title: "Search Failed",
-          message: err instanceof Error ? err.message : "Failed to search skills",
-        });
+        setBrowseError(err instanceof Error ? err.message : "Failed to search skills");
       })
       .finally(() => {
         setIsLoading(false);
       });
   };
+
+  // Re-runs whichever fetch last populated the results area - the
+  // `BrowseErrorEmptyState`'s "Try again" button.
+  const retry = () => handleSearch(searchQuery);
 
   // A Promise chain, not a try/finally statement, so the compiler can still
   // optimize this component (it doesn't support `finally` clauses yet).
@@ -287,6 +253,8 @@ function useSkillStoreData(
     isLoading,
     isLoadingMore,
     hasMore,
+    browseError,
+    retry,
     searchResultsWithStatus,
     handleSearch,
     loadMore,
@@ -322,6 +290,8 @@ export function SkillStore({ compact = false }: SkillStoreProps = {}) {
     handleSearch,
     loadMore,
     loadInstalledSkills,
+    browseError,
+    retry,
   } = useSkillStoreData(projects, addToast);
 
   const handleInstallStart = (skillName: string) => {
@@ -416,62 +386,84 @@ export function SkillStore({ compact = false }: SkillStoreProps = {}) {
         </div>
       )}
 
-      <SkillStoreTabs
-        activeTab={activeTab}
-        onTabChange={(tab) => {
+      <Tabs
+        value={activeTab}
+        onValueChange={(tab) => {
           setActiveTab(tab);
           setSelectedSkillName(null);
         }}
-        installedCount={installedSkills.length}
-        tabsPadding={tabsPadding}
-        searchQuery={searchQuery}
-        onSearchQueryChange={setSearchQuery}
-        onSearch={handleSearch}
-        isSearching={isLoading}
-        resultCount={searchResultsWithStatus.length}
-      />
+        className="flex flex-1 flex-col gap-0 overflow-hidden"
+      >
+        <SkillStoreTabList installedCount={installedSkills.length} tabsPadding={tabsPadding} />
 
-      <div className={`flex flex-1 overflow-hidden ${compact ? "flex-col" : ""}`}>
-        {activeTab === "browse" ? (
-          <SkillBrowser
-            skills={searchResultsWithStatus}
-            selectedSkill={selectedSkill}
-            onSelectSkill={(skill) => setSelectedSkillName(skill.name)}
-            mode={{ kind: "browse", isLoading, isLoadingMore, hasMore, onLoadMore: loadMore }}
-            emptyMessage={
-              searchQuery ? "No skills found matching your search" : "Loading popular skills…"
-            }
-          />
-        ) : (
-          <SkillBrowser
-            skills={installedSkillsWithStatus}
-            selectedSkill={selectedSkill}
-            onSelectSkill={(skill) => setSelectedSkillName(skill.name)}
-            mode={{ kind: "installed" }}
-            emptyMessage="No skills installed yet"
-          />
-        )}
+        <TabsContent value="browse" className="flex flex-1 flex-col overflow-hidden">
+          {browseError ? (
+            <BrowseErrorEmptyState error={browseError} onRetry={retry} />
+          ) : (
+            <>
+              <div className={`flex items-center gap-4 border-b border-border py-4 ${tabsPadding}`}>
+                <SkillSearchBar
+                  value={searchQuery}
+                  onChange={setSearchQuery}
+                  onSearch={handleSearch}
+                  isLoading={isLoading}
+                />
+                <div className="ml-auto flex items-center gap-4">
+                  <span className="text-small tabular-nums text-text-tertiary">
+                    {searchResultsWithStatus.length} skill
+                    {searchResultsWithStatus.length !== 1 ? "s" : ""}
+                  </span>
+                </div>
+              </div>
 
+              <div className={`flex flex-1 overflow-hidden ${compact ? "flex-col" : ""}`}>
+                <SkillBrowser
+                  skills={searchResultsWithStatus}
+                  selectedSkill={selectedSkill}
+                  onSelectSkill={(skill) => setSelectedSkillName(skill.name)}
+                  mode={{ kind: "browse", isLoading, isLoadingMore, hasMore, onLoadMore: loadMore }}
+                  emptyMessage={
+                    searchQuery ? "No skills found matching your search" : "Loading popular skills…"
+                  }
+                />
+              </div>
+            </>
+          )}
+        </TabsContent>
+
+        <TabsContent value="installed" className="flex flex-1 flex-col overflow-hidden">
+          <div className={`flex items-center gap-4 border-b border-border py-4 ${tabsPadding}`}>
+            <span className="text-small tabular-nums text-text-tertiary">
+              {installedSkills.length} installed skill{installedSkills.length !== 1 ? "s" : ""}
+            </span>
+          </div>
+
+          <div className={`flex flex-1 overflow-hidden ${compact ? "flex-col" : ""}`}>
+            <SkillBrowser
+              skills={installedSkillsWithStatus}
+              selectedSkill={selectedSkill}
+              onSelectSkill={(skill) => setSelectedSkillName(skill.name)}
+              mode={{ kind: "installed" }}
+              emptyMessage="No skills installed yet"
+            />
+          </div>
+        </TabsContent>
+      </Tabs>
+
+      <Drawer
+        open={selectedSkill !== null}
+        onOpenChange={(open) => !open && setSelectedSkillName(null)}
+      >
         {selectedSkill && (
-          <>
-            {/* Decorative scrim: a pointer affordance duplicating the Escape
-                path in SkillDetailPanel, so it's aria-hidden rather than a
-                focusable control. */}
-            <div
-              className="fixed inset-0 z-(--z-backdrop) bg-scrim"
-              aria-hidden="true"
-              onClick={() => setSelectedSkillName(null)}
-            />
-            <SkillDetailPanel
-              skill={selectedSkill}
-              onClose={() => setSelectedSkillName(null)}
-              onInstallStart={handleInstallStart}
-              onInstallComplete={handleInstallComplete}
-              onRemoveComplete={handleRemoveComplete}
-            />
-          </>
+          <SkillDetailPanel
+            skill={selectedSkill}
+            onClose={() => setSelectedSkillName(null)}
+            onInstallStart={handleInstallStart}
+            onInstallComplete={handleInstallComplete}
+            onRemoveComplete={handleRemoveComplete}
+          />
         )}
-      </div>
+      </Drawer>
 
       {installProgress && (
         <InstallProgressModal progress={installProgress} onClose={() => setInstallProgress(null)} />

@@ -6,6 +6,7 @@
 
 import { ChevronDown, LayoutGrid, List, ListFilter, Search, X } from "lucide-react";
 import { ask } from "@tauri-apps/plugin-dialog";
+import { ToggleGroup, ToggleGroupItem } from "@skill-studio/ui";
 import { harnessesPresent } from "@skill-studio/lib";
 import { isProjectScope, type SkillListFilter } from "@skill-studio/lib";
 import { shortProjectPath } from "@skill-studio/lib";
@@ -23,6 +24,7 @@ import { SelectControl } from "../ui/SelectControl";
 import { TooltipControl } from "../ui/TooltipControl";
 import { SORT_ITEMS, isSortMode } from "../../lib/skill-list-sort";
 import type { SortMode } from "../../lib/skill-list-sort";
+import { singleSelectToggleValue } from "../../lib/single-select-toggle-group";
 
 // No "plugin" here: plugin-shipped skills have their own place (PluginSkillsView).
 const SOURCE_KINDS: SkillSourceKind[] = ["dotagents", "skills-sh", "in-repo", "manual", "fork"];
@@ -43,15 +45,12 @@ const USAGE_LABELS = {
   "unused-30d": "Not used in 30 days",
 } as const satisfies Record<NonNullable<SkillListFilter["usage"]>, string>;
 
-/** Reproduces the former shared `.menu-control-item` look inline - InstalledSkillHeader has its own copy of the same styling. */
-const MENU_ITEM_CLASS =
-  "flex h-(--control-height) cursor-pointer items-center gap-2 rounded-sm px-2.5 text-body text-text-secondary transition-colors data-highlighted:bg-bg-hover data-highlighted:text-text-primary";
+/** The project menu's two-line rows (name + full path) - `MenuItem`'s baked-in default is a single line. */
 const MENU_RADIO_ITEM_CLASS =
   "flex h-auto flex-col items-start gap-0.5 rounded-sm px-2.5 py-1.5 text-body text-text-secondary transition-colors data-highlighted:bg-bg-hover data-highlighted:text-text-primary";
-const MENU_SEPARATOR_CLASS = "mx-0.5 my-1 h-px border-none bg-border-subtle";
-/** Reproduces the former shared `.segmented`/`.segmented-item` look inline - only used by the Scope group below. */
-const SEGMENTED_ITEM_CLASS =
-  "inline-flex h-(--control-height) items-center gap-1 border border-l-0 border-border bg-transparent px-3 text-body text-text-tertiary transition-colors duration-150 hover:bg-bg-hover hover:text-text-secondary aria-pressed:bg-bg-tertiary aria-pressed:text-text-primary";
+/** The Scope group's project trigger sits after the ToggleGroup, styled the same as its items. */
+const SEGMENTED_TRIGGER_CLASS =
+  "inline-flex h-(--control-height) items-center gap-1 rounded-r-sm border-y border-r border-border bg-transparent px-3 text-body text-text-tertiary transition-colors duration-150 hover:bg-bg-hover hover:text-text-secondary aria-expanded:bg-bg-tertiary aria-expanded:text-text-primary";
 
 interface SkillListFilterBarProps {
   filter: SkillListFilter;
@@ -169,27 +168,22 @@ export function SkillListFilterBar({
           />
         </div>
 
-        <div
-          className="flex [&>*:first-child]:rounded-l-sm [&>*:first-child]:border-l [&>*:last-child]:rounded-r-sm"
-          role="group"
-          aria-label="Scope"
-        >
-          <button
-            className={SEGMENTED_ITEM_CLASS}
-            aria-pressed={filter.scope === "all"}
-            onClick={() => setScope("all")}
+        <div className="flex" role="group" aria-label="Scope">
+          <ToggleGroup
+            variant="segmented"
+            className="rounded-r-none"
+            value={filter.scope === "all" || filter.scope === "global" ? [filter.scope] : []}
+            onValueChange={(next) => singleSelectToggleValue<"all" | "global">(next, setScope)}
           >
-            All
-          </button>
-          <button
-            className={SEGMENTED_ITEM_CLASS}
-            aria-pressed={filter.scope === "global"}
-            onClick={() => setScope("global")}
-          >
-            Global
-          </button>
+            <ToggleGroupItem value="all" className="px-3">
+              All
+            </ToggleGroupItem>
+            <ToggleGroupItem value="global" className="px-3">
+              Global
+            </ToggleGroupItem>
+          </ToggleGroup>
           <MenuControl
-            triggerClassName={SEGMENTED_ITEM_CLASS}
+            triggerClassName={SEGMENTED_TRIGGER_CLASS}
             triggerAriaLabel="Project"
             trigger={
               <>
@@ -228,18 +222,14 @@ export function SkillListFilterBar({
             </MenuRadioGroup>
             {selectedProject && (
               <>
-                <MenuSeparator className={MENU_SEPARATOR_CLASS} />
-                <MenuItem
-                  closeOnClick
-                  className={MENU_ITEM_CLASS}
-                  onClick={() => handleStopTracking(selectedProject)}
-                >
+                <MenuSeparator />
+                <MenuItem closeOnClick onClick={() => handleStopTracking(selectedProject)}>
                   Stop tracking {basename(selectedProject)}…
                 </MenuItem>
               </>
             )}
-            <MenuSeparator className={MENU_SEPARATOR_CLASS} />
-            <MenuItem closeOnClick className={MENU_ITEM_CLASS} onClick={onAddProject}>
+            <MenuSeparator />
+            <MenuItem closeOnClick onClick={onAddProject}>
               Add project…
             </MenuItem>
           </MenuControl>
@@ -272,25 +262,20 @@ export function SkillListFilterBar({
                   onChange({ ...filter, harness: (value as string) || undefined });
                 }}
               >
-                <MenuRadioItem value="" closeOnClick className={MENU_ITEM_CLASS}>
+                <MenuRadioItem value="" closeOnClick>
                   Any harness
                 </MenuRadioItem>
                 {harnesses.map((harness) => {
                   const harnessId = harnessIdFromLabel(harness);
                   return (
-                    <MenuRadioItem
-                      key={harness}
-                      value={harness}
-                      closeOnClick
-                      className={MENU_ITEM_CLASS}
-                    >
+                    <MenuRadioItem key={harness} value={harness} closeOnClick>
                       {harnessId && <HarnessIcon harness={harnessId} size={13} />}
                       {harness}
                     </MenuRadioItem>
                   );
                 })}
               </MenuRadioGroup>
-              <MenuSeparator className={MENU_SEPARATOR_CLASS} />
+              <MenuSeparator />
             </>
           )}
           <p className="m-0 px-2.5 pt-1.5 pb-0.5 text-caption font-medium tracking-[0.08em] text-text-tertiary uppercase">
@@ -307,12 +292,7 @@ export function SkillListFilterBar({
             }}
           >
             {SOURCE_OPTIONS.map((option) => (
-              <MenuRadioItem
-                key={option.value}
-                value={option.value}
-                closeOnClick
-                className={MENU_ITEM_CLASS}
-              >
+              <MenuRadioItem key={option.value} value={option.value} closeOnClick>
                 {option.value === "" ? "Any source" : option.label}
               </MenuRadioItem>
             ))}
@@ -335,32 +315,27 @@ export function SkillListFilterBar({
           triggerPrefix="Sort:"
         />
 
-        <div
-          className="flex [&>*:first-child]:rounded-l-sm [&>*:first-child]:border-l [&>*:last-child]:rounded-r-sm"
-          role="group"
+        <ToggleGroup
+          variant="segmented"
           aria-label="View"
+          value={[showCoverage ? "coverage" : "list"]}
+          onValueChange={(next) =>
+            singleSelectToggleValue<"list" | "coverage">(next, (selected) =>
+              onToggleCoverage(selected === "coverage"),
+            )
+          }
         >
           <TooltipControl content="List">
-            <button
-              className={`${SEGMENTED_ITEM_CLASS} px-2.5`}
-              aria-pressed={!showCoverage}
-              aria-label="List view"
-              onClick={() => onToggleCoverage(false)}
-            >
+            <ToggleGroupItem value="list" className="px-2.5" aria-label="List view">
               <List size={14} />
-            </button>
+            </ToggleGroupItem>
           </TooltipControl>
           <TooltipControl content="Coverage matrix">
-            <button
-              className={`${SEGMENTED_ITEM_CLASS} px-2.5`}
-              aria-pressed={showCoverage}
-              aria-label="Coverage matrix view"
-              onClick={() => onToggleCoverage(true)}
-            >
+            <ToggleGroupItem value="coverage" className="px-2.5" aria-label="Coverage matrix view">
               <LayoutGrid size={14} />
-            </button>
+            </ToggleGroupItem>
           </TooltipControl>
-        </div>
+        </ToggleGroup>
       </div>
 
       {activeCount > 0 && (

@@ -13,14 +13,16 @@
 // so they're testable without Tauri - see event_commands.rs for the IPC
 // wrappers.
 //
-// Symlink targets inside an exploded directory are absolute: the directory
-// is built at a temp path in `root`'s parent, and a robust *relative* target
-// from there to `<shared_root>/<skill>` would depend on how far apart `root`
-// and `shared_root` are in the filesystem (unlike the one-level shift
-// `skill_harness_disable`'s move-aside handles, there's no fixed relationship
-// here). An absolute target is always correct and the shared root's path
-// itself never gets exploded, so this doesn't create the "moved a relative
-// symlink without" hazard.
+// Symlink targets inside an exploded directory are written relative to the
+// directory holding them, so `~/.claude/skills/<name>` reads
+// `../../.agents/skills/<name>` - byte-identical to what `npx skills` v1.5.23
+// creates in symlink mode, and verified against a real install. Relative
+// targets survive the whole home directory being moved or restored under a
+// different user name, which absolute ones do not. `relative_link_target`
+// falls back to the absolute path whenever no relative route exists (separate
+// volumes, or a non-absolute input). The exploded directory is staged at a
+// temp path in `root`'s own parent, so it sits at the same depth as `root`
+// and the targets are already correct before the rename.
 // ============================================================================
 
 use std::collections::HashSet;
@@ -32,6 +34,36 @@ use super::event_store::{
     allocate_id, copy_recursive, fingerprint_path, EventDraft, EventRow, EventStatus, EventStore,
     InverseOp,
 };
+
+/// Validates that `root` is safe for `materialize_harness_root` to explode:
+/// a symlink whose canonical target's last two path components are
+/// `.agents/skills`. Shared by the command-level validation and its tests -
+/// `explode_shared_dir` itself only checks "is a symlink" since its other
+/// caller (`set_shared_harness_skill_enabled`, before Part 2) already knows
+/// the root is the shared one.
+pub fn validate_materialize_root(root: &Path) -> Result<PathBuf, String> {
+    let meta = fs::symlink_metadata(root)
+        .map_err(|e| format!("Failed to stat {}: {e}", root.display()))?;
+    if !meta.file_type().is_symlink() {
+        return Err(format!("{} is not a symlink", root.display()));
+    }
+    let canonical =
+        fs::canonicalize(root).map_err(|e| format!("Failed to resolve {}: {e}", root.display()))?;
+    let components: Vec<_> = canonical
+        .components()
+        .filter_map(|c| c.as_os_str().to_str())
+        .collect();
+    let ends_in_shared_skills = components.len() >= 2
+        && components[components.len() - 2] == ".agents"
+        && components[components.len() - 1] == "skills";
+    if !ends_in_shared_skills {
+        return Err(format!(
+            "{} does not resolve into a .agents/skills folder",
+            root.display()
+        ));
+    }
+    Ok(canonical)
+}
 
 /// Converts `root` (a symlink whose canonical target is the shared skills
 /// dir) into a real directory containing one absolute per-skill symlink for
@@ -86,6 +118,18 @@ pub fn explode_shared_dir(store: &EventStore, root: &Path, harness: &str) -> Res
     )?;
 
     let mutate: Result<(), String> = (|| {
+        // Re-resolve the symlink right before replacing it, so a change
+        // between the caller's validation (and this function's own initial
+        // read above) and this mutation can't slip a different target past
+        // the check that ran a moment ago.
+        let current = fs::canonicalize(root)
+            .map_err(|e| format!("Failed to resolve {}: {e}", root.display()))?;
+        if current != shared_root {
+            return Err(format!(
+                "{} changed since it was validated; aborting",
+                root.display()
+            ));
+        }
         fs::remove_file(root).map_err(|e| format!("Failed to remove {}: {e}", root.display()))?;
         fs::rename(&tmp, root)
             .map_err(|e| format!("Failed to move {} into place: {e}", root.display()))
@@ -113,8 +157,8 @@ pub fn explode_shared_dir(store: &EventStore, root: &Path, harness: &str) -> Res
     }
 }
 
-/// Populates `tmp` with one absolute symlink per top-level directory in
-/// `shared_root`, named after it.
+/// Populates `tmp` with one symlink per top-level directory in `shared_root`,
+/// named after it, each target written relative to `tmp` itself.
 fn build_exploded_dir(tmp: &Path, shared_root: &Path) -> Result<(), String> {
     fs::create_dir_all(tmp).map_err(|e| format!("Failed to create {}: {e}", tmp.display()))?;
     for entry in fs::read_dir(shared_root)
@@ -129,7 +173,8 @@ fn build_exploded_dir(tmp: &Path, shared_root: &Path) -> Result<(), String> {
             continue;
         }
         let name = entry.file_name();
-        create_symlink(&shared_root.join(&name), &tmp.join(&name))?;
+        let link = tmp.join(&name);
+        create_symlink(&relative_link_target(tmp, &shared_root.join(&name)), &link)?;
     }
     Ok(())
 }
@@ -226,7 +271,10 @@ pub fn relink_harness(
         },
     )?;
 
-    finish_link_event(store, &id, &link, create_symlink(&target, &link))?;
+    // The event payload records where the link points; the link on disk
+    // spells that same destination relative to `root`.
+    let created = create_symlink(&relative_link_target(root, &target), &link);
+    finish_link_event(store, &id, &link, created)?;
     store.set_materialized_disabled(root, skill, false)
 }
 
@@ -676,6 +724,51 @@ pub fn repair_relink_link(
     finish_link_event(store, &id, link, relinked)
 }
 
+/// `target` expressed relative to `link_dir`, the directory the symlink will
+/// live in. Returns `target` unchanged when the two share no common ancestor
+/// or either is relative, since there is then no relative route to write.
+fn relative_link_target(link_dir: &Path, target: &Path) -> PathBuf {
+    let (Some(from_dir), Some(to_path)) = (resolved_dir(link_dir), resolved_file(target)) else {
+        return target.to_path_buf();
+    };
+    let from: Vec<_> = from_dir.components().collect();
+    let to: Vec<_> = to_path.components().collect();
+    let shared = from.iter().zip(&to).take_while(|(a, b)| a == b).count();
+    // One shared component is the filesystem root alone, which is no
+    // relationship at all - a link across two volumes stays absolute.
+    if shared < 2 {
+        return target.to_path_buf();
+    }
+    let mut relative = PathBuf::new();
+    for _ in shared..from.len() {
+        relative.push("..");
+    }
+    for component in &to[shared..] {
+        relative.push(component);
+    }
+    if relative.as_os_str().is_empty() {
+        PathBuf::from(".")
+    } else {
+        relative
+    }
+}
+
+/// `dir` with every symlink in it resolved, so two paths naming one directory
+/// through different routes (`/var` and `/private/var` on macOS) compare equal.
+fn resolved_dir(dir: &Path) -> Option<PathBuf> {
+    if !dir.is_absolute() {
+        return None;
+    }
+    Some(fs::canonicalize(dir).unwrap_or_else(|_| dir.to_path_buf()))
+}
+
+/// `file` with its parent directory resolved, leaving the final component
+/// alone - it names the link's destination and may not exist yet.
+fn resolved_file(file: &Path) -> Option<PathBuf> {
+    let (parent, name) = (file.parent()?, file.file_name()?);
+    Some(resolved_dir(parent)?.join(name))
+}
+
 fn create_symlink(target: &Path, link: &Path) -> Result<(), String> {
     #[cfg(unix)]
     {
@@ -732,6 +825,93 @@ mod tests {
         assert_eq!(
             fs::read_link(&restored).unwrap(),
             PathBuf::from("../../.agents/skills/find-bugs")
+        );
+    }
+
+    #[test]
+    fn validate_materialize_root_refuses_a_real_directory() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path().join(".claude/skills");
+        fs::create_dir_all(&root).unwrap();
+
+        let err = validate_materialize_root(&root).unwrap_err();
+        assert!(err.contains("is not a symlink"), "{err}");
+    }
+
+    #[test]
+    fn validate_materialize_root_refuses_a_symlink_outside_agents_skills() {
+        let tmp = tempfile::tempdir().unwrap();
+        let target = tmp.path().join("elsewhere");
+        fs::create_dir_all(&target).unwrap();
+        let root = tmp.path().join(".claude/skills");
+        fs::create_dir_all(root.parent().unwrap()).unwrap();
+        symlink(&target, &root).unwrap();
+
+        let err = validate_materialize_root(&root).unwrap_err();
+        assert!(err.contains(".agents/skills"), "{err}");
+    }
+
+    #[test]
+    fn validate_materialize_root_accepts_a_symlink_into_agents_skills() {
+        let tmp = tempfile::tempdir().unwrap();
+        let shared = tmp.path().join(".agents/skills");
+        fs::create_dir_all(&shared).unwrap();
+        let root = tmp.path().join(".claude/skills");
+        fs::create_dir_all(root.parent().unwrap()).unwrap();
+        symlink(&shared, &root).unwrap();
+
+        let canonical = validate_materialize_root(&root).unwrap();
+        assert_eq!(canonical, fs::canonicalize(&shared).unwrap());
+    }
+
+    /// `npx skills` v1.5.23 in symlink mode writes each per-skill link as
+    /// `../../.agents/skills/<name>`, verified against a real install into a
+    /// throwaway HOME. An exploded root has to produce the same shape, or a
+    /// moved home directory leaves every link dangling.
+    #[test]
+    fn exploded_links_are_relative_the_way_the_skills_cli_writes_them() {
+        let tmp = tempfile::tempdir().unwrap();
+        let store = store(tmp.path());
+        let home = tmp.path().join("home");
+        write_skill(&home.join(".agents/skills/find-bugs"), "find-bugs");
+        fs::create_dir_all(home.join(".claude")).unwrap();
+        let root = home.join(".claude/skills");
+        symlink(home.join(".agents/skills"), &root).unwrap();
+
+        explode_shared_dir(&store, &root, "claude-code").unwrap();
+
+        assert_eq!(
+            fs::read_link(root.join("find-bugs")).unwrap(),
+            PathBuf::from("../../.agents/skills/find-bugs")
+        );
+    }
+
+    #[test]
+    fn a_relinked_skill_is_relative_too() {
+        let tmp = tempfile::tempdir().unwrap();
+        let store = store(tmp.path());
+        let home = tmp.path().join("home");
+        write_skill(&home.join(".agents/skills/find-bugs"), "find-bugs");
+        fs::create_dir_all(home.join(".claude")).unwrap();
+        let root = home.join(".claude/skills");
+        symlink(home.join(".agents/skills"), &root).unwrap();
+
+        explode_shared_dir(&store, &root, "claude-code").unwrap();
+        unlink_harness(&store, &root, "find-bugs", "claude-code").unwrap();
+        relink_harness(&store, &root, "find-bugs", "claude-code").unwrap();
+
+        assert_eq!(
+            fs::read_link(root.join("find-bugs")).unwrap(),
+            PathBuf::from("../../.agents/skills/find-bugs")
+        );
+    }
+
+    #[test]
+    fn a_target_on_another_root_keeps_its_absolute_path() {
+        let elsewhere = PathBuf::from("/Volumes/other/skills/find-bugs");
+        assert_eq!(
+            relative_link_target(Path::new("/Users/x/.claude/skills"), &elsewhere),
+            elsewhere
         );
     }
 

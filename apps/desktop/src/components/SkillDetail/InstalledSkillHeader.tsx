@@ -13,21 +13,18 @@ import { pluginLabelForSkill } from "@skill-studio/lib";
 import type { SkillRunSummary } from "@skill-studio/lib";
 import { formatBytes, formatRelativeTime, formatTokens } from "@skill-studio/lib";
 import { SOURCE_KIND_LABELS, trialHoursLeft } from "@skill-studio/lib";
-import type { InstalledSkill, SkillInvocationStats } from "@skill-studio/lib";
+import type { Deployment, InstalledSkill, SkillInvocationStats } from "@skill-studio/lib";
+import { isFeatureEnabled } from "../../lib/feature-flags";
 import type { ActiveView } from "../../store/appStore";
 import { MenuControl, MenuItem, MenuSeparator } from "../ui/MenuControl";
+import { TooltipControl } from "../ui/TooltipControl";
 import { SKILL_ASSISTANT_DRAWER_ID } from "./SkillAssistantDrawer";
 import { useSkillPageActions } from "./skill-page-actions";
 
-/** Reproduces the shared `.menu-control-item` look inline - see SkillListFilterBar's copy of the same class. */
-const MENU_ITEM_CLASS =
-  "flex h-(--control-height) cursor-pointer items-center gap-2 rounded-sm px-2.5 text-body text-text-secondary transition-colors data-highlighted:bg-bg-hover data-highlighted:text-text-primary data-disabled:cursor-not-allowed data-disabled:text-text-quaternary";
-const MENU_ITEM_DANGER_CLASS =
-  "flex h-(--control-height) cursor-pointer items-center gap-2 rounded-sm px-2.5 text-body text-error transition-colors data-highlighted:bg-error-soft data-highlighted:text-error";
-const MENU_SEPARATOR_CLASS = "mx-0.5 my-1 h-px border-none bg-border-subtle";
-
 interface InstalledSkillHeaderProps {
   skill: InstalledSkill;
+  /** The deployment whose SKILL.md the page renders - the header's violation line follows it. */
+  deployment?: Deployment;
   from: ActiveView;
   onBack: () => void;
   onRemoveComplete: () => void;
@@ -107,6 +104,7 @@ function lastTestLabel(lastTest: SkillRunSummary): string {
  */
 export function InstalledSkillHeader({
   skill,
+  deployment,
   from,
   onBack,
   onRemoveComplete,
@@ -118,8 +116,18 @@ export function InstalledSkillHeader({
   assistantTriggerRef,
 }: InstalledSkillHeaderProps) {
   const actions = useSkillPageActions(skill, onRemoveComplete);
-  const blockingViolations = skill.spec_violations.filter(isBlockingSpecViolation);
-  const nonBlockingCount = skill.spec_violations.length - blockingViolations.length;
+  const assistantEnabled = isFeatureEnabled("skill-assistant");
+  const nonBlockingCount =
+    skill.spec_violations.length - skill.spec_violations.filter(isBlockingSpecViolation).length;
+  // The red violation line names only the deployment whose SKILL.md the page
+  // actually renders - other deployments' violations show on their own
+  // Locations rows instead (see `SkillLocationsCard`). The union in
+  // `skill.spec_violations` (and its "N spec notes" chip above) is unchanged:
+  // Home's spec-violation issue still relies on it covering every copy.
+  const renderedDeployment = deployment ?? skill.deployments.find((d) => d.content_hash);
+  const blockingViolations = (renderedDeployment?.spec_violations ?? []).filter(
+    isBlockingSpecViolation,
+  );
 
   const modifiedRelative = skill.modified_at ? formatRelativeTime(skill.modified_at) : undefined;
   const installedDate = absoluteDate(skill.installed_at);
@@ -152,52 +160,38 @@ export function InstalledSkillHeader({
               {actions.primaryAction.busy ? "Working…" : actions.primaryAction.label}
             </Button>
           )}
-          <button
-            ref={assistantTriggerRef}
-            type="button"
-            className="flex h-(--control-height) items-center gap-1.5 rounded-sm border border-border px-3 text-body text-text-secondary transition-colors hover:bg-bg-tertiary hover:text-text-primary aria-expanded:border-border-focus aria-expanded:text-accent"
-            onClick={onOpenAssistant}
-            aria-expanded={isAssistantOpen}
-            aria-controls={SKILL_ASSISTANT_DRAWER_ID}
-            title="Assistant"
-          >
-            <PanelRight size={16} />
-            <span>Assistant</span>
-          </button>
+          {assistantEnabled && (
+            <button
+              ref={assistantTriggerRef}
+              type="button"
+              className="flex h-(--control-height) items-center gap-1.5 rounded-sm border border-border px-3 text-body text-text-secondary transition-colors hover:bg-bg-tertiary hover:text-text-primary aria-expanded:border-border-focus aria-expanded:text-accent"
+              onClick={onOpenAssistant}
+              aria-expanded={isAssistantOpen}
+              aria-controls={isAssistantOpen ? SKILL_ASSISTANT_DRAWER_ID : undefined}
+              title="Assistant"
+            >
+              <PanelRight size={16} />
+              <span>Assistant</span>
+            </button>
+          )}
           <MenuControl
             triggerClassName="flex h-(--control-height) w-(--control-height) cursor-pointer items-center justify-center rounded-sm border border-border text-text-secondary transition-colors hover:bg-bg-tertiary hover:text-text-primary"
             triggerAriaLabel="More actions"
             trigger={<MoreHorizontal size={16} />}
             align="end"
           >
-            <MenuItem
-              closeOnClick
-              className={MENU_ITEM_CLASS}
-              onClick={actions.reveal}
-              disabled={!actions.path}
-            >
+            <MenuItem closeOnClick onClick={actions.reveal} disabled={!actions.path}>
               Reveal in Finder
             </MenuItem>
-            <MenuItem
-              closeOnClick
-              className={MENU_ITEM_CLASS}
-              onClick={actions.openEditor}
-              disabled={!actions.path}
-            >
+            <MenuItem closeOnClick onClick={actions.openEditor} disabled={!actions.path}>
               Open in editor
             </MenuItem>
-            <MenuItem
-              closeOnClick
-              className={MENU_ITEM_CLASS}
-              onClick={actions.copyPath}
-              disabled={!actions.path}
-            >
+            <MenuItem closeOnClick onClick={actions.copyPath} disabled={!actions.path}>
               Copy path
             </MenuItem>
-            <MenuSeparator className={MENU_SEPARATOR_CLASS} />
+            <MenuSeparator />
             <MenuItem
               closeOnClick
-              className={MENU_ITEM_CLASS}
               onClick={actions.parkAction.run}
               disabled={actions.parkAction.busy}
             >
@@ -206,7 +200,6 @@ export function InstalledSkillHeader({
             {actions.forkAction && (
               <MenuItem
                 closeOnClick
-                className={MENU_ITEM_CLASS}
                 onClick={actions.forkAction.run}
                 disabled={actions.forkAction.busy}
               >
@@ -215,10 +208,10 @@ export function InstalledSkillHeader({
             )}
             {actions.removeAction && (
               <>
-                <MenuSeparator className={MENU_SEPARATOR_CLASS} />
+                <MenuSeparator />
                 <MenuItem
                   closeOnClick
-                  className={MENU_ITEM_DANGER_CLASS}
+                  variant="destructive"
                   onClick={actions.removeAction.run}
                   disabled={actions.removeAction.busy}
                 >
@@ -264,12 +257,13 @@ export function InstalledSkillHeader({
           </span>
         )}
         {nonBlockingCount > 0 && (
-          <span
-            className="inline-flex items-center gap-1 rounded-full bg-bg-tertiary px-2 py-0.5 text-caption text-text-tertiary"
-            title={skill.spec_violations.filter((v) => !isBlockingSpecViolation(v)).join("; ")}
+          <TooltipControl
+            content={skill.spec_violations.filter((v) => !isBlockingSpecViolation(v)).join("; ")}
           >
-            {nonBlockingCount} spec note{nonBlockingCount !== 1 ? "s" : ""}
-          </span>
+            <span className="inline-flex items-center gap-1 rounded-full bg-bg-tertiary px-2 py-0.5 text-caption text-text-tertiary">
+              {nonBlockingCount} spec note{nonBlockingCount !== 1 ? "s" : ""}
+            </span>
+          </TooltipControl>
         )}
       </div>
 
@@ -282,7 +276,7 @@ export function InstalledSkillHeader({
 
       <div className="text-small text-text-tertiary">
         {metaSegments.join(" · ")}
-        {lastTest && (
+        {assistantEnabled && lastTest && (
           <>
             {metaSegments.length > 0 && " · "}
             <button

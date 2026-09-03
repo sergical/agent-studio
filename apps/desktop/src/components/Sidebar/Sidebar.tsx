@@ -17,6 +17,7 @@ import {
   Puzzle,
   RefreshCw,
   Search,
+  Settings as SettingsIcon,
   Sun,
 } from "lucide-react";
 import { ownSkillsView, pluginSkillsView } from "@skill-studio/lib";
@@ -24,6 +25,7 @@ import { defaultSkillListFilter } from "@skill-studio/lib";
 import { isFeatureEnabled } from "../../lib/feature-flags";
 import { relativeScanTime, sidebarAnchorView } from "../../lib/sidebar-nav";
 import { useAppStore } from "../../store/appStore";
+import { TooltipControl } from "../ui/TooltipControl";
 import type { SkillSnapshot } from "@skill-studio/lib";
 
 interface SidebarProps {
@@ -195,38 +197,56 @@ export function Sidebar({ snapshot, isLoading, requestRescan }: SidebarProps) {
       )}
 
       <div className="mt-auto flex select-none items-center justify-between gap-2 border-t border-border-subtle px-2.5 py-2">
-        <button
-          type="button"
-          className="flex h-6 cursor-pointer items-center gap-1.5 rounded-sm border-0 bg-transparent px-1.5 text-caption text-text-tertiary transition-colors hover:enabled:bg-bg-hover hover:enabled:text-text-primary disabled:cursor-default"
-          onClick={handleRefresh}
-          disabled={spinning}
-          title="Rescan installed skills"
-        >
-          <RefreshCw size={13} className={spinning ? "animate-spin" : ""} />
-          <span>
-            {spinning ? "Scanning…" : `Scanned ${relativeScanTime(snapshot?.scanned_at)}`}
-          </span>
-        </button>
+        <TooltipControl content="Rescan installed skills">
+          <button
+            type="button"
+            className="flex h-6 cursor-pointer items-center gap-1.5 rounded-sm border-0 bg-transparent px-1.5 text-caption text-text-tertiary transition-colors hover:enabled:bg-bg-hover hover:enabled:text-text-primary disabled:cursor-default"
+            onClick={handleRefresh}
+            disabled={spinning}
+          >
+            <RefreshCw size={13} className={spinning ? "animate-spin" : ""} />
+            <span>
+              {spinning ? "Scanning…" : `Scanned ${relativeScanTime(snapshot?.scanned_at)}`}
+            </span>
+          </button>
+        </TooltipControl>
         <div className="flex items-center gap-0.5">
-          <button
-            type="button"
-            className={`${iconButtonClass} aria-[current=page]:bg-accent-softer aria-[current=page]:text-accent`}
-            onClick={() => setActiveView({ kind: "learn" })}
-            aria-current={anchorView.kind === "learn" ? "page" : undefined}
-            aria-label="Learn"
-            title="Learn"
+          <TooltipControl content="Learn">
+            <button
+              type="button"
+              className={`${iconButtonClass} aria-[current=page]:bg-accent-softer aria-[current=page]:text-accent`}
+              onClick={() => setActiveView({ kind: "learn" })}
+              aria-current={anchorView.kind === "learn" ? "page" : undefined}
+              aria-label="Learn"
+            >
+              <BookOpen size={13} />
+            </button>
+          </TooltipControl>
+          <TooltipControl content="Settings">
+            <button
+              type="button"
+              className={`${iconButtonClass} aria-[current=page]:bg-accent-softer aria-[current=page]:text-accent`}
+              onClick={() => setActiveView({ kind: "settings" })}
+              aria-current={anchorView.kind === "settings" ? "page" : undefined}
+              aria-label="Settings"
+            >
+              <SettingsIcon size={13} />
+            </button>
+          </TooltipControl>
+          <TooltipControl
+            content={resolvedTheme === "dark" ? "Switch to light theme" : "Switch to dark theme"}
           >
-            <BookOpen size={13} />
-          </button>
-          <button
-            type="button"
-            className={iconButtonClass}
-            onClick={() => setTheme(resolvedTheme === "dark" ? "light" : "dark")}
-            aria-label={resolvedTheme === "dark" ? "Switch to light theme" : "Switch to dark theme"}
-            title={resolvedTheme === "dark" ? "Switch to light theme" : "Switch to dark theme"}
-          >
-            {resolvedTheme === "dark" ? <Moon size={13} /> : <Sun size={13} />}
-          </button>
+            <button
+              type="button"
+              className={iconButtonClass}
+              onClick={() => setTheme(resolvedTheme === "dark" ? "light" : "dark")}
+              aria-label={
+                resolvedTheme === "dark" ? "Switch to light theme" : "Switch to dark theme"
+              }
+            >
+              {resolvedTheme === "dark" ? <Moon size={13} /> : <Sun size={13} />}
+            </button>
+          </TooltipControl>
         </div>
       </div>
     </nav>

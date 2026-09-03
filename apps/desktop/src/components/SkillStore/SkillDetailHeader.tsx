@@ -15,6 +15,7 @@ import {
 } from "lucide-react";
 import type { SkillWithStatus } from "@skill-studio/lib";
 import { SOURCE_KIND_LABELS } from "@skill-studio/lib";
+import { TooltipControl } from "../ui/TooltipControl";
 
 interface SkillDetailHeaderProps {
   skill: SkillWithStatus;
@@ -99,13 +100,16 @@ export function SkillDetailHeader({ skill, resolvedTopSource, onClose }: SkillDe
             </span>
           )}
         </div>
-        <button
-          className="flex size-8 shrink-0 items-center justify-center rounded-sm border-0 bg-transparent text-text-tertiary transition-colors hover:bg-bg-hover hover:text-text-primary"
-          onClick={onClose}
-          aria-label="Close"
-        >
-          <X size={18} />
-        </button>
+        <TooltipControl content="Close">
+          <button
+            type="button"
+            className="flex size-8 shrink-0 items-center justify-center rounded-sm border-0 bg-transparent text-text-tertiary transition-colors hover:bg-bg-hover hover:text-text-primary"
+            onClick={onClose}
+            aria-label="Close"
+          >
+            <X size={18} />
+          </button>
+        </TooltipControl>
       </div>
 
       {skill.installed_info && skill.installed_info.deployments.length > 0 && (

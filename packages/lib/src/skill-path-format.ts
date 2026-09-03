@@ -29,3 +29,12 @@ export function shortProjectPath(path: string): string {
   const segments = path.split("/").filter(Boolean);
   return `~/${segments.slice(-2).join("/")}`;
 }
+
+/**
+ * Everything before a path's last segment. Used wherever a deployment's
+ * skills root has to be derived from the skill directory it points at.
+ */
+export function parentDirectory(path: string): string {
+  const idx = path.lastIndexOf("/");
+  return idx > 0 ? path.slice(0, idx) : path;
+}

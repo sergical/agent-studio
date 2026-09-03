@@ -124,6 +124,17 @@ export interface SkillDetails {
   skill_md: string | null;
 }
 
+/**
+ * How discovery requests reach skills.sh - see the Rust `resolve_skills_sh_access`.
+ * `"direct"` means a developer-override key is configured (`server_url` is
+ * `null`); `"server"` means requests go through the local Skill Studio
+ * server at `server_url`.
+ */
+export interface SkillsShAccessInfo {
+  mode: "direct" | "server";
+  server_url: string | null;
+}
+
 // ============================================================================
 // Lock File Types
 // ============================================================================
@@ -223,6 +234,19 @@ export interface Deployment {
    * per-skill one) - per-skill disable needs a materialize step first.
    */
   shared_via_whole_dir_link?: boolean;
+  /**
+   * Violations of the agentskills.io SKILL.md spec found for this specific
+   * deployment - as opposed to `InstalledSkill.spec_violations`, the deduped
+   * union across every deployment of the same name.
+   */
+  spec_violations?: string[];
+  /**
+   * Which invocation channels this deployment's own SKILL.md allows - see
+   * `frontmatter::invocation_policy` on the Rust side. Optional so
+   * hand-built fixtures/tests predating this field still compile; callers
+   * that need a value should fall back to `InstalledSkill.invocation`.
+   */
+  invocation?: InvocationPolicy;
 }
 
 /**
@@ -322,6 +346,10 @@ export interface InstallRequest {
   scope: InstallScope;
   project_path?: string;
   agents: AgentId[];
+  /** Harnesses to switch off for this skill right after the install, for
+   * readers the install itself cannot avoid reaching - see
+   * `installDisabledHarnesses`. */
+  disabled_harnesses: AgentId[];
 }
 
 /**
@@ -346,6 +374,20 @@ export interface InstallResult {
 export type AddMethod = "dotagents" | "skills-sh" | "copy";
 
 /**
+ * What the Add Skill sheet needs before it can pick sensible Method and
+ * Harnesses defaults - see the Rust `get_add_method_defaults`.
+ */
+export interface AddMethodDefaults {
+  dotagents_installed: boolean;
+  has_skill_lock: boolean;
+  /** Every first-class agent whose own config directory exists on this
+   * machine, in `AgentId`'s declaration order. */
+  installed_harnesses: AgentId[];
+  /** True when `~/.claude/skills` is a symlink into the shared folder. */
+  claude_reads_shared_folder: boolean;
+}
+
+/**
  * `addSkill`'s request. `source` is produced verbatim by
  * `parseSkillSource` - see `skill-source-parse.ts`.
  */
@@ -353,6 +395,10 @@ export interface AddSkillRequest {
   source: import("./skill-source-parse").ParsedSkillSource;
   method: AddMethod;
   agents: AgentId[];
+  /** Harnesses to switch off for this skill right after the install, for
+   * readers the install itself cannot avoid reaching - see
+   * `installDisabledHarnesses`. */
+  disabled_harnesses: AgentId[];
   scope: InstallScope;
   project_path?: string;
   trial: boolean;
@@ -366,6 +412,50 @@ export interface AddSkillResult {
   deployments_created: string[];
   /** Set when the install succeeded but recording the 24 h trial failed. */
   warning?: string;
+}
+
+/**
+ * One skill folder found in a GitHub repo by `listGithubSkills` - `path` is
+ * repo-relative and `""` for a `SKILL.md` at the repo root.
+ */
+export interface GithubSkillEntry {
+  name: string;
+  path: string;
+}
+
+/** `listGithubSkills`' result - see `github_skill_listing.rs`. */
+export interface GithubSkillListing {
+  repo: string;
+  git_ref: string;
+  commit?: string;
+  skills: GithubSkillEntry[];
+  /** GitHub's own flag for a tree too large to return in one response. */
+  truncated: boolean;
+}
+
+/**
+ * `addSkills`' request: one source plus the skill folders picked out of it.
+ */
+export interface AddSkillsRequest {
+  source: import("./skill-source-parse").ParsedSkillSource;
+  skills: GithubSkillEntry[];
+  method: AddMethod;
+  agents: AgentId[];
+  /** Harnesses to switch off for this skill right after the install, for
+   * readers the install itself cannot avoid reaching - see
+   * `installDisabledHarnesses`. */
+  disabled_harnesses: AgentId[];
+  scope: InstallScope;
+  project_path?: string;
+  trial: boolean;
+}
+
+/** One skill's outcome in an `addSkills` batch - exactly one of
+ * `result`/`error` is set. */
+export interface AddSkillOutcome {
+  name: string;
+  result?: AddSkillResult;
+  error?: string;
 }
 
 /**

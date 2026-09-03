@@ -17,13 +17,17 @@ interface HarnessIconProps {
 export { agentIdFromDeploymentLabel as harnessIdFromLabel } from "@skill-studio/lib";
 
 export function HarnessIcon({ harness, size = 16, muted = false }: HarnessIconProps) {
-  const icon = renderIcon(harness, size);
-  return muted ? (
-    <span className="inline-flex" style={{ color: "var(--color-icon-muted)" }}>
-      {icon}
+  // `data-harness-icon` lets a container animate just the harness marks inside
+  // it (see the shared-folder rows in `SkillSharedFolderGroup`) without
+  // catching the lucide icons and chips that sit in the same rows.
+  return (
+    <span
+      data-harness-icon=""
+      className="inline-flex"
+      style={muted ? { color: "var(--color-icon-muted)" } : undefined}
+    >
+      {renderIcon(harness, size)}
     </span>
-  ) : (
-    icon
   );
 }
 

@@ -6,6 +6,7 @@ import { describe, expect, it } from "vitest";
 import {
   AGENT_MATRIX_LABELS,
   agentIdFromDeploymentLabel,
+  deploymentRelationText,
   driftingCopies,
   groupDeploymentsForDisplay,
   locationSummary,
@@ -53,30 +54,39 @@ function fixtureSkill(overrides: Partial<InstalledSkill> = {}): InstalledSkill {
 }
 
 describe("groupDeploymentsForDisplay", () => {
-  it("groups a shared root and its linked harnesses into one group of three", () => {
+  it("groups a shared root with the harnesses that read it through a whole-root link", () => {
     const shared = fixtureDeployment({ agent: "shared" });
-    const linked = [
+    const readers = [
       fixtureDeployment({
         agent: "Claude Code",
-        is_symlink: true,
-        symlink_target: "/home/.agents/skills/find-bugs",
+        path: "/home/.claude/skills/find-bugs",
+        resolved_path: "/home/.agents/skills/find-bugs",
+        shared_via_whole_dir_link: true,
       }),
       fixtureDeployment({
         agent: "Codex",
-        is_symlink: true,
-        symlink_target: "/home/.agents/skills/find-bugs",
-      }),
-      fixtureDeployment({
-        agent: "Cursor",
-        is_symlink: true,
-        symlink_target: "/home/.agents/skills/find-bugs",
+        path: "/home/.codex/skills/find-bugs",
+        resolved_path: "/home/.agents/skills/find-bugs",
+        shared_via_whole_dir_link: true,
       }),
     ];
-    const result = groupDeploymentsForDisplay([shared, ...linked]);
+    const result = groupDeploymentsForDisplay([shared, ...readers]);
     expect(result.groups).toHaveLength(1);
     expect(result.groups[0]?.shared).toBe(shared);
-    expect(result.groups[0]?.linked).toEqual(linked);
+    expect(result.groups[0]?.linked).toEqual(readers);
     expect(result.standalone).toEqual([]);
+  });
+
+  it("keeps a per-skill symlink out of the group - it is a location of its own", () => {
+    const shared = fixtureDeployment({ agent: "shared" });
+    const symlink = fixtureDeployment({
+      agent: "Claude Code",
+      is_symlink: true,
+      symlink_target: "/home/.agents/skills/find-bugs",
+    });
+    const result = groupDeploymentsForDisplay([shared, symlink]);
+    expect(result.groups[0]?.linked).toEqual([]);
+    expect(result.standalone).toEqual([symlink]);
   });
 
   it("produces only standalone rows when there is no shared root", () => {
@@ -108,11 +118,12 @@ describe("groupDeploymentsForDisplay", () => {
       scope: "global",
       path: "/home/.agents/skills/find-bugs",
     });
-    const globalLinked = fixtureDeployment({
+    const globalReader = fixtureDeployment({
       agent: "Codex",
       scope: "global",
-      is_symlink: true,
-      symlink_target: "/home/.agents/skills/find-bugs",
+      path: "/home/.codex/skills/find-bugs",
+      resolved_path: "/home/.agents/skills/find-bugs",
+      shared_via_whole_dir_link: true,
     });
     const projectShared = fixtureDeployment({
       agent: "shared",
@@ -120,41 +131,43 @@ describe("groupDeploymentsForDisplay", () => {
       project_path: "/home/src/sentry",
       path: "/home/src/sentry/.agents/skills/find-bugs",
     });
-    const projectLinked = fixtureDeployment({
+    const projectReader = fixtureDeployment({
       agent: "Claude Code",
       scope: "project",
       project_path: "/home/src/sentry",
-      is_symlink: true,
-      symlink_target: "/home/src/sentry/.agents/skills/find-bugs",
+      path: "/home/src/sentry/.claude/skills/find-bugs",
+      resolved_path: "/home/src/sentry/.agents/skills/find-bugs",
+      shared_via_whole_dir_link: true,
     });
 
     const result = groupDeploymentsForDisplay([
       globalShared,
-      globalLinked,
+      globalReader,
       projectShared,
-      projectLinked,
+      projectReader,
     ]);
 
     expect(result.groups).toHaveLength(2);
     const globalGroup = result.groups.find((g) => g.shared === globalShared);
     const projectGroup = result.groups.find((g) => g.shared === projectShared);
-    expect(globalGroup?.linked).toEqual([globalLinked]);
-    expect(projectGroup?.linked).toEqual([projectLinked]);
+    expect(globalGroup?.linked).toEqual([globalReader]);
+    expect(projectGroup?.linked).toEqual([projectReader]);
     expect(result.standalone).toEqual([]);
   });
 
-  it("leaves a link standalone when its target matches no shared root", () => {
+  it("leaves a reader standalone when its root link matches no shared root here", () => {
     const shared = fixtureDeployment({ agent: "shared", path: "/home/.agents/skills/find-bugs" });
-    const unrelatedLink = fixtureDeployment({
+    const unrelatedReader = fixtureDeployment({
       agent: "Codex",
-      is_symlink: true,
-      symlink_target: "/home/other/.agents/skills/find-bugs",
       scope: "project",
       project_path: "/home/other",
+      path: "/home/other/.codex/skills/find-bugs",
+      resolved_path: "/home/other/.agents/skills/find-bugs",
+      shared_via_whole_dir_link: true,
     });
-    const result = groupDeploymentsForDisplay([shared, unrelatedLink]);
+    const result = groupDeploymentsForDisplay([shared, unrelatedReader]);
     expect(result.groups[0]?.linked).toEqual([]);
-    expect(result.standalone).toEqual([unrelatedLink]);
+    expect(result.standalone).toEqual([unrelatedReader]);
   });
 });
 
@@ -303,5 +316,47 @@ describe("AGENT_MATRIX_LABELS", () => {
       "Cursor",
       "Grok Build",
     ]);
+  });
+});
+
+describe("deploymentRelationText", () => {
+  it("says the shared root lives here", () => {
+    expect(
+      deploymentRelationText(
+        fixtureDeployment({ agent: "shared", path: "/Users/me/.agents/skills/find-bugs" }),
+      ),
+    ).toBe("lives here");
+  });
+
+  it("calls a per-skill link into the shared root a symlink", () => {
+    expect(
+      deploymentRelationText(
+        fixtureDeployment({
+          is_symlink: true,
+          symlink_target: "/Users/me/.agents/skills/find-bugs",
+        }),
+      ),
+    ).toBe("symlink");
+  });
+
+  it("names the linked root a whole-dir link reads through", () => {
+    expect(
+      deploymentRelationText(
+        fixtureDeployment({
+          path: "/Users/me/.claude/skills/find-bugs",
+          shared_via_whole_dir_link: true,
+        }),
+      ),
+    ).toBe("reads this folder via ~/.claude/skills");
+  });
+
+  it("calls a real directory a copy", () => {
+    expect(deploymentRelationText(fixtureDeployment())).toBe("copy");
+  });
+
+  it("calls an unresolved link broken", () => {
+    expect(
+      deploymentRelationText(fixtureDeployment({ is_symlink: true, symlink_is_broken: true })),
+    ).toBe("broken link");
   });
 });

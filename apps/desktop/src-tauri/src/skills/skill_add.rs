@@ -21,13 +21,16 @@ use tauri::Manager;
 
 use super::agents::AgentId;
 use super::commands::{push_agent_args, skills_sh_add_args};
+use super::github_skill_listing::GithubSkillEntry;
 use super::skill_agent_runner::validate_skill_dir_name;
 use super::skill_dto::{
-    AddSkillRequest, AddSkillResult, InstallScope, ParsedSkillSource, ParsedSkillSourceKind,
+    AddSkillOutcome, AddSkillRequest, AddSkillResult, AddSkillsRequest, InstallScope,
+    ParsedSkillSource, ParsedSkillSourceKind,
 };
-use super::skill_fork::{ForkMutationLock, RealUpstreamFetch, UpstreamFetch};
+use super::skill_fork::{ForkMutationLock, RealUpstreamFetch, RepoSnapshot, UpstreamFetch};
 use super::skill_fork_registry::{AddMethod, TrialScope};
 use super::skill_fs::copy_dir_all;
+use super::skill_harness_disable::set_harness_enabled_with;
 use super::skill_refresh::{self, SkillRefreshState};
 use super::skill_trial;
 use super::skill_update_check::{self, CommitLookup, GhCommitLookup};
@@ -228,11 +231,12 @@ fn dir_entry_names(dir: &Path) -> std::collections::BTreeSet<String> {
 fn dotagents_source_arg(source: &ParsedSkillSource) -> Result<String, String> {
     match source.kind {
         ParsedSkillSourceKind::Github => {
-            let repo = source.repo.clone().ok_or("A GitHub source needs a repo")?;
-            Ok(match &source.path {
-                Some(path) => format!("{repo}/{path}"),
-                None => repo,
-            })
+            // dotagents only accepts `owner/repo`; the skill inside it is
+            // selected with `--name`, never as a path suffix (which it rejects).
+            source
+                .repo
+                .clone()
+                .ok_or("A GitHub source needs a repo".to_string())
         }
         ParsedSkillSourceKind::Git => {
             let url = source.url.clone().ok_or("A git source needs a url")?;
@@ -468,6 +472,7 @@ fn add_via_copy(
     request: &AddSkillRequest,
     fetch: &dyn UpstreamFetch,
     lookup: &dyn CommitLookup,
+    snapshot: Option<&dyn RepoSnapshot>,
 ) -> Result<AddSkillResult, String> {
     if request.scope == InstallScope::Project {
         let project_path = request
@@ -504,14 +509,21 @@ fn add_via_copy(
                 .clone()
                 .ok_or("A GitHub source needs a repo")?;
             let path = request.source.path.clone().unwrap_or_default();
-            let commit = match &request.source.git_ref {
-                Some(r) => r.clone(),
-                None => lookup
-                    .latest_commit(&repo, &path, None)?
-                    .map(|(sha, _)| sha)
-                    .ok_or_else(|| format!("Could not determine {name}'s latest commit"))?,
-            };
-            fetch.fetch_skill_dir(&repo, &path, &commit, &target)?;
+            // A batch install passes the snapshot it already downloaded, so
+            // the tarball is fetched once for the whole picker selection.
+            match snapshot {
+                Some(snapshot) => snapshot.copy_dir(&path, &target)?,
+                None => {
+                    let commit = match &request.source.git_ref {
+                        Some(r) => r.clone(),
+                        None => lookup
+                            .latest_commit(&repo, &path, None)?
+                            .map(|(sha, _)| sha)
+                            .ok_or_else(|| format!("Could not determine {name}'s latest commit"))?,
+                    };
+                    fetch.fetch_skill_dir(&repo, &path, &commit, &target)?;
+                }
+            }
         }
         ParsedSkillSourceKind::Local => {
             let local_path = request
@@ -571,6 +583,69 @@ fn claude_skills_dir(home: &Path, request: &AddSkillRequest) -> PathBuf {
     }
 }
 
+/// The `SKILL.md` paths Codex can see among the deployments an install just
+/// created: its own skills directory, plus the shared folder it reads
+/// natively. Codex's per-skill switch keys off the path, not the name, so
+/// anything else that was created is irrelevant to it.
+fn codex_visible_skill_mds(
+    home: &Path,
+    request: &AddSkillRequest,
+    deployments: &[String],
+) -> Vec<PathBuf> {
+    let project = PathBuf::from(request.project_path.as_deref().unwrap_or(""));
+    let roots = [
+        shared_skills_dir(home, request),
+        if request.scope == InstallScope::Global {
+            AgentId::Codex.global_skills_dir(home)
+        } else {
+            AgentId::Codex.project_skills_dir(&project)
+        },
+    ];
+    deployments
+        .iter()
+        .map(PathBuf::from)
+        .filter(|path| {
+            path.parent()
+                .is_some_and(|parent| roots.contains(&parent.to_path_buf()))
+        })
+        .map(|path| path.join("SKILL.md"))
+        .collect()
+}
+
+/// Switches the freshly installed skill off for every harness in
+/// `request.disabled_harnesses` - the readers the install itself couldn't
+/// avoid reaching, since every method writes the shared folder they all
+/// read. A failure folds into `result.warning`: the skill is on disk and
+/// usable, so it must not be reported as a failed install.
+fn apply_disabled_harnesses(home: &Path, request: &AddSkillRequest, result: &mut AddSkillResult) {
+    if request.disabled_harnesses.is_empty() {
+        return;
+    }
+    let codex_paths = codex_visible_skill_mds(home, request, &result.deployments_created);
+    let mut failures = Vec::new();
+    // One `dotagents add` can create several folders, joined into `name`.
+    for name in result.name.split(", ") {
+        for agent in &request.disabled_harnesses {
+            if let Err(e) =
+                set_harness_enabled_with(home, name, agent.cli_name(), false, &codex_paths)
+            {
+                failures.push(format!(
+                    "Installed, but could not turn it off for {}: {e}",
+                    agent.display_name()
+                ));
+            }
+        }
+    }
+    if failures.is_empty() {
+        return;
+    }
+    let appended = failures.join(" ");
+    result.warning = Some(match result.warning.take() {
+        Some(existing) => format!("{existing} {appended}"),
+        None => appended,
+    });
+}
+
 /// `add_skill`'s logic, taking `home`/traits directly so it's testable
 /// without a Tauri `AppHandle` or a network call.
 pub fn add_skill_with(
@@ -581,11 +656,160 @@ pub fn add_skill_with(
     lookup: &dyn CommitLookup,
 ) -> Result<AddSkillResult, String> {
     validate_parsed_source(&request.source)?;
-    match request.method {
+    let mut result = match request.method {
         AddMethod::Dotagents => add_via_dotagents(home, request, runner),
         AddMethod::SkillsSh => add_via_skills_sh(home, request, runner),
-        AddMethod::Copy => add_via_copy(home, request, fetch, lookup),
+        AddMethod::Copy => add_via_copy(home, request, fetch, lookup, None),
+    }?;
+    apply_disabled_harnesses(home, request, &mut result);
+    Ok(result)
+}
+
+// ============================================================================
+// Batch install - one picker selection, many skills
+// ============================================================================
+
+/// The single-skill request `entry` implies, with everything else copied
+/// from the batch. An entry at the repo root has an empty `path`, which
+/// stays `None` so the copy method treats it as "the whole repo".
+fn request_for_entry(batch: &AddSkillsRequest, entry: &GithubSkillEntry) -> AddSkillRequest {
+    let mut source = batch.source.clone();
+    source.path = Some(entry.path.clone()).filter(|p| !p.is_empty());
+    source.skill_name = Some(entry.name.clone());
+    AddSkillRequest {
+        source,
+        method: batch.method,
+        agents: batch.agents.clone(),
+        disabled_harnesses: batch.disabled_harnesses.clone(),
+        scope: batch.scope.clone(),
+        project_path: batch.project_path.clone(),
+        trial: batch.trial,
     }
+}
+
+/// `add_skills`' logic, taking `home`/traits directly so it's testable
+/// without a Tauri `AppHandle` or a network call. One skill's failure never
+/// stops the rest: each entry gets its own `AddSkillOutcome`. The Copy
+/// method downloads the repo once up front and extracts every selected
+/// folder out of that one snapshot.
+pub fn add_skills_with(
+    home: &Path,
+    request: &AddSkillsRequest,
+    runner: &dyn CommandRunner,
+    fetch: &dyn UpstreamFetch,
+    lookup: &dyn CommitLookup,
+) -> Result<Vec<AddSkillOutcome>, String> {
+    if request.skills.is_empty() {
+        return Err("Select at least one skill".to_string());
+    }
+
+    let snapshot = if request.method == AddMethod::Copy
+        && request.source.kind == ParsedSkillSourceKind::Github
+    {
+        open_repo_snapshot(request, fetch, lookup)?
+    } else {
+        None
+    };
+
+    let mut outcomes = Vec::with_capacity(request.skills.len());
+    for entry in &request.skills {
+        let single = request_for_entry(request, entry);
+        let mut result = match validate_parsed_source(&single.source) {
+            Ok(()) => match request.method {
+                AddMethod::Dotagents => add_via_dotagents(home, &single, runner),
+                AddMethod::SkillsSh => add_via_skills_sh(home, &single, runner),
+                AddMethod::Copy => add_via_copy(home, &single, fetch, lookup, snapshot.as_deref()),
+            },
+            Err(e) => Err(e),
+        };
+        if let Ok(result) = &mut result {
+            apply_disabled_harnesses(home, &single, result);
+        }
+        outcomes.push(match result {
+            Ok(result) => AddSkillOutcome {
+                name: entry.name.clone(),
+                result: Some(result),
+                error: None,
+            },
+            Err(error) => AddSkillOutcome {
+                name: entry.name.clone(),
+                result: None,
+                error: Some(error),
+            },
+        });
+    }
+    Ok(outcomes)
+}
+
+/// Resolves the commit the batch pins to and downloads the repo once.
+/// `None` means the fetch implementation has no bulk mode, so each skill
+/// falls back to its own `fetch_skill_dir`.
+fn open_repo_snapshot(
+    request: &AddSkillsRequest,
+    fetch: &dyn UpstreamFetch,
+    lookup: &dyn CommitLookup,
+) -> Result<Option<Box<dyn RepoSnapshot>>, String> {
+    let repo = request
+        .source
+        .repo
+        .clone()
+        .ok_or("A GitHub source needs a repo")?;
+    let path = request.source.path.clone().unwrap_or_default();
+    let commit = match &request.source.git_ref {
+        Some(r) => r.clone(),
+        None => lookup
+            .latest_commit(&repo, &path, None)?
+            .map(|(sha, _)| sha)
+            .ok_or_else(|| format!("Could not determine {repo}'s latest commit"))?,
+    };
+    fetch.open_repo(&repo, &commit)
+}
+
+/// The `UpstreamFetch`/`CommitLookup` pair both add commands run with.
+type GithubTools = (Box<dyn UpstreamFetch>, Box<dyn CommitLookup>);
+
+/// The GitHub-facing pair both add commands run with: the real `gh`-backed
+/// implementations, or ones that fail with "Run Check now first" when `gh`
+/// isn't resolvable.
+fn resolve_fetch_and_lookup(app: &tauri::AppHandle) -> Result<GithubTools, String> {
+    let app_data = app
+        .path()
+        .app_data_dir()
+        .map_err(|e| format!("Could not resolve app data dir: {e}"))?;
+    Ok(match skill_update_check::resolve_gh_binary() {
+        Some(gh_bin) => (
+            Box::new(RealUpstreamFetch {
+                gh_bin: gh_bin.clone(),
+                cache_dir: app_data.join("skill-studio").join("cache"),
+            }),
+            Box::new(GhCommitLookup { gh_bin }),
+        ),
+        None => {
+            let message = "Run Check now first".to_string();
+            (
+                Box::new(Unavailable(message.clone())),
+                Box::new(Unavailable(message)),
+            )
+        }
+    })
+}
+
+/// Installs every skill picked out of one source - see `add_skills_with`.
+/// The whole batch fails only when nothing could be attempted; a single
+/// skill's failure comes back in its own `AddSkillOutcome`.
+#[tauri::command]
+pub fn add_skills(
+    request: AddSkillsRequest,
+    app: tauri::AppHandle,
+    fork_lock: tauri::State<ForkMutationLock>,
+) -> Result<Vec<AddSkillOutcome>, String> {
+    let _guard = fork_lock.try_acquire()?;
+    let home = dirs::home_dir().ok_or("Could not find home directory")?;
+    let runner = RealCommandRunner;
+    let (fetch, lookup) = resolve_fetch_and_lookup(&app)?;
+    let result = add_skills_with(&home, &request, &runner, fetch.as_ref(), lookup.as_ref());
+    skill_refresh::request_snapshot_rebuild(&app);
+    result
 }
 
 #[tauri::command]
@@ -598,28 +822,8 @@ pub fn add_skill(
     let _guard = fork_lock.try_acquire()?;
     let _ = &refresh_state;
     let home = dirs::home_dir().ok_or("Could not find home directory")?;
-    let app_data = app
-        .path()
-        .app_data_dir()
-        .map_err(|e| format!("Could not resolve app data dir: {e}"))?;
     let runner = RealCommandRunner;
-    let (fetch, lookup): (Box<dyn UpstreamFetch>, Box<dyn CommitLookup>) =
-        match skill_update_check::resolve_gh_binary() {
-            Some(gh_bin) => (
-                Box::new(RealUpstreamFetch {
-                    gh_bin: gh_bin.clone(),
-                    cache_dir: app_data.join("skill-studio").join("cache"),
-                }),
-                Box::new(GhCommitLookup { gh_bin }),
-            ),
-            None => {
-                let message = "Run Check now first".to_string();
-                (
-                    Box::new(Unavailable(message.clone())),
-                    Box::new(Unavailable(message)),
-                )
-            }
-        };
+    let (fetch, lookup) = resolve_fetch_and_lookup(&app)?;
 
     // Trial recording happens inside each `add_via_*` method (it needs the
     // exact per-skill directories only they know), and surfaces as
@@ -703,6 +907,7 @@ mod tests {
             source,
             method,
             agents: vec![],
+            disabled_harnesses: vec![],
             scope: InstallScope::Global,
             project_path: None,
             trial: false,
@@ -744,7 +949,7 @@ mod tests {
                 "-y",
                 "@sentry/dotagents",
                 "add",
-                "getsentry/find-bugs/skills/find-bugs",
+                "getsentry/find-bugs",
                 "--name",
                 "find-bugs",
                 "--ref",
@@ -1211,6 +1416,187 @@ mod tests {
         assert!(registry.trials.contains_key("global/two"));
     }
 
+    fn entry(name: &str, path: &str) -> GithubSkillEntry {
+        GithubSkillEntry {
+            name: name.to_string(),
+            path: path.to_string(),
+        }
+    }
+
+    fn batch_request(
+        source: ParsedSkillSource,
+        method: AddMethod,
+        skills: Vec<GithubSkillEntry>,
+    ) -> AddSkillsRequest {
+        AddSkillsRequest {
+            source,
+            skills,
+            method,
+            agents: vec![],
+            disabled_harnesses: vec![],
+            scope: InstallScope::Global,
+            project_path: None,
+            trial: false,
+        }
+    }
+
+    /// An `UpstreamFetch` with a bulk mode, counting how many times the repo
+    /// was downloaded.
+    #[derive(Default)]
+    struct CountingFetch {
+        downloads: Mutex<usize>,
+    }
+
+    struct FakeSnapshot;
+    impl RepoSnapshot for FakeSnapshot {
+        fn copy_dir(&self, _path: &str, into: &Path) -> Result<(), String> {
+            fs::create_dir_all(into).unwrap();
+            fs::write(into.join("SKILL.md"), "body").unwrap();
+            Ok(())
+        }
+    }
+
+    impl UpstreamFetch for CountingFetch {
+        fn fetch_skill_dir(&self, _: &str, _: &str, _: &str, _: &Path) -> Result<(), String> {
+            panic!("a batch copy must extract from the snapshot, not refetch");
+        }
+
+        fn open_repo(&self, _: &str, _: &str) -> Result<Option<Box<dyn RepoSnapshot>>, String> {
+            *self.downloads.lock().unwrap() += 1;
+            Ok(Some(Box::new(FakeSnapshot)))
+        }
+    }
+
+    #[test]
+    fn copy_batch_downloads_the_repo_once_for_every_skill() {
+        let tmp = tempfile::tempdir().unwrap();
+        let home = tmp.path().to_path_buf();
+        let mut source = github_source("kentcdodds/kcd-skills", Some("skills"), None);
+        source.git_ref = Some("main".to_string());
+        let request = batch_request(
+            source,
+            AddMethod::Copy,
+            vec![
+                entry("visual-recap", "skills/visual-recap"),
+                entry("other", "skills/other"),
+                entry("third", "skills/third"),
+            ],
+        );
+
+        let fetch = CountingFetch::default();
+        let outcomes = add_skills_with(
+            &home,
+            &request,
+            &FakeRunner::default(),
+            &fetch,
+            &NeverCalledLookup,
+        )
+        .unwrap();
+        assert_eq!(outcomes.len(), 3);
+        assert!(outcomes.iter().all(|o| o.error.is_none()));
+        assert_eq!(*fetch.downloads.lock().unwrap(), 1);
+        assert!(home.join(".agents/skills/visual-recap/SKILL.md").exists());
+        assert!(home.join(".agents/skills/third/SKILL.md").exists());
+    }
+
+    #[test]
+    fn a_failed_skill_does_not_stop_the_rest_of_the_batch() {
+        let tmp = tempfile::tempdir().unwrap();
+        let home = tmp.path().to_path_buf();
+        fs::create_dir_all(home.join(".agents/skills/other")).unwrap();
+        let mut source = github_source("kentcdodds/kcd-skills", Some("skills"), None);
+        source.git_ref = Some("main".to_string());
+        let request = batch_request(
+            source,
+            AddMethod::Copy,
+            vec![
+                entry("other", "skills/other"),
+                entry("visual-recap", "skills/visual-recap"),
+            ],
+        );
+
+        let outcomes = add_skills_with(
+            &home,
+            &request,
+            &FakeRunner::default(),
+            &CountingFetch::default(),
+            &NeverCalledLookup,
+        )
+        .unwrap();
+        assert!(outcomes[0]
+            .error
+            .as_deref()
+            .unwrap()
+            .contains("already exists"));
+        assert!(outcomes[1].error.is_none());
+        assert!(home.join(".agents/skills/visual-recap/SKILL.md").exists());
+    }
+
+    #[test]
+    fn dotagents_batch_runs_one_cli_call_per_skill_with_its_own_name() {
+        let tmp = tempfile::tempdir().unwrap();
+        let home = tmp.path().to_path_buf();
+        let request = batch_request(
+            github_source("kentcdodds/kcd-skills", Some("skills"), None),
+            AddMethod::Dotagents,
+            vec![
+                entry("visual-recap", "skills/visual-recap"),
+                entry("other", "skills/other"),
+            ],
+        );
+
+        let runner = FakeRunner {
+            creates: vec![
+                home.join(".agents/skills/visual-recap"),
+                home.join(".agents/skills/other"),
+            ],
+            ..Default::default()
+        };
+        let outcomes = add_skills_with(
+            &home,
+            &request,
+            &runner,
+            &NeverCalledFetch,
+            &NeverCalledLookup,
+        )
+        .unwrap();
+        assert_eq!(outcomes.len(), 2);
+        let calls = runner.calls.lock().unwrap();
+        assert_eq!(calls.len(), 2);
+        assert!(calls[0].0.contains(&"--name".to_string()));
+        assert!(calls[0].0.contains(&"visual-recap".to_string()));
+        assert!(calls[1].0.contains(&"other".to_string()));
+    }
+
+    #[test]
+    fn skills_sh_batch_passes_each_skill_flag() {
+        let tmp = tempfile::tempdir().unwrap();
+        let home = tmp.path().to_path_buf();
+        let request = batch_request(
+            github_source("kentcdodds/kcd-skills", Some("skills"), None),
+            AddMethod::SkillsSh,
+            vec![
+                entry("visual-recap", "skills/visual-recap"),
+                entry("other", "skills/other"),
+            ],
+        );
+
+        let runner = FakeRunner::default();
+        add_skills_with(
+            &home,
+            &request,
+            &runner,
+            &NeverCalledFetch,
+            &NeverCalledLookup,
+        )
+        .unwrap();
+        let calls = runner.calls.lock().unwrap();
+        assert_eq!(calls.len(), 2);
+        assert!(calls[0].0.contains(&"--skill".to_string()));
+        assert!(calls[0].0.contains(&"visual-recap".to_string()));
+        assert!(calls[1].0.contains(&"other".to_string()));
+    }
+
     #[test]
     fn trial_recording_failure_surfaces_as_a_warning_and_keeps_the_install() {
         let tmp = tempfile::tempdir().unwrap();
@@ -1242,5 +1628,78 @@ mod tests {
         assert!(home.join(".agents/skills/find-bugs").exists());
         let warning = result.warning.expect("expected a trial warning");
         assert!(warning.contains("24 h trial could not be recorded"));
+    }
+
+    /// Installs `find-bugs` through dotagents with `disabled_harnesses` set,
+    /// and hands back the result for the caller to assert on.
+    fn add_with_disabled(home: &Path, disabled: Vec<AgentId>) -> AddSkillResult {
+        let source = github_source(
+            "getsentry/find-bugs",
+            Some("skills/find-bugs"),
+            Some("find-bugs"),
+        );
+        let mut request = base_request(source, AddMethod::Dotagents);
+        request.disabled_harnesses = disabled;
+        let runner = FakeRunner {
+            creates: vec![home.join(".agents/skills/find-bugs")],
+            ..Default::default()
+        };
+        add_skill_with(
+            home,
+            &request,
+            &runner,
+            &NeverCalledFetch,
+            &NeverCalledLookup,
+        )
+        .unwrap()
+    }
+
+    #[test]
+    fn a_disabled_codex_reader_is_written_to_codex_config() {
+        let tmp = tempfile::tempdir().unwrap();
+        let home = tmp.path();
+
+        let result = add_with_disabled(home, vec![AgentId::Codex]);
+
+        assert!(result.warning.is_none());
+        assert_eq!(
+            super::super::codex_skill_config::read_disabled_skill_md_paths(home),
+            vec![home.join(".agents/skills/find-bugs/SKILL.md")]
+        );
+    }
+
+    #[test]
+    fn a_disabled_claude_code_under_a_whole_dir_link_becomes_a_warning() {
+        let tmp = tempfile::tempdir().unwrap();
+        let home = tmp.path();
+        fs::create_dir_all(home.join(".agents/skills")).unwrap();
+        fs::create_dir_all(home.join(".claude")).unwrap();
+        std::os::unix::fs::symlink(home.join(".agents/skills"), home.join(".claude/skills"))
+            .unwrap();
+
+        let result = add_with_disabled(home, vec![AgentId::ClaudeCode]);
+
+        assert!(home.join(".agents/skills/find-bugs").exists());
+        let warning = result.warning.expect("expected a disable warning");
+        assert!(
+            warning.starts_with("Installed, but could not turn it off for Claude Code:"),
+            "{warning}"
+        );
+        assert!(warning.contains("whole shared folder"), "{warning}");
+    }
+
+    #[test]
+    fn a_harness_that_cannot_be_disabled_becomes_a_warning_not_a_failed_install() {
+        let tmp = tempfile::tempdir().unwrap();
+        let home = tmp.path();
+
+        let result = add_with_disabled(home, vec![AgentId::Pi]);
+
+        assert!(home.join(".agents/skills/find-bugs").exists());
+        let warning = result.warning.expect("expected a disable warning");
+        assert!(
+            warning.contains("could not turn it off for pi: pi has no per-skill disable"),
+            "{warning}"
+        );
     }
 }

@@ -229,7 +229,7 @@ export function useSkillPageActions(
     });
     if (!confirmed) return;
     await runAction(addToast, setIsRemoving, "Remove failed", async () => {
-      const result = await removeSkill(skill.name, true);
+      const result = await removeSkill(skill.name, null);
       if (result.success) {
         onRemoveComplete();
       } else {

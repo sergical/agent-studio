@@ -57,7 +57,10 @@ pub fn run() {
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
+            skills::add_method_defaults::get_add_method_defaults,
             // Skills.sh integration
+            skills::commands::get_skills_sh_access,
+            skills::commands::set_skills_sh_api_key,
             skills::commands::search_skills,
             skills::commands::get_popular_skills,
             skills::commands::get_skill_details,
@@ -72,6 +75,9 @@ pub fn run() {
             skills::commands::write_installed_skill_md,
             skills::commands::write_installed_skill_md_if_unchanged,
             skills::commands::open_skill_path,
+            skills::commands::list_installed_editors,
+            skills::commands::get_preferred_editor,
+            skills::commands::set_preferred_editor,
             skills::skill_update_check::check_skill_updates_now,
             // Fork / Pull upstream / Un-fork
             skills::skill_fork::fork_skill,
@@ -79,6 +85,8 @@ pub fn run() {
             skills::skill_fork::unfork_skill,
             // Add skill / trials
             skills::skill_add::add_skill,
+            skills::skill_add::add_skills,
+            skills::github_skill_listing::list_github_skills,
             skills::skill_trial::keep_skill_trial,
             skills::skill_trial::restore_trashed_skill,
             // Park (disable globally) / per-harness disable / invocation policy
@@ -91,6 +99,7 @@ pub fn run() {
             skills::event_commands::list_skill_events,
             skills::event_commands::restore_skill_event,
             skills::event_commands::set_shared_harness_skill_enabled,
+            skills::event_commands::materialize_harness_root,
             skills::event_commands::distribute_skill_from_shared,
             skills::event_commands::repair_skill_link,
             // Background refresh / invocation snapshot

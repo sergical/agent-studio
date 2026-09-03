@@ -6,8 +6,9 @@
 
 import { useState } from "react";
 import { PatchDiff } from "@pierre/diffs/react";
-import { Button } from "@skill-studio/ui";
+import { Button, ToggleGroup, ToggleGroupItem } from "@skill-studio/ui";
 import { writeInstalledSkillMdIfUnchanged } from "../../lib/skill-api";
+import { singleSelectToggleValue } from "../../lib/single-select-toggle-group";
 import type { SkillMdHunk } from "@skill-studio/lib";
 import { applyAcceptedHunks } from "@skill-studio/lib";
 import { diffTheme } from "../../lib/theme";
@@ -109,26 +110,31 @@ export function SkillProposedEdits({
               <span className="overflow-hidden text-ellipsis whitespace-nowrap font-mono text-caption text-text-secondary">
                 {hunk.header}
               </span>
-              <div className="flex shrink-0 gap-1" role="group" aria-labelledby={headerId}>
-                <button
-                  type="button"
-                  className="h-6 cursor-pointer rounded-sm border border-border bg-transparent px-2 text-caption text-text-secondary transition-colors aria-pressed:bg-accent-soft aria-pressed:text-text-primary"
-                  aria-pressed={hunk.accepted}
+              <ToggleGroup
+                variant="segmented"
+                aria-labelledby={headerId}
+                value={[hunk.accepted ? "accept" : "reject"]}
+                onValueChange={(next) =>
+                  singleSelectToggleValue<"accept" | "reject">(next, (selected) =>
+                    setAccepted(hunk.index, selected === "accept"),
+                  )
+                }
+              >
+                <ToggleGroupItem
+                  value="accept"
+                  className="h-6 px-2"
                   aria-label={`Accept change ${index + 1} of ${hunks.length}`}
-                  onClick={() => setAccepted(hunk.index, true)}
                 >
                   Accept
-                </button>
-                <button
-                  type="button"
-                  className="h-6 cursor-pointer rounded-sm border border-border bg-transparent px-2 text-caption text-text-secondary transition-colors aria-pressed:bg-accent-soft aria-pressed:text-text-primary"
-                  aria-pressed={!hunk.accepted}
+                </ToggleGroupItem>
+                <ToggleGroupItem
+                  value="reject"
+                  className="h-6 px-2"
                   aria-label={`Reject change ${index + 1} of ${hunks.length}`}
-                  onClick={() => setAccepted(hunk.index, false)}
                 >
                   Reject
-                </button>
-              </div>
+                </ToggleGroupItem>
+              </ToggleGroup>
             </div>
             <div className="skill-proposed-hunk-body">
               <PatchDiff

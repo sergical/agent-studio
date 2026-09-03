@@ -21,6 +21,9 @@ export { Input } from "./components/input";
 export { Textarea } from "./components/textarea";
 export { Checkbox } from "./components/checkbox";
 export { Switch } from "./components/switch";
+export { Toggle, toggleVariants } from "./components/toggle";
+export { ToggleGroup, ToggleGroupItem } from "./components/toggle-group";
+export { RadioGroup, RadioGroupItem } from "./components/radio-group";
 export {
   Select,
   SelectContent,
@@ -56,6 +59,29 @@ export {
   DialogTrigger,
 } from "./components/dialog";
 export {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogPortal,
+  AlertDialogTitle,
+  AlertDialogTrigger,
+} from "./components/alert-dialog";
+export {
+  Drawer,
+  DrawerClose,
+  DrawerContent,
+  DrawerDescription,
+  DrawerFooter,
+  DrawerHeader,
+  DrawerPortal,
+  DrawerTitle,
+  DrawerTrigger,
+} from "./components/drawer";
+export {
   DropdownMenu,
   DropdownMenuPortal,
   DropdownMenuTrigger,
@@ -74,5 +100,12 @@ export {
 } from "./components/dropdown-menu";
 export { Separator } from "./components/separator";
 export { ScrollArea, ScrollBar } from "./components/scroll-area";
+export {
+  Collapsible,
+  CollapsibleTrigger,
+  CollapsiblePanel,
+  CollapsibleContent,
+} from "./components/collapsible";
+export { Progress } from "./components/progress";
 
 export { KitPreview } from "./kit-preview";

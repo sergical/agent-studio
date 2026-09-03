@@ -4,8 +4,10 @@
 // the Activity page's By skill table
 // ============================================================================
 
+import { ToggleGroup, ToggleGroupItem } from "@skill-studio/ui";
 import { USAGE_WINDOWS } from "@skill-studio/lib";
 import type { UsageWindow } from "@skill-studio/lib";
+import { singleSelectToggleValue } from "../../lib/single-select-toggle-group";
 
 interface WindowSegmentedControlProps {
   value: UsageWindow;
@@ -14,20 +16,16 @@ interface WindowSegmentedControlProps {
 
 export function WindowSegmentedControl({ value, onChange }: WindowSegmentedControlProps) {
   return (
-    <div className="flex overflow-hidden rounded-sm border border-border">
-      {USAGE_WINDOWS.map(({ id }, i) => (
-        <button
-          key={id}
-          type="button"
-          aria-pressed={value === id}
-          className={`h-6 px-2 text-caption transition-colors ${i > 0 ? "border-l border-border" : ""} ${
-            value === id ? "bg-bg-tertiary text-text-primary" : "bg-transparent text-text-tertiary"
-          }`}
-          onClick={() => onChange(id)}
-        >
+    <ToggleGroup
+      variant="segmented"
+      value={[value]}
+      onValueChange={(next) => singleSelectToggleValue<UsageWindow>(next, onChange)}
+    >
+      {USAGE_WINDOWS.map(({ id }) => (
+        <ToggleGroupItem key={id} value={id}>
           {id}
-        </button>
+        </ToggleGroupItem>
       ))}
-    </div>
+    </ToggleGroup>
   );
 }

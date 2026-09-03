@@ -5,6 +5,7 @@
 import { useEffect, useEffectEvent, useRef, useState } from "react";
 import { Save, X } from "lucide-react";
 import { Button, Textarea } from "@skill-studio/ui";
+import { DiscardChangesDialog } from "./DiscardChangesDialog";
 
 interface SkillMarkdownEditorProps {
   initialContent: string;
@@ -33,6 +34,7 @@ export function SkillMarkdownEditor({
   const [content, setContent] = useState(initialContent);
   const isDirty = content !== initialContent;
   const textareaRef = useRef<HTMLTextAreaElement>(null);
+  const [showDiscardDialog, setShowDiscardDialog] = useState(false);
 
   // Notified from the change handler itself, not an effect syncing a derived
   // value up to the parent - it only needs to fire on an actual dirty-state
@@ -44,7 +46,10 @@ export function SkillMarkdownEditor({
   };
 
   const handleCancel = () => {
-    if (isDirty && !window.confirm("Discard unsaved changes?")) return;
+    if (isDirty) {
+      setShowDiscardDialog(true);
+      return;
+    }
     onCancel();
   };
 
@@ -96,6 +101,14 @@ export function SkillMarkdownEditor({
         value={content}
         onChange={(e) => handleContentChange(e.target.value)}
         spellCheck={false}
+      />
+      <DiscardChangesDialog
+        open={showDiscardDialog}
+        onOpenChange={setShowDiscardDialog}
+        onDiscard={() => {
+          setShowDiscardDialog(false);
+          onCancel();
+        }}
       />
     </div>
   );

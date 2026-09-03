@@ -45,6 +45,7 @@ export type ActiveView =
   | { kind: "activity" }
   | { kind: "packs" }
   | { kind: "learn"; section?: LearnSection }
+  | { kind: "settings" }
   | {
       kind: "skill";
       name: string;

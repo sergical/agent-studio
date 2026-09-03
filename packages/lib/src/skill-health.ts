@@ -5,7 +5,9 @@
 // isolation (Vitest, once a runner is wired up).
 // ============================================================================
 
+import { agentIdFromDeploymentLabel } from "./skill-coverage";
 import { ownDeployments } from "./skill-plugin-partition";
+import { homeRelativePath, parentDirectory } from "./skill-path-format";
 import type { Deployment, InstalledSkill } from "./skill-types";
 
 /**
@@ -17,6 +19,7 @@ import type { Deployment, InstalledSkill } from "./skill-types";
 export type HealthIssueKind =
   | "duplicate"
   | "broken-symlink"
+  | "linked-root"
   | "parked-but-reinstalled"
   | "spec-violation"
   | "lock-only";
@@ -26,6 +29,17 @@ export interface HealthIssue {
   kind: HealthIssueKind;
   skill: InstalledSkill;
   detail: string;
+  /**
+   * For `"linked-root"` only: the harness's agent id (e.g. `"claude-code"`,
+   * what the backend commands key on, never the display label) and the
+   * shared-folder root path it reads through. A `"linked-root"` issue isn't
+   * really about one skill, it's about a harness/root pair, so `skill` above
+   * is just a representative one for the row's harness marks and "Open"
+   * action.
+   */
+  harness?: string;
+  harnessLabel?: string;
+  root?: string;
 }
 
 /**
@@ -34,6 +48,10 @@ export interface HealthIssue {
  */
 export const HEALTH_ISSUE_KIND_ORDER: HealthIssueKind[] = [
   "parked-but-reinstalled",
+  // A root link outranks the per-skill issues below it: it is one structural
+  // fault that blocks per-skill control for a whole harness, and Home only
+  // previews the first few rows before collapsing the rest.
+  "linked-root",
   "duplicate",
   "broken-symlink",
   "spec-violation",
@@ -50,6 +68,7 @@ export const HEALTH_ISSUE_SEVERITY = {
   "parked-but-reinstalled": "error",
   duplicate: "warning",
   "broken-symlink": "error",
+  "linked-root": "warning",
   "spec-violation": "error",
   "lock-only": "warning",
 } as const satisfies Record<HealthIssueKind, "error" | "warning">;
@@ -62,6 +81,10 @@ export const HEALTH_ISSUE_KIND_LABEL = {
   },
   duplicate: { singular: "skill differs between copies", plural: "skills differ between copies" },
   "broken-symlink": { singular: "broken link", plural: "broken links" },
+  "linked-root": {
+    singular: "harness reads the shared folder through a root link",
+    plural: "harnesses read the shared folder through a root link",
+  },
   "spec-violation": {
     singular: "skill that fails to load",
     plural: "skills that fail to load",
@@ -224,6 +247,38 @@ export function findLockOnlySkills(skills: InstalledSkill[]): HealthIssue[] {
 }
 
 /**
+ * One issue per (harness, root) whose global deployment reads the shared
+ * folder through a whole-dir link (`shared_via_whole_dir_link`) rather than
+ * per-skill links - see `skill_materialize::explode_shared_dir`. Every skill
+ * under that root shares the same issue, so this dedupes across them and
+ * ignores project scope (a project's own skills root can't be the shared
+ * whole-dir link).
+ */
+export function findLinkedRootIssues(skills: InstalledSkill[]): HealthIssue[] {
+  const seen = new Map<string, HealthIssue>();
+  for (const skill of skills) {
+    for (const deployment of skill.deployments) {
+      if (deployment.scope !== "global" || !deployment.shared_via_whole_dir_link) continue;
+      const harnessId = agentIdFromDeploymentLabel(deployment.agent);
+      if (!harnessId || harnessId === "shared") continue;
+      const root = parentDirectory(deployment.path);
+      const key = `${harnessId}::${root}`;
+      if (seen.has(key)) continue;
+      const rootLabel = homeRelativePath(root);
+      seen.set(key, {
+        kind: "linked-root",
+        skill,
+        harness: harnessId,
+        harnessLabel: deployment.agent,
+        root,
+        detail: `${deployment.agent} reads the shared folder through a root link at ${rootLabel}. Skills cannot be switched off for ${deployment.agent} one at a time until it is converted to per-skill links.`,
+      });
+    }
+  }
+  return [...seen.values()];
+}
+
+/**
  * One skill's coverage gap at one scope: deployed to some, but not all, of
  * the four first-class agents. Not a `HealthIssue` - a gap here isn't
  * something broken, just a column the coverage view highlights.
@@ -303,6 +358,7 @@ export function collectDashboardIssues(skills: InstalledSkill[]): HealthIssue[] 
     ...findParkedButReinstalled(skills),
     ...findDuplicateSkills(skills),
     ...findBrokenSymlinks(skills),
+    ...findLinkedRootIssues(skills),
     ...findSpecViolations(skills),
     ...findLockOnlySkills(skills),
   ];

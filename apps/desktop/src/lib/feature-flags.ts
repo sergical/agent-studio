@@ -13,6 +13,12 @@ const FLAG_DEFAULTS = {
    * Off until packs earn a place in v1.
    */
   "skill-packs": false,
+  /**
+   * The skill page's Assistant drawer (ask/audit/test a skill in a scratch
+   * harness) and the "last test" link that opens its run history.
+   * Off until the harness runs are reliable.
+   */
+  "skill-assistant": false,
 } as const;
 
 export type FeatureFlag = keyof typeof FLAG_DEFAULTS;

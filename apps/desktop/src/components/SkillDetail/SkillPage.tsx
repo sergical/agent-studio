@@ -9,7 +9,9 @@ import { useCallback, useEffect, useEffectEvent, useRef, useState } from "react"
 import { ArrowLeft } from "lucide-react";
 import { useSkillSnapshot } from "../../hooks/useSkillSnapshot";
 import { forkSkill, readInstalledSkillMd, writeInstalledSkillMd } from "../../lib/skill-api";
+import { isFeatureEnabled } from "../../lib/feature-flags";
 import {
+  editableDeployments,
   isUnresolvedDeployment,
   ownDeployments,
   skillMdPathForDeployment,
@@ -17,6 +19,7 @@ import {
 import type { InstalledSkill, SkillInvocationStats } from "@skill-studio/lib";
 import type { ActiveView } from "../../store/appStore";
 import { useAppStore } from "../../store/appStore";
+import { DiscardChangesDialog } from "./DiscardChangesDialog";
 import { InstalledSkillHeader } from "./InstalledSkillHeader";
 import { SkillAssistantDrawer } from "./SkillAssistantDrawer";
 import { SkillAssistantPanel } from "./SkillAssistantPanel";
@@ -196,6 +199,11 @@ export function SkillPage({
   const [isCompareOpen, setIsCompareOpen] = useState(false);
   const assistantTriggerRef = useRef<HTMLButtonElement>(null);
 
+  // Set while the discard-changes guard is waiting on the user - runs on
+  // confirm, cleared on cancel. The old native confirm() prompt made this a
+  // synchronous check; the dialog makes it async instead.
+  const [pendingDiscard, setPendingDiscard] = useState<(() => void) | null>(null);
+
   /** The skill the compare dialog was last shown for, so a plain skill switch (no fresh compare request) closes it instead of carrying it over. */
   const compareSkillNameRef = useRef<string | undefined>(skill?.name);
 
@@ -223,7 +231,10 @@ export function SkillPage({
   // Reads the latest isEditing/isEditorDirty/onBack without making the
   // listener effect below re-subscribe every time one of them changes.
   const onEscapeBack = useEffectEvent(() => {
-    if (isEditing && isEditorDirty && !window.confirm("Discard unsaved changes?")) return;
+    if (isEditing && isEditorDirty) {
+      setPendingDiscard(() => onBack);
+      return;
+    }
     onBack();
   });
 
@@ -261,14 +272,17 @@ export function SkillPage({
   // The deployment this page edits: only the one the caller clicked, when
   // given - a stale `deploymentPath` (the copy was removed by a rescan) must
   // not silently fall back to a different copy of the skill. With no
-  // `deploymentPath` at all, fall back to the skill's first own deployment,
+  // `deploymentPath` at all, fall back to the skill's first physical file
+  // (a symlink only points at another copy), then its first own deployment,
   // then its first deployment (a plugin-only skill has no own deployment).
   const requestedDeployment =
     skill && deploymentPath ? skill.deployments.find((d) => d.path === deploymentPath) : undefined;
   const deploymentUnresolved = Boolean(skill && deploymentPath && !requestedDeployment);
   const deployment =
     skill &&
-    (deploymentPath ? requestedDeployment : ownDeployments(skill)[0] || skill.deployments[0]);
+    (deploymentPath
+      ? requestedDeployment
+      : editableDeployments(skill)[0] || ownDeployments(skill)[0] || skill.deployments[0]);
   // A broken deployment symlink can't be read at all - SkillRepairCard takes
   // over the SKILL.md card's spot instead of firing the doomed
   // `readInstalledSkillMd` for it (see SkillMarkdownCard's old "Unknown
@@ -342,6 +356,7 @@ export function SkillPage({
     <div className="mx-auto flex max-w-[1200px] flex-col gap-6 pt-7 pb-7 px-8">
       <InstalledSkillHeader
         skill={skill}
+        deployment={deployment ?? undefined}
         from={from}
         onBack={onBack}
         onRemoveComplete={onRemoveComplete}
@@ -357,12 +372,7 @@ export function SkillPage({
       />
 
       <div className="flex min-w-0 flex-col gap-6">
-        <SkillLocationsCard
-          skill={skill}
-          skillMdPath={!isPluginManaged ? skillMdPath : undefined}
-          skillMdDeployment={deployment ?? undefined}
-          onCompareCopies={() => setIsCompareOpen(true)}
-        />
+        <SkillLocationsCard skill={skill} onCompareCopies={() => setIsCompareOpen(true)} />
 
         {deployment && isDeploymentBroken ? (
           <SkillRepairCard skill={skill} deployment={deployment} />
@@ -371,7 +381,7 @@ export function SkillPage({
             skill={skill}
             isPluginManaged={isPluginManaged}
             deploymentUnresolved={deploymentUnresolved}
-            ownDeploymentOptions={ownDeployments(skill)}
+            ownDeploymentOptions={editableDeployments(skill)}
             deployment={deployment ?? undefined}
             onSelectDeployment={(path) => openSkill(skill.name, path)}
             rawContent={rawContent}
@@ -396,7 +406,7 @@ export function SkillPage({
       </div>
 
       <SkillAssistantDrawer
-        isOpen={isAssistantOpen}
+        isOpen={isAssistantOpen && isFeatureEnabled("skill-assistant")}
         onClose={() => setIsAssistantOpen(false)}
         triggerRef={assistantTriggerRef}
       >
@@ -417,6 +427,17 @@ export function SkillPage({
       {isCompareOpen && (
         <SkillCompareDialog skill={skill} onClose={() => setIsCompareOpen(false)} />
       )}
+
+      <DiscardChangesDialog
+        open={pendingDiscard !== null}
+        onOpenChange={(open) => {
+          if (!open) setPendingDiscard(null);
+        }}
+        onDiscard={() => {
+          pendingDiscard?.();
+          setPendingDiscard(null);
+        }}
+      />
     </div>
   );
 }

@@ -193,9 +193,20 @@ pub struct ForkRegistry {
     /// Share packs created via `skill_pack`, keyed by pack name.
     #[serde(default)]
     pub packs: BTreeMap<String, PackRecord>,
-    /// skills.sh /api/v1 bearer token; absent until the user configures one.
+    /// skills.sh /api/v1 bearer token; absent until the user configures one
+    /// (the developer override - see `api::resolve_skills_sh_access`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub skills_sh_api_key: Option<String>,
+    /// The local Skill Studio server's base URL (no `/api/v1` suffix), used
+    /// for discovery instead of skills.sh directly when `skills_sh_api_key`
+    /// is absent. Absent means the default `http://127.0.0.1:8787`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub server_url: Option<String>,
+    /// The macOS application name "Open in editor" hands a path to, without
+    /// the `.app` suffix - `"Cursor"`, `"Visual Studio Code"`. Absent means
+    /// the system default for the file's type. See `skill_editor`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub preferred_editor: Option<String>,
 }
 
 fn default_version() -> u32 {
@@ -216,6 +227,8 @@ impl Default for ForkRegistry {
             harness_disabled: BTreeMap::new(),
             packs: BTreeMap::new(),
             skills_sh_api_key: None,
+            server_url: None,
+            preferred_editor: None,
         }
     }
 }

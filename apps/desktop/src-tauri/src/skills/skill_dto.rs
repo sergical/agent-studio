@@ -12,6 +12,7 @@ use std::collections::BTreeMap;
 use serde::{Deserialize, Serialize};
 
 use super::frontmatter::InvocationPolicy;
+use super::github_skill_listing::GithubSkillEntry;
 use super::provenance::SourceKind;
 use super::skill_fork_registry::{AddMethod, OriginTool, TrialScope};
 
@@ -62,6 +63,16 @@ pub struct SkillDetails {
     pub hash: String,
     /// SKILL.md (or AGENTS.md fallback) contents, when the payload has one.
     pub skill_md: Option<String>,
+}
+
+/// How discovery requests reach skills.sh - see `api::resolve_skills_sh_access`.
+/// `"direct"` means a developer-override key is configured (`server_url` is
+/// `None`); `"server"` means requests go through the local Skill Studio
+/// server at `server_url`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SkillsShAccessInfo {
+    pub mode: String,
+    pub server_url: Option<String>,
 }
 
 // ============================================================================
@@ -169,6 +180,19 @@ pub struct Deployment {
     /// per-skill links - see `skill_materialize::explode_shared_dir`.
     #[serde(default)]
     pub shared_via_whole_dir_link: bool,
+    /// Violations of the agentskills.io SKILL.md spec found for this
+    /// specific deployment's SKILL.md - as opposed to
+    /// `InstalledSkill.spec_violations`, which is the deduped union across
+    /// every deployment of the same name. Lets the UI blame the one copy
+    /// that's actually broken instead of every deployment sharing the name.
+    #[serde(default)]
+    pub spec_violations: Vec<String>,
+    /// Which invocation channels this deployment's own SKILL.md allows - see
+    /// `frontmatter::invocation_policy`. Defaults to `Both`, same as
+    /// `InstalledSkill.invocation`, for deployments serialized before this
+    /// field existed (fixtures, cached snapshots).
+    #[serde(default = "default_invocation")]
+    pub invocation: InvocationPolicy,
 }
 
 /// Fork provenance shown on a forked skill's detail header - see
@@ -325,9 +349,44 @@ pub struct AddSkillRequest {
     pub source: ParsedSkillSource,
     pub method: AddMethod,
     pub agents: Vec<super::agents::AgentId>,
+    /// Harnesses to switch off for this skill right after a successful
+    /// install: readers of the shared folder the install itself cannot
+    /// avoid reaching. A failure here is reported as a warning, never as a
+    /// failed install - see `apply_disabled_harnesses`.
+    #[serde(default)]
+    pub disabled_harnesses: Vec<super::agents::AgentId>,
     pub scope: InstallScope,
     pub project_path: Option<String>,
     pub trial: bool,
+}
+
+/// `add_skills`' request: one source, and the skill folders picked out of it
+/// by the Add-skill sheet's picker (see `github_skill_listing`). Every other
+/// field means exactly what it does on `AddSkillRequest`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AddSkillsRequest {
+    pub source: ParsedSkillSource,
+    pub skills: Vec<GithubSkillEntry>,
+    pub method: AddMethod,
+    pub agents: Vec<super::agents::AgentId>,
+    /// Harnesses to switch off for this skill right after a successful
+    /// install: readers of the shared folder the install itself cannot
+    /// avoid reaching. A failure here is reported as a warning, never as a
+    /// failed install - see `apply_disabled_harnesses`.
+    #[serde(default)]
+    pub disabled_harnesses: Vec<super::agents::AgentId>,
+    pub scope: InstallScope,
+    pub project_path: Option<String>,
+    pub trial: bool,
+}
+
+/// One skill's outcome in an `add_skills` batch. A failure never stops the
+/// rest of the batch, so exactly one of `result`/`error` is set per entry.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AddSkillOutcome {
+    pub name: String,
+    pub result: Option<AddSkillResult>,
+    pub error: Option<String>,
 }
 
 /// `add_skill`'s result.
@@ -338,7 +397,8 @@ pub struct AddSkillResult {
     pub command: String,
     pub deployments_created: Vec<String>,
     /// Set when the install itself succeeded but a follow-up step (recording
-    /// the 24 h trial) failed - the skill is on disk and usable, it just
+    /// the 24 h trial, or turning the skill off for a `disabled_harnesses`
+    /// entry) failed - the skill is on disk and usable, it just
     /// isn't tracked for auto-expiry. The sheet shows this as a warning
     /// toast rather than treating the whole request as failed.
     #[serde(default)]
@@ -364,6 +424,12 @@ pub struct InstallRequest {
     pub scope: InstallScope,
     pub project_path: Option<String>,
     pub agents: Vec<super::agents::AgentId>,
+    /// Harnesses to switch off for this skill right after a successful
+    /// install: readers of the shared folder the install itself cannot
+    /// avoid reaching. A failure here is reported as a warning, never as a
+    /// failed install - see `apply_disabled_harnesses`.
+    #[serde(default)]
+    pub disabled_harnesses: Vec<super::agents::AgentId>,
 }
 
 /// Installation result

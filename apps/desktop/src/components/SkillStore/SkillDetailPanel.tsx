@@ -3,6 +3,7 @@
 // ============================================================================
 
 import { useEffect, useState } from "react";
+import { DrawerContent } from "@skill-studio/ui";
 import { SkillDetailHeader } from "./SkillDetailHeader";
 import { SkillContent } from "./SkillContent";
 import { InstallControls } from "./InstallControls";
@@ -29,15 +30,6 @@ export function SkillDetailPanel({
   const [isLoadingDetails, setIsLoadingDetails] = useState(false);
   const resolvedTopSource = details?.source ?? skill.top_source ?? null;
   const openAddSkillSheet = useAppStore((state) => state.openAddSkillSheet);
-
-  // Escape closes the panel, mirroring the backdrop's click-to-dismiss.
-  useEffect(() => {
-    function onKeyDown(event: KeyboardEvent) {
-      if (event.key === "Escape") onClose();
-    }
-    window.addEventListener("keydown", onKeyDown);
-    return () => window.removeEventListener("keydown", onKeyDown);
-  }, [onClose]);
 
   // Fetch the full skill details (source + SKILL.md body) by the skill's
   // full owner/repo/slug id.
@@ -69,7 +61,11 @@ export function SkillDetailPanel({
   }, [skill.id]);
 
   return (
-    <div className="fixed top-0 right-0 bottom-0 z-(--z-drawer) flex w-[560px] animate-[slideInDrawer_0.2s_ease] flex-col overflow-y-auto border-l border-border bg-bg-secondary">
+    <DrawerContent
+      side="right"
+      className="w-[min(640px,92vw)] overflow-y-auto bg-bg-secondary"
+      showCloseButton={false}
+    >
       <SkillDetailHeader skill={skill} resolvedTopSource={resolvedTopSource} onClose={onClose} />
       <SkillContent
         skill={skill}
@@ -93,6 +89,6 @@ export function SkillDetailPanel({
         onInstallComplete={onInstallComplete}
         onRemoveComplete={onRemoveComplete}
       />
-    </div>
+    </DrawerContent>
   );
 }

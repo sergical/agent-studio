@@ -18,7 +18,9 @@ use super::provenance::SourceKind;
 use super::skill_agent_runner::validate_skill_dir_name;
 use super::skill_dto::{
     InstallRequest, InstallResult, InstalledSkill, PaginatedSkillsResponse, SkillDetails,
+    SkillsShAccessInfo,
 };
+use super::skill_editor;
 use super::skill_fork;
 use super::skill_fork_registry;
 use super::skill_refresh::{self, SkillRefreshState};
@@ -102,16 +104,50 @@ pub(crate) fn dotagents_remove_args(name: &str) -> Vec<String> {
     ]
 }
 
-/// Loads the skills.sh bearer token from `~/.agents/skill-studio.json`,
-/// shared by all three skills.sh commands below. `read_fork_registry`
-/// against the real home dir, same as other commands do.
-fn require_api_key() -> Result<String, String> {
-    let home = dirs::home_dir().ok_or("Could not find home directory")?;
-    let registry = skill_fork_registry::read_fork_registry(&home)?;
-    registry.skills_sh_api_key.ok_or_else(|| {
-        "No skills.sh API key configured. Add \"skills_sh_api_key\" to ~/.agents/skill-studio.json."
-            .to_string()
+/// `set_skills_sh_api_key`'s logic against an arbitrary home dir, so tests
+/// don't need to touch the real `~/.agents`.
+fn save_skills_sh_api_key(home: &std::path::Path, key: &str) -> Result<(), String> {
+    let trimmed = key.trim();
+    if trimmed.is_empty() {
+        return Err("The API key can't be empty".to_string());
+    }
+    let mut registry = skill_fork_registry::read_fork_registry(home)?;
+    registry.skills_sh_api_key = Some(trimmed.to_string());
+    skill_fork_registry::write_fork_registry(home, &registry)
+}
+
+/// `get_skills_sh_access`'s logic against an arbitrary home dir, so tests
+/// don't need to touch the real `~/.agents`.
+fn skills_sh_access_info(home: &std::path::Path) -> Result<SkillsShAccessInfo, String> {
+    Ok(match api::resolve_skills_sh_access(home)? {
+        api::SkillsShAccess::Direct { .. } => SkillsShAccessInfo {
+            mode: "direct".to_string(),
+            server_url: None,
+        },
+        api::SkillsShAccess::Server { base_url } => SkillsShAccessInfo {
+            mode: "server".to_string(),
+            server_url: Some(base_url.trim_end_matches("/api/v1").to_string()),
+        },
     })
+}
+
+/// Whether discovery goes straight to skills.sh with a developer-override key
+/// (`"direct"`) or through the local Skill Studio server (`"server"`, with
+/// its URL) - the Settings page's status line and the Browse tab's error
+/// messaging both read this instead of the old key-only status.
+#[tauri::command]
+pub fn get_skills_sh_access() -> Result<SkillsShAccessInfo, String> {
+    let home = dirs::home_dir().ok_or("Could not find home directory")?;
+    skills_sh_access_info(&home)
+}
+
+/// Saves `key` as `skills_sh_api_key` in `~/.agents/skill-studio.json`,
+/// preserving every other field. Refuses an empty (or all-whitespace) key -
+/// the Settings page's Save button.
+#[tauri::command]
+pub fn set_skills_sh_api_key(key: String) -> Result<(), String> {
+    let home = dirs::home_dir().ok_or("Could not find home directory")?;
+    save_skills_sh_api_key(&home, &key)
 }
 
 /// Search for skills on skills.sh
@@ -120,8 +156,9 @@ pub async fn search_skills(
     query: String,
     limit: Option<u32>,
 ) -> Result<PaginatedSkillsResponse, String> {
-    let api_key = require_api_key()?;
-    api::search_skills(&api_key, &query, limit).await
+    let home = dirs::home_dir().ok_or("Could not find home directory")?;
+    let access = api::resolve_skills_sh_access(&home)?;
+    api::search_skills(&access, &query, limit).await
 }
 
 /// Get popular skills (sorted by install count)
@@ -130,15 +167,17 @@ pub async fn get_popular_skills(
     page: Option<u32>,
     per_page: Option<u32>,
 ) -> Result<PaginatedSkillsResponse, String> {
-    let api_key = require_api_key()?;
-    api::get_popular_skills(&api_key, page, per_page).await
+    let home = dirs::home_dir().ok_or("Could not find home directory")?;
+    let access = api::resolve_skills_sh_access(&home)?;
+    api::get_popular_skills(&access, page, per_page).await
 }
 
 /// Get skill details from skills.sh
 #[tauri::command]
 pub async fn get_skill_details(skill_id: String) -> Result<SkillDetails, String> {
-    let api_key = require_api_key()?;
-    api::get_skill_details(&api_key, &skill_id).await
+    let home = dirs::home_dir().ok_or("Could not find home directory")?;
+    let access = api::resolve_skills_sh_access(&home)?;
+    api::get_skill_details(&access, &skill_id).await
 }
 
 /// Get all installed skills. Returns the background-refreshed snapshot's
@@ -265,6 +304,8 @@ mod tests {
                     disabled_readers: Vec::new(),
                     codex_implicit_invocation: None,
                     shared_via_whole_dir_link: false,
+                    spec_violations: Vec::new(),
+                    invocation: super::super::frontmatter::InvocationPolicy::Both,
                 }],
                 has_spec: false,
                 description: None,
@@ -292,6 +333,37 @@ mod tests {
             update_check: Default::default(),
             opencode_config_kind: None,
         }
+    }
+
+    #[test]
+    fn skills_sh_remove_args_selects_global_flag() {
+        assert_eq!(
+            skills_sh_remove_args("foo", true),
+            vec!["skills", "remove", "foo", "--yes", "--global"]
+        );
+        assert_eq!(
+            skills_sh_remove_args("foo", false),
+            vec!["skills", "remove", "foo", "--yes"]
+        );
+    }
+
+    #[test]
+    fn validate_remove_project_path_accepts_a_known_project() {
+        let dep_dir = std::path::Path::new("/repo/.claude/skills/foo");
+        let mut snapshot = fixture_snapshot(dep_dir, None);
+        snapshot.skills[0].deployments[0].project_path = Some("/repo".to_string());
+
+        assert!(validate_remove_project_path(Some(&snapshot), "foo", "/repo").is_ok());
+    }
+
+    #[test]
+    fn validate_remove_project_path_rejects_a_path_not_in_the_snapshot() {
+        let dep_dir = std::path::Path::new("/repo/.claude/skills/foo");
+        let mut snapshot = fixture_snapshot(dep_dir, None);
+        snapshot.skills[0].deployments[0].project_path = Some("/repo".to_string());
+
+        let err = validate_remove_project_path(Some(&snapshot), "foo", "/elsewhere").unwrap_err();
+        assert!(err.contains("/elsewhere"), "{err}");
     }
 
     #[test]
@@ -497,6 +569,50 @@ mod tests {
             ]
         );
     }
+
+    #[test]
+    fn skills_sh_access_info_is_server_mode_before_a_key_is_set() {
+        let tmp = tempfile::tempdir().unwrap();
+        let info = skills_sh_access_info(tmp.path()).unwrap();
+        assert_eq!(info.mode, "server");
+        assert_eq!(info.server_url, Some("http://127.0.0.1:8787".to_string()));
+    }
+
+    #[test]
+    fn save_skills_sh_api_key_then_access_info_is_direct() {
+        let tmp = tempfile::tempdir().unwrap();
+        save_skills_sh_api_key(tmp.path(), "sk-test-key").unwrap();
+        let info = skills_sh_access_info(tmp.path()).unwrap();
+        assert_eq!(info.mode, "direct");
+        assert_eq!(info.server_url, None);
+    }
+
+    #[test]
+    fn save_skills_sh_api_key_rejects_a_blank_key() {
+        let tmp = tempfile::tempdir().unwrap();
+        let err = save_skills_sh_api_key(tmp.path(), "   ").unwrap_err();
+        assert!(err.contains("can't be empty"));
+    }
+
+    #[test]
+    fn save_skills_sh_api_key_preserves_other_registry_fields() {
+        let tmp = tempfile::tempdir().unwrap();
+        let mut registry = skill_fork_registry::read_fork_registry(tmp.path()).unwrap();
+        registry.preferred_editor = Some("Visual Studio Code".to_string());
+        skill_fork_registry::write_fork_registry(tmp.path(), &registry).unwrap();
+
+        save_skills_sh_api_key(tmp.path(), "sk-test-key").unwrap();
+
+        let round_tripped = skill_fork_registry::read_fork_registry(tmp.path()).unwrap();
+        assert_eq!(
+            round_tripped.preferred_editor,
+            Some("Visual Studio Code".to_string())
+        );
+        assert_eq!(
+            round_tripped.skills_sh_api_key,
+            Some("sk-test-key".to_string())
+        );
+    }
 }
 
 /// List project directories discovered from Codex config and Claude Code
@@ -588,6 +704,34 @@ pub async fn install_skill(
                 .to_string()
         });
 
+        // A harness that couldn't be switched off is logged, not returned:
+        // `InstallResult` has no warning channel, and the skill is installed.
+        if !request.disabled_harnesses.is_empty() {
+            let home = dirs::home_dir().ok_or("Could not find home directory")?;
+            let codex_dir = if request.scope == super::skill_dto::InstallScope::Global {
+                AgentId::Codex.global_skills_dir(&home)
+            } else {
+                AgentId::Codex.project_skills_dir(std::path::Path::new(
+                    request.project_path.as_deref().unwrap_or(""),
+                ))
+            };
+            let codex_paths = vec![codex_dir.join(&result_name).join("SKILL.md")];
+            for agent in &request.disabled_harnesses {
+                if let Err(e) = super::skill_harness_disable::set_harness_enabled_with(
+                    &home,
+                    &result_name,
+                    agent.cli_name(),
+                    false,
+                    &codex_paths,
+                ) {
+                    eprintln!(
+                        "[install_skill] could not disable {}: {e}",
+                        agent.cli_name()
+                    );
+                }
+            }
+        }
+
         skill_refresh::request_snapshot_rebuild(&app);
         Ok(InstallResult {
             success: true,
@@ -630,11 +774,41 @@ fn parse_skill_source(source: &str) -> (String, Option<String>) {
     }
 }
 
-/// Remove a skill using npx skills CLI
+/// Validates `project_path` against `skill_name`'s known project-scope
+/// deployments in `snapshot` - `remove_skill`'s guard against running the CLI
+/// (or a fork's directory delete) somewhere other than the process cwd,
+/// which is what let "Remove from <project>" silently act on the desktop
+/// app's own working directory instead of the project.
+pub(crate) fn validate_remove_project_path(
+    snapshot: Option<&skill_refresh::SkillSnapshot>,
+    skill_name: &str,
+    project_path: &str,
+) -> Result<(), String> {
+    let owns = snapshot
+        .and_then(|s| s.skills.iter().find(|sk| sk.name == skill_name))
+        .map(|sk| {
+            sk.deployments
+                .iter()
+                .any(|d| d.scope == "project" && d.project_path.as_deref() == Some(project_path))
+        })
+        .unwrap_or(false);
+    if owns {
+        Ok(())
+    } else {
+        Err(format!(
+            "{project_path} is not a known project location for {skill_name}"
+        ))
+    }
+}
+
+/// Remove a skill using npx skills CLI. `project_path` is `None` for a
+/// global removal, or the project directory to remove from - validated
+/// against the snapshot and passed as the CLI's `current_dir` so the removal
+/// can't land on the desktop process's own cwd.
 #[tauri::command]
 pub async fn remove_skill(
     skill_name: String,
-    global: bool,
+    project_path: Option<String>,
     app: tauri::AppHandle,
     refresh_state: tauri::State<'_, SkillRefreshState>,
     fork_lock: tauri::State<'_, skill_fork::ForkMutationLock>,
@@ -645,15 +819,22 @@ pub async fn remove_skill(
     // `remove_forked_skill` must not acquire it again itself.
     let _guard = fork_lock.try_acquire()?;
 
+    let snapshot = refresh_state.snapshot.read().ok().and_then(|g| g.clone());
+    if let Some(path) = &project_path {
+        validate_remove_project_path(snapshot.as_ref(), &skill_name, path)?;
+    }
+    let global = project_path.is_none();
+
     // A forked skill is a plain directory under `.agents/skills`, in no
     // ledger the CLI could remove from - delete it directly and drop its
-    // fork-registry record and snapshot instead of shelling out.
-    let snapshot = refresh_state.snapshot.read().ok().and_then(|g| g.clone());
-    let is_fork = snapshot
-        .as_ref()
-        .and_then(|s| s.skills.iter().find(|s| s.name == skill_name))
-        .map(|s| s.source_kind)
-        == Some(SourceKind::Fork);
+    // fork-registry record and snapshot instead of shelling out. Forks only
+    // ever live in the shared global folder, so this only applies globally.
+    let is_fork = global
+        && snapshot
+            .as_ref()
+            .and_then(|s| s.skills.iter().find(|s| s.name == skill_name))
+            .map(|s| s.source_kind)
+            == Some(SourceKind::Fork);
     if is_fork {
         return remove_forked_skill(skill_name, app);
     }
@@ -668,8 +849,12 @@ pub async fn remove_skill(
     // Log the command for debugging
     eprintln!("[remove_skill] Running: npx {}", args.join(" "));
 
-    let output = Command::new("npx")
-        .args(&args)
+    let mut command = Command::new("npx");
+    command.args(&args);
+    if let Some(path) = &project_path {
+        command.current_dir(path);
+    }
+    let output = command
         .output()
         .map_err(|e| format!("Failed to execute npx skills: {}", e))?;
 
@@ -987,17 +1172,47 @@ pub fn open_skill_path(
 ) -> Result<(), String> {
     require_snapshot_owns_path(&refresh_state, std::path::Path::new(&path))?;
 
-    let flag = match mode.as_str() {
-        "reveal" => "-R",
-        "editor" => "-t",
+    let args = match mode.as_str() {
+        "reveal" => vec!["-R".to_string()],
+        // `-t` would mean the system default *text* editor, which is TextEdit
+        // on a stock machine - see `skill_editor` for the setting behind this.
+        "editor" => {
+            let home = dirs::home_dir().ok_or("Could not find home directory")?;
+            skill_editor::open_editor_args(
+                skill_editor::preferred_editor(&home).as_deref(),
+                &skill_editor::installed_editors(&home),
+            )
+        }
         other => return Err(format!("Unknown open mode: {other}")),
     };
 
     Command::new("open")
-        .args([flag, &path])
+        .args(&args)
+        .arg(&path)
         .output()
         .map_err(|e| format!("Failed to open {}: {}", path, e))?;
     Ok(())
+}
+
+/// The editors installed on this machine, for the Settings picker.
+#[tauri::command]
+pub fn list_installed_editors() -> Result<Vec<skill_editor::EditorOption>, String> {
+    let home = dirs::home_dir().ok_or("Could not find home directory")?;
+    Ok(skill_editor::installed_editors(&home))
+}
+
+/// The application "Open in editor" currently uses, or `None` for the system
+/// default.
+#[tauri::command]
+pub fn get_preferred_editor() -> Result<Option<String>, String> {
+    let home = dirs::home_dir().ok_or("Could not find home directory")?;
+    Ok(skill_editor::preferred_editor(&home))
+}
+
+#[tauri::command]
+pub fn set_preferred_editor(app_name: Option<String>) -> Result<(), String> {
+    let home = dirs::home_dir().ok_or("Could not find home directory")?;
+    skill_editor::set_preferred_editor(&home, app_name)
 }
 
 /// Build the `npx @sentry/dotagents ...` args for updating one

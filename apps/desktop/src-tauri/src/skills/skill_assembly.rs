@@ -150,6 +150,8 @@ pub fn assemble_installed_skills(
             disabled_readers: Vec::new(),
             codex_implicit_invocation: None,
             shared_via_whole_dir_link: candidate.shared_via_whole_dir_link,
+            spec_violations: candidate.spec_violations.clone(),
+            invocation: super::frontmatter::invocation_policy(candidate.frontmatter.as_ref()).0,
         });
     }
 
@@ -353,6 +355,57 @@ mod tests {
 
         let skills = assemble_installed_skills(vec![a, b, c], &empty_lock());
         assert_eq!(skills[0].content_hashes.len(), 2);
+    }
+
+    #[test]
+    fn violations_are_attributed_to_the_deployment_that_has_them() {
+        let global = candidate("motion", "Claude Code");
+        let mut project = candidate("motion", "Claude Code");
+        project.scope = "project".to_string();
+        project.spec_violations = vec!["missing required frontmatter field: name".to_string()];
+
+        let skills = assemble_installed_skills(vec![global, project], &empty_lock());
+        assert_eq!(skills.len(), 1);
+        assert_eq!(skills[0].spec_violations.len(), 1);
+
+        let by_scope: HashMap<&str, &Vec<String>> = skills[0]
+            .deployments
+            .iter()
+            .map(|d| (d.scope.as_str(), &d.spec_violations))
+            .collect();
+        assert!(by_scope.get("global").unwrap().is_empty());
+        assert_eq!(
+            by_scope.get("project").unwrap().as_slice(),
+            &["missing required frontmatter field: name".to_string()]
+        );
+    }
+
+    #[test]
+    fn invocation_follows_the_deployment_own_frontmatter() {
+        let global = candidate("motion", "Claude Code");
+        let mut project = candidate("motion", "Claude Code");
+        project.scope = "project".to_string();
+        project.frontmatter = Some(crate::skills::frontmatter::SkillFrontmatter {
+            disable_model_invocation: Some(true),
+            ..Default::default()
+        });
+
+        let skills = assemble_installed_skills(vec![global, project], &empty_lock());
+        assert_eq!(skills.len(), 1);
+
+        let by_scope: HashMap<&str, crate::skills::frontmatter::InvocationPolicy> = skills[0]
+            .deployments
+            .iter()
+            .map(|d| (d.scope.as_str(), d.invocation))
+            .collect();
+        assert_eq!(
+            by_scope.get("global"),
+            Some(&crate::skills::frontmatter::InvocationPolicy::Both)
+        );
+        assert_eq!(
+            by_scope.get("project"),
+            Some(&crate::skills::frontmatter::InvocationPolicy::UserOnly)
+        );
     }
 
     #[test]

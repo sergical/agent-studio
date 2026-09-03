@@ -7,6 +7,7 @@
 
 import { useEffect, useRef, useState } from "react";
 import { ChevronRight } from "lucide-react";
+import { Collapsible, CollapsiblePanel, CollapsibleTrigger } from "@skill-studio/ui";
 import { SkillMarkdown } from "./SkillMarkdown";
 import type { SkillAgentRunState } from "../../hooks/useSkillAgentRun";
 import type { SkillAgentEvent, SkillLoaded } from "@skill-studio/lib";
@@ -74,13 +75,12 @@ function footerLeadSegments(state: SkillAgentRunState): string[] {
 function ToolCallBlock({ block }: { block: Extract<TranscriptBlock, { kind: "tool_call" }> }) {
   const [isOpen, setIsOpen] = useState(false);
   return (
-    <div className="flex flex-col rounded-sm border border-border-subtle bg-bg-tertiary">
-      <button
-        type="button"
-        className="flex h-7 cursor-pointer items-center gap-1.5 border-0 bg-transparent px-2 text-left transition-colors hover:bg-bg-hover"
-        onClick={() => setIsOpen((open) => !open)}
-        aria-expanded={isOpen}
-      >
+    <Collapsible
+      open={isOpen}
+      onOpenChange={setIsOpen}
+      className="flex flex-col rounded-sm border border-border-subtle bg-bg-tertiary"
+    >
+      <CollapsibleTrigger className="flex h-7 cursor-pointer items-center gap-1.5 border-0 bg-transparent px-2 text-left transition-colors hover:bg-bg-hover">
         <ChevronRight
           size={14}
           className={`shrink-0 text-text-tertiary transition-transform ${isOpen ? "rotate-90" : ""}`}
@@ -91,13 +91,15 @@ function ToolCallBlock({ block }: { block: Extract<TranscriptBlock, { kind: "too
         <span className="overflow-hidden text-ellipsis whitespace-nowrap text-caption text-text-secondary">
           {block.summary}
         </span>
-      </button>
-      {isOpen && block.detail && (
-        <pre className="m-0 max-h-60 overflow-y-auto border-t border-border-subtle p-2 text-caption break-words whitespace-pre-wrap text-text-secondary">
-          {block.detail}
-        </pre>
+      </CollapsibleTrigger>
+      {block.detail && (
+        <CollapsiblePanel>
+          <pre className="m-0 max-h-60 overflow-y-auto border-t border-border-subtle p-2 text-caption break-words whitespace-pre-wrap text-text-secondary">
+            {block.detail}
+          </pre>
+        </CollapsiblePanel>
       )}
-    </div>
+    </Collapsible>
   );
 }
 
@@ -172,7 +174,7 @@ export function SkillAgentTranscript({ state }: SkillAgentTranscriptProps) {
       })}
 
       {state.status === "running" && (
-        <div className="skill-agent-pulse" aria-label="Running">
+        <div className="skill-agent-pulse" role="status" aria-label="Running">
           <span />
           <span />
           <span />

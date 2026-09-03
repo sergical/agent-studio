@@ -1457,6 +1457,8 @@ mod tests {
                     disabled_readers: Vec::new(),
                     codex_implicit_invocation: None,
                     shared_via_whole_dir_link: false,
+                    spec_violations: Vec::new(),
+                    invocation: super::super::frontmatter::InvocationPolicy::Both,
                 }],
                 has_spec: false,
                 description: None,

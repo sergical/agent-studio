@@ -69,8 +69,6 @@ export function SkillListTable({
   const exitSelectionMode = useAppStore((state) => state.exitSelectionMode);
   /** Index of the last row checked by click (not shift-click), for shift-click range-select. */
   const lastCheckedIndexRef = useRef<number | null>(null);
-  /** Whether Shift was held for the row checkbox click in progress - CheckboxControl's onCheckedChange doesn't carry the native event, so this is captured a beat earlier, on pointerdown. */
-  const shiftKeyRef = useRef(false);
 
   /** The deployment path this row's selection checkbox stands for. */
   const rowPath = (skill: InstalledSkill): string | undefined =>
@@ -234,16 +232,14 @@ export function SkillListTable({
                   <label
                     className="flex w-11 shrink-0 cursor-pointer items-center justify-center"
                     aria-label={`Select ${skill.name}`}
-                    onPointerDownCapture={(e) => {
-                      shiftKeyRef.current = e.shiftKey;
-                    }}
                   >
                     <CheckboxControl
                       checked={selectedPaths.has(rowPath(skill) ?? "")}
-                      onCheckedChange={() => {
-                        handleRowCheckboxClick(index, shiftKeyRef.current);
-                        // Consumed: a later keyboard toggle must not reuse a pointer's Shift.
-                        shiftKeyRef.current = false;
+                      onCheckedChange={(_checked, eventDetails) => {
+                        // SAFETY: the underlying event is a pointer or keyboard event, both of which carry `shiftKey`.
+                        const shiftKey = (eventDetails.event as MouseEvent | KeyboardEvent)
+                          .shiftKey;
+                        handleRowCheckboxClick(index, shiftKey);
                       }}
                     />
                   </label>

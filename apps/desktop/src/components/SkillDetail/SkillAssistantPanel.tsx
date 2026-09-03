@@ -1176,27 +1176,29 @@ export function SkillAssistantPanel({
         </div>
       )}
 
-      {showTestForm ? (
-        <SkillTestForm
-          skill={skill}
-          otherOwnSkills={otherOwnSkills}
-          candidateProjects={candidateProjects}
-          isRunning={isTestRunning}
-          onRun={handleRunTest}
-        />
-      ) : (
-        <AskComposer
-          textareaRef={textareaRef}
-          prompt={prompt}
-          onPromptChange={setPrompt}
-          onKeyDown={handleKeyDown}
-          isRunning={isRunning}
-          sessionId={state.sessionId}
-          onNewSession={handleNewSession}
-          onRun={handleRun}
-          onCancel={() => cancel()}
-        />
-      )}
+      <div id="skill-assistant-test-toggle-region">
+        {showTestForm ? (
+          <SkillTestForm
+            skill={skill}
+            otherOwnSkills={otherOwnSkills}
+            candidateProjects={candidateProjects}
+            isRunning={isTestRunning}
+            onRun={handleRunTest}
+          />
+        ) : (
+          <AskComposer
+            textareaRef={textareaRef}
+            prompt={prompt}
+            onPromptChange={setPrompt}
+            onKeyDown={handleKeyDown}
+            isRunning={isRunning}
+            sessionId={state.sessionId}
+            onNewSession={handleNewSession}
+            onRun={handleRun}
+            onCancel={() => cancel()}
+          />
+        )}
+      </div>
 
       <div className="flex gap-2">
         <Button
@@ -1214,6 +1216,8 @@ export function SkillAssistantPanel({
           className="flex-1"
           onClick={() => setShowTestForm((open) => !open)}
           disabled={isRunning}
+          aria-expanded={showTestForm}
+          aria-controls="skill-assistant-test-toggle-region"
         >
           Test
         </Button>

@@ -9,7 +9,7 @@
 
 import { useState } from "react";
 import { TriangleAlert } from "lucide-react";
-import { Button } from "@skill-studio/ui";
+import { Button, RadioGroup, RadioGroupItem } from "@skill-studio/ui";
 import {
   agentIdFromDeploymentLabel,
   deploymentLabel,
@@ -88,6 +88,7 @@ export function SkillRepairCard({ skill, deployment }: SkillRepairCardProps) {
           skill_source: source,
           scope,
           agents: [reinstallAgent],
+          disabled_harnesses: [],
           project_path: scope === "project" ? deployment.project_path : undefined,
         });
         addToast({
@@ -134,18 +135,15 @@ export function SkillRepairCard({ skill, deployment }: SkillRepairCardProps) {
         <span className="font-mono text-small">{homeRelativePath(rawTarget)}</span> — missing.
       </p>
 
-      <div className="flex flex-col gap-2 px-3 pb-1">
+      <RadioGroup
+        className="gap-2 px-3 pb-1"
+        value={selectedKey}
+        onValueChange={(value) => setSelectedKey(value)}
+      >
         {options.map((option) => (
-          <RepairOptionRow
-            key={optionKey(option)}
-            option={option}
-            skill={skill}
-            source={source}
-            isSelected={optionKey(option) === selectedKey}
-            onSelect={() => setSelectedKey(optionKey(option))}
-          />
+          <RepairOptionRow key={optionKey(option)} option={option} skill={skill} source={source} />
         ))}
-      </div>
+      </RadioGroup>
 
       <div className="flex items-center gap-3 px-3 pt-2 pb-1">
         <Button
@@ -176,34 +174,21 @@ interface RepairOptionRowProps {
   option: FixOption;
   skill: InstalledSkill;
   source: string | null;
-  isSelected: boolean;
-  onSelect: () => void;
 }
 
-function RepairOptionRow({ option, skill, source, isSelected, onSelect }: RepairOptionRowProps) {
+function RepairOptionRow({ option, skill, source }: RepairOptionRowProps) {
   const { title, description } = describeOption(option, skill, source);
   return (
-    <div
-      role="radio"
-      aria-checked={isSelected}
-      tabIndex={0}
-      onClick={onSelect}
-      onKeyDown={(event) => {
-        if (event.key === "Enter" || event.key === " ") {
-          event.preventDefault();
-          onSelect();
-        }
-      }}
-      className={`flex cursor-pointer gap-3 rounded-sm border border-border-subtle bg-bg-elevated px-3.5 py-3 transition-colors hover:bg-bg-hover aria-checked:border-accent aria-checked:bg-accent-softer aria-checked:shadow-[inset_0_0_0_1px_var(--color-accent)]`}
-    >
-      <span
-        className={`mt-0.5 size-[15px] flex-none rounded-full border-[1.5px] ${isSelected ? "border-accent bg-accent" : "border-border-strong"}`}
+    <label className="flex cursor-pointer gap-3 rounded-sm border border-border-subtle bg-bg-elevated px-3.5 py-3 transition-colors hover:bg-bg-hover has-data-checked:border-accent has-data-checked:bg-accent-softer has-data-checked:shadow-[inset_0_0_0_1px_var(--color-accent)]">
+      <RadioGroupItem
+        value={optionKey(option)}
+        className="mt-0.5 size-[15px] flex-none border-[1.5px] border-border-strong data-checked:border-accent data-checked:bg-accent data-checked:text-text-on-accent"
       />
       <span className="flex flex-col gap-0.5">
         <span className="font-medium text-text-primary">{title}</span>
         <span className="max-w-[58ch] text-small text-text-tertiary">{description}</span>
       </span>
-    </div>
+    </label>
   );
 }
 
