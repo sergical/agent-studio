@@ -12,7 +12,6 @@ import type {
   AddSkillResult,
   AddSkillsRequest,
   AgentId,
-  AgentTarget,
   ImportResult,
   InstallRequest,
   InstallResult,
@@ -111,17 +110,6 @@ export async function registerSkillProjects(paths: string[]): Promise<void> {
  */
 export async function unregisterSkillProject(path: string): Promise<void> {
   return invoke("unregister_skill_project", { path });
-}
-
-// ============================================================================
-// Agent Targets API
-// ============================================================================
-
-/**
- * Get all supported agent targets
- */
-export async function getAgentTargets(): Promise<AgentTarget[]> {
-  return invoke("get_agent_targets");
 }
 
 // ============================================================================
