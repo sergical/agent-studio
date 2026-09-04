@@ -327,8 +327,8 @@ Skill Studio integrates with skills.sh for skill discovery and installation.
 
 ### API Endpoint
 
-- Base: `https://skills.sh/api/v1`, authenticated with `Authorization: Bearer <key>`
-- Key lives in `~/.agents/skill-studio.json`'s `skills_sh_api_key` field (the user adds it themselves; absent by default)
+- Default: requests route through the local Skill Studio server (`apps/server`, default `http://127.0.0.1:8787/api/v1`), which holds the real skills.sh key - no client key needed. Settings shows the resolved mode; see `apps/server/README.md`.
+- Developer override: a non-empty `skills_sh_api_key` in `~/.agents/skill-studio.json` instead sends `Authorization: Bearer <key>` straight to `https://skills.sh/api/v1`, bypassing the server.
 - **List**: `GET /skills?view=all-time&page=<0-indexed>&per_page=<n>` - paginated, sorted by install count
 - **Search**: `GET /skills/search?q=<query>&limit=<n>` - no pagination, one shot up to `limit`
 - **Details**: `GET /skills/{owner/repo}/{slug}` - returns the skill's files, including its `SKILL.md`/`AGENTS.md` body
