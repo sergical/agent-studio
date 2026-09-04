@@ -112,8 +112,7 @@ npm run check
 │       │   │   └── ui/           # Toast, ToastContainer
 │       │   ├── lib/
 │       │   │   ├── skill-types.ts        # Type definitions
-│       │   │   ├── skill-api.ts          # Tauri IPC wrappers
-│       │   │   └── github-skill-source.ts # GitHub SKILL.md fetch
+│       │   │   └── skill-api.ts          # Tauri IPC wrappers
 │       │   ├── store/
 │       │   │   └── appStore.ts   # Zustand store
 │       │   ├── App.tsx           # Main app component
@@ -293,7 +292,6 @@ let home = get_home_dir().ok_or("Could not find home directory")?;
 | State Store           | `apps/desktop/src/store/appStore.ts`              |
 | Skill types           | `apps/desktop/src/lib/skill-types.ts`             |
 | Tauri IPC wrappers    | `apps/desktop/src/lib/skill-api.ts`               |
-| GitHub SKILL.md fetch | `apps/desktop/src/lib/github-skill-source.ts`     |
 | Tauri commands        | `apps/desktop/src-tauri/src/skills/commands.rs`   |
 | Scanner               | `apps/desktop/src-tauri/src/skills/scan.rs`       |
 | Provenance            | `apps/desktop/src-tauri/src/skills/provenance.rs` |
