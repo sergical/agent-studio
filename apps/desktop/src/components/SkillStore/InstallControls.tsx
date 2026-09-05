@@ -36,7 +36,7 @@ interface InstallControlsProps {
   resolvedTopSource: string | null;
   onInstallStart: (skillName: string) => void;
   onInstallComplete: (result: { success: boolean; error?: string; skillName?: string }) => void;
-  onRemoveComplete: () => void;
+  onRemoveComplete: (result: { success: boolean; error?: string }) => void;
 }
 
 export function InstallControls({
@@ -136,14 +136,20 @@ export function InstallControls({
 
   const handleRemove = () => {
     setIsRemoving(true);
-    // A `Promise.finally` call, not a `try/finally` statement: `removeSkill`
-    // throwing (no catch here, same as before) still runs the cleanup
-    // before the rejection propagates.
+    // Surface both the resolved `{ success, error }` result and a thrown
+    // rejection to `onRemoveComplete`, mirroring `handleInstall`: an in-repo
+    // skill resolves `success: false` with an explanatory `error` (it isn't
+    // tracked by skills.sh), which must reach the user as a toast rather
+    // than being silently swallowed.
     return removeSkill(skill.name, installScope === "global" ? null : selectedProject)
       .then((result) => {
-        if (result.success) {
-          onRemoveComplete();
-        }
+        onRemoveComplete({ success: result.success, error: result.error });
+      })
+      .catch((err) => {
+        onRemoveComplete({
+          success: false,
+          error: err instanceof Error ? err.message : "Unknown error",
+        });
       })
       .finally(() => {
         setIsRemoving(false);

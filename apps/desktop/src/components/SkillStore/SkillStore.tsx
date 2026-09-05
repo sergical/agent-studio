@@ -326,15 +326,23 @@ export function SkillStore({ compact = false }: SkillStoreProps = {}) {
     setInstallProgress(null);
   };
 
-  const handleRemoveComplete = () => {
-    addToast({
-      type: "success",
-      title: "Skill Removed",
-      message: "Successfully removed skill",
-    });
-    // Refresh installed skills - `installedSkillsWithStatus`/`searchResultsWithStatus` re-derive from it.
-    loadInstalledSkills();
-    setSelectedSkillName(null);
+  const handleRemoveComplete = (result: { success: boolean; error?: string }) => {
+    if (result.success) {
+      addToast({
+        type: "success",
+        title: "Skill Removed",
+        message: "Successfully removed skill",
+      });
+      // Refresh installed skills - `installedSkillsWithStatus`/`searchResultsWithStatus` re-derive from it.
+      loadInstalledSkills();
+      setSelectedSkillName(null);
+    } else {
+      addToast({
+        type: "error",
+        title: "Removal Failed",
+        message: result.error || "Unknown error",
+      });
+    }
   };
 
   // Get installed skills with full status for Installed tab

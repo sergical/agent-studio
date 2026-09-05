@@ -367,6 +367,65 @@ mod tests {
     }
 
     #[test]
+    fn is_in_repo_skill_true_for_in_repo_in_snapshot() {
+        let dep_dir = std::path::Path::new("/repo/.claude/skills/my-notes");
+        let mut snapshot = fixture_snapshot(dep_dir, None);
+        snapshot.skills[0].source_kind = SourceKind::InRepo;
+        assert!(is_in_repo_skill(Some(&snapshot), "foo"));
+    }
+
+    #[test]
+    fn is_in_repo_skill_false_for_other_source_kinds() {
+        let dep_dir = std::path::Path::new("/repo/.claude/skills/foo");
+        let mut snapshot = fixture_snapshot(dep_dir, None);
+        for kind in [
+            SourceKind::Manual,
+            SourceKind::SkillsSh,
+            SourceKind::Fork,
+            SourceKind::Dotagents,
+            SourceKind::Plugin,
+        ] {
+            snapshot.skills[0].source_kind = kind;
+            assert!(
+                !is_in_repo_skill(Some(&snapshot), "foo"),
+                "{kind:?} should not classify as in-repo"
+            );
+        }
+    }
+
+    #[test]
+    fn is_in_repo_skill_false_when_absent_from_snapshot() {
+        let dep_dir = std::path::Path::new("/repo/.claude/skills/foo");
+        let snapshot = fixture_snapshot(dep_dir, None);
+        assert!(!is_in_repo_skill(Some(&snapshot), "not-installed"));
+        assert!(!is_in_repo_skill(None, "foo"));
+    }
+
+    #[test]
+    fn update_rejection_rejects_in_repo_like_manual() {
+        assert_eq!(
+            update_rejection(Some(SourceKind::InRepo)),
+            Some("Update is not available for manually installed skills")
+        );
+        assert_eq!(
+            update_rejection(Some(SourceKind::Manual)),
+            Some("Update is not available for manually installed skills")
+        );
+        assert_eq!(
+            update_rejection(Some(SourceKind::Plugin)),
+            Some("Update is not available for manually installed skills")
+        );
+        assert_eq!(
+            update_rejection(Some(SourceKind::Fork)),
+            Some("Forked skills update with Pull upstream")
+        );
+        // SkillsSh, Dotagents, and an unknown skill proceed to the owning CLI.
+        assert_eq!(update_rejection(Some(SourceKind::SkillsSh)), None);
+        assert_eq!(update_rejection(Some(SourceKind::Dotagents)), None);
+        assert_eq!(update_rejection(None), None);
+    }
+
+    #[test]
     fn push_agent_args_rejects_grok_build() {
         let mut args = vec!["skills".to_string(), "add".to_string()];
         let err =
@@ -801,6 +860,23 @@ pub(crate) fn validate_remove_project_path(
     }
 }
 
+/// Whether `skill_name` is an in-repo skill in `snapshot` - a plain directory
+/// inside a git working tree that no skill-manager ledger tracks (see
+/// `provenance::classify_source_kind`). `remove_skill` rejects these up front
+/// rather than routing them through `npx skills remove`, which exits 0 on
+/// names absent from its lock file and would report a silent success that the
+/// snapshot rebuild immediately re-discovers. Pulled out so the dispatch is
+/// testable without a `tauri::AppHandle` or `SkillRefreshState`.
+pub(crate) fn is_in_repo_skill(
+    snapshot: Option<&skill_refresh::SkillSnapshot>,
+    skill_name: &str,
+) -> bool {
+    snapshot
+        .and_then(|s| s.skills.iter().find(|s| s.name == skill_name))
+        .map(|s| s.source_kind)
+        == Some(SourceKind::InRepo)
+}
+
 /// Remove a skill using npx skills CLI. `project_path` is `None` for a
 /// global removal, or the project directory to remove from - validated
 /// against the snapshot and passed as the CLI's `current_dir` so the removal
@@ -837,6 +913,27 @@ pub async fn remove_skill(
             == Some(SourceKind::Fork);
     if is_fork {
         return remove_forked_skill(skill_name, app);
+    }
+
+    // An in-repo skill is a plain directory inside a git working tree that no
+    // skill-manager ledger tracks - the skills.sh lock file doesn't contain
+    // it, so `npx skills remove <name>` exits 0 printing "No skills found to
+    // remove" and leaves the directory in place. Reject up front instead of
+    // no-op'ing through the CLI and reporting a silent success the snapshot
+    // rebuild immediately re-discovers; the directory should be removed from
+    // the git working tree directly.
+    if is_in_repo_skill(snapshot.as_ref(), &skill_name) {
+        return Ok(InstallResult {
+            success: false,
+            skill_name,
+            installed_path: None,
+            error: Some(
+                "In-repo skills aren't tracked by skills.sh; remove the directory from your git working tree"
+                    .to_string(),
+            ),
+            tool: None,
+            command: None,
+        });
     }
 
     let scope = if global {
@@ -1268,11 +1365,29 @@ fn dotagents_update_args(
     Ok(args)
 }
 
+/// `update_skill`'s rejection of source kinds no owning CLI can update
+/// through - manual, plugin, and in-repo skills aren't tracked by any
+/// skill-manager ledger, so `npx skills update` exits 0 on them without doing
+/// anything (it finds no matching name in its lock file); forks update via
+/// "Pull upstream" instead. Returns the error message `update_skill` should
+/// return, or `None` to proceed with the owning CLI. Pulled out so the
+/// dispatch is testable without a `tauri::AppHandle`.
+pub(crate) fn update_rejection(source_kind: Option<SourceKind>) -> Option<&'static str> {
+    match source_kind {
+        Some(SourceKind::Manual) | Some(SourceKind::Plugin) | Some(SourceKind::InRepo) => {
+            Some("Update is not available for manually installed skills")
+        }
+        Some(SourceKind::Fork) => Some("Forked skills update with Pull upstream"),
+        _ => None,
+    }
+}
+
 /// Update a skill, using whichever CLI owns it: `dotagents` for a
 /// dotagents-managed skill (`add` re-pins it to the latest commit; `install`
 /// re-runs the wildcard sync for a skill with no `[[skills]]` row), `npx
-/// skills update` for a skills.sh skill. Manual/plugin skills have no owning
-/// CLI to update through, so they're rejected up front.
+/// skills update` for a skills.sh skill. Manual/plugin/in-repo skills have no
+/// owning CLI to update through (the skills.sh lock file doesn't track them),
+/// so they're rejected up front.
 #[tauri::command]
 pub async fn update_skill(
     skill_name: String,
@@ -1288,13 +1403,11 @@ pub async fn update_skill(
         .and_then(|s| s.skills.iter().find(|s| s.name == skill_name))
         .map(|s| s.source_kind);
 
+    if let Some(msg) = update_rejection(source_kind) {
+        return Err(msg.to_string());
+    }
+
     let (tool, mut args): (&str, Vec<String>) = match source_kind {
-        Some(SourceKind::Manual) | Some(SourceKind::Plugin) => {
-            return Err("Update is not available for manually installed skills".to_string());
-        }
-        Some(SourceKind::Fork) => {
-            return Err("Forked skills update with Pull upstream".to_string());
-        }
         Some(SourceKind::Dotagents) => {
             let ledger = dotagents_ledger::read_dotagents_ledger(&home.join(".agents"))?;
             let entry = ledger.iter().find(|s| s.name == skill_name);
