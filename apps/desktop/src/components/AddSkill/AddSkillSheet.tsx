@@ -102,7 +102,7 @@ const METHOD_TOOLTIPS = {
  * it's installed - the sheet has no reason to prefer skills.sh just because
  * it's been used here before.
  */
-function availableMethods(
+export function availableMethods(
   parsed: ParsedSkillSource | { error: string },
   defaults: AddMethodDefaults | null,
 ): SheetMethod[] {
@@ -552,6 +552,31 @@ function ScopePicker({
 }
 
 /**
+ * Whether the manual-add form is valid to submit - the source parses, at
+ * least one install method is available (a git source with dotagents
+ * missing has none), a project scope has a path, and a listed GitHub source
+ * has at least one picked skill folder. The persistent `noMethodsAvailable`
+ * gate lives here rather than only in the footer so the button's disabled
+ * state, `handleSubmit`'s early return, and tests all read one definition;
+ * only the transient `listingBlocks` loading gate is added at the footer.
+ */
+export function addSkillFormValid(input: {
+  parsed: ParsedSkillSource | { error: string };
+  noMethodsAvailable: boolean;
+  scope: InstallScope;
+  projectPath: string | null;
+  githubEntries: GithubSkillEntry[] | null;
+}): boolean {
+  const { parsed, noMethodsAvailable, scope, projectPath, githubEntries } = input;
+  return (
+    !("error" in parsed) &&
+    !noMethodsAvailable &&
+    (scope !== "project" || !!projectPath) &&
+    (githubEntries === null || githubEntries.length > 0)
+  );
+}
+
+/**
  * Owns `handleSubmit` and the derived `isValid` flag: both close over the
  * same handful of form fields plus the three callbacks that fire on success,
  * so pulling them out of `AddSkillSheet` keeps that component's body to the
@@ -560,6 +585,10 @@ function ScopePicker({
 function useAddSkillSubmit(input: {
   parsed: ParsedSkillSource | { error: string };
   method: SheetMethod;
+  /** `true` when `parsed` is valid but supports no install method at all
+   * (a git source with the dotagents CLI absent). Gated here so the submit
+   * button matches the picker's own disabled state. */
+  noMethodsAvailable: boolean;
   agents: AgentId[];
   disabledHarnesses: AgentId[];
   scope: InstallScope;
@@ -576,6 +605,7 @@ function useAddSkillSubmit(input: {
   const {
     parsed,
     method,
+    noMethodsAvailable,
     agents,
     disabledHarnesses,
     scope,
@@ -587,10 +617,13 @@ function useAddSkillSubmit(input: {
     openSkill,
     addToast,
   } = input;
-  const isValid =
-    !("error" in parsed) &&
-    (scope !== "project" || !!projectPath) &&
-    (githubEntries === null || githubEntries.length > 0);
+  const isValid = addSkillFormValid({
+    parsed,
+    noMethodsAvailable,
+    scope,
+    projectPath,
+    githubEntries,
+  });
 
   const handleSubmit = async () => {
     if ("error" in parsed || !isValid) return;
@@ -921,6 +954,7 @@ export function AddSkillSheet() {
   const { isValid, handleSubmit } = useAddSkillSubmit({
     parsed,
     method,
+    noMethodsAvailable,
     agents,
     disabledHarnesses,
     scope,
