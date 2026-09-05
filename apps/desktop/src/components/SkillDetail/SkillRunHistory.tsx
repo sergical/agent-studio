@@ -44,9 +44,8 @@ function stateFromRecord(
 }
 
 /**
- * A "Runs" list opened from the skill page header's "Last test" line: rows
- * for every recorded run, newest first; clicking one loads its transcript in
- * place of the list.
+ * A "Runs" list opened from the assistant panel: rows for every recorded run,
+ * newest first; clicking one loads its transcript in place of the list.
  */
 export function SkillRunHistory({ skillName, onClose }: SkillRunHistoryProps) {
   const [runs, setRuns] = useState<SkillRunRecord[] | null>(null);

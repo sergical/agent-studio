@@ -1,24 +1,20 @@
 // ============================================================================
-// InstalledSkillHeader - Row 1: back button, name, one primary action, and an
-// overflow menu holding every other action. Row 2: description. Row 3: the
-// chip row (provenance, parked, trial, update available, spec notes). Row 4:
-// a quiet tabular metadata line.
+// InstalledSkillHeader - Controls above a responsive identity and source
+// ledger area, followed by any blocking violation for the rendered copy.
 // ============================================================================
 
 import type { RefObject } from "react";
 import { ArrowLeft, AlertTriangle, MoreHorizontal, PanelRight } from "lucide-react";
 import { Button } from "@skill-studio/ui";
 import { isBlockingSpecViolation } from "@skill-studio/lib";
-import { pluginLabelForSkill } from "@skill-studio/lib";
-import type { SkillRunSummary } from "@skill-studio/lib";
-import { formatBytes, formatRelativeTime, formatTokens } from "@skill-studio/lib";
-import { SOURCE_KIND_LABELS, trialHoursLeft } from "@skill-studio/lib";
-import type { Deployment, InstalledSkill, SkillInvocationStats } from "@skill-studio/lib";
+import { trialHoursLeft } from "@skill-studio/lib";
+import type { Deployment, InstalledSkill } from "@skill-studio/lib";
 import { isFeatureEnabled } from "../../lib/feature-flags";
 import type { ActiveView } from "../../store/appStore";
 import { MenuControl, MenuItem, MenuSeparator } from "../ui/MenuControl";
 import { TooltipControl } from "../ui/TooltipControl";
 import { SKILL_ASSISTANT_DRAWER_ID } from "./SkillAssistantDrawer";
+import { InstalledSkillSourceLedger } from "./InstalledSkillSourceLedger";
 import { useSkillPageActions } from "./skill-page-actions";
 
 interface InstalledSkillHeaderProps {
@@ -28,11 +24,6 @@ interface InstalledSkillHeaderProps {
   from: ActiveView;
   onBack: () => void;
   onRemoveComplete: () => void;
-  invocationStats: SkillInvocationStats | undefined;
-  /** The newest "Test" run recorded for this skill - `undefined` when it was never tested. */
-  lastTest?: SkillRunSummary;
-  /** Opens the "Runs" history list in the assistant panel. */
-  onOpenHistory: () => void;
   /** Whether the assistant drawer is open, for the trigger's `aria-expanded`. */
   isAssistantOpen: boolean;
   onOpenAssistant: () => void;
@@ -57,15 +48,6 @@ function backLabel(from: ActiveView): string {
   }
 }
 
-/** "dotagents" / "skills.sh" / "plugin · openai-templates" / "manual" / "fork". */
-function provenanceChipLabel(skill: InstalledSkill): string {
-  if (skill.source_kind === "plugin") {
-    const pluginName = pluginLabelForSkill(skill);
-    return pluginName ? `plugin · ${pluginName}` : SOURCE_KIND_LABELS.plugin;
-  }
-  return SOURCE_KIND_LABELS[skill.source_kind];
-}
-
 /** "Parked · Aug 25, 2026" / "Parked" when the timestamp is missing or unparseable. */
 function parkedChipLabel(parkedAt: string | undefined): string {
   if (!parkedAt) return "Parked";
@@ -82,25 +64,9 @@ function trialChipLabel(expiresAt: string): string {
   return `Trial · ${hours} h`;
 }
 
-/** "12 Mar 2026" - the metadata line's absolute install date, `null` for an unparseable/missing date. */
-function absoluteDate(iso: string): string | null {
-  const date = new Date(iso);
-  if (Number.isNaN(date.getTime())) return null;
-  return date.toLocaleDateString(undefined, { day: "numeric", month: "short", year: "numeric" });
-}
-
-/** "passed 2 h ago on Claude Code" / "failed 2 h ago on Codex" / "ran 2 h ago on pi". */
-function lastTestLabel(lastTest: SkillRunSummary): string {
-  const outcome = lastTest.passed === undefined ? "ran" : lastTest.passed ? "passed" : "failed";
-  return `last test ${outcome} ${formatRelativeTime(lastTest.at)} on ${lastTest.harness}`;
-}
-
 /**
- * The page header: back button and name with the one primary action and an
- * overflow menu on the right (row 1); description (row 2); provenance/parked/
- * trial/update/spec-notes chips, with blocking violations rendered as a
- * warning line instead of a chip (row 3); a quiet tabular metadata line
- * (row 4).
+ * The installed skill header keeps controls separate from identity and exact
+ * lifecycle ownership facts. It shows no location or invocation details.
  */
 export function InstalledSkillHeader({
   skill,
@@ -108,9 +74,6 @@ export function InstalledSkillHeader({
   from,
   onBack,
   onRemoveComplete,
-  invocationStats,
-  lastTest,
-  onOpenHistory,
   isAssistantOpen,
   onOpenAssistant,
   assistantTriggerRef,
@@ -129,20 +92,9 @@ export function InstalledSkillHeader({
     isBlockingSpecViolation,
   );
 
-  const modifiedRelative = skill.modified_at ? formatRelativeTime(skill.modified_at) : undefined;
-  const installedDate = absoluteDate(skill.installed_at);
-  const metaSegments = [
-    formatBytes(skill.folder_bytes),
-    `${formatTokens(skill.skill_md_tokens)} tokens`,
-    `${invocationStats?.last_30_days ?? 0} uses in 30 days`,
-    modifiedRelative && `edited ${modifiedRelative}`,
-    skill.source && skill.source !== "local" && `source ${skill.source}`,
-    installedDate && `installed ${installedDate}`,
-  ].filter((segment): segment is string => Boolean(segment));
-
   return (
-    <div className="flex flex-col gap-2">
-      <div className="flex items-center gap-4">
+    <header className="flex flex-col gap-4">
+      <div className="flex items-center justify-between gap-4">
         <button
           className="flex shrink-0 items-center gap-1.5 border-0 bg-transparent p-1 text-small text-text-tertiary transition-colors hover:text-text-primary"
           onClick={onBack}
@@ -151,9 +103,6 @@ export function InstalledSkillHeader({
           <ArrowLeft size={16} />
           <span>{backLabel(from)}</span>
         </button>
-        <h1 className="min-w-0 flex-1 overflow-hidden text-ellipsis whitespace-nowrap text-title font-semibold text-text-primary">
-          {skill.name}
-        </h1>
         <div className="flex shrink-0 items-center gap-2">
           {actions.primaryAction && (
             <Button onClick={actions.primaryAction.run} disabled={actions.primaryAction.busy}>
@@ -223,60 +172,68 @@ export function InstalledSkillHeader({
         </div>
       </div>
 
-      {skill.description && (
-        <p className="max-w-[65ch] text-pretty text-body leading-[1.5] text-text-secondary">
-          {skill.description}
-        </p>
-      )}
+      <div className="grid w-full grid-cols-1 gap-6 min-[900px]:grid-cols-[minmax(0,1.35fr)_minmax(260px,1fr)] min-[900px]:gap-8">
+        <div className="flex min-w-0 flex-col gap-4">
+          <div>
+            <h1 className="text-title font-semibold text-text-primary">{skill.name}</h1>
+            {skill.description && (
+              <p className="mt-3 max-w-[65ch] text-pretty text-body leading-[1.5] text-text-secondary">
+                {skill.description}
+              </p>
+            )}
+          </div>
 
-      <div className="flex flex-wrap items-center gap-1.5">
-        <span className="inline-flex items-center gap-1 rounded-full bg-bg-tertiary px-2 py-0.5 text-caption text-text-tertiary">
-          {provenanceChipLabel(skill)}
-        </span>
-        {skill.parked && (
-          <span className="inline-flex items-center gap-1 rounded-full bg-bg-tertiary px-2 py-0.5 text-caption text-warning">
-            {parkedChipLabel(skill.parked_at)}
-          </span>
-        )}
-        {(skill.trials ?? (skill.trial ? [skill.trial] : [])).map((trial) => {
-          const keepAction = actions.keepTrial(trial);
-          const scope = trial.scope === "global" ? "Global" : "Project";
-          return (
-            <span
-              key={trial.deployment_id || `${trial.scope}/${trial.project_path ?? ""}`}
-              className="inline-flex items-center gap-1 rounded-full bg-bg-tertiary px-2 py-0.5 text-caption text-accent"
-            >
-              {scope}{" "}
-              {trial.status === "recovery-required"
-                ? "expiry needs review"
-                : trial.status === "expiring"
-                  ? "expiry in progress"
-                  : trialChipLabel(trial.expires_at)}
-              <button
-                type="button"
-                className="cursor-pointer rounded-sm border-0 bg-bg-primary px-1.5 py-px text-caption font-semibold text-inherit disabled:cursor-not-allowed disabled:opacity-50"
-                onClick={keepAction.run}
-                disabled={keepAction.busy}
+          <div className="flex flex-wrap items-center gap-1.5">
+            {skill.parked && (
+              <span className="inline-flex items-center gap-1 rounded-full bg-bg-tertiary px-2 py-0.5 text-caption text-warning">
+                {parkedChipLabel(skill.parked_at)}
+              </span>
+            )}
+            {(skill.trials ?? (skill.trial ? [skill.trial] : [])).map((trial) => {
+              const keepAction = actions.keepTrial(trial);
+              const scope = trial.scope === "global" ? "Global" : "Project";
+              return (
+                <span
+                  key={trial.deployment_id || `${trial.scope}/${trial.project_path ?? ""}`}
+                  className="inline-flex items-center gap-1 rounded-full bg-bg-tertiary px-2 py-0.5 text-caption text-accent"
+                >
+                  {scope}{" "}
+                  {trial.status === "recovery-required"
+                    ? "expiry needs review"
+                    : trial.status === "expiring"
+                      ? "expiry in progress"
+                      : trialChipLabel(trial.expires_at)}
+                  <button
+                    type="button"
+                    className="cursor-pointer rounded-sm border-0 bg-bg-primary px-1.5 py-px text-caption font-semibold text-inherit disabled:cursor-not-allowed disabled:opacity-50"
+                    onClick={keepAction.run}
+                    disabled={keepAction.busy}
+                  >
+                    Keep
+                  </button>
+                </span>
+              );
+            })}
+            {skill.update_owner_ids.length > 0 && (
+              <span className="inline-flex items-center gap-1 rounded-full bg-bg-tertiary px-2 py-0.5 text-caption text-accent">
+                Update available
+              </span>
+            )}
+            {nonBlockingCount > 0 && (
+              <TooltipControl
+                content={skill.spec_violations
+                  .filter((violation) => !isBlockingSpecViolation(violation))
+                  .join("; ")}
               >
-                Keep
-              </button>
-            </span>
-          );
-        })}
-        {skill.update_owner_ids.length > 0 && (
-          <span className="inline-flex items-center gap-1 rounded-full bg-bg-tertiary px-2 py-0.5 text-caption text-accent">
-            Update available
-          </span>
-        )}
-        {nonBlockingCount > 0 && (
-          <TooltipControl
-            content={skill.spec_violations.filter((v) => !isBlockingSpecViolation(v)).join("; ")}
-          >
-            <span className="inline-flex items-center gap-1 rounded-full bg-bg-tertiary px-2 py-0.5 text-caption text-text-tertiary">
-              {nonBlockingCount} spec note{nonBlockingCount !== 1 ? "s" : ""}
-            </span>
-          </TooltipControl>
-        )}
+                <span className="inline-flex items-center gap-1 rounded-full bg-bg-tertiary px-2 py-0.5 text-caption text-text-tertiary">
+                  {nonBlockingCount} spec note{nonBlockingCount !== 1 ? "s" : ""}
+                </span>
+              </TooltipControl>
+            )}
+          </div>
+        </div>
+
+        <InstalledSkillSourceLedger skill={skill} />
       </div>
 
       {blockingViolations.length > 0 && (
@@ -285,22 +242,6 @@ export function InstalledSkillHeader({
           <span>{blockingViolations.join("; ")}</span>
         </div>
       )}
-
-      <div className="text-small text-text-tertiary">
-        {metaSegments.join(" · ")}
-        {assistantEnabled && lastTest && (
-          <>
-            {metaSegments.length > 0 && " · "}
-            <button
-              type="button"
-              className="cursor-pointer border-0 bg-transparent p-0 font-inherit text-small text-text-tertiary hover:text-text-secondary hover:underline"
-              onClick={onOpenHistory}
-            >
-              {lastTestLabel(lastTest)}
-            </button>
-          </>
-        )}
-      </div>
-    </div>
+    </header>
   );
 }

@@ -1,13 +1,12 @@
 // ============================================================================
 // SkillPage - Full-page view of an installed skill: header (name, one
-// primary action, an assistant trigger, overflow menu, chips, metadata
-// line), the "where it lives" locations card, the SKILL.md card, and the
+// primary action, an assistant trigger, overflow menu, chips, source ledger),
+// the "where it lives" locations card, the SKILL.md card, and the
 // assistant panel in a right-hand overlay drawer.
 // ============================================================================
 
 import { useCallback, useEffect, useEffectEvent, useRef, useState } from "react";
 import { ArrowLeft } from "lucide-react";
-import { useSkillSnapshot } from "../../hooks/useSkillSnapshot";
 import { forkSkill, readInstalledSkillMd, writeInstalledSkillMd } from "../../lib/skill-api";
 import { lifecycleTargetForDeployment } from "../../lib/skill-lifecycle-target";
 import { isFeatureEnabled } from "../../lib/feature-flags";
@@ -17,7 +16,7 @@ import {
   ownDeployments,
   skillMdPathForDeployment,
 } from "@skill-studio/lib";
-import type { Deployment, InstalledSkill, SkillInvocationStats } from "@skill-studio/lib";
+import type { Deployment, InstalledSkill } from "@skill-studio/lib";
 import type { ActiveView } from "../../store/appStore";
 import { useAppStore } from "../../store/appStore";
 import { DiscardChangesDialog } from "./DiscardChangesDialog";
@@ -34,7 +33,6 @@ interface SkillPageProps {
   skill: InstalledSkill | null;
   /** The specific deployment the caller clicked, when known - see `ActiveView`'s "skill" kind. */
   deploymentPath?: string;
-  invocationStats: SkillInvocationStats | undefined;
   onBack: () => void;
   onRemoveComplete: () => void;
   /** The view the page was opened from, for the back button's label. */
@@ -174,14 +172,13 @@ function useSkillMdContent({ skill, skillMdPath, deployment, addToast }: UseSkil
 /**
  * Full-page view of an installed skill: `InstalledSkillHeader` (which owns
  * the back button, name, primary action, assistant trigger, overflow menu,
- * chips, and metadata line), then a single-column body - `SkillLocationsCard`
+ * chips, and source ledger), then a single-column body - `SkillLocationsCard`
  * and `SkillMarkdownCard` - with `SkillAssistantPanel` rendered inside a
  * `SkillAssistantDrawer` overlay.
  */
 export function SkillPage({
   skill,
   deploymentPath,
-  invocationStats,
   onBack,
   onRemoveComplete,
   from,
@@ -192,8 +189,6 @@ export function SkillPage({
   const clearSkillIntent = useAppStore((state) => state.clearSkillIntent);
   const isAssistantOpen = useAppStore((state) => state.isAssistantOpen);
   const setIsAssistantOpen = useAppStore((state) => state.setIsAssistantOpen);
-  const { snapshot } = useSkillSnapshot();
-
   const [isEditing, setIsEditing] = useState(false);
   const [isEditorDirty, setIsEditorDirty] = useState(false);
   const [isHistoryOpen, setIsHistoryOpen] = useState(false);
@@ -361,12 +356,6 @@ export function SkillPage({
         from={from}
         onBack={onBack}
         onRemoveComplete={onRemoveComplete}
-        invocationStats={invocationStats}
-        lastTest={snapshot?.last_test_by_skill[skill.name]}
-        onOpenHistory={() => {
-          setIsHistoryOpen(true);
-          setIsAssistantOpen(true);
-        }}
         isAssistantOpen={isAssistantOpen}
         onOpenAssistant={() => setIsAssistantOpen(true)}
         assistantTriggerRef={assistantTriggerRef}
@@ -421,6 +410,7 @@ export function SkillPage({
             if (skillMdPath) loadContent(skillMdPath, false);
           }}
           showHistory={isHistoryOpen}
+          onOpenHistory={() => setIsHistoryOpen(true)}
           onCloseHistory={() => setIsHistoryOpen(false)}
         />
       </SkillAssistantDrawer>
