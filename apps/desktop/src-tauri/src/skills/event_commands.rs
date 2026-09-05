@@ -159,9 +159,10 @@ fn validate_materialize_request(
     harness: &str,
     root: &str,
 ) -> Result<(), String> {
-    let display = AgentId::all()
-        .into_iter()
-        .find(|agent| agent.cli_name() == harness)
+    // Renderer sends the serde `AgentId` form (e.g. `"open-code"`), not the
+    // `cli_name()` form (`"opencode"`); the snapshot stores the display name.
+    let display = serde_json::from_str::<AgentId>(&format!("\"{harness}\""))
+        .ok()
         .map(|agent| agent.display_name().to_string())
         .unwrap_or_else(|| harness.to_string());
     let owns = snapshot.skills.iter().any(|skill| {
@@ -517,6 +518,76 @@ mod tests {
         let err =
             validate_materialize_request(&snapshot, "codex", "/home/.claude/skills").unwrap_err();
         assert!(err.contains("codex"), "{err}");
+    }
+
+    /// Like `fixture_materialize_snapshot` but records the deployment under
+    /// `agent_display` (e.g. `"OpenCode"`) instead of the default Claude Code
+    /// — the snapshot stores the display name on `Deployment.agent`, mirroring
+    /// the scanner's `root_label = id.display_name()` population.
+    fn fixture_materialize_snapshot_for_agent(root: &Path, agent_display: &str) -> SkillSnapshot {
+        let mut snapshot = fixture_materialize_snapshot(root);
+        snapshot.skills[0].deployments[0].agent = agent_display.to_string();
+        snapshot
+    }
+
+    /// Regression for the OpenCode namespace divergence (the original bug):
+    /// the renderer sends the serde form `"open-code"`
+    /// (`AgentId::OpenCode` under `#[serde(rename_all = "kebab-case")]`), but
+    /// `AgentId::OpenCode::cli_name()` is `"opencode"`. A `cli_name()`-based
+    /// bridge misses, falls back to the raw `"open-code"`, and compares it
+    /// against the snapshot's display name `"OpenCode"` — which never matches.
+    /// The guard must bridge through the serde namespace, not `cli_name()`.
+    #[test]
+    fn validate_materialize_request_accepts_opencode_serde_form() {
+        let root = PathBuf::from("/home/.config/opencode/skills");
+        let snapshot = fixture_materialize_snapshot_for_agent(&root, "OpenCode");
+        assert!(
+            validate_materialize_request(&snapshot, "open-code", "/home/.config/opencode/skills")
+                .is_ok(),
+            "the renderer's serde form `\"open-code\"` must match a recorded OpenCode whole-dir link"
+        );
+    }
+
+    /// Locks in the renderer (serde) form -> display name contract for every
+    /// first-class agent plus the agents whose display names diverge from
+    /// their kebab-case serde form in non-obvious ways. `AgentId::OpenCode` is
+    /// the one agent whose serde (`"open-code"`) and CLI (`"opencode"`) forms
+    /// diverge, so it is the case a `cli_name()`-based bridge would reject.
+    #[test]
+    fn validate_materialize_request_accepts_every_first_class_serde_form() {
+        let cases: &[(&str, &str)] = &[
+            ("claude-code", "Claude Code"),
+            ("open-code", "OpenCode"),
+            ("pi", "pi"),
+            ("cursor", "Cursor"),
+            ("grok-build", "Grok Build"),
+            ("amazon-q", "Amazon Q"),
+            ("roo-code", "Roo Code"),
+            ("codex", "Codex"),
+            ("pear-ai", "Pear AI"),
+            ("gemini-code", "Gemini Code"),
+        ];
+        for (harness, display) in cases {
+            let root = PathBuf::from(format!("/home/.{harness}/skills"));
+            let snapshot = fixture_materialize_snapshot_for_agent(&root, display);
+            assert!(
+                validate_materialize_request(&snapshot, harness, root.to_str().unwrap()).is_ok(),
+                "serde form `{harness}` should match a recorded `{display}` whole-dir link"
+            );
+        }
+    }
+
+    /// A valid serde form that resolves to a display name the snapshot doesn't
+    /// record must still be rejected — the fix maps to the right display name
+    /// but the snapshot-owner check still has to agree. Guards against a fix
+    /// that accepts any `AgentId` regardless of the recorded deployment agent.
+    #[test]
+    fn validate_materialize_request_rejects_opencode_when_snapshot_records_claude() {
+        let root = PathBuf::from("/home/.claude/skills");
+        let snapshot = fixture_materialize_snapshot(&root);
+        let err = validate_materialize_request(&snapshot, "open-code", "/home/.claude/skills")
+            .unwrap_err();
+        assert!(err.contains("open-code"), "{err}");
     }
 
     #[test]
