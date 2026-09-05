@@ -875,6 +875,7 @@ fn discover_into(
             .frontmatter
             .as_ref()
             .and_then(|f| f.name.clone())
+            .filter(|n| !n.trim().is_empty())
             .unwrap_or_else(|| dir_name.clone());
         let spec_violations = validate_skill(
             &dir_name,
@@ -1050,6 +1051,51 @@ mod tests {
         let plugin = found.plugin.as_ref().expect("plugin info set");
         assert_eq!(plugin.name, "sentry-toolkit");
         assert_eq!(plugin.harness, "Claude Code");
+    }
+
+    #[test]
+    fn plugin_cache_empty_frontmatter_name_falls_back_to_directory_name() {
+        // The plugin-skill branch in `discover_into` must apply the same
+        // empty/whitespace frontmatter-name fallback as the regular
+        // `build_candidate` path: `name: ""` / `name: "   "` deserialize to
+        // `Some("")` / `Some("   ")`, so without a `.filter` gate the
+        // directory-name fallback never runs and the blank string becomes the
+        // candidate name (and the downstream dedup key).
+        let tmp = tempfile::tempdir().unwrap();
+        let home = tmp.path();
+        for dir_name in ["empty-named", "whitespace-named"] {
+            let plugin_root = home.join(".claude/plugins/cache/marketplace/sentry-toolkit/1.0.0");
+            fs::create_dir_all(plugin_root.join(".claude-plugin")).unwrap();
+            fs::write(
+                plugin_root.join(".claude-plugin/plugin.json"),
+                r#"{"name": "sentry-toolkit", "version": "1.0.0"}"#,
+            )
+            .unwrap();
+            let skill_dir = plugin_root.join("skills").join(dir_name);
+            fs::create_dir_all(&skill_dir).unwrap();
+            let frontmatter_name = if dir_name == "empty-named" {
+                "\"\""
+            } else {
+                "\"   \""
+            };
+            fs::write(
+                skill_dir.join("SKILL.md"),
+                format!("---\nname: {frontmatter_name}\ndescription: does things.\n---\nBody.\n"),
+            )
+            .unwrap();
+        }
+
+        let candidates = discover_skill_candidates(home, &[]);
+        let mut names: Vec<_> = candidates
+            .iter()
+            .filter(|c| c.plugin.is_some())
+            .map(|c| c.name.clone())
+            .collect();
+        names.sort();
+        assert_eq!(
+            names,
+            vec!["empty-named".to_string(), "whitespace-named".to_string()]
+        );
     }
 
     #[test]
