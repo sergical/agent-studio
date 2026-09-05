@@ -487,14 +487,18 @@ fn read_tail_sample(path: &Path, offset: u64) -> Vec<u8> {
 /// line and by `file_budget`/`run_budget`. Returns the concatenated text of
 /// every *complete, `\n`-terminated* line read, the number of bytes consumed
 /// for those complete lines, and whether the read ended mid-drain of a line
-/// too big to fit this pass's budget (see below). A final line at true EOF
-/// with no trailing `\n` is never committed - it may still be being
-/// written - so the next refresh re-reads it from the same offset. A line
-/// that overruns `MAX_LINE_BYTES`, or that alone can't fit `file_budget`, is
-/// drained and skipped rather than buffered or parsed: `skip_to_newline`
-/// resumes an in-progress drain left over from a previous, budget-truncated
-/// pass, so a persistently oversized line still makes progress instead of
-/// being re-read from scratch (and truncated at the same point) forever.
+/// too big to fit this pass's budget (see below). An ordinary (in-budget)
+/// final line at true EOF with no trailing `\n` is never committed - it may
+/// still be being written - so the next refresh re-reads it from the same
+/// offset (and it will be parseable once complete). A line that overruns
+/// `MAX_LINE_BYTES`, or that alone can't fit `file_budget`, is drained and
+/// skipped rather than buffered or parsed - including an oversized line
+/// still unterminated at EOF: since an oversized line is unparseable even
+/// once complete, re-reading it would only loop on the same bytes forever,
+/// so it is committed (drained) and `skip_to_newline` resumes an in-progress
+/// drain left over from a previous, budget-truncated pass, so a persistently
+/// oversized line still makes progress instead of being re-read from
+/// scratch (and truncated at the same point) forever.
 /// `None` when the file can't be opened or seeked to; an empty read (nothing
 /// to do) still returns `Some(("", 0, false))`.
 fn read_transcript_from_offset(
@@ -603,10 +607,19 @@ fn read_transcript_from_offset(
         }
 
         if !terminated {
-            // Final line at true EOF with no trailing `\n`: don't commit it,
-            // the next refresh re-reads it from this same offset once it's
-            // complete.
-            consumed -= line_bytes;
+            // Final line at true EOF with no trailing `\n`. An ordinary
+            // (in-budget) line isn't committed so the next refresh re-reads
+            // it from this same offset once it's complete - and it *will* be
+            // parseable then. An oversized line, however, is never parsed
+            // even once complete (it's drained-and-skipped below), so
+            // reverting it would only re-read the same unparseable bytes
+            // forever and keep `incomplete` wedged. Mirror the budget branch:
+            // commit the drained bytes and resume draining next pass.
+            if line_bytes > MAX_LINE_BYTES as u64 {
+                skipping = true;
+            } else {
+                consumed -= line_bytes;
+            }
             break;
         }
 
@@ -1087,6 +1100,44 @@ mod tests {
         let stats = index.stats();
         assert_eq!(stats.len(), 1);
         assert_eq!(stats[0].skill, "write-tests");
+    }
+
+    #[test]
+    fn oversized_unterminated_final_line_does_not_stall() {
+        // An oversized final line (well over MAX_LINE_BYTES) with NO trailing
+        // `\n` - an aborted/in-progress write frozen at EOF - must be
+        // drained-and-skipped in one pass, not reverted and re-read forever.
+        let tmp = tempfile::tempdir().unwrap();
+        let projects_dir = tmp.path().join("projects");
+        let session_dir = projects_dir.join("-my-project");
+        fs::create_dir_all(&session_dir).unwrap();
+        let path = session_dir.join("session.jsonl");
+        let content = vec![b'x'; MAX_LINE_BYTES + 1024];
+        fs::write(&path, &content).unwrap();
+
+        let mut index = SkillInvocationIndex::default();
+        let first = index.refresh(&projects_dir);
+        // The oversized line is drained (consumed == content.len()), so the
+        // file fully advances and is NOT left incomplete.
+        assert!(!first.incomplete);
+        let entry = index.files.get(&path).unwrap();
+        assert_eq!(entry.parsed_bytes as usize, content.len());
+        assert!(
+            entry.skipping_line,
+            "oversized unterminated tail resumes draining next pass"
+        );
+        // Oversized lines are never parsed, so nothing is indexed.
+        assert!(index.stats().is_empty());
+
+        // Unchanged file: the cache fast-path skips it; no re-read, no stall.
+        let second = index.refresh(&projects_dir);
+        assert_eq!(second.files_reparsed, 0);
+        assert!(!second.incomplete);
+        assert_eq!(
+            index.files.get(&path).unwrap().parsed_bytes as usize,
+            content.len()
+        );
+        assert!(index.stats().is_empty());
     }
 
     #[test]
