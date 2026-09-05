@@ -26,6 +26,7 @@ import { ProjectDirectorySelect } from "./ProjectDirectorySelect";
 import { ScopeToggleGroup } from "./ScopeToggleGroup";
 import { getAddMethodDefaults, installSkill, removeSkill, updateSkill } from "../../lib/skill-api";
 import { useAppStore } from "../../store/appStore";
+import { resolveInstallScope } from "./install-scope";
 import type { AgentId, InstallScope, SkillWithStatus } from "@skill-studio/lib";
 
 const ACTION_BUTTON_CLASS =
@@ -60,6 +61,16 @@ export function InstallControls({
   // Project directories the user has pointed at for project-scoped installs
   const availableProjects = useAppStore((state) => state.userAddedProjects);
   const addProject = useAppStore((state) => state.addProject);
+
+  // For an installed skill, the remove/update scope is derived from its own
+  // `installed_info.deployments` - never user input - so there is no state to
+  // go stale on a remount. The previous design kept a single `installScope`
+  // state defaulted to "global" that only the not-installed branch's toggle
+  // ever changed, so a drawer reopened over a project-scoped skill reset to
+  // "global" and silently removed/updated the wrong deployment. The
+  // not-installed branch below still uses `installScope`/`selectedProject`
+  // for its install form; the installed branch reads `installedScope` here.
+  const installedScope = skill.is_installed ? resolveInstallScope(skill) : null;
 
   useEffect(() => {
     let cancelled = false;
@@ -136,10 +147,12 @@ export function InstallControls({
 
   const handleRemove = () => {
     setIsRemoving(true);
-    // A `Promise.finally` call, not a `try/finally` statement: `removeSkill`
-    // throwing (no catch here, same as before) still runs the cleanup
-    // before the rejection propagates.
-    return removeSkill(skill.name, installScope === "global" ? null : selectedProject)
+    // `installedScope` is non-null whenever the installed branch (the only
+    // place Remove is rendered) is shown: derive the project path from the
+    // skill's own deployments instead of the install-form state, so a
+    // reopened drawer targets the deployment's real scope.
+    const projectPath = installedScope?.scope === "project" ? installedScope.projectPath : null;
+    return removeSkill(skill.name, projectPath)
       .then((result) => {
         if (result.success) {
           onRemoveComplete();
@@ -155,7 +168,12 @@ export function InstallControls({
   // optimize this component (it doesn't support `finally` clauses yet).
   const handleUpdate = () => {
     setIsUpdating(true);
-    return updateSkill(skill.name, installScope === "global")
+    // Mirror `handleRemove`: target the deployment's real scope, derived from
+    // `installed_info.deployments`, instead of the install-form state that
+    // resets to "global" on a remount.
+    const isGlobal = !installedScope || installedScope.scope === "global";
+    const projectPath = isGlobal ? null : installedScope.projectPath;
+    return updateSkill(skill.name, isGlobal, projectPath)
       .then((result) => {
         if (result.success) {
           onInstallComplete({ success: true, skillName: skill.name });

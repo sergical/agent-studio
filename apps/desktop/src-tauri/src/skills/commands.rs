@@ -73,6 +73,24 @@ pub(crate) fn skills_sh_remove_args(skill_name: &str, global: bool) -> Vec<Strin
     args
 }
 
+/// The `npx skills update <name> [--global]` argv `update_skill` runs for a
+/// skills.sh skill - pulled out (mirroring `skills_sh_remove_args`) so the
+/// scope selection is testable without shelling out. `global` is the
+/// *effective* global flag: false for a project-scoped update, where
+/// `update_skill` instead drives the CLI with `current_dir(project_path)` and
+/// omits `--global`.
+pub(crate) fn skills_sh_update_args(skill_name: &str, global: bool) -> Vec<String> {
+    let mut args = vec![
+        "skills".to_string(),
+        "update".to_string(),
+        skill_name.to_string(),
+    ];
+    if global {
+        args.push("--global".to_string());
+    }
+    args
+}
+
 /// The `npx -y @sentry/dotagents add <source> --name <name> [--ref <ref>]`
 /// argv - the plain (non-re-pinning) shape of what `dotagents_update_args`
 /// builds for a named entry, reused by `skill_fork::unfork_skill` to
@@ -348,22 +366,48 @@ mod tests {
     }
 
     #[test]
-    fn validate_remove_project_path_accepts_a_known_project() {
-        let dep_dir = std::path::Path::new("/repo/.claude/skills/foo");
-        let mut snapshot = fixture_snapshot(dep_dir, None);
-        snapshot.skills[0].deployments[0].project_path = Some("/repo".to_string());
-
-        assert!(validate_remove_project_path(Some(&snapshot), "foo", "/repo").is_ok());
+    fn skills_sh_update_args_selects_global_flag() {
+        // Global update: `npx skills update <name> --global`.
+        assert_eq!(
+            skills_sh_update_args("foo", true),
+            vec!["skills", "update", "foo", "--global"]
+        );
+        // Project-scoped update: no `--global`; `update_skill` drives the CLI
+        // with `current_dir(project_path)` instead.
+        assert_eq!(
+            skills_sh_update_args("foo", false),
+            vec!["skills", "update", "foo"]
+        );
     }
 
     #[test]
-    fn validate_remove_project_path_rejects_a_path_not_in_the_snapshot() {
+    fn validate_project_deployment_path_accepts_a_known_project() {
         let dep_dir = std::path::Path::new("/repo/.claude/skills/foo");
         let mut snapshot = fixture_snapshot(dep_dir, None);
         snapshot.skills[0].deployments[0].project_path = Some("/repo".to_string());
 
-        let err = validate_remove_project_path(Some(&snapshot), "foo", "/elsewhere").unwrap_err();
+        assert!(validate_project_deployment_path(Some(&snapshot), "foo", "/repo").is_ok());
+    }
+
+    #[test]
+    fn validate_project_deployment_path_rejects_a_path_not_in_the_snapshot() {
+        let dep_dir = std::path::Path::new("/repo/.claude/skills/foo");
+        let mut snapshot = fixture_snapshot(dep_dir, None);
+        snapshot.skills[0].deployments[0].project_path = Some("/repo".to_string());
+
+        let err =
+            validate_project_deployment_path(Some(&snapshot), "foo", "/elsewhere").unwrap_err();
         assert!(err.contains("/elsewhere"), "{err}");
+    }
+
+    #[test]
+    fn validate_project_deployment_path_rejects_when_the_snapshot_is_missing() {
+        // No snapshot yet (the refresh thread hasn't produced one) must not be
+        // treated as "any path is fine": the project path is unverified, the
+        // same guard that keeps a remove/update from landing on the desktop
+        // process's own cwd.
+        let err = validate_project_deployment_path(None, "foo", "/repo").unwrap_err();
+        assert!(err.contains("/repo"), "{err}");
     }
 
     #[test]
@@ -775,11 +819,14 @@ fn parse_skill_source(source: &str) -> (String, Option<String>) {
 }
 
 /// Validates `project_path` against `skill_name`'s known project-scope
-/// deployments in `snapshot` - `remove_skill`'s guard against running the CLI
-/// (or a fork's directory delete) somewhere other than the process cwd,
-/// which is what let "Remove from <project>" silently act on the desktop
-/// app's own working directory instead of the project.
-pub(crate) fn validate_remove_project_path(
+/// deployments in `snapshot` - the guard `remove_skill` and `update_skill`
+/// both use against running the CLI (or a fork's directory delete) somewhere
+/// other than the deployment's real project directory. The snapshot is the
+/// source of truth here (not the lock file) because a forked skill could have
+/// a stale lock entry pointing at a path the user has since moved, which is
+/// what let "Remove from <project>" silently act on the desktop app's own
+/// working directory instead of the project.
+pub(crate) fn validate_project_deployment_path(
     snapshot: Option<&skill_refresh::SkillSnapshot>,
     skill_name: &str,
     project_path: &str,
@@ -821,7 +868,7 @@ pub async fn remove_skill(
 
     let snapshot = refresh_state.snapshot.read().ok().and_then(|g| g.clone());
     if let Some(path) = &project_path {
-        validate_remove_project_path(snapshot.as_ref(), &skill_name, path)?;
+        validate_project_deployment_path(snapshot.as_ref(), &skill_name, path)?;
     }
     let global = project_path.is_none();
 
@@ -1273,22 +1320,42 @@ fn dotagents_update_args(
 /// re-runs the wildcard sync for a skill with no `[[skills]]` row), `npx
 /// skills update` for a skills.sh skill. Manual/plugin skills have no owning
 /// CLI to update through, so they're rejected up front.
+///
+/// `project_path` targets a project-scoped update: when `Some`, it's
+/// validated against the snapshot (the skill must have a project deployment
+/// at that path) and the CLI runs with that directory as its working
+/// directory and without `--global` - mirroring `remove_skill`. When `None`,
+/// a global update runs with `--global` (the previous behavior). Project
+/// scope only applies to skills.sh skills; a dotagents skill has no project
+/// deployment, so a `Some` path is rejected by the validation before any CLI
+/// runs.
 #[tauri::command]
 pub async fn update_skill(
     skill_name: String,
     global: bool,
+    project_path: Option<String>,
     app: tauri::AppHandle,
     refresh_state: tauri::State<'_, SkillRefreshState>,
     update_check_state: tauri::State<'_, skill_update_check::UpdateCheckState>,
 ) -> Result<InstallResult, String> {
     let home = dirs::home_dir().ok_or("Could not find home directory")?;
     let snapshot = refresh_state.snapshot.read().ok().and_then(|g| g.clone());
+
+    // A project-scoped update targets the project deployment, not the global
+    // ledger: validate the path against the snapshot (so the CLI can never
+    // land on the desktop process's own cwd) and drop `--global` for it.
+    // Mirrors `remove_skill`'s project-path handling.
+    let update_global = global && project_path.is_none();
+    if let Some(path) = &project_path {
+        validate_project_deployment_path(snapshot.as_ref(), &skill_name, path)?;
+    }
+
     let source_kind = snapshot
         .as_ref()
         .and_then(|s| s.skills.iter().find(|s| s.name == skill_name))
         .map(|s| s.source_kind);
 
-    let (tool, mut args): (&str, Vec<String>) = match source_kind {
+    let (tool, args): (&str, Vec<String>) = match source_kind {
         Some(SourceKind::Manual) | Some(SourceKind::Plugin) => {
             return Err("Update is not available for manually installed skills".to_string());
         }
@@ -1314,24 +1381,21 @@ pub async fn update_skill(
             ("dotagents", args)
         }
         // SkillsSh, or a skill not found in the snapshot yet - fall back to
-        // the CLI that owns everything else.
+        // the CLI that owns everything else. A project-scoped update keeps
+        // `--global` off and runs from `project_path` below.
         _ => (
             "skills-sh",
-            vec![
-                "skills".to_string(),
-                "update".to_string(),
-                skill_name.clone(),
-            ],
+            skills_sh_update_args(&skill_name, update_global),
         ),
     };
 
-    if tool == "skills-sh" && global {
-        args.push("--global".to_string());
-    }
-
     let npx_command = format!("npx {}", args.join(" "));
-    let output = Command::new("npx")
-        .args(&args)
+    let mut command = Command::new("npx");
+    command.args(&args);
+    if let Some(path) = &project_path {
+        command.current_dir(path);
+    }
+    let output = command
         .output()
         .map_err(|e| format!("Failed to execute npx: {}", e))?;
 
