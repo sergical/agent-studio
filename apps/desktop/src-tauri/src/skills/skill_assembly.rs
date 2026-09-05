@@ -214,9 +214,9 @@ pub fn assemble_installed_skills(
     skills
 }
 
-/// Attach a canonical Universal owner's identity to verified dependent links.
-/// Linked deployments stay read-only so lifecycle actions must target the
-/// canonical deployment that owns them.
+/// Assign the canonical Universal owner's identity to verified dependent links.
+/// The links remain read-only. Lifecycle actions must target their canonical
+/// deployment.
 pub(crate) fn propagate_verified_linked_owners(skills: &mut [InstalledSkill]) {
     let canonical_owners: Vec<_> = skills
         .iter()

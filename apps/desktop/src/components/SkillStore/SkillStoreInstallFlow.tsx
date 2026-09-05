@@ -33,7 +33,7 @@ interface SkillStoreInstallFlowProps {
   onInstallComplete: (result: SkillInstallCompletion) => void;
 }
 
-/** Configures and starts a not-installed skills.sh skill deployment. */
+/** Configures and starts a skills.sh install for a skill that is not installed. */
 export function SkillStoreInstallFlow({
   skill,
   resolvedTopSource,
@@ -103,7 +103,7 @@ export function SkillStoreInstallFlow({
     if (!repoSource) {
       onInstallComplete({
         success: false,
-        error: `No GitHub repository is available for ${skill.name}`,
+        error: `Cannot install ${skill.name}: no GitHub repository is recorded.`,
         skillName: skill.name,
       });
       setIsInstalling(false);
@@ -136,7 +136,8 @@ export function SkillStoreInstallFlow({
       .catch((error) => {
         onInstallComplete({
           success: false,
-          error: error instanceof Error ? error.message : "Unknown error",
+          error:
+            error instanceof Error ? error.message : "Install failed without an error message.",
           skillName: skill.name,
         });
       })

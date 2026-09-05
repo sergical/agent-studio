@@ -79,9 +79,9 @@ export function SkillLocationsCard({ skill, onCompareCopies }: SkillLocationsCar
   const handleSetInvocation = (file: InvocationFile, policy: InvocationPolicy) => {
     if (!file.editable || savingFile) return;
     setSavingFile(file.path);
-    // Only the global Universal folder can still need a fork first - a managed
-    // project Universal folder or managed copy is `editable: false` and never
-    // reaches here (see `fileEditability`).
+    // Only the global Universal folder can need a fork before editing.
+    // `fileEditability` prevents managed Project folders and copies from
+    // reaching this branch.
     const isManaged = skill.source_kind === "dotagents" || skill.source_kind === "skills-sh";
     const forkIfNeeded =
       isManaged && file.kind === "shared"

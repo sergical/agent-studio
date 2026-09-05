@@ -58,10 +58,10 @@ export function SkillLocationCell({ skill }: SkillLocationCellProps) {
   return (
     <span className="flex min-w-0 items-center gap-1 overflow-hidden">
       {truth && (
-        <TooltipControl content="Universal folder · source of truth">
+        <TooltipControl content="Universal folder · canonical deployment">
           <span
             className={`${LOCATION_CHIP_CLASS} text-text-primary`}
-            aria-label="Universal folder, source of truth"
+            aria-label="Universal folder, canonical deployment"
           >
             <HarnessIcon harness="shared" size={13} />
           </span>

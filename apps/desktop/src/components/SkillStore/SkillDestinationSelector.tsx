@@ -24,7 +24,7 @@ interface SkillDestinationSelectorProps {
   perHarnessDisabledReason?: string;
 }
 
-/** Selects the independent install destination and exact Per harness copy targets. */
+/** Selects Universal or the harness folders that receive independent copies. */
 export function SkillDestinationSelector({
   destination,
   harnesses,
@@ -63,13 +63,13 @@ export function SkillDestinationSelector({
       )}
       {destination === "universal" ? (
         <div className="flex flex-col gap-1 text-caption text-text-tertiary">
-          <p className="m-0">One canonical deployment for every harness that reads Universal.</p>
+          <p className="m-0">One Universal deployment, visible to every enabled reader.</p>
           <p className="m-0 font-mono">{universalDestinationPath(scope)}</p>
         </div>
       ) : (
         <div className="flex flex-col gap-1">
           <p className="m-0 text-caption text-text-tertiary">
-            Independent copies. Available with the Copy method only.
+            Writes a separate copy to each selected harness. Requires the Copy method.
           </p>
           {PER_HARNESS_DESTINATIONS.map((row) => (
             <div

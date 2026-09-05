@@ -193,7 +193,7 @@ export function useLocationActions(
         runWithErrorToast("Couldn't reinstall", async () => {
           const source = parseSkillSource(skill.source);
           if ("error" in source || source.kind !== "github" || !source.repo) {
-            throw new Error(`No GitHub repository is available for ${skill.name}`);
+            throw new Error(`Cannot reinstall ${skill.name}: no GitHub repository is recorded.`);
           }
           await addSkill({
             source: { ...source, path: source.path ?? skill.name, skillName: skill.name },

@@ -445,7 +445,7 @@ export async function restoreSkillEvent(eventId: string, force: boolean): Promis
 /**
  * The Locations card's entry point for disabling/enabling one skill under
  * one harness that reads from the shared root. Refuses when `harness`'s root
- * is still a whole-dir link to the Universal folder - call
+ * is still a whole-dir link to the Universal folder. Call
  * `materializeHarnessRoot` first (the Convert dialog).
  */
 export async function setSharedHarnessSkillEnabled(

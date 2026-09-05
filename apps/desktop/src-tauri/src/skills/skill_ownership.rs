@@ -21,8 +21,7 @@ use super::skill_deployment::{
 use super::skill_dto::InstallScope;
 use super::skill_fork_registry::CopyDeploymentRecord;
 
-/// Who is allowed to mutate a deployment. `None` / read-only kinds must not
-/// be guessed into a CLI owner.
+/// The owner allowed to change a deployment. Read-only kinds use `None`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(rename_all = "kebab-case")]
 pub enum LifecycleOwnerKind {
@@ -206,8 +205,8 @@ pub fn classify_lifecycle_owner(
     }
 
     // Compatibility: a Universal root next to agents.toml/lock without a
-    // named row used to be classified Dotagents. That is ambiguous for
-    // mutation - keep the display kind, refuse owner-wide actions.
+    // named row was classified as Dotagents. Its owner is ambiguous, so keep
+    // the display kind but refuse owner-wide actions.
     if candidate.shared_root_has_lock_entry {
         return (LifecycleOwnerKind::Ambiguous, None, SourceKind::Dotagents);
     }

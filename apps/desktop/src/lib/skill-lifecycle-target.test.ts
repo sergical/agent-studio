@@ -241,7 +241,7 @@ describe("lifecycleTargetForSkill", () => {
     expect(preview.managedDeployments.map(({ id }) => id)).toEqual(["canonical"]);
     expect(preview.linkedDeployments.map(({ id }) => id)).toEqual(["linked"]);
     expect(skillRemovalDescription(preview)).toBe(
-      "The selected managed deployment group will remove 1 deployment and 1 verified dependent link. Independent copies outside this group remain. This cannot be undone.",
+      "This removes 1 managed deployment and 1 verified dependent link. Independent copies outside this group remain. This cannot be undone.",
     );
   });
 

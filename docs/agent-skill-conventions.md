@@ -55,23 +55,22 @@ to it. Config-based controls for Codex and OpenCode apply to one harness.
 
 ## Scope and destination
 
-Scope and destination are separate choices:
+Choose a scope and a destination separately:
 
-| Choice      | Values                 | Meaning                                                                                                                                      |
-| ----------- | ---------------------- | -------------------------------------------------------------------------------------------------------------------------------------------- |
-| Scope       | Global, Project        | Global writes below the user's home directory. Project writes below one selected project.                                                    |
-| Destination | Universal, Per harness | Universal creates one canonical `.agents/skills/<name>` deployment. Per harness creates an independent copy in each selected harness folder. |
+| Choice      | Values                 | Meaning                                                                                                                                   |
+| ----------- | ---------------------- | ----------------------------------------------------------------------------------------------------------------------------------------- |
+| Scope       | Global, Project        | Global writes below the user's home directory. Project writes below one selected project.                                                 |
+| Destination | Universal, Per harness | Universal writes one canonical deployment to `.agents/skills/<name>`. Per harness writes a separate copy to each selected harness folder. |
 
-Universal paths are `~/.agents/skills` for Global scope and `.agents/skills` for
-Project scope. Codex, OpenCode, pi, Cursor, and Grok Build read these paths without
-another deployment. Claude Code can use a per-skill link to the same Universal
-deployment. These readers and links control visibility. They are not additional
-install destinations.
+Global Universal deployments go in `~/.agents/skills`. Project Universal deployments
+go in `.agents/skills`. Codex, OpenCode, pi, Cursor, and Grok Build read these paths
+directly. Claude Code can use a per-skill link to the same deployment. Selecting these
+readers changes visibility. It does not create more deployments.
 
 Per harness never writes `.agents/skills` and never creates links back to Universal.
-Each selected harness gets its own directory copy. Those copies can drift and their
-lifecycle stays independent. Only the Copy method supports Per harness. The
-dotagents and skills.sh methods, including Store installs, support Universal only.
+Each selected harness gets its own directory copy. Each copy has an independent
+lifecycle and can differ from the others. Only the Copy method supports Per harness.
+dotagents and skills.sh, including Store installs, support Universal only.
 
 ### Parking (disable globally, for every harness)
 
@@ -124,7 +123,7 @@ while every other harness keeps seeing it, via that harness's own mechanism:
 | pi          | `.pi/skills/`                         | `~/.pi/agent/skills/`                          | root `.md` files with valid frontmatter count too                                                               |
 | Cursor      | `.cursor/skills/`                     | `~/.cursor/skills/`                            | also reads .agents, .claude and .codex skill dirs; plugins in ~/.cursor/plugins/{cache,local}                   |
 | Grok Build  | `.grok/skills/`                       | `~/.grok/skills/`                              | reads ~/.agents/skills; plugins in ~/.grok/plugins, marketplaces in ~/.grok/config.toml [[marketplace.sources]] |
-| Universal   | `.agents/skills/`                     | `~/.agents/skills/`                            | Canonical deployment; Codex, OpenCode, pi, Cursor and Grok Build read it natively; Claude Code needs a symlink  |
+| Universal   | `.agents/skills/`                     | `~/.agents/skills/`                            | Canonical deployment. Codex, OpenCode, pi, Cursor and Grok Build read it directly. Claude Code needs a symlink. |
 | parked      | n/a (global only)                     | `~/.agents/skills-parked/`                     | Skill Studio's own root for parked (disabled globally) skills - see "Parking" above; excluded from coverage     |
 
 ## Local data sources Skill Studio reads
@@ -198,25 +197,24 @@ record and snapshot - the frontend confirms this destructively first.
 ## Lifecycle targets and safety
 
 Each discovered deployment has a stable `deployment_id`, destination, backing
-relationship, owner kind, and mutability. Mutating commands receive either one exact
-`deployment_id` or one explicit `owner_id`. They do not infer a target from a skill
-name when more than one mutable owner exists in the selected scope. Before a write,
-the backend reloads the current snapshot and checks that the id still matches the
-path, scope, and destination.
+relationship, owner kind, and mutability. A mutating command receives one exact
+`deployment_id` or one explicit `owner_id`. If a scope has more than one mutable
+owner, the command does not select one by skill name. Before writing, the backend
+reloads the snapshot and confirms that the id still matches the path, scope, and
+destination.
 
-Owner-wide update and removal affect only deployments with that owner id. Global
-and Project ledgers have different owner ids. A Per harness Copy deployment has its
-own lifecycle and does not inherit a nearby Universal ledger. Park and unpark only
-accept the Global Universal canonical deployment. They do not move Project
-deployments or Per harness copies.
+An owner-wide update or removal affects only deployments with that owner id. Global
+and Project ledgers have different owner ids. A Per harness Copy has its own lifecycle
+and does not inherit a Universal ledger. Park and unpark accept only the canonical
+Global Universal deployment. They do not move Project deployments or Per harness
+copies.
 
-Skill Studio permits lifecycle writes for deployments owned by skills.sh,
-dotagents, Copy, or a fork. Plugin, in-repo, manual, wildcard-dotagents, and
-ambiguous deployments are read-only. Lifecycle commands refuse these deployments
-instead of guessing an owner or deleting a discovered path. Source reads, update
-checks, plugin-cache enumeration, and GitHub fetches remain read-only. Managed
-updates and removals run the owning CLI rather than editing its lock or manifest
-files directly.
+Skill Studio can change deployments owned by skills.sh, dotagents, Copy, or a fork.
+Plugin, in-repo, manual, wildcard-dotagents, and ambiguous deployments are read-only.
+Lifecycle commands reject read-only deployments. They do not guess an owner or
+delete a path found during discovery. Source reads, update checks, plugin-cache
+enumeration, and GitHub fetches do not write to those sources. Managed updates and
+removals run the owning CLI instead of editing its lock or manifest files.
 
 ### Compatibility identifiers
 
@@ -239,13 +237,13 @@ methods installs it: **dotagents** (`npx -y @sentry/dotagents add`, tracked in
 `agents.toml`/`agents.lock`), **skills.sh** (tracked in `.skill-lock.json`;
 GitHub sources only), or **Copy** (untracked, with no update ledger).
 
-dotagents and skills.sh always install one Universal deployment. A skills.sh
-Universal install uses its Universal target and does not list a native Universal
-reader such as Codex as an install target. It can also request a Claude Code link.
-Copy can install either one Universal deployment or independent Per harness copies.
-For Per harness, the backend copies the fetched source separately into each selected
-harness path and refuses an empty selection. Project scope applies the same model
-below the selected project. Trials apply to Universal installs only.
+dotagents and skills.sh always install one Universal deployment. A skills.sh install
+uses its Universal target. It does not use a direct reader such as Codex as a proxy
+target. The install can also request a Claude Code link. Copy can install one
+Universal deployment or separate Per harness copies. For Per harness, the backend
+copies the fetched source into each selected harness path and rejects an empty
+selection. Project scope uses the same layout below the selected project. Trials are
+available only for Universal installs.
 
 ## Packs
 

@@ -133,7 +133,7 @@ export interface ScopeGroup {
   parkedScope: boolean;
 }
 
-/** One row of the Invocation footer - a Universal folder or a copy/plugin, each with its own SKILL.md. */
+/** One Invocation footer row for a deployment with its own SKILL.md. */
 export interface InvocationFile {
   scopeLabel: string;
   kind: "shared" | "copy" | "plugin";
@@ -144,7 +144,7 @@ export interface InvocationFile {
   tip: string;
   chip: "plugin" | null;
   invocation: InvocationPolicy;
-  /** False for a plugin file, a managed project Universal folder, or a managed copy - see `fileEditability`. */
+  /** False for a plugin file, managed Project Universal folder, or managed copy. */
   editable: boolean;
   /** Set alongside `editable: false` - why the segmented control is disabled. */
   disabledReason?: string;
@@ -157,10 +157,10 @@ export interface InvocationFile {
  * provenance is its own `plugin` field when set, otherwise the whole skill's
  * `source_kind` (there is no finer-grained per-deployment provenance -
  * see skill-list-filter.ts's "'plugin' reaches outside a skill's own
- * source_kind" note). The global Universal folder is always editable - a
- * managed one forks first, the same rule the SKILL.md editor uses - but a
- * managed project Universal folder or a managed copy is not: editing it in
- * place would be overwritten on the next sync/update.
+ * source_kind" note). The global Universal folder is always editable. A
+ * managed deployment forks before editing, as in the SKILL.md editor. Managed
+ * Project Universal folders and managed copies are not editable because the
+ * next sync or update would overwrite the changes.
  */
 function fileEditability(
   kind: "shared" | "copy" | "plugin",
@@ -361,7 +361,7 @@ function driftCondition(deployment: Deployment, ctx: GroupContext): Condition {
   };
 }
 
-/** Conditions for one harness deployment - a per-skill link, a copy, or a plugin (never the Universal folder itself). */
+/** Conditions for one harness link, copy, or plugin deployment. */
 function deploymentConditions(deployment: Deployment, ctx: GroupContext): Condition[] {
   const out: Condition[] = [];
   const label = harnessLabelFromAgent(deployment.agent);
@@ -760,7 +760,7 @@ export function promoteToGlobal(groups: ScopeGroup[]): PromoteSource | null {
   return { path: source.path, agents };
 }
 
-/** The Invocation footer's rows: the Universal folder (if any) plus every copy/plugin - links read the shared file, so they never get one of their own. */
+/** Build Invocation rows for the Universal folder and each copy or plugin. Links share the Universal SKILL.md and do not get a row. */
 export function buildInvocationFiles(
   groups: ScopeGroup[],
   skill: InstalledSkill,

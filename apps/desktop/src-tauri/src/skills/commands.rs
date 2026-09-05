@@ -1708,7 +1708,10 @@ fn remove_dotagents_deployment_with(
     if deployment.destination != SkillDestination::Universal
         || !matches!(deployment.backing, BackingRelationship::Canonical)
     {
-        return Err("dotagents removal requires its canonical Universal deployment".to_string());
+        return Err(
+            "Cannot remove with dotagents: the selected target is not its canonical Universal deployment"
+                .to_string(),
+        );
     }
     let canonical_path = std::fs::canonicalize(&deployment.path)
         .map_err(|error| format!("Failed to resolve {}: {error}", deployment.path))?;

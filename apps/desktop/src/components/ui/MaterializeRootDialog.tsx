@@ -78,12 +78,10 @@ export function MaterializeRootDialog({
         <DialogHeader>
           <DialogTitle>Convert {rootLabel} to per-skill links?</DialogTitle>
           <DialogDescription>
-            {harnessLabel} currently reads every skill in the Universal folder through one link at{" "}
-            {rootLabel}. Converting replaces that one link with a separate symlink per skill,
-            pointing at the same Universal folder. This is the layout that the skills.sh CLI creates
-            in symlink mode. Nothing is copied, and each skill can then be switched on or off for{" "}
-            {harnessLabel} on its own. This change is recorded in Activity and can be undone from
-            there.
+            The link at {rootLabel} lets {harnessLabel} read every skill in the Universal folder.
+            Converting replaces it with one symlink per skill. The symlinks still point to the
+            Universal folder, so no files are copied. You can then switch each skill on or off for{" "}
+            {harnessLabel}. Activity records this change and provides the undo action.
           </DialogDescription>
         </DialogHeader>
         <DialogFooter>

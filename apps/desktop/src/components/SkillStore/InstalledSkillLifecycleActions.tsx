@@ -117,7 +117,7 @@ export function InstalledSkillLifecycleActions({
         } else {
           onInstallComplete({
             success: false,
-            error: result.error ?? "Update did not complete",
+            error: result.error ?? "Update command failed without an error message.",
             skillName: skill.name,
           });
         }
@@ -125,7 +125,7 @@ export function InstalledSkillLifecycleActions({
       .catch((error) => {
         onInstallComplete({
           success: false,
-          error: error instanceof Error ? error.message : "Unknown error",
+          error: error instanceof Error ? error.message : "Update failed without an error message.",
           skillName: skill.name,
         });
       })

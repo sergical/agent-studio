@@ -1,10 +1,9 @@
 // ============================================================================
-// UniversalVisibilitySelector - which harnesses can see a new Universal
-// deployment. The Universal folder (~/.agents/skills) is one canonical
-// deployment; the installed harnesses that read it hang under it, each
-// with its own off switch (pi, Cursor and Grok Build have no per-skill
-// disable, so theirs is checked and inert). Claude Code sits beside the
-// Universal block because it needs its own per-skill symlink.
+// UniversalVisibilitySelector shows which harnesses can see a new Universal
+// deployment. Installed harnesses that read ~/.agents/skills appear below
+// that folder. pi, Cursor, and Grok Build have no per-skill disable, so their
+// switches stay on. Claude Code appears separately because it needs a
+// per-skill symlink.
 // ============================================================================
 
 import { Folder } from "lucide-react";
@@ -19,7 +18,7 @@ import type { AgentId, InstallScope } from "@skill-studio/lib";
 
 const HARNESS_LABEL = new Map<AgentId, string>(UNIVERSAL_VISIBILITY_HARNESSES);
 
-const NO_SWITCH_CAPTION = "Always reads the Universal folder; no per-skill off switch";
+const NO_SWITCH_CAPTION = "Always reads the Universal folder. No per-skill off switch.";
 
 const ROW_CLASS = "grid h-9 items-center gap-2 rounded-sm px-2 hover:bg-bg-hover";
 

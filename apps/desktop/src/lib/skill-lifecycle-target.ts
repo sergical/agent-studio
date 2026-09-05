@@ -195,7 +195,7 @@ export function skillUpdateAvailability(
   return { available: true, target: { owner_id: ownerId } };
 }
 
-/** Run each owner update explicitly and retain every failure for truthful UI reporting. */
+/** Run each owner update and return every failure for the UI. */
 export async function updateSkillOwners(
   skill: Pick<InstalledSkill, "update_owner_ids" | "update_owners">,
   updateOwner: (target: LifecycleTarget) => Promise<{ success: boolean; error?: string }>,
@@ -211,11 +211,16 @@ export async function updateSkillOwners(
       // react-doctor-disable-next-line react-doctor/async-await-in-loop -- concurrent owner CLIs can race on the same ledger and are rejected by the backend mutation lock
       const result = await updateOwner(target);
       if (result.success) succeeded += 1;
-      else failures.push({ ownerId, message: result.error ?? "Update did not complete" });
+      else {
+        failures.push({
+          ownerId,
+          message: result.error ?? "Update command failed without an error message.",
+        });
+      }
     } catch (error) {
       failures.push({
         ownerId,
-        message: error instanceof Error ? error.message : "Unknown error",
+        message: error instanceof Error ? error.message : "Update failed without an error message.",
       });
     }
   }
@@ -268,11 +273,11 @@ export function skillDeploymentRemovalPreview(
   };
 }
 
-/** Describe only the owner group and verified links that the removal target controls. */
+/** Describe the owner group and verified links that the target removes. */
 export function skillRemovalDescription(preview: SkillRemovalPreview): string {
   const deploymentCount = preview.managedDeployments.length;
   const linkCount = preview.linkedDeployments.length;
-  return `The selected managed deployment group will remove ${deploymentCount} deployment${deploymentCount === 1 ? "" : "s"} and ${linkCount} verified dependent link${linkCount === 1 ? "" : "s"}. Independent copies outside this group remain. This cannot be undone.`;
+  return `This removes ${deploymentCount} managed deployment${deploymentCount === 1 ? "" : "s"} and ${linkCount} verified dependent link${linkCount === 1 ? "" : "s"}. Independent copies outside this group remain. This cannot be undone.`;
 }
 
 /** The Global Universal folder park/unpark may move. Project and Per harness stay independent. */

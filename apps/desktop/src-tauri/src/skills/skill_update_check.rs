@@ -556,9 +556,9 @@ fn check_candidate(
     })
 }
 
-/// Core of the update-check entry points: builds owner candidates, optionally
-/// narrows them by owner ID, checks each in a small worker pool, and writes
-/// the result. A narrowed run preserves every other owner's previous state.
+/// Build owner candidates, optionally filter by owner ID, check them in a
+/// small worker pool, and write the result. A filtered run preserves every
+/// other owner's previous state.
 fn run_update_check_impl(
     home: &Path,
     project_paths: &[PathBuf],

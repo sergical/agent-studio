@@ -661,10 +661,9 @@ fn run_trial_expiry_pass_with_writer(
     expired
 }
 
-/// Removes every trial past `now`'s `expires_at`, one at a time. A skill
-/// whose removal fails keeps its trial record (and whatever trash copy was
-/// made) so the next tick retries it; only skills that fully expired are
-/// returned and dropped from the registry.
+/// Remove expired trials one at a time. If removal fails, keep the trial
+/// record and any trash copy so the next tick can retry. Return only trials
+/// whose removal completed and whose registry records were deleted.
 pub fn run_trial_expiry_pass(
     home: &Path,
     now: DateTime<Utc>,

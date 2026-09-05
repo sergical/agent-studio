@@ -777,7 +777,7 @@ pub fn set_deployment_enabled(
     if !enabled {
         if deployment.agent == "shared" {
             return Err(
-                "Shared-root deployments can't be disabled per harness - park the skill instead"
+                "Cannot disable a Universal root for one harness. Park the skill to disable it for every harness."
                     .to_string(),
             );
         }

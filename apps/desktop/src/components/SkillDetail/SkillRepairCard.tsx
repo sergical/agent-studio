@@ -90,7 +90,7 @@ export function SkillRepairCard({ skill, deployment }: SkillRepairCardProps) {
           addToast({
             type: "error",
             title: "Couldn't fix this location",
-            message: `No GitHub repository is available for ${skill.name}`,
+            message: `Cannot reinstall ${skill.name}: no GitHub repository is recorded.`,
           });
           setIsFixing(false);
           return;
