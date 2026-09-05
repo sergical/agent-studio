@@ -9,6 +9,7 @@ import { useCallback, useEffect, useEffectEvent, useRef, useState } from "react"
 import { ArrowLeft } from "lucide-react";
 import { useSkillSnapshot } from "../../hooks/useSkillSnapshot";
 import { forkSkill, readInstalledSkillMd, writeInstalledSkillMd } from "../../lib/skill-api";
+import { lifecycleTargetForDeployment } from "../../lib/skill-lifecycle-target";
 import { isFeatureEnabled } from "../../lib/feature-flags";
 import {
   editableDeployments,
@@ -16,7 +17,7 @@ import {
   ownDeployments,
   skillMdPathForDeployment,
 } from "@skill-studio/lib";
-import type { InstalledSkill, SkillInvocationStats } from "@skill-studio/lib";
+import type { Deployment, InstalledSkill, SkillInvocationStats } from "@skill-studio/lib";
 import type { ActiveView } from "../../store/appStore";
 import { useAppStore } from "../../store/appStore";
 import { DiscardChangesDialog } from "./DiscardChangesDialog";
@@ -43,7 +44,7 @@ interface SkillPageProps {
 interface UseSkillMdContentParams {
   skill: InstalledSkill | null;
   skillMdPath: string | undefined;
-  deployment: { path: string } | undefined;
+  deployment: Deployment | undefined;
   addToast: ReturnType<typeof useAppStore.getState>["addToast"];
 }
 
@@ -116,7 +117,7 @@ function useSkillMdContent({ skill, skillMdPath, deployment, addToast }: UseSkil
     // `skillMdPath` is only set once `deployment` resolves (see above), so
     // it's non-null here.
     const forkIfNeeded = needsForkToSave
-      ? forkSkill(skill.name, deployment!.path).catch((err) => {
+      ? forkSkill(lifecycleTargetForDeployment(deployment!)).catch((err) => {
           forkFailed = true;
           addToast({
             type: "error",

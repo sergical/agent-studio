@@ -76,7 +76,12 @@ export function SkillLocationRow({
             onCheckedChange={(next) =>
               onAction(
                 row.kind === "reader"
-                  ? { kind: "set-reader-enabled", agent: row.harness, enabled: next }
+                  ? {
+                      kind: "set-reader-enabled",
+                      target: row.lifecycleTarget,
+                      agent: row.harness,
+                      enabled: next,
+                    }
                   : { kind: "set-enabled", deployment: row.deployment!, enabled: next },
               )
             }

@@ -66,7 +66,7 @@ function restoreDescription(event: SkillEvent): string {
     case "explode_shared_dir":
       return `Restore ${event.harness ?? "the harness"}'s whole-folder link`;
     case "distribute_from_shared":
-      return `Move ${skillPart} back into the shared folder and remove the per-harness copies`;
+      return `Move ${skillPart} back into the Universal folder and remove the per-harness copies`;
     case "move_aside_disable":
       return `Restore ${skillPart} to its original location`;
     default:

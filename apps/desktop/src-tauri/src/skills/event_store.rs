@@ -603,39 +603,6 @@ impl EventStore {
         }
     }
 
-    /// Patches `inverse.copy_fingerprints` after `distribute_from_shared`'s
-    /// mutation completes and every copy's actual fingerprint is known - the
-    /// one field `record` can't fill in up front, same reasoning as
-    /// `patch_inverse_post_fingerprint`.
-    pub(crate) fn patch_inverse_copy_fingerprints(
-        &self,
-        id: &str,
-        fingerprints: &[String],
-    ) -> Result<(), String> {
-        let row = self
-            .get_event(id)?
-            .ok_or_else(|| format!("Event {id} vanished before its inverse could be patched"))?;
-        let mut inverse = row
-            .inverse
-            .ok_or_else(|| format!("Event {id} has no inverse to patch"))?;
-        if let Some(obj) = inverse.as_object_mut() {
-            obj.insert(
-                "copy_fingerprints".to_string(),
-                serde_json::to_value(fingerprints)
-                    .map_err(|e| format!("Failed to serialize copy fingerprints: {e}"))?,
-            );
-        }
-        let json = serde_json::to_string(&inverse)
-            .map_err(|e| format!("Failed to serialize patched inverse: {e}"))?;
-        self.conn
-            .execute(
-                "UPDATE events SET inverse = ?1 WHERE id = ?2",
-                params![json, id],
-            )
-            .map_err(|e| format!("Failed to patch inverse for {id}: {e}"))?;
-        Ok(())
-    }
-
     /// Records `root` as a harness skills dir that Skill Studio converted
     /// to per-skill links mirroring `shared_root` (see the spec's
     /// `explode_shared_dir`). Idempotent: re-registering updates the row.
@@ -812,8 +779,7 @@ fn hash_entry(path: &Path) -> std::io::Result<String> {
 
 /// Copies `src` into `dest`, preserving regular files as bytes, directories
 /// recursively, and symlinks as the literal link (never following it).
-/// `pub(crate)`: also used by `skill_materialize::distribute_from_shared` to
-/// give a harness its own real copy of a shared skill dir.
+/// `pub(crate)`: Copy removal also uses it to stage and restore exact paths.
 pub(crate) fn copy_recursive(src: &Path, dest: &Path) -> Result<(), String> {
     let meta =
         fs::symlink_metadata(src).map_err(|e| format!("Failed to stat {}: {e}", src.display()))?;

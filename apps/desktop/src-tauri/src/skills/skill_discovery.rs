@@ -303,6 +303,14 @@ fn walk_for_facts(skill_dir: &Path) -> Option<(FolderWalk, Vec<u8>, bool)> {
     Some((walk, bytes, skill_md_truncated))
 }
 
+/// Recompute the bounded strong folder hash that discovery stores on a deployment.
+/// This bypasses the facts cache so mutation guards always compare live bytes.
+pub(crate) fn live_skill_content_hash(skill_dir: &Path) -> Result<String, String> {
+    let (walk, _, _) = walk_for_facts(skill_dir)
+        .ok_or_else(|| format!("Could not read {}/SKILL.md", skill_dir.display()))?;
+    Ok(content_hash(walk.hashable, MAX_FOLDER_BYTES))
+}
+
 /// The expensive half of `compute_content_facts`: hashing every file in
 /// `walk` and tokenizing SKILL.md. Only run on a `get_or_compute_facts` cache
 /// miss - `walk_for_facts` (stat-only) already ran to produce `walk`.
@@ -482,12 +490,6 @@ fn build_candidate(
         .file_name()
         .map(|n| n.to_string_lossy().to_string())
         .unwrap_or_default();
-    let name = facts
-        .frontmatter
-        .as_ref()
-        .and_then(|f| f.name.clone())
-        .filter(|n| !n.trim().is_empty())
-        .unwrap_or_else(|| dir_name.clone());
     let spec_violations = validate_skill(
         &dir_name,
         facts.frontmatter.as_ref(),
@@ -503,7 +505,7 @@ fn build_candidate(
     // `.claude/skills` root linked to `.agents/skills`), where `skill_dir`
     // already holds the canonical directory.
     let resolved_path = if is_symlink {
-        None
+        Some(skill_dir.to_path_buf())
     } else {
         fs::canonicalize(skill_dir).ok().filter(|c| c != entry_path)
     };
@@ -523,7 +525,10 @@ fn build_candidate(
         });
 
     SkillCandidate {
-        name,
+        // Lifecycle identity is the entry name. Frontmatter name remains in
+        // `frontmatter` for display and diagnostics, but cannot claim another
+        // folder's ledger or CLI lifecycle operations.
+        name: dir_name,
         path: entry_path.to_path_buf(),
         root_label: root.label.clone(),
         scope: scope.to_string(),

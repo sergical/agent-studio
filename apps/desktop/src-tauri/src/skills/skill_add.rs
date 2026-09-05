@@ -14,23 +14,27 @@
 // ============================================================================
 
 use std::fs;
-use std::path::{Path, PathBuf};
+use std::path::{Component, Path, PathBuf};
 use std::process::Command;
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use tauri::Manager;
 
 use super::agents::AgentId;
-use super::commands::{push_agent_args, skills_sh_add_args};
 use super::github_skill_listing::GithubSkillEntry;
 use super::skill_agent_runner::validate_skill_dir_name;
+use super::skill_deployment::{deployment_id, universal_skills_dir, SkillDestination};
 use super::skill_dto::{
     AddSkillOutcome, AddSkillRequest, AddSkillResult, AddSkillsRequest, InstallScope,
     ParsedSkillSource, ParsedSkillSourceKind,
 };
 use super::skill_fork::{ForkMutationLock, RealUpstreamFetch, RepoSnapshot, UpstreamFetch};
-use super::skill_fork_registry::{AddMethod, TrialScope};
+use super::skill_fork_registry::{AddMethod, CopyDeploymentRecord, TrialScope};
 use super::skill_fs::copy_dir_all;
-use super::skill_harness_disable::set_harness_enabled_with;
+use super::skill_harness_disable::set_new_universal_reader_enabled;
+use super::skill_install_plan::{
+    allowed_method, per_harness_copy_targets, skills_sh_universal_add_args, SkillInstallSpec,
+};
 use super::skill_refresh::{self, SkillRefreshState};
 use super::skill_trial;
 use super::skill_update_check::{self, CommitLookup, GhCommitLookup};
@@ -258,7 +262,7 @@ fn dotagents_source_arg(source: &ParsedSkillSource) -> Result<String, String> {
 fn maybe_record_trials(
     home: &Path,
     request: &AddSkillRequest,
-    installs: &[(String, PathBuf, Option<PathBuf>)],
+    installs: &[(String, PathBuf, Option<PathBuf>, String)],
 ) -> Option<String> {
     if !request.trial {
         return None;
@@ -269,10 +273,10 @@ fn maybe_record_trials(
     };
     let now = chrono::Utc::now();
     let mut failures = Vec::new();
-    for (name, skill_dir, claude_link) in installs {
+    for (name, skill_dir, claude_link, deployment_id) in installs {
         if let Err(e) = skill_trial::record_trial(
             home,
-            name,
+            deployment_id,
             scope,
             request.project_path.as_deref(),
             request.method,
@@ -291,6 +295,26 @@ fn maybe_record_trials(
             failures.join("; ")
         ))
     }
+}
+
+fn installed_deployment_id(
+    request: &AddSkillRequest,
+    name: &str,
+    path: &Path,
+    slot: &str,
+) -> String {
+    let scope = match request.scope {
+        InstallScope::Global => "global",
+        InstallScope::Project => "project",
+    };
+    deployment_id(
+        name,
+        scope,
+        request.destination,
+        slot,
+        request.project_path.as_deref(),
+        path,
+    )
 }
 
 fn add_via_dotagents(
@@ -346,7 +370,7 @@ fn add_via_dotagents(
         .iter()
         .map(|n| shared_dir.join(n).to_string_lossy().to_string())
         .collect();
-    let mut installs: Vec<(String, PathBuf, Option<PathBuf>)> = Vec::new();
+    let mut installs = Vec::new();
     for name in &new_names {
         let claude_link =
             maybe_claude_code_symlink(&claude_dir, &shared_dir, name, &request.agents)?
@@ -354,7 +378,13 @@ fn add_via_dotagents(
         if let Some(link) = &claude_link {
             deployments_created.push(link.to_string_lossy().to_string());
         }
-        installs.push((name.clone(), shared_dir.join(name), claude_link));
+        let skill_dir = shared_dir.join(name);
+        installs.push((
+            name.clone(),
+            skill_dir.clone(),
+            claude_link,
+            installed_deployment_id(request, name, &skill_dir, "universal"),
+        ));
     }
     let warning = maybe_record_trials(home, request, &installs);
 
@@ -378,54 +408,53 @@ fn add_via_skills_sh(
         .clone()
         .ok_or("The skills.sh method needs a GitHub source")?;
     let skill_name = request.source.skill_name.clone();
-    let global = request.scope == InstallScope::Global;
-
-    let mut args = skills_sh_add_args(
-        &repo,
-        skill_name.as_deref(),
-        global,
-        request.project_path.as_deref(),
-    );
-    // Grok Build isn't an `npx skills` install target - it only reads the
-    // shared folder - so it's dropped before `push_agent_args`, which would
-    // otherwise refuse the whole request over it.
-    let installable: Vec<AgentId> = request
-        .agents
-        .iter()
-        .copied()
-        .filter(|a| *a != AgentId::GrokBuild)
-        .collect();
-    push_agent_args(&mut args, &installable)?;
+    let spec = SkillInstallSpec {
+        scope: request.scope.clone(),
+        destination: request.destination,
+        project_path: request.project_path.clone(),
+        harnesses: request.agents.clone(),
+    };
+    let args = skills_sh_universal_add_args(&repo, skill_name.as_deref(), &spec)?;
 
     runner.run_npx(&args, None)?;
 
     let result_name =
         skill_name.unwrap_or_else(|| repo.split('/').next_back().unwrap_or(&repo).to_string());
 
-    let deployment_dirs: Vec<PathBuf> = installable
-        .iter()
-        .map(|agent| {
-            if global {
-                agent.global_skills_dir(home)
-            } else {
-                agent.project_skills_dir(Path::new(request.project_path.as_deref().unwrap_or("")))
-            }
-        })
-        .collect();
+    let project = request.project_path.as_deref().map(Path::new);
+    let mut deployment_dirs = vec![universal_skills_dir(home, request.scope.clone(), project)];
+    if request.agents.contains(&AgentId::ClaudeCode) {
+        deployment_dirs.push(claude_skills_dir(home, request));
+    }
     let deployments_created = deployment_dirs
         .iter()
         .map(|dir| dir.join(&result_name).to_string_lossy().to_string())
         .collect();
 
-    // `skills.sh` writes into each selected agent's own directory, not a
-    // single shared one - there's no per-app symlink to track here, so the
-    // trial only ever has a `skill_dir` (the first installed agent's copy)
-    // and no `claude_link`.
+    // Universal is the canonical trial directory. skills.sh may also create
+    // Claude Code's selected link or copy, but trial expiry remains owned by
+    // the Universal deployment.
+    let claude_link = deployment_dirs
+        .get(1)
+        .map(|dir| dir.join(&result_name))
+        .filter(|path| {
+            fs::symlink_metadata(path)
+                .map(|metadata| metadata.file_type().is_symlink())
+                .unwrap_or(false)
+        });
     let warning = deployment_dirs.first().and_then(|dir| {
         maybe_record_trials(
             home,
             request,
-            &[(result_name.clone(), dir.join(&result_name), None)],
+            &[{
+                let skill_dir = dir.join(&result_name);
+                (
+                    result_name.clone(),
+                    skill_dir.clone(),
+                    claude_link,
+                    installed_deployment_id(request, &result_name, &skill_dir, "universal"),
+                )
+            }],
         )
     });
 
@@ -467,6 +496,182 @@ fn derive_copy_name(source: &ParsedSkillSource) -> Result<String, String> {
     }
 }
 
+fn remove_install_paths(paths: &[PathBuf]) {
+    for path in paths {
+        if fs::symlink_metadata(path).is_ok() {
+            let _ = fs::remove_dir_all(path);
+        }
+    }
+}
+
+fn lexical_absolute_path(path: &Path) -> Result<PathBuf, String> {
+    let absolute = if path.is_absolute() {
+        path.to_path_buf()
+    } else {
+        std::env::current_dir()
+            .map_err(|error| format!("Could not resolve current directory: {error}"))?
+            .join(path)
+    };
+    let mut normalized = PathBuf::new();
+    for component in absolute.components() {
+        match component {
+            Component::CurDir => {}
+            Component::ParentDir => {
+                normalized.pop();
+            }
+            Component::Prefix(prefix) => normalized.push(prefix.as_os_str()),
+            Component::RootDir => normalized.push(component.as_os_str()),
+            Component::Normal(part) => normalized.push(part),
+        }
+    }
+    Ok(normalized)
+}
+
+fn resolve_existing_path_prefix(path: &Path) -> Result<PathBuf, String> {
+    let mut existing = lexical_absolute_path(path)?;
+    let mut missing = Vec::new();
+    loop {
+        match fs::canonicalize(&existing) {
+            Ok(mut canonical) => {
+                for part in missing.iter().rev() {
+                    canonical.push(part);
+                }
+                return Ok(canonical);
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                let part = existing.file_name().ok_or_else(|| {
+                    format!("Could not resolve Copy destination {}", path.display())
+                })?;
+                missing.push(part.to_os_string());
+                existing.pop();
+            }
+            Err(error) => {
+                return Err(format!(
+                    "Could not resolve Copy destination {}: {error}",
+                    path.display()
+                ));
+            }
+        }
+    }
+}
+
+fn path_is_within(path: &Path, directory: &Path) -> bool {
+    path == directory || path.starts_with(directory)
+}
+
+/// Reject local Copy destinations that resolve within the source before creating paths.
+fn validate_local_copy_destinations(
+    source: &Path,
+    targets: &[PathBuf],
+    staging: &[PathBuf],
+) -> Result<(), String> {
+    let source_lexical = lexical_absolute_path(source)?;
+    let source_canonical = fs::canonicalize(source)
+        .map_err(|error| format!("Could not resolve {}: {error}", source.display()))?;
+    for candidate in targets
+        .iter()
+        .filter_map(|target| target.parent())
+        .chain(targets.iter().map(PathBuf::as_path))
+        .chain(staging.iter().map(PathBuf::as_path))
+    {
+        let candidate_lexical = lexical_absolute_path(candidate)?;
+        let candidate_canonical = resolve_existing_path_prefix(candidate)?;
+        if path_is_within(&candidate_lexical, &source_lexical)
+            || path_is_within(&candidate_lexical, &source_canonical)
+            || path_is_within(&candidate_canonical, &source_canonical)
+        {
+            return Err(format!(
+                "Local Copy destination must be outside the source directory: {}",
+                candidate.display()
+            ));
+        }
+    }
+    Ok(())
+}
+
+/// Stage every Copy target beside its destination, then rename each complete
+/// directory into place. A failure removes all staging and committed targets.
+fn commit_copy_install<F, C>(
+    targets: &[PathBuf],
+    local_source: Option<&Path>,
+    acquire: F,
+    copy: C,
+) -> Result<(), String>
+where
+    F: FnOnce(&Path) -> Result<(), String>,
+    C: Fn(&Path, &Path) -> Result<(), String>,
+{
+    let nonce = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_nanos();
+    let staging: Vec<PathBuf> = targets
+        .iter()
+        .enumerate()
+        .map(|(index, target)| {
+            target
+                .parent()
+                .unwrap_or_else(|| Path::new("."))
+                .join(format!(
+                    ".skill-studio-install-{}-{nonce}-{index}",
+                    std::process::id()
+                ))
+        })
+        .collect();
+
+    if let Some(source) = local_source {
+        validate_local_copy_destinations(source, targets, &staging)?;
+    }
+
+    for target in targets {
+        let parent = target
+            .parent()
+            .ok_or_else(|| format!("Copy destination has no parent: {}", target.display()))?;
+        fs::create_dir_all(parent)
+            .map_err(|error| format!("Failed to create {}: {error}", parent.display()))?;
+        if fs::symlink_metadata(target).is_ok() {
+            remove_install_paths(&staging);
+            return Err(format!(
+                "Copy destination already exists: {}",
+                target.display()
+            ));
+        }
+    }
+
+    if let Err(error) = acquire(&staging[0]) {
+        remove_install_paths(&staging);
+        return Err(error);
+    }
+    for stage in staging.iter().skip(1) {
+        if let Err(error) = copy(&staging[0], stage) {
+            remove_install_paths(&staging);
+            return Err(error);
+        }
+    }
+
+    let mut committed = Vec::new();
+    for (stage, target) in staging.iter().zip(targets) {
+        if fs::symlink_metadata(target).is_ok() {
+            remove_install_paths(&staging);
+            remove_install_paths(&committed);
+            return Err(format!(
+                "Copy destination already exists: {}",
+                target.display()
+            ));
+        }
+        if let Err(error) = fs::rename(stage, target) {
+            remove_install_paths(&staging);
+            remove_install_paths(&committed);
+            return Err(format!(
+                "Failed to commit Copy destination {}: {error}",
+                target.display()
+            ));
+        }
+        committed.push(target.clone());
+    }
+    Ok(())
+}
+
 fn add_via_copy(
     home: &Path,
     request: &AddSkillRequest,
@@ -474,6 +679,9 @@ fn add_via_copy(
     lookup: &dyn CommitLookup,
     snapshot: Option<&dyn RepoSnapshot>,
 ) -> Result<AddSkillResult, String> {
+    // Read before creating files. A malformed registry must fail closed, not
+    // let an install succeed without the ownership record needed to remove it.
+    let mut registry = super::skill_fork_registry::read_fork_registry(home)?;
     if request.scope == InstallScope::Project {
         let project_path = request
             .project_path
@@ -488,67 +696,183 @@ fn add_via_copy(
 
     let name = derive_copy_name(&request.source)?;
     validate_skill_dir_name(&name)?;
-    let shared_dir = shared_skills_dir(home, request);
-    let claude_dir = claude_skills_dir(home, request);
-    let target = shared_dir.join(&name);
-    if target.parent() != Some(shared_dir.as_path()) {
-        return Err("Refusing to write outside the skills folder".to_string());
-    }
-    if target.exists() {
-        return Err(format!(
-            "`{name}` already exists in {}",
-            shared_dir.display()
-        ));
-    }
-
-    match request.source.kind {
-        ParsedSkillSourceKind::Github => {
-            let repo = request
-                .source
-                .repo
-                .clone()
-                .ok_or("A GitHub source needs a repo")?;
-            let path = request.source.path.clone().unwrap_or_default();
-            // A batch install passes the snapshot it already downloaded, so
-            // the tarball is fetched once for the whole picker selection.
-            match snapshot {
-                Some(snapshot) => snapshot.copy_dir(&path, &target)?,
-                None => {
-                    let commit = match &request.source.git_ref {
-                        Some(r) => r.clone(),
-                        None => lookup
-                            .latest_commit(&repo, &path, None)?
-                            .map(|(sha, _)| sha)
-                            .ok_or_else(|| format!("Could not determine {name}'s latest commit"))?,
-                    };
-                    fetch.fetch_skill_dir(&repo, &path, &commit, &target)?;
+    let project = request.project_path.as_deref().map(Path::new);
+    let per_harness_agents = if request.destination == SkillDestination::PerHarness {
+        per_harness_copy_targets(&SkillInstallSpec {
+            scope: request.scope.clone(),
+            destination: request.destination,
+            project_path: request.project_path.clone(),
+            harnesses: request.agents.clone(),
+        })?
+    } else {
+        Vec::new()
+    };
+    let target_roots = match request.destination {
+        SkillDestination::Universal => {
+            vec![universal_skills_dir(home, request.scope.clone(), project)]
+        }
+        SkillDestination::PerHarness => per_harness_agents
+            .iter()
+            .map(|agent| match request.scope {
+                InstallScope::Global => agent.global_skills_dir(home),
+                InstallScope::Project => {
+                    agent.project_skills_dir(project.unwrap_or_else(|| Path::new("")))
                 }
+            })
+            .collect(),
+    };
+    let targets: Vec<PathBuf> = target_roots.iter().map(|root| root.join(&name)).collect();
+    let target = targets[0].clone();
+    let local_copy_source = if request.source.kind == ParsedSkillSourceKind::Local {
+        let path = request
+            .source
+            .local_path
+            .as_deref()
+            .ok_or("A local source needs a path")?;
+        Some(fs::canonicalize(path).map_err(|error| format!("Could not resolve {path}: {error}"))?)
+    } else {
+        None
+    };
+
+    commit_copy_install(
+        &targets,
+        local_copy_source.as_deref(),
+        |staging_target| match request.source.kind {
+            ParsedSkillSourceKind::Github => {
+                let repo = request
+                    .source
+                    .repo
+                    .clone()
+                    .ok_or("A GitHub source needs a repo")?;
+                let path = request.source.path.clone().unwrap_or_default();
+                // A batch install passes the snapshot it already downloaded, so
+                // the tarball is fetched once for the whole picker selection.
+                match snapshot {
+                    Some(snapshot) => snapshot.copy_dir(&path, staging_target)?,
+                    None => {
+                        let commit = match &request.source.git_ref {
+                            Some(r) => r.clone(),
+                            None => lookup
+                                .latest_commit(&repo, &path, None)?
+                                .map(|(sha, _)| sha)
+                                .ok_or_else(|| {
+                                    format!("Could not determine {name}'s latest commit")
+                                })?,
+                        };
+                        fetch.fetch_skill_dir(&repo, &path, &commit, staging_target)?;
+                    }
+                }
+                Ok(())
+            }
+            ParsedSkillSourceKind::Local => {
+                let local_path = local_copy_source
+                    .as_deref()
+                    .ok_or("A local source needs a path")?;
+                copy_dir_all(local_path, staging_target)
+            }
+            ParsedSkillSourceKind::Git => {
+                Err("Copy is not supported for git sources; use dotagents".to_string())
+            }
+        },
+        copy_dir_all,
+    )?;
+    let mut deployments_created: Vec<String> = targets
+        .iter()
+        .map(|path| path.to_string_lossy().to_string())
+        .collect();
+    let claude_link = if request.destination == SkillDestination::Universal {
+        match maybe_claude_code_symlink(
+            &claude_skills_dir(home, request),
+            &target_roots[0],
+            &name,
+            &request.agents,
+        ) {
+            Ok(link) => link.map(PathBuf::from),
+            Err(error) => {
+                for created in &targets {
+                    let _ = fs::remove_dir_all(created);
+                }
+                return Err(error);
             }
         }
-        ParsedSkillSourceKind::Local => {
-            let local_path = request
-                .source
-                .local_path
-                .clone()
-                .ok_or("A local source needs a path")?;
-            copy_dir_all(Path::new(&local_path), &target)?;
-        }
-        ParsedSkillSourceKind::Git => {
-            return Err("Copy is not supported for git sources; use dotagents".to_string());
-        }
-    }
-
-    let mut deployments_created = vec![target.to_string_lossy().to_string()];
-    let claude_link = maybe_claude_code_symlink(&claude_dir, &shared_dir, &name, &request.agents)?
-        .map(PathBuf::from);
+    } else {
+        None
+    };
     if let Some(link) = &claude_link {
         deployments_created.push(link.to_string_lossy().to_string());
     }
-    let warning = maybe_record_trials(
-        home,
-        request,
-        &[(name.clone(), target.clone(), claude_link)],
-    );
+
+    let ownership_records = if request.destination == SkillDestination::Universal {
+        let mut records = vec![copy_deployment_record(request, &name, &target, "universal")];
+        if let Some(link) = &claude_link {
+            records.push(copy_deployment_record(
+                request,
+                &name,
+                link,
+                AgentId::ClaudeCode.cli_name(),
+            ));
+        }
+        records.into_iter().collect::<Result<Vec<_>, _>>()
+    } else {
+        per_harness_agents
+            .iter()
+            .zip(&targets)
+            .map(|(agent, path)| copy_deployment_record(request, &name, path, agent.cli_name()))
+            .collect::<Result<Vec<_>, _>>()
+    };
+    let ownership_records = match ownership_records {
+        Ok(records) => records,
+        Err(error) => {
+            if let Some(link) = &claude_link {
+                let _ = fs::remove_file(link);
+            }
+            for created in &targets {
+                let _ = fs::remove_dir_all(created);
+            }
+            return Err(format!(
+                "Failed to fingerprint Copy ownership; rolled back the install: {error}"
+            ));
+        }
+    };
+    for record in &ownership_records {
+        registry
+            .copies
+            .insert(record.deployment_id.clone(), record.clone());
+    }
+    registry.version = super::skill_fork_registry::CURRENT_REGISTRY_VERSION;
+    if let Err(error) = super::skill_fork_registry::write_fork_registry(home, &registry) {
+        if let Some(link) = &claude_link {
+            let _ = fs::remove_file(link);
+        }
+        for created in &targets {
+            let _ = fs::remove_dir_all(created);
+        }
+        return Err(format!(
+            "Failed to record Copy ownership; rolled back the install: {error}"
+        ));
+    }
+    let trial_installs: Vec<_> = if request.destination == SkillDestination::Universal {
+        vec![(
+            name.clone(),
+            target.clone(),
+            claude_link,
+            installed_deployment_id(request, &name, &target, "universal"),
+        )]
+    } else {
+        per_harness_agents
+            .iter()
+            .zip(targets.iter())
+            .map(|(agent, path)| {
+                (
+                    name.clone(),
+                    path.clone(),
+                    None,
+                    installed_deployment_id(request, &name, path, agent.cli_name()),
+                )
+            })
+            .collect()
+    };
+    let warning = maybe_record_trials(home, request, &trial_installs);
 
     Ok(AddSkillResult {
         name,
@@ -556,6 +880,25 @@ fn add_via_copy(
         command: format!("copy -> {}", target.display()),
         deployments_created,
         warning,
+    })
+}
+
+fn copy_deployment_record(
+    request: &AddSkillRequest,
+    name: &str,
+    path: &Path,
+    slot: &str,
+) -> Result<CopyDeploymentRecord, String> {
+    Ok(CopyDeploymentRecord {
+        deployment_id: installed_deployment_id(request, name, path, slot),
+        name: name.to_string(),
+        path: path.to_path_buf(),
+        scope: request.scope.clone(),
+        destination: request.destination,
+        slot: slot.to_string(),
+        project_path: request.project_path.clone(),
+        content_hash: super::skill_discovery::live_skill_content_hash(path)?,
+        disabled: false,
     })
 }
 
@@ -622,13 +965,33 @@ fn apply_disabled_harnesses(home: &Path, request: &AddSkillRequest, result: &mut
         return;
     }
     let codex_paths = codex_visible_skill_mds(home, request, &result.deployments_created);
+    let universal_root = shared_skills_dir(home, request);
+    let project_path = request.project_path.as_deref().map(Path::new);
+    let claude_root = super::skill_lifecycle::claude_skills_dir_for_scope(
+        home,
+        request.scope.clone(),
+        project_path,
+    );
     let mut failures = Vec::new();
     // One `dotagents add` can create several folders, joined into `name`.
     for name in result.name.split(", ") {
         for agent in &request.disabled_harnesses {
-            if let Err(e) =
-                set_harness_enabled_with(home, name, agent.cli_name(), false, &codex_paths)
-            {
+            let universal_path = universal_root.join(name);
+            let deployment_id =
+                installed_deployment_id(request, name, &universal_path, "universal");
+            let target = super::skill_dto::HarnessVisibilityTarget {
+                deployment_id,
+                reader_agent: *agent,
+            };
+            if let Err(e) = set_new_universal_reader_enabled(
+                home,
+                name,
+                &target,
+                false,
+                &universal_path,
+                &claude_root.join(name),
+                &codex_paths,
+            ) {
                 failures.push(format!(
                     "Installed, but could not turn it off for {}: {e}",
                     agent.display_name()
@@ -655,9 +1018,22 @@ pub fn add_skill_with(
     fetch: &dyn UpstreamFetch,
     lookup: &dyn CommitLookup,
 ) -> Result<AddSkillResult, String> {
+    if request.destination == SkillDestination::PerHarness && request.trial {
+        return Err("Trials require the Universal destination".to_string());
+    }
     validate_parsed_source(&request.source)?;
+    allowed_method(request.destination, request.method)?;
+    if request.destination == SkillDestination::PerHarness && !request.disabled_harnesses.is_empty()
+    {
+        return Err("Per harness installs cannot include disabled harnesses".to_string());
+    }
     let mut result = match request.method {
-        AddMethod::Dotagents => add_via_dotagents(home, request, runner),
+        AddMethod::Dotagents => {
+            if request.destination != SkillDestination::Universal {
+                return Err("dotagents installs require the Universal destination".to_string());
+            }
+            add_via_dotagents(home, request, runner)
+        }
         AddMethod::SkillsSh => add_via_skills_sh(home, request, runner),
         AddMethod::Copy => add_via_copy(home, request, fetch, lookup, None),
     }?;
@@ -679,6 +1055,7 @@ fn request_for_entry(batch: &AddSkillsRequest, entry: &GithubSkillEntry) -> AddS
     AddSkillRequest {
         source,
         method: batch.method,
+        destination: batch.destination,
         agents: batch.agents.clone(),
         disabled_harnesses: batch.disabled_harnesses.clone(),
         scope: batch.scope.clone(),
@@ -699,8 +1076,20 @@ pub fn add_skills_with(
     fetch: &dyn UpstreamFetch,
     lookup: &dyn CommitLookup,
 ) -> Result<Vec<AddSkillOutcome>, String> {
+    if request.destination == SkillDestination::PerHarness && request.trial {
+        return Err("Trials require the Universal destination".to_string());
+    }
     if request.skills.is_empty() {
         return Err("Select at least one skill".to_string());
+    }
+    allowed_method(request.destination, request.method)?;
+    if request.method == AddMethod::Dotagents && request.destination != SkillDestination::Universal
+    {
+        return Err("dotagents installs require the Universal destination".to_string());
+    }
+    if request.destination == SkillDestination::PerHarness && !request.disabled_harnesses.is_empty()
+    {
+        return Err("Per harness installs cannot include disabled harnesses".to_string());
     }
 
     let snapshot = if request.method == AddMethod::Copy
@@ -906,12 +1295,76 @@ mod tests {
         AddSkillRequest {
             source,
             method,
+            destination: SkillDestination::Universal,
             agents: vec![],
             disabled_harnesses: vec![],
             scope: InstallScope::Global,
             project_path: None,
             trial: false,
         }
+    }
+
+    fn local_source(path: &Path, skill_name: &str) -> ParsedSkillSource {
+        ParsedSkillSource {
+            kind: ParsedSkillSourceKind::Local,
+            repo: None,
+            path: None,
+            git_ref: None,
+            skill_name: Some(skill_name.to_string()),
+            url: None,
+            local_path: Some(path.to_string_lossy().to_string()),
+        }
+    }
+
+    #[test]
+    fn single_per_harness_trial_is_rejected_before_creating_paths() {
+        let tmp = tempfile::tempdir().unwrap();
+        let home = tmp.path().join("home");
+        let mut request = base_request(
+            github_source("getsentry/find-bugs", None, Some("find-bugs")),
+            AddMethod::Copy,
+        );
+        request.destination = SkillDestination::PerHarness;
+        request.agents = vec![AgentId::ClaudeCode];
+        request.trial = true;
+
+        let error = add_skill_with(
+            &home,
+            &request,
+            &FakeRunner::default(),
+            &NeverCalledFetch,
+            &NeverCalledLookup,
+        )
+        .unwrap_err();
+
+        assert_eq!(error, "Trials require the Universal destination");
+        assert!(!home.exists());
+    }
+
+    #[test]
+    fn batch_per_harness_trial_is_rejected_before_creating_paths() {
+        let tmp = tempfile::tempdir().unwrap();
+        let home = tmp.path().join("home");
+        let mut request = batch_request(
+            github_source("getsentry/find-bugs", None, None),
+            AddMethod::Copy,
+            vec![entry("find-bugs", "skills/find-bugs")],
+        );
+        request.destination = SkillDestination::PerHarness;
+        request.agents = vec![AgentId::ClaudeCode];
+        request.trial = true;
+
+        let error = add_skills_with(
+            &home,
+            &request,
+            &FakeRunner::default(),
+            &NeverCalledFetch,
+            &NeverCalledLookup,
+        )
+        .unwrap_err();
+
+        assert_eq!(error, "Trials require the Universal destination");
+        assert!(!home.exists());
     }
 
     #[test]
@@ -1087,6 +1540,16 @@ mod tests {
         .unwrap();
         assert_eq!(result.tool, "copy");
         assert!(home.join(".agents/skills/find-bugs/SKILL.md").exists());
+        let registry = super::super::skill_fork_registry::read_fork_registry(&home).unwrap();
+        assert_eq!(
+            registry.version,
+            super::super::skill_fork_registry::CURRENT_REGISTRY_VERSION
+        );
+        let record = registry.copies.values().next().unwrap();
+        assert_eq!(record.path, home.join(".agents/skills/find-bugs"));
+        assert_eq!(record.scope, InstallScope::Global);
+        assert_eq!(record.destination, SkillDestination::Universal);
+        assert_eq!(record.slot, "universal");
     }
 
     #[test]
@@ -1110,6 +1573,80 @@ mod tests {
         )
         .unwrap_err();
         assert!(err.contains("already exists"));
+    }
+
+    #[test]
+    fn copy_acquisition_failure_removes_partial_stage_and_allows_retry() {
+        let tmp = tempfile::tempdir().unwrap();
+        let target = tmp.path().join("skills/foo");
+        let targets = vec![target.clone()];
+
+        let error = commit_copy_install(
+            &targets,
+            None,
+            |stage| {
+                fs::create_dir_all(stage).unwrap();
+                fs::write(stage.join("partial"), "partial").unwrap();
+                Err("injected mid-copy failure".to_string())
+            },
+            copy_dir_all,
+        )
+        .unwrap_err();
+
+        assert!(error.contains("mid-copy"));
+        assert!(!target.exists());
+        assert!(fs::read_dir(target.parent().unwrap())
+            .unwrap()
+            .next()
+            .is_none());
+        commit_copy_install(
+            &targets,
+            None,
+            |stage| {
+                fs::create_dir_all(stage).map_err(|error| error.to_string())?;
+                fs::write(stage.join("SKILL.md"), "body").map_err(|error| error.to_string())
+            },
+            copy_dir_all,
+        )
+        .unwrap();
+        assert!(target.join("SKILL.md").exists());
+    }
+
+    #[test]
+    fn later_copy_target_failure_leaves_no_destination_or_stage() {
+        let tmp = tempfile::tempdir().unwrap();
+        let targets = vec![
+            tmp.path().join("claude/foo"),
+            tmp.path().join("codex/foo"),
+            tmp.path().join("pi/foo"),
+        ];
+        let copy_count = Mutex::new(0);
+
+        let error = commit_copy_install(
+            &targets,
+            None,
+            |stage| {
+                fs::create_dir_all(stage).map_err(|error| error.to_string())?;
+                fs::write(stage.join("SKILL.md"), "body").map_err(|error| error.to_string())
+            },
+            |source, destination| {
+                let mut count = copy_count.lock().unwrap();
+                *count += 1;
+                if *count == 2 {
+                    fs::create_dir_all(destination).unwrap();
+                    fs::write(destination.join("partial"), "partial").unwrap();
+                    return Err("injected later-target failure".to_string());
+                }
+                copy_dir_all(source, destination)
+            },
+        )
+        .unwrap_err();
+
+        assert!(error.contains("later-target"));
+        assert!(targets.iter().all(|target| !target.exists()));
+        for parent in targets.iter().filter_map(|target| target.parent()) {
+            assert!(fs::read_dir(parent).unwrap().next().is_none());
+        }
     }
 
     #[test]
@@ -1139,6 +1676,214 @@ mod tests {
         .unwrap();
         assert_eq!(result.name, "my-skill");
         assert!(home.join(".agents/skills/my-skill/SKILL.md").exists());
+    }
+
+    #[test]
+    fn local_copy_rejects_home_ancestor_for_universal_and_per_harness() {
+        for destination in [SkillDestination::Universal, SkillDestination::PerHarness] {
+            let tmp = tempfile::tempdir().unwrap();
+            let home = tmp.path().join("home");
+            fs::create_dir_all(&home).unwrap();
+            fs::write(home.join("SKILL.md"), "body").unwrap();
+            let mut request = base_request(local_source(&home, "nested-copy"), AddMethod::Copy);
+            request.destination = destination;
+            request.agents = vec![AgentId::ClaudeCode];
+
+            let error = add_skill_with(
+                &home,
+                &request,
+                &FakeRunner::default(),
+                &NeverCalledFetch,
+                &NeverCalledLookup,
+            )
+            .unwrap_err();
+
+            assert!(error.contains("outside the source directory"));
+            assert!(!home.join(".agents").exists());
+            assert!(!home.join(".claude").exists());
+        }
+    }
+
+    #[test]
+    fn local_copy_rejects_project_ancestor_for_universal_and_per_harness() {
+        for destination in [SkillDestination::Universal, SkillDestination::PerHarness] {
+            let tmp = tempfile::tempdir().unwrap();
+            let home = tmp.path().join("home");
+            let project = tmp.path().join("project");
+            fs::create_dir_all(&project).unwrap();
+            fs::write(project.join("SKILL.md"), "body").unwrap();
+            let mut request = base_request(local_source(&project, "nested-copy"), AddMethod::Copy);
+            request.scope = InstallScope::Project;
+            request.project_path = Some(project.to_string_lossy().to_string());
+            request.destination = destination;
+            request.agents = vec![AgentId::ClaudeCode];
+
+            let error = add_skill_with(
+                &home,
+                &request,
+                &FakeRunner::default(),
+                &NeverCalledFetch,
+                &NeverCalledLookup,
+            )
+            .unwrap_err();
+
+            assert!(error.contains("outside the source directory"));
+            assert!(!project.join(".agents").exists());
+            assert!(!project.join(".claude").exists());
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn local_copy_rejects_a_symlink_source_that_resolves_to_destination_ancestor() {
+        let tmp = tempfile::tempdir().unwrap();
+        let home = tmp.path().join("home");
+        let source_link = tmp.path().join("source-link");
+        fs::create_dir_all(&home).unwrap();
+        fs::write(home.join("SKILL.md"), "body").unwrap();
+        std::os::unix::fs::symlink(&home, &source_link).unwrap();
+        let request = base_request(local_source(&source_link, "nested-copy"), AddMethod::Copy);
+
+        let error = add_skill_with(
+            &home,
+            &request,
+            &FakeRunner::default(),
+            &NeverCalledFetch,
+            &NeverCalledLookup,
+        )
+        .unwrap_err();
+
+        assert!(error.contains("outside the source directory"));
+        assert!(!home.join(".agents").exists());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn local_copy_rejects_a_destination_parent_symlinked_into_the_source() {
+        let tmp = tempfile::tempdir().unwrap();
+        let home = tmp.path().join("home");
+        let source = tmp.path().join("source");
+        let linked_parent = source.join("linked-parent");
+        fs::create_dir_all(&home).unwrap();
+        fs::create_dir_all(&linked_parent).unwrap();
+        fs::write(source.join("SKILL.md"), "body").unwrap();
+        std::os::unix::fs::symlink(&linked_parent, home.join(".agents")).unwrap();
+        let request = base_request(local_source(&source, "nested-copy"), AddMethod::Copy);
+
+        let error = add_skill_with(
+            &home,
+            &request,
+            &FakeRunner::default(),
+            &NeverCalledFetch,
+            &NeverCalledLookup,
+        )
+        .unwrap_err();
+
+        assert!(error.contains("outside the source directory"));
+        assert!(!linked_parent.join("skills").exists());
+        assert!(fs::read_dir(&linked_parent).unwrap().next().is_none());
+    }
+
+    #[test]
+    fn local_copy_rejects_source_equal_to_target_without_modifying_it() {
+        let tmp = tempfile::tempdir().unwrap();
+        let home = tmp.path().join("home");
+        let source = home.join(".agents/skills/existing");
+        fs::create_dir_all(&source).unwrap();
+        fs::write(source.join("SKILL.md"), "body").unwrap();
+        let request = base_request(local_source(&source, "existing"), AddMethod::Copy);
+
+        let error = add_skill_with(
+            &home,
+            &request,
+            &FakeRunner::default(),
+            &NeverCalledFetch,
+            &NeverCalledLookup,
+        )
+        .unwrap_err();
+
+        assert!(error.contains("outside the source directory"));
+        assert_eq!(fs::read_to_string(source.join("SKILL.md")).unwrap(), "body");
+        assert_eq!(fs::read_dir(source.parent().unwrap()).unwrap().count(), 1);
+    }
+
+    #[test]
+    fn per_harness_copy_records_each_exact_created_deployment() {
+        let tmp = tempfile::tempdir().unwrap();
+        let home = tmp.path().join("home");
+        let local = tmp.path().join("my-skill");
+        fs::create_dir_all(&local).unwrap();
+        fs::write(local.join("SKILL.md"), "body").unwrap();
+        let source = ParsedSkillSource {
+            kind: ParsedSkillSourceKind::Local,
+            repo: None,
+            path: None,
+            git_ref: None,
+            skill_name: None,
+            url: None,
+            local_path: Some(local.to_string_lossy().to_string()),
+        };
+        let mut request = base_request(source, AddMethod::Copy);
+        request.destination = SkillDestination::PerHarness;
+        request.agents = vec![
+            AgentId::ClaudeCode,
+            AgentId::Codex,
+            AgentId::OpenCode,
+            AgentId::Pi,
+            AgentId::Cursor,
+            AgentId::GrokBuild,
+        ];
+
+        add_skill_with(
+            &home,
+            &request,
+            &FakeRunner::default(),
+            &NeverCalledFetch,
+            &NeverCalledLookup,
+        )
+        .unwrap();
+
+        let registry = super::super::skill_fork_registry::read_fork_registry(&home).unwrap();
+        assert_eq!(registry.copies.len(), 6);
+        for agent in &request.agents {
+            let path = agent.global_skills_dir(&home).join("my-skill");
+            let id = installed_deployment_id(&request, "my-skill", &path, agent.cli_name());
+            let record = registry.copies.get(&id).unwrap();
+            assert_eq!(record.path, path);
+            assert_eq!(record.slot, agent.cli_name());
+            assert_eq!(record.destination, SkillDestination::PerHarness);
+        }
+    }
+
+    #[test]
+    fn copy_refuses_malformed_existing_registry_without_creating_files() {
+        let tmp = tempfile::tempdir().unwrap();
+        let home = tmp.path().join("home");
+        let local = tmp.path().join("my-skill");
+        fs::create_dir_all(home.join(".agents")).unwrap();
+        fs::write(home.join(".agents/skill-studio.json"), "not json").unwrap();
+        fs::create_dir_all(&local).unwrap();
+        fs::write(local.join("SKILL.md"), "body").unwrap();
+        let source = ParsedSkillSource {
+            kind: ParsedSkillSourceKind::Local,
+            repo: None,
+            path: None,
+            git_ref: None,
+            skill_name: None,
+            url: None,
+            local_path: Some(local.to_string_lossy().to_string()),
+        };
+        let request = base_request(source, AddMethod::Copy);
+
+        assert!(add_skill_with(
+            &home,
+            &request,
+            &FakeRunner::default(),
+            &NeverCalledFetch,
+            &NeverCalledLookup,
+        )
+        .is_err());
+        assert!(!home.join(".agents/skills/my-skill").exists());
     }
 
     #[test]
@@ -1239,7 +1984,7 @@ mod tests {
     }
 
     #[test]
-    fn claude_code_symlink_not_created_for_skills_sh_method() {
+    fn skills_sh_reports_universal_and_selected_claude_deployments() {
         let tmp = tempfile::tempdir().unwrap();
         let home = tmp.path().to_path_buf();
         fs::create_dir_all(home.join(".claude/skills")).unwrap();
@@ -1256,7 +2001,53 @@ mod tests {
         )
         .unwrap();
         assert!(fs::symlink_metadata(home.join(".claude/skills/find-bugs")).is_err());
-        assert_eq!(result.deployments_created.len(), 1);
+        assert_eq!(result.deployments_created.len(), 2);
+    }
+
+    #[test]
+    fn skills_sh_trial_records_the_exact_claude_link_created_by_the_cli() {
+        struct SkillsShLinkRunner {
+            home: PathBuf,
+        }
+
+        impl CommandRunner for SkillsShLinkRunner {
+            fn run_npx(&self, _args: &[String], _cwd: Option<&Path>) -> Result<(), String> {
+                let skill_dir = self.home.join(".agents/skills/find-bugs");
+                fs::create_dir_all(&skill_dir).unwrap();
+                fs::write(skill_dir.join("SKILL.md"), "body").unwrap();
+                let link = self.home.join(".claude/skills/find-bugs");
+                fs::create_dir_all(link.parent().unwrap()).unwrap();
+                std::os::unix::fs::symlink("../../.agents/skills/find-bugs", link).unwrap();
+                Ok(())
+            }
+        }
+
+        let tmp = tempfile::tempdir().unwrap();
+        let home = tmp.path().to_path_buf();
+        let source = github_source("getsentry/find-bugs", None, Some("find-bugs"));
+        let mut request = base_request(source, AddMethod::SkillsSh);
+        request.agents = vec![AgentId::ClaudeCode];
+        request.trial = true;
+
+        add_skill_with(
+            &home,
+            &request,
+            &SkillsShLinkRunner { home: home.clone() },
+            &NeverCalledFetch,
+            &NeverCalledLookup,
+        )
+        .unwrap();
+
+        let registry = super::super::skill_fork_registry::read_fork_registry(&home).unwrap();
+        let trial = registry.trials.values().next().unwrap();
+        assert_eq!(
+            trial.claude_link,
+            Some(home.join(".claude/skills/find-bugs"))
+        );
+        assert_eq!(
+            trial.claude_link_target,
+            Some(PathBuf::from("../../.agents/skills/find-bugs"))
+        );
     }
 
     #[test]
@@ -1374,15 +2165,13 @@ mod tests {
         // Global shared folder is untouched.
         assert!(!home.join(".agents/skills/my-skill").exists());
 
-        // The trial's `skill_dir` is the project copy, so expiry removes it,
-        // not anything under the home directory.
-        let expired = skill_trial::run_trial_expiry_pass(
-            &home,
-            chrono::Utc::now() + chrono::Duration::hours(25),
-            &FakeRunner::default(),
-        );
-        assert_eq!(expired.len(), 1);
-        assert!(!installed.exists());
+        // Expiry later resolves this exact deployment from a fresh snapshot.
+        let registry = super::super::skill_fork_registry::read_fork_registry(&home).unwrap();
+        let trial = registry.trials.values().next().unwrap();
+        assert_eq!(trial.skill_dir, installed);
+        assert_eq!(trial.scope, TrialScope::Project);
+        assert!(!trial.deployment_id.is_empty());
+        assert!(!trial.deployment_fingerprint.is_empty());
     }
 
     #[test]
@@ -1412,8 +2201,12 @@ mod tests {
 
         let registry = super::super::skill_fork_registry::read_fork_registry(&home).unwrap();
         assert_eq!(registry.trials.len(), 2);
-        assert!(registry.trials.contains_key("global/one"));
-        assert!(registry.trials.contains_key("global/two"));
+        for name in ["one", "two"] {
+            let skill_dir = home.join(".agents/skills").join(name);
+            let deployment_id = installed_deployment_id(&request, name, &skill_dir, "universal");
+            let key = super::super::skill_fork_registry::deployment_trial_key(&deployment_id);
+            assert_eq!(registry.trials[&key].deployment_id, deployment_id);
+        }
     }
 
     fn entry(name: &str, path: &str) -> GithubSkillEntry {
@@ -1432,6 +2225,7 @@ mod tests {
             source,
             skills,
             method,
+            destination: SkillDestination::Universal,
             agents: vec![],
             disabled_harnesses: vec![],
             scope: InstallScope::Global,
@@ -1628,6 +2422,44 @@ mod tests {
         assert!(home.join(".agents/skills/find-bugs").exists());
         let warning = result.warning.expect("expected a trial warning");
         assert!(warning.contains("24 h trial could not be recorded"));
+    }
+
+    #[test]
+    fn copy_fingerprint_failure_rolls_back_installed_directories() {
+        let tmp = tempfile::tempdir().unwrap();
+        let home = tmp.path().join("home");
+        let source_dir = tmp.path().join("source");
+        fs::create_dir_all(&source_dir).unwrap();
+        fs::write(source_dir.join("README.md"), "missing SKILL.md").unwrap();
+        let source = ParsedSkillSource {
+            kind: ParsedSkillSourceKind::Local,
+            repo: None,
+            path: None,
+            git_ref: None,
+            skill_name: Some("find-bugs".to_string()),
+            url: None,
+            local_path: Some(source_dir.to_string_lossy().to_string()),
+        };
+        let request = base_request(source, AddMethod::Copy);
+
+        let error = add_skill_with(
+            &home,
+            &request,
+            &FakeRunner::default(),
+            &NeverCalledFetch,
+            &NeverCalledLookup,
+        )
+        .unwrap_err();
+
+        assert!(
+            error.contains("Failed to fingerprint Copy ownership"),
+            "{error}"
+        );
+        assert!(!home.join(".agents/skills/find-bugs").exists());
+        assert!(super::super::skill_fork_registry::read_fork_registry(&home)
+            .unwrap()
+            .copies
+            .is_empty());
     }
 
     /// Installs `find-bugs` through dotagents with `disabled_harnesses` set,

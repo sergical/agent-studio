@@ -238,20 +238,32 @@ export function InstalledSkillHeader({
             {parkedChipLabel(skill.parked_at)}
           </span>
         )}
-        {skill.trial && (
-          <span className="inline-flex items-center gap-1 rounded-full bg-bg-tertiary px-2 py-0.5 text-caption text-accent">
-            {trialChipLabel(skill.trial.expires_at)}
-            <button
-              type="button"
-              className="cursor-pointer rounded-sm border-0 bg-bg-primary px-1.5 py-px text-caption font-semibold text-inherit disabled:cursor-not-allowed disabled:opacity-50"
-              onClick={actions.keepTrial.run}
-              disabled={actions.keepTrial.busy}
+        {(skill.trials ?? (skill.trial ? [skill.trial] : [])).map((trial) => {
+          const keepAction = actions.keepTrial(trial);
+          const scope = trial.scope === "global" ? "Global" : "Project";
+          return (
+            <span
+              key={trial.deployment_id || `${trial.scope}/${trial.project_path ?? ""}`}
+              className="inline-flex items-center gap-1 rounded-full bg-bg-tertiary px-2 py-0.5 text-caption text-accent"
             >
-              Keep
-            </button>
-          </span>
-        )}
-        {skill.has_update && (
+              {scope}{" "}
+              {trial.status === "recovery-required"
+                ? "expiry needs review"
+                : trial.status === "expiring"
+                  ? "expiry in progress"
+                  : trialChipLabel(trial.expires_at)}
+              <button
+                type="button"
+                className="cursor-pointer rounded-sm border-0 bg-bg-primary px-1.5 py-px text-caption font-semibold text-inherit disabled:cursor-not-allowed disabled:opacity-50"
+                onClick={keepAction.run}
+                disabled={keepAction.busy}
+              >
+                Keep
+              </button>
+            </span>
+          );
+        })}
+        {skill.update_owner_ids.length > 0 && (
           <span className="inline-flex items-center gap-1 rounded-full bg-bg-tertiary px-2 py-0.5 text-caption text-accent">
             Update available
           </span>

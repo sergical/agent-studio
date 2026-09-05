@@ -27,7 +27,7 @@ use super::project_discovery;
 use super::skill_assembly;
 use super::skill_discovery;
 use super::skill_dto::{Deployment, InstalledSkill};
-use super::skill_fork_registry::{trial_key, TrialScope};
+use super::skill_fork_registry::TrialScope;
 use super::skill_invocations::{
     InvocationHeatmap, RefreshReport, SkillInvocationIndex, SkillInvocationStats,
 };
@@ -772,24 +772,16 @@ fn build_snapshot(
             skills: std::collections::HashMap::new(),
         }
     });
-    let mut skills = skill_assembly::assemble_installed_skills(candidates, &lock);
+    let ledgers = super::skill_ownership::load_ownership_ledgers(home, &project_paths);
+    let fork_registry = super::skill_fork_registry::read_fork_registry_or_default(home);
+    let mut skills = skill_assembly::assemble_installed_skills(
+        candidates,
+        &lock,
+        &ledgers,
+        &fork_registry.copies,
+    );
 
     let update_store = skill_update_check::read_update_check_store_at(update_check_path);
-    for skill in &mut skills {
-        // The update ledger only covers the home-scoped `.agents` roots, so
-        // a project-only deployment of a same-named skill never gets flagged
-        // from this data - see the module doc for why that's out of scope.
-        let is_global = skill.deployments.iter().any(|d| d.scope == "global");
-        if is_global {
-            if let Some(state) = update_store.skills.get(&skill.name) {
-                skill.has_update = skill_update_check::has_update(state);
-                if skill.has_update {
-                    skill.update_commit = state.latest_commit.clone();
-                    skill.update_commit_at = state.latest_commit_at.clone();
-                }
-            }
-        }
-    }
     let update_check = skill_update_check::summarize(&update_store);
 
     // A forked skill is no longer in any ledger, so `classify_source_kind`
@@ -797,15 +789,30 @@ fn build_snapshot(
     // manual directory - the fork registry is the only source of truth for
     // it. Forking only ever applies to the shared `.agents/skills` root, so
     // a same-named project-scoped skill is left alone.
-    let fork_registry = super::skill_fork_registry::read_fork_registry_or_default(home);
     for skill in &mut skills {
         let Some(record) = fork_registry.forks.get(&skill.name) else {
             continue;
         };
-        let is_global = skill.deployments.iter().any(|d| d.scope == "global");
-        if !is_global {
+        let expected_path = if record.skill_dir.as_os_str().is_empty() {
+            home.join(".agents/skills").join(&skill.name)
+        } else {
+            record.skill_dir.clone()
+        };
+        let Some(deployment) = skill.deployments.iter_mut().find(|deployment| {
+            deployment.scope == "global"
+                && deployment.destination == super::skill_deployment::SkillDestination::Universal
+                && matches!(
+                    deployment.backing,
+                    super::skill_deployment::BackingRelationship::Canonical
+                )
+                && Path::new(&deployment.path) == expected_path
+                && (record.deployment_id.is_empty() || deployment.id == record.deployment_id)
+        }) else {
             continue;
-        }
+        };
+        deployment.owner_kind = super::skill_ownership::LifecycleOwnerKind::Fork;
+        deployment.owner_id = Some(format!("owner:v1/global/{}", skill.name));
+        deployment.mutability = super::skill_deployment::DeploymentMutability::Mutable;
         skill.source_kind = super::provenance::SourceKind::Fork;
         skill.fork = Some(super::skill_dto::ForkInfo {
             origin_tool: record.origin_tool,
@@ -816,42 +823,90 @@ fn build_snapshot(
         });
     }
 
-    // Trials aren't gated on global scope like forks are - `add_skill`
-    // supports project-scoped trials too. The `trials` map only keys on
-    // scope+name (see `trial_key`), so a global trial is matched against any
-    // global deployment and a project trial against a deployment whose
-    // `project_path` matches the one the trial was recorded for.
+    let current_owner_ids: Vec<String> = skills
+        .iter()
+        .flat_map(|skill| skill.deployments.iter())
+        .filter_map(|deployment| deployment.owner_id.clone())
+        .collect();
     for skill in &mut skills {
-        if let Some(trial) = fork_registry
-            .trials
-            .get(&trial_key(TrialScope::Global, &skill.name))
-        {
-            if skill.deployments.iter().any(|d| d.scope == "global") {
-                skill.trial = Some(super::skill_dto::TrialInfo {
-                    expires_at: trial.expires_at.clone(),
-                    method: trial.method,
-                    scope: TrialScope::Global,
-                    project_path: None,
-                });
+        for deployment in &skill.deployments {
+            let Some(owner_id) = deployment.owner_id.as_deref() else {
                 continue;
+            };
+            let Some(state) =
+                skill_update_check::state_for_owner(&update_store, owner_id, &current_owner_ids)
+                    .filter(|state| skill_update_check::has_update(state))
+            else {
+                continue;
+            };
+            if !skill.update_owner_ids.iter().any(|id| id == owner_id) {
+                skill.update_owner_ids.push(owner_id.to_string());
             }
+            skill.update_owners.push(super::skill_dto::OwnerUpdateInfo {
+                owner_id: owner_id.to_string(),
+                latest_commit: state.latest_commit.clone(),
+                latest_commit_at: state.latest_commit_at.clone(),
+            });
         }
-        if let Some(trial) = fork_registry
+        skill.has_update = !skill.update_owner_ids.is_empty();
+        let shared_metadata = skill.update_owners.first().filter(|first| {
+            skill.update_owners.iter().all(|update| {
+                update.latest_commit == first.latest_commit
+                    && update.latest_commit_at == first.latest_commit_at
+            })
+        });
+        skill.update_commit = shared_metadata.and_then(|update| update.latest_commit.clone());
+        skill.update_commit_at = shared_metadata.and_then(|update| update.latest_commit_at.clone());
+    }
+
+    // New trial records identify one exact deployment. Version 1 records use
+    // scope/name keys and are accepted only when their stored path and scope
+    // resolve to exactly one current deployment.
+    for skill in &mut skills {
+        let matches: Vec<_> = fork_registry
             .trials
-            .get(&trial_key(TrialScope::Project, &skill.name))
-        {
-            let matches = skill
-                .deployments
-                .iter()
-                .any(|d| d.project_path.as_deref() == trial.project_path.as_deref());
-            if matches {
-                skill.trial = Some(super::skill_dto::TrialInfo {
-                    expires_at: trial.expires_at.clone(),
-                    method: trial.method,
-                    scope: TrialScope::Project,
-                    project_path: trial.project_path.clone(),
-                });
-            }
+            .values()
+            .filter_map(|trial| {
+                if trial.status == super::skill_fork_registry::TrialStatus::RecoveryRequired
+                    && super::skill_deployment::parse_deployment_id(&trial.deployment_id)
+                        .is_some_and(|parsed| parsed.name == skill.name)
+                {
+                    return Some((trial, trial.deployment_id.clone()));
+                }
+                let candidates: Vec<_> = skill
+                    .deployments
+                    .iter()
+                    .filter(|deployment| {
+                        if !trial.deployment_id.is_empty() {
+                            return deployment.id == trial.deployment_id;
+                        }
+                        let scope_matches = match trial.scope {
+                            TrialScope::Global => deployment.scope == "global",
+                            TrialScope::Project => {
+                                deployment.scope == "project"
+                                    && deployment.project_path.as_deref()
+                                        == trial.project_path.as_deref()
+                            }
+                        };
+                        scope_matches && Path::new(&deployment.path) == trial.skill_dir
+                    })
+                    .collect();
+                (candidates.len() == 1).then(|| (trial, candidates[0].id.clone()))
+            })
+            .collect();
+        skill.trials = matches
+            .into_iter()
+            .map(|(trial, deployment_id)| super::skill_dto::TrialInfo {
+                deployment_id,
+                expires_at: trial.expires_at.clone(),
+                method: trial.method,
+                status: trial.status,
+                scope: trial.scope,
+                project_path: trial.project_path.clone(),
+            })
+            .collect();
+        if skill.trials.len() == 1 {
+            skill.trial = skill.trials.first().cloned();
         }
     }
 
@@ -859,7 +914,18 @@ fn build_snapshot(
     // look at, so both the "parked" flag and the badge come straight from
     // the registry's `parked` record instead.
     for skill in &mut skills {
-        if let Some(record) = fork_registry.parked.get(&skill.name) {
+        if let Some(record) = fork_registry.parked.get(&skill.name).filter(|record| {
+            let expected = if record.skill_dir.as_os_str().is_empty() {
+                home.join(".agents/skills-parked").join(&skill.name)
+            } else {
+                record.skill_dir.clone()
+            };
+            skill.deployments.iter().any(|deployment| {
+                deployment.scope == "parked"
+                    && Path::new(&deployment.path) == expected
+                    && (record.deployment_id.is_empty() || deployment.id == record.deployment_id)
+            })
+        }) {
             skill.parked = true;
             skill.parked_at = Some(record.parked_at.clone());
             skill.source_kind = record.source_kind;
@@ -878,6 +944,16 @@ fn build_snapshot(
             .into_iter()
             .collect();
     for skill in &mut skills {
+        let open_code_deployment_count = skill
+            .deployments
+            .iter()
+            .filter(|deployment| deployment.agent == "OpenCode")
+            .count();
+        let claude_deployment_count = skill
+            .deployments
+            .iter()
+            .filter(|deployment| deployment.agent == "Claude Code")
+            .count();
         for deployment in &mut skill.deployments {
             if deployment.agent == "Codex" {
                 let skill_md = PathBuf::from(&deployment.path).join("SKILL.md");
@@ -889,17 +965,23 @@ fn build_snapshot(
                 deployment.codex_implicit_invocation =
                     read_codex_allow_implicit_invocation(&PathBuf::from(&deployment.path));
             } else if deployment.agent == "OpenCode" {
-                if opencode_denied.iter().any(|pattern| {
-                    super::opencode_skill_permission::pattern_matches(pattern, &skill.name)
-                }) {
+                if open_code_deployment_count == 1
+                    && opencode_denied.iter().any(|pattern| {
+                        super::opencode_skill_permission::pattern_matches(pattern, &skill.name)
+                    })
+                {
                     deployment.disabled = true;
                     deployment.disabled_by = Some(super::skill_dto::DisabledBy::OpencodePermission);
                 }
             } else if deployment.agent == "Claude Code"
                 && fork_registry
                     .harness_disabled
-                    .get(&skill.name)
-                    .is_some_and(|by_harness| by_harness.contains_key("claude-code"))
+                    .values()
+                    .filter_map(|by_harness| by_harness.get("claude-code"))
+                    .any(|record| {
+                        (record.deployment_id.is_empty() && claude_deployment_count == 1)
+                            || record.deployment_id == deployment.id
+                    })
             {
                 deployment.disabled = true;
                 deployment.disabled_by = Some(super::skill_dto::DisabledBy::ClaudeLinkRemoved);
@@ -1269,6 +1351,75 @@ mod tests {
     }
 
     #[test]
+    fn build_snapshot_does_not_overlay_fork_onto_same_name_project_deployment() {
+        let tmp = tempfile::tempdir().unwrap();
+        let home = tmp.path().join("home");
+        let project = tmp.path().join("project");
+        let project_skill = project.join(".agents/skills/find-bugs");
+        fs::create_dir_all(&project_skill).unwrap();
+        fs::write(
+            project_skill.join("SKILL.md"),
+            "---\nname: find-bugs\ndescription: project copy\n---\nbody",
+        )
+        .unwrap();
+
+        let global_skill = home.join(".agents/skills/find-bugs");
+        let global_id = super::super::skill_deployment::deployment_id(
+            "find-bugs",
+            "global",
+            super::super::skill_deployment::SkillDestination::Universal,
+            "universal",
+            None,
+            &global_skill,
+        );
+        let mut registry = super::super::skill_fork_registry::read_fork_registry(&home).unwrap();
+        registry.forks.insert(
+            "find-bugs".to_string(),
+            super::super::skill_fork_registry::ForkRecord {
+                deployment_id: global_id,
+                skill_dir: global_skill,
+                forked_at: "2026-01-01T00:00:00Z".to_string(),
+                origin_tool: super::super::skill_fork_registry::OriginTool::Dotagents,
+                origin_source: "getsentry/find-bugs".to_string(),
+                repo: "getsentry/find-bugs".to_string(),
+                path: "skills/find-bugs".to_string(),
+                declared_ref: None,
+                base_commit: "a".repeat(40),
+            },
+        );
+        super::super::skill_fork_registry::write_fork_registry(&home, &registry).unwrap();
+
+        let mut invocation_index = SkillInvocationIndex::default();
+        let cache_path = tmp.path().join("cache.json");
+        let (snapshot, _) = build_snapshot(
+            &home,
+            std::slice::from_ref(&project),
+            &BTreeSet::new(),
+            &mut invocation_index,
+            &mut skill_discovery::SkillFactsCache::default(),
+            BuildPaths {
+                cache_path: &cache_path,
+                runs_root: tmp.path(),
+                update_check_path: &tmp.path().join("update-check.json"),
+            },
+            Utc::now(),
+        );
+
+        let skill = snapshot
+            .skills
+            .iter()
+            .find(|skill| skill.name == "find-bugs")
+            .unwrap();
+        assert_eq!(
+            skill.source_kind,
+            super::super::provenance::SourceKind::Manual
+        );
+        assert!(skill.fork.is_none());
+        assert_eq!(skill.deployments.len(), 1);
+        assert_eq!(skill.deployments[0].scope, "project");
+    }
+
+    #[test]
     fn build_snapshot_reads_update_check_store_at_the_production_path() {
         // Regression test: `update_check_path` is already the full file
         // path (`<app data>/skill-studio/update-check.json`), computed the
@@ -1279,20 +1430,41 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let home = tmp.path().join("home");
         let app_data = tmp.path().join("app-data");
-        fs::create_dir_all(home.join(".claude/skills/foo")).unwrap();
+        fs::create_dir_all(home.join(".agents/skills/foo")).unwrap();
         fs::write(
-            home.join(".claude/skills/foo/SKILL.md"),
+            home.join(".agents/skills/foo/SKILL.md"),
             "---\nname: foo\ndescription: test\n---\nbody",
         )
         .unwrap();
+        fs::write(
+            home.join(".agents/.skill-lock.json"),
+            serde_json::json!({
+                "version": 3,
+                "skills": {
+                    "foo": {
+                        "source": "someorg/foo",
+                        "sourceType": "github",
+                        "sourceUrl": "https://github.com/someorg/foo",
+                        "skillPath": "skills/foo/SKILL.md",
+                        "skillFolderHash": "abc",
+                        "installedAt": "2026-01-01T00:00:00Z",
+                        "updatedAt": "2026-01-01T00:00:00Z"
+                    }
+                }
+            })
+            .to_string(),
+        )
+        .unwrap();
 
+        let seeded_owner_id = "owner:v1/global/foo";
         let update_check_path = skill_update_check::update_check_path(&app_data);
         fs::create_dir_all(update_check_path.parent().unwrap()).unwrap();
         let store = serde_json::json!({
+            "version": 2,
             "checked_at": Utc::now().to_rfc3339(),
             "gh_status": { "kind": "ok" },
-            "skills": {
-                "foo": {
+            "owners": {
+                (seeded_owner_id): {
                     "repo": "someorg/foo",
                     "path": "skills/foo",
                     "installed_commit": "a".repeat(40),
@@ -1323,8 +1495,264 @@ mod tests {
         );
 
         let foo = snapshot.skills.iter().find(|s| s.name == "foo").unwrap();
+        assert_eq!(
+            foo.deployments[0].owner_id.as_deref(),
+            Some(seeded_owner_id)
+        );
         assert!(foo.has_update);
+        assert_eq!(foo.update_owner_ids, vec![seeded_owner_id]);
         assert_eq!(foo.update_commit.as_deref(), Some("b".repeat(40).as_str()));
+        assert_eq!(foo.update_owners.len(), 1);
+    }
+
+    #[test]
+    fn build_snapshot_exposes_simultaneous_global_and_project_trials() {
+        let tmp = tempfile::tempdir().unwrap();
+        let home = tmp.path().join("home");
+        let project = tmp.path().join("project");
+        let global_dir = home.join(".agents/skills/foo");
+        let project_dir = project.join(".agents/skills/foo");
+        for skill_dir in [&global_dir, &project_dir] {
+            fs::create_dir_all(skill_dir).unwrap();
+            fs::write(
+                skill_dir.join("SKILL.md"),
+                "---\nname: foo\ndescription: test\n---\nbody",
+            )
+            .unwrap();
+        }
+        let mut registry = super::super::skill_fork_registry::ForkRegistry::default();
+        for (key, scope, project_path, skill_dir) in [
+            ("global/foo", TrialScope::Global, None, global_dir),
+            (
+                "project/foo",
+                TrialScope::Project,
+                Some(project.to_string_lossy().to_string()),
+                project_dir,
+            ),
+        ] {
+            registry.trials.insert(
+                key.to_string(),
+                super::super::skill_fork_registry::TrialRecord {
+                    deployment_id: String::new(),
+                    started_at: "2026-09-05T00:00:00Z".to_string(),
+                    expires_at: "2026-09-06T00:00:00Z".to_string(),
+                    status: super::super::skill_fork_registry::TrialStatus::Active,
+                    method: super::super::skill_fork_registry::AddMethod::Copy,
+                    scope,
+                    project_path,
+                    skill_dir,
+                    deployment_fingerprint: String::new(),
+                    claude_link: None,
+                    claude_link_target: None,
+                },
+            );
+        }
+        super::super::skill_fork_registry::write_fork_registry(&home, &registry).unwrap();
+
+        let mut invocation_index = SkillInvocationIndex::default();
+        let (snapshot, _) = build_snapshot(
+            &home,
+            std::slice::from_ref(&project),
+            &BTreeSet::new(),
+            &mut invocation_index,
+            &mut skill_discovery::SkillFactsCache::default(),
+            BuildPaths {
+                cache_path: &tmp.path().join("cache.json"),
+                runs_root: tmp.path(),
+                update_check_path: &tmp.path().join("update-check.json"),
+            },
+            Utc::now(),
+        );
+
+        let foo = snapshot
+            .skills
+            .iter()
+            .find(|skill| skill.name == "foo")
+            .unwrap();
+        assert_eq!(foo.trials.len(), 2);
+        assert!(foo.trial.is_none());
+        assert!(foo
+            .trials
+            .iter()
+            .any(|trial| trial.scope == TrialScope::Global));
+        assert!(foo
+            .trials
+            .iter()
+            .any(|trial| trial.scope == TrialScope::Project));
+        assert!(foo
+            .trials
+            .iter()
+            .all(|trial| !trial.deployment_id.is_empty()));
+    }
+
+    #[test]
+    fn build_snapshot_surfaces_recovery_when_only_a_claude_replacement_remains() {
+        let tmp = tempfile::tempdir().unwrap();
+        let home = tmp.path().join("home");
+        let replacement = home.join(".claude/skills/foo");
+        fs::create_dir_all(&replacement).unwrap();
+        fs::write(
+            replacement.join("SKILL.md"),
+            "---\nname: foo\ndescription: replacement\n---\nbody",
+        )
+        .unwrap();
+        let missing = home.join(".agents/skills/foo");
+        let deployment_id = super::super::skill_deployment::deployment_id(
+            "foo",
+            "global",
+            super::super::skill_deployment::SkillDestination::Universal,
+            "universal",
+            None,
+            &missing,
+        );
+        let mut registry = super::super::skill_fork_registry::ForkRegistry::default();
+        registry.trials.insert(
+            super::super::skill_fork_registry::deployment_trial_key(&deployment_id),
+            super::super::skill_fork_registry::TrialRecord {
+                deployment_id,
+                started_at: "2026-09-05T00:00:00Z".to_string(),
+                expires_at: "2026-09-06T00:00:00Z".to_string(),
+                status: super::super::skill_fork_registry::TrialStatus::RecoveryRequired,
+                method: super::super::skill_fork_registry::AddMethod::SkillsSh,
+                scope: TrialScope::Global,
+                project_path: None,
+                skill_dir: missing,
+                deployment_fingerprint: "old".to_string(),
+                claude_link: Some(replacement),
+                claude_link_target: Some(PathBuf::from("replacement")),
+            },
+        );
+        super::super::skill_fork_registry::write_fork_registry(&home, &registry).unwrap();
+
+        let mut invocation_index = SkillInvocationIndex::default();
+        let (snapshot, _) = build_snapshot(
+            &home,
+            &[],
+            &BTreeSet::new(),
+            &mut invocation_index,
+            &mut skill_discovery::SkillFactsCache::default(),
+            BuildPaths {
+                cache_path: &tmp.path().join("cache.json"),
+                runs_root: tmp.path(),
+                update_check_path: &tmp.path().join("update-check.json"),
+            },
+            Utc::now(),
+        );
+
+        let foo = snapshot
+            .skills
+            .iter()
+            .find(|skill| skill.name == "foo")
+            .unwrap();
+        assert_eq!(foo.trials.len(), 1);
+        assert_eq!(
+            foo.trials[0].status,
+            super::super::skill_fork_registry::TrialStatus::RecoveryRequired
+        );
+    }
+
+    #[test]
+    fn differing_owner_updates_keep_only_per_owner_commit_metadata() {
+        let tmp = tempfile::tempdir().unwrap();
+        let home = tmp.path().join("home");
+        let project = tmp.path().join("project");
+        let lock = serde_json::json!({
+            "version": 3,
+            "skills": { "foo": {
+                "source": "someorg/foo", "sourceType": "github",
+                "sourceUrl": "https://github.com/someorg/foo",
+                "skillPath": "skills/foo/SKILL.md", "skillFolderHash": "abc",
+                "installedAt": "2026-01-01T00:00:00Z", "updatedAt": "2026-01-01T00:00:00Z"
+            }}
+        })
+        .to_string();
+        for root in [home.join(".agents"), project.join(".agents")] {
+            let skill_dir = root.join("skills/foo");
+            fs::create_dir_all(&skill_dir).unwrap();
+            fs::write(
+                skill_dir.join("SKILL.md"),
+                "---\nname: foo\ndescription: test\n---\nbody",
+            )
+            .unwrap();
+            fs::write(root.join(".skill-lock.json"), &lock).unwrap();
+        }
+        let update_check_path = tmp.path().join("update-check.json");
+        let cache_path = tmp.path().join("cache.json");
+        let mut invocation_index = SkillInvocationIndex::default();
+        let (initial, _) = build_snapshot(
+            &home,
+            std::slice::from_ref(&project),
+            &BTreeSet::new(),
+            &mut invocation_index,
+            &mut skill_discovery::SkillFactsCache::default(),
+            BuildPaths {
+                cache_path: &cache_path,
+                runs_root: tmp.path(),
+                update_check_path: &update_check_path,
+            },
+            Utc::now(),
+        );
+        let foo = initial
+            .skills
+            .iter()
+            .find(|skill| skill.name == "foo")
+            .unwrap();
+        let owner_ids: Vec<_> = foo
+            .deployments
+            .iter()
+            .filter_map(|deployment| deployment.owner_id.clone())
+            .collect();
+        assert_eq!(owner_ids.len(), 2);
+        let owners = serde_json::Map::from_iter(owner_ids.iter().enumerate().map(
+            |(index, owner_id)| {
+                (
+                    owner_id.clone(),
+                    serde_json::json!({
+                        "repo": "someorg/foo", "path": "skills/foo",
+                        "installed_commit": "a".repeat(40),
+                        "latest_commit": if index == 0 { "b".repeat(40) } else { "c".repeat(40) },
+                        "latest_commit_at": if index == 0 { "2026-02-01T00:00:00Z" } else { "2026-03-01T00:00:00Z" },
+                        "checked_at": Utc::now().to_rfc3339(), "error": null,
+                        "lock_updated_at": null
+                    }),
+                )
+            },
+        ));
+        fs::write(
+            &update_check_path,
+            serde_json::json!({
+                "version": 2, "checked_at": Utc::now().to_rfc3339(),
+                "gh_status": { "kind": "ok" }, "owners": owners
+            })
+            .to_string(),
+        )
+        .unwrap();
+
+        let (snapshot, _) = build_snapshot(
+            &home,
+            std::slice::from_ref(&project),
+            &BTreeSet::new(),
+            &mut invocation_index,
+            &mut skill_discovery::SkillFactsCache::default(),
+            BuildPaths {
+                cache_path: &cache_path,
+                runs_root: tmp.path(),
+                update_check_path: &update_check_path,
+            },
+            Utc::now(),
+        );
+        let foo = snapshot
+            .skills
+            .iter()
+            .find(|skill| skill.name == "foo")
+            .unwrap();
+        assert_eq!(foo.update_owners.len(), 2);
+        assert!(foo.update_commit.is_none());
+        assert!(foo.update_commit_at.is_none());
+        assert_ne!(
+            foo.update_owners[0].latest_commit,
+            foo.update_owners[1].latest_commit
+        );
     }
 
     #[test]
@@ -1437,6 +1865,8 @@ mod tests {
                 installed_at: Utc::now().to_rfc3339(),
                 updated_at: None,
                 has_update: false,
+                update_owner_ids: Vec::new(),
+                update_owners: Vec::new(),
                 update_commit: None,
                 update_commit_at: None,
                 source_kind: SourceKind::Manual,
@@ -1446,19 +1876,7 @@ mod tests {
                     path: dep_dir.to_string_lossy().to_string(),
                     is_symlink: false,
                     plugin: None,
-                    symlink_target: None,
-                    resolved_path: None,
-                    symlink_is_broken: false,
-                    symlink_error: None,
-                    project_path: None,
-                    content_hash: String::new(),
-                    disabled: false,
-                    disabled_by: None,
-                    disabled_readers: Vec::new(),
-                    codex_implicit_invocation: None,
-                    shared_via_whole_dir_link: false,
-                    spec_violations: Vec::new(),
-                    invocation: super::super::frontmatter::InvocationPolicy::Both,
+                    ..Default::default()
                 }],
                 has_spec: false,
                 description: None,
@@ -1474,6 +1892,7 @@ mod tests {
                 folder_truncated: false,
                 fork: None,
                 trial: None,
+                trials: Vec::new(),
                 parked: false,
                 parked_at: None,
                 invocation: super::super::frontmatter::InvocationPolicy::Both,

@@ -21,9 +21,13 @@ use chrono::{DateTime, Utc};
 
 use super::provenance::SourceKind;
 use super::skill_agent_runner::validate_skill_dir_name;
+use super::skill_dto::LifecycleTarget;
 use super::skill_fork::ForkMutationLock;
 use super::skill_fork_registry::{
     read_fork_registry, trial_key, write_fork_registry, ParkedRecord, TrialScope,
+};
+use super::skill_lifecycle::{
+    find_deployment, require_global_universal_park_target, revalidate_deployment,
 };
 use super::skill_refresh::{self, SkillRefreshState};
 
@@ -59,28 +63,6 @@ pub(crate) fn take_claude_link(home: &Path, name: &str) -> Result<Option<PathBuf
     fs::remove_file(&link_path)
         .map_err(|e| format!("Failed to remove {}: {e}", link_path.display()))?;
     Ok(Some(target))
-}
-
-/// Whether `~/.claude/skills/<name>` is covered by a per-skill symlink, the
-/// whole-dir symlink, or nothing - a read-only counterpart to
-/// `take_claude_link` for callers (like `skill_harness_disable`) that need
-/// to decide whether removing it is even possible before doing so.
-pub(crate) enum ClaudeLinkState {
-    PerSkill,
-    WholeDir,
-    None,
-}
-
-pub(crate) fn claude_link_state(home: &Path, name: &str) -> ClaudeLinkState {
-    if let Ok(meta) = fs::symlink_metadata(home.join(".claude").join("skills")) {
-        if meta.file_type().is_symlink() {
-            return ClaudeLinkState::WholeDir;
-        }
-    }
-    match fs::symlink_metadata(claude_link_path(home, name)) {
-        Ok(meta) if meta.file_type().is_symlink() => ClaudeLinkState::PerSkill,
-        _ => ClaudeLinkState::None,
-    }
 }
 
 /// Recreates `~/.claude/skills/<name>` -> `target` (as recorded when it was
@@ -172,23 +154,39 @@ fn dir_trees_identical(a: &Path, b: &Path) -> Result<bool, String> {
     Ok(fa == fb)
 }
 
-/// If `name` has a running global trial, point its `skill_dir`/`claude_link`
-/// at the new location - a parked trial's clock keeps running (see module
-/// docs), but its recorded paths must track wherever the folder actually is,
-/// so expiry (or a later unpark) doesn't operate on a path that's moved out
-/// from under it.
+/// If `name` has a running global trial, point its active paths at the new
+/// location. A parked trial has no active Claude link. The parked record keeps
+/// the removed link's raw target for restoration.
 fn retarget_trial(
     registry: &mut super::skill_fork_registry::ForkRegistry,
     name: &str,
+    old_skill_dir: &Path,
     skill_dir: PathBuf,
+    deployment_id: String,
     claude_link: Option<PathBuf>,
 ) {
-    if let Some(trial) = registry
+    let legacy_key = trial_key(TrialScope::Global, name);
+    let key = registry
         .trials
-        .get_mut(&trial_key(TrialScope::Global, name))
-    {
+        .iter()
+        .find(|(key, trial)| {
+            trial.scope == TrialScope::Global
+                && trial.skill_dir == old_skill_dir
+                && (trial.deployment_id.is_empty()
+                    || super::skill_deployment::parse_deployment_id(&trial.deployment_id)
+                        .is_some_and(|parsed| parsed.name == name)
+                    || *key == &legacy_key)
+        })
+        .map(|(key, _)| key.clone());
+    if let Some(key) = key {
+        let mut trial = registry.trials.remove(&key).expect("key came from map");
         trial.skill_dir = skill_dir;
+        trial.deployment_id = deployment_id.clone();
         trial.claude_link = claude_link;
+        registry.trials.insert(
+            super::skill_fork_registry::deployment_trial_key(&deployment_id),
+            trial,
+        );
     }
 }
 
@@ -254,12 +252,28 @@ fn park_skill_impl(
     }
 
     let record = ParkedRecord {
+        deployment_id: super::skill_deployment::deployment_id(
+            name,
+            "parked",
+            super::skill_deployment::SkillDestination::Universal,
+            "universal",
+            None,
+            &parked_dir,
+        ),
+        skill_dir: parked_dir.clone(),
         parked_at: now.to_rfc3339(),
         source_kind,
         claude_link: claude_link.clone(),
     };
     registry.parked.insert(name.to_string(), record.clone());
-    retarget_trial(&mut registry, name, parked_dir.clone(), claude_link.clone());
+    retarget_trial(
+        &mut registry,
+        name,
+        &shared_dir,
+        parked_dir.clone(),
+        record.deployment_id.clone(),
+        None,
+    );
 
     if let Err(e) = write_registry(home, &registry) {
         // Roll back: move the folder back and recreate the removed link.
@@ -381,7 +395,22 @@ fn unpark_skill_impl(
     };
 
     registry.parked.remove(name);
-    retarget_trial(&mut registry, name, shared_dir, restored_link);
+    let global_id = super::skill_deployment::deployment_id(
+        name,
+        "global",
+        super::skill_deployment::SkillDestination::Universal,
+        "universal",
+        None,
+        &shared_dir,
+    );
+    retarget_trial(
+        &mut registry,
+        name,
+        &parked_dir,
+        shared_dir,
+        global_id,
+        restored_link,
+    );
     write_registry(home, &registry)?;
 
     if let Some(e) = link_restore_err {
@@ -398,9 +427,41 @@ fn unpark_skill_impl(
     Ok(outcome)
 }
 
+fn park_target_skill(
+    snapshot: &skill_refresh::SkillSnapshot,
+    target: &LifecycleTarget,
+    action: &str,
+) -> Result<(String, SourceKind), String> {
+    let deployment_id = target
+        .deployment_id
+        .as_deref()
+        .ok_or("Park needs a deployment_id")?;
+    if target.owner_id.is_some() {
+        return Err("Park targets one Global Universal deployment, not an owner group".to_string());
+    }
+    let (skill, deployment) = find_deployment(snapshot, deployment_id)?;
+    revalidate_deployment(deployment, deployment_id)?;
+    require_global_universal_park_target(deployment)?;
+    match action {
+        "Park" => {
+            super::skill_lifecycle::require_direct_deployment_mutable(deployment, action)?;
+            if deployment.scope != "global" {
+                return Err("Park is only available for the Global Universal folder.".to_string());
+            }
+        }
+        "Unpark" if deployment.scope != "parked" => {
+            return Err(
+                "Unpark is only available for a parked Global Universal folder.".to_string(),
+            )
+        }
+        _ => {}
+    }
+    Ok((skill.name.clone(), skill.source_kind))
+}
+
 #[tauri::command]
 pub fn park_skill(
-    name: String,
+    target: LifecycleTarget,
     app: tauri::AppHandle,
     refresh_state: tauri::State<SkillRefreshState>,
     fork_lock: tauri::State<ForkMutationLock>,
@@ -408,12 +469,14 @@ pub fn park_skill(
     let _guard = fork_lock.try_acquire()?;
     let home = dirs::home_dir().ok_or("Could not find home directory")?;
 
-    let snapshot = refresh_state.snapshot.read().ok().and_then(|g| g.clone());
-    let source_kind = snapshot
-        .as_ref()
-        .and_then(|s| s.skills.iter().find(|s| s.name == name))
-        .map(|s| s.source_kind)
-        .unwrap_or(SourceKind::Manual);
+    let snapshot = super::skill_lifecycle::resolve_fresh_lifecycle_target(
+        &app,
+        &refresh_state,
+        &target,
+        "Park",
+    )?
+    .snapshot;
+    let (name, source_kind) = park_target_skill(&snapshot, &target, "Park")?;
 
     let result = park_skill_with(&home, &name, source_kind, Utc::now());
     if let Ok(record) = &result {
@@ -433,13 +496,35 @@ pub fn park_skill(
 
 #[tauri::command]
 pub fn unpark_skill(
-    name: String,
+    target: LifecycleTarget,
     app: tauri::AppHandle,
     refresh_state: tauri::State<SkillRefreshState>,
     fork_lock: tauri::State<ForkMutationLock>,
 ) -> Result<UnparkOutcome, String> {
     let _guard = fork_lock.try_acquire()?;
     let home = dirs::home_dir().ok_or("Could not find home directory")?;
+    let snapshot = super::skill_lifecycle::rebuild_fresh_lifecycle_snapshot(&app, &refresh_state)?;
+    let (name, _) = park_target_skill(&snapshot, &target, "Unpark")?;
+    let deployment_id = target.deployment_id.as_deref().expect("validated above");
+    let deployment = find_deployment(&snapshot, deployment_id)?.1;
+    let registry = read_fork_registry(&home)?;
+    let record = registry
+        .parked
+        .get(&name)
+        .ok_or_else(|| format!("\"{name}\" is not parked"))?;
+    let expected = if record.skill_dir.as_os_str().is_empty() {
+        skills_parked_root(&home).join(&name)
+    } else {
+        record.skill_dir.clone()
+    };
+    if (!record.deployment_id.is_empty() && record.deployment_id != deployment_id)
+        || Path::new(&deployment.path) != expected
+    {
+        return Err(
+            "The parked record does not belong to the selected Global Universal deployment"
+                .to_string(),
+        );
+    }
 
     let result = unpark_skill_with(&home, &name, Utc::now());
     if result.is_ok() {
@@ -490,6 +575,22 @@ mod tests {
 
         let registry = read_fork_registry(home).unwrap();
         assert!(registry.parked.contains_key("find-bugs"));
+    }
+
+    #[test]
+    fn park_leaves_same_name_project_universal_deployment_untouched() {
+        let tmp = tempfile::tempdir().unwrap();
+        let home = tmp.path().join("home");
+        let project = tmp.path().join("project");
+        write_skill(&home.join(".agents/skills/find-bugs"), "find-bugs");
+        write_skill(&project.join(".agents/skills/find-bugs"), "find-bugs");
+
+        park_skill_with(&home, "find-bugs", SourceKind::SkillsSh, now()).unwrap();
+
+        assert!(project.join(".agents/skills/find-bugs/SKILL.md").is_file());
+        assert!(home
+            .join(".agents/skills-parked/find-bugs/SKILL.md")
+            .is_file());
     }
 
     #[test]
@@ -632,34 +733,64 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let home = tmp.path();
         write_skill(&home.join(".agents/skills/find-bugs"), "find-bugs");
+        fs::create_dir_all(home.join(".claude/skills")).unwrap();
+        let link_path = home.join(".claude/skills/find-bugs");
+        let link_target = PathBuf::from("../../.agents/skills/find-bugs");
+        std::os::unix::fs::symlink(&link_target, &link_path).unwrap();
 
         let mut registry = read_fork_registry(home).unwrap();
         registry.trials.insert(
             trial_key(TrialScope::Global, "find-bugs"),
             super::super::skill_fork_registry::TrialRecord {
+                deployment_id: String::new(),
                 started_at: now().to_rfc3339(),
                 expires_at: (now() + chrono::Duration::hours(24)).to_rfc3339(),
+                status: super::super::skill_fork_registry::TrialStatus::Active,
                 method: super::super::skill_fork_registry::AddMethod::Copy,
                 scope: TrialScope::Global,
                 project_path: None,
                 skill_dir: home.join(".agents/skills/find-bugs"),
-                claude_link: None,
+                deployment_fingerprint: String::new(),
+                claude_link: Some(link_path.clone()),
+                claude_link_target: Some(link_target.clone()),
             },
         );
         write_fork_registry(home, &registry).unwrap();
 
         park_skill_with(home, "find-bugs", SourceKind::Manual, now()).unwrap();
         let registry = read_fork_registry(home).unwrap();
-        let trial = &registry.trials[&trial_key(TrialScope::Global, "find-bugs")];
+        let parked_id = super::super::skill_deployment::deployment_id(
+            "find-bugs",
+            "parked",
+            super::super::skill_deployment::SkillDestination::Universal,
+            "universal",
+            None,
+            &home.join(".agents/skills-parked/find-bugs"),
+        );
+        let trial =
+            &registry.trials[&super::super::skill_fork_registry::deployment_trial_key(&parked_id)];
         assert_eq!(
             trial.skill_dir,
             home.join(".agents/skills-parked/find-bugs")
         );
+        assert_eq!(trial.claude_link, None);
+        assert_eq!(trial.claude_link_target, Some(link_target.clone()));
 
         unpark_skill_with(home, "find-bugs", now()).unwrap();
         let registry = read_fork_registry(home).unwrap();
-        let trial = &registry.trials[&trial_key(TrialScope::Global, "find-bugs")];
+        let global_id = super::super::skill_deployment::deployment_id(
+            "find-bugs",
+            "global",
+            super::super::skill_deployment::SkillDestination::Universal,
+            "universal",
+            None,
+            &home.join(".agents/skills/find-bugs"),
+        );
+        let trial =
+            &registry.trials[&super::super::skill_fork_registry::deployment_trial_key(&global_id)];
         assert_eq!(trial.skill_dir, home.join(".agents/skills/find-bugs"));
+        assert_eq!(trial.claude_link, Some(link_path.clone()));
+        assert_eq!(fs::read_link(&link_path).unwrap(), link_target);
     }
 
     // -- dir_trees_identical -------------------------------------------------

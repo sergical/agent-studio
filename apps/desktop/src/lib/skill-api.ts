@@ -12,14 +12,13 @@ import type {
   AddSkillResult,
   AddSkillsRequest,
   AgentId,
-  AgentTarget,
   ImportResult,
-  InstallRequest,
   InstallResult,
   ForkRecord,
   GithubSkillListing,
   InstalledSkill,
-  InstallScope,
+  HarnessVisibilityTarget,
+  LifecycleTarget,
   InvocationPolicy,
   PackInfo,
   PackMember,
@@ -113,46 +112,21 @@ export async function unregisterSkillProject(path: string): Promise<void> {
   return invoke("unregister_skill_project", { path });
 }
 
-// ============================================================================
-// Agent Targets API
-// ============================================================================
-
-/**
- * Get all supported agent targets
- */
-export async function getAgentTargets(): Promise<AgentTarget[]> {
-  return invoke("get_agent_targets");
-}
-
-// ============================================================================
-// Installation API
-// ============================================================================
-
-/**
- * Install a skill using npx skills CLI
- */
-export async function installSkill(request: InstallRequest): Promise<InstallResult> {
-  return invoke("install_skill", { request });
-}
-
 /**
  * Remove a skill using npx skills CLI. `projectPath` is `null` for a global
  * removal, or the project directory to remove from - validated on the Rust
  * side against the current snapshot and used as the CLI's working directory.
  */
-export async function removeSkill(
-  skillName: string,
-  projectPath: string | null,
-): Promise<InstallResult> {
-  return invoke("remove_skill", { skillName, projectPath });
+export async function removeSkill(target: LifecycleTarget): Promise<InstallResult> {
+  return invoke("remove_skill", { target });
 }
 
 /**
  * Update a skill through whichever CLI owns it (dotagents or skills.sh).
  * `result.tool`/`result.command` say what actually ran.
  */
-export async function updateSkill(skillName: string, global: boolean): Promise<InstallResult> {
-  return invoke("update_skill", { skillName, global });
+export async function updateSkill(target: LifecycleTarget): Promise<InstallResult> {
+  return invoke("update_skill", { target });
 }
 
 /**
@@ -220,13 +194,12 @@ export async function setPreferredEditor(appName: string | null): Promise<void> 
 
 /**
  * Detach a dotagents- or skills.sh-managed skill from its ledger so local
- * edits survive `sync`/`update`. `path` must be the shared-folder deployment
- * (`~/.agents/skills/<name>`, or the Claude Code symlink to it) - the
- * backend refuses anything else. Refused for a manual/plugin skill or a
+ * edits survive `sync`/`update`. The target must resolve to the Universal
+ * deployment or its Claude Code link. Refused for a manual/plugin skill or a
  * dotagents wildcard entry.
  */
-export async function forkSkill(name: string, path: string): Promise<ForkRecord> {
-  return invoke("fork_skill", { name, path });
+export async function forkSkill(target: LifecycleTarget): Promise<ForkRecord> {
+  return invoke("fork_skill", { target });
 }
 
 /**
@@ -234,16 +207,16 @@ export async function forkSkill(name: string, path: string): Promise<ForkRecord>
  * copy and a freshly fetched upstream copy, then advance the snapshot to
  * the new upstream commit.
  */
-export async function pullForkUpstream(name: string): Promise<PullResult> {
-  return invoke("pull_fork_upstream", { name });
+export async function pullForkUpstream(target: LifecycleTarget): Promise<PullResult> {
+  return invoke("pull_fork_upstream", { target });
 }
 
 /**
  * Discard a forked skill's local edits and reinstall it from its recorded
  * origin. Callers should confirm with the user first - this runs immediately.
  */
-export async function unforkSkill(name: string): Promise<void> {
-  return invoke("unfork_skill", { name });
+export async function unforkSkill(target: LifecycleTarget): Promise<void> {
+  return invoke("unfork_skill", { target });
 }
 
 // ============================================================================
@@ -336,14 +309,10 @@ export async function getAddMethodDefaults(): Promise<AddMethodDefaults> {
 }
 
 /**
- * Drop `name`'s trial record so the expiry loop leaves it alone.
+ * Drop the selected deployment's trial record so the expiry loop leaves it alone.
  */
-export async function keepSkillTrial(
-  name: string,
-  scope: InstallScope,
-  projectPath?: string,
-): Promise<void> {
-  return invoke("keep_skill_trial", { name, scope, projectPath });
+export async function keepSkillTrial(target: LifecycleTarget): Promise<void> {
+  return invoke("keep_skill_trial", { target });
 }
 
 /**
@@ -386,39 +355,42 @@ export function onTrialExpired(
 // ============================================================================
 
 /**
- * Park (disable globally): moves the shared-folder deployment to
- * `~/.agents/skills-parked/<name>`, removing a per-skill Claude Code symlink
- * first if one exists. Refused when `name` isn't deployed to the shared
- * folder, or already parked.
+ * Park one Global Universal deployment: moves that folder to
+ * `~/.agents/skills-parked/<name>`. Project and Per harness copies stay
+ * independent. Refused when the target is not a Global Universal folder.
  */
-export async function parkSkill(name: string): Promise<void> {
-  return invoke("park_skill", { name });
+export async function parkSkill(target: LifecycleTarget): Promise<void> {
+  return invoke("park_skill", { target });
 }
 
 /**
- * Reverse `parkSkill`: moves the parked copy back to
- * `~/.agents/skills/<name>` and restores the Claude Code symlink if one was
- * removed. When reinstalling created a new shared-folder copy while parked,
- * reconciles by discarding the parked copy (if byte-identical) or trashing it
- * to `~/.agents/skills-trash`.
+ * Reverse `parkSkill` for the selected parked or Global Universal target.
+ * Project copies are not unparked as a side effect.
  */
-export async function unparkSkill(name: string): Promise<void> {
-  return invoke("unpark_skill", { name });
+export async function unparkSkill(target: LifecycleTarget): Promise<void> {
+  return invoke("unpark_skill", { target });
 }
 
 /**
- * Enable or disable one harness's own view of `name`, via that harness's own
+ * Enable or disable one harness's own view of the selected deployment, via that harness's own
  * mechanism (Codex `config.toml`, OpenCode `opencode.json`, or - for Claude
  * Code - removing/restoring its per-skill symlink). Refused for harnesses
  * with no per-skill disable (pi, Cursor, Grok Build) and for Claude Code when
  * the skill is deployed via the whole-directory symlink.
  */
 export async function setHarnessEnabled(
-  name: string,
-  agent: string,
+  target: LifecycleTarget,
+  agent: AgentId,
   enabled: boolean,
 ): Promise<void> {
-  return invoke("set_harness_enabled", { name, agent, enabled });
+  if (!target.deployment_id) {
+    throw new Error("Harness visibility needs one exact deployment");
+  }
+  const visibilityTarget: HarnessVisibilityTarget = {
+    deployment_id: target.deployment_id,
+    reader_agent: agent,
+  };
+  return invoke("set_harness_enabled", { target: visibilityTarget, enabled });
 }
 
 /**
@@ -429,11 +401,10 @@ export async function setHarnessEnabled(
  * and plugin-provided deployments.
  */
 export async function setDeploymentEnabled(
-  name: string,
-  path: string,
+  target: LifecycleTarget,
   enabled: boolean,
 ): Promise<void> {
-  return invoke("set_deployment_enabled", { name, path, enabled });
+  return invoke("set_deployment_enabled", { target, enabled });
 }
 
 /**
@@ -474,16 +445,16 @@ export async function restoreSkillEvent(eventId: string, force: boolean): Promis
 /**
  * The Locations card's entry point for disabling/enabling one skill under
  * one harness that reads from the shared root. Refuses when `harness`'s root
- * is still a whole-dir link to the shared folder - call
+ * is still a whole-dir link to the Universal folder - call
  * `materializeHarnessRoot` first (the Convert dialog).
  */
 export async function setSharedHarnessSkillEnabled(
   rootPath: string,
-  skill: string,
+  target: LifecycleTarget,
   harness: string,
   enabled: boolean,
 ): Promise<void> {
-  return invoke("set_shared_harness_skill_enabled", { rootPath, skill, harness, enabled });
+  return invoke("set_shared_harness_skill_enabled", { rootPath, target, harness, enabled });
 }
 
 /**
@@ -492,8 +463,12 @@ export async function setSharedHarnessSkillEnabled(
  * Locations card's Convert dialog and Home's linked-root repair card. Recorded
  * in Activity and can be undone from there.
  */
-export async function materializeHarnessRoot(harness: string, root: string): Promise<void> {
-  return invoke("materialize_harness_root", { harness, root });
+export async function materializeHarnessRoot(
+  target: LifecycleTarget,
+  harness: string,
+  root: string,
+): Promise<void> {
+  return invoke("materialize_harness_root", { target, harness, root });
 }
 
 /**

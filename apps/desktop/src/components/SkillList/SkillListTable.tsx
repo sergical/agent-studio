@@ -265,7 +265,7 @@ export function SkillListTable({
                     >
                       {skill.name}
                     </span>
-                    {skill.has_update && (
+                    {skill.update_owner_ids.length > 0 && (
                       <span className="inline-flex shrink-0 rounded-sm bg-accent-soft px-1.5 py-px text-caption font-semibold text-accent">
                         Update
                       </span>

@@ -167,6 +167,7 @@ function useSkillStoreData(
 
   // Load installed and popular skills on mount.
   useEffect(() => {
+    // react-doctor-disable-next-line react-hooks-js/set-state-in-effect -- starts the external Tauri and skills.sh reads for the current project set
     loadInitialData();
   }, [loadInitialData]);
 
@@ -307,6 +308,7 @@ export function SkillStore({ compact = false }: SkillStoreProps = {}) {
     success: boolean;
     error?: string;
     skillName?: string;
+    warning?: string;
   }) => {
     if (result.success) {
       addToast({
@@ -314,6 +316,13 @@ export function SkillStore({ compact = false }: SkillStoreProps = {}) {
         title: "Skill Installed",
         message: `Successfully installed ${result.skillName || "skill"}`,
       });
+      if (result.warning) {
+        addToast({
+          type: "warning",
+          title: `Installed ${result.skillName || "skill"}`,
+          message: result.warning,
+        });
+      }
       // Refresh installed skills - `searchResultsWithStatus` re-derives from it.
       loadInstalledSkills();
     } else {

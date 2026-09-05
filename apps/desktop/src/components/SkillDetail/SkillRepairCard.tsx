@@ -15,9 +15,10 @@ import {
   deploymentLabel,
   homeRelativePath,
   isUnresolvedDeployment,
+  parseSkillSource,
 } from "@skill-studio/lib";
 import type { AgentId, Deployment, InstalledSkill, InstallScope } from "@skill-studio/lib";
-import { installSkill, repairSkillLink } from "../../lib/skill-api";
+import { addSkill, repairSkillLink } from "../../lib/skill-api";
 import { useAppStore } from "../../store/appStore";
 
 interface SkillRepairCardProps {
@@ -84,13 +85,37 @@ export function SkillRepairCard({ skill, deployment }: SkillRepairCardProps) {
           return;
         }
         const scope: InstallScope = deployment.scope === "project" ? "project" : "global";
-        await installSkill({
-          skill_source: source,
+        const parsedSource = parseSkillSource(source);
+        if ("error" in parsedSource || parsedSource.kind !== "github" || !parsedSource.repo) {
+          addToast({
+            type: "error",
+            title: "Couldn't fix this location",
+            message: `No GitHub repository is available for ${skill.name}`,
+          });
+          setIsFixing(false);
+          return;
+        }
+        const result = await addSkill({
+          source: {
+            ...parsedSource,
+            path: parsedSource.path ?? skill.name,
+            skillName: skill.name,
+          },
+          method: "skills-sh",
           scope,
-          agents: [reinstallAgent],
+          destination: "universal",
+          agents: reinstallAgent === "claude-code" ? ["claude-code"] : [],
           disabled_harnesses: [],
           project_path: scope === "project" ? deployment.project_path : undefined,
+          trial: false,
         });
+        if (result.warning) {
+          addToast({
+            type: "warning",
+            title: "Reinstalled with a warning",
+            message: result.warning,
+          });
+        }
         addToast({
           type: "success",
           title: "Reinstalled",

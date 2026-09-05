@@ -58,10 +58,10 @@ export function SkillLocationCell({ skill }: SkillLocationCellProps) {
   return (
     <span className="flex min-w-0 items-center gap-1 overflow-hidden">
       {truth && (
-        <TooltipControl content="Shared folder · source of truth">
+        <TooltipControl content="Universal folder · source of truth">
           <span
             className={`${LOCATION_CHIP_CLASS} text-text-primary`}
-            aria-label="shared, source of truth"
+            aria-label="Universal folder, source of truth"
           >
             <HarnessIcon harness="shared" size={13} />
           </span>
@@ -80,7 +80,7 @@ export function SkillLocationCell({ skill }: SkillLocationCellProps) {
           >
             <span
               className={LOCATION_CHIP_CLASS}
-              aria-label={`${d.agent}, linked to the shared folder`}
+              aria-label={`${d.agent}, linked to the Universal folder`}
             >
               <AgentMark agent={d.agent} />
               <Link2 size={10} className="text-text-tertiary" />
