@@ -17,6 +17,7 @@ import { TooltipControl } from "../ui/TooltipControl";
 import { homeRelativePath } from "@skill-studio/lib";
 import { SkillLocationMenu } from "./SkillLocationMenu";
 import { SkillLocationRow } from "./SkillLocationRow";
+import { sharedSwitchAction } from "./skill-location-helpers";
 import {
   folderReaders,
   rowMenu,
@@ -122,9 +123,7 @@ export function SkillLocationScope({
         <span className="flex shrink-0 items-center gap-1">
           <SwitchControl
             checked={shared.switchOn}
-            onCheckedChange={(next) =>
-              onAction({ kind: "set-enabled", deployment: shared.deployment!, enabled: next })
-            }
+            onCheckedChange={(next) => onAction(sharedSwitchAction(next))}
             ariaLabel="Enabled everywhere"
           />
           <SkillLocationMenu

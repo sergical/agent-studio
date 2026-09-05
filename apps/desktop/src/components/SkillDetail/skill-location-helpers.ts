@@ -25,3 +25,17 @@ export function canToggleHarness(deployment: Deployment): boolean {
   if (deployment.scope !== "global") return false;
   return id !== "claude-code" || deployment.is_symlink;
 }
+
+/**
+ * The `LocationAction` the Shared folder row's "Enabled everywhere" switch
+ * dispatches: `park`/`unpark`, mirroring the shared row's own ⋯ menu
+ * (`rowMenu` in `skill-location-status.ts`). Never `set-enabled` - the
+ * shared root (`deployment.agent === "shared"`) is not a harness
+ * deployment, so `canToggleHarness` returns `false` and the generic
+ * `set-enabled` path falls back to `setDeploymentEnabled`, which the
+ * backend refuses for shared-root deployments ("park the skill instead").
+ * Toggling the switch off parks; on unparks.
+ */
+export function sharedSwitchAction(next: boolean): { kind: "park" } | { kind: "unpark" } {
+  return next ? { kind: "unpark" } : { kind: "park" };
+}
