@@ -16,7 +16,7 @@ interface SkillDetailPanelProps {
   onClose: () => void;
   onInstallStart: (skillName: string) => void;
   onInstallComplete: (result: { success: boolean; error?: string; skillName?: string }) => void;
-  onRemoveComplete: () => void;
+  onRemoveComplete: (result: { success: boolean; error?: string }) => void;
 }
 
 export function SkillDetailPanel({
