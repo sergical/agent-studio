@@ -456,6 +456,11 @@ export function SkillStore({ compact = false }: SkillStoreProps = {}) {
       >
         {selectedSkill && (
           <SkillDetailPanel
+            // Key by skill name so switching skills with the drawer open
+            // remounts the panel (resetting InstallControls' install-form
+            // state) instead of reusing the previous skill's stale scope /
+            // selected-project selection across skills.
+            key={selectedSkill.name}
             skill={selectedSkill}
             onClose={() => setSelectedSkillName(null)}
             onInstallStart={handleInstallStart}

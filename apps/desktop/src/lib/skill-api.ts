@@ -149,10 +149,18 @@ export async function removeSkill(
 
 /**
  * Update a skill through whichever CLI owns it (dotagents or skills.sh).
- * `result.tool`/`result.command` say what actually ran.
+ * `result.tool`/`result.command` say what actually ran. `projectPath` is
+ * `null` for a global update, or the project directory to update in - the
+ * Rust command validates it against the snapshot and runs the CLI with that
+ * directory as its working directory, mirroring `removeSkill`. Callers that
+ * update a global deployment leave `projectPath` at its `null` default.
  */
-export async function updateSkill(skillName: string, global: boolean): Promise<InstallResult> {
-  return invoke("update_skill", { skillName, global });
+export async function updateSkill(
+  skillName: string,
+  global: boolean,
+  projectPath: string | null = null,
+): Promise<InstallResult> {
+  return invoke("update_skill", { skillName, global, projectPath });
 }
 
 /**
