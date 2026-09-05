@@ -318,9 +318,10 @@ fn classify_shared_member(home: &Path, app_data: &Path, name: &str) -> MemberKin
             .trim_end_matches("/SKILL.md")
             .to_string();
         let store = skill_update_check::read_update_check_store(app_data);
+        let owner_id = format!("owner:v1/global/{name}");
         let r#ref = store
-            .skills
-            .get(name)
+            .owners
+            .get(&owner_id)
             .and_then(|s| s.installed_commit.clone());
         return MemberKind::SkillsSh {
             repo: entry.source.clone(),
@@ -1311,10 +1312,11 @@ resolved_commit = "3333333333333333333333333333333333cccc"
         fs::write(
             skill_update_check::update_check_path(&app_data),
             serde_json::json!({
+                "version": 2,
                 "checked_at": "2026-01-01T00:00:00Z",
                 "gh_status": {"kind": "ok"},
-                "skills": {
-                    "cool-skill": {
+                "owners": {
+                    "owner:v1/global/cool-skill": {
                         "repo": "someone/cool-skill",
                         "path": "cool-skill",
                         "installed_commit": "4444444444444444444444444444444444dddd",
@@ -1393,6 +1395,8 @@ resolved_commit = "3333333333333333333333333333333333cccc"
         registry.forks.insert(
             "my-fork".to_string(),
             skill_fork_registry::ForkRecord {
+                deployment_id: String::new(),
+                skill_dir: PathBuf::new(),
                 forked_at: "2026-01-01T00:00:00Z".to_string(),
                 origin_tool: skill_fork_registry::OriginTool::Dotagents,
                 origin_source: "getsentry/my-fork".to_string(),

@@ -20,7 +20,7 @@ function cellTitle(cell: AgentMatrixCell): string {
     cell.state === "own"
       ? "In the agent's folder"
       : cell.state === "shared"
-        ? "Via the shared .agents folder"
+        ? "Via the Universal folder"
         : "Not deployed";
   // A broken own-directory link doesn't hide effective visibility (e.g. a
   // healthy shared fallback), so the tooltip states both facts rather than
@@ -52,7 +52,7 @@ function CoverageMarker({ cell }: { cell: AgentMatrixCell }) {
 }
 
 /**
- * Skill x column visibility grid: a "Shared" column for the shared `.agents`
+ * Skill x column visibility grid: a Universal column for the `.agents`
  * root, then one column per first-class agent. Clicking a row selects the
  * skill in the detail panel. The header row stays pinned while scrolling.
  */
@@ -71,9 +71,9 @@ export function SkillCoverageMatrix({ skills, onSelectSkill }: SkillCoverageMatr
           <tr>
             <th className={HEADER_CELL_CLASS}>Skill</th>
             <th className={HEADER_CELL_CLASS}>
-              <TooltipControl content="Shared .agents folder">
+              <TooltipControl content="Universal folder (.agents/skills)">
                 <span
-                  aria-label="Shared .agents folder"
+                  aria-label="Universal folder"
                   className="inline-flex items-center justify-center"
                 >
                   <HarnessIcon harness="shared" size={15} />

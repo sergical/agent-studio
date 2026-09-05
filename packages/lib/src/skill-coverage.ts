@@ -200,7 +200,7 @@ function withoutTrailingSlash(path: string): string {
   return path.endsWith("/") ? path.slice(0, -1) : path;
 }
 
-/** The shared folder a `linked-to-shared` deployment's link resolves to, normalised for comparison. */
+/** The Universal folder a `linked-to-shared` deployment's link resolves to, normalised for comparison. */
 function linkedSharedTarget(deployment: Deployment): string {
   return withoutTrailingSlash(deploymentLinkTarget(deployment) ?? deployment.path);
 }
@@ -232,7 +232,7 @@ export function groupDeploymentsForDisplay(deployments: Deployment[]): GroupedDe
   const standalone: Deployment[] = [];
 
   for (const deployment of deployments) {
-    // Only a harness whose whole skills root points at the shared folder
+    // Only a harness whose whole skills root points at the Universal folder
     // belongs inside the group: it has no folder of its own, it just reads
     // this one. A per-skill symlink is a location in its own right - it can
     // be removed, repointed, or left dangling without touching the shared

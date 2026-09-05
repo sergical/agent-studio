@@ -16,10 +16,13 @@ import {
   DialogTitle,
 } from "@skill-studio/ui";
 import { homeRelativePath } from "@skill-studio/lib";
+import type { LifecycleTarget } from "@skill-studio/lib";
 import { materializeHarnessRoot, setSharedHarnessSkillEnabled } from "../../lib/skill-api";
 import { useAppStore } from "../../store/appStore";
 
 interface MaterializeRootDialogProps {
+  /** The whole-directory-link deployment selected by the caller. */
+  target: LifecycleTarget;
   /** The harness's agent id (e.g. `"claude-code"`) - what the backend keys the materialized-root record on. */
   harness: string;
   /** The harness's display label (e.g. "Claude Code"), for the dialog copy only. */
@@ -37,6 +40,7 @@ interface MaterializeRootDialogProps {
 }
 
 export function MaterializeRootDialog({
+  target,
   harness,
   harnessLabel,
   root,
@@ -50,9 +54,9 @@ export function MaterializeRootDialog({
 
   const handleConvert = () => {
     setIsConverting(true);
-    materializeHarnessRoot(harness, root)
+    materializeHarnessRoot(target, harness, root)
       .then(() =>
-        disableSkill ? setSharedHarnessSkillEnabled(root, disableSkill, harness, false) : undefined,
+        disableSkill ? setSharedHarnessSkillEnabled(root, target, harness, false) : undefined,
       )
       .then(() => {
         onConverted?.();
@@ -74,12 +78,10 @@ export function MaterializeRootDialog({
         <DialogHeader>
           <DialogTitle>Convert {rootLabel} to per-skill links?</DialogTitle>
           <DialogDescription>
-            {harnessLabel} currently reads every skill in the shared folder through one link at{" "}
-            {rootLabel}. Converting replaces that one link with a separate symlink per skill,
-            pointing at the same shared folder — the exact layout the skills.sh CLI creates in
-            symlink mode. Nothing is copied, and each skill can then be switched on or off for{" "}
-            {harnessLabel} on its own. This change is recorded in Activity and can be undone from
-            there.
+            The link at {rootLabel} lets {harnessLabel} read every skill in the Universal folder.
+            Converting replaces it with one symlink per skill. The symlinks still point to the
+            Universal folder, so no files are copied. You can then switch each skill on or off for{" "}
+            {harnessLabel}. Activity records this change and provides the undo action.
           </DialogDescription>
         </DialogHeader>
         <DialogFooter>

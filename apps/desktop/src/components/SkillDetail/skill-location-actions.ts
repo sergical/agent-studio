@@ -8,11 +8,10 @@
 // ============================================================================
 
 import { useState } from "react";
-import { agentIdFromDeploymentLabel, COMMON_AGENTS } from "@skill-studio/lib";
-import type { InstalledSkill } from "@skill-studio/lib";
+import { agentIdFromDeploymentLabel, parseSkillSource } from "@skill-studio/lib";
+import type { Deployment, InstalledSkill, LifecycleTarget } from "@skill-studio/lib";
 import {
   addSkill,
-  installSkill,
   openSkillPath,
   parkSkill,
   removeSkill,
@@ -23,6 +22,11 @@ import {
   unparkSkill,
   updateSkill,
 } from "../../lib/skill-api";
+import {
+  lifecycleTargetForPark,
+  lifecycleTargetForSkill,
+  updateSkillOwners,
+} from "../../lib/skill-lifecycle-target";
 import { useAppStore } from "../../store/appStore";
 import { canToggleHarness } from "./skill-location-helpers";
 import type { LocationAction } from "./skill-location-status";
@@ -31,10 +35,19 @@ interface UseLocationActionsResult {
   run: (action: LocationAction) => void;
   isBusy: boolean;
   /** Set while a "Convert to per-skill links…" action is pending confirmation. */
-  materializeRequest: { harness: string; harnessLabel: string; root: string } | null;
+  materializeRequest: {
+    target: LifecycleTarget;
+    harness: string;
+    harnessLabel: string;
+    root: string;
+  } | null;
   closeMaterializeRequest: () => void;
   /** Set while a "Remove from <Scope>…" action is pending confirmation. */
-  removeRequest: { scopeLabel: string; projectPath: string | null } | null;
+  removeRequest: {
+    scopeLabel: string;
+    projectPath: string | null;
+    deployment?: Deployment;
+  } | null;
   closeRemoveRequest: () => void;
 }
 
@@ -46,6 +59,7 @@ export function useLocationActions(
   const addToast = useAppStore((state) => state.addToast);
   const [isBusy, setIsBusy] = useState(false);
   const [materializeRequest, setMaterializeRequest] = useState<{
+    target: LifecycleTarget;
     harness: string;
     harnessLabel: string;
     root: string;
@@ -53,6 +67,7 @@ export function useLocationActions(
   const [removeRequest, setRemoveRequest] = useState<{
     scopeLabel: string;
     projectPath: string | null;
+    deployment?: Deployment;
   } | null>(null);
 
   const runWithErrorToast = (title: string, fn: () => Promise<void>) => {
@@ -94,6 +109,7 @@ export function useLocationActions(
         return;
       case "convert-root":
         setMaterializeRequest({
+          target: action.target,
           harness: action.harness,
           harnessLabel: action.harness,
           root: action.root,
@@ -101,8 +117,10 @@ export function useLocationActions(
         return;
       case "set-enabled": {
         const { deployment, enabled } = action;
+        const readerAgent = agentIdFromDeploymentLabel(deployment.agent);
         if (deployment.shared_via_whole_dir_link) {
           setMaterializeRequest({
+            target: { deployment_id: deployment.id },
             harness: agentIdFromDeploymentLabel(deployment.agent) ?? deployment.agent,
             harnessLabel: deployment.agent,
             root: deployment.path.slice(0, deployment.path.lastIndexOf("/")),
@@ -111,18 +129,16 @@ export function useLocationActions(
         }
         runWithErrorToast(enabled ? "Couldn't enable" : "Couldn't disable", () =>
           deployment.disabled_by === "studio-moved" || !canToggleHarness(deployment)
-            ? setDeploymentEnabled(skill.name, deployment.path, enabled)
-            : setHarnessEnabled(
-                skill.name,
-                agentIdFromDeploymentLabel(deployment.agent) ?? "",
-                enabled,
-              ),
+            ? setDeploymentEnabled({ deployment_id: deployment.id }, enabled)
+            : readerAgent && readerAgent !== "shared"
+              ? setHarnessEnabled({ deployment_id: deployment.id }, readerAgent, enabled)
+              : Promise.reject(new Error(`${deployment.agent} is not a supported reader`)),
         );
         return;
       }
       case "set-reader-enabled":
         runWithErrorToast(action.enabled ? "Couldn't enable" : "Couldn't disable", () =>
-          setHarnessEnabled(skill.name, action.agent, action.enabled),
+          setHarnessEnabled(action.target, action.agent, action.enabled),
         );
         return;
       case "promote-global": {
@@ -131,6 +147,7 @@ export function useLocationActions(
           await addSkill({
             source: { kind: "local", localPath: source },
             method: "copy",
+            destination: "universal",
             agents,
             disabled_harnesses: [],
             scope: "global",
@@ -145,35 +162,53 @@ export function useLocationActions(
         return;
       }
       case "park":
-        runWithErrorToast("Couldn't park skill", () => parkSkill(skill.name));
+        runWithErrorToast("Couldn't park skill", () => parkSkill(lifecycleTargetForPark(skill)));
         return;
       case "unpark":
-        runWithErrorToast("Couldn't unpark skill", () => unparkSkill(skill.name));
+        runWithErrorToast("Couldn't unpark skill", () =>
+          unparkSkill(lifecycleTargetForPark(skill)),
+        );
         return;
       case "remove-scope":
         setRemoveRequest({ scopeLabel: action.scopeLabel, projectPath: action.projectPath });
         return;
+      case "remove-deployment":
+        setRemoveRequest({
+          scopeLabel: action.scopeLabel,
+          projectPath: action.deployment.project_path ?? null,
+          deployment: action.deployment,
+        });
+        return;
       case "update":
         runWithErrorToast("Update failed", async () => {
-          await updateSkill(skill.name, true);
+          const summary = await updateSkillOwners(skill, updateSkill);
+          if (summary.failures.length > 0) {
+            throw new Error(
+              `Updated ${summary.succeeded} of ${summary.attempted} deployments. ${summary.failures.map((failure) => failure.message).join("; ")}`,
+            );
+          }
         });
         return;
       case "install-again":
-        // A lock-only entry has no deployment to say where it used to live,
-        // so "Install again" reinstalls to every first-class agent globally
-        // - the same default `AddSkillSheet` offers a fresh install.
         runWithErrorToast("Couldn't reinstall", async () => {
-          await installSkill({
-            skill_source: skill.source,
+          const source = parseSkillSource(skill.source);
+          if ("error" in source || source.kind !== "github" || !source.repo) {
+            throw new Error(`Cannot reinstall ${skill.name}: no GitHub repository is recorded.`);
+          }
+          await addSkill({
+            source: { ...source, path: source.path ?? skill.name, skillName: skill.name },
+            method: "skills-sh",
             scope: "global",
-            agents: COMMON_AGENTS,
+            destination: "universal",
+            agents: [],
             disabled_harnesses: [],
+            trial: false,
           });
         });
         return;
       case "remove-lock-entry":
         runWithErrorToast("Couldn't remove lock entry", async () => {
-          await removeSkill(skill.name, null);
+          await removeSkill(lifecycleTargetForSkill(skill, "global"));
         });
         return;
     }

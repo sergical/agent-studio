@@ -4,6 +4,7 @@
 // ============================================================================
 
 export * from "./skill-types";
+export * from "./skill-install-destination";
 export * from "./skill-coverage";
 export * from "./skill-health";
 export * from "./home-summary";

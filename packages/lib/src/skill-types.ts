@@ -198,6 +198,16 @@ export type DisabledBy =
  * A place a skill is deployed on disk for a specific agent.
  */
 export interface Deployment {
+  /** Stable identity used by lifecycle mutations. */
+  id: string;
+  destination: SkillDestination;
+  owner_kind: LifecycleOwnerKind;
+  owner_id?: string;
+  mutability: "mutable" | "read-only";
+  backing:
+    | { kind: "canonical" }
+    | { kind: "linked-to"; deployment_id: string }
+    | { kind: "independent" };
   agent: string;
   scope: "global" | "project" | "plugin" | "parked";
   path: string;
@@ -268,6 +278,10 @@ export interface InstalledSkill {
   installed_at: string;
   updated_at?: string;
   has_update: boolean;
+  /** Exact lifecycle owners with a newer persisted upstream commit. */
+  update_owner_ids: string[];
+  /** Update metadata keyed by exact lifecycle owner. */
+  update_owners?: OwnerUpdateInfo[];
   /** The upstream commit `has_update` compares against, when `has_update` is true. */
   update_commit?: string;
   /** The committer date of `update_commit`. */
@@ -301,6 +315,8 @@ export interface InstalledSkill {
   fork?: ForkInfo;
   /** Set when this skill is a "Try for 24 hours" install still within its window. */
   trial?: TrialInfo;
+  /** Every active trial keyed by exact deployment. */
+  trials?: TrialInfo[];
   /** True when parked (disabled globally) - see `skill_park.rs`. */
   parked: boolean;
   /** RFC3339 timestamp of when this skill was parked, set only when `parked`. */
@@ -314,11 +330,21 @@ export interface InstalledSkill {
  * `skill_fork_registry::TrialRecord` on the Rust side.
  */
 export interface TrialInfo {
+  /** Exact deployment that expiry and Keep target. Empty only in legacy snapshots. */
+  deployment_id?: string;
   expires_at: string;
   method: AddMethod;
+  status?: "active" | "expiring" | "recovery-required";
   /** The trial's scope - `keepSkillTrial` needs it to key back into `trials` correctly. */
   scope: InstallScope;
   project_path?: string;
+}
+
+/** Persisted update state for one exact lifecycle owner. */
+export interface OwnerUpdateInfo {
+  owner_id: string;
+  latest_commit?: string;
+  latest_commit_at?: string;
 }
 
 /**
@@ -338,18 +364,30 @@ export function trialHoursLeft(expiresAt: string): number {
  */
 export type InstallScope = "global" | "project";
 
-/**
- * Installation request
- */
-export interface InstallRequest {
-  skill_source: string;
-  scope: InstallScope;
-  project_path?: string;
-  agents: AgentId[];
-  /** Harnesses to switch off for this skill right after the install, for
-   * readers the install itself cannot avoid reaching - see
-   * `installDisabledHarnesses`. */
-  disabled_harnesses: AgentId[];
+/** A Universal root or independent Per harness copies. */
+export type SkillDestination = "universal" | "per-harness";
+
+/** Tool or source that owns lifecycle changes for a deployment. */
+export type LifecycleOwnerKind =
+  | "skills-sh"
+  | "dotagents"
+  | "copy"
+  | "fork"
+  | "plugin"
+  | "in-repo"
+  | "manual"
+  | "wildcard-dotagents"
+  | "ambiguous";
+
+/** Exact deployment or explicit owner group passed to lifecycle commands. */
+export type LifecycleTarget =
+  | { deployment_id: string; owner_id?: never }
+  | { owner_id: string; deployment_id?: never };
+
+/** Exact deployment and the harness reader whose visibility will change. */
+export interface HarnessVisibilityTarget {
+  deployment_id: string;
+  reader_agent: AgentId;
 }
 
 /**
@@ -383,7 +421,7 @@ export interface AddMethodDefaults {
   /** Every first-class agent whose own config directory exists on this
    * machine, in `AgentId`'s declaration order. */
   installed_harnesses: AgentId[];
-  /** True when `~/.claude/skills` is a symlink into the shared folder. */
+  /** True when `~/.claude/skills` is a symlink into the Universal folder. */
   claude_reads_shared_folder: boolean;
 }
 
@@ -394,10 +432,11 @@ export interface AddMethodDefaults {
 export interface AddSkillRequest {
   source: import("./skill-source-parse").ParsedSkillSource;
   method: AddMethod;
+  destination: SkillDestination;
   agents: AgentId[];
   /** Harnesses to switch off for this skill right after the install, for
    * readers the install itself cannot avoid reaching - see
-   * `installDisabledHarnesses`. */
+   * `universalDisabledHarnesses`. */
   disabled_harnesses: AgentId[];
   scope: InstallScope;
   project_path?: string;
@@ -440,10 +479,11 @@ export interface AddSkillsRequest {
   source: import("./skill-source-parse").ParsedSkillSource;
   skills: GithubSkillEntry[];
   method: AddMethod;
+  destination: SkillDestination;
   agents: AgentId[];
   /** Harnesses to switch off for this skill right after the install, for
    * readers the install itself cannot avoid reaching - see
-   * `installDisabledHarnesses`. */
+   * `universalDisabledHarnesses`. */
   disabled_harnesses: AgentId[];
   scope: InstallScope;
   project_path?: string;

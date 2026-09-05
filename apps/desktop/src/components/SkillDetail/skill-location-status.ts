@@ -17,7 +17,13 @@ import {
   locationSummary,
   parentDirectory,
 } from "@skill-studio/lib";
-import type { AgentId, Deployment, InstalledSkill, InvocationPolicy } from "@skill-studio/lib";
+import type {
+  AgentId,
+  Deployment,
+  InstalledSkill,
+  InvocationPolicy,
+  LifecycleTarget,
+} from "@skill-studio/lib";
 import type { TooltipLine } from "../ui/TooltipControl";
 
 export type StatusLevel = "error" | "warning" | "off";
@@ -41,12 +47,13 @@ export type LocationAction =
   | { kind: "reveal"; path: string; label: string }
   | { kind: "open-editor"; path: string; label: string }
   | { kind: "compare" }
-  | { kind: "convert-root"; harness: AgentId; root: string }
+  | { kind: "convert-root"; target: LifecycleTarget; harness: AgentId; root: string }
   | { kind: "set-enabled"; deployment: Deployment; enabled: boolean }
-  | { kind: "set-reader-enabled"; agent: AgentId; enabled: boolean }
+  | { kind: "set-reader-enabled"; target: LifecycleTarget; agent: AgentId; enabled: boolean }
   | { kind: "park" }
   | { kind: "unpark" }
   | { kind: "remove-scope"; scopeLabel: string; projectPath: string | null }
+  | { kind: "remove-deployment"; scopeLabel: string; deployment: Deployment }
   | { kind: "update" }
   | { kind: "install-again" }
   | { kind: "remove-lock-entry" }
@@ -91,6 +98,8 @@ interface BaseLocationRow {
   level: StatusLevel | null;
   /** `null` for a synthesized reader row - there is no deployment of its own to act on. */
   deployment: Deployment | null;
+  /** Exact deployment used by lifecycle actions, including synthesized reader rows. */
+  lifecycleTarget: LifecycleTarget;
   hasSwitch: boolean;
   switchOn: boolean;
   chip: "always on" | null;
@@ -109,7 +118,7 @@ export interface AgentLocationRow extends BaseLocationRow {
   harness: AgentId;
 }
 
-/** One row on the flat card: the shared folder, a per-skill link, a copy, a plugin, or a synthesized always-reads-the-folder reader. */
+/** One row on the flat card: the Universal folder, a per-skill link, a copy, a plugin, or a synthesized always-reads-the-folder reader. */
 export type LocationRow = SharedLocationRow | AgentLocationRow;
 
 /** One scope block on the card: Global (folds in plugin and parked deployments), or one project. */
@@ -124,7 +133,7 @@ export interface ScopeGroup {
   parkedScope: boolean;
 }
 
-/** One row of the Invocation footer - a shared folder or a copy/plugin, each with its own SKILL.md. */
+/** One Invocation footer row for a deployment with its own SKILL.md. */
 export interface InvocationFile {
   scopeLabel: string;
   kind: "shared" | "copy" | "plugin";
@@ -135,7 +144,7 @@ export interface InvocationFile {
   tip: string;
   chip: "plugin" | null;
   invocation: InvocationPolicy;
-  /** False for a plugin file, a managed project shared folder, or a managed copy - see `fileEditability`. */
+  /** False for a plugin file, managed Project Universal folder, or managed copy. */
   editable: boolean;
   /** Set alongside `editable: false` - why the segmented control is disabled. */
   disabledReason?: string;
@@ -148,10 +157,10 @@ export interface InvocationFile {
  * provenance is its own `plugin` field when set, otherwise the whole skill's
  * `source_kind` (there is no finer-grained per-deployment provenance -
  * see skill-list-filter.ts's "'plugin' reaches outside a skill's own
- * source_kind" note). The global shared folder is always editable - a
- * managed one forks first, the same rule the SKILL.md editor uses - but a
- * managed project shared folder or a managed copy is not: editing it in
- * place would be overwritten on the next sync/update.
+ * source_kind" note). The global Universal folder is always editable. A
+ * managed deployment forks before editing, as in the SKILL.md editor. Managed
+ * Project Universal folders and managed copies are not editable because the
+ * next sync or update would overwrite the changes.
  */
 function fileEditability(
   kind: "shared" | "copy" | "plugin",
@@ -180,7 +189,7 @@ function fileEditability(
 }
 
 const harnessLabelFromAgent = (agent: string): string =>
-  agent === "shared" ? "Shared folder" : agent;
+  agent === "shared" ? "Universal folder" : agent;
 
 /** Display label for a synthesized reader row - `deployment.agent` is already a display label, but a reader has no deployment, only its machine `AgentId`. */
 function readerLabel(agent: AgentId): string {
@@ -205,7 +214,7 @@ function harnessId(agent: string): AgentId | null {
   return id === "shared" || id === null ? null : id;
 }
 
-/** True when a skill parked globally still has a live copy or shared folder outside the parked one. */
+/** True when a skill parked globally still has a live copy or Universal folder outside the parked one. */
 export function liveElsewhere(skill: InstalledSkill): boolean {
   return skill.parked && skill.deployments.some((d) => d.scope !== "parked" && !d.disabled);
 }
@@ -288,9 +297,9 @@ function offCondition(deployment: Deployment): Condition {
 }
 
 /** Off for a synthesized reader row - Codex/OpenCode are the only readers with their own switch. */
-function readerOffCondition(agent: AgentId): Condition {
+function readerOffCondition(agent: AgentId, target: LifecycleTarget): Condition {
   const base = { level: "off" as const, status: "Off", phrase: "off", plural: "off" };
-  const action: LocationAction = { kind: "set-reader-enabled", agent, enabled: true };
+  const action: LocationAction = { kind: "set-reader-enabled", target, agent, enabled: true };
   return agent === "codex"
     ? {
         ...base,
@@ -331,7 +340,7 @@ interface GroupContext {
 
 function driftCondition(deployment: Deployment, ctx: GroupContext): Condition {
   const what = ctx.anyShared
-    ? "This copy differs from the shared folder."
+    ? "This copy differs from the Universal folder."
     : `This copy differs from the copy in ${ctx.otherScopeLabel ?? "another scope"}.`;
   const label = harnessLabelFromAgent(deployment.agent);
   return {
@@ -343,7 +352,7 @@ function driftCondition(deployment: Deployment, ctx: GroupContext): Condition {
     fix: "Compare copies to see the changes.",
     menu: [
       {
-        label: ctx.anyShared ? "Compare with the shared folder…" : "Compare copies…",
+        label: ctx.anyShared ? "Compare with the Universal folder…" : "Compare copies…",
         action: { kind: "compare" },
       },
       { label: "Reveal in Finder", action: { kind: "reveal", path: deployment.path, label } },
@@ -352,7 +361,7 @@ function driftCondition(deployment: Deployment, ctx: GroupContext): Condition {
   };
 }
 
-/** Conditions for one harness deployment - a per-skill link, a copy, or a plugin (never the shared folder itself). */
+/** Conditions for one harness link, copy, or plugin deployment. */
 function deploymentConditions(deployment: Deployment, ctx: GroupContext): Condition[] {
   const out: Condition[] = [];
   const label = harnessLabelFromAgent(deployment.agent);
@@ -429,7 +438,7 @@ function sharedConditions(shared: Deployment, ctx: GroupContext): Condition[] {
         ...(ctx.live ? [] : [{ label: "Enable everywhere", action: { kind: "unpark" as const } }]),
         {
           label: "Reveal in Finder",
-          action: { kind: "reveal", path: shared.path, label: "the shared folder" },
+          action: { kind: "reveal", path: shared.path, label: "the Universal folder" },
         },
       ],
     });
@@ -479,9 +488,9 @@ function scopeLabelOf(key: string): string {
 }
 
 /**
- * Builds every scope block for `skill`'s Locations card: the shared folder
+ * Builds every scope block for `skill`'s Locations card: the Universal folder
  * (when it has one), harness/copy/plugin rows, synthesized reader rows for
- * agents that read the shared folder natively with no deployment of their
+ * agents that read the Universal folder natively with no deployment of their
  * own, and each row's/folder's dot and tooltip.
  */
 export function buildScopeGroups(skill: InstalledSkill): ScopeGroup[] {
@@ -521,12 +530,13 @@ export function buildScopeGroups(skill: InstalledSkill): ScopeGroup[] {
           return {
             kind: "shared",
             harness: "shared",
-            harnessLabel: "Shared folder",
+            harnessLabel: "Universal folder",
             path: sharedDeployment.path,
             caption: "",
             conditions,
             level: topLevel(conditions),
             deployment: sharedDeployment,
+            lifecycleTarget: { deployment_id: sharedDeployment.id },
             hasSwitch: true,
             switchOn: !sharedDeployment.disabled && !parkedScope,
             chip: null,
@@ -548,7 +558,7 @@ export function buildScopeGroups(skill: InstalledSkill): ScopeGroup[] {
       return {
         kind,
         // SAFETY: every deployment Skill Studio scans comes from a
-        // first-class agent id or the shared folder; `d.agent` falls
+        // first-class agent id or the Universal folder; `d.agent` falls
         // outside `AgentId` only for a harness label `agentIdFromDeploymentLabel`
         // doesn't recognize, which the scanner never produces today.
         harness: (harnessId(d.agent) ?? d.agent) as AgentId,
@@ -558,6 +568,7 @@ export function buildScopeGroups(skill: InstalledSkill): ScopeGroup[] {
         conditions,
         level: topLevel(conditions),
         deployment: d,
+        lifecycleTarget: { deployment_id: d.id },
         hasSwitch: !d.symlink_is_broken && kind !== "plugin",
         switchOn: !d.disabled && !parkedScope,
         chip: null,
@@ -575,7 +586,7 @@ export function buildScopeGroups(skill: InstalledSkill): ScopeGroup[] {
         const conditions: Condition[] = parkedScope
           ? [offBecauseParked(readerLabel(agent), live)]
           : disabledForReader && hasSwitch
-            ? [readerOffCondition(agent)]
+            ? [readerOffCondition(agent, shared.lifecycleTarget)]
             : [];
         rows.push({
           kind: "reader",
@@ -586,6 +597,7 @@ export function buildScopeGroups(skill: InstalledSkill): ScopeGroup[] {
           conditions,
           level: topLevel(conditions),
           deployment: null,
+          lifecycleTarget: shared.lifecycleTarget,
           hasSwitch,
           switchOn: !disabledForReader && !parkedScope,
           chip: hasSwitch ? null : "always on",
@@ -718,7 +730,7 @@ export function titleLink(
   if (hasDrift) return "Compare copies";
   if (skill.deployments.length === 0) return "Install again";
   if (skill.parked) return "Enable everywhere";
-  if (skill.has_update) return "Update";
+  if (skill.update_owner_ids.length > 0) return "Update";
   return null;
 }
 
@@ -748,27 +760,28 @@ export function promoteToGlobal(groups: ScopeGroup[]): PromoteSource | null {
   return { path: source.path, agents };
 }
 
-/** The Invocation footer's rows: the shared folder (if any) plus every copy/plugin - links read the shared file, so they never get one of their own. */
+/** Build Invocation rows for the Universal folder and each copy or plugin. Links share the Universal SKILL.md and do not get a row. */
 export function buildInvocationFiles(
   groups: ScopeGroup[],
   skill: InstalledSkill,
 ): InvocationFile[] {
   const files: InvocationFile[] = [];
   for (const group of groups) {
-    if (group.shared?.deployment) {
+    const shared = group.shared;
+    if (shared?.deployment) {
       files.push({
         scopeLabel: group.label,
         kind: "shared",
         harness: "shared",
         name: `${group.label} folder`,
-        path: group.shared.path,
-        level: group.shared.level,
-        tip: rowTipLines(group.shared.conditions).join("\n"),
+        path: shared.path,
+        level: shared.level,
+        tip: rowTipLines(shared.conditions).join("\n"),
         chip: null,
-        invocation: group.shared.invocation ?? "both",
-        ...fileEditability("shared", group.isGlobal, skill, group.shared.deployment),
+        invocation: shared.invocation ?? "both",
+        ...fileEditability("shared", group.isGlobal, skill, shared.deployment),
         caption: "",
-        deployment: group.shared.deployment,
+        deployment: shared.deployment,
       });
     }
     for (const row of group.rows) {
@@ -842,7 +855,7 @@ export function rowMenu(
     push(
       {
         label: "Reveal in Finder",
-        action: { kind: "reveal", path: row.path, label: "the shared folder" },
+        action: { kind: "reveal", path: row.path, label: "the Universal folder" },
       },
       false,
     );
@@ -860,15 +873,20 @@ export function rowMenu(
       push(
         {
           label: `Disable for ${row.harnessLabel}`,
-          action: { kind: "set-reader-enabled", agent: row.harness, enabled: false },
+          action: {
+            kind: "set-reader-enabled",
+            target: row.lifecycleTarget,
+            agent: row.harness,
+            enabled: false,
+          },
         },
         false,
       );
     }
     push(
       {
-        label: "Reveal shared folder in Finder",
-        action: { kind: "reveal", path: row.path, label: "the shared folder" },
+        label: "Reveal Universal folder in Finder",
+        action: { kind: "reveal", path: row.path, label: "the Universal folder" },
       },
       false,
     );
@@ -912,6 +930,7 @@ export function rowMenu(
           label: "Convert to per-skill links…",
           action: {
             kind: "convert-root",
+            target: row.lifecycleTarget,
             harness: row.harness,
             root: parentDirectory(row.deployment.path),
           },
@@ -929,7 +948,16 @@ export function rowMenu(
         false,
       );
     }
-    // "Delete copy" is deliberately omitted: there is no path-level delete IPC.
+    if (row.kind === "copy" && row.deployment?.owner_kind === "copy") {
+      push(
+        {
+          label: `Remove ${row.harnessLabel} copy…`,
+          action: { kind: "remove-deployment", scopeLabel, deployment: row.deployment },
+          danger: true,
+        },
+        false,
+      );
+    }
   }
 
   let hint = row.conditions.find((c) => c.hint)?.hint;

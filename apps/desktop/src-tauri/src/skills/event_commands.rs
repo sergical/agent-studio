@@ -15,7 +15,7 @@ use std::sync::Mutex;
 use super::agents::AgentId;
 use super::event_store::{EventRow, EventStore};
 use super::skill_agent_runner::validate_skill_dir_name;
-use super::skill_dto::{Deployment, SkillEventDto};
+use super::skill_dto::{Deployment, LifecycleTarget, SkillEventDto};
 use super::skill_fork::ForkMutationLock;
 use super::skill_materialize;
 use super::skill_refresh::{self, SkillRefreshState, SkillSnapshot};
@@ -109,7 +109,7 @@ pub fn restore_skill_event(
 #[allow(clippy::too_many_arguments)]
 pub fn set_shared_harness_skill_enabled(
     root_path: String,
-    skill: String,
+    target: LifecycleTarget,
     harness: String,
     enabled: bool,
     app: tauri::AppHandle,
@@ -118,9 +118,40 @@ pub fn set_shared_harness_skill_enabled(
     event_store: tauri::State<EventStoreState>,
 ) -> Result<(), String> {
     let _guard = fork_lock.try_acquire()?;
+    let deployment_id = target
+        .deployment_id
+        .as_deref()
+        .ok_or("Shared harness disable needs one deployment_id")?;
+    if target.owner_id.is_some() {
+        return Err(
+            "Shared harness disable targets one deployment, not an owner group".to_string(),
+        );
+    }
+    let snapshot = super::skill_lifecycle::rebuild_fresh_lifecycle_snapshot(&app, &refresh_state)?;
+    let (installed_skill, deployment) =
+        super::skill_lifecycle::find_deployment(&snapshot, deployment_id)?;
+    super::skill_lifecycle::revalidate_deployment(deployment, deployment_id)?;
+    let display = AgentId::all()
+        .into_iter()
+        .find(|agent| {
+            agent.cli_name() == harness || (*agent == AgentId::OpenCode && harness == "open-code")
+        })
+        .map(|agent| agent.display_name())
+        .ok_or_else(|| format!("Unknown harness: {harness}"))?;
+    if deployment.agent != display
+        || Path::new(&deployment.path).parent() != Some(Path::new(&root_path))
+        || !matches!(
+            deployment.backing,
+            super::skill_deployment::BackingRelationship::LinkedTo { .. }
+        )
+    {
+        return Err(format!(
+            "Deployment {deployment_id} is not the selected {harness} deployment under {root_path}"
+        ));
+    }
+    let skill = installed_skill.name.clone();
     validate_skill_dir_name(&skill)?;
     let root = PathBuf::from(&root_path);
-    super::commands::require_snapshot_owns_path(&refresh_state, &root)?;
 
     let guard = locked_store(&event_store)?;
     let store = guard.as_ref().ok_or("Event store is unavailable")?;
@@ -156,29 +187,60 @@ pub fn set_shared_harness_skill_enabled(
 /// `root` with `shared_via_whole_dir_link` set.
 fn validate_materialize_request(
     snapshot: &SkillSnapshot,
+    target: &LifecycleTarget,
     harness: &str,
     root: &str,
-) -> Result<(), String> {
+) -> Result<PathBuf, String> {
+    let deployment_id = target
+        .deployment_id
+        .as_deref()
+        .ok_or("Materialization needs one deployment_id")?;
+    if target.owner_id.is_some() {
+        return Err("Materialization targets one deployment, not an owner group".to_string());
+    }
+    let (_, deployment) = super::skill_lifecycle::find_deployment(snapshot, deployment_id)?;
+    super::skill_lifecycle::revalidate_deployment(deployment, deployment_id)?;
     let display = AgentId::all()
         .into_iter()
-        .find(|agent| agent.cli_name() == harness)
+        .find(|agent| {
+            agent.cli_name() == harness || (*agent == AgentId::OpenCode && harness == "open-code")
+        })
         .map(|agent| agent.display_name().to_string())
         .unwrap_or_else(|| harness.to_string());
-    let owns = snapshot.skills.iter().any(|skill| {
-        skill.deployments.iter().any(|d| {
-            d.agent == display
-                && d.path == root
-                && d.scope == "global"
-                && d.shared_via_whole_dir_link
-        })
-    });
-    if owns {
-        Ok(())
-    } else {
-        Err(format!(
-            "{root} is not a recorded whole-directory link for {harness}"
-        ))
+    if deployment.agent != display || !deployment.shared_via_whole_dir_link {
+        return Err(format!(
+            "Deployment {deployment_id} is not a recorded whole-directory link for {harness}"
+        ));
     }
+    let deployment_root = Path::new(&deployment.path)
+        .parent()
+        .ok_or_else(|| format!("{} has no skills root", deployment.path))?;
+    if deployment_root != Path::new(root) {
+        return Err(format!(
+            "{root} is not the harness root of deployment {deployment_id}"
+        ));
+    }
+    let universal_id = match &deployment.backing {
+        super::skill_deployment::BackingRelationship::LinkedTo { deployment_id } => deployment_id,
+        _ => return Err("Materialization requires a deployment linked to Universal".to_string()),
+    };
+    let (_, universal) = super::skill_lifecycle::find_deployment(snapshot, universal_id)?;
+    if universal.scope != deployment.scope
+        || universal.project_path != deployment.project_path
+        || !matches!(
+            universal.backing,
+            super::skill_deployment::BackingRelationship::Canonical
+        )
+    {
+        return Err(
+            "The harness deployment does not match its exact scoped Universal deployment"
+                .to_string(),
+        );
+    }
+    Path::new(&universal.path)
+        .parent()
+        .map(PathBuf::from)
+        .ok_or_else(|| format!("{} has no Universal root", universal.path))
 }
 
 /// Converts a harness's whole-dir link to the shared skills root into a real
@@ -190,6 +252,7 @@ fn validate_materialize_request(
 #[tauri::command]
 pub fn materialize_harness_root(
     app: tauri::AppHandle,
+    target: LifecycleTarget,
     harness: String,
     root: String,
     refresh_state: tauri::State<SkillRefreshState>,
@@ -200,13 +263,22 @@ pub fn materialize_harness_root(
     let root_path = PathBuf::from(&root);
     skill_materialize::validate_materialize_root(&root_path)?;
 
-    let snapshot = refresh_state
-        .snapshot
-        .read()
-        .map_err(|e| format!("snapshot lock poisoned: {e}"))?
-        .clone()
-        .ok_or("No skill snapshot available")?;
-    validate_materialize_request(&snapshot, &harness, &root)?;
+    let snapshot = super::skill_lifecycle::rebuild_fresh_lifecycle_snapshot(&app, &refresh_state)?;
+    let universal_root = validate_materialize_request(&snapshot, &target, &harness, &root)?;
+    let resolved_harness_root = std::fs::canonicalize(&root_path)
+        .map_err(|error| format!("Failed to resolve {root}: {error}"))?;
+    let resolved_universal_root = std::fs::canonicalize(&universal_root).map_err(|error| {
+        format!(
+            "Failed to resolve selected Universal root {}: {error}",
+            universal_root.display()
+        )
+    })?;
+    if resolved_harness_root != resolved_universal_root {
+        return Err(format!(
+            "{root} does not point to the selected deployment's exact scoped Universal root {}",
+            universal_root.display()
+        ));
+    }
 
     let guard = locked_store(&event_store)?;
     let store = guard.as_ref().ok_or("Event store is unavailable")?;
@@ -272,12 +344,7 @@ pub fn repair_skill_link(
     let _guard = fork_lock.try_acquire()?;
     let link = PathBuf::from(&path);
 
-    let snapshot = refresh_state
-        .snapshot
-        .read()
-        .map_err(|e| format!("snapshot lock poisoned: {e}"))?
-        .clone()
-        .ok_or("No skill snapshot available")?;
+    let snapshot = super::skill_lifecycle::rebuild_fresh_lifecycle_snapshot(&app, &refresh_state)?;
 
     let (skill_name, deployment) = find_deployment_at(&snapshot, &link)
         .ok_or_else(|| format!("Path is not an installed skill: {path}"))?;
@@ -367,35 +434,6 @@ pub fn repair_skill_link(
     Ok(())
 }
 
-/// The Locations card's "Move out of shared folder" entry point: gives every
-/// harness that reads the shared root its own real copy of `skill`, then
-/// deletes the shared copy - see `skill_materialize::distribute_from_shared`.
-/// Unlike `set_shared_harness_skill_enabled`, `root_path` is the shared root
-/// itself (e.g. `~/.agents/skills`), not one harness's skills dir.
-#[tauri::command]
-pub fn distribute_skill_from_shared(
-    root_path: String,
-    skill: String,
-    app: tauri::AppHandle,
-    refresh_state: tauri::State<SkillRefreshState>,
-    fork_lock: tauri::State<ForkMutationLock>,
-    event_store: tauri::State<EventStoreState>,
-) -> Result<(), String> {
-    let _guard = fork_lock.try_acquire()?;
-    validate_skill_dir_name(&skill)?;
-    let root = PathBuf::from(&root_path);
-    super::commands::require_snapshot_owns_path(&refresh_state, &root)?;
-
-    let home = dirs::home_dir().ok_or("Could not find home directory")?;
-    let guard = locked_store(&event_store)?;
-    let store = guard.as_ref().ok_or("Event store is unavailable")?;
-    skill_materialize::distribute_from_shared(store, &home, &root, &skill)?;
-    drop(guard);
-
-    skill_refresh::request_snapshot_rebuild(&app);
-    Ok(())
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -418,19 +456,8 @@ mod tests {
                 path: path.to_string_lossy().to_string(),
                 is_symlink: true,
                 plugin: None,
-                symlink_target: None,
-                resolved_path: None,
                 symlink_is_broken: broken,
-                symlink_error: None,
-                project_path: None,
-                content_hash: String::new(),
-                disabled: false,
-                disabled_by: None,
-                disabled_readers: Vec::new(),
-                codex_implicit_invocation: None,
-                shared_via_whole_dir_link: false,
-                spec_violations: Vec::new(),
-                invocation: super::super::frontmatter::InvocationPolicy::Both,
+                ..Default::default()
             }
         }
 
@@ -444,6 +471,8 @@ mod tests {
                 installed_at: chrono::Utc::now().to_rfc3339(),
                 updated_at: None,
                 has_update: false,
+                update_owner_ids: Vec::new(),
+                update_owners: Vec::new(),
                 update_commit: None,
                 update_commit_at: None,
                 source_kind: SourceKind::Manual,
@@ -465,6 +494,7 @@ mod tests {
                 folder_truncated: false,
                 fork: None,
                 trial: None,
+                trials: Vec::new(),
                 parked: false,
                 parked_at: None,
                 invocation: super::super::frontmatter::InvocationPolicy::Both,
@@ -482,29 +512,144 @@ mod tests {
     /// A snapshot with one global, whole-dir-linked Claude Code deployment,
     /// for `validate_materialize_request` tests.
     fn fixture_materialize_snapshot(root: &Path) -> SkillSnapshot {
-        let mut snapshot = fixture_snapshot(root, root);
-        snapshot.skills[0].deployments[0].scope = "global".to_string();
-        snapshot.skills[0].deployments[0].symlink_is_broken = false;
-        snapshot.skills[0].deployments[0].shared_via_whole_dir_link = true;
-        snapshot.skills[0].deployments.truncate(1);
+        use super::super::skill_deployment::{
+            deployment_id, BackingRelationship, SkillDestination,
+        };
+
+        let canonical_path = PathBuf::from("/home/.agents/skills/find-bugs");
+        let canonical_id = deployment_id(
+            "find-bugs",
+            "global",
+            SkillDestination::Universal,
+            "universal",
+            None,
+            &canonical_path,
+        );
+        let linked_path = root.join("find-bugs");
+        let linked_id = deployment_id(
+            "find-bugs",
+            "global",
+            SkillDestination::Universal,
+            "claude-code",
+            None,
+            &linked_path,
+        );
+        let mut snapshot = fixture_snapshot(&linked_path, &canonical_path);
+        let linked = &mut snapshot.skills[0].deployments[0];
+        linked.id = linked_id;
+        linked.destination = SkillDestination::Universal;
+        linked.scope = "global".to_string();
+        linked.symlink_is_broken = false;
+        linked.shared_via_whole_dir_link = true;
+        linked.backing = BackingRelationship::LinkedTo {
+            deployment_id: canonical_id.clone(),
+        };
+        let canonical = &mut snapshot.skills[0].deployments[1];
+        canonical.id = canonical_id;
+        canonical.agent = "shared".to_string();
+        canonical.destination = SkillDestination::Universal;
+        canonical.scope = "global".to_string();
+        canonical.is_symlink = false;
+        canonical.backing = BackingRelationship::Canonical;
         snapshot
+    }
+
+    fn materialize_target(snapshot: &SkillSnapshot) -> LifecycleTarget {
+        LifecycleTarget {
+            deployment_id: Some(snapshot.skills[0].deployments[0].id.clone()),
+            owner_id: None,
+        }
     }
 
     #[test]
     fn validate_materialize_request_accepts_a_recorded_whole_dir_link() {
         let root = PathBuf::from("/home/.claude/skills");
         let snapshot = fixture_materialize_snapshot(&root);
-        assert!(
-            validate_materialize_request(&snapshot, "claude-code", "/home/.claude/skills").is_ok()
-        );
+        let target = materialize_target(&snapshot);
+        assert!(validate_materialize_request(
+            &snapshot,
+            &target,
+            "claude-code",
+            "/home/.claude/skills"
+        )
+        .is_ok());
+    }
+
+    #[test]
+    fn materialize_refuses_when_fresh_snapshot_no_longer_has_cached_target() {
+        let root = PathBuf::from("/home/.claude/skills");
+        let cached = fixture_materialize_snapshot(&root);
+        let target = materialize_target(&cached);
+        assert!(validate_materialize_request(
+            &cached,
+            &target,
+            "claude-code",
+            "/home/.claude/skills"
+        )
+        .is_ok());
+
+        let mut fresh = cached;
+        fresh.skills[0]
+            .deployments
+            .retain(|deployment| target.deployment_id.as_deref() != Some(&deployment.id));
+        assert!(validate_materialize_request(
+            &fresh,
+            &target,
+            "claude-code",
+            "/home/.claude/skills"
+        )
+        .is_err());
+    }
+
+    #[test]
+    fn materialize_resolves_whole_root_children_to_the_exact_universal_deployment() {
+        use super::super::skill_deployment::{id_for_candidate, DeploymentCandidate};
+
+        for (label, harness, root) in [
+            ("Claude Code", "claude-code", "/home/.claude/skills"),
+            ("OpenCode", "open-code", "/home/.config/opencode/skills"),
+        ] {
+            let root = PathBuf::from(root);
+            let linked_path = root.join("find-bugs");
+            let resolved_path = PathBuf::from("/home/.agents/skills/find-bugs");
+            let (linked_id, _, backing) = id_for_candidate(DeploymentCandidate {
+                name: "find-bugs",
+                root_label: label,
+                scope: "global",
+                path: &linked_path,
+                project_path: None,
+                is_symlink: false,
+                symlink_target: None,
+                resolved_path: Some(&resolved_path),
+                shared_via_whole_dir_link: true,
+            });
+            let mut snapshot = fixture_materialize_snapshot(&root);
+            let linked = &mut snapshot.skills[0].deployments[0];
+            linked.id = linked_id.clone();
+            linked.agent = label.to_string();
+            linked.path = linked_path.to_string_lossy().into_owned();
+            linked.resolved_path = Some(resolved_path.to_string_lossy().into_owned());
+            linked.backing = backing;
+            let target = LifecycleTarget {
+                deployment_id: Some(linked_id),
+                owner_id: None,
+            };
+
+            let selected =
+                validate_materialize_request(&snapshot, &target, harness, &root.to_string_lossy())
+                    .unwrap();
+            assert_eq!(selected, PathBuf::from("/home/.agents/skills"), "{label}");
+        }
     }
 
     #[test]
     fn validate_materialize_request_rejects_a_root_not_in_the_snapshot() {
         let root = PathBuf::from("/home/.claude/skills");
         let snapshot = fixture_materialize_snapshot(&root);
-        let err = validate_materialize_request(&snapshot, "claude-code", "/home/.codex/skills")
-            .unwrap_err();
+        let target = materialize_target(&snapshot);
+        let err =
+            validate_materialize_request(&snapshot, &target, "claude-code", "/home/.codex/skills")
+                .unwrap_err();
         assert!(err.contains("/home/.codex/skills"), "{err}");
     }
 
@@ -512,11 +657,68 @@ mod tests {
     fn validate_materialize_request_rejects_a_harness_root_mismatch() {
         let root = PathBuf::from("/home/.claude/skills");
         let snapshot = fixture_materialize_snapshot(&root);
+        let target = materialize_target(&snapshot);
         // The root is recorded for Claude Code, not Codex - the two must
         // agree, not just each independently point at something real.
-        let err =
-            validate_materialize_request(&snapshot, "codex", "/home/.claude/skills").unwrap_err();
+        let err = validate_materialize_request(&snapshot, &target, "codex", "/home/.claude/skills")
+            .unwrap_err();
         assert!(err.contains("codex"), "{err}");
+    }
+
+    #[test]
+    fn materialize_same_name_project_target_resolves_only_project_universal_root() {
+        use super::super::skill_deployment::{
+            deployment_id, BackingRelationship, SkillDestination,
+        };
+
+        let mut snapshot = fixture_materialize_snapshot(Path::new("/home/.claude/skills"));
+        let project_root = PathBuf::from("/work/app/.agents/skills");
+        let project_skill = project_root.join("find-bugs");
+        let project_id = deployment_id(
+            "find-bugs",
+            "project",
+            SkillDestination::Universal,
+            "universal",
+            Some("/work/app"),
+            &project_skill,
+        );
+        let linked_path = PathBuf::from("/work/app/.claude/skills/find-bugs");
+        let linked_id = deployment_id(
+            "find-bugs",
+            "project",
+            SkillDestination::Universal,
+            "claude-code",
+            Some("/work/app"),
+            &linked_path,
+        );
+        let mut project_link = snapshot.skills[0].deployments[0].clone();
+        project_link.id = linked_id.clone();
+        project_link.scope = "project".to_string();
+        project_link.project_path = Some("/work/app".to_string());
+        project_link.path = linked_path.to_string_lossy().into_owned();
+        project_link.backing = BackingRelationship::LinkedTo {
+            deployment_id: project_id.clone(),
+        };
+        let mut project_universal = snapshot.skills[0].deployments[1].clone();
+        project_universal.id = project_id;
+        project_universal.scope = "project".to_string();
+        project_universal.project_path = Some("/work/app".to_string());
+        project_universal.path = project_skill.to_string_lossy().into_owned();
+        snapshot.skills[0].deployments.push(project_link);
+        snapshot.skills[0].deployments.push(project_universal);
+        let target = LifecycleTarget {
+            deployment_id: Some(linked_id),
+            owner_id: None,
+        };
+
+        let selected = validate_materialize_request(
+            &snapshot,
+            &target,
+            "claude-code",
+            "/work/app/.claude/skills",
+        )
+        .unwrap();
+        assert_eq!(selected, project_root);
     }
 
     #[test]
@@ -549,6 +751,25 @@ mod tests {
 
         let snapshot = fixture_snapshot(&broken, &healthy);
         assert!(find_deployment_at(&snapshot, &outside).is_none());
+    }
+
+    #[test]
+    fn repair_refuses_when_fresh_snapshot_no_longer_has_cached_link() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path().join("root");
+        fs::create_dir_all(&root).unwrap();
+        let broken = root.join("find-bugs-claude");
+        symlink("/does/not/exist", &broken).unwrap();
+        let healthy = root.join("find-bugs-codex");
+        fs::create_dir_all(&healthy).unwrap();
+        let cached = fixture_snapshot(&broken, &healthy);
+        assert!(find_deployment_at(&cached, &broken).is_some());
+
+        let mut fresh = cached;
+        fresh.skills[0]
+            .deployments
+            .retain(|deployment| Path::new(&deployment.path) != broken);
+        assert!(find_deployment_at(&fresh, &broken).is_none());
     }
 
     #[test]

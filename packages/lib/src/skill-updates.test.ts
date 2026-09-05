@@ -28,6 +28,8 @@ function fixtureSkill(overrides: Partial<InstalledSkill> = {}): InstalledSkill {
     parked: false,
     invocation: "both",
     ...overrides,
+    update_owner_ids:
+      overrides.update_owner_ids ?? (overrides.has_update ? ["owner:v1/global/agent-browser"] : []),
   };
 }
 
@@ -44,7 +46,7 @@ function fixtureSnapshot(skills: InstalledSkill[]): SkillSnapshot {
 }
 
 describe("skillsWithUpdates", () => {
-  it("returns only skills with has_update set", () => {
+  it("returns only skills with update owner ids", () => {
     const skills = [fixtureSkill({ has_update: true }), fixtureSkill({ name: "other" })];
     expect(skillsWithUpdates(fixtureSnapshot(skills)).map((s) => s.name)).toEqual([
       "agent-browser",

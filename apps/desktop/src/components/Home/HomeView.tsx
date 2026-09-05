@@ -18,6 +18,11 @@ import {
   unusedSkills,
 } from "@skill-studio/lib";
 import { parkSkill, pullForkUpstream, updateSkill } from "../../lib/skill-api";
+import {
+  lifecycleTargetForHarnessRoot,
+  lifecycleTargetForPark,
+  updateSkillOwners,
+} from "../../lib/skill-lifecycle-target";
 import { collectDashboardIssues } from "@skill-studio/lib";
 import type { HealthIssue, HealthIssueKind } from "@skill-studio/lib";
 import { defaultSkillListFilter } from "@skill-studio/lib";
@@ -28,6 +33,7 @@ import type {
   AgentId,
   InstalledSkill,
   InvocationPolicy,
+  LifecycleTarget,
   SkillListFilter,
   SkillSnapshot,
 } from "@skill-studio/lib";
@@ -169,15 +175,15 @@ function PullLatestButton({ skill }: { skill: InstalledSkill }) {
     setIsPulling(true);
     try {
       if (skill.source_kind === "fork") {
-        const result = await pullForkUpstream(skill.name);
+        const result = await pullForkUpstream(lifecycleTargetForPark(skill));
         addToast({ type: "success", title: result.message ?? `Merged ${skill.name}` });
       } else {
-        const result = await updateSkill(skill.name, true);
-        if (result.success) {
-          addToast({ type: "success", title: "Skill updated", message: skill.name });
-        } else {
-          addToast({ type: "error", title: "Update failed", message: result.error });
-        }
+        const summary = await updateSkillOwners(skill, updateSkill);
+        addToast({
+          type: summary.failures.length > 0 ? "warning" : "success",
+          title: `Updated ${summary.succeeded} of ${summary.attempted} deployments`,
+          message: summary.failures.map((failure) => failure.message).join("; ") || skill.name,
+        });
       }
       setIsPulling(false);
     } catch (err) {
@@ -209,7 +215,7 @@ function ParkButton({ skill }: { skill: InstalledSkill }) {
   const handlePark = async () => {
     setIsParking(true);
     try {
-      await parkSkill(skill.name);
+      await parkSkill(lifecycleTargetForPark(skill));
       addToast({ type: "success", title: `Parked ${skill.name}` });
       setIsParking(false);
     } catch (err) {
@@ -567,6 +573,7 @@ export function HomeView({ snapshot, isLoading, onSelectSkill }: HomeViewProps) 
   const [filter, setFilter] = useState<HomeFilter | null>(null);
   const [collapsedGroups, setCollapsedGroups] = useState<Set<GroupId>>(() => new Set(["unused"]));
   const [linkedRootDialog, setLinkedRootDialog] = useState<{
+    target: LifecycleTarget;
     harness: string;
     harnessLabel: string;
     root: string;
@@ -710,7 +717,12 @@ export function HomeView({ snapshot, isLoading, onSelectSkill }: HomeViewProps) 
                         issue={issue}
                         onCompare={() => openSkill(issue.skill.name, undefined, "compare")}
                         onConvertLinkedRoot={(harness, harnessLabel, root) =>
-                          setLinkedRootDialog({ harness, harnessLabel, root })
+                          setLinkedRootDialog({
+                            target: lifecycleTargetForHarnessRoot(issue.skill, harness, root),
+                            harness,
+                            harnessLabel,
+                            root,
+                          })
                         }
                         onOpen={() => onSelectSkill(issue.skill.name)}
                       />
@@ -839,6 +851,7 @@ export function HomeView({ snapshot, isLoading, onSelectSkill }: HomeViewProps) 
 
       {linkedRootDialog && (
         <MaterializeRootDialog
+          target={linkedRootDialog.target}
           harness={linkedRootDialog.harness}
           harnessLabel={linkedRootDialog.harnessLabel}
           root={linkedRootDialog.root}
@@ -869,24 +882,30 @@ function UpdatesGroup({
   const handleUpdateAll = async () => {
     setIsUpdatingAll(true);
     let failures = 0;
+    let attempted = 0;
+    let succeeded = 0;
     for (const skill of updates) {
       try {
         if (skill.source_kind === "fork") {
           // react-doctor-disable-next-line react-doctor/async-await-in-loop -- update-all runs sequentially on purpose; concurrent `npx skills update` calls race on ~/.agents/.skill-lock.json
-          await pullForkUpstream(skill.name);
+          await pullForkUpstream(lifecycleTargetForPark(skill));
+          attempted += 1;
+          succeeded += 1;
         } else {
           // react-doctor-disable-next-line react-doctor/async-await-in-loop -- update-all runs sequentially on purpose; concurrent `npx skills update` calls race on ~/.agents/.skill-lock.json
-          const result = await updateSkill(skill.name, true);
-          if (!result.success) failures += 1;
+          const summary = await updateSkillOwners(skill, updateSkill);
+          attempted += summary.attempted;
+          succeeded += summary.succeeded;
+          failures += summary.failures.length;
         }
       } catch {
+        attempted += skill.source_kind === "fork" ? 1 : skill.update_owner_ids.length;
         failures += 1;
       }
     }
-    const succeeded = updates.length - failures;
     addToast({
       type: failures > 0 ? "warning" : "success",
-      title: `Updated ${succeeded} of ${updates.length} skill${updates.length === 1 ? "" : "s"}`,
+      title: `Updated ${succeeded} of ${attempted} deployment${attempted === 1 ? "" : "s"}`,
       message: failures > 0 ? `${failures} failed` : undefined,
     });
     setIsUpdatingAll(false);

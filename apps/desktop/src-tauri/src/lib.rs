@@ -68,7 +68,6 @@ pub fn run() {
             skills::commands::list_skill_projects,
             skills::commands::is_skill_installed,
             skills::commands::get_agent_targets,
-            skills::commands::install_skill,
             skills::commands::remove_skill,
             skills::commands::update_skill,
             skills::commands::read_installed_skill_md,
@@ -100,7 +99,6 @@ pub fn run() {
             skills::event_commands::restore_skill_event,
             skills::event_commands::set_shared_harness_skill_enabled,
             skills::event_commands::materialize_harness_root,
-            skills::event_commands::distribute_skill_from_shared,
             skills::event_commands::repair_skill_link,
             // Background refresh / invocation snapshot
             skills::skill_refresh::get_skill_snapshot,

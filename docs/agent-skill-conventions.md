@@ -44,8 +44,8 @@ Sources: https://code.claude.com/docs/en/skills · https://developers.openai.com
 https://opencode.ai/docs/skills/ · https://pi.dev/docs/latest/skills
 
 Frontmatter-based controls (`disable-model-invocation`, `user-invocable`) edit the
-shared SKILL.md, so they apply to every agent that reads that same folder or symlink
-target. Config-based controls (Codex, OpenCode) are per agent.
+Universal SKILL.md, so they apply to every agent that reads that folder or a symlink
+to it. Config-based controls for Codex and OpenCode apply to one harness.
 
 ### Other Claude Code frontmatter fields
 
@@ -53,17 +53,36 @@ target. Config-based controls (Codex, OpenCode) are per agent.
 (globs that gate auto-loading), `model`, `effort`, `argument-hint`, `arguments`,
 `hooks`, `shell`, `when_to_use`, `metadata`, `license`, `compatibility`.
 
+## Scope and destination
+
+Choose a scope and a destination separately:
+
+| Choice      | Values                 | Meaning                                                                                                                                   |
+| ----------- | ---------------------- | ----------------------------------------------------------------------------------------------------------------------------------------- |
+| Scope       | Global, Project        | Global writes below the user's home directory. Project writes below one selected project.                                                 |
+| Destination | Universal, Per harness | Universal writes one canonical deployment to `.agents/skills/<name>`. Per harness writes a separate copy to each selected harness folder. |
+
+Global Universal deployments go in `~/.agents/skills`. Project Universal deployments
+go in `.agents/skills`. Codex, OpenCode, pi, Cursor, and Grok Build read these paths
+directly. Claude Code can use a per-skill link to the same deployment. Selecting these
+readers changes visibility. It does not create more deployments.
+
+Per harness never writes `.agents/skills` and never creates links back to Universal.
+Each selected harness gets its own directory copy. Each copy has an independent
+lifecycle and can differ from the others. Only the Copy method supports Per harness.
+dotagents and skills.sh, including Store installs, support Universal only.
+
 ### Parking (disable globally, for every harness)
 
-Parking is Skill Studio's own global disable: it moves a skill's shared-folder
+Parking is Skill Studio's own global disable: it moves a skill's Universal
 deployment from `~/.agents/skills/<name>` to `~/.agents/skills-parked/<name>`
 (a rename, not a copy), removing a per-skill Claude Code symlink first if one
-exists. Every harness that reads the shared folder loses the skill at once;
+exists. Every harness that reads the Universal folder loses the skill at once;
 unparking reverses both steps. The registry (`~/.agents/skill-studio.json`)
 records `parked: {name: {parked_at, source_kind, claude_link}}` so unparking
 knows whether to recreate a Claude Code link.
 
-Because parking only moves the shared folder, a `sync`/`update`/reinstall run
+Because parking only moves the Universal folder, a `sync`/`update`/reinstall run
 while a skill is parked can recreate `~/.agents/skills/<name>` on its own -
 Skill Studio still shows the skill as parked (from the registry record), but
 flags it as `parked-but-reinstalled` until it's unparked. Unparking then
@@ -90,8 +109,8 @@ while every other harness keeps seeing it, via that harness's own mechanism:
   symlink under `~/.claude/skills/<name>`. This only works when the skill is
   deployed via that per-skill symlink; a skill deployed through the whole-directory
   `~/.claude/skills → ~/.agents/skills` symlink has no per-skill link to remove.
-- **pi, Cursor, Grok Build**: no per-skill disable - these agents read the
-  shared folder directly, so the only way to disable a skill for them is to
+- **pi, Cursor, Grok Build**: no per-skill disable. These agents read the
+  Universal folder directly, so the only way to disable a skill for them is to
   park it (above), which disables it for every harness.
 
 ## Discovery paths
@@ -104,7 +123,7 @@ while every other harness keeps seeing it, via that harness's own mechanism:
 | pi          | `.pi/skills/`                         | `~/.pi/agent/skills/`                          | root `.md` files with valid frontmatter count too                                                               |
 | Cursor      | `.cursor/skills/`                     | `~/.cursor/skills/`                            | also reads .agents, .claude and .codex skill dirs; plugins in ~/.cursor/plugins/{cache,local}                   |
 | Grok Build  | `.grok/skills/`                       | `~/.grok/skills/`                              | reads ~/.agents/skills; plugins in ~/.grok/plugins, marketplaces in ~/.grok/config.toml [[marketplace.sources]] |
-| shared      | `.agents/skills/`                     | `~/.agents/skills/`                            | `npx skills` target; Codex, OpenCode, pi, Cursor and Grok Build read it natively; Claude Code needs a symlink   |
+| Universal   | `.agents/skills/`                     | `~/.agents/skills/`                            | Canonical deployment. Codex, OpenCode, pi, Cursor and Grok Build read it directly. Claude Code needs a symlink. |
 | parked      | n/a (global only)                     | `~/.agents/skills-parked/`                     | Skill Studio's own root for parked (disabled globally) skills - see "Parking" above; excluded from coverage     |
 
 ## Local data sources Skill Studio reads
@@ -175,6 +194,37 @@ writes back to GitHub or to the owning CLI's own files.
 origin (`declared_ref`, if any, for a dotagents fork), then drops the fork
 record and snapshot - the frontend confirms this destructively first.
 
+## Lifecycle targets and safety
+
+Each discovered deployment has a stable `deployment_id`, destination, backing
+relationship, owner kind, and mutability. A mutating command receives one exact
+`deployment_id` or one explicit `owner_id`. If a scope has more than one mutable
+owner, the command does not select one by skill name. Before writing, the backend
+reloads the snapshot and confirms that the id still matches the path, scope, and
+destination.
+
+An owner-wide update or removal affects only deployments with that owner id. Global
+and Project ledgers have different owner ids. A Per harness Copy has its own lifecycle
+and does not inherit a Universal ledger. Park and unpark accept only the canonical
+Global Universal deployment. They do not move Project deployments or Per harness
+copies.
+
+Skill Studio can change deployments owned by skills.sh, dotagents, Copy, or a fork.
+Plugin, in-repo, manual, wildcard-dotagents, and ambiguous deployments are read-only.
+Lifecycle commands reject read-only deployments. They do not guess an owner or
+delete a path found during discovery. Source reads, update checks, plugin-cache
+enumeration, and GitHub fetches do not write to those sources. Managed updates and
+removals run the owning CLI instead of editing its lock or manifest files.
+
+### Compatibility identifiers
+
+The scanner and existing DTOs can still use the machine value `shared` for the
+Universal `.agents/skills` root. Existing fields such as
+`claude_reads_shared_folder`, `shared_via_whole_dir_link`, event kinds such as
+`explode_shared_dir`, and internal `shared-root` relationship names remain on the
+wire for compatibility. UI copy must call this destination Universal. These
+compatibility values do not define another destination.
+
 ## Add skill
 
 The "Add skill" sheet (`src/components/AddSkill/AddSkillSheet.tsx`, backend
@@ -184,17 +234,16 @@ The "Add skill" sheet (`src/components/AddSkill/AddSkillSheet.tsx`, backend
 `git:<url>` or a bare `*.git` URL, or an absolute/`~/` local path - parsed by
 `src/lib/skill-source-parse.ts` into a `ParsedSkillSource`. One of three
 methods installs it: **dotagents** (`npx -y @sentry/dotagents add`, tracked in
-`agents.toml`/`agents.lock`), **skills.sh** (the existing `install_skill`
-path, tracked in `.skill-lock.json`; github sources only), or **Copy**
-(fetches a GitHub tarball or copies a local path straight into
-`~/.agents/skills/<name>`, untracked - no ledger, no updates). Every method
-writes only the shared folder; Claude Code reads it through `~/.claude/skills`
-the same way a whole-dir symlink normally provides, so when that path is a
-real directory (not the whole-dir symlink) and Claude Code is a selected
-harness, `add_skill` creates one relative per-skill symlink
-`~/.claude/skills/<name> -> ../../.agents/skills/<name>` - never for
-`skills.sh`, since its own `--agent claude-code` deploys straight into
-Claude Code's directory.
+`agents.toml`/`agents.lock`), **skills.sh** (tracked in `.skill-lock.json`;
+GitHub sources only), or **Copy** (untracked, with no update ledger).
+
+dotagents and skills.sh always install one Universal deployment. A skills.sh install
+uses its Universal target. It does not use a direct reader such as Codex as a proxy
+target. The install can also request a Claude Code link. Copy can install one
+Universal deployment or separate Per harness copies. For Per harness, the backend
+copies the fetched source into each selected harness path and rejects an empty
+selection. Project scope uses the same layout below the selected project. Trials are
+available only for Universal installs.
 
 ## Packs
 

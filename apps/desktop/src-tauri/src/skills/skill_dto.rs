@@ -14,7 +14,9 @@ use serde::{Deserialize, Serialize};
 use super::frontmatter::InvocationPolicy;
 use super::github_skill_listing::GithubSkillEntry;
 use super::provenance::SourceKind;
+use super::skill_deployment::{BackingRelationship, DeploymentMutability, SkillDestination};
 use super::skill_fork_registry::{AddMethod, OriginTool, TrialScope};
+use super::skill_ownership::LifecycleOwnerKind;
 
 /// Which mechanism `Deployment.disabled` came from - see
 /// `skill_harness_disable`. The first three are native per-harness switches;
@@ -121,7 +123,25 @@ pub struct PluginInfo {
 /// Where a skill is deployed on disk for a specific agent
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Deployment {
-    /// Display name of the agent (e.g. "Claude Code")
+    /// Stable id (`dep:v1/...`) for exact mutations. Empty only on
+    /// lock-file-only records that have no on-disk path.
+    #[serde(default)]
+    pub id: String,
+    /// Universal (`.agents/skills`) or Per harness. Compatibility still
+    /// serializes the scanner label `shared` on `agent`.
+    #[serde(default = "default_destination")]
+    pub destination: SkillDestination,
+    #[serde(default = "default_owner_kind")]
+    pub owner_kind: LifecycleOwnerKind,
+    /// `owner:v1/...` when a matching ledger owns this deployment.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub owner_id: Option<String>,
+    #[serde(default)]
+    pub mutability: DeploymentMutability,
+    #[serde(default = "default_backing")]
+    pub backing: BackingRelationship,
+    /// Display name of the agent (e.g. "Claude Code"). Universal roots
+    /// still use the compatibility label `shared`.
     pub agent: String,
     pub scope: String, // "global" | "project" | "plugin"
     pub path: String,
@@ -195,6 +215,37 @@ pub struct Deployment {
     pub invocation: InvocationPolicy,
 }
 
+impl Default for Deployment {
+    fn default() -> Self {
+        Self {
+            id: String::new(),
+            destination: default_destination(),
+            owner_kind: default_owner_kind(),
+            owner_id: None,
+            mutability: DeploymentMutability::default(),
+            backing: default_backing(),
+            agent: String::new(),
+            scope: String::new(),
+            path: String::new(),
+            is_symlink: false,
+            plugin: None,
+            symlink_target: None,
+            resolved_path: None,
+            symlink_is_broken: false,
+            symlink_error: None,
+            project_path: None,
+            content_hash: String::new(),
+            disabled: false,
+            disabled_by: None,
+            disabled_readers: Vec::new(),
+            codex_implicit_invocation: None,
+            shared_via_whole_dir_link: false,
+            spec_violations: Vec::new(),
+            invocation: default_invocation(),
+        }
+    }
+}
+
 /// Fork provenance shown on a forked skill's detail header - see
 /// `skill_fork_registry::ForkRecord`, which this is a read-only projection
 /// of for the frontend.
@@ -218,6 +269,14 @@ pub struct InstalledSkill {
     pub installed_at: String,
     pub updated_at: Option<String>,
     pub has_update: bool,
+    /// Exact lifecycle owners whose persisted update state is newer than the
+    /// installed commit. Aggregate update badges derive from this list.
+    #[serde(default)]
+    pub update_owner_ids: Vec<String>,
+    /// Update metadata keyed by the exact lifecycle owner. New clients use
+    /// this instead of pairing an action with aggregate commit metadata.
+    #[serde(default)]
+    pub update_owners: Vec<OwnerUpdateInfo>,
     /// The upstream commit `has_update` compares against, from the same
     /// `skill_update_check` state - for the detail header's "Update
     /// available · abc1234 · 3d ago" line. `None` unless `has_update`.
@@ -283,6 +342,10 @@ pub struct InstalledSkill {
     /// window - see `skill_fork_registry::TrialRecord` and `skill_trial`.
     #[serde(default)]
     pub trial: Option<TrialInfo>,
+    /// Every active trial keyed by its exact deployment. `trial` remains for
+    /// old clients and is populated only when there is one active trial.
+    #[serde(default)]
+    pub trials: Vec<TrialInfo>,
     /// True when this skill is parked (disabled globally) - see
     /// `skill_park`. Parked skills are excluded from coverage/dashboard
     /// totals and shown in their own sidebar group instead.
@@ -301,17 +364,42 @@ fn default_invocation() -> InvocationPolicy {
     InvocationPolicy::Both
 }
 
+fn default_destination() -> SkillDestination {
+    SkillDestination::PerHarness
+}
+
+fn default_owner_kind() -> LifecycleOwnerKind {
+    LifecycleOwnerKind::Manual
+}
+
+fn default_backing() -> BackingRelationship {
+    BackingRelationship::Independent
+}
+
 /// A trial's remaining-time projection, read-only for the frontend - see
 /// `skill_fork_registry::TrialRecord`, which this is a projection of.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TrialInfo {
+    #[serde(default)]
+    pub deployment_id: String,
     pub expires_at: String,
     pub method: AddMethod,
+    pub status: super::skill_fork_registry::TrialStatus,
     /// The trial's scope - needed so `keep_skill_trial`/expiry can key back
     /// into `trials` (`"global/<name>"` or `"project/<name>"`) correctly.
     pub scope: TrialScope,
     #[serde(default)]
     pub project_path: Option<String>,
+}
+
+/// Persisted update state for one exact lifecycle owner.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct OwnerUpdateInfo {
+    pub owner_id: String,
+    #[serde(default)]
+    pub latest_commit: Option<String>,
+    #[serde(default)]
+    pub latest_commit_at: Option<String>,
 }
 
 // ============================================================================
@@ -348,11 +436,11 @@ pub enum ParsedSkillSourceKind {
 pub struct AddSkillRequest {
     pub source: ParsedSkillSource,
     pub method: AddMethod,
+    pub destination: SkillDestination,
     pub agents: Vec<super::agents::AgentId>,
     /// Harnesses to switch off for this skill right after a successful
-    /// install: readers of the shared folder the install itself cannot
-    /// avoid reaching. A failure here is reported as a warning, never as a
-    /// failed install - see `apply_disabled_harnesses`.
+    /// install: readers of the Universal folder the install itself cannot
+    /// avoid reaching. Unused for Per harness Copy.
     #[serde(default)]
     pub disabled_harnesses: Vec<super::agents::AgentId>,
     pub scope: InstallScope,
@@ -368,11 +456,11 @@ pub struct AddSkillsRequest {
     pub source: ParsedSkillSource,
     pub skills: Vec<GithubSkillEntry>,
     pub method: AddMethod,
+    pub destination: SkillDestination,
     pub agents: Vec<super::agents::AgentId>,
     /// Harnesses to switch off for this skill right after a successful
-    /// install: readers of the shared folder the install itself cannot
-    /// avoid reaching. A failure here is reported as a warning, never as a
-    /// failed install - see `apply_disabled_harnesses`.
+    /// install: readers of the Universal folder the install itself cannot
+    /// avoid reaching. Unused for Per harness Copy.
     #[serde(default)]
     pub disabled_harnesses: Vec<super::agents::AgentId>,
     pub scope: InstallScope,
@@ -410,26 +498,28 @@ pub struct AddSkillResult {
 // ============================================================================
 
 /// Scope for skill installation
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "lowercase")]
 pub enum InstallScope {
     Global,
     Project,
 }
 
-/// Installation request
+/// Update or remove one deployment, or every deployment of one owner.
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct InstallRequest {
-    pub skill_source: String, // e.g., "getsentry/find-bugs" or skill name
-    pub scope: InstallScope,
-    pub project_path: Option<String>,
-    pub agents: Vec<super::agents::AgentId>,
-    /// Harnesses to switch off for this skill right after a successful
-    /// install: readers of the shared folder the install itself cannot
-    /// avoid reaching. A failure here is reported as a warning, never as a
-    /// failed install - see `apply_disabled_harnesses`.
-    #[serde(default)]
-    pub disabled_harnesses: Vec<super::agents::AgentId>,
+pub struct LifecycleTarget {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub deployment_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub owner_id: Option<String>,
+}
+
+/// Exact deployment plus the harness whose visibility will change. Universal
+/// deployments are valid for readers that discover that scope directly.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct HarnessVisibilityTarget {
+    pub deployment_id: String,
+    pub reader_agent: super::agents::AgentId,
 }
 
 /// Installation result

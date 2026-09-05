@@ -54,6 +54,7 @@ function fixtureSkill(overrides: Partial<InstalledSkill> = {}): InstalledSkill {
     parked: false,
     invocation: "both",
     ...overrides,
+    update_owner_ids: overrides.update_owner_ids ?? [],
   };
 }
 

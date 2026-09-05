@@ -24,6 +24,12 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use serde::{Deserialize, Serialize};
 
 use super::provenance::SourceKind;
+use super::skill_deployment::SkillDestination;
+use super::skill_dto::InstallScope;
+
+fn path_is_empty(path: &Path) -> bool {
+    path.as_os_str().is_empty()
+}
 
 /// Which CLI a forked skill was originally managed by.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -52,12 +58,29 @@ pub enum TrialScope {
     Project,
 }
 
+/// Durable state for trial expiry. `Expiring` prevents an interrupted CLI
+/// removal from matching a later installation at the same path.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "kebab-case")]
+pub enum TrialStatus {
+    #[default]
+    Active,
+    Expiring,
+    RecoveryRequired,
+}
+
 /// One "Try for 24 hours" install, tracked so `skill_trial`'s expiry loop
 /// knows when to remove it and how.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct TrialRecord {
+    /// Stable identity of the exact deployment this trial owns. Empty only
+    /// for records written before registry version 2.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub deployment_id: String,
     pub started_at: String,
     pub expires_at: String,
+    #[serde(default)]
+    pub status: TrialStatus,
     pub method: AddMethod,
     pub scope: TrialScope,
     #[serde(default)]
@@ -68,11 +91,19 @@ pub struct TrialRecord {
     /// (that method never writes the shared `.agents/skills` folder).
     #[serde(default)]
     pub skill_dir: PathBuf,
+    /// Recursive content fingerprint recorded immediately after install.
+    /// Empty only for legacy records, which expiry must not mutate.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub deployment_fingerprint: String,
     /// The per-skill Claude Code symlink `add_skill` created for this trial,
     /// if any - `None` when Claude Code wasn't selected or the whole-dir
     /// symlink already covered it.
     #[serde(default)]
     pub claude_link: Option<PathBuf>,
+    /// Raw target of `claude_link` at install time. Missing only from legacy
+    /// records, which expiry refuses when a Claude link is present.
+    #[serde(default)]
+    pub claude_link_target: Option<PathBuf>,
 }
 
 /// The `trials` map key for a given scope: `"global/<name>"` or
@@ -84,6 +115,11 @@ pub fn trial_key(scope: TrialScope, name: &str) -> String {
         TrialScope::Global => format!("global/{name}"),
         TrialScope::Project => format!("project/{name}"),
     }
+}
+
+/// Registry key used by all new trial records.
+pub fn deployment_trial_key(deployment_id: &str) -> String {
+    format!("deployment/{deployment_id}")
 }
 
 /// The skill name embedded in a `trials` map key, e.g. `"global/find-bugs"`
@@ -98,6 +134,12 @@ pub fn name_from_trial_key(key: &str) -> &str {
 /// (`pull_fork_upstream`).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ForkRecord {
+    /// Global Universal deployment detached by this fork. Empty only for a
+    /// legacy record, which callers must resolve by its exact local path.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub deployment_id: String,
+    #[serde(default, skip_serializing_if = "path_is_empty")]
+    pub skill_dir: PathBuf,
     pub forked_at: String,
     pub origin_tool: OriginTool,
     /// The exact source string the owning CLI would reinstall from -
@@ -121,6 +163,12 @@ pub struct ForkRecord {
 /// to look at.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ParkedRecord {
+    /// Parked deployment identity and exact directory. Empty only for
+    /// registry version 1 records.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub deployment_id: String,
+    #[serde(default, skip_serializing_if = "path_is_empty")]
+    pub skill_dir: PathBuf,
     pub parked_at: String,
     pub source_kind: SourceKind,
     /// The per-skill Claude Code symlink that was removed when parking, if
@@ -136,6 +184,10 @@ pub struct ParkedRecord {
 /// `skill_harness_disable`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ClaudeLinkRemoved {
+    /// Exact Claude Code deployment whose link was removed. Empty only for
+    /// registry version 1 records.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub deployment_id: String,
     /// The symlink's original target, so re-enabling can recreate it exactly
     /// (relative, as `maybe_claude_code_symlink` creates it).
     pub link_target: PathBuf,
@@ -171,6 +223,28 @@ pub struct PackRecord {
     pub skills: Vec<String>,
 }
 
+/// One deployment created by Skill Studio's Copy installer. The deployment
+/// ID is also the `copies` map key; the repeated identity fields make a
+/// malformed or stale record fail closed during discovery and removal.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CopyDeploymentRecord {
+    pub deployment_id: String,
+    pub name: String,
+    pub path: PathBuf,
+    pub scope: InstallScope,
+    pub destination: SkillDestination,
+    pub slot: String,
+    #[serde(default)]
+    pub project_path: Option<String>,
+    /// Discovery-compatible strong content hash recorded at install time.
+    /// Empty only for legacy records, which destructive mutations refuse.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub content_hash: String,
+    /// True when the exact copy is stored under `.skill-studio-disabled`.
+    #[serde(default)]
+    pub disabled: bool,
+}
+
 /// `~/.agents/skill-studio.json`'s shape.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ForkRegistry {
@@ -193,6 +267,11 @@ pub struct ForkRegistry {
     /// Share packs created via `skill_pack`, keyed by pack name.
     #[serde(default)]
     pub packs: BTreeMap<String, PackRecord>,
+    /// Exact deployments created by the Copy installer, keyed by deployment
+    /// ID. Absent in registry versions 1 and 2; those installs remain manual
+    /// because Copy ownership is never inferred from directory topology.
+    #[serde(default)]
+    pub copies: BTreeMap<String, CopyDeploymentRecord>,
     /// skills.sh /api/v1 bearer token; absent until the user configures one
     /// (the developer override - see `api::resolve_skills_sh_access`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -209,8 +288,10 @@ pub struct ForkRegistry {
     pub preferred_editor: Option<String>,
 }
 
+pub const CURRENT_REGISTRY_VERSION: u32 = 4;
+
 fn default_version() -> u32 {
-    1
+    CURRENT_REGISTRY_VERSION
 }
 
 // `#[derive(Default)]` would use `u32`/`Value`'s own `Default` (0 / Null)
@@ -226,6 +307,7 @@ impl Default for ForkRegistry {
             parked: BTreeMap::new(),
             harness_disabled: BTreeMap::new(),
             packs: BTreeMap::new(),
+            copies: BTreeMap::new(),
             skills_sh_api_key: None,
             server_url: None,
             preferred_editor: None,
@@ -307,7 +389,7 @@ mod tests {
     fn missing_file_yields_default_registry() {
         let tmp = tempfile::tempdir().unwrap();
         let reg = read_fork_registry(tmp.path()).unwrap();
-        assert_eq!(reg.version, 1);
+        assert_eq!(reg.version, 4);
         assert!(reg.forks.is_empty());
     }
 
@@ -318,6 +400,8 @@ mod tests {
         reg.forks.insert(
             "find-bugs".to_string(),
             ForkRecord {
+                deployment_id: "dep:v1/global/universal/universal/find-bugs/-/x".to_string(),
+                skill_dir: tmp.path().join(".agents/skills/find-bugs"),
                 forked_at: "2026-01-01T00:00:00Z".to_string(),
                 origin_tool: OriginTool::Dotagents,
                 origin_source: "getsentry/find-bugs".to_string(),
@@ -345,6 +429,21 @@ mod tests {
         std::fs::write(tmp.path().join(".agents/skill-studio.json"), "not json").unwrap();
         let err = read_fork_registry(tmp.path()).unwrap_err();
         assert!(err.contains("malformed"));
+    }
+
+    #[test]
+    fn version_two_registry_reads_with_no_inferred_copy_ownership() {
+        let tmp = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(tmp.path().join(".agents")).unwrap();
+        std::fs::write(
+            tmp.path().join(".agents/skill-studio.json"),
+            r#"{"version":2,"forks":{},"trials":{},"parked":{},"harness_disabled":{},"packs":{}}"#,
+        )
+        .unwrap();
+
+        let registry = read_fork_registry(tmp.path()).unwrap();
+        assert_eq!(registry.version, 2);
+        assert!(registry.copies.is_empty());
     }
 
     #[test]

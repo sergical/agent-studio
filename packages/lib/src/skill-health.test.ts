@@ -51,6 +51,7 @@ function fixtureSkill(overrides: Partial<InstalledSkill> = {}): InstalledSkill {
     parked: false,
     invocation: "both",
     ...overrides,
+    update_owner_ids: overrides.update_owner_ids ?? [],
   };
 }
 
@@ -145,7 +146,7 @@ describe("findDuplicateSkills", () => {
     });
     const issues = findDuplicateSkills([skill]);
     expect(issues).toHaveLength(1);
-    expect(issues[0].detail).toBe("Global · Cursor differs from Global · Shared folder");
+    expect(issues[0].detail).toBe("Global · Cursor differs from Global · Universal folder");
   });
 
   it("uses a plural verb when more than one copy differs", () => {
@@ -160,7 +161,7 @@ describe("findDuplicateSkills", () => {
     });
     const issues = findDuplicateSkills([skill]);
     expect(issues[0].detail).toBe(
-      "Global \u00b7 Cursor; Global \u00b7 Codex differ from Global \u00b7 Shared folder",
+      "Global \u00b7 Cursor; Global \u00b7 Codex differ from Global \u00b7 Universal folder",
     );
   });
 
@@ -172,7 +173,7 @@ describe("findDuplicateSkills", () => {
       ],
     });
     const issues = findDuplicateSkills([skill]);
-    expect(issues[0].detail).toBe("2 copies differ: Global · Shared folder; Global · Cursor");
+    expect(issues[0].detail).toBe("2 copies differ: Global · Universal folder; Global · Cursor");
   });
 });
 
@@ -214,7 +215,7 @@ describe("findLinkedRootIssues", () => {
     expect(issues[0].root).toBe("/home/.claude/skills");
   });
 
-  it("does not flag a per-skill symlink into the shared root", () => {
+  it("does not flag a per-skill symlink into the Universal root", () => {
     const skill = fixtureSkill({
       deployments: [
         fixtureDeployment({
@@ -242,7 +243,7 @@ describe("HEALTH_ISSUE_KIND_ORDER", () => {
 });
 
 describe("findParkedButReinstalled", () => {
-  it("flags a parked skill whose shared-folder deployment came back", () => {
+  it("flags a parked skill whose Universal deployment came back", () => {
     const skill = fixtureSkill({
       parked: true,
       deployments: [fixtureDeployment({ scope: "global" })],

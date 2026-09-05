@@ -17,27 +17,45 @@ import {
   AlertDialogTitle,
 } from "@skill-studio/ui";
 import { removeSkill } from "../../lib/skill-api";
+import {
+  skillDeploymentRemovalPreview,
+  skillRemovalAvailability,
+  skillRemovalDescription,
+} from "../../lib/skill-lifecycle-target";
 import { useAppStore } from "../../store/appStore";
+import type { Deployment, InstalledSkill } from "@skill-studio/lib";
 
 export function RemoveDeploymentsDialog({
-  skillName,
+  skill,
   scopeLabel,
   projectPath,
+  deployment,
   onClose,
 }: {
-  skillName: string;
+  skill: InstalledSkill;
   /** "Global" or the project folder's name - what the section this came from is called. */
   scopeLabel: string;
   /** `null` for the global scope, otherwise the project directory to remove from. */
   projectPath: string | null;
+  /** Exact independent Copy selected from a Locations row. */
+  deployment?: Deployment;
   onClose: () => void;
 }) {
   const [isRemoving, setIsRemoving] = useState(false);
   const addToast = useAppStore((state) => state.addToast);
+  const skillName = skill.name;
+  const removalAvailability = deployment
+    ? { available: true as const, preview: skillDeploymentRemovalPreview(skill, deployment) }
+    : skillRemovalAvailability(skill, {
+        skillName,
+        scope: projectPath ? "project" : "global",
+        projectPath,
+      });
 
   const handleRemove = () => {
+    if (!removalAvailability.available) return;
     setIsRemoving(true);
-    removeSkill(skillName, projectPath)
+    removeSkill(removalAvailability.preview.target)
       .then((result) => {
         if (!result.success) throw new Error(result.error ?? "The removal did not complete.");
         onClose();
@@ -60,15 +78,20 @@ export function RemoveDeploymentsDialog({
             Remove {skillName} from {scopeLabel}?
           </AlertDialogTitle>
           <AlertDialogDescription>
-            Every {scopeLabel} copy goes with it, including the links each harness reads it through.
-            Copies in other scopes stay where they are. Reinstalling brings it back.
+            {removalAvailability.available
+              ? skillRemovalDescription(removalAvailability.preview)
+              : removalAvailability.reason}
           </AlertDialogDescription>
         </AlertDialogHeader>
         <AlertDialogFooter>
           <AlertDialogCancel onClick={onClose} disabled={isRemoving}>
             Cancel
           </AlertDialogCancel>
-          <AlertDialogAction variant="destructive" onClick={handleRemove} disabled={isRemoving}>
+          <AlertDialogAction
+            variant="destructive"
+            onClick={handleRemove}
+            disabled={isRemoving || !removalAvailability.available}
+          >
             {isRemoving ? "Removing…" : `Remove from ${scopeLabel}`}
           </AlertDialogAction>
         </AlertDialogFooter>
