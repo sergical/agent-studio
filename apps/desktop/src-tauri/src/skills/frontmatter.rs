@@ -108,12 +108,17 @@ pub fn frontmatter_fields(content: &str) -> BTreeMap<String, String> {
         return BTreeMap::new();
     }
     let mut yaml_block = String::new();
+    let mut closed = false;
     for line in lines {
         if line.trim() == "---" {
+            closed = true;
             break;
         }
         yaml_block.push_str(line);
         yaml_block.push('\n');
+    }
+    if !closed {
+        return BTreeMap::new();
     }
     let Ok(serde_yaml::Value::Mapping(map)) = serde_yaml::from_str(&yaml_block) else {
         return BTreeMap::new();
@@ -290,6 +295,42 @@ mod tests {
     #[test]
     fn frontmatter_fields_empty_without_frontmatter() {
         assert!(frontmatter_fields("no frontmatter here").is_empty());
+    }
+
+    #[test]
+    fn frontmatter_fields_empty_when_closing_fence_missing() {
+        // A SKILL.md whose frontmatter is missing its closing `---` fence
+        // must yield an empty map: before the fix `frontmatter_fields`
+        // parsed the entire remaining file as YAML and returned a populated
+        // "ghost" map (including `disable-model-invocation`), contradicting
+        // `parse_frontmatter` (which correctly returned `None`).
+        let content = "---\nname: write-tests\ndescription: Writes tests for new features.\ndisable-model-invocation: true\nRole: test author\nOutput: a test file\n";
+        assert!(parse_frontmatter(&content).is_none());
+        let fields = frontmatter_fields(&content);
+        assert!(
+            fields.is_empty(),
+            "missing closing fence must yield an empty map, got {fields:?}"
+        );
+        assert!(fields.get("disable-model-invocation").is_none());
+    }
+
+    #[test]
+    fn frontmatter_fields_well_formed_fence_still_yields_user_only_policy() {
+        // Regression guard: a legitimately fenced frontmatter with
+        // `disable-model-invocation: true` must still stringified-map through
+        // `frontmatter_fields` to `InvocationPolicy::UserOnly` - the path
+        // `skill_refresh` uses to compute `InstalledSkill.invocation`.
+        let content = "---\nname: write-tests\ndescription: Writes tests.\ndisable-model-invocation: true\n---\nBody.\n";
+        let fields = frontmatter_fields(content);
+        assert_eq!(
+            fields.get("disable-model-invocation").map(String::as_str),
+            Some("true")
+        );
+        let disable_model = fields.get("disable-model-invocation").map(|v| v == "true");
+        let user_invocable = fields.get("user-invocable").map(|v| v == "true");
+        let (policy, conflict) = invocation_policy_from(disable_model, user_invocable);
+        assert_eq!(policy, InvocationPolicy::UserOnly);
+        assert!(!conflict);
     }
 
     #[test]
