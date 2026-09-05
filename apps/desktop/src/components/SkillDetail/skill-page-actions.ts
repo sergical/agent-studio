@@ -34,6 +34,20 @@ function sharedFolderDeployment(skill: InstalledSkill) {
   );
 }
 
+/**
+ * Whether the page header's "Remove" item should be offered for `skill`. The
+ * header has no scope picker, so Remove is global-only: on click it passes
+ * `null` to `removeSkill`, which the backend maps to `npx skills remove
+ * <name> --global` - an operation that can only touch a global deployment.
+ * It is therefore surfaced only for skills.sh-managed skills that actually
+ * have a global deployment. A project-only skills.sh skill has none, so the
+ * header offers no Remove for it - the Locations card's scope-aware "Remove
+ * from <Project>" flow (`RemoveDeploymentsDialog`) handles that case instead.
+ */
+export function shouldOfferHeaderRemove(skill: InstalledSkill): boolean {
+  return skill.source_kind === "skills-sh" && skill.deployments.some((d) => d.scope === "global");
+}
+
 type AddToast = ReturnType<typeof useAppStore.getState>["addToast"];
 
 /**
@@ -79,7 +93,7 @@ export interface SkillPageActions {
   parkAction: SkillPageAction;
   /** Fork (when forkable) or Un-fork (when already forked) - `null` when neither applies. */
   forkAction: SkillPageAction | null;
-  /** Only skills.sh-managed skills carry lock-file metadata `removeSkill` needs. */
+  /** Global-only skills.sh removal - `null` unless `shouldOfferHeaderRemove(skill)`. */
   removeAction: SkillPageAction | null;
   keepTrial: SkillPageAction;
 }
@@ -87,10 +101,13 @@ export interface SkillPageActions {
 /**
  * Consolidates every header/overflow-menu action for `skill` into one hook,
  * so `InstalledSkillHeader` only has to render menu items and one primary
- * button. No behaviour changes from the old `InstalledSkillHeader` icon row
- * and `SkillDetailActions`, aside from the update button always targeting
- * global scope (the page header has no scope picker) and Remove gaining the
- * same `ask()` confirm the other destructive actions here already use.
+ * button. The update button always targets global scope (the page header
+ * has no scope picker), and Remove is likewise global-only: it is offered
+ * only when a global deployment exists (see `shouldOfferHeaderRemove`) and
+ * passes `null` to `removeSkill`. A project-only skills.sh skill has no
+ * global deployment, so the header surfaces no Remove for it - the
+ * Locations card's scope-aware "Remove from <Project>" flow handles that
+ * case. Both destructive actions confirm via `ask()` first.
  */
 export function useSkillPageActions(
   skill: InstalledSkill,
@@ -255,8 +272,9 @@ export function useSkillPageActions(
     forkAction = { label: "Fork", run: doFork, busy: isForking };
   }
 
-  const removeAction: SkillPageAction | null =
-    skill.source_kind === "skills-sh" ? { label: "Remove", run: doRemove, busy: isRemoving } : null;
+  const removeAction: SkillPageAction | null = shouldOfferHeaderRemove(skill)
+    ? { label: "Remove", run: doRemove, busy: isRemoving }
+    : null;
 
   return {
     path,
