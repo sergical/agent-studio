@@ -22,19 +22,19 @@ This feature map provides:
 - Footer controls: rescan, Learn, Settings, theme toggle
 
 **[Home Dashboard](./home-dashboard.md)**
-- Stat tiles: Broken, Warnings, Updates (clickable filters)
-- Lane card: Invocation counts, prompt cost (segmented bars)
-- Inbox groups: Broken, Warnings, Updates, Unused (30d), Recently Used
-- Trial restore toasts
-- Linked-root conversion dialog
-- Filter interactions
+- Stat tiles: Broken, Warnings, Updates (clickable filters with InfoPopover explainers)
+- Invocation/cost lane card: segmented bars by policy and usage, clickable segments
+- Inbox groups: Broken, Warnings, Updates, Unused (30d), Recently Used (collapsible, max 6 rows, "Show all" footer links)
+- Trial restore toast (24h expiry, restore action)
+- MaterializeRootDialog (convert linked root to per-skill links)
+- Filter interactions (tile click → filtered view, "Show everything" to clear)
 
 **[Skills Management](./skills-management.md)**
-- Filterable skill table (scope, harness, source, issue, invocation, usage)
-- Search integration (sidebar query applies here)
-- Selection mode (multi-select for create pack)
-- Coverage matrix toggle (alternative table view)
-- Quick actions per row
+- Filter bar: search input, scope (All/Global/Project dropdown), Filter menu (harness, source), result count, sort selector, view toggle
+- Active filter chips (second row when filters active, "Clear all" button)
+- Selection mode: "Select" button, header checkbox, row checkboxes (keyed by path), shift-click range select, "Create pack" action
+- Coverage matrix toggle (List vs Coverage grid view)
+- SkillListTable: sortable columns (name/used/cost), skill location cells, invocation chips, empty states
 
 **[Plugins View](./plugins-view.md)**
 - Read-only skills from native plugin caches
@@ -43,11 +43,10 @@ This feature map provides:
 - No edit/fork/remove actions (plugin-managed)
 
 **[Activity Tracking](./activity-tracking.md)**
-- Invocation history (newest first, 200 event limit)
-- Year heatmap by skill and project
-- Usage breakdowns (30d window selector)
-- Event restore operations (undo with drift guard)
-- Filtering by skill
+- Invocation heatmap: 52-week × 7-day GitHub-style grid, 5 intensity levels, hover tooltips, month/weekday labels
+- By Skill table: window selector (24h/7d/30d), clickable rows, columns (name, last used, invocations, projects)
+- By Project table: 30d only, basename labels, full path tooltips, sorted by count
+- History section: event log (200 events max), per-row actions (Restore, Reveal in Finder), restore flow with drift guard confirmation
 
 **[Packs Management](./packs-management.md)**
 - Create pack (bundle selected skills)
@@ -64,21 +63,21 @@ This feature map provides:
 - Not used in 30 days (transcript-based usage tracking)
 
 **[Settings](./settings.md)**
-- Editor preference (which app "Open in editor" uses)
-- skills.sh API key (developer override for direct access)
-- Theme preference (stored, future integration)
-- Project tracking (add/remove project directories)
+- Open in Editor picker: radio group (Automatic + detected editors), saves immediately on selection, empty state when no editors detected
+- skills.sh API key: password input, "Save" button, status line (direct vs server mode), key never refetched
+- Theme: managed in sidebar footer (sun/moon icon toggle), not in SettingsView component
+- Projects: managed in Skills filter bar ("Add project…" / "Stop tracking…" in Project dropdown)
 
 ### Skill Detail & Operations
 
 **[Skill Detail Page](./skill-detail.md)**
-- Header: name, primary action, assistant trigger, overflow menu, metadata
-- Locations card: per-deployment enable/disable, harness toggles, repair broken links
-- Markdown card: view/edit SKILL.md, fork-before-save for managed skills
-- Test form: invoke skill with Cloud Agent, capture results
-- Compare dialog: side-by-side diff of multiple deployments
-- Repair card: fix broken symlinks (remove or relink)
-- Assistant drawer: AI-powered skill editor with audit proposals
+- Header: Back button (dynamic label), skill name, primary action (Pull/Remove), assistant trigger, overflow menu (Compare/View history/Open/Duplicate), chips (source/invocation/issues), metadata line
+- Locations card: per-deployment rows (harness icon, scope badge, path, enable/disable toggle, Open in editor, Reveal in Finder), unresolved deployments (grayed, italic)
+- Markdown card: display mode (rendered markdown, "Edit" button) / edit mode (Monaco editor, "Discard"/"Save" buttons, fork-before-save for dotagents/skills-sh)
+- DiscardChangesDialog: triggered by "Discard" or Escape with dirty changes, confirms before reverting
+- SkillCompareDialog: side-by-side diff of multiple deployments, auto-opens with `intent: "compare"`
+- SkillRepairCard: shown when issues exist (spec violations, missing deps), per-issue fix actions
+- SkillAssistantDrawer: right-side overlay, AI chat interface, apply flow for SKILL.md edits
 
 **[Add Skill Sheet](./add-skill-sheet.md)**
 - Source field with live parsing (GitHub owner/repo, URLs, git URLs, local paths)
@@ -115,8 +114,8 @@ This feature map provides:
 ## Coverage Overview
 
 ### Documentation Status
-- ✅ **Fully Mapped**: 9 primary surfaces (sidebar, plugins, packs, learn, add-skill, skillstore, skill-ops)
-- 📝 **Partially Mapped**: 5 surfaces (home, skills, activity, settings, skill-detail) - basic coverage exists, sub-features need expansion
+- ✅ **Fully Mapped**: 14 surfaces - all primary views, skill detail, operations, and sub-features documented to full depth
+- 📝 **Partially Mapped**: 0 - all surfaces expanded with complete sub-features, branches, benchmarks, and end states
 - ❌ **Not Mapped**: 0 - every surface has documentation
 
 See **[COVERAGE.md](./COVERAGE.md)** for the complete matrix of all surfaces, modals, sub-features, and their verification status.
@@ -199,13 +198,9 @@ Every feature file follows this template:
 
 ## Expansion Priorities
 
-Per COVERAGE.md, these surfaces need detailed sub-feature expansion:
+**All surfaces now at full depth.** No expansion priorities remain.
 
-1. **Home dashboard** - Stat tiles, inbox groups, filters, trial restore, linked-root dialog
-2. **Skills management** - Filters (all 7 kinds), selection mode, coverage matrix view
-3. **Skill detail** - Locations card, markdown editor, test form, compare dialog, repair flow, assistant drawer
-4. **Activity tracking** - Heatmap details, restore operation branches
-5. **Settings** - Theme preference, project tracking UI
+Next focus: **Verification** - driving documented flows with Playwright, capturing evidence (screenshots, logs, test results), and marking features as "Proven" in COVERAGE.md.
 
 ## Related Documentation
 
