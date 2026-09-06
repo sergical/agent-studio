@@ -9,5 +9,5 @@ import type { InstalledSkill, SkillSnapshot } from "./skill-types";
 
 /** Every skill with a newer commit available upstream, per the background update check. */
 export function skillsWithUpdates(snapshot: SkillSnapshot): InstalledSkill[] {
-  return snapshot.skills.filter((skill) => skill.has_update);
+  return snapshot.skills.filter((skill) => skill.update_owner_ids.length > 0);
 }

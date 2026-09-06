@@ -19,7 +19,14 @@ import {
   unparkSkill,
   updateSkill,
 } from "../../lib/skill-api";
-import type { InstalledSkill } from "@skill-studio/lib";
+import {
+  lifecycleTargetForDeployment,
+  lifecycleTargetForPark,
+  lifecycleTargetForSkill,
+  lifecycleTargetForTrial,
+  updateSkillOwners,
+} from "../../lib/skill-lifecycle-target";
+import type { InstalledSkill, TrialInfo } from "@skill-studio/lib";
 import { useAppStore } from "../../store/appStore";
 
 /**
@@ -81,7 +88,7 @@ export interface SkillPageActions {
   forkAction: SkillPageAction | null;
   /** Only skills.sh-managed skills carry lock-file metadata `removeSkill` needs. */
   removeAction: SkillPageAction | null;
-  keepTrial: SkillPageAction;
+  keepTrial: (trial: TrialInfo) => SkillPageAction;
 }
 
 /**
@@ -146,27 +153,27 @@ export function useSkillPageActions(
       skill.parked ? "Couldn't unpark skill" : "Couldn't park skill",
       async () => {
         if (skill.parked) {
-          await unparkSkill(skill.name);
+          await unparkSkill(lifecycleTargetForPark(skill));
           addToast({ type: "success", title: `Unparked ${skill.name}` });
         } else {
-          await parkSkill(skill.name);
+          await parkSkill(lifecycleTargetForPark(skill));
           addToast({ type: "success", title: `Parked ${skill.name}` });
         }
       },
     );
 
-  const keepTrial = () =>
+  const keepTrial = (trial: TrialInfo) => () =>
     runAction(addToast, setIsKeeping, "Couldn't keep skill", async () => {
-      await keepSkillTrial(skill.name, skill.trial?.scope ?? "global", skill.trial?.project_path);
+      await keepSkillTrial(lifecycleTargetForTrial(skill, trial));
       addToast({ type: "success", title: `Kept ${skill.name}` });
     });
 
-  const forkPath = sharedFolderDeployment(skill)?.path;
+  const forkDeployment = sharedFolderDeployment(skill);
 
   const doFork = () => {
-    if (!forkPath) return;
+    if (!forkDeployment) return;
     return runAction(addToast, setIsForking, "Fork failed", async () => {
-      await forkSkill(skill.name, forkPath);
+      await forkSkill(lifecycleTargetForDeployment(forkDeployment));
       addToast({ type: "success", title: "Forked", message: `${skill.name} is now yours to edit` });
     });
   };
@@ -182,7 +189,7 @@ export function useSkillPageActions(
     );
     if (!confirmed) return;
     await runAction(addToast, setIsUnforking, "Un-fork failed", async () => {
-      await unforkSkill(skill.name);
+      await unforkSkill(lifecycleTargetForSkill(skill, "global"));
       addToast({
         type: "success",
         title: "Un-forked",
@@ -193,7 +200,7 @@ export function useSkillPageActions(
 
   const doPullUpstream = () =>
     runAction(addToast, setIsPulling, "Pull upstream failed", async () => {
-      const result = await pullForkUpstream(skill.name);
+      const result = await pullForkUpstream(lifecycleTargetForSkill(skill, "global"));
       if (result.message) {
         addToast({ type: "info", title: result.message });
       } else if (result.conflicts.length > 0) {
@@ -210,15 +217,19 @@ export function useSkillPageActions(
 
   const doUpdate = () =>
     runAction(addToast, setIsUpdating, "Update failed", async () => {
-      const result = await updateSkill(skill.name, true);
-      if (result.success) {
+      const summary = await updateSkillOwners(skill, updateSkill);
+      if (summary.failures.length === 0) {
         addToast({
           type: "success",
-          title: "Skill updated",
-          message: result.tool ? `Ran ${result.tool} for ${skill.name}` : undefined,
+          title: `Updated ${summary.succeeded} deployment${summary.succeeded === 1 ? "" : "s"}`,
+          message: skill.name,
         });
       } else {
-        addToast({ type: "error", title: "Update failed", message: result.error });
+        addToast({
+          type: "warning",
+          title: `Updated ${summary.succeeded} of ${summary.attempted} deployments`,
+          message: summary.failures.map((failure) => failure.message).join("; "),
+        });
       }
     });
 
@@ -229,7 +240,7 @@ export function useSkillPageActions(
     });
     if (!confirmed) return;
     await runAction(addToast, setIsRemoving, "Remove failed", async () => {
-      const result = await removeSkill(skill.name, null);
+      const result = await removeSkill(lifecycleTargetForSkill(skill, "global"));
       if (result.success) {
         onRemoveComplete();
       } else {
@@ -239,11 +250,11 @@ export function useSkillPageActions(
   };
 
   let primaryAction: SkillPageAction | null = null;
-  if (skill.source_kind === "fork" && skill.has_update) {
+  if (skill.source_kind === "fork" && skill.update_owner_ids.length > 0) {
     primaryAction = { label: "Pull latest", run: doPullUpstream, busy: isPulling };
   } else if (
     (skill.source_kind === "dotagents" || skill.source_kind === "skills-sh") &&
-    skill.has_update
+    skill.update_owner_ids.length > 0
   ) {
     primaryAction = { label: "Update", run: doUpdate, busy: isUpdating };
   }
@@ -251,7 +262,7 @@ export function useSkillPageActions(
   let forkAction: SkillPageAction | null = null;
   if (skill.source_kind === "fork") {
     forkAction = { label: "Un-fork", run: doUnfork, busy: isUnforking };
-  } else if (forkPath) {
+  } else if (forkDeployment) {
     forkAction = { label: "Fork", run: doFork, busy: isForking };
   }
 
@@ -272,6 +283,6 @@ export function useSkillPageActions(
     },
     forkAction,
     removeAction,
-    keepTrial: { label: "Keep", run: keepTrial, busy: isKeeping },
+    keepTrial: (trial) => ({ label: "Keep", run: keepTrial(trial), busy: isKeeping }),
   };
 }

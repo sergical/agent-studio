@@ -77,6 +77,8 @@ interface SkillAssistantPanelProps {
   onDiskChanged: () => void;
   /** Shows the "Runs" history list in place of the panel's normal content. */
   showHistory: boolean;
+  /** Opens the recorded run history in place of the panel's normal content. */
+  onOpenHistory: () => void;
   onCloseHistory: () => void;
 }
 
@@ -938,6 +940,7 @@ export function SkillAssistantPanel({
   onApplied,
   onDiskChanged,
   showHistory,
+  onOpenHistory,
   onCloseHistory,
 }: SkillAssistantPanelProps) {
   const addToast = useAppStore((state) => state.addToast);
@@ -1103,6 +1106,9 @@ export function SkillAssistantPanel({
         items={harnessSelectItemsForSkill}
         leadingIcon={<HarnessIcon harness={harness} size={14} />}
       />
+      <Button variant="outline" size="sm" className="self-start" onClick={onOpenHistory}>
+        Runs
+      </Button>
 
       {hasTranscript ? (
         <SkillAgentTranscript state={state} />

@@ -26,14 +26,28 @@
 // ============================================================================
 
 use std::collections::HashSet;
+use std::ffi::CString;
 use std::fs;
+use std::os::unix::ffi::OsStrExt;
 use std::path::{Path, PathBuf};
 
-use super::agents::AgentId;
 use super::event_store::{
-    allocate_id, copy_recursive, fingerprint_path, EventDraft, EventRow, EventStatus, EventStore,
-    InverseOp,
+    allocate_id, fingerprint_path, EventDraft, EventRow, EventStatus, EventStore, InverseOp,
 };
+
+struct StagingDirectory(PathBuf);
+
+impl StagingDirectory {
+    fn persist(self) {
+        std::mem::forget(self);
+    }
+}
+
+impl Drop for StagingDirectory {
+    fn drop(&mut self) {
+        let _ = fs::remove_dir_all(&self.0);
+    }
+}
 
 /// Validates that `root` is safe for `materialize_harness_root` to explode:
 /// a symlink whose canonical target's last two path components are
@@ -70,7 +84,23 @@ pub fn validate_materialize_root(root: &Path) -> Result<PathBuf, String> {
 /// every skill directory in the shared root. Registers `root` as a
 /// materialized root on success. See the module header for the staging
 /// order and the choice of absolute targets.
-pub fn explode_shared_dir(store: &EventStore, root: &Path, harness: &str) -> Result<(), String> {
+pub fn explode_shared_dir(
+    store: &EventStore,
+    root: &Path,
+    harness: &str,
+) -> Result<String, String> {
+    explode_shared_dir_with_event_id_and_hook(store, root, harness, &allocate_id(), &|_| Ok(()))
+}
+
+/// Converts a shared root with the child event id reserved by a parent Make
+/// operation. The hook exists for crash-boundary tests.
+pub(crate) fn explode_shared_dir_with_event_id_and_hook(
+    store: &EventStore,
+    root: &Path,
+    harness: &str,
+    id: &str,
+    after_phase: &dyn Fn(&str) -> Result<(), String>,
+) -> Result<String, String> {
     let meta = fs::symlink_metadata(root)
         .map_err(|e| format!("Failed to stat {}: {e}", root.display()))?;
     if !meta.file_type().is_symlink() {
@@ -87,12 +117,10 @@ pub fn explode_shared_dir(store: &EventStore, root: &Path, harness: &str) -> Res
 
     // Phase 1: build the replacement directory complete, at a temp path in
     // the same parent, before anything at `root` is touched.
-    let id = allocate_id();
     let tmp = parent.join(format!(".skill-studio-materialize-{id}"));
-    if let Err(e) = build_exploded_dir(&tmp, &shared_root) {
-        let _ = fs::remove_dir_all(&tmp);
-        return Err(e);
-    }
+    let staging = StagingDirectory(tmp.clone());
+    build_exploded_dir(&tmp, &shared_root)?;
+    let staged_fingerprint = fingerprint_path(&tmp);
 
     let inverse = InverseOp::RecreateSymlink {
         link: root.to_path_buf(),
@@ -101,21 +129,32 @@ pub fn explode_shared_dir(store: &EventStore, root: &Path, harness: &str) -> Res
         post_fingerprint: None,
     };
     store.record(
-        &id,
+        id,
         EventDraft {
             kind: "explode_shared_dir".to_string(),
             skill: String::new(),
             harness: Some(harness.to_string()),
             scope: None,
             project_path: None,
-            payload: serde_json::json!({ "root": root, "shared_root": shared_root }),
+            payload: serde_json::json!({
+                "root": root,
+                "shared_root": shared_root,
+                "staging": tmp,
+                "literal_root_target": literal_target,
+                "staged_fingerprint": staged_fingerprint,
+            }),
             inverse: Some(
                 serde_json::to_value(&inverse)
                     .map_err(|e| format!("Failed to serialize inverse: {e}"))?,
             ),
             backup_dir: None,
+            restorable: true,
         },
     )?;
+    if let Err(error) = after_phase("materialize_staged") {
+        staging.persist();
+        return Err(error);
+    }
 
     let mutate: Result<(), String> = (|| {
         // Re-resolve the symlink right before replacing it, so a change
@@ -131,18 +170,36 @@ pub fn explode_shared_dir(store: &EventStore, root: &Path, harness: &str) -> Res
             ));
         }
         fs::remove_file(root).map_err(|e| format!("Failed to remove {}: {e}", root.display()))?;
-        fs::rename(&tmp, root)
-            .map_err(|e| format!("Failed to move {} into place: {e}", root.display()))
+        after_phase("materialize_root_removed")?;
+        rename_directory_without_replace(&tmp, root)?;
+        after_phase("materialize_published")
     })();
 
     match mutate {
         Ok(()) => {
             let post_fp = fingerprint_path(root);
-            store.patch_inverse_post_fingerprint(&id, &post_fp)?;
-            store.finish(&id, EventStatus::Done)?;
-            store.register_materialized_root(root, harness, &shared_root, &id)
+            let finalize = (|| {
+                store.patch_inverse_post_fingerprint(id, &post_fp)?;
+                store.register_materialized_root(root, harness, &shared_root, id)?;
+                store.finish(id, EventStatus::Done)?;
+                Ok(id.to_string())
+            })();
+            match finalize {
+                Ok(event_id) => Ok(event_id),
+                Err(error) => {
+                    let _ = fs::remove_dir_all(root);
+                    let _ = create_symlink(&literal_target, root);
+                    let _ = store.unregister_materialized_root(root);
+                    let _ = store.finish(id, EventStatus::Failed);
+                    Err(error)
+                }
+            }
         }
         Err(e) => {
+            if e.starts_with("injected independent-copy crash") {
+                staging.persist();
+                return Err(e);
+            }
             // Rollback: if the temp dir is still there and `root` is gone,
             // the crash/error landed between removing the link and renaming
             // the temp dir into place - put the original link back so the
@@ -150,10 +207,394 @@ pub fn explode_shared_dir(store: &EventStore, root: &Path, harness: &str) -> Res
             if tmp.exists() && fs::symlink_metadata(root).is_err() {
                 let _ = create_symlink(&literal_target, root);
             }
-            let _ = fs::remove_dir_all(&tmp);
-            let _ = store.finish(&id, EventStatus::Failed);
+            let _ = store.finish(id, EventStatus::Failed);
             Err(e)
         }
+    }
+}
+
+fn path_c_string(path: &Path) -> Result<CString, String> {
+    CString::new(path.as_os_str().as_bytes())
+        .map_err(|_| format!("Path contains a null byte: {}", path.display()))
+}
+
+/// Moves a staged directory into an absent destination in one operation. It
+/// never replaces content that appeared after the caller's last check.
+fn rename_directory_without_replace(from: &Path, to: &Path) -> Result<(), String> {
+    let from_c = path_c_string(from)?;
+    let to_c = path_c_string(to)?;
+    #[cfg(target_vendor = "apple")]
+    let result = {
+        // Both pointers remain valid for this call and point to null-terminated path bytes.
+        unsafe { libc::renamex_np(from_c.as_ptr(), to_c.as_ptr(), libc::RENAME_EXCL) }
+    };
+    #[cfg(any(target_os = "linux", target_os = "android"))]
+    let result = {
+        // Both pointers remain valid for this call and AT_FDCWD makes each path absolute or cwd-relative.
+        unsafe {
+            libc::renameat2(
+                libc::AT_FDCWD,
+                from_c.as_ptr(),
+                libc::AT_FDCWD,
+                to_c.as_ptr(),
+                libc::RENAME_NOREPLACE,
+            )
+        }
+    };
+    #[cfg(not(any(target_vendor = "apple", target_os = "linux", target_os = "android")))]
+    return Err(
+        "Publishing a materialized root without replacement is unsupported on this platform"
+            .to_string(),
+    );
+
+    #[cfg(any(target_vendor = "apple", target_os = "linux", target_os = "android"))]
+    if result == 0 {
+        Ok(())
+    } else {
+        Err(format!(
+            "Failed to publish staged materialized root at {} without replacing existing content: {}",
+            to.display(),
+            std::io::Error::last_os_error()
+        ))
+    }
+}
+
+fn materialize_event_path(event: &EventRow, key: &str) -> Result<PathBuf, String> {
+    event
+        .payload
+        .get(key)
+        .and_then(serde_json::Value::as_str)
+        .map(PathBuf::from)
+        .ok_or_else(|| format!("Interrupted materialize event has no {key}"))
+}
+
+fn finish_recovered_materialized_root(
+    store: &EventStore,
+    event: &EventRow,
+    root: &Path,
+    shared_root: &Path,
+) -> Result<(), String> {
+    let post_fingerprint = fingerprint_path(root);
+    store.patch_inverse_post_fingerprint(&event.id, &post_fingerprint)?;
+    store.register_materialized_root(
+        root,
+        event.harness.as_deref().unwrap_or_default(),
+        shared_root,
+        &event.id,
+    )?;
+    store.finish(&event.id, EventStatus::Done)
+}
+
+/// Recovers the exact materialization child reserved by a Make operation.
+/// Unknown root or staging content remains untouched and interrupted.
+pub(crate) fn reconcile_connected_materialize_event(
+    store: &EventStore,
+    event: &EventRow,
+) -> Result<(), String> {
+    reconcile_connected_materialize_event_with_hook(store, event, &|| Ok(()))
+}
+
+pub(crate) fn reconcile_connected_materialize_event_with_hook(
+    store: &EventStore,
+    event: &EventRow,
+    before_publish: &dyn Fn() -> Result<(), String>,
+) -> Result<(), String> {
+    if event.kind != "explode_shared_dir" || event.status != "interrupted" {
+        return Ok(());
+    }
+    let root = materialize_event_path(event, "root")?;
+    let shared_root = materialize_event_path(event, "shared_root")?;
+    let staging = materialize_event_path(event, "staging")?;
+    let literal_target = materialize_event_path(event, "literal_root_target")?;
+    let staged_fingerprint = event
+        .payload
+        .get("staged_fingerprint")
+        .and_then(serde_json::Value::as_str)
+        .ok_or("Interrupted materialize event has no staged_fingerprint")?;
+    let expected_staging = root
+        .parent()
+        .ok_or_else(|| format!("{} has no parent directory", root.display()))?
+        .join(format!(".skill-studio-materialize-{}", event.id));
+    if staging != expected_staging {
+        return Err(
+            "Interrupted materialize event has an inconsistent staging path; preserved the filesystem unchanged"
+                .to_string(),
+        );
+    }
+    let staging_is_exact = fs::symlink_metadata(&staging)
+        .is_ok_and(|metadata| metadata.is_dir() && !metadata.file_type().is_symlink())
+        && fingerprint_path(&staging) == staged_fingerprint;
+    let staging_is_absent = fs::symlink_metadata(&staging)
+        .is_err_and(|error| error.kind() == std::io::ErrorKind::NotFound);
+
+    match fs::symlink_metadata(&root) {
+        Ok(metadata)
+            if metadata.file_type().is_symlink()
+                && fs::read_link(&root).ok().as_ref() == Some(&literal_target) =>
+        {
+            if staging_is_exact {
+                fs::remove_dir_all(&staging).map_err(|error| {
+                    format!(
+                        "Failed to remove recovered materialize staging {}: {error}",
+                        staging.display()
+                    )
+                })?;
+            } else if !staging_is_absent {
+                return Err("Interrupted materialize event found changed staging content; preserved it unchanged".to_string());
+            }
+            store.finish(&event.id, EventStatus::Failed)
+        }
+        Ok(metadata) if metadata.is_dir() && !metadata.file_type().is_symlink() => {
+            if !staging_is_absent || fingerprint_path(&root) != staged_fingerprint {
+                return Err("Interrupted materialize event found unknown root content; preserved it unchanged".to_string());
+            }
+            finish_recovered_materialized_root(store, event, &root, &shared_root)
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            if staging_is_exact {
+                before_publish()?;
+                rename_directory_without_replace(&staging, &root)?;
+                finish_recovered_materialized_root(store, event, &root, &shared_root)
+            } else if staging_is_absent {
+                create_symlink(&literal_target, &root).map_err(|error| {
+                    format!(
+                        "Failed to recreate materialized root link at {} without replacing existing content: {error}",
+                        root.display()
+                    )
+                })?;
+                store.finish(&event.id, EventStatus::Failed)
+            } else {
+                Err("Interrupted materialize event found changed staging content; preserved it unchanged".to_string())
+            }
+        }
+        Ok(_) => Err(
+            "Interrupted materialize event found unknown root content; preserved it unchanged"
+                .to_string(),
+        ),
+        Err(error) => Err(format!(
+            "Failed to identify interrupted materialize root {}: {error}",
+            root.display()
+        )),
+    }
+}
+
+/// Exact identity for converting one whole harness root and then disabling one deployment.
+pub struct ConvertThenDisableRequest<'a> {
+    pub root: &'a Path,
+    pub shared_root: &'a Path,
+    pub skill: &'a str,
+    pub harness: &'a str,
+    pub deployment_id: &'a str,
+    pub deployment_path: &'a Path,
+    pub scope: &'a str,
+    pub project_path: Option<&'a str>,
+}
+
+/// Persists the combined intent before converting the root, then disables only the selected link.
+pub fn convert_root_then_disable(
+    store: &EventStore,
+    request: ConvertThenDisableRequest<'_>,
+) -> Result<(), String> {
+    convert_root_then_disable_with_hook(store, request, &|_| Ok(()))
+}
+
+pub(crate) fn convert_root_then_disable_with_hook(
+    store: &EventStore,
+    request: ConvertThenDisableRequest<'_>,
+    after_phase: &dyn Fn(&str) -> Result<(), String>,
+) -> Result<(), String> {
+    let intent_id = allocate_id();
+    let materialize_event_id = allocate_id();
+    store.record(
+        &intent_id,
+        EventDraft {
+            kind: "materialize_then_disable".to_string(),
+            skill: request.skill.to_string(),
+            harness: Some(request.harness.to_string()),
+            scope: Some(request.scope.to_string()),
+            project_path: request.project_path.map(str::to_string),
+            payload: serde_json::json!({
+                "root": request.root,
+                "shared_root": request.shared_root,
+                "skill": request.skill,
+                "harness": request.harness,
+                "deployment_id": request.deployment_id,
+                "deployment_path": request.deployment_path,
+                "materialize_event_id": materialize_event_id,
+            }),
+            inverse: None,
+            backup_dir: None,
+            restorable: false,
+        },
+    )?;
+    after_phase("intent_recorded")?;
+
+    if let Err(error) = explode_shared_dir_with_event_id_and_hook(
+        store,
+        request.root,
+        request.harness,
+        &materialize_event_id,
+        after_phase,
+    ) {
+        if !error.starts_with("injected independent-copy crash") {
+            let _ = store.finish(&intent_id, EventStatus::Failed);
+        }
+        return Err(error);
+    }
+    after_phase("conversion_completed")?;
+
+    let disable_result = match after_phase("before_disable") {
+        Ok(()) => unlink_harness(store, request.root, request.skill, request.harness),
+        Err(error) if error.starts_with("injected independent-copy crash") => return Err(error),
+        Err(error) => Err(error),
+    };
+    match disable_result {
+        Ok(()) => {
+            after_phase("disable_completed")?;
+            store.finish(&intent_id, EventStatus::Done)
+        }
+        Err(disable_error) => {
+            match rollback_unchanged_materialization(store, request.root, &materialize_event_id) {
+                Ok(true) => {
+                    store.finish(&intent_id, EventStatus::Failed)?;
+                    Err(format!(
+                        "Could not turn off {} after conversion; the conversion was rolled back: {disable_error}",
+                        request.skill
+                    ))
+                }
+                Ok(false) | Err(_) => Err(format!(
+                    "Conversion completed, but turning off {} did not complete. Restart Skill Studio to recover: {disable_error}",
+                    request.skill
+                )),
+            }
+        }
+    }
+}
+
+fn rollback_unchanged_materialization(
+    store: &EventStore,
+    root: &Path,
+    materialize_event_id: &str,
+) -> Result<bool, String> {
+    let event = store
+        .get(materialize_event_id)?
+        .ok_or_else(|| format!("Materialize event {materialize_event_id} was not found"))?;
+    if event.status != "done" {
+        return Ok(false);
+    }
+    let expected = event
+        .inverse
+        .as_ref()
+        .and_then(|inverse| inverse.get("post_fingerprint"))
+        .and_then(serde_json::Value::as_str)
+        .ok_or("Materialize event has no completed fingerprint")?;
+    if fingerprint_path(root) != expected {
+        return Ok(false);
+    }
+    store.restore(materialize_event_id, false)?;
+    store.unregister_materialized_root(root)?;
+    Ok(true)
+}
+
+/// Completes or safely rolls back one interrupted convert-and-disable intent.
+pub fn reconcile_interrupted_convert_then_disable(
+    store: &EventStore,
+    event: &EventRow,
+) -> Result<(), String> {
+    if event.kind != "materialize_then_disable" || event.status != "interrupted" {
+        return Ok(());
+    }
+    let root = materialize_event_path(event, "root")?;
+    let shared_root = materialize_event_path(event, "shared_root")?;
+    let deployment_path = materialize_event_path(event, "deployment_path")?;
+    let skill = event
+        .payload
+        .get("skill")
+        .and_then(serde_json::Value::as_str)
+        .ok_or("Interrupted convert-and-disable intent has no skill")?;
+    let harness = event
+        .payload
+        .get("harness")
+        .and_then(serde_json::Value::as_str)
+        .ok_or("Interrupted convert-and-disable intent has no harness")?;
+    let materialize_event_id = event
+        .payload
+        .get("materialize_event_id")
+        .and_then(serde_json::Value::as_str)
+        .ok_or("Interrupted convert-and-disable intent has no materialize_event_id")?;
+    if deployment_path != root.join(skill) {
+        return Err(
+            "Interrupted convert-and-disable deployment identity is inconsistent".to_string(),
+        );
+    }
+
+    let Some(mut materialize_event) = store.get(materialize_event_id)? else {
+        if fs::symlink_metadata(&root).is_ok_and(|metadata| metadata.file_type().is_symlink())
+            && fs::canonicalize(&root).ok().as_deref()
+                == fs::canonicalize(&shared_root).ok().as_deref()
+        {
+            store.finish(&event.id, EventStatus::Failed)?;
+            return Ok(());
+        }
+        return Err(format!(
+            "Materialize event {materialize_event_id} was not found and the original root is not intact"
+        ));
+    };
+    if materialize_event.status == "interrupted" {
+        reconcile_connected_materialize_event(store, &materialize_event)?;
+        materialize_event = store
+            .get(materialize_event_id)?
+            .ok_or_else(|| format!("Materialize event {materialize_event_id} was not found"))?;
+    }
+
+    if fs::symlink_metadata(&root).is_ok_and(|metadata| metadata.file_type().is_symlink()) {
+        if fs::canonicalize(&root).ok().as_deref() == fs::canonicalize(&shared_root).ok().as_deref()
+        {
+            store.finish(&event.id, EventStatus::Failed)?;
+            return Ok(());
+        }
+        return Err("Interrupted convert-and-disable found a different root link".to_string());
+    }
+    if materialize_event.status != "done" {
+        return Err(
+            "Interrupted convert-and-disable has no completed conversion to recover".to_string(),
+        );
+    }
+
+    match fs::symlink_metadata(&deployment_path) {
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            store.set_materialized_disabled(&root, skill, true)?;
+            store.finish(&event.id, EventStatus::Done)
+        }
+        Ok(metadata) if metadata.file_type().is_symlink() => {
+            let expected_target = shared_root.join(skill);
+            if fs::canonicalize(&deployment_path).ok() != fs::canonicalize(&expected_target).ok() {
+                return Err(
+                    "Interrupted convert-and-disable found a changed selected deployment link"
+                        .to_string(),
+                );
+            }
+            match unlink_harness(store, &root, skill, harness) {
+                Ok(()) => store.finish(&event.id, EventStatus::Done),
+                Err(error) => {
+                    if rollback_unchanged_materialization(store, &root, materialize_event_id)? {
+                        store.finish(&event.id, EventStatus::Failed)?;
+                        Ok(())
+                    } else {
+                        Err(format!(
+                            "Interrupted convert-and-disable could not turn off {skill}: {error}"
+                        ))
+                    }
+                }
+            }
+        }
+        Ok(_) => Err(
+            "Interrupted convert-and-disable found changed selected deployment content".to_string(),
+        ),
+        Err(error) => Err(format!(
+            "Interrupted convert-and-disable could not inspect {}: {error}",
+            deployment_path.display()
+        )),
     }
 }
 
@@ -219,6 +660,7 @@ pub fn unlink_harness(
                     .map_err(|e| format!("Failed to serialize inverse: {e}"))?,
             ),
             backup_dir: None,
+            restorable: true,
         },
     )?;
 
@@ -268,6 +710,7 @@ pub fn relink_harness(
                     .map_err(|e| format!("Failed to serialize inverse: {e}"))?,
             ),
             backup_dir: None,
+            restorable: true,
         },
     )?;
 
@@ -364,6 +807,7 @@ fn remove_stale_link(
                     .map_err(|e| format!("Failed to serialize inverse: {e}"))?,
             ),
             backup_dir: None,
+            restorable: true,
         },
     )?;
     let removed =
@@ -371,11 +815,13 @@ fn remove_stale_link(
     finish_link_event(store, &id, link, removed)
 }
 
-/// Refuses restoring an `explode_shared_dir` event while its root has any
-/// `materialized_disabled` entries - the whole-dir link can't represent
-/// per-skill disables, so un-materializing would silently re-enable them.
-/// A no-op for any other event kind.
-pub fn restore_guard_for_explode(store: &EventStore, event: &EventRow) -> Result<(), String> {
+/// Refuses restoring an `explode_shared_dir` event while per-skill state
+/// depends on its real directory. Force restore must not bypass this guard.
+pub fn restore_guard_for_explode(
+    store: &EventStore,
+    event: &EventRow,
+    home: &Path,
+) -> Result<(), String> {
     if event.kind != "explode_shared_dir" {
         return Ok(());
     }
@@ -385,218 +831,45 @@ pub fn restore_guard_for_explode(store: &EventStore, event: &EventRow) -> Result
         .and_then(|v| v.as_str())
         .ok_or_else(|| "explode_shared_dir event has no root in its payload".to_string())?;
     let disabled = store.materialized_disabled(Path::new(root))?;
-    if disabled.is_empty() {
-        return Ok(());
-    }
-    Err(format!(
-        "Cannot undo the whole-folder link while these skills are individually disabled here: {} - re-enable them first",
-        disabled.join(", ")
-    ))
-}
-
-/// The five harnesses that read the shared `.agents/skills` root directly -
-/// Codex and OpenCode natively per-skill, pi/Cursor/Grok Build unconditionally
-/// (see skill_harness_disable.rs's module doc). Every one of them is always a
-/// `distribute_from_shared` target, whether or not it happens to have its own
-/// symlink to the skill yet.
-const SHARED_ROOT_READERS: &[AgentId] = &[
-    AgentId::Codex,
-    AgentId::OpenCode,
-    AgentId::Pi,
-    AgentId::Cursor,
-    AgentId::GrokBuild,
-];
-
-/// Whether `entry` is a symlink whose canonical target is `shared_dir` -
-/// `distribute_from_shared`'s test for "this harness reaches the skill only
-/// through a link into the shared root".
-fn is_symlink_into(entry: &Path, shared_dir: &Path) -> bool {
-    let Ok(meta) = fs::symlink_metadata(entry) else {
-        return false;
-    };
-    if !meta.file_type().is_symlink() {
-        return false;
-    }
-    match (fs::canonicalize(entry), fs::canonicalize(shared_dir)) {
-        (Ok(a), Ok(b)) => a == b,
-        _ => false,
-    }
-}
-
-/// One thing `distribute_from_shared` does for a target harness: give it a
-/// fresh copy where there was nothing, or replace a symlink into the shared
-/// dir with one.
-enum DistributePlanItem {
-    Copy(PathBuf),
-    ReplaceSymlink(PathBuf, PathBuf),
-}
-
-impl DistributePlanItem {
-    fn entry(&self) -> &Path {
-        match self {
-            DistributePlanItem::Copy(p) => p,
-            DistributePlanItem::ReplaceSymlink(p, _) => p,
-        }
-    }
-}
-
-/// Moves `skill` out of the shared root at `root` (e.g. `.agents/skills`) and
-/// into a real copy under every harness that reads it, then deletes
-/// `root/<skill>`. This is the only way to give pi, Cursor, and Grok Build
-/// (which have no per-skill off switch of their own) something they can be
-/// individually disabled for - see the module's spec doc,
-/// docs/spec-event-store.md.
-///
-/// Targets are the five `SHARED_ROOT_READERS`, always, plus any other
-/// first-class harness (in practice, Claude Code) whose skills dir already
-/// symlinks this one skill into `root`. A harness whose whole skills dir is
-/// itself a symlink into the shared root is exploded first (its own,
-/// separately restorable event), so its entry for `skill` becomes a per-skill
-/// symlink before the plan below classifies it. A target that already has a
-/// real `skill` dir of its own is left untouched.
-pub fn distribute_from_shared(
-    store: &EventStore,
-    home: &Path,
-    root: &Path,
-    skill: &str,
-) -> Result<(), String> {
-    let shared_dir = root.join(skill);
-    let meta = fs::symlink_metadata(&shared_dir)
-        .map_err(|_| format!("\"{}\" does not exist", shared_dir.display()))?;
-    if !meta.is_dir() {
+    if !disabled.is_empty() {
         return Err(format!(
-            "\"{}\" is not a real directory",
-            shared_dir.display()
+            "Cannot undo the whole-folder link while these skills are individually disabled here: {} - re-enable them first",
+            disabled.join(", ")
         ));
     }
-
-    let agents_dir = root
-        .parent()
-        .ok_or_else(|| format!("{} has no parent directory", root.display()))?;
-    let base = agents_dir
-        .parent()
-        .ok_or_else(|| format!("{} has no parent directory", agents_dir.display()))?
-        .to_path_buf();
-    let is_global = base == home;
-    let harness_dir = |id: AgentId| -> PathBuf {
-        if is_global {
-            id.global_skills_dir(home)
-        } else {
-            id.project_skills_dir(&base)
-        }
-    };
-
-    let mut targets: Vec<(AgentId, PathBuf)> = SHARED_ROOT_READERS
-        .iter()
-        .map(|&id| (id, harness_dir(id)))
-        .collect();
-    let claude_dir = harness_dir(AgentId::ClaudeCode);
-    if is_symlink_into(&claude_dir.join(skill), &shared_dir) {
-        targets.push((AgentId::ClaudeCode, claude_dir));
+    let dependent = store
+        .active_events_of_kind("make_independent_copy")?
+        .into_iter()
+        .find(|candidate| {
+            candidate
+                .payload
+                .get("materialize_event_id")
+                .and_then(|value| value.as_str())
+                == Some(event.id.as_str())
+                || candidate
+                    .payload
+                    .get("expected_root")
+                    .and_then(|value| value.as_str())
+                    == Some(root)
+        });
+    if let Some(dependent) = dependent {
+        return Err(format!(
+            "Cannot undo the whole-folder link while {} has an independent Copy in this root; undo independent copies first",
+            dependent.skill
+        ));
     }
-
-    // Whole-dir links convert to per-skill links first, exactly like
-    // `set_shared_harness_skill_enabled` - each conversion is its own
-    // restorable event, not part of the one below.
-    for (id, dir) in &targets {
-        let is_whole_dir_link = fs::symlink_metadata(dir)
-            .map(|m| m.file_type().is_symlink())
-            .unwrap_or(false);
-        if is_whole_dir_link {
-            explode_shared_dir(store, dir, id.cli_name())?;
-        }
+    let registry = super::skill_fork_registry::read_fork_registry(home)?;
+    if let Some(record) = registry
+        .copies
+        .values()
+        .find(|record| !record.disabled && record.path.parent() == Some(Path::new(root)))
+    {
+        return Err(format!(
+            "Cannot undo the whole-folder link while {} has an independent Copy in this root; undo independent copies first",
+            record.name
+        ));
     }
-
-    // Plan the mutation now that every whole-dir link has been converted, so
-    // each target's `skill` entry is either absent, a real dir/file to leave
-    // alone, or a per-skill symlink into the shared dir to replace.
-    let mut plan = Vec::new();
-    for (_, dir) in &targets {
-        let entry = dir.join(skill);
-        match fs::symlink_metadata(&entry) {
-            Ok(m) if m.file_type().is_symlink() && is_symlink_into(&entry, &shared_dir) => {
-                let former_target = fs::read_link(&entry)
-                    .map_err(|e| format!("Failed to read link {}: {e}", entry.display()))?;
-                plan.push(DistributePlanItem::ReplaceSymlink(entry, former_target));
-            }
-            Ok(_) => {} // already has its own thing there - leave it
-            Err(_) => plan.push(DistributePlanItem::Copy(entry)),
-        }
-    }
-    let copies: Vec<PathBuf> = plan.iter().map(|item| item.entry().to_path_buf()).collect();
-    let symlinks: Vec<(PathBuf, PathBuf)> = plan
-        .iter()
-        .filter_map(|item| match item {
-            DistributePlanItem::ReplaceSymlink(p, t) => Some((p.clone(), t.clone())),
-            DistributePlanItem::Copy(_) => None,
-        })
-        .collect();
-
-    let pre_fingerprint = fingerprint_path(&shared_dir);
-    let id = allocate_id();
-    store.backup_paths(&id, std::slice::from_ref(&shared_dir))?;
-
-    let inverse = InverseOp::UndistributeFromShared {
-        shared_dir: shared_dir.clone(),
-        copies,
-        copy_fingerprints: Vec::new(),
-        symlinks,
-        pre_fingerprint,
-        post_fingerprint: None,
-    };
-    store.record(
-        &id,
-        EventDraft {
-            kind: "distribute_from_shared".to_string(),
-            skill: skill.to_string(),
-            harness: None,
-            scope: None,
-            project_path: None,
-            payload: serde_json::json!({ "root": root, "shared_dir": shared_dir }),
-            inverse: Some(
-                serde_json::to_value(&inverse)
-                    .map_err(|e| format!("Failed to serialize inverse: {e}"))?,
-            ),
-            backup_dir: Some(format!("backups/{id}")),
-        },
-    )?;
-
-    let mutate: Result<Vec<String>, String> = (|| {
-        let mut fingerprints = Vec::new();
-        for item in &plan {
-            match item {
-                DistributePlanItem::Copy(entry) => {
-                    if let Some(parent) = entry.parent() {
-                        fs::create_dir_all(parent)
-                            .map_err(|e| format!("Failed to create {}: {e}", parent.display()))?;
-                    }
-                    copy_recursive(&shared_dir, entry)?;
-                    fingerprints.push(fingerprint_path(entry));
-                }
-                DistributePlanItem::ReplaceSymlink(link, _) => {
-                    fs::remove_file(link)
-                        .map_err(|e| format!("Failed to remove {}: {e}", link.display()))?;
-                    copy_recursive(&shared_dir, link)?;
-                    fingerprints.push(fingerprint_path(link));
-                }
-            }
-        }
-        fs::remove_dir_all(&shared_dir)
-            .map_err(|e| format!("Failed to remove {}: {e}", shared_dir.display()))?;
-        Ok(fingerprints)
-    })();
-
-    match mutate {
-        Ok(fingerprints) => {
-            store.patch_inverse_copy_fingerprints(&id, &fingerprints)?;
-            store.patch_inverse_post_fingerprint(&id, "absent")?;
-            store.finish(&id, EventStatus::Done)
-        }
-        Err(e) => {
-            let _ = store.finish(&id, EventStatus::Failed);
-            Err(e)
-        }
-    }
+    Ok(())
 }
 
 /// Finishes a recorded event after its filesystem mutation runs: on success,
@@ -664,6 +937,7 @@ pub fn repair_remove_link(
                     .map_err(|e| format!("Failed to serialize inverse: {e}"))?,
             ),
             backup_dir: None,
+            restorable: true,
         },
     )?;
 
@@ -714,6 +988,7 @@ pub fn repair_relink_link(
                     .map_err(|e| format!("Failed to serialize inverse: {e}"))?,
             ),
             backup_dir: None,
+            restorable: true,
         },
     )?;
 
@@ -887,6 +1162,160 @@ mod tests {
     }
 
     #[test]
+    fn convert_then_disable_rolls_back_when_disable_fails_before_mutation() {
+        let tmp = tempfile::tempdir().unwrap();
+        let store = store(tmp.path());
+        let home = tmp.path().join("home");
+        let shared = home.join(".agents/skills");
+        write_skill(&shared.join("find-bugs"), "find-bugs");
+        fs::create_dir_all(home.join(".claude")).unwrap();
+        let root = home.join(".claude/skills");
+        symlink(&shared, &root).unwrap();
+        let deployment_path = root.join("find-bugs");
+
+        let error = convert_root_then_disable_with_hook(
+            &store,
+            ConvertThenDisableRequest {
+                root: &root,
+                shared_root: &shared,
+                skill: "find-bugs",
+                harness: "claude-code",
+                deployment_id: "dep:v1/global/claude-code/universal/find-bugs/-/path",
+                deployment_path: &deployment_path,
+                scope: "global",
+                project_path: None,
+            },
+            &|phase| {
+                if phase == "before_disable" {
+                    Err("injected disable failure".to_string())
+                } else {
+                    Ok(())
+                }
+            },
+        )
+        .unwrap_err();
+
+        assert!(error.contains("conversion was rolled back"), "{error}");
+        assert!(fs::symlink_metadata(&root)
+            .unwrap()
+            .file_type()
+            .is_symlink());
+        let intent = store
+            .list(20, Some("find-bugs"))
+            .unwrap()
+            .into_iter()
+            .find(|event| event.kind == "materialize_then_disable")
+            .unwrap();
+        assert_eq!(intent.status, "failed");
+    }
+
+    #[test]
+    fn interrupted_convert_then_disable_completes_exact_link_and_is_idempotent() {
+        let tmp = tempfile::tempdir().unwrap();
+        let store = store(tmp.path());
+        let home = tmp.path().join("home");
+        let shared = home.join(".agents/skills");
+        write_skill(&shared.join("find-bugs"), "find-bugs");
+        write_skill(&shared.join("write-docs"), "write-docs");
+        fs::create_dir_all(home.join(".claude")).unwrap();
+        let root = home.join(".claude/skills");
+        symlink(&shared, &root).unwrap();
+        let same_name_elsewhere = home.join(".codex/skills/find-bugs");
+        write_skill(&same_name_elsewhere, "find-bugs");
+        let deployment_path = root.join("find-bugs");
+
+        let crash = convert_root_then_disable_with_hook(
+            &store,
+            ConvertThenDisableRequest {
+                root: &root,
+                shared_root: &shared,
+                skill: "find-bugs",
+                harness: "claude-code",
+                deployment_id: "dep:v1/global/claude-code/universal/find-bugs/-/path",
+                deployment_path: &deployment_path,
+                scope: "global",
+                project_path: None,
+            },
+            &|phase| {
+                if phase == "conversion_completed" {
+                    Err("injected independent-copy crash after conversion".to_string())
+                } else {
+                    Ok(())
+                }
+            },
+        )
+        .unwrap_err();
+        assert!(crash.starts_with("injected independent-copy crash"));
+
+        store.reconcile_at_startup().unwrap();
+        let event = store
+            .interrupted_convert_then_disable_events()
+            .unwrap()
+            .pop()
+            .unwrap();
+        reconcile_interrupted_convert_then_disable(&store, &event).unwrap();
+        reconcile_interrupted_convert_then_disable(&store, &event).unwrap();
+
+        assert!(fs::symlink_metadata(&deployment_path).is_err());
+        assert!(fs::symlink_metadata(root.join("write-docs")).is_ok());
+        assert!(same_name_elsewhere.join("SKILL.md").is_file());
+        assert_eq!(
+            store.materialized_disabled(&root).unwrap(),
+            vec!["find-bugs".to_string()]
+        );
+        assert_eq!(store.get(&event.id).unwrap().unwrap().status, "done");
+    }
+
+    #[test]
+    fn interrupted_intent_before_conversion_is_safely_closed_as_failed() {
+        let tmp = tempfile::tempdir().unwrap();
+        let store = store(tmp.path());
+        let home = tmp.path().join("home");
+        let shared = home.join(".agents/skills");
+        write_skill(&shared.join("find-bugs"), "find-bugs");
+        fs::create_dir_all(home.join(".claude")).unwrap();
+        let root = home.join(".claude/skills");
+        symlink(&shared, &root).unwrap();
+        let deployment_path = root.join("find-bugs");
+
+        convert_root_then_disable_with_hook(
+            &store,
+            ConvertThenDisableRequest {
+                root: &root,
+                shared_root: &shared,
+                skill: "find-bugs",
+                harness: "claude-code",
+                deployment_id: "dep:v1/global/claude-code/universal/find-bugs/-/path",
+                deployment_path: &deployment_path,
+                scope: "global",
+                project_path: None,
+            },
+            &|phase| {
+                if phase == "intent_recorded" {
+                    Err("injected independent-copy crash before conversion".to_string())
+                } else {
+                    Ok(())
+                }
+            },
+        )
+        .unwrap_err();
+        store.reconcile_at_startup().unwrap();
+        let event = store
+            .interrupted_convert_then_disable_events()
+            .unwrap()
+            .pop()
+            .unwrap();
+
+        reconcile_interrupted_convert_then_disable(&store, &event).unwrap();
+
+        assert!(fs::symlink_metadata(&root)
+            .unwrap()
+            .file_type()
+            .is_symlink());
+        assert_eq!(store.get(&event.id).unwrap().unwrap().status, "failed");
+    }
+
+    #[test]
     fn a_relinked_skill_is_relative_too() {
         let tmp = tempfile::tempdir().unwrap();
         let store = store(tmp.path());
@@ -952,13 +1381,13 @@ mod tests {
         // Disable one skill through the materialized root, then refuse to
         // un-materialize while it's disabled.
         unlink_harness(&store, &root, "find-bugs", "claude-code").unwrap();
-        let err = restore_guard_for_explode(&store, explode_event).unwrap_err();
+        let err = restore_guard_for_explode(&store, explode_event, &home).unwrap_err();
         assert!(err.contains("find-bugs"), "{err}");
 
         // Re-enable, then the restore is allowed and puts the dir-level
         // symlink back.
         relink_harness(&store, &root, "find-bugs", "claude-code").unwrap();
-        restore_guard_for_explode(&store, explode_event).unwrap();
+        restore_guard_for_explode(&store, explode_event, &home).unwrap();
         store.restore(&explode_event.id, false).unwrap();
         assert!(fs::symlink_metadata(&root)
             .unwrap()
@@ -968,147 +1397,6 @@ mod tests {
             fs::canonicalize(&root).unwrap(),
             fs::canonicalize(home.join(".agents/skills")).unwrap()
         );
-    }
-
-    /// A fake home with `find-bugs` shared globally, a pre-existing real
-    /// Cursor copy, and Claude Code linked to it per-skill. Returns
-    /// `(home, root)`.
-    fn home_with_shared_skill(tmp: &Path) -> (PathBuf, PathBuf) {
-        let home = tmp.join("home");
-        write_skill(&home.join(".agents/skills/find-bugs"), "find-bugs");
-        fs::write(home.join(".agents/skills/find-bugs/extra.txt"), "extra").unwrap();
-
-        // Pre-existing real copy - distribute must leave this one alone.
-        write_skill(
-            &home.join(".cursor/skills/find-bugs"),
-            "find-bugs-cursor-copy",
-        );
-
-        // Claude Code links this one skill in, per-skill (not a whole-dir link).
-        fs::create_dir_all(home.join(".claude/skills")).unwrap();
-        symlink(
-            "../../.agents/skills/find-bugs",
-            home.join(".claude/skills/find-bugs"),
-        )
-        .unwrap();
-
-        let root = home.join(".agents/skills");
-        (home, root)
-    }
-
-    #[test]
-    fn distribute_gives_every_reader_a_copy_and_removes_the_shared_dir() {
-        let tmp = tempfile::tempdir().unwrap();
-        let store = store(tmp.path());
-        let (home, root) = home_with_shared_skill(tmp.path());
-
-        distribute_from_shared(&store, &home, &root, "find-bugs").unwrap();
-
-        assert!(fs::symlink_metadata(root.join("find-bugs")).is_err());
-
-        for copy in [
-            home.join(".codex/skills/find-bugs"),
-            home.join(".config/opencode/skills/find-bugs"),
-            home.join(".pi/agent/skills/find-bugs"),
-            home.join(".grok/skills/find-bugs"),
-            home.join(".claude/skills/find-bugs"),
-        ] {
-            assert!(
-                !fs::symlink_metadata(&copy)
-                    .unwrap()
-                    .file_type()
-                    .is_symlink(),
-                "{} should be a real copy",
-                copy.display()
-            );
-            assert!(copy.join("extra.txt").is_file(), "{}", copy.display());
-        }
-        // Claude Code's symlink was replaced, not left as a broken link.
-        assert!(fs::read_to_string(home.join(".claude/skills/find-bugs/extra.txt")).is_ok());
-
-        // Pre-existing Cursor copy is untouched - still has its own content,
-        // not the shared dir's.
-        assert!(!home.join(".cursor/skills/find-bugs/extra.txt").exists());
-        assert_eq!(
-            fs::read_to_string(home.join(".cursor/skills/find-bugs/SKILL.md")).unwrap(),
-            "---\nname: find-bugs-cursor-copy\ndescription: test\n---\nBody."
-        );
-
-        let events = store.list(10, Some("find-bugs")).unwrap();
-        let event = events
-            .iter()
-            .find(|e| e.kind == "distribute_from_shared")
-            .unwrap();
-        assert_eq!(event.status, "done");
-    }
-
-    #[test]
-    fn restore_after_distribute_brings_back_the_shared_dir_and_the_removed_symlink() {
-        let tmp = tempfile::tempdir().unwrap();
-        let store = store(tmp.path());
-        let (home, root) = home_with_shared_skill(tmp.path());
-
-        distribute_from_shared(&store, &home, &root, "find-bugs").unwrap();
-        let events = store.list(10, Some("find-bugs")).unwrap();
-        let event = events
-            .iter()
-            .find(|e| e.kind == "distribute_from_shared")
-            .unwrap();
-
-        store.restore(&event.id, false).unwrap();
-
-        assert!(root.join("find-bugs/extra.txt").is_file());
-        for copy in [
-            home.join(".codex/skills/find-bugs"),
-            home.join(".config/opencode/skills/find-bugs"),
-            home.join(".pi/agent/skills/find-bugs"),
-            home.join(".grok/skills/find-bugs"),
-        ] {
-            assert!(fs::symlink_metadata(&copy).is_err(), "{}", copy.display());
-        }
-        let claude_link = home.join(".claude/skills/find-bugs");
-        assert!(fs::symlink_metadata(&claude_link)
-            .unwrap()
-            .file_type()
-            .is_symlink());
-        assert_eq!(
-            fs::read_link(&claude_link).unwrap(),
-            PathBuf::from("../../.agents/skills/find-bugs")
-        );
-
-        // The pre-existing Cursor copy was never touched by distribute or restore.
-        assert_eq!(
-            fs::read_to_string(home.join(".cursor/skills/find-bugs/SKILL.md")).unwrap(),
-            "---\nname: find-bugs-cursor-copy\ndescription: test\n---\nBody."
-        );
-    }
-
-    #[test]
-    fn restore_refuses_when_a_copy_drifted_unless_forced() {
-        let tmp = tempfile::tempdir().unwrap();
-        let store = store(tmp.path());
-        let (home, root) = home_with_shared_skill(tmp.path());
-
-        distribute_from_shared(&store, &home, &root, "find-bugs").unwrap();
-        let events = store.list(10, Some("find-bugs")).unwrap();
-        let event = events
-            .iter()
-            .find(|e| e.kind == "distribute_from_shared")
-            .unwrap()
-            .clone();
-
-        fs::write(
-            home.join(".codex/skills/find-bugs/extra.txt"),
-            "edited by someone",
-        )
-        .unwrap();
-
-        let err = store.restore(&event.id, false).unwrap_err();
-        assert!(err.contains("changed since"), "{err}");
-        assert!(root.join("find-bugs").symlink_metadata().is_err());
-
-        store.restore(&event.id, true).unwrap();
-        assert!(root.join("find-bugs/extra.txt").is_file());
     }
 
     #[test]

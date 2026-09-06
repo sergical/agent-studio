@@ -16,31 +16,30 @@ import {
   DialogTitle,
 } from "@skill-studio/ui";
 import { homeRelativePath } from "@skill-studio/lib";
-import { materializeHarnessRoot, setSharedHarnessSkillEnabled } from "../../lib/skill-api";
+import type { LifecycleTarget } from "@skill-studio/lib";
+import { materializeHarnessRoot, materializeHarnessRootThenDisable } from "../../lib/skill-api";
 import { useAppStore } from "../../store/appStore";
 
 interface MaterializeRootDialogProps {
+  /** The whole-directory-link deployment selected by the caller. */
+  target: LifecycleTarget;
   /** The harness's agent id (e.g. `"claude-code"`) - what the backend keys the materialized-root record on. */
   harness: string;
   /** The harness's display label (e.g. "Claude Code"), for the dialog copy only. */
   harnessLabel: string;
   root: string;
-  /**
-   * When set, a successful conversion immediately disables this skill for
-   * `harness` too - the Locations card's per-row toggle flow. Home's plain
-   * repair card omits it: it only offers the conversion.
-   */
-  disableSkill?: string;
+  intent: { kind: "convert-only" } | { kind: "convert-then-disable"; skill: string };
   onClose: () => void;
   /** Called once the conversion (and optional disable) succeeds, before `onClose`. */
   onConverted?: () => void;
 }
 
 export function MaterializeRootDialog({
+  target,
   harness,
   harnessLabel,
   root,
-  disableSkill,
+  intent,
   onClose,
   onConverted,
 }: MaterializeRootDialogProps) {
@@ -50,10 +49,11 @@ export function MaterializeRootDialog({
 
   const handleConvert = () => {
     setIsConverting(true);
-    materializeHarnessRoot(harness, root)
-      .then(() =>
-        disableSkill ? setSharedHarnessSkillEnabled(root, disableSkill, harness, false) : undefined,
-      )
+    const conversion =
+      intent.kind === "convert-then-disable"
+        ? materializeHarnessRootThenDisable(target, harness, root)
+        : materializeHarnessRoot(target, harness, root);
+    conversion
       .then(() => {
         onConverted?.();
         onClose();
@@ -61,7 +61,10 @@ export function MaterializeRootDialog({
       .catch((err) => {
         addToast({
           type: "error",
-          title: "Couldn't convert",
+          title:
+            intent.kind === "convert-then-disable"
+              ? "Couldn't convert and turn off"
+              : "Couldn't convert",
           message: err instanceof Error ? err.message : "Unknown error",
         });
       })
@@ -74,12 +77,17 @@ export function MaterializeRootDialog({
         <DialogHeader>
           <DialogTitle>Convert {rootLabel} to per-skill links?</DialogTitle>
           <DialogDescription>
-            {harnessLabel} currently reads every skill in the shared folder through one link at{" "}
-            {rootLabel}. Converting replaces that one link with a separate symlink per skill,
-            pointing at the same shared folder — the exact layout the skills.sh CLI creates in
-            symlink mode. Nothing is copied, and each skill can then be switched on or off for{" "}
-            {harnessLabel} on its own. This change is recorded in Activity and can be undone from
-            there.
+            The link at {rootLabel} lets {harnessLabel} read every skill in the Universal folder.
+            Converting replaces it with one symlink per skill. The symlinks still point to the
+            Universal folder, so no files are copied. You can then switch each skill on or off for{" "}
+            {harnessLabel}.
+            {intent.kind === "convert-then-disable" && (
+              <>
+                {" "}
+                After conversion, {intent.skill} will be turned off only for {harnessLabel}.
+              </>
+            )}{" "}
+            Activity records this change and provides the undo action.
           </DialogDescription>
         </DialogHeader>
         <DialogFooter>
@@ -89,8 +97,8 @@ export function MaterializeRootDialog({
           <Button onClick={handleConvert} disabled={isConverting}>
             {isConverting
               ? "Converting…"
-              : disableSkill
-                ? `Convert and disable ${disableSkill}`
+              : intent.kind === "convert-then-disable"
+                ? `Convert, then turn off ${intent.skill}`
                 : "Convert"}
           </Button>
         </DialogFooter>

@@ -82,8 +82,8 @@ export const HEALTH_ISSUE_KIND_LABEL = {
   duplicate: { singular: "skill differs between copies", plural: "skills differ between copies" },
   "broken-symlink": { singular: "broken link", plural: "broken links" },
   "linked-root": {
-    singular: "harness reads the shared folder through a root link",
-    plural: "harnesses read the shared folder through a root link",
+    singular: "harness reads the Universal folder through a root link",
+    plural: "harnesses read the Universal folder through a root link",
   },
   "spec-violation": {
     singular: "skill that fails to load",
@@ -119,14 +119,14 @@ export function agentsCoveredByDeployment(agent: string): readonly string[] {
  * "Global" or the project directory basename, plus the deployment's agent
  * (already a display label, e.g. "Claude Code" or "shared"), so two copies
  * at the same scope but different agents get distinct labels, e.g.
- * "Global · Claude Code", "Global · Shared folder", "webvitals.com · Shared folder".
+ * "Global · Claude Code", "Global · Universal folder", "webvitals.com · Universal folder".
  */
 export function deploymentLabel(deployment: Deployment): string {
   const scope =
     deployment.scope === "project" && deployment.project_path
       ? (deployment.project_path.split("/").filter(Boolean).pop() ?? "Global")
       : "Global";
-  const agent = deployment.agent === "shared" ? "Shared folder" : deployment.agent;
+  const agent = deployment.agent === "shared" ? "Universal folder" : deployment.agent;
   return `${scope} · ${agent}`;
 }
 
@@ -271,7 +271,7 @@ export function findLinkedRootIssues(skills: InstalledSkill[]): HealthIssue[] {
         harness: harnessId,
         harnessLabel: deployment.agent,
         root,
-        detail: `${deployment.agent} reads the shared folder through a root link at ${rootLabel}. Skills cannot be switched off for ${deployment.agent} one at a time until it is converted to per-skill links.`,
+        detail: `${deployment.agent} reads the Universal folder through a root link at ${rootLabel}. Skills cannot be switched off for ${deployment.agent} one at a time until it is converted to per-skill links.`,
       });
     }
   }
@@ -341,7 +341,7 @@ export function findParkedButReinstalled(skills: InstalledSkill[]): HealthIssue[
     .map((skill) => ({
       kind: "parked-but-reinstalled" as const,
       skill,
-      detail: "Parked, but an install or sync recreated the shared-folder copy",
+      detail: "Parked, but an install or sync recreated the Universal copy",
     }));
 }
 

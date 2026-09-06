@@ -18,6 +18,11 @@ import {
 
 function fixtureDeployment(overrides: Partial<Deployment> = {}): Deployment {
   return {
+    id: "dep:v1/global/universal/find-bugs",
+    destination: "universal",
+    owner_kind: "manual",
+    mutability: "read-only",
+    backing: { kind: "canonical" },
     agent: "shared",
     scope: "global",
     path: "/home/.agents/skills/find-bugs",
@@ -51,6 +56,8 @@ function fixtureSkill(overrides: Partial<InstalledSkill> = {}): InstalledSkill {
     parked: false,
     invocation: "both",
     ...overrides,
+    update_owner_ids:
+      overrides.update_owner_ids ?? (overrides.has_update ? ["owner:v1/global/find-bugs"] : []),
   };
 }
 
@@ -105,7 +112,7 @@ describe("buildScopeGroups", () => {
     expect(global.shared?.conditions[0].what).toContain("The skill still loads.");
   });
 
-  it("flags a copy that drifted from the shared truth", () => {
+  it("flags a copy that drifted from the Universal deployment", () => {
     const shared = fixtureDeployment({ content_hash: "aaa" });
     const codexCopy = fixtureDeployment({
       agent: "Codex",
@@ -119,7 +126,7 @@ describe("buildScopeGroups", () => {
     const project = groups.find((g) => !g.isGlobal)!;
     const row = project.rows.find((r) => r.harness === "codex");
     expect(row?.level).toBe("warning");
-    expect(row?.conditions[0].what).toBe("This copy differs from the shared folder.");
+    expect(row?.conditions[0].what).toBe("This copy differs from the Universal folder.");
   });
 
   it("treats a whole-root link as a plain link row with a switch", () => {
@@ -193,7 +200,7 @@ describe("buildScopeGroups", () => {
     expect(global.rows.find((r) => r.harness === "claude-code")?.level).toBe("off");
   });
 
-  it("flags parked-but-live with an error dot on the shared folder", () => {
+  it("flags parked-but-live with an error dot on the Universal folder", () => {
     const parkedShared = fixtureDeployment({
       scope: "parked",
       path: "/home/.agents/skills-parked/find-bugs",
@@ -210,7 +217,7 @@ describe("buildScopeGroups", () => {
     expect(global.shared?.conditions[0].status).toBe("Parked but live");
   });
 
-  it("synthesizes reader rows for agents that read the shared folder natively", () => {
+  it("synthesizes reader rows for agents that read the Universal folder natively", () => {
     const shared = fixtureDeployment();
     const claude = fixtureDeployment({
       agent: "Claude Code",
@@ -372,6 +379,37 @@ describe("titleLink", () => {
 });
 
 describe("rowMenu", () => {
+  it("offers an independent copy only for a healthy enabled Universal-backed link", () => {
+    const linked = fixtureDeployment({
+      agent: "Claude Code",
+      is_symlink: true,
+      backing: { kind: "linked-to", deployment_id: "dep:v1/global/universal/find-bugs" },
+      path: "/home/.claude/skills/find-bugs",
+    });
+    const skill = fixtureSkill({ deployments: [fixtureDeployment(), linked] });
+    const [global] = buildScopeGroups(skill);
+    const row = global.rows.find((candidate) => candidate.harness === "claude-code")!;
+
+    expect(rowMenu(row, global.label).entries.map((entry) => entry.label)).toContain(
+      "Make independent copy",
+    );
+
+    for (const deployment of [
+      { ...linked, disabled: true },
+      { ...linked, symlink_is_broken: true },
+      { ...linked, backing: { kind: "independent" as const } },
+      { ...linked, is_symlink: false, shared_via_whole_dir_link: false },
+    ]) {
+      const [scope] = buildScopeGroups(
+        fixtureSkill({ deployments: [fixtureDeployment(), deployment] }),
+      );
+      const candidate = scope.rows.find((item) => item.harness === "claude-code")!;
+      expect(rowMenu(candidate, scope.label).entries.map((entry) => entry.label)).not.toContain(
+        "Make independent copy",
+      );
+    }
+  });
+
   it("leads with the highest condition's first fix even when it is destructive", () => {
     const claude = fixtureDeployment({
       agent: "Claude Code",
@@ -460,14 +498,14 @@ describe("buildInvocationFiles / invocationFooterNote", () => {
 });
 
 describe("buildInvocationFiles editability", () => {
-  it("keeps the global shared folder editable even when the skill is managed", () => {
+  it("keeps the global Universal folder editable even when the skill is managed", () => {
     const shared = fixtureDeployment();
     const skill = fixtureSkill({ deployments: [shared], source_kind: "dotagents" });
     const files = buildInvocationFiles(buildScopeGroups(skill), skill);
     expect(files[0]).toMatchObject({ kind: "shared", editable: true });
   });
 
-  it("disables a managed project shared folder", () => {
+  it("disables a managed project Universal folder", () => {
     const projectShared = fixtureDeployment({
       scope: "project",
       project_path: "/repo",

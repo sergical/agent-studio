@@ -71,7 +71,7 @@ export function SkillDetailHeader({ skill, resolvedTopSource, onClose }: SkillDe
               Installed
             </span>
           )}
-          {skill.installed_info?.has_update && (
+          {(skill.installed_info?.update_owner_ids.length ?? 0) > 0 && (
             <span className={`${BADGE_CLASS} bg-accent-soft text-accent`}>Update available</span>
           )}
           {skill.installed_info && (

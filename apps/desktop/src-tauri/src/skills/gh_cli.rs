@@ -11,6 +11,11 @@
 use std::path::Path;
 use std::process::Command;
 
+use super::skill_process::{
+    run_controlled_command_output, AddOperationControl, ControlledProcessError,
+    MAX_PROCESS_OUTPUT_BYTES,
+};
+
 /// Why a `gh` invocation failed.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum GhError {
@@ -84,6 +89,30 @@ pub(crate) fn run_gh(
     } else {
         Err(GhError::Failed(message))
     }
+}
+
+/// Runs a read-only `gh` call with Add operation cancellation, deadline, and
+/// bounded output. Add's commit lookup uses this instead of `wait_with_output`.
+pub(crate) fn run_gh_controlled(
+    gh_bin: &Path,
+    args: &[&str],
+    control: &AddOperationControl,
+) -> Result<Vec<u8>, GhError> {
+    let args = args
+        .iter()
+        .map(|arg| (*arg).to_string())
+        .collect::<Vec<_>>();
+    run_controlled_command_output(gh_bin, &args, None, control, MAX_PROCESS_OUTPUT_BYTES).map_err(
+        |error| match error {
+            ControlledProcessError::Cancelled | ControlledProcessError::TimedOut => {
+                GhError::Failed(error.into_message())
+            }
+            ControlledProcessError::Failed(message) if is_not_logged_in(&message) => {
+                GhError::NotLoggedIn
+            }
+            ControlledProcessError::Failed(message) => GhError::Failed(message),
+        },
+    )
 }
 
 #[cfg(test)]

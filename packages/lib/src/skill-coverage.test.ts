@@ -50,11 +50,12 @@ function fixtureSkill(overrides: Partial<InstalledSkill> = {}): InstalledSkill {
     parked: false,
     invocation: "both",
     ...overrides,
+    update_owner_ids: overrides.update_owner_ids ?? [],
   };
 }
 
 describe("groupDeploymentsForDisplay", () => {
-  it("groups a shared root with the harnesses that read it through a whole-root link", () => {
+  it("groups a Universal root with the harnesses that read it through a whole-root link", () => {
     const shared = fixtureDeployment({ agent: "shared" });
     const readers = [
       fixtureDeployment({
@@ -89,7 +90,7 @@ describe("groupDeploymentsForDisplay", () => {
     expect(result.standalone).toEqual([symlink]);
   });
 
-  it("produces only standalone rows when there is no shared root", () => {
+  it("produces only standalone rows when there is no Universal root", () => {
     const deployments = [
       fixtureDeployment({ agent: "Claude Code" }),
       fixtureDeployment({ agent: "Codex" }),
@@ -99,7 +100,7 @@ describe("groupDeploymentsForDisplay", () => {
     expect(result.standalone).toEqual(deployments);
   });
 
-  it("never puts a broken link inside the shared group", () => {
+  it("never puts a broken link inside the Universal group", () => {
     const shared = fixtureDeployment({ agent: "shared" });
     const broken = fixtureDeployment({
       agent: "Claude Code",
@@ -112,7 +113,7 @@ describe("groupDeploymentsForDisplay", () => {
     expect(result.standalone).toEqual([broken]);
   });
 
-  it("keeps a global shared root and a project shared root as separate groups with no cross-contamination (regression: wrong-root nesting)", () => {
+  it("keeps global and project Universal roots separate", () => {
     const globalShared = fixtureDeployment({
       agent: "shared",
       scope: "global",
@@ -155,7 +156,7 @@ describe("groupDeploymentsForDisplay", () => {
     expect(result.standalone).toEqual([]);
   });
 
-  it("leaves a reader standalone when its root link matches no shared root here", () => {
+  it("leaves a reader standalone when its root link matches no Universal root", () => {
     const shared = fixtureDeployment({ agent: "shared", path: "/home/.agents/skills/find-bugs" });
     const unrelatedReader = fixtureDeployment({
       agent: "Codex",
@@ -225,14 +226,14 @@ describe("agentIdFromDeploymentLabel", () => {
 });
 
 describe("locationSummary", () => {
-  it("puts the shared-root deployment in truth", () => {
+  it("puts the Universal deployment in truth", () => {
     const skill = fixtureSkill({
       deployments: [fixtureDeployment({ agent: "shared", path: "/home/.agents/skills/find-bugs" })],
     });
     expect(locationSummary(skill).truth?.agent).toBe("shared");
   });
 
-  it("groups a symlink into the shared root as a link", () => {
+  it("groups a symlink into the Universal root as a link", () => {
     const skill = fixtureSkill({
       deployments: [
         fixtureDeployment({
@@ -254,7 +255,7 @@ describe("locationSummary", () => {
     expect(locationSummary(skill).copies.map((d) => d.agent)).toEqual(["Claude Code"]);
   });
 
-  it("groups a healthy symlink to somewhere outside the shared root as a copy", () => {
+  it("groups a healthy symlink outside the Universal root as a copy", () => {
     const skill = fixtureSkill({
       deployments: [
         fixtureDeployment({
@@ -320,7 +321,7 @@ describe("AGENT_MATRIX_LABELS", () => {
 });
 
 describe("deploymentRelationText", () => {
-  it("says the shared root lives here", () => {
+  it("says the Universal root lives here", () => {
     expect(
       deploymentRelationText(
         fixtureDeployment({ agent: "shared", path: "/Users/me/.agents/skills/find-bugs" }),
@@ -328,7 +329,7 @@ describe("deploymentRelationText", () => {
     ).toBe("lives here");
   });
 
-  it("calls a per-skill link into the shared root a symlink", () => {
+  it("calls a per-skill link into the Universal root a symlink", () => {
     expect(
       deploymentRelationText(
         fixtureDeployment({

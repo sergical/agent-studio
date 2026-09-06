@@ -241,8 +241,8 @@ export function LearnView({ section }: LearnViewProps) {
               </tbody>
             </table>
             <p className="m-0">
-              Frontmatter edits the shared file, so they apply to every harness that reads the same
-              folder or symlink. Codex and OpenCode settings apply to that harness only.
+              Frontmatter edits the Universal file, so they apply to every harness that reads the
+              same folder or symlink. Codex and OpenCode settings apply to that harness only.
             </p>
           </section>
 

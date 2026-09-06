@@ -13,13 +13,18 @@ const SCOPE_OPTION_CLASS = "h-[26px] px-3 text-small";
 interface ScopeToggleGroupProps {
   scope: InstallScope;
   onScopeChange: (scope: InstallScope) => void;
+  ariaLabel?: string;
 }
 
-export function ScopeToggleGroup({ scope, onScopeChange }: ScopeToggleGroupProps) {
+export function ScopeToggleGroup({
+  scope,
+  onScopeChange,
+  ariaLabel = "Install scope",
+}: ScopeToggleGroupProps) {
   return (
     <ToggleGroup
       variant="segmented"
-      aria-label="Install scope"
+      aria-label={ariaLabel}
       value={[scope]}
       onValueChange={(next) => singleSelectToggleValue<InstallScope>(next, onScopeChange)}
     >

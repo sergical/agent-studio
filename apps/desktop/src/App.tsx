@@ -121,12 +121,10 @@ function App() {
     main = <SettingsView />;
   } else {
     const skill = snapshot?.skills.find((s) => s.name === activeView.name) ?? null;
-    const invocationStats = snapshot?.invocations.find((s) => s.skill === activeView.name);
     main = (
       <SkillPage
         skill={skill}
         deploymentPath={activeView.deploymentPath}
-        invocationStats={invocationStats}
         onBack={closeSkill}
         onRemoveComplete={closeSkill}
         from={activeView.from}

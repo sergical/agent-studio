@@ -18,17 +18,22 @@ use std::process::Command;
 use serde::{Deserialize, Serialize};
 use tauri::Manager;
 
-use super::commands::{
-    dotagents_add_args, dotagents_remove_args, skills_sh_add_args, skills_sh_remove_args,
-};
+use super::commands::{dotagents_add_args, dotagents_remove_args};
 use super::dotagents_ledger;
-use super::gh_cli::{run_gh, GhError};
 use super::lock_file;
+use super::skill_deployment::SkillDestination;
+use super::skill_dto::InstallScope;
 use super::skill_fork_registry::{
-    fork_snapshot_dir, read_fork_registry, trial_key, write_fork_registry, ForkRecord,
-    ForkRegistry, OriginTool, TrialScope,
+    deployment_trial_key, fork_snapshot_dir, read_fork_registry, trial_key, write_fork_registry,
+    ForkRecord, ForkRegistry, OriginTool, TrialScope,
 };
 use super::skill_fs::copy_dir_all;
+use super::skill_install_plan::{skills_sh_universal_add_args, SkillInstallSpec};
+use super::skill_lifecycle::skills_sh_remove_args_for_scope;
+use super::skill_process::{
+    run_controlled_command_to_file, AddOperationControl, ControlledProcessError,
+    MAX_PROCESS_OUTPUT_BYTES,
+};
 use super::skill_refresh::{self, SkillRefreshState};
 use super::skill_update_check::{self, CommitLookup, GhCommitLookup, UpdateCheckState};
 
@@ -38,8 +43,8 @@ use super::skill_update_check::{self, CommitLookup, GhCommitLookup, UpdateCheckS
 
 /// Removes a skill from its owning ledger, or reinstalls it from its
 /// recorded origin. The real implementation shells out to the same argv
-/// `remove_skill` / `install_skill` / `dotagents_update_args` already build
-/// (see the `dotagents_*`/`skills_sh_*` arg builders in `commands.rs`).
+/// `remove_skill` / `add_skill` / `dotagents_update_args` already build
+/// (see the command and install-plan arg builders).
 pub trait LedgerTool {
     fn remove(&self, tool: OriginTool, name: &str) -> Result<(), String>;
     fn reinstall(&self, rec: &ForkRecord, name: &str) -> Result<(), String>;
@@ -70,16 +75,67 @@ pub trait UpstreamFetch {
     ) -> Result<Option<Box<dyn RepoSnapshot>>, String> {
         Ok(None)
     }
+
+    /// Fetch under one Add operation's cancellation flag and deadline.
+    fn fetch_skill_dir_controlled(
+        &self,
+        repo: &str,
+        path: &str,
+        commit: &str,
+        into: &Path,
+        control: &AddOperationControl,
+    ) -> Result<(), String> {
+        control.check_message()?;
+        let result = self.fetch_skill_dir(repo, path, commit, into);
+        control.check_message()?;
+        result
+    }
+
+    /// Open a reusable repo snapshot under one Add operation deadline.
+    fn open_repo_controlled(
+        &self,
+        repo: &str,
+        commit: &str,
+        control: &AddOperationControl,
+    ) -> Result<Option<Box<dyn RepoSnapshot>>, String> {
+        control.check_message()?;
+        let result = self.open_repo(repo, commit);
+        control.check_message()?;
+        result
+    }
 }
 
 /// A repo already downloaded and extracted at one commit; `copy_dir` pulls
 /// one folder out of it.
 pub trait RepoSnapshot {
     fn copy_dir(&self, path: &str, into: &Path) -> Result<(), String>;
+
+    /// Copy one folder while honoring an Add operation interruption.
+    fn copy_dir_controlled(
+        &self,
+        path: &str,
+        into: &Path,
+        control: &AddOperationControl,
+    ) -> Result<(), String> {
+        control.check_message()?;
+        let result = self.copy_dir(path, into);
+        control.check_message()?;
+        result
+    }
 }
 
 /// Real `LedgerTool`, shelling out to `npx`.
 pub struct RealLedgerTool;
+
+fn skills_sh_unfork_add_args(rec: &ForkRecord, name: &str) -> Result<Vec<String>, String> {
+    let spec = SkillInstallSpec {
+        scope: InstallScope::Global,
+        destination: SkillDestination::Universal,
+        project_path: None,
+        harnesses: vec![],
+    };
+    skills_sh_universal_add_args(&rec.origin_source, Some(name), &spec)
+}
 
 fn run_npx(args: &[String]) -> Result<(), String> {
     let output = Command::new("npx")
@@ -98,11 +154,11 @@ fn run_npx(args: &[String]) -> Result<(), String> {
 impl LedgerTool for RealLedgerTool {
     fn remove(&self, tool: OriginTool, name: &str) -> Result<(), String> {
         let args = match tool {
-            OriginTool::Dotagents => dotagents_remove_args(name),
+            OriginTool::Dotagents => dotagents_remove_args(name, InstallScope::Global),
             // Fork only ever applies to a global-scope skill (see
             // `skill_refresh::build_snapshot`), so remove/reinstall always
             // target the global scope.
-            OriginTool::SkillsSh => skills_sh_remove_args(name, true),
+            OriginTool::SkillsSh => skills_sh_remove_args_for_scope(name, InstallScope::Global),
         };
         run_npx(&args)
     }
@@ -112,7 +168,7 @@ impl LedgerTool for RealLedgerTool {
             OriginTool::Dotagents => {
                 dotagents_add_args(&rec.origin_source, name, rec.declared_ref.as_deref())
             }
-            OriginTool::SkillsSh => skills_sh_add_args(&rec.origin_source, Some(name), true, None),
+            OriginTool::SkillsSh => skills_sh_unfork_add_args(rec, name)?,
         };
         run_npx(&args)
     }
@@ -145,6 +201,32 @@ fn resolve_lookup() -> Box<dyn CommitLookup> {
     }
 }
 
+/// Runs the same fork transaction as `fork_skill` after another command has
+/// already resolved and locked the exact Global Universal deployment.
+pub(crate) fn fork_resolved_deployment_with_real_services(
+    home: &Path,
+    app_data: &Path,
+    name: &str,
+    path: &Path,
+) -> Result<ForkRecord, String> {
+    let lookup = resolve_lookup();
+    let gh_bin =
+        skill_update_check::resolve_gh_binary().ok_or_else(|| "Run Check now first".to_string())?;
+    let fetch = RealUpstreamFetch {
+        gh_bin,
+        cache_dir: app_data.join("skill-studio").join("cache"),
+    };
+    fork_skill_with(
+        home,
+        app_data,
+        name,
+        path,
+        &RealLedgerTool,
+        &fetch,
+        lookup.as_ref(),
+    )
+}
+
 /// Real `UpstreamFetch`, via `gh api .../tarball/<sha>` + `tar -xzf`.
 pub struct RealUpstreamFetch {
     pub gh_bin: PathBuf,
@@ -167,12 +249,45 @@ impl UpstreamFetch for RealUpstreamFetch {
     fn open_repo(&self, repo: &str, commit: &str) -> Result<Option<Box<dyn RepoSnapshot>>, String> {
         Ok(Some(Box::new(self.download(repo, commit)?)))
     }
+
+    fn fetch_skill_dir_controlled(
+        &self,
+        repo: &str,
+        path: &str,
+        commit: &str,
+        into: &Path,
+        control: &AddOperationControl,
+    ) -> Result<(), String> {
+        self.download_controlled(repo, commit, control)?
+            .copy_dir_controlled(path, into, control)
+    }
+
+    fn open_repo_controlled(
+        &self,
+        repo: &str,
+        commit: &str,
+        control: &AddOperationControl,
+    ) -> Result<Option<Box<dyn RepoSnapshot>>, String> {
+        Ok(Some(Box::new(
+            self.download_controlled(repo, commit, control)?,
+        )))
+    }
 }
 
 impl RealUpstreamFetch {
     /// One `gh api .../tarball/<sha>` download, extracted to a scratch
     /// directory that is removed when the returned snapshot drops.
     fn download(&self, repo: &str, commit: &str) -> Result<ExtractedRepo, String> {
+        self.download_controlled(repo, commit, &AddOperationControl::bounded_default())
+    }
+
+    fn download_controlled(
+        &self,
+        repo: &str,
+        commit: &str,
+        control: &AddOperationControl,
+    ) -> Result<ExtractedRepo, String> {
+        control.check_message()?;
         fs::create_dir_all(&self.cache_dir)
             .map_err(|e| format!("Failed to create {}: {e}", self.cache_dir.display()))?;
 
@@ -183,31 +298,34 @@ impl RealUpstreamFetch {
             paths: vec![tarball_path.clone(), extract_dir.clone()],
         };
 
-        let tarball = run_gh(
+        run_controlled_command_to_file(
             &self.gh_bin,
-            &["api", &format!("repos/{repo}/tarball/{commit}")],
+            &["api".to_string(), format!("repos/{repo}/tarball/{commit}")],
             None,
+            control,
+            &tarball_path,
+            MAX_PROCESS_OUTPUT_BYTES,
         )
-        .map_err(|e: GhError| e.message())?;
-        fs::write(&tarball_path, &tarball)
-            .map_err(|e| format!("Failed to write {}: {e}", tarball_path.display()))?;
+        .map_err(ControlledProcessError::into_message)?;
 
+        control.check_message()?;
         fs::create_dir_all(&extract_dir)
             .map_err(|e| format!("Failed to create {}: {e}", extract_dir.display()))?;
-        let tar_output = Command::new("tar")
-            .args([
-                "-xzf",
-                &tarball_path.to_string_lossy(),
-                "-C",
-                &extract_dir.to_string_lossy(),
-            ])
-            .output()
-            .map_err(|e| format!("Failed to run tar: {e}"))?;
-        if !tar_output.status.success() {
-            return Err(String::from_utf8_lossy(&tar_output.stderr)
-                .trim()
-                .to_string());
-        }
+        run_controlled_command_to_file(
+            Path::new("tar"),
+            &[
+                "-xzf".to_string(),
+                tarball_path.to_string_lossy().into_owned(),
+                "-C".to_string(),
+                extract_dir.to_string_lossy().into_owned(),
+            ],
+            None,
+            control,
+            Path::new("/dev/null"),
+            MAX_PROCESS_OUTPUT_BYTES,
+        )
+        .map_err(ControlledProcessError::into_message)?;
+        control.check_message()?;
 
         Ok(ExtractedRepo {
             extract_dir,
@@ -227,6 +345,17 @@ impl RepoSnapshot for ExtractedRepo {
     fn copy_dir(&self, path: &str, into: &Path) -> Result<(), String> {
         let source_dir = locate_extracted_skill_dir(&self.extract_dir, path)?;
         copy_dir_all(&source_dir, into)
+    }
+
+    fn copy_dir_controlled(
+        &self,
+        path: &str,
+        into: &Path,
+        control: &AddOperationControl,
+    ) -> Result<(), String> {
+        control.check_message()?;
+        let source_dir = locate_extracted_skill_dir(&self.extract_dir, path)?;
+        super::skill_fs::copy_dir_all_controlled(&source_dir, into, control)
     }
 }
 
@@ -364,9 +493,10 @@ fn resolve_fork_origin(
             .to_string();
 
         let store = skill_update_check::read_update_check_store(app_data);
+        let owner_id = format!("owner:v1/global/{name}");
         let base_commit = match store
-            .skills
-            .get(name)
+            .owners
+            .get(&owner_id)
             .and_then(|s| s.installed_commit.clone())
         {
             Some(commit) => commit,
@@ -475,6 +605,15 @@ pub fn fork_skill_with(
     // 2. Write the record before touching the ledger - a failure here means
     //    the skill is still fully attached, never detached with no record.
     let record = ForkRecord {
+        deployment_id: super::skill_deployment::deployment_id(
+            name,
+            "global",
+            super::skill_deployment::SkillDestination::Universal,
+            "universal",
+            None,
+            path,
+        ),
+        skill_dir: skill_dir.clone(),
         forked_at: chrono::Utc::now().to_rfc3339(),
         origin_tool: origin.tool,
         origin_source: origin.origin_source,
@@ -490,6 +629,9 @@ pub fn fork_skill_with(
     // Forking only ever applies to the shared (global) `.agents/skills`
     // root, so only the global-scoped key needs clearing.
     registry.trials.remove(&trial_key(TrialScope::Global, name));
+    registry
+        .trials
+        .remove(&deployment_trial_key(&record.deployment_id));
     if let Err(e) = write_fork_registry(home, &registry) {
         let _ = fs::remove_dir_all(&base_dir);
         return Err(e);
@@ -551,8 +693,7 @@ impl ForkMutationLock {
 
 #[tauri::command]
 pub fn fork_skill(
-    name: String,
-    path: String,
+    target: super::skill_dto::LifecycleTarget,
     app: tauri::AppHandle,
     refresh_state: tauri::State<SkillRefreshState>,
     update_check_state: tauri::State<UpdateCheckState>,
@@ -573,11 +714,31 @@ pub fn fork_skill(
         cache_dir: app_data.join("skill-studio").join("cache"),
     };
 
+    let resolved = super::skill_lifecycle::resolve_fresh_lifecycle_target(
+        &app,
+        &refresh_state,
+        &target,
+        "Fork",
+    )?;
+    let snapshot = resolved.snapshot;
+    let id = target
+        .deployment_id
+        .as_deref()
+        .ok_or("Fork needs one Global Universal deployment_id")?;
+    if target.owner_id.is_some() {
+        return Err("Fork targets one Global Universal deployment, not an owner group".to_string());
+    }
+    let (skill, deployment) = super::skill_lifecycle::find_deployment(&snapshot, id)?;
+    super::skill_lifecycle::revalidate_deployment(deployment, id)?;
+    super::skill_lifecycle::require_direct_deployment_mutable(deployment, "Fork")?;
+    super::skill_lifecycle::require_global_universal_park_target(deployment)
+        .map_err(|_| "Fork is only available for the Global Universal folder.".to_string())?;
+
     let result = fork_skill_with(
         &home,
         &app_data,
-        &name,
-        Path::new(&path),
+        &skill.name,
+        Path::new(&deployment.path),
         &RealLedgerTool,
         &fetch,
         lookup.as_ref(),
@@ -822,7 +983,12 @@ pub fn pull_fork_upstream_with(
         .ok_or_else(|| format!("`{name}` is not forked"))?;
 
     let store = skill_update_check::read_update_check_store(app_data);
-    let to_commit = match store.skills.get(name).and_then(|s| s.latest_commit.clone()) {
+    let owner_id = format!("owner:v1/global/{name}");
+    let to_commit = match store
+        .owners
+        .get(&owner_id)
+        .and_then(|state| state.latest_commit.clone())
+    {
         Some(commit) => commit,
         None => match lookup.latest_commit(&record.repo, &record.path, None)? {
             Some((sha, _)) => sha,
@@ -843,7 +1009,11 @@ pub fn pull_fork_upstream_with(
         });
     }
 
-    let mine_dir = home.join(".agents").join("skills").join(name);
+    let mine_dir = if record.skill_dir.as_os_str().is_empty() {
+        home.join(".agents").join("skills").join(name)
+    } else {
+        record.skill_dir.clone()
+    };
     let base_dir = fork_snapshot_dir(app_data, name);
     let scratch = app_data.join("skill-studio").join("forks").join(name);
     let staging_live = scratch.join("staging-live");
@@ -967,7 +1137,7 @@ pub fn pull_fork_upstream_with(
 
 #[tauri::command]
 pub fn pull_fork_upstream(
-    name: String,
+    target: super::skill_dto::LifecycleTarget,
     app: tauri::AppHandle,
     refresh_state: tauri::State<SkillRefreshState>,
     update_check_state: tauri::State<UpdateCheckState>,
@@ -987,6 +1157,13 @@ pub fn pull_fork_upstream(
         cache_dir: app_data.join("skill-studio").join("cache"),
     };
 
+    let resolved = super::skill_lifecycle::resolve_fresh_lifecycle_target(
+        &app,
+        &refresh_state,
+        &target,
+        "Pull upstream",
+    )?;
+    let (name, _) = resolve_recorded_fork_target(&resolved.snapshot, &target, &home)?;
     let result = pull_fork_upstream_with(&home, &app_data, &name, &fetch, lookup.as_ref());
     skill_refresh::request_snapshot_rebuild(&app);
     let _ = &refresh_state;
@@ -1015,6 +1192,11 @@ pub fn unfork_skill_with(
 
     registry.forks.remove(name);
     registry.trials.remove(&trial_key(TrialScope::Global, name));
+    if !record.deployment_id.is_empty() {
+        registry
+            .trials
+            .remove(&deployment_trial_key(&record.deployment_id));
+    }
     write_fork_registry(home, &registry)?;
     let _ = fs::remove_dir_all(fork_snapshot_dir(app_data, name));
     Ok(())
@@ -1022,7 +1204,7 @@ pub fn unfork_skill_with(
 
 #[tauri::command]
 pub fn unfork_skill(
-    name: String,
+    target: super::skill_dto::LifecycleTarget,
     app: tauri::AppHandle,
     refresh_state: tauri::State<SkillRefreshState>,
     update_check_state: tauri::State<UpdateCheckState>,
@@ -1036,10 +1218,59 @@ pub fn unfork_skill(
         .app_data_dir()
         .map_err(|e| format!("Could not resolve app data dir: {e}"))?;
 
+    let resolved = super::skill_lifecycle::resolve_fresh_lifecycle_target(
+        &app,
+        &refresh_state,
+        &target,
+        "Unfork",
+    )?;
+    let (name, _) = resolve_recorded_fork_target(&resolved.snapshot, &target, &home)?;
     let result = unfork_skill_with(&home, &app_data, &name, &RealLedgerTool);
     skill_refresh::request_snapshot_rebuild(&app);
     let _ = &refresh_state;
     result
+}
+
+fn resolve_recorded_fork_target(
+    snapshot: &super::skill_refresh::SkillSnapshot,
+    target: &super::skill_dto::LifecycleTarget,
+    home: &Path,
+) -> Result<(String, ForkRecord), String> {
+    let id = target
+        .deployment_id
+        .as_deref()
+        .ok_or("Fork lifecycle needs one Global Universal deployment_id")?;
+    if target.owner_id.is_some() {
+        return Err(
+            "Fork lifecycle targets one Global Universal deployment, not an owner group"
+                .to_string(),
+        );
+    }
+    let (skill, deployment) = super::skill_lifecycle::find_deployment(snapshot, id)?;
+    super::skill_lifecycle::revalidate_deployment(deployment, id)?;
+    super::skill_lifecycle::require_global_universal_park_target(deployment).map_err(|_| {
+        "Fork lifecycle is only available for the Global Universal folder.".to_string()
+    })?;
+    let registry = read_fork_registry(home)?;
+    let record = registry
+        .forks
+        .get(&skill.name)
+        .cloned()
+        .ok_or_else(|| format!("`{}` is not forked", skill.name))?;
+    let expected_path = if record.skill_dir.as_os_str().is_empty() {
+        home.join(".agents/skills").join(&skill.name)
+    } else {
+        record.skill_dir.clone()
+    };
+    if (!record.deployment_id.is_empty() && record.deployment_id != id)
+        || Path::new(&deployment.path) != expected_path
+    {
+        return Err(
+            "The fork record does not belong to the selected Global Universal deployment"
+                .to_string(),
+        );
+    }
+    Ok((skill.name.clone(), record))
 }
 
 // ============================================================================
@@ -1238,13 +1469,17 @@ mod tests {
         registry.trials.insert(
             trial_key(TrialScope::Global, "find-bugs"),
             super::super::skill_fork_registry::TrialRecord {
+                deployment_id: String::new(),
                 started_at: now.to_rfc3339(),
                 expires_at: (now + chrono::Duration::hours(24)).to_rfc3339(),
+                status: super::super::skill_fork_registry::TrialStatus::Active,
                 method: super::super::skill_fork_registry::AddMethod::Dotagents,
                 scope: super::super::skill_fork_registry::TrialScope::Global,
                 project_path: None,
                 skill_dir: home.join(".agents/skills/find-bugs"),
+                deployment_fingerprint: String::new(),
                 claude_link: None,
+                claude_link_target: None,
             },
         );
         write_fork_registry(&home, &registry).unwrap();
@@ -1557,6 +1792,8 @@ mod tests {
         registry.forks.insert(
             name.to_string(),
             ForkRecord {
+                deployment_id: String::new(),
+                skill_dir: PathBuf::new(),
                 forked_at: "2026-01-01T00:00:00Z".to_string(),
                 origin_tool: OriginTool::Dotagents,
                 origin_source: "getsentry/find-bugs".to_string(),
@@ -1582,10 +1819,11 @@ mod tests {
         use std::collections::BTreeMap;
         fs::create_dir_all(app_data.join("skill-studio")).unwrap();
         let store = UpdateCheckStore {
+            version: 2,
             checked_at: Some("2026-01-01T00:00:00Z".to_string()),
             gh_status: GhStatus::Ok,
-            skills: BTreeMap::from([(
-                name.to_string(),
+            owners: BTreeMap::from([(
+                format!("owner:v1/global/{name}"),
                 SkillUpdateState {
                     repo: "getsentry/find-bugs".to_string(),
                     path: "skills/find-bugs".to_string(),
@@ -1597,6 +1835,7 @@ mod tests {
                     lock_updated_at: None,
                 },
             )]),
+            legacy_skills: BTreeMap::new(),
         };
         fs::write(
             app_data.join("skill-studio/update-check.json"),
@@ -1913,6 +2152,36 @@ mod tests {
     }
 
     #[test]
+    fn skills_sh_unfork_argv_keeps_source_ref_skill_and_global_scope() {
+        let record = ForkRecord {
+            deployment_id: String::new(),
+            skill_dir: PathBuf::new(),
+            forked_at: "2026-01-01T00:00:00Z".to_string(),
+            origin_tool: OriginTool::SkillsSh,
+            origin_source: "obra/find-bugs@v1.2.3".to_string(),
+            repo: "obra/find-bugs".to_string(),
+            path: "skills/find-bugs".to_string(),
+            declared_ref: None,
+            base_commit: "a".repeat(40),
+        };
+
+        assert_eq!(
+            skills_sh_unfork_add_args(&record, "find-bugs").unwrap(),
+            vec![
+                "skills",
+                "add",
+                "obra/find-bugs@v1.2.3",
+                "--yes",
+                "--global",
+                "--skill",
+                "find-bugs",
+                "--agent",
+                "universal",
+            ]
+        );
+    }
+
+    #[test]
     fn unfork_removes_record_and_snapshot_and_reinstalls_with_declared_ref() {
         let tmp = tempfile::tempdir().unwrap();
         let home = tmp.path().join("home");
@@ -1921,6 +2190,8 @@ mod tests {
         registry.forks.insert(
             "find-bugs".to_string(),
             ForkRecord {
+                deployment_id: String::new(),
+                skill_dir: PathBuf::new(),
                 forked_at: "2026-01-01T00:00:00Z".to_string(),
                 origin_tool: OriginTool::Dotagents,
                 origin_source: "getsentry/find-bugs".to_string(),
@@ -1958,6 +2229,8 @@ mod tests {
         registry.forks.insert(
             "find-bugs".to_string(),
             ForkRecord {
+                deployment_id: String::new(),
+                skill_dir: PathBuf::new(),
                 forked_at: "2026-01-01T00:00:00Z".to_string(),
                 origin_tool: OriginTool::Dotagents,
                 origin_source: "getsentry/find-bugs".to_string(),
@@ -1971,13 +2244,17 @@ mod tests {
         registry.trials.insert(
             trial_key(TrialScope::Global, "find-bugs"),
             super::super::skill_fork_registry::TrialRecord {
+                deployment_id: String::new(),
                 started_at: now.to_rfc3339(),
                 expires_at: (now + chrono::Duration::hours(24)).to_rfc3339(),
+                status: super::super::skill_fork_registry::TrialStatus::Active,
                 method: super::super::skill_fork_registry::AddMethod::Copy,
                 scope: super::super::skill_fork_registry::TrialScope::Global,
                 project_path: None,
                 skill_dir: home.join(".agents/skills/find-bugs"),
+                deployment_fingerprint: String::new(),
                 claude_link: None,
+                claude_link_target: None,
             },
         );
         write_fork_registry(&home, &registry).unwrap();
@@ -2000,6 +2277,8 @@ mod tests {
         registry.forks.insert(
             "find-bugs".to_string(),
             ForkRecord {
+                deployment_id: String::new(),
+                skill_dir: PathBuf::new(),
                 forked_at: "2026-01-01T00:00:00Z".to_string(),
                 origin_tool: OriginTool::SkillsSh,
                 origin_source: "obra/find-bugs".to_string(),

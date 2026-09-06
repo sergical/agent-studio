@@ -11,10 +11,12 @@
 import { useState } from "react";
 import { ToggleGroup, ToggleGroupItem } from "@skill-studio/ui";
 import { forkSkill } from "../../lib/skill-api";
+import { lifecycleTargetForDeployment } from "../../lib/skill-lifecycle-target";
 import { singleSelectToggleValue } from "../../lib/single-select-toggle-group";
 import { useAppStore } from "../../store/appStore";
 import { HarnessIcon } from "../ui/HarnessIcon";
 import { MaterializeRootDialog } from "../ui/MaterializeRootDialog";
+import { MakeIndependentCopyDialog } from "./MakeIndependentCopyDialog";
 import { StatusIcon } from "../ui/StatusIcon";
 import { TooltipControl } from "../ui/TooltipControl";
 import { RemoveDeploymentsDialog } from "./RemoveDeploymentsDialog";
@@ -78,13 +80,13 @@ export function SkillLocationsCard({ skill, onCompareCopies }: SkillLocationsCar
   const handleSetInvocation = (file: InvocationFile, policy: InvocationPolicy) => {
     if (!file.editable || savingFile) return;
     setSavingFile(file.path);
-    // Only the global shared folder can still need a fork first - a managed
-    // project shared folder or managed copy is `editable: false` and never
-    // reaches here (see `fileEditability`).
+    // Only the global Universal folder can need a fork before editing.
+    // `fileEditability` prevents managed Project folders and copies from
+    // reaching this branch.
     const isManaged = skill.source_kind === "dotagents" || skill.source_kind === "skills-sh";
     const forkIfNeeded =
       isManaged && file.kind === "shared"
-        ? forkSkill(skill.name, file.deployment.path)
+        ? forkSkill(lifecycleTargetForDeployment(file.deployment))
         : Promise.resolve();
     forkIfNeeded
       .then(() => setSkillInvocation(skill.name, `${file.path}/SKILL.md`, policy))
@@ -220,18 +222,32 @@ export function SkillLocationsCard({ skill, onCompareCopies }: SkillLocationsCar
 
       {actions.materializeRequest && (
         <MaterializeRootDialog
+          target={actions.materializeRequest.target}
           harness={actions.materializeRequest.harness}
           harnessLabel={actions.materializeRequest.harnessLabel}
           root={actions.materializeRequest.root}
-          disableSkill={skill.name}
+          intent={
+            actions.materializeRequest.intent === "convert-only"
+              ? { kind: "convert-only" }
+              : { kind: "convert-then-disable", skill: skill.name }
+          }
           onClose={actions.closeMaterializeRequest}
+        />
+      )}
+      {actions.independentCopyRequest && (
+        <MakeIndependentCopyDialog
+          skillName={skill.name}
+          deployment={actions.independentCopyRequest.deployment}
+          scopeLabel={actions.independentCopyRequest.scopeLabel}
+          onClose={actions.closeIndependentCopyRequest}
         />
       )}
       {actions.removeRequest && (
         <RemoveDeploymentsDialog
-          skillName={skill.name}
+          skill={skill}
           scopeLabel={actions.removeRequest.scopeLabel}
           projectPath={actions.removeRequest.projectPath}
+          deployment={actions.removeRequest.deployment}
           onClose={actions.closeRemoveRequest}
         />
       )}

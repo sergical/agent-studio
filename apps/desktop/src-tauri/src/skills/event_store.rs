@@ -18,8 +18,9 @@
 // since the event, and restore refuses unless `force`. Restore is itself a
 // mutation: before applying the inverse it backs up whatever currently sits
 // at the destination (drifted or not) under its own event id and inserts a
-// `restore` event with its own `RestoreBackup` inverse, so restore-of-restore
-// is always possible and `force` never destroys the only copy of anything.
+// `restore` event with its own `RestoreBackup` inverse. Most restore events
+// can themselves be restored. A caller can mark one non-restorable when
+// recreating bytes cannot recreate the matching ownership metadata.
 // ============================================================================
 
 use std::fs::{self, File};
@@ -61,7 +62,8 @@ pub fn open(db_path: &Path) -> Result<Connection, String> {
             inverse     TEXT,
             backup_dir  TEXT,
             status      TEXT NOT NULL,
-            reverted_by TEXT REFERENCES events(id)
+            reverted_by TEXT REFERENCES events(id),
+            restorable  INTEGER NOT NULL DEFAULT 1
         );
         CREATE INDEX IF NOT EXISTS idx_events_skill ON events(skill, ts DESC);
 
@@ -78,6 +80,16 @@ pub fn open(db_path: &Path) -> Result<Connection, String> {
         );",
     )
     .map_err(|e| format!("Failed to create event store schema: {e}"))?;
+    let has_restorable = conn
+        .prepare("SELECT restorable FROM events LIMIT 0")
+        .is_ok();
+    if !has_restorable {
+        conn.execute(
+            "ALTER TABLE events ADD COLUMN restorable INTEGER NOT NULL DEFAULT 1",
+            [],
+        )
+        .map_err(|e| format!("Failed to add events.restorable: {e}"))?;
+    }
     Ok(conn)
 }
 
@@ -174,8 +186,8 @@ impl EventStore {
         self.conn
             .execute(
                 "INSERT INTO events
-                    (id, ts, kind, skill, harness, scope, project_path, payload, inverse, backup_dir, status, reverted_by)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, 'pending', NULL)",
+                    (id, ts, kind, skill, harness, scope, project_path, payload, inverse, backup_dir, status, reverted_by, restorable)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, 'pending', NULL, ?11)",
                 params![
                     id,
                     ts,
@@ -187,6 +199,7 @@ impl EventStore {
                     payload_json,
                     inverse_json,
                     draft.backup_dir,
+                    draft.restorable,
                 ],
             )
             .map_err(|e| format!("Failed to insert event {id}: {e}"))?;
@@ -241,6 +254,79 @@ impl EventStore {
             .map_err(|e| format!("Failed to read event row: {e}"))
     }
 
+    /// Lists active events of one kind for dependency guards. Failed and
+    /// already-restored events cannot own live filesystem state.
+    pub(crate) fn active_events_of_kind(&self, kind: &str) -> Result<Vec<EventRow>, String> {
+        let mut stmt = self
+            .conn
+            .prepare(
+                "SELECT * FROM events
+                 WHERE kind = ?1 AND reverted_by IS NULL
+                   AND status IN ('pending', 'done', 'interrupted')
+                 ORDER BY rowid DESC",
+            )
+            .map_err(|e| format!("Failed to prepare active event query: {e}"))?;
+        let rows = stmt
+            .query_map(params![kind], row_from)
+            .map_err(|e| format!("Failed to query active {kind} events: {e}"))?;
+        rows.collect::<Result<Vec<_>, _>>()
+            .map_err(|e| format!("Failed to read active {kind} event: {e}"))
+    }
+
+    /// Lists every interrupted Make event and restore event that startup must
+    /// retry. Recovery handlers discard restores that do not target Make.
+    pub fn interrupted_independent_copy_events(&self) -> Result<Vec<EventRow>, String> {
+        let mut stmt = self
+            .conn
+            .prepare(
+                "SELECT * FROM events
+                 WHERE status = 'interrupted'
+                   AND kind IN ('make_independent_copy', 'restore')
+                 ORDER BY rowid ASC",
+            )
+            .map_err(|e| format!("Failed to prepare independent-copy recovery query: {e}"))?;
+        let rows = stmt
+            .query_map([], row_from)
+            .map_err(|e| format!("Failed to query interrupted independent-copy events: {e}"))?;
+        rows.collect::<Result<Vec<_>, _>>()
+            .map_err(|e| format!("Failed to read interrupted independent-copy event: {e}"))
+    }
+
+    /// Lists interrupted whole-root convert-and-disable intents in creation order.
+    pub fn interrupted_convert_then_disable_events(&self) -> Result<Vec<EventRow>, String> {
+        let mut stmt = self
+            .conn
+            .prepare(
+                "SELECT * FROM events
+                 WHERE status = 'interrupted' AND kind = 'materialize_then_disable'
+                 ORDER BY rowid ASC",
+            )
+            .map_err(|e| format!("Failed to prepare convert-and-disable recovery query: {e}"))?;
+        let rows = stmt
+            .query_map([], row_from)
+            .map_err(|e| format!("Failed to query interrupted convert-and-disable events: {e}"))?;
+        rows.collect::<Result<Vec<_>, _>>()
+            .map_err(|e| format!("Failed to read interrupted convert-and-disable event: {e}"))
+    }
+
+    /// Interrupted deterministic frontmatter repairs that startup can finish
+    /// from their backend-generated, fingerprint-bound intent.
+    pub fn interrupted_frontmatter_repair_events(&self) -> Result<Vec<EventRow>, String> {
+        let mut stmt = self
+            .conn
+            .prepare(
+                "SELECT * FROM events
+                 WHERE status = 'interrupted' AND kind = 'repair_skill_frontmatter'
+                 ORDER BY rowid ASC",
+            )
+            .map_err(|e| format!("Failed to prepare frontmatter repair recovery query: {e}"))?;
+        let rows = stmt
+            .query_map([], row_from)
+            .map_err(|e| format!("Failed to query interrupted frontmatter repairs: {e}"))?;
+        rows.collect::<Result<Vec<_>, _>>()
+            .map_err(|e| format!("Failed to read interrupted frontmatter repair: {e}"))
+    }
+
     /// Flips every `pending` row to `interrupted` (a crash is the only way
     /// one survives a restart) and returns the flipped rows.
     pub fn reconcile_at_startup(&self) -> Result<Vec<EventRow>, String> {
@@ -281,6 +367,9 @@ impl EventStore {
             .ok_or_else(|| format!("Event {target_id} not found"))?;
         if target.reverted_by.is_some() {
             return Err(format!("Event {target_id} was already restored"));
+        }
+        if !target.restorable {
+            return Err(format!("Event {target_id} is not restorable"));
         }
         let inverse_value = target
             .inverse
@@ -381,6 +470,7 @@ impl EventStore {
                         .map_err(|e| format!("Failed to serialize restore inverse: {e}"))?,
                 ),
                 backup_dir: Some(backup_dir),
+                restorable: true,
             },
         )?;
 
@@ -397,6 +487,71 @@ impl EventStore {
                 Err(e)
             }
         }
+    }
+
+    /// Replaces an already-recorded event payload. Independent copy records
+    /// intent first, then fills fingerprints, Copy ownership, and any
+    /// whole-root conversion id once those values exist.
+    pub(crate) fn patch_event_payload(&self, id: &str, payload: &Value) -> Result<(), String> {
+        let json = serde_json::to_string(payload)
+            .map_err(|e| format!("Failed to serialize payload for {id}: {e}"))?;
+        self.conn
+            .execute(
+                "UPDATE events SET payload = ?1 WHERE id = ?2",
+                params![json, id],
+            )
+            .map_err(|e| format!("Failed to patch payload for {id}: {e}"))?;
+        Ok(())
+    }
+
+    /// Replaces an already-recorded inverse. Whole-root independent copies
+    /// record intent before the per-skill link exists, then fill RecreateSymlink.
+    pub(crate) fn patch_event_inverse(&self, id: &str, inverse: &Value) -> Result<(), String> {
+        let json = serde_json::to_string(inverse)
+            .map_err(|e| format!("Failed to serialize inverse for {id}: {e}"))?;
+        self.conn
+            .execute(
+                "UPDATE events SET inverse = ?1 WHERE id = ?2",
+                params![json, id],
+            )
+            .map_err(|e| format!("Failed to patch inverse for {id}: {e}"))?;
+        Ok(())
+    }
+
+    /// Claims `target_id` for restore event `restore_id`. Zero rows means
+    /// another restore already claimed it.
+    pub(crate) fn claim_event_restore(
+        &self,
+        target_id: &str,
+        restore_id: &str,
+    ) -> Result<(), String> {
+        let claimed = self
+            .conn
+            .execute(
+                "UPDATE events SET reverted_by = ?1 WHERE id = ?2 AND reverted_by IS NULL",
+                params![restore_id, target_id],
+            )
+            .map_err(|e| format!("Failed to claim event {target_id}: {e}"))?;
+        if claimed == 0 {
+            return Err(format!("Event {target_id} was already restored"));
+        }
+        Ok(())
+    }
+
+    /// Clears a restore claim so an interrupted undo can be retried or
+    /// abandoned without leaving the original event unrestorable.
+    pub(crate) fn unclaim_event_restore(
+        &self,
+        target_id: &str,
+        restore_id: &str,
+    ) -> Result<(), String> {
+        self.conn
+            .execute(
+                "UPDATE events SET reverted_by = NULL WHERE id = ?1 AND reverted_by = ?2",
+                params![target_id, restore_id],
+            )
+            .map_err(|e| format!("Failed to unclaim event {target_id}: {e}"))?;
+        Ok(())
     }
 
     /// Patches an already-recorded event's `inverse.post_fingerprint` once
@@ -563,6 +718,7 @@ impl EventStore {
                         .map_err(|e| format!("Failed to serialize restore inverse: {e}"))?,
                 ),
                 backup_dir: Some(backup_dir),
+                restorable: true,
             },
         )?;
 
@@ -601,39 +757,6 @@ impl EventStore {
                 Err(e)
             }
         }
-    }
-
-    /// Patches `inverse.copy_fingerprints` after `distribute_from_shared`'s
-    /// mutation completes and every copy's actual fingerprint is known - the
-    /// one field `record` can't fill in up front, same reasoning as
-    /// `patch_inverse_post_fingerprint`.
-    pub(crate) fn patch_inverse_copy_fingerprints(
-        &self,
-        id: &str,
-        fingerprints: &[String],
-    ) -> Result<(), String> {
-        let row = self
-            .get_event(id)?
-            .ok_or_else(|| format!("Event {id} vanished before its inverse could be patched"))?;
-        let mut inverse = row
-            .inverse
-            .ok_or_else(|| format!("Event {id} has no inverse to patch"))?;
-        if let Some(obj) = inverse.as_object_mut() {
-            obj.insert(
-                "copy_fingerprints".to_string(),
-                serde_json::to_value(fingerprints)
-                    .map_err(|e| format!("Failed to serialize copy fingerprints: {e}"))?,
-            );
-        }
-        let json = serde_json::to_string(&inverse)
-            .map_err(|e| format!("Failed to serialize patched inverse: {e}"))?;
-        self.conn
-            .execute(
-                "UPDATE events SET inverse = ?1 WHERE id = ?2",
-                params![json, id],
-            )
-            .map_err(|e| format!("Failed to patch inverse for {id}: {e}"))?;
-        Ok(())
     }
 
     /// Records `root` as a harness skills dir that Skill Studio converted
@@ -755,6 +878,7 @@ fn row_from(row: &rusqlite::Row) -> rusqlite::Result<EventRow> {
         backup_dir: row.get("backup_dir")?,
         status: row.get("status")?,
         reverted_by: row.get("reverted_by")?,
+        restorable: row.get("restorable")?,
     })
 }
 
@@ -770,10 +894,18 @@ pub fn allocate_id() -> String {
 /// sorted `(name, entry-fingerprint)` pairs for a directory (so a rename
 /// inside a directory changes its fingerprint even if total bytes match).
 pub fn fingerprint_path(path: &Path) -> String {
-    if fs::symlink_metadata(path).is_err() {
-        return "absent".to_string();
+    fingerprint_path_checked(path)
+        .ok()
+        .flatten()
+        .unwrap_or_else(|| "absent".to_string())
+}
+
+pub fn fingerprint_path_checked(path: &Path) -> std::io::Result<Option<String>> {
+    match fs::symlink_metadata(path) {
+        Ok(_) => hash_entry(path).map(Some),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
+        Err(error) => Err(error),
     }
-    hash_entry(path).unwrap_or_else(|_| "absent".to_string())
 }
 
 fn hash_entry(path: &Path) -> std::io::Result<String> {
@@ -786,7 +918,7 @@ fn hash_entry(path: &Path) -> std::io::Result<String> {
         hasher.update(target.to_string_lossy().as_bytes());
     } else if file_type.is_dir() {
         hasher.update(b"D");
-        let mut entries: Vec<_> = fs::read_dir(path)?.filter_map(|e| e.ok()).collect();
+        let mut entries: Vec<_> = fs::read_dir(path)?.collect::<Result<_, _>>()?;
         entries.sort_by_key(|e| e.file_name());
         for entry in entries {
             let name_bytes = entry
@@ -812,8 +944,7 @@ fn hash_entry(path: &Path) -> std::io::Result<String> {
 
 /// Copies `src` into `dest`, preserving regular files as bytes, directories
 /// recursively, and symlinks as the literal link (never following it).
-/// `pub(crate)`: also used by `skill_materialize::distribute_from_shared` to
-/// give a harness its own real copy of a shared skill dir.
+/// `pub(crate)`: Copy removal also uses it to stage and restore exact paths.
 pub(crate) fn copy_recursive(src: &Path, dest: &Path) -> Result<(), String> {
     let meta =
         fs::symlink_metadata(src).map_err(|e| format!("Failed to stat {}: {e}", src.display()))?;
@@ -910,6 +1041,7 @@ pub struct EventDraft {
     pub inverse: Option<Value>,
     /// Relative to `app_data`, e.g. `"backups/<id>"`.
     pub backup_dir: Option<String>,
+    pub restorable: bool,
 }
 
 pub enum EventStatus {
@@ -941,6 +1073,7 @@ pub struct EventRow {
     pub backup_dir: Option<String>,
     pub status: String,
     pub reverted_by: Option<String>,
+    pub restorable: bool,
 }
 
 /// How to undo one event. `pre_fingerprint` is the destination's
@@ -1066,6 +1199,7 @@ mod tests {
             payload,
             inverse,
             backup_dir,
+            restorable: true,
         }
     }
 
@@ -1106,6 +1240,32 @@ mod tests {
 
         let filtered = store.list(10, Some("alpha")).unwrap();
         assert_eq!(filtered.len(), 2);
+    }
+
+    #[test]
+    fn schema_migration_defaults_existing_events_to_restorable() {
+        let tmp = tempfile::tempdir().unwrap();
+        let app_data = tmp.path().join("app_data");
+        fs::create_dir_all(&app_data).unwrap();
+        let db_path = app_data.join("events.sqlite3");
+        let connection = Connection::open(&db_path).unwrap();
+        connection
+            .execute_batch(
+                "CREATE TABLE events (
+                    id TEXT PRIMARY KEY, ts TEXT NOT NULL, kind TEXT NOT NULL,
+                    skill TEXT NOT NULL, harness TEXT, scope TEXT, project_path TEXT,
+                    payload TEXT NOT NULL, inverse TEXT, backup_dir TEXT,
+                    status TEXT NOT NULL, reverted_by TEXT
+                );
+                INSERT INTO events VALUES
+                    ('legacy', '2026-09-05T00:00:00Z', 'install', 'find-bugs', NULL,
+                     NULL, NULL, '{}', NULL, NULL, 'done', NULL);",
+            )
+            .unwrap();
+        drop(connection);
+
+        let store = EventStore::open(&app_data).unwrap();
+        assert!(store.get("legacy").unwrap().unwrap().restorable);
     }
 
     #[test]

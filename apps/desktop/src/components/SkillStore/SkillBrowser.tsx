@@ -130,7 +130,7 @@ function SkillCard({ skill, isSelected, onClick, hideInstalledIndicator = false 
         <h3 className="m-0 truncate text-emphasis font-semibold text-text-primary">{skill.name}</h3>
         <div className="flex items-center gap-1">
           {isInstalledMarked ? (
-            skill.installed_info?.has_update ? (
+            (skill.installed_info?.update_owner_ids.length ?? 0) > 0 ? (
               <span
                 className="flex size-[18px] items-center justify-center rounded-full bg-warning-soft text-warning"
                 title="Update available"

@@ -4,7 +4,7 @@
 // filesystem entry of their own (Codex, OpenCode, pi, Cursor, Grok Build),
 // followed by every harness with its own entry - a link, a copy, or a
 // plugin - as a flat sibling row at the accordion's own indent. A scope with
-// no shared folder has no accordion at all, only flat rows.
+// no Universal folder has no accordion at all, only flat rows.
 // ============================================================================
 
 import { useState } from "react";
