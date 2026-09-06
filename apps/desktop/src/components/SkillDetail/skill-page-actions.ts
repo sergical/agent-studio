@@ -24,6 +24,7 @@ import {
   lifecycleTargetForPark,
   lifecycleTargetForSkill,
   lifecycleTargetForTrial,
+  skillGlobalRemovalTarget,
   updateSkillOwners,
 } from "../../lib/skill-lifecycle-target";
 import type { InstalledSkill, TrialInfo } from "@skill-studio/lib";
@@ -86,7 +87,7 @@ export interface SkillPageActions {
   parkAction: SkillPageAction;
   /** Fork (when forkable) or Un-fork (when already forked) - `null` when neither applies. */
   forkAction: SkillPageAction | null;
-  /** Only skills.sh-managed skills carry lock-file metadata `removeSkill` needs. */
+  /** Global-only removal, present only when an exact mutable lifecycle target exists. */
   removeAction: SkillPageAction | null;
   keepTrial: (trial: TrialInfo) => SkillPageAction;
 }
@@ -114,6 +115,7 @@ export function useSkillPageActions(
   const [isRemoving, setIsRemoving] = useState(false);
 
   const path = skill.deployments[0]?.path ?? skill.skill_path;
+  const globalRemovalTarget = skillGlobalRemovalTarget(skill);
 
   const reveal = () => {
     if (!path) return;
@@ -234,13 +236,14 @@ export function useSkillPageActions(
     });
 
   const doRemove = async () => {
+    if (!globalRemovalTarget) return;
     const confirmed = await ask(`Remove ${skill.name}?`, {
       title: "Remove skill",
       kind: "warning",
     });
     if (!confirmed) return;
     await runAction(addToast, setIsRemoving, "Remove failed", async () => {
-      const result = await removeSkill(lifecycleTargetForSkill(skill, "global"));
+      const result = await removeSkill(globalRemovalTarget);
       if (result.success) {
         onRemoveComplete();
       } else {
@@ -266,8 +269,9 @@ export function useSkillPageActions(
     forkAction = { label: "Fork", run: doFork, busy: isForking };
   }
 
-  const removeAction: SkillPageAction | null =
-    skill.source_kind === "skills-sh" ? { label: "Remove", run: doRemove, busy: isRemoving } : null;
+  const removeAction: SkillPageAction | null = globalRemovalTarget
+    ? { label: "Remove", run: doRemove, busy: isRemoving }
+    : null;
 
   return {
     path,

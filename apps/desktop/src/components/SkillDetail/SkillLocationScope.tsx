@@ -17,6 +17,7 @@ import { TooltipControl } from "../ui/TooltipControl";
 import { homeRelativePath } from "@skill-studio/lib";
 import { SkillLocationMenu } from "./SkillLocationMenu";
 import { SkillLocationRow } from "./SkillLocationRow";
+import { sharedFolderSwitchPolicy } from "./skill-location-helpers";
 import {
   folderReaders,
   rowMenu,
@@ -53,6 +54,7 @@ export function SkillLocationScope({
   }
 
   const menu = rowMenu(shared, group.label, group.projectPath ?? null);
+  const switchPolicy = sharedFolderSwitchPolicy(group);
   const label = showEyebrow ? (group.isGlobal ? "Global folder" : "Project folder") : group.label;
 
   const labelPath = homeRelativePath(shared.path);
@@ -121,11 +123,13 @@ export function SkillLocationScope({
         </CollapsibleTrigger>
         <span className="flex shrink-0 items-center gap-1">
           <SwitchControl
-            checked={shared.switchOn}
-            onCheckedChange={(next) =>
-              onAction({ kind: "set-enabled", deployment: shared.deployment!, enabled: next })
-            }
-            ariaLabel="Enabled everywhere"
+            checked={switchPolicy.checked}
+            disabled={switchPolicy.disabled}
+            onCheckedChange={(next) => {
+              const action = switchPolicy.actionForCheckedChange(next);
+              if (action) onAction(action);
+            }}
+            ariaLabel={group.isGlobal ? "Enabled everywhere" : `Enabled in ${group.label}`}
           />
           <SkillLocationMenu
             entries={menu.entries}

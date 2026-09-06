@@ -157,6 +157,16 @@ export function skillRemovalAvailability(
   }
 }
 
+/** Resolve the page header's global-only Remove action to one mutable deployment or owner. */
+export function skillGlobalRemovalTarget(skill: SkillLifecycleView): LifecycleTarget | null {
+  const globalScope = skillMutableLifecycleScopes(skill).find(
+    (selection) => selection.scope === "global",
+  );
+  if (!globalScope) return null;
+  const availability = skillRemovalAvailability(skill, globalScope);
+  return availability.available ? availability.preview.target : null;
+}
+
 /** Exact owner targets whose persisted update state reports a newer commit. */
 export function skillUpdateOwnerTargets(
   skill: Pick<InstalledSkill, "update_owner_ids" | "update_owners">,
