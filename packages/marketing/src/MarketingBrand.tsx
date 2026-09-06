@@ -9,7 +9,10 @@ interface LogoLockupProps {
 
 export function LogoLockup({ inverse = false, compact = false }: LogoLockupProps) {
   return (
-    <a href="#top" {...stylex.props(brandStyles.lockup, inverse && brandStyles.inverse)}>
+    <a
+      href="#top"
+      {...stylex.props(stylex.defaultMarker(), brandStyles.lockup, inverse && brandStyles.inverse)}
+    >
       <img
         src="/skill-studio-logo.png"
         alt=""
@@ -62,12 +65,22 @@ const brandStyles = stylex.create({
   },
   logo: {
     display: "block",
-    filter: paletteVars.logoFilter,
+    filter: {
+      default: paletteVars.logoFilter,
+      [stylex.when.ancestor(":focus-visible")]: "none",
+      "@media (hover: hover) and (pointer: fine)": {
+        [stylex.when.ancestor(":hover")]: "none",
+      },
+    },
     height: "auto",
     objectFit: "contain",
-    transition: "transform 300ms cubic-bezier(0.19, 1, 0.22, 1)",
+    transition: "filter 180ms ease, transform 300ms cubic-bezier(0.19, 1, 0.22, 1)",
     "@media (hover: hover) and (pointer: fine)": {
       ":hover": { transform: "rotate(-6deg) scale(1.06)" },
+    },
+    "@media (prefers-reduced-motion: reduce)": {
+      transition: "none",
+      ":hover": { transform: "none" },
     },
   },
   wordmark: {

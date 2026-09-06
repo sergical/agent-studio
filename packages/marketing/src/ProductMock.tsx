@@ -2,7 +2,7 @@
 // Skill Studio marketing demo - interactive preview of the desktop product
 // ============================================================================
 
-import { useMemo, useState, type MouseEvent } from "react";
+import { useEffect, useMemo, useRef, useState, type KeyboardEvent, type MouseEvent } from "react";
 import * as stylex from "@stylexjs/stylex";
 import {
   Activity,
@@ -47,6 +47,7 @@ interface ProductMockProps {
 type RootView = "home" | "skills" | "plugins" | "activity";
 type Scope = "All" | "Global" | "Project";
 type ActivityWindow = "24h" | "7d" | "14d" | "30d";
+type InvocationPolicy = "Both" | "User only" | "Model only";
 
 interface SkillRow {
   name: string;
@@ -56,6 +57,7 @@ interface SkillRow {
   uses: number;
   tokens: string;
   status?: "Update";
+  trial?: boolean;
 }
 
 interface DetailState {
@@ -141,7 +143,14 @@ const skills = [
 ] satisfies ReadonlyArray<SkillRow>;
 
 const activitySkills = [
-  { ...skills[0], name: "cmux-workspace", uses: 28 },
+  {
+    name: "cmux-workspace",
+    description: "Manage cmux workspaces, panes, and terminals.",
+    location: "Global",
+    agents: ["claude"],
+    uses: 28,
+    tokens: "2.7k",
+  },
   { ...skills[1], name: "cmux", uses: 25 },
   { ...skills[2], name: "artifact-design", uses: 21 },
   { ...skills[3], name: "codex:adversarial-review", uses: 20 },
@@ -360,7 +369,13 @@ function AgentStack({ agents }: { agents: readonly AgentId[] }) {
   );
 }
 
-function HomeScreen({ onOpenSkill }: { onOpenSkill: (skill: SkillRow) => void }) {
+function HomeScreen({
+  onCompare,
+  onOpenSkill,
+}: {
+  onCompare: (skillName: string) => void;
+  onOpenSkill: (skill: SkillRow) => void;
+}) {
   const attention = [
     {
       label: "Broken",
@@ -379,7 +394,7 @@ function HomeScreen({ onOpenSkill }: { onOpenSkill: (skill: SkillRow) => void })
       tone: "warning" as const,
       rows: [
         ["agent-browser", "Shared folder needs per-skill links"],
-        ["activate-homepage-hero", "Three copies differ"],
+        ["commit", "Global and project copies differ"],
         ["add-customer-story", "Three copies differ"],
         ["code-simplifier", "Four copies differ"],
       ],
@@ -460,7 +475,19 @@ function HomeScreen({ onOpenSkill }: { onOpenSkill: (skill: SkillRow) => void })
               <button
                 key={name}
                 type="button"
-                onClick={() => onOpenSkill(skills[(index * 3 + rowIndex) % skills.length])}
+                onClick={() => {
+                  if (item.label === "Warnings" && detail.includes("copies differ")) {
+                    onCompare(name);
+                    return;
+                  }
+                  const fallback = skills[(index * 3 + rowIndex) % skills.length];
+                  const skill = skills.find((candidate) => candidate.name === name) ?? {
+                    ...fallback,
+                    name,
+                    description: detail,
+                  };
+                  onOpenSkill(skill);
+                }}
                 {...stylex.props(styles.inboxRow)}
               >
                 <i {...stylex.props(styles.statusDot, styles[`${item.tone}Background`])} />
@@ -474,7 +501,7 @@ function HomeScreen({ onOpenSkill }: { onOpenSkill: (skill: SkillRow) => void })
                 <span {...stylex.props(styles.rowAction)}>
                   {item.label === "Updates"
                     ? "Pull latest"
-                    : item.label === "Warnings"
+                    : item.label === "Warnings" && detail.includes("copies differ")
                       ? "Compare"
                       : "Open"}
                 </span>
@@ -611,9 +638,11 @@ function PluginsScreen({ onOpenSkill }: { onOpenSkill: (skill: SkillRow) => void
   );
 }
 
+const heatLevels = [0, 1, 2, 3, 4] as const;
 const heat = Array.from({ length: 364 }, (_, index) => {
-  if (index < 310 && index % 47 !== 0) return 0;
-  return ((index * 7) % 5) as 0 | 1 | 2 | 3 | 4;
+  const activity = (index * 37 + Math.floor(index / 7) * 13) % 101;
+  if (index % 7 === 6 || activity < 20) return 0;
+  return heatLevels[1 + (activity % 4)];
 });
 
 function ActivityScreen({ onOpenSkill }: { onOpenSkill: (skill: SkillRow) => void }) {
@@ -627,7 +656,9 @@ function ActivityScreen({ onOpenSkill }: { onOpenSkill: (skill: SkillRow) => voi
       <article {...stylex.props(styles.activityCard)}>
         <div {...stylex.props(styles.activityTop)}>
           <span {...stylex.props(styles.activityLabel)}>Activity</span>
-          <span {...stylex.props(styles.activityTotal)}>293 invocations in the last year</span>
+          <span {...stylex.props(styles.activityTotal)}>
+            {heat.reduce<number>((total, count) => total + count, 0)} invocations in the last year
+          </span>
         </div>
         <div {...stylex.props(styles.heatmapMonths)} aria-hidden="true">
           {[
@@ -725,20 +756,45 @@ function ActivityScreen({ onOpenSkill }: { onOpenSkill: (skill: SkillRow) => voi
 const installAgents = ["codex", "opencode", "pi", "cursor", "grok"] satisfies AgentId[];
 const installScopes = ["Global", "Project"] satisfies ReadonlyArray<"Global" | "Project">;
 
-function AddSkillDrawer({ onClose }: { onClose: () => void }) {
+function AddSkillDrawer({
+  onClose,
+  onInstall,
+}: {
+  onClose: () => void;
+  onInstall: (skill: SkillRow) => void;
+}) {
   const [source, setSource] = useState("");
+  const [trial, setTrial] = useState(false);
   const [scope, setScope] = useState<"Global" | "Project">("Global");
-  const [selectedAgents, setSelectedAgents] = useState<AgentId[]>([
-    "claude",
-    "codex",
-    "opencode",
-    "pi",
-  ]);
+  const [selectedAgents, setSelectedAgents] = useState<AgentId[]>(["claude", ...installAgents]);
 
   const toggleAgent = (agent: AgentId) => {
+    if (agent === "codex") {
+      setTrial(false);
+      setSelectedAgents((current) =>
+        current.includes("codex")
+          ? current.filter((item) => item === "claude")
+          : [...current, ...installAgents],
+      );
+      return;
+    }
     setSelectedAgents((current) =>
       current.includes(agent) ? current.filter((item) => item !== agent) : [...current, agent],
     );
+  };
+  const installSkill = () => {
+    const skillSource = source.trim();
+    onInstall({
+      name: skillSource.replace(/\/$/, "").split("/").pop() || "new-skill",
+      description: skillSource.endsWith("/frontend-design")
+        ? "Create distinctive, production-grade frontend interfaces."
+        : `Added from ${skillSource}.`,
+      location: scope === "Global" ? "Global" : "agent-studio",
+      agents: selectedAgents,
+      uses: 0,
+      tokens: "1.4k",
+      trial,
+    });
   };
 
   return (
@@ -893,7 +949,13 @@ function AddSkillDrawer({ onClose }: { onClose: () => void }) {
           </div>
 
           <label {...stylex.props(styles.trialOption)}>
-            <input type="checkbox" {...stylex.props(styles.trialCheckbox)} />
+            <input
+              type="checkbox"
+              checked={trial}
+              disabled={!selectedAgents.includes("codex")}
+              onChange={(event) => setTrial(event.target.checked)}
+              {...stylex.props(styles.trialCheckbox)}
+            />
             <span {...stylex.props(styles.trialCopy)}>
               Try for 24 hours
               <small {...stylex.props(styles.trialHelp)}>
@@ -907,7 +969,12 @@ function AddSkillDrawer({ onClose }: { onClose: () => void }) {
         <button type="button" onClick={onClose} {...stylex.props(styles.cancelAction)}>
           Cancel
         </button>
-        <button type="button" disabled={!source} {...stylex.props(styles.installAction)}>
+        <button
+          type="button"
+          disabled={!source.trim() || selectedAgents.length === 0}
+          onClick={installSkill}
+          {...stylex.props(styles.installAction)}
+        >
           Add skill
         </button>
       </footer>
@@ -915,8 +982,117 @@ function AddSkillDrawer({ onClose }: { onClose: () => void }) {
   );
 }
 
+function CompareDialog({ skillName, onClose }: { skillName: string; onClose: () => void }) {
+  const dialog = useRef<HTMLElement>(null);
+  const closeButton = useRef<HTMLButtonElement>(null);
+
+  useEffect(() => {
+    const previousFocus =
+      document.activeElement instanceof HTMLElement ? document.activeElement : null;
+    closeButton.current?.focus();
+    return () => previousFocus?.focus();
+  }, []);
+
+  const handleKeyDown = (event: KeyboardEvent<HTMLElement>) => {
+    if (event.key === "Escape") {
+      event.preventDefault();
+      onClose();
+      return;
+    }
+    if (event.key !== "Tab") return;
+    const focusable = dialog.current?.querySelectorAll<HTMLElement>(
+      "button:not([disabled]), [href], input:not([disabled]), select:not([disabled]), [tabindex]:not([tabindex='-1'])",
+    );
+    if (!focusable?.length) return;
+    const first = focusable[0];
+    const last = focusable[focusable.length - 1];
+    if (event.shiftKey && document.activeElement === first) {
+      event.preventDefault();
+      last?.focus();
+    } else if (!event.shiftKey && document.activeElement === last) {
+      event.preventDefault();
+      first?.focus();
+    }
+  };
+
+  return (
+    <div {...stylex.props(styles.compareBackdrop)}>
+      <section
+        ref={dialog}
+        role="dialog"
+        aria-modal="true"
+        aria-label={`Compare copies of ${skillName}`}
+        onKeyDown={handleKeyDown}
+        {...stylex.props(styles.compareDialog)}
+      >
+        <header {...stylex.props(styles.compareHeader)}>
+          <h2 {...stylex.props(styles.compareTitle)}>Compare copies of {skillName}</h2>
+          <button
+            ref={closeButton}
+            type="button"
+            aria-label="Close comparison"
+            onClick={onClose}
+            {...stylex.props(styles.drawerClose)}
+          >
+            <X aria-hidden="true" size={15} />
+          </button>
+        </header>
+        <div {...stylex.props(styles.comparePickers)}>
+          <button type="button" {...stylex.props(styles.comparePicker)}>
+            Global · ~/.agents/skills
+            <ChevronDown aria-hidden="true" size={14} />
+          </button>
+          <button type="button" {...stylex.props(styles.comparePicker)}>
+            agent-studio · .agents/skills
+            <ChevronDown aria-hidden="true" size={14} />
+          </button>
+        </div>
+        <div {...stylex.props(styles.diff)}>
+          <div {...stylex.props(styles.diffHeader)}>
+            <span>SKILL.md</span>
+            <span>−2</span>
+            <span>+2</span>
+          </div>
+          {[
+            ["1", "1", "---", "context"],
+            ["2", "2", `name: ${skillName}`, "context"],
+            ["3", "3", "description: Create a verified commit.", "context"],
+            ["4", "4", "---", "context"],
+            ["5", "5", "", "context"],
+            ["6", "6", "## Before committing", "context"],
+            ["7", "", "- Run npm test.", "removed"],
+            ["", "7", "+ Run pnpm test.", "added"],
+            ["8", "", "- Commit to the current branch.", "removed"],
+            ["", "8", "+ Create a branch before committing.", "added"],
+          ].map(([before, after, content, kind], index) => (
+            <div
+              key={index}
+              {...stylex.props(
+                styles.diffRow,
+                kind === "removed"
+                  ? styles.diffRemoved
+                  : kind === "added"
+                    ? styles.diffAdded
+                    : styles.diffContext,
+              )}
+            >
+              <span>{before}</span>
+              <span>{after}</span>
+              <code>{content}</code>
+            </div>
+          ))}
+        </div>
+      </section>
+    </div>
+  );
+}
+
 function DetailScreen({ detail, onBack }: { detail: DetailState; onBack: () => void }) {
-  const [invocation, setInvocation] = useState("Both");
+  const [invocation, setInvocation] = useState<InvocationPolicy>("Both");
+  const [locationExpanded, setLocationExpanded] = useState(false);
+  const [trial, setTrial] = useState(detail.skill.trial ?? false);
+  const location = detail.skill.location;
+  const skillPath = `${location === "Global" ? "~/" : "agent-studio/"}.agents/skills/${detail.skill.name}`;
   const backLabel =
     detail.from === "home" ? "Home" : detail.from === "activity" ? "Activity" : "Skills";
   return (
@@ -945,6 +1121,18 @@ function DetailScreen({ detail, onBack }: { detail: DetailState; onBack: () => v
         <p {...stylex.props(styles.detailDescription)}>{detail.skill.description}</p>
         <div {...stylex.props(styles.chips)}>
           <span {...stylex.props(styles.chip)}>dotagents</span>
+          {trial && (
+            <span {...stylex.props(styles.chip, styles.accent)}>
+              Trial · 24h left
+              <button
+                type="button"
+                onClick={() => setTrial(false)}
+                {...stylex.props(styles.keepTrial)}
+              >
+                Keep
+              </button>
+            </span>
+          )}
           {detail.skill.status && (
             <span {...stylex.props(styles.chip, styles.accent)}>Update available</span>
           )}
@@ -961,13 +1149,22 @@ function DetailScreen({ detail, onBack }: { detail: DetailState; onBack: () => v
             <h3 {...stylex.props(styles.cardTitle)}>Locations</h3>
           </div>
           <div {...stylex.props(styles.scopeRow)}>
-            <button type="button" {...stylex.props(styles.scopeMain)}>
+            <button
+              type="button"
+              aria-expanded={locationExpanded}
+              onClick={() => setLocationExpanded(!locationExpanded)}
+              {...stylex.props(styles.scopeMain)}
+            >
               <span {...stylex.props(styles.scopeChevron)}>
-                <ChevronRight aria-hidden="true" size={14} />
+                {locationExpanded ? (
+                  <ChevronDown aria-hidden="true" size={14} />
+                ) : (
+                  <ChevronRight aria-hidden="true" size={14} />
+                )}
               </span>
               <span {...stylex.props(styles.scopeIdentity)}>
                 <Folder aria-hidden="true" size={16} />
-                <span {...stylex.props(styles.scopeName)}>Global</span>
+                <span {...stylex.props(styles.scopeName)}>{location}</span>
               </span>
               <span {...stylex.props(styles.readerStack)}>
                 {detail.skill.agents.map((agent, index) => (
@@ -989,19 +1186,24 @@ function DetailScreen({ detail, onBack }: { detail: DetailState; onBack: () => v
               </button>
             </span>
           </div>
+          {locationExpanded && (
+            <p {...stylex.props(styles.locationPath)}>
+              <code>{skillPath}</code>
+            </p>
+          )}
           <div {...stylex.props(styles.invocation)}>
             <span {...stylex.props(styles.invocationLabel)}>Invocation</span>
             <div {...stylex.props(styles.invocationRow)}>
               <Folder aria-hidden="true" size={16} />
               <span {...stylex.props(styles.invocationFile)}>
-                <b>Global folder</b>
+                <b>{location === "Global" ? "Global folder" : "Project folder"}</b>
               </span>
               <div
                 role="group"
                 aria-label="Invocation policy"
                 {...stylex.props(styles.invocationSegments)}
               >
-                {["Both", "User only", "Model only"].map((label) => (
+                {(["Both", "User only", "Model only"] satisfies InvocationPolicy[]).map((label) => (
                   <button
                     key={label}
                     type="button"
@@ -1018,7 +1220,11 @@ function DetailScreen({ detail, onBack }: { detail: DetailState; onBack: () => v
               </div>
             </div>
             <p {...stylex.props(styles.invocationNote)}>
-              Both: you can call /{detail.skill.name} and the model can pick it.
+              {invocation === "Both" &&
+                `Both: you can call /${detail.skill.name} and the model can pick it.`}
+              {invocation === "User only" && `User only: only /${detail.skill.name} starts it.`}
+              {invocation === "Model only" &&
+                `Model only: the model picks it; there is no /${detail.skill.name} command.`}
             </p>
           </div>
         </article>
@@ -1027,7 +1233,7 @@ function DetailScreen({ detail, onBack }: { detail: DetailState; onBack: () => v
           <div {...stylex.props(styles.cardHeading)}>
             <h3 {...stylex.props(styles.cardTitle)}>SKILL.md</h3>
             <span {...stylex.props(styles.markdownActions)}>
-              <small>Global</small>
+              <small>{location}</small>
               <button type="button" {...stylex.props(styles.editButton)}>
                 Edit
               </button>
@@ -1039,7 +1245,7 @@ function DetailScreen({ detail, onBack }: { detail: DetailState; onBack: () => v
             <h5 {...stylex.props(styles.markdownHeading)}>When to use this skill</h5>
             <p {...stylex.props(styles.markdownParagraph)}>
               Use it when the work needs a repeatable workflow, clear constraints, and a result that
-              every coding agent can understand.
+              the project can verify.
             </p>
             <h5 {...stylex.props(styles.markdownHeading)}>Core principles</h5>
             <ul {...stylex.props(styles.markdownList)}>
@@ -1056,7 +1262,7 @@ function DetailScreen({ detail, onBack }: { detail: DetailState; onBack: () => v
 export function ProductMock({
   theme,
   onToggleTheme,
-  initialView = "skills",
+  initialView = "home",
   initialSkillName,
   initialInstall = false,
   variant = "hero",
@@ -1067,14 +1273,17 @@ export function ProductMock({
     initialSkill ? { skill: initialSkill, from: initialView } : null,
   );
   const [installOpen, setInstallOpen] = useState(initialInstall);
+  const [compareSkill, setCompareSkill] = useState<string | null>(null);
   const navigate = (view: RootView) => {
     setActiveView(view);
     setDetail(null);
     setInstallOpen(false);
+    setCompareSkill(null);
   };
   const openSkill = (skill: SkillRow) => {
     setDetail({ skill, from: activeView });
     setInstallOpen(false);
+    setCompareSkill(null);
   };
   return (
     <div
@@ -1106,7 +1315,7 @@ export function ProductMock({
           {detail ? (
             <DetailScreen detail={detail} onBack={() => setDetail(null)} />
           ) : activeView === "home" ? (
-            <HomeScreen onOpenSkill={openSkill} />
+            <HomeScreen onCompare={setCompareSkill} onOpenSkill={openSkill} />
           ) : activeView === "skills" ? (
             <SkillsScreen onOpenSkill={openSkill} />
           ) : activeView === "plugins" ? (
@@ -1116,7 +1325,19 @@ export function ProductMock({
           )}
         </div>
       </div>
-      {installOpen && <AddSkillDrawer onClose={() => setInstallOpen(false)} />}
+      {installOpen && (
+        <AddSkillDrawer
+          onClose={() => setInstallOpen(false)}
+          onInstall={(skill) => {
+            setActiveView("skills");
+            setDetail({ skill, from: "skills" });
+            setInstallOpen(false);
+          }}
+        />
+      )}
+      {compareSkill && (
+        <CompareDialog skillName={compareSkill} onClose={() => setCompareSkill(null)} />
+      )}
     </div>
   );
 }
@@ -1162,6 +1383,86 @@ const styles = stylex.create({
     transform: "scale(1.14)",
     width: "87.719%",
   },
+  compareBackdrop: {
+    alignItems: "center",
+    backgroundColor: "oklch(0 0 0 / .58)",
+    display: "flex",
+    inset: 0,
+    justifyContent: "center",
+    position: "absolute",
+    zIndex: 8,
+  },
+  compareDialog: {
+    backgroundColor: tokens.raised,
+    borderColor: tokens.border,
+    borderRadius: 8,
+    borderStyle: "solid",
+    borderWidth: 1,
+    boxShadow: "0 24px 80px oklch(0 0 0 / .45)",
+    display: "flex",
+    flexDirection: "column",
+    maxHeight: "85%",
+    overflow: "hidden",
+    width: "72%",
+  },
+  compareHeader: {
+    alignItems: "center",
+    borderBottomColor: tokens.border,
+    borderBottomStyle: "solid",
+    borderBottomWidth: 1,
+    display: "flex",
+    justifyContent: "space-between",
+    padding: "16px 20px",
+  },
+  compareTitle: { fontSize: 16, fontWeight: 600, margin: 0 },
+  comparePickers: {
+    borderBottomColor: tokens.border,
+    borderBottomStyle: "solid",
+    borderBottomWidth: 1,
+    display: "grid",
+    gap: 12,
+    gridTemplateColumns: "1fr 1fr",
+    padding: "12px 20px",
+  },
+  comparePicker: {
+    alignItems: "center",
+    backgroundColor: tokens.surface,
+    borderColor: tokens.border,
+    borderRadius: 5,
+    borderStyle: "solid",
+    borderWidth: 1,
+    color: tokens.text,
+    display: "flex",
+    fontSize: 13,
+    height: 34,
+    justifyContent: "space-between",
+    paddingInline: 10,
+  },
+  diff: {
+    backgroundColor: tokens.background,
+    fontFamily: "ui-monospace, SFMono-Regular, Menlo, monospace",
+    fontSize: 12,
+    margin: 20,
+    overflow: "hidden",
+  },
+  diffHeader: {
+    backgroundColor: tokens.surface,
+    borderColor: tokens.border,
+    borderStyle: "solid",
+    borderWidth: 1,
+    display: "grid",
+    gridTemplateColumns: "1fr auto auto",
+    gap: 10,
+    padding: "8px 12px",
+  },
+  diffRow: {
+    display: "grid",
+    gridTemplateColumns: "34px 34px minmax(0, 1fr)",
+    minHeight: 28,
+  },
+  diffContext: { backgroundColor: tokens.background },
+  diffRemoved: { backgroundColor: "oklch(0.42 0.12 25 / .32)" },
+  diffAdded: { backgroundColor: "oklch(0.42 0.11 150 / .3)" },
   windowBar: {
     alignItems: "center",
     backgroundColor: tokens.surface,
@@ -1683,7 +1984,14 @@ const styles = stylex.create({
     "@media (max-width: 680px)": { gap: 6, gridTemplateColumns: "1fr" },
   },
   laneTitle: { color: tokens.muted, fontSize: 12, whiteSpace: "nowrap" },
-  laneSegments: { display: "flex", gap: 2, height: 28, maxWidth: "100%", minWidth: 0 },
+  laneSegments: {
+    display: "flex",
+    gap: 2,
+    height: 28,
+    maxWidth: "100%",
+    minWidth: 0,
+    "@media (max-width: 680px)": { fontSize: 12 },
+  },
   lanePrimary: {
     alignItems: "center",
     backgroundColor: tokens.accentSoft,
@@ -1697,6 +2005,7 @@ const styles = stylex.create({
     overflow: "hidden",
     paddingInline: 10,
     whiteSpace: "nowrap",
+    "@media (max-width: 680px)": { paddingInline: 6 },
   },
   laneSecondary: {
     alignItems: "center",
@@ -1711,6 +2020,7 @@ const styles = stylex.create({
     overflow: "hidden",
     paddingInline: 10,
     whiteSpace: "nowrap",
+    "@media (max-width: 680px)": { paddingInline: 6 },
   },
   laneTertiary: {
     alignItems: "center",
@@ -1725,8 +2035,9 @@ const styles = stylex.create({
     overflow: "hidden",
     paddingInline: 10,
     whiteSpace: "nowrap",
+    "@media (max-width: 680px)": { paddingInline: 6 },
   },
-  laneBoth: { flex: "2.1 1 0" },
+  laneBoth: { flex: "2.1 1 0", "@media (max-width: 680px)": { flex: "1 1 0" } },
   laneModel: { flex: "1 1 0" },
   laneUser: { flex: "1 1 0" },
   laneActive: { flex: "2.2 1 0" },
@@ -2079,6 +2390,17 @@ const styles = stylex.create({
     textOverflow: "ellipsis",
     whiteSpace: "nowrap",
   },
+  keepTrial: {
+    backgroundColor: tokens.background,
+    borderWidth: 0,
+    borderRadius: 3,
+    color: "inherit",
+    fontSize: 11,
+    fontWeight: 600,
+    marginLeft: 6,
+    padding: "2px 6px",
+  },
+  locationPath: { color: tokens.muted, fontSize: 12, margin: "0 0 14px", overflowWrap: "anywhere" },
   detailHeader: { display: "flex", flexDirection: "column", gap: 8 },
   detailTitle: {
     flex: 1,
