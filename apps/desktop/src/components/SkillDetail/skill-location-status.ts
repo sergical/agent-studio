@@ -856,7 +856,9 @@ export function rowMenu(
       },
       false,
     );
-    if (!hasOff) push({ label: "Park (Disable everywhere)", action: { kind: "park" } }, false);
+    if (!hasOff && projectPath === null) {
+      push({ label: "Park (Disable everywhere)", action: { kind: "park" } }, false);
+    }
     push(
       {
         label: `Remove from ${scopeLabel}…`,

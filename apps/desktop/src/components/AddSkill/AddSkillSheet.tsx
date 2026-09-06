@@ -34,6 +34,8 @@ import { ScopeToggleGroup } from "../SkillStore/ScopeToggleGroup";
 import { SkillStore } from "../SkillStore/SkillStore";
 import { SkillDestinationSelector } from "../SkillStore/SkillDestinationSelector";
 import { CheckboxControl } from "../ui/CheckboxControl";
+import { availableAddSkillMethods, isAddSkillFormValid } from "./add-skill-form";
+import type { AddSkillSheetMethod } from "./add-skill-form";
 import {
   abandonPackImportTrust,
   cancelAddSkillOperation,
@@ -56,8 +58,6 @@ import {
   addSkillFinishAction,
   addSkillOperationProgressCopy,
   addSkillOperationTerminalCopy,
-  installDestinationError,
-  installTrialError,
   isAddSkillOperationCancellable,
   isAddSkillOperationTerminal,
   normalizeInstallHarnesses,
@@ -99,7 +99,7 @@ const ALL_METHODS = ["dotagents", "skills-sh", "copy"] as const satisfies AddMet
  * `import_skill_pack`). Kept out of the shared `AddMethod` type so trial
  * tracking and every other `AddMethod` switch never has to account for it.
  */
-type SheetMethod = AddMethod | "pack";
+type SheetMethod = AddSkillSheetMethod;
 const ALL_SHEET_METHODS = [...ALL_METHODS, "pack"] as const satisfies SheetMethod[];
 
 /** Pack import stays hidden until the `skill-packs` flag ships. */
@@ -120,32 +120,6 @@ const METHOD_TOOLTIPS = {
   copy: "Untracked. Supports Universal or independent Per harness copies.",
   pack: "Imports every skill in this share pack to Universal.",
 } satisfies Record<SheetMethod, string>;
-
-/**
- * Which methods a parsed source supports, in the sheet's preferred order -
- * the first entry in each list is also that source kind's default, so the
- * "clamp to a valid method" derivation below doubles as "reset to the
- * default when the source kind changes". Dropping "dotagents" entirely when
- * it can't run (rather than just disabling it) keeps a stale pick from a
- * previous source silently surviving a switch to one where it's unusable.
- * A GitHub source with `has_skill_lock` still defaults to dotagents when
- * it's installed - the sheet has no reason to prefer skills.sh just because
- * it's been used here before.
- */
-function availableMethods(
-  parsed: ParsedSkillSource | { error: string },
-  defaults: AddMethodDefaults | null,
-): SheetMethod[] {
-  if ("error" in parsed) return [];
-  const dotagentsInstalled = defaults?.dotagents_installed ?? true;
-  if (parsed.kind === "github") {
-    return dotagentsInstalled
-      ? ["dotagents", "skills-sh", "copy", "pack"]
-      : ["skills-sh", "copy", "pack"];
-  }
-  if (parsed.kind === "git") return dotagentsInstalled ? ["dotagents"] : [];
-  return isFeatureEnabled("skill-packs") ? ["copy", "pack"] : ["copy"];
-}
 
 /** One-line parse feedback shown beneath the Source field. */
 function parseSummary(parsed: ParsedSkillSource | { error: string }): string {
@@ -517,7 +491,7 @@ function GithubSkillPicker({
 
 /**
  * The Method segmented control - which choices are enabled comes from
- * `availableMethods(parsed, defaults)`. `noMethodsAvailable` disables every
+ * `availableAddSkillMethods(parsed, defaults)`. `noMethodsAvailable` disables every
  * option (a parsed git source with dotagents missing, its only method);
  * `caption` always shows one line - either that unavailability explanation
  * or the picked method's own tooltip text.
@@ -650,6 +624,7 @@ function applyFinishAction(
 function useAddSkillSubmit(input: {
   parsed: ParsedSkillSource | { error: string };
   method: SheetMethod;
+  noMethodsAvailable: boolean;
   destination: SkillDestination;
   agents: AgentId[];
   disabledHarnesses: AgentId[];
@@ -665,6 +640,7 @@ function useAddSkillSubmit(input: {
   const {
     parsed,
     method,
+    noMethodsAvailable,
     destination,
     agents,
     disabledHarnesses,
@@ -686,12 +662,16 @@ function useAddSkillSubmit(input: {
   const consumedIdRef = useRef<string | undefined>(undefined);
   const unlistenRef = useRef<(() => void) | undefined>(undefined);
   const packTrustTokenRef = useRef<string | undefined>(undefined);
-  const isValid =
-    !("error" in parsed) &&
-    (scope !== "project" || !!projectPath) &&
-    installDestinationError(destination, agents) === null &&
-    installTrialError(destination, trial) === null &&
-    (githubEntries === null || githubEntries.length > 0);
+  const isValid = isAddSkillFormValid({
+    parsed,
+    noMethodsAvailable,
+    destination,
+    agents,
+    scope,
+    projectPath,
+    trial,
+    githubEntries,
+  });
 
   const packSource =
     "error" in parsed
@@ -1215,7 +1195,7 @@ export function AddSkillSheet() {
   };
 
   const parsed = parseSkillSource(source);
-  const sourceMethods = availableMethods(parsed, defaults);
+  const sourceMethods = availableAddSkillMethods(parsed, defaults);
   const methods =
     destination === "per-harness"
       ? sourceMethods.filter((candidate) => candidate === "copy")
@@ -1291,6 +1271,7 @@ export function AddSkillSheet() {
   } = useAddSkillSubmit({
     parsed,
     method,
+    noMethodsAvailable,
     destination,
     agents,
     disabledHarnesses,

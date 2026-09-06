@@ -4,6 +4,7 @@ import {
   lifecycleTargetForHarnessRoot,
   lifecycleTargetForSkill,
   lifecycleTargetForTrial,
+  skillGlobalRemovalTarget,
   skillLifecycleScopeSelection,
   skillMutableLifecycleScopes,
   skillRemovalAvailability,
@@ -306,5 +307,74 @@ describe("skill update owner targets", () => {
       succeeded: 1,
       failures: [{ ownerId: "owner:v1/project/%2Fp/x", message: "project update failed" }],
     });
+  });
+});
+
+describe("skillGlobalRemovalTarget", () => {
+  function skill(
+    deployments: Deployment[],
+    sourceKind: InstalledSkill["source_kind"] = "skills-sh",
+  ) {
+    return {
+      name: "x",
+      source_kind: sourceKind,
+      deployments,
+    } satisfies Pick<InstalledSkill, "name" | "deployments" | "source_kind">;
+  }
+
+  it("returns an exact global owner target", () => {
+    expect(skillGlobalRemovalTarget(skill([deployment("global", "owner:v1/global/x")]))).toEqual({
+      owner_id: "owner:v1/global/x",
+    });
+  });
+
+  it("returns an exact app-managed Copy deployment even when the display source is manual", () => {
+    const copy = {
+      ...deployment("global-copy"),
+      owner_kind: "copy" as const,
+    };
+
+    expect(skillGlobalRemovalTarget(skill([copy], "manual"))).toEqual({
+      deployment_id: "global-copy",
+    });
+  });
+
+  it("rejects project-only, plugin, parked, manual, ambiguous, and lock-only records", () => {
+    const projectOnly = deployment("project", "owner:v1/project/%2Frepo/x", "/repo");
+    const plugin = {
+      ...deployment("plugin"),
+      scope: "plugin" as const,
+      owner_kind: "plugin" as const,
+      mutability: "read-only" as const,
+    };
+    const parked = {
+      ...deployment("parked", "owner:v1/global/x"),
+      scope: "parked" as const,
+    };
+    const manual = {
+      ...deployment("manual"),
+      owner_kind: "manual" as const,
+      mutability: "read-only" as const,
+    };
+    const ambiguous = {
+      ...deployment("ambiguous"),
+      owner_kind: "ambiguous" as const,
+      mutability: "read-only" as const,
+    };
+
+    expect(skillGlobalRemovalTarget(skill([projectOnly]))).toBeNull();
+    expect(skillGlobalRemovalTarget(skill([plugin], "plugin"))).toBeNull();
+    expect(skillGlobalRemovalTarget(skill([parked]))).toBeNull();
+    expect(skillGlobalRemovalTarget(skill([manual], "manual"))).toBeNull();
+    expect(skillGlobalRemovalTarget(skill([ambiguous], "dotagents"))).toBeNull();
+    expect(skillGlobalRemovalTarget(skill([]))).toBeNull();
+  });
+
+  it("rejects a global scope with multiple mutable owners", () => {
+    expect(
+      skillGlobalRemovalTarget(
+        skill([deployment("one", "owner:one"), deployment("two", "owner:two")]),
+      ),
+    ).toBeNull();
   });
 });
