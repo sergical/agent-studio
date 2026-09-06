@@ -20,7 +20,6 @@ use tauri::Manager;
 
 use super::commands::{dotagents_add_args, dotagents_remove_args};
 use super::dotagents_ledger;
-use super::gh_cli::{run_gh, GhError};
 use super::lock_file;
 use super::skill_deployment::SkillDestination;
 use super::skill_dto::InstallScope;
@@ -31,6 +30,10 @@ use super::skill_fork_registry::{
 use super::skill_fs::copy_dir_all;
 use super::skill_install_plan::{skills_sh_universal_add_args, SkillInstallSpec};
 use super::skill_lifecycle::skills_sh_remove_args_for_scope;
+use super::skill_process::{
+    run_controlled_command_to_file, AddOperationControl, ControlledProcessError,
+    MAX_PROCESS_OUTPUT_BYTES,
+};
 use super::skill_refresh::{self, SkillRefreshState};
 use super::skill_update_check::{self, CommitLookup, GhCommitLookup, UpdateCheckState};
 
@@ -72,12 +75,53 @@ pub trait UpstreamFetch {
     ) -> Result<Option<Box<dyn RepoSnapshot>>, String> {
         Ok(None)
     }
+
+    /// Fetch under one Add operation's cancellation flag and deadline.
+    fn fetch_skill_dir_controlled(
+        &self,
+        repo: &str,
+        path: &str,
+        commit: &str,
+        into: &Path,
+        control: &AddOperationControl,
+    ) -> Result<(), String> {
+        control.check_message()?;
+        let result = self.fetch_skill_dir(repo, path, commit, into);
+        control.check_message()?;
+        result
+    }
+
+    /// Open a reusable repo snapshot under one Add operation deadline.
+    fn open_repo_controlled(
+        &self,
+        repo: &str,
+        commit: &str,
+        control: &AddOperationControl,
+    ) -> Result<Option<Box<dyn RepoSnapshot>>, String> {
+        control.check_message()?;
+        let result = self.open_repo(repo, commit);
+        control.check_message()?;
+        result
+    }
 }
 
 /// A repo already downloaded and extracted at one commit; `copy_dir` pulls
 /// one folder out of it.
 pub trait RepoSnapshot {
     fn copy_dir(&self, path: &str, into: &Path) -> Result<(), String>;
+
+    /// Copy one folder while honoring an Add operation interruption.
+    fn copy_dir_controlled(
+        &self,
+        path: &str,
+        into: &Path,
+        control: &AddOperationControl,
+    ) -> Result<(), String> {
+        control.check_message()?;
+        let result = self.copy_dir(path, into);
+        control.check_message()?;
+        result
+    }
 }
 
 /// Real `LedgerTool`, shelling out to `npx`.
@@ -157,6 +201,32 @@ fn resolve_lookup() -> Box<dyn CommitLookup> {
     }
 }
 
+/// Runs the same fork transaction as `fork_skill` after another command has
+/// already resolved and locked the exact Global Universal deployment.
+pub(crate) fn fork_resolved_deployment_with_real_services(
+    home: &Path,
+    app_data: &Path,
+    name: &str,
+    path: &Path,
+) -> Result<ForkRecord, String> {
+    let lookup = resolve_lookup();
+    let gh_bin =
+        skill_update_check::resolve_gh_binary().ok_or_else(|| "Run Check now first".to_string())?;
+    let fetch = RealUpstreamFetch {
+        gh_bin,
+        cache_dir: app_data.join("skill-studio").join("cache"),
+    };
+    fork_skill_with(
+        home,
+        app_data,
+        name,
+        path,
+        &RealLedgerTool,
+        &fetch,
+        lookup.as_ref(),
+    )
+}
+
 /// Real `UpstreamFetch`, via `gh api .../tarball/<sha>` + `tar -xzf`.
 pub struct RealUpstreamFetch {
     pub gh_bin: PathBuf,
@@ -179,12 +249,45 @@ impl UpstreamFetch for RealUpstreamFetch {
     fn open_repo(&self, repo: &str, commit: &str) -> Result<Option<Box<dyn RepoSnapshot>>, String> {
         Ok(Some(Box::new(self.download(repo, commit)?)))
     }
+
+    fn fetch_skill_dir_controlled(
+        &self,
+        repo: &str,
+        path: &str,
+        commit: &str,
+        into: &Path,
+        control: &AddOperationControl,
+    ) -> Result<(), String> {
+        self.download_controlled(repo, commit, control)?
+            .copy_dir_controlled(path, into, control)
+    }
+
+    fn open_repo_controlled(
+        &self,
+        repo: &str,
+        commit: &str,
+        control: &AddOperationControl,
+    ) -> Result<Option<Box<dyn RepoSnapshot>>, String> {
+        Ok(Some(Box::new(
+            self.download_controlled(repo, commit, control)?,
+        )))
+    }
 }
 
 impl RealUpstreamFetch {
     /// One `gh api .../tarball/<sha>` download, extracted to a scratch
     /// directory that is removed when the returned snapshot drops.
     fn download(&self, repo: &str, commit: &str) -> Result<ExtractedRepo, String> {
+        self.download_controlled(repo, commit, &AddOperationControl::bounded_default())
+    }
+
+    fn download_controlled(
+        &self,
+        repo: &str,
+        commit: &str,
+        control: &AddOperationControl,
+    ) -> Result<ExtractedRepo, String> {
+        control.check_message()?;
         fs::create_dir_all(&self.cache_dir)
             .map_err(|e| format!("Failed to create {}: {e}", self.cache_dir.display()))?;
 
@@ -195,31 +298,34 @@ impl RealUpstreamFetch {
             paths: vec![tarball_path.clone(), extract_dir.clone()],
         };
 
-        let tarball = run_gh(
+        run_controlled_command_to_file(
             &self.gh_bin,
-            &["api", &format!("repos/{repo}/tarball/{commit}")],
+            &["api".to_string(), format!("repos/{repo}/tarball/{commit}")],
             None,
+            control,
+            &tarball_path,
+            MAX_PROCESS_OUTPUT_BYTES,
         )
-        .map_err(|e: GhError| e.message())?;
-        fs::write(&tarball_path, &tarball)
-            .map_err(|e| format!("Failed to write {}: {e}", tarball_path.display()))?;
+        .map_err(ControlledProcessError::into_message)?;
 
+        control.check_message()?;
         fs::create_dir_all(&extract_dir)
             .map_err(|e| format!("Failed to create {}: {e}", extract_dir.display()))?;
-        let tar_output = Command::new("tar")
-            .args([
-                "-xzf",
-                &tarball_path.to_string_lossy(),
-                "-C",
-                &extract_dir.to_string_lossy(),
-            ])
-            .output()
-            .map_err(|e| format!("Failed to run tar: {e}"))?;
-        if !tar_output.status.success() {
-            return Err(String::from_utf8_lossy(&tar_output.stderr)
-                .trim()
-                .to_string());
-        }
+        run_controlled_command_to_file(
+            Path::new("tar"),
+            &[
+                "-xzf".to_string(),
+                tarball_path.to_string_lossy().into_owned(),
+                "-C".to_string(),
+                extract_dir.to_string_lossy().into_owned(),
+            ],
+            None,
+            control,
+            Path::new("/dev/null"),
+            MAX_PROCESS_OUTPUT_BYTES,
+        )
+        .map_err(ControlledProcessError::into_message)?;
+        control.check_message()?;
 
         Ok(ExtractedRepo {
             extract_dir,
@@ -239,6 +345,17 @@ impl RepoSnapshot for ExtractedRepo {
     fn copy_dir(&self, path: &str, into: &Path) -> Result<(), String> {
         let source_dir = locate_extracted_skill_dir(&self.extract_dir, path)?;
         copy_dir_all(&source_dir, into)
+    }
+
+    fn copy_dir_controlled(
+        &self,
+        path: &str,
+        into: &Path,
+        control: &AddOperationControl,
+    ) -> Result<(), String> {
+        control.check_message()?;
+        let source_dir = locate_extracted_skill_dir(&self.extract_dir, path)?;
+        super::skill_fs::copy_dir_all_controlled(&source_dir, into, control)
     }
 }
 

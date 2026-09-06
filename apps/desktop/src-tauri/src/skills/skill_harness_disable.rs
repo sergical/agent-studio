@@ -379,6 +379,7 @@ fn record_move_aside_event(
                     .map_err(|e| format!("Failed to serialize inverse: {e}"))?,
             ),
             backup_dir: None,
+            restorable: true,
         },
     )?;
     Ok((id, path.to_path_buf()))
@@ -913,6 +914,7 @@ mod tests {
             })
             .collect();
         SkillSnapshot {
+            revision: 0,
             skills: vec![InstalledSkill {
                 name: "find-bugs".to_string(),
                 source: "copy".to_string(),

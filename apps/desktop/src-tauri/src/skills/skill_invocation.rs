@@ -164,9 +164,11 @@ pub fn rewrite_invocation_frontmatter(
         out.push_str(raw);
     }
 
-    let rewritten =
-        parse_frontmatter(&out).ok_or("Rewritten frontmatter failed to parse back".to_string())?;
-    let (rewritten_policy, _) = invocation_policy(Some(&rewritten));
+    let parsed = parse_frontmatter(&out);
+    let rewritten = parsed
+        .as_frontmatter()
+        .ok_or("Rewritten frontmatter failed to parse back".to_string())?;
+    let (rewritten_policy, _) = invocation_policy(Some(rewritten));
     if rewritten_policy != policy {
         return Err(
             "Rewritten frontmatter does not round-trip to the requested invocation policy"
@@ -285,15 +287,11 @@ pub fn set_skill_invocation(
 
     let result = set_skill_invocation_with(&canonical, policy, has_codex_deployment);
     if result.is_ok() {
-        // Surgical: flip the field the frontend renders and emit right away;
-        // the background loop's full rebuild (skills_dirty) reconciles the
-        // derived state (frontmatter fields, hashes) moments later.
-        if let Err(e) = skill_refresh::patch_snapshot_and_emit(&app, &refresh_state, |snapshot| {
-            if let Some(skill) = snapshot.skills.iter_mut().find(|s| s.name == name) {
-                skill.invocation = policy;
-            }
-        }) {
-            eprintln!("[set_skill_invocation] snapshot patch failed: {e}");
+        if let Err(error) =
+            skill_refresh::reconcile_skill_names_and_emit(&app, &refresh_state, [name], &[])
+        {
+            eprintln!("[set_skill_invocation] targeted snapshot reconciliation failed: {error}");
+            refresh_state.mark_skills_dirty();
         }
     }
     result

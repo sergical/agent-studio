@@ -59,6 +59,10 @@ const INVOCATIONS_REBUILD_INTERVAL: Duration = Duration::from_secs(5);
 /// projects, and invocation history, built together in one background pass.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SkillSnapshot {
+    /// Process-local publication order. Zero is reserved for snapshots read
+    /// from older serialized data that predates revisions.
+    #[serde(default)]
+    pub revision: u64,
     pub skills: Vec<InstalledSkill>,
     pub projects: Vec<String>,
     pub invocations: Vec<SkillInvocationStats>,
@@ -392,14 +396,40 @@ pub fn rebuild_snapshot_now(
         state.invocations_dirty.store(true, Ordering::SeqCst);
     }
 
-    match state.snapshot.write() {
-        Ok(mut guard) => *guard = Some(built.clone()),
-        Err(e) => return Err(format!("snapshot lock poisoned: {e}")),
-    }
+    let built = publish_skill_snapshot(app, state, built)?;
     state.mark_built_at(now);
+    Ok(built)
+}
 
+/// Publish one snapshot while the caller holds `rebuild_lock`. This is the
+/// only place that assigns revisions or replaces the current projection.
+fn publish_skill_snapshot(
+    app: &AppHandle,
+    state: &SkillRefreshState,
+    built: SkillSnapshot,
+) -> Result<SkillSnapshot, String> {
+    let built = store_skill_snapshot(state, built)?;
     app.emit(SNAPSHOT_EVENT, &built)
         .map_err(|e| format!("failed to emit {SNAPSHOT_EVENT}: {e}"))?;
+    Ok(built)
+}
+
+fn store_skill_snapshot(
+    state: &SkillRefreshState,
+    mut built: SkillSnapshot,
+) -> Result<SkillSnapshot, String> {
+    let mut guard = state
+        .snapshot
+        .write()
+        .map_err(|e| format!("snapshot lock poisoned: {e}"))?;
+    built.revision = match guard.as_ref() {
+        Some(current) => current
+            .revision
+            .checked_add(1)
+            .ok_or("snapshot revision exhausted")?,
+        None => 1,
+    };
+    *guard = Some(built.clone());
     Ok(built)
 }
 
@@ -414,22 +444,169 @@ pub fn patch_snapshot_and_emit(
     state: &SkillRefreshState,
     patch: impl FnOnce(&mut SkillSnapshot),
 ) -> Result<(), String> {
+    let _guard = state
+        .rebuild_lock
+        .lock()
+        .map_err(|e| format!("rebuild lock poisoned: {e}"))?;
     let built = {
-        let mut guard = state
+        let guard = state
             .snapshot
-            .write()
+            .read()
             .map_err(|e| format!("snapshot lock poisoned: {e}"))?;
-        let Some(snapshot) = guard.as_mut() else {
+        let Some(snapshot) = guard.as_ref() else {
             // No snapshot yet - the pending full build will pick up the change.
             state.skills_dirty.store(true, Ordering::SeqCst);
             return Ok(());
         };
-        patch(snapshot);
-        snapshot.clone()
+        let mut built = snapshot.clone();
+        patch(&mut built);
+        built
     };
     state.skills_dirty.store(true, Ordering::SeqCst);
-    app.emit(SNAPSHOT_EVENT, &built)
-        .map_err(|e| format!("failed to emit {SNAPSHOT_EVENT}: {e}"))
+    publish_skill_snapshot(app, state, built).map(|_| ())
+}
+
+/// Reconcile named skills at all configured global and project roots, replace
+/// only those rows in the current projection, emit, then request the ordinary
+/// watcher-backed full reconciliation.
+pub fn reconcile_skill_names_and_emit(
+    app: &AppHandle,
+    state: &SkillRefreshState,
+    names: impl IntoIterator<Item = String>,
+    affected_projects: &[PathBuf],
+) -> Result<(), String> {
+    let names: BTreeSet<String> = names.into_iter().collect();
+    if names.is_empty()
+        || names
+            .iter()
+            .any(|name| Path::new(name).components().count() != 1 || name == "." || name == "..")
+    {
+        state.mark_skills_dirty();
+        return Err("Targeted skill reconciliation needs plain skill names".to_string());
+    }
+
+    let _guard = state
+        .rebuild_lock
+        .lock()
+        .map_err(|error| format!("rebuild lock poisoned: {error}"))?;
+    let current = state
+        .snapshot
+        .read()
+        .map_err(|error| format!("snapshot lock poisoned: {error}"))?
+        .clone();
+    let Some(current) = current else {
+        state.mark_skills_dirty();
+        return Ok(());
+    };
+    let home = dirs::home_dir().ok_or_else(|| {
+        state.mark_skills_dirty();
+        "Could not find home directory".to_string()
+    })?;
+    let excluded_projects = state.excluded_project_set();
+    let mut projects: BTreeSet<PathBuf> = current.projects.iter().map(PathBuf::from).collect();
+    projects.extend(state.extra_project_paths());
+    projects.extend(affected_projects.iter().cloned());
+    let projects: Vec<PathBuf> = projects
+        .into_iter()
+        .filter(|project| !is_home_directory(project, &home))
+        .filter(|project| !excluded_projects.contains(&project.to_string_lossy().to_string()))
+        .collect();
+
+    let candidates = {
+        let mut facts_cache = state
+            .facts_cache
+            .lock()
+            .map_err(|error| format!("facts cache lock poisoned: {error}"))?;
+        skill_discovery::discover_named_skill_candidates_cached(
+            &home,
+            &projects,
+            &names,
+            &mut facts_cache,
+        )
+    };
+    let mut targeted_paths: BTreeSet<PathBuf> = agents::skill_roots(&home, &projects)
+        .into_iter()
+        .flat_map(|root| {
+            names.iter().flat_map(move |name| {
+                [
+                    root.path.join(name),
+                    root.path
+                        .join(skill_discovery::STUDIO_DISABLED_DIR_NAME)
+                        .join(name),
+                ]
+            })
+        })
+        .collect();
+    targeted_paths.extend(candidates.iter().map(|candidate| candidate.path.clone()));
+    let lock = lock_file::read_lock_file().map_err(|error| {
+        state.mark_skills_dirty();
+        format!("Targeted skill reconciliation could not read lock file: {error}")
+    })?;
+    let ledgers = super::skill_ownership::load_ownership_ledgers(&home, &projects);
+    let fork_registry = super::skill_fork_registry::read_fork_registry(&home).map_err(|error| {
+        state.mark_skills_dirty();
+        format!("Targeted skill reconciliation could not read lifecycle registry: {error}")
+    })?;
+    let mut replacements = skill_assembly::assemble_installed_skills(
+        candidates,
+        &lock,
+        &ledgers,
+        &fork_registry.copies,
+    );
+    let current_owner_ids: Vec<String> = current
+        .skills
+        .iter()
+        .flat_map(|skill| skill.deployments.iter())
+        .filter(|deployment| !targeted_paths.contains(Path::new(&deployment.path)))
+        .chain(
+            replacements
+                .iter()
+                .flat_map(|skill| skill.deployments.iter()),
+        )
+        .filter_map(|deployment| deployment.owner_id.clone())
+        .collect();
+    let update_store = skill_update_check::read_update_check_store_at(&state.update_check_path);
+    apply_skill_snapshot_overlays(
+        &home,
+        &mut replacements,
+        &fork_registry,
+        &update_store,
+        &current_owner_ids,
+    );
+    sort_snapshot_skills(&mut replacements);
+
+    let mut built = current;
+    replace_snapshot_deployments(&mut built.skills, &targeted_paths, replacements);
+    built.scanned_at = Utc::now().to_rfc3339();
+    state.mark_skills_dirty();
+    publish_skill_snapshot(app, state, built)?;
+    Ok(())
+}
+
+fn replace_snapshot_deployments(
+    skills: &mut Vec<InstalledSkill>,
+    targeted_paths: &BTreeSet<PathBuf>,
+    replacements: Vec<InstalledSkill>,
+) {
+    for skill in skills.iter_mut() {
+        skill
+            .deployments
+            .retain(|deployment| !targeted_paths.contains(Path::new(&deployment.path)));
+    }
+    skills.retain(|skill| !skill.deployments.is_empty());
+    skills.extend(replacements);
+    sort_snapshot_skills(skills);
+}
+
+fn sort_snapshot_skills(skills: &mut [InstalledSkill]) {
+    for skill in skills.iter_mut() {
+        skill.deployments.sort_by(|left, right| {
+            left.id
+                .cmp(&right.id)
+                .then_with(|| left.path.cmp(&right.path))
+        });
+    }
+    skills.sort_by(|left, right| left.name.cmp(&right.name));
 }
 
 /// Refresh only the invocation index and recompute stats/heatmap, reusing
@@ -465,22 +642,22 @@ fn rebuild_invocations_only(app: &AppHandle, state: &SkillRefreshState) -> Resul
     }
 
     let built = {
-        let mut guard = state
+        let guard = state
             .snapshot
-            .write()
+            .read()
             .map_err(|e| format!("snapshot lock poisoned: {e}"))?;
-        let Some(snapshot) = guard.as_mut() else {
+        let Some(snapshot) = guard.as_ref() else {
             return Ok(()); // no full snapshot yet; the next full rebuild covers this
         };
-        snapshot.invocations = invocations;
-        snapshot.heatmap = heatmap;
-        snapshot.scanned_at = now.to_rfc3339();
-        snapshot.clone()
+        let mut built = snapshot.clone();
+        built.invocations = invocations;
+        built.heatmap = heatmap;
+        built.scanned_at = now.to_rfc3339();
+        built
     };
+    publish_skill_snapshot(app, state, built)?;
     state.mark_built_at(now);
-
-    app.emit(SNAPSHOT_EVENT, &built)
-        .map_err(|e| format!("failed to emit {SNAPSHOT_EVENT}: {e}"))
+    Ok(())
 }
 
 /// True when `path` is inside `snapshot`: it canonicalizes to the same path
@@ -729,67 +906,50 @@ fn read_codex_allow_implicit_invocation(skill_dir: &Path) -> Option<bool> {
         .as_bool()
 }
 
-fn build_snapshot(
+fn snapshot_owner_ids(skills: &[InstalledSkill]) -> Vec<String> {
+    skills
+        .iter()
+        .flat_map(|skill| skill.deployments.iter())
+        .filter_map(|deployment| deployment.owner_id.clone())
+        .collect()
+}
+
+/// Recompute registry, update, disable, and invocation fields on freshly
+/// assembled skills. Both full and targeted discovery use this same path.
+fn apply_skill_snapshot_overlays(
     home: &Path,
-    extra_projects: &[PathBuf],
-    excluded_projects: &BTreeSet<String>,
-    invocation_index: &mut SkillInvocationIndex,
-    facts_cache: &mut skill_discovery::SkillFactsCache,
-    paths: BuildPaths,
-    now: DateTime<Utc>,
-) -> (SkillSnapshot, RefreshReport) {
-    let total_start = Instant::now();
-    let BuildPaths {
-        cache_path,
-        runs_root,
-        update_check_path,
-    } = paths;
-    let projects_start = Instant::now();
-    let mut project_paths: BTreeSet<PathBuf> = project_discovery::discover_skill_projects(home)
-        .into_iter()
-        .collect();
-    project_paths.extend(extra_projects.iter().cloned());
-    let project_paths: Vec<PathBuf> = project_paths
-        .into_iter()
-        .filter(|p| !excluded_projects.contains(&p.to_string_lossy().to_string()))
-        // The home directory is the global scope (it holds ~/.claude/skills,
-        // ~/.agents/skills, ...), never a project - even if a stray session
-        // transcript recorded it as a cwd.
-        .filter(|p| !is_home_directory(p, home))
-        .collect();
-    let projects_ms = projects_start.elapsed().as_millis();
-
-    let discovery_start = Instant::now();
-    let candidates =
-        skill_discovery::discover_skill_candidates_cached(home, &project_paths, facts_cache);
-    let discovery_ms = discovery_start.elapsed().as_millis();
-    let (facts_hits, facts_total) = facts_cache.last_pass_stats();
-
-    let lock = lock_file::read_lock_file().unwrap_or_else(|e| {
-        eprintln!("skill refresh: failed to read lock file: {e}");
-        lock_file::SkillLockFile {
-            version: 3,
-            skills: std::collections::HashMap::new(),
+    skills: &mut [InstalledSkill],
+    fork_registry: &super::skill_fork_registry::ForkRegistry,
+    update_store: &skill_update_check::UpdateCheckStore,
+    current_owner_ids: &[String],
+) {
+    for skill in skills.iter_mut() {
+        skill.has_update = false;
+        skill.update_owner_ids.clear();
+        skill.update_owners.clear();
+        skill.update_commit = None;
+        skill.update_commit_at = None;
+        skill.fork = None;
+        skill.trial = None;
+        skill.trials.clear();
+        skill.parked = false;
+        skill.parked_at = None;
+        for deployment in &mut skill.deployments {
+            if deployment.disabled_by != Some(super::skill_dto::DisabledBy::StudioMoved) {
+                deployment.disabled = false;
+                deployment.disabled_by = None;
+            }
+            deployment.disabled_readers.clear();
+            deployment.codex_implicit_invocation = None;
         }
-    });
-    let ledgers = super::skill_ownership::load_ownership_ledgers(home, &project_paths);
-    let fork_registry = super::skill_fork_registry::read_fork_registry_or_default(home);
-    let mut skills = skill_assembly::assemble_installed_skills(
-        candidates,
-        &lock,
-        &ledgers,
-        &fork_registry.copies,
-    );
-
-    let update_store = skill_update_check::read_update_check_store_at(update_check_path);
-    let update_check = skill_update_check::summarize(&update_store);
+    }
 
     // A forked skill is no longer in any ledger, so `classify_source_kind`
     // (which only sees on-disk facts) can't tell it apart from a plain
     // manual directory - the fork registry is the only source of truth for
     // it. Forking only ever applies to the shared `.agents/skills` root, so
     // a same-named project-scoped skill is left alone.
-    for skill in &mut skills {
+    for skill in skills.iter_mut() {
         let Some(record) = fork_registry.forks.get(&skill.name) else {
             continue;
         };
@@ -823,18 +983,13 @@ fn build_snapshot(
         });
     }
 
-    let current_owner_ids: Vec<String> = skills
-        .iter()
-        .flat_map(|skill| skill.deployments.iter())
-        .filter_map(|deployment| deployment.owner_id.clone())
-        .collect();
-    for skill in &mut skills {
+    for skill in skills.iter_mut() {
         for deployment in &skill.deployments {
             let Some(owner_id) = deployment.owner_id.as_deref() else {
                 continue;
             };
             let Some(state) =
-                skill_update_check::state_for_owner(&update_store, owner_id, &current_owner_ids)
+                skill_update_check::state_for_owner(update_store, owner_id, current_owner_ids)
                     .filter(|state| skill_update_check::has_update(state))
             else {
                 continue;
@@ -862,7 +1017,7 @@ fn build_snapshot(
     // New trial records identify one exact deployment. Version 1 records use
     // scope/name keys and are accepted only when their stored path and scope
     // resolve to exactly one current deployment.
-    for skill in &mut skills {
+    for skill in skills.iter_mut() {
         let matches: Vec<_> = fork_registry
             .trials
             .values()
@@ -913,7 +1068,7 @@ fn build_snapshot(
     // Parked skills have no deployment left for `classify_source_kind` to
     // look at, so both the "parked" flag and the badge come straight from
     // the registry's `parked` record instead.
-    for skill in &mut skills {
+    for skill in skills.iter_mut() {
         if let Some(record) = fork_registry.parked.get(&skill.name).filter(|record| {
             let expected = if record.skill_dir.as_os_str().is_empty() {
                 home.join(".agents/skills-parked").join(&skill.name)
@@ -943,7 +1098,7 @@ fn build_snapshot(
         super::opencode_skill_permission::read_denied_patterns(home)
             .into_iter()
             .collect();
-    for skill in &mut skills {
+    for skill in skills.iter_mut() {
         let open_code_deployment_count = skill
             .deployments
             .iter()
@@ -1003,7 +1158,7 @@ fn build_snapshot(
     // Invocation policy comes straight from the already-parsed frontmatter
     // fields (`frontmatter_fields` is stringified, since that's shared with
     // the dashboard's "extra fields" display).
-    for skill in &mut skills {
+    for skill in skills.iter_mut() {
         let disable_model = skill
             .frontmatter_fields
             .get("disable-model-invocation")
@@ -1015,6 +1170,71 @@ fn build_snapshot(
         skill.invocation =
             super::frontmatter::invocation_policy_from(disable_model, user_invocable).0;
     }
+}
+
+fn build_snapshot(
+    home: &Path,
+    extra_projects: &[PathBuf],
+    excluded_projects: &BTreeSet<String>,
+    invocation_index: &mut SkillInvocationIndex,
+    facts_cache: &mut skill_discovery::SkillFactsCache,
+    paths: BuildPaths,
+    now: DateTime<Utc>,
+) -> (SkillSnapshot, RefreshReport) {
+    let total_start = Instant::now();
+    let BuildPaths {
+        cache_path,
+        runs_root,
+        update_check_path,
+    } = paths;
+    let projects_start = Instant::now();
+    let mut project_paths: BTreeSet<PathBuf> = project_discovery::discover_skill_projects(home)
+        .into_iter()
+        .collect();
+    project_paths.extend(extra_projects.iter().cloned());
+    let project_paths: Vec<PathBuf> = project_paths
+        .into_iter()
+        .filter(|p| !excluded_projects.contains(&p.to_string_lossy().to_string()))
+        // The home directory is the global scope (it holds ~/.claude/skills,
+        // ~/.agents/skills, ...), never a project - even if a stray session
+        // transcript recorded it as a cwd.
+        .filter(|p| !is_home_directory(p, home))
+        .collect();
+    let projects_ms = projects_start.elapsed().as_millis();
+
+    let discovery_start = Instant::now();
+    let candidates =
+        skill_discovery::discover_skill_candidates_cached(home, &project_paths, facts_cache);
+    let discovery_ms = discovery_start.elapsed().as_millis();
+    let (facts_hits, facts_total) = facts_cache.last_pass_stats();
+
+    let lock = lock_file::read_lock_file().unwrap_or_else(|e| {
+        eprintln!("skill refresh: failed to read lock file: {e}");
+        lock_file::SkillLockFile {
+            version: 3,
+            skills: std::collections::HashMap::new(),
+        }
+    });
+    let ledgers = super::skill_ownership::load_ownership_ledgers(home, &project_paths);
+    let fork_registry = super::skill_fork_registry::read_fork_registry_or_default(home);
+    let mut skills = skill_assembly::assemble_installed_skills(
+        candidates,
+        &lock,
+        &ledgers,
+        &fork_registry.copies,
+    );
+
+    let update_store = skill_update_check::read_update_check_store_at(update_check_path);
+    let update_check = skill_update_check::summarize(&update_store);
+
+    let current_owner_ids = snapshot_owner_ids(&skills);
+    apply_skill_snapshot_overlays(
+        home,
+        &mut skills,
+        &fork_registry,
+        &update_store,
+        &current_owner_ids,
+    );
 
     let invocations_start = Instant::now();
     let report = invocation_index.refresh(&home.join(".claude/projects"));
@@ -1030,6 +1250,7 @@ fn build_snapshot(
     let skill_count = skills.len();
 
     let snapshot = SkillSnapshot {
+        revision: 0,
         skills,
         projects: project_paths
             .into_iter()
@@ -1856,6 +2077,7 @@ mod tests {
         use super::super::skill_dto::{Deployment, InstalledSkill};
 
         SkillSnapshot {
+            revision: 0,
             skills: vec![InstalledSkill {
                 name: "foo".to_string(),
                 source: "manual".to_string(),
@@ -1954,6 +2176,157 @@ mod tests {
         state.mark_built_at(now);
         let an_hour_later = now + chrono::Duration::hours(1);
         assert!(state.is_hour_stale(an_hour_later));
+    }
+
+    #[test]
+    fn stored_snapshots_receive_monotonic_revisions() {
+        let state = fixture_state();
+        let first = store_skill_snapshot(&state, fixture_snapshot(Path::new("/first"))).unwrap();
+        let second = store_skill_snapshot(&state, fixture_snapshot(Path::new("/second"))).unwrap();
+
+        assert_eq!(first.revision, 1);
+        assert_eq!(second.revision, 2);
+    }
+
+    #[test]
+    fn rebuild_started_before_patch_cannot_publish_after_patch() {
+        let state = fixture_state();
+        store_skill_snapshot(&state, fixture_snapshot(Path::new("/initial"))).unwrap();
+        let rebuild_state = state.clone();
+        let (started_tx, started_rx) = std::sync::mpsc::channel();
+        let (finish_tx, finish_rx) = std::sync::mpsc::channel();
+        let rebuild = std::thread::spawn(move || {
+            let _guard = rebuild_state.rebuild_lock.lock().unwrap();
+            started_tx.send(()).unwrap();
+            finish_rx.recv().unwrap();
+            store_skill_snapshot(&rebuild_state, fixture_snapshot(Path::new("/rebuild"))).unwrap()
+        });
+        started_rx.recv().unwrap();
+
+        let patch_state = state.clone();
+        let patch = std::thread::spawn(move || {
+            let _guard = patch_state.rebuild_lock.lock().unwrap();
+            store_skill_snapshot(&patch_state, fixture_snapshot(Path::new("/patch"))).unwrap()
+        });
+        finish_tx.send(()).unwrap();
+
+        assert_eq!(rebuild.join().unwrap().revision, 2);
+        assert_eq!(patch.join().unwrap().revision, 3);
+        assert_eq!(state.snapshot.read().unwrap().as_ref().unwrap().revision, 3);
+    }
+
+    #[test]
+    fn targeted_replacement_adds_updates_removes_and_sorts_without_touching_unrelated_skills() {
+        let mut unrelated = fixture_snapshot(Path::new("/unrelated")).skills.remove(0);
+        unrelated.name = "middle".to_string();
+        unrelated.description = Some("preserve me".to_string());
+        let mut update = fixture_snapshot(Path::new("/old")).skills.remove(0);
+        update.name = "zulu".to_string();
+        let mut remove = fixture_snapshot(Path::new("/remove")).skills.remove(0);
+        remove.name = "remove".to_string();
+        let mut skills = vec![update, unrelated, remove];
+
+        let mut added = fixture_snapshot(Path::new("/add")).skills.remove(0);
+        added.name = "alpha".to_string();
+        let mut updated = fixture_snapshot(Path::new("/new")).skills.remove(0);
+        updated.name = "zulu".to_string();
+        updated.description = Some("updated".to_string());
+        updated.deployments.push(Deployment {
+            id: "a".to_string(),
+            path: "/new/a".to_string(),
+            ..Default::default()
+        });
+        updated.deployments[0].id = "z".to_string();
+        let targeted_paths = ["/old", "/remove"].into_iter().map(PathBuf::from).collect();
+
+        replace_snapshot_deployments(&mut skills, &targeted_paths, vec![updated, added]);
+
+        assert_eq!(
+            skills
+                .iter()
+                .map(|skill| skill.name.as_str())
+                .collect::<Vec<_>>(),
+            vec!["alpha", "middle", "zulu"]
+        );
+        assert_eq!(skills[1].description.as_deref(), Some("preserve me"));
+        assert_eq!(skills[2].description.as_deref(), Some("updated"));
+        assert_eq!(
+            skills[2]
+                .deployments
+                .iter()
+                .map(|deployment| deployment.id.as_str())
+                .collect::<Vec<_>>(),
+            vec!["a", "z"]
+        );
+    }
+
+    #[test]
+    fn targeted_replacement_removes_prior_row_by_lexical_deployment_path() {
+        let mut stale = fixture_snapshot(Path::new("/root/lexical-name"))
+            .skills
+            .remove(0);
+        stale.name = "different-name".to_string();
+        let unrelated = fixture_snapshot(Path::new("/root/unrelated"))
+            .skills
+            .remove(0);
+        let mut replacement = fixture_snapshot(Path::new("/root/lexical-name"))
+            .skills
+            .remove(0);
+        replacement.name = "lexical-name".to_string();
+        replacement.spec_violations = vec![
+            "name \"different-name\" does not match its directory name \"lexical-name\""
+                .to_string(),
+        ];
+        let targeted_paths = [PathBuf::from("/root/lexical-name")].into_iter().collect();
+        let mut skills = vec![stale, unrelated];
+
+        replace_snapshot_deployments(&mut skills, &targeted_paths, vec![replacement]);
+
+        assert_eq!(skills.len(), 2);
+        assert!(skills.iter().any(|skill| skill.name == "foo"));
+        let refreshed = skills
+            .iter()
+            .find(|skill| skill.name == "lexical-name")
+            .unwrap();
+        assert!(refreshed.spec_violations[0].contains("does not match"));
+        assert!(!skills.iter().any(|skill| skill.name == "different-name"));
+    }
+
+    #[test]
+    fn targeted_overlay_recomputation_clears_stale_native_and_update_state() {
+        let temp = tempfile::tempdir().unwrap();
+        let mut skill = fixture_snapshot(&temp.path().join("skill"))
+            .skills
+            .remove(0);
+        skill.has_update = true;
+        skill.update_owner_ids.push("stale-owner".to_string());
+        skill
+            .frontmatter_fields
+            .insert("disable-model-invocation".to_string(), "true".to_string());
+        skill.deployments[0].agent = "Codex".to_string();
+        skill.deployments[0].disabled = true;
+        skill.deployments[0].disabled_by = Some(super::super::skill_dto::DisabledBy::CodexConfig);
+        skill.deployments[0].disabled_readers = vec!["open-code".to_string()];
+        skill.deployments[0].codex_implicit_invocation = Some(true);
+
+        apply_skill_snapshot_overlays(
+            temp.path(),
+            std::slice::from_mut(&mut skill),
+            &super::super::skill_fork_registry::ForkRegistry::default(),
+            &skill_update_check::UpdateCheckStore::default(),
+            &[],
+        );
+
+        assert!(!skill.has_update);
+        assert!(skill.update_owner_ids.is_empty());
+        assert_eq!(
+            skill.invocation,
+            super::super::frontmatter::InvocationPolicy::UserOnly
+        );
+        assert!(!skill.deployments[0].disabled);
+        assert_eq!(skill.deployments[0].disabled_by, None);
+        assert!(skill.deployments[0].disabled_readers.is_empty());
+        assert_eq!(skill.deployments[0].codex_implicit_invocation, None);
     }
 
     #[test]

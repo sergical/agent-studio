@@ -7,7 +7,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import type {
   AddMethodDefaults,
-  AddSkillOutcome,
+  AddSkillOperationEvent,
   AddSkillRequest,
   AddSkillResult,
   AddSkillsRequest,
@@ -15,12 +15,16 @@ import type {
   ImportResult,
   InstallResult,
   ForkRecord,
+  FrontmatterRepairApplyMode,
+  FrontmatterRepairPreview,
   GithubSkillListing,
   InstalledSkill,
   HarnessVisibilityTarget,
   LifecycleTarget,
   InvocationPolicy,
   PackInfo,
+  PackImportPreflightResult,
+  PackImportRequest,
   PackMember,
   PaginatedSkillsResponse,
   PullResult,
@@ -30,6 +34,27 @@ import type {
   SkillSnapshot,
   UpdatePackResult,
 } from "@skill-studio/lib";
+
+export async function previewSkillFrontmatterRepair(
+  target: LifecycleTarget,
+): Promise<FrontmatterRepairPreview> {
+  return invoke("preview_skill_frontmatter_repair", { target });
+}
+
+export async function applySkillFrontmatterRepair(
+  target: LifecycleTarget,
+  preview: FrontmatterRepairPreview,
+  mode: FrontmatterRepairApplyMode,
+): Promise<void> {
+  return invoke("apply_skill_frontmatter_repair", {
+    request: {
+      target,
+      proposal_id: preview.proposal_id,
+      expected_content_fingerprint: preview.expected_content_fingerprint,
+      mode,
+    },
+  });
+}
 
 // ============================================================================
 // Search API
@@ -256,12 +281,26 @@ export async function deleteSkillPack(name: string): Promise<void> {
 }
 
 /**
- * Import a pack from a GitHub repo: `dotagents add <source> --all` for its
- * bundled skills, plus a per-row `dotagents add` for any `[[skills]]` entry
- * in its `agents.toml` that points elsewhere.
+ * Preflight and import a pack from a GitHub repo or local folder. Remote
+ * repository identities pause for explicit trust before any install.
  */
-export async function importSkillPack(source: string, agents: AgentId[]): Promise<ImportResult> {
-  return invoke("import_skill_pack", { source, agents });
+export async function importSkillPack(
+  request: PackImportRequest,
+): Promise<PackImportPreflightResult> {
+  return invoke("import_skill_pack", { request });
+}
+
+/** Confirm the exact repository list returned by pack import preflight. */
+export async function confirmSkillPackTrust(
+  confirmationToken: string,
+  request: PackImportRequest,
+): Promise<ImportResult> {
+  return invoke("confirm_skill_pack_trust", { confirmationToken, request });
+}
+
+/** Consume a pending pack trust prompt and remove its unchanged local snapshot. */
+export async function abandonPackImportTrust(confirmationToken: string): Promise<boolean> {
+  return invoke("abandon_pack_import_trust", { confirmationToken });
 }
 
 // ============================================================================
@@ -271,18 +310,67 @@ export async function importSkillPack(source: string, agents: AgentId[]): Promis
 /**
  * Submit the Add-skill sheet: installs `request.source` via `request.method`,
  * applying the Claude Code shared-folder symlink rule for `dotagents`/`copy`.
+ * Kept for Skill Store / repair callers; the Add-skill sheet uses operations.
  */
 export async function addSkill(request: AddSkillRequest): Promise<AddSkillResult> {
   return invoke("add_skill", { request });
 }
 
+/** Event name every background Add Skill status is emitted on. */
+export const ADD_SKILL_OPERATION_EVENT = "skills://add-skill-operation";
+
 /**
- * Installs every skill in `request.skills` from one source. The promise
- * rejects only when nothing could be attempted; a single skill's failure
- * comes back as that entry's `error`.
+ * Schedule a single-skill add. Returns the queued event before `npx` or
+ * network work. Generate `operationId` and subscribe before calling.
  */
-export async function addSkills(request: AddSkillsRequest): Promise<AddSkillOutcome[]> {
-  return invoke("add_skills", { request });
+export async function startAddSkillOperation(
+  operationId: string,
+  request: AddSkillRequest,
+): Promise<AddSkillOperationEvent> {
+  return invoke("start_add_skill_operation", { operationId, request });
+}
+
+/**
+ * Schedule a batch add. Returns the queued event immediately.
+ */
+export async function startAddSkillsOperation(
+  operationId: string,
+  request: AddSkillsRequest,
+): Promise<AddSkillOperationEvent> {
+  return invoke("start_add_skills_operation", { operationId, request });
+}
+
+/** Catch-up read after subscribe or remount. */
+export async function getAddSkillOperation(operationId: string): Promise<AddSkillOperationEvent> {
+  return invoke("get_add_skill_operation", { operationId });
+}
+
+/** Request cancel. The worker still reports completed if mutation finished. */
+export async function cancelAddSkillOperation(
+  operationId: string,
+): Promise<AddSkillOperationEvent> {
+  return invoke("cancel_add_skill_operation", { operationId });
+}
+
+/**
+ * Trust this operation's repository identity and retry the same request.
+ * Rejects a mismatched or replayed confirmation.
+ */
+export async function confirmAddSkillTrust(
+  operationId: string,
+  retryOperationId: string,
+  identity: string,
+): Promise<AddSkillOperationEvent> {
+  return invoke("confirm_add_skill_trust", { operationId, retryOperationId, identity });
+}
+
+/** Subscribe to background Add Skill status events. */
+export function onAddSkillOperation(
+  cb: (event: AddSkillOperationEvent) => void,
+): Promise<() => void> {
+  return listen<AddSkillOperationEvent>(ADD_SKILL_OPERATION_EVENT, (event) => {
+    cb(event.payload);
+  });
 }
 
 /**
@@ -443,21 +531,6 @@ export async function restoreSkillEvent(eventId: string, force: boolean): Promis
 }
 
 /**
- * The Locations card's entry point for disabling/enabling one skill under
- * one harness that reads from the shared root. Refuses when `harness`'s root
- * is still a whole-dir link to the Universal folder. Call
- * `materializeHarnessRoot` first (the Convert dialog).
- */
-export async function setSharedHarnessSkillEnabled(
-  rootPath: string,
-  target: LifecycleTarget,
-  harness: string,
-  enabled: boolean,
-): Promise<void> {
-  return invoke("set_shared_harness_skill_enabled", { rootPath, target, harness, enabled });
-}
-
-/**
  * Converts a harness's whole-dir link to the shared skills root into a real
  * directory of per-skill links, as an explicit, named action - the
  * Locations card's Convert dialog and Home's linked-root repair card. Recorded
@@ -469,6 +542,20 @@ export async function materializeHarnessRoot(
   root: string,
 ): Promise<void> {
   return invoke("materialize_harness_root", { target, harness, root });
+}
+
+/** Converts a whole harness root and disables the selected deployment under one durable intent. */
+export async function materializeHarnessRootThenDisable(
+  target: LifecycleTarget,
+  harness: string,
+  root: string,
+): Promise<void> {
+  return invoke("materialize_harness_root_then_disable", { target, harness, root });
+}
+
+/** Replaces one healthy Universal-backed deployment link with a local Copy directory. */
+export async function makeSkillIndependentCopy(target: LifecycleTarget): Promise<void> {
+  return invoke("make_skill_independent_copy", { target });
 }
 
 /**
@@ -509,22 +596,8 @@ export async function requestSkillRescan(): Promise<void> {
  * Subscribe to `skills://snapshot`, emitted every time the background
  * refresh thread (re)builds the snapshot. Returns an unlisten function.
  */
-export function onSkillSnapshot(cb: (snapshot: SkillSnapshot) => void): () => void {
-  let unlisten: (() => void) | undefined;
-  let cancelled = false;
-
-  listen<SkillSnapshot>("skills://snapshot", (event) => {
+export function onSkillSnapshot(cb: (snapshot: SkillSnapshot) => void): Promise<() => void> {
+  return listen<SkillSnapshot>("skills://snapshot", (event) => {
     cb(event.payload);
-  }).then((fn) => {
-    if (cancelled) {
-      fn();
-    } else {
-      unlisten = fn;
-    }
   });
-
-  return () => {
-    cancelled = true;
-    unlisten?.();
-  };
 }

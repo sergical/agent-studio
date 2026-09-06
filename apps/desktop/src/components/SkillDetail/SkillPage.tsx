@@ -7,7 +7,12 @@
 
 import { useCallback, useEffect, useEffectEvent, useRef, useState } from "react";
 import { ArrowLeft } from "lucide-react";
-import { forkSkill, readInstalledSkillMd, writeInstalledSkillMd } from "../../lib/skill-api";
+import {
+  forkSkill,
+  previewSkillFrontmatterRepair,
+  readInstalledSkillMd,
+  writeInstalledSkillMd,
+} from "../../lib/skill-api";
 import { lifecycleTargetForDeployment } from "../../lib/skill-lifecycle-target";
 import { isFeatureEnabled } from "../../lib/feature-flags";
 import {
@@ -16,7 +21,7 @@ import {
   ownDeployments,
   skillMdPathForDeployment,
 } from "@skill-studio/lib";
-import type { Deployment, InstalledSkill } from "@skill-studio/lib";
+import type { Deployment, FrontmatterRepairPreview, InstalledSkill } from "@skill-studio/lib";
 import type { ActiveView } from "../../store/appStore";
 import { useAppStore } from "../../store/appStore";
 import { DiscardChangesDialog } from "./DiscardChangesDialog";
@@ -24,9 +29,11 @@ import { InstalledSkillHeader } from "./InstalledSkillHeader";
 import { SkillAssistantDrawer } from "./SkillAssistantDrawer";
 import { SkillAssistantPanel } from "./SkillAssistantPanel";
 import { SkillCompareDialog } from "./SkillCompareDialog";
+import { SkillFrontmatterRepairDialog } from "./SkillFrontmatterRepairDialog";
 import { SkillLocationsCard } from "./SkillLocationsCard";
 import { SkillMarkdownCard } from "./SkillMarkdownCard";
 import { SkillRepairCard } from "./SkillRepairCard";
+import { hasMalformedYamlWarning } from "./skill-frontmatter-repair-policy";
 
 interface SkillPageProps {
   /** `null` when the skill named by the route was removed since the page opened. */
@@ -193,6 +200,8 @@ export function SkillPage({
   const [isEditorDirty, setIsEditorDirty] = useState(false);
   const [isHistoryOpen, setIsHistoryOpen] = useState(false);
   const [isCompareOpen, setIsCompareOpen] = useState(false);
+  const [frontmatterRepair, setFrontmatterRepair] = useState<FrontmatterRepairPreview | null>(null);
+  const [isFrontmatterRepairOpen, setIsFrontmatterRepairOpen] = useState(false);
   const assistantTriggerRef = useRef<HTMLButtonElement>(null);
 
   // Set while the discard-changes guard is waiting on the user - runs on
@@ -288,6 +297,21 @@ export function SkillPage({
     deployment && !isDeploymentBroken ? skillMdPathForDeployment(deployment) : undefined;
   const isPluginManaged = Boolean(deployment?.plugin);
 
+  useEffect(() => {
+    if (!deployment || !hasMalformedYamlWarning(deployment)) return;
+    let ignore = false;
+    previewSkillFrontmatterRepair(lifecycleTargetForDeployment(deployment))
+      .then((preview) => {
+        if (!ignore && preview.deployment_id === deployment.id) setFrontmatterRepair(preview);
+      })
+      .catch(() => undefined);
+    return () => {
+      ignore = true;
+    };
+  }, [deployment]);
+  const selectedFrontmatterRepair =
+    frontmatterRepair?.deployment_id === deployment?.id ? frontmatterRepair : null;
+
   const {
     rawContent,
     isLoadingContent,
@@ -359,6 +383,9 @@ export function SkillPage({
         isAssistantOpen={isAssistantOpen}
         onOpenAssistant={() => setIsAssistantOpen(true)}
         assistantTriggerRef={assistantTriggerRef}
+        frontmatterRepair={selectedFrontmatterRepair}
+        onFixYaml={() => setIsFrontmatterRepairOpen(true)}
+        onEditManually={() => setIsEditing(true)}
       />
 
       <div className="flex min-w-0 flex-col gap-6">
@@ -417,6 +444,19 @@ export function SkillPage({
 
       {isCompareOpen && (
         <SkillCompareDialog skill={skill} onClose={() => setIsCompareOpen(false)} />
+      )}
+
+      {isFrontmatterRepairOpen && selectedFrontmatterRepair && deployment && (
+        <SkillFrontmatterRepairDialog
+          target={lifecycleTargetForDeployment(deployment)}
+          preview={selectedFrontmatterRepair}
+          onClose={() => setIsFrontmatterRepairOpen(false)}
+          onEditManually={() => setIsEditing(true)}
+          onApplied={() => {
+            setFrontmatterRepair(null);
+            if (skillMdPath) loadContent(skillMdPath, false);
+          }}
+        />
       )}
 
       <DiscardChangesDialog

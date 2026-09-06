@@ -20,6 +20,7 @@ import type { SkillEvent } from "@skill-studio/lib";
 import { listSkillEvents, openSkillPath, restoreSkillEvent } from "../../lib/skill-api";
 import { useAppStore } from "../../store/appStore";
 import { HARNESS_LABELS } from "../../lib/harness-labels";
+import { canRestoreSkillEvent, shouldOfferForceRestore } from "./skill-history-restore-policy";
 
 const HARNESS_LABEL_BY_ID = new Map<string, string>(HARNESS_LABELS);
 
@@ -37,6 +38,7 @@ function iconForKind(kind: string, className: string) {
       return <Link2 {...props} />;
     case "explode_shared_dir":
     case "distribute_from_shared":
+    case "make_independent_copy":
       return <FolderSymlink {...props} />;
     case "move_aside_disable":
       return <Archive {...props} />;
@@ -52,11 +54,6 @@ function kindLabel(kind: string): string {
   return kind.replace(/_/g, " ");
 }
 
-/** The backend's drift-guard refusal names the drifted path and ends in this phrase - see event_store.rs. */
-function isDriftRefusal(message: string): boolean {
-  return message.includes("changed since") || message.includes("drifted");
-}
-
 /** What a restore's confirm dialog names as "what will be put back" - the inverse of the event's own kind. */
 function restoreDescription(event: SkillEvent): string {
   const skillPart = event.skill ? `${event.skill}` : (event.harness ?? "this item");
@@ -67,6 +64,8 @@ function restoreDescription(event: SkillEvent): string {
       return `Restore ${event.harness ?? "the harness"}'s whole-folder link`;
     case "distribute_from_shared":
       return `Move ${skillPart} back into the Universal folder and remove the per-harness copies`;
+    case "make_independent_copy":
+      return `Restore ${skillPart}'s exact Universal link`;
     case "move_aside_disable":
       return `Restore ${skillPart} to its original location`;
     default:
@@ -107,7 +106,7 @@ function EventRow({ event, onRestored }: { event: SkillEvent; onRestored: () => 
       setIsRestoring(false);
     } catch (err) {
       const message = err instanceof Error ? err.message : "Unknown error";
-      if (!force && isDriftRefusal(message)) {
+      if (!force && shouldOfferForceRestore(event, message)) {
         const proceed = await ask(
           `${message}\n\nRestoring anyway will back up the current content first, so it stays restorable.`,
           { title: "Content has changed", kind: "warning" },
@@ -166,7 +165,7 @@ function EventRow({ event, onRestored }: { event: SkillEvent; onRestored: () => 
           Reveal in Finder
         </button>
       )}
-      {event.restorable && (
+      {canRestoreSkillEvent(event) && (
         <button
           type="button"
           className="shrink-0 cursor-pointer rounded-sm border border-border-subtle bg-transparent px-2 py-1 text-small text-text-secondary transition-colors hover:bg-bg-hover disabled:opacity-50"

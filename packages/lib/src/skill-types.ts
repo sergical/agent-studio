@@ -384,6 +384,22 @@ export type LifecycleTarget =
   | { deployment_id: string; owner_id?: never }
   | { owner_id: string; deployment_id?: never };
 
+/** A backend-authorized way to apply one deterministic malformed-YAML repair. */
+export type FrontmatterRepairApplyMode = "apply-fix" | "fix-installed-copy" | "fork-and-fix";
+
+/** Immutable proposal returned for one exact deployment before any write. */
+export interface FrontmatterRepairPreview {
+  deployment_id: string;
+  path: string;
+  scope: string;
+  reason: string;
+  expected_content_fingerprint: string;
+  proposal_id: string;
+  original_content: string;
+  proposed_content: string;
+  allowed_apply_modes: FrontmatterRepairApplyMode[];
+}
+
 /** Exact deployment and the harness reader whose visibility will change. */
 export interface HarnessVisibilityTarget {
   deployment_id: string;
@@ -572,6 +588,21 @@ export interface ImportResult {
   errors: string[];
 }
 
+/** Fixed-target request used for pack import preflight and confirmation. */
+export interface PackImportRequest {
+  source: string;
+  agents: AgentId[];
+  method: "pack";
+  destination: "universal";
+  scope: "global";
+  project_path: null;
+}
+
+/** A pack import either finished or needs explicit trust for all listed repositories. */
+export type PackImportPreflightResult =
+  | { status: "imported"; result: ImportResult }
+  | { status: "needs-trust"; identities: string[]; confirmation_token: string };
+
 // ============================================================================
 // UI State Types
 // ============================================================================
@@ -651,6 +682,8 @@ export interface InvocationHeatmap {
  * skills/skill_refresh.rs.
  */
 export interface SkillSnapshot {
+  /** Process-local publication order. Revision 0 is a legacy bootstrap snapshot. */
+  revision: number;
   skills: InstalledSkill[];
   projects: string[];
   invocations: SkillInvocationStats[];
@@ -692,6 +725,8 @@ export interface SkillEvent {
   status: "pending" | "done" | "failed" | "interrupted";
   /** True when this event has an inverse, hasn't already been undone, and its status allows a restore. */
   restorable: boolean;
+  /** False when bypassing drift checks could cross an independent Copy boundary. */
+  force_restorable: boolean;
   reverted_by?: string;
   /** Absolute path to this event's backup directory, for a "Reveal in Finder" action. */
   backup_path?: string;

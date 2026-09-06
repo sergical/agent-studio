@@ -17,7 +17,7 @@ import {
 } from "@skill-studio/ui";
 import { homeRelativePath } from "@skill-studio/lib";
 import type { LifecycleTarget } from "@skill-studio/lib";
-import { materializeHarnessRoot, setSharedHarnessSkillEnabled } from "../../lib/skill-api";
+import { materializeHarnessRoot, materializeHarnessRootThenDisable } from "../../lib/skill-api";
 import { useAppStore } from "../../store/appStore";
 
 interface MaterializeRootDialogProps {
@@ -28,12 +28,7 @@ interface MaterializeRootDialogProps {
   /** The harness's display label (e.g. "Claude Code"), for the dialog copy only. */
   harnessLabel: string;
   root: string;
-  /**
-   * When set, a successful conversion immediately disables this skill for
-   * `harness` too - the Locations card's per-row toggle flow. Home's plain
-   * repair card omits it: it only offers the conversion.
-   */
-  disableSkill?: string;
+  intent: { kind: "convert-only" } | { kind: "convert-then-disable"; skill: string };
   onClose: () => void;
   /** Called once the conversion (and optional disable) succeeds, before `onClose`. */
   onConverted?: () => void;
@@ -44,7 +39,7 @@ export function MaterializeRootDialog({
   harness,
   harnessLabel,
   root,
-  disableSkill,
+  intent,
   onClose,
   onConverted,
 }: MaterializeRootDialogProps) {
@@ -54,10 +49,11 @@ export function MaterializeRootDialog({
 
   const handleConvert = () => {
     setIsConverting(true);
-    materializeHarnessRoot(target, harness, root)
-      .then(() =>
-        disableSkill ? setSharedHarnessSkillEnabled(root, target, harness, false) : undefined,
-      )
+    const conversion =
+      intent.kind === "convert-then-disable"
+        ? materializeHarnessRootThenDisable(target, harness, root)
+        : materializeHarnessRoot(target, harness, root);
+    conversion
       .then(() => {
         onConverted?.();
         onClose();
@@ -65,7 +61,10 @@ export function MaterializeRootDialog({
       .catch((err) => {
         addToast({
           type: "error",
-          title: "Couldn't convert",
+          title:
+            intent.kind === "convert-then-disable"
+              ? "Couldn't convert and turn off"
+              : "Couldn't convert",
           message: err instanceof Error ? err.message : "Unknown error",
         });
       })
@@ -81,7 +80,14 @@ export function MaterializeRootDialog({
             The link at {rootLabel} lets {harnessLabel} read every skill in the Universal folder.
             Converting replaces it with one symlink per skill. The symlinks still point to the
             Universal folder, so no files are copied. You can then switch each skill on or off for{" "}
-            {harnessLabel}. Activity records this change and provides the undo action.
+            {harnessLabel}.
+            {intent.kind === "convert-then-disable" && (
+              <>
+                {" "}
+                After conversion, {intent.skill} will be turned off only for {harnessLabel}.
+              </>
+            )}{" "}
+            Activity records this change and provides the undo action.
           </DialogDescription>
         </DialogHeader>
         <DialogFooter>
@@ -91,8 +97,8 @@ export function MaterializeRootDialog({
           <Button onClick={handleConvert} disabled={isConverting}>
             {isConverting
               ? "Converting…"
-              : disableSkill
-                ? `Convert and disable ${disableSkill}`
+              : intent.kind === "convert-then-disable"
+                ? `Convert, then turn off ${intent.skill}`
                 : "Convert"}
           </Button>
         </DialogFooter>

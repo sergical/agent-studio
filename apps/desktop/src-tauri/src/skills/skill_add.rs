@@ -15,7 +15,8 @@
 
 use std::fs;
 use std::path::{Component, Path, PathBuf};
-use std::process::Command;
+use std::sync::atomic::AtomicBool;
+use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use tauri::Manager;
@@ -30,13 +31,19 @@ use super::skill_dto::{
 };
 use super::skill_fork::{ForkMutationLock, RealUpstreamFetch, RepoSnapshot, UpstreamFetch};
 use super::skill_fork_registry::{AddMethod, CopyDeploymentRecord, TrialScope};
+#[cfg(test)]
 use super::skill_fs::copy_dir_all;
+use super::skill_fs::copy_dir_all_controlled;
 use super::skill_harness_disable::set_new_universal_reader_enabled;
 use super::skill_install_plan::{
     allowed_method, per_harness_copy_targets, skills_sh_universal_add_args, SkillInstallSpec,
 };
+use super::skill_process::{
+    run_controlled_npx_with_control, AddOperationControl, ControlledProcessError,
+};
 use super::skill_refresh::{self, SkillRefreshState};
 use super::skill_trial;
+use super::skill_trust_policy::require_trusted_dotagents_source;
 use super::skill_update_check::{self, CommitLookup, GhCommitLookup};
 
 // ============================================================================
@@ -45,30 +52,72 @@ use super::skill_update_check::{self, CommitLookup, GhCommitLookup};
 
 /// Runs an external CLI (`npx ...`), optionally in `cwd`. The real
 /// implementation always runs `npx`, since both `dotagents` and `skills.sh`
-/// are invoked through it.
+/// are invoked through it. Implementations may honour `is_cancelled` so a
+/// background Add Skill operation can stop between batch items.
 pub trait CommandRunner {
     fn run_npx(&self, args: &[String], cwd: Option<&Path>) -> Result<(), String>;
+
+    /// True when the owning Add Skill operation has been cancelled.
+    fn is_cancelled(&self) -> bool {
+        false
+    }
+
+    /// Shared Add operation cancellation and deadline. Legacy runners receive
+    /// a finite default context.
+    fn operation_control(&self) -> AddOperationControl {
+        AddOperationControl::bounded_default()
+    }
 }
 
-pub struct RealCommandRunner;
+/// Real `npx` runner used by Add Skill. Stdin is null; output is bounded;
+/// cancel and timeout kill the process group.
+pub struct RealCommandRunner {
+    control: AddOperationControl,
+}
+
+impl RealCommandRunner {
+    /// Uncancellable runner for install/remove/import paths that are not an
+    /// Add Skill operation. Prefer `with_cancel` when the caller owns a flag.
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Add Skill background worker: the operation's cancel flag kills `npx`.
+    pub fn with_cancel(cancel: Arc<AtomicBool>) -> Self {
+        Self {
+            control: AddOperationControl::new(
+                cancel,
+                super::skill_process::DEFAULT_ADD_PROCESS_TIMEOUT,
+            ),
+        }
+    }
+
+    /// Use the context created when the queued Add operation began.
+    pub fn with_control(control: AddOperationControl) -> Self {
+        Self { control }
+    }
+}
+
+impl Default for RealCommandRunner {
+    fn default() -> Self {
+        Self {
+            control: AddOperationControl::bounded_default(),
+        }
+    }
+}
 
 impl CommandRunner for RealCommandRunner {
     fn run_npx(&self, args: &[String], cwd: Option<&Path>) -> Result<(), String> {
-        let mut cmd = Command::new("npx");
-        cmd.args(args);
-        if let Some(dir) = cwd {
-            cmd.current_dir(dir);
-        }
-        let output = cmd
-            .output()
-            .map_err(|e| format!("Failed to execute npx: {e}"))?;
-        if output.status.success() {
-            Ok(())
-        } else {
-            let stderr = String::from_utf8_lossy(&output.stderr).to_string();
-            let stdout = String::from_utf8_lossy(&output.stdout).to_string();
-            Err(if stderr.is_empty() { stdout } else { stderr })
-        }
+        run_controlled_npx_with_control(args, cwd, &self.control)
+            .map_err(ControlledProcessError::into_message)
+    }
+
+    fn is_cancelled(&self) -> bool {
+        self.control.check().is_err()
+    }
+
+    fn operation_control(&self) -> AddOperationControl {
+        self.control.clone()
     }
 }
 
@@ -222,7 +271,7 @@ fn validate_parsed_source(source: &ParsedSkillSource) -> Result<(), String> {
 
 /// Every entry name directly under `dir`, or an empty set when `dir` doesn't
 /// exist yet.
-fn dir_entry_names(dir: &Path) -> std::collections::BTreeSet<String> {
+pub(crate) fn dir_entry_names(dir: &Path) -> std::collections::BTreeSet<String> {
     fs::read_dir(dir)
         .into_iter()
         .flatten()
@@ -322,6 +371,7 @@ fn add_via_dotagents(
     request: &AddSkillRequest,
     runner: &dyn CommandRunner,
 ) -> Result<AddSkillResult, String> {
+    require_trusted_dotagents_source(home, &request.source).map_err(|error| error.to_string())?;
     let source_arg = dotagents_source_arg(&request.source)?;
     let is_project = request.scope == InstallScope::Project;
     let project_path = request.project_path.as_deref();
@@ -594,12 +644,29 @@ fn validate_local_copy_destinations(
 fn commit_copy_install<F, C>(
     targets: &[PathBuf],
     local_source: Option<&Path>,
+    control: &AddOperationControl,
     acquire: F,
     copy: C,
 ) -> Result<(), String>
 where
     F: FnOnce(&Path) -> Result<(), String>,
     C: Fn(&Path, &Path) -> Result<(), String>,
+{
+    commit_copy_install_with_hook(targets, local_source, control, acquire, copy, |_| {})
+}
+
+fn commit_copy_install_with_hook<F, C, H>(
+    targets: &[PathBuf],
+    local_source: Option<&Path>,
+    control: &AddOperationControl,
+    acquire: F,
+    copy: C,
+    mut after_commit: H,
+) -> Result<(), String>
+where
+    F: FnOnce(&Path) -> Result<(), String>,
+    C: Fn(&Path, &Path) -> Result<(), String>,
+    H: FnMut(usize),
 {
     let nonce = SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -624,6 +691,7 @@ where
     }
 
     for target in targets {
+        control.check_message()?;
         let parent = target
             .parent()
             .ok_or_else(|| format!("Copy destination has no parent: {}", target.display()))?;
@@ -638,11 +706,13 @@ where
         }
     }
 
+    control.check_message()?;
     if let Err(error) = acquire(&staging[0]) {
         remove_install_paths(&staging);
         return Err(error);
     }
     for stage in staging.iter().skip(1) {
+        control.check_message()?;
         if let Err(error) = copy(&staging[0], stage) {
             remove_install_paths(&staging);
             return Err(error);
@@ -651,6 +721,16 @@ where
 
     let mut committed = Vec::new();
     for (stage, target) in staging.iter().zip(targets) {
+        if let Err(error) = control.check_message() {
+            remove_install_paths(&staging);
+            if committed.is_empty() {
+                return Err(error);
+            }
+            return Err(format!(
+                "{error} after committing {} Copy destination(s); committed content was preserved",
+                committed.len()
+            ));
+        }
         if fs::symlink_metadata(target).is_ok() {
             remove_install_paths(&staging);
             remove_install_paths(&committed);
@@ -668,6 +748,7 @@ where
             ));
         }
         committed.push(target.clone());
+        after_commit(committed.len());
     }
     Ok(())
 }
@@ -678,7 +759,9 @@ fn add_via_copy(
     fetch: &dyn UpstreamFetch,
     lookup: &dyn CommitLookup,
     snapshot: Option<&dyn RepoSnapshot>,
+    control: &AddOperationControl,
 ) -> Result<AddSkillResult, String> {
+    control.check_message()?;
     // Read before creating files. A malformed registry must fail closed, not
     // let an install succeed without the ownership record needed to remove it.
     let mut registry = super::skill_fork_registry::read_fork_registry(home)?;
@@ -737,6 +820,7 @@ fn add_via_copy(
     commit_copy_install(
         &targets,
         local_copy_source.as_deref(),
+        control,
         |staging_target| match request.source.kind {
             ParsedSkillSourceKind::Github => {
                 let repo = request
@@ -748,18 +832,26 @@ fn add_via_copy(
                 // A batch install passes the snapshot it already downloaded, so
                 // the tarball is fetched once for the whole picker selection.
                 match snapshot {
-                    Some(snapshot) => snapshot.copy_dir(&path, staging_target)?,
+                    Some(snapshot) => {
+                        snapshot.copy_dir_controlled(&path, staging_target, control)?
+                    }
                     None => {
                         let commit = match &request.source.git_ref {
                             Some(r) => r.clone(),
                             None => lookup
-                                .latest_commit(&repo, &path, None)?
+                                .latest_commit_controlled(&repo, &path, None, control)?
                                 .map(|(sha, _)| sha)
                                 .ok_or_else(|| {
                                     format!("Could not determine {name}'s latest commit")
                                 })?,
                         };
-                        fetch.fetch_skill_dir(&repo, &path, &commit, staging_target)?;
+                        fetch.fetch_skill_dir_controlled(
+                            &repo,
+                            &path,
+                            &commit,
+                            staging_target,
+                            control,
+                        )?;
                     }
                 }
                 Ok(())
@@ -768,19 +860,20 @@ fn add_via_copy(
                 let local_path = local_copy_source
                     .as_deref()
                     .ok_or("A local source needs a path")?;
-                copy_dir_all(local_path, staging_target)
+                copy_dir_all_controlled(local_path, staging_target, control)
             }
             ParsedSkillSourceKind::Git => {
                 Err("Copy is not supported for git sources; use dotagents".to_string())
             }
         },
-        copy_dir_all,
+        |source, destination| copy_dir_all_controlled(source, destination, control),
     )?;
     let mut deployments_created: Vec<String> = targets
         .iter()
         .map(|path| path.to_string_lossy().to_string())
         .collect();
     let claude_link = if request.destination == SkillDestination::Universal {
+        control.check_message()?;
         match maybe_claude_code_symlink(
             &claude_skills_dir(home, request),
             &target_roots[0],
@@ -803,13 +896,20 @@ fn add_via_copy(
     }
 
     let ownership_records = if request.destination == SkillDestination::Universal {
-        let mut records = vec![copy_deployment_record(request, &name, &target, "universal")];
+        let mut records = vec![copy_deployment_record(
+            request,
+            &name,
+            &target,
+            "universal",
+            control,
+        )];
         if let Some(link) = &claude_link {
             records.push(copy_deployment_record(
                 request,
                 &name,
                 link,
                 AgentId::ClaudeCode.cli_name(),
+                control,
             ));
         }
         records.into_iter().collect::<Result<Vec<_>, _>>()
@@ -817,12 +917,21 @@ fn add_via_copy(
         per_harness_agents
             .iter()
             .zip(&targets)
-            .map(|(agent, path)| copy_deployment_record(request, &name, path, agent.cli_name()))
+            .map(|(agent, path)| {
+                copy_deployment_record(request, &name, path, agent.cli_name(), control)
+            })
             .collect::<Result<Vec<_>, _>>()
     };
     let ownership_records = match ownership_records {
         Ok(records) => records,
         Err(error) => {
+            if error.contains(super::skill_process::PROCESS_CANCELLED_MESSAGE)
+                || error.contains(super::skill_process::PROCESS_TIMED_OUT_MESSAGE)
+            {
+                return Err(format!(
+                    "{error} after committing Copy content; committed content was preserved"
+                ));
+            }
             if let Some(link) = &claude_link {
                 let _ = fs::remove_file(link);
             }
@@ -840,6 +949,7 @@ fn add_via_copy(
             .insert(record.deployment_id.clone(), record.clone());
     }
     registry.version = super::skill_fork_registry::CURRENT_REGISTRY_VERSION;
+    control.check_message()?;
     if let Err(error) = super::skill_fork_registry::write_fork_registry(home, &registry) {
         if let Some(link) = &claude_link {
             let _ = fs::remove_file(link);
@@ -888,6 +998,7 @@ fn copy_deployment_record(
     name: &str,
     path: &Path,
     slot: &str,
+    control: &AddOperationControl,
 ) -> Result<CopyDeploymentRecord, String> {
     Ok(CopyDeploymentRecord {
         deployment_id: installed_deployment_id(request, name, path, slot),
@@ -897,14 +1008,14 @@ fn copy_deployment_record(
         destination: request.destination,
         slot: slot.to_string(),
         project_path: request.project_path.clone(),
-        content_hash: super::skill_discovery::live_skill_content_hash(path)?,
+        content_hash: super::skill_discovery::live_skill_content_hash_controlled(path, control)?,
         disabled: false,
     })
 }
 
 /// The shared skills folder `add_via_dotagents` writes into - the home root
 /// for global scope, `<project>/.agents/skills` for project scope.
-fn shared_skills_dir(home: &Path, request: &AddSkillRequest) -> PathBuf {
+pub(crate) fn shared_skills_dir(home: &Path, request: &AddSkillRequest) -> PathBuf {
     if request.scope == InstallScope::Global {
         home.join(".agents").join("skills")
     } else {
@@ -1018,6 +1129,7 @@ pub fn add_skill_with(
     fetch: &dyn UpstreamFetch,
     lookup: &dyn CommitLookup,
 ) -> Result<AddSkillResult, String> {
+    let control = runner.operation_control();
     if request.destination == SkillDestination::PerHarness && request.trial {
         return Err("Trials require the Universal destination".to_string());
     }
@@ -1035,7 +1147,7 @@ pub fn add_skill_with(
             add_via_dotagents(home, request, runner)
         }
         AddMethod::SkillsSh => add_via_skills_sh(home, request, runner),
-        AddMethod::Copy => add_via_copy(home, request, fetch, lookup, None),
+        AddMethod::Copy => add_via_copy(home, request, fetch, lookup, None, &control),
     }?;
     apply_disabled_harnesses(home, request, &mut result);
     Ok(result)
@@ -1076,6 +1188,21 @@ pub fn add_skills_with(
     fetch: &dyn UpstreamFetch,
     lookup: &dyn CommitLookup,
 ) -> Result<Vec<AddSkillOutcome>, String> {
+    add_skills_with_progress(home, request, runner, fetch, lookup, |_, _, _| {})
+}
+
+/// `add_skills_with`, plus a per-item progress hook the background Add Skill
+/// operation uses for "2 of 5" status. The hook must not change install
+/// behaviour.
+pub fn add_skills_with_progress(
+    home: &Path,
+    request: &AddSkillsRequest,
+    runner: &dyn CommandRunner,
+    fetch: &dyn UpstreamFetch,
+    lookup: &dyn CommitLookup,
+    mut on_item: impl FnMut(usize, usize, &str),
+) -> Result<Vec<AddSkillOutcome>, String> {
+    let control = runner.operation_control();
     if request.destination == SkillDestination::PerHarness && request.trial {
         return Err("Trials require the Universal destination".to_string());
     }
@@ -1087,6 +1214,10 @@ pub fn add_skills_with(
     {
         return Err("dotagents installs require the Universal destination".to_string());
     }
+    if request.method == AddMethod::Dotagents {
+        require_trusted_dotagents_source(home, &request.source)
+            .map_err(|error| error.to_string())?;
+    }
     if request.destination == SkillDestination::PerHarness && !request.disabled_harnesses.is_empty()
     {
         return Err("Per harness installs cannot include disabled harnesses".to_string());
@@ -1095,19 +1226,31 @@ pub fn add_skills_with(
     let snapshot = if request.method == AddMethod::Copy
         && request.source.kind == ParsedSkillSourceKind::Github
     {
-        open_repo_snapshot(request, fetch, lookup)?
+        open_repo_snapshot(request, fetch, lookup, &control)?
     } else {
         None
     };
 
-    let mut outcomes = Vec::with_capacity(request.skills.len());
-    for entry in &request.skills {
+    let total = request.skills.len();
+    let mut outcomes = Vec::with_capacity(total);
+    for (index, entry) in request.skills.iter().enumerate() {
+        on_item(index + 1, total, &entry.name);
+        if runner.is_cancelled() {
+            outcomes.push(AddSkillOutcome {
+                name: entry.name.clone(),
+                result: None,
+                error: Some(super::skill_process::PROCESS_CANCELLED_MESSAGE.to_string()),
+            });
+            continue;
+        }
         let single = request_for_entry(request, entry);
         let mut result = match validate_parsed_source(&single.source) {
             Ok(()) => match request.method {
                 AddMethod::Dotagents => add_via_dotagents(home, &single, runner),
                 AddMethod::SkillsSh => add_via_skills_sh(home, &single, runner),
-                AddMethod::Copy => add_via_copy(home, &single, fetch, lookup, snapshot.as_deref()),
+                AddMethod::Copy => {
+                    add_via_copy(home, &single, fetch, lookup, snapshot.as_deref(), &control)
+                }
             },
             Err(e) => Err(e),
         };
@@ -1137,6 +1280,7 @@ fn open_repo_snapshot(
     request: &AddSkillsRequest,
     fetch: &dyn UpstreamFetch,
     lookup: &dyn CommitLookup,
+    control: &AddOperationControl,
 ) -> Result<Option<Box<dyn RepoSnapshot>>, String> {
     let repo = request
         .source
@@ -1147,20 +1291,20 @@ fn open_repo_snapshot(
     let commit = match &request.source.git_ref {
         Some(r) => r.clone(),
         None => lookup
-            .latest_commit(&repo, &path, None)?
+            .latest_commit_controlled(&repo, &path, None, control)?
             .map(|(sha, _)| sha)
             .ok_or_else(|| format!("Could not determine {repo}'s latest commit"))?,
     };
-    fetch.open_repo(&repo, &commit)
+    fetch.open_repo_controlled(&repo, &commit, control)
 }
 
 /// The `UpstreamFetch`/`CommitLookup` pair both add commands run with.
-type GithubTools = (Box<dyn UpstreamFetch>, Box<dyn CommitLookup>);
+pub(crate) type GithubTools = (Box<dyn UpstreamFetch>, Box<dyn CommitLookup>);
 
 /// The GitHub-facing pair both add commands run with: the real `gh`-backed
 /// implementations, or ones that fail with "Run Check now first" when `gh`
 /// isn't resolvable.
-fn resolve_fetch_and_lookup(app: &tauri::AppHandle) -> Result<GithubTools, String> {
+pub(crate) fn resolve_fetch_and_lookup(app: &tauri::AppHandle) -> Result<GithubTools, String> {
     let app_data = app
         .path()
         .app_data_dir()
@@ -1194,7 +1338,7 @@ pub fn add_skills(
 ) -> Result<Vec<AddSkillOutcome>, String> {
     let _guard = fork_lock.try_acquire()?;
     let home = dirs::home_dir().ok_or("Could not find home directory")?;
-    let runner = RealCommandRunner;
+    let runner = RealCommandRunner::new();
     let (fetch, lookup) = resolve_fetch_and_lookup(&app)?;
     let result = add_skills_with(&home, &request, &runner, fetch.as_ref(), lookup.as_ref());
     skill_refresh::request_snapshot_rebuild(&app);
@@ -1211,7 +1355,7 @@ pub fn add_skill(
     let _guard = fork_lock.try_acquire()?;
     let _ = &refresh_state;
     let home = dirs::home_dir().ok_or("Could not find home directory")?;
-    let runner = RealCommandRunner;
+    let runner = RealCommandRunner::new();
     let (fetch, lookup) = resolve_fetch_and_lookup(&app)?;
 
     // Trial recording happens inside each `add_via_*` method (it needs the
@@ -1316,6 +1460,61 @@ mod tests {
         }
     }
 
+    fn trust_repo(home: &Path, repo: &str) {
+        super::super::skill_trust_policy::record_trusted_dotagents_source(home, repo).unwrap();
+    }
+
+    #[test]
+    fn legacy_single_dotagents_add_refuses_an_untrusted_source() {
+        let tmp = tempfile::tempdir().unwrap();
+        let home = tmp.path();
+        let request = base_request(
+            github_source("kentcdodds/kcd-skills", None, Some("visual-recap")),
+            AddMethod::Dotagents,
+        );
+        let runner = FakeRunner::default();
+
+        let error = add_skill_with(
+            home,
+            &request,
+            &runner,
+            &NeverCalledFetch,
+            &NeverCalledLookup,
+        )
+        .unwrap_err();
+
+        assert_eq!(error, "Untrusted dotagents source: kentcdodds/kcd-skills");
+        assert!(runner.calls.lock().unwrap().is_empty());
+        assert!(super::super::skill_fork_registry::read_fork_registry(home)
+            .unwrap()
+            .trusted_dotagents_sources
+            .is_empty());
+    }
+
+    #[test]
+    fn legacy_batch_dotagents_add_refuses_an_untrusted_source() {
+        let tmp = tempfile::tempdir().unwrap();
+        let home = tmp.path();
+        let request = batch_request(
+            github_source("kentcdodds/kcd-skills", Some("skills"), None),
+            AddMethod::Dotagents,
+            vec![entry("visual-recap", "skills/visual-recap")],
+        );
+        let runner = FakeRunner::default();
+
+        let error = add_skills_with(
+            home,
+            &request,
+            &runner,
+            &NeverCalledFetch,
+            &NeverCalledLookup,
+        )
+        .unwrap_err();
+
+        assert_eq!(error, "Untrusted dotagents source: kentcdodds/kcd-skills");
+        assert!(runner.calls.lock().unwrap().is_empty());
+    }
+
     #[test]
     fn single_per_harness_trial_is_rejected_before_creating_paths() {
         let tmp = tempfile::tempdir().unwrap();
@@ -1368,7 +1567,7 @@ mod tests {
     }
 
     #[test]
-    fn dotagents_argv_includes_name_and_ref() {
+    fn trusted_legacy_single_dotagents_add_runs_fake_runner_with_name_and_ref() {
         let tmp = tempfile::tempdir().unwrap();
         let home = tmp.path().to_path_buf();
         let mut source = github_source(
@@ -1378,6 +1577,7 @@ mod tests {
         );
         source.git_ref = Some("v2".to_string());
         let request = base_request(source, AddMethod::Dotagents);
+        trust_repo(&home, "getsentry/find-bugs");
 
         let runner = FakeRunner {
             creates: vec![home.join(".agents/skills/find-bugs")],
@@ -1420,6 +1620,7 @@ mod tests {
         fs::create_dir_all(&project).unwrap();
         let source = github_source("getsentry/find-bugs", None, Some("find-bugs"));
         let mut request = base_request(source, AddMethod::Dotagents);
+        trust_repo(&home, "getsentry/find-bugs");
         request.scope = InstallScope::Project;
         request.project_path = Some(project.to_string_lossy().to_string());
 
@@ -1447,6 +1648,7 @@ mod tests {
         fs::create_dir_all(home.join(".agents/skills/existing")).unwrap();
         let source = github_source("getsentry/many-skills", None, None);
         let request = base_request(source, AddMethod::Dotagents);
+        trust_repo(&home, "getsentry/many-skills");
 
         let runner = FakeRunner {
             creates: vec![
@@ -1584,6 +1786,7 @@ mod tests {
         let error = commit_copy_install(
             &targets,
             None,
+            &AddOperationControl::bounded_default(),
             |stage| {
                 fs::create_dir_all(stage).unwrap();
                 fs::write(stage.join("partial"), "partial").unwrap();
@@ -1602,6 +1805,7 @@ mod tests {
         commit_copy_install(
             &targets,
             None,
+            &AddOperationControl::bounded_default(),
             |stage| {
                 fs::create_dir_all(stage).map_err(|error| error.to_string())?;
                 fs::write(stage.join("SKILL.md"), "body").map_err(|error| error.to_string())
@@ -1625,6 +1829,7 @@ mod tests {
         let error = commit_copy_install(
             &targets,
             None,
+            &AddOperationControl::bounded_default(),
             |stage| {
                 fs::create_dir_all(stage).map_err(|error| error.to_string())?;
                 fs::write(stage.join("SKILL.md"), "body").map_err(|error| error.to_string())
@@ -1647,6 +1852,40 @@ mod tests {
         for parent in targets.iter().filter_map(|target| target.parent()) {
             assert!(fs::read_dir(parent).unwrap().next().is_none());
         }
+    }
+
+    #[test]
+    fn cancellation_after_first_copy_commit_preserves_and_reports_partial_truth() {
+        let tmp = tempfile::tempdir().unwrap();
+        let targets = vec![tmp.path().join("one/skill"), tmp.path().join("two/skill")];
+        let cancel = Arc::new(AtomicBool::new(false));
+        let control =
+            AddOperationControl::new(Arc::clone(&cancel), std::time::Duration::from_secs(5));
+        let error = commit_copy_install_with_hook(
+            &targets,
+            None,
+            &control,
+            |stage| {
+                fs::create_dir_all(stage).map_err(|error| error.to_string())?;
+                fs::write(stage.join("SKILL.md"), "body").map_err(|error| error.to_string())
+            },
+            copy_dir_all,
+            |committed| {
+                if committed == 1 {
+                    cancel.store(true, std::sync::atomic::Ordering::SeqCst);
+                }
+            },
+        )
+        .unwrap_err();
+
+        assert!(error.contains(super::super::skill_process::PROCESS_CANCELLED_MESSAGE));
+        assert!(error.contains("after committing 1 Copy destination"));
+        assert!(targets[0].join("SKILL.md").exists());
+        assert!(!targets[1].exists());
+        assert!(fs::read_dir(targets[1].parent().unwrap())
+            .unwrap()
+            .next()
+            .is_none());
     }
 
     #[test]
@@ -1895,6 +2134,7 @@ mod tests {
         fs::create_dir_all(home.join(".claude/skills")).unwrap();
         let source = github_source("getsentry/find-bugs", None, Some("find-bugs"));
         let mut request = base_request(source, AddMethod::Dotagents);
+        trust_repo(&home, "getsentry/find-bugs");
         request.agents = vec![AgentId::ClaudeCode];
 
         let runner = FakeRunner {
@@ -1958,6 +2198,7 @@ mod tests {
             .unwrap();
         let source = github_source("getsentry/find-bugs", None, Some("find-bugs"));
         let mut request = base_request(source, AddMethod::Dotagents);
+        trust_repo(&home, "getsentry/find-bugs");
         request.agents = vec![AgentId::ClaudeCode];
 
         let runner = FakeRunner {
@@ -2181,6 +2422,7 @@ mod tests {
         let source = github_source("getsentry/many-skills", None, None);
         let mut request = base_request(source, AddMethod::Dotagents);
         request.trial = true;
+        trust_repo(&home, "getsentry/many-skills");
 
         let runner = FakeRunner {
             creates: vec![
@@ -2276,7 +2518,6 @@ mod tests {
                 entry("third", "skills/third"),
             ],
         );
-
         let fetch = CountingFetch::default();
         let outcomes = add_skills_with(
             &home,
@@ -2338,6 +2579,7 @@ mod tests {
                 entry("other", "skills/other"),
             ],
         );
+        trust_repo(&home, "kentcdodds/kcd-skills");
 
         let runner = FakeRunner {
             creates: vec![
@@ -2404,7 +2646,7 @@ mod tests {
             Some("skills/find-bugs"),
             Some("find-bugs"),
         );
-        let mut request = base_request(source, AddMethod::Dotagents);
+        let mut request = base_request(source, AddMethod::SkillsSh);
         request.trial = true;
 
         let runner = FakeRunner {
@@ -2465,6 +2707,7 @@ mod tests {
     /// Installs `find-bugs` through dotagents with `disabled_harnesses` set,
     /// and hands back the result for the caller to assert on.
     fn add_with_disabled(home: &Path, disabled: Vec<AgentId>) -> AddSkillResult {
+        trust_repo(home, "getsentry/find-bugs");
         let source = github_source(
             "getsentry/find-bugs",
             Some("skills/find-bugs"),

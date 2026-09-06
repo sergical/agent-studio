@@ -35,13 +35,10 @@ interface UseLocationActionsResult {
   run: (action: LocationAction) => void;
   isBusy: boolean;
   /** Set while a "Convert to per-skill links…" action is pending confirmation. */
-  materializeRequest: {
-    target: LifecycleTarget;
-    harness: string;
-    harnessLabel: string;
-    root: string;
-  } | null;
+  materializeRequest: MaterializeLocationRequest | null;
   closeMaterializeRequest: () => void;
+  independentCopyRequest: { deployment: Deployment; scopeLabel: string } | null;
+  closeIndependentCopyRequest: () => void;
   /** Set while a "Remove from <Scope>…" action is pending confirmation. */
   removeRequest: {
     scopeLabel: string;
@@ -51,6 +48,44 @@ interface UseLocationActionsResult {
   closeRemoveRequest: () => void;
 }
 
+export interface MaterializeLocationRequest {
+  target: LifecycleTarget;
+  harness: string;
+  harnessLabel: string;
+  root: string;
+  intent: "convert-only" | "convert-then-disable";
+}
+
+/** Routes only explicit conversion and whole-root toggle-off actions to the conversion dialog. */
+export function materializeRequestForLocationAction(
+  action: LocationAction,
+): MaterializeLocationRequest | null {
+  if (action.kind === "convert-root") {
+    return {
+      target: action.target,
+      harness: action.harness,
+      harnessLabel: action.harness,
+      root: action.root,
+      intent: "convert-only",
+    };
+  }
+  if (
+    action.kind !== "set-enabled" ||
+    action.enabled ||
+    !action.deployment.shared_via_whole_dir_link
+  ) {
+    return null;
+  }
+  const { deployment } = action;
+  return {
+    target: { deployment_id: deployment.id },
+    harness: agentIdFromDeploymentLabel(deployment.agent) ?? deployment.agent,
+    harnessLabel: deployment.agent,
+    root: deployment.path.slice(0, deployment.path.lastIndexOf("/")),
+    intent: "convert-then-disable",
+  };
+}
+
 /** Every `LocationAction` this hook runs directly, without a confirm dialog first. */
 export function useLocationActions(
   skill: InstalledSkill,
@@ -58,11 +93,12 @@ export function useLocationActions(
 ): UseLocationActionsResult {
   const addToast = useAppStore((state) => state.addToast);
   const [isBusy, setIsBusy] = useState(false);
-  const [materializeRequest, setMaterializeRequest] = useState<{
-    target: LifecycleTarget;
-    harness: string;
-    harnessLabel: string;
-    root: string;
+  const [materializeRequest, setMaterializeRequest] = useState<MaterializeLocationRequest | null>(
+    null,
+  );
+  const [independentCopyRequest, setIndependentCopyRequest] = useState<{
+    deployment: Deployment;
+    scopeLabel: string;
   } | null>(null);
   const [removeRequest, setRemoveRequest] = useState<{
     scopeLabel: string;
@@ -108,23 +144,20 @@ export function useLocationActions(
         onCompareCopies?.();
         return;
       case "convert-root":
-        setMaterializeRequest({
-          target: action.target,
-          harness: action.harness,
-          harnessLabel: action.harness,
-          root: action.root,
+        setMaterializeRequest(materializeRequestForLocationAction(action));
+        return;
+      case "make-independent-copy":
+        setIndependentCopyRequest({
+          deployment: action.deployment,
+          scopeLabel: action.scopeLabel,
         });
         return;
       case "set-enabled": {
         const { deployment, enabled } = action;
         const readerAgent = agentIdFromDeploymentLabel(deployment.agent);
-        if (deployment.shared_via_whole_dir_link) {
-          setMaterializeRequest({
-            target: { deployment_id: deployment.id },
-            harness: agentIdFromDeploymentLabel(deployment.agent) ?? deployment.agent,
-            harnessLabel: deployment.agent,
-            root: deployment.path.slice(0, deployment.path.lastIndexOf("/")),
-          });
+        const conversion = materializeRequestForLocationAction(action);
+        if (conversion) {
+          setMaterializeRequest(conversion);
           return;
         }
         runWithErrorToast(enabled ? "Couldn't enable" : "Couldn't disable", () =>
@@ -219,6 +252,8 @@ export function useLocationActions(
     isBusy,
     materializeRequest,
     closeMaterializeRequest: () => setMaterializeRequest(null),
+    independentCopyRequest,
+    closeIndependentCopyRequest: () => setIndependentCopyRequest(null),
     removeRequest,
     closeRemoveRequest: () => setRemoveRequest(null),
   };

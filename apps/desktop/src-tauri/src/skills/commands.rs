@@ -232,6 +232,7 @@ mod tests {
         use std::collections::BTreeMap;
 
         skill_refresh::SkillSnapshot {
+            revision: 0,
             skills: vec![InstalledSkill {
                 name: "foo".to_string(),
                 source: "manual".to_string(),
@@ -1889,7 +1890,7 @@ pub async fn remove_skill(
                 scope,
                 project_path: project_path.as_deref().map(Path::new),
             },
-            &RealCommandRunner,
+            &RealCommandRunner::new(),
             |stage_root| std::fs::remove_dir_all(stage_root).map_err(|error| error.to_string()),
         )?;
         skill_trial::drop_trial_record(

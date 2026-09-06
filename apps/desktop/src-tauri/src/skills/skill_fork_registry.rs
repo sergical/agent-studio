@@ -17,7 +17,7 @@
 // instead, which downgrades that same error to a logged warning.
 // ============================================================================
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 
@@ -286,6 +286,11 @@ pub struct ForkRegistry {
     /// the system default for the file's type. See `skill_editor`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub preferred_editor: Option<String>,
+    /// Normalized GitHub `owner/repo` and `git:<url>` identities the user
+    /// has explicitly trusted for a later dotagents Add Skill retry. Empty
+    /// by default: `kentcdodds/kcd-skills` still needs confirmation.
+    #[serde(default, skip_serializing_if = "BTreeSet::is_empty")]
+    pub trusted_dotagents_sources: BTreeSet<String>,
 }
 
 pub const CURRENT_REGISTRY_VERSION: u32 = 4;
@@ -311,6 +316,7 @@ impl Default for ForkRegistry {
             skills_sh_api_key: None,
             server_url: None,
             preferred_editor: None,
+            trusted_dotagents_sources: BTreeSet::new(),
         }
     }
 }

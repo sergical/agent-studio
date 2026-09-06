@@ -4,7 +4,8 @@
 // actually holds (one skill, or a picker for a folder of them), offers a
 // Method and Destination controls, Universal visibility, a
 // Global/Project Scope, and an optional "Try for 24 hours" trial. Submits to
-// the `add_skills` Tauri command for GitHub sources, `add_skill` otherwise.
+// a background Add Skill operation (`start_add_skill_operation` /
+// `start_add_skills_operation`) so `npx` never runs on the UI thread.
 // ============================================================================
 
 import { useEffect, useReducer, useRef, useState } from "react";
@@ -34,21 +35,41 @@ import { SkillStore } from "../SkillStore/SkillStore";
 import { SkillDestinationSelector } from "../SkillStore/SkillDestinationSelector";
 import { CheckboxControl } from "../ui/CheckboxControl";
 import {
-  addSkill,
-  addSkills,
+  abandonPackImportTrust,
+  cancelAddSkillOperation,
+  confirmAddSkillTrust,
+  confirmSkillPackTrust,
   getAddMethodDefaults,
+  getAddSkillOperation,
   importSkillPack,
   listGithubSkills,
+  onAddSkillOperation,
+  startAddSkillOperation,
+  startAddSkillsOperation,
 } from "../../lib/skill-api";
+import {
+  applyAddSkillOperationEvent,
+  listenForAddSkillOperation,
+} from "../../hooks/useAddSkillOperation";
 import { singleSelectToggleValue } from "../../lib/single-select-toggle-group";
 import {
+  addSkillFinishAction,
+  addSkillOperationProgressCopy,
+  addSkillOperationTerminalCopy,
   installDestinationError,
   installTrialError,
+  isAddSkillOperationCancellable,
+  isAddSkillOperationTerminal,
   normalizeInstallHarnesses,
   parseSkillSource,
+  shouldConsumeAddSkillOperation,
   trialSelectionForDestination,
 } from "@skill-studio/lib";
-import type { ParsedSkillSource } from "@skill-studio/lib";
+import type {
+  AddSkillOperationEvent,
+  PackImportRequest,
+  ParsedSkillSource,
+} from "@skill-studio/lib";
 import { isFeatureEnabled } from "../../lib/feature-flags";
 import { useAppStore } from "../../store/appStore";
 import type {
@@ -123,7 +144,7 @@ function availableMethods(
       : ["skills-sh", "copy", "pack"];
   }
   if (parsed.kind === "git") return dotagentsInstalled ? ["dotagents"] : [];
-  return ["copy"];
+  return isFeatureEnabled("skill-packs") ? ["copy", "pack"] : ["copy"];
 }
 
 /** One-line parse feedback shown beneath the Source field. */
@@ -592,11 +613,39 @@ function ScopePicker({
   );
 }
 
+function applyFinishAction(
+  status: AddSkillOperationEvent,
+  closeSheet: () => void,
+  openSkill: (name: string) => void,
+  addToast: ReturnType<typeof useAppStore.getState>["addToast"],
+  dispatch: Dispatch<FormAction>,
+) {
+  const action = addSkillFinishAction(status);
+  if (action.kind === "error") {
+    dispatch({ type: "submit_error", error: action.error });
+    return;
+  }
+  closeSheet();
+  addToast({
+    type: action.message ? "warning" : "success",
+    title: action.title,
+    message: action.message,
+  });
+  if (action.failedTitle) {
+    addToast({
+      type: "error",
+      title: action.failedTitle,
+      message: action.failedMessage,
+    });
+  }
+  if (action.openName) openSkill(action.openName);
+  dispatch({ type: "submit_end" });
+}
+
 /**
- * Owns `handleSubmit` and the derived `isValid` flag: both close over the
- * same handful of form fields plus the three callbacks that fire on success,
- * so pulling them out of `AddSkillSheet` keeps that component's body to the
- * dialog shell and its own effects.
+ * Owns `handleSubmit` and the derived `isValid` flag. Add Skill listens
+ * first, then starts the background operation so queued progress shows
+ * before any `npx` work.
  */
 function useAddSkillSubmit(input: {
   parsed: ParsedSkillSource | { error: string };
@@ -607,8 +656,6 @@ function useAddSkillSubmit(input: {
   scope: InstallScope;
   projectPath: string | null;
   trial: boolean;
-  /** The picked GitHub skill folders, or `null` for a source that isn't
-   * listed (local, git, or a pack import). */
   githubEntries: GithubSkillEntry[] | null;
   dispatch: Dispatch<FormAction>;
   closeSheet: () => void;
@@ -630,6 +677,15 @@ function useAddSkillSubmit(input: {
     openSkill,
     addToast,
   } = input;
+  const [operation, setOperation] = useState<AddSkillOperationEvent | undefined>(undefined);
+  const [packTrust, setPackTrust] = useState<
+    { identities: string[]; confirmationToken: string; requestKey: string } | undefined
+  >(undefined);
+  const [trustBusy, setTrustBusy] = useState(false);
+  const operationIdRef = useRef<string | undefined>(undefined);
+  const consumedIdRef = useRef<string | undefined>(undefined);
+  const unlistenRef = useRef<(() => void) | undefined>(undefined);
+  const packTrustTokenRef = useRef<string | undefined>(undefined);
   const isValid =
     !("error" in parsed) &&
     (scope !== "project" || !!projectPath) &&
@@ -637,22 +693,79 @@ function useAddSkillSubmit(input: {
     installTrialError(destination, trial) === null &&
     (githubEntries === null || githubEntries.length > 0);
 
+  const packSource =
+    "error" in parsed
+      ? undefined
+      : parsed.kind === "github"
+        ? parsed.repo
+        : parsed.kind === "local"
+          ? parsed.localPath
+          : undefined;
+  const packRequest: PackImportRequest | undefined =
+    method === "pack" && packSource
+      ? {
+          source: packSource,
+          agents,
+          method: "pack",
+          destination: "universal",
+          scope: "global",
+          project_path: null,
+        }
+      : undefined;
+  const packRequestKey = packRequest ? JSON.stringify(packRequest) : undefined;
+  const activePackTrust = packTrust?.requestKey === packRequestKey ? packTrust : undefined;
+
+  useEffect(() => {
+    return () => {
+      unlistenRef.current?.();
+      const token = packTrustTokenRef.current;
+      packTrustTokenRef.current = undefined;
+      if (token) void abandonPackImportTrust(token).catch(() => undefined);
+    };
+  }, []);
+
+  const claimPackTrustToken = (expected?: string) => {
+    const token = packTrustTokenRef.current;
+    if (!token || (expected && token !== expected)) return undefined;
+    packTrustTokenRef.current = undefined;
+    return token;
+  };
+
+  const abandonActivePackTrust = () => {
+    const token = claimPackTrustToken();
+    setPackTrust(undefined);
+    if (token) void abandonPackImportTrust(token).catch(() => undefined);
+  };
+
+  useEffect(() => {
+    if (!operation || !shouldConsumeAddSkillOperation(operation, consumedIdRef.current)) return;
+    consumedIdRef.current = operation.operation_id;
+    applyFinishAction(operation, closeSheet, openSkill, addToast, dispatch);
+    operationIdRef.current = undefined;
+  }, [addToast, closeSheet, dispatch, openSkill, operation]);
+
   const handleSubmit = async () => {
-    if ("error" in parsed || !isValid) return;
-    // Pack imports always target the repo itself, not a sub-path - the
-    // sheet's Source field can point at a path within it, but a pack's own
-    // agents.toml lives at the repo root. Checked before the try below since
-    // the compiler can't follow a `throw` thrown from inside its own catch.
-    const packRepo = parsed.kind === "github" ? parsed.repo : undefined;
-    if (method === "pack" && !packRepo) {
-      dispatch({ type: "submit_error", error: "Pack import needs a GitHub repo" });
+    if ("error" in parsed || !isValid || operationIdRef.current) return;
+    if (method === "pack" && !packRequest) {
+      dispatch({ type: "submit_error", error: "Pack import needs a repository or local folder" });
       return;
     }
     dispatch({ type: "submit_start" });
     try {
       if (method === "pack") {
-        // SAFETY: the `!packRepo` guard above already returned otherwise.
-        const result = await importSkillPack(packRepo!, agents);
+        const preflight = await importSkillPack(packRequest!);
+        if (preflight.status === "needs-trust") {
+          abandonActivePackTrust();
+          packTrustTokenRef.current = preflight.confirmation_token;
+          setPackTrust({
+            identities: preflight.identities,
+            confirmationToken: preflight.confirmation_token,
+            requestKey: packRequestKey!,
+          });
+          dispatch({ type: "submit_end" });
+          return;
+        }
+        const result = preflight.result;
         closeSheet();
         const total = result.bundled.length + result.referenced.length;
         if (result.errors.length > 0) {
@@ -668,63 +781,54 @@ function useAddSkillSubmit(input: {
         return;
       }
       const projectArg = scope === "project" ? (projectPath ?? undefined) : undefined;
-      if (githubEntries) {
-        const outcomes = await addSkills({
-          source: parsed,
-          skills: githubEntries,
-          method,
-          destination,
-          agents,
-          disabled_harnesses: disabledHarnesses,
-          scope,
-          project_path: projectArg,
-          trial,
-        });
-        const installed = outcomes.filter((outcome) => outcome.result);
-        const failed = outcomes.filter((outcome) => outcome.error);
-        if (installed.length === 0) {
-          dispatch({
-            type: "submit_error",
-            error: failed.map((f) => `${f.name}: ${f.error}`).join("; ") || "Nothing was installed",
-          });
-          return;
-        }
-        closeSheet();
-        addToast({
-          type: "success",
-          title: `Added ${installed.length} skill${installed.length !== 1 ? "s" : ""}`,
-          message: installed.flatMap((outcome) => outcome.result?.warning ?? []).join("; "),
-        });
-        if (failed.length > 0) {
-          addToast({
-            type: "error",
-            title: `${failed.length} skill${failed.length !== 1 ? "s" : ""} failed`,
-            message: failed.map((f) => `${f.name}: ${f.error}`).join("; "),
-          });
-        }
-        if (installed.length === 1) openSkill(installed[0].name);
-        dispatch({ type: "submit_end" });
-        return;
-      }
-      const result = await addSkill({
-        source: parsed,
-        method,
-        destination,
-        agents,
-        disabled_harnesses: disabledHarnesses,
-        scope,
-        project_path: projectArg,
-        trial,
+      const operationId = crypto.randomUUID();
+      operationIdRef.current = operationId;
+      consumedIdRef.current = undefined;
+      setOperation({
+        operation_id: operationId,
+        sequence: 0,
+        phase: "queued",
+        message: "Waiting to add skill",
       });
-      closeSheet();
-      if (result.warning) {
-        addToast({ type: "warning", title: `Added ${result.name}`, message: result.warning });
-      } else {
-        addToast({ type: "success", title: `Added ${result.name}` });
-      }
-      openSkill(result.name);
-      dispatch({ type: "submit_end" });
+      unlistenRef.current?.();
+      const unlisten = await listenForAddSkillOperation({
+        isCancelled: () => false,
+        listen: onAddSkillOperation,
+        onEvent: (incoming) => {
+          const trackedId = operationIdRef.current;
+          setOperation((current) => applyAddSkillOperationEvent(current, incoming, trackedId));
+        },
+      });
+      unlistenRef.current = unlisten;
+      const queued = githubEntries
+        ? await startAddSkillsOperation(operationId, {
+            source: parsed,
+            skills: githubEntries,
+            method,
+            destination,
+            agents,
+            disabled_harnesses: disabledHarnesses,
+            scope,
+            project_path: projectArg,
+            trial,
+          })
+        : await startAddSkillOperation(operationId, {
+            source: parsed,
+            method,
+            destination,
+            agents,
+            disabled_harnesses: disabledHarnesses,
+            scope,
+            project_path: projectArg,
+            trial,
+          });
+      setOperation((current) => applyAddSkillOperationEvent(current, queued, operationId));
+      const snapshot = await getAddSkillOperation(operationId);
+      setOperation((current) => applyAddSkillOperationEvent(current, snapshot, operationId));
     } catch (err) {
+      unlistenRef.current?.();
+      unlistenRef.current = undefined;
+      operationIdRef.current = undefined;
       dispatch({
         type: "submit_error",
         error: err instanceof Error ? err.message : "Unknown error",
@@ -732,7 +836,111 @@ function useAddSkillSubmit(input: {
     }
   };
 
-  return { isValid, handleSubmit };
+  const handleCancelOperation = async () => {
+    if (activePackTrust) {
+      abandonActivePackTrust();
+      dispatch({ type: "submit_end" });
+      closeSheet();
+      return;
+    }
+    const operationId = operationIdRef.current;
+    if (operationId && operation?.phase === "needs-trust") {
+      unlistenRef.current?.();
+      unlistenRef.current = undefined;
+      operationIdRef.current = undefined;
+      setOperation(undefined);
+      dispatch({ type: "submit_end" });
+      closeSheet();
+      try {
+        await cancelAddSkillOperation(operationId);
+      } catch (error) {
+        addToast({
+          type: "error",
+          title: "Could not decline repository trust",
+          message: error instanceof Error ? error.message : "Unknown error",
+        });
+      }
+      return;
+    }
+    if (!operationId || !operation || !isAddSkillOperationCancellable(operation.phase)) {
+      closeSheet();
+      return;
+    }
+    try {
+      const next = await cancelAddSkillOperation(operationId);
+      setOperation((current) => applyAddSkillOperationEvent(current, next, operationId));
+    } catch (error) {
+      dispatch({
+        type: "submit_error",
+        error: error instanceof Error ? error.message : "Could not cancel",
+      });
+    }
+  };
+
+  const handleTrustAndRetry = async () => {
+    if (activePackTrust) {
+      if (!packRequest || trustBusy) return;
+      const confirmationToken = claimPackTrustToken(activePackTrust.confirmationToken);
+      if (!confirmationToken) return;
+      setTrustBusy(true);
+      try {
+        const result = await confirmSkillPackTrust(confirmationToken, packRequest);
+        setPackTrust(undefined);
+        closeSheet();
+        const total = result.bundled.length + result.referenced.length;
+        addToast(
+          result.errors.length > 0
+            ? {
+                type: "warning",
+                title: `Imported ${total} skill${total !== 1 ? "s" : ""}`,
+                message: result.errors.join("; "),
+              }
+            : {
+                type: "success",
+                title: `Imported ${total} skill${total !== 1 ? "s" : ""}`,
+              },
+        );
+      } catch (error) {
+        void abandonPackImportTrust(confirmationToken).catch(() => undefined);
+        setPackTrust(undefined);
+        dispatch({
+          type: "submit_error",
+          error: error instanceof Error ? error.message : "Pack trust confirmation failed",
+        });
+      }
+      setTrustBusy(false);
+      return;
+    }
+    const operationId = operationIdRef.current;
+    const identity = operation?.untrusted_source?.identity;
+    if (!operationId || !identity || trustBusy) return;
+    setTrustBusy(true);
+    try {
+      const retryOperationId = crypto.randomUUID();
+      const retry = await confirmAddSkillTrust(operationId, retryOperationId, identity);
+      operationIdRef.current = retry.operation_id;
+      consumedIdRef.current = undefined;
+      setOperation(retry);
+      const snapshot = await getAddSkillOperation(retry.operation_id);
+      setOperation((current) => applyAddSkillOperationEvent(current, snapshot, retry.operation_id));
+    } catch (error) {
+      dispatch({
+        type: "submit_error",
+        error: error instanceof Error ? error.message : "Trust confirmation failed",
+      });
+    }
+    setTrustBusy(false);
+  };
+
+  return {
+    isValid,
+    handleSubmit,
+    handleCancelOperation,
+    handleTrustAndRetry,
+    operation,
+    packTrust: activePackTrust,
+    trustBusy,
+  };
 }
 
 /** The "Add by source" tab's form fields, everything below the Method picker. */
@@ -855,33 +1063,101 @@ function ManualTabFooter({
   submitLabel,
   isValid,
   isSubmitting,
+  operation,
+  packTrust,
+  trustBusy,
   onCancel,
   onSubmit,
+  onTrustAndRetry,
 }: {
   method: SheetMethod;
   submitLabel: string;
   isValid: boolean;
   isSubmitting: boolean;
+  operation: AddSkillOperationEvent | undefined;
+  packTrust: { identities: string[]; confirmationToken: string; requestKey: string } | undefined;
+  trustBusy: boolean;
   onCancel: () => void;
   onSubmit: () => void;
+  onTrustAndRetry: () => void;
 }) {
+  if (packTrust || operation?.phase === "needs-trust") {
+    const identities = packTrust
+      ? packTrust.identities
+      : [operation?.untrusted_source?.identity ?? "this repository"];
+    const isPackTrust = !!packTrust;
+    return (
+      <div className="flex flex-col gap-3 border-t border-border px-5 py-4">
+        <div>
+          <p className="m-0 text-body font-medium text-text-primary">
+            Trust {identities.length === 1 ? "this repository" : "these repositories"}?
+          </p>
+          <ul className="m-0 mt-1 list-inside list-disc text-small text-text-secondary">
+            {identities.map((identity) => (
+              <li key={identity}>{identity}</li>
+            ))}
+          </ul>
+          <p className="m-0 mt-2 text-caption text-text-tertiary">
+            Skills from this source can run on your machine. Confirm only if you trust it.
+          </p>
+        </div>
+        <div className="flex justify-end gap-2">
+          <Button
+            variant="outline"
+            className="h-(--control-height) rounded-md px-3.5 text-body font-medium"
+            onClick={onCancel}
+            disabled={trustBusy}
+          >
+            Close
+          </Button>
+          <Button
+            className="h-(--control-height) rounded-md bg-accent px-3.5 text-body font-medium text-text-on-accent hover:bg-accent-hover"
+            onClick={onTrustAndRetry}
+            disabled={trustBusy}
+          >
+            {isPackTrust
+              ? `Trust ${identities.length === 1 ? "repository" : "repositories"} and import`
+              : "Trust repository and retry"}
+          </Button>
+        </div>
+      </div>
+    );
+  }
+
+  const inProgress = isSubmitting && operation && !isAddSkillOperationTerminal(operation.phase);
+  const terminalFailure =
+    operation &&
+    (operation.phase === "failed" ||
+      operation.phase === "cancelled" ||
+      operation.phase === "timed-out");
   return (
-    <div className="flex justify-end gap-2 border-t border-border px-5 py-4">
-      <Button
-        variant="outline"
-        className="h-(--control-height) rounded-md px-3.5 text-body font-medium"
-        onClick={onCancel}
-        disabled={isSubmitting}
-      >
-        Cancel
-      </Button>
-      <Button
-        className="h-(--control-height) rounded-md bg-accent px-3.5 text-body font-medium text-text-on-accent hover:bg-accent-hover"
-        onClick={onSubmit}
-        disabled={!isValid || isSubmitting}
-      >
-        {isSubmitting ? "Adding…" : method === "pack" ? "Import pack" : submitLabel}
-      </Button>
+    <div className="flex flex-col gap-2 border-t border-border px-5 py-4">
+      {inProgress && (
+        <p className="m-0 text-caption text-text-tertiary">
+          {addSkillOperationProgressCopy(operation)}
+        </p>
+      )}
+      {terminalFailure && (
+        <p className="m-0 text-small text-error" role="alert">
+          {addSkillOperationTerminalCopy(operation)}
+        </p>
+      )}
+      <div className="flex justify-end gap-2">
+        <Button
+          variant="outline"
+          className="h-(--control-height) rounded-md px-3.5 text-body font-medium"
+          onClick={onCancel}
+        >
+          Cancel
+        </Button>
+        <Button
+          className="h-(--control-height) rounded-md bg-accent px-3.5 text-body font-medium text-text-on-accent hover:bg-accent-hover"
+          onClick={onSubmit}
+          disabled={!isValid || isSubmitting}
+        >
+          {inProgress ? "Adding…" : method === "pack" ? "Import pack" : submitLabel}
+        </Button>
+      </div>
     </div>
   );
 }
@@ -1004,7 +1280,15 @@ export function AddSkillSheet() {
     ? listedSkills.filter((skill) => selectedPathSet.has(skill.path))
     : null;
 
-  const { isValid, handleSubmit } = useAddSkillSubmit({
+  const {
+    isValid,
+    handleSubmit,
+    handleCancelOperation,
+    handleTrustAndRetry,
+    operation,
+    packTrust,
+    trustBusy,
+  } = useAddSkillSubmit({
     parsed,
     method,
     destination,
@@ -1037,7 +1321,12 @@ export function AddSkillSheet() {
     <Drawer
       open={isOpen}
       onOpenChange={(open) => {
-        if (!open && !isSubmitting) closeSheet();
+        if (
+          !open &&
+          !(isSubmitting && operation && isAddSkillOperationCancellable(operation.phase))
+        ) {
+          void handleCancelOperation();
+        }
       }}
     >
       <DrawerContent
@@ -1104,7 +1393,14 @@ export function AddSkillSheet() {
               projectPath={projectPath}
               userAddedProjects={userAddedProjects}
               trial={trial}
-              submitError={submitError}
+              submitError={
+                operation &&
+                (operation.phase === "failed" ||
+                  operation.phase === "cancelled" ||
+                  operation.phase === "timed-out")
+                  ? null
+                  : submitError
+              }
               dispatch={dispatch}
               onBrowseProject={handleBrowseProject}
               installedReaders={installedReaders}
@@ -1132,8 +1428,12 @@ export function AddSkillSheet() {
             submitLabel={submitLabel}
             isValid={isValid && !listingBlocks}
             isSubmitting={isSubmitting}
-            onCancel={closeSheet}
+            operation={operation}
+            packTrust={packTrust}
+            trustBusy={trustBusy}
+            onCancel={handleCancelOperation}
             onSubmit={handleSubmit}
+            onTrustAndRetry={handleTrustAndRetry}
           />
         )}
       </DrawerContent>

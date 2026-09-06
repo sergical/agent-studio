@@ -48,6 +48,7 @@ export type LocationAction =
   | { kind: "open-editor"; path: string; label: string }
   | { kind: "compare" }
   | { kind: "convert-root"; target: LifecycleTarget; harness: AgentId; root: string }
+  | { kind: "make-independent-copy"; deployment: Deployment; scopeLabel: string }
   | { kind: "set-enabled"; deployment: Deployment; enabled: boolean }
   | { kind: "set-reader-enabled"; target: LifecycleTarget; agent: AgentId; enabled: boolean }
   | { kind: "park" }
@@ -934,6 +935,20 @@ export function rowMenu(
             harness: row.harness,
             root: parentDirectory(row.deployment.path),
           },
+        },
+        false,
+      );
+    }
+    if (
+      row.kind === "link" &&
+      !isBroken &&
+      row.deployment?.backing.kind === "linked-to" &&
+      !row.deployment.disabled
+    ) {
+      push(
+        {
+          label: "Make independent copy",
+          action: { kind: "make-independent-copy", deployment: row.deployment, scopeLabel },
         },
         false,
       );

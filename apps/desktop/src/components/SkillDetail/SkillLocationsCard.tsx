@@ -16,6 +16,7 @@ import { singleSelectToggleValue } from "../../lib/single-select-toggle-group";
 import { useAppStore } from "../../store/appStore";
 import { HarnessIcon } from "../ui/HarnessIcon";
 import { MaterializeRootDialog } from "../ui/MaterializeRootDialog";
+import { MakeIndependentCopyDialog } from "./MakeIndependentCopyDialog";
 import { StatusIcon } from "../ui/StatusIcon";
 import { TooltipControl } from "../ui/TooltipControl";
 import { RemoveDeploymentsDialog } from "./RemoveDeploymentsDialog";
@@ -225,8 +226,20 @@ export function SkillLocationsCard({ skill, onCompareCopies }: SkillLocationsCar
           harness={actions.materializeRequest.harness}
           harnessLabel={actions.materializeRequest.harnessLabel}
           root={actions.materializeRequest.root}
-          disableSkill={skill.name}
+          intent={
+            actions.materializeRequest.intent === "convert-only"
+              ? { kind: "convert-only" }
+              : { kind: "convert-then-disable", skill: skill.name }
+          }
           onClose={actions.closeMaterializeRequest}
+        />
+      )}
+      {actions.independentCopyRequest && (
+        <MakeIndependentCopyDialog
+          skillName={skill.name}
+          deployment={actions.independentCopyRequest.deployment}
+          scopeLabel={actions.independentCopyRequest.scopeLabel}
+          onClose={actions.closeIndependentCopyRequest}
         />
       )}
       {actions.removeRequest && (

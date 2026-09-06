@@ -31,6 +31,79 @@ fn open_event_store(app: &tauri::App) -> Option<skills::event_store::EventStore>
                     row.id, row.kind
                 );
             }
+            let recovery_rows =
+                store
+                    .interrupted_independent_copy_events()
+                    .unwrap_or_else(|error| {
+                        eprintln!(
+                            "[event_store] failed to list independent-copy recovery rows: {error}"
+                        );
+                        Vec::new()
+                    });
+            for row in &recovery_rows {
+                let recovery = dirs::home_dir()
+                    .ok_or_else(|| "Could not find home directory".to_string())
+                    .and_then(|home| {
+                        if row.kind == "make_independent_copy" {
+                            skills::skill_independent_copy::reconcile_interrupted_independent_copy(
+                                &store, &home, row,
+                            )
+                        } else {
+                            skills::skill_independent_copy::reconcile_interrupted_independent_copy_restore(
+                                &store, &home, row,
+                            )
+                        }
+                    });
+                if let Err(error) = recovery {
+                    eprintln!(
+                        "[event_store] independent-copy recovery for {} preserved ambiguous filesystem state: {error}",
+                        row.id
+                    );
+                }
+            }
+            let convert_rows = store
+                .interrupted_convert_then_disable_events()
+                .unwrap_or_else(|error| {
+                    eprintln!(
+                        "[event_store] failed to list convert-and-disable recovery rows: {error}"
+                    );
+                    Vec::new()
+                });
+            for row in &convert_rows {
+                if let Err(error) =
+                    skills::skill_materialize::reconcile_interrupted_convert_then_disable(
+                        &store, row,
+                    )
+                {
+                    eprintln!(
+                        "[event_store] convert-and-disable recovery for {} preserved ambiguous filesystem state: {error}",
+                        row.id
+                    );
+                }
+            }
+            let repair_rows = store
+                .interrupted_frontmatter_repair_events()
+                .unwrap_or_else(|error| {
+                    eprintln!(
+                        "[event_store] failed to list frontmatter repair recovery rows: {error}"
+                    );
+                    Vec::new()
+                });
+            for row in &repair_rows {
+                if let Err(error) = dirs::home_dir()
+                    .ok_or_else(|| "Could not find home directory".to_string())
+                    .and_then(|home| {
+                        skills::skill_frontmatter_repair::reconcile_interrupted_frontmatter_repair(
+                            &store, &home, row,
+                        )
+                    })
+                {
+                    eprintln!(
+                        "[event_store] frontmatter repair recovery for {} needs review: {error}",
+                        row.id
+                    );
+                }
+            }
         }
         Err(e) => eprintln!("[event_store] startup reconcile failed: {e}"),
     }
@@ -44,6 +117,15 @@ pub fn run() {
         .setup(|app| {
             let refresh_state = skills::skill_refresh::init(app.handle());
             app.manage(refresh_state);
+            app.manage(skills::skill_add_operation::AddSkillOperationState::default());
+            app.manage(skills::skill_pack::PackImportTrustState::default());
+            if let Some(home) = dirs::home_dir() {
+                if let Err(error) =
+                    skills::skill_pack::reconcile_pack_import_staging_at_startup(&home)
+                {
+                    eprintln!("[skill_pack] startup staging reconcile failed: {error}");
+                }
+            }
             app.manage(skills::skill_agent_runner::SkillAgentRunnerState::default());
             app.manage(skills::skill_run_target::SkillRunTargetState::default());
             app.manage(skills::skill_fork::ForkMutationLock::default());
@@ -73,6 +155,8 @@ pub fn run() {
             skills::commands::read_installed_skill_md,
             skills::commands::write_installed_skill_md,
             skills::commands::write_installed_skill_md_if_unchanged,
+            skills::skill_frontmatter_repair::preview_skill_frontmatter_repair,
+            skills::skill_frontmatter_repair::apply_skill_frontmatter_repair,
             skills::commands::open_skill_path,
             skills::commands::list_installed_editors,
             skills::commands::get_preferred_editor,
@@ -85,6 +169,11 @@ pub fn run() {
             // Add skill / trials
             skills::skill_add::add_skill,
             skills::skill_add::add_skills,
+            skills::skill_add_operation::start_add_skill_operation,
+            skills::skill_add_operation::start_add_skills_operation,
+            skills::skill_add_operation::get_add_skill_operation,
+            skills::skill_add_operation::cancel_add_skill_operation,
+            skills::skill_add_operation::confirm_add_skill_trust,
             skills::github_skill_listing::list_github_skills,
             skills::skill_trial::keep_skill_trial,
             skills::skill_trial::restore_trashed_skill,
@@ -99,6 +188,8 @@ pub fn run() {
             skills::event_commands::restore_skill_event,
             skills::event_commands::set_shared_harness_skill_enabled,
             skills::event_commands::materialize_harness_root,
+            skills::event_commands::materialize_harness_root_then_disable,
+            skills::event_commands::make_skill_independent_copy,
             skills::event_commands::repair_skill_link,
             // Background refresh / invocation snapshot
             skills::skill_refresh::get_skill_snapshot,
@@ -127,6 +218,8 @@ pub fn run() {
             skills::skill_pack::publish_skill_pack,
             skills::skill_pack::delete_skill_pack,
             skills::skill_pack::import_skill_pack,
+            skills::skill_pack::confirm_skill_pack_trust,
+            skills::skill_pack::abandon_pack_import_trust,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

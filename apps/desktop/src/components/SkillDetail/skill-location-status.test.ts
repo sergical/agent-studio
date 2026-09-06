@@ -379,6 +379,37 @@ describe("titleLink", () => {
 });
 
 describe("rowMenu", () => {
+  it("offers an independent copy only for a healthy enabled Universal-backed link", () => {
+    const linked = fixtureDeployment({
+      agent: "Claude Code",
+      is_symlink: true,
+      backing: { kind: "linked-to", deployment_id: "dep:v1/global/universal/find-bugs" },
+      path: "/home/.claude/skills/find-bugs",
+    });
+    const skill = fixtureSkill({ deployments: [fixtureDeployment(), linked] });
+    const [global] = buildScopeGroups(skill);
+    const row = global.rows.find((candidate) => candidate.harness === "claude-code")!;
+
+    expect(rowMenu(row, global.label).entries.map((entry) => entry.label)).toContain(
+      "Make independent copy",
+    );
+
+    for (const deployment of [
+      { ...linked, disabled: true },
+      { ...linked, symlink_is_broken: true },
+      { ...linked, backing: { kind: "independent" as const } },
+      { ...linked, is_symlink: false, shared_via_whole_dir_link: false },
+    ]) {
+      const [scope] = buildScopeGroups(
+        fixtureSkill({ deployments: [fixtureDeployment(), deployment] }),
+      );
+      const candidate = scope.rows.find((item) => item.harness === "claude-code")!;
+      expect(rowMenu(candidate, scope.label).entries.map((entry) => entry.label)).not.toContain(
+        "Make independent copy",
+      );
+    }
+  });
+
   it("leads with the highest condition's first fix even when it is destructive", () => {
     const claude = fixtureDeployment({
       agent: "Claude Code",

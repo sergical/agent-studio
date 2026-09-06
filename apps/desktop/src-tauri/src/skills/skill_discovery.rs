@@ -20,7 +20,9 @@ use sha2::{Digest, Sha256};
 use tiktoken_rs::CoreBPE;
 
 use super::agents;
-use super::frontmatter::{frontmatter_fields, parse_frontmatter, validate_skill, SkillFrontmatter};
+use super::frontmatter::{
+    frontmatter_fields, parse_frontmatter, validate_skill, FrontmatterParseResult,
+};
 use super::plugins;
 use super::skill_candidate::SkillCandidate;
 
@@ -86,6 +88,16 @@ fn walk_folder(dir: &Path) -> FolderWalk {
 }
 
 fn walk_folder_capped(dir: &Path, max_files: usize, max_bytes: u64) -> FolderWalk {
+    walk_folder_capped_with_check(dir, max_files, max_bytes, &mut || Ok(()))
+        .expect("the no-op folder-walk check cannot fail")
+}
+
+fn walk_folder_capped_with_check(
+    dir: &Path,
+    max_files: usize,
+    max_bytes: u64,
+    check: &mut dyn FnMut() -> Result<(), String>,
+) -> Result<FolderWalk, String> {
     let mut walk = FolderWalk {
         hashable: Vec::new(),
         total_bytes: 0,
@@ -93,8 +105,8 @@ fn walk_folder_capped(dir: &Path, max_files: usize, max_bytes: u64) -> FolderWal
         newest: None,
         truncated: false,
     };
-    walk_folder_into(dir, dir, max_files, max_bytes, &mut walk);
-    walk
+    walk_folder_into(dir, dir, max_files, max_bytes, &mut walk, check)?;
+    Ok(walk)
 }
 
 fn walk_folder_into(
@@ -103,16 +115,19 @@ fn walk_folder_into(
     max_files: usize,
     max_bytes: u64,
     walk: &mut FolderWalk,
-) {
+    check: &mut dyn FnMut() -> Result<(), String>,
+) -> Result<(), String> {
+    check()?;
     if walk.truncated {
-        return;
+        return Ok(());
     }
     let Ok(entries) = fs::read_dir(dir) else {
-        return;
+        return Ok(());
     };
     for entry in entries.flatten() {
+        check()?;
         if walk.truncated {
-            return;
+            return Ok(());
         }
         let path = entry.path();
         let Ok(file_type) = entry.file_type() else {
@@ -132,7 +147,7 @@ fn walk_folder_into(
         }
 
         if file_type.is_dir() {
-            walk_folder_into(root, &path, max_files, max_bytes, walk);
+            walk_folder_into(root, &path, max_files, max_bytes, walk, check)?;
         } else if file_type.is_file() {
             let Ok(meta) = entry.metadata() else { continue };
             // Enforce the remaining byte budget before queuing/reading the
@@ -164,6 +179,7 @@ fn walk_folder_into(
             }
         }
     }
+    Ok(())
 }
 
 /// sha256 over the sorted (relative path, bytes) pairs of a skill folder.
@@ -179,11 +195,21 @@ fn walk_folder_into(
 /// after the walk's own per-file check, no read can push the total past the
 /// cap; the length field records the file's real size regardless.
 fn content_hash(mut files: Vec<HashableFile>, max_bytes: u64) -> String {
+    content_hash_with_check(&mut files, max_bytes, &mut || Ok(()))
+        .expect("the no-op content-hash check cannot fail")
+}
+
+fn content_hash_with_check(
+    files: &mut [HashableFile],
+    max_bytes: u64,
+    check: &mut dyn FnMut() -> Result<(), String>,
+) -> Result<String, String> {
     files.sort_by(|a, b| a.rel_path.cmp(&b.rel_path));
     let mut hasher = Sha256::new();
     let mut buf = [0u8; 64 * 1024];
     let mut remaining = max_bytes;
-    for file in &files {
+    for file in files.iter() {
+        check()?;
         let rel_path_bytes = file.rel_path.to_string_lossy().into_owned().into_bytes();
         hasher.update((rel_path_bytes.len() as u64).to_le_bytes());
         hasher.update(&rel_path_bytes);
@@ -197,6 +223,7 @@ fn content_hash(mut files: Vec<HashableFile>, max_bytes: u64) -> String {
         if let Ok(handle) = fs::File::open(&file.abs_path) {
             let mut limited = handle.take(remaining);
             loop {
+                check()?;
                 match limited.read(&mut buf) {
                     Ok(0) => break,
                     Ok(n) => {
@@ -208,11 +235,11 @@ fn content_hash(mut files: Vec<HashableFile>, max_bytes: u64) -> String {
             }
         }
     }
-    hasher
+    Ok(hasher
         .finalize()
         .iter()
         .map(|b| format!("{b:02x}"))
-        .collect()
+        .collect())
 }
 
 /// A cheap stand-in for a folder's content, built from `stat` alone: no file
@@ -256,7 +283,7 @@ fn count_tokens(text: &str, tokenizer: Option<&CoreBPE>) -> u32 {
 /// the lexical name a symlink alias was found under, not the canonical
 /// target, so it's computed per candidate in `build_candidate` instead.
 struct SkillContentFacts {
-    frontmatter: Option<SkillFrontmatter>,
+    frontmatter_parse_result: FrontmatterParseResult,
     frontmatter_fields: BTreeMap<String, String>,
     has_spec: bool,
     folder_bytes: u64,
@@ -311,6 +338,40 @@ pub(crate) fn live_skill_content_hash(skill_dir: &Path) -> Result<String, String
     Ok(content_hash(walk.hashable, MAX_FOLDER_BYTES))
 }
 
+/// Recompute the bounded strong hash while checking one Add operation during
+/// directory traversal and each streamed file chunk.
+pub(crate) fn live_skill_content_hash_controlled(
+    skill_dir: &Path,
+    control: &super::skill_process::AddOperationControl,
+) -> Result<String, String> {
+    control.check_message()?;
+    let mut skill_md = fs::File::open(skill_dir.join("SKILL.md"))
+        .map_err(|_| format!("Could not read {}/SKILL.md", skill_dir.display()))?;
+    let mut skill_md_bytes = Vec::new();
+    let mut buffer = [0_u8; 64 * 1024];
+    while skill_md_bytes.len() as u64 <= SKILL_MD_MAX_BYTES {
+        control.check_message()?;
+        let remaining = (SKILL_MD_MAX_BYTES + 1 - skill_md_bytes.len() as u64)
+            .min(buffer.len() as u64) as usize;
+        let count = skill_md
+            .read(&mut buffer[..remaining])
+            .map_err(|_| format!("Could not read {}/SKILL.md", skill_dir.display()))?;
+        if count == 0 {
+            break;
+        }
+        skill_md_bytes.extend_from_slice(&buffer[..count]);
+    }
+    let mut check = || control.check_message();
+    let mut walk = walk_folder_capped_with_check(
+        skill_dir,
+        MAX_FOLDER_FILES,
+        MAX_FOLDER_BYTES
+            .saturating_sub(skill_md_bytes.len().min(SKILL_MD_MAX_BYTES as usize) as u64),
+        &mut check,
+    )?;
+    content_hash_with_check(&mut walk.hashable, MAX_FOLDER_BYTES, &mut check)
+}
+
 /// The expensive half of `compute_content_facts`: hashing every file in
 /// `walk` and tokenizing SKILL.md. Only run on a `get_or_compute_facts` cache
 /// miss - `walk_for_facts` (stat-only) already ran to produce `walk`.
@@ -322,20 +383,20 @@ fn compute_content_facts_from_walk(
     tokenizer: Option<&CoreBPE>,
 ) -> SkillContentFacts {
     let content = String::from_utf8_lossy(skill_md_bytes).into_owned();
-    let frontmatter = parse_frontmatter(&content);
-    let name_for_tokens = frontmatter
-        .as_ref()
+    let frontmatter_parse_result = parse_frontmatter(&content);
+    let name_for_tokens = frontmatter_parse_result
+        .as_frontmatter()
         .and_then(|f| f.name.clone())
         .unwrap_or_default();
-    let description_for_tokens = frontmatter
-        .as_ref()
+    let description_for_tokens = frontmatter_parse_result
+        .as_frontmatter()
         .and_then(|f| f.description.clone())
         .unwrap_or_default();
     let modified_at = walk.newest.map(|t| DateTime::<Utc>::from(t).to_rfc3339());
 
     SkillContentFacts {
         frontmatter_fields: frontmatter_fields(&content),
-        frontmatter,
+        frontmatter_parse_result,
         has_spec: has_spec(skill_dir),
         folder_bytes: walk.total_bytes,
         file_count: walk.file_count,
@@ -492,7 +553,7 @@ fn build_candidate(
         .unwrap_or_default();
     let spec_violations = validate_skill(
         &dir_name,
-        facts.frontmatter.as_ref(),
+        &facts.frontmatter_parse_result,
         facts.skill_md_line_count,
     );
     // Plugin provenance checks the resolved skill dir first (the canonical
@@ -541,7 +602,7 @@ fn build_candidate(
         plugin,
         shared_root_has_lock_entry,
         frontmatter_fields: facts.frontmatter_fields.clone(),
-        frontmatter: facts.frontmatter.clone(),
+        frontmatter: facts.frontmatter_parse_result.as_frontmatter().cloned(),
         spec_violations,
         has_spec: facts.has_spec,
         folder_bytes: facts.folder_bytes,
@@ -701,81 +762,103 @@ fn scan_root_entries(
         {
             continue;
         }
-        let sym_meta = fs::symlink_metadata(&entry_path).ok();
-        let is_symlink = sym_meta
-            .as_ref()
-            .map(|m| m.file_type().is_symlink())
-            .unwrap_or(false);
+        scan_root_entry(
+            &entry_path,
+            root,
+            has_lock_entry,
+            scope,
+            studio_disabled,
+            facts_cache,
+            git_cache,
+            tokenizer,
+            out,
+        );
+    }
+}
 
-        if is_symlink {
-            match resolve_symlink(&entry_path) {
-                SymlinkResolution::Resolved(target) => {
-                    if !target.join("SKILL.md").is_file() {
-                        continue;
-                    }
-                    if let Some(facts) = get_or_compute_facts(facts_cache, &target, tokenizer) {
-                        out.push(build_candidate(
-                            &entry_path,
-                            &target,
-                            root,
-                            true,
-                            Some(target.clone()),
-                            None,
-                            has_lock_entry,
-                            scope,
-                            &facts,
-                            git_cache,
-                            studio_disabled,
-                        ));
-                    }
+#[allow(clippy::too_many_arguments)]
+fn scan_root_entry(
+    entry_path: &Path,
+    root: &agents::SkillRoot,
+    has_lock_entry: bool,
+    scope: &str,
+    studio_disabled: bool,
+    facts_cache: &mut SkillFactsCache,
+    git_cache: &mut HashMap<PathBuf, bool>,
+    tokenizer: Option<&CoreBPE>,
+    out: &mut Vec<SkillCandidate>,
+) {
+    let is_symlink =
+        fs::symlink_metadata(entry_path).is_ok_and(|metadata| metadata.file_type().is_symlink());
+
+    if is_symlink {
+        match resolve_symlink(entry_path) {
+            SymlinkResolution::Resolved(target) => {
+                if !target.join("SKILL.md").is_file() {
+                    return;
                 }
-                SymlinkResolution::Broken(raw_target) => {
-                    out.push(broken_symlink_candidate(
-                        &entry_path,
+                if let Some(facts) = get_or_compute_facts(facts_cache, &target, tokenizer) {
+                    out.push(build_candidate(
+                        entry_path,
+                        &target,
                         root,
-                        scope,
-                        raw_target,
                         true,
+                        Some(target.clone()),
                         None,
-                        studio_disabled,
-                    ));
-                }
-                SymlinkResolution::Error(raw_target, message) => {
-                    out.push(broken_symlink_candidate(
-                        &entry_path,
-                        root,
+                        has_lock_entry,
                         scope,
-                        raw_target,
-                        false,
-                        Some(message),
+                        &facts,
+                        git_cache,
                         studio_disabled,
                     ));
                 }
             }
-            continue;
+            SymlinkResolution::Broken(raw_target) => {
+                out.push(broken_symlink_candidate(
+                    entry_path,
+                    root,
+                    scope,
+                    raw_target,
+                    true,
+                    None,
+                    studio_disabled,
+                ));
+            }
+            SymlinkResolution::Error(raw_target, message) => {
+                out.push(broken_symlink_candidate(
+                    entry_path,
+                    root,
+                    scope,
+                    raw_target,
+                    false,
+                    Some(message),
+                    studio_disabled,
+                ));
+            }
         }
+        return;
+    }
 
-        let is_dir = fs::metadata(&entry_path)
-            .map(|m| m.is_dir())
-            .unwrap_or(false);
-        if !is_dir || !entry_path.join("SKILL.md").is_file() {
-            continue;
-        }
-        if let Some(facts) = get_or_compute_facts(facts_cache, &entry_path, tokenizer) {
-            out.push(build_candidate(
-                &entry_path,
-                &entry_path,
-                root,
-                false,
-                None,
-                None,
-                has_lock_entry,
-                scope,
-                &facts,
-                git_cache,
-                studio_disabled,
-            ));
-        }
+    let is_dir = fs::metadata(entry_path)
+        .map(|m| m.is_dir())
+        .unwrap_or(false);
+    if !is_dir || !entry_path.join("SKILL.md").is_file() {
+        return;
+    }
+    if let Some(facts) = get_or_compute_facts(facts_cache, entry_path, tokenizer) {
+        out.push(build_candidate(
+            entry_path,
+            entry_path,
+            root,
+            false,
+            None,
+            None,
+            has_lock_entry,
+            scope,
+            &facts,
+            git_cache,
+            studio_disabled,
+        ));
     }
 }
 
@@ -817,6 +900,102 @@ pub fn discover_skill_candidates_cached(
     cache.begin_pass();
     let out = discover_into(home, project_paths, cache);
     cache.end_pass();
+    out
+}
+
+/// Discover only the requested lexical skill names at every configured agent
+/// root. Unlike a full pass, this does not evict untouched facts-cache entries.
+pub fn discover_named_skill_candidates_cached(
+    home: &Path,
+    project_paths: &[PathBuf],
+    names: &std::collections::BTreeSet<String>,
+    cache: &mut SkillFactsCache,
+) -> Vec<SkillCandidate> {
+    cache.begin_pass();
+    let mut out = Vec::new();
+    let mut git_cache = HashMap::new();
+    let tokenizer = tokenizer();
+
+    for root in agents::skill_roots(home, project_paths) {
+        let has_lock_entry = shared_root_has_lock_entry(&root);
+        let scope = scope_str(&root);
+        for name in names {
+            scan_root_entry(
+                &root.path.join(name),
+                &root,
+                has_lock_entry,
+                scope,
+                false,
+                cache,
+                &mut git_cache,
+                tokenizer,
+                &mut out,
+            );
+            scan_root_entry(
+                &root.path.join(STUDIO_DISABLED_DIR_NAME).join(name),
+                &root,
+                has_lock_entry,
+                scope,
+                true,
+                cache,
+                &mut git_cache,
+                tokenizer,
+                &mut out,
+            );
+        }
+    }
+
+    // Plugin manifests are the only reliable map from a plugin cache to its
+    // skill names. Enumerate those manifests, but retain only requested names.
+    for plugin_skill in plugins::scan_plugin_skills(home) {
+        let is_symlink = fs::symlink_metadata(&plugin_skill.skill_dir)
+            .map(|metadata| metadata.file_type().is_symlink())
+            .unwrap_or(false);
+        let Some(facts) = get_or_compute_facts(cache, &plugin_skill.skill_dir, tokenizer) else {
+            continue;
+        };
+        let dir_name = plugin_skill
+            .skill_dir
+            .file_name()
+            .map(|name| name.to_string_lossy().to_string())
+            .unwrap_or_default();
+        if !names.contains(&dir_name) {
+            continue;
+        }
+        out.push(SkillCandidate {
+            name: dir_name.clone(),
+            path: plugin_skill.skill_dir.clone(),
+            root_label: plugin_skill.plugin.harness.clone(),
+            scope: "plugin".to_string(),
+            project_path: None,
+            is_symlink,
+            symlink_target: None,
+            resolved_path: None,
+            symlink_is_broken: false,
+            symlink_error: None,
+            plugin: Some(plugin_skill.plugin),
+            shared_root_has_lock_entry: false,
+            frontmatter_fields: facts.frontmatter_fields.clone(),
+            frontmatter: facts.frontmatter_parse_result.as_frontmatter().cloned(),
+            spec_violations: validate_skill(
+                &dir_name,
+                &facts.frontmatter_parse_result,
+                facts.skill_md_line_count,
+            ),
+            has_spec: facts.has_spec,
+            folder_bytes: facts.folder_bytes,
+            file_count: facts.file_count,
+            skill_md_tokens: facts.skill_md_tokens,
+            description_tokens: facts.description_tokens,
+            content_hash: facts.content_hash.clone(),
+            modified_at: facts.modified_at.clone(),
+            folder_truncated: facts.folder_truncated,
+            in_git_repo: in_git_repo(&plugin_skill.skill_dir, &mut git_cache),
+            studio_disabled: false,
+            shared_via_whole_dir_link: false,
+        });
+    }
+
     out
 }
 
@@ -876,19 +1055,14 @@ fn discover_into(
             .file_name()
             .map(|n| n.to_string_lossy().to_string())
             .unwrap_or_default();
-        let name = facts
-            .frontmatter
-            .as_ref()
-            .and_then(|f| f.name.clone())
-            .unwrap_or_else(|| dir_name.clone());
         let spec_violations = validate_skill(
             &dir_name,
-            facts.frontmatter.as_ref(),
+            &facts.frontmatter_parse_result,
             facts.skill_md_line_count,
         );
 
         out.push(SkillCandidate {
-            name,
+            name: dir_name,
             path: plugin_skill.skill_dir.clone(),
             root_label: plugin_skill.plugin.harness.clone(),
             scope: "plugin".to_string(),
@@ -901,7 +1075,7 @@ fn discover_into(
             plugin: Some(plugin_skill.plugin),
             shared_root_has_lock_entry: false,
             frontmatter_fields: facts.frontmatter_fields.clone(),
-            frontmatter: facts.frontmatter.clone(),
+            frontmatter: facts.frontmatter_parse_result.as_frontmatter().cloned(),
             spec_violations,
             has_spec: facts.has_spec,
             folder_bytes: facts.folder_bytes,
@@ -931,6 +1105,124 @@ mod tests {
             format!("---\nname: {name}\ndescription: does things.\n---\nBody text here.\n"),
         )
         .unwrap();
+    }
+
+    fn write_malformed_skill(dir: &Path, name: &str) {
+        fs::create_dir_all(dir).unwrap();
+        fs::write(
+            dir.join("SKILL.md"),
+            format!("---\nname: {name}\ndescription: Triggers on: requests\n---\nBody.\n"),
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn named_discovery_adds_updates_and_removes_without_evicting_unrelated_facts() {
+        let temp = tempfile::tempdir().unwrap();
+        let home = temp.path();
+        let root = home.join(".claude/skills");
+        let alpha = root.join("alpha");
+        let beta = root.join("beta");
+        write_skill(&alpha, "alpha");
+        write_skill(&beta, "beta");
+
+        let mut cache = SkillFactsCache::default();
+        let initial = discover_skill_candidates_cached(home, &[], &mut cache);
+        assert!(initial.iter().any(|candidate| candidate.name == "alpha"));
+        assert!(initial.iter().any(|candidate| candidate.name == "beta"));
+        let beta_key = fs::canonicalize(&beta).unwrap();
+        assert!(cache.entries.contains_key(&beta_key));
+
+        fs::write(
+            alpha.join("SKILL.md"),
+            "---\nname: alpha\ndescription: changed.\n---\nNew body.\n",
+        )
+        .unwrap();
+        let names = ["alpha".to_string()].into_iter().collect();
+        let updated = discover_named_skill_candidates_cached(home, &[], &names, &mut cache);
+        assert_eq!(updated.len(), 1);
+        assert!(updated[0].description_tokens > 0);
+        assert!(cache.entries.contains_key(&beta_key));
+
+        fs::remove_dir_all(&alpha).unwrap();
+        let removed = discover_named_skill_candidates_cached(home, &[], &names, &mut cache);
+        assert!(removed.is_empty());
+        assert!(cache.entries.contains_key(&beta_key));
+    }
+
+    #[test]
+    fn named_discovery_uses_lexical_name_and_keeps_frontmatter_mismatch_diagnostic() {
+        let temp = tempfile::tempdir().unwrap();
+        let home = temp.path();
+        write_skill(&home.join(".claude/skills/lexical-name"), "different-name");
+        let names = ["lexical-name".to_string()].into_iter().collect();
+        let mut cache = SkillFactsCache::default();
+
+        let found = discover_named_skill_candidates_cached(home, &[], &names, &mut cache);
+
+        assert_eq!(found.len(), 1);
+        assert_eq!(found[0].name, "lexical-name");
+        assert!(found[0]
+            .spec_violations
+            .iter()
+            .any(|violation| violation.contains("does not match its directory name")));
+    }
+
+    #[test]
+    fn malformed_yaml_diagnostic_is_consistent_across_deployment_kinds() {
+        let tmp = tempfile::tempdir().unwrap();
+        let home = tmp.path();
+        let project = home.join("project");
+
+        let global = home.join(".claude/skills/global-bad");
+        let universal = home.join(".agents/skills/universal-bad");
+        let project_skill = project.join(".codex/skills/project-bad");
+        let disabled = home
+            .join(".pi/agent/skills")
+            .join(STUDIO_DISABLED_DIR_NAME)
+            .join("disabled-bad");
+        for (path, name) in [
+            (&global, "global-bad"),
+            (&universal, "universal-bad"),
+            (&project_skill, "project-bad"),
+            (&disabled, "disabled-bad"),
+        ] {
+            write_malformed_skill(path, name);
+        }
+
+        let symlink = home.join(".codex/skills/symlink-bad");
+        fs::create_dir_all(symlink.parent().unwrap()).unwrap();
+        #[cfg(unix)]
+        std::os::unix::fs::symlink(&universal, &symlink).unwrap();
+
+        let plugin_root = home.join(".claude/plugins/cache/marketplace/bad-plugin/1.0.0");
+        fs::create_dir_all(plugin_root.join(".claude-plugin")).unwrap();
+        fs::write(
+            plugin_root.join(".claude-plugin/plugin.json"),
+            r#"{"name": "bad-plugin", "version": "1.0.0"}"#,
+        )
+        .unwrap();
+        let plugin_skill = plugin_root.join("skills/plugin-bad");
+        write_malformed_skill(&plugin_skill, "plugin-bad");
+
+        let candidates = discover_skill_candidates(home, std::slice::from_ref(&project));
+        for path in [
+            global,
+            universal,
+            project_skill,
+            disabled,
+            symlink,
+            plugin_skill,
+        ] {
+            let candidate = candidates
+                .iter()
+                .find(|candidate| candidate.path == path)
+                .unwrap_or_else(|| panic!("candidate not found: {}", path.display()));
+            assert_eq!(
+                candidate.spec_violations,
+                ["invalid YAML frontmatter at line 3, column 25: mapping values are not allowed in this context"]
+            );
+        }
     }
 
     #[test]
@@ -1307,7 +1599,10 @@ mod tests {
         let facts = compute_content_facts(&skill_dir, None).expect("facts computed");
         assert!(facts.folder_truncated);
         assert_eq!(
-            facts.frontmatter.as_ref().and_then(|f| f.name.clone()),
+            facts
+                .frontmatter_parse_result
+                .as_frontmatter()
+                .and_then(|f| f.name.clone()),
             Some("huge-skill".to_string())
         );
     }
@@ -1441,6 +1736,33 @@ mod tests {
 
         assert_eq!(cache.last_pass_stats(), (0, 1));
         assert_ne!(first_hash, second_hash);
+    }
+
+    #[test]
+    fn editing_skill_md_invalidates_cached_frontmatter_diagnostics() {
+        let tmp = tempfile::tempdir().unwrap();
+        let home = tmp.path();
+        let skill_dir = home.join(".claude/skills/find-bugs");
+        write_skill(&skill_dir, "find-bugs");
+
+        let mut cache = SkillFactsCache::default();
+        let first = discover_skill_candidates_cached(home, &[], &mut cache);
+        assert!(first[0].spec_violations.is_empty());
+
+        let skill_md = skill_dir.join("SKILL.md");
+        fs::write(
+            &skill_md,
+            "---\nname: find-bugs\ndescription: Triggers on: bug reports\n---\nBody.\n",
+        )
+        .unwrap();
+        let file = fs::File::open(&skill_md).unwrap();
+        file.set_modified(SystemTime::now() + Duration::from_secs(5))
+            .unwrap();
+
+        let second = discover_skill_candidates_cached(home, &[], &mut cache);
+        assert_eq!(cache.last_pass_stats(), (0, 1));
+        assert_eq!(second[0].spec_violations.len(), 1);
+        assert!(second[0].spec_violations[0].starts_with("invalid YAML frontmatter at line 3"));
     }
 
     #[test]

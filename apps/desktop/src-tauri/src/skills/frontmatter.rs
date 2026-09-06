@@ -37,6 +37,31 @@ pub struct SkillFrontmatter {
     pub user_invocable: Option<bool>,
 }
 
+/// Outcome of parsing the complete fenced YAML block at the start of SKILL.md.
+#[derive(Debug, Clone)]
+pub enum FrontmatterParseResult {
+    Absent,
+    Valid(SkillFrontmatter),
+    Invalid(FrontmatterParseError),
+}
+
+/// A path-free YAML frontmatter error located in the full SKILL.md file.
+#[derive(Debug, Clone)]
+pub struct FrontmatterParseError {
+    pub line: usize,
+    pub column: usize,
+    pub message: String,
+}
+
+impl FrontmatterParseResult {
+    pub fn as_frontmatter(&self) -> Option<&SkillFrontmatter> {
+        match self {
+            Self::Valid(frontmatter) => Some(frontmatter),
+            Self::Absent | Self::Invalid(_) => None,
+        }
+    }
+}
+
 /// The three invocation-control states a skill's frontmatter can express -
 /// see `docs/agent-skill-conventions.md`'s "Invocation control" section.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -79,24 +104,42 @@ pub fn invocation_policy_from(
     }
 }
 
-/// Parse SKILL.md frontmatter per the agentskills.io spec. Malformed YAML
-/// (or a missing `---` fence) is treated the same as no frontmatter at all -
-/// `validate_skill` turns that into "missing name/description" violations
-/// rather than this function returning an error.
-pub fn parse_frontmatter(content: &str) -> Option<SkillFrontmatter> {
+/// Parse a complete SKILL.md frontmatter fence without losing YAML errors.
+pub fn parse_frontmatter(content: &str) -> FrontmatterParseResult {
     let mut lines = content.lines();
-    if lines.next()?.trim() != "---" {
-        return None;
+    if lines.next().map(str::trim) != Some("---") {
+        return FrontmatterParseResult::Absent;
     }
     let mut yaml_block = String::new();
     for line in lines {
         if line.trim() == "---" {
-            return serde_yaml::from_str(&yaml_block).ok();
+            return match serde_yaml::from_str(&yaml_block) {
+                Ok(frontmatter) => FrontmatterParseResult::Valid(frontmatter),
+                Err(error) => {
+                    let location = error.location();
+                    let line = location.as_ref().map_or(1, |location| location.line() + 1);
+                    let column = location.as_ref().map_or(1, serde_yaml::Location::column);
+                    let rendered = error.to_string();
+                    let message = rendered
+                        .rsplit_once(" at line ")
+                        .map_or(rendered.as_str(), |(message, _)| message)
+                        .to_string();
+                    FrontmatterParseResult::Invalid(FrontmatterParseError {
+                        line,
+                        column,
+                        message,
+                    })
+                }
+            };
         }
         yaml_block.push_str(line);
         yaml_block.push('\n');
     }
-    None
+    FrontmatterParseResult::Invalid(FrontmatterParseError {
+        line: content.lines().count().saturating_add(1),
+        column: 1,
+        message: "unterminated YAML frontmatter".to_string(),
+    })
 }
 
 /// Every top-level frontmatter key, stringified, for the dashboard to show
@@ -158,39 +201,49 @@ fn is_valid_skill_name(name: &str) -> bool {
 /// free-form by design.
 pub fn validate_skill(
     dir_name: &str,
-    frontmatter: Option<&SkillFrontmatter>,
+    parse_result: &FrontmatterParseResult,
     skill_md_line_count: usize,
 ) -> Vec<String> {
     let mut violations = Vec::new();
+    let frontmatter = parse_result.as_frontmatter();
 
-    match frontmatter
-        .and_then(|f| f.name.as_deref())
-        .filter(|n| !n.is_empty())
-    {
-        None => violations.push("missing required frontmatter field: name".to_string()),
-        Some(name) => {
-            if !is_valid_skill_name(name) {
-                violations.push(format!(
-                    "name \"{name}\" must be 1-64 lowercase a-z0-9 characters and hyphens, with no leading, trailing, or consecutive hyphens"
-                ));
-            }
-            if name != dir_name {
-                violations.push(format!(
-                    "name \"{name}\" does not match its directory name \"{dir_name}\""
-                ));
-            }
-        }
+    if let FrontmatterParseResult::Invalid(error) = parse_result {
+        violations.push(format!(
+            "invalid YAML frontmatter at line {}, column {}: {}",
+            error.line, error.column, error.message
+        ));
     }
 
-    match frontmatter
-        .and_then(|f| f.description.as_deref())
-        .filter(|d| !d.is_empty())
-    {
-        None => violations.push("missing required frontmatter field: description".to_string()),
-        Some(d) if d.chars().count() > 1024 => {
-            violations.push("description exceeds 1024 characters".to_string())
+    if !matches!(parse_result, FrontmatterParseResult::Invalid(_)) {
+        match frontmatter
+            .and_then(|f| f.name.as_deref())
+            .filter(|n| !n.is_empty())
+        {
+            None => violations.push("missing required frontmatter field: name".to_string()),
+            Some(name) => {
+                if !is_valid_skill_name(name) {
+                    violations.push(format!(
+                        "name \"{name}\" must be 1-64 lowercase a-z0-9 characters and hyphens, with no leading, trailing, or consecutive hyphens"
+                    ));
+                }
+                if name != dir_name {
+                    violations.push(format!(
+                        "name \"{name}\" does not match its directory name \"{dir_name}\""
+                    ));
+                }
+            }
         }
-        Some(_) => {}
+
+        match frontmatter
+            .and_then(|f| f.description.as_deref())
+            .filter(|d| !d.is_empty())
+        {
+            None => violations.push("missing required frontmatter field: description".to_string()),
+            Some(d) if d.chars().count() > 1024 => {
+                violations.push("description exceeds 1024 characters".to_string())
+            }
+            Some(_) => {}
+        }
     }
 
     if let Some(compat) = frontmatter.and_then(|f| f.compatibility.as_deref()) {
@@ -222,9 +275,17 @@ mod tests {
         }
     }
 
+    fn validate_frontmatter(frontmatter: SkillFrontmatter, dir_name: &str) -> Vec<String> {
+        validate_skill(dir_name, &FrontmatterParseResult::Valid(frontmatter), 10)
+    }
+
     #[test]
     fn fully_valid_skill_has_no_violations() {
-        let violations = validate_skill("write-tests", Some(&valid_frontmatter()), 50);
+        let violations = validate_skill(
+            "write-tests",
+            &FrontmatterParseResult::Valid(valid_frontmatter()),
+            50,
+        );
         assert!(
             violations.is_empty(),
             "expected no violations, got {violations:?}"
@@ -235,7 +296,7 @@ mod tests {
     fn bad_name_characters_are_flagged() {
         let mut fm = valid_frontmatter();
         fm.name = Some("Write_Tests!".to_string());
-        let violations = validate_skill("Write_Tests!", Some(&fm), 10);
+        let violations = validate_frontmatter(fm, "Write_Tests!");
         assert!(violations
             .iter()
             .any(|v| v.contains("must be 1-64 lowercase")));
@@ -243,7 +304,7 @@ mod tests {
 
     #[test]
     fn name_directory_mismatch_is_flagged() {
-        let violations = validate_skill("other-dir", Some(&valid_frontmatter()), 10);
+        let violations = validate_frontmatter(valid_frontmatter(), "other-dir");
         assert!(violations
             .iter()
             .any(|v| v.contains("does not match its directory name")));
@@ -253,7 +314,7 @@ mod tests {
     fn missing_description_is_flagged() {
         let mut fm = valid_frontmatter();
         fm.description = None;
-        let violations = validate_skill("write-tests", Some(&fm), 10);
+        let violations = validate_frontmatter(fm, "write-tests");
         assert!(violations
             .iter()
             .any(|v| v.contains("missing required frontmatter field: description")));
@@ -263,7 +324,7 @@ mod tests {
     fn overlong_description_is_flagged() {
         let mut fm = valid_frontmatter();
         fm.description = Some("x".repeat(1025));
-        let violations = validate_skill("write-tests", Some(&fm), 10);
+        let violations = validate_frontmatter(fm, "write-tests");
         assert!(violations
             .iter()
             .any(|v| v.contains("exceeds 1024 characters")));
@@ -271,7 +332,9 @@ mod tests {
 
     #[test]
     fn missing_frontmatter_flags_both_required_fields() {
-        let violations = validate_skill("write-tests", None, 10);
+        let parsed = parse_frontmatter("# No frontmatter\nBody.");
+        assert!(matches!(parsed, FrontmatterParseResult::Absent));
+        let violations = validate_skill("write-tests", &parsed, 10);
         assert!(violations.iter().any(|v| v.contains("name")));
         assert!(violations.iter().any(|v| v.contains("description")));
     }
@@ -284,6 +347,46 @@ mod tests {
         assert_eq!(
             fields.get("custom-field").map(String::as_str),
             Some("some-value")
+        );
+    }
+
+    #[test]
+    fn colon_in_plain_description_reports_yaml_location_without_missing_fields() {
+        let content =
+            "---\nname: write-tests\ndescription: Triggers on: requests for tests\n---\nBody.";
+        let parsed = parse_frontmatter(content);
+        let violations = validate_skill("write-tests", &parsed, content.lines().count());
+
+        assert_eq!(
+            violations,
+            vec!["invalid YAML frontmatter at line 3, column 25: mapping values are not allowed in this context"]
+        );
+    }
+
+    #[test]
+    fn valid_yaml_with_missing_fields_keeps_required_field_diagnostics() {
+        let parsed = parse_frontmatter("---\nlicense: MIT\n---\nBody.");
+        let violations = validate_skill("write-tests", &parsed, 4);
+
+        assert_eq!(
+            violations,
+            vec![
+                "missing required frontmatter field: name".to_string(),
+                "missing required frontmatter field: description".to_string(),
+            ]
+        );
+    }
+
+    #[test]
+    fn unterminated_frontmatter_is_one_invalid_eof_diagnostic() {
+        let content = "---\nname: write-tests\ndescription: Writes tests.";
+        let parsed = parse_frontmatter(content);
+        let violations = validate_skill("write-tests", &parsed, content.lines().count());
+
+        assert!(matches!(parsed, FrontmatterParseResult::Invalid(_)));
+        assert_eq!(
+            violations,
+            vec!["invalid YAML frontmatter at line 4, column 1: unterminated YAML frontmatter"]
         );
     }
 
@@ -332,7 +435,7 @@ mod tests {
         let mut fm = valid_frontmatter();
         fm.disable_model_invocation = Some(true);
         fm.user_invocable = Some(false);
-        let violations = validate_skill("write-tests", Some(&fm), 10);
+        let violations = validate_frontmatter(fm, "write-tests");
         assert!(violations
             .iter()
             .any(|v| v.contains("conflicting invocation keys")));

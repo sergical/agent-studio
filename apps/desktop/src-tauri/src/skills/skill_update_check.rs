@@ -273,6 +273,21 @@ pub trait CommitLookup: Sync {
         path: &str,
         until: Option<&str>,
     ) -> Result<Option<(String, String)>, String>;
+
+    /// Add-operation lookup. Legacy implementations keep working, while the
+    /// real implementation applies the shared cancellation and deadline.
+    fn latest_commit_controlled(
+        &self,
+        repo: &str,
+        path: &str,
+        until: Option<&str>,
+        control: &super::skill_process::AddOperationControl,
+    ) -> Result<Option<(String, String)>, String> {
+        control.check_message()?;
+        let result = self.latest_commit(repo, path, until);
+        control.check_message()?;
+        result
+    }
 }
 
 /// Real `CommitLookup` backed by the `gh` CLI.
@@ -319,6 +334,40 @@ impl CommitLookup for GhCommitLookup {
             return Ok(None);
         }
         Ok(Some((sha, date)))
+    }
+
+    fn latest_commit_controlled(
+        &self,
+        repo: &str,
+        path: &str,
+        until: Option<&str>,
+        control: &super::skill_process::AddOperationControl,
+    ) -> Result<Option<(String, String)>, String> {
+        let mut api_path = format!(
+            "repos/{repo}/commits?path={}&per_page=1",
+            urlencoding::encode(path)
+        );
+        if let Some(until) = until {
+            api_path.push_str(&format!("&until={}", urlencoding::encode(until)));
+        }
+        let stdout = super::gh_cli::run_gh_controlled(
+            &self.gh_bin,
+            &[
+                "api",
+                &api_path,
+                "--jq",
+                ".[0] | [.sha, .commit.committer.date] | @tsv",
+            ],
+            control,
+        )
+        .map_err(|error| error.message())?;
+        let stdout = String::from_utf8_lossy(&stdout);
+        let mut parts = stdout.trim().splitn(2, '\t');
+        let sha = parts.next().unwrap_or_default().to_string();
+        if sha.is_empty() {
+            return Ok(None);
+        }
+        Ok(Some((sha, parts.next().unwrap_or_default().to_string())))
     }
 }
 

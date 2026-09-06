@@ -405,6 +405,7 @@ mod tests {
 
     fn snapshot(deployments: Vec<Deployment>) -> SkillSnapshot {
         SkillSnapshot {
+            revision: 0,
             skills: vec![InstalledSkill {
                 name: "find-bugs".to_string(),
                 source: "o/r".to_string(),

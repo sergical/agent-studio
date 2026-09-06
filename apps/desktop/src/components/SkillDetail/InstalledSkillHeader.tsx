@@ -8,7 +8,7 @@ import { ArrowLeft, AlertTriangle, MoreHorizontal, PanelRight } from "lucide-rea
 import { Button } from "@skill-studio/ui";
 import { isBlockingSpecViolation } from "@skill-studio/lib";
 import { trialHoursLeft } from "@skill-studio/lib";
-import type { Deployment, InstalledSkill } from "@skill-studio/lib";
+import type { Deployment, FrontmatterRepairPreview, InstalledSkill } from "@skill-studio/lib";
 import { isFeatureEnabled } from "../../lib/feature-flags";
 import type { ActiveView } from "../../store/appStore";
 import { MenuControl, MenuItem, MenuSeparator } from "../ui/MenuControl";
@@ -29,6 +29,9 @@ interface InstalledSkillHeaderProps {
   onOpenAssistant: () => void;
   /** So the drawer can return focus here when it closes. */
   assistantTriggerRef: RefObject<HTMLButtonElement | null>;
+  frontmatterRepair?: FrontmatterRepairPreview | null;
+  onFixYaml: () => void;
+  onEditManually: () => void;
 }
 
 /** The back button's label: the name of the view the page was opened from. */
@@ -77,6 +80,9 @@ export function InstalledSkillHeader({
   isAssistantOpen,
   onOpenAssistant,
   assistantTriggerRef,
+  frontmatterRepair,
+  onFixYaml,
+  onEditManually,
 }: InstalledSkillHeaderProps) {
   const actions = useSkillPageActions(skill, onRemoveComplete);
   const assistantEnabled = isFeatureEnabled("skill-assistant");
@@ -90,6 +96,9 @@ export function InstalledSkillHeader({
   const renderedDeployment = deployment ?? skill.deployments.find((d) => d.content_hash);
   const blockingViolations = (renderedDeployment?.spec_violations ?? []).filter(
     isBlockingSpecViolation,
+  );
+  const hasMalformedYaml = blockingViolations.some((violation) =>
+    violation.startsWith("invalid YAML frontmatter at line "),
   );
 
   return (
@@ -237,9 +246,18 @@ export function InstalledSkillHeader({
       </div>
 
       {blockingViolations.length > 0 && (
-        <div className="flex items-center gap-1.5 text-small text-error">
+        <div className="flex items-center gap-2 text-small text-error">
           <AlertTriangle size={13} />
           <span>{blockingViolations.join("; ")}</span>
+          {hasMalformedYaml && (
+            <Button
+              size="sm"
+              variant="outline"
+              onClick={frontmatterRepair ? onFixYaml : onEditManually}
+            >
+              {frontmatterRepair ? "Fix YAML" : "Edit manually"}
+            </Button>
+          )}
         </div>
       )}
     </header>

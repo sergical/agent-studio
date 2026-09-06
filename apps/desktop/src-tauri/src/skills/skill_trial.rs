@@ -17,7 +17,7 @@ use sha2::{Digest, Sha256};
 use tauri::{AppHandle, Emitter, Manager};
 
 use super::agents::AgentId;
-use super::event_store::fingerprint_path;
+use super::event_store::{fingerprint_path, fingerprint_path_checked};
 use super::skill_add::{maybe_claude_code_symlink, CommandRunner, RealCommandRunner};
 use super::skill_dto::LifecycleTarget;
 use super::skill_fork::ForkMutationLock;
@@ -25,6 +25,7 @@ use super::skill_fork_registry::{
     deployment_trial_key, name_from_trial_key, read_fork_registry, trial_key, write_fork_registry,
     AddMethod, ForkRegistry, TrialRecord, TrialScope, TrialStatus,
 };
+use super::skill_fs::copy_dir_preserving_symlinks;
 use super::skill_lifecycle::{
     find_deployment, revalidate_deployment, skills_sh_remove_args_for_scope,
 };
@@ -120,37 +121,6 @@ fn drop_recovery_trial_without_deployment(
     registry.trials.remove(&key);
     write_fork_registry(home, &registry)?;
     Ok(true)
-}
-
-/// Like `copy_dir_all`, but recreates symlinks (`read_link` + `symlink`)
-/// instead of skipping them. A skill folder that itself contains symlinked
-/// files or subdirectories must not lose them on the way into the trash -
-/// the "trash copy always happens first" guarantee is only real if the
-/// trash copy is complete.
-pub(crate) fn copy_dir_preserving_symlinks(src: &Path, dst: &Path) -> Result<(), String> {
-    fs::create_dir_all(dst).map_err(|e| format!("Failed to create {}: {e}", dst.display()))?;
-    for entry in fs::read_dir(src).map_err(|e| format!("Failed to read {}: {e}", src.display()))? {
-        let entry = entry.map_err(|e| format!("Failed to read a directory entry: {e}"))?;
-        let file_type = entry
-            .file_type()
-            .map_err(|e| format!("Failed to stat {}: {e}", entry.path().display()))?;
-        let dest_path = dst.join(entry.file_name());
-        if file_type.is_symlink() {
-            let target = fs::read_link(entry.path())
-                .map_err(|e| format!("Failed to read symlink {}: {e}", entry.path().display()))?;
-            #[cfg(unix)]
-            std::os::unix::fs::symlink(&target, &dest_path)
-                .map_err(|e| format!("Failed to symlink {}: {e}", dest_path.display()))?;
-            #[cfg(not(unix))]
-            return Err("Symlinking is only supported on Unix".to_string());
-        } else if file_type.is_dir() {
-            copy_dir_preserving_symlinks(&entry.path(), &dest_path)?;
-        } else {
-            fs::copy(entry.path(), &dest_path)
-                .map_err(|e| format!("Failed to copy {}: {e}", entry.path().display()))?;
-        }
-    }
-    Ok(())
 }
 
 /// Total number of filesystem entries (files, dirs, symlinks) under `dir`,
@@ -276,23 +246,27 @@ fn expire_one(
     trial: &TrialRecord,
     now: DateTime<Utc>,
     runner: &dyn CommandRunner,
-) -> Result<String, String> {
+) -> Result<String, ExpireOneError> {
     let is_project = trial.scope == TrialScope::Project;
     let project_path = trial.project_path.as_deref();
     if is_project && project_path.is_none() {
-        return Err(format!(
+        return Err(ExpireOneError::before_backup(format!(
             "Trial for {name} is project-scoped but has no project_path"
-        ));
+        )));
     }
 
     let skill_dir = &trial.skill_dir;
     if !skill_dir.exists() {
-        return Err(format!("{} not found", skill_dir.display()));
+        return Err(ExpireOneError::before_backup(format!(
+            "{} not found",
+            skill_dir.display()
+        )));
     }
 
     let trash_root = home.join(".agents").join("skills-trash");
-    fs::create_dir_all(&trash_root)
-        .map_err(|e| format!("Failed to create {}: {e}", trash_root.display()))?;
+    fs::create_dir_all(&trash_root).map_err(|e| {
+        ExpireOneError::before_backup(format!("Failed to create {}: {e}", trash_root.display()))
+    })?;
     let stamp = now.format("%Y%m%d-%H%M%S");
     let deployment_digest = Sha256::digest(trial.deployment_id.as_bytes());
     let deployment_key: String = deployment_digest[..8]
@@ -307,12 +281,21 @@ fn expire_one(
         match fs::create_dir(&candidate) {
             Ok(()) => break candidate,
             Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => continue,
-            Err(error) => return Err(format!("Failed to create {}: {error}", candidate.display())),
+            Err(error) => {
+                return Err(ExpireOneError::before_backup(format!(
+                    "Failed to create {}: {error}",
+                    candidate.display()
+                )))
+            }
         }
     };
     let staging_path = invocation_root.join(".staging");
-    fs::create_dir(&staging_path)
-        .map_err(|error| format!("Failed to create {}: {error}", staging_path.display()))?;
+    fs::create_dir(&staging_path).map_err(|error| {
+        ExpireOneError::before_backup(format!(
+            "Failed to create {}: {error}",
+            staging_path.display()
+        ))
+    })?;
     let trash_path = invocation_root.join("backup");
     // Trash copy first - removal must never run without one already in place.
     // Symlinks are recreated, never followed, so a symlinked file or
@@ -320,7 +303,7 @@ fn expire_one(
     let source_fingerprint_before = fingerprint_path(skill_dir);
     if let Err(error) = copy_dir_preserving_symlinks(skill_dir, &staging_path) {
         let _ = fs::remove_dir_all(&invocation_root);
-        return Err(error);
+        return Err(ExpireOneError::before_backup(error));
     }
     let source_fingerprint_after = fingerprint_path(skill_dir);
     let staging_fingerprint = fingerprint_path(&staging_path);
@@ -328,56 +311,76 @@ fn expire_one(
         || staging_fingerprint != source_fingerprint_after
     {
         let _ = fs::remove_dir_all(&invocation_root);
-        return Err(format!(
+        return Err(ExpireOneError::before_backup(format!(
             "Trash copy of {} does not match the original; not removing the original",
             skill_dir.display()
-        ));
+        )));
     }
     fs::rename(&staging_path, &trash_path).map_err(|error| {
-        format!(
+        ExpireOneError::before_backup(format!(
             "Failed to publish trial backup {}: {error}",
             trash_path.display()
-        )
+        ))
     })?;
 
-    match trial.method {
-        AddMethod::Dotagents => {
-            let scope = if is_project {
-                super::skill_dto::InstallScope::Project
-            } else {
-                super::skill_dto::InstallScope::Global
-            };
-            let args = super::commands::dotagents_remove_args(name, scope);
-            let cwd = if is_project {
-                project_path.map(PathBuf::from)
-            } else {
-                None
-            };
-            runner.run_npx(&args, cwd.as_deref())?;
+    let removal_result = (|| -> Result<(), String> {
+        let scope = if is_project {
+            super::skill_dto::InstallScope::Project
+        } else {
+            super::skill_dto::InstallScope::Global
+        };
+        let cwd = project_path.filter(|_| is_project).map(PathBuf::from);
+        match trial.method {
+            AddMethod::Dotagents => {
+                let args = super::commands::dotagents_remove_args(name, scope);
+                runner.run_npx(&args, cwd.as_deref())?;
+            }
+            AddMethod::SkillsSh => {
+                let args = skills_sh_remove_args_for_scope(name, scope);
+                runner.run_npx(&args, cwd.as_deref())?;
+            }
+            AddMethod::Copy => {
+                fs::remove_dir_all(skill_dir)
+                    .map_err(|e| format!("Failed to remove {}: {e}", skill_dir.display()))?;
+            }
         }
-        AddMethod::SkillsSh => {
-            let scope = if is_project {
-                super::skill_dto::InstallScope::Project
-            } else {
-                super::skill_dto::InstallScope::Global
-            };
-            let args = skills_sh_remove_args_for_scope(name, scope);
-            let cwd = if is_project {
-                project_path.map(PathBuf::from)
-            } else {
-                None
-            };
-            runner.run_npx(&args, cwd.as_deref())?;
-        }
-        AddMethod::Copy => {
-            fs::remove_dir_all(skill_dir)
-                .map_err(|e| format!("Failed to remove {}: {e}", skill_dir.display()))?;
-        }
+
+        remove_original_claude_link_if_present(trial)?;
+        Ok(())
+    })();
+
+    if let Err(message) = removal_result {
+        return Err(ExpireOneError {
+            message,
+            attempt_backup: Some(AttemptBackup {
+                trash_root,
+                invocation_root,
+                backup_path: trash_path,
+            }),
+        });
     }
 
-    remove_original_claude_link_if_present(trial)?;
-
     Ok(trash_path.to_string_lossy().to_string())
+}
+
+struct AttemptBackup {
+    trash_root: PathBuf,
+    invocation_root: PathBuf,
+    backup_path: PathBuf,
+}
+
+struct ExpireOneError {
+    message: String,
+    attempt_backup: Option<AttemptBackup>,
+}
+
+impl ExpireOneError {
+    fn before_backup(message: String) -> Self {
+        Self {
+            message,
+            attempt_backup: None,
+        }
+    }
 }
 
 fn registry_without_expired_trial(
@@ -437,21 +440,77 @@ fn restore_copy_trial(trial: &TrialRecord, trash_path: &Path) -> Result<(), Stri
     Ok(())
 }
 
-fn trial_deployment_still_matches(trial: &TrialRecord) -> bool {
-    if fingerprint_path(&trial.skill_dir) != trial.deployment_fingerprint {
-        return false;
+fn trial_deployment_still_matches(trial: &TrialRecord) -> Result<bool, String> {
+    let deployment_fingerprint = fingerprint_path_checked(&trial.skill_dir)
+        .map_err(|error| format!("Trial deployment cannot be verified: {error}"))?;
+    if deployment_fingerprint.as_deref() != Some(&trial.deployment_fingerprint) {
+        return Ok(false);
     }
     match (&trial.claude_link, &trial.claude_link_target) {
         (Some(link), Some(target)) => {
-            fs::symlink_metadata(link)
-                .map(|metadata| metadata.file_type().is_symlink())
-                .unwrap_or(false)
-                && fs::read_link(link).ok().as_deref() == Some(target)
-                && fs::canonicalize(link).ok() == fs::canonicalize(&trial.skill_dir).ok()
+            let metadata = match fs::symlink_metadata(link) {
+                Ok(metadata) => metadata,
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(false),
+                Err(error) => return Err(format!("Trial Claude link cannot be verified: {error}")),
+            };
+            if !metadata.file_type().is_symlink() {
+                return Ok(false);
+            }
+            let actual_target = fs::read_link(link)
+                .map_err(|error| format!("Trial Claude link cannot be verified: {error}"))?;
+            if actual_target.as_path() != target.as_path() {
+                return Ok(false);
+            }
+            let actual = fs::canonicalize(link)
+                .map_err(|error| format!("Trial Claude link cannot be resolved: {error}"))?;
+            let expected = fs::canonicalize(&trial.skill_dir)
+                .map_err(|error| format!("Trial deployment cannot be resolved: {error}"))?;
+            Ok(actual == expected)
         }
-        (None, _) => true,
-        (Some(_), None) => false,
+        (None, _) => Ok(true),
+        (Some(_), None) => Ok(false),
     }
+}
+
+fn remove_unreferenced_attempt_backup(home: &Path, attempt: &AttemptBackup) -> Result<(), String> {
+    let expected_root = home.join(".agents").join("skills-trash");
+    if attempt.trash_root != expected_root
+        || attempt.invocation_root.parent() != Some(expected_root.as_path())
+        || attempt.backup_path != attempt.invocation_root.join("backup")
+    {
+        return Err("Trial backup cleanup refused an unexpected path identity".to_string());
+    }
+
+    let canonical_root = fs::canonicalize(&expected_root)
+        .map_err(|error| format!("Trial trash root cannot be resolved: {error}"))?;
+    let invocation_metadata = fs::symlink_metadata(&attempt.invocation_root)
+        .map_err(|error| format!("Trial backup invocation cannot be inspected: {error}"))?;
+    let backup_metadata = fs::symlink_metadata(&attempt.backup_path)
+        .map_err(|error| format!("Trial backup cannot be inspected: {error}"))?;
+    if !invocation_metadata.file_type().is_dir()
+        || invocation_metadata.file_type().is_symlink()
+        || !backup_metadata.file_type().is_dir()
+        || backup_metadata.file_type().is_symlink()
+    {
+        return Err("Trial backup cleanup refused a non-directory or symlink".to_string());
+    }
+
+    let canonical_invocation = fs::canonicalize(&attempt.invocation_root)
+        .map_err(|error| format!("Trial backup invocation cannot be resolved: {error}"))?;
+    let canonical_backup = fs::canonicalize(&attempt.backup_path)
+        .map_err(|error| format!("Trial backup cannot be resolved: {error}"))?;
+    if canonical_invocation.parent() != Some(canonical_root.as_path())
+        || canonical_backup != canonical_invocation.join("backup")
+    {
+        return Err("Trial backup cleanup refused a path outside the trial trash root".to_string());
+    }
+
+    fs::remove_dir_all(&attempt.invocation_root).map_err(|error| {
+        format!(
+            "Failed to remove unused trial backup {}: {error}",
+            attempt.backup_path.display()
+        )
+    })
 }
 
 enum ExpiringRecovery {
@@ -532,6 +591,27 @@ fn run_trial_expiry_pass_with_writer(
     runner: &dyn CommandRunner,
     snapshot: &super::skill_refresh::SkillSnapshot,
     write_registry: &mut dyn FnMut(&Path, &ForkRegistry) -> Result<(), String>,
+) -> Vec<ExpiredTrial> {
+    run_trial_expiry_pass_with_controls(
+        home,
+        now,
+        runner,
+        snapshot,
+        write_registry,
+        &mut trial_deployment_still_matches,
+        &mut remove_unreferenced_attempt_backup,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn run_trial_expiry_pass_with_controls(
+    home: &Path,
+    now: DateTime<Utc>,
+    runner: &dyn CommandRunner,
+    snapshot: &super::skill_refresh::SkillSnapshot,
+    write_registry: &mut dyn FnMut(&Path, &ForkRegistry) -> Result<(), String>,
+    verify_unchanged: &mut dyn FnMut(&TrialRecord) -> Result<bool, String>,
+    cleanup_backup: &mut dyn FnMut(&Path, &AttemptBackup) -> Result<(), String>,
 ) -> Vec<ExpiredTrial> {
     let mut registry = match read_fork_registry(home) {
         Ok(registry) => registry,
@@ -618,20 +698,60 @@ fn run_trial_expiry_pass_with_writer(
             Ok(trash_path) => trash_path,
             Err(error) => {
                 if trial.method != AddMethod::Copy {
-                    if trial_deployment_still_matches(&trial) {
-                        match write_registry(home, &original_registry) {
-                            Ok(()) => registry = original_registry,
-                            Err(restore_error) => eprintln!(
-                                "[skill_trial] failed to restore active trial after {name} removal failed: {restore_error}"
-                            ),
+                    match verify_unchanged(&trial) {
+                        Ok(true) => {
+                            let cleanup_result = error
+                                .attempt_backup
+                                .as_ref()
+                                .map(|backup| cleanup_backup(home, backup))
+                                .transpose();
+                            match cleanup_result {
+                                Ok(_) => match write_registry(home, &original_registry) {
+                                    Ok(()) => registry = original_registry,
+                                    Err(restore_error) => eprintln!(
+                                        "[skill_trial] failed to restore active trial after {name} removal failed: {restore_error}"
+                                    ),
+                                },
+                                Err(cleanup_error) => {
+                                    registry
+                                        .trials
+                                        .get_mut(&key)
+                                        .expect("expiring trial exists")
+                                        .status = TrialStatus::RecoveryRequired;
+                                    if let Err(write_error) = write_registry(home, &registry) {
+                                        registry = original_registry;
+                                        eprintln!(
+                                            "[skill_trial] failed to persist recovery state after backup cleanup failed for {name}: {write_error}"
+                                        );
+                                    }
+                                    eprintln!(
+                                        "[skill_trial] {name} needs expiry recovery because backup cleanup failed: {cleanup_error}"
+                                    );
+                                }
+                            }
                         }
-                    } else {
-                        eprintln!(
+                        Ok(false) => eprintln!(
                             "[skill_trial] {name} removal failed after changing the deployment; its durable tombstone remains"
-                        );
+                        ),
+                        Err(verify_error) => {
+                            registry
+                                .trials
+                                .get_mut(&key)
+                                .expect("expiring trial exists")
+                                .status = TrialStatus::RecoveryRequired;
+                            if let Err(write_error) = write_registry(home, &registry) {
+                                registry = original_registry;
+                                eprintln!(
+                                    "[skill_trial] failed to persist recovery state after verification failed for {name}: {write_error}"
+                                );
+                            }
+                            eprintln!(
+                                "[skill_trial] {name} removal failed and the deployment could not be verified; its backup remains for recovery: {verify_error}"
+                            );
+                        }
                     }
                 }
-                eprintln!("[skill_trial] failed to expire {name}: {error}");
+                eprintln!("[skill_trial] failed to expire {name}: {}", error.message);
                 continue;
             }
         };
@@ -679,7 +799,7 @@ fn run_and_emit(app: &AppHandle) {
     let Some(home) = dirs::home_dir() else {
         return;
     };
-    let runner = RealCommandRunner;
+    let runner = RealCommandRunner::new();
     let expired = {
         let lock = app.state::<ForkMutationLock>();
         let Ok(_guard) = lock.try_acquire() else {
@@ -1131,6 +1251,7 @@ mod tests {
             })
             .collect();
         super::super::skill_refresh::SkillSnapshot {
+            revision: 0,
             skills,
             projects: Vec::new(),
             invocations: Vec::new(),
@@ -1429,6 +1550,99 @@ mod tests {
             fs::read_to_string(skill_dir.join("SKILL.md")).unwrap(),
             "replacement"
         );
+        let trash_root = home.join(".agents/skills-trash");
+        let backups: Vec<_> = fs::read_dir(trash_root).unwrap().collect();
+        assert_eq!(backups.len(), 1);
+    }
+
+    #[test]
+    fn verification_error_preserves_the_attempt_backup() {
+        let tmp = tempfile::tempdir().unwrap();
+        let home = tmp.path();
+        let now = Utc::now();
+        seed_trial(
+            home,
+            "find-bugs",
+            AddMethod::SkillsSh,
+            now - chrono::Duration::hours(1),
+        );
+        let snapshot = trial_snapshot(home);
+
+        let expired = run_trial_expiry_pass_with_controls(
+            home,
+            now,
+            &FakeRunner {
+                fail: true,
+                ..Default::default()
+            },
+            &snapshot,
+            &mut write_fork_registry,
+            &mut |_| Err("injected verification failure".to_string()),
+            &mut |_, _| panic!("verification errors must not clean backups"),
+        );
+
+        assert!(expired.is_empty());
+        assert_eq!(
+            fs::read_dir(home.join(".agents/skills-trash"))
+                .unwrap()
+                .count(),
+            1
+        );
+        assert_eq!(
+            read_fork_registry(home)
+                .unwrap()
+                .trials
+                .values()
+                .next()
+                .unwrap()
+                .status,
+            TrialStatus::RecoveryRequired
+        );
+    }
+
+    #[test]
+    fn cleanup_failure_persists_recovery_required_and_preserves_backup() {
+        let tmp = tempfile::tempdir().unwrap();
+        let home = tmp.path();
+        let now = Utc::now();
+        seed_trial(
+            home,
+            "find-bugs",
+            AddMethod::Dotagents,
+            now - chrono::Duration::hours(1),
+        );
+        let snapshot = trial_snapshot(home);
+
+        let expired = run_trial_expiry_pass_with_controls(
+            home,
+            now,
+            &FakeRunner {
+                fail: true,
+                ..Default::default()
+            },
+            &snapshot,
+            &mut write_fork_registry,
+            &mut |_| Ok(true),
+            &mut |_, _| Err("injected cleanup failure".to_string()),
+        );
+
+        assert!(expired.is_empty());
+        assert_eq!(
+            read_fork_registry(home)
+                .unwrap()
+                .trials
+                .values()
+                .next()
+                .unwrap()
+                .status,
+            TrialStatus::RecoveryRequired
+        );
+        assert_eq!(
+            fs::read_dir(home.join(".agents/skills-trash"))
+                .unwrap()
+                .count(),
+            1
+        );
     }
 
     #[test]
@@ -1628,7 +1842,7 @@ mod tests {
     }
 
     #[test]
-    fn trash_copy_precedes_removal_and_survives_a_failing_tool() {
+    fn repeated_clean_cli_failures_do_not_accumulate_trial_backups() {
         let tmp = tempfile::tempdir().unwrap();
         let home = tmp.path();
         let now = Utc::now();
@@ -1643,23 +1857,76 @@ mod tests {
             fail: true,
             ..Default::default()
         };
-        let snapshot = trial_snapshot(home);
-        let expired = run_trial_expiry_pass(home, now, &runner, &snapshot);
-        assert!(expired.is_empty());
-        // The folder is untouched (the CLI would have removed it, but our
-        // fake failed before that), and the trial record is kept for retry.
+        for retry in 0..3 {
+            let snapshot = trial_snapshot(home);
+            let expired = run_trial_expiry_pass(
+                home,
+                now + chrono::Duration::minutes(retry),
+                &runner,
+                &snapshot,
+            );
+            assert!(expired.is_empty());
+        }
+
         assert!(home.join(".agents/skills/find-bugs").exists());
         let registry = read_fork_registry(home).unwrap();
         assert!(registry
             .trials
             .values()
             .any(|trial| trial.deployment_id.contains("find-bugs")));
-        // The trash copy was still made before the failing removal attempt.
         let trash_root = home.join(".agents/skills-trash");
-        let has_trash = fs::read_dir(&trash_root)
-            .map(|mut d| d.next().is_some())
-            .unwrap_or(false);
-        assert!(has_trash);
+        assert_eq!(fs::read_dir(trash_root).unwrap().count(), 0);
+    }
+
+    #[test]
+    fn clean_failure_cleanup_keeps_same_name_other_deployment_and_backup() {
+        let tmp = tempfile::tempdir().unwrap();
+        let home = tmp.path().join("home");
+        let project = tmp.path().join("project");
+        let now = Utc::now();
+        seed_trial(
+            &home,
+            "find-bugs",
+            AddMethod::Dotagents,
+            now - chrono::Duration::hours(1),
+        );
+        let project_skill = seed_project_trial(
+            &home,
+            &project,
+            "find-bugs",
+            AddMethod::Copy,
+            now + chrono::Duration::hours(1),
+        );
+        let other_backup = home
+            .join(".agents/skills-trash")
+            .join("find-bugs-20260101-120000");
+        fs::create_dir_all(&other_backup).unwrap();
+        fs::write(other_backup.join("SKILL.md"), "older backup").unwrap();
+
+        let snapshot = trial_snapshot(&home);
+        let expired = run_trial_expiry_pass(
+            &home,
+            now,
+            &FakeRunner {
+                fail: true,
+                ..Default::default()
+            },
+            &snapshot,
+        );
+
+        assert!(expired.is_empty());
+        assert!(home.join(".agents/skills/find-bugs/SKILL.md").is_file());
+        assert!(project_skill.join("SKILL.md").is_file());
+        assert_eq!(
+            fs::read_to_string(other_backup.join("SKILL.md")).unwrap(),
+            "older backup"
+        );
+        assert_eq!(
+            fs::read_dir(home.join(".agents/skills-trash"))
+                .unwrap()
+                .count(),
+            1
+        );
     }
 
     #[test]

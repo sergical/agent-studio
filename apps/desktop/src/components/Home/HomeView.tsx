@@ -855,6 +855,7 @@ export function HomeView({ snapshot, isLoading, onSelectSkill }: HomeViewProps) 
           harness={linkedRootDialog.harness}
           harnessLabel={linkedRootDialog.harnessLabel}
           root={linkedRootDialog.root}
+          intent={{ kind: "convert-only" }}
           onClose={() => setLinkedRootDialog(null)}
         />
       )}

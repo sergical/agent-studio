@@ -96,6 +96,8 @@ pub struct SkillEventDto {
     /// True when this event has an inverse, hasn't already been undone, and
     /// its status is one a restore makes sense for.
     pub restorable: bool,
+    /// False when force restore could cross an independent Copy boundary.
+    pub force_restorable: bool,
     pub reverted_by: Option<String>,
     /// Absolute path to this event's backup directory, for a "Reveal in
     /// Finder" action - `None` when the event backed up nothing.
