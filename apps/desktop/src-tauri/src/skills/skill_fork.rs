@@ -552,7 +552,7 @@ fn validate_fork_path(home: &Path, name: &str, path: &Path) -> Result<(), String
         .map_err(|e| format!("Failed to resolve {}: {e}", expected.display()))?;
     if canonical_given != canonical_expected {
         return Err(
-            "Only the shared-folder copy (~/.agents/skills/<name>) can be forked".to_string(),
+            "Only the Universal-folder copy (~/.agents/skills/<name>) can be forked".to_string(),
         );
     }
     Ok(())
@@ -1602,7 +1602,7 @@ mod tests {
             &NeverCalledLookup,
         )
         .unwrap_err();
-        assert!(err.contains("shared-folder"));
+        assert!(err.contains("Universal-folder"));
         assert_eq!(ledger.remove_calls.lock().unwrap().len(), 0);
     }
 

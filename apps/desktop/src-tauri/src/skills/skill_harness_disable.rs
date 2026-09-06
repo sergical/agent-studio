@@ -467,7 +467,7 @@ fn set_claude_code_enabled(
 
     match claude_link_state_at(link_path) {
         ClaudeLinkState::WholeDir => Err(
-            "Claude Code reads the whole shared folder for skills, not a per-skill symlink - it cannot be disabled for just this skill".to_string(),
+            "Claude Code reads the whole Universal folder for skills, not a per-skill symlink - it cannot be disabled for just this skill".to_string(),
         ),
         ClaudeLinkState::None => {
             Err(format!("\"{name}\" is not deployed to Claude Code via a per-skill symlink"))
@@ -562,7 +562,7 @@ pub fn set_harness_enabled_with(
         }
         "claude-code" => Err("Claude Code visibility needs an exact deployment target".to_string()),
         "pi" | "cursor" | "grok-build" => Err(format!(
-            "{agent} has no per-skill disable - it reads the shared skills folder directly"
+            "{agent} has no per-skill disable - it reads the Universal folder directly"
         )),
         other => Err(format!("Unknown harness: {other}")),
     }
@@ -1254,7 +1254,7 @@ mod tests {
             false,
         )
         .unwrap_err();
-        assert!(err.contains("whole shared folder"));
+        assert!(err.contains("whole Universal folder"));
     }
 
     #[test]

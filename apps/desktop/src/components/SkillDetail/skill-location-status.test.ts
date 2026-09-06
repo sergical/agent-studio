@@ -2,7 +2,11 @@
 // Skill Studio - skill-location-status tests
 // ============================================================================
 
+import { createElement } from "react";
+import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it } from "vitest";
+import { TooltipProvider } from "@skill-studio/ui";
+import { SkillLocationRow } from "./SkillLocationRow";
 import type { Deployment, InstalledSkill } from "@skill-studio/lib";
 import {
   buildInvocationFiles,
@@ -143,7 +147,6 @@ describe("buildScopeGroups", () => {
     expect(row?.kind).toBe("link");
     expect(row?.level).toBe(null);
     expect(row?.hasSwitch).toBe(true);
-    expect(row?.chip).toBe(null);
     expect(row?.conditions).toHaveLength(0);
   });
 
@@ -198,6 +201,20 @@ describe("buildScopeGroups", () => {
     expect(global.shared?.level).toBe("off");
     expect(global.shared?.conditions[0].what).toContain("Off everywhere");
     expect(global.rows.find((r) => r.harness === "claude-code")?.level).toBe("off");
+    const pi = global.rows.find((row) => row.harness === "pi")!;
+    const markup = renderToStaticMarkup(
+      createElement(
+        TooltipProvider,
+        null,
+        createElement(SkillLocationRow, {
+          row: pi,
+          scopeLabel: global.label,
+          onAction: () => undefined,
+        }),
+      ),
+    );
+    expect(markup).toContain('aria-checked="false"');
+    expect(markup).toContain('aria-label="Disabled for pi while this skill is off"');
   });
 
   it("flags parked-but-live with an error dot on the Universal folder", () => {
@@ -228,10 +245,10 @@ describe("buildScopeGroups", () => {
     const [global] = buildScopeGroups(skill);
     const pi = global.rows.find((r) => r.harness === "pi");
     expect(pi?.kind).toBe("reader");
-    expect(pi?.chip).toBe("always on");
+    expect(pi?.hasSwitch).toBe(false);
+    expect(pi?.switchOn).toBe(true);
     const codex = global.rows.find((r) => r.harness === "codex");
     expect(codex?.hasSwitch).toBe(true);
-    expect(codex?.chip).toBeNull();
   });
 
   it("keeps broken link errors on their own rows, not the folder", () => {
@@ -379,6 +396,22 @@ describe("titleLink", () => {
 });
 
 describe("rowMenu", () => {
+  it("does not duplicate switch controls with Disable menu actions", () => {
+    const shared = fixtureDeployment();
+    const claude = fixtureDeployment({
+      agent: "Claude Code",
+      is_symlink: true,
+      path: "/home/.claude/skills/find-bugs",
+    });
+    const [global] = buildScopeGroups(fixtureSkill({ deployments: [shared, claude] }));
+
+    for (const row of global.rows.filter((candidate) => candidate.hasSwitch)) {
+      const menu = rowMenu(row, global.label);
+      const labels = [...menu.entries, ...menu.danger].map((entry) => entry.label);
+      expect(labels).not.toContain(`Disable for ${row.harnessLabel}`);
+    }
+  });
+
   it("offers an independent copy only for a healthy enabled Universal-backed link", () => {
     const linked = fixtureDeployment({
       agent: "Claude Code",

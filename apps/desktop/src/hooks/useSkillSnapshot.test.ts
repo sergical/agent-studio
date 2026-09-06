@@ -40,6 +40,7 @@ describe("selectNewerSkillSnapshot", () => {
 describe("startSkillSnapshotSubscription", () => {
   it("registers before reading and rejects a stale initial read", async () => {
     let current: SkillSnapshot | undefined;
+    const received: Array<{ revision: number; source: string }> = [];
     let listener: ((snapshot: SkillSnapshot) => void) | undefined;
     let finishRead: ((snapshot: SkillSnapshot) => void) | undefined;
     const read = new Promise<SkillSnapshot>((resolve) => {
@@ -52,7 +53,8 @@ describe("startSkillSnapshotSubscription", () => {
         return () => undefined;
       },
       read: () => read,
-      onSnapshot: (candidate) => {
+      onSnapshot: (candidate, source) => {
+        received.push({ revision: candidate.revision, source });
         current = selectNewerSkillSnapshot(current, candidate);
       },
       onError: () => undefined,
@@ -64,6 +66,10 @@ describe("startSkillSnapshotSubscription", () => {
     await subscription;
 
     expect(current?.scanned_at).toBe("event");
+    expect(received).toEqual([
+      { revision: 2, source: "event" },
+      { revision: 1, source: "initial" },
+    ]);
   });
 
   it("disposes a listener that finishes registering after unmount", async () => {

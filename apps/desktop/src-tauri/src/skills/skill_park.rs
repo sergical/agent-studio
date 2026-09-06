@@ -219,7 +219,7 @@ fn park_skill_impl(
     let shared_dir = shared_skill_dir(home, name);
     if !shared_dir.is_dir() {
         return Err(format!(
-            "\"{name}\" is not deployed in the shared folder (~/.agents/skills/{name})"
+            "\"{name}\" is not deployed in the Universal folder (~/.agents/skills/{name})"
         ));
     }
 
@@ -597,7 +597,7 @@ mod tests {
     fn park_refuses_when_not_deployed_in_shared_folder() {
         let tmp = tempfile::tempdir().unwrap();
         let err = park_skill_with(tmp.path(), "find-bugs", SourceKind::Manual, now()).unwrap_err();
-        assert!(err.contains("not deployed in the shared folder"));
+        assert!(err.contains("not deployed in the Universal folder"));
     }
 
     #[test]
