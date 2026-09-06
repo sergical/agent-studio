@@ -29,8 +29,8 @@
   },
   "devDependencies": {
     "@oxlint/plugins": "^1.80.0",
-    "@playwright/test": "^1.63.0",
-    "react-doctor": "^0.9.12"
+    "react-doctor": "^0.9.12",
+    "zod": "4.4.3"
   },
   "engines": {
     "node": "^22.18.0 || >=24.11.0"

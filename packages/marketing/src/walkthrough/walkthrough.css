@@ -1,0 +1,4 @@
+/* The page's unlayered font reset must not override the walkthrough's StyleX type scale. */
+[data-walkthrough] button {
+  font: revert-layer;
+}
