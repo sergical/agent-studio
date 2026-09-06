@@ -26,6 +26,7 @@ export function SkillLocationRow({
 }) {
   const menu = rowMenu(row, scopeLabel);
   const tip = tipLines(row.conditions);
+  const isAlwaysOnReader = row.kind === "reader" && !row.hasSwitch;
   const labelTip =
     row.kind === "link" && row.deployment?.symlink_target
       ? [
@@ -65,11 +66,6 @@ export function SkillLocationRow({
         <span className="truncate text-caption text-text-tertiary">{row.caption}</span>
       </span>
       <span className="flex shrink-0 items-center gap-1">
-        {row.chip && (
-          <span className="mr-1 rounded-full bg-bg-tertiary px-1.5 py-0.5 text-caption text-text-tertiary">
-            {row.chip}
-          </span>
-        )}
         {row.hasSwitch ? (
           <SwitchControl
             checked={row.switchOn}
@@ -87,6 +83,27 @@ export function SkillLocationRow({
             }
             ariaLabel={`Enabled for ${row.harnessLabel}`}
           />
+        ) : isAlwaysOnReader ? (
+          <TooltipControl
+            content={
+              row.switchOn
+                ? `Always on because ${row.harnessLabel} has no per-skill switch.`
+                : `Off because this skill is disabled in the Universal folder.`
+            }
+          >
+            <span className="inline-flex">
+              <SwitchControl
+                checked={row.switchOn}
+                disabled
+                onCheckedChange={() => undefined}
+                ariaLabel={
+                  row.switchOn
+                    ? `Always enabled for ${row.harnessLabel}`
+                    : `Disabled for ${row.harnessLabel} while this skill is off`
+                }
+              />
+            </span>
+          </TooltipControl>
         ) : (
           <span className="w-6" aria-hidden="true" />
         )}

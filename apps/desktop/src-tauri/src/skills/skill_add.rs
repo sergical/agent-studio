@@ -2760,7 +2760,7 @@ mod tests {
             warning.starts_with("Installed, but could not turn it off for Claude Code:"),
             "{warning}"
         );
-        assert!(warning.contains("whole shared folder"), "{warning}");
+        assert!(warning.contains("whole Universal folder"), "{warning}");
     }
 
     #[test]

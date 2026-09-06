@@ -23,14 +23,18 @@ import {
 import { ownSkillsView, pluginSkillsView } from "@skill-studio/lib";
 import { defaultSkillListFilter } from "@skill-studio/lib";
 import { isFeatureEnabled } from "../../lib/feature-flags";
-import { relativeScanTime, sidebarAnchorView } from "../../lib/sidebar-nav";
+import {
+  hasNewerSkillSnapshotEmission,
+  rescanTooltip,
+  sidebarAnchorView,
+} from "../../lib/sidebar-nav";
 import { useAppStore } from "../../store/appStore";
 import { TooltipControl } from "../ui/TooltipControl";
 import type { SkillSnapshot } from "@skill-studio/lib";
 
 interface SidebarProps {
   snapshot: SkillSnapshot | undefined;
-  isLoading: boolean;
+  emittedSnapshotRevision: number | undefined;
   requestRescan: () => Promise<void>;
 }
 
@@ -40,8 +44,11 @@ interface SidebarProps {
  * non-empty), and a footer with the snapshot's age and a manual rescan
  * button.
  */
-export function Sidebar({ snapshot, isLoading, requestRescan }: SidebarProps) {
-  const [isRescanning, setIsRescanning] = useState(false);
+export function Sidebar({ snapshot, emittedSnapshotRevision, requestRescan }: SidebarProps) {
+  const [pendingRescanSnapshotRevision, setPendingRescanSnapshotRevision] = useState<number | null>(
+    null,
+  );
+  const activeRescanIdRef = useRef<symbol | null>(null);
   // Forces the footer to re-render so "just now" ages into "1m ago" and
   // beyond without waiting for the next snapshot - relativeScanTime() itself
   // stays a pure function of scannedAt and the current clock.
@@ -49,6 +56,11 @@ export function Sidebar({ snapshot, isLoading, requestRescan }: SidebarProps) {
   useEffect(() => {
     const id = setInterval(() => forceTick((n) => n + 1), 30_000);
     return () => clearInterval(id);
+  }, []);
+  useEffect(() => {
+    return () => {
+      activeRescanIdRef.current = null;
+    };
   }, []);
   const activeView = useAppStore((state) => state.activeView);
   const anchorView = sidebarAnchorView(activeView);
@@ -86,13 +98,36 @@ export function Sidebar({ snapshot, isLoading, requestRescan }: SidebarProps) {
     }
   }
 
+  useEffect(() => {
+    if (
+      activeRescanIdRef.current !== null &&
+      hasNewerSkillSnapshotEmission(
+        pendingRescanSnapshotRevision ?? undefined,
+        emittedSnapshotRevision,
+      )
+    ) {
+      activeRescanIdRef.current = null;
+      setPendingRescanSnapshotRevision(null);
+    }
+  }, [emittedSnapshotRevision, pendingRescanSnapshotRevision]);
+
   const handleRefresh = async () => {
-    setIsRescanning(true);
-    await requestRescan();
-    // Cleared when the next snapshot lands and `isLoading` flips back to false.
+    if (activeRescanIdRef.current !== null) return;
+
+    const requestId = Symbol("sidebar-rescan");
+    activeRescanIdRef.current = requestId;
+    setPendingRescanSnapshotRevision(snapshot?.revision ?? 0);
+
+    try {
+      await requestRescan();
+    } catch {
+      if (activeRescanIdRef.current !== requestId) return;
+      activeRescanIdRef.current = null;
+      setPendingRescanSnapshotRevision(null);
+    }
   };
 
-  const spinning = isRescanning && isLoading;
+  const spinning = pendingRescanSnapshotRevision !== null;
 
   const itemClass = (active: boolean) =>
     `grid h-[30px] w-full cursor-pointer grid-cols-[15px_minmax(0,1fr)_auto] items-center gap-2 rounded-sm border-0 px-2.5 text-left text-body transition-colors ${
@@ -197,17 +232,16 @@ export function Sidebar({ snapshot, isLoading, requestRescan }: SidebarProps) {
       )}
 
       <div className="mt-auto flex select-none items-center justify-between gap-2 border-t border-border-subtle px-2.5 py-2">
-        <TooltipControl content="Rescan installed skills">
+        <TooltipControl content={rescanTooltip(snapshot?.scanned_at)}>
           <button
             type="button"
-            className="flex h-6 cursor-pointer items-center gap-1.5 rounded-sm border-0 bg-transparent px-1.5 text-caption text-text-tertiary transition-colors hover:enabled:bg-bg-hover hover:enabled:text-text-primary disabled:cursor-default"
+            className="flex h-6 shrink-0 cursor-pointer items-center gap-1.5 rounded-sm border-0 bg-transparent px-1.5 text-caption text-text-tertiary transition-colors hover:enabled:bg-bg-hover hover:enabled:text-text-primary disabled:cursor-default"
             onClick={handleRefresh}
             disabled={spinning}
+            aria-label={spinning ? "Syncing installed skills" : "Sync installed skills"}
           >
             <RefreshCw size={13} className={spinning ? "animate-spin" : ""} />
-            <span>
-              {spinning ? "Scanning…" : `Scanned ${relativeScanTime(snapshot?.scanned_at)}`}
-            </span>
+            <span className="whitespace-nowrap">{spinning ? "Syncing…" : "Sync"}</span>
           </button>
         </TooltipControl>
         <div className="flex items-center gap-0.5">

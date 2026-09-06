@@ -103,7 +103,6 @@ interface BaseLocationRow {
   lifecycleTarget: LifecycleTarget;
   hasSwitch: boolean;
   switchOn: boolean;
-  chip: "always on" | null;
   invocation: InvocationPolicy | null;
 }
 
@@ -540,7 +539,6 @@ export function buildScopeGroups(skill: InstalledSkill): ScopeGroup[] {
             lifecycleTarget: { deployment_id: sharedDeployment.id },
             hasSwitch: true,
             switchOn: !sharedDeployment.disabled && !parkedScope,
-            chip: null,
             invocation: sharedDeployment.invocation ?? skill.invocation,
           };
         })()
@@ -572,7 +570,6 @@ export function buildScopeGroups(skill: InstalledSkill): ScopeGroup[] {
         lifecycleTarget: { deployment_id: d.id },
         hasSwitch: !d.symlink_is_broken && kind !== "plugin",
         switchOn: !d.disabled && !parkedScope,
-        chip: null,
         invocation: d.invocation ?? skill.invocation,
       };
     });
@@ -601,7 +598,6 @@ export function buildScopeGroups(skill: InstalledSkill): ScopeGroup[] {
           lifecycleTarget: shared.lifecycleTarget,
           hasSwitch,
           switchOn: !disabledForReader && !parkedScope,
-          chip: hasSwitch ? null : "always on",
           invocation: null,
         });
       }
@@ -870,20 +866,6 @@ export function rowMenu(
       false,
     );
   } else if (row.kind === "reader") {
-    if (row.hasSwitch && !hasOff) {
-      push(
-        {
-          label: `Disable for ${row.harnessLabel}`,
-          action: {
-            kind: "set-reader-enabled",
-            target: row.lifecycleTarget,
-            agent: row.harness,
-            enabled: false,
-          },
-        },
-        false,
-      );
-    }
     push(
       {
         label: "Reveal Universal folder in Finder",
@@ -907,15 +889,6 @@ export function rowMenu(
       false,
     );
   } else {
-    if (row.hasSwitch && !hasOff && row.deployment) {
-      push(
-        {
-          label: `Disable for ${row.harnessLabel}`,
-          action: { kind: "set-enabled", deployment: row.deployment, enabled: false },
-        },
-        false,
-      );
-    }
     push(
       {
         label: "Reveal in Finder",
@@ -976,8 +949,6 @@ export function rowMenu(
   }
 
   let hint = row.conditions.find((c) => c.hint)?.hint;
-  if (row.kind === "reader" && !row.hasSwitch)
-    hint = `Always on. ${row.harnessLabel} has no per-skill switch.`;
   if (row.kind === "plugin" && row.deployment?.plugin) {
     hint = `Managed by the ${row.deployment.plugin.name} plugin. Disable it in ${row.harnessLabel}.`;
   }

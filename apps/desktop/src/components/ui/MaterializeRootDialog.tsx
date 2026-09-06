@@ -65,7 +65,7 @@ export function MaterializeRootDialog({
             intent.kind === "convert-then-disable"
               ? "Couldn't convert and turn off"
               : "Couldn't convert",
-          message: err instanceof Error ? err.message : "Unknown error",
+          message: err instanceof Error ? err.message : String(err),
         });
       })
       .finally(() => setIsConverting(false));
