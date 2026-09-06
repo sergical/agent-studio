@@ -112,8 +112,7 @@ npm run check
 │       │   │   └── ui/           # Toast, ToastContainer
 │       │   ├── lib/
 │       │   │   ├── skill-types.ts        # Type definitions
-│       │   │   ├── skill-api.ts          # Tauri IPC wrappers
-│       │   │   └── github-skill-source.ts # GitHub SKILL.md fetch
+│       │   │   └── skill-api.ts          # Tauri IPC wrappers
 │       │   ├── store/
 │       │   │   └── appStore.ts   # Zustand store
 │       │   ├── App.tsx           # Main app component
@@ -293,7 +292,6 @@ let home = get_home_dir().ok_or("Could not find home directory")?;
 | State Store           | `apps/desktop/src/store/appStore.ts`              |
 | Skill types           | `apps/desktop/src/lib/skill-types.ts`             |
 | Tauri IPC wrappers    | `apps/desktop/src/lib/skill-api.ts`               |
-| GitHub SKILL.md fetch | `apps/desktop/src/lib/github-skill-source.ts`     |
 | Tauri commands        | `apps/desktop/src-tauri/src/skills/commands.rs`   |
 | Scanner               | `apps/desktop/src-tauri/src/skills/scan.rs`       |
 | Provenance            | `apps/desktop/src-tauri/src/skills/provenance.rs` |
@@ -327,8 +325,8 @@ Skill Studio integrates with skills.sh for skill discovery and installation.
 
 ### API Endpoint
 
-- Base: `https://skills.sh/api/v1`, authenticated with `Authorization: Bearer <key>`
-- Key lives in `~/.agents/skill-studio.json`'s `skills_sh_api_key` field (the user adds it themselves; absent by default)
+- Default: requests route through the local Skill Studio server (`apps/server`, default `http://127.0.0.1:8787/api/v1`), which holds the real skills.sh key - no client key needed. Settings shows the resolved mode; see `apps/server/README.md`.
+- Developer override: a non-empty `skills_sh_api_key` in `~/.agents/skill-studio.json` instead sends `Authorization: Bearer <key>` straight to `https://skills.sh/api/v1`, bypassing the server.
 - **List**: `GET /skills?view=all-time&page=<0-indexed>&per_page=<n>` - paginated, sorted by install count
 - **Search**: `GET /skills/search?q=<query>&limit=<n>` - no pagination, one shot up to `limit`
 - **Details**: `GET /skills/{owner/repo}/{slug}` - returns the skill's files, including its `SKILL.md`/`AGENTS.md` body

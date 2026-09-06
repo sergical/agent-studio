@@ -189,7 +189,7 @@ pub fn set_shared_harness_skill_enabled(
             .unwrap_or(false);
         if is_whole_dir_link {
             return Err(format!(
-                "{} is a link to the shared folder; convert it to per-skill links first",
+                "{} is a link to the Universal folder; convert it to per-skill links first",
                 root.display()
             ));
         }

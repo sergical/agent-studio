@@ -90,6 +90,23 @@ pub fn open(db_path: &Path) -> Result<Connection, String> {
         )
         .map_err(|e| format!("Failed to add events.restorable: {e}"))?;
     }
+    let has_backup_dir = {
+        let mut statement = conn
+            .prepare("PRAGMA table_info(events)")
+            .map_err(|e| format!("Failed to inspect event store schema: {e}"))?;
+        let has_backup_dir = statement
+            .query_map([], |row| row.get::<_, String>(1))
+            .map_err(|e| format!("Failed to query event store columns: {e}"))?
+            .try_fold(false, |found, column| {
+                column.map(|column| found || column == "backup_dir")
+            })
+            .map_err(|e| format!("Failed to read event store columns: {e}"))?;
+        has_backup_dir
+    };
+    if !has_backup_dir {
+        conn.execute("ALTER TABLE events ADD COLUMN backup_dir TEXT", [])
+            .map_err(|e| format!("Failed to add events.backup_dir: {e}"))?;
+    }
     Ok(conn)
 }
 
@@ -1266,6 +1283,49 @@ mod tests {
 
         let store = EventStore::open(&app_data).unwrap();
         assert!(store.get("legacy").unwrap().unwrap().restorable);
+    }
+
+    #[test]
+    fn open_migrates_legacy_events_schema_without_backup_dir() {
+        let tmp = tempfile::tempdir().unwrap();
+        let app_data = tmp.path().join("app_data");
+        fs::create_dir_all(&app_data).unwrap();
+        let db_path = app_data.join("events.sqlite3");
+        let legacy = Connection::open(&db_path).unwrap();
+        legacy
+            .execute_batch(
+                "CREATE TABLE events (
+                    id TEXT PRIMARY KEY, ts TEXT NOT NULL, kind TEXT NOT NULL,
+                    skill TEXT NOT NULL, harness TEXT, scope TEXT, project_path TEXT,
+                    payload TEXT NOT NULL, inverse TEXT, status TEXT NOT NULL, reverted_by TEXT
+                );
+                INSERT INTO events (id, ts, kind, skill, payload, status)
+                VALUES ('legacy', '2026-01-01T00:00:00Z', 'install', 'old', '{}', 'done');",
+            )
+            .unwrap();
+        drop(legacy);
+
+        let store = EventStore::open(&app_data).unwrap();
+        let id = allocate_id();
+        let backup_dir = format!("backups/{id}");
+        store
+            .record(
+                &id,
+                draft(
+                    "remove",
+                    "new",
+                    serde_json::json!({}),
+                    None,
+                    Some(backup_dir.clone()),
+                ),
+            )
+            .unwrap();
+        store.finish(&id, EventStatus::Done).unwrap();
+
+        let rows = store.list(10, None).unwrap();
+        assert_eq!(rows[0].backup_dir.as_deref(), Some(backup_dir.as_str()));
+        assert_eq!(rows[1].id, "legacy");
+        assert_eq!(rows[1].backup_dir, None);
     }
 
     #[test]

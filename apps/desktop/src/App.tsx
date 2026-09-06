@@ -29,7 +29,7 @@ import { useAppStore } from "./store/appStore";
 import "./App.css";
 
 function App() {
-  const { snapshot, isLoading, requestRescan } = useSkillSnapshot();
+  const { snapshot, emittedSnapshotRevision, isLoading, requestRescan } = useSkillSnapshot();
   const resolvedTheme = useAppStore((state) => state.resolvedTheme);
   const activeView = useAppStore((state) => state.activeView);
   const openSkill = useAppStore((state) => state.openSkill);
@@ -135,7 +135,11 @@ function App() {
   return (
     <TooltipProvider delay={400}>
       <div className="flex h-screen overflow-hidden bg-[var(--color-bg-primary)]">
-        <Sidebar snapshot={snapshot} isLoading={isLoading} requestRescan={requestRescan} />
+        <Sidebar
+          snapshot={snapshot}
+          emittedSnapshotRevision={emittedSnapshotRevision}
+          requestRescan={requestRescan}
+        />
         <main className="flex-1 overflow-y-auto">{main}</main>
 
         <AddSkillSheet />
