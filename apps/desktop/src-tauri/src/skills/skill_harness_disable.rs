@@ -427,6 +427,27 @@ fn set_claude_code_enabled(
     expected_target: &Path,
     enabled: bool,
 ) -> Result<(), String> {
+    set_claude_code_enabled_with_registry_writer(
+        home,
+        name,
+        deployment_id,
+        link_path,
+        expected_target,
+        enabled,
+        |registry| write_fork_registry(home, registry),
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn set_claude_code_enabled_with_registry_writer(
+    home: &Path,
+    name: &str,
+    deployment_id: &str,
+    link_path: &Path,
+    expected_target: &Path,
+    enabled: bool,
+    write_registry: impl FnOnce(&ForkRegistry) -> Result<(), String>,
+) -> Result<(), String> {
     let mut registry = read_fork_registry(home)?;
     let registry_key = format!("deployment/{deployment_id}");
 
@@ -461,7 +482,7 @@ fn set_claude_code_enabled(
                 registry.harness_disabled.remove(&record_key);
             }
         }
-        write_fork_registry(home, &registry)?;
+        write_registry(&registry)?;
         return Ok(());
     }
 
@@ -486,13 +507,13 @@ fn set_claude_code_enabled(
                     link_path.display()
                 ));
             }
-            fs::remove_file(link_path)
-                .map_err(|error| format!("Failed to remove {}: {error}", link_path.display()))?;
             if target.as_os_str().is_empty() {
                 return Err(format!(
                     "\"{name}\" is not deployed to Claude Code via a per-skill symlink"
                 ));
             }
+            fs::remove_file(link_path)
+                .map_err(|error| format!("Failed to remove {}: {error}", link_path.display()))?;
             registry
                 .harness_disabled
                 .entry(registry_key)
@@ -501,12 +522,51 @@ fn set_claude_code_enabled(
                     "claude-code".to_string(),
                     ClaudeLinkRemoved {
                         deployment_id: deployment_id.to_string(),
-                        link_target: target,
+                        link_target: target.clone(),
                     },
                 );
-            write_fork_registry(home, &registry)
+            if let Err(write_error) = write_registry(&registry) {
+                return match recreate_removed_claude_link(link_path, &target) {
+                    Ok(()) => Err(write_error),
+                    Err(rollback_error) => Err(format!(
+                        "Failed to record the Claude Code disable ({write_error}) and failed to restore {} -> {}: {rollback_error}. Recreate that symlink manually.",
+                        link_path.display(),
+                        target.display()
+                    )),
+                };
+            }
+            Ok(())
         }
     }
+}
+
+/// Recreates the exact raw target of a Claude link removed by a disable that
+/// could not be committed. Unlike the idempotent enable helper, this refuses
+/// any path that appeared after removal so rollback never hides a collision.
+fn recreate_removed_claude_link(link_path: &Path, target: &Path) -> Result<(), String> {
+    let parent = link_path.parent().ok_or("Claude Code link has no parent")?;
+    if fs::symlink_metadata(parent).is_ok_and(|metadata| metadata.file_type().is_symlink()) {
+        return Err(format!(
+            "{} became a whole-directory symlink",
+            parent.display()
+        ));
+    }
+    match fs::symlink_metadata(link_path) {
+        Ok(_) => {
+            return Err(format!(
+                "{} became occupied before rollback",
+                link_path.display()
+            ));
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+        Err(error) => {
+            return Err(format!(
+                "Failed to inspect {} before rollback: {error}",
+                link_path.display()
+            ));
+        }
+    }
+    create_symlink(target, link_path)
 }
 
 fn claude_link_state_at(link_path: &Path) -> ClaudeLinkState {
@@ -1234,6 +1294,131 @@ mod tests {
         assert!(!registry
             .harness_disabled
             .contains_key(&format!("deployment/{deployment_id}")));
+    }
+
+    #[test]
+    fn claude_disable_registry_failure_restores_exact_relative_link_and_registry() {
+        let tmp = tempfile::tempdir().unwrap();
+        let home = tmp.path();
+        let universal = home.join(".agents/skills/find-bugs");
+        write_skill(&universal, "find-bugs");
+        fs::create_dir_all(home.join(".claude/skills")).unwrap();
+        let link = home.join(".claude/skills/find-bugs");
+        let raw_target = PathBuf::from("../../.agents/skills/find-bugs");
+        std::os::unix::fs::symlink(&raw_target, &link).unwrap();
+        let deployment_id = deployment_id(
+            "find-bugs",
+            "global",
+            SkillDestination::Universal,
+            "universal",
+            None,
+            &universal,
+        );
+        let registry = ForkRegistry {
+            server_url: Some("https://registry.example.test".to_string()),
+            ..ForkRegistry::default()
+        };
+        write_fork_registry(home, &registry).unwrap();
+        let registry_path = crate::skills::skill_fork_registry::fork_registry_path(home);
+        let registry_before = fs::read(&registry_path).unwrap();
+
+        let error = set_claude_code_enabled_with_registry_writer(
+            home,
+            "find-bugs",
+            &deployment_id,
+            &link,
+            &universal,
+            false,
+            |_| Err("injected registry-write failure".to_string()),
+        )
+        .unwrap_err();
+
+        assert_eq!(error, "injected registry-write failure");
+        assert!(fs::symlink_metadata(&link)
+            .unwrap()
+            .file_type()
+            .is_symlink());
+        assert_eq!(fs::read_link(&link).unwrap(), raw_target);
+        assert_eq!(fs::read(&registry_path).unwrap(), registry_before);
+        assert!(read_fork_registry(home)
+            .unwrap()
+            .harness_disabled
+            .is_empty());
+
+        set_claude_code_enabled(home, "find-bugs", &deployment_id, &link, &universal, true)
+            .unwrap();
+        assert_eq!(
+            fs::read_link(&link).unwrap(),
+            Path::new("../../.agents/skills/find-bugs")
+        );
+    }
+
+    #[test]
+    fn claude_disable_reports_manual_recovery_when_link_rollback_is_blocked() {
+        let tmp = tempfile::tempdir().unwrap();
+        let home = tmp.path();
+        let universal = home.join(".agents/skills/find-bugs");
+        write_skill(&universal, "find-bugs");
+        fs::create_dir_all(home.join(".claude/skills")).unwrap();
+        let link = home.join(".claude/skills/find-bugs");
+        std::os::unix::fs::symlink("../../.agents/skills/find-bugs", &link).unwrap();
+        let deployment_id = deployment_id(
+            "find-bugs",
+            "global",
+            SkillDestination::Universal,
+            "universal",
+            None,
+            &universal,
+        );
+
+        let error = set_claude_code_enabled_with_registry_writer(
+            home,
+            "find-bugs",
+            &deployment_id,
+            &link,
+            &universal,
+            false,
+            |_| {
+                fs::write(&link, "rollback blocker").unwrap();
+                Err("injected registry-write failure".to_string())
+            },
+        )
+        .unwrap_err();
+
+        assert!(error.contains("injected registry-write failure"), "{error}");
+        assert!(error.contains("failed to restore"), "{error}");
+        assert!(error.contains("Recreate that symlink manually"), "{error}");
+        assert_eq!(fs::read_to_string(&link).unwrap(), "rollback blocker");
+        assert!(read_fork_registry(home)
+            .unwrap()
+            .harness_disabled
+            .is_empty());
+    }
+
+    #[test]
+    fn claude_disable_refuses_missing_link_and_regular_file_without_registry_changes() {
+        let tmp = tempfile::tempdir().unwrap();
+        let home = tmp.path();
+        let universal = home.join(".agents/skills/find-bugs");
+        write_skill(&universal, "find-bugs");
+        fs::create_dir_all(home.join(".claude/skills")).unwrap();
+        let link = home.join(".claude/skills/find-bugs");
+
+        let missing_error =
+            set_claude_code_enabled(home, "find-bugs", "deployment-id", &link, &universal, false)
+                .unwrap_err();
+        assert!(missing_error.contains("not deployed to Claude Code"));
+
+        fs::write(&link, "user-owned file").unwrap();
+        let file_error =
+            set_claude_code_enabled(home, "find-bugs", "deployment-id", &link, &universal, false)
+                .unwrap_err();
+        assert!(file_error.contains("not deployed to Claude Code"));
+        assert_eq!(fs::read_to_string(&link).unwrap(), "user-owned file");
+        assert!(read_fork_registry(home)
+            .unwrap()
+            .harness_disabled
+            .is_empty());
     }
 
     #[test]
