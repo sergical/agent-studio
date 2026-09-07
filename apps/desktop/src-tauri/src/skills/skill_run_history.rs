@@ -135,16 +135,24 @@ fn record_run_at(
             .map_err(|e| format!("Could not write last.json: {e}"))?;
     }
 
-    trim_run_history(root, &dir, MAX_RUNS_PER_SKILL)?;
+    trim_run_history(root, &dir, MAX_RUNS_PER_SKILL, &record.id)?;
     Ok(())
 }
 
 /// Deletes the oldest `.json`/`.events.jsonl` record pairs in `dir` beyond
-/// `keep`, ordered by the record id (a run id, always chronological because
-/// it's the same UUID v4/v7-ish token the frontend generates per run start -
-/// sorted lexically by file mtime instead, which is monotonic regardless of
-/// the id's own shape).
-fn trim_run_history(root: &Path, dir: &Path, keep: usize) -> Result<(), String> {
+/// `keep`, ordered by file mtime because frontend UUID v4 run ids are not
+/// chronological. `protected_run_id` is excluded from deletion so a backward
+/// clock jump cannot make a newly written run delete itself.
+fn trim_run_history(
+    root: &Path,
+    dir: &Path,
+    keep: usize,
+    protected_run_id: &str,
+) -> Result<(), String> {
+    if keep == 0 {
+        return Err("Run history retention must keep at least one record".to_string());
+    }
+
     // Defense in depth: `validate_skill_dir_name` already keeps `dir` a
     // single path segment under `root`, but this is the call that deletes
     // files, so it re-checks containment against the canonical paths before
@@ -175,16 +183,27 @@ fn trim_run_history(root: &Path, dir: &Path, keep: usize) -> Result<(), String> 
             Some((modified, entry.path()))
         })
         .collect();
-    records.sort_by_key(|(modified, _)| *modified);
+    records.sort_by(|(left_modified, left_path), (right_modified, right_path)| {
+        left_modified
+            .cmp(right_modified)
+            .then_with(|| left_path.cmp(right_path))
+    });
 
-    if records.len() > keep {
-        for (_, path) in &records[..records.len() - keep] {
-            let _ = fs::remove_file(path);
-            if let Some(stem) = path.file_stem() {
-                let events_path =
-                    path.with_file_name(format!("{}.events.jsonl", stem.to_string_lossy()));
-                let _ = fs::remove_file(events_path);
-            }
+    let remove_count = records.len().saturating_sub(keep);
+    for (_, path) in records
+        .iter()
+        .filter(|(_, path)| {
+            path.file_stem()
+                .map(|stem| stem != protected_run_id)
+                .unwrap_or(true)
+        })
+        .take(remove_count)
+    {
+        let _ = fs::remove_file(path);
+        if let Some(stem) = path.file_stem() {
+            let events_path =
+                path.with_file_name(format!("{}.events.jsonl", stem.to_string_lossy()));
+            let _ = fs::remove_file(events_path);
         }
     }
     Ok(())
@@ -272,6 +291,7 @@ pub fn read_last_test_index(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::time::SystemTime;
     use tempfile::tempdir;
 
     fn sample_record(id: &str, started_at: &str) -> SkillRunRecord {
@@ -311,7 +331,7 @@ mod tests {
             fs::write(dir.path().join(format!("run-{i}.events.jsonl")), "").unwrap();
             std::thread::sleep(std::time::Duration::from_millis(5));
         }
-        trim_run_history(dir.path(), dir.path(), 2).unwrap();
+        trim_run_history(dir.path(), dir.path(), 2, "run-4").unwrap();
 
         let remaining: Vec<_> = fs::read_dir(dir.path())
             .unwrap()
@@ -319,6 +339,65 @@ mod tests {
             .filter(|e| e.path().extension().map(|x| x == "json").unwrap_or(false))
             .collect();
         assert_eq!(remaining.len(), 2);
+    }
+
+    #[test]
+    fn trim_run_history_protects_the_just_written_oldest_run() {
+        let dir = tempdir().unwrap();
+        let write_record_pair = |id: &str, modified: SystemTime| {
+            let record = sample_record(id, "2024-01-01T00:00:00Z");
+            let record_path = dir.path().join(format!("{id}.json"));
+            let events_path = dir.path().join(format!("{id}.events.jsonl"));
+            fs::write(&record_path, serde_json::to_vec(&record).unwrap()).unwrap();
+            fs::write(&events_path, "event").unwrap();
+            fs::File::open(&record_path)
+                .unwrap()
+                .set_modified(modified)
+                .unwrap();
+        };
+
+        let first_mtime = SystemTime::UNIX_EPOCH + std::time::Duration::from_secs(10);
+        write_record_pair("protected", first_mtime);
+        write_record_pair(
+            "eligible-oldest",
+            first_mtime + std::time::Duration::from_secs(1),
+        );
+        write_record_pair(
+            "eligible-middle",
+            first_mtime + std::time::Duration::from_secs(2),
+        );
+        write_record_pair(
+            "eligible-newest",
+            first_mtime + std::time::Duration::from_secs(3),
+        );
+
+        trim_run_history(dir.path(), dir.path(), 2, "protected").unwrap();
+
+        assert!(dir.path().join("protected.json").is_file());
+        assert!(dir.path().join("protected.events.jsonl").is_file());
+        assert!(!dir.path().join("eligible-oldest.json").exists());
+        assert!(!dir.path().join("eligible-oldest.events.jsonl").exists());
+        assert!(!dir.path().join("eligible-middle.json").exists());
+        assert!(dir.path().join("eligible-newest.json").is_file());
+        let remaining_records = fs::read_dir(dir.path())
+            .unwrap()
+            .filter_map(|entry| entry.ok())
+            .filter(|entry| entry.path().extension().is_some_and(|ext| ext == "json"))
+            .count();
+        assert_eq!(remaining_records, 2);
+    }
+
+    #[test]
+    fn trim_run_history_rejects_zero_retention_without_deleting_records() {
+        let dir = tempdir().unwrap();
+        fs::write(dir.path().join("protected.json"), "{}").unwrap();
+        fs::write(dir.path().join("protected.events.jsonl"), "event").unwrap();
+
+        let error = trim_run_history(dir.path(), dir.path(), 0, "protected").unwrap_err();
+
+        assert!(error.contains("at least one"));
+        assert!(dir.path().join("protected.json").is_file());
+        assert!(dir.path().join("protected.events.jsonl").is_file());
     }
 
     #[test]

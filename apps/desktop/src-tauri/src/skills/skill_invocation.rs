@@ -18,12 +18,12 @@
 use std::fs;
 use std::path::{Path, PathBuf};
 
-use super::commands::{
-    canonicalize_skill_md, check_skill_md_write_allowed, require_snapshot_owns_path,
-};
+use super::commands::canonicalize_skill_md;
 use super::frontmatter::{invocation_policy, parse_frontmatter, InvocationPolicy};
+use super::skill_deployment::parse_deployment_id;
+use super::skill_dto::Deployment;
 use super::skill_md_write::begin_skill_md_write_transaction;
-use super::skill_refresh::{self, SkillRefreshState};
+use super::skill_refresh::{self, SkillRefreshState, SkillSnapshot};
 
 /// Strips a line's trailing terminator (`\r\n` or `\n`), if it has one - used
 /// to compare line *content* while the raw, terminator-included slice is kept
@@ -245,20 +245,19 @@ fn patch_codex_openai_yaml(skill_dir: &Path, user_only: bool) -> Result<(), Stri
 
 /// `set_skill_invocation`'s logic, taking the canonical `SKILL.md` path
 /// directly so it's testable without a Tauri `AppHandle` or a snapshot.
-/// `has_codex_deployment` gates the `agents/openai.yaml` sidecar patch -
-/// only meaningful for a skill actually deployed to Codex.
+/// `is_codex_deployment` gates the `agents/openai.yaml` sidecar patch.
 pub fn set_skill_invocation_with(
     canonical_skill_md: &Path,
     policy: InvocationPolicy,
-    has_codex_deployment: bool,
+    is_codex_deployment: bool,
 ) -> Result<(), String> {
-    set_skill_invocation_with_read_hook(canonical_skill_md, policy, has_codex_deployment, || {})
+    set_skill_invocation_with_read_hook(canonical_skill_md, policy, is_codex_deployment, || {})
 }
 
 fn set_skill_invocation_with_read_hook(
     canonical_skill_md: &Path,
     policy: InvocationPolicy,
-    has_codex_deployment: bool,
+    is_codex_deployment: bool,
     after_read: impl FnOnce(),
 ) -> Result<(), String> {
     let transaction = begin_skill_md_write_transaction()?;
@@ -268,13 +267,87 @@ fn set_skill_invocation_with_read_hook(
     transaction.replace_text(canonical_skill_md, &updated)?;
     drop(transaction);
 
-    if has_codex_deployment {
+    if is_codex_deployment {
         let skill_dir = canonical_skill_md
             .parent()
             .ok_or("SKILL.md has no parent directory")?;
         patch_codex_openai_yaml(skill_dir, policy == InvocationPolicy::UserOnly)?;
     }
     Ok(())
+}
+
+/// Resolves one invocation edit to its exact lexical deployment before the
+/// requested `SKILL.md` is canonicalized. This prevents separate deployment
+/// paths that resolve to one directory from losing their harness identity.
+fn exact_snapshot_invocation_deployment<'a>(
+    snapshot: &'a SkillSnapshot,
+    name: &str,
+    requested_skill_md: &Path,
+) -> Result<&'a Deployment, String> {
+    if requested_skill_md
+        .file_name()
+        .and_then(|file| file.to_str())
+        != Some("SKILL.md")
+    {
+        return Err(format!(
+            "Invocation target is stale: {} is not a SKILL.md path",
+            requested_skill_md.display()
+        ));
+    }
+    let requested_dir = requested_skill_md.parent().ok_or_else(|| {
+        format!(
+            "Invocation target is stale: {} has no deployment directory",
+            requested_skill_md.display()
+        )
+    })?;
+    let mut matching = snapshot.skills.iter().flat_map(|skill| {
+        skill
+            .deployments
+            .iter()
+            .filter(move |deployment| Path::new(&deployment.path) == requested_dir)
+            .map(move |deployment| (skill, deployment))
+    });
+    let (skill, deployment) = matching.next().ok_or_else(|| {
+        format!(
+            "Invocation target is stale: {} is not an exact deployment in the current snapshot",
+            requested_skill_md.display()
+        )
+    })?;
+    if matching.next().is_some() {
+        return Err(format!(
+            "Invocation target is ambiguous: {} matches more than one deployment",
+            requested_skill_md.display()
+        ));
+    }
+    if skill.name != name {
+        return Err(format!(
+            "Invocation target is stale: {} belongs to {}, not {name}",
+            requested_skill_md.display(),
+            skill.name
+        ));
+    }
+
+    let parsed = parse_deployment_id(&deployment.id).ok_or_else(|| {
+        format!(
+            "Invocation target is stale: deployment {} has an invalid identity",
+            deployment.id
+        )
+    })?;
+    let codex_identity_mismatch = (parsed.slot == "codex") != (deployment.agent == "Codex");
+    if parsed.name != skill.name
+        || parsed.scope != deployment.scope
+        || parsed.destination != deployment.destination
+        || parsed.project_path != deployment.project_path
+        || parsed.lexical_path != Path::new(&deployment.path)
+        || codex_identity_mismatch
+    {
+        return Err(format!(
+            "Invocation target is stale: deployment {} no longer matches its snapshot identity",
+            deployment.id
+        ));
+    }
+
+    Ok(deployment)
 }
 
 #[tauri::command]
@@ -286,17 +359,20 @@ pub fn set_skill_invocation(
     refresh_state: tauri::State<SkillRefreshState>,
 ) -> Result<(), String> {
     let path_buf = PathBuf::from(&path);
-    require_snapshot_owns_path(&refresh_state, &path_buf)?;
+    let snapshot = refresh_state
+        .snapshot
+        .read()
+        .map_err(|error| format!("Snapshot lock poisoned: {error}"))?
+        .clone()
+        .ok_or_else(|| format!("Invocation target is stale: {path} is not an installed skill"))?;
+    let deployment = exact_snapshot_invocation_deployment(&snapshot, &name, &path_buf)?;
+    if deployment.plugin.is_some() {
+        return Err("Skill is managed by a plugin and cannot be edited here".to_string());
+    }
+    let is_codex_deployment = deployment.agent == "Codex";
     let canonical = canonicalize_skill_md(&path_buf, &path)?;
 
-    let snapshot = refresh_state.snapshot.read().ok().and_then(|g| g.clone());
-    check_skill_md_write_allowed(snapshot.as_ref(), &path_buf)?;
-    let has_codex_deployment = snapshot
-        .as_ref()
-        .and_then(|s| s.skills.iter().find(|s| s.name == name))
-        .is_some_and(|s| s.deployments.iter().any(|d| d.agent == "Codex"));
-
-    let result = set_skill_invocation_with(&canonical, policy, has_codex_deployment);
+    let result = set_skill_invocation_with(&canonical, policy, is_codex_deployment);
     if result.is_ok() {
         if let Err(error) =
             skill_refresh::reconcile_skill_names_and_emit(&app, &refresh_state, [name], &[])
@@ -311,6 +387,87 @@ pub fn set_skill_invocation(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn invocation_snapshot(deployments: Vec<Deployment>) -> SkillSnapshot {
+        use super::super::provenance::SourceKind;
+        use super::super::skill_dto::InstalledSkill;
+        use super::super::skill_invocations::InvocationHeatmap;
+
+        SkillSnapshot {
+            revision: 1,
+            skills: vec![InstalledSkill {
+                name: "find-bugs".to_string(),
+                source: "manual".to_string(),
+                source_type: "manual".to_string(),
+                source_url: None,
+                skill_path: None,
+                installed_at: "2024-01-01T00:00:00Z".to_string(),
+                updated_at: None,
+                has_update: false,
+                update_owner_ids: Vec::new(),
+                update_owners: Vec::new(),
+                update_commit: None,
+                update_commit_at: None,
+                source_kind: SourceKind::Manual,
+                deployments,
+                has_spec: false,
+                description: None,
+                spec_violations: Vec::new(),
+                skill_md_tokens: 0,
+                description_tokens: 0,
+                folder_bytes: 0,
+                file_count: 0,
+                content_hash: String::new(),
+                content_hashes: Vec::new(),
+                modified_at: None,
+                frontmatter_fields: Default::default(),
+                folder_truncated: false,
+                fork: None,
+                trial: None,
+                trials: Vec::new(),
+                parked: false,
+                parked_at: None,
+                invocation: InvocationPolicy::Both,
+            }],
+            projects: Vec::new(),
+            invocations: Vec::new(),
+            heatmap: InvocationHeatmap::default(),
+            scanned_at: "2024-01-01T00:00:00Z".to_string(),
+            last_test_by_skill: Default::default(),
+            update_check: Default::default(),
+            opencode_config_kind: None,
+        }
+    }
+
+    fn invocation_deployment(
+        path: &Path,
+        agent: &str,
+        slot: &str,
+        destination: super::super::skill_deployment::SkillDestination,
+    ) -> Deployment {
+        use super::super::skill_deployment::{deployment_id, DeploymentMutability};
+
+        Deployment {
+            id: deployment_id("find-bugs", "global", destination, slot, None, path),
+            destination,
+            mutability: DeploymentMutability::Mutable,
+            agent: agent.to_string(),
+            scope: "global".to_string(),
+            path: path.to_string_lossy().into_owned(),
+            ..Default::default()
+        }
+    }
+
+    fn write_invocation_skill(skill_dir: &Path) -> PathBuf {
+        fs::create_dir_all(skill_dir).unwrap();
+        let skill_md = skill_dir.join("SKILL.md");
+        fs::write(
+            &skill_md,
+            "---\nname: find-bugs\ndescription: test\n---\nBody.",
+        )
+        .unwrap();
+        skill_md
+    }
 
     #[test]
     fn both_removes_either_key() {
@@ -448,6 +605,131 @@ mod tests {
         assert!(yaml.contains("other_key: kept"));
         assert!(yaml.contains("something_else: true"));
         assert!(yaml.contains("allow_implicit_invocation: false"));
+    }
+
+    #[test]
+    fn same_named_codex_sibling_does_not_create_a_claude_sidecar() {
+        use super::super::skill_deployment::SkillDestination;
+
+        let tmp = tempfile::tempdir().unwrap();
+        let claude_dir = tmp.path().join(".claude/skills/find-bugs");
+        let codex_dir = tmp.path().join(".codex/skills/find-bugs");
+        let claude_skill_md = write_invocation_skill(&claude_dir);
+        write_invocation_skill(&codex_dir);
+        let snapshot = invocation_snapshot(vec![
+            invocation_deployment(
+                &claude_dir,
+                "Claude Code",
+                "claude-code",
+                SkillDestination::PerHarness,
+            ),
+            invocation_deployment(&codex_dir, "Codex", "codex", SkillDestination::PerHarness),
+        ]);
+
+        let deployment =
+            exact_snapshot_invocation_deployment(&snapshot, "find-bugs", &claude_skill_md).unwrap();
+        set_skill_invocation_with(
+            &claude_skill_md,
+            InvocationPolicy::UserOnly,
+            deployment.agent == "Codex",
+        )
+        .unwrap();
+
+        assert!(!codex_openai_yaml_path(&claude_dir).exists());
+        assert!(!codex_openai_yaml_path(&codex_dir).exists());
+    }
+
+    #[test]
+    fn exact_codex_deployment_keeps_sidecar_behavior_with_same_named_sibling() {
+        use super::super::skill_deployment::SkillDestination;
+
+        let tmp = tempfile::tempdir().unwrap();
+        let claude_dir = tmp.path().join(".claude/skills/find-bugs");
+        let codex_dir = tmp.path().join(".codex/skills/find-bugs");
+        write_invocation_skill(&claude_dir);
+        let codex_skill_md = write_invocation_skill(&codex_dir);
+        let snapshot = invocation_snapshot(vec![
+            invocation_deployment(
+                &claude_dir,
+                "Claude Code",
+                "claude-code",
+                SkillDestination::PerHarness,
+            ),
+            invocation_deployment(&codex_dir, "Codex", "codex", SkillDestination::PerHarness),
+        ]);
+
+        let deployment =
+            exact_snapshot_invocation_deployment(&snapshot, "find-bugs", &codex_skill_md).unwrap();
+        set_skill_invocation_with(
+            &codex_skill_md,
+            InvocationPolicy::UserOnly,
+            deployment.agent == "Codex",
+        )
+        .unwrap();
+
+        let yaml = fs::read_to_string(codex_openai_yaml_path(&codex_dir)).unwrap();
+        assert!(yaml.contains("allow_implicit_invocation: false"));
+        assert!(!codex_openai_yaml_path(&claude_dir).exists());
+    }
+
+    #[test]
+    fn universal_deployment_with_a_codex_link_does_not_receive_a_sidecar() {
+        use super::super::skill_deployment::{BackingRelationship, SkillDestination};
+
+        let tmp = tempfile::tempdir().unwrap();
+        let universal_dir = tmp.path().join(".agents/skills/find-bugs");
+        let codex_dir = tmp.path().join(".codex/skills/find-bugs");
+        let universal_skill_md = write_invocation_skill(&universal_dir);
+        let universal = invocation_deployment(
+            &universal_dir,
+            "shared",
+            "universal",
+            SkillDestination::Universal,
+        );
+        let mut codex_link =
+            invocation_deployment(&codex_dir, "Codex", "codex", SkillDestination::Universal);
+        codex_link.is_symlink = true;
+        codex_link.backing = BackingRelationship::LinkedTo {
+            deployment_id: universal.id.clone(),
+        };
+        let snapshot = invocation_snapshot(vec![universal, codex_link]);
+
+        let deployment =
+            exact_snapshot_invocation_deployment(&snapshot, "find-bugs", &universal_skill_md)
+                .unwrap();
+        set_skill_invocation_with(
+            &universal_skill_md,
+            InvocationPolicy::UserOnly,
+            deployment.agent == "Codex",
+        )
+        .unwrap();
+
+        assert!(!codex_openai_yaml_path(&universal_dir).exists());
+    }
+
+    #[test]
+    fn exact_invocation_deployment_rejects_stale_name_and_ambiguous_path() {
+        use super::super::skill_deployment::SkillDestination;
+
+        let tmp = tempfile::tempdir().unwrap();
+        let claude_dir = tmp.path().join(".claude/skills/find-bugs");
+        let skill_md = write_invocation_skill(&claude_dir);
+        let deployment = invocation_deployment(
+            &claude_dir,
+            "Claude Code",
+            "claude-code",
+            SkillDestination::PerHarness,
+        );
+        let snapshot = invocation_snapshot(vec![deployment.clone()]);
+
+        let stale =
+            exact_snapshot_invocation_deployment(&snapshot, "other-name", &skill_md).unwrap_err();
+        assert!(stale.contains("stale"));
+
+        let ambiguous = invocation_snapshot(vec![deployment.clone(), deployment]);
+        let error =
+            exact_snapshot_invocation_deployment(&ambiguous, "find-bugs", &skill_md).unwrap_err();
+        assert!(error.contains("ambiguous"));
     }
 
     #[test]

@@ -151,12 +151,17 @@ pub fn frontmatter_fields(content: &str) -> BTreeMap<String, String> {
         return BTreeMap::new();
     }
     let mut yaml_block = String::new();
+    let mut has_closing_fence = false;
     for line in lines {
         if line.trim() == "---" {
+            has_closing_fence = true;
             break;
         }
         yaml_block.push_str(line);
         yaml_block.push('\n');
+    }
+    if !has_closing_fence {
+        return BTreeMap::new();
     }
     let Ok(serde_yaml::Value::Mapping(map)) = serde_yaml::from_str(&yaml_block) else {
         return BTreeMap::new();
@@ -387,6 +392,25 @@ mod tests {
         assert_eq!(
             violations,
             vec!["invalid YAML frontmatter at line 4, column 1: unterminated YAML frontmatter"]
+        );
+    }
+
+    #[test]
+    fn frontmatter_fields_rejects_body_fields_after_an_unclosed_fence() {
+        let content = "---\nname: write-tests\ndescription: Writes tests.\ndisable-model-invocation: true\nRole: test author\nGoal: write tests for new features\n";
+
+        assert!(frontmatter_fields(content).is_empty());
+    }
+
+    #[test]
+    fn frontmatter_fields_parses_valid_crlf_frontmatter() {
+        let content = "---\r\nname: write-tests\r\ndescription: Writes tests.\r\n---\r\nBody.";
+        let fields = frontmatter_fields(content);
+
+        assert_eq!(fields.get("name").map(String::as_str), Some("write-tests"));
+        assert_eq!(
+            fields.get("description").map(String::as_str),
+            Some("Writes tests.")
         );
     }
 
