@@ -20,7 +20,7 @@ import { SkillMarkdownEditor } from "./SkillMarkdownEditor";
  */
 export type SkillMarkdownEditState =
   | { kind: "viewing" }
-  | { kind: "editing"; isDirty: boolean; isSaving: boolean };
+  | { kind: "editing"; openedContent: string; isDirty: boolean; isSaving: boolean };
 
 interface SkillMarkdownCardProps {
   skill: InstalledSkill;
@@ -144,7 +144,7 @@ export function SkillMarkdownCard({
         </p>
       ) : editState.kind === "editing" && rawContent !== null ? (
         <SkillMarkdownEditor
-          initialContent={rawContent}
+          initialContent={editState.openedContent}
           isSaving={editState.isSaving}
           saveLabel={saveLabel}
           onSave={onSave}

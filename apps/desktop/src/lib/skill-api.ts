@@ -162,19 +162,9 @@ export async function readInstalledSkillMd(path: string): Promise<string> {
 }
 
 /**
- * Overwrite an installed skill's `SKILL.md` with `content`, for the detail
- * drawer's inline editor. Refused when the file belongs to a plugin-managed
- * deployment or falls outside the current snapshot.
- */
-export async function writeInstalledSkillMd(path: string, content: string): Promise<void> {
-  return invoke("write_installed_skill_md", { path, content });
-}
-
-/**
- * Like `writeInstalledSkillMd`, but refuses (compare-and-swap) when the
- * file's current content doesn't match `expectedContent` - the copy the
- * caller last loaded. Used by the Audit proposal's Apply action so a save
- * made elsewhere while the proposal was open can't be silently clobbered.
+ * Overwrites an installed skill's `SKILL.md` only when its current content
+ * matches `expectedContent`. Audit proposal Apply and the inline editor use
+ * this compare-and-swap so a save made elsewhere can't be silently clobbered.
  */
 export async function writeInstalledSkillMdIfUnchanged(
   path: string,

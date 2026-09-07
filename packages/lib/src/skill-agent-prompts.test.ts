@@ -27,6 +27,21 @@ describe("fenceForMarkdown", () => {
 });
 
 describe("extractProposedSkillMd", () => {
+  it("honors the no-changes sentinel before unrelated fenced text", () => {
+    const finalText = `${HEADING}\n\nNo changes proposed.\n\n\`\`\`markdown\nunrelated\n\`\`\``;
+    expect(extractProposedSkillMd(finalText)).toBeNull();
+  });
+
+  it("does not treat a bare fenced snippet as a proposal", () => {
+    const finalText = `${HEADING}\n\n\`\`\`\nunrelated\n\`\`\``;
+    expect(extractProposedSkillMd(finalText)).toBeNull();
+  });
+
+  it("skips bare and other-language fences before a tagged proposal", () => {
+    const finalText = `${HEADING}\n\n\`\`\`\nunrelated before\n\`\`\`\n\n\`\`\`text\nstill unrelated\n\`\`\`\n\n~~~~md\n---\nname: proposed\n---\n~~~~\n\n\`\`\`\nunrelated after\n\`\`\``;
+    expect(extractProposedSkillMd(finalText)).toBe("---\nname: proposed\n---");
+  });
+
   it("extracts a proposal whose body contains a shorter ``` fence inside a longer outer fence", () => {
     const inner = "```js\nconsole.log(1);\n```";
     const finalText = `${HEADING}\n\n\`\`\`\`markdown\n---\nname: foo\n---\n\n${inner}\n\`\`\`\``;

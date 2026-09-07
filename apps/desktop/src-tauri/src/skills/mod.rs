@@ -39,6 +39,7 @@ pub mod skill_invocation;
 pub mod skill_invocations;
 pub mod skill_lifecycle;
 pub mod skill_materialize;
+pub mod skill_md_write;
 pub mod skill_ownership;
 pub mod skill_pack;
 pub mod skill_park;

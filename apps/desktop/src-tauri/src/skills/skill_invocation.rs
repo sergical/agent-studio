@@ -19,10 +19,10 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use super::commands::{
-    atomic_write_skill_md, canonicalize_skill_md, check_skill_md_write_allowed,
-    require_snapshot_owns_path,
+    canonicalize_skill_md, check_skill_md_write_allowed, require_snapshot_owns_path,
 };
 use super::frontmatter::{invocation_policy, parse_frontmatter, InvocationPolicy};
+use super::skill_md_write::begin_skill_md_write_transaction;
 use super::skill_refresh::{self, SkillRefreshState};
 
 /// Strips a line's trailing terminator (`\r\n` or `\n`), if it has one - used
@@ -252,10 +252,21 @@ pub fn set_skill_invocation_with(
     policy: InvocationPolicy,
     has_codex_deployment: bool,
 ) -> Result<(), String> {
-    let current = fs::read_to_string(canonical_skill_md)
-        .map_err(|e| format!("Failed to open {}: {e}", canonical_skill_md.display()))?;
+    set_skill_invocation_with_read_hook(canonical_skill_md, policy, has_codex_deployment, || {})
+}
+
+fn set_skill_invocation_with_read_hook(
+    canonical_skill_md: &Path,
+    policy: InvocationPolicy,
+    has_codex_deployment: bool,
+    after_read: impl FnOnce(),
+) -> Result<(), String> {
+    let transaction = begin_skill_md_write_transaction()?;
+    let current = transaction.read_to_string(canonical_skill_md)?;
+    after_read();
     let updated = rewrite_invocation_frontmatter(&current, policy)?;
-    atomic_write_skill_md(canonical_skill_md, &updated)?;
+    transaction.replace_text(canonical_skill_md, &updated)?;
+    drop(transaction);
 
     if has_codex_deployment {
         let skill_dir = canonical_skill_md
@@ -361,6 +372,29 @@ mod tests {
         set_skill_invocation_with(&skill_md, InvocationPolicy::UserOnly, false).unwrap();
         let content = fs::read_to_string(&skill_md).unwrap();
         assert!(content.contains("disable-model-invocation: true"));
+    }
+
+    #[test]
+    fn invocation_read_and_replace_share_the_skill_md_write_transaction() {
+        let tmp = tempfile::tempdir().unwrap();
+        let skill_md = tmp.path().join("SKILL.md");
+        fs::write(
+            &skill_md,
+            "---\nname: find-bugs\ndescription: test\n---\nBody.",
+        )
+        .unwrap();
+
+        set_skill_invocation_with_read_hook(&skill_md, InvocationPolicy::UserOnly, false, || {
+            assert!(
+                super::super::skill_md_write::skill_md_write_transaction_is_held(),
+                "invocation read completed without the SKILL.md transaction"
+            );
+        })
+        .unwrap();
+
+        assert!(fs::read_to_string(skill_md)
+            .unwrap()
+            .contains("disable-model-invocation: true"));
     }
 
     #[test]
