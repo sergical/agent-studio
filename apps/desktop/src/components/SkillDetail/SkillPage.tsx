@@ -28,6 +28,7 @@ import { DiscardChangesDialog } from "./DiscardChangesDialog";
 import { InstalledSkillHeader } from "./InstalledSkillHeader";
 import { SkillAssistantDrawer } from "./SkillAssistantDrawer";
 import { SkillAssistantPanel } from "./SkillAssistantPanel";
+import { useSkillAssistantNavigation } from "./skill-assistant-view-policy";
 import { SkillCompareDialog } from "./SkillCompareDialog";
 import { SkillFrontmatterRepairDialog } from "./SkillFrontmatterRepairDialog";
 import { SkillLocationsCard } from "./SkillLocationsCard";
@@ -196,9 +197,10 @@ export function SkillPage({
   const clearSkillIntent = useAppStore((state) => state.clearSkillIntent);
   const isAssistantOpen = useAppStore((state) => state.isAssistantOpen);
   const setIsAssistantOpen = useAppStore((state) => state.setIsAssistantOpen);
+  const { isRunsOpen, openAssistant, closeAssistant, openRuns, closeRuns } =
+    useSkillAssistantNavigation(skill?.name, setIsAssistantOpen);
   const [isEditing, setIsEditing] = useState(false);
   const [isEditorDirty, setIsEditorDirty] = useState(false);
-  const [isHistoryOpen, setIsHistoryOpen] = useState(false);
   const [isCompareOpen, setIsCompareOpen] = useState(false);
   const [frontmatterRepair, setFrontmatterRepair] = useState<FrontmatterRepairPreview | null>(null);
   const [isFrontmatterRepairOpen, setIsFrontmatterRepairOpen] = useState(false);
@@ -266,14 +268,6 @@ export function SkillPage({
     return () => window.removeEventListener("keydown", onKeyDown);
   }, []);
 
-  /** The skill the history drawer was last shown for, so a skill switch closes it instead of carrying it over. */
-  const historySkillNameRef = useRef<string | undefined>(skill?.name);
-  if (historySkillNameRef.current !== skill?.name) {
-    // react-doctor-disable-next-line react-doctor/no-ref-current-in-render -- adjust-during-render, per React docs "storing information from previous renders"
-    historySkillNameRef.current = skill?.name;
-    if (isHistoryOpen) setIsHistoryOpen(false);
-  }
-
   // The deployment this page edits: only the one the caller clicked, when
   // given - a stale `deploymentPath` (the copy was removed by a rescan) must
   // not silently fall back to a different copy of the skill. With no
@@ -326,7 +320,7 @@ export function SkillPage({
 
   // A skill switch can't carry over a draft or edit mode from a different
   // skill - adjusted during render (same single-ref pattern as
-  // `compareSkillNameRef`/`historySkillNameRef` above), keyed off the same
+  // `compareSkillNameRef` above), keyed off the same
   // identity `useSkillMdContent`'s own reset uses.
   const editSkillNameRef = useRef<string | undefined>(skill?.name);
   if (editSkillNameRef.current !== skill?.name) {
@@ -381,7 +375,7 @@ export function SkillPage({
         onBack={onBack}
         onRemoveComplete={onRemoveComplete}
         isAssistantOpen={isAssistantOpen}
-        onOpenAssistant={() => setIsAssistantOpen(true)}
+        onOpenAssistant={openAssistant}
         assistantTriggerRef={assistantTriggerRef}
         frontmatterRepair={selectedFrontmatterRepair}
         onFixYaml={() => setIsFrontmatterRepairOpen(true)}
@@ -424,7 +418,7 @@ export function SkillPage({
 
       <SkillAssistantDrawer
         isOpen={isAssistantOpen && isFeatureEnabled("skill-assistant")}
-        onClose={() => setIsAssistantOpen(false)}
+        onClose={closeAssistant}
         triggerRef={assistantTriggerRef}
       >
         <SkillAssistantPanel
@@ -436,9 +430,9 @@ export function SkillPage({
           onDiskChanged={() => {
             if (skillMdPath) loadContent(skillMdPath, false);
           }}
-          showHistory={isHistoryOpen}
-          onOpenHistory={() => setIsHistoryOpen(true)}
-          onCloseHistory={() => setIsHistoryOpen(false)}
+          showHistory={isRunsOpen}
+          onOpenHistory={openRuns}
+          onCloseHistory={closeRuns}
         />
       </SkillAssistantDrawer>
 

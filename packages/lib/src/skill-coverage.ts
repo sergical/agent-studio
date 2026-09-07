@@ -315,12 +315,17 @@ export function resolveCompareSelection(
 
 /**
  * A broken, disabled, or parked shared-root deployment doesn't make a skill
- * visible via the shared root.
+ * visible via the shared root. When `reader` is set, a shared deployment that
+ * explicitly disables that reader does not provide visibility to it.
  */
-function isSharedRootDeployment(skill: InstalledSkill): boolean {
+function isSharedRootDeployment(skill: InstalledSkill, reader?: AgentId): boolean {
   if (skill.parked) return false;
   return ownDeployments(skill).some(
-    (d) => d.agent === SHARED_AGENT_ID && !d.disabled && !isUnresolvedDeployment(d),
+    (d) =>
+      d.agent === SHARED_AGENT_ID &&
+      !d.disabled &&
+      !isUnresolvedDeployment(d) &&
+      (reader === undefined || !(d.disabled_readers ?? []).includes(reader)),
   );
 }
 
@@ -337,7 +342,9 @@ export function skillVisibleToAgent(
   agent: AgentId,
 ): "own" | "shared" | "none" {
   if (isOwnDirDeployment(skill, agent)) return "own";
-  if (AGENTS_READING_SHARED_ROOT.includes(agent) && isSharedRootDeployment(skill)) return "shared";
+  if (AGENTS_READING_SHARED_ROOT.includes(agent) && isSharedRootDeployment(skill, agent)) {
+    return "shared";
+  }
   return "none";
 }
 

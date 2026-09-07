@@ -6,6 +6,7 @@
   "scripts": {
     "dev": "vite",
     "build": "tsc --noEmit && vite build",
+    "test": "vitest run",
     "remotion:studio": "remotion studio src/remotion/index.ts",
     "typecheck": "tsc --noEmit",
     "remotion:capture": "node scripts/capture-walkthroughs.mjs",

@@ -9,7 +9,7 @@
 
 import { useState } from "react";
 import { agentIdFromDeploymentLabel, parseSkillSource } from "@skill-studio/lib";
-import type { Deployment, InstalledSkill, LifecycleTarget } from "@skill-studio/lib";
+import type { AgentId, Deployment, InstalledSkill, LifecycleTarget } from "@skill-studio/lib";
 import {
   addSkill,
   openSkillPath,
@@ -56,6 +56,26 @@ export interface MaterializeLocationRequest {
   intent: "convert-only" | "convert-then-disable";
 }
 
+/** Display label for a harness whose whole skills root can be materialized. */
+function materializeHarnessLabel(harness: AgentId): string {
+  switch (harness) {
+    case "claude-code":
+      return "Claude Code";
+    case "codex":
+      return "Codex";
+    case "open-code":
+      return "OpenCode";
+    case "pi":
+      return "pi";
+    case "cursor":
+      return "Cursor";
+    case "grok-build":
+      return "Grok Build";
+    default:
+      return harness;
+  }
+}
+
 /** Routes only explicit conversion and whole-root toggle-off actions to the conversion dialog. */
 export function materializeRequestForLocationAction(
   action: LocationAction,
@@ -64,7 +84,7 @@ export function materializeRequestForLocationAction(
     return {
       target: action.target,
       harness: action.harness,
-      harnessLabel: action.harness,
+      harnessLabel: materializeHarnessLabel(action.harness),
       root: action.root,
       intent: "convert-only",
     };

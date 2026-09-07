@@ -11,6 +11,7 @@ beforeEach(() => {
     selectedSkillPaths: new Set(),
     selectionMode: false,
     activeView: { kind: "home" },
+    skillListFilter: { scope: "all", query: "" },
   });
 });
 
@@ -97,12 +98,67 @@ describe("skillListFilter", () => {
     expect(useAppStore.getState().activeView.kind).toBe("skills");
   });
 
+  it("keeps sidebar and filter-bar query updates on the same store value", () => {
+    const updateQuery = (query: string) => useAppStore.getState().setSkillListFilter({ query });
+
+    updateQuery("from sidebar");
+    expect(useAppStore.getState().skillListFilter.query).toBe("from sidebar");
+
+    updateQuery("from filter bar");
+    expect(useAppStore.getState().skillListFilter.query).toBe("from filter bar");
+  });
+
   it("opening and closing a skill leaves the filter unchanged", () => {
     useAppStore.getState().setActiveView({ kind: "skills" });
-    useAppStore.getState().setSkillListFilter({ scope: "global" });
+    useAppStore.getState().setSkillListFilter({ scope: "global", query: "regression" });
     useAppStore.getState().openSkill("find-bugs");
     useAppStore.getState().closeSkill();
     expect(useAppStore.getState().skillListFilter.scope).toBe("global");
+    expect(useAppStore.getState().skillListFilter.query).toBe("regression");
+  });
+
+  it("changing scope clears selection mode and paths together", () => {
+    useAppStore.setState({
+      skillListFilter: { scope: "global", query: "find" },
+      selectionMode: true,
+      selectedSkillPaths: new Set(["/global/find-bugs"]),
+    });
+
+    useAppStore.getState().setSkillListFilter({ scope: { project: "/repo" } });
+
+    const state = useAppStore.getState();
+    expect(state.skillListFilter).toEqual({ scope: { project: "/repo" }, query: "find" });
+    expect(state.selectionMode).toBe(false);
+    expect(state.selectedSkillPaths).toEqual(new Set());
+  });
+
+  it("keeps selection for query and other unrelated filter changes", () => {
+    useAppStore.setState({
+      skillListFilter: { scope: "global", query: "" },
+      selectionMode: true,
+      selectedSkillPaths: new Set(["/global/find-bugs"]),
+    });
+
+    useAppStore.getState().setSkillListFilter({ query: "find", source: "manual" });
+
+    const state = useAppStore.getState();
+    expect(state.skillListFilter).toEqual({ scope: "global", query: "find", source: "manual" });
+    expect(state.selectionMode).toBe(true);
+    expect(state.selectedSkillPaths).toEqual(new Set(["/global/find-bugs"]));
+  });
+
+  it("resetting a scoped filter also clears its stale selection", () => {
+    useAppStore.setState({
+      skillListFilter: { scope: "parked", query: "" },
+      selectionMode: true,
+      selectedSkillPaths: new Set(["/parked/find-bugs"]),
+    });
+
+    useAppStore.getState().resetSkillListFilter();
+
+    expect(useAppStore.getState().skillListFilter).toEqual({ scope: "all", query: "" });
+    expect(useAppStore.getState().selectionMode).toBe(false);
+    expect(useAppStore.getState().selectedSkillPaths).toEqual(new Set());
   });
 });
 
