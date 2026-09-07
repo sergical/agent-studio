@@ -11,7 +11,7 @@ import {
   forkSkill,
   previewSkillFrontmatterRepair,
   readInstalledSkillMd,
-  writeInstalledSkillMd,
+  writeInstalledSkillMdIfUnchanged,
 } from "../../lib/skill-api";
 import { lifecycleTargetForDeployment } from "../../lib/skill-lifecycle-target";
 import { isFeatureEnabled } from "../../lib/feature-flags";
@@ -34,6 +34,7 @@ import { SkillFrontmatterRepairDialog } from "./SkillFrontmatterRepairDialog";
 import { SkillLocationsCard } from "./SkillLocationsCard";
 import { SkillMarkdownCard } from "./SkillMarkdownCard";
 import { SkillRepairCard } from "./SkillRepairCard";
+import { saveSkillEditorDraft } from "./skill-editor-save";
 import { hasMalformedYamlWarning } from "./skill-frontmatter-repair-policy";
 
 interface SkillPageProps {
@@ -110,7 +111,7 @@ function useSkillMdContent({ skill, skillMdPath, deployment, addToast }: UseSkil
 
   // A Promise chain, not a try/finally statement, so the compiler can still
   // optimize this component (it doesn't support `finally` clauses yet).
-  const handleSave = (content: string, onSaved: () => void) => {
+  const handleSave = (content: string, openedContent: string, onSaved: () => void) => {
     // Ignore a duplicate save request (e.g. Cmd+S fired while the Save
     // button's own click is already in flight).
     if (!skill || !skillMdPath || isSaving) return;
@@ -136,16 +137,24 @@ function useSkillMdContent({ skill, skillMdPath, deployment, addToast }: UseSkil
     return forkIfNeeded
       .then(() => {
         if (forkFailed) return;
-        return writeInstalledSkillMd(skillMdPath, content).then(() => {
-          setRawContent(content);
+        return saveSkillEditorDraft(
+          { path: skillMdPath, openedContent, draftContent: content },
+          writeInstalledSkillMdIfUnchanged,
+        ).then((savedDraft) => {
+          setRawContent(savedDraft.openedContent);
           onSaved();
         });
       })
       .catch((err) => {
+        const message = err instanceof Error ? err.message : String(err);
+        const isConflict = message.includes("SKILL.md changed on disk since it was loaded");
+        if (isConflict) loadContent(skillMdPath, false);
         addToast({
           type: "error",
-          title: "Couldn't save SKILL.md",
-          message: err instanceof Error ? err.message : "Unknown error",
+          title: isConflict ? "SKILL.md changed on disk" : "Couldn't save SKILL.md",
+          message: isConflict
+            ? "Your draft is still open. Cancel editing to view the latest file; you will be asked before the draft is discarded."
+            : message,
         });
       })
       .finally(() => {
@@ -199,7 +208,8 @@ export function SkillPage({
   const setIsAssistantOpen = useAppStore((state) => state.setIsAssistantOpen);
   const { isRunsOpen, openAssistant, closeAssistant, openRuns, closeRuns } =
     useSkillAssistantNavigation(skill?.name, setIsAssistantOpen);
-  const [isEditing, setIsEditing] = useState(false);
+  const [editorOpenedContent, setEditorOpenedContent] = useState<string | null>(null);
+  const isEditing = editorOpenedContent !== null;
   const [isEditorDirty, setIsEditorDirty] = useState(false);
   const [isCompareOpen, setIsCompareOpen] = useState(false);
   const [frontmatterRepair, setFrontmatterRepair] = useState<FrontmatterRepairPreview | null>(null);
@@ -326,7 +336,7 @@ export function SkillPage({
   if (editSkillNameRef.current !== skill?.name) {
     // react-doctor-disable-next-line react-doctor/no-ref-current-in-render -- adjust-during-render, per React docs "storing information from previous renders"
     editSkillNameRef.current = skill?.name;
-    if (isEditing) setIsEditing(false);
+    if (isEditing) setEditorOpenedContent(null);
     if (isEditorDirty) setIsEditorDirty(false);
   }
 
@@ -337,15 +347,22 @@ export function SkillPage({
   if (editSkillMdPathRef.current !== skillMdPath) {
     // react-doctor-disable-next-line react-doctor/no-ref-current-in-render -- adjust-during-render, per React docs "storing information from previous renders"
     editSkillMdPathRef.current = skillMdPath;
-    if (isEditing) setIsEditing(false);
+    if (isEditing) setEditorOpenedContent(null);
     if (isEditorDirty) setIsEditorDirty(false);
   }
 
   const handleSave = (content: string) => {
-    saveContent(content, () => {
-      setIsEditing(false);
+    if (editorOpenedContent === null) return;
+    saveContent(content, editorOpenedContent, () => {
+      setEditorOpenedContent(null);
       setIsEditorDirty(false);
     });
+  };
+
+  const startEditing = () => {
+    if (rawContent === null) return;
+    setEditorOpenedContent(rawContent);
+    setIsEditorDirty(false);
   };
 
   if (!skill) {
@@ -379,7 +396,7 @@ export function SkillPage({
         assistantTriggerRef={assistantTriggerRef}
         frontmatterRepair={selectedFrontmatterRepair}
         onFixYaml={() => setIsFrontmatterRepairOpen(true)}
-        onEditManually={() => setIsEditing(true)}
+        onEditManually={startEditing}
       />
 
       <div className="flex min-w-0 flex-col gap-6">
@@ -401,14 +418,19 @@ export function SkillPage({
             onRetry={handleRetryLoad}
             editState={
               isEditing
-                ? { kind: "editing", isDirty: isEditorDirty, isSaving }
+                ? {
+                    kind: "editing",
+                    openedContent: editorOpenedContent,
+                    isDirty: isEditorDirty,
+                    isSaving,
+                  }
                 : { kind: "viewing" }
             }
-            onStartEdit={() => setIsEditing(true)}
+            onStartEdit={startEditing}
             saveLabel={needsForkToSave ? "Fork and save" : "Save"}
             onSave={handleSave}
             onCancelEdit={() => {
-              setIsEditing(false);
+              setEditorOpenedContent(null);
               setIsEditorDirty(false);
             }}
             onDirtyChange={setIsEditorDirty}
@@ -445,7 +467,7 @@ export function SkillPage({
           target={lifecycleTargetForDeployment(deployment)}
           preview={selectedFrontmatterRepair}
           onClose={() => setIsFrontmatterRepairOpen(false)}
-          onEditManually={() => setIsEditing(true)}
+          onEditManually={startEditing}
           onApplied={() => {
             setFrontmatterRepair(null);
             if (skillMdPath) loadContent(skillMdPath, false);

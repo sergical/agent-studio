@@ -83,8 +83,8 @@ ${PROPOSED_HEADING}
 Only include this section if changes are worth making. If so, follow the heading with ONE fenced block wrapping the complete revised SKILL.md - frontmatter included, nothing omitted, no placeholders. Wrap the proposed file in a fence of exactly ${fence.length} backticks (${fence}markdown … ${fence}), because the file itself contains shorter fences. If no change is worth making, write "No changes proposed." instead of the block.`;
 }
 
-/** Matches a fenced code block (3+ backticks or 3+ tildes, optionally tagged \`markdown\`/\`md\`) and captures the opening fence, the info string line, and the body. */
-const FENCE_OPEN_RE = /^(`{3,}|~{3,})[ \t]*(?:markdown|md)?[ \t]*$/;
+/** Matches a fenced code block tagged exactly `markdown` or `md` and captures its opening fence. */
+const MARKDOWN_FENCE_OPEN_RE = /^(`{3,}|~{3,})[ \t]*(?:markdown|md)[ \t]*$/;
 
 /**
  * Pulls the fenced SKILL.md rewrite out of a finished run's `finalText`, if
@@ -102,12 +102,14 @@ export function extractProposedSkillMd(finalText: string): string | null {
   if (headingIndex === -1) return null;
   const afterHeading = finalText.slice(headingIndex + PROPOSED_HEADING.length);
   const lines = afterHeading.split(/\r\n|\n/);
+  const firstContentLine = lines.find((line) => line.trim().length > 0);
+  if (firstContentLine === "No changes proposed.") return null;
 
   let openerIndex = -1;
   let fenceChar = "";
   let fenceLength = 0;
   for (let i = 0; i < lines.length; i++) {
-    const match = lines[i].match(FENCE_OPEN_RE);
+    const match = lines[i].match(MARKDOWN_FENCE_OPEN_RE);
     if (match) {
       openerIndex = i;
       fenceChar = match[1][0];

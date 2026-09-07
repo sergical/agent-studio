@@ -3,12 +3,11 @@
 // IPC commands for skill discovery, installation, and management
 // ============================================================================
 
-use std::fs::{File, OpenOptions};
-use std::io::{Read, Write};
+use std::fs::File;
+use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::time::SystemTime;
 
 use super::agents::{AgentId, AgentTarget};
 use super::api;
@@ -27,6 +26,7 @@ use super::skill_lifecycle::{
     dotagents_update_args, ledger_matching_deployment, rebuild_fresh_lifecycle_snapshot,
     resolve_lifecycle_target, skills_sh_remove_args_for_scope, skills_sh_update_args,
 };
+use super::skill_md_write::{write_skill_md, write_skill_md_compare_and_swap};
 use super::skill_refresh::{self, SkillRefreshState};
 use super::skill_trial;
 use super::skill_update_check;
@@ -437,7 +437,7 @@ mod tests {
         let snapshot = fixture_snapshot(&dep_dir, None);
         assert!(check_skill_md_write_allowed(Some(&snapshot), &skill_md).is_ok());
 
-        atomic_write_skill_md(&skill_md, "---\nname: foo\n---\nupdated body").unwrap();
+        write_skill_md(&skill_md, "---\nname: foo\n---\nupdated body").unwrap();
 
         let round_tripped = std::fs::read_to_string(&skill_md).unwrap();
         assert_eq!(round_tripped, "---\nname: foo\n---\nupdated body");
@@ -449,10 +449,10 @@ mod tests {
         let skill_md = tmp.path().join("SKILL.md");
         std::fs::write(&skill_md, "original").unwrap();
 
-        atomic_write_skill_md(&skill_md, "first save").unwrap();
+        write_skill_md(&skill_md, "first save").unwrap();
         assert_eq!(std::fs::read_to_string(&skill_md).unwrap(), "first save");
 
-        atomic_write_skill_md(&skill_md, "second save").unwrap();
+        write_skill_md(&skill_md, "second save").unwrap();
         assert_eq!(std::fs::read_to_string(&skill_md).unwrap(), "second save");
     }
 
@@ -464,7 +464,7 @@ mod tests {
         let canonical = tmp.path().join("SKILL.md");
         std::fs::create_dir_all(&canonical).unwrap();
 
-        let err = atomic_write_skill_md(&canonical, "content");
+        let err = write_skill_md(&canonical, "content");
         assert!(err.is_err());
 
         let leftover_temp_files = std::fs::read_dir(tmp.path())
@@ -499,6 +499,48 @@ mod tests {
 
         write_skill_md_compare_and_swap(&skill_md, "on disk now", "new content").unwrap();
         assert_eq!(std::fs::read_to_string(&skill_md).unwrap(), "new content");
+    }
+
+    #[test]
+    fn concurrent_compare_and_swap_allows_only_one_matching_write() {
+        use std::sync::{mpsc, Arc};
+
+        let tmp = tempfile::tempdir().unwrap();
+        let skill_md = Arc::new(tmp.path().join("SKILL.md"));
+        std::fs::write(skill_md.as_ref(), "shared baseline").unwrap();
+
+        let first_path = Arc::clone(&skill_md);
+        let (first_compared_tx, first_compared_rx) = mpsc::channel();
+        let (release_first_tx, release_first_rx) = mpsc::channel();
+        let first = std::thread::spawn(move || {
+            super::super::skill_md_write::write_skill_md_compare_and_swap_with(
+                &first_path,
+                "shared baseline",
+                "first write",
+                || {
+                    let _ = first_compared_tx.send(());
+                    let _ = release_first_rx.recv();
+                },
+            )
+        });
+
+        first_compared_rx.recv().unwrap();
+        let lock_was_held_across_compare =
+            super::super::skill_md_write::skill_md_write_transaction_is_held();
+        let second_path = Arc::clone(&skill_md);
+        let second = std::thread::spawn(move || {
+            write_skill_md_compare_and_swap(&second_path, "shared baseline", "second write")
+        });
+        release_first_tx.send(()).unwrap();
+
+        let results = [first.join().unwrap(), second.join().unwrap()];
+        assert!(lock_was_held_across_compare);
+        assert_eq!(results.iter().filter(|result| result.is_ok()).count(), 1);
+        assert_eq!(results.iter().filter(|result| result.is_err()).count(), 1);
+        assert_eq!(
+            std::fs::read_to_string(skill_md.as_ref()).unwrap(),
+            "first write"
+        );
     }
 
     fn dotagents_skill(
@@ -2235,61 +2277,6 @@ pub(crate) fn check_skill_md_write_allowed(
     }
 }
 
-/// Counter appended to the atomic-write temp filename, on top of the pid and
-/// a timestamp, so two saves landing in the same process within the same
-/// nanosecond still get distinct temp files.
-static ATOMIC_WRITE_COUNTER: AtomicU64 = AtomicU64::new(0);
-
-/// Writes `content` to `canonical` atomically: a temp file in the same
-/// directory, then a rename, so a crash mid-write can't leave a truncated
-/// `SKILL.md` behind. Pulled out of the command so it's testable with a
-/// plain tempdir, no snapshot or `tauri::AppHandle` needed.
-///
-/// The temp filename is unique per call (pid + a process-wide counter +
-/// wall-clock nanos) and created with `create_new` so a concurrent save, or a
-/// pre-existing symlink at that path, can't be interleaved or truncated.
-pub(crate) fn atomic_write_skill_md(
-    canonical: &std::path::Path,
-    content: &str,
-) -> Result<(), String> {
-    let parent = canonical.parent().ok_or_else(|| {
-        format!(
-            "Failed to resolve parent directory of {}",
-            canonical.display()
-        )
-    })?;
-    let counter = ATOMIC_WRITE_COUNTER.fetch_add(1, Ordering::Relaxed);
-    let nanos = SystemTime::now()
-        .duration_since(SystemTime::UNIX_EPOCH)
-        .map(|d| d.as_nanos())
-        .unwrap_or(0);
-    let tmp_path = parent.join(format!(
-        ".SKILL.md.tmp-{}-{}-{}",
-        std::process::id(),
-        counter,
-        nanos
-    ));
-
-    let mut file = OpenOptions::new()
-        .write(true)
-        .create_new(true)
-        .open(&tmp_path)
-        .map_err(|e| format!("Failed to create {}: {}", tmp_path.display(), e))?;
-    let write_result = file
-        .write_all(content.as_bytes())
-        .and_then(|_| file.sync_all());
-    drop(file);
-    if let Err(e) = write_result {
-        let _ = std::fs::remove_file(&tmp_path);
-        return Err(format!("Failed to write {}: {}", tmp_path.display(), e));
-    }
-
-    std::fs::rename(&tmp_path, canonical).map_err(|e| {
-        let _ = std::fs::remove_file(&tmp_path);
-        format!("Failed to save {}: {}", canonical.display(), e)
-    })
-}
-
 /// Runs every check `write_installed_skill_md` and
 /// `write_installed_skill_md_if_unchanged` share - ownership, canonicalization,
 /// the size limit, and the plugin-managed refusal - and returns the canonical
@@ -2328,36 +2315,16 @@ pub fn write_installed_skill_md(
     refresh_state: tauri::State<SkillRefreshState>,
 ) -> Result<(), String> {
     let canonical = validate_skill_md_write(&path, &content, &refresh_state)?;
-    atomic_write_skill_md(&canonical, &content)?;
+    write_skill_md(&canonical, &content)?;
     skill_refresh::request_snapshot_rebuild(&app);
     Ok(())
 }
 
-/// Refuses when `canonical`'s current content differs from `expected_content`
-/// (the file drifted on disk since the caller loaded it), otherwise writes
-/// atomically. Pulled out of the command so it's testable without a snapshot
-/// or `tauri::AppHandle`.
-pub(crate) fn write_skill_md_compare_and_swap(
-    canonical: &std::path::Path,
-    expected_content: &str,
-    content: &str,
-) -> Result<(), String> {
-    let current = std::fs::read_to_string(canonical)
-        .map_err(|e| format!("Failed to open {}: {}", canonical.display(), e))?;
-    if current != expected_content {
-        return Err(
-            "SKILL.md changed on disk since it was loaded. Reload the file and run the audit again."
-                .to_string(),
-        );
-    }
-    atomic_write_skill_md(canonical, content)
-}
-
 /// Like `write_installed_skill_md`, but refuses the write (rather than
 /// silently overwriting) when the file's current content doesn't match
-/// `expected_content` - the copy the caller last loaded. Used by the Audit
-/// proposal's Apply action so a save made elsewhere while the proposal was
-/// open can't be clobbered.
+/// `expected_content` - the copy the caller last loaded. Used by Audit
+/// proposal Apply and the inline editor to detect an ordinary stale baseline
+/// before writing.
 #[tauri::command]
 pub fn write_installed_skill_md_if_unchanged(
     path: String,

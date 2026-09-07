@@ -5,7 +5,6 @@
 // ============================================================================
 
 use std::fs;
-use std::io::Write;
 use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
@@ -20,6 +19,7 @@ use super::frontmatter::{parse_frontmatter, FrontmatterParseResult};
 use super::skill_deployment::{BackingRelationship, DeploymentMutability, SkillDestination};
 use super::skill_dto::{Deployment, LifecycleTarget};
 use super::skill_fork::ForkMutationLock;
+use super::skill_md_write::{begin_skill_md_write_transaction, SkillMdWriteTransaction};
 use super::skill_ownership::LifecycleOwnerKind;
 use super::skill_refresh::{self, SkillRefreshState};
 
@@ -246,6 +246,20 @@ fn validate_bound_preview(
     Ok(preview)
 }
 
+fn begin_bound_frontmatter_repair_transaction(
+    deployment: &Deployment,
+    expected_content_fingerprint: &str,
+    expected_proposal_id: &str,
+) -> Result<(SkillMdWriteTransaction, FrontmatterRepairPreview), String> {
+    let transaction = begin_skill_md_write_transaction()?;
+    let preview = validate_bound_preview(
+        deployment,
+        expected_content_fingerprint,
+        expected_proposal_id,
+    )?;
+    Ok((transaction, preview))
+}
+
 fn exact_target<'a>(
     snapshot: &'a skill_refresh::SkillSnapshot,
     target: &LifecycleTarget,
@@ -270,35 +284,6 @@ pub fn preview_skill_frontmatter_repair(
 ) -> Result<FrontmatterRepairPreview, String> {
     let snapshot = super::skill_lifecycle::rebuild_fresh_lifecycle_snapshot(&app, &refresh_state)?;
     preview_from_deployment(exact_target(&snapshot, &target)?)
-}
-
-fn atomic_write(path: &Path, bytes: &[u8]) -> Result<(), String> {
-    let parent = path.parent().ok_or("SKILL.md has no parent directory")?;
-    let permissions = fs::metadata(path)
-        .map_err(|error| format!("Failed to stat {}: {error}", path.display()))?
-        .permissions();
-    let temp = parent.join(format!(".SKILL.md.repair-{}", allocate_id()));
-    let result = (|| {
-        let mut file = fs::OpenOptions::new()
-            .write(true)
-            .create_new(true)
-            .open(&temp)
-            .map_err(|error| format!("Failed to create repair file: {error}"))?;
-        file.write_all(bytes)
-            .map_err(|error| format!("Failed to write repair file: {error}"))?;
-        file.sync_all()
-            .map_err(|error| format!("Failed to sync repair file: {error}"))?;
-        fs::set_permissions(&temp, permissions)
-            .map_err(|error| format!("Failed to preserve SKILL.md permissions: {error}"))?;
-        fs::rename(&temp, path).map_err(|error| format!("Failed to replace SKILL.md: {error}"))?;
-        fs::File::open(parent)
-            .and_then(|dir| dir.sync_all())
-            .map_err(|error| format!("Failed to sync skill directory: {error}"))
-    })();
-    if result.is_err() {
-        let _ = fs::remove_file(temp);
-    }
-    result
 }
 
 fn finish_repair_write(
@@ -372,11 +357,21 @@ pub fn reconcile_interrupted_frontmatter_repair(
     home: &Path,
     row: &EventRow,
 ) -> Result<(), String> {
+    reconcile_interrupted_frontmatter_repair_with(store, home, row, |_| {})
+}
+
+fn reconcile_interrupted_frontmatter_repair_with(
+    store: &EventStore,
+    home: &Path,
+    row: &EventRow,
+    after_read: impl FnOnce(&SkillMdWriteTransaction),
+) -> Result<(), String> {
+    let transaction = begin_skill_md_write_transaction()?;
     let intent: FrontmatterRepairIntent = serde_json::from_value(row.payload.clone())
         .map_err(|error| format!("Malformed frontmatter repair intent: {error}"))?;
     let skill_md = intent.path.join("SKILL.md");
-    let current = fs::read(&skill_md)
-        .map_err(|error| format!("Failed to read {}: {error}", skill_md.display()))?;
+    let current = transaction.read(&skill_md)?;
+    after_read(&transaction);
     let current_fingerprint = content_fingerprint(&current);
     if current_fingerprint == intent.proposed_content_fingerprint {
         store.patch_inverse_post_fingerprint(&row.id, &fingerprint_path(&skill_md))?;
@@ -403,7 +398,7 @@ pub fn reconcile_interrupted_frontmatter_repair(
         &row.id,
         &skill_md,
         intent.proposed_content.as_bytes(),
-        atomic_write,
+        |path, bytes| transaction.replace_bytes(path, bytes),
     )
 }
 
@@ -424,11 +419,6 @@ pub fn apply_skill_frontmatter_repair(
     let _guard = fork_lock.try_acquire()?;
     let snapshot = super::skill_lifecycle::rebuild_fresh_lifecycle_snapshot(&app, &refresh_state)?;
     let deployment = exact_target(&snapshot, &target)?.clone();
-    let preview = validate_bound_preview(&deployment, &expected_content_fingerprint, &proposal_id)?;
-    if !preview.allowed_apply_modes.contains(&mode) {
-        return Err("This repair mode is not allowed for the selected deployment".to_string());
-    }
-
     let skill_md = PathBuf::from(&deployment.path).join("SKILL.md");
     let name = super::skill_deployment::parse_deployment_id(&deployment.id)
         .map(|id| id.name)
@@ -438,6 +428,14 @@ pub fn apply_skill_frontmatter_repair(
         .lock()
         .map_err(|error| format!("event store lock poisoned: {error}"))?;
     let store = guard.as_mut().ok_or("Event store is unavailable")?;
+    let (transaction, preview) = begin_bound_frontmatter_repair_transaction(
+        &deployment,
+        &expected_content_fingerprint,
+        &proposal_id,
+    )?;
+    if !preview.allowed_apply_modes.contains(&mode) {
+        return Err("This repair mode is not allowed for the selected deployment".to_string());
+    }
     let event_id = allocate_id();
     let pre_fingerprint = fingerprint_path(&skill_md);
     let intent = FrontmatterRepairIntent {
@@ -496,7 +494,8 @@ pub fn apply_skill_frontmatter_repair(
             store.finish(&event_id, EventStatus::Failed)?;
             return Err(error);
         }
-        let live = fs::read(Path::new(&deployment.path).join("SKILL.md"))
+        let live = transaction
+            .read(&skill_md)
             .map_err(|error| format!("Fork completed, but the repair needs recovery: {error}"))?;
         if content_fingerprint(&live) != expected_content_fingerprint {
             return Err(
@@ -508,19 +507,22 @@ pub fn apply_skill_frontmatter_repair(
     let result = if mode == FrontmatterRepairApplyMode::ForkAndFix {
         // Keep durable intent pending if the write fails. Startup can safely
         // finish it because the exact fork record and source fingerprint bind it.
-        atomic_write(&skill_md, preview.proposed_content.as_bytes()).and_then(|()| {
-            store.patch_inverse_post_fingerprint(&event_id, &fingerprint_path(&skill_md))?;
-            store.finish(&event_id, EventStatus::Done)
-        })
+        transaction
+            .replace_bytes(&skill_md, preview.proposed_content.as_bytes())
+            .and_then(|()| {
+                store.patch_inverse_post_fingerprint(&event_id, &fingerprint_path(&skill_md))?;
+                store.finish(&event_id, EventStatus::Done)
+            })
     } else {
         finish_repair_write(
             store,
             &event_id,
             &skill_md,
             preview.proposed_content.as_bytes(),
-            atomic_write,
+            |path, bytes| transaction.replace_bytes(path, bytes),
         )
     };
+    drop(transaction);
     drop(guard);
     let affected_projects: Vec<PathBuf> = deployment
         .project_path
@@ -543,6 +545,7 @@ mod tests {
     use super::super::skill_fork_registry::{
         write_fork_registry, ForkRecord, ForkRegistry, OriginTool,
     };
+    use super::super::skill_md_write::{skill_md_write_transaction_is_held, write_skill_md_bytes};
     use super::*;
 
     fn malformed() -> &'static str {
@@ -744,6 +747,33 @@ mod tests {
     }
 
     #[test]
+    fn repair_apply_validation_and_replace_hold_the_skill_md_transaction() {
+        let temp = tempfile::tempdir().unwrap();
+        let skill = temp.path().join("sample");
+        fs::create_dir_all(&skill).unwrap();
+        fs::write(skill.join("SKILL.md"), malformed()).unwrap();
+        let deployment = deployment(&skill, LifecycleOwnerKind::Manual);
+        let preview = preview_from_deployment(&deployment).unwrap();
+
+        let (transaction, validated) = begin_bound_frontmatter_repair_transaction(
+            &deployment,
+            &preview.expected_content_fingerprint,
+            &preview.proposal_id,
+        )
+        .unwrap();
+        assert!(skill_md_write_transaction_is_held());
+        transaction
+            .replace_text(&skill.join("SKILL.md"), &validated.proposed_content)
+            .unwrap();
+        drop(transaction);
+
+        assert_eq!(
+            fs::read_to_string(skill.join("SKILL.md")).unwrap(),
+            preview.proposed_content
+        );
+    }
+
+    #[test]
     fn direct_write_changes_only_the_exact_scope_and_keeps_managed_registry_ownership() {
         let temp = tempfile::tempdir().unwrap();
         let selected = temp.path().join("global/sample");
@@ -755,7 +785,7 @@ mod tests {
         let deployment = deployment(&selected, LifecycleOwnerKind::SkillsSh);
         let owner_before = deployment.owner_id.clone();
         let preview = preview_from_deployment(&deployment).unwrap();
-        atomic_write(
+        write_skill_md_bytes(
             &selected.join("SKILL.md"),
             preview.proposed_content.as_bytes(),
         )
@@ -807,7 +837,7 @@ mod tests {
             "repair-2",
             &skill.join("SKILL.md"),
             intent.proposed_content.as_bytes(),
-            atomic_write,
+            write_skill_md_bytes,
         )
         .unwrap();
         fs::write(skill.join("SKILL.md"), "external drift").unwrap();
@@ -855,7 +885,10 @@ mod tests {
         );
         write_fork_registry(&home, &registry).unwrap();
         let rows = store.reconcile_at_startup().unwrap();
-        reconcile_interrupted_frontmatter_repair(&store, &home, &rows[0]).unwrap();
+        reconcile_interrupted_frontmatter_repair_with(&store, &home, &rows[0], |_| {
+            assert!(skill_md_write_transaction_is_held());
+        })
+        .unwrap();
         assert_eq!(
             fs::read_to_string(skill.join("SKILL.md")).unwrap(),
             intent.proposed_content

@@ -15,6 +15,12 @@ const UPSTREAM_BASE = "https://skills.sh/api/v1";
 const DEFAULT_PORT = 8787;
 const HOST = "127.0.0.1";
 
+interface RawNodeRequestEnvironment {
+  incoming: {
+    url?: string;
+  };
+}
+
 /** One proxied GET's outcome: the upstream's own status and JSON body when
  * it responded at all (any status, not just 2xx), or a synthetic `{ error }`
  * body when the request to skills.sh itself couldn't be made. */
@@ -64,6 +70,78 @@ export function requireApiKey(env: NodeJS.ProcessEnv): string {
   return key;
 }
 
+/** True only when no decoding layer turns a path segment into traversal or a separator. */
+function decodesToSafePathSegment(segment: string): boolean {
+  let decodedLayer = segment;
+  while (true) {
+    if (
+      decodedLayer.length === 0 ||
+      decodedLayer === "." ||
+      decodedLayer === ".." ||
+      decodedLayer.includes("/") ||
+      decodedLayer.includes("\\")
+    ) {
+      return false;
+    }
+    const nextLayer = decodedLayer.replace(/%([0-9a-f]{2})/gi, (_escape, hex: string) =>
+      String.fromCharCode(Number.parseInt(hex, 16)),
+    );
+    if (nextLayer === decodedLayer) return true;
+    decodedLayer = nextLayer;
+  }
+}
+
+/** True only when a raw path segment has valid percent encoding and stays safe when decoded. */
+function isSafeRawPathSegment(segment: string): boolean {
+  try {
+    decodeURIComponent(segment);
+  } catch {
+    return false;
+  }
+  return decodesToSafePathSegment(segment);
+}
+
+/** Validates the unnormalized Node request target before Hono can route a normalized URL. */
+export function isAllowedRawRequestTarget(rawTarget: string | undefined): boolean {
+  if (!rawTarget) return false;
+
+  const queryStart = rawTarget.indexOf("?");
+  const rawPath = queryStart === -1 ? rawTarget : rawTarget.slice(0, queryStart);
+  const rawQuery = queryStart === -1 ? "" : rawTarget.slice(queryStart + 1);
+  try {
+    decodeURIComponent(rawQuery);
+  } catch {
+    return false;
+  }
+  const segments = rawPath.split("/");
+  if (segments[0] !== "" || segments.slice(1).some((segment) => !isSafeRawPathSegment(segment))) {
+    return false;
+  }
+
+  const isApiV1 = segments[1] === "api" && segments[2] === "v1";
+  if (!isApiV1) return true;
+
+  const isSkillsRoute = segments[3] === "skills";
+  const isListRoute = isSkillsRoute && segments.length === 4;
+  const isSearchRoute = isSkillsRoute && segments.length === 5 && segments[4] === "search";
+  const isDetailRoute = isSkillsRoute && segments.length === 7;
+  return isListRoute || isSearchRoute || isDetailRoute;
+}
+
+/** Detects malformed first-pass percent encoding before Hono's tolerant parameter decoding hides it. */
+function hasMalformedSkillDetailEncoding(url: string): boolean {
+  const encodedSegments = new URL(url).pathname.split("/").slice(4);
+  if (encodedSegments.length !== 3) return true;
+  return encodedSegments.some((segment) => {
+    try {
+      decodeURIComponent(segment);
+      return false;
+    } catch {
+      return true;
+    }
+  });
+}
+
 /** Builds the Hono app for `apiKey` - split out from `main` so tests can
  * exercise routes without starting a real listener. */
 export function createApp(apiKey: string): Hono {
@@ -94,23 +172,39 @@ export function createApp(apiKey: string): Hono {
 
   app.get("/api/v1/skills/:owner/:repo/:slug", async (c) => {
     const { owner, repo, slug } = c.req.param();
+    const segments = [owner, repo, slug];
+    if (hasMalformedSkillDetailEncoding(c.req.url) || !segments.every(decodesToSafePathSegment)) {
+      return c.json({ error: "Invalid skill detail path" }, 400);
+    }
     const { status, body } = await proxyGet(
       apiKey,
-      `/skills/${owner}/${repo}/${slug}`,
+      `/skills/${segments.map((segment) => encodeURIComponent(segment)).join("/")}`,
       new URL(c.req.url).search,
     );
     // SAFETY: see the /api/v1/skills handler above.
     return c.json(body, status as ContentfulStatusCode);
   });
 
+  app.get("/api/v1/*", (c) => c.json({ error: "Invalid skill detail path" }, 400));
+
   return app;
+}
+
+/** Creates the production Node fetch seam that rejects unsafe raw targets before Hono routing. */
+export function createNodeRequestHandler(apiKey: string) {
+  const app = createApp(apiKey);
+  return (request: Request, env: RawNodeRequestEnvironment): Response | Promise<Response> => {
+    if (!isAllowedRawRequestTarget(env.incoming.url)) {
+      return Response.json({ error: "Invalid request path" }, { status: 400 });
+    }
+    return app.fetch(request, env);
+  };
 }
 
 function main() {
   const apiKey = requireApiKey(process.env);
   const port = Number(process.env.PORT) || DEFAULT_PORT;
-  const app = createApp(apiKey);
-  serve({ fetch: app.fetch, port, hostname: HOST }, (info) => {
+  serve({ fetch: createNodeRequestHandler(apiKey), port, hostname: HOST }, (info) => {
     process.stdout.write(`Skill Studio server listening on http://${HOST}:${info.port}\n`);
   });
 }

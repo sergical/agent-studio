@@ -33,6 +33,8 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use sha2::{Digest, Sha256};
 
+use super::skill_md_write::{begin_skill_md_write_transaction, SkillMdWriteTransaction};
+
 /// Opens (creating if absent) the event store DB at `db_path` and ensures
 /// its schema exists.
 pub fn open(db_path: &Path) -> Result<Connection, String> {
@@ -379,6 +381,15 @@ impl EventStore {
     /// created to do it. See the module header for the drift-guard and
     /// restore-of-restore design.
     pub fn restore(&self, target_id: &str, force: bool) -> Result<String, String> {
+        self.restore_with_skill_md_transaction_observer(target_id, force, |_| {})
+    }
+
+    fn restore_with_skill_md_transaction_observer(
+        &self,
+        target_id: &str,
+        force: bool,
+        observe_transaction: impl FnOnce(Option<&SkillMdWriteTransaction>),
+    ) -> Result<String, String> {
         let target = self
             .get_event(target_id)?
             .ok_or_else(|| format!("Event {target_id} not found"))?;
@@ -395,6 +406,15 @@ impl EventStore {
         let inverse: InverseOp = serde_json::from_value(inverse_value)
             .map_err(|e| format!("Failed to parse inverse for {target_id}: {e}"))?;
 
+        let skill_md_transaction = (inverse
+            .destination()
+            .file_name()
+            .and_then(|name| name.to_str())
+            == Some("SKILL.md"))
+        .then(begin_skill_md_write_transaction)
+        .transpose()?;
+        observe_transaction(skill_md_transaction.as_ref());
+
         let restore_id = allocate_id();
         let claimed = self
             .conn
@@ -407,7 +427,7 @@ impl EventStore {
             return Err(format!("Event {target_id} was already restored"));
         }
 
-        match self.apply_restore(&restore_id, &target, &inverse, force) {
+        let result = match self.apply_restore(&restore_id, &target, &inverse, force) {
             Ok(()) => Ok(restore_id),
             Err(e) => {
                 let _ = self.conn.execute(
@@ -416,7 +436,9 @@ impl EventStore {
                 );
                 Err(e)
             }
-        }
+        };
+        drop(skill_md_transaction);
+        result
     }
 
     fn apply_restore(
@@ -1194,6 +1216,7 @@ pub struct MaterializedRoot {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::skills::skill_md_write::skill_md_write_transaction_is_held;
     use std::os::unix::fs::symlink;
 
     fn store(dir: &Path) -> EventStore {
@@ -1416,6 +1439,104 @@ mod tests {
         // right before the first restore ran.
         store.restore(&restore_id, false).unwrap();
         assert_eq!(fingerprint_path(&path), "absent");
+    }
+
+    #[test]
+    fn repair_undo_and_redo_hold_skill_md_transaction_but_other_files_do_not() {
+        let tmp = tempfile::tempdir().unwrap();
+        let store = store(tmp.path());
+        let skill_md = tmp.path().join("skills/sample/SKILL.md");
+        fs::create_dir_all(skill_md.parent().unwrap()).unwrap();
+        fs::write(&skill_md, b"malformed frontmatter").unwrap();
+        let malformed_fingerprint = fingerprint_path(&skill_md);
+
+        let repair_id = allocate_id();
+        store
+            .backup_paths(&repair_id, std::slice::from_ref(&skill_md))
+            .unwrap();
+        fs::write(&skill_md, b"repaired frontmatter").unwrap();
+        let repair_inverse = InverseOp::RestoreBackup {
+            path: skill_md.clone(),
+            pre_fingerprint: malformed_fingerprint,
+            post_fingerprint: Some(fingerprint_path(&skill_md)),
+        };
+        store
+            .record(
+                &repair_id,
+                draft(
+                    "repair_skill_frontmatter",
+                    "sample",
+                    serde_json::json!({}),
+                    Some(serde_json::to_value(repair_inverse).unwrap()),
+                    Some(format!("backups/{repair_id}")),
+                ),
+            )
+            .unwrap();
+        store.finish(&repair_id, EventStatus::Done).unwrap();
+
+        let undo_id = store
+            .restore_with_skill_md_transaction_observer(&repair_id, false, |transaction| {
+                assert!(transaction.is_some());
+                assert!(skill_md_write_transaction_is_held());
+            })
+            .unwrap();
+        assert_eq!(fs::read(&skill_md).unwrap(), b"malformed frontmatter");
+        assert_eq!(
+            store
+                .get(&repair_id)
+                .unwrap()
+                .unwrap()
+                .reverted_by
+                .as_deref(),
+            Some(undo_id.as_str())
+        );
+
+        let redo_id = store
+            .restore_with_skill_md_transaction_observer(&undo_id, false, |transaction| {
+                assert!(transaction.is_some());
+                assert!(skill_md_write_transaction_is_held());
+            })
+            .unwrap();
+        assert_eq!(fs::read(&skill_md).unwrap(), b"repaired frontmatter");
+        assert_eq!(
+            store.get(&undo_id).unwrap().unwrap().reverted_by.as_deref(),
+            Some(redo_id.as_str())
+        );
+        assert_eq!(store.get(&redo_id).unwrap().unwrap().status, "done");
+
+        let ordinary_file = tmp.path().join("notes.md");
+        fs::write(&ordinary_file, b"before").unwrap();
+        let ordinary_before_fingerprint = fingerprint_path(&ordinary_file);
+        let ordinary_id = allocate_id();
+        store
+            .backup_paths(&ordinary_id, std::slice::from_ref(&ordinary_file))
+            .unwrap();
+        fs::write(&ordinary_file, b"after").unwrap();
+        let ordinary_inverse = InverseOp::RestoreBackup {
+            path: ordinary_file.clone(),
+            pre_fingerprint: ordinary_before_fingerprint,
+            post_fingerprint: Some(fingerprint_path(&ordinary_file)),
+        };
+        store
+            .record(
+                &ordinary_id,
+                draft(
+                    "update_notes",
+                    "sample",
+                    serde_json::json!({}),
+                    Some(serde_json::to_value(ordinary_inverse).unwrap()),
+                    Some(format!("backups/{ordinary_id}")),
+                ),
+            )
+            .unwrap();
+        store.finish(&ordinary_id, EventStatus::Done).unwrap();
+
+        store
+            .restore_with_skill_md_transaction_observer(&ordinary_id, false, |transaction| {
+                assert!(transaction.is_none());
+            })
+            .unwrap();
+        assert_eq!(fs::read(ordinary_file).unwrap(), b"before");
     }
 
     #[test]
