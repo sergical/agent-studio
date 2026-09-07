@@ -52,7 +52,6 @@ export function SkillsView({ snapshot, onSelectSkill }: SkillsViewProps) {
   const resetSkillListFilter = useAppStore((state) => state.resetSkillListFilter);
   const showCoverage = useAppStore((state) => state.showCoverage);
   const setShowCoverage = useAppStore((state) => state.setShowCoverage);
-  const [query, setQuery] = useState("");
   const [sort, setSort] = useState<SortMode>("name");
   const selectedSkillName = useAppStore((state) =>
     state.activeView.kind === "skill" ? state.activeView.name : null,
@@ -74,15 +73,7 @@ export function SkillsView({ snapshot, onSelectSkill }: SkillsViewProps) {
   // list is always the user's own skills.
   const baseSkills = ownSkillsView(allSkills);
   const issues = collectDashboardIssues(baseSkills);
-  const filtered = applySkillListFilter(baseSkills, filter, issues, snapshot?.invocations);
-  const trimmedQuery = query.trim().toLowerCase();
-  const rows = trimmedQuery
-    ? filtered.filter(
-        (s) =>
-          s.name.toLowerCase().includes(trimmedQuery) ||
-          (s.description ?? "").toLowerCase().includes(trimmedQuery),
-      )
-    : filtered;
+  const rows = applySkillListFilter(baseSkills, filter, issues, snapshot?.invocations);
 
   const handleAddProject = async () => {
     const selected = await open({ directory: true, multiple: false, title: "Add Project" });
@@ -146,8 +137,6 @@ export function SkillsView({ snapshot, onSelectSkill }: SkillsViewProps) {
         showCoverage={showCoverage}
         onToggleCoverage={setShowCoverage}
         resultCount={rows.length}
-        query={query}
-        onQueryChange={setQuery}
         sort={sort}
         onSortChange={setSort}
         snapshot={snapshot}
@@ -163,10 +152,7 @@ export function SkillsView({ snapshot, onSelectSkill }: SkillsViewProps) {
           selectedSkillName={selectedSkillName}
           deploymentPathForSkill={(skill) => deploymentForScope(skill, filter.scope)}
           hasAnySkills={baseSkills.length > 0}
-          onClearFilters={() => {
-            setQuery("");
-            resetSkillListFilter();
-          }}
+          onClearFilters={resetSkillListFilter}
           onAddSkill={() => openAddSkillSheet()}
         />
       )}

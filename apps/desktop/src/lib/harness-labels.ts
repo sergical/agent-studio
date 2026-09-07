@@ -3,7 +3,7 @@
 // / pi), consumed by SkillAssistantPanel and SkillHistorySection.
 // ============================================================================
 
-import type { AgentId } from "@skill-studio/lib";
+import type { HarnessId } from "@skill-studio/lib";
 
 /** Display label for each first-class harness, in the order the control shows them. */
 export const HARNESS_LABELS = [
@@ -11,4 +11,4 @@ export const HARNESS_LABELS = [
   ["codex", "Codex"],
   ["open-code", "OpenCode"],
   ["pi", "pi"],
-] satisfies [AgentId, string][];
+] satisfies [HarnessId, string][];

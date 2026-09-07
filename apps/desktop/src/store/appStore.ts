@@ -4,7 +4,7 @@
 // ============================================================================
 
 import { create } from "zustand";
-import { defaultSkillListFilter } from "@skill-studio/lib";
+import { defaultSkillListFilter, isProjectScope } from "@skill-studio/lib";
 import type { SkillListFilter } from "@skill-studio/lib";
 import { USAGE_WINDOWS } from "@skill-studio/lib";
 import type { UsageWindow } from "@skill-studio/lib";
@@ -134,8 +134,8 @@ interface AppState {
   // Keyed by the row's deployment directory path (`Deployment.path`), not by
   // skill name - a pack member is bundled from one specific deployment, and
   // two rows can share a name (project vs. plugin) but not a path. Cleared
-  // whenever the active view changes, so a selection made in Global doesn't
-  // linger into Project.
+  // whenever the active view or list scope changes, so a selection made in
+  // Global doesn't linger into Project.
   selectedSkillPaths: Set<string>;
   toggleSkillSelection: (path: string) => void;
   clearSkillSelection: () => void;
@@ -185,6 +185,15 @@ function savePathList(key: string, paths: string[]): void {
   }
 }
 
+/** Whether two Skills list scopes select the same global, parked, all, or project rows. */
+function sameSkillListScope(
+  left: SkillListFilter["scope"],
+  right: SkillListFilter["scope"],
+): boolean {
+  if (isProjectScope(left)) return isProjectScope(right) && left.project === right.project;
+  return left === right;
+}
+
 /** Cleans up the previous `watchSystemTheme` listener - re-set on every `setTheme` call, so only one is ever live. */
 let systemThemeCleanup: (() => void) | null = null;
 
@@ -224,8 +233,19 @@ export const useAppStore = create<AppState>((set, get) => ({
 
   skillListFilter: defaultSkillListFilter(),
   setSkillListFilter: (patch) =>
-    set((state) => ({ skillListFilter: { ...state.skillListFilter, ...patch } })),
-  resetSkillListFilter: () => set({ skillListFilter: defaultSkillListFilter() }),
+    set((state) => {
+      const skillListFilter = { ...state.skillListFilter, ...patch };
+      return sameSkillListScope(state.skillListFilter.scope, skillListFilter.scope)
+        ? { skillListFilter }
+        : { skillListFilter, selectedSkillPaths: new Set(), selectionMode: false };
+    }),
+  resetSkillListFilter: () =>
+    set((state) => {
+      const skillListFilter = defaultSkillListFilter();
+      return sameSkillListScope(state.skillListFilter.scope, skillListFilter.scope)
+        ? { skillListFilter }
+        : { skillListFilter, selectedSkillPaths: new Set(), selectionMode: false };
+    }),
 
   showCoverage: false,
   setShowCoverage: (show) => set({ showCoverage: show }),

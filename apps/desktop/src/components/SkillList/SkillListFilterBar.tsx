@@ -64,9 +64,6 @@ interface SkillListFilterBarProps {
   showCoverage: boolean;
   onToggleCoverage: (show: boolean) => void;
   resultCount: number;
-  /** Free-text name/description filter, applied by `SkillListTable`. */
-  query: string;
-  onQueryChange: (query: string) => void;
   /** Sort order, applied by `SkillListTable`. */
   sort: SortMode;
   onSortChange: (sort: SortMode) => void;
@@ -129,8 +126,6 @@ export function SkillListFilterBar({
   showCoverage,
   onToggleCoverage,
   resultCount,
-  query,
-  onQueryChange,
   sort,
   onSortChange,
   snapshot,
@@ -161,8 +156,8 @@ export function SkillListFilterBar({
           <Search size={13} className="pointer-events-none absolute left-3" />
           <input
             className="h-(--control-height) w-full rounded-sm border border-border bg-bg-primary py-0 pr-3 pl-8 text-body text-text-primary transition-colors placeholder:text-text-quaternary focus-visible:border-border-focus"
-            value={query}
-            onChange={(e) => onQueryChange(e.target.value)}
+            value={filter.query}
+            onChange={(e) => onChange({ ...filter, query: e.target.value })}
             placeholder="Filter skills…"
             aria-label="Filter skills"
           />

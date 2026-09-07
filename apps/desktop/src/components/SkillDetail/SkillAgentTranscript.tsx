@@ -9,6 +9,10 @@ import { useEffect, useRef, useState } from "react";
 import { ChevronRight } from "lucide-react";
 import { Collapsible, CollapsiblePanel, CollapsibleTrigger } from "@skill-studio/ui";
 import { SkillMarkdown } from "./SkillMarkdown";
+import {
+  skillAgentRunTerminalLabel,
+  unreportedSkillAgentRunError,
+} from "./skill-agent-transcript-policy";
 import type { SkillAgentRunState } from "../../hooks/useSkillAgentRun";
 import type { SkillAgentEvent, SkillLoaded } from "@skill-studio/lib";
 
@@ -66,7 +70,8 @@ const SKILL_LOADED_LABEL = {
 
 /** Footer segments before "skill loaded: …", e.g. ["Finished", "4.2 s", "$0.06"]. Omits parts the run didn't report. */
 function footerLeadSegments(state: SkillAgentRunState): string[] {
-  const segments = ["Finished"];
+  const terminalLabel = skillAgentRunTerminalLabel(state.status);
+  const segments = terminalLabel ? [terminalLabel] : [];
   if (state.durationMs !== undefined) segments.push(`${(state.durationMs / 1000).toFixed(1)} s`);
   if (state.costUsd !== undefined) segments.push(`$${state.costUsd.toFixed(2)}`);
   return segments;
@@ -109,6 +114,7 @@ function ToolCallBlock({ block }: { block: Extract<TranscriptBlock, { kind: "too
  */
 export function SkillAgentTranscript({ state }: SkillAgentTranscriptProps) {
   const blocks = buildBlocks(state.events);
+  const unreportedError = unreportedSkillAgentRunError(state);
   const scrollRef = useRef<HTMLDivElement>(null);
   const stickToBottomRef = useRef(true);
 
@@ -138,6 +144,12 @@ export function SkillAgentTranscript({ state }: SkillAgentTranscriptProps) {
       ref={scrollRef}
       onScroll={handleScroll}
     >
+      {unreportedError && (
+        <div className="rounded-sm bg-error-soft px-2.5 py-2 text-small break-words whitespace-pre-wrap text-error">
+          {unreportedError}
+        </div>
+      )}
+
       {blocks.map((block) => {
         if (block.kind === "text") {
           return <SkillMarkdown key={block.id} content={block.text} className="leading-normal" />;

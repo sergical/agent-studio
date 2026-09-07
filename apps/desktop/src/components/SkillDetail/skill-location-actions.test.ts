@@ -25,15 +25,24 @@ function wholeRootDeployment(): Deployment {
 }
 
 describe("materializeRequestForLocationAction", () => {
-  it("routes an explicit conversion as convert-only", () => {
+  it.each([
+    ["claude-code", "Claude Code"],
+    ["open-code", "OpenCode"],
+  ] as const)("routes an explicit %s conversion with display label %s", (harness, harnessLabel) => {
     expect(
       materializeRequestForLocationAction({
         kind: "convert-root",
         target: { deployment_id: "deployment" },
-        harness: "claude-code",
+        harness,
         root: "/home/.claude/skills",
       }),
-    ).toMatchObject({ intent: "convert-only", root: "/home/.claude/skills" });
+    ).toEqual({
+      target: { deployment_id: "deployment" },
+      harness,
+      harnessLabel,
+      root: "/home/.claude/skills",
+      intent: "convert-only",
+    });
   });
 
   it("routes only whole-root toggle-off as convert-then-disable", () => {

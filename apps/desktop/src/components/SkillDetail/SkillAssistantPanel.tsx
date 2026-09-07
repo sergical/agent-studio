@@ -22,7 +22,6 @@ import {
   parseJudgeVerdict,
 } from "@skill-studio/lib";
 import type { HarnessId } from "@skill-studio/lib";
-import { skillVisibleToAgent } from "@skill-studio/lib";
 import type { SkillMdHunk } from "@skill-studio/lib";
 import { diffSkillMd } from "@skill-studio/lib";
 import { ownDeployments, ownSkillsView } from "@skill-studio/lib";
@@ -36,33 +35,20 @@ import {
   skillRunTargetDiff,
 } from "../../lib/skill-run-target-api";
 import type { SkillRunTargetInfo } from "@skill-studio/lib";
-import { COMMON_AGENTS } from "@skill-studio/lib";
-import type { AgentId, InstalledSkill, Toast } from "@skill-studio/lib";
+import type { InstalledSkill, Toast } from "@skill-studio/lib";
 import { useAppStore } from "../../store/appStore";
 import { HarnessIcon } from "../ui/HarnessIcon";
 import { HARNESS_LABELS } from "../../lib/harness-labels";
-import type { SelectControlItem } from "../ui/SelectControl";
 import { SelectControl } from "../ui/SelectControl";
 import { SkillAgentTranscript } from "./SkillAgentTranscript";
+import { skillAgentRunHasTranscript } from "./skill-agent-transcript-policy";
+import {
+  isSkillAssistantHarness,
+  skillAssistantHarnessPolicy,
+} from "./skill-assistant-harness-policy";
 import { SkillRunHistory } from "./SkillRunHistory";
 import type { SkillTestRunParams } from "./SkillTestForm";
 import { SkillTestForm } from "./SkillTestForm";
-
-/**
- * `HARNESS_LABELS` as `SelectControl` items, for the assistant panel's
- * harness picker. A run doesn't use the installed copy - it copies the skill
- * into a fresh scratch folder (see `sourceFolderPath`) and runs there - so a
- * harness with no deployment for `skill` still runs normally. The label
- * still says so, since `visibleAgentsFor` is useful context, but the item
- * stays selectable: disabling it would leave a dead end when no harness sees
- * the skill (`defaultHarness` falls back to Claude Code either way).
- */
-function harnessSelectItems(visibleAgents: readonly AgentId[]): SelectControlItem[] {
-  return HARNESS_LABELS.map(([value, label]) => ({
-    value,
-    label: visibleAgents.includes(value) ? label : `${label} (doesn't see this skill)`,
-  }));
-}
 
 interface SkillAssistantPanelProps {
   skill: InstalledSkill;
@@ -178,11 +164,6 @@ function runSessionReducer(state: RunSessionState, action: RunSessionAction): Ru
   }
 }
 
-/** Every first-class agent that can actually see `skill`, in `COMMON_AGENTS` order. */
-function visibleAgentsFor(skill: InstalledSkill): AgentId[] {
-  return COMMON_AGENTS.filter((agent) => skillVisibleToAgent(skill, agent) !== "none");
-}
-
 /** `skill`'s own skill folder, for the scratch dir - a plugin-only skill has no folder to copy. */
 function sourceFolderPath(skill: InstalledSkill): string | undefined {
   return ownDeployments(skill)[0]?.path ?? skill.deployments[0]?.path;
@@ -223,7 +204,7 @@ function buildRunRecord(
 interface UseAssistantRunSessionParams {
   skill: InstalledSkill;
   skillMdPath: string | undefined;
-  defaultHarness: AgentId;
+  defaultHarness: HarnessId;
   cancel: () => Promise<void>;
   judgeCancel: () => Promise<void>;
   reset: () => Promise<void>;
@@ -249,7 +230,7 @@ function useAssistantRunSession({
   judgeReset,
   addToast,
 }: UseAssistantRunSessionParams) {
-  const [harness, setHarness] = useState<AgentId>(defaultHarness);
+  const [harness, setHarness] = useState<HarnessId>(defaultHarness);
   const [scratchDir, setScratchDir] = useState<string | undefined>(undefined);
   const [isPreparing, setIsPreparing] = useState(false);
   const [showTestForm, setShowTestForm] = useState(false);
@@ -347,7 +328,7 @@ function useAssistantRunSession({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  const handleSelectHarness = async (agent: AgentId) => {
+  const handleSelectHarness = async (agent: HarnessId) => {
     if (agent === harness) return;
     const token = ++opTokenRef.current;
     // Stop the previous harness's run before switching out from under it.
@@ -650,7 +631,7 @@ interface UseAssistantActionsParams {
   rawContent: string | null;
   skillMdPath: string | undefined;
   isPluginManaged: boolean;
-  harness: AgentId;
+  harness: HarnessId;
   prompt: string;
   state: SkillAgentRunState;
   run: (request: Parameters<ReturnType<typeof useSkillAgentRun>["run"]>[0]) => Promise<void>;
@@ -703,10 +684,8 @@ function useAssistantActions({
     dispatchRunSession({ type: "set_run_kind", kind: "ask" });
     recordedRunIdRef.current = undefined;
     try {
-      // SAFETY: `harness` only ever holds a value from `HarnessSegmentedControl`,
-      // which offers exactly the four `HarnessId` agents.
       await run({
-        harness: harness as HarnessId,
+        harness,
         prompt,
         cwd: dir,
         skill_name: skill.name,
@@ -733,10 +712,8 @@ function useAssistantActions({
     dispatchRunSession({ type: "start_audit" });
     recordedRunIdRef.current = undefined;
     try {
-      // SAFETY: `harness` only ever holds a value from `HarnessSegmentedControl`,
-      // which offers exactly the four `HarnessId` agents.
       await run({
-        harness: harness as HarnessId,
+        harness,
         prompt: buildSkillAuditPrompt({
           skillName: skill.name,
           skillMd: rawContent,
@@ -784,14 +761,12 @@ function useAssistantActions({
     activeTargetRef.current = null;
     dispatchRunSession({ type: "start_test" });
 
-    // SAFETY: `harness` only ever holds a value from `HarnessSegmentedControl`,
-    // which offers exactly the four `HarnessId` agents.
     await runSkillTestFlow({
       skill,
       params,
       sourcePath,
       extraSkills,
-      harness: harness as HarnessId,
+      harness,
       token,
       opTokenRef,
       setActiveTarget,
@@ -810,7 +785,7 @@ interface TestJudgePanelProps {
   judgeState: SkillAgentRunState;
   runState: SkillAgentRunState;
   verdict: ReturnType<typeof parseJudgeVerdict>;
-  harness: AgentId;
+  harness: HarnessId;
 }
 
 /** The "Test" run's judge transcript and pass/fail verdict, shown once the
@@ -945,10 +920,7 @@ export function SkillAssistantPanel({
 }: SkillAssistantPanelProps) {
   const addToast = useAppStore((state) => state.addToast);
   const { snapshot } = useSkillSnapshot();
-  const visibleAgents = visibleAgentsFor(skill);
-  const defaultHarness: AgentId =
-    (visibleAgents.includes("claude-code") ? "claude-code" : visibleAgents[0]) ?? "claude-code";
-  const harnessSelectItemsForSkill = harnessSelectItems(visibleAgents);
+  const { defaultHarness, items: harnessSelectItemsForSkill } = skillAssistantHarnessPolicy(skill);
 
   const [prompt, setPrompt] = useState("");
   // The file's content at the moment the current audit run started, so a
@@ -1060,9 +1032,7 @@ export function SkillAssistantPanel({
     if (!state.runId || recordedRunIdRef.current === state.runId) return;
     recordedRunIdRef.current = state.runId;
     recordSkillRun(
-      // SAFETY: `harness` only ever holds a value from `HarnessSegmentedControl`,
-      // which offers exactly the four `HarnessId` agents.
-      buildRunRecord(state, harness as HarnessId, skill.name, runKind, undefined, undefined),
+      buildRunRecord(state, harness, skill.name, runKind, undefined, undefined),
       state.events,
     ).catch(() => {});
   }, [runKind, state, skill.name, harness]);
@@ -1084,7 +1054,7 @@ export function SkillAssistantPanel({
     });
 
   const isRunning = state.status === "running" || isPreparing;
-  const hasTranscript = state.events.length > 0;
+  const hasTranscript = skillAgentRunHasTranscript(state);
   const canAudit = rawContent !== null && !isPluginManaged && !isRunning;
   const candidateProjects = testCandidateProjects(skill, snapshot?.projects ?? []);
   const isTestRunning =
@@ -1100,8 +1070,7 @@ export function SkillAssistantPanel({
         ariaLabel="Harness"
         value={harness}
         onValueChange={(value) => {
-          // SAFETY: `items` only ever holds a value from `HARNESS_LABELS`.
-          handleSelectHarness(value as AgentId);
+          if (isSkillAssistantHarness(value)) handleSelectHarness(value);
         }}
         items={harnessSelectItemsForSkill}
         leadingIcon={<HarnessIcon harness={harness} size={14} />}

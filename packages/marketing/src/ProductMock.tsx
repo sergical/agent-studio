@@ -29,6 +29,7 @@ import {
 import { AgentIcon, type AgentId } from "./AgentIcon";
 import { productDemoLightTheme, productDemoTokens as tokens } from "./ProductDemoTokens.stylex";
 import type { SiteTheme } from "./SiteTheme.stylex";
+import { productMockDetailBackLabel, type ProductMockRootView } from "./product-mock-navigation";
 
 export interface ThemeToggleOrigin {
   x: number;
@@ -38,13 +39,12 @@ export interface ThemeToggleOrigin {
 interface ProductMockProps {
   theme: SiteTheme;
   onToggleTheme: (origin: ThemeToggleOrigin) => void;
-  initialView?: RootView;
+  initialView?: ProductMockRootView;
   initialSkillName?: string;
   initialInstall?: boolean;
   variant?: "hero" | "walkthrough" | "capture";
 }
 
-type RootView = "home" | "skills" | "plugins" | "activity";
 type Scope = "All" | "Global" | "Project";
 type ActivityWindow = "24h" | "7d" | "14d" | "30d";
 type InvocationPolicy = "Both" | "User only" | "Model only";
@@ -62,7 +62,7 @@ interface SkillRow {
 
 interface DetailState {
   skill: SkillRow;
-  from: RootView;
+  from: ProductMockRootView;
 }
 
 const skills = [
@@ -210,7 +210,7 @@ const pluginGroups = [
 ];
 
 const navItems: ReadonlyArray<{
-  id: RootView;
+  id: ProductMockRootView;
   label: string;
   Icon: typeof LayoutDashboard;
   count?: number;
@@ -272,8 +272,8 @@ function Sidebar({
   theme,
   onToggleTheme,
 }: {
-  activeView: RootView;
-  onNavigate: (view: RootView) => void;
+  activeView: ProductMockRootView;
+  onNavigate: (view: ProductMockRootView) => void;
   onAddSkill: () => void;
   theme: SiteTheme;
   onToggleTheme: (origin: ThemeToggleOrigin) => void;
@@ -1093,8 +1093,7 @@ function DetailScreen({ detail, onBack }: { detail: DetailState; onBack: () => v
   const [trial, setTrial] = useState(detail.skill.trial ?? false);
   const location = detail.skill.location;
   const skillPath = `${location === "Global" ? "~/" : "agent-studio/"}.agents/skills/${detail.skill.name}`;
-  const backLabel =
-    detail.from === "home" ? "Home" : detail.from === "activity" ? "Activity" : "Skills";
+  const backLabel = productMockDetailBackLabel(detail.from);
   return (
     <section {...stylex.props(styles.page)}>
       <header {...stylex.props(styles.detailHeader)}>
@@ -1268,13 +1267,13 @@ export function ProductMock({
   variant = "hero",
 }: ProductMockProps) {
   const initialSkill = skills.find((skill) => skill.name === initialSkillName);
-  const [activeView, setActiveView] = useState<RootView>(initialView);
+  const [activeView, setActiveView] = useState<ProductMockRootView>(initialView);
   const [detail, setDetail] = useState<DetailState | null>(
     initialSkill ? { skill: initialSkill, from: initialView } : null,
   );
   const [installOpen, setInstallOpen] = useState(initialInstall);
   const [compareSkill, setCompareSkill] = useState<string | null>(null);
-  const navigate = (view: RootView) => {
+  const navigate = (view: ProductMockRootView) => {
     setActiveView(view);
     setDetail(null);
     setInstallOpen(false);

@@ -5,6 +5,7 @@
 import { describe, expect, it } from "vitest";
 import {
   AGENT_MATRIX_LABELS,
+  agentMatrix,
   agentIdFromDeploymentLabel,
   deploymentRelationText,
   driftingCopies,
@@ -12,6 +13,7 @@ import {
   locationSummary,
   pickCompareDefaults,
   resolveCompareSelection,
+  skillVisibleToAgent,
 } from "./skill-coverage";
 import type { Deployment, InstalledSkill } from "./skill-types";
 
@@ -317,6 +319,44 @@ describe("AGENT_MATRIX_LABELS", () => {
       "Cursor",
       "Grok Build",
     ]);
+  });
+});
+
+describe("disabled shared-root readers", () => {
+  it("reports a disabled reader as not visible in the coverage matrix", () => {
+    const skill = fixtureSkill({
+      deployments: [
+        fixtureDeployment({
+          agent: "shared",
+          path: "/home/.agents/skills/find-bugs",
+          disabled_readers: ["open-code"],
+        }),
+      ],
+    });
+
+    expect(skillVisibleToAgent(skill, "open-code")).toBe("none");
+    expect(skillVisibleToAgent(skill, "codex")).toBe("shared");
+    expect(agentMatrix([skill])[0]?.cells.OpenCode.state).toBe("none");
+    expect(agentMatrix([skill])[0]?.cells.Codex.state).toBe("shared");
+  });
+
+  it("prefers a healthy own deployment over a disabled shared-root reader", () => {
+    const skill = fixtureSkill({
+      deployments: [
+        fixtureDeployment({
+          agent: "shared",
+          path: "/home/.agents/skills/find-bugs",
+          disabled_readers: ["open-code"],
+        }),
+        fixtureDeployment({
+          agent: "OpenCode",
+          path: "/home/.config/opencode/skills/find-bugs",
+        }),
+      ],
+    });
+
+    expect(skillVisibleToAgent(skill, "open-code")).toBe("own");
+    expect(agentMatrix([skill])[0]?.cells.OpenCode.state).toBe("own");
   });
 });
 

@@ -17,6 +17,7 @@ import {
   type EditorOption,
 } from "../../lib/skill-api";
 import { useAppStore } from "../../store/appStore";
+import { skillsShAccessStatusText, type SkillsShAccessState } from "./skills-sh-access-status";
 
 /** The always-available first choice: the first installed editor Skill Studio knows about. */
 function automaticOption(editors: EditorOption[]) {
@@ -120,11 +121,7 @@ function EditorPicker() {
  */
 function SkillsShKeySetting() {
   const addToast = useAppStore((state) => state.addToast);
-  const [access, setAccess] = useState<{ mode: "direct" | "server"; server_url: string | null }>({
-    mode: "server",
-    server_url: null,
-  });
-  const [isLoading, setIsLoading] = useState(true);
+  const [accessState, setAccessState] = useState<SkillsShAccessState>({ kind: "loading" });
   const [key, setKey] = useState("");
   const [isSaving, setIsSaving] = useState(false);
 
@@ -132,17 +129,15 @@ function SkillsShKeySetting() {
     let cancelled = false;
     getSkillsShAccess()
       .then((status) => {
-        if (!cancelled) setAccess(status);
+        if (!cancelled) setAccessState({ kind: "available", access: status });
       })
       .catch((err) => {
+        if (!cancelled) setAccessState({ kind: "unavailable" });
         addToast({
           type: "error",
           title: "Couldn't read your skills.sh access mode",
           message: err instanceof Error ? err.message : "Unknown error",
         });
-      })
-      .finally(() => {
-        if (!cancelled) setIsLoading(false);
       });
     return () => {
       cancelled = true;
@@ -153,7 +148,10 @@ function SkillsShKeySetting() {
     setIsSaving(true);
     setSkillsShApiKey(key)
       .then(() => {
-        setAccess({ mode: "direct", server_url: null });
+        setAccessState({
+          kind: "available",
+          access: { mode: "direct", server_url: null },
+        });
         setKey("");
       })
       .catch((err) => {
@@ -165,6 +163,8 @@ function SkillsShKeySetting() {
       })
       .finally(() => setIsSaving(false));
   };
+
+  const accessStatus = skillsShAccessStatusText(accessState);
 
   return (
     <div className="flex flex-col gap-3 rounded-lg border border-border-subtle p-4">
@@ -189,13 +189,7 @@ function SkillsShKeySetting() {
           Save
         </Button>
       </div>
-      {!isLoading && (
-        <p className="m-0 text-small text-text-tertiary">
-          {access.mode === "direct"
-            ? "Using a local skills.sh key (developer override)"
-            : `Browsing through the Skill Studio server at ${access.server_url}`}
-        </p>
-      )}
+      {accessStatus && <p className="m-0 text-small text-text-tertiary">{accessStatus}</p>}
     </div>
   );
 }
