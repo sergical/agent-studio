@@ -54,12 +54,44 @@ const MAX_TRANSCRIPT_LINE_BYTES: usize = 64 * 1024;
 /// lines could otherwise still cost an unbounded amount of I/O.
 const MAX_TRANSCRIPT_FILE_BYTES: u64 = 4 * 1024 * 1024;
 
-/// Newest transcript files tried per project dir before giving up on that
-/// project, and the total bytes one discovery run may read across every
-/// project. Together they bound one refresh even when no transcript carries
-/// a recognizable `cwd` (e.g. after a transcript schema change).
-const MAX_TRANSCRIPTS_PER_PROJECT: usize = 5;
+/// Total bytes one discovery run may read across every project. This bounds
+/// one refresh even when no transcript carries a recognizable `cwd` (e.g.
+/// after a transcript schema change).
 const MAX_TRANSCRIPT_TOTAL_BYTES: u64 = 64 * 1024 * 1024;
+
+/// Transcript files one discovery run may try to open. This independently
+/// bounds empty and unreadable files, which do not consume the byte budget.
+const MAX_TRANSCRIPT_ATTEMPTS: usize = 10_000;
+
+struct TranscriptScanLimits {
+    remaining_bytes: u64,
+    remaining_attempts: usize,
+}
+
+impl TranscriptScanLimits {
+    fn new(remaining_bytes: u64, remaining_attempts: usize) -> Self {
+        Self {
+            remaining_bytes,
+            remaining_attempts,
+        }
+    }
+
+    fn can_attempt_transcript(&self) -> bool {
+        self.remaining_bytes > 0 && self.remaining_attempts > 0
+    }
+
+    fn begin_transcript_attempt(&mut self) -> Option<u64> {
+        if !self.can_attempt_transcript() {
+            return None;
+        }
+        self.remaining_attempts -= 1;
+        Some(MAX_TRANSCRIPT_FILE_BYTES.min(self.remaining_bytes))
+    }
+
+    fn consume_bytes(&mut self, bytes: u64) {
+        self.remaining_bytes = self.remaining_bytes.saturating_sub(bytes);
+    }
+}
 
 /// The `cwd` recorded in a single transcript file: the first line (of up to
 /// `MAX_TRANSCRIPT_LINES`, each capped at `MAX_TRANSCRIPT_LINE_BYTES`, within
@@ -68,14 +100,14 @@ const MAX_TRANSCRIPT_TOTAL_BYTES: u64 = 64 * 1024 * 1024;
 /// the per-line cap abandons the whole file rather than draining and
 /// continuing, so a single pathological line can't be used to keep reading
 /// past the file's budget one bounded chunk at a time.
-fn cwd_from_transcript(path: &Path, total_budget: &mut u64) -> Option<PathBuf> {
+fn cwd_from_transcript(path: &Path, limits: &mut TranscriptScanLimits) -> Option<PathBuf> {
+    let mut budget = limits.begin_transcript_attempt()?;
     let file = fs::File::open(path).ok()?;
     let mut reader = BufReader::new(file);
     // Reused across iterations and cleared each time, so memory use is
     // bounded by one line's worth of bytes rather than growing with the
     // number of lines scanned.
     let mut buf: Vec<u8> = Vec::new();
-    let mut budget = MAX_TRANSCRIPT_FILE_BYTES.min(*total_budget);
     for _ in 0..MAX_TRANSCRIPT_LINES {
         if budget == 0 {
             break;
@@ -91,7 +123,7 @@ fn cwd_from_transcript(path: &Path, total_budget: &mut u64) -> Option<PathBuf> {
             Ok(0) => break, // EOF
             Ok(n) => {
                 budget = budget.saturating_sub(n as u64);
-                *total_budget = total_budget.saturating_sub(n as u64);
+                limits.consume_bytes(n as u64);
             }
             Err(_) => break,
         }
@@ -124,23 +156,28 @@ fn cwd_from_transcript(path: &Path, total_budget: &mut u64) -> Option<PathBuf> {
     None
 }
 
-/// The `cwd` recorded in each Claude Code project's transcripts: for each
-/// dir in `~/.claude/projects/*`, scan its `*.jsonl` files newest-first and
-/// use the first one with a valid `cwd`.
+/// The distinct `cwd` values recorded in Claude Code project transcripts.
+/// Each encoded project directory can represent more than one real path, so
+/// every `*.jsonl` file is scanned newest-first within the total byte budget.
 fn claude_transcript_cwds(home: &Path) -> Vec<PathBuf> {
-    claude_transcript_cwds_within(home, MAX_TRANSCRIPT_TOTAL_BYTES)
+    claude_transcript_cwds_within(
+        home,
+        TranscriptScanLimits::new(MAX_TRANSCRIPT_TOTAL_BYTES, MAX_TRANSCRIPT_ATTEMPTS),
+    )
 }
 
-/// `claude_transcript_cwds` with an explicit operation-wide byte budget;
-/// stops scanning (returning what it found so far) once the budget is spent.
-fn claude_transcript_cwds_within(home: &Path, mut total_budget: u64) -> Vec<PathBuf> {
-    let mut out = Vec::new();
+/// `claude_transcript_cwds` with explicit operation-wide limits. Stops
+/// scanning and returns what it found when either limit is spent.
+fn claude_transcript_cwds_within(home: &Path, mut limits: TranscriptScanLimits) -> Vec<PathBuf> {
+    let mut out = BTreeSet::new();
 
     let Ok(project_dirs) = fs::read_dir(home.join(".claude/projects")) else {
-        return out;
+        return Vec::new();
     };
-    for project_dir in project_dirs.flatten() {
-        if total_budget == 0 {
+    let mut project_dirs: Vec<_> = project_dirs.flatten().collect();
+    project_dirs.sort_by_key(|entry| entry.path());
+    for project_dir in project_dirs {
+        if !limits.can_attempt_transcript() {
             break;
         }
         let dir = project_dir.path();
@@ -157,22 +194,30 @@ fn claude_transcript_cwds_within(home: &Path, mut total_budget: u64) -> Vec<Path
             // `*.jsonl` is never opened as a transcript.
             .filter(|e| fs::symlink_metadata(e.path()).is_ok_and(|m| m.file_type().is_file()))
             .collect();
-        transcripts.sort_by_key(|e| {
-            e.metadata()
+        transcripts.sort_by(|left, right| {
+            let left_modified = left
+                .metadata()
                 .and_then(|m| m.modified())
-                .unwrap_or(SystemTime::UNIX_EPOCH)
+                .unwrap_or(SystemTime::UNIX_EPOCH);
+            let right_modified = right
+                .metadata()
+                .and_then(|m| m.modified())
+                .unwrap_or(SystemTime::UNIX_EPOCH);
+            right_modified
+                .cmp(&left_modified)
+                .then_with(|| left.path().cmp(&right.path()))
         });
-        transcripts.reverse(); // newest first
-        transcripts.truncate(MAX_TRANSCRIPTS_PER_PROJECT);
 
-        if let Some(cwd) = transcripts
-            .iter()
-            .find_map(|e| cwd_from_transcript(&e.path(), &mut total_budget))
-        {
-            out.push(cwd);
+        for transcript in transcripts {
+            if !limits.can_attempt_transcript() {
+                break;
+            }
+            if let Some(cwd) = cwd_from_transcript(&transcript.path(), &mut limits) {
+                out.insert(cwd);
+            }
         }
     }
-    out
+    out.into_iter().collect()
 }
 
 /// True when `path` is inside Skill Studio's own scratch root - the assistant's
@@ -248,14 +293,53 @@ mod tests {
             fs::create_dir_all(home.join(format!("proj{i}/.claude/skills"))).unwrap();
         }
 
-        let unbounded = claude_transcript_cwds_within(home, u64::MAX);
+        let unbounded =
+            claude_transcript_cwds_within(home, TranscriptScanLimits::new(u64::MAX, usize::MAX));
         assert_eq!(unbounded.len(), 10);
 
-        let bounded = claude_transcript_cwds_within(home, 2_500);
+        let bounded =
+            claude_transcript_cwds_within(home, TranscriptScanLimits::new(2_500, usize::MAX));
         assert!(
             bounded.len() <= 3,
             "budget should stop the scan early: {bounded:?}"
         );
+    }
+
+    #[test]
+    fn empty_and_invalid_transcripts_exhaust_attempt_limit() {
+        let tmp = tempfile::tempdir().unwrap();
+        let home = tmp.path();
+        let project = home.join("older-valid-project");
+        fs::create_dir_all(project.join(".claude/skills")).unwrap();
+
+        let transcript_dir = home.join(".claude/projects/-attempt-limit");
+        fs::create_dir_all(&transcript_dir).unwrap();
+        let valid = transcript_dir.join("oldest-valid.jsonl");
+        fs::write(
+            &valid,
+            format!(r#"{{"type":"user","cwd":"{}"}}"#, project.display()),
+        )
+        .unwrap();
+        let invalid = transcript_dir.join("middle-invalid.jsonl");
+        fs::write(&invalid, "not json\n").unwrap();
+        let empty = transcript_dir.join("newest-empty.jsonl");
+        fs::write(&empty, "").unwrap();
+
+        let now = SystemTime::now();
+        fs::File::open(&valid)
+            .unwrap()
+            .set_modified(now - std::time::Duration::from_secs(120))
+            .unwrap();
+        fs::File::open(&invalid)
+            .unwrap()
+            .set_modified(now - std::time::Duration::from_secs(60))
+            .unwrap();
+        fs::File::open(&empty).unwrap().set_modified(now).unwrap();
+
+        let limits = TranscriptScanLimits::new(u64::MAX, 2);
+        let found = claude_transcript_cwds_within(home, limits);
+
+        assert!(found.is_empty());
     }
 
     #[test]
@@ -278,6 +362,64 @@ mod tests {
 
         let found = discover_skill_projects(home);
         assert_eq!(found, vec![project]);
+    }
+
+    #[test]
+    fn colliding_claude_project_directory_discovers_every_transcript_cwd() {
+        fn claude_project_dir_name(path: &Path) -> String {
+            path.to_string_lossy()
+                .chars()
+                .map(|character| {
+                    if character.is_ascii_alphanumeric() {
+                        character
+                    } else {
+                        '-'
+                    }
+                })
+                .collect()
+        }
+
+        let tmp = tempfile::tempdir().unwrap();
+        let home = tmp.path();
+        let hyphenated_project = home.join("foo-bar");
+        let nested_project = home.join("foo/bar");
+        fs::create_dir_all(hyphenated_project.join(".claude/skills")).unwrap();
+        fs::create_dir_all(nested_project.join(".claude/skills")).unwrap();
+
+        let encoded_hyphenated = claude_project_dir_name(&hyphenated_project);
+        let encoded_nested = claude_project_dir_name(&nested_project);
+        assert_eq!(encoded_hyphenated, encoded_nested);
+
+        let transcript_dir = home.join(".claude/projects").join(encoded_hyphenated);
+        fs::create_dir_all(&transcript_dir).unwrap();
+        let older = transcript_dir.join("older.jsonl");
+        fs::write(
+            &older,
+            format!(
+                r#"{{"type":"user","cwd":"{}"}}"#,
+                nested_project.to_string_lossy()
+            ),
+        )
+        .unwrap();
+        let newer = transcript_dir.join("newer.jsonl");
+        fs::write(
+            &newer,
+            format!(
+                r#"{{"type":"user","cwd":"{}"}}"#,
+                hyphenated_project.to_string_lossy()
+            ),
+        )
+        .unwrap();
+
+        let now = SystemTime::now();
+        fs::File::open(&older)
+            .unwrap()
+            .set_modified(now - std::time::Duration::from_secs(60))
+            .unwrap();
+        fs::File::open(&newer).unwrap().set_modified(now).unwrap();
+
+        let found = discover_skill_projects(home);
+        assert_eq!(found, vec![nested_project, hyphenated_project]);
     }
 
     #[test]
