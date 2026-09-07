@@ -540,6 +540,190 @@ fn fork_live_recovery_dir(app_data: &Path, name: &str) -> PathBuf {
         .join("live-recovery")
 }
 
+/// Owned sibling used to protect an earlier live recovery while a new fork
+/// transaction prepares its replacement.
+fn fork_live_recovery_quarantine_dir(app_data: &Path, name: &str) -> PathBuf {
+    app_data
+        .join("skill-studio")
+        .join("forks")
+        .join(name)
+        .join("live-recovery-quarantine")
+}
+
+trait ForkTransactionStorage {
+    fn rename_dir(&self, from: &Path, to: &Path) -> std::io::Result<()>;
+    fn remove_dir_all(&self, path: &Path) -> std::io::Result<()>;
+    fn snapshot_live_skill(&self, skill_dir: &Path, recovery_dir: &Path) -> Result<(), String>;
+    fn read_registry(&self, home: &Path) -> Result<ForkRegistry, String>;
+    fn write_registry(&self, home: &Path, registry: &ForkRegistry) -> Result<(), String>;
+}
+
+struct FileForkTransactionStorage;
+
+impl ForkTransactionStorage for FileForkTransactionStorage {
+    fn rename_dir(&self, from: &Path, to: &Path) -> std::io::Result<()> {
+        fs::rename(from, to)
+    }
+
+    fn remove_dir_all(&self, path: &Path) -> std::io::Result<()> {
+        fs::remove_dir_all(path)
+    }
+
+    fn snapshot_live_skill(&self, skill_dir: &Path, recovery_dir: &Path) -> Result<(), String> {
+        copy_dir_all(skill_dir, recovery_dir)
+    }
+
+    fn read_registry(&self, home: &Path) -> Result<ForkRegistry, String> {
+        read_fork_registry(home)
+    }
+
+    fn write_registry(&self, home: &Path, registry: &ForkRegistry) -> Result<(), String> {
+        write_fork_registry(home, registry)
+    }
+}
+
+fn fork_transaction_path_exists(path: &Path) -> Result<bool, String> {
+    match fs::symlink_metadata(path) {
+        Ok(_) => Ok(true),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(false),
+        Err(error) => Err(format!(
+            "Failed to inspect fork transaction path {}: {error}",
+            path.display()
+        )),
+    }
+}
+
+fn clear_fork_transaction_dir(
+    storage: &dyn ForkTransactionStorage,
+    path: &Path,
+) -> Result<(), String> {
+    if !fork_transaction_path_exists(path)? {
+        return Ok(());
+    }
+    storage
+        .remove_dir_all(path)
+        .map_err(|error| format!("Failed to clear {}: {error}", path.display()))
+}
+
+fn quarantine_existing_live_recovery(
+    storage: &dyn ForkTransactionStorage,
+    recovery_dir: &Path,
+    quarantine_dir: &Path,
+) -> Result<Option<PathBuf>, String> {
+    if fork_transaction_path_exists(quarantine_dir)? {
+        return Err(format!(
+            "Fork recovery requires attention: the quarantine path {} already exists. It was not replaced, and {} was not changed.",
+            quarantine_dir.display(),
+            recovery_dir.display()
+        ));
+    }
+    if !fork_transaction_path_exists(recovery_dir)? {
+        return Ok(None);
+    }
+
+    storage
+        .rename_dir(recovery_dir, quarantine_dir)
+        .map_err(|error| {
+            format!(
+                "Failed to quarantine the existing recovery copy from {} to {}: {error}. No fork changes were made; the recovery copy remains at {}.",
+                recovery_dir.display(),
+                quarantine_dir.display(),
+                recovery_dir.display()
+            )
+        })?;
+    Ok(Some(quarantine_dir.to_path_buf()))
+}
+
+fn restore_quarantined_live_recovery(
+    storage: &dyn ForkTransactionStorage,
+    recovery_dir: &Path,
+    quarantine_dir: Option<&Path>,
+) -> Result<(), String> {
+    if let Err(error) = clear_fork_transaction_dir(storage, recovery_dir) {
+        return Err(match quarantine_dir {
+            Some(quarantine_dir) => format!(
+                "Could not restore the previous recovery copy because the incomplete replacement at {} could not be cleared: {error}. The previous recovery remains at {}.",
+                recovery_dir.display(),
+                quarantine_dir.display()
+            ),
+            None => format!(
+                "Could not clear the incomplete recovery copy at {}: {error}",
+                recovery_dir.display()
+            ),
+        });
+    }
+
+    let Some(quarantine_dir) = quarantine_dir else {
+        return Ok(());
+    };
+    storage
+        .rename_dir(quarantine_dir, recovery_dir)
+        .map_err(|error| {
+            format!(
+                "Could not restore the previous recovery copy from {} to {}: {error}. The previous recovery remains at {}.",
+                quarantine_dir.display(),
+                recovery_dir.display(),
+                quarantine_dir.display()
+            )
+        })
+}
+
+struct ForkPreDetachPaths<'a> {
+    home: &'a Path,
+    base_dir: &'a Path,
+    recovery_dir: &'a Path,
+    quarantine_dir: Option<&'a Path>,
+}
+
+enum ForkRecoveryRollback {
+    RestorePrevious,
+    KeepComplete,
+}
+
+fn rollback_fork_before_detach(
+    storage: &dyn ForkTransactionStorage,
+    primary_error: String,
+    paths: &ForkPreDetachPaths<'_>,
+    registry_before: Option<&ForkRegistry>,
+    recovery: ForkRecoveryRollback,
+) -> String {
+    let mut rollback_errors = Vec::new();
+    if let Some(registry_before) = registry_before {
+        if let Err(error) = storage.write_registry(paths.home, registry_before) {
+            rollback_errors.push(format!("Failed to restore the fork registry: {error}"));
+        }
+    }
+    if let Err(error) = clear_fork_transaction_dir(storage, paths.base_dir) {
+        rollback_errors.push(error);
+    }
+
+    if matches!(recovery, ForkRecoveryRollback::KeepComplete) {
+        rollback_errors.push(format!(
+            "A complete live recovery copy remains at {}.",
+            paths.recovery_dir.display()
+        ));
+        if let Some(quarantine_dir) = paths.quarantine_dir {
+            rollback_errors.push(format!(
+                "The previous recovery copy remains at {}.",
+                quarantine_dir.display()
+            ));
+        }
+    } else if let Err(error) =
+        restore_quarantined_live_recovery(storage, paths.recovery_dir, paths.quarantine_dir)
+    {
+        rollback_errors.push(error);
+    }
+
+    if rollback_errors.is_empty() {
+        primary_error
+    } else {
+        format!(
+            "{primary_error} Recovery rollback needs attention: {}",
+            rollback_errors.join(" ")
+        )
+    }
+}
+
 /// Requires `path` to canonicalize to `~/.agents/skills/<name>` (following
 /// the whole-dir symlink Claude Code needs at `~/.claude/skills`), so
 /// forking a same-named project or plugin deployment can't detach an
@@ -566,11 +750,11 @@ fn validate_fork_path(home: &Path, name: &str, path: &Path) -> Result<(), String
 /// `base_commit`*, not the current on-disk copy - a local edit made before
 /// forking (e.g. one `dotagents sync` preserved) must still show up as a
 /// diff against `base_commit` on the next Pull, not get silently treated as
-/// "already synced". The record is written before the ledger is touched, so
-/// a registry-write failure never leaves a skill detached with no
-/// provenance; the live tree is snapshotted to a recovery copy right before
-/// the ledger's `remove` runs, so a folder that removal wipes can still be
-/// restored.
+/// "already synced". An earlier live recovery is quarantined until its
+/// replacement is complete. The record and replacement recovery are written
+/// before the ledger is touched, so a pre-detach failure keeps the skill
+/// attached and restores the earlier recovery. The replacement recovery stays
+/// available while ledger removal and live-tree restoration run.
 pub fn fork_skill_with(
     home: &Path,
     app_data: &Path,
@@ -580,27 +764,72 @@ pub fn fork_skill_with(
     fetch: &dyn UpstreamFetch,
     lookup: &dyn CommitLookup,
 ) -> Result<ForkRecord, String> {
+    fork_skill_with_storage(
+        home,
+        app_data,
+        name,
+        path,
+        ledger,
+        fetch,
+        lookup,
+        &FileForkTransactionStorage,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn fork_skill_with_storage(
+    home: &Path,
+    app_data: &Path,
+    name: &str,
+    path: &Path,
+    ledger: &dyn LedgerTool,
+    fetch: &dyn UpstreamFetch,
+    lookup: &dyn CommitLookup,
+    storage: &dyn ForkTransactionStorage,
+) -> Result<ForkRecord, String> {
     validate_fork_path(home, name, path)?;
 
     let agents_dir = home.join(".agents");
     let skill_dir = agents_dir.join("skills").join(name);
     let origin = resolve_fork_origin(&agents_dir, app_data, name, lookup)?;
 
+    let recovery_dir = fork_live_recovery_dir(app_data, name);
+    let quarantine_dir = fork_live_recovery_quarantine_dir(app_data, name);
+    let quarantined_recovery =
+        quarantine_existing_live_recovery(storage, &recovery_dir, &quarantine_dir)?;
+
     // 1. Fetch the upstream tree at `base_commit` as the merge base - not a
     //    copy of the (possibly locally edited) live tree.
     let base_dir = fork_snapshot_dir(app_data, name);
-    if base_dir.exists() {
-        fs::remove_dir_all(&base_dir)
-            .map_err(|e| format!("Failed to clear the stale snapshot for {name}: {e}"))?;
+    let rollback_paths = ForkPreDetachPaths {
+        home,
+        base_dir: &base_dir,
+        recovery_dir: &recovery_dir,
+        quarantine_dir: quarantined_recovery.as_deref(),
+    };
+    if let Err(error) = clear_fork_transaction_dir(storage, &base_dir) {
+        return Err(rollback_fork_before_detach(
+            storage,
+            format!("Failed to clear the stale snapshot for {name}: {error}"),
+            &rollback_paths,
+            None,
+            ForkRecoveryRollback::RestorePrevious,
+        ));
     }
-    fetch
-        .fetch_skill_dir(&origin.repo, &origin.path, &origin.base_commit, &base_dir)
-        .map_err(|e| {
+    if let Err(error) =
+        fetch.fetch_skill_dir(&origin.repo, &origin.path, &origin.base_commit, &base_dir)
+    {
+        return Err(rollback_fork_before_detach(
+            storage,
             format!(
-                "Could not fetch {name}'s upstream copy at {}: {e}. Nothing was changed.",
+                "Could not fetch {name}'s upstream copy at {}: {error}. Nothing was changed.",
                 origin.base_commit
-            )
-        })?;
+            ),
+            &rollback_paths,
+            None,
+            ForkRecoveryRollback::RestorePrevious,
+        ));
+    }
 
     // 2. Write the record before touching the ledger - a failure here means
     //    the skill is still fully attached, never detached with no record.
@@ -622,7 +851,19 @@ pub fn fork_skill_with(
         declared_ref: origin.declared_ref,
         base_commit: origin.base_commit,
     };
-    let mut registry = read_fork_registry(home)?;
+    let registry_before = match storage.read_registry(home) {
+        Ok(registry) => registry,
+        Err(error) => {
+            return Err(rollback_fork_before_detach(
+                storage,
+                error,
+                &rollback_paths,
+                None,
+                ForkRecoveryRollback::RestorePrevious,
+            ));
+        }
+    };
+    let mut registry = registry_before.clone();
     registry.forks.insert(name.to_string(), record.clone());
     // A forked skill is no longer the same "add" that started a trial - drop
     // any trial record for it so forking doesn't leave a stale one behind.
@@ -632,32 +873,56 @@ pub fn fork_skill_with(
     registry
         .trials
         .remove(&deployment_trial_key(&record.deployment_id));
-    if let Err(e) = write_fork_registry(home, &registry) {
-        let _ = fs::remove_dir_all(&base_dir);
-        return Err(e);
+    if let Err(error) = storage.write_registry(home, &registry) {
+        return Err(rollback_fork_before_detach(
+            storage,
+            error,
+            &rollback_paths,
+            None,
+            ForkRecoveryRollback::RestorePrevious,
+        ));
     }
 
     // 3. Snapshot the live tree as a recovery copy before removing it from
     //    the ledger, in case that removal wipes the directory.
-    let recovery_dir = fork_live_recovery_dir(app_data, name);
-    if recovery_dir.exists() {
-        fs::remove_dir_all(&recovery_dir)
-            .map_err(|e| format!("Failed to clear the stale recovery copy for {name}: {e}"))?;
+    if let Err(error) = storage.snapshot_live_skill(&skill_dir, &recovery_dir) {
+        return Err(rollback_fork_before_detach(
+            storage,
+            format!("Failed to snapshot {name} before forking: {error}"),
+            &rollback_paths,
+            Some(&registry_before),
+            ForkRecoveryRollback::RestorePrevious,
+        ));
     }
-    if let Err(e) = copy_dir_all(&skill_dir, &recovery_dir) {
-        registry.forks.remove(name);
-        let _ = write_fork_registry(home, &registry);
-        let _ = fs::remove_dir_all(&base_dir);
-        return Err(format!("Failed to snapshot {name} before forking: {e}"));
+
+    if let Some(quarantine_dir) = quarantined_recovery.as_deref() {
+        if let Err(error) = storage.remove_dir_all(quarantine_dir) {
+            return Err(rollback_fork_before_detach(
+                storage,
+                format!(
+                    "Failed to clear the previous recovery quarantine at {}: {error}",
+                    quarantine_dir.display()
+                ),
+                &rollback_paths,
+                Some(&registry_before),
+                ForkRecoveryRollback::KeepComplete,
+            ));
+        }
     }
 
     // 4. Remove it from the owning ledger.
-    if let Err(e) = ledger.remove(origin.tool, name) {
-        registry.forks.remove(name);
-        let _ = write_fork_registry(home, &registry);
-        let _ = fs::remove_dir_all(&base_dir);
-        let _ = fs::remove_dir_all(&recovery_dir);
-        return Err(e);
+    let detached_rollback_paths = ForkPreDetachPaths {
+        quarantine_dir: None,
+        ..rollback_paths
+    };
+    if let Err(error) = ledger.remove(origin.tool, name) {
+        return Err(rollback_fork_before_detach(
+            storage,
+            error,
+            &detached_rollback_paths,
+            Some(&registry_before),
+            ForkRecoveryRollback::KeepComplete,
+        ));
     }
 
     // 5. If the ledger's removal wiped the folder, restore it from the
@@ -1362,6 +1627,74 @@ mod tests {
         }
     }
 
+    struct FailingFetch;
+
+    impl UpstreamFetch for FailingFetch {
+        fn fetch_skill_dir(
+            &self,
+            _repo: &str,
+            _path: &str,
+            _commit: &str,
+            into: &Path,
+        ) -> Result<(), String> {
+            write_file(&into.join("partial.txt"), "incomplete fetch");
+            Err("injected fetch failure".to_string())
+        }
+    }
+
+    #[derive(Default)]
+    struct InjectedForkTransactionStorage {
+        fail_rename_to: Option<PathBuf>,
+        fail_rename_from: Option<PathBuf>,
+        fail_remove: Option<PathBuf>,
+        fail_snapshot: bool,
+        fail_registry_read: bool,
+        fail_registry_write_call: Option<usize>,
+        registry_write_calls: Mutex<usize>,
+    }
+
+    impl ForkTransactionStorage for InjectedForkTransactionStorage {
+        fn rename_dir(&self, from: &Path, to: &Path) -> std::io::Result<()> {
+            if self.fail_rename_to.as_deref() == Some(to)
+                || self.fail_rename_from.as_deref() == Some(from)
+            {
+                return Err(std::io::Error::other("injected quarantine rename failure"));
+            }
+            fs::rename(from, to)
+        }
+
+        fn remove_dir_all(&self, path: &Path) -> std::io::Result<()> {
+            if self.fail_remove.as_deref() == Some(path) {
+                return Err(std::io::Error::other("injected quarantine cleanup failure"));
+            }
+            fs::remove_dir_all(path)
+        }
+
+        fn snapshot_live_skill(&self, skill_dir: &Path, recovery_dir: &Path) -> Result<(), String> {
+            if self.fail_snapshot {
+                write_file(&recovery_dir.join("partial.txt"), "incomplete snapshot");
+                return Err("injected live snapshot failure".to_string());
+            }
+            copy_dir_all(skill_dir, recovery_dir)
+        }
+
+        fn read_registry(&self, home: &Path) -> Result<ForkRegistry, String> {
+            if self.fail_registry_read {
+                return Err("injected registry read failure".to_string());
+            }
+            read_fork_registry(home)
+        }
+
+        fn write_registry(&self, home: &Path, registry: &ForkRegistry) -> Result<(), String> {
+            let mut calls = self.registry_write_calls.lock().unwrap();
+            *calls += 1;
+            if self.fail_registry_write_call == Some(*calls) {
+                return Err("injected registry write failure".to_string());
+            }
+            write_fork_registry(home, registry)
+        }
+    }
+
     fn write_file(path: &Path, content: &str) {
         fs::create_dir_all(path.parent().unwrap()).unwrap();
         fs::write(path, content).unwrap();
@@ -1737,10 +2070,10 @@ mod tests {
         assert!(err.contains("not managed by dotagents or skills.sh"));
     }
 
-    /// Finding 2: a CLI-remove failure must leave no record, no base
-    /// snapshot, and no recovery copy - and the folder untouched.
+    /// A CLI-remove failure leaves no record or base snapshot, but keeps the
+    /// live recovery because a failed CLI can still have removed the folder.
     #[test]
-    fn fork_remove_failure_leaves_no_snapshot_or_record() {
+    fn fork_remove_failure_keeps_recovery_but_no_base_or_record() {
         let tmp = tempfile::tempdir().unwrap();
         let home = tmp.path().join("home");
         let app_data = tmp.path().join("data");
@@ -1767,10 +2100,15 @@ mod tests {
             &NeverCalledLookup,
         )
         .unwrap_err();
-        assert_eq!(err, "npx failed");
+        assert!(err.contains("npx failed"), "{err}");
+        assert!(err.contains("live-recovery"), "{err}");
 
         assert!(!fork_snapshot_dir(&app_data, "find-bugs").exists());
-        assert!(!fork_live_recovery_dir(&app_data, "find-bugs").exists());
+        assert_eq!(
+            fs::read_to_string(fork_live_recovery_dir(&app_data, "find-bugs").join("SKILL.md"))
+                .unwrap(),
+            "body"
+        );
         assert!(!read_fork_registry(&home)
             .unwrap()
             .forks
@@ -1779,6 +2117,458 @@ mod tests {
             fs::read_to_string(home.join(".agents/skills/find-bugs/SKILL.md")).unwrap(),
             "body"
         );
+    }
+
+    #[test]
+    fn stale_recovery_quarantine_failure_happens_before_registry_or_ledger_changes() {
+        let tmp = tempfile::tempdir().unwrap();
+        let home = tmp.path().join("home");
+        let app_data = tmp.path().join("data");
+        seed_dotagents_ledger(
+            &home,
+            "find-bugs",
+            "getsentry/find-bugs",
+            "skills/find-bugs",
+            &"a".repeat(40),
+        );
+        let skill_md = home.join(".agents/skills/find-bugs/SKILL.md");
+        write_file(&skill_md, "live body");
+        let recovery_dir = fork_live_recovery_dir(&app_data, "find-bugs");
+        write_file(&recovery_dir.join("stale.txt"), "stale recovery");
+        let quarantine_dir = fork_live_recovery_quarantine_dir(&app_data, "find-bugs");
+
+        let mut registry = ForkRegistry {
+            server_url: Some("https://registry.example.test".to_string()),
+            ..ForkRegistry::default()
+        };
+        registry
+            .trusted_dotagents_sources
+            .insert("owner/repo".to_string());
+        write_fork_registry(&home, &registry).unwrap();
+        let registry_before =
+            fs::read(super::super::skill_fork_registry::fork_registry_path(&home)).unwrap();
+        let agents_toml_before = fs::read(home.join(".agents/agents.toml")).unwrap();
+        let agents_lock_before = fs::read(home.join(".agents/agents.lock")).unwrap();
+        let ledger = FakeLedger::default();
+        let storage = InjectedForkTransactionStorage {
+            fail_rename_to: Some(quarantine_dir.clone()),
+            ..Default::default()
+        };
+        let error = fork_skill_with_storage(
+            &home,
+            &app_data,
+            "find-bugs",
+            &home.join(".agents/skills/find-bugs"),
+            &ledger,
+            &NeverCalledFetch,
+            &NeverCalledLookup,
+            &storage,
+        )
+        .unwrap_err();
+
+        assert!(
+            error.contains("injected quarantine rename failure"),
+            "{error}"
+        );
+        assert!(
+            error.contains(&recovery_dir.display().to_string()),
+            "{error}"
+        );
+        assert!(skill_md.is_file());
+        assert_eq!(fs::read_to_string(skill_md).unwrap(), "live body");
+        assert_eq!(ledger.remove_calls.lock().unwrap().len(), 0);
+        assert_eq!(
+            fs::read(super::super::skill_fork_registry::fork_registry_path(&home,)).unwrap(),
+            registry_before
+        );
+        assert_eq!(
+            fs::read(home.join(".agents/agents.toml")).unwrap(),
+            agents_toml_before
+        );
+        assert_eq!(
+            fs::read(home.join(".agents/agents.lock")).unwrap(),
+            agents_lock_before
+        );
+        assert!(!fork_snapshot_dir(&app_data, "find-bugs").exists());
+        assert_eq!(
+            fs::read_to_string(recovery_dir.join("stale.txt")).unwrap(),
+            "stale recovery"
+        );
+        assert!(!quarantine_dir.exists());
+    }
+
+    #[test]
+    fn fetch_failure_restores_the_quarantined_recovery_copy() {
+        let tmp = tempfile::tempdir().unwrap();
+        let home = tmp.path().join("home");
+        let app_data = tmp.path().join("data");
+        seed_dotagents_ledger(
+            &home,
+            "find-bugs",
+            "getsentry/find-bugs",
+            "skills/find-bugs",
+            &"a".repeat(40),
+        );
+        let skill_md = home.join(".agents/skills/find-bugs/SKILL.md");
+        write_file(&skill_md, "live body");
+        let recovery_dir = fork_live_recovery_dir(&app_data, "find-bugs");
+        write_file(&recovery_dir.join("stale.txt"), "stale recovery");
+
+        let ledger = FakeLedger::default();
+        let error = fork_skill_with(
+            &home,
+            &app_data,
+            "find-bugs",
+            &home.join(".agents/skills/find-bugs"),
+            &ledger,
+            &FailingFetch,
+            &NeverCalledLookup,
+        )
+        .unwrap_err();
+
+        assert!(error.contains("injected fetch failure"), "{error}");
+        assert_eq!(fs::read_to_string(skill_md).unwrap(), "live body");
+        assert_eq!(ledger.remove_calls.lock().unwrap().len(), 0);
+        assert_eq!(
+            fs::read_to_string(recovery_dir.join("stale.txt")).unwrap(),
+            "stale recovery"
+        );
+        assert!(!fork_live_recovery_quarantine_dir(&app_data, "find-bugs").exists());
+        assert!(!fork_snapshot_dir(&app_data, "find-bugs").exists());
+        assert!(!read_fork_registry(&home)
+            .unwrap()
+            .forks
+            .contains_key("find-bugs"));
+    }
+
+    #[test]
+    fn registry_write_failure_restores_the_quarantined_recovery_copy() {
+        let tmp = tempfile::tempdir().unwrap();
+        let home = tmp.path().join("home");
+        let app_data = tmp.path().join("data");
+        seed_dotagents_ledger(
+            &home,
+            "find-bugs",
+            "getsentry/find-bugs",
+            "skills/find-bugs",
+            &"a".repeat(40),
+        );
+        let skill_md = home.join(".agents/skills/find-bugs/SKILL.md");
+        write_file(&skill_md, "live body");
+        let recovery_dir = fork_live_recovery_dir(&app_data, "find-bugs");
+        write_file(&recovery_dir.join("stale.txt"), "stale recovery");
+        let registry = ForkRegistry {
+            server_url: Some("https://registry.example.test".to_string()),
+            ..ForkRegistry::default()
+        };
+        write_fork_registry(&home, &registry).unwrap();
+        let registry_path = super::super::skill_fork_registry::fork_registry_path(&home);
+        let registry_before = fs::read(&registry_path).unwrap();
+        let storage = InjectedForkTransactionStorage {
+            fail_registry_write_call: Some(1),
+            ..Default::default()
+        };
+        let fetch = FakeFetch {
+            files: vec![("SKILL.md", "upstream body")],
+        };
+        let ledger = FakeLedger::default();
+
+        let error = fork_skill_with_storage(
+            &home,
+            &app_data,
+            "find-bugs",
+            &home.join(".agents/skills/find-bugs"),
+            &ledger,
+            &fetch,
+            &NeverCalledLookup,
+            &storage,
+        )
+        .unwrap_err();
+
+        assert!(error.contains("injected registry write failure"), "{error}");
+        assert_eq!(fs::read(&registry_path).unwrap(), registry_before);
+        assert_eq!(fs::read_to_string(skill_md).unwrap(), "live body");
+        assert_eq!(ledger.remove_calls.lock().unwrap().len(), 0);
+        assert_eq!(
+            fs::read_to_string(recovery_dir.join("stale.txt")).unwrap(),
+            "stale recovery"
+        );
+        assert!(!fork_live_recovery_quarantine_dir(&app_data, "find-bugs").exists());
+        assert!(!fork_snapshot_dir(&app_data, "find-bugs").exists());
+    }
+
+    #[test]
+    fn registry_read_failure_restores_the_quarantined_recovery_copy() {
+        let tmp = tempfile::tempdir().unwrap();
+        let home = tmp.path().join("home");
+        let app_data = tmp.path().join("data");
+        seed_dotagents_ledger(
+            &home,
+            "find-bugs",
+            "getsentry/find-bugs",
+            "skills/find-bugs",
+            &"a".repeat(40),
+        );
+        let skill_md = home.join(".agents/skills/find-bugs/SKILL.md");
+        write_file(&skill_md, "live body");
+        let recovery_dir = fork_live_recovery_dir(&app_data, "find-bugs");
+        write_file(&recovery_dir.join("stale.txt"), "stale recovery");
+        let storage = InjectedForkTransactionStorage {
+            fail_registry_read: true,
+            ..Default::default()
+        };
+        let fetch = FakeFetch {
+            files: vec![("SKILL.md", "upstream body")],
+        };
+        let ledger = FakeLedger::default();
+
+        let error = fork_skill_with_storage(
+            &home,
+            &app_data,
+            "find-bugs",
+            &home.join(".agents/skills/find-bugs"),
+            &ledger,
+            &fetch,
+            &NeverCalledLookup,
+            &storage,
+        )
+        .unwrap_err();
+
+        assert!(error.contains("injected registry read failure"), "{error}");
+        assert_eq!(fs::read_to_string(skill_md).unwrap(), "live body");
+        assert_eq!(ledger.remove_calls.lock().unwrap().len(), 0);
+        assert_eq!(
+            fs::read_to_string(recovery_dir.join("stale.txt")).unwrap(),
+            "stale recovery"
+        );
+        assert!(!fork_live_recovery_quarantine_dir(&app_data, "find-bugs").exists());
+        assert!(!fork_snapshot_dir(&app_data, "find-bugs").exists());
+    }
+
+    #[test]
+    fn live_snapshot_failure_restores_registry_and_quarantined_recovery() {
+        let tmp = tempfile::tempdir().unwrap();
+        let home = tmp.path().join("home");
+        let app_data = tmp.path().join("data");
+        seed_dotagents_ledger(
+            &home,
+            "find-bugs",
+            "getsentry/find-bugs",
+            "skills/find-bugs",
+            &"a".repeat(40),
+        );
+        let skill_md = home.join(".agents/skills/find-bugs/SKILL.md");
+        write_file(&skill_md, "live body");
+        let recovery_dir = fork_live_recovery_dir(&app_data, "find-bugs");
+        write_file(&recovery_dir.join("stale.txt"), "stale recovery");
+        let registry = ForkRegistry {
+            server_url: Some("https://registry.example.test".to_string()),
+            ..ForkRegistry::default()
+        };
+        write_fork_registry(&home, &registry).unwrap();
+        let registry_path = super::super::skill_fork_registry::fork_registry_path(&home);
+        let registry_before = fs::read(&registry_path).unwrap();
+        let storage = InjectedForkTransactionStorage {
+            fail_snapshot: true,
+            ..Default::default()
+        };
+        let fetch = FakeFetch {
+            files: vec![("SKILL.md", "upstream body")],
+        };
+        let ledger = FakeLedger::default();
+
+        let error = fork_skill_with_storage(
+            &home,
+            &app_data,
+            "find-bugs",
+            &home.join(".agents/skills/find-bugs"),
+            &ledger,
+            &fetch,
+            &NeverCalledLookup,
+            &storage,
+        )
+        .unwrap_err();
+
+        assert!(error.contains("injected live snapshot failure"), "{error}");
+        assert_eq!(fs::read(&registry_path).unwrap(), registry_before);
+        assert_eq!(fs::read_to_string(skill_md).unwrap(), "live body");
+        assert_eq!(ledger.remove_calls.lock().unwrap().len(), 0);
+        assert_eq!(
+            fs::read_to_string(recovery_dir.join("stale.txt")).unwrap(),
+            "stale recovery"
+        );
+        assert!(!fork_live_recovery_quarantine_dir(&app_data, "find-bugs").exists());
+        assert!(!fork_snapshot_dir(&app_data, "find-bugs").exists());
+    }
+
+    #[test]
+    fn quarantine_cleanup_failure_keeps_complete_and_previous_recovery_copies() {
+        let tmp = tempfile::tempdir().unwrap();
+        let home = tmp.path().join("home");
+        let app_data = tmp.path().join("data");
+        seed_dotagents_ledger(
+            &home,
+            "find-bugs",
+            "getsentry/find-bugs",
+            "skills/find-bugs",
+            &"a".repeat(40),
+        );
+        let skill_md = home.join(".agents/skills/find-bugs/SKILL.md");
+        write_file(&skill_md, "live body");
+        let recovery_dir = fork_live_recovery_dir(&app_data, "find-bugs");
+        let quarantine_dir = fork_live_recovery_quarantine_dir(&app_data, "find-bugs");
+        write_file(&recovery_dir.join("stale.txt"), "stale recovery");
+        let registry = ForkRegistry {
+            server_url: Some("https://registry.example.test".to_string()),
+            ..ForkRegistry::default()
+        };
+        write_fork_registry(&home, &registry).unwrap();
+        let registry_path = super::super::skill_fork_registry::fork_registry_path(&home);
+        let registry_before = fs::read(&registry_path).unwrap();
+        let storage = InjectedForkTransactionStorage {
+            fail_remove: Some(quarantine_dir.clone()),
+            ..Default::default()
+        };
+        let fetch = FakeFetch {
+            files: vec![("SKILL.md", "upstream body")],
+        };
+        let ledger = FakeLedger::default();
+
+        let error = fork_skill_with_storage(
+            &home,
+            &app_data,
+            "find-bugs",
+            &home.join(".agents/skills/find-bugs"),
+            &ledger,
+            &fetch,
+            &NeverCalledLookup,
+            &storage,
+        )
+        .unwrap_err();
+
+        assert!(
+            error.contains("injected quarantine cleanup failure"),
+            "{error}"
+        );
+        assert!(
+            error.contains(&recovery_dir.display().to_string()),
+            "{error}"
+        );
+        assert!(
+            error.contains(&quarantine_dir.display().to_string()),
+            "{error}"
+        );
+        assert_eq!(fs::read(&registry_path).unwrap(), registry_before);
+        assert_eq!(fs::read_to_string(skill_md).unwrap(), "live body");
+        assert_eq!(ledger.remove_calls.lock().unwrap().len(), 0);
+        assert_eq!(
+            fs::read_to_string(recovery_dir.join("SKILL.md")).unwrap(),
+            "live body"
+        );
+        assert_eq!(
+            fs::read_to_string(quarantine_dir.join("stale.txt")).unwrap(),
+            "stale recovery"
+        );
+        assert!(!fork_snapshot_dir(&app_data, "find-bugs").exists());
+    }
+
+    #[test]
+    fn rollback_failure_reports_the_quarantine_that_preserves_old_recovery() {
+        let tmp = tempfile::tempdir().unwrap();
+        let home = tmp.path().join("home");
+        let app_data = tmp.path().join("data");
+        seed_dotagents_ledger(
+            &home,
+            "find-bugs",
+            "getsentry/find-bugs",
+            "skills/find-bugs",
+            &"a".repeat(40),
+        );
+        write_file(&home.join(".agents/skills/find-bugs/SKILL.md"), "live body");
+        let recovery_dir = fork_live_recovery_dir(&app_data, "find-bugs");
+        let quarantine_dir = fork_live_recovery_quarantine_dir(&app_data, "find-bugs");
+        write_file(&recovery_dir.join("stale.txt"), "stale recovery");
+        let storage = InjectedForkTransactionStorage {
+            fail_rename_from: Some(quarantine_dir.clone()),
+            ..Default::default()
+        };
+        let ledger = FakeLedger::default();
+
+        let error = fork_skill_with_storage(
+            &home,
+            &app_data,
+            "find-bugs",
+            &home.join(".agents/skills/find-bugs"),
+            &ledger,
+            &FailingFetch,
+            &NeverCalledLookup,
+            &storage,
+        )
+        .unwrap_err();
+
+        assert!(
+            error.contains("Recovery rollback needs attention"),
+            "{error}"
+        );
+        assert!(
+            error.contains(&quarantine_dir.display().to_string()),
+            "{error}"
+        );
+        assert!(!recovery_dir.exists());
+        assert_eq!(
+            fs::read_to_string(quarantine_dir.join("stale.txt")).unwrap(),
+            "stale recovery"
+        );
+        assert_eq!(ledger.remove_calls.lock().unwrap().len(), 0);
+    }
+
+    #[test]
+    fn preexisting_recovery_quarantine_is_not_clobbered() {
+        let tmp = tempfile::tempdir().unwrap();
+        let home = tmp.path().join("home");
+        let app_data = tmp.path().join("data");
+        seed_dotagents_ledger(
+            &home,
+            "find-bugs",
+            "getsentry/find-bugs",
+            "skills/find-bugs",
+            &"a".repeat(40),
+        );
+        write_file(&home.join(".agents/skills/find-bugs/SKILL.md"), "live body");
+        let recovery_dir = fork_live_recovery_dir(&app_data, "find-bugs");
+        let quarantine_dir = fork_live_recovery_quarantine_dir(&app_data, "find-bugs");
+        write_file(&recovery_dir.join("current.txt"), "current recovery");
+        write_file(&quarantine_dir.join("previous.txt"), "previous recovery");
+        let ledger = FakeLedger::default();
+
+        let error = fork_skill_with(
+            &home,
+            &app_data,
+            "find-bugs",
+            &home.join(".agents/skills/find-bugs"),
+            &ledger,
+            &NeverCalledFetch,
+            &NeverCalledLookup,
+        )
+        .unwrap_err();
+
+        assert!(
+            error.contains("Fork recovery requires attention"),
+            "{error}"
+        );
+        assert!(
+            error.contains(&quarantine_dir.display().to_string()),
+            "{error}"
+        );
+        assert_eq!(
+            fs::read_to_string(recovery_dir.join("current.txt")).unwrap(),
+            "current recovery"
+        );
+        assert_eq!(
+            fs::read_to_string(quarantine_dir.join("previous.txt")).unwrap(),
+            "previous recovery"
+        );
+        assert_eq!(ledger.remove_calls.lock().unwrap().len(), 0);
     }
 
     fn seed_registry(
