@@ -76,8 +76,35 @@ function isPlainAliasConsumerUse(node: ESTree.TSType, environment: TypeEnvironme
 	return !isInsideTypeAliasDeclaration(node);
 }
 
+function isPlainInterfaceConsumerWithReportedDefinition(
+	node: ESTree.TSType,
+	environment: TypeEnvironment,
+): boolean {
+	if (node.type !== "TSTypeReference" || node.typeArguments?.params.length) return false;
+	const name = typeReferenceName(node);
+	if (name === null) return false;
+	const declarations = environment.interfaces.get(name);
+	if (
+		declarations === undefined ||
+		declarations.some((declaration) => (declaration.typeParameters?.params.length ?? 0) > 0)
+	)
+		return false;
+	return declarations.some((declaration) =>
+		declaration.body.body.some(
+			(member) =>
+				member.type === "TSIndexSignature" &&
+				member.typeAnnotation !== null &&
+				classifyUnsafeDictionaryValue(member.typeAnnotation.typeAnnotation, environment) !== null,
+		),
+	);
+}
+
 function shouldReportType(node: ESTree.TSType, environment: TypeEnvironment): boolean {
-	if (isPlainAliasConsumerUse(node, environment)) return false;
+	if (
+		isPlainAliasConsumerUse(node, environment) ||
+		isPlainInterfaceConsumerWithReportedDefinition(node, environment)
+	)
+		return false;
 	if (classifyUnsafeDictionary(node, environment) === null) return false;
 	let current: ESTree.Node | null = node.parent;
 	while (current !== null && current.type !== "Program") {
