@@ -88,7 +88,7 @@ Selectors:
 - **Park restrictions** - Only skills deployed to shared folder (not project-scoped, plugin, or already parked)
 - **Unpark collision** - If skill was reinstalled while parked, unpark reconciles (discards duplicate or trashes drift)
 - **Enable/disable varies** - Per-harness uses harness's own mechanism (Codex toml, OpenCode json, Claude symlink); deployment-level uses `.skill-studio-disabled/` fallback
-- **Invocation policy writes** - Modifies SKILL.md frontmatter + Codex `agents/openai.yaml` (two files)
+- **Invocation policy writes** - Modifies SKILL.md; writes Codex `agents/openai.yaml` only when the targeted deployment's agent is Codex
 - **Sequential updates** - "Update all" button runs updates sequentially (avoids lock-file races)
 
 ## Branches
@@ -209,4 +209,4 @@ Invariants:
 - Fork converts `source_kind` from dotagents/skills-sh to "fork"
 - Park moves skill to `skills-parked/`, never deletes
 - Enable/disable per-harness uses harness's native mechanism (never generic for those)
-- Invocation policy writes to both SKILL.md and Codex yaml (if Codex deployment exists)
+- Invocation policy writes to SKILL.md; Codex yaml is written only when the targeted deployment is Codex
