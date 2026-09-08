@@ -161,8 +161,8 @@ Selectors:
 - **Project dropdown edge case** - "Add project" requires native folder picker (not testable via Playwright without mocks)
 - **"Stop tracking" confirmation** - Native Tauri `ask()` dialog, not dismissible via Playwright
 - **Coverage matrix reuses filters** - Same filter/search/sort apply to matrix view (just different rendering)
-- **Selection persists across filter** - Checked rows stay checked even if filtered out (selection keyed by path, not visibility)
-- **Selection clears on view change** - Leaving Skills view (e.g. to Home) exits selection mode and clears `selectedSkillPaths`
+- **Selection persists across non-scope filters** - Checked rows stay checked even if filtered out by search/harness/source/issue (selection keyed by path, not visibility)
+- **Selection clears on view or scope change** - Leaving Skills view (e.g. to Home) or switching scope (All/Global/Project) exits selection mode and clears `selectedSkillPaths`
 - **Pack creation async** - "Create pack" calls backend, shows progress in button text ("Creating…"), toast on complete
 - **Empty result vs no skills** - Different empty states: `hasAnySkills: false` shows "Add skill" CTA, filtered-to-empty shows "Clear filters"
 
