@@ -41,6 +41,16 @@ pub struct SkillRunRecord {
     pub started_at: String,
     pub duration_ms: u64,
     pub ok: bool,
+    /// `true` when the user cancelled the run. The dashboard/list summary and
+    /// the Runs-history row render "Cancelled" instead of "Failed" off this
+    /// flag, not off `final_text`, so the distinction can't collide with a
+    /// genuine failure whose last assistant message happened to be
+    /// "Cancelled". `#[serde(default)]` so records written before this field
+    /// existed (which include cancelled runs mislabeled as `ok: false`)
+    /// deserialize with `cancelled: false` and keep their prior "Failed"
+    /// label - a deliberate forward-only fix.
+    #[serde(default)]
+    pub cancelled: bool,
     pub skill_loaded: super::skill_agent_runner::SkillLoaded,
     pub judge: Option<SkillRunJudge>,
     pub cost_usd: Option<f64>,
@@ -304,6 +314,7 @@ mod tests {
             started_at: started_at.to_string(),
             duration_ms: 100,
             ok: true,
+            cancelled: false,
             skill_loaded: super::super::skill_agent_runner::SkillLoaded::Yes,
             judge: Some(SkillRunJudge {
                 passed: true,
@@ -485,5 +496,43 @@ mod tests {
 
         let index = read_last_test_index(root.path(), &["demo".to_string()]);
         assert_eq!(index["demo"].passed, None);
+    }
+
+    /// A run record written before the `cancelled` field existed must still
+    /// list and deserialize, defaulting `cancelled` to `false`. Such a
+    /// record (the pre-fix cancel, persisted as `ok: false` with `final_text:
+    /// "Cancelled"`) keeps its prior "Failed" row label - the fix is
+    /// forward-only, so old cancels don't silently re-label themselves off the
+    /// `final_text` magic string.
+    #[test]
+    fn record_without_cancelled_field_reads_as_not_cancelled() {
+        let root = tempdir().unwrap();
+        let demo = root.path().join("demo");
+        fs::create_dir_all(&demo).unwrap();
+        // Written by an older build, before `cancelled` was added.
+        let legacy_json = r#"{
+            "id": "run-legacy",
+            "skill_name": "demo",
+            "harness": "claude-code",
+            "action": "ask",
+            "target_kind": null,
+            "started_at": "2024-01-01T00:00:00Z",
+            "duration_ms": 100,
+            "ok": false,
+            "skill_loaded": "unknown",
+            "judge": null,
+            "cost_usd": null,
+            "final_text": "Cancelled",
+            "transcript_path": "run-legacy.events.jsonl"
+        }"#;
+        fs::write(demo.join("run-legacy.json"), legacy_json).unwrap();
+
+        let records = list_runs_at(root.path(), "demo").unwrap();
+        assert_eq!(records.len(), 1, "legacy record must still be listable");
+        assert!(
+            !records[0].cancelled,
+            "a record with no `cancelled` field defaults to not cancelled"
+        );
+        assert_eq!(records[0].final_text, "Cancelled");
     }
 }

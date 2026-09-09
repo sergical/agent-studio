@@ -38,6 +38,13 @@ export type SkillAgentEventKind =
   | {
       kind: "finished";
       ok: boolean;
+      /**
+       * `true` only on the runner's cancel branch: a first-class cancel signal
+       * the frontend maps to the `cancelled` run status, instead of keying off
+       * `final_text === "Cancelled"`. Always present on the wire (Rust emits it
+       * for every `Finished`, defaulting older transcripts to `false`).
+       */
+      cancelled: boolean;
       final_text: string;
       session_id?: string;
       cost_usd?: number;
