@@ -2340,4 +2340,41 @@ mod tests {
         let snapshot = fixture_snapshot(&dep_dir);
         assert!(snapshot_owns_path(&snapshot, &skill_md));
     }
+
+    #[cfg(unix)]
+    #[test]
+    fn universal_both_edit_makes_read_path_report_none_after_codex_user_only_in_symlink_shared_dir()
+    {
+        use super::super::frontmatter::InvocationPolicy;
+        use super::super::skill_invocation::set_skill_invocation_with;
+
+        let tmp = tempfile::tempdir().unwrap();
+        let universal_dir = tmp.path().join(".agents/skills/find-bugs");
+        let codex_dir = tmp.path().join(".codex/skills/find-bugs");
+        fs::create_dir_all(&universal_dir).unwrap();
+        fs::write(
+            universal_dir.join("SKILL.md"),
+            "---\nname: find-bugs\ndescription: test\n---\nBody.",
+        )
+        .unwrap();
+        fs::create_dir_all(codex_dir.parent().unwrap()).unwrap();
+        std::os::unix::fs::symlink(&universal_dir, &codex_dir).unwrap();
+
+        let canonical_codex = std::fs::canonicalize(codex_dir.join("SKILL.md")).unwrap();
+        let canonical_universal = std::fs::canonicalize(universal_dir.join("SKILL.md")).unwrap();
+        assert_eq!(canonical_codex, canonical_universal);
+
+        // Codex-row "User only" writes the shared sidecar; the read path the
+        // snapshot rebuild uses must surface Some(false) -> "User only".
+        set_skill_invocation_with(&canonical_codex, InvocationPolicy::UserOnly, true).unwrap();
+        assert_eq!(
+            read_codex_allow_implicit_invocation(&universal_dir),
+            Some(false)
+        );
+
+        // Universal-row "Both" reconciles the orphaned sidecar; the read path
+        // must now surface None so the Codex row no longer reports "User only".
+        set_skill_invocation_with(&canonical_universal, InvocationPolicy::Both, false).unwrap();
+        assert_eq!(read_codex_allow_implicit_invocation(&universal_dir), None);
+    }
 }
