@@ -151,33 +151,65 @@ describe("buildScopeGroups", () => {
   });
 
   it.each([
-    ["codex-config", "Off for Codex — switched off in ~/.codex/config.toml."],
-    ["opencode-permission", "Off for OpenCode — denied in opencode.json."],
-    ["claude-link-removed", "Off for Claude Code — the link under ~/.claude/skills was removed."],
-    ["studio-moved", "Off for pi — moved into .skill-studio-disabled."],
-  ] as const)("reports the %s off mode with its own sentence", (disabledBy, expectedWhat) => {
-    const agentLabel =
-      disabledBy === "studio-moved"
-        ? "pi"
-        : disabledBy === "codex-config"
-          ? "Codex"
-          : disabledBy === "opencode-permission"
-            ? "OpenCode"
-            : "Claude Code";
-    const shared = fixtureDeployment();
-    const row = fixtureDeployment({
-      agent: agentLabel,
-      is_symlink: agentLabel === "Claude Code",
-      disabled: true,
-      disabled_by: disabledBy,
-      path: `/home/.${agentLabel.toLowerCase()}/skills/find-bugs`,
-    });
-    const skill = fixtureSkill({ deployments: [shared, row] });
-    const [global] = buildScopeGroups(skill);
-    const found = global.rows.find((r) => r.harnessLabel === agentLabel);
-    expect(found?.level).toBe("off");
-    expect(found?.conditions[0].what).toBe(expectedWhat);
-  });
+    [
+      "codex-config",
+      "Off for Codex — switched off in ~/.codex/config.toml.",
+      "Turns it back on in Codex's config.toml.",
+    ],
+    [
+      "opencode-permission",
+      "Off for OpenCode — denied in opencode.json.",
+      "Allows it again in opencode.json.",
+    ],
+    [
+      "claude-link-removed",
+      "Off for Claude Code — the link under ~/.claude/skills was removed.",
+      "Restores the link in ~/.claude/skills.",
+    ],
+    [
+      "studio-moved",
+      "Off for pi — moved into .skill-studio-disabled.",
+      "Moves it back into ~/.pi/skills.",
+    ],
+  ] as const)(
+    "reports the %s off mode with its own sentence",
+    (disabledBy, expectedWhat, expectedHint) => {
+      const agentLabel =
+        disabledBy === "studio-moved"
+          ? "pi"
+          : disabledBy === "codex-config"
+            ? "Codex"
+            : disabledBy === "opencode-permission"
+              ? "OpenCode"
+              : "Claude Code";
+      const shared = fixtureDeployment();
+      // Use a realistic home (`/home/user`) so `homeRelativePath` renders the
+      // skills root as `~/.<agent>/skills`, as it does in production.
+      const skillsRoot = `/home/user/.${agentLabel.toLowerCase()}/skills`;
+      // `studio-moved` physically relocates the deployment into a
+      // `.skill-studio-disabled` holding directory, and the scanner re-emits
+      // that holding-dir path as `deployment.path` (see skill_assembly.rs);
+      // the other modes leave the deployment in place at its skills root.
+      const row = fixtureDeployment({
+        agent: agentLabel,
+        is_symlink: agentLabel === "Claude Code",
+        disabled: true,
+        disabled_by: disabledBy,
+        path:
+          disabledBy === "studio-moved"
+            ? `${skillsRoot}/.skill-studio-disabled/find-bugs`
+            : `${skillsRoot}/find-bugs`,
+      });
+      const skill = fixtureSkill({ deployments: [shared, row] });
+      const [global] = buildScopeGroups(skill);
+      const found = global.rows.find((r) => r.harnessLabel === agentLabel);
+      expect(found?.level).toBe("off");
+      expect(found?.conditions[0].what).toBe(expectedWhat);
+      expect(found?.conditions[0].hint).toBe(expectedHint);
+      // The same hint surfaces through the row's ⋯ menu.
+      expect(rowMenu(found!, global.label).hint).toBe(expectedHint);
+    },
+  );
 
   it("marks the whole scope off and parked when the skill is parked", () => {
     const parkedShared = fixtureDeployment({

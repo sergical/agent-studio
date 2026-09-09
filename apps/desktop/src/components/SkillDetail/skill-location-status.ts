@@ -279,7 +279,20 @@ function offCondition(deployment: Deployment): Condition {
       );
     case "studio-moved":
     default: {
-      const parent = homeRelativePath(parentDirectory(deployment.path));
+      // For `studio-moved` the Rust disable mechanism physically relocates the
+      // deployment to `<skills-root>/.skill-studio-disabled/<name>`, and the
+      // scanner re-emits that holding-dir path as `deployment.path`, so one
+      // `parentDirectory` step lands inside `.skill-studio-disabled` rather
+      // than the skills root it is restored to. Walk twice to skip the
+      // holding-directory segment, but only for genuine `studio-moved`
+      // deployments: this branch also serves as the `default` for any future
+      // `disabled_by` value whose `path` would not sit inside
+      // `.skill-studio-disabled`, so an unconditional double-walk would
+      // over-step one level for those.
+      const parent =
+        deployment.disabled_by === "studio-moved"
+          ? homeRelativePath(parentDirectory(parentDirectory(deployment.path)))
+          : homeRelativePath(parentDirectory(deployment.path));
       return {
         ...base,
         what: `Off for ${label} — moved into .skill-studio-disabled.`,
