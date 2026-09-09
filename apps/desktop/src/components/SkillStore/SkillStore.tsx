@@ -8,16 +8,37 @@ import { SkillSearchBar } from "./SkillSearchBar";
 import { SkillBrowser } from "./SkillBrowser";
 import { SkillDetailPanel } from "./SkillDetailPanel";
 import { InstallProgressModal } from "./InstallProgressModal";
+import { startInstalledSkillsRefresh } from "./installed-skills-refresh";
 import { searchSkills, getInstalledSkills, getPopularSkills } from "../../lib/skill-api";
 import type {
   SkillSearchResult,
   InstalledSkill,
   SkillWithStatus,
   InstallProgressState,
+  PaginatedSkillsResponse,
 } from "@skill-studio/lib";
 import { useAppStore } from "../../store/appStore";
 
 const LIMIT = 50;
+
+/**
+ * The skill-discovery API surface `useSkillStoreData` depends on. Injected
+ * (defaulting to the real Tauri-backed functions) so tests can supply a
+ * faithful fake implementation instead of mocking the `skill-api` module or
+ * polyfilling the Tauri IPC boundary - mirroring `startSkillSnapshotSubscription`'s
+ * injected `listen`/`read` seams.
+ */
+export interface SkillStoreApi {
+  getInstalledSkills(projectPaths?: string[]): Promise<InstalledSkill[]>;
+  getPopularSkills(page?: number, perPage?: number): Promise<PaginatedSkillsResponse>;
+  searchSkills(query: string, limit?: number): Promise<PaginatedSkillsResponse>;
+}
+
+const realSkillStoreApi: SkillStoreApi = {
+  getInstalledSkills,
+  getPopularSkills,
+  searchSkills,
+};
 
 /**
  * Extract GitHub owner/repo from a URL or source string
@@ -103,9 +124,10 @@ function BrowseErrorEmptyState({ error, onRetry }: { error: string; onRetry: () 
  * hook (after an install/remove completes), so it's returned alongside the
  * rest rather than kept as a private effect dependency.
  */
-function useSkillStoreData(
+export function useSkillStoreData(
   projects: string[],
   addToast: ReturnType<typeof useAppStore.getState>["addToast"],
+  api: SkillStoreApi = realSkillStoreApi,
 ) {
   const [searchQuery, setSearchQuery] = useState("");
   // Raw API results, with no installed-status merged in - `searchResultsWithStatus`
@@ -128,17 +150,35 @@ function useSkillStoreData(
   // ref avoids a re-render on every page bump.
   const pageRef = useRef(0);
 
+  // Captures `projects` at mount for the mount-only fetch below. Reading it
+  // from a ref instead of `projects` keeps `loadInitialData`'s `useCallback`
+  // deps independent of `projects` (deps are `[api]`, stable in production)
+  // so the initial popular+installed fetch runs exactly once on mount and
+  // never re-runs when `projects` changes - re-running it would
+  // unconditionally `setRawResults(popular skills)` and silently overwrite an
+  // active Browse search's results (the c0078ad regression, which dropped the
+  // `if (!searchQuery)` guard and `searchQuery` from the dep array). The
+  // separate effect below refreshes only `installedSkills` on `projects`
+  // changes.
+  const initialProjectsRef = useRef(projects);
+
   // A Promise chain, not a try/finally statement, so the compiler can still
   // optimize this component (it doesn't support `finally` clauses yet).
-  // Kept memoized (not stripped like the other handlers below): the mount
-  // effect further down depends on this callback's identity to run exactly
-  // once instead of on every render.
+  // Kept memoized with deps `[api]`: in production `api` is the module-level
+  // `realSkillStoreApi` constant, so its identity never changes and the mount
+  // effect below runs the initial popular+installed fetch exactly once on
+  // mount (never on a `projects` change). `projects` is read from
+  // `initialProjectsRef` (capture-at-mount), not the closure, so it is not a
+  // dependency and the fetch can't re-run when the project set changes.
   // react-doctor-disable-next-line react-doctor/react-compiler-no-manual-memoization -- the mount effect below depends on this callback's identity to run exactly once
   const loadInitialData = useCallback(() => {
     pageRef.current = 0;
     setBrowseError(null);
     // Load both in parallel
-    return Promise.all([getInstalledSkills(projects), getPopularSkills(0, LIMIT)])
+    return Promise.all([
+      api.getInstalledSkills(initialProjectsRef.current),
+      api.getPopularSkills(0, LIMIT),
+    ])
       .then(([installed, popularResponse]) => {
         setInstalledSkills(installed);
         setHasMore(popularResponse.has_more);
@@ -150,11 +190,11 @@ function useSkillStoreData(
       .finally(() => {
         setIsLoading(false);
       });
-  }, [projects]);
+  }, [api]);
 
   const loadInstalledSkills = async () => {
     try {
-      const installed = await getInstalledSkills(projects);
+      const installed = await api.getInstalledSkills(projects);
       setInstalledSkills(installed);
     } catch (err) {
       addToast({
@@ -167,9 +207,33 @@ function useSkillStoreData(
 
   // Load installed and popular skills on mount.
   useEffect(() => {
-    // react-doctor-disable-next-line react-hooks-js/set-state-in-effect -- starts the external Tauri and skills.sh reads for the current project set
+    // react-doctor-disable-next-line react-hooks-js/set-state-in-effect -- the mount read populates the initial installed + popular skill state from Tauri and skills.sh
     loadInitialData();
   }, [loadInitialData]);
+
+  // Refresh only the installed list when the user's project set changes
+  // (e.g. adding a project directory from the install drawer's "Choose
+  // directory" button behind Project scope). The first run is skipped: the
+  // mount fetch above already seeded `installedSkills`. After that this
+  // deliberately re-reads the installed list and nothing else - it never
+  // re-fetches popular skills or touches `rawResults`/`hasMore`/`pageRef`,
+  // so an active Browse search's committed `searchQuery` and its result grid
+  // stay consistent. That is the fix for the c0078ad regression in which the
+  // initial fetch re-ran on every `projects` change and overwrote `rawResults`
+  // with popular skills mid-search.
+  const didMountInstalledRefreshRef = useRef(false);
+  useEffect(() => {
+    if (!didMountInstalledRefreshRef.current) {
+      didMountInstalledRefreshRef.current = true;
+      return;
+    }
+    // react-doctor-disable-next-line react-hooks-js/set-state-in-effect -- a changed project directory can change which skills are installed, so re-read the installed list only
+    return startInstalledSkillsRefresh(projects, api.getInstalledSkills, {
+      onInstalled: setInstalledSkills,
+      onError: (message) =>
+        addToast({ type: "error", title: "Failed to Load Installed Skills", message }),
+    });
+  }, [projects, addToast, api]);
 
   // Every result merged with the current installed status - recomputed
   // whenever either input changes, so an install/remove refreshing
@@ -186,7 +250,8 @@ function useSkillStoreData(
 
     if (!query.trim() || query.length < 2) {
       // Show popular skills when no search query
-      return getPopularSkills(0, LIMIT)
+      return api
+        .getPopularSkills(0, LIMIT)
         .then((response) => {
           setRawResults(response.skills);
           setHasMore(response.has_more);
@@ -201,7 +266,8 @@ function useSkillStoreData(
 
     // The v1 search endpoint has no pagination - a single call returns
     // everything up to LIMIT.
-    return searchSkills(query, LIMIT)
+    return api
+      .searchSkills(query, LIMIT)
       .then((response) => {
         setRawResults(response.skills);
         setHasMore(false);
