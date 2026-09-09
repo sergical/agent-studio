@@ -652,4 +652,104 @@ describe("anti-slop interface dictionary rules", () => {
 		).toBe(true);
 		expect(shadowedDiagnostics).toEqual([]);
 	});
+
+	it("drops a non-generic inherited unsafe index signature narrowed by a same-key-kind override", () => {
+		const diagnostics = lintAntiSlopFixture(
+			`interface Base {
+				[key: string]: unknown;
+			}
+			interface Derived extends Base {
+				[key: string]: string;
+			}
+			const derived: Derived = {};
+			void derived;`,
+			["no-unsafe-dictionary-type"],
+		);
+
+		expect(diagnosticCount(diagnostics, "no-unsafe-dictionary-type")).toBe(1);
+		expect(diagnostics[0]?.message).toContain("unknown");
+	});
+
+	it("drops a generic inherited unsafe index signature narrowed by a same-key-kind override", () => {
+		const diagnostics = lintAntiSlopFixture(
+			`interface Base<Value> {
+				[key: string]: Value;
+			}
+			interface Derived extends Base<unknown> {
+				[key: string]: string;
+			}
+			const derived: Derived = {};
+			void derived;`,
+			["no-unsafe-dictionary-type"],
+		);
+
+		expect(diagnostics).toEqual([]);
+	});
+
+	it("keeps reporting a derived consumer when its body declares no override of an inherited unsafe signature", () => {
+		const diagnostics = lintAntiSlopFixture(
+			`interface Base {
+				[key: string]: unknown;
+			}
+			interface Derived extends Base {}
+			const derived: Derived = {};
+			void derived;`,
+			["no-unsafe-dictionary-type"],
+		);
+
+		expect(diagnosticCount(diagnostics, "no-unsafe-dictionary-type")).toBe(2);
+		expect(diagnostics.every((diagnostic) => diagnostic.message.includes("unknown"))).toBe(true);
+	});
+
+	it("still reports a partial override that leaves an inherited unsafe key kind in place", () => {
+		const diagnostics = lintAntiSlopFixture(
+			`interface Base {
+				[key: string]: unknown;
+				[key: number]: unknown;
+			}
+			interface Derived extends Base {
+				[key: string]: string;
+			}
+			const derived: Derived = {};
+			void derived;`,
+			["no-unsafe-dictionary-type"],
+		);
+
+		expect(diagnosticCount(diagnostics, "no-unsafe-dictionary-type")).toBe(3);
+		expect(diagnostics.every((diagnostic) => diagnostic.message.includes("unknown"))).toBe(true);
+	});
+
+	it("keeps the inherited unsafe signature when the direct override covers a different key kind", () => {
+		const diagnostics = lintAntiSlopFixture(
+			`interface Base {
+				[key: string]: unknown;
+			}
+			interface Derived extends Base {
+				[key: number]: string;
+			}
+			const derived: Derived = {};
+			void derived;`,
+			["no-unsafe-dictionary-type"],
+		);
+
+		expect(diagnosticCount(diagnostics, "no-unsafe-dictionary-type")).toBe(2);
+		expect(diagnostics.every((diagnostic) => diagnostic.message.includes("unknown"))).toBe(true);
+	});
+
+	it("drops an inherited unsafe union value narrowed to a safe member by an override", () => {
+		const diagnostics = lintAntiSlopFixture(
+			`interface Base {
+				[key: string]: unknown | string;
+			}
+			interface Derived extends Base {
+				[key: string]: string;
+			}
+			const derived: Derived = {};
+			void derived;`,
+			["no-unsafe-dictionary-type"],
+		);
+
+		expect(diagnosticCount(diagnostics, "no-unsafe-dictionary-type")).toBe(1);
+		expect(diagnostics[0]?.message).toContain("union");
+	});
 });
