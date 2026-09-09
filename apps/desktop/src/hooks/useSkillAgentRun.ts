@@ -8,7 +8,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { cancelSkillAgentRun, onSkillAgentEvent, startSkillAgentRun } from "../lib/skill-agent-api";
 import type { SkillAgentEvent, SkillAgentRunRequest, SkillLoaded } from "@skill-studio/lib";
 
-export type SkillAgentRunStatus = "idle" | "running" | "finished" | "error";
+export type SkillAgentRunStatus = "idle" | "running" | "finished" | "cancelled" | "error";
 
 /** Everything the transcript UI needs to render one run's progress. */
 export interface SkillAgentRunState {
@@ -57,7 +57,10 @@ function applyEvent(state: SkillAgentRunState, event: SkillAgentEvent): SkillAge
       return {
         ...state,
         events,
-        status: event.kind.ok ? "finished" : "error",
+        // A user-initiated cancel is a distinct terminal outcome: the runner
+        // marks it with `cancelled: true` so the transcript renders
+        // "Cancelled" instead of collapsing into the "Failed" error path.
+        status: event.kind.cancelled ? "cancelled" : event.kind.ok ? "finished" : "error",
         finalText: event.kind.final_text,
         sessionId: event.kind.session_id,
         costUsd: event.kind.cost_usd,
@@ -100,7 +103,7 @@ export function useSkillAgentRun() {
       if (event.run_id !== runIdRef.current) return;
       const next = applyEvent(stateRef.current, event);
       setBoth(next);
-      if (next.status === "finished" || next.status === "error")
+      if (next.status === "finished" || next.status === "cancelled" || next.status === "error")
         resolveFinish(finishResolverRef, next);
     });
     return () => {

@@ -126,7 +126,10 @@ export function SkillAgentTranscript({ state }: SkillAgentTranscriptProps) {
     // finished/error footer also grows the box's content without adding an
     // event, so a status flip to either is its own trigger.
     const hasNewContent =
-      state.events.length > 0 || state.status === "finished" || state.status === "error";
+      state.events.length > 0 ||
+      state.status === "finished" ||
+      state.status === "cancelled" ||
+      state.status === "error";
     if (el && stickToBottomRef.current && hasNewContent) {
       el.scrollTop = el.scrollHeight;
     }
@@ -193,7 +196,9 @@ export function SkillAgentTranscript({ state }: SkillAgentTranscriptProps) {
         </div>
       )}
 
-      {(state.status === "finished" || state.status === "error") && (
+      {(state.status === "finished" ||
+        state.status === "cancelled" ||
+        state.status === "error") && (
         <div className="pt-1 text-caption text-text-tertiary">
           {footerLeadSegments(state).join(" · ")}
           {state.skillLoaded !== undefined && (

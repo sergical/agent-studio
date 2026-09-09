@@ -126,6 +126,14 @@ pub enum SkillAgentEventKind {
     },
     Finished {
         ok: bool,
+        /// `true` only for the cancel branch's terminal `Finished`. Carries the
+        /// user-initiated cancel signal as a first-class field so the frontend
+        /// can render "Cancelled" without keying off the `final_text` magic
+        /// string. `#[serde(default)]` so transcripts written before this
+        /// field existed deserialize with `cancelled: false` (a genuine
+        /// finish, never a cancel).
+        #[serde(default)]
+        cancelled: bool,
         final_text: String,
         session_id: Option<String>,
         cost_usd: Option<f64>,
@@ -389,6 +397,7 @@ fn parse_claude_line(
             }
             events.push(SkillAgentEventKind::Finished {
                 ok: !is_error,
+                cancelled: false,
                 final_text,
                 session_id,
                 cost_usd: value.get("total_cost_usd").and_then(Value::as_f64),
@@ -1094,6 +1103,7 @@ async fn run_process(
                 &seq,
                 SkillAgentEventKind::Finished {
                     ok: false,
+                    cancelled: false,
                     final_text: String::new(),
                     session_id: None,
                     cost_usd: None,
@@ -1181,6 +1191,7 @@ async fn run_process(
             &seq,
             SkillAgentEventKind::Finished {
                 ok: false,
+                cancelled: true,
                 final_text: "Cancelled".to_string(),
                 session_id: parse_state.session_id.clone(),
                 cost_usd: None,
@@ -1222,6 +1233,7 @@ async fn run_process(
         &seq,
         SkillAgentEventKind::Finished {
             ok: exit_ok && !had_error,
+            cancelled: false,
             final_text,
             session_id: parse_state.session_id.clone(),
             cost_usd: parse_state.cost_usd,
@@ -1574,6 +1586,7 @@ mod tests {
         match &events[0] {
             SkillAgentEventKind::Finished {
                 ok,
+                cancelled,
                 final_text,
                 cost_usd,
                 duration_ms,
@@ -1581,6 +1594,7 @@ mod tests {
                 ..
             } => {
                 assert!(ok);
+                assert!(!cancelled, "a harness-emitted Finished is not a cancel");
                 assert_eq!(final_text, "BANANA");
                 assert_eq!(*cost_usd, Some(0.061));
                 assert_eq!(*duration_ms, 1200);
@@ -1892,16 +1906,122 @@ mod tests {
         .await;
 
         assert!(runs.lock().unwrap().is_empty());
-        let finished_count = events
+        let mut finished: Vec<SkillAgentEvent> = events
             .lock()
             .unwrap()
             .iter()
             .filter(|e| matches!(e.kind, SkillAgentEventKind::Finished { .. }))
-            .count();
-        assert_eq!(finished_count, 1);
+            .cloned()
+            .collect();
+        assert_eq!(finished.len(), 1, "expected exactly one Finished");
+        // A non-cancelled run's terminal `Finished` is not a cancel.
+        match &finished.pop().unwrap().kind {
+            SkillAgentEventKind::Finished { cancelled, .. } => assert!(!cancelled),
+            other => panic!("expected Finished, got {other:?}"),
+        }
     }
 
-    // -- F5: bounded output framing -----------------------------------------
+    /// Drives `run_process` against a long-lived child (`sleep 30`), cancels
+    /// it mid-run, and asserts the cancel branch emits exactly one terminal
+    /// `Finished { ok: false, cancelled: true, final_text: "Cancelled" }` -
+    /// the structural signal the frontend renders "Cancelled" off of.
+    #[tokio::test]
+    async fn cancel_branch_emits_finished_marked_cancelled() {
+        let dir = tempdir().unwrap();
+        let run_id = new_run_id();
+        let handle = Arc::new(RunHandle::default());
+
+        let events: Arc<Mutex<Vec<SkillAgentEvent>>> = Arc::new(Mutex::new(Vec::new()));
+        let events_clone = events.clone();
+        let sink: EventSink = Box::new(move |event| {
+            events_clone
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .push(event);
+        });
+
+        let handle_for_cancel = handle.clone();
+        let run_task = tokio::spawn(async move {
+            run_process(
+                &sink,
+                &run_id,
+                HarnessId::ClaudeCode,
+                "say-banana",
+                "/bin/sleep",
+                &["30".to_string()],
+                &[],
+                dir.path(),
+                None,
+                &handle_for_cancel,
+            )
+            .await;
+        });
+
+        // Let the child spawn and `Started` emit before cancelling. Even if
+        // the notify races the select!, `Notify::notify_one` stores a permit
+        // the cancel arm consumes, so the cancel branch always wins over the
+        // still-running `sleep`.
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        handle.cancel.notify_one();
+        run_task.await.unwrap();
+
+        let evs = events.lock().unwrap_or_else(|e| e.into_inner()).clone();
+        assert!(
+            evs.iter()
+                .any(|e| matches!(e.kind, SkillAgentEventKind::Started { .. })),
+            "expected a Started event before cancel, got {evs:?}"
+        );
+        let finished: Vec<&SkillAgentEvent> = evs
+            .iter()
+            .filter(|e| matches!(e.kind, SkillAgentEventKind::Finished { .. }))
+            .collect();
+        assert_eq!(
+            finished.len(),
+            1,
+            "expected exactly one Finished, got {evs:?}"
+        );
+        match &finished[0].kind {
+            SkillAgentEventKind::Finished {
+                ok,
+                cancelled,
+                final_text,
+                ..
+            } => {
+                assert!(!ok, "a cancelled run is not ok");
+                assert!(cancelled, "the cancel branch must set cancelled = true");
+                assert_eq!(final_text, "Cancelled");
+            }
+            other => panic!("expected Finished, got {other:?}"),
+        }
+    }
+
+    /// A `Finished` event written before the `cancelled` field existed (older
+    /// `.events.jsonl` transcripts) must still deserialize, defaulting
+    /// `cancelled` to `false` so a pre-fix cancel doesn't read back as
+    /// cancelled by accident - and so the `#[serde(default)]` on an
+    /// internally-tagged enum variant actually works.
+    #[test]
+    fn finished_event_without_cancelled_field_reads_as_not_cancelled() {
+        let legacy = r#"{"run_id":"r","seq":2,"at":"2026-01-01T00:00:00Z","kind":{"kind":"finished","ok":false,"final_text":"Cancelled","session_id":null,"cost_usd":null,"duration_ms":1234,"skill_loaded":"unknown"}}"#;
+        let event: SkillAgentEvent = serde_json::from_str(legacy)
+            .expect("legacy Finished without `cancelled` must still deserialize");
+        match event.kind {
+            SkillAgentEventKind::Finished {
+                ok,
+                cancelled,
+                final_text,
+                ..
+            } => {
+                assert!(!ok);
+                assert!(
+                    !cancelled,
+                    "a Finished with no `cancelled` field defaults to not cancelled"
+                );
+                assert_eq!(final_text, "Cancelled");
+            }
+            other => panic!("expected Finished, got {other:?}"),
+        }
+    }
 
     #[test]
     fn parse_line_malformed_and_partial_records_are_ignored() {

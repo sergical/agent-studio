@@ -13,6 +13,8 @@ import type { SkillRunAction, SkillRunRecord } from "@skill-studio/lib";
 import { formatRelativeTime } from "@skill-studio/lib";
 import { HarnessIcon } from "../ui/HarnessIcon";
 import { SkillAgentTranscript } from "./SkillAgentTranscript";
+import { skillRunHistoryRowOutcome } from "./skill-run-history-row-policy";
+import type { SkillRunRowTone } from "./skill-run-history-row-policy";
 
 interface SkillRunHistoryProps {
   skillName: string;
@@ -25,13 +27,19 @@ const ACTION_LABEL = {
   test: "Test",
 } satisfies Record<SkillRunAction, string>;
 
+const ROW_TONE_CLASS = {
+  success: "text-success",
+  error: "text-error",
+  tertiary: "text-text-tertiary",
+} satisfies Record<SkillRunRowTone, string>;
+
 /** Builds a read-only `SkillAgentRunState` from a recorded run, for `SkillAgentTranscript`. */
 function stateFromRecord(
   record: SkillRunRecord,
   events: SkillAgentRunState["events"],
 ): SkillAgentRunState {
   return {
-    status: record.ok ? "finished" : "error",
+    status: record.cancelled ? "cancelled" : record.ok ? "finished" : "error",
     runId: record.id,
     events,
     finalText: record.final_text,
@@ -130,17 +138,21 @@ export function SkillRunHistory({ skillName, onClose }: SkillRunHistoryProps) {
                 {ACTION_LABEL[run.action]}
               </span>
               <HarnessIcon harness={run.harness} size={12} />
-              <span
-                className={`text-caption font-semibold ${
-                  (run.judge ? run.judge.passed : run.ok) ? "text-success" : "text-error"
-                }`}
-              >
-                {run.judge ? (run.judge.passed ? "Passed" : "Failed") : run.ok ? "OK" : "Failed"}
-              </span>
+              <SkillRunOutcomeLabel record={run} />
             </button>
           ))}
         </div>
       )}
     </div>
+  );
+}
+
+/** The outcome chip on one Runs-history row: "Passed"/"Failed"/"Cancelled"/"OK". */
+function SkillRunOutcomeLabel({ record }: { record: SkillRunRecord }) {
+  const outcome = skillRunHistoryRowOutcome(record);
+  return (
+    <span className={`text-caption font-semibold ${ROW_TONE_CLASS[outcome.tone]}`}>
+      {outcome.label}
+    </span>
   );
 }

@@ -193,6 +193,7 @@ function buildRunRecord(
     started_at: new Date().toISOString(),
     duration_ms: state.durationMs ?? 0,
     ok: state.status === "finished",
+    cancelled: state.status === "cancelled",
     skill_loaded: state.skillLoaded ?? "unknown",
     judge,
     cost_usd: state.costUsd,
@@ -1024,11 +1025,12 @@ export function SkillAssistantPanel({
     });
   }, [runKind, state.status, state.finalText, skillMdPath, dispatchRunSession]);
 
-  // Record every finished/errored Ask or Audit run once. Test records itself
+  // Record every finished/errored/cancelled Ask or Audit run once. Test records itself
   // once, inline, at the end of `runTest`.
   useEffect(() => {
     if (runKind === "test") return;
-    if (state.status !== "finished" && state.status !== "error") return;
+    if (state.status !== "finished" && state.status !== "cancelled" && state.status !== "error")
+      return;
     if (!state.runId || recordedRunIdRef.current === state.runId) return;
     recordedRunIdRef.current = state.runId;
     recordSkillRun(
