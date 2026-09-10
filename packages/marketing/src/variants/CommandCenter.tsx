@@ -1,4 +1,3 @@
-import { useRef, type PointerEvent } from "react";
 import * as stylex from "@stylexjs/stylex";
 import { Code2 } from "lucide-react";
 
@@ -40,31 +39,6 @@ function DownloadButton({ theme }: { theme: SiteTheme }) {
 }
 
 export function CommandCenter({ theme, onToggleTheme }: CommandCenterProps) {
-  const productHalo = useRef<HTMLDivElement>(null);
-
-  const moveProductHalo = (event: PointerEvent<HTMLDivElement>) => {
-    if (
-      event.pointerType !== "mouse" ||
-      window.matchMedia("(prefers-reduced-motion: reduce)").matches
-    ) {
-      return;
-    }
-    const bounds = event.currentTarget.getBoundingClientRect();
-    const x = (event.clientX - bounds.left - bounds.width / 2) * 0.05;
-    const y = (event.clientY - bounds.top - bounds.height / 2) * 0.05;
-    if (productHalo.current) {
-      productHalo.current.style.transform = `translate3d(${x}px, ${y}px, 0) scale(1.04)`;
-      productHalo.current.style.opacity = "0.86";
-    }
-  };
-
-  const resetProductHalo = () => {
-    if (productHalo.current) {
-      productHalo.current.style.transform = "translate3d(0, 0, 0) scale(1)";
-      productHalo.current.style.opacity = "0.62";
-    }
-  };
-
   return (
     <div id="top" {...stylex.props(styles.page, theme === "light" && lightSiteTheme)}>
       <header {...stylex.props(styles.header)}>
@@ -107,18 +81,8 @@ export function CommandCenter({ theme, onToggleTheme }: CommandCenterProps) {
             </div>
           </div>
 
-          <div
-            id="product"
-            onPointerMove={moveProductHalo}
-            onPointerLeave={resetProductHalo}
-            {...stylex.props(styles.productWrap)}
-          >
-            <div
-              ref={productHalo}
-              data-product-halo=""
-              {...stylex.props(styles.productHalo)}
-              aria-hidden="true"
-            />
+          <div id="product" {...stylex.props(styles.productWrap)}>
+            <div {...stylex.props(styles.productHalo)} aria-hidden="true" />
             <ProductMock theme={theme} onToggleTheme={onToggleTheme} />
           </div>
         </section>
@@ -246,6 +210,7 @@ const styles = stylex.create({
     lineHeight: 1.6,
     margin: "30px 0 28px",
     maxWidth: "54ch",
+    textWrap: "pretty",
     "@media (max-width: 600px)": { maxWidth: "34ch" },
   },
   actions: {
@@ -281,7 +246,6 @@ const styles = stylex.create({
       ":hover": {
         backgroundColor: siteTokens.accentHover,
         boxShadow: "0 1px 0 oklch(1 0 0 / .35) inset, 0 14px 38px oklch(0 0 0 / .38)",
-        transform: "scale(1.015)",
       },
       ":hover:active": {
         boxShadow: "0 1px 0 oklch(1 0 0 / .18) inset, 0 4px 12px oklch(0 0 0 / .24)",
@@ -344,7 +308,6 @@ const styles = stylex.create({
     opacity: 0.62,
     pointerEvents: "none",
     position: "absolute",
-    transition: "opacity 220ms ease, transform 600ms cubic-bezier(0.19, 1, 0.22, 1)",
   },
   agentProof: {
     alignItems: "center",
