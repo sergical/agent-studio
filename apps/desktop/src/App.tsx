@@ -140,7 +140,10 @@ function App() {
           emittedSnapshotRevision={emittedSnapshotRevision}
           requestRescan={requestRescan}
         />
-        <main className="flex-1 overflow-y-auto">{main}</main>
+        <div className="flex min-w-0 flex-1 flex-col">
+          <div data-tauri-drag-region className="h-9 shrink-0" />
+          <main className="min-h-0 flex-1 overflow-y-auto [scrollbar-gutter:stable]">{main}</main>
+        </div>
 
         <AddSkillSheet />
         <Toaster
