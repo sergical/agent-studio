@@ -125,7 +125,7 @@ export function addSkillFinishAction(status: AddSkillOperationEvent): AddSkillFi
     return {
       kind: "success",
       title: `Added ${status.result.name}`,
-      message: status.result.warning,
+      message: status.result.warning ?? undefined,
       openName: status.result.name,
     };
   }

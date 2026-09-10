@@ -19,7 +19,6 @@ use std::path::{Path, PathBuf};
 
 use chrono::{DateTime, Utc};
 
-use super::provenance::SourceKind;
 use super::skill_agent_runner::validate_skill_dir_name;
 use super::skill_dto::LifecycleTarget;
 use super::skill_fork::ForkMutationLock;
@@ -30,6 +29,7 @@ use super::skill_lifecycle::{
     find_deployment, require_global_universal_park_target, revalidate_deployment,
 };
 use super::skill_refresh::{self, SkillRefreshState};
+use super::SourceKind;
 
 /// `~/.agents/skills-parked`.
 fn skills_parked_root(home: &Path) -> PathBuf {
@@ -545,14 +545,7 @@ pub fn unpark_skill(
 mod tests {
     use super::*;
 
-    fn write_skill(dir: &Path, name: &str) {
-        fs::create_dir_all(dir).unwrap();
-        fs::write(
-            dir.join("SKILL.md"),
-            format!("---\nname: {name}\ndescription: test\n---\nBody."),
-        )
-        .unwrap();
-    }
+    use super::super::test_support::write_skill;
 
     fn now() -> DateTime<Utc> {
         DateTime::parse_from_rfc3339("2026-01-01T00:00:00Z")

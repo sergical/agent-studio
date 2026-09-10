@@ -7,6 +7,7 @@ import { useRef, useState } from "react";
 import type { KeyboardEvent } from "react";
 import { formatTokens, pluginLabelForSkill } from "@skill-studio/lib";
 import type { InstalledSkill, PackMember, SkillInvocationStats } from "@skill-studio/lib";
+import { Button } from "@skill-studio/ui";
 import { isFeatureEnabled } from "../../lib/feature-flags";
 import type { SortMode } from "../../lib/skill-list-sort";
 import { useAppStore } from "../../store/appStore";
@@ -154,27 +155,31 @@ export function SkillListTable({
                 />
               </div>
               <span className="text-small text-text-secondary">{selectedPaths.size} selected</span>
-              <button
-                className="ml-auto cursor-pointer rounded-sm bg-accent px-3 py-1.5 text-small font-semibold text-text-on-accent disabled:cursor-not-allowed disabled:opacity-50"
+              <Button
+                size="sm"
+                className="ml-auto rounded-sm bg-accent text-text-on-accent"
                 onClick={() => setShowPackPrompt(true)}
                 disabled={selectedPaths.size === 0}
               >
                 Create pack
-              </button>
-              <button
-                className="cursor-pointer rounded-sm border border-border bg-transparent px-3 py-1.5 text-small text-text-tertiary"
+              </Button>
+              <Button
+                variant="outline"
+                size="sm"
+                className="rounded-sm text-text-tertiary"
                 onClick={exitSelectionMode}
               >
                 Cancel
-              </button>
+              </Button>
             </>
           ) : (
-            <button
-              className="h-(--control-height) shrink-0 cursor-pointer rounded-sm border border-border bg-transparent px-3 text-body text-text-secondary transition-colors hover:bg-bg-hover hover:text-text-primary"
+            <Button
+              variant="outline"
+              className="h-(--control-height) shrink-0 rounded-sm px-3 text-body text-text-secondary"
               onClick={enterSelectionMode}
             >
               Select
-            </button>
+            </Button>
           )}
         </div>
       )}
@@ -185,24 +190,26 @@ export function SkillListTable({
             <>
               <p className="m-0">No skills match</p>
               {onClearFilters && (
-                <button
-                  className="h-8 cursor-pointer rounded-sm border border-border bg-bg-tertiary px-3 text-small text-text-primary transition-colors hover:bg-bg-hover"
+                <Button
+                  variant="secondary"
+                  className="rounded-sm border border-border text-text-primary"
                   onClick={onClearFilters}
                 >
                   Clear filters
-                </button>
+                </Button>
               )}
             </>
           ) : (
             <>
               <p className="m-0">You haven't added a skill yet</p>
               {onAddSkill && (
-                <button
-                  className="h-8 cursor-pointer rounded-sm border border-border bg-bg-tertiary px-3 text-small text-text-primary transition-colors hover:bg-bg-hover"
+                <Button
+                  variant="secondary"
+                  className="rounded-sm border border-border text-text-primary"
                   onClick={onAddSkill}
                 >
                   Add skill
-                </button>
+                </Button>
               )}
             </>
           )}
@@ -244,8 +251,9 @@ export function SkillListTable({
                     />
                   </label>
                 )}
-                <button
-                  className={`grid h-11 min-w-0 flex-1 cursor-pointer items-center gap-3 overflow-hidden rounded-md border border-border bg-bg-secondary px-3 text-left transition-colors [grid-template-columns:minmax(0,1.2fr)_minmax(0,1.8fr)_140px_48px_64px] hover:bg-bg-hover active:bg-bg-active ${
+                <Button
+                  variant="ghost"
+                  className={`grid h-11 min-w-0 flex-1 gap-3 overflow-hidden rounded-md border border-border bg-bg-secondary px-3 justify-start text-left [grid-template-columns:minmax(0,1.2fr)_minmax(0,1.8fr)_140px_48px_64px] ${
                     selected
                       ? "border-accent bg-accent-softer shadow-[inset_2px_0_0_var(--color-accent)]"
                       : ""
@@ -305,7 +313,7 @@ export function SkillListTable({
                   <span className="whitespace-nowrap text-right text-small tabular-nums text-text-tertiary">
                     {formatTokens(skill.skill_md_tokens)}
                   </span>
-                </button>
+                </Button>
               </div>
             );
           })}

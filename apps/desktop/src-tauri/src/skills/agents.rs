@@ -8,10 +8,11 @@
 
 use std::path::{Path, PathBuf};
 
+use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
 /// Agent target identifier
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Hash, JsonSchema)]
 #[serde(rename_all = "kebab-case")]
 pub enum AgentId {
     ClaudeCode,
@@ -320,7 +321,7 @@ impl AgentId {
 }
 
 /// Agent target with paths resolved
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct AgentTarget {
     pub id: AgentId,
     pub name: String,

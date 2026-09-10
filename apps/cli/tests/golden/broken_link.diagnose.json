@@ -1,0 +1,87 @@
+{
+  "correlation_id": "-",
+  "data": {
+    "inventory": {
+      "completeness": "complete",
+      "observations": [],
+      "projects": [],
+      "skills": [
+        {
+          "deployments": [
+            {
+              "backing": "linked_to",
+              "content_fingerprint": null,
+              "content_hash": "",
+              "description_tokens": 0,
+              "destination": "universal",
+              "disabled_by": null,
+              "disabled_readers": [],
+              "file_count": 0,
+              "folder_bytes": 0,
+              "folder_truncated": false,
+              "frontmatter": null,
+              "frontmatter_fields": {},
+              "harness": "claude-code",
+              "has_spec": false,
+              "id": "dep:v1/global/claude-code/universal/ghost/-/%24HOME%2F.claude%2Fskills%2Fghost",
+              "in_git_repo": false,
+              "is_symlink": true,
+              "link_target": "$HOME/.claude/skills/../../.agents/skills/missing",
+              "modified_at": "-",
+              "mutability": "read_only",
+              "owner_id": null,
+              "owner_kind": "manual",
+              "path": "$HOME/.claude/skills/ghost",
+              "plugin": null,
+              "resolved_path": null,
+              "root": {
+                "kind": {
+                  "harness": "claude-code",
+                  "kind": "harness"
+                },
+                "scope": {
+                  "scope": "global"
+                }
+              },
+              "shared_via_whole_dir_link": false,
+              "skill_md_tokens": 0,
+              "source_kind": "manual",
+              "spec_violations": [],
+              "studio_disabled": false,
+              "symlink_error": null,
+              "symlink_is_broken": true
+            }
+          ],
+          "description": null,
+          "name": "ghost"
+        }
+      ],
+      "timings": []
+    },
+    "issues": [
+      {
+        "deployment_id": "dep:v1/global/claude-code/universal/ghost/-/%24HOME%2F.claude%2Fskills%2Fghost",
+        "kind": "broken_link",
+        "message": "$HOME/.claude/skills/ghost links to a missing target",
+        "next_action": {
+          "action": "repair_link",
+          "deployment_id": "dep:v1/global/claude-code/universal/ghost/-/%24HOME%2F.claude%2Fskills%2Fghost"
+        },
+        "severity": "error",
+        "skill": "ghost"
+      }
+    ]
+  },
+  "errors": [],
+  "event_id": null,
+  "operation": "diagnose",
+  "schema_version": 1,
+  "scope": {
+    "history_root": "$HOME/.history",
+    "home": "$HOME",
+    "id": "-",
+    "kind": "fixture",
+    "projects": []
+  },
+  "status": "ok"
+}

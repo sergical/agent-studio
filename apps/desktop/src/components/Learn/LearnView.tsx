@@ -5,6 +5,7 @@
 // ============================================================================
 
 import { useEffect, useRef } from "react";
+import { Button } from "@skill-studio/ui";
 import { HarnessIcon } from "../ui/HarnessIcon";
 import { PageShell } from "../Shell/PageShell";
 import { useAppStore } from "../../store/appStore";
@@ -42,12 +43,13 @@ export function LearnView({ section }: LearnViewProps) {
     <PageShell
       title="Learn"
       actions={
-        <button
-          className="flex shrink-0 items-center gap-1.5 p-1 text-small text-text-tertiary transition-colors hover:text-text-primary"
+        <Button
+          variant="ghost"
+          className="h-auto shrink-0 gap-1.5 p-1 text-small text-text-tertiary"
           onClick={() => setActiveView({ kind: "home" })}
         >
           ← Home
-        </button>
+        </Button>
       }
     >
       <div className="grid grid-cols-[180px_minmax(0,1fr)] items-start gap-8">

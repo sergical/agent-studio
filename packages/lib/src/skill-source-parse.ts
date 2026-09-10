@@ -91,3 +91,23 @@ export function parseSkillSource(input: string): ParsedSkillSource | { error: st
 
   return { error: PARSE_ERROR };
 }
+
+/**
+ * Fills in this module's optional `ParsedSkillSource` fields (unset while
+ * the sheet only knows a few of them) with the `null`s the Rust
+ * `ParsedSkillSource` DTO always serializes - see that type's doc comment
+ * in `skill-types.generated.ts` for why every field there is required.
+ */
+export function toWireParsedSkillSource(
+  source: ParsedSkillSource,
+): import("./skill-types.generated").ParsedSkillSource {
+  return {
+    kind: source.kind,
+    repo: source.repo ?? null,
+    path: source.path ?? null,
+    ref: source.ref ?? null,
+    skillName: source.skillName ?? null,
+    url: source.url ?? null,
+    localPath: source.localPath ?? null,
+  };
+}

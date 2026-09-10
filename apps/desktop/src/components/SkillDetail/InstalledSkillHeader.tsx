@@ -52,7 +52,7 @@ function backLabel(from: ActiveView): string {
 }
 
 /** "Parked · Aug 25, 2026" / "Parked" when the timestamp is missing or unparseable. */
-function parkedChipLabel(parkedAt: string | undefined): string {
+function parkedChipLabel(parkedAt: string | null | undefined): string {
   if (!parkedAt) return "Parked";
   const date = new Date(parkedAt);
   if (Number.isNaN(date.getTime())) return "Parked";
@@ -104,14 +104,15 @@ export function InstalledSkillHeader({
   return (
     <header className="flex flex-col gap-4">
       <div className="flex items-center justify-between gap-4">
-        <button
-          className="flex shrink-0 items-center gap-1.5 border-0 bg-transparent p-1 text-small text-text-tertiary transition-colors hover:text-text-primary"
+        <Button
+          variant="ghost"
+          className="h-auto shrink-0 gap-1.5 p-1 text-small text-text-tertiary"
           onClick={onBack}
           aria-label="Back"
         >
           <ArrowLeft size={16} />
           <span>{backLabel(from)}</span>
-        </button>
+        </Button>
         <div className="flex shrink-0 items-center gap-2">
           {actions.primaryAction && (
             <Button onClick={actions.primaryAction.run} disabled={actions.primaryAction.busy}>
@@ -119,10 +120,10 @@ export function InstalledSkillHeader({
             </Button>
           )}
           {assistantEnabled && (
-            <button
+            <Button
               ref={assistantTriggerRef}
-              type="button"
-              className="flex h-(--control-height) items-center gap-1.5 rounded-sm border border-border px-3 text-body text-text-secondary transition-colors hover:bg-bg-tertiary hover:text-text-primary aria-expanded:border-border-focus aria-expanded:text-accent"
+              variant="outline"
+              className="h-(--control-height) gap-1.5 rounded-sm px-3 text-body aria-expanded:border-border-focus aria-expanded:text-accent"
               onClick={onOpenAssistant}
               aria-expanded={isAssistantOpen}
               aria-controls={isAssistantOpen ? SKILL_ASSISTANT_DRAWER_ID : undefined}
@@ -130,7 +131,7 @@ export function InstalledSkillHeader({
             >
               <PanelRight size={16} />
               <span>Assistant</span>
-            </button>
+            </Button>
           )}
           <MenuControl
             triggerClassName="flex h-(--control-height) w-(--control-height) cursor-pointer items-center justify-center rounded-sm border border-border text-text-secondary transition-colors hover:bg-bg-tertiary hover:text-text-primary"
@@ -212,14 +213,15 @@ export function InstalledSkillHeader({
                     : trial.status === "expiring"
                       ? "expiry in progress"
                       : trialChipLabel(trial.expires_at)}
-                  <button
-                    type="button"
-                    className="cursor-pointer rounded-sm border-0 bg-bg-primary px-1.5 py-px text-caption font-semibold text-inherit disabled:cursor-not-allowed disabled:opacity-50"
+                  <Button
+                    variant="secondary"
+                    size="xs"
+                    className="h-auto rounded-sm bg-bg-primary px-1.5 py-px text-caption text-inherit"
                     onClick={keepAction.run}
                     disabled={keepAction.busy}
                   >
                     Keep
-                  </button>
+                  </Button>
                 </span>
               );
             })}

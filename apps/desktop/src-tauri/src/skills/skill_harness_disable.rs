@@ -16,10 +16,10 @@
 //     `restore_deployment_at` rename the deployment's directory into a
 //     sibling `.skill-studio-disabled/` holding directory in the same skills
 //     root. Harnesses scan their skills root one level deep, so the moved
-//     entry becomes invisible to them without touching its content -
-//     `skill_discovery.rs` walks the holding directory the same way so the
-//     UI still shows it (as disabled). Shared-root and plugin-cache
-//     deployments refuse this - see `set_deployment_enabled`.
+//     entry becomes invisible to them without touching its content - core's
+//     `ops::scan` walks the holding directory the same way so the UI still
+//     shows it (as disabled). Shared-root and plugin-cache deployments
+//     refuse this - see `set_deployment_enabled`.
 // ============================================================================
 
 use std::fs;
@@ -31,13 +31,18 @@ use super::event_store::{fingerprint_path, EventDraft, EventStatus, InverseOp};
 use super::opencode_skill_permission;
 use super::skill_agent_runner::validate_skill_dir_name;
 use super::skill_deployment::{BackingRelationship, SkillDestination};
-use super::skill_discovery::STUDIO_DISABLED_DIR_NAME;
 use super::skill_dto::{DisabledBy, HarnessVisibilityTarget, LifecycleTarget};
 use super::skill_fork::ForkMutationLock;
 use super::skill_fork_registry::{
     read_fork_registry, write_fork_registry, ClaudeLinkRemoved, CopyDeploymentRecord, ForkRegistry,
 };
 use super::skill_refresh::{self, SkillRefreshState};
+
+/// Name of the holding directory the universal move-aside disable renames a
+/// deployment into. Core already defines this (`identity::MOVE_ASIDE_DIR_NAME`)
+/// for `ops::scan`'s own one-level-reader skip; re-exported under its old
+/// desktop name so every existing call site here keeps reading unchanged.
+pub(crate) use skill_studio_core::identity::MOVE_ASIDE_DIR_NAME as STUDIO_DISABLED_DIR_NAME;
 
 enum ClaudeLinkState {
     PerSkill,
@@ -921,7 +926,6 @@ pub fn set_deployment_enabled(
 mod tests {
     use super::*;
     use crate::skills::frontmatter::InvocationPolicy;
-    use crate::skills::provenance::SourceKind;
     use crate::skills::skill_deployment::{
         deployment_id, BackingRelationship, DeploymentMutability, SkillDestination,
     };
@@ -929,17 +933,11 @@ mod tests {
     use crate::skills::skill_invocations::InvocationHeatmap;
     use crate::skills::skill_ownership::LifecycleOwnerKind;
     use crate::skills::skill_refresh::SkillSnapshot;
+    use crate::skills::SourceKind;
     use std::collections::BTreeMap;
     use std::fs;
 
-    fn write_skill(dir: &Path, name: &str) {
-        fs::create_dir_all(dir).unwrap();
-        fs::write(
-            dir.join("SKILL.md"),
-            format!("---\nname: {name}\ndescription: test\n---\nBody."),
-        )
-        .unwrap();
-    }
+    use super::super::test_support::write_skill;
 
     fn native_snapshot(agent: &str, entries: &[(&str, &str, Option<&str>)]) -> SkillSnapshot {
         let deployments = entries
@@ -1016,6 +1014,8 @@ mod tests {
             last_test_by_skill: Default::default(),
             update_check: Default::default(),
             opencode_config_kind: None,
+            scan_partial: false,
+            scan_observations: Vec::new(),
         }
     }
 
@@ -1528,7 +1528,7 @@ mod tests {
             agent: "Cursor".to_string(),
             scope: "global".to_string(),
             path: path.to_string_lossy().to_string(),
-            content_hash: crate::skills::skill_discovery::live_skill_content_hash(path).unwrap(),
+            content_hash: crate::skills::core_content_hash::live_skill_content_hash(path).unwrap(),
             disabled,
             disabled_by: disabled.then_some(DisabledBy::StudioMoved),
             ..Default::default()
@@ -1566,38 +1566,33 @@ mod tests {
                 write_fork_registry(home, registry)
             })
             .unwrap();
-        let candidates = crate::skills::skill_discovery::discover_skill_candidates(home, &[]);
-        let candidate = candidates
-            .iter()
-            .find(|candidate| candidate.path == disabled_path)
-            .unwrap();
-        assert!(!candidate.content_hash.is_empty());
-        assert_eq!(candidate.content_hash, initial.content_hash);
-        let (disabled_id, destination, _) = crate::skills::skill_deployment::id_for_candidate(
-            crate::skills::skill_deployment::DeploymentCandidate {
-                name: &candidate.name,
-                root_label: &candidate.root_label,
-                scope: &candidate.scope,
-                path: &candidate.path,
-                project_path: candidate
-                    .project_path
-                    .as_ref()
-                    .and_then(|path| path.to_str()),
-                is_symlink: candidate.is_symlink,
-                symlink_target: candidate.symlink_target.as_deref(),
-                resolved_path: candidate.resolved_path.as_deref(),
-                shared_via_whole_dir_link: candidate.shared_via_whole_dir_link,
-            },
-        );
-        let (owner, _, _) = crate::skills::skill_ownership::classify_lifecycle_owner(
-            candidate,
+        // Run the same core scan the refresh pipeline runs and read the
+        // disabled deployment's owner_kind and content_hash back off it, so
+        // the assertion covers what the app would show, not a local guess.
+        let update_check_path = home.join(".agents/state/update-check.json");
+        let scanned = crate::skills::skill_refresh::core_scan_installed_skills(
+            home,
             &[],
-            destination,
-            &disabled_id,
-            &read_fork_registry(home).unwrap().copies,
+            &update_check_path,
+            &["find-bugs".to_string()],
         );
-        assert_eq!(owner, LifecycleOwnerKind::Copy);
-        assert!(owner.is_mutable());
+        let deployment = scanned
+            .skills
+            .iter()
+            .flat_map(|skill| skill.deployments.iter())
+            .find(|deployment| deployment.path == disabled_path)
+            .unwrap();
+        assert!(!deployment.content_hash.is_empty());
+        assert_eq!(deployment.content_hash, initial.content_hash);
+        assert_eq!(
+            deployment.owner_kind,
+            skill_studio_core::identity::LifecycleOwnerKind::Copy
+        );
+        assert_eq!(
+            deployment.mutability,
+            skill_studio_core::identity::DeploymentMutability::Mutable
+        );
+        let disabled_id = deployment.id.as_str().to_string();
 
         let disabled = copy_deployment(&disabled_path, true);
         assert_eq!(disabled.id, disabled_id);

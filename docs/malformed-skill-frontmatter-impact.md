@@ -14,13 +14,13 @@ The spec does **not** define skip-vs-load for a running agent. Each harness choo
 
 ## Compatibility
 
-| Agent | Parser | Unquoted `key: value: more` | Truly broken YAML | Missing `description` | Explicit invoke | Model invoke | Catalog / tokens |
-| --- | --- | --- | --- | --- | --- | --- | --- |
-| **agentskills.io / skills-ref** | strictyaml | Fail validate | Fail validate | Fail validate | n/a | n/a | Spec: name+description always in catalog |
-| **Claude Code** | Undocumented (lenient) | Load **body, empty metadata** | Same | Body still loads; listing may use first markdown paragraph | `/name` from **directory** still works | No `description` → no auto-match | Listing always includes names; descriptions truncated (1% context budget; 1,536-char cap with `when_to_use`) |
-| **Codex** | `serde_yaml` + line repair | **Repaired** (single-quoted) | `SkillParseError::InvalidYaml`; not in loaded set | `missing field \`description\``; not loaded | `$name` only if parse succeeded | Implicit list only loaded skills | Name + description + path; ≤2% context or 8,000 chars; descriptions shortened first |
-| **OpenCode** | gray-matter, then `sanitize` → `\|-` | **Repaired** | Session error event + log; **skip** | Current loader: `description` optional; catalog `fmt()` **omits** skills with no description | `skill({ name })` → not found if skipped | Same catalog | `<available_skills>` is name+description |
-| **pi** | `yaml` parse, **no** colon repair | **Skip** + warning | Skip + warning | Skip + warning | `/skill:name` only if loaded | Hidden if `disable-model-invocation`; else name+description+location in system prompt | XML catalog of loaded skills only |
+| Agent                           | Parser                               | Unquoted `key: value: more`   | Truly broken YAML                                 | Missing `description`                                                                        | Explicit invoke                          | Model invoke                                                                          | Catalog / tokens                                                                                             |
+| ------------------------------- | ------------------------------------ | ----------------------------- | ------------------------------------------------- | -------------------------------------------------------------------------------------------- | ---------------------------------------- | ------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------ |
+| **agentskills.io / skills-ref** | strictyaml                           | Fail validate                 | Fail validate                                     | Fail validate                                                                                | n/a                                      | n/a                                                                                   | Spec: name+description always in catalog                                                                     |
+| **Claude Code**                 | Undocumented (lenient)               | Load **body, empty metadata** | Same                                              | Body still loads; listing may use first markdown paragraph                                   | `/name` from **directory** still works   | No `description` → no auto-match                                                      | Listing always includes names; descriptions truncated (1% context budget; 1,536-char cap with `when_to_use`) |
+| **Codex**                       | `serde_yaml` + line repair           | **Repaired** (single-quoted)  | `SkillParseError::InvalidYaml`; not in loaded set | `missing field \`description\``; not loaded                                                  | `$name` only if parse succeeded          | Implicit list only loaded skills                                                      | Name + description + path; ≤2% context or 8,000 chars; descriptions shortened first                          |
+| **OpenCode**                    | gray-matter, then `sanitize` → `\|-` | **Repaired**                  | Session error event + log; **skip**               | Current loader: `description` optional; catalog `fmt()` **omits** skills with no description | `skill({ name })` → not found if skipped | Same catalog                                                                          | `<available_skills>` is name+description                                                                     |
+| **pi**                          | `yaml` parse, **no** colon repair    | **Skip** + warning            | Skip + warning                                    | Skip + warning                                                                               | `/skill:name` only if loaded             | Hidden if `disable-model-invocation`; else name+description+location in system prompt | XML catalog of loaded skills only                                                                            |
 
 Sources: [Claude Code skills](https://code.claude.com/docs/en/skills) (Troubleshooting: malformed YAML); [Codex build skills](https://developers.openai.com/codex/skills); [`codex-rs/skills/src/parser.rs`](https://github.com/openai/codex/blob/main/codex-rs/skills/src/parser.rs) (`aef295cd`); [`parser_tests.rs`](https://github.com/openai/codex/blob/main/codex-rs/skills/src/parser_tests.rs); [OpenCode skills](https://opencode.ai/docs/skills/); `packages/opencode/src/skill/index.ts` on `dev` (`5a04ec21`); [`packages/core/src/config/markdown.ts`](https://github.com/anomalyco/opencode/blob/2a33addd/packages/core/src/config/markdown.ts); [pi skills](https://pi.dev/docs/latest/skills); [`packages/coding-agent/src/core/skills.ts`](https://github.com/earendil-works/pi/blob/main/packages/coding-agent/src/core/skills.ts) `loadSkillFromFile`; [`frontmatter.ts`](https://github.com/earendil-works/pi/blob/main/packages/coding-agent/src/utils/frontmatter.ts); [pi#4725](https://github.com/earendil-works/pi/issues/4725) / [pi#4532](https://github.com/earendil-works/pi/issues/4532) (maintainers reject non-YAML fallbacks).
 
@@ -47,12 +47,12 @@ Do not claim measured latency or energy numbers. Observable effects are skip, em
 
 ## Safe repair forms
 
-| Form | Compatible with |
-| --- | --- |
-| Double- or single-quoted scalar | All four agents + skills-ref (escape inner quotes) |
-| Literal `\|` / `\|-` | All four; Codex tests keep block bodies while repairing sibling keys |
-| Folded `>` / `>-` | YAML 1.2; OpenCode sanitize leaves existing `>`/`\|` alone |
-| JSON flow `[]` / `{}` | Claude/Codex/OpenCode/pi likely; **skills-ref fails** |
+| Form                            | Compatible with                                                      |
+| ------------------------------- | -------------------------------------------------------------------- |
+| Double- or single-quoted scalar | All four agents + skills-ref (escape inner quotes)                   |
+| Literal `\|` / `\|-`            | All four; Codex tests keep block bodies while repairing sibling keys |
+| Folded `>` / `>-`               | YAML 1.2; OpenCode sanitize leaves existing `>`/`\|` alone           |
+| JSON flow `[]` / `{}`           | Claude/Codex/OpenCode/pi likely; **skills-ref fails**                |
 
 Prefer quoting the `description` line, or `description: \|-` plus indented text. Do not introduce flow collections in `metadata` if `skills-ref validate` matters.
 

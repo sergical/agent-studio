@@ -15,6 +15,10 @@ function event(forceRestorable: boolean): SkillEvent {
     status: "done",
     restorable: true,
     force_restorable: forceRestorable,
+    harness: null,
+    project_path: null,
+    reverted_by: null,
+    scope: null,
   };
 }
 

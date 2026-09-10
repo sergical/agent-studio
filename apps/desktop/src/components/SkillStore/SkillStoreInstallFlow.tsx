@@ -18,6 +18,7 @@ import {
 import { addSkill, getAddMethodDefaults } from "../../lib/skill-api";
 import { useAppStore } from "../../store/appStore";
 import type { SkillInstallCompletion } from "./InstallControls";
+import { toWireParsedSkillSource } from "@skill-studio/lib";
 import type { AgentId, InstallScope, SkillDestination, SkillWithStatus } from "@skill-studio/lib";
 
 const ACTION_BUTTON_CLASS =
@@ -111,12 +112,12 @@ export function SkillStoreInstallFlow({
     }
 
     addSkill({
-      source: {
+      source: toWireParsedSkillSource({
         kind: "github",
         repo: repoSource,
         path: skill.name,
         skillName: skill.name,
-      },
+      }),
       method: "skills-sh",
       scope: installScope,
       destination,
@@ -127,11 +128,15 @@ export function SkillStoreInstallFlow({
         claudeReadsUniversal,
         claudeLink,
       ),
-      project_path: installScope === "project" ? (selectedProject ?? undefined) : undefined,
+      project_path: installScope === "project" ? (selectedProject ?? null) : null,
       trial: false,
     })
       .then((result) => {
-        onInstallComplete({ success: true, skillName: result.name, warning: result.warning });
+        onInstallComplete({
+          success: true,
+          skillName: result.name,
+          warning: result.warning ?? undefined,
+        });
       })
       .catch((error) => {
         onInstallComplete({

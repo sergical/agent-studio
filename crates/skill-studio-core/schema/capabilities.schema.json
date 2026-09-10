@@ -1,0 +1,445 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Capabilities",
+  "description": "Result of the `capabilities` operation.",
+  "type": "object",
+  "properties": {
+    "harnesses": {
+      "description": "One report per requested harness, in catalog order.",
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/CapabilityReport"
+      }
+    },
+    "tools": {
+      "description": "Tools the caller asked about, in request order. Empty unless the\nrequest named tools and a [`crate::ports::ToolLookup`] port exists.",
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/ToolAvailability"
+      }
+    }
+  },
+  "required": [
+    "harnesses",
+    "tools"
+  ],
+  "$defs": {
+    "AgentId": {
+      "description": "Kebab-case harness identifier, for example `claude-code` or `open-code`.\n\nInvariant: the string is the serde wire name used by the desktop app\ntoday. `open-code` is canonical; `opencode` is only a CLI binary name and\nis never stored in an `AgentId`.",
+      "type": "string"
+    },
+    "CapabilityReport": {
+      "description": "Answer to the `capabilities` operation for one harness.",
+      "type": "object",
+      "properties": {
+        "discovery": {
+          "description": "Roots the scanner will visit for this harness.",
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/RootSpec"
+          }
+        },
+        "harness": {
+          "description": "Harness.",
+          "$ref": "#/$defs/AgentId"
+        },
+        "native_disable": {
+          "description": "Native disable facts.",
+          "anyOf": [
+            {
+              "$ref": "#/$defs/NativeDisableSpec"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "observed": {
+          "description": "Machine facts, when the caller asked for them.",
+          "anyOf": [
+            {
+              "$ref": "#/$defs/HarnessObserved"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "operations": {
+          "description": "Per-operation support derived from the facts.",
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/OperationSupport"
+          }
+        },
+        "runtime_notes": {
+          "description": "Notes for a person (unverified rows, open issues).",
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
+      },
+      "required": [
+        "harness",
+        "discovery",
+        "operations",
+        "runtime_notes"
+      ]
+    },
+    "Confidence": {
+      "description": "How sure the catalog is about a fact.",
+      "oneOf": [
+        {
+          "description": "Read from the vendor's documentation or repository.",
+          "type": "string",
+          "const": "verified-from-docs"
+        },
+        {
+          "description": "Derived from a secondary source or an issue thread.",
+          "type": "string",
+          "const": "inferred"
+        },
+        {
+          "description": "Not found in any primary source.",
+          "type": "string",
+          "const": "unknown"
+        }
+      ]
+    },
+    "DisableMechanism": {
+      "description": "Native switch a harness offers to hide one skill.",
+      "oneOf": [
+        {
+          "description": "Claude Code `settings.json` `skillOverrides`.",
+          "type": "string",
+          "const": "claude_skill_overrides"
+        },
+        {
+          "description": "Codex `config.toml` `[[skills.config]]`.",
+          "type": "string",
+          "const": "codex_skills_config"
+        },
+        {
+          "description": "OpenCode `opencode.json(c)` permission rule `{ action: \"skill\",\nresource, effect }` (v2) or `permission.skill` map (v1).",
+          "type": "string",
+          "const": "opencode_permission"
+        },
+        {
+          "description": "pi `settings.json` `skills` exclusions (`!pattern`, `-path`), also\nwritten by `pi config`.",
+          "type": "string",
+          "const": "pi_settings"
+        },
+        {
+          "description": "Skill Studio removes the per-skill link under `~/.claude/skills`.",
+          "type": "string",
+          "const": "claude_link_removed"
+        },
+        {
+          "description": "Skill Studio moves the folder into `.skill-studio-disabled`.",
+          "type": "string",
+          "const": "studio_moved"
+        }
+      ]
+    },
+    "DisabledBy": {
+      "description": "Why a deployment is off, as shown to the user.\n\nInvariant: the first four names match the desktop wire today; the last\ntwo are new and only appear once the matching mechanism is supported.",
+      "oneOf": [
+        {
+          "description": "Codex `[[skills.config]] enabled = false`.",
+          "type": "string",
+          "const": "codex-config"
+        },
+        {
+          "description": "OpenCode `permission.skill` deny.",
+          "type": "string",
+          "const": "opencode-permission"
+        },
+        {
+          "description": "The Claude Code per-skill link was removed.",
+          "type": "string",
+          "const": "claude-link-removed"
+        },
+        {
+          "description": "Skill Studio moved the folder aside.",
+          "type": "string",
+          "const": "studio-moved"
+        },
+        {
+          "description": "Claude Code `skillOverrides` set to `off`.",
+          "type": "string",
+          "const": "claude-skill-overrides"
+        },
+        {
+          "description": "pi per-skill toggle.",
+          "type": "string",
+          "const": "pi-settings"
+        }
+      ]
+    },
+    "Evidence": {
+      "description": "Where a fact comes from.",
+      "type": "object",
+      "properties": {
+        "confidence": {
+          "description": "Confidence level.",
+          "$ref": "#/$defs/Confidence"
+        },
+        "source": {
+          "description": "URL or document reference.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "source",
+        "confidence"
+      ]
+    },
+    "HarnessObserved": {
+      "description": "Facts observed on this machine, as opposed to documented facts.",
+      "type": "object",
+      "properties": {
+        "config_present": {
+          "description": "The native config file exists.",
+          "type": "boolean"
+        },
+        "config_writable": {
+          "description": "The native config file can be written (parsed and not `.jsonc`).",
+          "$ref": "#/$defs/Support"
+        },
+        "runner_binary": {
+          "description": "Resolved runner binary, when found on `PATH`.",
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "config_present",
+        "config_writable"
+      ]
+    },
+    "NativeDisableSpec": {
+      "description": "Native disable facts for one harness.",
+      "type": "object",
+      "properties": {
+        "disabled_by": {
+          "description": "Value reported on a disabled deployment.",
+          "$ref": "#/$defs/DisabledBy"
+        },
+        "evidence": {
+          "description": "Evidence for the mechanism.",
+          "$ref": "#/$defs/Evidence"
+        },
+        "mechanism": {
+          "description": "The switch.",
+          "$ref": "#/$defs/DisableMechanism"
+        },
+        "scopes": {
+          "description": "Scope levels the switch works at.",
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/ScopeLevel"
+          }
+        },
+        "writable": {
+          "description": "Whether Skill Studio can write the switch safely.",
+          "$ref": "#/$defs/Support"
+        }
+      },
+      "required": [
+        "mechanism",
+        "scopes",
+        "writable",
+        "disabled_by",
+        "evidence"
+      ]
+    },
+    "OperationSupport": {
+      "description": "Support for one core operation on one harness.",
+      "type": "object",
+      "properties": {
+        "operation": {
+          "description": "Operation name, as used in the envelope.",
+          "type": "string"
+        },
+        "support": {
+          "description": "Support.",
+          "$ref": "#/$defs/Support"
+        }
+      },
+      "required": [
+        "operation",
+        "support"
+      ]
+    },
+    "RootRole": {
+      "description": "Role of a root the harness reads.",
+      "oneOf": [
+        {
+          "description": "The harness's own skills directory.",
+          "type": "string",
+          "const": "own"
+        },
+        {
+          "description": "The shared `.agents/skills` root.",
+          "type": "string",
+          "const": "universal"
+        },
+        {
+          "description": "A legacy directory still read for compatibility.",
+          "type": "string",
+          "const": "legacy"
+        },
+        {
+          "description": "A plugin cache that ships skills.",
+          "type": "string",
+          "const": "plugin_cache"
+        },
+        {
+          "description": "A root another harness owns that this harness also reads.",
+          "type": "string",
+          "const": "cross_harness"
+        }
+      ]
+    },
+    "RootSpec": {
+      "description": "One root a harness reads.",
+      "type": "object",
+      "properties": {
+        "evidence": {
+          "description": "Evidence.",
+          "$ref": "#/$defs/Evidence"
+        },
+        "level": {
+          "description": "Global or project.",
+          "$ref": "#/$defs/ScopeLevel"
+        },
+        "recursive": {
+          "description": "True when the harness walks subdirectories for `SKILL.md`.",
+          "type": "boolean"
+        },
+        "relative_path": {
+          "description": "Path relative to the home or the project.",
+          "type": "string"
+        },
+        "role": {
+          "description": "Role.",
+          "$ref": "#/$defs/RootRole"
+        }
+      },
+      "required": [
+        "level",
+        "relative_path",
+        "role",
+        "recursive",
+        "evidence"
+      ]
+    },
+    "ScopeLevel": {
+      "description": "Global (`~`) or project scope level.",
+      "oneOf": [
+        {
+          "description": "Under the home root.",
+          "type": "string",
+          "const": "global"
+        },
+        {
+          "description": "Under a project root.",
+          "type": "string",
+          "const": "project"
+        }
+      ]
+    },
+    "Support": {
+      "description": "Whether a harness supports one capability.\n\nInvariant: `Unknown` carries no evidence and is never treated as `No`.\nAn operation that needs a `Yes` refuses on `Unknown` with\n[`crate::error::ErrorCode::Unsupported`] and names the missing evidence.",
+      "oneOf": [
+        {
+          "description": "Supported.",
+          "type": "object",
+          "properties": {
+            "evidence": {
+              "$ref": "#/$defs/Evidence"
+            },
+            "support": {
+              "type": "string",
+              "const": "yes"
+            }
+          },
+          "required": [
+            "support",
+            "evidence"
+          ]
+        },
+        {
+          "description": "Not supported.",
+          "type": "object",
+          "properties": {
+            "evidence": {
+              "$ref": "#/$defs/Evidence"
+            },
+            "support": {
+              "type": "string",
+              "const": "no"
+            }
+          },
+          "required": [
+            "support",
+            "evidence"
+          ]
+        },
+        {
+          "description": "Supported with limits described in the evidence source.",
+          "type": "object",
+          "properties": {
+            "evidence": {
+              "$ref": "#/$defs/Evidence"
+            },
+            "support": {
+              "type": "string",
+              "const": "partial"
+            }
+          },
+          "required": [
+            "support",
+            "evidence"
+          ]
+        },
+        {
+          "description": "No primary source found.",
+          "type": "object",
+          "properties": {
+            "support": {
+              "type": "string",
+              "const": "unknown"
+            }
+          },
+          "required": [
+            "support"
+          ]
+        }
+      ]
+    },
+    "ToolAvailability": {
+      "description": "Whether one executable was found on `PATH`.",
+      "type": "object",
+      "properties": {
+        "name": {
+          "description": "Name as requested (`npx`, `dotagents`, `gh`).",
+          "type": "string"
+        },
+        "path": {
+          "description": "Resolved path, `None` when the tool is absent.",
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "name"
+      ]
+    }
+  }
+}

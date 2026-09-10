@@ -7,6 +7,7 @@
 
 import { useCallback, useEffect, useEffectEvent, useRef, useState } from "react";
 import { ArrowLeft } from "lucide-react";
+import { Button } from "@skill-studio/ui";
 import {
   forkSkill,
   previewSkillFrontmatterRepair,
@@ -369,14 +370,15 @@ export function SkillPage({
     return (
       <div className="mx-auto flex max-w-[1200px] flex-col gap-6 pt-7 pb-7 px-8">
         <div className="flex items-center gap-4">
-          <button
-            className="flex shrink-0 items-center gap-1.5 border-0 bg-transparent p-1 text-small text-text-tertiary transition-colors hover:text-text-primary"
+          <Button
+            variant="ghost"
+            className="h-auto shrink-0 gap-1.5 p-1 text-small text-text-tertiary"
             onClick={onBack}
             aria-label="Back"
           >
             <ArrowLeft size={16} />
             <span>{from.kind === "home" ? "Home" : "Back"}</span>
-          </button>
+          </Button>
         </div>
         <p className="text-body text-text-tertiary">This skill is no longer installed.</p>
       </div>

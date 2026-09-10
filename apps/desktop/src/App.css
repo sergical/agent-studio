@@ -216,7 +216,11 @@ body {
   outline: 2px solid var(--color-border-focus);
   outline-offset: 2px;
 }
-:where(input[data-slot="input"], textarea[data-slot="textarea"]):focus-visible {
+:where(
+  input[data-slot="input"],
+  textarea[data-slot="textarea"],
+  [data-slot="button"]
+):focus-visible {
   outline: none;
 } /* One frame of frozen transitions during a theme switch, so every
      component's own transition timing doesn't turn it into a ragged

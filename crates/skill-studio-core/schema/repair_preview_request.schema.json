@@ -1,0 +1,21 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "RepairPreviewRequest",
+  "description": "Request for `preview_frontmatter_repair`.",
+  "type": "object",
+  "properties": {
+    "deployment_id": {
+      "description": "Target deployment.",
+      "$ref": "#/$defs/DeploymentId"
+    }
+  },
+  "required": [
+    "deployment_id"
+  ],
+  "$defs": {
+    "DeploymentId": {
+      "description": "Opaque deployment id.\n\nInvariant: the string starts with `dep:v1/`. Its internal layout is a core\ndetail; adapters and the UI compare it as a string and never split it.",
+      "type": "string"
+    }
+  }
+}

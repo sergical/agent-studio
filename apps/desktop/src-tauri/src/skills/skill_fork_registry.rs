@@ -21,18 +21,19 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 
+use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
-use super::provenance::SourceKind;
 use super::skill_deployment::SkillDestination;
 use super::skill_dto::InstallScope;
+use super::SourceKind;
 
 fn path_is_empty(path: &Path) -> bool {
     path.as_os_str().is_empty()
 }
 
 /// Which CLI a forked skill was originally managed by.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "kebab-case")]
 pub enum OriginTool {
     Dotagents,
@@ -42,7 +43,7 @@ pub enum OriginTool {
 /// How `add_skill` installed a skill - shared by `AddSkillRequest.method` and
 /// `TrialRecord.method`, since a trial's expiry step needs to know which tool
 /// (if any) owns the skill it's about to remove.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "kebab-case")]
 pub enum AddMethod {
     Dotagents,
@@ -51,7 +52,7 @@ pub enum AddMethod {
 }
 
 /// Which scope a trial (or an `add_skill` request) targeted.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "lowercase")]
 pub enum TrialScope {
     Global,
@@ -60,7 +61,7 @@ pub enum TrialScope {
 
 /// Durable state for trial expiry. `Expiring` prevents an interrupted CLI
 /// removal from matching a later installation at the same path.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default, JsonSchema)]
 #[serde(rename_all = "kebab-case")]
 pub enum TrialStatus {
     #[default]
@@ -132,7 +133,7 @@ pub fn name_from_trial_key(key: &str) -> &str {
 /// One forked skill's provenance, enough to reinstall it from its origin
 /// (`unfork_skill`) or to fetch its upstream at a specific commit
 /// (`pull_fork_upstream`).
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct ForkRecord {
     /// Global Universal deployment detached by this fork. Empty only for a
     /// legacy record, which callers must resolve by its exact local path.
@@ -196,7 +197,7 @@ pub struct ClaudeLinkRemoved {
 /// One skill bundled into a pack: `name` is its directory name, `path` is
 /// the exact deployment directory it was bundled from - see
 /// `skill_pack::resolve_members`.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct PackMember {
     pub name: String,
     pub path: PathBuf,

@@ -7,6 +7,7 @@
 
 import { formatTokens, groupPluginSkills, pluginSkillsView } from "@skill-studio/lib";
 import type { InstalledSkill, PluginGroup, SkillSnapshot } from "@skill-studio/lib";
+import { Button } from "@skill-studio/ui";
 import { PageShell } from "../Shell/PageShell";
 import { HarnessIcon, harnessIdFromLabel } from "../ui/HarnessIcon";
 
@@ -59,9 +60,10 @@ export function PluginSkillsView({ snapshot, onSelectSkill }: PluginSkillsViewPr
                 </header>
                 <div className="flex flex-col gap-1.5">
                   {skills.map((skill) => (
-                    <button
+                    <Button
                       key={skill.name}
-                      className="grid h-11 min-w-0 cursor-pointer items-center gap-3 overflow-hidden rounded-md border border-border bg-bg-secondary px-3 text-left transition-colors [grid-template-columns:minmax(0,1fr)_minmax(0,2fr)_64px] hover:bg-bg-hover"
+                      variant="ghost"
+                      className="grid h-11 min-w-0 gap-3 overflow-hidden rounded-md border border-border bg-bg-secondary px-3 justify-start text-left [grid-template-columns:minmax(0,1fr)_minmax(0,2fr)_64px]"
                       onClick={() => onSelectSkill(skill.name, deploymentPathInGroup(skill, group))}
                     >
                       <span className="truncate text-body font-semibold text-text-primary">
@@ -73,7 +75,7 @@ export function PluginSkillsView({ snapshot, onSelectSkill }: PluginSkillsViewPr
                       <span className="whitespace-nowrap text-right text-caption tabular-nums text-text-tertiary">
                         {formatTokens(skill.skill_md_tokens)}
                       </span>
-                    </button>
+                    </Button>
                   ))}
                 </div>
               </section>

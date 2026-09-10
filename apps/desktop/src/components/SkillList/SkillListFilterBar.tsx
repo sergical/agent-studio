@@ -6,7 +6,7 @@
 
 import { ChevronDown, LayoutGrid, List, ListFilter, Search, X } from "lucide-react";
 import { ask } from "@tauri-apps/plugin-dialog";
-import { ToggleGroup, ToggleGroupItem } from "@skill-studio/ui";
+import { Button, Input, ToggleGroup, ToggleGroupItem } from "@skill-studio/ui";
 import { harnessesPresent } from "@skill-studio/lib";
 import { isProjectScope, type SkillListFilter } from "@skill-studio/lib";
 import { shortProjectPath } from "@skill-studio/lib";
@@ -85,13 +85,15 @@ function projectScopeLabel(filter: SkillListFilter): string {
 /** One removable chip in the active-filters row: a label and an "×" that clears that field. */
 function ActiveChip({ label, onClear }: { label: string; onClear: () => void }) {
   return (
-    <button
-      className="inline-flex h-6 cursor-pointer items-center gap-1.5 rounded-sm border-0 bg-accent-soft px-2 text-caption text-text-secondary transition-colors hover:bg-accent-softer"
+    <Button
+      variant="ghost"
+      size="xs"
+      className="gap-1.5 rounded-sm bg-accent-soft px-2 text-text-secondary hover:bg-accent-softer"
       onClick={onClear}
     >
       {label}
       <X size={11} />
-    </button>
+    </Button>
   );
 }
 
@@ -154,8 +156,8 @@ export function SkillListFilterBar({
       <div className="flex flex-wrap items-center gap-2.5">
         <div className="relative flex w-60 items-center text-text-tertiary">
           <Search size={13} className="pointer-events-none absolute left-3" />
-          <input
-            className="h-(--control-height) w-full rounded-sm border border-border bg-bg-primary py-0 pr-3 pl-8 text-body text-text-primary transition-colors placeholder:text-text-quaternary focus-visible:border-border-focus"
+          <Input
+            className="h-(--control-height) w-full pr-3 pl-8"
             value={filter.query}
             onChange={(e) => onChange({ ...filter, query: e.target.value })}
             placeholder="Filter skills…"
@@ -377,12 +379,9 @@ export function SkillListFilterBar({
               onClear={() => onChange({ ...filter, usage: undefined })}
             />
           )}
-          <button
-            className="h-6 cursor-pointer border-0 bg-transparent px-2 text-caption text-text-tertiary transition-colors hover:text-text-primary"
-            onClick={onReset}
-          >
+          <Button variant="ghost" size="xs" className="px-2 text-text-tertiary" onClick={onReset}>
             Clear all
-          </button>
+          </Button>
         </div>
       )}
     </div>

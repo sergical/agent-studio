@@ -8,7 +8,7 @@
 
 import { useState } from "react";
 import type { ReactNode } from "react";
-import { Popover, PopoverContent, PopoverTrigger } from "@skill-studio/ui";
+import { Button, Popover, PopoverContent, PopoverTrigger } from "@skill-studio/ui";
 
 interface InfoPopoverProps {
   /** aria-label for the ⓘ trigger button, e.g. "About broken". */
@@ -54,14 +54,14 @@ export function InfoPopover({ label, title, children, onLearnMore, className }: 
         >
           <p className="m-0">{children}</p>
           {onLearnMore && (
-            <button
-              type="button"
-              className="inline-flex items-center gap-1 border-0 bg-none p-0 text-small text-accent hover:underline"
+            <Button
+              variant="link"
+              className="h-auto gap-1 p-0 text-small"
               onClick={handleLearnMore}
             >
               Learn more
               <span aria-hidden="true">→</span>
-            </button>
+            </Button>
           )}
         </PopoverContent>
       </Popover>

@@ -4,13 +4,10 @@
 // against one skill, and the streamed transcript events it produces
 // ============================================================================
 
-import type { AgentId } from "./skill-types";
-
-/**
- * One of the four first-class agents a skill run can target. Same wire
- * format as `AgentId`, but scoped to the harnesses the local runner drives.
- */
-export type HarnessId = Extract<AgentId, "claude-code" | "codex" | "open-code" | "pi">;
+// `HarnessId` is Rust's `skill_agent_runner::HarnessId` (see skill-types.ts) -
+// re-exported here instead of redeclared so the two can't drift apart.
+import type { HarnessId } from "./skill-types";
+export type { HarnessId };
 
 /** Whether a run may write to its scratch directory or only read it. */
 export type WriteAccess = "read_only" | "workspace";

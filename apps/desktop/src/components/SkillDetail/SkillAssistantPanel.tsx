@@ -864,13 +864,9 @@ function AskComposer({
         {sessionId ? (
           <span className="text-caption text-text-tertiary">
             Continues the current session ·{" "}
-            <button
-              type="button"
-              className="cursor-pointer border-0 bg-transparent p-0 text-caption text-accent transition-colors hover:text-accent-hover"
-              onClick={onNewSession}
-            >
+            <Button variant="link" className="h-auto p-0 text-caption" onClick={onNewSession}>
               New session
-            </button>
+            </Button>
           </span>
         ) : (
           <span />

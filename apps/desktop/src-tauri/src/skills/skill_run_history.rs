@@ -59,7 +59,7 @@ pub enum SkillRunAction {
 
 /// The cheap per-skill index `build_snapshot` reads for every skill's
 /// dashboard/list row, written alongside every full record.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct SkillRunSummary {
     pub at: String,
     pub harness: HarnessId,
