@@ -1558,7 +1558,7 @@ const styles = stylex.create({
     outline: "none",
     padding: 0,
     width: "100%",
-    "@media (max-width: 680px)": { fontSize: 15 },
+    "@media (max-width: 680px)": { fontSize: 16 },
   },
   addSkill: {
     alignItems: "center",
@@ -1658,6 +1658,7 @@ const styles = stylex.create({
     scrollbarWidth: "none",
     "::-webkit-scrollbar": { display: "none" },
     "@media (max-width: 680px)": { height: 424, width: "100%" },
+    "@media (prefers-reduced-motion: reduce)": { animationName: "none" },
   },
   page: {
     display: "flex",
@@ -1774,7 +1775,7 @@ const styles = stylex.create({
     width: "100%",
     ":focus": { borderColor: tokens.accent },
   },
-  addSkillHelp: { color: tokens.faint, fontSize: 10, lineHeight: 1.4 },
+  addSkillHelp: { color: tokens.faint, fontSize: 12, lineHeight: 1.4 },
   methodPicker: { display: "flex" },
   methodButton: {
     backgroundColor: "transparent",
@@ -1833,7 +1834,7 @@ const styles = stylex.create({
   installTargetPath: {
     color: tokens.faint,
     fontFamily: "ui-monospace, SFMono-Regular, Menlo, monospace",
-    fontSize: 10,
+    fontSize: 12,
   },
   installSwitch: {
     backgroundColor: tokens.raised,
@@ -2216,7 +2217,7 @@ const styles = stylex.create({
   location: { alignItems: "center", color: tokens.muted, display: "flex", gap: 6, minWidth: 0 },
   agentStack: { alignItems: "center", display: "flex", gap: 4 },
   number: { color: tokens.muted, fontVariantNumeric: "tabular-nums", textAlign: "right" },
-  empty: { color: tokens.muted, fontSize: 10, textAlign: "center" },
+  empty: { color: tokens.muted, fontSize: 12, textAlign: "center" },
   pluginGroups: { display: "flex", flexDirection: "column", gap: 16 },
   pluginGroup: {
     backgroundColor: "transparent",
@@ -2490,6 +2491,7 @@ const styles = stylex.create({
     lineHeight: 1.5,
     margin: 0,
     maxWidth: "65ch",
+    textWrap: "pretty",
   },
   chips: { display: "flex", gap: 6 },
   chip: {

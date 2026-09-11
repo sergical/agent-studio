@@ -62,7 +62,7 @@ export function MarketingSite() {
   };
 
   return (
-    <div {...stylex.props(getPaletteTheme("mono"))}>
+    <div {...stylex.props(getPaletteTheme("violet"))}>
       <CommandCenter theme={theme} onToggleTheme={toggleTheme} />
     </div>
   );
