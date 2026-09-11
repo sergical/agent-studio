@@ -368,7 +368,7 @@ export function SkillPage({
 
   if (!skill) {
     return (
-      <div className="mx-auto flex max-w-[1200px] flex-col gap-6 pt-7 pb-7 px-8">
+      <div className="mx-auto flex max-w-[1200px] flex-col gap-6 px-8 pt-9 pb-7">
         <div className="flex items-center gap-4">
           <Button
             variant="ghost"
@@ -386,7 +386,7 @@ export function SkillPage({
   }
 
   return (
-    <div className="mx-auto flex max-w-[1200px] flex-col gap-6 pt-7 pb-7 px-8">
+    <div className="mx-auto flex max-w-[1200px] flex-col gap-6 px-8 pt-9 pb-7">
       <InstalledSkillHeader
         skill={skill}
         deployment={deployment ?? undefined}
