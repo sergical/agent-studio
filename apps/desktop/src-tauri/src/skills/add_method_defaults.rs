@@ -8,6 +8,7 @@
 
 use std::path::{Path, PathBuf};
 
+use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
 use super::agents::AgentId;
@@ -51,7 +52,7 @@ const CHECKED_HARNESSES: &[AgentId] = &[
 ];
 
 /// What the Add Skill sheet needs before it can pick sensible defaults.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct AddMethodDefaults {
     /// Whether `npx` (what every dotagents command shells out to) resolves
     /// on `PATH` - dotagents can't run at all without it.

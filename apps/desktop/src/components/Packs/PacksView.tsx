@@ -105,13 +105,14 @@ function PackDetail({
       title={pack.name}
       width="narrow"
       actions={
-        <button
-          className="inline-flex shrink-0 items-center gap-1 self-start border-0 bg-none p-0 text-small text-text-tertiary"
+        <Button
+          variant="ghost"
+          className="h-auto shrink-0 gap-1 self-start p-0 text-small text-text-tertiary"
           onClick={onBack}
         >
           <ChevronLeft size={14} />
           Packs
-        </button>
+        </Button>
       }
     >
       <div className="flex max-w-140 flex-col gap-2.5">
@@ -223,9 +224,10 @@ export function PacksView() {
       ) : (
         <div className="flex flex-col gap-1.5">
           {packs.map((pack) => (
-            <button
+            <Button
               key={pack.name}
-              className="flex h-11 w-full items-center gap-2.5 rounded-md border border-border bg-bg-secondary px-3 text-left text-text-secondary transition-colors hover:bg-bg-hover"
+              variant="ghost"
+              className="h-11 w-full gap-2.5 rounded-md border border-border bg-bg-secondary px-3 justify-start text-left text-text-secondary"
               onClick={() => setOpenName(pack.name)}
             >
               <Package size={15} />
@@ -237,7 +239,7 @@ export function PacksView() {
                 {pack.repo ?? "Local only"}
               </span>
               <span className="text-caption text-text-tertiary">{formatDate(pack.created_at)}</span>
-            </button>
+            </Button>
           ))}
         </div>
       )}

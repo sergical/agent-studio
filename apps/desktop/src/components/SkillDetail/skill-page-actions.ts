@@ -247,7 +247,7 @@ export function useSkillPageActions(
       if (result.success) {
         onRemoveComplete();
       } else {
-        addToast({ type: "error", title: "Remove failed", message: result.error });
+        addToast({ type: "error", title: "Remove failed", message: result.error ?? undefined });
       }
     });
   };

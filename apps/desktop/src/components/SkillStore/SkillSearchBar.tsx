@@ -4,7 +4,7 @@
 
 import { useEffect, useEffectEvent, useRef } from "react";
 import { Search, X, Loader } from "lucide-react";
-import { Input } from "@skill-studio/ui";
+import { Button, Input } from "@skill-studio/ui";
 
 interface SkillSearchBarProps {
   value: string;
@@ -71,16 +71,18 @@ export function SkillSearchBar({
         onChange={(e) => onChange(e.target.value)}
         onKeyDown={handleKeyDown}
         placeholder={placeholder}
-        className="h-(--control-height) rounded-sm border-border bg-bg-primary pr-8.5 pl-8.5 text-body text-text-primary placeholder:text-text-tertiary focus-visible:border-border-focus focus-visible:ring-0"
+        className="h-(--control-height) pr-8.5 pl-8.5"
       />
       {value && (
-        <button
-          className="absolute right-2 flex size-5 items-center justify-center rounded-full border-0 bg-bg-tertiary text-text-tertiary transition-colors hover:bg-bg-hover hover:text-text-primary"
+        <Button
+          variant="ghost"
+          size="icon-xs"
+          className="absolute right-2 rounded-full bg-bg-tertiary text-text-tertiary"
           onClick={handleClear}
           title="Clear search"
         >
           <X size={14} />
-        </button>
+        </Button>
       )}
     </div>
   );

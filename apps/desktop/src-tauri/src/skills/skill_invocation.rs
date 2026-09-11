@@ -389,9 +389,9 @@ mod tests {
     use super::*;
 
     fn invocation_snapshot(deployments: Vec<Deployment>) -> SkillSnapshot {
-        use super::super::provenance::SourceKind;
         use super::super::skill_dto::InstalledSkill;
         use super::super::skill_invocations::InvocationHeatmap;
+        use super::super::SourceKind;
 
         SkillSnapshot {
             revision: 1,
@@ -436,6 +436,8 @@ mod tests {
             last_test_by_skill: Default::default(),
             update_check: Default::default(),
             opencode_config_kind: None,
+            scan_partial: false,
+            scan_observations: Vec::new(),
         }
     }
 

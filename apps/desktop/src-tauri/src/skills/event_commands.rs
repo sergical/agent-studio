@@ -675,8 +675,8 @@ mod tests {
     /// one - for `find_deployment_at`/`repair_skill_link` validation tests,
     /// without needing a running Tauri app.
     fn fixture_snapshot(broken_path: &Path, healthy_path: &Path) -> SkillSnapshot {
-        use super::super::provenance::SourceKind;
         use super::super::skill_dto::InstalledSkill;
+        use super::super::SourceKind;
 
         fn deployment(path: &Path, broken: bool) -> Deployment {
             Deployment {
@@ -736,6 +736,8 @@ mod tests {
             last_test_by_skill: Default::default(),
             update_check: Default::default(),
             opencode_config_kind: None,
+            scan_partial: false,
+            scan_observations: Vec::new(),
         }
     }
 

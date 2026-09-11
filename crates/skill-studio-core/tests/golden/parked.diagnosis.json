@@ -1,0 +1,82 @@
+{
+  "inventory": {
+    "completeness": "complete",
+    "observations": [],
+    "projects": [],
+    "skills": [
+      {
+        "deployments": [
+          {
+            "backing": "canonical",
+            "content_fingerprint": "sha256:b9a65caef3989e8fccb043899d1a2f408abbc4947ac2e213c662804323810370",
+            "content_hash": "b9a65caef3989e8fccb043899d1a2f408abbc4947ac2e213c662804323810370",
+            "description_tokens": 12,
+            "destination": "universal",
+            "disabled_by": null,
+            "disabled_readers": [],
+            "file_count": 1,
+            "folder_bytes": 94,
+            "folder_truncated": false,
+            "frontmatter": {
+              "allowed-tools": null,
+              "compatibility": null,
+              "description": "Helps with zeta for fixture-driven tests.",
+              "disable-model-invocation": null,
+              "license": null,
+              "metadata": null,
+              "name": "zeta",
+              "user-invocable": null
+            },
+            "frontmatter_fields": {
+              "description": "Helps with zeta for fixture-driven tests.",
+              "name": "zeta"
+            },
+            "harness": null,
+            "has_spec": false,
+            "id": "dep:v1/global/universal/universal/zeta/-/%24HOME%2F.agents%2Fskills-parked%2Fzeta",
+            "in_git_repo": false,
+            "is_symlink": false,
+            "link_target": null,
+            "modified_at": "-",
+            "mutability": "read_only",
+            "owner_id": null,
+            "owner_kind": "manual",
+            "path": "$HOME/.agents/skills-parked/zeta",
+            "plugin": null,
+            "resolved_path": null,
+            "root": {
+              "kind": {
+                "kind": "parked"
+              },
+              "scope": {
+                "scope": "global"
+              }
+            },
+            "shared_via_whole_dir_link": false,
+            "skill_md_tokens": 24,
+            "source_kind": "manual",
+            "spec_violations": [],
+            "studio_disabled": false,
+            "symlink_error": null,
+            "symlink_is_broken": false
+          }
+        ],
+        "description": "Helps with zeta for fixture-driven tests.",
+        "name": "zeta"
+      }
+    ],
+    "timings": []
+  },
+  "issues": [
+    {
+      "deployment_id": "dep:v1/global/universal/universal/zeta/-/%24HOME%2F.agents%2Fskills-parked%2Fzeta",
+      "kind": "parked",
+      "message": "$HOME/.agents/skills-parked/zeta is parked",
+      "next_action": {
+        "action": "none"
+      },
+      "severity": "off",
+      "skill": "zeta"
+    }
+  ]
+}

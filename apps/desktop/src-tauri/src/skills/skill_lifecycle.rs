@@ -91,7 +91,7 @@ fn revalidate_deployment_fingerprint(deployment: &Deployment, action: &str) -> R
             deployment.path
         ));
     }
-    let live_hash = super::skill_discovery::live_skill_content_hash(Path::new(&deployment.path))?;
+    let live_hash = super::core_content_hash::live_skill_content_hash(Path::new(&deployment.path))?;
     if live_hash != deployment.content_hash {
         return Err(format!(
             "{action} refused: {} changed during lifecycle resolution",
@@ -358,11 +358,11 @@ pub fn claude_skills_dir_for_scope(
 mod tests {
     use super::*;
     use crate::skills::frontmatter::InvocationPolicy;
-    use crate::skills::provenance::SourceKind;
     use crate::skills::skill_deployment::{
         deployment_id, BackingRelationship, DeploymentMutability,
     };
     use crate::skills::skill_invocations::InvocationHeatmap;
+    use crate::skills::SourceKind;
     use chrono::Utc;
     use std::collections::BTreeMap;
 
@@ -447,6 +447,8 @@ mod tests {
             last_test_by_skill: Default::default(),
             update_check: Default::default(),
             opencode_config_kind: None,
+            scan_partial: false,
+            scan_observations: Vec::new(),
         }
     }
 
@@ -645,7 +647,7 @@ mod tests {
             &linked_path,
         );
         let content_hash =
-            crate::skills::skill_discovery::live_skill_content_hash(&canonical_path).unwrap();
+            crate::skills::core_content_hash::live_skill_content_hash(&canonical_path).unwrap();
         let owner_id = "owner:v1/global/find-bugs";
         let mut canonical = dep(
             &canonical_id,
@@ -711,7 +713,7 @@ mod tests {
             SkillDestination::Universal,
         );
         canonical.content_hash =
-            crate::skills::skill_discovery::live_skill_content_hash(&canonical_path).unwrap();
+            crate::skills::core_content_hash::live_skill_content_hash(&canonical_path).unwrap();
         canonical.mutability = DeploymentMutability::ReadOnly;
         let snap = snapshot(vec![canonical]);
 

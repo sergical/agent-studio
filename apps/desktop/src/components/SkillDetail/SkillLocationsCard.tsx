@@ -9,7 +9,7 @@
 // ============================================================================
 
 import { useState } from "react";
-import { ToggleGroup, ToggleGroupItem } from "@skill-studio/ui";
+import { Button, ToggleGroup, ToggleGroupItem } from "@skill-studio/ui";
 import { forkSkill } from "../../lib/skill-api";
 import { lifecycleTargetForDeployment } from "../../lib/skill-lifecycle-target";
 import { singleSelectToggleValue } from "../../lib/single-select-toggle-group";
@@ -21,6 +21,7 @@ import { StatusIcon } from "../ui/StatusIcon";
 import { TooltipControl } from "../ui/TooltipControl";
 import { RemoveDeploymentsDialog } from "./RemoveDeploymentsDialog";
 import { SkillLocationScope } from "./SkillLocationScope";
+import { UninstallPluginDialog } from "./UninstallPluginDialog";
 import { useLocationActions, setSkillInvocation } from "./skill-location-actions";
 import {
   buildInvocationFiles,
@@ -105,19 +106,19 @@ export function SkillLocationsCard({ skill, onCompareCopies }: SkillLocationsCar
       <div className="flex items-baseline justify-between gap-3 text-body font-semibold text-text-primary">
         Locations
         {link && (
-          <button
-            type="button"
-            className="cursor-pointer border-0 bg-transparent p-0 text-small font-normal text-accent transition-colors hover:underline"
+          <Button
+            variant="link"
+            className="h-auto p-0 text-small font-normal"
             onClick={() => actions.run(TITLE_LINK_ACTIONS[link])}
           >
             {link}
-          </button>
+          </Button>
         )}
         {promote && (
           <TooltipControl content="Copies it to ~/.agents/skills, where every project reads it.">
-            <button
-              type="button"
-              className="cursor-pointer border-0 bg-transparent p-0 text-small font-normal text-accent transition-colors hover:underline"
+            <Button
+              variant="link"
+              className="h-auto p-0 text-small font-normal"
               onClick={() =>
                 actions.run({
                   kind: "promote-global",
@@ -127,7 +128,7 @@ export function SkillLocationsCard({ skill, onCompareCopies }: SkillLocationsCar
               }
             >
               Promote to global
-            </button>
+            </Button>
           </TooltipControl>
         )}
       </div>
@@ -249,6 +250,12 @@ export function SkillLocationsCard({ skill, onCompareCopies }: SkillLocationsCar
           projectPath={actions.removeRequest.projectPath}
           deployment={actions.removeRequest.deployment}
           onClose={actions.closeRemoveRequest}
+        />
+      )}
+      {actions.pluginUninstallRequest && (
+        <UninstallPluginDialog
+          deployment={actions.pluginUninstallRequest}
+          onClose={actions.closePluginUninstallRequest}
         />
       )}
     </div>

@@ -12,6 +12,7 @@ import {
   USAGE_WINDOWS,
 } from "@skill-studio/lib";
 import type { SkillSnapshot } from "@skill-studio/lib";
+import { Button } from "@skill-studio/ui";
 import { useAppStore } from "../../store/appStore";
 import { PageShell } from "../Shell/PageShell";
 import { TooltipControl } from "../ui/TooltipControl";
@@ -124,9 +125,10 @@ export function SkillActivityView({ snapshot, onSelectSkill }: SkillActivityView
             ) : (
               <div className="flex flex-col">
                 {bySkill.map((stat) => (
-                  <button
+                  <Button
                     key={stat.skill}
-                    className="grid h-8 w-full grid-cols-[minmax(0,1fr)_72px_88px_72px] items-center gap-3 border-0 border-b border-border-subtle bg-transparent px-2 text-left transition-colors hover:bg-bg-hover"
+                    variant="ghost"
+                    className="grid h-8 w-full grid-cols-[minmax(0,1fr)_72px_88px_72px] gap-3 rounded-none border-b border-border-subtle px-2 justify-start text-left"
                     onClick={() => onSelectSkill(stat.skill)}
                   >
                     <span className="truncate text-body text-text-primary" title={stat.skill}>
@@ -141,7 +143,7 @@ export function SkillActivityView({ snapshot, onSelectSkill }: SkillActivityView
                     <span className="text-right text-body text-text-secondary tabular-nums">
                       {Object.keys(stat.by_project_30_days).length}
                     </span>
-                  </button>
+                  </Button>
                 ))}
               </div>
             )}

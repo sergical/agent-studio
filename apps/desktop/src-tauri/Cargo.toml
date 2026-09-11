@@ -4,6 +4,17 @@ version = "0.1.0"
 description = "Manage coding assistant configurations"
 authors = ["you"]
 edition = "2021"
+# `tauri dev` runs plain `cargo run`; with two bins (this one and `schema`)
+# cargo needs to be told which one is the app.
+default-run = "skill-studio-desktop"
+
+# The CLI at apps/cli also publishes a binary called `skill-studio`.
+# Both crates write into the one workspace target directory, so without
+# an explicit name here the two builds overwrite each other and
+# `target/debug/skill-studio` is whichever crate compiled last.
+[[bin]]
+name = "skill-studio-desktop"
+path = "src/main.rs"
 
 [lib]
 name = "skill_studio_lib"
@@ -37,6 +48,11 @@ libc = "0.2"
 # available in the 0.3x/0.4x line, per spec's fallback instruction.
 rusqlite = { version = "0.40", features = ["bundled"] }
 ulid = "1"
+skill-studio-core = { path = "../../../crates/skill-studio-core" }
+skill-studio-host = { path = "../../../crates/skill-studio-host" }
+schemars = { version = "1", features = ["chrono04"] }
 
 [dev-dependencies]
 tempfile = "3"
+skill-studio-core = { path = "../../../crates/skill-studio-core", features = ["testing"] }
+similar = "2"

@@ -21,6 +21,10 @@ function wholeRootDeployment(): Deployment {
     symlink_is_broken: false,
     content_hash: "abc",
     disabled: false,
+    codex_implicit_invocation: null,
+    disabled_by: null,
+    invocation: "both",
+    spec_violations: [],
   };
 }
 

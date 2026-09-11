@@ -3,7 +3,7 @@
 // ============================================================================
 
 import { useEffect, useState } from "react";
-import { DrawerContent } from "@skill-studio/ui";
+import { Button, DrawerContent } from "@skill-studio/ui";
 import { SkillDetailHeader } from "./SkillDetailHeader";
 import { SkillContent } from "./SkillContent";
 import { InstallControls } from "./InstallControls";
@@ -77,15 +77,15 @@ export function SkillDetailPanel({
         skillMd={details?.skill_md ?? null}
         isLoading={isLoadingDetails}
       />
-      <button
-        type="button"
-        className="mx-5 self-start border-0 bg-transparent p-0 text-small text-accent hover:underline"
+      <Button
+        variant="link"
+        className="mx-5 h-auto self-start p-0 text-small"
         onClick={() =>
           openAddSkillSheet(resolvedTopSource ? `${resolvedTopSource}/${skill.name}` : skill.name)
         }
       >
         Add with more options…
-      </button>
+      </Button>
       <div className="my-2 h-px bg-border" />
       <InstallControls
         skill={skill}

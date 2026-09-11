@@ -15,6 +15,7 @@ import {
   Link2Off,
   Undo2,
 } from "lucide-react";
+import { Button } from "@skill-studio/ui";
 import { formatRelativeTime } from "@skill-studio/lib";
 import type { SkillEvent } from "@skill-studio/lib";
 import { listSkillEvents, openSkillPath, restoreSkillEvent } from "../../lib/skill-api";
@@ -157,23 +158,20 @@ function EventRow({ event, onRestored }: { event: SkillEvent; onRestored: () => 
         {isInterrupted ? "Interrupted - the app was quit during this operation" : event.status}
       </span>
       {event.backup_path && (
-        <button
-          type="button"
-          className="shrink-0 cursor-pointer border-0 bg-transparent p-0 text-small text-accent hover:underline"
-          onClick={handleReveal}
-        >
+        <Button variant="link" className="h-auto shrink-0 p-0 text-small" onClick={handleReveal}>
           Reveal in Finder
-        </button>
+        </Button>
       )}
       {canRestoreSkillEvent(event) && (
-        <button
-          type="button"
-          className="shrink-0 cursor-pointer rounded-sm border border-border-subtle bg-transparent px-2 py-1 text-small text-text-secondary transition-colors hover:bg-bg-hover disabled:opacity-50"
+        <Button
+          variant="outline"
+          size="sm"
+          className="h-auto shrink-0 rounded-sm border-border-subtle px-2 py-1 text-small text-text-secondary"
           onClick={handleRestoreClick}
           disabled={isRestoring}
         >
           Restore
-        </button>
+        </Button>
       )}
     </div>
   );

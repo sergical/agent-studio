@@ -26,7 +26,7 @@ const LIMIT = 50;
  */
 function extractGitHubRepo(
   source: string | undefined,
-  sourceUrl: string | undefined,
+  sourceUrl: string | null | undefined,
 ): string | undefined {
   // Try source_url first (more reliable)
   if (sourceUrl) {
@@ -359,9 +359,12 @@ export function SkillStore({ compact = false }: SkillStoreProps = {}) {
       id: skill.name,
       name: skill.name,
       installs: 0,
+      author: null,
+      description: null,
+      tags: null,
       is_installed: true,
       installed_info: skill,
-      top_source: topSource,
+      top_source: topSource ?? null,
     };
   });
 

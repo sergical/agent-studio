@@ -9,27 +9,31 @@
 
 use std::collections::BTreeMap;
 
+use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
 use super::frontmatter::InvocationPolicy;
 use super::github_skill_listing::GithubSkillEntry;
-use super::provenance::SourceKind;
 use super::skill_deployment::{BackingRelationship, DeploymentMutability, SkillDestination};
 use super::skill_fork_registry::{AddMethod, OriginTool, TrialScope};
 use super::skill_ownership::LifecycleOwnerKind;
+use super::SourceKind;
 
 /// Which mechanism `Deployment.disabled` came from - see
 /// `skill_harness_disable`. The first three are native per-harness switches;
 /// `StudioMoved` is the universal fallback that renames the deployment's
 /// directory aside into a `.skill-studio-disabled/` holding directory in its
 /// skills root, for harnesses with no native switch.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "kebab-case")]
 pub enum DisabledBy {
     CodexConfig,
     OpencodePermission,
     ClaudeLinkRemoved,
     StudioMoved,
+    /// Claude Code `settings.json` `enabledPlugins["<plugin>@<marketplace>"]`
+    /// set to `false`.
+    ClaudePluginDisabled,
 }
 
 // ============================================================================
@@ -37,7 +41,7 @@ pub enum DisabledBy {
 // ============================================================================
 
 /// Search result from skills.sh API
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct SkillSearchResult {
     pub id: String,
     pub name: String,
@@ -49,14 +53,14 @@ pub struct SkillSearchResult {
 }
 
 /// Paginated response to return to frontend
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct PaginatedSkillsResponse {
     pub skills: Vec<SkillSearchResult>,
     pub has_more: bool,
 }
 
 /// skills.sh v1 skill details, including the skill's markdown body.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct SkillDetails {
     pub id: String,
     pub source: String,
@@ -71,7 +75,7 @@ pub struct SkillDetails {
 /// `"direct"` means a developer-override key is configured (`server_url` is
 /// `None`); `"server"` means requests go through the local Skill Studio
 /// server at `server_url`.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct SkillsShAccessInfo {
     pub mode: String,
     pub server_url: Option<String>,
@@ -83,7 +87,7 @@ pub struct SkillsShAccessInfo {
 
 /// One row of the event log, projected for the Activity view's History
 /// section - see `event_store::EventRow` and `event_commands::list_skill_events`.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct SkillEventDto {
     pub id: String,
     pub ts: String,
@@ -114,16 +118,20 @@ pub struct SkillEventDto {
 /// A plugin that shipped a skill, per the agent-plugins.org convention
 /// (Claude Code / Codex plugin caches, or any directory with a `plugin.json`
 /// manifest and a `skills/` subdirectory).
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct PluginInfo {
     pub name: String,
     pub version: Option<String>,
     /// Which agent's plugin system this came from, e.g. "Claude Code", "Codex".
     pub harness: String,
+    /// Marketplace directory name.
+    pub marketplace: String,
+    /// `"<plugin>@<marketplace>"`, the id the harness's plugin CLI expects.
+    pub id: String,
 }
 
 /// Where a skill is deployed on disk for a specific agent
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct Deployment {
     /// Stable id (`dep:v1/...`) for exact mutations. Empty only on
     /// lock-file-only records that have no on-disk path.
@@ -251,7 +259,7 @@ impl Default for Deployment {
 /// Fork provenance shown on a forked skill's detail header - see
 /// `skill_fork_registry::ForkRecord`, which this is a read-only projection
 /// of for the frontend.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct ForkInfo {
     pub origin_tool: OriginTool,
     pub origin_source: String,
@@ -261,7 +269,7 @@ pub struct ForkInfo {
 }
 
 /// Installed skill with parsed data
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct InstalledSkill {
     pub name: String,
     pub source: String,
@@ -287,7 +295,7 @@ pub struct InstalledSkill {
     /// The committer date of `update_commit`, for the same line.
     #[serde(default)]
     pub update_commit_at: Option<String>,
-    /// How this skill was installed - see `provenance::SourceKind`.
+    /// How this skill was installed - see `skill_studio_core::identity::SourceKind`.
     pub source_kind: SourceKind,
     /// Every place this skill was found deployed on disk, one entry per
     /// agent/scope. Empty when the skill is known only from the lock file.
@@ -380,7 +388,7 @@ fn default_backing() -> BackingRelationship {
 
 /// A trial's remaining-time projection, read-only for the frontend - see
 /// `skill_fork_registry::TrialRecord`, which this is a projection of.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct TrialInfo {
     #[serde(default)]
     pub deployment_id: String,
@@ -395,7 +403,7 @@ pub struct TrialInfo {
 }
 
 /// Persisted update state for one exact lifecycle owner.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, JsonSchema)]
 pub struct OwnerUpdateInfo {
     pub owner_id: String,
     #[serde(default)]
@@ -412,7 +420,7 @@ pub struct OwnerUpdateInfo {
 /// `src/lib/skill-source-parse.ts`'s `parseSkillSource`, which produces this
 /// exact shape on the frontend. `#[serde(rename_all = "camelCase")]` so the
 /// two sides agree on field names without either translating the other.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct ParsedSkillSource {
     pub kind: ParsedSkillSourceKind,
@@ -425,7 +433,7 @@ pub struct ParsedSkillSource {
     pub local_path: Option<String>,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "lowercase")]
 pub enum ParsedSkillSourceKind {
     Github,
@@ -434,7 +442,7 @@ pub enum ParsedSkillSourceKind {
 }
 
 /// `add_skill`'s request - see `AddSkillSheet`.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct AddSkillRequest {
     pub source: ParsedSkillSource,
     pub method: AddMethod,
@@ -453,7 +461,7 @@ pub struct AddSkillRequest {
 /// `add_skills`' request: one source, and the skill folders picked out of it
 /// by the Add-skill sheet's picker (see `github_skill_listing`). Every other
 /// field means exactly what it does on `AddSkillRequest`.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct AddSkillsRequest {
     pub source: ParsedSkillSource,
     pub skills: Vec<GithubSkillEntry>,
@@ -472,7 +480,7 @@ pub struct AddSkillsRequest {
 
 /// One skill's outcome in an `add_skills` batch. A failure never stops the
 /// rest of the batch, so exactly one of `result`/`error` is set per entry.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct AddSkillOutcome {
     pub name: String,
     pub result: Option<AddSkillResult>,
@@ -480,7 +488,7 @@ pub struct AddSkillOutcome {
 }
 
 /// `add_skill`'s result.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct AddSkillResult {
     pub name: String,
     pub tool: String,
@@ -500,7 +508,7 @@ pub struct AddSkillResult {
 // ============================================================================
 
 /// Scope for skill installation
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, JsonSchema)]
 #[serde(rename_all = "lowercase")]
 pub enum InstallScope {
     Global,
@@ -508,7 +516,7 @@ pub enum InstallScope {
 }
 
 /// Update or remove one deployment, or every deployment of one owner.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct LifecycleTarget {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub deployment_id: Option<String>,
@@ -518,14 +526,14 @@ pub struct LifecycleTarget {
 
 /// Exact deployment plus the harness whose visibility will change. Universal
 /// deployments are valid for readers that discover that scope directly.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct HarnessVisibilityTarget {
     pub deployment_id: String,
     pub reader_agent: super::agents::AgentId,
 }
 
 /// Installation result
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct InstallResult {
     pub success: bool,
     pub skill_name: String,

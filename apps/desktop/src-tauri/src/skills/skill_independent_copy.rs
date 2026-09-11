@@ -244,7 +244,7 @@ fn run_independent_copy(
             "Independent copy refused: the staged copy does not match its source".to_string(),
         );
     }
-    let content_hash = super::skill_discovery::live_skill_content_hash(staging)?;
+    let content_hash = super::core_content_hash::live_skill_content_hash(staging)?;
     let record = CopyDeploymentRecord {
         deployment_id: copy_id.to_string(),
         name: request.skill.to_string(),
@@ -998,7 +998,7 @@ fn claim_replaced_copy(
         );
     };
     let mut record = copy_record.clone();
-    record.content_hash = super::skill_discovery::live_skill_content_hash(&data.deployment_path)?;
+    record.content_hash = super::core_content_hash::live_skill_content_hash(&data.deployment_path)?;
     let mut registry = read_fork_registry(home)?;
     if registry
         .copies

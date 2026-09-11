@@ -6,6 +6,7 @@
 
 use std::collections::{BTreeMap, HashMap};
 
+use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
 /// SKILL.md frontmatter, per the agentskills.io spec. Unknown keys are
@@ -64,7 +65,7 @@ impl FrontmatterParseResult {
 
 /// The three invocation-control states a skill's frontmatter can express -
 /// see `docs/agent-skill-conventions.md`'s "Invocation control" section.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "kebab-case")]
 pub enum InvocationPolicy {
     /// Both explicit (`/name`) and model auto-invoke are available.

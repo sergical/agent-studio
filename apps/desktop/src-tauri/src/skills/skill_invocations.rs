@@ -15,10 +15,11 @@ use std::path::{Path, PathBuf};
 use std::time::SystemTime;
 
 use chrono::{DateTime, Utc};
+use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
 /// One recorded skill invocation from an agent transcript.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct SkillInvocation {
     pub skill: String,
     /// Which agent recorded this invocation, e.g. "Claude Code".
@@ -28,7 +29,7 @@ pub struct SkillInvocation {
 }
 
 /// Per-skill invocation summary sent to the frontend.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct SkillInvocationStats {
     pub skill: String,
     pub total: u32,
@@ -44,7 +45,7 @@ pub struct SkillInvocationStats {
 }
 
 /// Per-day invocation counts for the heatmap (date "YYYY-MM-DD" -> count).
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize, JsonSchema)]
 pub struct InvocationHeatmap {
     pub days: BTreeMap<String, u32>,
 }

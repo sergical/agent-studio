@@ -1,0 +1,198 @@
+{
+  "inventory": {
+    "completeness": "complete",
+    "observations": [],
+    "projects": [
+      "$HOME/proj"
+    ],
+    "skills": [
+      {
+        "deployments": [
+          {
+            "backing": "independent",
+            "content_fingerprint": "sha256:9cd87ed3013ba4df7a47401cb7b361866078d6f267a51a408b32d4fd162282a0",
+            "content_hash": "9cd87ed3013ba4df7a47401cb7b361866078d6f267a51a408b32d4fd162282a0",
+            "description_tokens": 10,
+            "destination": "per_harness",
+            "disabled_by": null,
+            "disabled_readers": [],
+            "file_count": 1,
+            "folder_bytes": 91,
+            "folder_truncated": false,
+            "frontmatter": {
+              "allowed-tools": null,
+              "compatibility": null,
+              "description": "Helps with eta for fixture-driven tests.",
+              "disable-model-invocation": null,
+              "license": null,
+              "metadata": null,
+              "name": "eta",
+              "user-invocable": null
+            },
+            "frontmatter_fields": {
+              "description": "Helps with eta for fixture-driven tests.",
+              "name": "eta"
+            },
+            "harness": "claude-code",
+            "has_spec": false,
+            "id": "dep:v1/project/claude-code/per-harness/eta/%24HOME%2Fproj/%24HOME%2Fproj%2F.claude%2Fskills%2Feta",
+            "in_git_repo": true,
+            "is_symlink": false,
+            "link_target": null,
+            "modified_at": "-",
+            "mutability": "read_only",
+            "owner_id": null,
+            "owner_kind": "in_repo",
+            "path": "$HOME/proj/.claude/skills/eta",
+            "plugin": null,
+            "resolved_path": null,
+            "root": {
+              "kind": {
+                "harness": "claude-code",
+                "kind": "harness"
+              },
+              "scope": {
+                "project": "$HOME/proj",
+                "scope": "project"
+              }
+            },
+            "shared_via_whole_dir_link": false,
+            "skill_md_tokens": 21,
+            "source_kind": "in-repo",
+            "spec_violations": [],
+            "studio_disabled": false,
+            "symlink_error": null,
+            "symlink_is_broken": false
+          }
+        ],
+        "description": "Helps with eta for fixture-driven tests.",
+        "name": "eta"
+      },
+      {
+        "deployments": [
+          {
+            "backing": "independent",
+            "content_fingerprint": "sha256:a5e0ab90e4e5e38878feb9a80da6301df1e425b1d420b55a6810fd57e1424118",
+            "content_hash": "a5e0ab90e4e5e38878feb9a80da6301df1e425b1d420b55a6810fd57e1424118",
+            "description_tokens": 11,
+            "destination": "per_harness",
+            "disabled_by": null,
+            "disabled_readers": [],
+            "file_count": 1,
+            "folder_bytes": 94,
+            "folder_truncated": false,
+            "frontmatter": {
+              "allowed-tools": null,
+              "compatibility": null,
+              "description": "Helps with iota for fixture-driven tests.",
+              "disable-model-invocation": null,
+              "license": null,
+              "metadata": null,
+              "name": "iota",
+              "user-invocable": null
+            },
+            "frontmatter_fields": {
+              "description": "Helps with iota for fixture-driven tests.",
+              "name": "iota"
+            },
+            "harness": "open-code",
+            "has_spec": false,
+            "id": "dep:v1/project/opencode/per-harness/iota/%24HOME%2Fproj/%24HOME%2Fproj%2F.opencode%2Fskill%2Fiota",
+            "in_git_repo": true,
+            "is_symlink": false,
+            "link_target": null,
+            "modified_at": "-",
+            "mutability": "read_only",
+            "owner_id": null,
+            "owner_kind": "in_repo",
+            "path": "$HOME/proj/.opencode/skill/iota",
+            "plugin": null,
+            "resolved_path": null,
+            "root": {
+              "kind": {
+                "harness": "open-code",
+                "kind": "legacy"
+              },
+              "scope": {
+                "project": "$HOME/proj",
+                "scope": "project"
+              }
+            },
+            "shared_via_whole_dir_link": false,
+            "skill_md_tokens": 21,
+            "source_kind": "in-repo",
+            "spec_violations": [],
+            "studio_disabled": false,
+            "symlink_error": null,
+            "symlink_is_broken": false
+          }
+        ],
+        "description": "Helps with iota for fixture-driven tests.",
+        "name": "iota"
+      },
+      {
+        "deployments": [
+          {
+            "backing": "canonical",
+            "content_fingerprint": "sha256:996d9534edcb5745b22890a41ed53d5ce64871ce46f0dfb85eb0250b81758931",
+            "content_hash": "996d9534edcb5745b22890a41ed53d5ce64871ce46f0dfb85eb0250b81758931",
+            "description_tokens": 10,
+            "destination": "universal",
+            "disabled_by": null,
+            "disabled_readers": [],
+            "file_count": 1,
+            "folder_bytes": 97,
+            "folder_truncated": false,
+            "frontmatter": {
+              "allowed-tools": null,
+              "compatibility": null,
+              "description": "Helps with theta for fixture-driven tests.",
+              "disable-model-invocation": null,
+              "license": null,
+              "metadata": null,
+              "name": "theta",
+              "user-invocable": null
+            },
+            "frontmatter_fields": {
+              "description": "Helps with theta for fixture-driven tests.",
+              "name": "theta"
+            },
+            "harness": null,
+            "has_spec": false,
+            "id": "dep:v1/project/universal/universal/theta/%24HOME%2Fproj/%24HOME%2Fproj%2F.agents%2Fskills%2Ftheta",
+            "in_git_repo": true,
+            "is_symlink": false,
+            "link_target": null,
+            "modified_at": "-",
+            "mutability": "read_only",
+            "owner_id": null,
+            "owner_kind": "in_repo",
+            "path": "$HOME/proj/.agents/skills/theta",
+            "plugin": null,
+            "resolved_path": null,
+            "root": {
+              "kind": {
+                "kind": "universal"
+              },
+              "scope": {
+                "project": "$HOME/proj",
+                "scope": "project"
+              }
+            },
+            "shared_via_whole_dir_link": false,
+            "skill_md_tokens": 21,
+            "source_kind": "in-repo",
+            "spec_violations": [],
+            "studio_disabled": false,
+            "symlink_error": null,
+            "symlink_is_broken": false
+          }
+        ],
+        "description": "Helps with theta for fixture-driven tests.",
+        "name": "theta"
+      }
+    ],
+    "timings": []
+  },
+  "issues": []
+}

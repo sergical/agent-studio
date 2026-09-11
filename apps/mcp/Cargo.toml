@@ -1,0 +1,28 @@
+[package]
+name = "skill-studio-mcp"
+version = "0.1.0"
+edition = "2021"
+description = "skill-studio-mcp: stateless MCP server over the Skill Studio core"
+license = "MIT"
+publish = false
+
+[[bin]]
+name = "skill-studio-mcp"
+path = "src/main.rs"
+
+[dependencies]
+skill-studio-core = { path = "../../crates/skill-studio-core" }
+skill-studio-host = { path = "../../crates/skill-studio-host" }
+rmcp = { version = "3.2", features = ["server", "transport-io", "macros"] }
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "io-std", "signal"] }
+serde = "1"
+serde_json = "1"
+schemars = { version = "1", features = ["chrono04"] }
+ulid = { version = "1", features = ["serde"] }
+dirs = "5"
+anyhow = "1"
+
+[dev-dependencies]
+skill-studio-core = { path = "../../crates/skill-studio-core", features = ["testing"] }
+tempfile = "3"
+rmcp = { version = "3.2", features = ["client", "transport-child-process"] }

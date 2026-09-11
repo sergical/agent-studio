@@ -1,0 +1,58 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "RepairOutcome",
+  "description": "Result of `apply_frontmatter_repair`.",
+  "oneOf": [
+    {
+      "description": "The file was rewritten and an event recorded.",
+      "type": "object",
+      "properties": {
+        "deployment_id": {
+          "description": "Deployment written (the fork for `ForkAndFix`).",
+          "$ref": "#/$defs/DeploymentId"
+        },
+        "event_id": {
+          "description": "History event.",
+          "$ref": "#/$defs/EventId"
+        },
+        "outcome": {
+          "type": "string",
+          "const": "applied"
+        }
+      },
+      "required": [
+        "outcome",
+        "event_id",
+        "deployment_id"
+      ]
+    },
+    {
+      "description": "The file already had the proposed bytes; nothing was written.",
+      "type": "object",
+      "properties": {
+        "deployment_id": {
+          "description": "Deployment inspected.",
+          "$ref": "#/$defs/DeploymentId"
+        },
+        "outcome": {
+          "type": "string",
+          "const": "already_applied"
+        }
+      },
+      "required": [
+        "outcome",
+        "deployment_id"
+      ]
+    }
+  ],
+  "$defs": {
+    "DeploymentId": {
+      "description": "Opaque deployment id.\n\nInvariant: the string starts with `dep:v1/`. Its internal layout is a core\ndetail; adapters and the UI compare it as a string and never split it.",
+      "type": "string"
+    },
+    "EventId": {
+      "description": "History event id (ULID string).\n\nInvariant: lexical order equals creation order inside one store.",
+      "type": "string"
+    }
+  }
+}

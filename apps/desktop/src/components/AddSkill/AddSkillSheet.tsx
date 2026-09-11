@@ -63,6 +63,7 @@ import {
   normalizeInstallHarnesses,
   parseSkillSource,
   shouldConsumeAddSkillOperation,
+  toWireParsedSkillSource,
   trialSelectionForDestination,
 } from "@skill-studio/lib";
 import type {
@@ -411,13 +412,9 @@ function GithubSkillPicker({
         <span className={SECTION_LABEL_CLASS}>Skills</span>
         <p className="m-0 flex h-9 items-center gap-2 text-caption text-error">
           {state.error ?? "Could not list this repo's skills"}
-          <button
-            type="button"
-            className="text-caption font-medium text-accent underline"
-            onClick={state.retry}
-          >
+          <Button variant="link" className="h-auto p-0 text-caption" onClick={state.retry}>
             Retry
-          </button>
+          </Button>
         </p>
       </div>
     );
@@ -448,15 +445,15 @@ function GithubSkillPicker({
         <>
           <div className="flex h-9 items-center justify-between gap-2">
             <span className="text-caption text-text-tertiary">{skills.length} skills</span>
-            <button
-              type="button"
-              className="text-caption font-medium text-accent"
+            <Button
+              variant="link"
+              className="h-auto p-0 text-caption font-medium"
               onClick={() =>
                 onSelectedPathsChange(allSelected ? [] : skills.map((skill) => skill.path))
               }
             >
               {allSelected ? "Select none" : "Select all"}
-            </button>
+            </Button>
           </div>
           <ul className="m-0 flex list-none flex-col p-0">
             {skills.map((skill) => (
@@ -760,7 +757,7 @@ function useAddSkillSubmit(input: {
         dispatch({ type: "submit_end" });
         return;
       }
-      const projectArg = scope === "project" ? (projectPath ?? undefined) : undefined;
+      const projectArg = scope === "project" ? (projectPath ?? null) : null;
       const operationId = crypto.randomUUID();
       operationIdRef.current = operationId;
       consumedIdRef.current = undefined;
@@ -782,7 +779,7 @@ function useAddSkillSubmit(input: {
       unlistenRef.current = unlisten;
       const queued = githubEntries
         ? await startAddSkillsOperation(operationId, {
-            source: parsed,
+            source: toWireParsedSkillSource(parsed),
             skills: githubEntries,
             method,
             destination,
@@ -793,7 +790,7 @@ function useAddSkillSubmit(input: {
             trial,
           })
         : await startAddSkillOperation(operationId, {
-            source: parsed,
+            source: toWireParsedSkillSource(parsed),
             method,
             destination,
             agents,

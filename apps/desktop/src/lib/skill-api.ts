@@ -499,6 +499,27 @@ export async function setSkillInvocation(
   return invoke("set_skill_invocation", { name, path, policy });
 }
 
+/**
+ * Enable or disable a Claude Code plugin (`claude plugin enable|disable
+ * <id> -s user`), which moves every skill the plugin ships together.
+ * Refused for any other harness.
+ */
+export async function setPluginEnabled(
+  pluginId: string,
+  harness: string,
+  enabled: boolean,
+): Promise<void> {
+  return invoke("set_plugin_enabled", { pluginId, harness, enabled });
+}
+
+/**
+ * Uninstall a Claude Code plugin (`claude plugin uninstall <id> -s user -y`),
+ * removing every skill it ships. Refused for any other harness.
+ */
+export async function uninstallPlugin(pluginId: string, harness: string): Promise<void> {
+  return invoke("uninstall_plugin", { pluginId, harness });
+}
+
 // ============================================================================
 // Event Store API
 // ============================================================================
