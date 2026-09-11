@@ -9,7 +9,7 @@
 import { useState } from "react";
 import type { ReactNode } from "react";
 import { ChevronDown } from "lucide-react";
-import { Collapsible, CollapsiblePanel, CollapsibleTrigger } from "@skill-studio/ui";
+import { Button, Collapsible, CollapsiblePanel, CollapsibleTrigger } from "@skill-studio/ui";
 import {
   attentionGroups,
   homeInvocationCounts,
@@ -48,12 +48,11 @@ const RECENTLY_USED_COUNT = 5;
 const MAX_ROWS_PER_GROUP = 6;
 
 /** Text link style shared by every "Show all"/"Show everything"/"Learn more" affordance on Home. */
-const LINK_CLASS =
-  "inline-flex items-center gap-1 border-0 bg-none p-0 text-small text-accent hover:underline";
+const LINK_CLASS = "h-auto gap-1 p-0 text-small";
 
 /** One inbox row's trailing action - a text button or, on the "Recently used" rows, a plain count. */
 const ROW_ACTION_CLASS =
-  "h-9 min-w-10 border-0 bg-none p-0 text-right text-small text-text-tertiary hover:text-accent";
+  "h-9 min-w-10 justify-end p-0 text-right text-small text-text-tertiary hover:bg-transparent hover:text-accent";
 
 /** The one filter that can be active at a time: a stat tile or the idle bar segment. */
 type HomeFilter = "broken" | "warn" | "upd" | "unused";
@@ -116,13 +115,14 @@ function InboxRow({
         className={`size-1.5 shrink-0 rounded-full ${severity === "error" ? "bg-error" : severity === "warning" ? "bg-warning" : ""}`}
       />
       <span className="flex min-w-0 items-center gap-2">
-        <button
-          className="min-w-0 truncate border-0 bg-none p-0 text-left text-body text-text-primary hover:text-accent"
+        <Button
+          variant="ghost"
+          className="h-auto min-w-0 truncate p-0 text-left text-body text-text-primary hover:bg-transparent hover:text-accent"
           onClick={onOpen}
           title={skill.name}
         >
           {skill.name}
-        </button>
+        </Button>
         <HarnessBadges skill={skill} />
       </span>
       <span className="truncate text-small text-text-tertiary">{detail}</span>
@@ -156,9 +156,9 @@ function ShowAllLink({
 }) {
   return (
     <div className="flex h-9 items-center px-4">
-      <button className={LINK_CLASS} onClick={onClick}>
+      <Button variant="link" className={LINK_CLASS} onClick={onClick}>
         {label} {count}
-      </button>
+      </Button>
     </div>
   );
 }
@@ -197,13 +197,13 @@ function PullLatestButton({ skill }: { skill: InstalledSkill }) {
   };
 
   return (
-    <button className={ROW_ACTION_CLASS} onClick={handlePull} disabled={isPulling}>
+    <Button variant="ghost" className={ROW_ACTION_CLASS} onClick={handlePull} disabled={isPulling}>
       {isPulling ? (
         <span className="inline-block size-3 animate-spin rounded-full border-2 border-current border-t-transparent" />
       ) : (
         "Pull latest"
       )}
-    </button>
+    </Button>
   );
 }
 
@@ -229,13 +229,13 @@ function ParkButton({ skill }: { skill: InstalledSkill }) {
   };
 
   return (
-    <button className={ROW_ACTION_CLASS} onClick={handlePark} disabled={isParking}>
+    <Button variant="ghost" className={ROW_ACTION_CLASS} onClick={handlePark} disabled={isParking}>
       {isParking ? (
         <span className="inline-block size-3 animate-spin rounded-full border-2 border-current border-t-transparent" />
       ) : (
         "Park"
       )}
-    </button>
+    </Button>
   );
 }
 
@@ -269,27 +269,28 @@ function WarningRowAction({
 }) {
   if (issue.kind === "duplicate") {
     return (
-      <button className={ROW_ACTION_CLASS} onClick={onCompare}>
+      <Button variant="ghost" className={ROW_ACTION_CLASS} onClick={onCompare}>
         Compare
-      </button>
+      </Button>
     );
   }
   if (issue.kind === "linked-root" && issue.harness && issue.root) {
     const { harness, root } = issue;
     const harnessLabel = issue.harnessLabel ?? harness;
     return (
-      <button
+      <Button
+        variant="ghost"
         className={ROW_ACTION_CLASS}
         onClick={() => onConvertLinkedRoot(harness, harnessLabel, root)}
       >
         {issueActionLabel(issue.kind)}
-      </button>
+      </Button>
     );
   }
   return (
-    <button className={ROW_ACTION_CLASS} onClick={onOpen}>
+    <Button variant="ghost" className={ROW_ACTION_CLASS} onClick={onOpen}>
       {issueActionLabel(issue.kind)}
-    </button>
+    </Button>
   );
 }
 
@@ -362,8 +363,9 @@ function HomeStatTiles({
   return (
     <div className="grid grid-cols-3 gap-3">
       <div className="group/stat relative flex">
-        <button
-          className={`flex flex-1 flex-col gap-1 rounded-md border border-border-subtle bg-bg-elevated px-4 py-3.5 text-left transition-[border-color,background-color,transform] duration-150 hover:border-border hover:bg-bg-hover active:scale-98 aria-pressed:border-accent aria-pressed:bg-accent-softer aria-pressed:shadow-[inset_0_0_0_1px_var(--color-accent)] ${
+        <Button
+          variant="outline"
+          className={`h-auto flex-1 flex-col items-stretch gap-1 rounded-md border-border-subtle bg-bg-elevated px-4 py-3.5 justify-start text-left active:scale-98 aria-pressed:border-accent aria-pressed:bg-accent-softer ${
             broken.length > 0 ? "[&_.home-stat-value]:text-error" : ""
           }`}
           aria-pressed={filter === "broken"}
@@ -377,7 +379,7 @@ function HomeStatTiles({
           <span className="home-stat-value text-display leading-[1.1] font-semibold tracking-[-0.02em] tabular-nums">
             {broken.length}
           </span>
-        </button>
+        </Button>
         <span className="absolute top-3.5 right-3.5 opacity-0 group-hover/stat:opacity-100 group-focus-within/stat:opacity-100 has-[[aria-expanded=true]]:opacity-100">
           <InfoPopover label="About broken" title="Broken and warnings" onLearnMore={onLearnMore}>
             An agent loads nothing, or something you did not intend: a dead link, a SKILL.md the
@@ -387,8 +389,9 @@ function HomeStatTiles({
       </div>
 
       <div className="group/stat relative flex">
-        <button
-          className={`flex flex-1 flex-col gap-1 rounded-md border border-border-subtle bg-bg-elevated px-4 py-3.5 text-left transition-[border-color,background-color,transform] duration-150 hover:border-border hover:bg-bg-hover active:scale-98 aria-pressed:border-accent aria-pressed:bg-accent-softer aria-pressed:shadow-[inset_0_0_0_1px_var(--color-accent)] ${
+        <Button
+          variant="outline"
+          className={`h-auto flex-1 flex-col items-stretch gap-1 rounded-md border-border-subtle bg-bg-elevated px-4 py-3.5 justify-start text-left active:scale-98 aria-pressed:border-accent aria-pressed:bg-accent-softer ${
             warnings.length > 0 ? "[&_.home-stat-value]:text-warning" : ""
           }`}
           aria-pressed={filter === "warn"}
@@ -402,7 +405,7 @@ function HomeStatTiles({
           <span className="home-stat-value text-display leading-[1.1] font-semibold tracking-[-0.02em] tabular-nums">
             {warnings.length}
           </span>
-        </button>
+        </Button>
         <span className="absolute top-3.5 right-3.5 opacity-0 group-hover/stat:opacity-100 group-focus-within/stat:opacity-100 has-[[aria-expanded=true]]:opacity-100">
           <InfoPopover label="About warnings" title="Broken and warnings" onLearnMore={onLearnMore}>
             Everything still loads, but the state drifted: copies that differ between harnesses,
@@ -412,8 +415,9 @@ function HomeStatTiles({
       </div>
 
       <div className="flex">
-        <button
-          className="flex flex-1 flex-col gap-1 rounded-md border border-border-subtle bg-bg-elevated px-4 py-3.5 text-left transition-[border-color,background-color,transform] duration-150 hover:border-border hover:bg-bg-hover active:scale-98 aria-pressed:border-accent aria-pressed:bg-accent-softer aria-pressed:shadow-[inset_0_0_0_1px_var(--color-accent)]"
+        <Button
+          variant="outline"
+          className="h-auto flex-1 flex-col items-stretch gap-1 rounded-md border-border-subtle bg-bg-elevated px-4 py-3.5 justify-start text-left active:scale-98 aria-pressed:border-accent aria-pressed:bg-accent-softer"
           aria-pressed={filter === "upd"}
           onClick={() => toggleFilter("upd")}
         >
@@ -425,7 +429,7 @@ function HomeStatTiles({
           <span className="text-display leading-[1.1] font-semibold tracking-[-0.02em] tabular-nums">
             {updates.length}
           </span>
-        </button>
+        </Button>
       </div>
     </div>
   );
@@ -471,35 +475,40 @@ function InvocationCostCard({
         <div className="flex h-7 gap-0.5" role="group" aria-label="Who can invoke">
           {inv.both > 0 && (
             <TooltipControl content="Open in Skills">
-              <button
-                className="inline-flex items-center gap-1 overflow-hidden rounded-xs bg-accent-soft px-2.5 text-small whitespace-nowrap text-text-primary transition-[filter] hover:brightness-115 aria-pressed:shadow-[inset_0_0_0_1px_var(--color-accent)]"
+              <Button
+                size="sm"
+                className="gap-1 overflow-hidden rounded-xs bg-accent-soft px-2.5 text-small whitespace-nowrap text-text-primary hover:brightness-115 aria-pressed:shadow-[inset_0_0_0_1px_var(--color-accent)]"
                 style={{ flex: `${inv.both} 0 auto` }}
                 onClick={() => goToInvocation("both")}
               >
                 <span className="tabular-nums">{inv.both}</span> you or the model
-              </button>
+              </Button>
             </TooltipControl>
           )}
           {inv.modelOnly > 0 && (
             <TooltipControl content="Open in Skills">
-              <button
-                className="inline-flex items-center gap-1 overflow-hidden rounded-xs bg-accent-softer px-2.5 text-small whitespace-nowrap text-text-secondary transition-[filter] hover:brightness-115 aria-pressed:shadow-[inset_0_0_0_1px_var(--color-accent)] aria-pressed:text-text-primary"
+              <Button
+                variant="secondary"
+                size="sm"
+                className="gap-1 overflow-hidden rounded-xs bg-accent-softer px-2.5 text-small whitespace-nowrap text-text-secondary hover:brightness-115 aria-pressed:shadow-[inset_0_0_0_1px_var(--color-accent)] aria-pressed:text-text-primary"
                 style={{ flex: `${inv.modelOnly} 0 auto` }}
                 onClick={() => goToInvocation("model-only")}
               >
                 <span className="tabular-nums">{inv.modelOnly}</span> model only
-              </button>
+              </Button>
             </TooltipControl>
           )}
           {inv.userOnly > 0 && (
             <TooltipControl content="Open in Skills">
-              <button
-                className="inline-flex items-center gap-1 overflow-hidden rounded-xs bg-bg-tertiary px-2.5 text-small whitespace-nowrap text-text-secondary transition-[filter] hover:brightness-115 aria-pressed:shadow-[inset_0_0_0_1px_var(--color-accent)] aria-pressed:text-text-primary"
+              <Button
+                variant="secondary"
+                size="sm"
+                className="gap-1 overflow-hidden rounded-xs bg-bg-tertiary px-2.5 text-small whitespace-nowrap text-text-secondary hover:brightness-115 aria-pressed:shadow-[inset_0_0_0_1px_var(--color-accent)] aria-pressed:text-text-primary"
                 style={{ flex: `${inv.userOnly} 0 auto` }}
                 onClick={() => goToInvocation("user-only")}
               >
                 <span className="tabular-nums">{inv.userOnly}</span> you only
-              </button>
+              </Button>
             </TooltipControl>
           )}
         </div>
@@ -532,25 +541,28 @@ function InvocationCostCard({
           ) : (
             <>
               <TooltipControl content="Open in Skills">
-                <button
-                  className="inline-flex items-center gap-1 overflow-hidden rounded-xs bg-accent-soft px-2.5 text-small whitespace-nowrap text-text-primary transition-[filter] hover:brightness-115"
+                <Button
+                  size="sm"
+                  className="gap-1 overflow-hidden rounded-xs bg-accent-soft px-2.5 text-small whitespace-nowrap text-text-primary hover:brightness-115"
                   style={{ flex: `${cost.usedTokens} 0 auto` }}
                   onClick={() => goToSkills({ usage: "used-30d" })}
                 >
                   <span className="tabular-nums">{formatTokens(cost.usedTokens)}</span> ·{" "}
                   <span className="tabular-nums">{cost.usedCount}</span> skills used in 30 days
-                </button>
+                </Button>
               </TooltipControl>
               <TooltipControl content="Show the skills not used in 30 days">
-                <button
-                  className="inline-flex items-center gap-1 overflow-hidden rounded-xs bg-bg-tertiary px-2.5 text-small whitespace-nowrap text-text-secondary transition-[filter] hover:brightness-115 aria-pressed:text-text-primary aria-pressed:shadow-[inset_0_0_0_1px_var(--color-accent)]"
+                <Button
+                  variant="secondary"
+                  size="sm"
+                  className="gap-1 overflow-hidden rounded-xs bg-bg-tertiary px-2.5 text-small whitespace-nowrap text-text-secondary hover:brightness-115 aria-pressed:text-text-primary aria-pressed:shadow-[inset_0_0_0_1px_var(--color-accent)]"
                   style={{ flex: `${cost.idleTokens} 0 auto` }}
                   aria-pressed={filter === "unused"}
                   onClick={() => toggleFilter("unused")}
                 >
                   <span className="tabular-nums">{formatTokens(cost.idleTokens)}</span> ·{" "}
                   <span className="tabular-nums">{cost.idleCount}</span> skills not used in 30 days
-                </button>
+                </Button>
               </TooltipControl>
             </>
           )}
@@ -646,9 +658,9 @@ export function HomeView({ snapshot, isLoading, onSelectSkill }: HomeViewProps) 
         {filter && (
           <div className="flex h-9 items-center gap-2.5 px-3 text-small text-text-tertiary">
             Showing one group ·{" "}
-            <button className={LINK_CLASS} onClick={() => setFilter(null)}>
+            <Button variant="link" className={LINK_CLASS} onClick={() => setFilter(null)}>
               Show everything
-            </button>
+            </Button>
           </div>
         )}
 
@@ -675,12 +687,13 @@ export function HomeView({ snapshot, isLoading, onSelectSkill }: HomeViewProps) 
                     onOpen={() => onSelectSkill(issue.skill.name)}
                     detail={<span title={issue.detail}>{issue.detail}</span>}
                     action={
-                      <button
+                      <Button
+                        variant="ghost"
                         className={ROW_ACTION_CLASS}
                         onClick={() => onSelectSkill(issue.skill.name)}
                       >
                         {issueActionLabel(issue.kind)}
-                      </button>
+                      </Button>
                     }
                   />
                 ))}
@@ -789,12 +802,13 @@ export function HomeView({ snapshot, isLoading, onSelectSkill }: HomeViewProps) 
                         modelInvocable ? (
                           <ParkButton skill={skill} />
                         ) : (
-                          <button
+                          <Button
+                            variant="ghost"
                             className={ROW_ACTION_CLASS}
                             onClick={() => onSelectSkill(skill.name)}
                           >
                             Open
-                          </button>
+                          </Button>
                         )
                       }
                     />
@@ -919,8 +933,9 @@ function UpdatesGroup({
         count={updates.length}
         extra={
           updates.length > 1 && (
-            <button
-              className="border-0 bg-none p-0 text-small text-accent not-disabled:hover:underline disabled:text-text-quaternary disabled:cursor-not-allowed"
+            <Button
+              variant="link"
+              className="h-auto p-0 text-small disabled:text-text-quaternary"
               onClick={(e) => {
                 e.stopPropagation();
                 handleUpdateAll();
@@ -928,7 +943,7 @@ function UpdatesGroup({
               disabled={isUpdatingAll}
             >
               {isUpdatingAll ? "Updating…" : "Update all"}
-            </button>
+            </Button>
           )
         }
       />

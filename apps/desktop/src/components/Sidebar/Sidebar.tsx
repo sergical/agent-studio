@@ -20,6 +20,7 @@ import {
   Settings as SettingsIcon,
   Sun,
 } from "lucide-react";
+import { Button, Input } from "@skill-studio/ui";
 import { ownSkillsView, pluginSkillsView } from "@skill-studio/lib";
 import { defaultSkillListFilter } from "@skill-studio/lib";
 import { isFeatureEnabled } from "../../lib/feature-flags";
@@ -130,45 +131,46 @@ export function Sidebar({ snapshot, emittedSnapshotRevision, requestRescan }: Si
   const spinning = pendingRescanSnapshotRevision !== null;
 
   const itemClass = (active: boolean) =>
-    `grid h-[30px] w-full cursor-pointer grid-cols-[15px_minmax(0,1fr)_auto] items-center gap-2 rounded-sm border-0 px-2.5 text-left text-body transition-colors ${
-      active
-        ? "bg-accent-soft text-text-primary"
-        : "bg-transparent text-text-secondary hover:bg-bg-hover hover:text-text-primary"
+    `grid h-[30px] w-full grid-cols-[15px_minmax(0,1fr)_auto] gap-2 rounded-sm px-2.5 text-left text-body ${
+      active ? "bg-accent-soft text-text-primary" : "text-text-secondary"
     }`;
-  const iconButtonClass =
-    "flex size-6 cursor-pointer items-center justify-center rounded-sm border-0 bg-transparent text-text-tertiary transition-colors hover:bg-bg-hover hover:text-text-primary";
+  const iconButtonClass = "rounded-sm text-text-tertiary";
 
   return (
-    <nav className="flex w-60 shrink-0 flex-col overflow-y-auto border-r border-border bg-bg-secondary">
-      <div className="flex flex-col gap-px px-2.5 pb-2.5 first:pt-3">
-        <input
+    <nav className="flex w-60 shrink-0 flex-col overflow-hidden border-r border-border bg-bg-secondary">
+      <div data-tauri-drag-region className="h-9 shrink-0" />
+      <div className="flex flex-col gap-px px-2.5 pt-1 pb-2.5">
+        <Input
           ref={searchInputRef}
           type="search"
           aria-label="Search skills"
-          className="h-8 rounded-sm border border-border bg-bg-primary px-3 text-body text-text-primary transition-colors duration-150 placeholder:text-text-quaternary focus-visible:border-border-focus"
           placeholder="Search skills…"
           value={skillListFilter.query}
           onChange={(e) => handleSearchChange(e.target.value)}
           onKeyDown={handleSearchKeyDown}
         />
-        <button
-          className="mt-1.5 flex h-[30px] cursor-pointer items-center justify-center gap-1.5 rounded-sm border-0 bg-accent-soft text-body text-text-primary transition-colors hover:text-accent-hover"
+        <Button
+          variant="default"
+          className="mt-1.5 h-[30px] gap-1.5 rounded-sm bg-accent-soft text-body text-text-primary"
           onClick={() => openAddSkillSheet()}
         >
           <Plus size={15} />
           <span>Add skill</span>
-        </button>
+        </Button>
       </div>
 
+      <div className="flex min-h-0 flex-1 flex-col overflow-y-auto">
       <div className="flex flex-col gap-px px-2.5 pb-2.5 first:pt-3">
-        <button
+        <Button
+          variant="ghost"
           className={itemClass(anchorView.kind === "home")}
           onClick={() => setActiveView({ kind: "home" })}
         >
           <LayoutDashboard size={15} />
           <span className="min-w-0 truncate">Home</span>
-        </button>
-        <button
+        </Button>
+        <Button
+          variant="ghost"
           className={itemClass(skillsActive)}
           onClick={() => {
             if (inParked) setSkillListFilter(defaultSkillListFilter());
@@ -182,9 +184,10 @@ export function Sidebar({ snapshot, emittedSnapshotRevision, requestRescan }: Si
               {skillsCount}
             </span>
           )}
-        </button>
+        </Button>
         {pluginCount > 0 && (
-          <button
+          <Button
+            variant="ghost"
             className={itemClass(anchorView.kind === "plugins")}
             onClick={() => setActiveView({ kind: "plugins" })}
           >
@@ -193,29 +196,32 @@ export function Sidebar({ snapshot, emittedSnapshotRevision, requestRescan }: Si
             <span className="text-right text-caption tabular-nums text-text-tertiary">
               {pluginCount}
             </span>
-          </button>
+          </Button>
         )}
-        <button
+        <Button
+          variant="ghost"
           className={itemClass(anchorView.kind === "activity")}
           onClick={() => setActiveView({ kind: "activity" })}
         >
           <ActivityIcon size={15} />
           <span className="min-w-0 truncate">Activity</span>
-        </button>
+        </Button>
         {packsEnabled && (
-          <button
+          <Button
+            variant="ghost"
             className={itemClass(anchorView.kind === "packs")}
             onClick={() => setActiveView({ kind: "packs" })}
           >
             <Package size={15} />
             <span className="min-w-0 truncate">Packs</span>
-          </button>
+          </Button>
         )}
       </div>
 
       {parkedCount > 0 && (
         <div className="flex flex-col gap-px px-2.5 pb-2.5 first:pt-3">
-          <button
+          <Button
+            variant="ghost"
             className={itemClass(anchorView.kind === "skills" && inParked)}
             onClick={() => {
               setSkillListFilter({ ...defaultSkillListFilter(), scope: "parked" });
@@ -227,51 +233,56 @@ export function Sidebar({ snapshot, emittedSnapshotRevision, requestRescan }: Si
             <span className="text-right text-caption tabular-nums text-text-tertiary">
               {parkedCount}
             </span>
-          </button>
+          </Button>
         </div>
       )}
+      </div>
 
       <div className="mt-auto flex select-none items-center justify-between gap-2 border-t border-border-subtle px-2.5 py-2">
         <TooltipControl content={rescanTooltip(snapshot?.scanned_at)}>
-          <button
-            type="button"
-            className="flex h-6 shrink-0 cursor-pointer items-center gap-1.5 rounded-sm border-0 bg-transparent px-1.5 text-caption text-text-tertiary transition-colors hover:enabled:bg-bg-hover hover:enabled:text-text-primary disabled:cursor-default"
+          <Button
+            variant="ghost"
+            size="xs"
+            className="shrink-0 gap-1.5 rounded-sm px-1.5 text-text-tertiary"
             onClick={handleRefresh}
             disabled={spinning}
             aria-label={spinning ? "Syncing installed skills" : "Sync installed skills"}
           >
             <RefreshCw size={13} className={spinning ? "animate-spin" : ""} />
             <span className="whitespace-nowrap">{spinning ? "Syncing…" : "Sync"}</span>
-          </button>
+          </Button>
         </TooltipControl>
         <div className="flex items-center gap-0.5">
           <TooltipControl content="Learn">
-            <button
-              type="button"
+            <Button
+              variant="ghost"
+              size="icon-xs"
               className={`${iconButtonClass} aria-[current=page]:bg-accent-softer aria-[current=page]:text-accent`}
               onClick={() => setActiveView({ kind: "learn" })}
               aria-current={anchorView.kind === "learn" ? "page" : undefined}
               aria-label="Learn"
             >
               <BookOpen size={13} />
-            </button>
+            </Button>
           </TooltipControl>
           <TooltipControl content="Settings">
-            <button
-              type="button"
+            <Button
+              variant="ghost"
+              size="icon-xs"
               className={`${iconButtonClass} aria-[current=page]:bg-accent-softer aria-[current=page]:text-accent`}
               onClick={() => setActiveView({ kind: "settings" })}
               aria-current={anchorView.kind === "settings" ? "page" : undefined}
               aria-label="Settings"
             >
               <SettingsIcon size={13} />
-            </button>
+            </Button>
           </TooltipControl>
           <TooltipControl
             content={resolvedTheme === "dark" ? "Switch to light theme" : "Switch to dark theme"}
           >
-            <button
-              type="button"
+            <Button
+              variant="ghost"
+              size="icon-xs"
               className={iconButtonClass}
               onClick={() => setTheme(resolvedTheme === "dark" ? "light" : "dark")}
               aria-label={
@@ -279,7 +290,7 @@ export function Sidebar({ snapshot, emittedSnapshotRevision, requestRescan }: Si
               }
             >
               {resolvedTheme === "dark" ? <Moon size={13} /> : <Sun size={13} />}
-            </button>
+            </Button>
           </TooltipControl>
         </div>
       </div>
