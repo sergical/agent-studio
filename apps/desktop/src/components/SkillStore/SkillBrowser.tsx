@@ -122,8 +122,9 @@ function SkillCard({ skill, isSelected, onClick, hideInstalledIndicator = false 
   const bgClass = isSelected ? "bg-accent-softer" : "bg-bg-secondary hover:bg-bg-tertiary";
 
   return (
-    <button
-      className={`flex flex-col gap-2 rounded-md border p-4 text-left transition-colors ${borderClass} ${bgClass}`}
+    <Button
+      variant="ghost"
+      className={`h-auto flex-col items-stretch gap-2 rounded-md border p-4 justify-start text-left ${borderClass} ${bgClass}`}
       onClick={onClick}
     >
       <div className="flex items-center justify-between gap-2">
@@ -195,7 +196,7 @@ function SkillCard({ skill, isSelected, onClick, hideInstalledIndicator = false 
       {(skill.description || skill.installed_info?.description) && (
         <p
           className="m-0 line-clamp-2 text-pretty text-small text-text-secondary"
-          title={skill.description || skill.installed_info?.description}
+          title={skill.description || skill.installed_info?.description || undefined}
         >
           {skill.description || skill.installed_info?.description}
         </p>
@@ -222,7 +223,7 @@ function SkillCard({ skill, isSelected, onClick, hideInstalledIndicator = false 
           </div>
         )}
       </div>
-    </button>
+    </Button>
   );
 }
 

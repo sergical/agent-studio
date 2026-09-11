@@ -9,6 +9,7 @@ import { homeDir } from "@tauri-apps/api/path";
 import { open } from "@tauri-apps/plugin-dialog";
 import { PageShell } from "../Shell/PageShell";
 import { SkillCoverageMatrix } from "../Coverage/SkillCoverageMatrix";
+import { ScanPartialBanner } from "./ScanPartialBanner";
 import { SkillListTable } from "./SkillListTable";
 import type { SortMode } from "../../lib/skill-list-sort";
 import { SkillListFilterBar } from "./SkillListFilterBar";
@@ -127,6 +128,7 @@ export function SkillsView({ snapshot, onSelectSkill }: SkillsViewProps) {
 
   return (
     <PageShell title="Skills">
+      {snapshot?.scan_partial && <ScanPartialBanner observations={snapshot.scan_observations} />}
       <SkillListFilterBar
         filter={filter}
         onChange={setSkillListFilter}

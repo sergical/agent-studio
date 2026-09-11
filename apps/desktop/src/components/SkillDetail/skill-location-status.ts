@@ -51,6 +51,8 @@ export type LocationAction =
   | { kind: "make-independent-copy"; deployment: Deployment; scopeLabel: string }
   | { kind: "set-enabled"; deployment: Deployment; enabled: boolean }
   | { kind: "set-reader-enabled"; target: LifecycleTarget; agent: AgentId; enabled: boolean }
+  | { kind: "set-plugin-enabled"; deployment: Deployment; enabled: boolean }
+  | { kind: "uninstall-plugin"; deployment: Deployment }
   | { kind: "park" }
   | { kind: "unpark" }
   | { kind: "remove-scope"; scopeLabel: string; projectPath: string | null }
@@ -890,6 +892,31 @@ export function rowMenu(
       },
       false,
     );
+    if (row.deployment?.plugin && row.harness === "claude-code") {
+      const name = row.deployment.plugin.name;
+      const isDisabledByClaude = row.deployment.disabled_by === "claude-plugin-disabled";
+      push(
+        {
+          label: isDisabledByClaude
+            ? `Enable the ${name} plugin for Claude Code`
+            : `Disable the ${name} plugin for Claude Code`,
+          action: {
+            kind: "set-plugin-enabled",
+            deployment: row.deployment,
+            enabled: isDisabledByClaude,
+          },
+        },
+        false,
+      );
+      push(
+        {
+          label: `Uninstall the ${name} plugin…`,
+          action: { kind: "uninstall-plugin", deployment: row.deployment },
+          danger: true,
+        },
+        false,
+      );
+    }
   } else {
     push(
       {
@@ -952,7 +979,13 @@ export function rowMenu(
 
   let hint = row.conditions.find((c) => c.hint)?.hint;
   if (row.kind === "plugin" && row.deployment?.plugin) {
-    hint = `Managed by the ${row.deployment.plugin.name} plugin. Disable it in ${row.harnessLabel}.`;
+    const name = row.deployment.plugin.name;
+    hint =
+      row.harness === "claude-code"
+        ? `Applies to every skill the ${name} plugin ships.`
+        : row.harness === "codex"
+          ? "Manage this plugin with /plugins inside Codex."
+          : `Manage this plugin inside ${row.harnessLabel}.`;
   }
   if (row.kind === "reader" && row.hasSwitch && !hasOff)
     hint = `Sets it off in ${row.harnessLabel}'s own config.`;

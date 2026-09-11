@@ -1,0 +1,27 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "ScanRequest",
+  "description": "Request for `scan`.",
+  "type": "object",
+  "properties": {
+    "skills": {
+      "description": "Restrict to these skill names; empty means all.",
+      "type": "array",
+      "default": [],
+      "items": {
+        "$ref": "#/$defs/SkillName"
+      }
+    },
+    "timings": {
+      "description": "Include per-phase timings.",
+      "type": "boolean",
+      "default": false
+    }
+  },
+  "$defs": {
+    "SkillName": {
+      "description": "Lexical skill name: the directory name that holds `SKILL.md`.\n\nInvariant: two deployments with the same `SkillName` are the same skill,\neven when their bytes differ. A symlink alias with another name is another\nskill.",
+      "type": "string"
+    }
+  }
+}

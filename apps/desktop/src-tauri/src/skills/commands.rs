@@ -196,7 +196,7 @@ mod tests {
     struct CountingLifecycleRunner(std::sync::atomic::AtomicUsize);
 
     impl CommandRunner for CountingLifecycleRunner {
-        fn run_npx(&self, _args: &[String], _cwd: Option<&Path>) -> Result<(), String> {
+        fn run(&self, _program: &str, _args: &[String], _cwd: Option<&Path>) -> Result<(), String> {
             self.0.fetch_add(1, Ordering::SeqCst);
             Ok(())
         }
@@ -225,9 +225,9 @@ mod tests {
         dep_dir: &std::path::Path,
         plugin: Option<super::super::skill_dto::PluginInfo>,
     ) -> skill_refresh::SkillSnapshot {
-        use super::super::provenance::SourceKind;
         use super::super::skill_dto::{Deployment, InstalledSkill};
         use super::super::skill_invocations::InvocationHeatmap;
+        use super::super::SourceKind;
         use chrono::Utc;
         use std::collections::BTreeMap;
 
@@ -285,6 +285,8 @@ mod tests {
             last_test_by_skill: Default::default(),
             update_check: Default::default(),
             opencode_config_kind: None,
+            scan_partial: false,
+            scan_observations: Vec::new(),
         }
     }
 
@@ -403,6 +405,8 @@ mod tests {
             name: "openai-templates".to_string(),
             version: Some("1.0.0".to_string()),
             harness: "Codex".to_string(),
+            marketplace: "some-marketplace".to_string(),
+            id: "openai-templates@some-marketplace".to_string(),
         };
         let snapshot = fixture_snapshot(&dep_dir, Some(plugin));
 
@@ -622,7 +626,7 @@ mod tests {
     }
 
     impl CommandRunner for DotagentsRemovalRunner {
-        fn run_npx(&self, _args: &[String], _cwd: Option<&Path>) -> Result<(), String> {
+        fn run(&self, _program: &str, _args: &[String], _cwd: Option<&Path>) -> Result<(), String> {
             if self.fail {
                 Err("injected dotagents failure".to_string())
             } else {
@@ -656,18 +660,19 @@ mod tests {
         home: &Path,
         projects: &[PathBuf],
     ) -> skill_refresh::SkillSnapshot {
-        let candidates = super::super::skill_discovery::discover_skill_candidates(home, projects);
-        let ledgers = super::super::skill_ownership::load_ownership_ledgers(home, projects);
+        let update_check_path = home.join("core-data/update-check.json");
+        let core_skills = super::super::skill_refresh::core_scan_installed_skills(
+            home,
+            projects,
+            &update_check_path,
+            &[],
+        );
         let lock = super::super::lock_file::SkillLockFile {
             version: 3,
             skills: Default::default(),
         };
-        let skills = super::super::skill_assembly::assemble_installed_skills(
-            candidates,
-            &lock,
-            &ledgers,
-            &Default::default(),
-        );
+        let skills =
+            super::super::skill_assembly::assemble_installed_skills(core_skills.skills, &lock);
         let mut snapshot = fixture_snapshot(home, None);
         snapshot.skills = skills;
         snapshot
@@ -843,6 +848,9 @@ mod tests {
             let tmp = tempfile::tempdir().unwrap();
             let home = tmp.path().join("home");
             let project = tmp.path().join("project");
+            // core_scan_installed_skills canonicalizes the home root even
+            // when the project-scoped deployment lives under `project`.
+            std::fs::create_dir_all(&home).unwrap();
             let scope_root = if project_scoped { &project } else { &home };
             let agents_dir = scope_root.join(".agents");
             let canonical = agents_dir.join("skills/foo");
@@ -1007,7 +1015,7 @@ mod tests {
         canonical.destination = SkillDestination::Universal;
         canonical.backing = BackingRelationship::Canonical;
         canonical.content_hash =
-            super::super::skill_discovery::live_skill_content_hash(&selected).unwrap();
+            super::super::core_content_hash::live_skill_content_hash(&selected).unwrap();
         let mut project_link_deployment = canonical.clone();
         project_link_deployment.id = deployment_id(
             "foo",
@@ -1128,7 +1136,7 @@ mod tests {
         canonical.backing = BackingRelationship::Canonical;
         canonical.scope = "global".to_string();
         canonical.content_hash =
-            super::super::skill_discovery::live_skill_content_hash(&canonical_path).unwrap();
+            super::super::core_content_hash::live_skill_content_hash(&canonical_path).unwrap();
         let mut link = canonical.clone();
         link.id = link_id.clone();
         link.agent = "Claude Code".to_string();
@@ -1198,7 +1206,7 @@ mod tests {
         assert!(persisted_registry.copies.contains_key(&canonical_id));
         assert!(persisted_registry.copies.contains_key(&link_id));
         assert_eq!(
-            super::super::skill_discovery::live_skill_content_hash(&canonical_path).unwrap(),
+            super::super::core_content_hash::live_skill_content_hash(&canonical_path).unwrap(),
             ownership.content_hash
         );
     }
@@ -1222,7 +1230,7 @@ mod tests {
             &skill_dir,
         );
         let content_hash =
-            super::super::skill_discovery::live_skill_content_hash(&skill_dir).unwrap();
+            super::super::core_content_hash::live_skill_content_hash(&skill_dir).unwrap();
         let mut registry = skill_fork_registry::read_fork_registry(&home).unwrap();
         registry.forks.insert(
             "find-bugs".to_string(),
@@ -1290,7 +1298,7 @@ mod tests {
         deployment.scope = "global".to_string();
         deployment.project_path = None;
         deployment.content_hash =
-            super::super::skill_discovery::live_skill_content_hash(path).unwrap();
+            super::super::core_content_hash::live_skill_content_hash(path).unwrap();
         let ownership = skill_fork_registry::CopyDeploymentRecord {
             deployment_id: deployment.id.clone(),
             name: "foo".to_string(),
@@ -1543,7 +1551,7 @@ fn remove_copy_deployment(
             deployment.path
         ));
     }
-    let live_hash = super::skill_discovery::live_skill_content_hash(deployment_path)?;
+    let live_hash = super::core_content_hash::live_skill_content_hash(deployment_path)?;
     if deployment.content_hash.is_empty()
         || ownership.content_hash.is_empty()
         || live_hash != deployment.content_hash
@@ -2123,7 +2131,7 @@ fn remove_forked_skill_with(
             skill_dir.display()
         ));
     }
-    let live_hash = super::skill_discovery::live_skill_content_hash(skill_dir)?;
+    let live_hash = super::core_content_hash::live_skill_content_hash(skill_dir)?;
     if deployment_content_hash.is_empty() || live_hash != deployment_content_hash {
         return Err(format!(
             "Fork removal refused: {} content changed after discovery",
@@ -2507,4 +2515,58 @@ pub async fn update_skill(
             command: Some(npx_command),
         })
     }
+}
+
+/// Runs one Claude-Code-only plugin lifecycle action: checks `harness`,
+/// holds `fork_lock` for the CLI call, then requests a snapshot rebuild.
+/// Shared by [`set_plugin_enabled`] and [`uninstall_plugin`], which differ
+/// only in which `claude plugin` subcommand `action` runs.
+fn run_plugin_lifecycle_action(
+    harness: &str,
+    app: &tauri::AppHandle,
+    fork_lock: &skill_fork::ForkMutationLock,
+    action: impl FnOnce() -> Result<(), String>,
+) -> Result<(), String> {
+    super::skill_plugin_lifecycle::require_claude_code_harness(harness)?;
+    let _guard = fork_lock.try_acquire()?;
+    action()?;
+    skill_refresh::request_snapshot_rebuild(app);
+    Ok(())
+}
+
+/// Disable or re-enable one Claude Code plugin (`claude plugin
+/// disable|enable <plugin_id> -s user`). Applies to every skill the plugin
+/// ships - Claude Code tracks `enabledPlugins` per plugin, not per skill.
+#[tauri::command]
+pub fn set_plugin_enabled(
+    plugin_id: String,
+    harness: String,
+    enabled: bool,
+    app: tauri::AppHandle,
+    _refresh_state: tauri::State<SkillRefreshState>,
+    fork_lock: tauri::State<skill_fork::ForkMutationLock>,
+) -> Result<(), String> {
+    run_plugin_lifecycle_action(&harness, &app, &fork_lock, || {
+        super::skill_plugin_lifecycle::set_plugin_enabled_with(
+            &RealCommandRunner::new(),
+            &plugin_id,
+            enabled,
+        )
+    })
+}
+
+/// Uninstall one Claude Code plugin (`claude plugin uninstall <plugin_id>
+/// -s user -y`). Removes the `enabledPlugins` entry; Claude Code sweeps the
+/// cache directory later.
+#[tauri::command]
+pub fn uninstall_plugin(
+    plugin_id: String,
+    harness: String,
+    app: tauri::AppHandle,
+    _refresh_state: tauri::State<SkillRefreshState>,
+    fork_lock: tauri::State<skill_fork::ForkMutationLock>,
+) -> Result<(), String> {
+    run_plugin_lifecycle_action(&harness, &app, &fork_lock, || {
+        super::skill_plugin_lifecycle::uninstall_plugin_with(&RealCommandRunner::new(), &plugin_id)
+    })
 }

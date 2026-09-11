@@ -12,7 +12,7 @@ import type { Deployment, InstalledSkill } from "./skill-types";
 export interface PluginGroup {
   harness: string;
   pluginName: string;
-  version?: string;
+  version: string | null;
   skills: InstalledSkill[];
 }
 
@@ -54,9 +54,26 @@ export function pluginSkillsView(skills: InstalledSkill[]): InstalledSkill[] {
     .map((skill) => ({ ...skill, deployments: pluginDeployments(skill) }));
 }
 
+/** The `plugin` info of the first plugin deployment shipping `skill`, if any. */
+export function pluginInfoForSkill(skill: InstalledSkill): Deployment["plugin"] {
+  return skill.deployments.find((d) => d.plugin)?.plugin;
+}
+
 /** The name of the first plugin deployment shipping `skill`, if any. */
 export function pluginLabelForSkill(skill: InstalledSkill): string | undefined {
-  return skill.deployments.find((d) => d.plugin)?.plugin?.name;
+  return pluginInfoForSkill(skill)?.name;
+}
+
+/**
+ * The Source-row and "Managed by" label for a plugin-shipped skill, e.g.
+ * `Claude Code plugin · codex · v1.0.6`. `undefined` when `skill` has no
+ * plugin deployment.
+ */
+export function pluginSourceLabel(skill: InstalledSkill): string | undefined {
+  const plugin = pluginInfoForSkill(skill);
+  if (!plugin) return undefined;
+  const version = plugin.version ? ` · v${plugin.version}` : "";
+  return `${plugin.harness} plugin · ${plugin.name}${version}`;
 }
 
 /** The absolute path to `deployment`'s `SKILL.md`, for read/write commands. */

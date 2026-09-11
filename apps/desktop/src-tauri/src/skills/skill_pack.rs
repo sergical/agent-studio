@@ -28,6 +28,7 @@ use std::process::Command;
 use std::sync::Mutex;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
+use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use tauri::Manager;
@@ -58,7 +59,7 @@ use super::skill_update_check;
 // ============================================================================
 
 /// One skill pack, as sent to the frontend.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct PackInfo {
     pub name: String,
     pub created_at: String,
@@ -93,7 +94,7 @@ pub struct PackMemberInput {
 
 /// Result of `update_skill_pack`: whether the rebuilt tree actually differed
 /// from the pack's last commit.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct UpdatePackResult {
     pub changed: bool,
     pub pack: PackInfo,
@@ -102,7 +103,7 @@ pub struct UpdatePackResult {
 /// Result of `import_skill_pack`: which names came from the repo's own
 /// `skills/` tree (`--all`) versus a `[[skills]]` row pointing elsewhere,
 /// and any per-row failures (a partial import still reports what worked).
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default, JsonSchema)]
 pub struct ImportResult {
     pub bundled: Vec<String>,
     pub referenced: Vec<String>,
@@ -111,7 +112,7 @@ pub struct ImportResult {
 
 /// The complete pack import request. Trust confirmation must repeat this
 /// value so a token cannot authorize a changed target or source.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct PackImportRequest {
     pub source: String,
     pub agents: Vec<AgentId>,
@@ -123,7 +124,7 @@ pub struct PackImportRequest {
 }
 
 /// Pack import either completes immediately or pauses for explicit trust.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 #[serde(tag = "status", rename_all = "kebab-case")]
 pub enum PackImportPreflightResult {
     Imported {
@@ -1945,7 +1946,7 @@ mod tests {
     }
 
     impl CommandRunner for LocalSnapshotRunner {
-        fn run_npx(&self, args: &[String], _cwd: Option<&Path>) -> Result<(), String> {
+        fn run(&self, _program: &str, args: &[String], _cwd: Option<&Path>) -> Result<(), String> {
             if args.contains(&"--all".to_string()) {
                 let source = Path::new(&args[3]);
                 *self.installed_skill.lock().unwrap() =
@@ -1964,7 +1965,7 @@ mod tests {
     }
 
     impl CommandRunner for FakeRunner {
-        fn run_npx(&self, args: &[String], _cwd: Option<&Path>) -> Result<(), String> {
+        fn run(&self, _program: &str, args: &[String], _cwd: Option<&Path>) -> Result<(), String> {
             self.calls.lock().unwrap().push(args.to_vec());
             if args.contains(&"--all".to_string()) {
                 for name in &self.all_creates {

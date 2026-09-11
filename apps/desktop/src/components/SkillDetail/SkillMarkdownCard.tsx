@@ -5,7 +5,7 @@
 // ============================================================================
 
 import { Button } from "@skill-studio/ui";
-import { deploymentLabel, pluginLabelForSkill } from "@skill-studio/lib";
+import { deploymentLabel, pluginInfoForSkill } from "@skill-studio/lib";
 import type { Deployment, InstalledSkill } from "@skill-studio/lib";
 import { SelectControl } from "../ui/SelectControl";
 import { TooltipControl } from "../ui/TooltipControl";
@@ -83,6 +83,10 @@ export function SkillMarkdownCard({
 }: SkillMarkdownCardProps) {
   const isEditing = editState.kind === "editing";
   const canEdit = !isEditing && !isPluginManaged && !deploymentUnresolved && rawContent !== null;
+  const plugin = isPluginManaged ? pluginInfoForSkill(skill) : undefined;
+  const pluginManagedText = plugin
+    ? `Managed by the ${plugin.name} plugin for ${plugin.harness}.`
+    : "Managed by a plugin.";
 
   return (
     <div className="flex flex-col gap-1 rounded-lg border border-border-subtle p-4">
@@ -139,9 +143,7 @@ export function SkillMarkdownCard({
           )}
         </div>
       ) : isPluginManaged ? (
-        <p className="m-0 p-3 text-body leading-[1.5] text-text-secondary">
-          Managed by the {pluginLabelForSkill(skill) ?? "harness"} plugin.
-        </p>
+        <p className="m-0 p-3 text-body leading-[1.5] text-text-secondary">{pluginManagedText}</p>
       ) : editState.kind === "editing" && rawContent !== null ? (
         <SkillMarkdownEditor
           initialContent={editState.openedContent}

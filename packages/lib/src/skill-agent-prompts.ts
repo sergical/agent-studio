@@ -131,7 +131,7 @@ export function extractProposedSkillMd(finalText: string): string | null {
 /** Input for `buildSkillJudgePrompt`. */
 export interface SkillJudgePromptInput {
   skillName: string;
-  description: string | undefined;
+  description: string | null | undefined;
   testPrompt: string;
   finalText: string;
   toolSummary: string[];

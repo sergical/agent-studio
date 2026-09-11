@@ -31,6 +31,11 @@ function deployment(id: string, ownerId?: string, projectPath?: string): Deploym
     project_path: projectPath,
     content_hash: "x",
     disabled: false,
+    codex_implicit_invocation: null,
+    disabled_by: null,
+    invocation: "both",
+    spec_violations: [],
+    shared_via_whole_dir_link: false,
   };
 }
 
@@ -138,6 +143,8 @@ describe("lifecycleTargetForSkill", () => {
         expires_at: "2026-09-06T00:00:00Z",
         method: "skills-sh",
         scope: "global",
+        project_path: null,
+        status: "active",
       },
     } satisfies Pick<InstalledSkill, "name" | "deployments" | "source_kind" | "trial">;
     expect(lifecycleTargetForTrial(skill, skill.trial)).toEqual({ deployment_id: "canonical" });
@@ -157,6 +164,8 @@ describe("lifecycleTargetForSkill", () => {
       expires_at: "2026-09-06T00:00:00Z",
       method: "skills-sh" as const,
       scope: "global" as const,
+      project_path: null,
+      status: "active" as const,
     };
     const projectTrial = {
       deployment_id: "project-copy",
@@ -164,6 +173,7 @@ describe("lifecycleTargetForSkill", () => {
       method: "skills-sh" as const,
       scope: "project" as const,
       project_path: "/work/project",
+      status: "active" as const,
     };
 
     expect(lifecycleTargetForTrial(skill, globalTrial)).toEqual({ deployment_id: "global-copy" });
@@ -281,9 +291,14 @@ describe("lifecycleTargetForSkill", () => {
 
 describe("skill update owner targets", () => {
   it("keeps a project-only update on its exact owner", () => {
-    expect(skillUpdateOwnerTargets({ update_owner_ids: ["owner:v1/project/%2Fp/x"] })).toEqual([
-      { owner_id: "owner:v1/project/%2Fp/x" },
-    ]);
+    expect(
+      skillUpdateOwnerTargets({
+        update_owner_ids: ["owner:v1/project/%2Fp/x"],
+        update_owners: [
+          { owner_id: "owner:v1/project/%2Fp/x", latest_commit: "next", latest_commit_at: null },
+        ],
+      }),
+    ).toEqual([{ owner_id: "owner:v1/project/%2Fp/x" }]);
   });
 
   it("updates mixed Global and Project owners and reports a partial failure", async () => {
@@ -291,6 +306,10 @@ describe("skill update owner targets", () => {
     const summary = await updateSkillOwners(
       {
         update_owner_ids: ["owner:v1/global/x", "owner:v1/project/%2Fp/x"],
+        update_owners: [
+          { owner_id: "owner:v1/global/x", latest_commit: "next", latest_commit_at: null },
+          { owner_id: "owner:v1/project/%2Fp/x", latest_commit: "next", latest_commit_at: null },
+        ],
       },
       async (target) => {
         const ownerId = target.owner_id ?? "";

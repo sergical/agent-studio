@@ -16,6 +16,7 @@ import {
   homeRelativePath,
   isUnresolvedDeployment,
   parseSkillSource,
+  toWireParsedSkillSource,
 } from "@skill-studio/lib";
 import type { AgentId, Deployment, InstalledSkill, InstallScope } from "@skill-studio/lib";
 import { addSkill, repairSkillLink } from "../../lib/skill-api";
@@ -96,17 +97,17 @@ export function SkillRepairCard({ skill, deployment }: SkillRepairCardProps) {
           return;
         }
         const result = await addSkill({
-          source: {
+          source: toWireParsedSkillSource({
             ...parsedSource,
             path: parsedSource.path ?? skill.name,
             skillName: skill.name,
-          },
+          }),
           method: "skills-sh",
           scope,
           destination: "universal",
           agents: reinstallAgent === "claude-code" ? ["claude-code"] : [],
           disabled_harnesses: [],
-          project_path: scope === "project" ? deployment.project_path : undefined,
+          project_path: (scope === "project" ? deployment.project_path : undefined) ?? null,
           trial: false,
         });
         if (result.warning) {

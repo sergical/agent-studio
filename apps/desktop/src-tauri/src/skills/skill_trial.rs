@@ -1012,7 +1012,7 @@ mod tests {
     }
 
     impl CommandRunner for FakeRunner {
-        fn run_npx(&self, args: &[String], cwd: Option<&Path>) -> Result<(), String> {
+        fn run(&self, _program: &str, args: &[String], cwd: Option<&Path>) -> Result<(), String> {
             self.calls
                 .lock()
                 .unwrap()
@@ -1031,7 +1031,7 @@ mod tests {
     }
 
     impl CommandRunner for ReinstallingRunner {
-        fn run_npx(&self, _args: &[String], _cwd: Option<&Path>) -> Result<(), String> {
+        fn run(&self, _program: &str, _args: &[String], _cwd: Option<&Path>) -> Result<(), String> {
             fs::remove_dir_all(&self.skill_dir).unwrap();
             fs::create_dir_all(&self.skill_dir).unwrap();
             fs::write(self.skill_dir.join("SKILL.md"), "replacement").unwrap();
@@ -1048,7 +1048,7 @@ mod tests {
     }
 
     impl CommandRunner for RemovingRunner {
-        fn run_npx(&self, _args: &[String], _cwd: Option<&Path>) -> Result<(), String> {
+        fn run(&self, _program: &str, _args: &[String], _cwd: Option<&Path>) -> Result<(), String> {
             fs::remove_dir_all(&self.skill_dir).map_err(|error| error.to_string())
         }
     }
@@ -1060,7 +1060,7 @@ mod tests {
     }
 
     impl CommandRunner for RepointingSkillsShRunner {
-        fn run_npx(&self, _args: &[String], _cwd: Option<&Path>) -> Result<(), String> {
+        fn run(&self, _program: &str, _args: &[String], _cwd: Option<&Path>) -> Result<(), String> {
             fs::remove_dir_all(&self.skill_dir).unwrap();
             fs::remove_file(&self.claude_link).unwrap();
             std::os::unix::fs::symlink(&self.replacement, &self.claude_link).unwrap();
@@ -1154,11 +1154,11 @@ mod tests {
 
     fn trial_snapshot(home: &Path) -> super::super::skill_refresh::SkillSnapshot {
         use super::super::frontmatter::InvocationPolicy;
-        use super::super::provenance::SourceKind;
         use super::super::skill_deployment::{BackingRelationship, DeploymentMutability};
         use super::super::skill_dto::{Deployment, InstalledSkill};
         use super::super::skill_invocations::InvocationHeatmap;
         use super::super::skill_ownership::LifecycleOwnerKind;
+        use super::super::SourceKind;
         use std::collections::BTreeMap;
 
         let registry = read_fork_registry(home).unwrap();
@@ -1260,6 +1260,8 @@ mod tests {
             last_test_by_skill: Default::default(),
             update_check: Default::default(),
             opencode_config_kind: None,
+            scan_partial: false,
+            scan_observations: Vec::new(),
         }
     }
 
@@ -1815,7 +1817,7 @@ mod tests {
         super::super::skill_park::park_skill_with(
             home,
             "find-bugs",
-            super::super::provenance::SourceKind::Manual,
+            super::super::SourceKind::Manual,
             now,
         )
         .unwrap();

@@ -1,0 +1,10 @@
+[workspace]
+members = ["crates/*", "apps/desktop/src-tauri", "apps/cli", "apps/mcp"]
+resolver = "2"
+
+# A debug-build scan of a real home spends most of its time inside
+# dependencies (hashing, tokenizing, regex, JSON), about 10x slower than
+# release. Optimize only dependencies so workspace crates keep fast
+# incremental debug builds.
+[profile.dev.package."*"]
+opt-level = 2

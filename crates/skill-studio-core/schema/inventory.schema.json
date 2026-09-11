@@ -1,0 +1,788 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Inventory",
+  "description": "Result of `scan`.",
+  "type": "object",
+  "properties": {
+    "completeness": {
+      "description": "Whether every root was read.",
+      "$ref": "#/$defs/Completeness"
+    },
+    "observations": {
+      "description": "Notes about skipped roots and other facts.",
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/Observation"
+      }
+    },
+    "projects": {
+      "description": "Projects that were covered, sorted by canonical path.",
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "skills": {
+      "description": "Skills sorted by name.",
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/InstalledSkillDto"
+      }
+    },
+    "timings": {
+      "description": "Phase timings.",
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/Timing"
+      }
+    }
+  },
+  "required": [
+    "skills",
+    "projects",
+    "completeness",
+    "observations",
+    "timings"
+  ],
+  "$defs": {
+    "AgentId": {
+      "description": "Kebab-case harness identifier, for example `claude-code` or `open-code`.\n\nInvariant: the string is the serde wire name used by the desktop app\ntoday. `open-code` is canonical; `opencode` is only a CLI binary name and\nis never stored in an `AgentId`.",
+      "type": "string"
+    },
+    "BackingRelationship": {
+      "description": "How a deployment is wired to its bytes.",
+      "oneOf": [
+        {
+          "description": "The directory holds the bytes.",
+          "type": "string",
+          "const": "canonical"
+        },
+        {
+          "description": "A symlink to another deployment.",
+          "type": "string",
+          "const": "linked_to"
+        },
+        {
+          "description": "A copy that no longer tracks its source.",
+          "type": "string",
+          "const": "independent"
+        }
+      ]
+    },
+    "Completeness": {
+      "description": "Whether a scan saw everything it was asked to see.",
+      "oneOf": [
+        {
+          "description": "Every root was read.",
+          "type": "string",
+          "const": "complete"
+        },
+        {
+          "description": "Some roots were skipped; see `observations`.",
+          "type": "string",
+          "const": "partial"
+        }
+      ]
+    },
+    "DeploymentDto": {
+      "description": "One installed copy or link of a skill.\n\nInvariant: `harness` is an [`AgentId`] or `None` for the universal and\nparked roots; it is never a display string. `plugin` is `Some` exactly\nwhen `root.kind` is [`crate::identity::RootKind::PluginCache`].",
+      "type": "object",
+      "properties": {
+        "backing": {
+          "description": "How the bytes are backed.",
+          "$ref": "#/$defs/BackingRelationship"
+        },
+        "content_fingerprint": {
+          "description": "Content fingerprint over the directory tree.",
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Fingerprint"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "content_hash": {
+          "description": "sha256 over the sorted (relative path, bytes) pairs of the skill\nfolder. Distinct from `content_fingerprint`: a different, whole-folder\nscheme kept for parity with the desktop's `SkillCandidate`.",
+          "type": "string"
+        },
+        "description_tokens": {
+          "description": "Token count of just `\"{name}: {description}\"` - the prompt cost the\nmodel actually pays per turn, as opposed to `skill_md_tokens` which\ncounts the whole file.",
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0
+        },
+        "destination": {
+          "description": "Universal or per-harness.",
+          "$ref": "#/$defs/SkillDestination"
+        },
+        "disabled_by": {
+          "description": "Why the deployment is off, when it is.",
+          "anyOf": [
+            {
+              "$ref": "#/$defs/DisabledBy"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "disabled_readers": {
+          "description": "Readers of a universal deployment that have it disabled.",
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/AgentId"
+          }
+        },
+        "file_count": {
+          "description": "Total files counted while walking the skill folder.",
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0
+        },
+        "folder_bytes": {
+          "description": "Total bytes read while walking the skill folder.",
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        },
+        "folder_truncated": {
+          "description": "True when the folder walk hit the file-count or byte cap and stopped\nearly - `folder_bytes`/`file_count`/`content_hash` are partial.",
+          "type": "boolean"
+        },
+        "frontmatter": {
+          "description": "Parsed `SKILL.md` frontmatter, when the file parsed.",
+          "anyOf": [
+            {
+              "$ref": "#/$defs/SkillFrontmatter"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "frontmatter_fields": {
+          "description": "Every top-level frontmatter key, stringified.",
+          "type": "object",
+          "additionalProperties": {
+            "type": "string"
+          }
+        },
+        "harness": {
+          "description": "Harness that owns the root, when it is a harness root.",
+          "anyOf": [
+            {
+              "$ref": "#/$defs/AgentId"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "has_spec": {
+          "description": "True when the SKILL.md matches the getsentry/skillet spec pattern.",
+          "type": "boolean"
+        },
+        "id": {
+          "description": "Opaque id.",
+          "$ref": "#/$defs/DeploymentId"
+        },
+        "in_git_repo": {
+          "description": "True when the skill's directory sits inside a git working tree (a\n`.git` file or directory on some ancestor). Distinguishes a\nversion-controlled directory from a genuinely unmanaged one - see\n[`SourceKind::InRepo`].",
+          "type": "boolean"
+        },
+        "is_symlink": {
+          "description": "True when the deployment's own directory entry is a symlink.",
+          "type": "boolean"
+        },
+        "link_target": {
+          "description": "Link target, when the deployment is a symlink.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "modified_at": {
+          "description": "RFC3339 of the newest file mtime in the skill folder.",
+          "type": [
+            "string",
+            "null"
+          ],
+          "format": "date-time"
+        },
+        "mutability": {
+          "description": "Whether writes are allowed.",
+          "$ref": "#/$defs/DeploymentMutability"
+        },
+        "owner_id": {
+          "description": "Owner id, when a ledger owns it.",
+          "anyOf": [
+            {
+              "$ref": "#/$defs/OwnerId"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "owner_kind": {
+          "description": "Which ledger owns the lifecycle.",
+          "$ref": "#/$defs/LifecycleOwnerKind"
+        },
+        "path": {
+          "description": "Absolute lexical path of the skill directory.",
+          "type": "string"
+        },
+        "plugin": {
+          "description": "Plugin provenance for a plugin-cache deployment.",
+          "anyOf": [
+            {
+              "$ref": "#/$defs/PluginSourceDto"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "resolved_path": {
+          "description": "Canonicalized directory the deployment resolves to, when that is\nmeaningfully different from `path`. Distinct from `link_target`:\n`link_target` is the symlink's own target, while `resolved_path` is\n`None` for an ordinary directory that canonicalizes to itself or for\na symlink whose target does not resolve.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "root": {
+          "description": "Root the deployment lives in.",
+          "$ref": "#/$defs/RootRef"
+        },
+        "shared_via_whole_dir_link": {
+          "description": "True when the skills root itself is a link into the universal root.",
+          "type": "boolean"
+        },
+        "skill_md_tokens": {
+          "description": "Token count of the whole `SKILL.md` file.",
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0
+        },
+        "source_kind": {
+          "description": "Provenance classification, per `apps/desktop`'s\n`provenance::classify_source_kind`.",
+          "$ref": "#/$defs/SourceKind"
+        },
+        "spec_violations": {
+          "description": "Spec violations, verbatim messages.",
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "studio_disabled": {
+          "description": "True when this deployment was found inside a root's\n`.skill-studio-disabled/` holding directory. Maps to `disabled_by ==\nSome(DisabledBy::StudioMoved)`.",
+          "type": "boolean"
+        },
+        "symlink_error": {
+          "description": "Error reading the symlink target, when one occurred.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "symlink_is_broken": {
+          "description": "True when the deployment is a symlink whose target does not resolve.",
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "id",
+        "root",
+        "path",
+        "destination",
+        "backing",
+        "mutability",
+        "shared_via_whole_dir_link",
+        "is_symlink",
+        "symlink_is_broken",
+        "owner_kind",
+        "disabled_readers",
+        "spec_violations",
+        "frontmatter_fields",
+        "has_spec",
+        "folder_bytes",
+        "file_count",
+        "skill_md_tokens",
+        "description_tokens",
+        "content_hash",
+        "folder_truncated",
+        "in_git_repo",
+        "studio_disabled",
+        "source_kind"
+      ]
+    },
+    "DeploymentId": {
+      "description": "Opaque deployment id.\n\nInvariant: the string starts with `dep:v1/`. Its internal layout is a core\ndetail; adapters and the UI compare it as a string and never split it.",
+      "type": "string"
+    },
+    "DeploymentMutability": {
+      "description": "Whether Skill Studio may change a deployment in place.",
+      "oneOf": [
+        {
+          "description": "Writes are allowed.",
+          "type": "string",
+          "const": "mutable"
+        },
+        {
+          "description": "Plugin caches and managed ledgers: writes are refused.",
+          "type": "string",
+          "const": "read_only"
+        }
+      ]
+    },
+    "DisabledBy": {
+      "description": "Why a deployment is off, as shown to the user.\n\nInvariant: the first four names match the desktop wire today; the last\ntwo are new and only appear once the matching mechanism is supported.",
+      "oneOf": [
+        {
+          "description": "Codex `[[skills.config]] enabled = false`.",
+          "type": "string",
+          "const": "codex-config"
+        },
+        {
+          "description": "OpenCode `permission.skill` deny.",
+          "type": "string",
+          "const": "opencode-permission"
+        },
+        {
+          "description": "The Claude Code per-skill link was removed.",
+          "type": "string",
+          "const": "claude-link-removed"
+        },
+        {
+          "description": "Skill Studio moved the folder aside.",
+          "type": "string",
+          "const": "studio-moved"
+        },
+        {
+          "description": "Claude Code `skillOverrides` set to `off`.",
+          "type": "string",
+          "const": "claude-skill-overrides"
+        },
+        {
+          "description": "pi per-skill toggle.",
+          "type": "string",
+          "const": "pi-settings"
+        }
+      ]
+    },
+    "Fingerprint": {
+      "description": "Content fingerprint in the `sha256:<hex>` form.\n\nInvariant: the hex is lowercase and 64 characters long. One scheme covers\nfiles, trees, and proposals; the old untyped hex form is parsed on read.",
+      "type": "string"
+    },
+    "InstalledSkillDto": {
+      "description": "One skill with all of its deployments.",
+      "type": "object",
+      "properties": {
+        "deployments": {
+          "description": "Deployments in scan order.",
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/DeploymentDto"
+          }
+        },
+        "description": {
+          "description": "Description from the first readable deployment.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "name": {
+          "description": "Name.",
+          "$ref": "#/$defs/SkillName"
+        }
+      },
+      "required": [
+        "name",
+        "deployments"
+      ]
+    },
+    "LifecycleOwnerKind": {
+      "description": "Which ledger owns a deployment's lifecycle.",
+      "oneOf": [
+        {
+          "description": "`~/.agents/.skill-lock.json`.",
+          "type": "string",
+          "const": "skills_sh"
+        },
+        {
+          "description": "A dotagents ledger.",
+          "type": "string",
+          "const": "dotagents"
+        },
+        {
+          "description": "A copy install recorded by Skill Studio.",
+          "type": "string",
+          "const": "copy"
+        },
+        {
+          "description": "A fork recorded by Skill Studio.",
+          "type": "string",
+          "const": "fork"
+        },
+        {
+          "description": "A harness plugin cache.",
+          "type": "string",
+          "const": "plugin"
+        },
+        {
+          "description": "Committed in the project repository.",
+          "type": "string",
+          "const": "in_repo"
+        },
+        {
+          "description": "Placed by hand.",
+          "type": "string",
+          "const": "manual"
+        },
+        {
+          "description": "A dotagents wildcard entry.",
+          "type": "string",
+          "const": "wildcard_dotagents"
+        },
+        {
+          "description": "More than one ledger claims the name.",
+          "type": "string",
+          "const": "ambiguous"
+        }
+      ]
+    },
+    "Observation": {
+      "description": "Something worth telling the caller that is not an error.",
+      "type": "object",
+      "properties": {
+        "message": {
+          "description": "Message for a person.",
+          "type": "string"
+        },
+        "root": {
+          "description": "Root the observation is about, when there is one.",
+          "anyOf": [
+            {
+              "$ref": "#/$defs/RootRef"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "required": [
+        "message"
+      ]
+    },
+    "OwnerId": {
+      "description": "Opaque lifecycle owner id.\n\nInvariant: the string starts with `owner:v1/`. It names the ledger entry\nthat installed the skill, not a path.",
+      "type": "string"
+    },
+    "PluginSourceDto": {
+      "description": "Where a plugin-cache deployment came from, per the agent-plugins.org\nmanifest convention (`<cache>/<marketplace>/<plugin>/<version>/skills/`).",
+      "type": "object",
+      "properties": {
+        "marketplace": {
+          "description": "Marketplace directory name.",
+          "type": "string"
+        },
+        "plugin": {
+          "description": "Plugin directory name.",
+          "type": "string"
+        },
+        "version": {
+          "description": "Version directory name, when the layout has one.",
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "marketplace",
+        "plugin"
+      ]
+    },
+    "ProjectRef": {
+      "description": "Absolute path of a tracked project directory.\n\nInvariant: the path is canonical inside a [`crate::scope::NormalizedScope`].\nWire values are the lexical path the caller gave.",
+      "type": "string"
+    },
+    "RootKind": {
+      "description": "What kind of root a path is.",
+      "oneOf": [
+        {
+          "description": "A harness's own skills directory (`~/.claude/skills`).",
+          "type": "object",
+          "properties": {
+            "harness": {
+              "$ref": "#/$defs/AgentId"
+            },
+            "kind": {
+              "type": "string",
+              "const": "harness"
+            }
+          },
+          "required": [
+            "kind",
+            "harness"
+          ]
+        },
+        {
+          "description": "The shared `.agents/skills` root.",
+          "type": "object",
+          "properties": {
+            "kind": {
+              "type": "string",
+              "const": "universal"
+            }
+          },
+          "required": [
+            "kind"
+          ]
+        },
+        {
+          "description": "The `.agents/skills-parked` holding root (global only).",
+          "type": "object",
+          "properties": {
+            "kind": {
+              "type": "string",
+              "const": "parked"
+            }
+          },
+          "required": [
+            "kind"
+          ]
+        },
+        {
+          "description": "A legacy directory a harness still reads (OpenCode `skill/`).",
+          "type": "object",
+          "properties": {
+            "harness": {
+              "$ref": "#/$defs/AgentId"
+            },
+            "kind": {
+              "type": "string",
+              "const": "legacy"
+            }
+          },
+          "required": [
+            "kind",
+            "harness"
+          ]
+        },
+        {
+          "description": "A plugin cache the harness ships skills in.",
+          "type": "object",
+          "properties": {
+            "harness": {
+              "$ref": "#/$defs/AgentId"
+            },
+            "kind": {
+              "type": "string",
+              "const": "plugin_cache"
+            }
+          },
+          "required": [
+            "kind",
+            "harness"
+          ]
+        }
+      ]
+    },
+    "RootRef": {
+      "description": "A root, before it is resolved on disk.\n\nInvariant: `(scope, kind)` is unique inside one normalized scope, and\n`Parked` exists only at `Global`. `RootRef::new` enforces the second\nrule; `scan` rejects a deserialized value that breaks it with\n[`ErrorCode::InvalidRequest`] through [`RootRef::validate`].",
+      "type": "object",
+      "properties": {
+        "kind": {
+          "description": "Harness, universal, parked, legacy, or plugin cache.",
+          "$ref": "#/$defs/RootKind"
+        },
+        "scope": {
+          "description": "Global or project.",
+          "$ref": "#/$defs/RootScope"
+        }
+      },
+      "required": [
+        "scope",
+        "kind"
+      ]
+    },
+    "RootScope": {
+      "description": "Where a root lives.",
+      "oneOf": [
+        {
+          "description": "Under the scope home.",
+          "type": "object",
+          "properties": {
+            "scope": {
+              "type": "string",
+              "const": "global"
+            }
+          },
+          "required": [
+            "scope"
+          ]
+        },
+        {
+          "description": "Under one tracked project.",
+          "type": "object",
+          "properties": {
+            "project": {
+              "$ref": "#/$defs/ProjectRef"
+            },
+            "scope": {
+              "type": "string",
+              "const": "project"
+            }
+          },
+          "required": [
+            "scope",
+            "project"
+          ]
+        }
+      ]
+    },
+    "SkillDestination": {
+      "description": "Universal (`.agents/skills`) or per-harness destination.",
+      "oneOf": [
+        {
+          "description": "The shared root.",
+          "type": "string",
+          "const": "universal"
+        },
+        {
+          "description": "A harness's own root.",
+          "type": "string",
+          "const": "per_harness"
+        }
+      ]
+    },
+    "SkillFrontmatter": {
+      "description": "`SKILL.md` frontmatter, per the agentskills.io spec. Unknown keys are\nignored by default serde behavior, so agent-specific extensions in a\nskill's frontmatter don't break parsing.",
+      "type": "object",
+      "properties": {
+        "allowed-tools": {
+          "description": "Comma-separated tool allowlist.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "compatibility": {
+          "description": "Optional, spec caps this at 500 chars.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "description": {
+          "description": "Required by spec: 1-1024 chars.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "disable-model-invocation": {
+          "description": "Claude Code / pi extension: restricts this skill to explicit\ninvocation only (`/name`, `/skill:name`), hiding it from the model's\nown auto-invoke matching. See [`InvocationPolicy`].",
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "license": {
+          "description": "License identifier or text.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "metadata": {
+          "description": "Tolerate non-string metadata values (numbers, lists, nested maps).",
+          "type": [
+            "object",
+            "null"
+          ],
+          "additionalProperties": true
+        },
+        "name": {
+          "description": "Required by spec: 1-64 chars, lowercase a-z0-9 and hyphens, must\nmatch the parent directory name.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "user-invocable": {
+          "description": "Claude Code / pi extension: `false` restricts this skill to model\nauto-invoke only, hiding it from explicit `/name` invocation. See\n[`InvocationPolicy`].",
+          "type": [
+            "boolean",
+            "null"
+          ]
+        }
+      }
+    },
+    "SkillName": {
+      "description": "Lexical skill name: the directory name that holds `SKILL.md`.\n\nInvariant: two deployments with the same `SkillName` are the same skill,\neven when their bytes differ. A symlink alias with another name is another\nskill.",
+      "type": "string"
+    },
+    "SourceKind": {
+      "description": "How a skill made it onto disk.\n\nPorted from the desktop's `provenance::SourceKind`. Serializes to the same\nkebab-case strings the frontend has always used. Declaration order doubles\nas precedence order (dotagents beats plugin beats skills-sh beats in-repo\nbeats manual) via the derived `Ord`, matching the desktop's\n`classify_source_kind`.",
+      "oneOf": [
+        {
+          "description": "Symlinked in by getsentry/dotagents.",
+          "type": "string",
+          "const": "dotagents"
+        },
+        {
+          "description": "Shipped by an agent plugin.",
+          "type": "string",
+          "const": "plugin"
+        },
+        {
+          "description": "Present in the skills.sh lock file.",
+          "type": "string",
+          "const": "skills-sh"
+        },
+        {
+          "description": "A plain directory with no skill-manager provenance, but sitting\ninside a git working tree.",
+          "type": "string",
+          "const": "in-repo"
+        },
+        {
+          "description": "A plain directory with no other provenance signal.",
+          "type": "string",
+          "const": "manual"
+        },
+        {
+          "description": "Detached from its dotagents/skills.sh ledger via \"Fork\" so local\nedits survive `sync`/`update`. Never produced by classification\ndirectly; assigned afterward from the fork registry.",
+          "type": "string",
+          "const": "fork"
+        }
+      ]
+    },
+    "Timing": {
+      "description": "How long one phase took.",
+      "type": "object",
+      "properties": {
+        "elapsed_ms": {
+          "description": "Elapsed milliseconds.",
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        },
+        "phase": {
+          "description": "Phase name.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "phase",
+        "elapsed_ms"
+      ]
+    }
+  }
+}

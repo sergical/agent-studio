@@ -1,0 +1,130 @@
+{
+  "completeness": "complete",
+  "observations": [],
+  "projects": [],
+  "skills": [
+    {
+      "deployments": [
+        {
+          "backing": "independent",
+          "content_fingerprint": "sha256:cc645fbf80b12dc18bdcc0af3452555d34e930cd940c1b0a517514fce83a67f2",
+          "content_hash": "cc645fbf80b12dc18bdcc0af3452555d34e930cd940c1b0a517514fce83a67f2",
+          "description_tokens": 10,
+          "destination": "per_harness",
+          "disabled_by": null,
+          "disabled_readers": [],
+          "file_count": 1,
+          "folder_bytes": 97,
+          "folder_truncated": false,
+          "frontmatter": {
+            "allowed-tools": null,
+            "compatibility": null,
+            "description": "Helps with delta for fixture-driven tests.",
+            "disable-model-invocation": null,
+            "license": null,
+            "metadata": null,
+            "name": "delta",
+            "user-invocable": null
+          },
+          "frontmatter_fields": {
+            "description": "Helps with delta for fixture-driven tests.",
+            "name": "delta"
+          },
+          "harness": "open-code",
+          "has_spec": false,
+          "id": "dep:v1/global/opencode/per-harness/delta/-/%24HOME%2F.config%2Fopencode%2Fskill%2Fdelta",
+          "in_git_repo": false,
+          "is_symlink": false,
+          "link_target": null,
+          "modified_at": "-",
+          "mutability": "read_only",
+          "owner_id": null,
+          "owner_kind": "manual",
+          "path": "$HOME/.config/opencode/skill/delta",
+          "plugin": null,
+          "resolved_path": null,
+          "root": {
+            "kind": {
+              "harness": "open-code",
+              "kind": "legacy"
+            },
+            "scope": {
+              "scope": "global"
+            }
+          },
+          "shared_via_whole_dir_link": false,
+          "skill_md_tokens": 21,
+          "source_kind": "manual",
+          "spec_violations": [],
+          "studio_disabled": false,
+          "symlink_error": null,
+          "symlink_is_broken": false
+        }
+      ],
+      "description": "Helps with delta for fixture-driven tests.",
+      "name": "delta"
+    },
+    {
+      "deployments": [
+        {
+          "backing": "independent",
+          "content_fingerprint": "sha256:f637663b34412c0cf06f6a19b1ffe6a48e423a94ff610f798673026bdc4414ab",
+          "content_hash": "f637663b34412c0cf06f6a19b1ffe6a48e423a94ff610f798673026bdc4414ab",
+          "description_tokens": 10,
+          "destination": "per_harness",
+          "disabled_by": null,
+          "disabled_readers": [],
+          "file_count": 1,
+          "folder_bytes": 103,
+          "folder_truncated": false,
+          "frontmatter": {
+            "allowed-tools": null,
+            "compatibility": null,
+            "description": "Helps with epsilon for fixture-driven tests.",
+            "disable-model-invocation": null,
+            "license": null,
+            "metadata": null,
+            "name": "epsilon",
+            "user-invocable": null
+          },
+          "frontmatter_fields": {
+            "description": "Helps with epsilon for fixture-driven tests.",
+            "name": "epsilon"
+          },
+          "harness": "open-code",
+          "has_spec": false,
+          "id": "dep:v1/global/opencode/per-harness/epsilon/-/%24HOME%2F.config%2Fopencode%2Fskills%2Fepsilon",
+          "in_git_repo": false,
+          "is_symlink": false,
+          "link_target": null,
+          "modified_at": "-",
+          "mutability": "read_only",
+          "owner_id": null,
+          "owner_kind": "manual",
+          "path": "$HOME/.config/opencode/skills/epsilon",
+          "plugin": null,
+          "resolved_path": null,
+          "root": {
+            "kind": {
+              "harness": "open-code",
+              "kind": "harness"
+            },
+            "scope": {
+              "scope": "global"
+            }
+          },
+          "shared_via_whole_dir_link": false,
+          "skill_md_tokens": 21,
+          "source_kind": "manual",
+          "spec_violations": [],
+          "studio_disabled": false,
+          "symlink_error": null,
+          "symlink_is_broken": false
+        }
+      ],
+      "description": "Helps with epsilon for fixture-driven tests.",
+      "name": "epsilon"
+    }
+  ],
+  "timings": []
+}

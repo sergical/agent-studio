@@ -27,6 +27,10 @@ export function SkillLocationRow({
   const menu = rowMenu(row, scopeLabel);
   const tip = tipLines(row.conditions);
   const isAlwaysOnReader = row.kind === "reader" && !row.hasSwitch;
+  const pluginDisabledByClaudeLabel =
+    row.kind === "plugin" && row.deployment?.disabled_by === "claude-plugin-disabled"
+      ? `Off because the ${row.deployment.plugin?.name ?? "plugin"} plugin is disabled in Claude Code.`
+      : null;
   const labelTip =
     row.kind === "link" && row.deployment?.symlink_target
       ? [
@@ -101,6 +105,17 @@ export function SkillLocationRow({
                     ? `Always enabled for ${row.harnessLabel}`
                     : `Disabled for ${row.harnessLabel} while this skill is off`
                 }
+              />
+            </span>
+          </TooltipControl>
+        ) : pluginDisabledByClaudeLabel ? (
+          <TooltipControl content={pluginDisabledByClaudeLabel}>
+            <span className="inline-flex">
+              <SwitchControl
+                checked={false}
+                disabled
+                onCheckedChange={() => undefined}
+                ariaLabel={pluginDisabledByClaudeLabel}
               />
             </span>
           </TooltipControl>

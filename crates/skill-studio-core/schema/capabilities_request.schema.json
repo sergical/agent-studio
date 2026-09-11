@@ -1,0 +1,35 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "CapabilitiesRequest",
+  "description": "Request for `capabilities`.",
+  "type": "object",
+  "properties": {
+    "harnesses": {
+      "description": "Restrict to these harnesses; empty means all. A name without a\ncatalog row is `invalid_request`.",
+      "type": "array",
+      "default": [],
+      "items": {
+        "$ref": "#/$defs/AgentId"
+      }
+    },
+    "observe": {
+      "description": "Also probe the machine (config presence, runner binary).",
+      "type": "boolean",
+      "default": false
+    },
+    "tools": {
+      "description": "Executables to look up on `PATH` (`npx`, `dotagents`, `gh`). Needs\nthe `ToolLookup` port; without it a non-empty list is `unsupported`.",
+      "type": "array",
+      "default": [],
+      "items": {
+        "type": "string"
+      }
+    }
+  },
+  "$defs": {
+    "AgentId": {
+      "description": "Kebab-case harness identifier, for example `claude-code` or `open-code`.\n\nInvariant: the string is the serde wire name used by the desktop app\ntoday. `open-code` is canonical; `opencode` is only a CLI binary name and\nis never stored in an `AgentId`.",
+      "type": "string"
+    }
+  }
+}

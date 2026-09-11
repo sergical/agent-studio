@@ -1,0 +1,122 @@
+{
+  "completeness": "complete",
+  "observations": [],
+  "projects": [],
+  "skills": [
+    {
+      "deployments": [
+        {
+          "backing": "independent",
+          "content_fingerprint": "sha256:1054eef70e404d4c4705046fc1859defc79a273e9a2212815eea5f6c2db6ec53",
+          "content_hash": "1054eef70e404d4c4705046fc1859defc79a273e9a2212815eea5f6c2db6ec53",
+          "description_tokens": 13,
+          "destination": "per_harness",
+          "disabled_by": null,
+          "disabled_readers": [],
+          "file_count": 1,
+          "folder_bytes": 90,
+          "folder_truncated": false,
+          "frontmatter": {
+            "allowed-tools": null,
+            "compatibility": null,
+            "description": "Has an uppercase name, which the spec forbids.",
+            "disable-model-invocation": null,
+            "license": null,
+            "metadata": null,
+            "name": "UpperCase",
+            "user-invocable": null
+          },
+          "frontmatter_fields": {
+            "description": "Has an uppercase name, which the spec forbids.",
+            "name": "UpperCase"
+          },
+          "harness": "claude-code",
+          "has_spec": false,
+          "id": "dep:v1/global/claude-code/per-harness/UpperCase/-/%24HOME%2F.claude%2Fskills%2FUpperCase",
+          "in_git_repo": false,
+          "is_symlink": false,
+          "link_target": null,
+          "modified_at": "-",
+          "mutability": "read_only",
+          "owner_id": null,
+          "owner_kind": "manual",
+          "path": "$HOME/.claude/skills/UpperCase",
+          "plugin": null,
+          "resolved_path": null,
+          "root": {
+            "kind": {
+              "harness": "claude-code",
+              "kind": "harness"
+            },
+            "scope": {
+              "scope": "global"
+            }
+          },
+          "shared_via_whole_dir_link": false,
+          "skill_md_tokens": 22,
+          "source_kind": "manual",
+          "spec_violations": [
+            "name \"UpperCase\" must be 1-64 lowercase a-z0-9 characters and hyphens, with no leading, trailing, or consecutive hyphens"
+          ],
+          "studio_disabled": false,
+          "symlink_error": null,
+          "symlink_is_broken": false
+        }
+      ],
+      "description": "Has an uppercase name, which the spec forbids.",
+      "name": "UpperCase"
+    },
+    {
+      "deployments": [
+        {
+          "backing": "independent",
+          "content_fingerprint": "sha256:d02755600813fac944ebb2dc3fa9ef62ad7d2fbe4abe107848581f1f62d08ae9",
+          "content_hash": "d02755600813fac944ebb2dc3fa9ef62ad7d2fbe4abe107848581f1f62d08ae9",
+          "description_tokens": 2,
+          "destination": "per_harness",
+          "disabled_by": null,
+          "disabled_readers": [],
+          "file_count": 1,
+          "folder_bytes": 64,
+          "folder_truncated": false,
+          "frontmatter": null,
+          "frontmatter_fields": {},
+          "harness": "claude-code",
+          "has_spec": false,
+          "id": "dep:v1/global/claude-code/per-harness/zeta-bad/-/%24HOME%2F.claude%2Fskills%2Fzeta-bad",
+          "in_git_repo": false,
+          "is_symlink": false,
+          "link_target": null,
+          "modified_at": "-",
+          "mutability": "read_only",
+          "owner_id": null,
+          "owner_kind": "manual",
+          "path": "$HOME/.claude/skills/zeta-bad",
+          "plugin": null,
+          "resolved_path": null,
+          "root": {
+            "kind": {
+              "harness": "claude-code",
+              "kind": "harness"
+            },
+            "scope": {
+              "scope": "global"
+            }
+          },
+          "shared_via_whole_dir_link": false,
+          "skill_md_tokens": 19,
+          "source_kind": "manual",
+          "spec_violations": [
+            "invalid YAML frontmatter at line 3, column 22: mapping values are not allowed in this context"
+          ],
+          "studio_disabled": false,
+          "symlink_error": null,
+          "symlink_is_broken": false
+        }
+      ],
+      "description": null,
+      "name": "zeta-bad"
+    }
+  ],
+  "timings": []
+}

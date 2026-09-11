@@ -1,0 +1,225 @@
+{
+  "inventory": {
+    "completeness": "complete",
+    "observations": [],
+    "projects": [],
+    "skills": [
+      {
+        "deployments": [
+          {
+            "backing": "independent",
+            "content_fingerprint": "sha256:215394f9121204444bc8fd350b3c601b19a81d755503aa55a129da11bca9069a",
+            "content_hash": "215394f9121204444bc8fd350b3c601b19a81d755503aa55a129da11bca9069a",
+            "description_tokens": 10,
+            "destination": "per_harness",
+            "disabled_by": "codex-config",
+            "disabled_readers": [],
+            "file_count": 1,
+            "folder_bytes": 94,
+            "folder_truncated": false,
+            "frontmatter": {
+              "allowed-tools": null,
+              "compatibility": null,
+              "description": "Helps with beta for fixture-driven tests.",
+              "disable-model-invocation": null,
+              "license": null,
+              "metadata": null,
+              "name": "beta",
+              "user-invocable": null
+            },
+            "frontmatter_fields": {
+              "description": "Helps with beta for fixture-driven tests.",
+              "name": "beta"
+            },
+            "harness": "codex",
+            "has_spec": false,
+            "id": "dep:v1/global/codex/per-harness/beta/-/%24HOME%2F.codex%2Fskills%2Fbeta",
+            "in_git_repo": false,
+            "is_symlink": false,
+            "link_target": null,
+            "modified_at": "-",
+            "mutability": "read_only",
+            "owner_id": null,
+            "owner_kind": "manual",
+            "path": "$HOME/.codex/skills/beta",
+            "plugin": null,
+            "resolved_path": null,
+            "root": {
+              "kind": {
+                "harness": "codex",
+                "kind": "harness"
+              },
+              "scope": {
+                "scope": "global"
+              }
+            },
+            "shared_via_whole_dir_link": false,
+            "skill_md_tokens": 21,
+            "source_kind": "manual",
+            "spec_violations": [],
+            "studio_disabled": false,
+            "symlink_error": null,
+            "symlink_is_broken": false
+          }
+        ],
+        "description": "Helps with beta for fixture-driven tests.",
+        "name": "beta"
+      },
+      {
+        "deployments": [
+          {
+            "backing": "independent",
+            "content_fingerprint": "sha256:f637663b34412c0cf06f6a19b1ffe6a48e423a94ff610f798673026bdc4414ab",
+            "content_hash": "f637663b34412c0cf06f6a19b1ffe6a48e423a94ff610f798673026bdc4414ab",
+            "description_tokens": 10,
+            "destination": "per_harness",
+            "disabled_by": "opencode-permission",
+            "disabled_readers": [],
+            "file_count": 1,
+            "folder_bytes": 103,
+            "folder_truncated": false,
+            "frontmatter": {
+              "allowed-tools": null,
+              "compatibility": null,
+              "description": "Helps with epsilon for fixture-driven tests.",
+              "disable-model-invocation": null,
+              "license": null,
+              "metadata": null,
+              "name": "epsilon",
+              "user-invocable": null
+            },
+            "frontmatter_fields": {
+              "description": "Helps with epsilon for fixture-driven tests.",
+              "name": "epsilon"
+            },
+            "harness": "open-code",
+            "has_spec": false,
+            "id": "dep:v1/global/opencode/per-harness/epsilon/-/%24HOME%2F.config%2Fopencode%2Fskills%2Fepsilon",
+            "in_git_repo": false,
+            "is_symlink": false,
+            "link_target": null,
+            "modified_at": "-",
+            "mutability": "read_only",
+            "owner_id": null,
+            "owner_kind": "manual",
+            "path": "$HOME/.config/opencode/skills/epsilon",
+            "plugin": null,
+            "resolved_path": null,
+            "root": {
+              "kind": {
+                "harness": "open-code",
+                "kind": "harness"
+              },
+              "scope": {
+                "scope": "global"
+              }
+            },
+            "shared_via_whole_dir_link": false,
+            "skill_md_tokens": 21,
+            "source_kind": "manual",
+            "spec_violations": [],
+            "studio_disabled": false,
+            "symlink_error": null,
+            "symlink_is_broken": false
+          }
+        ],
+        "description": "Helps with epsilon for fixture-driven tests.",
+        "name": "epsilon"
+      },
+      {
+        "deployments": [
+          {
+            "backing": "independent",
+            "content_fingerprint": "sha256:2bb3f592516d4e38bfa5fff45160305c086b1f4b8b4d8b31bc3a0d5a32590d09",
+            "content_hash": "2bb3f592516d4e38bfa5fff45160305c086b1f4b8b4d8b31bc3a0d5a32590d09",
+            "description_tokens": 11,
+            "destination": "per_harness",
+            "disabled_by": "studio-moved",
+            "disabled_readers": [],
+            "file_count": 1,
+            "folder_bytes": 97,
+            "folder_truncated": false,
+            "frontmatter": {
+              "allowed-tools": null,
+              "compatibility": null,
+              "description": "Helps with kappa for fixture-driven tests.",
+              "disable-model-invocation": null,
+              "license": null,
+              "metadata": null,
+              "name": "kappa",
+              "user-invocable": null
+            },
+            "frontmatter_fields": {
+              "description": "Helps with kappa for fixture-driven tests.",
+              "name": "kappa"
+            },
+            "harness": "claude-code",
+            "has_spec": false,
+            "id": "dep:v1/global/claude-code/per-harness/kappa/-/%24HOME%2F.claude%2Fskills%2F.skill-studio-disabled%2Fkappa",
+            "in_git_repo": false,
+            "is_symlink": false,
+            "link_target": null,
+            "modified_at": "-",
+            "mutability": "read_only",
+            "owner_id": null,
+            "owner_kind": "manual",
+            "path": "$HOME/.claude/skills/.skill-studio-disabled/kappa",
+            "plugin": null,
+            "resolved_path": null,
+            "root": {
+              "kind": {
+                "harness": "claude-code",
+                "kind": "harness"
+              },
+              "scope": {
+                "scope": "global"
+              }
+            },
+            "shared_via_whole_dir_link": false,
+            "skill_md_tokens": 21,
+            "source_kind": "manual",
+            "spec_violations": [],
+            "studio_disabled": true,
+            "symlink_error": null,
+            "symlink_is_broken": false
+          }
+        ],
+        "description": "Helps with kappa for fixture-driven tests.",
+        "name": "kappa"
+      }
+    ],
+    "timings": []
+  },
+  "issues": [
+    {
+      "deployment_id": "dep:v1/global/codex/per-harness/beta/-/%24HOME%2F.codex%2Fskills%2Fbeta",
+      "kind": "disabled",
+      "message": "$HOME/.codex/skills/beta is disabled",
+      "next_action": {
+        "action": "none"
+      },
+      "severity": "off",
+      "skill": "beta"
+    },
+    {
+      "deployment_id": "dep:v1/global/opencode/per-harness/epsilon/-/%24HOME%2F.config%2Fopencode%2Fskills%2Fepsilon",
+      "kind": "disabled",
+      "message": "$HOME/.config/opencode/skills/epsilon is disabled",
+      "next_action": {
+        "action": "none"
+      },
+      "severity": "off",
+      "skill": "epsilon"
+    },
+    {
+      "deployment_id": "dep:v1/global/claude-code/per-harness/kappa/-/%24HOME%2F.claude%2Fskills%2F.skill-studio-disabled%2Fkappa",
+      "kind": "disabled",
+      "message": "$HOME/.claude/skills/.skill-studio-disabled/kappa is disabled",
+      "next_action": {
+        "action": "none"
+      },
+      "severity": "off",
+      "skill": "kappa"
+    }
+  ]
+}

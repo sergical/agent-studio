@@ -3,7 +3,7 @@
 // Skills.sh integration for skill discovery, installation, and management
 // ============================================================================
 
-mod skills;
+pub mod skills;
 
 use tauri::Manager;
 
@@ -110,8 +110,33 @@ fn open_event_store(app: &tauri::App) -> Option<skills::event_store::EventStore>
     Some(store)
 }
 
+/// When `SKILL_STUDIO_FIXTURE` names a directory, points every `HOME`
+/// resolution in the app - `dirs::home_dir()` throughout the desktop crate,
+/// and `RuntimeScope::live` vs. `RuntimeScope::fixture` in
+/// `skill_refresh::build_snapshot` - at that directory instead of the real
+/// one, for the manual fixture-mode checklist in
+/// `docs/spec-core-primitives.md` section 11.5. Must run before anything
+/// else reads `HOME` (the refresh thread, the event store, `skill_pack`
+/// startup reconcile), so it's the very first thing `run()` does.
+///
+/// SAFETY: single-threaded at this point - `run()` hasn't spawned the
+/// refresh thread or handed control to Tauri yet, so nothing else reads
+/// `HOME` concurrently with this write.
+fn apply_fixture_home_override() {
+    if let Some(fixture) = std::env::var_os("SKILL_STUDIO_FIXTURE") {
+        eprintln!(
+            "skill-studio: SKILL_STUDIO_FIXTURE set, running against fixture home {}",
+            fixture.to_string_lossy()
+        );
+        unsafe {
+            std::env::set_var("HOME", &fixture);
+        }
+    }
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    apply_fixture_home_override();
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
         .setup(|app| {
@@ -183,6 +208,8 @@ pub fn run() {
             skills::skill_harness_disable::set_harness_enabled,
             skills::skill_harness_disable::set_deployment_enabled,
             skills::skill_invocation::set_skill_invocation,
+            skills::commands::set_plugin_enabled,
+            skills::commands::uninstall_plugin,
             // Event store: History and per-harness materialize disable
             skills::event_commands::list_skill_events,
             skills::event_commands::restore_skill_event,
