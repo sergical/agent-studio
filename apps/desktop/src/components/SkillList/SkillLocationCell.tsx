@@ -1,127 +1,90 @@
 // ============================================================================
-// SkillLocationCell - "Where does this skill really live, and who links to
-// it": one chip for the shared-root truth, one per symlink into it, one per
-// separate copy (drift risk), and the existing broken-link chip. Agents are
-// shown as harness brand marks; the relation glyph beside the mark says how
-// that agent reaches the skill (link, copy, broken), tooltips carry the words.
+// SkillLocationCell - the shared Location group: where on disk the skill
+// sits (global home folders, added project roots), independent of which
+// harnesses reach it. The project chip's tooltip is exception-only: it only
+// appears once the truncated name has actually clipped.
 // ============================================================================
 
-import { Copy, Link2, Unlink } from "lucide-react";
-import {
-  deploymentLinkTarget,
-  deploymentRelationText,
-  driftingCopies,
-  locationSummary,
-} from "@skill-studio/lib";
-import { homeRelativePath } from "@skill-studio/lib";
-import type { Deployment, InstalledSkill } from "@skill-studio/lib";
-import { HarnessIcon, harnessIdFromLabel } from "../ui/HarnessIcon";
-import { TooltipControl } from "../ui/TooltipControl";
+import { useLayoutEffect, useRef, useState } from "react";
+import { FolderGit2, Globe } from "lucide-react";
+import { RichTooltip } from "../ui/RichTooltip";
+import type { DiskLocation } from "./skill-row-state";
 
-interface SkillLocationCellProps {
-  skill: InstalledSkill;
-}
-
-/** The plain harness chip and each relation-to-shared-root chip share this base look. */
-const LOCATION_CHIP_BASE =
-  "inline-flex items-center gap-1 whitespace-nowrap rounded-sm border border-transparent px-1.5 py-0.5 text-caption tracking-[0.02em] text-text-secondary";
-const LOCATION_CHIP_CLASS = `${LOCATION_CHIP_BASE} bg-bg-tertiary`;
-
-/** The agent's brand mark, or its text label when no mark exists for it. */
-function AgentMark({ agent }: { agent: string }) {
-  const id = harnessIdFromLabel(agent);
-  if (!id) return <>{agent}</>;
-  return <HarnessIcon harness={id} size={13} />;
-}
-
-export function SkillLocationCell({ skill }: SkillLocationCellProps) {
-  const summary = locationSummary(skill);
-  const { truth, links, copies, broken } = summary;
-  const drifting = driftingCopies(summary);
-  const driftingPaths = new Set(drifting.map((d) => d.path));
-
-  // No shared-root copy and exactly one own directory: nothing to compare it
-  // against, so it's just the harness mark, no relation glyph.
-  if (!truth && links.length === 0 && copies.length === 1 && broken.length === 0) {
-    const [only] = copies;
-    return (
-      <span className="flex min-w-0 items-center gap-1 overflow-hidden">
-        <TooltipControl content={`${only.agent} · ${homeRelativePath(only.path)}`}>
-          <span className={LOCATION_CHIP_CLASS} aria-label={only.agent}>
-            <AgentMark agent={only.agent} />
-          </span>
-        </TooltipControl>
-      </span>
-    );
-  }
-
-  return (
-    <span className="flex min-w-0 items-center gap-1 overflow-hidden">
-      {truth && (
-        <TooltipControl content="Universal folder · canonical deployment">
-          <span
-            className={`${LOCATION_CHIP_CLASS} text-text-primary`}
-            aria-label="Universal folder, canonical deployment"
-          >
-            <HarnessIcon harness="shared" size={13} />
-          </span>
-        </TooltipControl>
+function LocationItem({ location }: { location: DiskLocation }) {
+  const nameRef = useRef<HTMLSpanElement>(null);
+  const [truncated, setTruncated] = useState(false);
+  const isProject = location.kind === "project";
+  // Measured after layout (and again on resize) so the tooltip exists before the first hover.
+  useLayoutEffect(() => {
+    if (!isProject) return;
+    const measure = () => {
+      const el = nameRef.current;
+      if (el) setTruncated(el.scrollWidth > el.clientWidth);
+    };
+    measure();
+    window.addEventListener("resize", measure);
+    return () => window.removeEventListener("resize", measure);
+  }, [isProject]);
+  const chip = (
+    <span
+      className={`inline-flex items-center gap-1 ${isProject ? "min-w-0 max-w-[120px]" : "shrink-0"}`}
+    >
+      {isProject ? (
+        <FolderGit2 size={13} className="shrink-0 text-text-tertiary" aria-hidden />
+      ) : (
+        <Globe size={13} className="shrink-0 text-text-tertiary" aria-hidden />
       )}
-      {links.map((d) => {
-        const target = deploymentLinkTarget(d);
-        return (
-          <TooltipControl
-            key={d.path}
-            content={
-              d.is_symlink
-                ? `${d.agent} · symlink → ${target ? homeRelativePath(target) : "unknown target"}`
-                : `${d.agent} · ${deploymentRelationText(d)}`
-            }
-          >
-            <span
-              className={LOCATION_CHIP_CLASS}
-              aria-label={`${d.agent}, linked to the Universal folder`}
-            >
-              <AgentMark agent={d.agent} />
-              <Link2 size={10} className="text-text-tertiary" />
-            </span>
-          </TooltipControl>
-        );
-      })}
-      {copies.map((d) => {
-        const isDrifting = driftingPaths.has(d.path);
-        return (
-          <TooltipControl
-            key={d.path}
-            content={`${d.agent} · separate copy at ${homeRelativePath(d.path)} · ${isDrifting ? "content differs" : "same content"}`}
-          >
-            <span
-              className={`${LOCATION_CHIP_BASE} ${isDrifting ? "bg-warning-soft" : "bg-bg-tertiary"}`}
-              aria-label={`${d.agent}, separate copy${isDrifting ? ", content differs" : ""}`}
-            >
-              <AgentMark agent={d.agent} />
-              <Copy size={10} className={isDrifting ? "text-warning" : "text-text-tertiary"} />
-            </span>
-          </TooltipControl>
-        );
-      })}
-      {broken.map((d) => (
-        <BrokenChip key={d.path} deployment={d} />
-      ))}
+      <span ref={nameRef} className="truncate text-small text-text-secondary">
+        {location.name}
+      </span>
     </span>
+  );
+  // The Global chip is already the word "Global" - there's no fact left for a tooltip to add. A
+  // project chip only gets one once its name has actually clipped.
+  if (!isProject || !truncated) return chip;
+  return (
+    <RichTooltip content={<span className="text-small">{location.name}</span>}>{chip}</RichTooltip>
   );
 }
 
-function BrokenChip({ deployment }: { deployment: Deployment }) {
+/** The "+N" chip's tooltip: one line per hidden location, its own kind icon and name. */
+function OverflowTooltip({ hidden }: { hidden: DiskLocation[] }) {
   return (
-    <TooltipControl content={`${deployment.agent} · broken link`}>
-      <span
-        className={`${LOCATION_CHIP_CLASS} text-error`}
-        aria-label={`${deployment.agent}, broken link`}
-      >
-        <AgentMark agent={deployment.agent} />
-        <Unlink size={10} />
-      </span>
-    </TooltipControl>
+    <div className="flex flex-col gap-1 text-small">
+      {hidden.map((location) => (
+        <span
+          key={`${location.kind}-${location.path}`}
+          className="flex items-center gap-1.5 text-text-tertiary"
+        >
+          {location.kind === "global" ? (
+            <Globe size={13} aria-hidden />
+          ) : (
+            <FolderGit2 size={13} aria-hidden />
+          )}
+          {location.name}
+        </span>
+      ))}
+    </div>
+  );
+}
+
+/** Where the skill sits on disk: up to two locations, then a "+N" overflow. */
+export function SkillLocationCell({ locations }: { locations: DiskLocation[] }) {
+  if (locations.length === 0) {
+    return <span className="text-small text-text-tertiary">Nowhere</span>;
+  }
+  const shown = locations.slice(0, 2);
+  const hidden = locations.slice(2);
+  return (
+    <span className="inline-flex min-w-0 items-center gap-2">
+      {shown.map((location) => (
+        <LocationItem key={`${location.kind}-${location.path}`} location={location} />
+      ))}
+      {hidden.length > 0 && (
+        <RichTooltip content={<OverflowTooltip hidden={hidden} />}>
+          <span className="shrink-0 text-small text-text-tertiary">+{hidden.length}</span>
+        </RichTooltip>
+      )}
+    </span>
   );
 }

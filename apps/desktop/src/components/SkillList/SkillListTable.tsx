@@ -4,24 +4,37 @@
 // ============================================================================
 
 import { useRef, useState } from "react";
-import type { KeyboardEvent } from "react";
-import { formatTokens, pluginLabelForSkill } from "@skill-studio/lib";
+import type { CSSProperties, KeyboardEvent } from "react";
 import type { InstalledSkill, PackMember, SkillInvocationStats } from "@skill-studio/lib";
 import { Button } from "@skill-studio/ui";
 import { isFeatureEnabled } from "../../lib/feature-flags";
+import { parkSkill, unparkSkill } from "../../lib/skill-api";
+import { lifecycleTargetForPark } from "../../lib/skill-lifecycle-target";
 import type { SortMode } from "../../lib/skill-list-sort";
 import { useAppStore } from "../../store/appStore";
 import { PackNamePrompt } from "../Packs/PackNamePrompt";
 import { CheckboxControl } from "../ui/CheckboxControl";
+import { HarnessStack } from "./HarnessStack";
+import {
+  HEADER_CELL_CLASS,
+  LeadingCell,
+  ROW_CLASS,
+  selectedRowClass,
+  SkillNameCell,
+  sortRows,
+  TokenPairCell,
+  TokenPairHeader,
+} from "./SkillRowCells";
+import type { TokenSortKey } from "./SkillRowCells";
 import { SkillLocationCell } from "./SkillLocationCell";
-import { TooltipControl } from "../ui/TooltipControl";
+import { DEFAULT_HARNESS_LIST, whereFacts } from "./skill-row-state";
 
-/** "User only" / "Model only" chip label, `null` for the default "both" policy. */
-function invocationChipLabel(invocation: InstalledSkill["invocation"]): string | null {
-  if (invocation === "user-only") return "User only";
-  if (invocation === "model-only") return "Model only";
-  return null;
-}
+/** The row's leading-glyph hit box, and the icon it holds - fixed sizes. */
+const GLYPH_HIT = 28;
+const GLYPH_SIZE = 14;
+
+/** Every skill row's column template: leading glyph, name, location, harnesses, tokens. */
+const COLUMNS = "[grid-template-columns:var(--glyph-hit)_minmax(0,1fr)_160px_148px_104px]";
 
 interface SkillListTableProps {
   skills: InstalledSkill[];
@@ -41,11 +54,10 @@ interface SkillListTableProps {
 }
 
 /**
- * Toolbar (Select, filter, sort) above a list of skill rows: name, one-line
- * description, location chips, 30-day use count and SKILL.md token count.
- * Clicking a row opens the skill, unless selection mode is on, where it
- * toggles the row instead. Selection and packs sit behind the "skill-packs"
- * feature flag.
+ * Toolbar (Select, filter, sort) above a list of skill rows: the state
+ * glyph, name, disk location, harness stack, and token pair. Clicking a row
+ * opens the skill, unless selection mode is on, where it toggles the row
+ * instead. Selection and packs sit behind the "skill-packs" feature flag.
  */
 export function SkillListTable({
   skills,
@@ -59,6 +71,7 @@ export function SkillListTable({
   onAddSkill,
 }: SkillListTableProps) {
   const [showPackPrompt, setShowPackPrompt] = useState(false);
+  const [tokenSort, setTokenSort] = useState<TokenSortKey>("full");
   const packsEnabled = isFeatureEnabled("skill-packs");
   const statsBySkill = new Map(stats.map((s) => [s.skill, s]));
   const selectedPaths = useAppStore((state) => state.selectedSkillPaths);
@@ -68,6 +81,7 @@ export function SkillListTable({
   const selectionMode = useAppStore((state) => state.selectionMode);
   const enterSelectionMode = useAppStore((state) => state.enterSelectionMode);
   const exitSelectionMode = useAppStore((state) => state.exitSelectionMode);
+  const addToast = useAppStore((state) => state.addToast);
   /** Index of the last row checked by click (not shift-click), for shift-click range-select. */
   const lastCheckedIndexRef = useRef<number | null>(null);
 
@@ -75,18 +89,7 @@ export function SkillListTable({
   const rowPath = (skill: InstalledSkill): string | undefined =>
     deploymentPathForSkill?.(skill) ?? skill.deployments[0]?.path;
 
-  const rows = [...skills];
-  if (sort === "name") {
-    rows.sort((a, b) => a.name.localeCompare(b.name));
-  } else if (sort === "used") {
-    rows.sort(
-      (a, b) =>
-        (statsBySkill.get(b.name)?.last_30_days ?? 0) -
-        (statsBySkill.get(a.name)?.last_30_days ?? 0),
-    );
-  } else {
-    rows.sort((a, b) => b.skill_md_tokens - a.skill_md_tokens);
-  }
+  const rows = sortRows(skills, sort, statsBySkill, tokenSort);
 
   const allVisibleSelected =
     rows.length > 0 && rows.every((s) => selectedPaths.has(rowPath(s) ?? ""));
@@ -138,22 +141,44 @@ export function SkillListTable({
     }
   }
 
+  /** Park/Unpark act on the deployment target `HomeView` uses; every other fix (Fix YAML, Fix
+   * link, Compare, Convert, Keep, Pull latest) opens the skill's own detail, since those flows
+   * live there. */
+  async function handleAct(label: string, skill: InstalledSkill) {
+    if (label !== "Park" && label !== "Unpark") {
+      onSelectSkill(skill.name, deploymentPathForSkill?.(skill));
+      return;
+    }
+    try {
+      if (label === "Park") await parkSkill(lifecycleTargetForPark(skill));
+      else await unparkSkill(lifecycleTargetForPark(skill));
+      addToast({
+        type: "success",
+        title: label === "Park" ? `Parked ${skill.name}` : `Unparked ${skill.name}`,
+      });
+    } catch (err) {
+      addToast({
+        type: "error",
+        title: label === "Park" ? "Couldn't park skill" : "Couldn't unpark skill",
+        message: err instanceof Error ? err.message : "Unknown error",
+      });
+    }
+  }
+
   return (
-    <div className="flex flex-col gap-3" onKeyDown={handleTableKeyDown}>
+    <div
+      className="flex flex-col gap-3"
+      style={
+        // SAFETY: `--glyph-hit` is a custom property, not a known CSSProperties key; React
+        // passes it through to the style attribute as-is.
+        { "--glyph-hit": `${GLYPH_HIT}px` } as CSSProperties
+      }
+      onKeyDown={handleTableKeyDown}
+    >
       {(selectionMode || packsEnabled) && (
         <div className="flex items-center gap-2">
           {selectionMode ? (
             <>
-              {/* The header checkbox sits in the same w-11 rail as the row
-                  checkboxes below, so entering selection mode doesn't shift it. */}
-              <div className="flex w-11 shrink-0 items-center justify-center [&_.checkbox-control-root]:before:absolute [&_.checkbox-control-root]:before:-inset-3 [&_.checkbox-control-root]:before:content-['']">
-                <CheckboxControl
-                  checked={allVisibleSelected}
-                  onCheckedChange={handleHeaderCheckboxChange}
-                  disabled={rows.length === 0}
-                  ariaLabel="Select all visible skills"
-                />
-              </div>
               <span className="text-small text-text-secondary">{selectedPaths.size} selected</span>
               <Button
                 size="sm"
@@ -215,105 +240,58 @@ export function SkillListTable({
           )}
         </div>
       ) : (
-        <div className="flex flex-col gap-1.5">
-          <div className="flex items-stretch">
-            {selectionMode && <span className="w-11 shrink-0" />}
-            <div className="grid min-w-0 flex-1 items-center gap-3 border border-transparent px-3 [grid-template-columns:minmax(0,1.2fr)_minmax(0,1.8fr)_140px_48px_64px]">
-              <span />
-              <span />
-              <span />
-              <TooltipControl content="Invocations in the last 30 days">
-                <span className="text-right text-caption text-text-tertiary">Uses</span>
-              </TooltipControl>
-              <TooltipControl content="SKILL.md tokens the model reads">
-                <span className="text-right text-caption text-text-tertiary">Tokens</span>
-              </TooltipControl>
+        <div className="overflow-hidden rounded-md border border-border">
+          <div className="flex items-center border-b border-border-subtle bg-bg-secondary px-3">
+            <div className={`grid flex-1 items-center gap-x-3 ${HEADER_CELL_CLASS} ${COLUMNS}`}>
+              {selectionMode ? (
+                <CheckboxControl
+                  checked={allVisibleSelected}
+                  onCheckedChange={handleHeaderCheckboxChange}
+                  disabled={rows.length === 0}
+                  ariaLabel="Select all visible skills"
+                />
+              ) : (
+                <span aria-hidden />
+              )}
+              <span>Skill</span>
+              <span>Location</span>
+              <span>Harnesses</span>
+              <TokenPairHeader sortKey={tokenSort} onSort={setTokenSort} />
             </div>
           </div>
           {rows.map((skill, index) => {
-            const stat = statsBySkill.get(skill.name);
             const selected = skill.name === selectedSkillName;
             return (
-              <div key={skill.name} className="flex items-stretch">
-                {selectionMode && (
-                  <label
-                    className="flex w-11 shrink-0 cursor-pointer items-center justify-center"
-                    aria-label={`Select ${skill.name}`}
-                  >
-                    <CheckboxControl
-                      checked={selectedPaths.has(rowPath(skill) ?? "")}
-                      onCheckedChange={(_checked, eventDetails) => {
-                        // SAFETY: the underlying event is a pointer or keyboard event, both of which carry `shiftKey`.
-                        const shiftKey = (eventDetails.event as MouseEvent | KeyboardEvent)
-                          .shiftKey;
-                        handleRowCheckboxClick(index, shiftKey);
-                      }}
-                    />
-                  </label>
-                )}
-                <Button
-                  variant="ghost"
-                  className={`grid h-11 min-w-0 flex-1 gap-3 overflow-hidden rounded-md border border-border bg-bg-secondary px-3 justify-start text-left [grid-template-columns:minmax(0,1.2fr)_minmax(0,1.8fr)_140px_48px_64px] ${
-                    selected
-                      ? "border-accent bg-accent-softer shadow-[inset_2px_0_0_var(--color-accent)]"
-                      : ""
-                  }`}
-                  onClick={(e) => {
-                    if (selectionMode && e.shiftKey) {
-                      handleRowCheckboxClick(index, true);
-                      return;
-                    }
-                    handleRowClick(index, skill);
+              <div
+                key={skill.name}
+                className={`${ROW_CLASS} gap-x-3 px-3 ${COLUMNS} hover:bg-bg-secondary ${selectedRowClass(
+                  selected,
+                )} ${skill.parked ? "text-text-tertiary" : ""}`}
+                onClick={(e) => {
+                  if (selectionMode && e.shiftKey) {
+                    handleRowCheckboxClick(index, true);
+                    return;
+                  }
+                  handleRowClick(index, skill);
+                }}
+              >
+                <LeadingCell
+                  skill={skill}
+                  selectionMode={selectionMode}
+                  checked={selectedPaths.has(rowPath(skill) ?? "")}
+                  onCheckedChange={(_checked, eventDetails) => {
+                    // SAFETY: the underlying event is a pointer or keyboard event, both of which carry `shiftKey`.
+                    const shiftKey = (eventDetails.event as MouseEvent | KeyboardEvent).shiftKey;
+                    handleRowCheckboxClick(index, shiftKey);
                   }}
-                >
-                  <span className="flex min-w-0 items-center gap-1.5">
-                    <span
-                      className="truncate text-body font-semibold text-text-primary"
-                      title={skill.name}
-                    >
-                      {skill.name}
-                    </span>
-                    {skill.update_owner_ids.length > 0 && (
-                      <span className="inline-flex shrink-0 rounded-sm bg-accent-soft px-1.5 py-px text-caption font-semibold text-accent">
-                        Update
-                      </span>
-                    )}
-                    {pluginLabelForSkill(skill) && (
-                      <span className="inline-flex shrink-0 rounded-sm bg-bg-tertiary px-1.5 py-px text-caption font-semibold text-text-secondary">
-                        plugin · {pluginLabelForSkill(skill)}
-                      </span>
-                    )}
-                    {skill.parked && (
-                      <span className="inline-flex shrink-0 rounded-sm bg-bg-tertiary px-1.5 py-px text-caption font-semibold text-text-secondary">
-                        Parked
-                      </span>
-                    )}
-                    {invocationChipLabel(skill.invocation) && (
-                      <span className="inline-flex shrink-0 rounded-sm bg-bg-tertiary px-1.5 py-px text-caption font-semibold text-text-secondary">
-                        {invocationChipLabel(skill.invocation)}
-                      </span>
-                    )}
-                  </span>
-                  <span
-                    className="truncate text-small text-text-tertiary"
-                    title={skill.description ?? ""}
-                  >
-                    {skill.description ?? ""}
-                  </span>
-                  <SkillLocationCell skill={skill} />
-                  <span
-                    className={`whitespace-nowrap text-right text-small tabular-nums ${
-                      (stat?.last_30_days ?? 0) === 0
-                        ? "text-text-quaternary"
-                        : "text-text-tertiary"
-                    }`}
-                  >
-                    {stat?.last_30_days ?? 0}
-                  </span>
-                  <span className="whitespace-nowrap text-right text-small tabular-nums text-text-tertiary">
-                    {formatTokens(skill.skill_md_tokens)}
-                  </span>
-                </Button>
+                  glyphSize={GLYPH_SIZE}
+                  onOpen={() => onSelectSkill(skill.name, deploymentPathForSkill?.(skill))}
+                  onAct={(label) => void handleAct(label, skill)}
+                />
+                <SkillNameCell skill={skill} />
+                <SkillLocationCell locations={whereFacts(skill, DEFAULT_HARNESS_LIST).locations} />
+                <HarnessStack skill={skill} harnessList={DEFAULT_HARNESS_LIST} />
+                <TokenPairCell skill={skill} sortKey={tokenSort} />
               </div>
             );
           })}
