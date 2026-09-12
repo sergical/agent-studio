@@ -30,7 +30,6 @@ import { ownSkillsView } from "@skill-studio/lib";
 import { formatRelativeTime, formatTokens, shortSha } from "@skill-studio/lib";
 import { skillsWithUpdates } from "@skill-studio/lib";
 import type {
-  AgentId,
   InstalledSkill,
   InvocationPolicy,
   LifecycleTarget,
@@ -39,7 +38,8 @@ import type {
 } from "@skill-studio/lib";
 import { useAppStore } from "../../store/appStore";
 import { PageShell } from "../Shell/PageShell";
-import { HarnessIcon, harnessIdFromLabel } from "../ui/HarnessIcon";
+import { DEFAULT_HARNESS_LIST } from "../SkillList/skill-row-state";
+import { HarnessStack } from "../SkillList/HarnessStack";
 import { InfoPopover } from "../ui/InfoPopover";
 import { MaterializeRootDialog } from "../ui/MaterializeRootDialog";
 import { TooltipControl } from "../ui/TooltipControl";
@@ -64,35 +64,6 @@ interface HomeViewProps {
   snapshot: SkillSnapshot | undefined;
   isLoading: boolean;
   onSelectSkill: (name: string) => void;
-}
-
-/** The harness marks for one skill's deployments - muted when every deployment for that harness is disabled or parked. */
-function harnessBadges(skill: InstalledSkill) {
-  const byHarness = new Map<AgentId | "shared", boolean[]>();
-  for (const deployment of skill.deployments) {
-    const id = harnessIdFromLabel(deployment.agent);
-    if (!id) continue;
-    const active = !deployment.disabled && deployment.scope !== "parked";
-    byHarness.set(id, [...(byHarness.get(id) ?? []), active]);
-  }
-  return [...byHarness.entries()].map(([id, activeFlags]) => ({
-    id,
-    muted: !activeFlags.some(Boolean),
-  }));
-}
-
-function HarnessBadges({ skill }: { skill: InstalledSkill }) {
-  const badges = harnessBadges(skill);
-  if (badges.length === 0) return null;
-  return (
-    <span className="inline-flex shrink-0 gap-[5px]">
-      {badges.map(({ id, muted }) => (
-        <span key={id} className="inline-flex text-text-tertiary">
-          <HarnessIcon harness={id} size={13} muted={muted} />
-        </span>
-      ))}
-    </span>
-  );
 }
 
 /** One row of any inbox group: severity dot, name + harness marks, detail, one action. */
@@ -123,7 +94,7 @@ function InboxRow({
         >
           {skill.name}
         </Button>
-        <HarnessBadges skill={skill} />
+        <HarnessStack skill={skill} harnessList={DEFAULT_HARNESS_LIST} />
       </span>
       <span className="truncate text-small text-text-tertiary">{detail}</span>
       {action}
