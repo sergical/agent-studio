@@ -53,8 +53,11 @@ export function MarketingSite() {
           ],
         },
         {
-          duration: 520,
-          easing: "cubic-bezier(0.19, 1, 0.22, 1)",
+          // A near-linear start keeps the first frames inside the icon, so the reveal reads as
+          // growing out of the button. An expo-out curve reaches ~90% radius in 150ms and then
+          // crawls, which reads as a mid-way freeze.
+          duration: 560,
+          easing: "cubic-bezier(0.4, 0, 0.2, 1)",
           pseudoElement: "::view-transition-new(root)",
         },
       );
@@ -62,7 +65,7 @@ export function MarketingSite() {
   };
 
   return (
-    <div {...stylex.props(getPaletteTheme("mono"))}>
+    <div {...stylex.props(getPaletteTheme("violet"))}>
       <CommandCenter theme={theme} onToggleTheme={toggleTheme} />
     </div>
   );

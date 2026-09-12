@@ -29,7 +29,7 @@ export function PageShell({
 }: PageShellProps) {
   return (
     <section
-      className={`mx-auto flex w-full flex-col gap-6 px-8 py-7 ${width === "narrow" ? "max-w-180" : "max-w-300"}`}
+      className={`mx-auto flex w-full flex-col gap-6 px-8 pt-9 pb-7 ${width === "narrow" ? "max-w-180" : "max-w-300"}`}
     >
       <header className="flex items-start justify-between gap-4">
         <div className="flex min-w-0 flex-col gap-1">

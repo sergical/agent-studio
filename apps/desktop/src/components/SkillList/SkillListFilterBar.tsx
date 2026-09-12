@@ -168,14 +168,14 @@ export function SkillListFilterBar({
         <div className="flex" role="group" aria-label="Scope">
           <ToggleGroup
             variant="segmented"
-            className="rounded-r-none"
+            className="h-(--control-height) rounded-r-none"
             value={filter.scope === "all" || filter.scope === "global" ? [filter.scope] : []}
             onValueChange={(next) => singleSelectToggleValue<"all" | "global">(next, setScope)}
           >
-            <ToggleGroupItem value="all" className="px-3">
+            <ToggleGroupItem value="all" className="h-full px-3 text-body">
               All
             </ToggleGroupItem>
-            <ToggleGroupItem value="global" className="px-3">
+            <ToggleGroupItem value="global" className="h-full px-3 text-body">
               Global
             </ToggleGroupItem>
           </ToggleGroup>
@@ -314,6 +314,7 @@ export function SkillListFilterBar({
 
         <ToggleGroup
           variant="segmented"
+          className="h-(--control-height)"
           aria-label="View"
           value={[showCoverage ? "coverage" : "list"]}
           onValueChange={(next) =>
@@ -323,12 +324,16 @@ export function SkillListFilterBar({
           }
         >
           <TooltipControl content="List">
-            <ToggleGroupItem value="list" className="px-2.5" aria-label="List view">
+            <ToggleGroupItem value="list" className="h-full px-2.5" aria-label="List view">
               <List size={14} />
             </ToggleGroupItem>
           </TooltipControl>
           <TooltipControl content="Coverage matrix">
-            <ToggleGroupItem value="coverage" className="px-2.5" aria-label="Coverage matrix view">
+            <ToggleGroupItem
+              value="coverage"
+              className="h-full px-2.5"
+              aria-label="Coverage matrix view"
+            >
               <LayoutGrid size={14} />
             </ToggleGroupItem>
           </TooltipControl>
