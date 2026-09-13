@@ -17,7 +17,10 @@ export function ScanPartialBanner({ observations }: ScanPartialBannerProps) {
   if (dismissed) return null;
 
   return (
-    <div className="flex items-start justify-between gap-3 rounded-sm border border-warning bg-warning-soft px-3.5 py-2.5 text-sm text-text-primary">
+    <div
+      role="status"
+      className="flex items-start justify-between gap-3 rounded-sm border border-warning bg-warning-soft px-3.5 py-2.5 text-sm text-text-primary"
+    >
       <div className="flex-1">
         <p className="select-text">Scan incomplete: {observations.length} roots were not read</p>
         {observations.length > 0 && (

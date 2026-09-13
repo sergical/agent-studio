@@ -79,7 +79,7 @@ export function SkillSearchBar({
           size="icon-xs"
           className="absolute right-2 rounded-full bg-bg-tertiary text-text-tertiary"
           onClick={handleClear}
-          title="Clear search"
+          aria-label="Clear search"
         >
           <X size={14} />
         </Button>

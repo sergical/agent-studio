@@ -86,7 +86,10 @@ export function HarnessStack({
     discs.push(
       <Disc key="overflow" first={discs.length === 0}>
         <RichTooltip content={<OverflowTooltip overflow={overflow} />}>
-          <span className="text-caption tabular-nums text-text-tertiary">+{overflow.length}</span>
+          <span className="text-caption tabular-nums text-text-tertiary">
+            +{overflow.length}
+            <span className="sr-only">: {overflow.map((reach) => reach.label).join(", ")}</span>
+          </span>
         </RichTooltip>
       </Disc>,
     );

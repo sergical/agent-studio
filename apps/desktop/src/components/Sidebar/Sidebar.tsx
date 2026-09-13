@@ -160,6 +160,7 @@ export function Sidebar({ snapshot, emittedSnapshotRevision, requestRescan }: Si
           <Button
             variant="ghost"
             className={itemClass(anchorView.kind === "home")}
+            aria-current={anchorView.kind === "home" ? "page" : undefined}
             onClick={() => setActiveView({ kind: "home" })}
           >
             <LayoutDashboard size={14} />
@@ -168,6 +169,7 @@ export function Sidebar({ snapshot, emittedSnapshotRevision, requestRescan }: Si
           <Button
             variant="ghost"
             className={itemClass(skillsActive)}
+            aria-current={skillsActive ? "page" : undefined}
             onClick={() => {
               if (inParked) setSkillListFilter(defaultSkillListFilter());
               setActiveView({ kind: "skills" });
@@ -185,6 +187,7 @@ export function Sidebar({ snapshot, emittedSnapshotRevision, requestRescan }: Si
             <Button
               variant="ghost"
               className={itemClass(anchorView.kind === "plugins")}
+              aria-current={anchorView.kind === "plugins" ? "page" : undefined}
               onClick={() => setActiveView({ kind: "plugins" })}
             >
               <Puzzle size={14} />
@@ -197,6 +200,7 @@ export function Sidebar({ snapshot, emittedSnapshotRevision, requestRescan }: Si
           <Button
             variant="ghost"
             className={itemClass(anchorView.kind === "activity")}
+            aria-current={anchorView.kind === "activity" ? "page" : undefined}
             onClick={() => setActiveView({ kind: "activity" })}
           >
             <ActivityIcon size={14} />
@@ -206,6 +210,7 @@ export function Sidebar({ snapshot, emittedSnapshotRevision, requestRescan }: Si
             <Button
               variant="ghost"
               className={itemClass(anchorView.kind === "packs")}
+              aria-current={anchorView.kind === "packs" ? "page" : undefined}
               onClick={() => setActiveView({ kind: "packs" })}
             >
               <Package size={14} />
@@ -219,6 +224,7 @@ export function Sidebar({ snapshot, emittedSnapshotRevision, requestRescan }: Si
             <Button
               variant="ghost"
               className={itemClass(anchorView.kind === "skills" && inParked)}
+              aria-current={anchorView.kind === "skills" && inParked ? "page" : undefined}
               onClick={() => {
                 setSkillListFilter({ ...defaultSkillListFilter(), scope: "parked" });
                 setActiveView({ kind: "skills" });
@@ -240,8 +246,11 @@ export function Sidebar({ snapshot, emittedSnapshotRevision, requestRescan }: Si
             variant="ghost"
             size="xs"
             className="shrink-0 gap-1.5 rounded-sm px-1.5 text-text-tertiary"
-            onClick={handleRefresh}
-            disabled={spinning}
+            onClick={() => {
+              if (spinning) return;
+              handleRefresh();
+            }}
+            aria-disabled={spinning}
             aria-label={spinning ? "Syncing installed skills" : "Sync installed skills"}
           >
             <RefreshCw size={13} className={spinning ? "animate-spin" : ""} />

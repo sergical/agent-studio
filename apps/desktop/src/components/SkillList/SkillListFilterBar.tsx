@@ -50,7 +50,7 @@ const USAGE_LABELS = {
 
 /** The project menu's two-line rows (name + full path) - `MenuItem`'s baked-in default is a single line. */
 const MENU_RADIO_ITEM_CLASS =
-  "flex h-auto flex-col items-start gap-0.5 rounded-sm px-2.5 py-1.5 text-body text-text-secondary transition-colors data-highlighted:bg-bg-hover data-highlighted:text-text-primary";
+  "flex h-auto flex-col items-start gap-0.5 rounded-sm px-2.5 py-1.5 text-body text-text-secondary data-highlighted:bg-bg-hover data-highlighted:text-text-primary";
 /** The Scope group's project trigger sits after the ToggleGroup, styled the same as its items. */
 const SEGMENTED_TRIGGER_CLASS =
   "inline-flex h-(--control-height) items-center gap-1 rounded-r-sm border-y border-r border-border bg-transparent px-3 text-body text-text-tertiary transition-colors duration-150 hover:bg-bg-hover hover:text-text-secondary aria-expanded:bg-bg-tertiary aria-expanded:text-text-primary";
@@ -194,7 +194,7 @@ export function SkillListFilterBar({
           </ToggleGroup>
           <MenuControl
             triggerClassName={SEGMENTED_TRIGGER_CLASS}
-            triggerAriaLabel="Project"
+            triggerAriaLabel={`Project: ${projectScopeLabel(filter)}`}
             trigger={
               <>
                 {projectScopeLabel(filter)}
@@ -247,7 +247,7 @@ export function SkillListFilterBar({
 
         <MenuControl
           triggerClassName="inline-flex h-(--control-height) cursor-pointer items-center gap-1.5 rounded-sm border border-border bg-transparent px-2.5 text-body text-text-tertiary transition-colors hover:bg-bg-hover hover:text-text-secondary"
-          triggerAriaLabel="Filter"
+          triggerAriaLabel={`Filter, ${filterMenuCount(filter)} active`}
           trigger={
             <>
               <ListFilter size={13} />
@@ -311,7 +311,10 @@ export function SkillListFilterBar({
       </div>
 
       <div className="ml-auto flex items-center gap-2">
-        <span className="whitespace-nowrap text-small tabular-nums text-text-tertiary">
+        <span
+          role="status"
+          className="whitespace-nowrap text-small tabular-nums text-text-tertiary"
+        >
           {resultCount} skill{resultCount !== 1 ? "s" : ""}
         </span>
 

@@ -37,7 +37,7 @@ export function InfoPopover({ label, title, children, onLearnMore, className }: 
     <span className={`relative inline-flex ${className ?? ""}`}>
       <Popover open={isOpen} onOpenChange={setIsOpen}>
         <PopoverTrigger
-          className={`relative inline-flex size-3.5 border-0 bg-none p-0 align-middle text-text-quaternary transition-colors hover:text-text-secondary focus-visible:text-text-secondary ${
+          className={`relative inline-flex size-3.5 border-0 bg-none p-0 align-middle text-text-tertiary transition-colors before:absolute before:-inset-[7px] before:content-[''] hover:text-text-secondary focus-visible:text-text-secondary ${
             isOpen ? "text-accent" : ""
           }`}
           aria-label={label}

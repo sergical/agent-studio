@@ -44,7 +44,7 @@ export function HarnessGlyph({
   );
 }
 
-function harnessMarkAriaLabel(reach: HarnessReach): string {
+function harnessMarkAriaLabel(reach: HarnessReach, parked: boolean): string {
   const how =
     reach.how === "linked"
       ? "link to the Universal folder"
@@ -53,7 +53,8 @@ function harnessMarkAriaLabel(reach: HarnessReach): string {
         : reach.how === "universal"
           ? "source in the Universal folder"
           : "own copy";
-  return `${reach.label} · ${how}`;
+  const state = parked ? "parked" : reach.disabled ? "disabled" : null;
+  return state ? `${reach.label} · ${how} · ${state}` : `${reach.label} · ${how}`;
 }
 
 /** One line per reached harness: `<glyph> <label> · <how>[ · <state>]` - the
@@ -113,8 +114,9 @@ export function HarnessMark({
   const glyphMuted = reach.disabled || parked;
   const mark = (
     <span
+      role="img"
       className="group relative inline-flex size-5 items-center justify-center"
-      aria-label={harnessMarkAriaLabel(reach)}
+      aria-label={harnessMarkAriaLabel(reach, parked)}
     >
       <span className="relative inline-flex" style={{ width: size, height: size }}>
         <HarnessGlyph harness={reach.harness} size={size} muted={glyphMuted} />
@@ -158,6 +160,7 @@ export function UniversalMark({ universal, size = 13 }: { universal: Universal; 
       }
     >
       <span
+        role="img"
         className="relative inline-flex size-5 items-center justify-center"
         aria-label="Universal folder"
       >

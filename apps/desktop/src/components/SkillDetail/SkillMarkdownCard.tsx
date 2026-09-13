@@ -57,7 +57,11 @@ function MarkdownSkeleton() {
   return (
     <div className="flex flex-col gap-2.5 px-5 py-4" aria-hidden="true">
       {SKELETON_LINE_WIDTHS.map((width, i) => (
-        <div key={i} className="h-3 animate-pulse rounded-xs bg-bg-tertiary" style={{ width }} />
+        <div
+          key={i}
+          className="h-3 animate-pulse rounded-xs bg-bg-tertiary motion-reduce:animate-none"
+          style={{ width }}
+        />
       ))}
     </div>
   );

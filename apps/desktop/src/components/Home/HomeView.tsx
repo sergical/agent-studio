@@ -82,9 +82,13 @@ function InboxRow({
 }) {
   return (
     <div className="grid h-9 grid-cols-[6px_minmax(0,260px)_minmax(0,1fr)_auto] items-center gap-3 border-b border-border-subtle py-0 pr-3 pl-4">
-      <span
-        className={`size-1.5 shrink-0 rounded-full ${severity === "error" ? "bg-error" : severity === "warning" ? "bg-warning" : ""}`}
-      />
+      <span className="inline-flex size-1.5 shrink-0">
+        <span
+          className={`size-1.5 rounded-full ${severity === "error" ? "bg-error" : severity === "warning" ? "bg-warning" : ""}`}
+          aria-hidden="true"
+        />
+        {severity && <span className="sr-only">{severity === "error" ? "Error" : "Warning"}</span>}
+      </span>
       <span className="flex min-w-0 items-center gap-2">
         <Button
           variant="ghost"
@@ -107,7 +111,7 @@ function GroupHead({ label, count, extra }: { label: string; count: number; extr
   return (
     <div className="sticky top-0 z-1 flex h-8.5 w-full items-center gap-2 border-t border-b border-border-subtle bg-bg-secondary px-3">
       <CollapsibleTrigger className="group/head flex h-full flex-1 items-center gap-2 text-left text-small font-semibold text-text-primary">
-        <ChevronDown className="size-3.5 shrink-0 -rotate-90 text-text-quaternary transition-transform group-data-panel-open/head:rotate-0" />
+        <ChevronDown className="size-3.5 shrink-0 -rotate-90 text-text-tertiary transition-transform group-data-panel-open/head:rotate-0" />
         {label}
         <span className="font-normal text-text-tertiary tabular-nums">{count}</span>
       </CollapsibleTrigger>
@@ -337,7 +341,7 @@ function HomeStatTiles({
       <div className="group/stat relative flex">
         <Button
           variant="outline"
-          className={`h-auto flex-1 flex-col items-stretch gap-1 rounded-md border-border-subtle bg-bg-elevated px-4 py-3.5 justify-start text-left active:scale-98 aria-pressed:border-accent aria-pressed:bg-accent-softer ${
+          className={`h-auto flex-1 flex-col items-stretch gap-1 rounded-md border-border-subtle bg-bg-elevated px-4 py-3.5 justify-start text-left active:translate-y-0 active:scale-98 aria-pressed:border-accent aria-pressed:bg-accent-softer ${
             broken.length > 0 ? "[&_.home-stat-value]:text-error" : ""
           }`}
           aria-pressed={filter === "broken"}
@@ -363,7 +367,7 @@ function HomeStatTiles({
       <div className="group/stat relative flex">
         <Button
           variant="outline"
-          className={`h-auto flex-1 flex-col items-stretch gap-1 rounded-md border-border-subtle bg-bg-elevated px-4 py-3.5 justify-start text-left active:scale-98 aria-pressed:border-accent aria-pressed:bg-accent-softer ${
+          className={`h-auto flex-1 flex-col items-stretch gap-1 rounded-md border-border-subtle bg-bg-elevated px-4 py-3.5 justify-start text-left active:translate-y-0 active:scale-98 aria-pressed:border-accent aria-pressed:bg-accent-softer ${
             warnings.length > 0 ? "[&_.home-stat-value]:text-warning" : ""
           }`}
           aria-pressed={filter === "warn"}
@@ -389,7 +393,7 @@ function HomeStatTiles({
       <div className="flex">
         <Button
           variant="outline"
-          className="h-auto flex-1 flex-col items-stretch gap-1 rounded-md border-border-subtle bg-bg-elevated px-4 py-3.5 justify-start text-left active:scale-98 aria-pressed:border-accent aria-pressed:bg-accent-softer"
+          className="h-auto flex-1 flex-col items-stretch gap-1 rounded-md border-border-subtle bg-bg-elevated px-4 py-3.5 justify-start text-left active:translate-y-0 active:scale-98 aria-pressed:border-accent aria-pressed:bg-accent-softer"
           aria-pressed={filter === "upd"}
           onClick={() => toggleFilter("upd")}
         >

@@ -69,13 +69,20 @@ export function PackNamePrompt({ members, onClose, onCreated }: PackNamePromptPr
         </p>
         <Input
           autoFocus
+          aria-label="Pack name"
+          aria-invalid={!!error}
+          aria-describedby={error ? "pack-name-error" : undefined}
           value={name}
           onChange={(e) => setName(e.target.value)}
           onKeyDown={(e) => {
             if (e.key === "Enter") handleSubmit();
           }}
         />
-        {error && <p className="m-0 mt-1.5 text-small text-error">{error}</p>}
+        {error && (
+          <p id="pack-name-error" role="alert" className="m-0 mt-1.5 text-small text-error">
+            {error}
+          </p>
+        )}
         <DialogFooter>
           <Button variant="outline" onClick={onClose}>
             Cancel

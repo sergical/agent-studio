@@ -258,18 +258,21 @@ export function SkillPage({
 
   useEffect(() => {
     function onKeyDown(event: KeyboardEvent) {
-      if (event.key !== "Escape") return;
+      if (event.key !== "Escape" || event.defaultPrevented) return;
       const target = event.target;
-      // Escape typed into an input, textarea, contenteditable region, or an
-      // open dialog belongs to that widget - the local handler (if any) deals
-      // with it, not page navigation.
+      // Escape typed into an input, textarea, contenteditable region, an open
+      // menu, listbox, or dialog belongs to that widget - the local handler
+      // (if any) deals with it, not page navigation. Popovers are role=dialog.
+      // `[data-open]` is not a signal: open Collapsible panels carry it too.
       if (
         target instanceof HTMLElement &&
         (target.tagName === "INPUT" ||
           target.tagName === "TEXTAREA" ||
           target.isContentEditable ||
           target.closest("dialog") !== null ||
-          target.closest('[role="dialog"]') !== null)
+          target.closest('[role="dialog"]') !== null ||
+          target.closest('[role="menu"]') !== null ||
+          target.closest('[role="listbox"]') !== null)
       ) {
         return;
       }

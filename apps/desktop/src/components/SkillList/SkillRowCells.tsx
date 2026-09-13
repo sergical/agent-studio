@@ -31,7 +31,7 @@ import type { RowLevel, RowState } from "./skill-row-state";
 /** The shared hit box: bigger than the 14px glyph so the button is easy to land a click on. Sized
  * by the `--glyph-hit` CSS variable the row column template sets. */
 const HIT_CLASS =
-  "relative inline-flex size-(--glyph-hit) shrink-0 items-center justify-center rounded-sm transition-colors duration-150 hover:bg-bg-tertiary focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-border data-[popup-open]:bg-bg-tertiary";
+  "relative inline-flex size-(--glyph-hit) shrink-0 items-center justify-center rounded-sm transition-colors duration-150 hover:bg-bg-tertiary focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-accent data-[popup-open]:bg-bg-tertiary";
 import { SkillRowMenu } from "./SkillRowMenu";
 
 /** The list header's cell. */
@@ -227,7 +227,7 @@ export function TokenPairHeader({
               variant="ghost"
               size="xs"
               aria-pressed={active}
-              className={`h-auto gap-0.5 px-1 py-0 text-caption font-medium tracking-[0.08em] uppercase ${
+              className={`relative h-auto gap-0.5 px-1 py-0 text-caption font-medium tracking-[0.08em] uppercase before:absolute before:-inset-1 before:content-[''] ${
                 active ? "text-text-primary" : "text-text-tertiary"
               }`}
               onClick={() => onSort(key)}

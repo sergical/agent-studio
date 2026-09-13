@@ -401,7 +401,7 @@ function GithubSkillPicker({
     return (
       <div className="flex flex-col gap-2">
         <span className={SECTION_LABEL_CLASS}>Skills</span>
-        <div className="h-9 animate-pulse rounded-sm bg-bg-tertiary" />
+        <div className="h-9 animate-pulse rounded-sm bg-bg-tertiary motion-reduce:animate-none" />
       </div>
     );
   }
