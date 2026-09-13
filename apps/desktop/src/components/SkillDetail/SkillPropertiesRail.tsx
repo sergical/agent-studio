@@ -110,13 +110,20 @@ export function SkillPropertiesRail({ skill, updateAction }: SkillPropertiesRail
 
   const toggleHarness = async (harness: AgentId, row: AgentLocationRow, enabled: boolean) => {
     setPendingHarness(harness);
+    // Hoisted out of the try below - the compiler can't optimize a logical expression computed
+    // inside a try/catch statement.
+    const useDeploymentToggle =
+      row.deployment != null &&
+      (row.deployment.disabled_by === "studio-moved" || !canToggleHarness(row.deployment));
     try {
       if (row.kind === "reader") {
         await setHarnessEnabled(row.lifecycleTarget, harness, enabled);
       } else if (row.deployment) {
-        await (row.deployment.disabled_by === "studio-moved" || !canToggleHarness(row.deployment)
-          ? setDeploymentEnabled({ deployment_id: row.deployment.id }, enabled)
-          : setHarnessEnabled({ deployment_id: row.deployment.id }, harness, enabled));
+        if (useDeploymentToggle) {
+          await setDeploymentEnabled({ deployment_id: row.deployment.id }, enabled);
+        } else {
+          await setHarnessEnabled({ deployment_id: row.deployment.id }, harness, enabled);
+        }
       }
       setAnnouncement({ kind: "status", text: "Saved" });
     } catch (err) {
@@ -124,9 +131,8 @@ export function SkillPropertiesRail({ skill, updateAction }: SkillPropertiesRail
         enabled ? "Couldn't enable" : "Couldn't disable",
         err instanceof Error ? err.message : "Unknown error",
       );
-    } finally {
-      setPendingHarness(null);
     }
+    setPendingHarness(null);
   };
 
   const invocationPolicies = new Set(files.map((file) => file.invocation));
@@ -135,18 +141,18 @@ export function SkillPropertiesRail({ skill, updateAction }: SkillPropertiesRail
   const handleSetInvocationAll = async (policy: InvocationPolicy) => {
     setIsSavingInvocation(true);
     try {
-      for (const file of files) {
-        if (file.editable) await setInvocationForFile(skill, file, policy);
-      }
+      // The files are independent writes, so they save in parallel rather than one at a time.
+      await Promise.all(
+        files.flatMap((file) => (file.editable ? [setInvocationForFile(skill, file, policy)] : [])),
+      );
       setAnnouncement({ kind: "status", text: "Saved" });
     } catch (err) {
       announceError(
         "Couldn't change invocation policy",
         err instanceof Error ? err.message : "Unknown error",
       );
-    } finally {
-      setIsSavingInvocation(false);
     }
+    setIsSavingInvocation(false);
   };
 
   return (

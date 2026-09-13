@@ -6,7 +6,7 @@
 // and the highlight moves without a transition.
 // ============================================================================
 
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import type { KeyboardEvent as ReactKeyboardEvent } from "react";
 import {
   BookOpen,
@@ -62,6 +62,9 @@ export function CommandPalette({ snapshot, requestRescan }: CommandPaletteProps)
 
   const [query, setQuery] = useState("");
   const [highlight, setHighlight] = useState(0);
+  // Tracked so the query/highlight reset below can happen during rendering, on the render where
+  // `open` flips, instead of a follow-up effect setting that state after commit.
+  const [prevOpen, setPrevOpen] = useState(open);
   const inputRef = useRef<HTMLInputElement>(null);
   const listRef = useRef<HTMLDivElement>(null);
   const restoreFocusRef = useRef<HTMLElement | null>(null);
@@ -79,7 +82,7 @@ export function CommandPalette({ snapshot, requestRescan }: CommandPaletteProps)
     item.run();
   }
 
-  const items = useMemo<PaletteItem[]>(() => {
+  const items: PaletteItem[] = (() => {
     const actions: PaletteItem[] = [
       {
         id: "action-add-skill",
@@ -139,31 +142,29 @@ export function CommandPalette({ snapshot, requestRescan }: CommandPaletteProps)
     );
 
     return [...actions, ...goto, ...skills];
-  }, [
-    snapshot,
-    packsEnabled,
-    resolvedTheme,
-    openAddSkillSheet,
-    requestRescan,
-    setActiveView,
-    requestSkillSearchFocus,
-    setTheme,
-    openSkill,
-  ]);
+  })();
 
-  const results = useMemo(() => rankItems(items, query), [items, query]);
+  const results = rankItems(items, query);
 
   function onQueryChange(value: string) {
     setQuery(value);
     setHighlight(0);
   }
 
+  // Resetting query/highlight is derived state (it only depends on the render where `open`
+  // flips), so it's set here during rendering rather than in the effect below.
+  if (open !== prevOpen) {
+    setPrevOpen(open);
+    if (open) {
+      setQuery("");
+      setHighlight(0);
+    }
+  }
+
   useEffect(() => {
     if (open) {
       restoreFocusRef.current =
         document.activeElement instanceof HTMLElement ? document.activeElement : null;
-      setQuery("");
-      setHighlight(0);
     } else {
       restoreFocusRef.current?.focus();
       restoreFocusRef.current = null;

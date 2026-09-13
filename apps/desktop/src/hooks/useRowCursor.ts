@@ -7,7 +7,7 @@
 // the cursor row from anywhere in the active view.
 // ============================================================================
 
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useEffectEvent, useRef, useState } from "react";
 import type { KeyboardEvent as ReactKeyboardEvent } from "react";
 
 interface UseRowCursorOptions {
@@ -76,49 +76,31 @@ export function useRowCursor({
   onCollapseGroup,
   onExpandGroup,
   initialKey,
-  active = true,
+  active: activeProp,
 }: UseRowCursorOptions): RowCursor {
+  const active = activeProp ?? true;
   const [cursorKey, setCursorKey] = useState<string | null>(
     (initialKey && keys.includes(initialKey) ? initialKey : keys[0]) ?? null,
   );
   const rowsRef = useRef(new Map<string, HTMLDivElement>());
   const gridRef = useRef<HTMLDivElement | null>(null);
-  const lastIndexRef = useRef(0);
+  // State, not a ref: the fallback below reads it during render, and a ref's `current` can't be
+  // read there.
+  const [lastIndex, setLastIndex] = useState(0);
   const pendingExpandRef = useRef<string | null>(null);
   const [statusText, setStatusText] = useState("");
   const statusTimerRef = useRef<number | undefined>(undefined);
 
   // The cursor survives a re-sort or filter change when its key is still visible; otherwise it
-  // moves to the nearest row by its previous index, so the cursor never silently vanishes.
-  useEffect(() => {
-    if (keys.length === 0) {
-      setCursorKey(null);
-      return;
-    }
-    setCursorKey((current) => {
-      if (current !== null && keys.includes(current)) return current;
-      return keys[Math.min(lastIndexRef.current, keys.length - 1)];
-    });
-    // A group expanded by ArrowRight: its rows only join `keys` on this render.
-    const groupId = pendingExpandRef.current;
-    if (groupId === null) return;
-    pendingExpandRef.current = null;
-    const firstInGroup = keys.find(
-      (key) => rowsRef.current.get(key)?.closest(`[data-group="${groupId}"]`) != null,
-    );
-    if (firstInGroup) moveTo(firstInGroup, false);
-    // eslint-disable-next-line react-hooks/exhaustive-deps -- moveTo reads the same render's keys.
-  }, [keys]);
-
-  // Focuses the seeded row whenever the caller's view becomes active, after its ref has attached -
-  // this is what returns focus to a row when a kept-alive list reappears from behind a skill page
-  // that just closed, with `initialKey` set to that skill's name.
-  useEffect(() => {
-    if (!active || !initialKey) return;
-    const frame = requestAnimationFrame(() => scrollAndFocus(initialKey));
-    return () => cancelAnimationFrame(frame);
-    // eslint-disable-next-line react-hooks/exhaustive-deps -- re-run only on activation, not on every initialKey change within one activation.
-  }, [active]);
+  // falls back to the nearest row by its previous index, so the cursor never silently vanishes -
+  // derived on every render instead of written back into state, since it's fully determined by
+  // `cursorKey`, `keys`, and the last moved-to index.
+  const effectiveCursorKey =
+    keys.length === 0
+      ? null
+      : cursorKey !== null && keys.includes(cursorKey)
+        ? cursorKey
+        : (keys[Math.min(lastIndex, keys.length - 1)] ?? null);
 
   function scrollAndFocus(key: string) {
     const el = rowsRef.current.get(key);
@@ -139,19 +121,48 @@ export function useRowCursor({
     if (key === undefined) return;
     const index = keys.indexOf(key);
     if (index === -1) return;
-    lastIndexRef.current = index;
+    setLastIndex(index);
     setCursorKey(key);
     scrollAndFocus(key);
     announce(key);
     if (extend) onExtend?.(key);
   }
 
+  // A group expanded by ArrowRight: its rows only join `keys` on this render, so the move into it
+  // has to wait for that render to land. `currentKeys` is passed in explicitly (rather than closed
+  // over) so the effect keeps its real `[keys]` dependency instead of one the linter can't see.
+  const focusExpandedGroup = useEffectEvent((currentKeys: string[]) => {
+    const groupId = pendingExpandRef.current;
+    if (groupId === null) return;
+    pendingExpandRef.current = null;
+    const firstInGroup = currentKeys.find(
+      (key) => rowsRef.current.get(key)?.closest(`[data-group="${groupId}"]`) != null,
+    );
+    if (firstInGroup) moveTo(firstInGroup, false);
+  });
+  useEffect(() => {
+    focusExpandedGroup(keys);
+  }, [keys]);
+
+  // Focuses the seeded row whenever the caller's view becomes active, after its ref has attached -
+  // this is what returns focus to a row when a kept-alive list reappears from behind a skill page
+  // that just closed, with `initialKey` set to that skill's name. `initialKey` is read through the
+  // effect event so it re-runs only on activation, not on every `initialKey` change within one.
+  const focusSeededRow = useEffectEvent(() => {
+    if (initialKey) scrollAndFocus(initialKey);
+  });
+  useEffect(() => {
+    if (!active) return;
+    const frame = requestAnimationFrame(() => focusSeededRow());
+    return () => cancelAnimationFrame(frame);
+  }, [active]);
+
   function groupIdFor(rowEl: HTMLElement): string | null {
     return rowEl.closest("[data-group]")?.getAttribute("data-group") ?? null;
   }
 
   function focusCursor() {
-    scrollAndFocus(cursorKey ?? keys[0]);
+    scrollAndFocus(effectiveCursorKey ?? keys[0]);
   }
 
   /** Public: focuses one row without touching the announced status or extending the selection -
@@ -175,7 +186,8 @@ export function useRowCursor({
       return;
     }
 
-    if (cursorKey === null) return;
+    if (effectiveCursorKey === null) return;
+    const cursorKey = effectiveCursorKey;
     const currentIndex = keys.indexOf(cursorKey);
 
     switch (e.key) {
@@ -245,7 +257,7 @@ export function useRowCursor({
   }
 
   return {
-    cursorKey,
+    cursorKey: effectiveCursorKey,
     rowRef: (key) => (el) => {
       if (el) rowsRef.current.set(key, el);
       else rowsRef.current.delete(key);
@@ -253,7 +265,7 @@ export function useRowCursor({
     containerRef: (el) => {
       gridRef.current = el;
     },
-    tabIndexFor: (key) => (key === cursorKey ? 0 : -1),
+    tabIndexFor: (key) => (key === effectiveCursorKey ? 0 : -1),
     onGridKeyDown,
     focusCursor,
     focusRow,

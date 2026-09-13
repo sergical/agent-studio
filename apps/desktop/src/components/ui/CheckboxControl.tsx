@@ -22,10 +22,12 @@ interface CheckboxControlProps {
 export function CheckboxControl({
   checked,
   onCheckedChange,
-  indeterminate = false,
-  disabled = false,
+  indeterminate: indeterminateProp,
+  disabled: disabledProp,
   ariaLabel,
 }: CheckboxControlProps) {
+  const indeterminate = indeterminateProp ?? false;
+  const disabled = disabledProp ?? false;
   return (
     <Checkbox
       // `checkbox-control-root` is kept as a bare hook with no rules of its

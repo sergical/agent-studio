@@ -4,7 +4,7 @@
 // filter bar instead - see the design rule in spec-ux-1.md section B.
 // ============================================================================
 
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useState } from "react";
 import {
   Activity as ActivityIcon,
   BookOpen,
@@ -50,7 +50,6 @@ export function Sidebar({ snapshot, emittedSnapshotRevision, requestRescan }: Si
   const [pendingRescanSnapshotRevision, setPendingRescanSnapshotRevision] = useState<number | null>(
     null,
   );
-  const activeRescanIdRef = useRef<symbol | null>(null);
   // Forces the footer to re-render so "just now" ages into "1m ago" and
   // beyond without waiting for the next snapshot - relativeScanTime() itself
   // stays a pure function of scannedAt and the current clock.
@@ -58,11 +57,6 @@ export function Sidebar({ snapshot, emittedSnapshotRevision, requestRescan }: Si
   useEffect(() => {
     const id = setInterval(() => forceTick((n) => n + 1), 30_000);
     return () => clearInterval(id);
-  }, []);
-  useEffect(() => {
-    return () => {
-      activeRescanIdRef.current = null;
-    };
   }, []);
   const activeView = useAppStore((state) => state.activeView);
   const anchorView = sidebarAnchorView(activeView);
@@ -90,36 +84,22 @@ export function Sidebar({ snapshot, emittedSnapshotRevision, requestRescan }: Si
     requestSkillSearchFocus();
   }
 
-  useEffect(() => {
-    if (
-      activeRescanIdRef.current !== null &&
-      hasNewerSkillSnapshotEmission(
-        pendingRescanSnapshotRevision ?? undefined,
-        emittedSnapshotRevision,
-      )
-    ) {
-      activeRescanIdRef.current = null;
-      setPendingRescanSnapshotRevision(null);
-    }
-  }, [emittedSnapshotRevision, pendingRescanSnapshotRevision]);
+  // "Spinning" is fully derived from `pendingRescanSnapshotRevision` and the store's latest
+  // emission - once a newer snapshot lands, this reads `false` on its own, with no effect needed
+  // to clear the pending revision back to null.
+  const spinning =
+    pendingRescanSnapshotRevision !== null &&
+    !hasNewerSkillSnapshotEmission(pendingRescanSnapshotRevision, emittedSnapshotRevision);
 
   const handleRefresh = async () => {
-    if (activeRescanIdRef.current !== null) return;
-
-    const requestId = Symbol("sidebar-rescan");
-    activeRescanIdRef.current = requestId;
+    if (spinning) return;
     setPendingRescanSnapshotRevision(snapshot?.revision ?? 0);
-
     try {
       await requestRescan();
     } catch {
-      if (activeRescanIdRef.current !== requestId) return;
-      activeRescanIdRef.current = null;
       setPendingRescanSnapshotRevision(null);
     }
   };
-
-  const spinning = pendingRescanSnapshotRevision !== null;
 
   const itemClass = (active: boolean) =>
     `grid h-6.5 w-full grid-cols-[14px_minmax(0,1fr)_auto] items-center gap-2 rounded-sm px-2 text-left text-body ${active ? "bg-bg-active text-text-primary" : "text-text-secondary hover:bg-bg-hover hover:text-text-primary"}`;

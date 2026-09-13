@@ -16,9 +16,10 @@ interface SwitchControlProps {
 export function SwitchControl({
   checked,
   onCheckedChange,
-  disabled = false,
+  disabled: disabledProp,
   ariaLabel,
 }: SwitchControlProps) {
+  const disabled = disabledProp ?? false;
   return (
     <Switch
       size="sm"

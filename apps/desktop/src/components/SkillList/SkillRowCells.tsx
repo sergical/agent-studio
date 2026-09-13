@@ -17,8 +17,7 @@ import {
   UserRound,
 } from "lucide-react";
 import { formatTokens } from "@skill-studio/lib";
-import type { InstalledSkill, SkillInvocationStats } from "@skill-studio/lib";
-import type { SortMode } from "../../lib/skill-list-sort";
+import type { InstalledSkill } from "@skill-studio/lib";
 import { CheckboxControl } from "../ui/CheckboxControl";
 import { RichTooltip } from "../ui/RichTooltip";
 import { isDecision } from "./skill-row-state";
@@ -40,13 +39,6 @@ const LEVEL_TEXT = {
   info: "text-accent",
   muted: "text-text-tertiary",
 } satisfies Record<RowLevel, string>;
-
-/** Selected-row treatment shared by the row: an accent border, softer fill, and a left accent bar. */
-export function selectedRowClass(selected: boolean): string {
-  return selected
-    ? "border-accent bg-accent-softer shadow-[inset_2px_0_0_var(--color-accent)]"
-    : "";
-}
 
 function glyphFor(state: RowState, size = 14): ReactNode {
   switch (state.kind) {
@@ -137,28 +129,6 @@ export function SkillNameCell({ skill }: { skill: InstalledSkill }) {
   );
 }
 
-/** Rows in the table's sort order: `name` and `used` order as the Sort select says; `size`
- * (the "largest" option) orders by the full SKILL.md token count, ties broken by name. */
-export function sortRows(
-  skills: InstalledSkill[],
-  sort: SortMode,
-  statsBySkill: Map<string, SkillInvocationStats>,
-): InstalledSkill[] {
-  const rows = [...skills];
-  if (sort === "name") {
-    rows.sort((a, b) => a.name.localeCompare(b.name));
-  } else if (sort === "used") {
-    rows.sort(
-      (a, b) =>
-        (statsBySkill.get(b.name)?.last_30_days ?? 0) -
-        (statsBySkill.get(a.name)?.last_30_days ?? 0),
-    );
-  } else {
-    rows.sort((a, b) => b.skill_md_tokens - a.skill_md_tokens || a.name.localeCompare(b.name));
-  }
-  return rows;
-}
-
 /** Both token numbers for one skill: the prompt cost first (the "name: description" line every
  * harness loads on every turn), then the full SKILL.md count, which is the one "Largest" sorts
  * by and so the one that reads bold. */
@@ -179,7 +149,8 @@ type CheckboxChange = ComponentProps<typeof CheckboxControl>["onCheckedChange"];
 /** The state glyph, tooltipped, with an always-present `sr-only` name so the severity reads
  * without a hover even though the icon itself is `aria-hidden`. `null` when the skill has
  * nothing to say - the caller's cell renders empty rather than a placeholder. */
-export function RowGlyph({ state, size = 14 }: { state: RowState | null; size?: number }) {
+export function RowGlyph({ state, size: sizeProp }: { state: RowState | null; size?: number }) {
+  const size = sizeProp ?? 14;
   if (!state) return null;
   return (
     <RichTooltip content={<StateTooltip state={state} />}>

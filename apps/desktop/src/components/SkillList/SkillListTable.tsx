@@ -20,13 +20,12 @@ import { HarnessStack } from "./HarnessStack";
 import {
   LeadingCell,
   ROW_CLASS,
-  selectedRowClass,
   SelectionCell,
   SkillNameCell,
-  sortRows,
   TokenPairCell,
   TrailingMenuCell,
 } from "./SkillRowCells";
+import { selectedRowClass, sortRows } from "./skill-row-format";
 import { SkillLocationCell } from "./SkillLocationCell";
 import { SkillRowMenuScope } from "./SkillRowMenu";
 import { DEFAULT_HARNESS_LIST, rowGroup, rowState, whereFacts } from "./skill-row-state";
@@ -84,14 +83,17 @@ export function SkillListTable({
   stats,
   sort,
   onSelectSkill,
-  selectedSkillName = null,
-  initialCursorSkillName = null,
+  selectedSkillName: selectedSkillNameProp,
+  initialCursorSkillName: initialCursorSkillNameProp,
   active,
   deploymentPathForSkill,
-  hasAnySkills = true,
+  hasAnySkills: hasAnySkillsProp,
   onClearFilters,
   onAddSkill,
 }: SkillListTableProps) {
+  const selectedSkillName = selectedSkillNameProp ?? null;
+  const initialCursorSkillName = initialCursorSkillNameProp ?? null;
+  const hasAnySkills = hasAnySkillsProp ?? true;
   const [showPackPrompt, setShowPackPrompt] = useState(false);
   const [collapsedGroups, setCollapsedGroups] = useState<Set<RowGroup>>(() => new Set());
   const packsEnabled = isFeatureEnabled("skill-packs");
@@ -112,9 +114,7 @@ export function SkillListTable({
     deploymentPathForSkill?.(skill) ?? skill.deployments[0]?.path;
 
   const sorted = sortRows(skills, sort, statsBySkill);
-  const statesBySkill = new Map<string, RowState | null>(
-    sorted.map((skill) => [skill.name, rowState(skill)]),
-  );
+  const statesBySkill = new Map<string, RowState | null>();
   // SAFETY: each bucket starts empty; the loop below only ever pushes `InstalledSkill` values into it.
   const buckets = {
     attention: [] as InstalledSkill[],
@@ -122,13 +122,15 @@ export function SkillListTable({
     parked: [] as InstalledSkill[],
   };
   for (const skill of sorted) {
-    buckets[rowGroup(skill, statesBySkill.get(skill.name) ?? null)].push(skill);
+    const state = rowState(skill);
+    statesBySkill.set(skill.name, state);
+    buckets[rowGroup(skill, state)].push(skill);
   }
   /** The grouped display order: `rowPath`/index below refer to this array, not `sorted`. */
   const rows = [...buckets.attention, ...buckets.healthy, ...buckets.parked];
   /** Row keys `useRowCursor` navigates, in rendered order - a collapsed group's rows drop out. */
-  const visibleKeys = GROUP_ORDER.filter((group) => !collapsedGroups.has(group)).flatMap((group) =>
-    buckets[group].map((skill) => skill.name),
+  const visibleKeys = GROUP_ORDER.flatMap((group) =>
+    collapsedGroups.has(group) ? [] : buckets[group].map((skill) => skill.name),
   );
 
   // Destructured (rather than kept as one `cursor` object) so each JSX use below is a plain
@@ -228,17 +230,18 @@ export function SkillListTable({
       onSelectSkill(skill.name, deploymentPathForSkill?.(skill));
       return;
     }
+    // Hoisted out of the try/catch below - the compiler can't optimize a conditional expression
+    // computed inside a try/catch statement.
+    const successTitle = label === "Park" ? `Parked ${skill.name}` : `Unparked ${skill.name}`;
+    const failureTitle = label === "Park" ? "Couldn't park skill" : "Couldn't unpark skill";
     try {
       if (label === "Park") await parkSkill(lifecycleTargetForPark(skill));
       else await unparkSkill(lifecycleTargetForPark(skill));
-      addToast({
-        type: "success",
-        title: label === "Park" ? `Parked ${skill.name}` : `Unparked ${skill.name}`,
-      });
+      addToast({ type: "success", title: successTitle });
     } catch (err) {
       addToast({
         type: "error",
-        title: label === "Park" ? "Couldn't park skill" : "Couldn't unpark skill",
+        title: failureTitle,
         message: err instanceof Error ? err.message : "Unknown error",
       });
     }

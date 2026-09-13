@@ -72,10 +72,11 @@ export function MenuControl({
   triggerClassName,
   triggerAriaLabel,
   children,
-  align = "start",
+  align: alignProp,
   popupClassName,
   onOpenChange,
 }: MenuControlProps) {
+  const align = alignProp ?? "start";
   return (
     <DropdownMenu onOpenChange={onOpenChange}>
       <DropdownMenuTrigger className={triggerClassName} aria-label={triggerAriaLabel}>

@@ -7,7 +7,7 @@
 // instead of two per row.
 // ============================================================================
 
-import { createContext, useContext, useMemo, useRef } from "react";
+import { createContext, useContext, useRef, useState } from "react";
 import type { ReactNode } from "react";
 import {
   cn,
@@ -105,9 +105,10 @@ function SkillRowMenuItems({
  * starts closing, so the close notification below still reaches the row that opened it - that's
  * how the row's `.`/Shift+F10 shortcut refocuses the right row once its menu closes. */
 export function SkillRowMenuScope({ children }: { children: ReactNode }) {
-  // Created once, not stored in state: the handle never changes, so there's no setter to pair it
-  // with.
-  const handle = useMemo(() => createDropdownMenuHandle<SkillRowMenuPayload>(), []);
+  // Lazy state, not `useMemo`: one handle per mount. The setter is never called, since the handle
+  // never changes; `hook-use-state` still requires the pair.
+  const [handle, setHandle] = useState(() => createDropdownMenuHandle<SkillRowMenuPayload>());
+  void setHandle;
   const activePayloadRef = useRef<SkillRowMenuPayload | null>(null);
   return (
     <SkillRowMenuHandleContext.Provider value={handle}>

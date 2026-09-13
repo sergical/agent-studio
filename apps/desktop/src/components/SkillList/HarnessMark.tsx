@@ -91,14 +91,16 @@ function harnessMarkTooltip(reach: HarnessReach, parked: boolean) {
  * its icon's corner. */
 export function HarnessMark({
   reach,
-  size = 13,
-  parked = false,
+  size: sizeProp,
+  parked: parkedProp,
 }: {
   reach: HarnessReach;
   size?: number;
   /** The whole skill is parked: every disc takes the disabled treatment and says so. */
   parked?: boolean;
 }) {
+  const size = sizeProp ?? 13;
+  const parked = parkedProp ?? false;
   if (!reach.reached) {
     return (
       <span
@@ -139,7 +141,14 @@ export function HarnessMark({
  * at full tone; absent is the same glyph dimmed to `--color-icon-muted` at
  * `opacity-60`. Present shows a one-line "Universal folder" tooltip so the
  * Layers glyph is named. */
-export function UniversalMark({ universal, size = 13 }: { universal: Universal; size?: number }) {
+export function UniversalMark({
+  universal,
+  size: sizeProp,
+}: {
+  universal: Universal;
+  size?: number;
+}) {
+  const size = sizeProp ?? 13;
   if (!universal.present) {
     return (
       <span

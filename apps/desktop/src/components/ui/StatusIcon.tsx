@@ -38,7 +38,8 @@ interface StatusIconProps {
 }
 
 /** An identity icon with an optional severity dot ringed in the row background - never a tinted or swapped icon, see status-spec.md §1. */
-export function StatusIcon({ icon, level, tip, size = 16 }: StatusIconProps) {
+export function StatusIcon({ icon, level, tip, size: sizeProp }: StatusIconProps) {
+  const size = sizeProp ?? 16;
   const content = (
     <span className="relative inline-flex shrink-0 items-center justify-center text-text-secondary">
       {icon}

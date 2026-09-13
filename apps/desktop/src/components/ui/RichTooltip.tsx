@@ -7,7 +7,7 @@
 // instance instead of hundreds.
 // ============================================================================
 
-import { createContext, useContext, useMemo } from "react";
+import { createContext, useContext, useState } from "react";
 import type { ReactElement, ReactNode } from "react";
 import { createTooltipHandle, Tooltip, TooltipContent, TooltipTrigger } from "@skill-studio/ui";
 import type { TooltipHandle } from "@skill-studio/ui";
@@ -38,9 +38,10 @@ export function useRichTooltipHandle(): TooltipHandle<RichTooltipPayload> | null
 /** Wraps a list of rows in one shared Tooltip root, keyed by a handle - the same 400ms provider
  * delay and instant switching between adjacent triggers, but one root instead of one per row. */
 export function RichTooltipScope({ children }: { children: ReactNode }) {
-  // Created once, not stored in state: the handle never changes, so there's no setter to pair it
-  // with.
-  const handle = useMemo(() => createTooltipHandle<RichTooltipPayload>(), []);
+  // Lazy state, not `useMemo`: one handle per mount. The setter is never called, since the handle
+  // never changes; `hook-use-state` still requires the pair.
+  const [handle, setHandle] = useState(() => createTooltipHandle<RichTooltipPayload>());
+  void setHandle;
   return (
     <RichTooltipHandleContext.Provider value={handle}>
       {children}
