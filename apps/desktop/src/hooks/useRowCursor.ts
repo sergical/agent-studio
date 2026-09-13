@@ -31,6 +31,10 @@ interface UseRowCursorOptions {
    * back button is instant); flipping back to `true` re-focuses `initialKey`'s row, without
    * scrolling if it's already in view. */
   active?: boolean;
+  /** For a virtualized caller: scrolls an unmounted row's key into view - e.g. a virtualizer's
+   * `scrollToIndex`. Once the row's element attaches, its ref callback focuses it. Omit this for a
+   * caller (like `HomeView`) that mounts every row up front. */
+  scrollToKey?: (key: string) => void;
 }
 
 export interface RowCursor {
@@ -77,6 +81,7 @@ export function useRowCursor({
   onExpandGroup,
   initialKey,
   active: activeProp,
+  scrollToKey,
 }: UseRowCursorOptions): RowCursor {
   const active = activeProp ?? true;
   const [cursorKey, setCursorKey] = useState<string | null>(
@@ -84,6 +89,9 @@ export function useRowCursor({
   );
   const rowsRef = useRef(new Map<string, HTMLDivElement>());
   const gridRef = useRef<HTMLDivElement | null>(null);
+  /** Set by `scrollAndFocus` when a key's row isn't mounted yet - the row's own `rowRef` callback
+   * focuses it once it attaches, then clears this. */
+  const pendingFocusKeyRef = useRef<string | null>(null);
   // State, not a ref: the fallback below reads it during render, and a ref's `current` can't be
   // read there.
   const [lastIndex, setLastIndex] = useState(0);
@@ -104,7 +112,15 @@ export function useRowCursor({
 
   function scrollAndFocus(key: string) {
     const el = rowsRef.current.get(key);
-    if (!el) return;
+    if (!el) {
+      // Not mounted (virtualized out) - ask the caller to scroll it into range, then focus it once
+      // its ref callback attaches it below.
+      if (scrollToKey) {
+        pendingFocusKeyRef.current = key;
+        scrollToKey(key);
+      }
+      return;
+    }
     el.focus({ preventScroll: true });
     el.scrollIntoView({ block: "nearest" });
   }
@@ -259,8 +275,13 @@ export function useRowCursor({
   return {
     cursorKey: effectiveCursorKey,
     rowRef: (key) => (el) => {
-      if (el) rowsRef.current.set(key, el);
-      else rowsRef.current.delete(key);
+      if (el) {
+        rowsRef.current.set(key, el);
+        if (pendingFocusKeyRef.current === key) {
+          pendingFocusKeyRef.current = null;
+          el.focus({ preventScroll: true });
+        }
+      } else rowsRef.current.delete(key);
     },
     containerRef: (el) => {
       gridRef.current = el;

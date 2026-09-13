@@ -3,10 +3,15 @@
 // with whatever it has already filtered down (scope, harness, source, issue)
 // ============================================================================
 
-import { useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import type { CSSProperties } from "react";
+import {
+  defaultRangeExtractor,
+  observeElementRect as observeDefaultElementRect,
+  useVirtualizer,
+} from "@tanstack/react-virtual";
 import type { InstalledSkill, PackMember, SkillInvocationStats } from "@skill-studio/lib";
-import { Button, Collapsible, CollapsiblePanel } from "@skill-studio/ui";
+import { Button, Collapsible } from "@skill-studio/ui";
 import { isFeatureEnabled } from "../../lib/feature-flags";
 import { parkSkill, unparkSkill } from "../../lib/skill-api";
 import { lifecycleTargetForPark } from "../../lib/skill-lifecycle-target";
@@ -46,6 +51,79 @@ const GROUP_LABEL = {
   healthy: "Healthy",
   parked: "Parked",
 };
+
+/** Fixed row/header sizes for the virtualizer - `GroupHead`'s `h-7` and `ROW_CLASS`'s `h-8`, both
+ * border-box so their border doesn't add to these. No `measureElement`: every row and header is
+ * the same height. */
+const HEADER_HEIGHT = 28;
+const ROW_HEIGHT = 32;
+/** Overscan past the visible range, in items. */
+const OVERSCAN = 8;
+
+/** One row of the flat, virtualized item list built from the three state-group buckets: a
+ * group's header, then (only while the group is open) one entry per skill in it. `index` is the
+ * row's position in the grouped `rows` array - what `aria-rowindex` and shift-click use - which
+ * stays stable even for a skill inside a collapsed group. */
+type ListItem =
+  | { kind: "header"; group: RowGroup }
+  | { kind: "row"; group: RowGroup; skill: InstalledSkill; index: number };
+
+/** A group's offset and total size in `ListItem[]`'s flat coordinate space - see
+ * `buildListItems`. */
+type GroupMeta = Record<RowGroup, { start: number; height: number }>;
+
+/** `buildListItems`'s result: the flat item list plus each group's placement in it. */
+interface ListItems {
+  items: ListItem[];
+  groupMeta: GroupMeta;
+}
+
+/** `useVirtualizer`'s instance holds mutable methods (`scrollToIndex`, `getVirtualItems`) that
+ * can't be memoized - calling it directly makes React Compiler bail out of memoizing the whole
+ * component. Isolating the call in its own hook, opted out of compilation, keeps that limitation
+ * local instead. */
+function useSkillListVirtualizer(
+  options: Parameters<typeof useVirtualizer<HTMLElement, HTMLDivElement>>[0],
+) {
+  "use no memo";
+  // oxlint-disable-next-line react/incompatible-library -- this hook is opted out of compilation above.
+  return useVirtualizer(options); // react-doctor-disable-line react-hooks-js/incompatible-library
+}
+
+/** Builds the flat `ListItem` list `useSkillListVirtualizer` measures, plus each group's
+ * `start`/`height` in that same flat coordinate space, for positioning its rows and sizing its
+ * container. Pulled out of the component so its loop doesn't count against its control-flow
+ * complexity. */
+function buildListItems(
+  buckets: Record<RowGroup, InstalledSkill[]>,
+  collapsedGroups: Set<RowGroup>,
+): ListItems {
+  const items: ListItem[] = [];
+  // SAFETY: every group below is set exactly once, before the caller reads it.
+  const groupMeta = {
+    attention: { start: 0, height: 0 },
+    healthy: { start: 0, height: 0 },
+    parked: { start: 0, height: 0 },
+  } satisfies GroupMeta;
+  let cumulativeSize = 0;
+  let rowIndex = 0;
+  for (const group of GROUP_ORDER) {
+    const groupSkills = buckets[group];
+    if (groupSkills.length === 0) continue;
+    const open = !collapsedGroups.has(group);
+    const height = HEADER_HEIGHT + (open ? groupSkills.length * ROW_HEIGHT : 0);
+    groupMeta[group] = { start: cumulativeSize, height };
+    items.push({ kind: "header", group });
+    if (open) {
+      groupSkills.forEach((skill, i) =>
+        items.push({ kind: "row", group, skill, index: rowIndex + i }),
+      );
+    }
+    rowIndex += groupSkills.length;
+    cumulativeSize += height;
+  }
+  return { items, groupMeta };
+}
 
 interface SkillListTableProps {
   skills: InstalledSkill[];
@@ -108,6 +186,18 @@ export function SkillListTable({
   const addToast = useAppStore((state) => state.addToast);
   /** Index of the last row checked by click (not shift-click), for shift-click range-select. */
   const lastCheckedIndexRef = useRef<number | null>(null);
+  /** The scroll container the virtualizer measures against - the nearest ancestor with its own
+   * scrollbar (`PageShell`'s content area), found by walking up from the grid element. */
+  const [scrollElement, setScrollElement] = useState<HTMLElement | null>(null);
+  const gridElRef = useRef<HTMLDivElement | null>(null);
+  /** How far the grid sits below the top of the scroll container's content - `useVirtualizer`'s
+   * `scrollMargin`, recomputed whenever content above the grid (filter chips, a scan banner)
+   * resizes. */
+  const [scrollMargin, setScrollMargin] = useState(0);
+  /** The roving cursor's key, mirrored here so the virtualizer's `rangeExtractor` (a plain
+   * callback, not part of render) can always keep that row's item in range without depending on
+   * `useRowCursor`'s return value before it exists. */
+  const cursorKeyRef = useRef<string | null>(null);
 
   /** The deployment path this row's selection checkbox stands for. */
   const rowPath = (skill: InstalledSkill): string | undefined =>
@@ -133,56 +223,150 @@ export function SkillListTable({
     collapsedGroups.has(group) ? [] : buckets[group].map((skill) => skill.name),
   );
 
+  /** The flat item list the virtualizer measures, and each group's offset/size in that same
+   * coordinate space - see `buildListItems`. */
+  const { items, groupMeta } = buildListItems(buckets, collapsedGroups);
+
+  const virtualizer = useSkillListVirtualizer({
+    count: items.length,
+    getScrollElement: () => scrollElement,
+    estimateSize: (index) => (items[index].kind === "header" ? HEADER_HEIGHT : ROW_HEIGHT),
+    overscan: OVERSCAN,
+    scrollMargin,
+    // Keeps a row scrolled to (Home/End, j/k past the rendered range) from surfacing under its
+    // group's sticky header.
+    scrollPaddingStart: HEADER_HEIGHT,
+    // The roving cursor row is always in the range, mounted, so a Tab into the grid always lands
+    // on it - `cursorKeyRef` (not `useRowCursor`'s return) since this callback outlives any one
+    // render and `useRowCursor` itself isn't in scope yet at this point.
+    rangeExtractor: (range) => {
+      const base = defaultRangeExtractor(range);
+      const cursorKeyValue = cursorKeyRef.current;
+      const cursorIndex =
+        cursorKeyValue === null
+          ? -1
+          : items.findIndex((item) => item.kind === "row" && item.skill.name === cursorKeyValue);
+      if (cursorIndex === -1 || base.includes(cursorIndex)) return base;
+      return [...base, cursorIndex].sort((a, b) => a - b);
+    },
+    // While the list is `hidden` behind an open skill's page, the scroll element measures 0x0 -
+    // ignoring that keeps the virtualizer's last real range instead of collapsing it to nothing,
+    // so the list doesn't blank for a frame when it's shown again.
+    observeElementRect: (instance, cb) =>
+      observeDefaultElementRect(instance, (rect) => {
+        if (rect.width === 0 && rect.height === 0) return;
+        cb(rect);
+      }),
+  });
+
   // Destructured (rather than kept as one `cursor` object) so each JSX use below is a plain
   // identifier, not a member access - oxlint's `react(refs)` check otherwise treats every property
   // read off a custom hook's return value as a potential ref read during render.
-  const { rowRef, containerRef, tabIndexFor, onGridKeyDown, focusCursor, focusRow, statusText } =
-    useRowCursor({
-      keys: visibleKeys,
-      // The row a just-closed skill page was opened from, so Escape back out of it returns
-      // focus there instead of resetting the cursor to the first row.
-      initialKey: initialCursorSkillName,
-      active,
-      onOpen: (key) => {
-        const skill = rows.find((s) => s.name === key);
-        if (skill) onSelectSkill(skill.name, deploymentPathForSkill?.(skill));
-      },
-      onToggle: (key) => {
-        const index = rows.findIndex((s) => s.name === key);
-        if (index !== -1) handleRowCheckboxClick(index, false);
-      },
-      onExtend: (key) => {
-        const skill = rows.find((s) => s.name === key);
-        const path = skill && rowPath(skill);
-        if (!path) return;
-        const next = new Set(selectedPaths);
-        next.add(path);
-        selectSkills([...next]);
-        syncSelectionMode(next.size);
-      },
-      onMenu: (_key, rowEl) => {
-        const triggers = rowEl.querySelectorAll<HTMLElement>('[data-slot="dropdown-menu-trigger"]');
-        triggers[triggers.length - 1]?.click();
-      },
-      onEscape: () => {
-        if (selectedPaths.size > 0) exitSelectionMode();
-      },
-      onCollapseGroup: (groupId) =>
-        setCollapsedGroups((prev) =>
-          // SAFETY: `groupId` only ever comes from this file's own `data-group` attributes, which
-          // are always one of the three `RowGroup` values.
-          new Set(prev).add(groupId as RowGroup),
-        ),
-      onExpandGroup: (groupId) =>
-        setCollapsedGroups((prev) => {
-          const next = new Set(prev);
-          // SAFETY: `groupId` only ever comes from this file's own `data-group` attributes, which
-          // are always one of the three `RowGroup` values.
-          next.delete(groupId as RowGroup);
-          return next;
-        }),
-    });
+  const {
+    rowRef,
+    containerRef,
+    tabIndexFor,
+    onGridKeyDown,
+    focusCursor,
+    focusRow,
+    statusText,
+    cursorKey,
+  } = useRowCursor({
+    keys: visibleKeys,
+    // The row a just-closed skill page was opened from, so Escape back out of it returns
+    // focus there instead of resetting the cursor to the first row.
+    initialKey: initialCursorSkillName,
+    active,
+    scrollToKey: (key) => {
+      const index = items.findIndex((item) => item.kind === "row" && item.skill.name === key);
+      if (index !== -1) virtualizer.scrollToIndex(index, { align: "auto" });
+    },
+    onOpen: (key) => {
+      const skill = rows.find((s) => s.name === key);
+      if (skill) onSelectSkill(skill.name, deploymentPathForSkill?.(skill));
+    },
+    onToggle: (key) => {
+      const index = rows.findIndex((s) => s.name === key);
+      if (index !== -1) handleRowCheckboxClick(index, false);
+    },
+    onExtend: (key) => {
+      const skill = rows.find((s) => s.name === key);
+      const path = skill && rowPath(skill);
+      if (!path) return;
+      const next = new Set(selectedPaths);
+      next.add(path);
+      selectSkills([...next]);
+      syncSelectionMode(next.size);
+    },
+    onMenu: (_key, rowEl) => {
+      const triggers = rowEl.querySelectorAll<HTMLElement>('[data-slot="dropdown-menu-trigger"]');
+      triggers[triggers.length - 1]?.click();
+    },
+    onEscape: () => {
+      if (selectedPaths.size > 0) exitSelectionMode();
+    },
+    onCollapseGroup: (groupId) =>
+      setCollapsedGroups((prev) =>
+        // SAFETY: `groupId` only ever comes from this file's own `data-group` attributes, which
+        // are always one of the three `RowGroup` values.
+        new Set(prev).add(groupId as RowGroup),
+      ),
+    onExpandGroup: (groupId) =>
+      setCollapsedGroups((prev) => {
+        const next = new Set(prev);
+        // SAFETY: `groupId` only ever comes from this file's own `data-group` attributes, which
+        // are always one of the three `RowGroup` values.
+        next.delete(groupId as RowGroup);
+        return next;
+      }),
+  });
   useRowCursorWindowEntry(active, focusCursor);
+
+  // Mirrors `cursorKey` into a ref for the virtualizer's `rangeExtractor` above - a plain callback
+  // outside render, so it reads the ref rather than closing over this render's `cursorKey`.
+  useEffect(() => {
+    cursorKeyRef.current = cursorKey;
+  }, [cursorKey]);
+
+  // Resolves the ancestor scroll container once the grid element attaches - `PageShell`'s
+  // `overflow-y-auto` content area, an ancestor of the grid rather than the grid itself.
+  function setGridRef(el: HTMLDivElement | null) {
+    containerRef(el);
+    gridElRef.current = el;
+    if (!el) return;
+    let node: HTMLElement | null = el.parentElement;
+    while (node) {
+      const { overflowY } = window.getComputedStyle(node);
+      if (overflowY === "auto" || overflowY === "scroll") {
+        setScrollElement(node);
+        return;
+      }
+      node = node.parentElement;
+    }
+  }
+
+  // Keeps `scrollMargin` (the grid's offset from the top of the scroll container's content) in
+  // sync with whatever sits above the grid - the filter chips, a partial-scan banner - by watching
+  // the scroll container's content child for size changes.
+  useEffect(() => {
+    if (!scrollElement) return;
+    function recompute() {
+      const gridEl = gridElRef.current;
+      if (!gridEl || !scrollElement) return;
+      const gridRect = gridEl.getBoundingClientRect();
+      // The grid is `hidden` behind an open skill's page - keep the last real margin instead of
+      // collapsing it to 0.
+      if (gridRect.width === 0 && gridRect.height === 0) return;
+      const scrollRect = scrollElement.getBoundingClientRect();
+      setScrollMargin(gridRect.top - scrollRect.top + scrollElement.scrollTop);
+    }
+    recompute();
+    const contentEl = scrollElement.firstElementChild;
+    if (!contentEl) return;
+    const observer = new ResizeObserver(recompute);
+    observer.observe(contentEl);
+    return () => observer.disconnect();
+  }, [scrollElement]);
 
   /** The store's `selectionMode` mirrors "at least one row checked" - kept in sync here since a
    * checkbox now drives selection directly instead of a separate mode switch. */
@@ -248,8 +432,9 @@ export function SkillListTable({
   }
 
   /** One skill row - `index` is its position in the grouped `rows` array, for shift-click and
-   * `aria-rowindex`; `useRowCursor` (via `skill.name`) drives the roving `tabIndex` instead. */
-  function renderRow(skill: InstalledSkill, index: number) {
+   * `aria-rowindex`; `useRowCursor` (via `skill.name`) drives the roving `tabIndex` instead.
+   * `style` is the virtualizer's absolute positioning within the row's group container. */
+  function renderRow(skill: InstalledSkill, index: number, style: CSSProperties) {
     const checked = selectedPaths.has(rowPath(skill) ?? "");
     const state = statesBySkill.get(skill.name) ?? null;
     return (
@@ -260,7 +445,10 @@ export function SkillListTable({
         aria-rowindex={index + 1}
         aria-selected={checked}
         tabIndex={tabIndexFor(skill.name)}
-        className={`${ROW_CLASS} gap-x-3 px-3 ${COLUMNS} hover:bg-bg-secondary focus-visible:outline-2 focus-visible:outline-accent -outline-offset-2 ${selectedRowClass(
+        style={style}
+        // `scroll-mt-7` (28px, `HEADER_HEIGHT`) keeps a row scrolled to by `scrollIntoView` from
+        // surfacing under its group's sticky header.
+        className={`${ROW_CLASS} scroll-mt-7 gap-x-3 px-3 ${COLUMNS} hover:bg-bg-secondary focus-visible:outline-2 focus-visible:outline-accent -outline-offset-2 ${selectedRowClass(
           skill.name === selectedSkillName,
         )} ${skill.parked ? "text-text-tertiary" : ""}`}
         onClick={() => onSelectSkill(skill.name, deploymentPathForSkill?.(skill))}
@@ -316,6 +504,8 @@ export function SkillListTable({
     );
   }
 
+  const virtualItems = virtualizer.getVirtualItems();
+
   return (
     <RichTooltipScope>
       <SkillRowMenuScope>
@@ -359,29 +549,42 @@ export function SkillListTable({
             </div>
           ) : (
             <div
-              ref={containerRef}
+              ref={setGridRef}
               role="grid"
               aria-label="Skills"
               aria-rowcount={rows.length}
-              className="overflow-hidden rounded-md border border-border"
+              // `overflow-clip`, not `overflow-hidden`: both clip rows to the rounded border, but
+              // `hidden` makes the grid a scroll container, which stops the group headers sticking.
+              className="overflow-clip rounded-md border border-border"
               onKeyDown={onGridKeyDown}
             >
               {GROUP_ORDER.map((group) => {
                 const groupSkills = buckets[group];
                 if (groupSkills.length === 0) return null;
-                const startIndex = GROUP_ORDER.slice(0, GROUP_ORDER.indexOf(group)).reduce(
-                  (sum, g) => sum + buckets[g].length,
-                  0,
-                );
+                const open = !collapsedGroups.has(group);
+                const { start: groupStart, height: groupHeight } = groupMeta[group];
+                // Push-style sticky headers stay scoped to this group: only the virtual row items
+                // that belong to it render here, absolutely positioned within it, so the next
+                // group's header pushes this one up exactly as it did unvirtualized.
+                const groupRowItems = open
+                  ? virtualItems.filter((virtualItem) => {
+                      const item = items[virtualItem.index];
+                      return item.kind === "row" && item.group === group;
+                    })
+                  : [];
                 return (
                   <Collapsible
                     key={group}
                     role="rowgroup"
                     data-group={group}
-                    open={!collapsedGroups.has(group)}
+                    open={open}
                     onOpenChange={() => toggleGroup(group)}
+                    style={{ position: "relative", height: groupHeight }}
                   >
-                    <div role="row">
+                    {/* Sticky here, not only inside `GroupHead`: a sticky element sticks within its
+                        parent, and this row is the header's parent. The group container is the
+                        next header's parent, so that header pushes this one up. */}
+                    <div role="row" className="sticky top-0 z-2">
                       <div role="gridcell">
                         <GroupHead
                           label={GROUP_LABEL[group]}
@@ -390,9 +593,18 @@ export function SkillListTable({
                         />
                       </div>
                     </div>
-                    <CollapsiblePanel>
-                      {groupSkills.map((skill, i) => renderRow(skill, startIndex + i))}
-                    </CollapsiblePanel>
+                    {groupRowItems.map((virtualItem) => {
+                      const item = items[virtualItem.index];
+                      // SAFETY: filtered to `kind === "row"` above.
+                      if (item.kind !== "row") return null;
+                      return renderRow(item.skill, item.index, {
+                        position: "absolute",
+                        top: 0,
+                        left: 0,
+                        width: "100%",
+                        transform: `translateY(${virtualItem.start - scrollMargin - groupStart}px)`,
+                      });
+                    })}
                   </Collapsible>
                 );
               })}
