@@ -43,7 +43,9 @@ export function PageShell({
               <Button
                 variant="ghost"
                 size="xs"
-                className="h-6 rounded-sm px-1.5 text-small text-text-tertiary hover:text-text-primary"
+                // The negative margin cancels the hover padding so the label's text starts where a
+                // top-level page's title does - otherwise "Skills" jumps right when it becomes a crumb.
+                className="-ml-1.5 h-6 rounded-sm px-1.5 text-small text-text-tertiary hover:text-text-primary"
                 onClick={parent.onClick}
               >
                 {parent.label}
