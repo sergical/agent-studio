@@ -6,14 +6,13 @@
 // ============================================================================
 
 import { useEffect, useState } from "react";
-import { Check, KeyRound, SquarePen } from "lucide-react";
-import { Button, Input, RadioGroup, RadioGroupItem } from "@skill-studio/ui";
+import { Check, Globe, SquarePen } from "lucide-react";
+import { RadioGroup, RadioGroupItem } from "@skill-studio/ui";
 import {
   getPreferredEditor,
   getSkillsShAccess,
   listInstalledEditors,
   setPreferredEditor,
-  setSkillsShApiKey,
   type EditorOption,
 } from "../../lib/skill-api";
 import { useAppStore } from "../../store/appStore";
@@ -115,15 +114,12 @@ function EditorPicker() {
 }
 
 /**
- * The saved key is never displayed or re-fetched - the input always starts
- * empty, and only the status line reflects what's actually resolved from
- * `~/.agents/skill-studio.json` (see `api::resolve_skills_sh_access`).
+ * Read-only: the app browses through the Skill Studio server, so there is no key to enter here.
+ * A developer override stays in `~/.agents/skill-studio.json` (see `api::resolve_skills_sh_access`).
  */
-function SkillsShKeySetting() {
+function SkillsShAccessSetting() {
   const addToast = useAppStore((state) => state.addToast);
   const [accessState, setAccessState] = useState<SkillsShAccessState>({ kind: "loading" });
-  const [key, setKey] = useState("");
-  const [isSaving, setIsSaving] = useState(false);
 
   useEffect(() => {
     let cancelled = false;
@@ -144,50 +140,13 @@ function SkillsShKeySetting() {
     };
   }, [addToast]);
 
-  const save = () => {
-    setIsSaving(true);
-    setSkillsShApiKey(key)
-      .then(() => {
-        setAccessState({
-          kind: "available",
-          access: { mode: "direct", server_url: null },
-        });
-        setKey("");
-      })
-      .catch((err) => {
-        addToast({
-          type: "error",
-          title: "Couldn't save your skills.sh key",
-          message: err instanceof Error ? err.message : "Unknown error",
-        });
-      })
-      .finally(() => setIsSaving(false));
-  };
-
   const accessStatus = skillsShAccessStatusText(accessState);
 
   return (
     <div className="flex flex-col gap-3 rounded-lg border border-border-subtle p-4">
       <div className="flex items-center gap-2 text-body font-semibold text-text-primary">
-        <KeyRound size={15} className="text-text-tertiary" />
+        <Globe size={15} className="text-text-tertiary" />
         skills.sh
-      </div>
-      <p className="m-0 max-w-prose text-small text-text-tertiary">
-        Browsing normally goes through the Skill Studio server, so no key is required. A skills.sh
-        API key (issued by Vercel) pasted here lets this machine browse directly instead. Installing
-        by source never needs a key.
-      </p>
-      <div className="flex items-center gap-2">
-        <Input
-          type="password"
-          placeholder="Developer override: skills.sh API key"
-          value={key}
-          onChange={(e) => setKey(e.target.value)}
-          className="max-w-sm"
-        />
-        <Button onClick={save} disabled={isSaving || key.trim().length === 0}>
-          Save
-        </Button>
       </div>
       {accessStatus && (
         <p className="m-0 select-text text-small text-text-tertiary">{accessStatus}</p>
@@ -200,7 +159,7 @@ export function SettingsView() {
   return (
     <div className="flex flex-col gap-4 p-6">
       <h1 className="m-0 text-heading font-semibold text-text-primary">Settings</h1>
-      <SkillsShKeySetting />
+      <SkillsShAccessSetting />
       <EditorPicker />
     </div>
   );
