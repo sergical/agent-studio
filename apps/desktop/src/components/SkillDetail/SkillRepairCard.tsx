@@ -156,7 +156,7 @@ export function SkillRepairCard({ skill, deployment }: SkillRepairCardProps) {
         </span>
       </div>
 
-      <p className="m-0 max-w-[62ch] p-3 pb-1 text-body leading-[1.5] text-text-secondary">
+      <p className="m-0 max-w-[62ch] select-text p-3 pb-1 text-body leading-[1.5] text-text-secondary">
         <span className="font-mono text-small">{homeRelativePath(deployment.path)}</span> points to{" "}
         <span className="font-mono text-small">{homeRelativePath(rawTarget)}</span> — missing.
       </p>

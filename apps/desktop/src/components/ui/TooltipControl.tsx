@@ -38,7 +38,7 @@ export function TooltipControl({ content, children }: TooltipControlProps) {
             return (
               <span
                 key={text}
-                className={`block ${isMono ? "font-mono whitespace-nowrap" : "whitespace-pre-line"}`}
+                className={`block ${isMono ? "select-text font-mono whitespace-nowrap" : "whitespace-pre-line"}`}
               >
                 {text}
               </span>

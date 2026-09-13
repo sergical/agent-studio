@@ -19,11 +19,11 @@ export function ScanPartialBanner({ observations }: ScanPartialBannerProps) {
   return (
     <div className="flex items-start justify-between gap-3 rounded-sm border border-warning bg-warning-soft px-3.5 py-2.5 text-sm text-text-primary">
       <div className="flex-1">
-        <p>Scan incomplete: {observations.length} roots were not read</p>
+        <p className="select-text">Scan incomplete: {observations.length} roots were not read</p>
         {observations.length > 0 && (
           <details className="mt-1 text-text-secondary">
-            <summary className="cursor-pointer select-none">Details</summary>
-            <ul className="mt-1 list-disc pl-4">
+            <summary className="select-none">Details</summary>
+            <ul className="mt-1 list-disc pl-4 select-text">
               {observations.map((observation) => (
                 <li key={observation}>{observation}</li>
               ))}

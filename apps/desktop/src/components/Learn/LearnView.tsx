@@ -67,7 +67,7 @@ export function LearnView({ section }: LearnViewProps) {
             </a>
           ))}
         </nav>
-        <div className="flex max-w-[65ch] flex-col gap-9 text-body leading-[1.55] text-text-secondary">
+        <div className="flex max-w-[65ch] select-text flex-col gap-9 text-body leading-[1.55] text-text-secondary">
           <section id="learn-broken" className="flex scroll-mt-6 flex-col gap-2">
             <h3
               className="m-0 mb-1 text-heading font-semibold text-text-primary"

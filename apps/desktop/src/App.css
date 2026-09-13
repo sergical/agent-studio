@@ -102,13 +102,6 @@
   ::after {
     border-color: var(--color-border);
   }
-
-  button:not(:disabled),
-  [role="button"]:not([aria-disabled="true"]),
-  select:not(:disabled),
-  summary {
-    cursor: pointer;
-  }
 }
 :root {
   /* Default (and data-theme="dark"): native scrollbars, form controls, and
@@ -171,6 +164,11 @@ body,
   height: 100%;
   margin: 0;
   padding: 0;
+  overscroll-behavior: none;
+}
+html {
+  /* No pinch zoom; panning still works for scrollable content. */
+  touch-action: pan-x pan-y;
 }
 body {
   background: var(--color-bg-primary);
@@ -181,6 +179,9 @@ body {
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
   font-synthesis: none;
+  /* Chrome is not a document to select; content opts back in with select-text. */
+  user-select: none;
+  -webkit-user-select: none;
 } /* Scrollbar styling */
 ::-webkit-scrollbar {
   width: 6px;

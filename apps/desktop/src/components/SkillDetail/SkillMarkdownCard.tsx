@@ -143,7 +143,9 @@ export function SkillMarkdownCard({
           )}
         </div>
       ) : isPluginManaged ? (
-        <p className="m-0 p-3 text-body leading-[1.5] text-text-secondary">{pluginManagedText}</p>
+        <p className="m-0 select-text p-3 text-body leading-[1.5] text-text-secondary">
+          {pluginManagedText}
+        </p>
       ) : editState.kind === "editing" && rawContent !== null ? (
         <SkillMarkdownEditor
           initialContent={editState.openedContent}
@@ -157,7 +159,7 @@ export function SkillMarkdownCard({
         <MarkdownSkeleton />
       ) : loadError ? (
         <div className="m-0 flex items-center justify-between gap-3 p-3 text-body leading-[1.5] text-error">
-          <span>{loadError}</span>
+          <span className="select-text">{loadError}</span>
           <Button variant="outline" size="sm" onClick={onRetry}>
             Retry
           </Button>

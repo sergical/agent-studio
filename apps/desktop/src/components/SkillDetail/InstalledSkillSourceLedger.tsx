@@ -28,7 +28,7 @@ function InstalledSkillSourceLedgerRow({
         {label}
       </dt>
       <dd
-        className={`m-0 min-w-0 text-right text-small ${secondary ? "text-text-tertiary" : "text-text-primary"}`}
+        className={`m-0 min-w-0 select-text text-right text-small ${secondary ? "text-text-tertiary" : "text-text-primary"}`}
       >
         {children}
       </dd>

@@ -18,6 +18,7 @@ import { SkillsView } from "./components/SkillList/SkillsView";
 import { PluginSkillsView } from "./components/SkillList/PluginSkillsView";
 import { PacksView } from "./components/Packs/PacksView";
 import { SkillPage } from "./components/SkillDetail/SkillPage";
+import { useNativeShell } from "./hooks/useNativeShell";
 import { useSkillSnapshot } from "./hooks/useSkillSnapshot";
 import {
   onTrialExpired,
@@ -29,6 +30,7 @@ import { useAppStore } from "./store/appStore";
 import "./App.css";
 
 function App() {
+  useNativeShell();
   const { snapshot, emittedSnapshotRevision, isLoading, requestRescan } = useSkillSnapshot();
   const resolvedTheme = useAppStore((state) => state.resolvedTheme);
   const activeView = useAppStore((state) => state.activeView);
@@ -157,7 +159,7 @@ function App() {
               color: "var(--color-text-primary)",
             },
             classNames: {
-              description: "text-text-secondary",
+              description: "select-text text-text-secondary",
               actionButton: "!bg-bg-tertiary !text-text-primary !border !border-border",
             },
           }}

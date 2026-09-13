@@ -69,7 +69,7 @@ export function PluginSkillsView({ snapshot, onSelectSkill }: PluginSkillsViewPr
                       <span className="truncate text-body font-semibold text-text-primary">
                         {skill.name}
                       </span>
-                      <span className="truncate text-small text-text-tertiary">
+                      <span className="select-text truncate text-small text-text-tertiary">
                         {skill.description}
                       </span>
                       <span className="whitespace-nowrap text-right text-caption tabular-nums text-text-tertiary">

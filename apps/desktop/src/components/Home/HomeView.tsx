@@ -96,7 +96,7 @@ function InboxRow({
         </Button>
         <HarnessStack skill={skill} harnessList={DEFAULT_HARNESS_LIST} />
       </span>
-      <span className="truncate text-small text-text-tertiary">{detail}</span>
+      <span className="select-text truncate text-small text-text-tertiary">{detail}</span>
       {action}
     </div>
   );
@@ -105,13 +105,14 @@ function InboxRow({
 /** A group's sticky header: chevron, label, count, spacer, optional extra action. Sits inside a `Collapsible`, whose `data-panel-open` drives the chevron. */
 function GroupHead({ label, count, extra }: { label: string; count: number; extra?: ReactNode }) {
   return (
-    <CollapsibleTrigger className="group/head sticky top-0 z-1 flex h-8.5 w-full items-center gap-2 border-t border-b border-border-subtle bg-bg-secondary px-3 text-left text-small font-semibold text-text-primary">
-      <ChevronDown className="size-3.5 shrink-0 -rotate-90 text-text-quaternary transition-transform group-data-panel-open/head:rotate-0" />
-      {label}
-      <span className="font-normal text-text-tertiary tabular-nums">{count}</span>
-      <span className="flex-1" />
+    <div className="sticky top-0 z-1 flex h-8.5 w-full items-center gap-2 border-t border-b border-border-subtle bg-bg-secondary px-3">
+      <CollapsibleTrigger className="group/head flex h-full flex-1 items-center gap-2 text-left text-small font-semibold text-text-primary">
+        <ChevronDown className="size-3.5 shrink-0 -rotate-90 text-text-quaternary transition-transform group-data-panel-open/head:rotate-0" />
+        {label}
+        <span className="font-normal text-text-tertiary tabular-nums">{count}</span>
+      </CollapsibleTrigger>
       {extra}
-    </CollapsibleTrigger>
+    </div>
   );
 }
 

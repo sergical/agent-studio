@@ -189,7 +189,9 @@ function SkillsShKeySetting() {
           Save
         </Button>
       </div>
-      {accessStatus && <p className="m-0 text-small text-text-tertiary">{accessStatus}</p>}
+      {accessStatus && (
+        <p className="m-0 select-text text-small text-text-tertiary">{accessStatus}</p>
+      )}
     </div>
   );
 }

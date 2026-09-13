@@ -195,7 +195,7 @@ function SkillCard({ skill, isSelected, onClick, hideInstalledIndicator = false 
 
       {(skill.description || skill.installed_info?.description) && (
         <p
-          className="m-0 line-clamp-2 text-pretty text-small text-text-secondary"
+          className="m-0 line-clamp-2 select-text text-pretty text-small text-text-secondary"
           title={skill.description || skill.installed_info?.description || undefined}
         >
           {skill.description || skill.installed_info?.description}
