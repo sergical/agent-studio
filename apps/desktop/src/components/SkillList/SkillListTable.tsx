@@ -402,7 +402,7 @@ export function SkillListTable({
             {packsEnabled && (
               <Button
                 size="sm"
-                className="rounded-sm bg-accent text-text-on-accent"
+                className="rounded-sm bg-accent-solid text-text-on-accent"
                 onClick={() => setShowPackPrompt(true)}
               >
                 Create pack

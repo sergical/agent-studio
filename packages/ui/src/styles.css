@@ -78,7 +78,7 @@
   --color-card-foreground: var(--color-text-primary);
   --color-popover: var(--color-bg-elevated);
   --color-popover-foreground: var(--color-text-primary);
-  --color-primary: var(--color-accent);
+  --color-primary: var(--color-accent-solid);
   --color-primary-foreground: var(--color-text-on-accent);
   --color-secondary: var(--color-bg-tertiary);
   --color-secondary-foreground: var(--color-text-primary);

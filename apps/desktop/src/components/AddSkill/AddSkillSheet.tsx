@@ -1088,7 +1088,7 @@ function ManualTabFooter({
             Close
           </Button>
           <Button
-            className="h-(--control-height) rounded-md bg-accent px-3.5 text-body font-medium text-text-on-accent hover:bg-accent-hover"
+            className="h-(--control-height) rounded-md bg-accent-solid px-3.5 text-body font-medium text-text-on-accent hover:bg-accent-solid-hover"
             onClick={onTrustAndRetry}
             disabled={trustBusy}
           >
@@ -1128,7 +1128,7 @@ function ManualTabFooter({
           Cancel
         </Button>
         <Button
-          className="h-(--control-height) rounded-md bg-accent px-3.5 text-body font-medium text-text-on-accent hover:bg-accent-hover"
+          className="h-(--control-height) rounded-md bg-accent-solid px-3.5 text-body font-medium text-text-on-accent hover:bg-accent-solid-hover"
           onClick={onSubmit}
           disabled={!isValid || isSubmitting}
         >

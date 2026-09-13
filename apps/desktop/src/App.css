@@ -46,6 +46,10 @@
   --color-accent-hover: oklch(0.725 0.145 294.824);
   --color-accent-soft: oklch(0.668 0.176 293.133 / 0.16);
   --color-accent-softer: oklch(0.668 0.176 293.133 / 0.08);
+  /* Solid accent fills behind white text - darker than --color-accent so the
+     label clears 4.5:1; --color-accent stays the text and ring colour. */
+  --color-accent-solid: oklch(0.58 0.19 293);
+  --color-accent-solid-hover: oklch(0.54 0.2 293);
 
   /* Semantic colors */
   --color-success: oklch(0.696 0.149 162.48);
@@ -79,7 +83,7 @@
   --default-transition-duration: 120ms;
   --default-transition-timing-function: var(--ease-out-quint);
 
-  /* Text drawn on a solid --color-accent fill (checkbox tick, etc.) */
+  /* Text drawn on a solid --color-accent-solid fill (checkbox tick, etc.) */
   --color-text-on-accent: oklch(1 0 0);
 
   /* Dimming layer behind a drawer/dialog */
@@ -141,6 +145,8 @@
   --color-accent-hover: oklch(0.491 0.241 292.581);
   --color-accent-soft: oklch(0.541 0.247 293.009 / 0.12);
   --color-accent-softer: oklch(0.541 0.247 293.009 / 0.06);
+  --color-accent-solid: oklch(0.541 0.247 293.009);
+  --color-accent-solid-hover: oklch(0.491 0.241 292.581);
 
   --color-success: oklch(0.514 0.109 163.225);
   --color-success-soft: oklch(0.514 0.109 163.225 / 0.12);

@@ -162,7 +162,7 @@ export function InstalledSkillLifecycleActions({
       )}
       {(installedSkill?.update_owner_ids.length ?? 0) > 0 && (
         <Button
-          className={`${ACTION_BUTTON_CLASS} bg-accent text-text-on-accent hover:bg-accent-hover`}
+          className={`${ACTION_BUTTON_CLASS} bg-accent-solid text-text-on-accent hover:bg-accent-solid-hover`}
           onClick={handleUpdate}
           disabled={isUpdating || !updateAvailability?.available}
         >

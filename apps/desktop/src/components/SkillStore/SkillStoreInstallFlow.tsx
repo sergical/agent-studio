@@ -213,7 +213,7 @@ export function SkillStoreInstallFlow({
 
       <div className="mt-auto flex flex-col gap-2 p-5">
         <Button
-          className={`${ACTION_BUTTON_CLASS} bg-accent text-text-on-accent hover:bg-accent-hover`}
+          className={`${ACTION_BUTTON_CLASS} bg-accent-solid text-text-on-accent hover:bg-accent-solid-hover`}
           onClick={handleInstall}
           disabled={isInstalling || (installScope === "project" && !selectedProject)}
         >

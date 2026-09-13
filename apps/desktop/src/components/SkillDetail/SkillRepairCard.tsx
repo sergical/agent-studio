@@ -173,7 +173,7 @@ export function SkillRepairCard({ skill, deployment }: SkillRepairCardProps) {
 
       <div className="flex items-center gap-3 px-3 pt-2 pb-1">
         <Button
-          className="gap-2 bg-accent text-text-on-accent hover:bg-accent-hover"
+          className="gap-2 bg-accent-solid text-text-on-accent hover:bg-accent-solid-hover"
           onClick={handleFix}
           disabled={isFixing || !selected}
         >
@@ -205,10 +205,10 @@ interface RepairOptionRowProps {
 function RepairOptionRow({ option, skill, source }: RepairOptionRowProps) {
   const { title, description } = describeOption(option, skill, source);
   return (
-    <label className="flex cursor-pointer gap-3 rounded-sm border border-border-subtle bg-bg-elevated px-3.5 py-3 transition-colors hover:bg-bg-hover has-data-checked:border-accent has-data-checked:bg-accent-softer has-data-checked:shadow-[inset_0_0_0_1px_var(--color-accent)]">
+    <label className="flex cursor-pointer gap-3 rounded-sm border border-border-subtle bg-bg-elevated px-3.5 py-3 transition-colors hover:bg-bg-hover has-data-checked:border-accent-solid has-data-checked:bg-accent-softer has-data-checked:shadow-[inset_0_0_0_1px_var(--color-accent)]">
       <RadioGroupItem
         value={optionKey(option)}
-        className="mt-0.5 size-[15px] flex-none border-[1.5px] border-border-strong data-checked:border-accent data-checked:bg-accent data-checked:text-text-on-accent"
+        className="mt-0.5 size-[15px] flex-none border-[1.5px] border-border-strong data-checked:border-accent-solid data-checked:bg-accent-solid data-checked:text-text-on-accent"
       />
       <span className="flex flex-col gap-0.5">
         <span className="font-medium text-text-primary">{title}</span>
