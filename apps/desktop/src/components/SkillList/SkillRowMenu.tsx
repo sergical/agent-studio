@@ -4,6 +4,7 @@
 // ============================================================================
 
 import type { ReactNode } from "react";
+import { Kbd } from "@skill-studio/ui";
 import type { InstalledSkill } from "@skill-studio/lib";
 import { MenuControl, MenuItem, MenuSeparator } from "../ui/MenuControl";
 import { fixesFor } from "./skill-row-state";
@@ -17,6 +18,9 @@ interface SkillRowMenuProps {
   triggerAriaLabel?: string;
   onOpen: () => void;
   onAct: (label: string) => void;
+  onOpenChange?: (open: boolean) => void;
+  /** Only the trailing ⋯ menu (the row's own menu) offers this - toggles the row's checkbox. */
+  onToggleSelect?: () => void;
 }
 
 export function SkillRowMenu({
@@ -27,6 +31,8 @@ export function SkillRowMenu({
   triggerAriaLabel,
   onOpen,
   onAct,
+  onOpenChange,
+  onToggleSelect,
 }: SkillRowMenuProps) {
   const fixes = state ? fixesFor(state) : [];
   return (
@@ -36,6 +42,7 @@ export function SkillRowMenu({
         triggerClassName={triggerClassName}
         triggerAriaLabel={triggerAriaLabel}
         popupClassName="min-w-[220px]"
+        onOpenChange={onOpenChange}
       >
         <div className="px-2 py-1.5 text-small text-text-primary">
           {state ? state.label : skill.name}
@@ -54,7 +61,16 @@ export function SkillRowMenu({
             <MenuSeparator />
           </>
         )}
-        <MenuItem onClick={onOpen}>Open skill</MenuItem>
+        <MenuItem onClick={onOpen} className="justify-between">
+          Open skill
+          <Kbd>↵</Kbd>
+        </MenuItem>
+        {onToggleSelect && (
+          <MenuItem onClick={onToggleSelect} className="justify-between">
+            Select
+            <Kbd>X</Kbd>
+          </MenuItem>
+        )}
         <MenuItem onClick={() => onAct(skill.parked ? "Unpark" : "Park")}>
           {skill.parked ? "Unpark" : "Park"}
         </MenuItem>

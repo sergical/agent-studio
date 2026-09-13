@@ -9,6 +9,7 @@ import { homeDir } from "@tauri-apps/api/path";
 import { TooltipProvider } from "@skill-studio/ui";
 import { Toaster } from "sonner";
 import { AddSkillSheet } from "./components/AddSkill/AddSkillSheet";
+import { CommandPalette } from "./components/CommandPalette/CommandPalette";
 import { Sidebar } from "./components/Sidebar/Sidebar";
 import { SkillActivityView } from "./components/Activity/SkillActivityView";
 import { HomeView } from "./components/Home/HomeView";
@@ -18,6 +19,7 @@ import { SkillsView } from "./components/SkillList/SkillsView";
 import { PluginSkillsView } from "./components/SkillList/PluginSkillsView";
 import { PacksView } from "./components/Packs/PacksView";
 import { SkillPage } from "./components/SkillDetail/SkillPage";
+import { useAppShortcuts } from "./hooks/useAppShortcuts";
 import { useNativeShell } from "./hooks/useNativeShell";
 import { useSkillSnapshot } from "./hooks/useSkillSnapshot";
 import {
@@ -31,6 +33,7 @@ import "./App.css";
 
 function App() {
   useNativeShell();
+  useAppShortcuts();
   const { snapshot, emittedSnapshotRevision, isLoading, requestRescan } = useSkillSnapshot();
   const resolvedTheme = useAppStore((state) => state.resolvedTheme);
   const activeView = useAppStore((state) => state.activeView);
@@ -150,6 +153,7 @@ function App() {
         </div>
 
         <AddSkillSheet />
+        <CommandPalette snapshot={snapshot} requestRescan={requestRescan} />
         <Toaster
           position="bottom-right"
           theme={resolvedTheme}

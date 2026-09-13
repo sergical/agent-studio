@@ -4,13 +4,14 @@
 // ============================================================================
 
 import { useRef, useState } from "react";
-import type { CSSProperties, KeyboardEvent } from "react";
+import type { CSSProperties } from "react";
 import type { InstalledSkill, PackMember, SkillInvocationStats } from "@skill-studio/lib";
 import { Button, Collapsible, CollapsiblePanel } from "@skill-studio/ui";
 import { isFeatureEnabled } from "../../lib/feature-flags";
 import { parkSkill, unparkSkill } from "../../lib/skill-api";
 import { lifecycleTargetForPark } from "../../lib/skill-lifecycle-target";
 import type { SortMode } from "../../lib/skill-list-sort";
+import { useRowCursor, useRowCursorWindowEntry } from "../../hooks/useRowCursor";
 import { useAppStore } from "../../store/appStore";
 import { PackNamePrompt } from "../Packs/PackNamePrompt";
 import { GroupHead } from "./GroupHead";
@@ -52,6 +53,9 @@ interface SkillListTableProps {
   sort: SortMode;
   onSelectSkill: (name: string, deploymentPath?: string) => void;
   selectedSkillName?: string | null;
+  /** The skill whose page Escape/back just closed, so the cursor returns to that row instead of
+   * resetting to the first one. */
+  initialCursorSkillName?: string | null;
   /** Resolves which deployment a row's click should open in the detail drawer, when the caller knows it. */
   deploymentPathForSkill?: (skill: InstalledSkill) => string | undefined;
   /** False when the caller's underlying list (before any filter) is empty, for the right empty state. */
@@ -75,6 +79,7 @@ export function SkillListTable({
   sort,
   onSelectSkill,
   selectedSkillName = null,
+  initialCursorSkillName = null,
   deploymentPathForSkill,
   hasAnySkills = true,
   onClearFilters,
@@ -114,6 +119,60 @@ export function SkillListTable({
   }
   /** The grouped display order: `rowPath`/index below refer to this array, not `sorted`. */
   const rows = [...buckets.attention, ...buckets.healthy, ...buckets.parked];
+  /** Row keys `useRowCursor` navigates, in rendered order - a collapsed group's rows drop out. */
+  const visibleKeys = GROUP_ORDER.filter((group) => !collapsedGroups.has(group)).flatMap((group) =>
+    buckets[group].map((skill) => skill.name),
+  );
+
+  // Destructured (rather than kept as one `cursor` object) so each JSX use below is a plain
+  // identifier, not a member access - oxlint's `react(refs)` check otherwise treats every property
+  // read off a custom hook's return value as a potential ref read during render.
+  const { rowRef, containerRef, tabIndexFor, onGridKeyDown, focusCursor, focusRow, statusText } =
+    useRowCursor({
+      keys: visibleKeys,
+      // The row a just-closed skill page was opened from, so Escape back out of it returns
+      // focus there instead of resetting the cursor to the first row.
+      initialKey: initialCursorSkillName,
+      onOpen: (key) => {
+        const skill = rows.find((s) => s.name === key);
+        if (skill) onSelectSkill(skill.name, deploymentPathForSkill?.(skill));
+      },
+      onToggle: (key) => {
+        const index = rows.findIndex((s) => s.name === key);
+        if (index !== -1) handleRowCheckboxClick(index, false);
+      },
+      onExtend: (key) => {
+        const skill = rows.find((s) => s.name === key);
+        const path = skill && rowPath(skill);
+        if (!path) return;
+        const next = new Set(selectedPaths);
+        next.add(path);
+        selectSkills([...next]);
+        syncSelectionMode(next.size);
+      },
+      onMenu: (_key, rowEl) => {
+        const triggers = rowEl.querySelectorAll<HTMLElement>('[data-slot="dropdown-menu-trigger"]');
+        triggers[triggers.length - 1]?.click();
+      },
+      onEscape: () => {
+        if (selectedPaths.size > 0) exitSelectionMode();
+      },
+      onCollapseGroup: (groupId) =>
+        setCollapsedGroups((prev) =>
+          // SAFETY: `groupId` only ever comes from this file's own `data-group` attributes, which
+          // are always one of the three `RowGroup` values.
+          new Set(prev).add(groupId as RowGroup),
+        ),
+      onExpandGroup: (groupId) =>
+        setCollapsedGroups((prev) => {
+          const next = new Set(prev);
+          // SAFETY: `groupId` only ever comes from this file's own `data-group` attributes, which
+          // are always one of the three `RowGroup` values.
+          next.delete(groupId as RowGroup);
+          return next;
+        }),
+    });
+  useRowCursorWindowEntry(true, focusCursor);
 
   /** The store's `selectionMode` mirrors "at least one row checked" - kept in sync here since a
    * checkbox now drives selection directly instead of a separate mode switch. */
@@ -142,30 +201,6 @@ export function SkillListTable({
       }
     }
     lastCheckedIndexRef.current = index;
-  }
-
-  /** Enter opens the skill; Space toggles its checkbox. Ignored otherwise, since the row itself
-   * isn't a button. */
-  function handleRowKeyDown(
-    e: KeyboardEvent<HTMLDivElement>,
-    index: number,
-    skill: InstalledSkill,
-  ) {
-    if (e.key === "Enter") {
-      e.preventDefault();
-      onSelectSkill(skill.name, deploymentPathForSkill?.(skill));
-    } else if (e.key === " ") {
-      e.preventDefault();
-      handleRowCheckboxClick(index, false);
-    }
-  }
-
-  /** Escape clears the selection, mirroring the selection bar's Cancel button. */
-  function handleTableKeyDown(e: KeyboardEvent<HTMLDivElement>) {
-    if (e.key === "Escape" && selectedPaths.size > 0) {
-      e.preventDefault();
-      exitSelectionMode();
-    }
   }
 
   function toggleGroup(group: RowGroup) {
@@ -201,19 +236,19 @@ export function SkillListTable({
     }
   }
 
-  /** One skill row - `index` is its position in the grouped `rows` array, for shift-click, Space,
-   * `aria-rowindex`, and the single `tabIndex={0}` tab stop. */
+  /** One skill row - `index` is its position in the grouped `rows` array, for shift-click and
+   * `aria-rowindex`; `useRowCursor` (via `skill.name`) drives the roving `tabIndex` instead. */
   function renderRow(skill: InstalledSkill, index: number) {
     const checked = selectedPaths.has(rowPath(skill) ?? "");
     const state = statesBySkill.get(skill.name) ?? null;
     return (
       <div
         key={skill.name}
+        ref={rowRef(skill.name)}
         role="row"
         aria-rowindex={index + 1}
         aria-selected={checked}
-        tabIndex={index === 0 ? 0 : -1}
-        onKeyDown={(e) => handleRowKeyDown(e, index, skill)}
+        tabIndex={tabIndexFor(skill.name)}
         className={`${ROW_CLASS} gap-x-3 px-3 ${COLUMNS} hover:bg-bg-secondary focus-visible:outline-2 focus-visible:outline-accent -outline-offset-2 ${selectedRowClass(
           skill.name === selectedSkillName,
         )} ${skill.parked ? "text-text-tertiary" : ""}`}
@@ -260,6 +295,10 @@ export function SkillListTable({
             visible={checked}
             onOpen={() => onSelectSkill(skill.name, deploymentPathForSkill?.(skill))}
             onAct={(label) => void handleAct(label, skill)}
+            onOpenChange={(open) => {
+              if (!open) focusRow(skill.name);
+            }}
+            onToggleSelect={() => handleRowCheckboxClick(index, false)}
           />
         </div>
       </div>
@@ -274,7 +313,6 @@ export function SkillListTable({
         // passes it through to the style attribute as-is.
         { "--glyph-hit": `${GLYPH_HIT}px` } as CSSProperties
       }
-      onKeyDown={handleTableKeyDown}
     >
       {rows.length === 0 ? (
         <div className="flex flex-col items-start gap-2 text-pretty text-small text-text-tertiary">
@@ -308,10 +346,12 @@ export function SkillListTable({
         </div>
       ) : (
         <div
+          ref={containerRef}
           role="grid"
           aria-label="Skills"
           aria-rowcount={rows.length}
           className="overflow-hidden rounded-md border border-border"
+          onKeyDown={onGridKeyDown}
         >
           {GROUP_ORDER.map((group) => {
             const groupSkills = buckets[group];
@@ -324,12 +364,17 @@ export function SkillListTable({
               <Collapsible
                 key={group}
                 role="rowgroup"
+                data-group={group}
                 open={!collapsedGroups.has(group)}
                 onOpenChange={() => toggleGroup(group)}
               >
                 <div role="row">
                   <div role="gridcell">
-                    <GroupHead label={GROUP_LABEL[group]} count={groupSkills.length} />
+                    <GroupHead
+                      label={GROUP_LABEL[group]}
+                      count={groupSkills.length}
+                      groupId={group}
+                    />
                   </div>
                 </div>
                 <CollapsiblePanel>
@@ -340,6 +385,10 @@ export function SkillListTable({
           })}
         </div>
       )}
+      {/* Visually-hidden live region: announces the cursor's position, debounced to the last move. */}
+      <div role="status" aria-live="polite" className="sr-only">
+        {statusText}
+      </div>
 
       {/* A zero-height wrapper so the sticky bar never reserves flow space of its own - checking a
           row must not push any other row down. `sticky bottom-4` then docks the bar to the

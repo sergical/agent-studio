@@ -107,5 +107,6 @@ export {
   CollapsibleContent,
 } from "./components/collapsible";
 export { Progress } from "./components/progress";
+export { Kbd } from "./components/kbd";
 
 export { KitPreview } from "./kit-preview";

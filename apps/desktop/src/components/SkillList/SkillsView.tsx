@@ -57,6 +57,7 @@ export function SkillsView({ snapshot, onSelectSkill }: SkillsViewProps) {
   const selectedSkillName = useAppStore((state) =>
     state.activeView.kind === "skill" ? state.activeView.name : null,
   );
+  const lastClosedSkillName = useAppStore((state) => state.lastClosedSkillName);
   const userAddedProjects = useAppStore((state) => state.userAddedProjects);
   const excludedProjects = useAppStore((state) => state.excludedProjects);
   const addProject = useAppStore((state) => state.addProject);
@@ -160,6 +161,7 @@ export function SkillsView({ snapshot, onSelectSkill }: SkillsViewProps) {
           sort={sort}
           onSelectSkill={onSelectSkill}
           selectedSkillName={selectedSkillName}
+          initialCursorSkillName={lastClosedSkillName}
           deploymentPathForSkill={(skill) => deploymentForScope(skill, filter.scope)}
           hasAnySkills={baseSkills.length > 0}
           onClearFilters={resetSkillListFilter}

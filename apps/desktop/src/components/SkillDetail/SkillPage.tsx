@@ -259,6 +259,9 @@ export function SkillPage({
   useEffect(() => {
     function onKeyDown(event: KeyboardEvent) {
       if (event.key !== "Escape" || event.defaultPrevented) return;
+      // The command palette owns Escape while it's open - it can outlive its own dialog's
+      // ownership of `target` briefly (e.g. right after opening, before focus moves into it).
+      if (useAppStore.getState().commandPaletteOpen) return;
       const target = event.target;
       // Escape typed into an input, textarea, contenteditable region, an open
       // menu, listbox, or dialog belongs to that widget - the local handler

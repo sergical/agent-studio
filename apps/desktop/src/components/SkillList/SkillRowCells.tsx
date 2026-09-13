@@ -224,6 +224,8 @@ interface TrailingMenuCellProps {
   visible: boolean;
   onOpen: () => void;
   onAct: (label: string) => void;
+  onOpenChange?: (open: boolean) => void;
+  onToggleSelect?: () => void;
 }
 
 /** The row's trailing Ellipsis menu: revealed on row hover/focus-within, or held visible while
@@ -235,6 +237,8 @@ export function TrailingMenuCell({
   visible,
   onOpen,
   onAct,
+  onOpenChange,
+  onToggleSelect,
 }: TrailingMenuCellProps) {
   return (
     <SkillRowMenu
@@ -247,6 +251,8 @@ export function TrailingMenuCell({
       triggerAriaLabel={`Actions · ${skill.name}`}
       onOpen={onOpen}
       onAct={onAct}
+      onOpenChange={onOpenChange}
+      onToggleSelect={onToggleSelect}
     />
   );
 }

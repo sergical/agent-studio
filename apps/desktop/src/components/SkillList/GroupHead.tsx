@@ -15,14 +15,19 @@ export function GroupHead({
   label,
   count,
   extra,
+  groupId,
 }: {
   label: string;
   count: number;
   extra?: ReactNode;
+  /** Marks the trigger with `data-group-header` so `useRowCursor`'s ArrowLeft/ArrowRight handling
+   * can find and focus it without a ref. */
+  groupId?: string;
 }) {
   return (
     <div className="sticky top-0 z-1 flex h-7 w-full items-center gap-2 border-b border-border-subtle bg-bg-primary px-3">
       <CollapsibleTrigger
+        data-group-header={groupId}
         className="group/head flex h-full flex-1 items-center gap-2 text-left text-small font-medium text-text-secondary"
         aria-label={`${label}, ${count} skill${count === 1 ? "" : "s"}`}
       >

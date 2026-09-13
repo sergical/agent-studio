@@ -23,6 +23,7 @@ import {
 import { Button } from "@skill-studio/ui";
 import { ownSkillsView, pluginSkillsView } from "@skill-studio/lib";
 import { defaultSkillListFilter } from "@skill-studio/lib";
+import { SHORTCUTS } from "../../lib/app-shortcuts";
 import { isFeatureEnabled } from "../../lib/feature-flags";
 import {
   hasNewerSkillSnapshotEmission,
@@ -130,7 +131,12 @@ export function Sidebar({ snapshot, emittedSnapshotRevision, requestRescan }: Si
       <div className="flex h-7 shrink-0 items-center justify-between pr-1.5 pl-3.5">
         <span className="text-small font-semibold text-text-primary">Skill Studio</span>
         <div className="flex items-center gap-0.5">
-          <TooltipControl content="Search skills">
+          {/* The sidebar switcher row only fits two icons without crowding, so the command
+              palette's ⌘K hint rides along on this tooltip instead of a third icon button. */}
+          <TooltipControl
+            content={["Search skills", "Command palette ⌘K"]}
+            shortcut={SHORTCUTS.filterSkills.keys}
+          >
             <Button
               variant="ghost"
               size="icon-xs"
@@ -141,7 +147,7 @@ export function Sidebar({ snapshot, emittedSnapshotRevision, requestRescan }: Si
               <Search size={14} />
             </Button>
           </TooltipControl>
-          <TooltipControl content="Add skill">
+          <TooltipControl content="Add skill" shortcut={SHORTCUTS.addSkill.keys}>
             <Button
               variant="ghost"
               size="icon-xs"
@@ -270,7 +276,7 @@ export function Sidebar({ snapshot, emittedSnapshotRevision, requestRescan }: Si
               <BookOpen size={13} />
             </Button>
           </TooltipControl>
-          <TooltipControl content="Settings">
+          <TooltipControl content="Settings" shortcut={SHORTCUTS.settings.keys}>
             <Button
               variant="ghost"
               size="icon-xs"

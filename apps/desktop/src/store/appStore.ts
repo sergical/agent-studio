@@ -77,6 +77,9 @@ interface AppState {
   openSkill: (name: string, deploymentPath?: string, intent?: "compare") => void;
   /** Returns to the view the current skill page was opened from. */
   closeSkill: () => void;
+  /** The skill whose page `closeSkill` just returned from - lets the list that reappears
+   * (Home or Skills) restore keyboard focus to that row instead of resetting to the first one. */
+  lastClosedSkillName: string | null;
   /** Clears the current skill view's `intent`, once its one-shot dialog has opened. */
   clearSkillIntent: () => void;
 
@@ -132,6 +135,10 @@ interface AppState {
   addSkillSheet: { open: boolean; prefill?: string };
   openAddSkillSheet: (prefill?: string) => void;
   closeAddSkillSheet: () => void;
+
+  // === Command Palette ===
+  commandPaletteOpen: boolean;
+  setCommandPaletteOpen: (open: boolean) => void;
 
   // === Multi-select (SkillListTable -> "Create pack") ===
   // Keyed by the row's deployment directory path (`Deployment.path`), not by
@@ -213,7 +220,12 @@ export const useAppStore = create<AppState>((set, get) => ({
   // Leaving the list (a view change or opening a skill) ends selection mode,
   // so a later return to Skills never lands in a half-finished selection.
   setActiveView: (view) =>
-    set({ activeView: view, selectedSkillPaths: new Set(), selectionMode: false }),
+    set({
+      activeView: view,
+      selectedSkillPaths: new Set(),
+      selectionMode: false,
+      lastClosedSkillName: null,
+    }),
   openSkill: (name, deploymentPath, intent) => {
     const current = get().activeView;
     const from = current.kind === "skill" ? current.from : current;
@@ -225,8 +237,11 @@ export const useAppStore = create<AppState>((set, get) => ({
   },
   closeSkill: () => {
     const current = get().activeView;
-    if (current.kind === "skill") set({ activeView: current.from });
+    if (current.kind === "skill") {
+      set({ activeView: current.from, lastClosedSkillName: current.name });
+    }
   },
+  lastClosedSkillName: null,
   clearSkillIntent: () => {
     const current = get().activeView;
     if (current.kind === "skill" && current.intent !== undefined) {
@@ -320,6 +335,9 @@ export const useAppStore = create<AppState>((set, get) => ({
   addSkillSheet: { open: false },
   openAddSkillSheet: (prefill) => set({ addSkillSheet: { open: true, prefill } }),
   closeAddSkillSheet: () => set({ addSkillSheet: { open: false } }),
+
+  commandPaletteOpen: false,
+  setCommandPaletteOpen: (open) => set({ commandPaletteOpen: open }),
 
   selectedSkillPaths: new Set<string>(),
   toggleSkillSelection: (path) => {

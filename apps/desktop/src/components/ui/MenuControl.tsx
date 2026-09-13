@@ -57,6 +57,8 @@ interface MenuControlProps {
   align?: "start" | "end";
   /** Extra classes on the popup. The popup sizes to its content (`w-auto` undoes the kit's anchor-width default), so this is for a floor like `min-w-[200px]`. */
   popupClassName?: string;
+  /** Notified on open/close - e.g. the row's `.`/Shift+F10 shortcut refocuses the row once its menu closes. */
+  onOpenChange?: (open: boolean) => void;
 }
 
 /** The root + trigger + popup shell of a menu; `children` is the item list. */
@@ -67,9 +69,10 @@ export function MenuControl({
   children,
   align = "start",
   popupClassName,
+  onOpenChange,
 }: MenuControlProps) {
   return (
-    <DropdownMenu>
+    <DropdownMenu onOpenChange={onOpenChange}>
       <DropdownMenuTrigger className={triggerClassName} aria-label={triggerAriaLabel}>
         {trigger}
       </DropdownMenuTrigger>

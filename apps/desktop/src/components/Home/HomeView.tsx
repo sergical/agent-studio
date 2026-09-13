@@ -7,7 +7,7 @@
 // ============================================================================
 
 import { useState } from "react";
-import type { CSSProperties, KeyboardEvent, ReactNode } from "react";
+import type { CSSProperties, ReactNode } from "react";
 import { Button, Collapsible, CollapsiblePanel } from "@skill-studio/ui";
 import {
   attentionGroups,
@@ -35,6 +35,7 @@ import type {
   SkillListFilter,
   SkillSnapshot,
 } from "@skill-studio/lib";
+import { useRowCursor, useRowCursorWindowEntry } from "../../hooks/useRowCursor";
 import { useAppStore } from "../../store/appStore";
 import { PageShell } from "../Shell/PageShell";
 import { GroupHead } from "../SkillList/GroupHead";
@@ -53,16 +54,19 @@ const HOME_GLYPH_SIZE = 14;
 const RECENTLY_USED_COUNT = 5;
 const MAX_ROWS_PER_GROUP = 6;
 
-/** A row's `aria-rowindex`/`tabIndex` facts. */
-interface RowPosition {
-  rowIndex: number;
-  isFirst: boolean;
+/** A row's `aria-rowindex` from its group's start offset and its position in that group - pure,
+ * so groups needn't share a mutable counter. */
+function rowAt(start: number, i: number): number {
+  return start + i + 1;
 }
 
-/** A row's `aria-rowindex`/`tabIndex` facts from its group's start offset and its position in
- * that group - pure, so groups needn't share a mutable counter. */
-function rowAt(start: number, i: number): RowPosition {
-  return { rowIndex: start + i + 1, isFirst: start + i === 0 };
+/** One row's key for `useRowCursor` - namespaced by group id, since a skill can appear in more
+ * than one Home group (e.g. broken and unused) and each occurrence needs its own cursor stop. */
+function issueKey(groupId: GroupId, issue: HealthIssue): string {
+  return `${groupId}:${issue.kind}:${issue.skill.name}:${issue.detail}`;
+}
+function skillKey(groupId: GroupId, skill: InstalledSkill): string {
+  return `${groupId}:${skill.name}`;
 }
 
 /** Text link style shared by every "Show all"/"Show everything"/"Learn more" affordance on Home. */
@@ -96,28 +100,25 @@ function HomeRow({
   action,
   onOpen,
   rowIndex,
-  isFirst,
+  rowRef,
+  tabIndex,
 }: {
   skill: InstalledSkill;
   detail: ReactNode;
   action: ReactNode;
   onOpen: () => void;
   rowIndex: number;
-  isFirst: boolean;
+  /** Registers the row with `useRowCursor` so movement can focus and scroll it. */
+  rowRef: (el: HTMLDivElement | null) => void;
+  tabIndex: 0 | -1;
 }) {
-  function handleKeyDown(e: KeyboardEvent<HTMLDivElement>) {
-    if (e.key === "Enter") {
-      e.preventDefault();
-      onOpen();
-    }
-  }
   return (
     <div
+      ref={rowRef}
       role="row"
       aria-rowindex={rowIndex}
-      tabIndex={isFirst ? 0 : -1}
+      tabIndex={tabIndex}
       onClick={onOpen}
-      onKeyDown={handleKeyDown}
       className={`${ROW_CLASS} grid-cols-[var(--glyph-hit)_minmax(0,1fr)_160px_148px_minmax(0,1fr)_88px] gap-x-3 px-3 hover:bg-bg-secondary focus-visible:outline-2 focus-visible:outline-accent -outline-offset-2`}
       style={
         // SAFETY: `--glyph-hit` is a custom property, not a known CSSProperties key; React
@@ -598,27 +599,19 @@ export function HomeView({ snapshot, isLoading, onSelectSkill }: HomeViewProps) 
     root: string;
   } | null>(null);
 
-  if (!snapshot) {
-    if (isLoading) {
-      return <HomeSkeleton />;
-    }
-    return (
-      <PageShell title="Home">
-        <p className="flex h-full items-center justify-center text-wrap-pretty text-text-tertiary">
-          No skill snapshot yet.
-        </p>
-      </PageShell>
-    );
-  }
-
-  const own = ownSkillsView(snapshot.skills);
+  // Every Hook below must run on every render (Home's skeleton/empty states return early, further
+  // down, only after they've all been called), so the derived data they depend on falls back to
+  // empty rather than gating on `snapshot` here.
+  const own = snapshot ? ownSkillsView(snapshot.skills) : [];
   const issues = collectDashboardIssues(own);
   const { broken, warnings } = attentionGroups(issues);
-  const updates = skillsWithUpdates(snapshot);
+  const updates = snapshot ? skillsWithUpdates(snapshot) : [];
   const inv = homeInvocationCounts(own);
-  const cost = homePromptCost(own, snapshot.invocations);
-  const unused = unusedSkills(own, snapshot.invocations);
-  const recent = recentlyUsedSkills(snapshot.skills, snapshot.invocations, RECENTLY_USED_COUNT);
+  const cost = homePromptCost(own, snapshot?.invocations ?? []);
+  const unused = unusedSkills(own, snapshot?.invocations ?? []);
+  const recent = snapshot
+    ? recentlyUsedSkills(snapshot.skills, snapshot.invocations, RECENTLY_USED_COUNT)
+    : [];
 
   const allClear = broken.length === 0 && warnings.length === 0 && updates.length === 0;
 
@@ -651,6 +644,97 @@ export function HomeView({ snapshot, isLoading, onSelectSkill }: HomeViewProps) 
   const unusedStart = updStart + groupCount("upd", updates.length);
   const recStart = unusedStart + groupCount("unused", unused.length);
 
+  // The cursor's row keys and their open actions, in the same visible-and-expanded order the JSX
+  // below renders - a collapsed or filtered-out group's rows drop out of both.
+  const brokenRows =
+    isGroupVisible("broken") && isGroupExpanded("broken")
+      ? broken.slice(0, MAX_ROWS_PER_GROUP)
+      : [];
+  const warnRows =
+    isGroupVisible("warn") && isGroupExpanded("warn") ? warnings.slice(0, MAX_ROWS_PER_GROUP) : [];
+  const updRows =
+    isGroupVisible("upd") && isGroupExpanded("upd") ? updates.slice(0, MAX_ROWS_PER_GROUP) : [];
+  const unusedRows =
+    isGroupVisible("unused") && isGroupExpanded("unused")
+      ? unused.slice(0, MAX_ROWS_PER_GROUP)
+      : [];
+  const recRows = isGroupVisible("rec") && isGroupExpanded("rec") ? recent : [];
+
+  const visibleKeys = [
+    ...brokenRows.map((issue) => issueKey("broken", issue)),
+    ...warnRows.map((issue) => issueKey("warn", issue)),
+    ...updRows.map((skill) => skillKey("upd", skill)),
+    ...unusedRows.map((skill) => skillKey("unused", skill)),
+    ...recRows.map(({ skill }) => skillKey("rec", skill)),
+  ];
+  const openByKey = new Map<string, () => void>([
+    ...brokenRows.map((issue): [string, () => void] => [
+      issueKey("broken", issue),
+      () => onSelectSkill(issue.skill.name),
+    ]),
+    ...warnRows.map((issue): [string, () => void] => [
+      issueKey("warn", issue),
+      () => onSelectSkill(issue.skill.name),
+    ]),
+    ...updRows.map((skill): [string, () => void] => [
+      skillKey("upd", skill),
+      () => onSelectSkill(skill.name),
+    ]),
+    ...unusedRows.map((skill): [string, () => void] => [
+      skillKey("unused", skill),
+      () => onSelectSkill(skill.name),
+    ]),
+    ...recRows.map(({ skill }): [string, () => void] => [
+      skillKey("rec", skill),
+      () => onSelectSkill(skill.name),
+    ]),
+  ]);
+
+  // Destructured (rather than kept as one `cursor` object) so each JSX use below is a plain
+  // identifier, not a member access - oxlint's `react(refs)` check otherwise treats every property
+  // read off a custom hook's return value as a potential ref read during render.
+  // Home's keys are namespaced by group (e.g. `"rec:some-skill"`), so the just-closed skill's
+  // plain name is matched as one `:`-delimited segment, not the whole key.
+  const lastClosedSkillName = useAppStore((state) => state.lastClosedSkillName);
+  const initialCursorKey = lastClosedSkillName
+    ? visibleKeys.find((key) => key.split(":").includes(lastClosedSkillName))
+    : undefined;
+
+  const { rowRef, containerRef, tabIndexFor, onGridKeyDown, focusCursor, statusText } =
+    useRowCursor({
+      keys: visibleKeys,
+      initialKey: initialCursorKey,
+      onOpen: (key) => openByKey.get(key)?.(),
+      onCollapseGroup: (groupId) =>
+        setCollapsedGroups((prev) =>
+          // SAFETY: `groupId` only ever comes from this file's own `data-group` attributes, which
+          // are always one of the five `GroupId` values.
+          new Set(prev).add(groupId as GroupId),
+        ),
+      onExpandGroup: (groupId) =>
+        setCollapsedGroups((prev) => {
+          const next = new Set(prev);
+          // SAFETY: `groupId` only ever comes from this file's own `data-group` attributes, which
+          // are always one of the five `GroupId` values.
+          next.delete(groupId as GroupId);
+          return next;
+        }),
+    });
+  useRowCursorWindowEntry(true, focusCursor);
+
+  if (!snapshot) {
+    if (isLoading) {
+      return <HomeSkeleton />;
+    }
+    return (
+      <PageShell title="Home">
+        <p className="flex h-full items-center justify-center text-wrap-pretty text-text-tertiary">
+          No skill snapshot yet.
+        </p>
+      </PageShell>
+    );
+  }
+
   return (
     <PageShell title="Home">
       <HomeStatTiles
@@ -673,7 +757,13 @@ export function HomeView({ snapshot, isLoading, onSelectSkill }: HomeViewProps) 
         toggleFilter={toggleFilter}
       />
 
-      <div className="flex flex-col" role="grid" aria-label="Home">
+      <div
+        ref={containerRef}
+        className="flex flex-col"
+        role="grid"
+        aria-label="Home"
+        onKeyDown={onGridKeyDown}
+      >
         {filter && (
           <div className="flex h-9 items-center gap-2.5 px-3 text-small text-text-tertiary">
             Showing one group ·{" "}
@@ -698,19 +788,20 @@ export function HomeView({ snapshot, isLoading, onSelectSkill }: HomeViewProps) 
           >
             <div role="row">
               <div role="gridcell">
-                <GroupHead label="Broken" count={broken.length} />
+                <GroupHead label="Broken" count={broken.length} groupId="broken" />
               </div>
             </div>
             <CollapsiblePanel>
               <div className="flex flex-col">
                 {broken.slice(0, MAX_ROWS_PER_GROUP).map((issue, i) => {
-                  const { rowIndex, isFirst } = rowAt(brokenStart, i);
+                  const key = issueKey("broken", issue);
                   return (
                     <HomeRow
-                      key={`${issue.kind}-${issue.skill.name}-${issue.detail}`}
+                      key={key}
                       skill={issue.skill}
-                      rowIndex={rowIndex}
-                      isFirst={isFirst}
+                      rowIndex={rowAt(brokenStart, i)}
+                      rowRef={rowRef(key)}
+                      tabIndex={tabIndexFor(key)}
                       onOpen={() => onSelectSkill(issue.skill.name)}
                       detail={<span>{issue.detail}</span>}
                       action={
@@ -746,19 +837,20 @@ export function HomeView({ snapshot, isLoading, onSelectSkill }: HomeViewProps) 
           >
             <div role="row">
               <div role="gridcell">
-                <GroupHead label="Warnings" count={warnings.length} />
+                <GroupHead label="Warnings" count={warnings.length} groupId="warn" />
               </div>
             </div>
             <CollapsiblePanel>
               <div className="flex flex-col">
                 {warnings.slice(0, MAX_ROWS_PER_GROUP).map((issue: HealthIssue, i) => {
-                  const { rowIndex, isFirst } = rowAt(warnStart, i);
+                  const key = issueKey("warn", issue);
                   return (
                     <HomeRow
-                      key={`${issue.kind}-${issue.skill.name}-${issue.detail}`}
+                      key={key}
                       skill={issue.skill}
-                      rowIndex={rowIndex}
-                      isFirst={isFirst}
+                      rowIndex={rowAt(warnStart, i)}
+                      rowRef={rowRef(key)}
+                      tabIndex={tabIndexFor(key)}
                       onOpen={() => onSelectSkill(issue.skill.name)}
                       detail={<span>{issue.detail}</span>}
                       action={
@@ -799,6 +891,8 @@ export function HomeView({ snapshot, isLoading, onSelectSkill }: HomeViewProps) 
             onSelectSkill={onSelectSkill}
             onShowAll={() => setActiveView({ kind: "skills" })}
             start={updStart}
+            rowRef={rowRef}
+            tabIndexFor={tabIndexFor}
           />
         )}
 
@@ -811,7 +905,11 @@ export function HomeView({ snapshot, isLoading, onSelectSkill }: HomeViewProps) 
           >
             <div role="row">
               <div role="gridcell">
-                <GroupHead label="Not used in the last 30 days" count={unused.length} />
+                <GroupHead
+                  label="Not used in the last 30 days"
+                  count={unused.length}
+                  groupId="unused"
+                />
               </div>
             </div>
             <CollapsiblePanel>
@@ -822,13 +920,14 @@ export function HomeView({ snapshot, isLoading, onSelectSkill }: HomeViewProps) 
                     ? (projectDeployment.project_path.split("/").filter(Boolean).pop() ?? "Global")
                     : "Global";
                   const modelInvocable = skill.invocation !== "user-only";
-                  const { rowIndex, isFirst } = rowAt(unusedStart, i);
+                  const key = skillKey("unused", skill);
                   return (
                     <HomeRow
-                      key={skill.name}
+                      key={key}
                       skill={skill}
-                      rowIndex={rowIndex}
-                      isFirst={isFirst}
+                      rowIndex={rowAt(unusedStart, i)}
+                      rowRef={rowRef(key)}
+                      tabIndex={tabIndexFor(key)}
                       onOpen={() => onSelectSkill(skill.name)}
                       detail={
                         <span>
@@ -879,19 +978,20 @@ export function HomeView({ snapshot, isLoading, onSelectSkill }: HomeViewProps) 
           >
             <div role="row">
               <div role="gridcell">
-                <GroupHead label="Recently used" count={recent.length} />
+                <GroupHead label="Recently used" count={recent.length} groupId="rec" />
               </div>
             </div>
             <CollapsiblePanel>
               <div className="flex flex-col">
                 {recent.map(({ skill, lastUsed, projectLabel, usesIn30Days }, i) => {
-                  const { rowIndex, isFirst } = rowAt(recStart, i);
+                  const key = skillKey("rec", skill);
                   return (
                     <HomeRow
-                      key={skill.name}
+                      key={key}
                       skill={skill}
-                      rowIndex={rowIndex}
-                      isFirst={isFirst}
+                      rowIndex={rowAt(recStart, i)}
+                      rowRef={rowRef(key)}
+                      tabIndex={tabIndexFor(key)}
                       onOpen={() => onSelectSkill(skill.name)}
                       detail={
                         <span>
@@ -916,6 +1016,10 @@ export function HomeView({ snapshot, isLoading, onSelectSkill }: HomeViewProps) 
           </Collapsible>
         )}
       </div>
+      {/* Visually-hidden live region: announces the cursor's position, debounced to the last move. */}
+      <div role="status" aria-live="polite" className="sr-only">
+        {statusText}
+      </div>
 
       {linkedRootDialog && (
         <MaterializeRootDialog
@@ -939,6 +1043,8 @@ function UpdatesGroup({
   onSelectSkill,
   onShowAll,
   start,
+  rowRef,
+  tabIndexFor,
 }: {
   updates: InstalledSkill[];
   isExpanded: boolean;
@@ -947,6 +1053,8 @@ function UpdatesGroup({
   onShowAll: () => void;
   /** This group's offset into the page's continuous `aria-rowindex` sequence. */
   start: number;
+  rowRef: (key: string) => (el: HTMLDivElement | null) => void;
+  tabIndexFor: (key: string) => 0 | -1;
 }) {
   const [isUpdatingAll, setIsUpdatingAll] = useState(false);
   const addToast = useAppStore((state) => state.addToast);
@@ -990,6 +1098,7 @@ function UpdatesGroup({
           <GroupHead
             label="Updates"
             count={updates.length}
+            groupId="upd"
             extra={
               updates.length > 1 && (
                 <Button
@@ -1011,13 +1120,14 @@ function UpdatesGroup({
       <CollapsiblePanel>
         <div className="flex flex-col">
           {updates.slice(0, MAX_ROWS_PER_GROUP).map((skill, i) => {
-            const { rowIndex, isFirst } = rowAt(start, i);
+            const key = skillKey("upd", skill);
             return (
               <HomeRow
-                key={skill.name}
+                key={key}
                 skill={skill}
-                rowIndex={rowIndex}
-                isFirst={isFirst}
+                rowIndex={rowAt(start, i)}
+                rowRef={rowRef(key)}
+                tabIndex={tabIndexFor(key)}
                 onOpen={() => onSelectSkill(skill.name)}
                 detail={
                   <>
