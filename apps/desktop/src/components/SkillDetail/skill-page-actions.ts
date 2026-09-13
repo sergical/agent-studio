@@ -99,9 +99,13 @@ export interface SkillPageActions {
  * and `SkillDetailActions`, aside from the update button always targeting
  * global scope (the page header has no scope picker) and Remove gaining the
  * same `ask()` confirm the other destructive actions here already use.
+ *
+ * `skill` is nullable so `SkillPage` can call this once, unconditionally,
+ * even on the "no longer installed" render - every hook above still runs
+ * every time, only the returned actions collapse to no-ops.
  */
 export function useSkillPageActions(
-  skill: InstalledSkill,
+  skill: InstalledSkill | null,
   onRemoveComplete: () => void,
 ): SkillPageActions {
   const addToast = useAppStore((state) => state.addToast);
@@ -113,6 +117,21 @@ export function useSkillPageActions(
   const [isUnforking, setIsUnforking] = useState(false);
   const [isUpdating, setIsUpdating] = useState(false);
   const [isRemoving, setIsRemoving] = useState(false);
+
+  if (!skill) {
+    return {
+      path: undefined,
+      copied,
+      reveal: () => undefined,
+      openEditor: () => undefined,
+      copyPath: () => undefined,
+      primaryAction: null,
+      parkAction: { label: "Park", run: () => undefined, busy: false },
+      forkAction: null,
+      removeAction: null,
+      keepTrial: () => ({ label: "Keep", run: () => undefined, busy: false }),
+    };
+  }
 
   const path = skill.deployments[0]?.path ?? skill.skill_path;
   const globalRemovalTarget = skillGlobalRemovalTarget(skill);

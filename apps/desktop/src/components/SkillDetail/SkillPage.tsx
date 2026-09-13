@@ -34,9 +34,12 @@ import { SkillCompareDialog } from "./SkillCompareDialog";
 import { SkillFrontmatterRepairDialog } from "./SkillFrontmatterRepairDialog";
 import { SkillLocationsCard } from "./SkillLocationsCard";
 import { SkillMarkdownCard } from "./SkillMarkdownCard";
+import { SkillPageHeaderActions } from "./SkillPageHeaderActions";
+import { SkillPropertiesRail } from "./SkillPropertiesRail";
 import { SkillRepairCard } from "./SkillRepairCard";
 import { saveSkillEditorDraft } from "./skill-editor-save";
 import { hasMalformedYamlWarning } from "./skill-frontmatter-repair-policy";
+import { useSkillPageActions } from "./skill-page-actions";
 
 interface SkillPageProps {
   /** `null` when the skill named by the route was removed since the page opened. */
@@ -209,6 +212,7 @@ export function SkillPage({
   const setIsAssistantOpen = useAppStore((state) => state.setIsAssistantOpen);
   const { isRunsOpen, openAssistant, closeAssistant, openRuns, closeRuns } =
     useSkillAssistantNavigation(skill?.name, setIsAssistantOpen);
+  const pageActions = useSkillPageActions(skill, onRemoveComplete);
   const [editorOpenedContent, setEditorOpenedContent] = useState<string | null>(null);
   const isEditing = editorOpenedContent !== null;
   const [isEditorDirty, setIsEditorDirty] = useState(false);
@@ -382,56 +386,69 @@ export function SkillPage({
   }
 
   return (
-    <PageShell title={skill.name} parent={{ label: backLabel(from), onClick: onBack }}>
-      <InstalledSkillHeader
-        skill={skill}
-        deployment={deployment ?? undefined}
-        onRemoveComplete={onRemoveComplete}
-        isAssistantOpen={isAssistantOpen}
-        onOpenAssistant={openAssistant}
-        assistantTriggerRef={assistantTriggerRef}
-        frontmatterRepair={selectedFrontmatterRepair}
-        onFixYaml={() => setIsFrontmatterRepairOpen(true)}
-        onEditManually={startEditing}
-      />
-
-      <div className="flex min-w-0 flex-col gap-6">
-        <SkillLocationsCard skill={skill} onCompareCopies={() => setIsCompareOpen(true)} />
-
-        {deployment && isDeploymentBroken ? (
-          <SkillRepairCard skill={skill} deployment={deployment} />
-        ) : (
-          <SkillMarkdownCard
+    <PageShell
+      title={skill.name}
+      parent={{ label: backLabel(from), onClick: onBack }}
+      actions={
+        <SkillPageHeaderActions
+          actions={pageActions}
+          assistantEnabled={isFeatureEnabled("skill-assistant")}
+          isAssistantOpen={isAssistantOpen}
+          onOpenAssistant={openAssistant}
+          assistantTriggerRef={assistantTriggerRef}
+        />
+      }
+    >
+      <div className="grid grid-cols-1 gap-8 min-[900px]:grid-cols-[minmax(0,1fr)_260px]">
+        <div className="flex min-w-0 flex-col gap-6">
+          <InstalledSkillHeader
             skill={skill}
-            isPluginManaged={isPluginManaged}
-            deploymentUnresolved={deploymentUnresolved}
-            ownDeploymentOptions={editableDeployments(skill)}
             deployment={deployment ?? undefined}
-            onSelectDeployment={(path) => openSkill(skill.name, path)}
-            rawContent={rawContent}
-            isLoadingContent={isLoadingContent}
-            loadError={loadError}
-            onRetry={handleRetryLoad}
-            editState={
-              isEditing
-                ? {
-                    kind: "editing",
-                    openedContent: editorOpenedContent,
-                    isDirty: isEditorDirty,
-                    isSaving,
-                  }
-                : { kind: "viewing" }
-            }
-            onStartEdit={startEditing}
-            saveLabel={needsForkToSave ? "Fork and save" : "Save"}
-            onSave={handleSave}
-            onCancelEdit={() => {
-              setEditorOpenedContent(null);
-              setIsEditorDirty(false);
-            }}
-            onDirtyChange={setIsEditorDirty}
+            actions={pageActions}
+            frontmatterRepair={selectedFrontmatterRepair}
+            onFixYaml={() => setIsFrontmatterRepairOpen(true)}
+            onEditManually={startEditing}
           />
-        )}
+
+          <SkillLocationsCard skill={skill} onCompareCopies={() => setIsCompareOpen(true)} />
+
+          {deployment && isDeploymentBroken ? (
+            <SkillRepairCard skill={skill} deployment={deployment} />
+          ) : (
+            <SkillMarkdownCard
+              skill={skill}
+              isPluginManaged={isPluginManaged}
+              deploymentUnresolved={deploymentUnresolved}
+              ownDeploymentOptions={editableDeployments(skill)}
+              deployment={deployment ?? undefined}
+              onSelectDeployment={(path) => openSkill(skill.name, path)}
+              rawContent={rawContent}
+              isLoadingContent={isLoadingContent}
+              loadError={loadError}
+              onRetry={handleRetryLoad}
+              editState={
+                isEditing
+                  ? {
+                      kind: "editing",
+                      openedContent: editorOpenedContent,
+                      isDirty: isEditorDirty,
+                      isSaving,
+                    }
+                  : { kind: "viewing" }
+              }
+              onStartEdit={startEditing}
+              saveLabel={needsForkToSave ? "Fork and save" : "Save"}
+              onSave={handleSave}
+              onCancelEdit={() => {
+                setEditorOpenedContent(null);
+                setIsEditorDirty(false);
+              }}
+              onDirtyChange={setIsEditorDirty}
+            />
+          )}
+        </div>
+
+        <SkillPropertiesRail skill={skill} updateAction={pageActions.primaryAction} />
       </div>
 
       <SkillAssistantDrawer

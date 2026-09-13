@@ -13,9 +13,16 @@ import {
   parseSkillSource,
   toWireParsedSkillSource,
 } from "@skill-studio/lib";
-import type { AgentId, Deployment, InstalledSkill, LifecycleTarget } from "@skill-studio/lib";
+import type {
+  AgentId,
+  Deployment,
+  InstalledSkill,
+  InvocationPolicy,
+  LifecycleTarget,
+} from "@skill-studio/lib";
 import {
   addSkill,
+  forkSkill,
   openSkillPath,
   parkSkill,
   removeSkill,
@@ -28,13 +35,14 @@ import {
   updateSkill,
 } from "../../lib/skill-api";
 import {
+  lifecycleTargetForDeployment,
   lifecycleTargetForPark,
   lifecycleTargetForSkill,
   updateSkillOwners,
 } from "../../lib/skill-lifecycle-target";
 import { useAppStore } from "../../store/appStore";
 import { canToggleHarness } from "./skill-location-helpers";
-import type { LocationAction } from "./skill-location-status";
+import type { InvocationFile, LocationAction } from "./skill-location-status";
 
 interface UseLocationActionsResult {
   run: (action: LocationAction) => void;
@@ -310,3 +318,22 @@ export function useLocationActions(
 // re-exported here so `SkillLocationsCard` has one import site for every
 // Locations-card write call.
 export { setSkillInvocation };
+
+/**
+ * Sets `file`'s invocation policy, forking first when needed - the same rule
+ * the SKILL.md editor uses: only the global Universal folder can need a fork
+ * before editing (`fileEditability` keeps managed Project folders and copies
+ * out of this branch). Shared by `SkillLocationsCard`'s segmented control and
+ * the properties rail's Invocation select.
+ */
+export async function setInvocationForFile(
+  skill: InstalledSkill,
+  file: InvocationFile,
+  policy: InvocationPolicy,
+): Promise<void> {
+  const isManaged = skill.source_kind === "dotagents" || skill.source_kind === "skills-sh";
+  if (isManaged && file.kind === "shared") {
+    await forkSkill(lifecycleTargetForDeployment(file.deployment));
+  }
+  await setSkillInvocation(skill.name, `${file.path}/SKILL.md`, policy);
+}

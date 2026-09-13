@@ -10,8 +10,6 @@
 
 import { useState } from "react";
 import { Button, ToggleGroup, ToggleGroupItem } from "@skill-studio/ui";
-import { forkSkill } from "../../lib/skill-api";
-import { lifecycleTargetForDeployment } from "../../lib/skill-lifecycle-target";
 import { singleSelectToggleValue } from "../../lib/single-select-toggle-group";
 import { useAppStore } from "../../store/appStore";
 import { HarnessIcon } from "../ui/HarnessIcon";
@@ -22,12 +20,14 @@ import { TooltipControl } from "../ui/TooltipControl";
 import { RemoveDeploymentsDialog } from "./RemoveDeploymentsDialog";
 import { SkillLocationScope } from "./SkillLocationScope";
 import { UninstallPluginDialog } from "./UninstallPluginDialog";
-import { useLocationActions, setSkillInvocation } from "./skill-location-actions";
+import { useLocationActions, setInvocationForFile } from "./skill-location-actions";
 import {
   buildInvocationFiles,
   buildScopeGroups,
+  INVOCATION_POLICY_OPTIONS,
   invocationFooterNote,
   promoteToGlobal,
+  scopeGroupsHaveDrift,
   titleLink,
   toTooltipLines,
 } from "./skill-location-status";
@@ -39,12 +39,6 @@ interface SkillLocationsCardProps {
   /** Opens `SkillCompareDialog` - shown as a "Compare copies" title link only when a copy has drifted. */
   onCompareCopies?: () => void;
 }
-
-const INVOCATION_POLICY_OPTIONS: { value: InvocationPolicy; label: string }[] = [
-  { value: "both", label: "Both" },
-  { value: "user-only", label: "User only" },
-  { value: "model-only", label: "Model only" },
-];
 
 interface LocationActionForTitle {
   kind: "unpark" | "compare" | "install-again" | "update";
@@ -71,9 +65,7 @@ export function SkillLocationsCard({ skill, onCompareCopies }: SkillLocationsCar
 
   const groups = buildScopeGroups(skill);
   const files = buildInvocationFiles(groups, skill);
-  const hasDrift = groups.some((g) =>
-    g.rows.some((r) => r.conditions.some((c) => c.status === "Differs")),
-  );
+  const hasDrift = scopeGroupsHaveDrift(groups);
   const link = titleLink(skill, hasDrift);
   const promote = link ? null : promoteToGlobal(groups);
   const showEyebrows = groups.some((g) => !g.isGlobal);
@@ -81,16 +73,7 @@ export function SkillLocationsCard({ skill, onCompareCopies }: SkillLocationsCar
   const handleSetInvocation = (file: InvocationFile, policy: InvocationPolicy) => {
     if (!file.editable || savingFile) return;
     setSavingFile(file.path);
-    // Only the global Universal folder can need a fork before editing.
-    // `fileEditability` prevents managed Project folders and copies from
-    // reaching this branch.
-    const isManaged = skill.source_kind === "dotagents" || skill.source_kind === "skills-sh";
-    const forkIfNeeded =
-      isManaged && file.kind === "shared"
-        ? forkSkill(lifecycleTargetForDeployment(file.deployment))
-        : Promise.resolve();
-    forkIfNeeded
-      .then(() => setSkillInvocation(skill.name, `${file.path}/SKILL.md`, policy))
+    setInvocationForFile(skill, file, policy)
       .catch((err) => {
         addToast({
           type: "error",
@@ -103,7 +86,11 @@ export function SkillLocationsCard({ skill, onCompareCopies }: SkillLocationsCar
 
   return (
     <div className="flex flex-col gap-1 rounded-lg border border-border-subtle p-4">
-      <div className="flex items-baseline justify-between gap-3 text-body font-semibold text-text-primary">
+      <div
+        id="skill-locations-heading"
+        tabIndex={-1}
+        className="flex items-baseline justify-between gap-3 text-body font-semibold text-text-primary outline-none"
+      >
         Locations
         {link && (
           <Button

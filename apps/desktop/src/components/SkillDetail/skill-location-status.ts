@@ -720,6 +720,18 @@ export function skillRollup(skill: InstalledSkill, groups: ScopeGroup[]): Rollup
   return rollup(entries, allOff);
 }
 
+/** The three invocation policies, in the order every picker (the Locations card's segmented control, the properties rail's select) shows them. */
+export const INVOCATION_POLICY_OPTIONS: { value: InvocationPolicy; label: string }[] = [
+  { value: "both", label: "Both" },
+  { value: "user-only", label: "User only" },
+  { value: "model-only", label: "Model only" },
+];
+
+/** True when any row across `groups` has drifted from its scope's canonical copy - `SkillLocationsCard`'s title link and the properties rail's Location warning glyph both key off this. */
+export function scopeGroupsHaveDrift(groups: ScopeGroup[]): boolean {
+  return groups.some((g) => g.rows.some((r) => r.conditions.some((c) => c.status === "Differs")));
+}
+
 /** The card title's one right-aligned action link, precedence per status-spec.md §2: unpark > compare > install-again > enable-everywhere > update. */
 export function titleLink(
   skill: InstalledSkill,
