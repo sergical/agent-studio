@@ -81,7 +81,9 @@ async function boot(): Promise<void> {
       import("./dev/harness/skill-fixture"),
       import("./dev/harness/mock-tauri"),
     ]);
-    window.__harness = installMockTauri(buildHarnessSnapshot());
+    // `?n=378` pads the estate to a realistic size for performance runs.
+    const skillCount = Number(new URLSearchParams(window.location.search).get("n") ?? 0);
+    window.__harness = installMockTauri(buildHarnessSnapshot(skillCount));
     // eslint-disable-next-line no-console
     console.info("[harness] mock Tauri IPC installed");
   }

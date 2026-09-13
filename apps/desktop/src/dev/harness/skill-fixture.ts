@@ -1111,12 +1111,25 @@ const allSkills: InstalledSkill[] = [
   ...fillerSkills,
 ];
 
+/** Repeats the filler skills under numbered names until the estate holds `count` skills, so
+ * performance runs can use a realistic size (the real estate measured 378). */
+function padSkills(count: number): InstalledSkill[] {
+  const padded = [...allSkills];
+  for (let index = 0; padded.length < count; index++) {
+    const base = fillerSkills[index % fillerSkills.length];
+    const name = `${base.name}-${index + 2}`;
+    padded.push({ ...base, name, deployments: [globalUniversal(name, "v1")] });
+  }
+  return padded;
+}
+
 /** Builds a fresh copy of the harness's skill snapshot - a new object each
- * call, so mutating it in `mock-tauri.ts` never leaks back into this fixture. */
-export function buildHarnessSnapshot(): SkillSnapshot {
+ * call, so mutating it in `mock-tauri.ts` never leaks back into this fixture.
+ * `skillCount` pads the estate with copies of the filler skills. */
+export function buildHarnessSnapshot(skillCount = 0): SkillSnapshot {
   return {
     revision: 1,
-    skills: allSkills,
+    skills: padSkills(skillCount),
     projects: [HARNESS_PROJECT, ACME_PROJECT, PERSONAL_PROJECT, BACKEND_PROJECT, MOBILE_PROJECT],
     invocations: invocationProfiles.map((profile) => {
       const byDay = invocationDaysBySkill.get(profile.skill) ?? {};
