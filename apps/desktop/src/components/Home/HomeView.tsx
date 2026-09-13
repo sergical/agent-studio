@@ -45,6 +45,7 @@ import { ROW_CLASS, RowGlyph, SkillNameCell } from "../SkillList/SkillRowCells";
 import { SkillLocationCell } from "../SkillList/SkillLocationCell";
 import { InfoPopover } from "../ui/InfoPopover";
 import { MaterializeRootDialog } from "../ui/MaterializeRootDialog";
+import { RichTooltipScope } from "../ui/RichTooltip";
 import { TooltipControl } from "../ui/TooltipControl";
 
 /** Home's row's glyph hit box - the same size Skills uses, so the two lists line up. */
@@ -757,265 +758,268 @@ export function HomeView({ snapshot, isLoading, onSelectSkill }: HomeViewProps) 
         toggleFilter={toggleFilter}
       />
 
-      <div
-        ref={containerRef}
-        className="flex flex-col"
-        role="grid"
-        aria-label="Home"
-        onKeyDown={onGridKeyDown}
-      >
-        {filter && (
-          <div className="flex h-9 items-center gap-2.5 px-3 text-small text-text-tertiary">
-            Showing one group ·{" "}
-            <Button variant="link" className={LINK_CLASS} onClick={() => setFilter(null)}>
-              Show everything
-            </Button>
-          </div>
-        )}
-
-        {allClear && !filter && (
-          <p className="flex h-full items-center justify-center text-wrap-pretty text-text-tertiary">
-            All clear. Nothing needs attention.
-          </p>
-        )}
-
-        {broken.length > 0 && isGroupVisible("broken") && (
-          <Collapsible
-            data-group="broken"
-            role="rowgroup"
-            open={isGroupExpanded("broken")}
-            onOpenChange={() => toggleGroup("broken")}
-          >
-            <div role="row">
-              <div role="gridcell">
-                <GroupHead label="Broken" count={broken.length} groupId="broken" />
-              </div>
+      <RichTooltipScope>
+        <div
+          ref={containerRef}
+          className="flex flex-col"
+          role="grid"
+          aria-label="Home"
+          onKeyDown={onGridKeyDown}
+        >
+          {filter && (
+            <div className="flex h-9 items-center gap-2.5 px-3 text-small text-text-tertiary">
+              Showing one group ·{" "}
+              <Button variant="link" className={LINK_CLASS} onClick={() => setFilter(null)}>
+                Show everything
+              </Button>
             </div>
-            <CollapsiblePanel>
-              <div className="flex flex-col">
-                {broken.slice(0, MAX_ROWS_PER_GROUP).map((issue, i) => {
-                  const key = issueKey("broken", issue);
-                  return (
-                    <HomeRow
-                      key={key}
-                      skill={issue.skill}
-                      rowIndex={rowAt(brokenStart, i)}
-                      rowRef={rowRef(key)}
-                      tabIndex={tabIndexFor(key)}
-                      onOpen={() => onSelectSkill(issue.skill.name)}
-                      detail={<span>{issue.detail}</span>}
-                      action={
-                        <Button
-                          variant="ghost"
-                          className={ROW_ACTION_CLASS}
-                          onClick={() => onSelectSkill(issue.skill.name)}
-                        >
-                          {issueActionLabel(issue.kind)}
-                        </Button>
-                      }
-                    />
-                  );
-                })}
-                {broken.length > MAX_ROWS_PER_GROUP && (
-                  <ShowAllLink
-                    count={broken.length}
-                    label="Show all"
-                    onClick={() => goToSkills({ issue: "any" })}
-                  />
-                )}
-              </div>
-            </CollapsiblePanel>
-          </Collapsible>
-        )}
+          )}
 
-        {warnings.length > 0 && isGroupVisible("warn") && (
-          <Collapsible
-            data-group="warn"
-            role="rowgroup"
-            open={isGroupExpanded("warn")}
-            onOpenChange={() => toggleGroup("warn")}
-          >
-            <div role="row">
-              <div role="gridcell">
-                <GroupHead label="Warnings" count={warnings.length} groupId="warn" />
-              </div>
-            </div>
-            <CollapsiblePanel>
-              <div className="flex flex-col">
-                {warnings.slice(0, MAX_ROWS_PER_GROUP).map((issue: HealthIssue, i) => {
-                  const key = issueKey("warn", issue);
-                  return (
-                    <HomeRow
-                      key={key}
-                      skill={issue.skill}
-                      rowIndex={rowAt(warnStart, i)}
-                      rowRef={rowRef(key)}
-                      tabIndex={tabIndexFor(key)}
-                      onOpen={() => onSelectSkill(issue.skill.name)}
-                      detail={<span>{issue.detail}</span>}
-                      action={
-                        <WarningRowAction
-                          issue={issue}
-                          onCompare={() => openSkill(issue.skill.name, undefined, "compare")}
-                          onConvertLinkedRoot={(harness, harnessLabel, root) =>
-                            setLinkedRootDialog({
-                              target: lifecycleTargetForHarnessRoot(issue.skill, harness, root),
-                              harness,
-                              harnessLabel,
-                              root,
-                            })
-                          }
-                          onOpen={() => onSelectSkill(issue.skill.name)}
-                        />
-                      }
-                    />
-                  );
-                })}
-                {warnings.length > MAX_ROWS_PER_GROUP && (
-                  <ShowAllLink
-                    count={warnings.length}
-                    label="Show all"
-                    onClick={() => goToSkills({ issue: "any" })}
-                  />
-                )}
-              </div>
-            </CollapsiblePanel>
-          </Collapsible>
-        )}
+          {allClear && !filter && (
+            <p className="flex h-full items-center justify-center text-wrap-pretty text-text-tertiary">
+              All clear. Nothing needs attention.
+            </p>
+          )}
 
-        {updates.length > 0 && isGroupVisible("upd") && (
-          <UpdatesGroup
-            updates={updates}
-            isExpanded={isGroupExpanded("upd")}
-            onToggle={() => toggleGroup("upd")}
-            onSelectSkill={onSelectSkill}
-            onShowAll={() => setActiveView({ kind: "skills" })}
-            start={updStart}
-            rowRef={rowRef}
-            tabIndexFor={tabIndexFor}
-          />
-        )}
-
-        {unused.length > 0 && isGroupVisible("unused") && (
-          <Collapsible
-            data-group="unused"
-            role="rowgroup"
-            open={isGroupExpanded("unused")}
-            onOpenChange={() => toggleGroup("unused")}
-          >
-            <div role="row">
-              <div role="gridcell">
-                <GroupHead
-                  label="Not used in the last 30 days"
-                  count={unused.length}
-                  groupId="unused"
-                />
+          {broken.length > 0 && isGroupVisible("broken") && (
+            <Collapsible
+              data-group="broken"
+              role="rowgroup"
+              open={isGroupExpanded("broken")}
+              onOpenChange={() => toggleGroup("broken")}
+            >
+              <div role="row">
+                <div role="gridcell">
+                  <GroupHead label="Broken" count={broken.length} groupId="broken" />
+                </div>
               </div>
-            </div>
-            <CollapsiblePanel>
-              <div className="flex flex-col">
-                {unused.slice(0, MAX_ROWS_PER_GROUP).map((skill, i) => {
-                  const projectDeployment = skill.deployments.find((d) => d.project_path);
-                  const scopeLabel = projectDeployment?.project_path
-                    ? (projectDeployment.project_path.split("/").filter(Boolean).pop() ?? "Global")
-                    : "Global";
-                  const modelInvocable = skill.invocation !== "user-only";
-                  const key = skillKey("unused", skill);
-                  return (
-                    <HomeRow
-                      key={key}
-                      skill={skill}
-                      rowIndex={rowAt(unusedStart, i)}
-                      rowRef={rowRef(key)}
-                      tabIndex={tabIndexFor(key)}
-                      onOpen={() => onSelectSkill(skill.name)}
-                      detail={
-                        <span>
-                          {scopeLabel} · installed {formatRelativeTime(skill.installed_at)} ·{" "}
-                          {modelInvocable ? (
-                            "description in every prompt"
-                          ) : (
-                            <span className="text-text-quaternary">
-                              user-only, not in the prompt
-                            </span>
-                          )}
-                        </span>
-                      }
-                      action={
-                        modelInvocable ? (
-                          <ParkButton skill={skill} />
-                        ) : (
+              <CollapsiblePanel>
+                <div className="flex flex-col">
+                  {broken.slice(0, MAX_ROWS_PER_GROUP).map((issue, i) => {
+                    const key = issueKey("broken", issue);
+                    return (
+                      <HomeRow
+                        key={key}
+                        skill={issue.skill}
+                        rowIndex={rowAt(brokenStart, i)}
+                        rowRef={rowRef(key)}
+                        tabIndex={tabIndexFor(key)}
+                        onOpen={() => onSelectSkill(issue.skill.name)}
+                        detail={<span>{issue.detail}</span>}
+                        action={
                           <Button
                             variant="ghost"
                             className={ROW_ACTION_CLASS}
-                            onClick={() => onSelectSkill(skill.name)}
+                            onClick={() => onSelectSkill(issue.skill.name)}
                           >
-                            Open
+                            {issueActionLabel(issue.kind)}
                           </Button>
-                        )
-                      }
+                        }
+                      />
+                    );
+                  })}
+                  {broken.length > MAX_ROWS_PER_GROUP && (
+                    <ShowAllLink
+                      count={broken.length}
+                      label="Show all"
+                      onClick={() => goToSkills({ issue: "any" })}
                     />
-                  );
-                })}
-                {unused.length > MAX_ROWS_PER_GROUP && (
-                  <ShowAllLink
-                    count={unused.length}
-                    label="Show all"
-                    onClick={() => goToSkills({ usage: "unused-30d" })}
-                  />
-                )}
-              </div>
-            </CollapsiblePanel>
-          </Collapsible>
-        )}
+                  )}
+                </div>
+              </CollapsiblePanel>
+            </Collapsible>
+          )}
 
-        {recent.length > 0 && isGroupVisible("rec") && (
-          <Collapsible
-            data-group="rec"
-            role="rowgroup"
-            open={isGroupExpanded("rec")}
-            onOpenChange={() => toggleGroup("rec")}
-          >
-            <div role="row">
-              <div role="gridcell">
-                <GroupHead label="Recently used" count={recent.length} groupId="rec" />
+          {warnings.length > 0 && isGroupVisible("warn") && (
+            <Collapsible
+              data-group="warn"
+              role="rowgroup"
+              open={isGroupExpanded("warn")}
+              onOpenChange={() => toggleGroup("warn")}
+            >
+              <div role="row">
+                <div role="gridcell">
+                  <GroupHead label="Warnings" count={warnings.length} groupId="warn" />
+                </div>
               </div>
-            </div>
-            <CollapsiblePanel>
-              <div className="flex flex-col">
-                {recent.map(({ skill, lastUsed, projectLabel, usesIn30Days }, i) => {
-                  const key = skillKey("rec", skill);
-                  return (
-                    <HomeRow
-                      key={key}
-                      skill={skill}
-                      rowIndex={rowAt(recStart, i)}
-                      rowRef={rowRef(key)}
-                      tabIndex={tabIndexFor(key)}
-                      onOpen={() => onSelectSkill(skill.name)}
-                      detail={
-                        <span>
-                          {projectLabel ?? "Global"} · {formatRelativeTime(lastUsed)}
-                        </span>
-                      }
-                      action={
-                        <span className={`${ROW_ACTION_CLASS} tabular-nums`}>
-                          {usesIn30Days} uses
-                        </span>
-                      }
+              <CollapsiblePanel>
+                <div className="flex flex-col">
+                  {warnings.slice(0, MAX_ROWS_PER_GROUP).map((issue: HealthIssue, i) => {
+                    const key = issueKey("warn", issue);
+                    return (
+                      <HomeRow
+                        key={key}
+                        skill={issue.skill}
+                        rowIndex={rowAt(warnStart, i)}
+                        rowRef={rowRef(key)}
+                        tabIndex={tabIndexFor(key)}
+                        onOpen={() => onSelectSkill(issue.skill.name)}
+                        detail={<span>{issue.detail}</span>}
+                        action={
+                          <WarningRowAction
+                            issue={issue}
+                            onCompare={() => openSkill(issue.skill.name, undefined, "compare")}
+                            onConvertLinkedRoot={(harness, harnessLabel, root) =>
+                              setLinkedRootDialog({
+                                target: lifecycleTargetForHarnessRoot(issue.skill, harness, root),
+                                harness,
+                                harnessLabel,
+                                root,
+                              })
+                            }
+                            onOpen={() => onSelectSkill(issue.skill.name)}
+                          />
+                        }
+                      />
+                    );
+                  })}
+                  {warnings.length > MAX_ROWS_PER_GROUP && (
+                    <ShowAllLink
+                      count={warnings.length}
+                      label="Show all"
+                      onClick={() => goToSkills({ issue: "any" })}
                     />
-                  );
-                })}
-                <ShowAllLink
-                  count={0}
-                  label="See all activity"
-                  onClick={() => setActiveView({ kind: "activity" })}
-                />
+                  )}
+                </div>
+              </CollapsiblePanel>
+            </Collapsible>
+          )}
+
+          {updates.length > 0 && isGroupVisible("upd") && (
+            <UpdatesGroup
+              updates={updates}
+              isExpanded={isGroupExpanded("upd")}
+              onToggle={() => toggleGroup("upd")}
+              onSelectSkill={onSelectSkill}
+              onShowAll={() => setActiveView({ kind: "skills" })}
+              start={updStart}
+              rowRef={rowRef}
+              tabIndexFor={tabIndexFor}
+            />
+          )}
+
+          {unused.length > 0 && isGroupVisible("unused") && (
+            <Collapsible
+              data-group="unused"
+              role="rowgroup"
+              open={isGroupExpanded("unused")}
+              onOpenChange={() => toggleGroup("unused")}
+            >
+              <div role="row">
+                <div role="gridcell">
+                  <GroupHead
+                    label="Not used in the last 30 days"
+                    count={unused.length}
+                    groupId="unused"
+                  />
+                </div>
               </div>
-            </CollapsiblePanel>
-          </Collapsible>
-        )}
-      </div>
+              <CollapsiblePanel>
+                <div className="flex flex-col">
+                  {unused.slice(0, MAX_ROWS_PER_GROUP).map((skill, i) => {
+                    const projectDeployment = skill.deployments.find((d) => d.project_path);
+                    const scopeLabel = projectDeployment?.project_path
+                      ? (projectDeployment.project_path.split("/").filter(Boolean).pop() ??
+                        "Global")
+                      : "Global";
+                    const modelInvocable = skill.invocation !== "user-only";
+                    const key = skillKey("unused", skill);
+                    return (
+                      <HomeRow
+                        key={key}
+                        skill={skill}
+                        rowIndex={rowAt(unusedStart, i)}
+                        rowRef={rowRef(key)}
+                        tabIndex={tabIndexFor(key)}
+                        onOpen={() => onSelectSkill(skill.name)}
+                        detail={
+                          <span>
+                            {scopeLabel} · installed {formatRelativeTime(skill.installed_at)} ·{" "}
+                            {modelInvocable ? (
+                              "description in every prompt"
+                            ) : (
+                              <span className="text-text-quaternary">
+                                user-only, not in the prompt
+                              </span>
+                            )}
+                          </span>
+                        }
+                        action={
+                          modelInvocable ? (
+                            <ParkButton skill={skill} />
+                          ) : (
+                            <Button
+                              variant="ghost"
+                              className={ROW_ACTION_CLASS}
+                              onClick={() => onSelectSkill(skill.name)}
+                            >
+                              Open
+                            </Button>
+                          )
+                        }
+                      />
+                    );
+                  })}
+                  {unused.length > MAX_ROWS_PER_GROUP && (
+                    <ShowAllLink
+                      count={unused.length}
+                      label="Show all"
+                      onClick={() => goToSkills({ usage: "unused-30d" })}
+                    />
+                  )}
+                </div>
+              </CollapsiblePanel>
+            </Collapsible>
+          )}
+
+          {recent.length > 0 && isGroupVisible("rec") && (
+            <Collapsible
+              data-group="rec"
+              role="rowgroup"
+              open={isGroupExpanded("rec")}
+              onOpenChange={() => toggleGroup("rec")}
+            >
+              <div role="row">
+                <div role="gridcell">
+                  <GroupHead label="Recently used" count={recent.length} groupId="rec" />
+                </div>
+              </div>
+              <CollapsiblePanel>
+                <div className="flex flex-col">
+                  {recent.map(({ skill, lastUsed, projectLabel, usesIn30Days }, i) => {
+                    const key = skillKey("rec", skill);
+                    return (
+                      <HomeRow
+                        key={key}
+                        skill={skill}
+                        rowIndex={rowAt(recStart, i)}
+                        rowRef={rowRef(key)}
+                        tabIndex={tabIndexFor(key)}
+                        onOpen={() => onSelectSkill(skill.name)}
+                        detail={
+                          <span>
+                            {projectLabel ?? "Global"} · {formatRelativeTime(lastUsed)}
+                          </span>
+                        }
+                        action={
+                          <span className={`${ROW_ACTION_CLASS} tabular-nums`}>
+                            {usesIn30Days} uses
+                          </span>
+                        }
+                      />
+                    );
+                  })}
+                  <ShowAllLink
+                    count={0}
+                    label="See all activity"
+                    onClick={() => setActiveView({ kind: "activity" })}
+                  />
+                </div>
+              </CollapsiblePanel>
+            </Collapsible>
+          )}
+        </div>
+      </RichTooltipScope>
       {/* Visually-hidden live region: announces the cursor's position, debounced to the last move. */}
       <div role="status" aria-live="polite" className="sr-only">
         {statusText}

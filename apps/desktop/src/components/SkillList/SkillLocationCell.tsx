@@ -2,32 +2,38 @@
 // SkillLocationCell - the shared Location group: where on disk the skill
 // sits (global home folders, added project roots), independent of which
 // harnesses reach it. The project chip's tooltip is exception-only: it only
-// appears once the truncated name has actually clipped.
+// appears once the truncated name has actually clipped, checked lazily on
+// hover/focus rather than measured for every row up front.
 // ============================================================================
 
-import { useLayoutEffect, useRef, useState } from "react";
+import { useRef, useState } from "react";
 import { FolderGit2, Globe } from "lucide-react";
-import { RichTooltip } from "../ui/RichTooltip";
+import { TooltipTrigger } from "@skill-studio/ui";
+import { RichTooltip, useRichTooltipHandle } from "../ui/RichTooltip";
 import type { DiskLocation } from "./skill-row-state";
 
 function LocationItem({ location }: { location: DiskLocation }) {
   const nameRef = useRef<HTMLSpanElement>(null);
   const [truncated, setTruncated] = useState(false);
   const isProject = location.kind === "project";
-  // Measured after layout (and again on resize) so the tooltip exists before the first hover.
-  useLayoutEffect(() => {
-    if (!isProject) return;
-    const measure = () => {
-      const el = nameRef.current;
-      if (el) setTruncated(el.scrollWidth > el.clientWidth);
-    };
-    measure();
-    window.addEventListener("resize", measure);
-    return () => window.removeEventListener("resize", measure);
-  }, [isProject]);
+  const handle = useRichTooltipHandle();
+
+  /** Measured when a tooltip is about to show, not at mount - most project names never clip, so
+   * most rows never pay for a measurement at all. */
+  function isClipped() {
+    const el = nameRef.current;
+    return el !== null && el.scrollWidth > el.clientWidth;
+  }
+  function checkTruncated() {
+    setTruncated(isClipped());
+  }
+
   const chip = (
     <span
       className={`inline-flex items-center gap-1 ${isProject ? "min-w-0 max-w-[120px]" : "shrink-0"}`}
+      // Outside a shared scope the chip only becomes a tooltip trigger once hovered and clipped.
+      onPointerEnter={isProject && !handle ? checkTruncated : undefined}
+      onFocus={isProject && !handle ? checkTruncated : undefined}
     >
       {isProject ? (
         <FolderGit2 size={13} className="shrink-0 text-text-tertiary" aria-hidden />
@@ -41,10 +47,21 @@ function LocationItem({ location }: { location: DiskLocation }) {
   );
   // The Global chip is already the word "Global" - there's no fact left for a tooltip to add. A
   // project chip only gets one once its name has actually clipped.
-  if (!isProject || !truncated) return chip;
-  return (
-    <RichTooltip content={<span className="text-small">{location.name}</span>}>{chip}</RichTooltip>
-  );
+  if (!isProject) return chip;
+  const content = <span className="text-small">{location.name}</span>;
+  // In a scope the chip is always a trigger - swapping elements on hover would miss the hover that
+  // caused it - and the shared tooltip shows nothing when the name fits.
+  if (handle) {
+    return (
+      <TooltipTrigger
+        handle={handle}
+        payload={() => (isClipped() ? content : null)}
+        render={chip}
+      />
+    );
+  }
+  if (!truncated) return chip;
+  return <RichTooltip content={content}>{chip}</RichTooltip>;
 }
 
 /** The "+N" chip's tooltip: one line per hidden location, its own kind icon and name. */

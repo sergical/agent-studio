@@ -13,6 +13,7 @@ import { lifecycleTargetForPark } from "../../lib/skill-lifecycle-target";
 import type { SortMode } from "../../lib/skill-list-sort";
 import { useRowCursor, useRowCursorWindowEntry } from "../../hooks/useRowCursor";
 import { useAppStore } from "../../store/appStore";
+import { RichTooltipScope } from "../ui/RichTooltip";
 import { PackNamePrompt } from "../Packs/PackNamePrompt";
 import { GroupHead } from "./GroupHead";
 import { HarnessStack } from "./HarnessStack";
@@ -27,6 +28,7 @@ import {
   TrailingMenuCell,
 } from "./SkillRowCells";
 import { SkillLocationCell } from "./SkillLocationCell";
+import { SkillRowMenuScope } from "./SkillRowMenu";
 import { DEFAULT_HARNESS_LIST, rowGroup, rowState, whereFacts } from "./skill-row-state";
 import type { RowGroup, RowState } from "./skill-row-state";
 
@@ -306,134 +308,139 @@ export function SkillListTable({
   }
 
   return (
-    <div
-      className="flex flex-col gap-3"
-      style={
-        // SAFETY: `--glyph-hit` is a custom property, not a known CSSProperties key; React
-        // passes it through to the style attribute as-is.
-        { "--glyph-hit": `${GLYPH_HIT}px` } as CSSProperties
-      }
-    >
-      {rows.length === 0 ? (
-        <div className="flex flex-col items-start gap-2 text-pretty text-small text-text-tertiary">
-          {hasAnySkills ? (
-            <>
-              <p className="m-0">No skills match</p>
-              {onClearFilters && (
-                <Button
-                  variant="secondary"
-                  className="rounded-sm border border-border text-text-primary"
-                  onClick={onClearFilters}
-                >
-                  Clear filters
-                </Button>
+    <RichTooltipScope>
+      <SkillRowMenuScope>
+        <div
+          className="flex flex-col gap-3"
+          style={
+            // SAFETY: `--glyph-hit` is a custom property, not a known CSSProperties key; React
+            // passes it through to the style attribute as-is.
+            { "--glyph-hit": `${GLYPH_HIT}px` } as CSSProperties
+          }
+        >
+          {rows.length === 0 ? (
+            <div className="flex flex-col items-start gap-2 text-pretty text-small text-text-tertiary">
+              {hasAnySkills ? (
+                <>
+                  <p className="m-0">No skills match</p>
+                  {onClearFilters && (
+                    <Button
+                      variant="secondary"
+                      className="rounded-sm border border-border text-text-primary"
+                      onClick={onClearFilters}
+                    >
+                      Clear filters
+                    </Button>
+                  )}
+                </>
+              ) : (
+                <>
+                  <p className="m-0">You haven't added a skill yet</p>
+                  {onAddSkill && (
+                    <Button
+                      variant="secondary"
+                      className="rounded-sm border border-border text-text-primary"
+                      onClick={onAddSkill}
+                    >
+                      Add skill
+                    </Button>
+                  )}
+                </>
               )}
-            </>
+            </div>
           ) : (
-            <>
-              <p className="m-0">You haven't added a skill yet</p>
-              {onAddSkill && (
+            <div
+              ref={containerRef}
+              role="grid"
+              aria-label="Skills"
+              aria-rowcount={rows.length}
+              className="overflow-hidden rounded-md border border-border"
+              onKeyDown={onGridKeyDown}
+            >
+              {GROUP_ORDER.map((group) => {
+                const groupSkills = buckets[group];
+                if (groupSkills.length === 0) return null;
+                const startIndex = GROUP_ORDER.slice(0, GROUP_ORDER.indexOf(group)).reduce(
+                  (sum, g) => sum + buckets[g].length,
+                  0,
+                );
+                return (
+                  <Collapsible
+                    key={group}
+                    role="rowgroup"
+                    data-group={group}
+                    open={!collapsedGroups.has(group)}
+                    onOpenChange={() => toggleGroup(group)}
+                  >
+                    <div role="row">
+                      <div role="gridcell">
+                        <GroupHead
+                          label={GROUP_LABEL[group]}
+                          count={groupSkills.length}
+                          groupId={group}
+                        />
+                      </div>
+                    </div>
+                    <CollapsiblePanel>
+                      {groupSkills.map((skill, i) => renderRow(skill, startIndex + i))}
+                    </CollapsiblePanel>
+                  </Collapsible>
+                );
+              })}
+            </div>
+          )}
+          {/* Visually-hidden live region: announces the cursor's position, debounced to the last move. */}
+          <div role="status" aria-live="polite" className="sr-only">
+            {statusText}
+          </div>
+
+          {/* A zero-height wrapper so the sticky bar never reserves flow space of its own -
+              checking a row must not push any other row down. `sticky bottom-4` then docks the
+              bar to the bottom of the scroll area without an enter transition. */}
+          {selectedPaths.size > 0 && (
+            <div className="pointer-events-none sticky inset-x-0 bottom-4 z-10 flex h-0 items-end justify-center">
+              <div className="pointer-events-auto flex h-9 items-center gap-2 rounded-md border border-border bg-bg-secondary px-2 shadow">
+                <span className="px-1 text-small text-text-secondary">
+                  {selectedPaths.size} selected
+                </span>
+                {packsEnabled && (
+                  <Button
+                    size="sm"
+                    className="rounded-sm bg-accent-solid text-text-on-accent"
+                    onClick={() => setShowPackPrompt(true)}
+                  >
+                    Create pack
+                  </Button>
+                )}
                 <Button
-                  variant="secondary"
-                  className="rounded-sm border border-border text-text-primary"
-                  onClick={onAddSkill}
+                  variant="outline"
+                  size="sm"
+                  className="rounded-sm text-text-tertiary"
+                  onClick={exitSelectionMode}
                 >
-                  Add skill
+                  Cancel
                 </Button>
-              )}
-            </>
+              </div>
+            </div>
+          )}
+
+          {showPackPrompt && (
+            <PackNamePrompt
+              members={skills.reduce<PackMember[]>((members, s) => {
+                const path = rowPath(s);
+                if (path !== undefined && selectedPaths.has(path))
+                  members.push({ name: s.name, path });
+                return members;
+              }, [])}
+              onClose={() => setShowPackPrompt(false)}
+              onCreated={() => {
+                setShowPackPrompt(false);
+                clearSkillSelection();
+              }}
+            />
           )}
         </div>
-      ) : (
-        <div
-          ref={containerRef}
-          role="grid"
-          aria-label="Skills"
-          aria-rowcount={rows.length}
-          className="overflow-hidden rounded-md border border-border"
-          onKeyDown={onGridKeyDown}
-        >
-          {GROUP_ORDER.map((group) => {
-            const groupSkills = buckets[group];
-            if (groupSkills.length === 0) return null;
-            const startIndex = GROUP_ORDER.slice(0, GROUP_ORDER.indexOf(group)).reduce(
-              (sum, g) => sum + buckets[g].length,
-              0,
-            );
-            return (
-              <Collapsible
-                key={group}
-                role="rowgroup"
-                data-group={group}
-                open={!collapsedGroups.has(group)}
-                onOpenChange={() => toggleGroup(group)}
-              >
-                <div role="row">
-                  <div role="gridcell">
-                    <GroupHead
-                      label={GROUP_LABEL[group]}
-                      count={groupSkills.length}
-                      groupId={group}
-                    />
-                  </div>
-                </div>
-                <CollapsiblePanel>
-                  {groupSkills.map((skill, i) => renderRow(skill, startIndex + i))}
-                </CollapsiblePanel>
-              </Collapsible>
-            );
-          })}
-        </div>
-      )}
-      {/* Visually-hidden live region: announces the cursor's position, debounced to the last move. */}
-      <div role="status" aria-live="polite" className="sr-only">
-        {statusText}
-      </div>
-
-      {/* A zero-height wrapper so the sticky bar never reserves flow space of its own - checking a
-          row must not push any other row down. `sticky bottom-4` then docks the bar to the
-          bottom of the scroll area without an enter transition. */}
-      {selectedPaths.size > 0 && (
-        <div className="pointer-events-none sticky inset-x-0 bottom-4 z-10 flex h-0 items-end justify-center">
-          <div className="pointer-events-auto flex h-9 items-center gap-2 rounded-md border border-border bg-bg-secondary px-2 shadow">
-            <span className="px-1 text-small text-text-secondary">
-              {selectedPaths.size} selected
-            </span>
-            {packsEnabled && (
-              <Button
-                size="sm"
-                className="rounded-sm bg-accent-solid text-text-on-accent"
-                onClick={() => setShowPackPrompt(true)}
-              >
-                Create pack
-              </Button>
-            )}
-            <Button
-              variant="outline"
-              size="sm"
-              className="rounded-sm text-text-tertiary"
-              onClick={exitSelectionMode}
-            >
-              Cancel
-            </Button>
-          </div>
-        </div>
-      )}
-
-      {showPackPrompt && (
-        <PackNamePrompt
-          members={skills.reduce<PackMember[]>((members, s) => {
-            const path = rowPath(s);
-            if (path !== undefined && selectedPaths.has(path)) members.push({ name: s.name, path });
-            return members;
-          }, [])}
-          onClose={() => setShowPackPrompt(false)}
-          onCreated={() => {
-            setShowPackPrompt(false);
-            clearSkillSelection();
-          }}
-        />
-      )}
-    </div>
+      </SkillRowMenuScope>
+    </RichTooltipScope>
   );
 }

@@ -12,11 +12,11 @@ function TooltipProvider({ delay = 0, ...props }: TooltipPrimitive.Provider.Prop
   return <TooltipPrimitive.Provider data-slot="tooltip-provider" delay={delay} {...props} />;
 }
 
-function Tooltip({ ...props }: TooltipPrimitive.Root.Props) {
+function Tooltip<Payload = unknown>({ ...props }: TooltipPrimitive.Root.Props<Payload>) {
   return <TooltipPrimitive.Root data-slot="tooltip" {...props} />;
 }
 
-function TooltipTrigger({ ...props }: TooltipPrimitive.Trigger.Props) {
+function TooltipTrigger<Payload = unknown>({ ...props }: TooltipPrimitive.Trigger.Props<Payload>) {
   return <TooltipPrimitive.Trigger data-slot="tooltip-trigger" {...props} />;
 }
 
@@ -58,4 +58,10 @@ function TooltipContent({
   );
 }
 
-export { Tooltip, TooltipTrigger, TooltipContent, TooltipProvider };
+/** Creates a handle to connect one `Tooltip` root to many detached `TooltipTrigger`s, so a list
+ * of rows can share a single tooltip instance instead of mounting one per row. */
+const createTooltipHandle = TooltipPrimitive.createHandle;
+type TooltipHandle<Payload = unknown> = TooltipPrimitive.Handle<Payload>;
+
+export { Tooltip, TooltipTrigger, TooltipContent, TooltipProvider, createTooltipHandle };
+export type { TooltipHandle };
