@@ -22,10 +22,15 @@ interface UseRowCursorOptions {
   onEscape?: () => void;
   onCollapseGroup?: (groupId: string) => void;
   onExpandGroup?: (groupId: string) => void;
-  /** Seeds the cursor on this key (when present in `keys`) and focuses its row once, on mount -
-   * e.g. the row a skill was opened from, so Escape from its detail page returns focus there
-   * instead of resetting to the first row. */
+  /** Seeds the cursor on this key (when present in `keys`) and focuses its row once - e.g. the row
+   * a skill was opened from, so Escape from its detail page returns focus there instead of
+   * resetting to the first row. */
   initialKey?: string | null;
+  /** Whether the caller's view is on screen right now - defaults to `true`. Pass `false` while the
+   * view is kept mounted but hidden behind another page (an open skill's page, kept alive so the
+   * back button is instant); flipping back to `true` re-focuses `initialKey`'s row, without
+   * scrolling if it's already in view. */
+  active?: boolean;
 }
 
 export interface RowCursor {
@@ -71,6 +76,7 @@ export function useRowCursor({
   onCollapseGroup,
   onExpandGroup,
   initialKey,
+  active = true,
 }: UseRowCursorOptions): RowCursor {
   const [cursorKey, setCursorKey] = useState<string | null>(
     (initialKey && keys.includes(initialKey) ? initialKey : keys[0]) ?? null,
@@ -104,14 +110,15 @@ export function useRowCursor({
     // eslint-disable-next-line react-hooks/exhaustive-deps -- moveTo reads the same render's keys.
   }, [keys]);
 
-  // Focuses the seeded row once on mount, after its ref has attached - this is what returns
-  // focus to a row when the caller remounts the grid with the previously-open skill's key.
+  // Focuses the seeded row whenever the caller's view becomes active, after its ref has attached -
+  // this is what returns focus to a row when a kept-alive list reappears from behind a skill page
+  // that just closed, with `initialKey` set to that skill's name.
   useEffect(() => {
-    if (!initialKey) return;
+    if (!active || !initialKey) return;
     const frame = requestAnimationFrame(() => scrollAndFocus(initialKey));
     return () => cancelAnimationFrame(frame);
-    // eslint-disable-next-line react-hooks/exhaustive-deps -- runs once, keyed by mount only.
-  }, []);
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- re-run only on activation, not on every initialKey change within one activation.
+  }, [active]);
 
   function scrollAndFocus(key: string) {
     const el = rowsRef.current.get(key);

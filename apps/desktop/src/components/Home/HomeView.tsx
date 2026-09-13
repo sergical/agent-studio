@@ -87,6 +87,9 @@ interface HomeViewProps {
   snapshot: SkillSnapshot | undefined;
   isLoading: boolean;
   onSelectSkill: (name: string) => void;
+  /** Whether Home is the view on screen right now - `false` while it's kept mounted but hidden
+   * behind an open skill's page, so its window-level keyboard shortcuts stay off. */
+  active: boolean;
 }
 
 /**
@@ -586,7 +589,7 @@ function InvocationCostCard({
  * grouped inbox list - the columns any of these three surfaces would
  * otherwise leave the user to reconstruct by hand.
  */
-export function HomeView({ snapshot, isLoading, onSelectSkill }: HomeViewProps) {
+export function HomeView({ snapshot, isLoading, onSelectSkill, active }: HomeViewProps) {
   const setActiveView = useAppStore((state) => state.setActiveView);
   const setSkillListFilter = useAppStore((state) => state.setSkillListFilter);
   const openSkill = useAppStore((state) => state.openSkill);
@@ -705,6 +708,7 @@ export function HomeView({ snapshot, isLoading, onSelectSkill }: HomeViewProps) 
     useRowCursor({
       keys: visibleKeys,
       initialKey: initialCursorKey,
+      active,
       onOpen: (key) => openByKey.get(key)?.(),
       onCollapseGroup: (groupId) =>
         setCollapsedGroups((prev) =>
@@ -721,7 +725,7 @@ export function HomeView({ snapshot, isLoading, onSelectSkill }: HomeViewProps) 
           return next;
         }),
     });
-  useRowCursorWindowEntry(true, focusCursor);
+  useRowCursorWindowEntry(active, focusCursor);
 
   if (!snapshot) {
     if (isLoading) {

@@ -39,6 +39,9 @@ function deploymentForScope(
 interface SkillsViewProps {
   snapshot: SkillSnapshot | undefined;
   onSelectSkill: (name: string, deploymentPath?: string) => void;
+  /** Whether Skills is the view on screen right now - `false` while it's kept mounted but hidden
+   * behind an open skill's page, so its window-level keyboard shortcuts stay off. */
+  active: boolean;
 }
 
 /**
@@ -47,7 +50,7 @@ interface SkillsViewProps {
  * the store's `skillListFilter`/`showCoverage`, so opening a skill and
  * coming back never loses them.
  */
-export function SkillsView({ snapshot, onSelectSkill }: SkillsViewProps) {
+export function SkillsView({ snapshot, onSelectSkill, active }: SkillsViewProps) {
   const filter = useAppStore((state) => state.skillListFilter);
   const setSkillListFilter = useAppStore((state) => state.setSkillListFilter);
   const resetSkillListFilter = useAppStore((state) => state.resetSkillListFilter);
@@ -162,6 +165,7 @@ export function SkillsView({ snapshot, onSelectSkill }: SkillsViewProps) {
           onSelectSkill={onSelectSkill}
           selectedSkillName={selectedSkillName}
           initialCursorSkillName={lastClosedSkillName}
+          active={active}
           deploymentPathForSkill={(skill) => deploymentForScope(skill, filter.scope)}
           hasAnySkills={baseSkills.length > 0}
           onClearFilters={resetSkillListFilter}

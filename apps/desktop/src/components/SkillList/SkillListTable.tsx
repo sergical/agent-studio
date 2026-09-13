@@ -58,6 +58,10 @@ interface SkillListTableProps {
   /** The skill whose page Escape/back just closed, so the cursor returns to that row instead of
    * resetting to the first one. */
   initialCursorSkillName?: string | null;
+  /** Whether Skills is the view on screen right now - `false` while it's kept mounted but hidden
+   * behind an open skill's page, so its window-level j/k/arrow shortcuts don't fire for a list the
+   * user can't see. */
+  active: boolean;
   /** Resolves which deployment a row's click should open in the detail drawer, when the caller knows it. */
   deploymentPathForSkill?: (skill: InstalledSkill) => string | undefined;
   /** False when the caller's underlying list (before any filter) is empty, for the right empty state. */
@@ -82,6 +86,7 @@ export function SkillListTable({
   onSelectSkill,
   selectedSkillName = null,
   initialCursorSkillName = null,
+  active,
   deploymentPathForSkill,
   hasAnySkills = true,
   onClearFilters,
@@ -135,6 +140,7 @@ export function SkillListTable({
       // The row a just-closed skill page was opened from, so Escape back out of it returns
       // focus there instead of resetting the cursor to the first row.
       initialKey: initialCursorSkillName,
+      active,
       onOpen: (key) => {
         const skill = rows.find((s) => s.name === key);
         if (skill) onSelectSkill(skill.name, deploymentPathForSkill?.(skill));
@@ -174,7 +180,7 @@ export function SkillListTable({
           return next;
         }),
     });
-  useRowCursorWindowEntry(true, focusCursor);
+  useRowCursorWindowEntry(active, focusCursor);
 
   /** The store's `selectionMode` mirrors "at least one row checked" - kept in sync here since a
    * checkbox now drives selection directly instead of a separate mode switch. */

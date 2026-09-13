@@ -28,8 +28,17 @@ import {
   restoreTrashedSkill,
   unregisterSkillProject,
 } from "./lib/skill-api";
+import type { ActiveView } from "./store/appStore";
 import { useAppStore } from "./store/appStore";
 import "./App.css";
+
+/** The `ActiveView` kinds a skill page can be opened from that are worth keeping mounted (but
+ * hidden) underneath it, so the back button is instant instead of re-scanning the whole list. */
+type ListViewKind = "home" | "skills" | "plugins" | "activity";
+
+function isListViewKind(kind: ActiveView["kind"]): kind is ListViewKind {
+  return kind === "home" || kind === "skills" || kind === "plugins" || kind === "activity";
+}
 
 function App() {
   useNativeShell();
@@ -109,32 +118,88 @@ function App() {
     });
   }, [addToast]);
 
-  let main: React.ReactNode;
-  if (activeView.kind === "home") {
-    main = <HomeView snapshot={snapshot} isLoading={isLoading} onSelectSkill={onSelectSkill} />;
-  } else if (activeView.kind === "skills") {
-    main = <SkillsView snapshot={snapshot} onSelectSkill={onSelectSkill} />;
-  } else if (activeView.kind === "plugins") {
-    main = <PluginSkillsView snapshot={snapshot} onSelectSkill={onSelectSkill} />;
-  } else if (activeView.kind === "activity") {
-    main = <SkillActivityView snapshot={snapshot} onSelectSkill={onSelectSkill} />;
-  } else if (activeView.kind === "packs") {
-    main = <PacksView />;
-  } else if (activeView.kind === "learn") {
-    main = <LearnView section={activeView.section} />;
-  } else if (activeView.kind === "settings") {
-    main = <SettingsView />;
-  } else {
-    const skill = snapshot?.skills.find((s) => s.name === activeView.name) ?? null;
-    main = (
+  /** One skill view - the page it opens, standalone (no kept-alive list underneath). */
+  function renderSkillPage(view: Extract<ActiveView, { kind: "skill" }>): React.ReactNode {
+    const skill = snapshot?.skills.find((s) => s.name === view.name) ?? null;
+    return (
       <SkillPage
         skill={skill}
-        deploymentPath={activeView.deploymentPath}
+        deploymentPath={view.deploymentPath}
         onBack={closeSkill}
         onRemoveComplete={closeSkill}
-        from={activeView.from}
+        from={view.from}
       />
     );
+  }
+
+  /**
+   * `kind`'s list view, plus (when `skillView` is set) the skill page open over it. Renders the
+   * same wrapper shape - a `<>` holding the list's div and, conditionally, the `SkillPage` - whether
+   * the list is the view on screen (`skillView` null) or hidden behind an open skill's page. Keeping
+   * that shape identical in both cases is what lets React preserve the list's component instance
+   * across opening and closing a skill, instead of unmounting and remounting it: reopening the list
+   * is then instant instead of re-scanning and re-rendering it from scratch.
+   */
+  function renderListLayer(
+    kind: ListViewKind,
+    skillView: Extract<ActiveView, { kind: "skill" }> | null,
+  ): React.ReactNode {
+    const isShown = skillView === null;
+    let list: React.ReactNode;
+    if (kind === "home") {
+      list = (
+        <HomeView
+          snapshot={snapshot}
+          isLoading={isLoading}
+          onSelectSkill={onSelectSkill}
+          active={isShown}
+        />
+      );
+    } else if (kind === "skills") {
+      list = <SkillsView snapshot={snapshot} onSelectSkill={onSelectSkill} active={isShown} />;
+    } else if (kind === "plugins") {
+      list = <PluginSkillsView snapshot={snapshot} onSelectSkill={onSelectSkill} />;
+    } else {
+      list = <SkillActivityView snapshot={snapshot} onSelectSkill={onSelectSkill} />;
+    }
+    return (
+      <>
+        {/* `hidden` (not an unmounting swap) so the list's own scroll container keeps its
+            `scrollTop` - display:none doesn't reset it, unlike removing the element would.
+            `inert` on top so nothing inside it is focusable, clickable, or reachable by AT while
+            the skill page covers it. */}
+        <div hidden={!isShown} inert={!isShown} className="flex min-h-0 flex-1 flex-col">
+          {list}
+        </div>
+        {skillView && renderSkillPage(skillView)}
+      </>
+    );
+  }
+
+  let main: React.ReactNode;
+  switch (activeView.kind) {
+    case "home":
+    case "skills":
+    case "plugins":
+    case "activity":
+      main = renderListLayer(activeView.kind, null);
+      break;
+    case "packs":
+      main = <PacksView />;
+      break;
+    case "learn":
+      main = <LearnView section={activeView.section} />;
+      break;
+    case "settings":
+      main = <SettingsView />;
+      break;
+    case "skill": {
+      // Opened from Packs, Learn, or Settings: none of those keep a list worth reviving, so the
+      // skill page fully replaces `main`, same as before.
+      const originKind = isListViewKind(activeView.from.kind) ? activeView.from.kind : null;
+      main = originKind ? renderListLayer(originKind, activeView) : renderSkillPage(activeView);
+      break;
+    }
   }
 
   return (
