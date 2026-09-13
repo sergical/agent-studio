@@ -6,7 +6,7 @@ prototype picker over eleven rounds; the picker and its variants are deleted.
 ## Direction: the Stack row
 
 - Columns: glyph hit area · Skill name · Location · Harnesses · Prompt / Full tokens. Rows are
-  36px (`h-9`). No Description column.
+  32px (`h-8`) - denser, Linear-like list. No Description column.
 - The leading glyph is the action: the row's one state icon (update, trial, broken, drift,
   invocation) with a menu on hover. Colour and icons carry state; words do not.
 - Location shows the Global chip and up to two project chips, then `+N`.

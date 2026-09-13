@@ -341,3 +341,18 @@ export function fixesFor(state: RowState): string[] {
 export function isDecision(state: RowState | null): boolean {
   return state !== null && state.kind !== "parked";
 }
+
+/** The list's three state groups, in display order. */
+export type RowGroup = "attention" | "healthy" | "parked";
+
+/** Which group a row sorts into: a decision-worthy state first, then a quiet
+ * "parked" fact, else healthy. Pass `state` when the caller already has it
+ * from `rowState(skill)` to avoid computing it twice. */
+export function rowGroup(
+  skill: InstalledSkill,
+  state: RowState | null = rowState(skill),
+): RowGroup {
+  if (isDecision(state)) return "attention";
+  if (skill.parked || state?.kind === "parked") return "parked";
+  return "healthy";
+}

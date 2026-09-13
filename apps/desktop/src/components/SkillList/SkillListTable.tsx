@@ -6,40 +6,49 @@
 import { useRef, useState } from "react";
 import type { CSSProperties, KeyboardEvent } from "react";
 import type { InstalledSkill, PackMember, SkillInvocationStats } from "@skill-studio/lib";
-import { Button } from "@skill-studio/ui";
+import { Button, Collapsible, CollapsiblePanel } from "@skill-studio/ui";
 import { isFeatureEnabled } from "../../lib/feature-flags";
 import { parkSkill, unparkSkill } from "../../lib/skill-api";
 import { lifecycleTargetForPark } from "../../lib/skill-lifecycle-target";
 import type { SortMode } from "../../lib/skill-list-sort";
 import { useAppStore } from "../../store/appStore";
 import { PackNamePrompt } from "../Packs/PackNamePrompt";
-import { CheckboxControl } from "../ui/CheckboxControl";
+import { GroupHead } from "./GroupHead";
 import { HarnessStack } from "./HarnessStack";
 import {
-  HEADER_CELL_CLASS,
   LeadingCell,
   ROW_CLASS,
   selectedRowClass,
+  SelectionCell,
   SkillNameCell,
   sortRows,
   TokenPairCell,
-  TokenPairHeader,
+  TrailingMenuCell,
 } from "./SkillRowCells";
-import type { TokenSortKey } from "./SkillRowCells";
 import { SkillLocationCell } from "./SkillLocationCell";
-import { DEFAULT_HARNESS_LIST, whereFacts } from "./skill-row-state";
+import { DEFAULT_HARNESS_LIST, rowGroup, rowState, whereFacts } from "./skill-row-state";
+import type { RowGroup, RowState } from "./skill-row-state";
 
 /** The row's leading-glyph hit box, and the icon it holds - fixed sizes. */
 const GLYPH_HIT = 28;
 const GLYPH_SIZE = 14;
 
-/** Every skill row's column template: leading glyph, name, location, harnesses, tokens. */
-const COLUMNS = "[grid-template-columns:var(--glyph-hit)_minmax(0,1fr)_160px_148px_104px]";
+/** Every skill row's column template: a checkbox gutter, leading glyph, name, location,
+ * harnesses, tokens (the trailing Ellipsis menu lives inside that last cell). */
+const COLUMNS = "[grid-template-columns:20px_var(--glyph-hit)_minmax(0,1fr)_160px_148px_104px]";
+
+/** The three state groups, in display order, and their header labels. */
+const GROUP_ORDER: RowGroup[] = ["attention", "healthy", "parked"];
+const GROUP_LABEL = {
+  attention: "Needs attention",
+  healthy: "Healthy",
+  parked: "Parked",
+};
 
 interface SkillListTableProps {
   skills: InstalledSkill[];
   stats: SkillInvocationStats[];
-  /** Sort order - the Sort select lives in `SkillListFilterBar`; the search box there narrows `skills` before it reaches this table. */
+  /** Sort order - the Sort select lives in `SkillListFilterBar`; the search box there narrows `skills` before it reaches this table. It applies inside each state group, not across the whole list. */
   sort: SortMode;
   onSelectSkill: (name: string, deploymentPath?: string) => void;
   selectedSkillName?: string | null;
@@ -54,10 +63,11 @@ interface SkillListTableProps {
 }
 
 /**
- * Toolbar (Select, filter, sort) above a list of skill rows: the state
- * glyph, name, disk location, harness stack, and token pair. Clicking a row
- * opens the skill, unless selection mode is on, where it toggles the row
- * instead. Selection and packs sit behind the "skill-packs" feature flag.
+ * A grid of skill rows split into three sticky-headed state groups (Needs
+ * attention, Healthy, Parked): the state glyph, name, disk location, harness
+ * stack, and token pair. Checking a row's checkbox selects it - no separate
+ * selection mode - and the action bar (Create pack, Cancel) shows once
+ * anything is checked. Packs sit behind the "skill-packs" feature flag.
  */
 export function SkillListTable({
   skills,
@@ -71,7 +81,7 @@ export function SkillListTable({
   onAddSkill,
 }: SkillListTableProps) {
   const [showPackPrompt, setShowPackPrompt] = useState(false);
-  const [tokenSort, setTokenSort] = useState<TokenSortKey>("full");
+  const [collapsedGroups, setCollapsedGroups] = useState<Set<RowGroup>>(() => new Set());
   const packsEnabled = isFeatureEnabled("skill-packs");
   const statsBySkill = new Map(stats.map((s) => [s.skill, s]));
   const selectedPaths = useAppStore((state) => state.selectedSkillPaths);
@@ -89,12 +99,30 @@ export function SkillListTable({
   const rowPath = (skill: InstalledSkill): string | undefined =>
     deploymentPathForSkill?.(skill) ?? skill.deployments[0]?.path;
 
-  const rows = sortRows(skills, sort, statsBySkill, tokenSort);
+  const sorted = sortRows(skills, sort, statsBySkill);
+  const statesBySkill = new Map<string, RowState | null>(
+    sorted.map((skill) => [skill.name, rowState(skill)]),
+  );
+  // SAFETY: each bucket starts empty; the loop below only ever pushes `InstalledSkill` values into it.
+  const buckets = {
+    attention: [] as InstalledSkill[],
+    healthy: [] as InstalledSkill[],
+    parked: [] as InstalledSkill[],
+  };
+  for (const skill of sorted) {
+    buckets[rowGroup(skill, statesBySkill.get(skill.name) ?? null)].push(skill);
+  }
+  /** The grouped display order: `rowPath`/index below refer to this array, not `sorted`. */
+  const rows = [...buckets.attention, ...buckets.healthy, ...buckets.parked];
 
-  const allVisibleSelected =
-    rows.length > 0 && rows.every((s) => selectedPaths.has(rowPath(s) ?? ""));
+  /** The store's `selectionMode` mirrors "at least one row checked" - kept in sync here since a
+   * checkbox now drives selection directly instead of a separate mode switch. */
+  function syncSelectionMode(nextSize: number) {
+    if (nextSize > 0 && !selectionMode) enterSelectionMode();
+    else if (nextSize === 0 && selectionMode) exitSelectionMode();
+  }
 
-  /** Checkbox click for one row - shift-click selects every row between it and the last clicked one, in visible order. */
+  /** Checkbox click for one row - shift-click selects every row between it and the last clicked one, in visible (grouped) order. */
   function handleRowCheckboxClick(index: number, shiftKey: boolean) {
     if (shiftKey && lastCheckedIndexRef.current !== null) {
       const [from, to] = [lastCheckedIndexRef.current, index].sort((a, b) => a - b);
@@ -102,43 +130,51 @@ export function SkillListTable({
       const next = new Set(selectedPaths);
       range.forEach((path) => path && next.add(path));
       selectSkills([...next]);
+      syncSelectionMode(next.size);
     } else {
       const path = rowPath(rows[index]);
-      if (path) toggleSkillSelection(path);
+      if (path) {
+        const next = new Set(selectedPaths);
+        if (next.has(path)) next.delete(path);
+        else next.add(path);
+        toggleSkillSelection(path);
+        syncSelectionMode(next.size);
+      }
     }
     lastCheckedIndexRef.current = index;
   }
 
-  function handleHeaderCheckboxChange() {
-    const next = new Set(selectedPaths);
-    if (allVisibleSelected) {
-      rows.forEach((s) => {
-        const path = rowPath(s);
-        if (path) next.delete(path);
-      });
-    } else {
-      rows.forEach((s) => {
-        const path = rowPath(s);
-        if (path) next.add(path);
-      });
-    }
-    selectSkills([...next]);
-  }
-
-  function handleRowClick(index: number, skill: InstalledSkill) {
-    if (selectionMode) {
+  /** Enter opens the skill; Space toggles its checkbox. Ignored otherwise, since the row itself
+   * isn't a button. */
+  function handleRowKeyDown(
+    e: KeyboardEvent<HTMLDivElement>,
+    index: number,
+    skill: InstalledSkill,
+  ) {
+    if (e.key === "Enter") {
+      e.preventDefault();
+      onSelectSkill(skill.name, deploymentPathForSkill?.(skill));
+    } else if (e.key === " ") {
+      e.preventDefault();
       handleRowCheckboxClick(index, false);
-      return;
     }
-    onSelectSkill(skill.name, deploymentPathForSkill?.(skill));
   }
 
-  /** Escape exits selection mode, mirroring the selection bar's Cancel button. */
+  /** Escape clears the selection, mirroring the selection bar's Cancel button. */
   function handleTableKeyDown(e: KeyboardEvent<HTMLDivElement>) {
-    if (e.key === "Escape" && selectionMode) {
+    if (e.key === "Escape" && selectedPaths.size > 0) {
       e.preventDefault();
       exitSelectionMode();
     }
+  }
+
+  function toggleGroup(group: RowGroup) {
+    setCollapsedGroups((prev) => {
+      const next = new Set(prev);
+      if (next.has(group)) next.delete(group);
+      else next.add(group);
+      return next;
+    });
   }
 
   /** Park/Unpark act on the deployment target `HomeView` uses; every other fix (Fix YAML, Fix
@@ -165,6 +201,71 @@ export function SkillListTable({
     }
   }
 
+  /** One skill row - `index` is its position in the grouped `rows` array, for shift-click, Space,
+   * `aria-rowindex`, and the single `tabIndex={0}` tab stop. */
+  function renderRow(skill: InstalledSkill, index: number) {
+    const checked = selectedPaths.has(rowPath(skill) ?? "");
+    const state = statesBySkill.get(skill.name) ?? null;
+    return (
+      <div
+        key={skill.name}
+        role="row"
+        aria-rowindex={index + 1}
+        aria-selected={checked}
+        tabIndex={index === 0 ? 0 : -1}
+        onKeyDown={(e) => handleRowKeyDown(e, index, skill)}
+        className={`${ROW_CLASS} gap-x-3 px-3 ${COLUMNS} hover:bg-bg-secondary focus-visible:outline-2 focus-visible:outline-accent -outline-offset-2 ${selectedRowClass(
+          skill.name === selectedSkillName,
+        )} ${skill.parked ? "text-text-tertiary" : ""}`}
+        onClick={() => onSelectSkill(skill.name, deploymentPathForSkill?.(skill))}
+      >
+        <div role="gridcell" className="contents">
+          <SelectionCell
+            skill={skill}
+            checked={checked}
+            visible={selectedPaths.size > 0}
+            onCheckedChange={(_checked, eventDetails) => {
+              // SAFETY: the underlying event is a pointer or keyboard event, both of which carry `shiftKey`.
+              const shiftKey = (eventDetails.event as MouseEvent | KeyboardEvent).shiftKey;
+              handleRowCheckboxClick(index, shiftKey);
+            }}
+          />
+        </div>
+        {/* Not `contents`: `LeadingCell` renders nothing for a healthy row, and a `contents`
+            wrapper around no children drops out of the grid, shifting every column after it. */}
+        <div role="gridcell" className="flex items-center justify-center">
+          <LeadingCell
+            skill={skill}
+            state={state}
+            glyphSize={GLYPH_SIZE}
+            onOpen={() => onSelectSkill(skill.name, deploymentPathForSkill?.(skill))}
+            onAct={(label) => void handleAct(label, skill)}
+          />
+        </div>
+        <div role="gridcell" className="contents">
+          <SkillNameCell skill={skill} />
+        </div>
+        <div role="gridcell" className="contents">
+          <SkillLocationCell locations={whereFacts(skill, DEFAULT_HARNESS_LIST).locations} />
+        </div>
+        <div role="gridcell" className="contents">
+          <HarnessStack skill={skill} harnessList={DEFAULT_HARNESS_LIST} />
+        </div>
+        <div role="gridcell" className="flex items-center justify-end gap-1">
+          <TokenPairCell skill={skill} />
+          <TrailingMenuCell
+            skill={skill}
+            state={state}
+            glyphSize={GLYPH_SIZE}
+            visible={checked}
+            onOpen={() => onSelectSkill(skill.name, deploymentPathForSkill?.(skill))}
+            onAct={(label) => void handleAct(label, skill)}
+          />
+        </div>
+      </div>
+    );
+  }
+
   return (
     <div
       className="flex flex-col gap-3"
@@ -175,40 +276,6 @@ export function SkillListTable({
       }
       onKeyDown={handleTableKeyDown}
     >
-      {(selectionMode || packsEnabled) && (
-        <div className="flex items-center gap-2">
-          {selectionMode ? (
-            <>
-              <span className="text-small text-text-secondary">{selectedPaths.size} selected</span>
-              <Button
-                size="sm"
-                className="ml-auto rounded-sm bg-accent text-text-on-accent"
-                onClick={() => setShowPackPrompt(true)}
-                disabled={selectedPaths.size === 0}
-              >
-                Create pack
-              </Button>
-              <Button
-                variant="outline"
-                size="sm"
-                className="rounded-sm text-text-tertiary"
-                onClick={exitSelectionMode}
-              >
-                Cancel
-              </Button>
-            </>
-          ) : (
-            <Button
-              variant="outline"
-              className="h-(--control-height) shrink-0 rounded-sm px-3 text-body text-text-secondary"
-              onClick={enterSelectionMode}
-            >
-              Select
-            </Button>
-          )}
-        </div>
-      )}
-
       {rows.length === 0 ? (
         <div className="flex flex-col items-start gap-2 text-pretty text-small text-text-tertiary">
           {hasAnySkills ? (
@@ -240,61 +307,67 @@ export function SkillListTable({
           )}
         </div>
       ) : (
-        <div className="overflow-hidden rounded-md border border-border">
-          <div className="flex items-center border-b border-border-subtle bg-bg-secondary px-3">
-            <div className={`grid flex-1 items-center gap-x-3 ${HEADER_CELL_CLASS} ${COLUMNS}`}>
-              {selectionMode ? (
-                <CheckboxControl
-                  checked={allVisibleSelected}
-                  onCheckedChange={handleHeaderCheckboxChange}
-                  disabled={rows.length === 0}
-                  ariaLabel="Select all visible skills"
-                />
-              ) : (
-                <span aria-hidden />
-              )}
-              <span>Skill</span>
-              <span>Location</span>
-              <span>Harnesses</span>
-              <TokenPairHeader sortKey={tokenSort} onSort={setTokenSort} />
-            </div>
-          </div>
-          {rows.map((skill, index) => {
-            const selected = skill.name === selectedSkillName;
+        <div
+          role="grid"
+          aria-label="Skills"
+          aria-rowcount={rows.length}
+          className="overflow-hidden rounded-md border border-border"
+        >
+          {GROUP_ORDER.map((group) => {
+            const groupSkills = buckets[group];
+            if (groupSkills.length === 0) return null;
+            const startIndex = GROUP_ORDER.slice(0, GROUP_ORDER.indexOf(group)).reduce(
+              (sum, g) => sum + buckets[g].length,
+              0,
+            );
             return (
-              <div
-                key={skill.name}
-                className={`${ROW_CLASS} gap-x-3 px-3 ${COLUMNS} hover:bg-bg-secondary ${selectedRowClass(
-                  selected,
-                )} ${skill.parked ? "text-text-tertiary" : ""}`}
-                onClick={(e) => {
-                  if (selectionMode && e.shiftKey) {
-                    handleRowCheckboxClick(index, true);
-                    return;
-                  }
-                  handleRowClick(index, skill);
-                }}
+              <Collapsible
+                key={group}
+                role="rowgroup"
+                open={!collapsedGroups.has(group)}
+                onOpenChange={() => toggleGroup(group)}
               >
-                <LeadingCell
-                  skill={skill}
-                  selectionMode={selectionMode}
-                  checked={selectedPaths.has(rowPath(skill) ?? "")}
-                  onCheckedChange={(_checked, eventDetails) => {
-                    // SAFETY: the underlying event is a pointer or keyboard event, both of which carry `shiftKey`.
-                    const shiftKey = (eventDetails.event as MouseEvent | KeyboardEvent).shiftKey;
-                    handleRowCheckboxClick(index, shiftKey);
-                  }}
-                  glyphSize={GLYPH_SIZE}
-                  onOpen={() => onSelectSkill(skill.name, deploymentPathForSkill?.(skill))}
-                  onAct={(label) => void handleAct(label, skill)}
-                />
-                <SkillNameCell skill={skill} />
-                <SkillLocationCell locations={whereFacts(skill, DEFAULT_HARNESS_LIST).locations} />
-                <HarnessStack skill={skill} harnessList={DEFAULT_HARNESS_LIST} />
-                <TokenPairCell skill={skill} sortKey={tokenSort} />
-              </div>
+                <div role="row">
+                  <div role="gridcell">
+                    <GroupHead label={GROUP_LABEL[group]} count={groupSkills.length} />
+                  </div>
+                </div>
+                <CollapsiblePanel>
+                  {groupSkills.map((skill, i) => renderRow(skill, startIndex + i))}
+                </CollapsiblePanel>
+              </Collapsible>
             );
           })}
+        </div>
+      )}
+
+      {/* A zero-height wrapper so the sticky bar never reserves flow space of its own - checking a
+          row must not push any other row down. `sticky bottom-4` then docks the bar to the
+          bottom of the scroll area without an enter transition. */}
+      {selectedPaths.size > 0 && (
+        <div className="pointer-events-none sticky inset-x-0 bottom-4 z-10 flex h-0 items-end justify-center">
+          <div className="pointer-events-auto flex h-9 items-center gap-2 rounded-md border border-border bg-bg-secondary px-2 shadow">
+            <span className="px-1 text-small text-text-secondary">
+              {selectedPaths.size} selected
+            </span>
+            {packsEnabled && (
+              <Button
+                size="sm"
+                className="rounded-sm bg-accent text-text-on-accent"
+                onClick={() => setShowPackPrompt(true)}
+              >
+                Create pack
+              </Button>
+            )}
+            <Button
+              variant="outline"
+              size="sm"
+              className="rounded-sm text-text-tertiary"
+              onClick={exitSelectionMode}
+            >
+              Cancel
+            </Button>
+          </div>
         </div>
       )}
 

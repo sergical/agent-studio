@@ -1,13 +1,11 @@
 // ============================================================================
-// SkillRowCells - the shared cell vocabulary for a Stack row: the list
-// header's cell class, the row frame, the name/invocation cell, the token
-// pair cell and its sortable header, and the leading cell (checkbox in
-// selection mode, otherwise the state glyph or a hover-only Ellipsis menu).
+// SkillRowCells - the shared cell vocabulary for a Stack row: the row frame,
+// the name/invocation cell, the token pair cell, the selection checkbox
+// gutter, and the leading (state glyph) and trailing (Ellipsis menu) cells.
 // ============================================================================
 
 import type { ComponentProps, ReactNode } from "react";
 import {
-  ArrowDown,
   CircleAlert,
   CircleArrowDown,
   CirclePause,
@@ -20,12 +18,10 @@ import {
 } from "lucide-react";
 import { formatTokens } from "@skill-studio/lib";
 import type { InstalledSkill, SkillInvocationStats } from "@skill-studio/lib";
-import { Button } from "@skill-studio/ui";
 import type { SortMode } from "../../lib/skill-list-sort";
 import { CheckboxControl } from "../ui/CheckboxControl";
 import { RichTooltip } from "../ui/RichTooltip";
-import { TooltipControl } from "../ui/TooltipControl";
-import { isDecision, rowState } from "./skill-row-state";
+import { isDecision } from "./skill-row-state";
 import type { RowLevel, RowState } from "./skill-row-state";
 
 /** The shared hit box: bigger than the 14px glyph so the button is easy to land a click on. Sized
@@ -34,13 +30,9 @@ const HIT_CLASS =
   "relative inline-flex size-(--glyph-hit) shrink-0 items-center justify-center rounded-sm transition-colors duration-150 hover:bg-bg-tertiary focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-accent data-[popup-open]:bg-bg-tertiary";
 import { SkillRowMenu } from "./SkillRowMenu";
 
-/** The list header's cell. */
-export const HEADER_CELL_CLASS =
-  "h-9 text-caption font-medium tracking-[0.08em] text-text-tertiary uppercase";
-
-/** One row's frame: 36px, hairline below, no radius of its own. */
+/** One row's frame: 32px, hairline below, no radius of its own. */
 export const ROW_CLASS =
-  "group grid h-9 w-full min-w-0 items-center rounded-none border-0 border-b border-border-subtle text-left last:border-b-0";
+  "group grid h-8 w-full min-w-0 items-center rounded-none border-0 border-b border-border-subtle text-left last:border-b-0";
 
 const LEVEL_TEXT = {
   error: "text-error",
@@ -145,18 +137,12 @@ export function SkillNameCell({ skill }: { skill: InstalledSkill }) {
   );
 }
 
-/** Which of the two Tokens numbers sorts and highlights the column: the prompt cost every
- * harness pays on every turn, or the full SKILL.md cost paid only on use. */
-export type TokenSortKey = "prompt" | "full";
-
 /** Rows in the table's sort order: `name` and `used` order as the Sort select says; `size`
- * (the "largest" option, i.e. by tokens) orders by whichever of the two token numbers
- * `tokenSort` has selected, ties broken by name. */
+ * (the "largest" option) orders by the full SKILL.md token count, ties broken by name. */
 export function sortRows(
   skills: InstalledSkill[],
   sort: SortMode,
   statsBySkill: Map<string, SkillInvocationStats>,
-  tokenSort: TokenSortKey,
 ): InstalledSkill[] {
   const rows = [...skills];
   if (sort === "name") {
@@ -168,147 +154,127 @@ export function sortRows(
         (statsBySkill.get(a.name)?.last_30_days ?? 0),
     );
   } else {
-    const value = (skill: InstalledSkill) =>
-      tokenSort === "prompt" ? skill.description_tokens : skill.skill_md_tokens;
-    rows.sort((a, b) => value(b) - value(a) || a.name.localeCompare(b.name));
+    rows.sort((a, b) => b.skill_md_tokens - a.skill_md_tokens || a.name.localeCompare(b.name));
   }
   return rows;
 }
 
 /** Both token numbers for one skill: the prompt cost first (the "name: description" line every
- * harness loads on every turn), then the full SKILL.md count. Whichever matches `sortKey` reads
- * as the column's real value; the other stays quiet. */
-export function TokenPairCell({
-  skill,
-  sortKey,
-}: {
-  skill: InstalledSkill;
-  sortKey: TokenSortKey;
-}) {
+ * harness loads on every turn), then the full SKILL.md count, which is the one "Largest" sorts
+ * by and so the one that reads bold. */
+export function TokenPairCell({ skill }: { skill: InstalledSkill }) {
   const promptText = skill.description_tokens > 0 ? formatTokens(skill.description_tokens) : "–";
   return (
     <RichTooltip content={<TokensTooltip skill={skill} />}>
       <span className="inline-flex items-baseline justify-end gap-1.5 tabular-nums text-small">
-        <span className={sortKey === "prompt" ? "text-text-primary" : "text-text-tertiary"}>
-          {promptText}
-        </span>
-        <span className={sortKey === "full" ? "text-text-primary" : "text-text-tertiary"}>
-          {formatTokens(skill.skill_md_tokens)}
-        </span>
+        <span className="text-text-tertiary">{promptText}</span>
+        <span className="text-text-primary">{formatTokens(skill.skill_md_tokens)}</span>
       </span>
     </RichTooltip>
   );
 }
 
-const TOKEN_SORT_LABEL = { prompt: "Prompt", full: "Full" } satisfies Record<TokenSortKey, string>;
-const TOKEN_SORT_TIP = {
-  prompt: "Sort by prompt cost: the name + description line every harness loads on every turn",
-  full: "Sort by SKILL.md size: loaded when the skill is used",
-} satisfies Record<TokenSortKey, string>;
+type CheckboxChange = ComponentProps<typeof CheckboxControl>["onCheckedChange"];
 
-/** The Tokens header's two sort buttons, one per number `TokenPairCell` renders; clicking one
- * sets it as the sort key without a separate direction control (both sort descending). Only
- * changes row order while the table's own sort is "size" (largest); otherwise it just changes
- * which number reads bold. */
-export function TokenPairHeader({
-  sortKey,
-  onSort,
-}: {
-  sortKey: TokenSortKey;
-  onSort: (key: TokenSortKey) => void;
-}) {
+/** The state glyph, tooltipped, with an always-present `sr-only` name so the severity reads
+ * without a hover even though the icon itself is `aria-hidden`. `null` when the skill has
+ * nothing to say - the caller's cell renders empty rather than a placeholder. */
+export function RowGlyph({ state, size = 14 }: { state: RowState | null; size?: number }) {
+  if (!state) return null;
   return (
-    <span className="inline-flex h-9 items-center justify-self-end gap-1">
-      {(["prompt", "full"] as const).map((key) => {
-        const active = key === sortKey;
-        return (
-          <TooltipControl key={key} content={TOKEN_SORT_TIP[key]}>
-            <Button
-              variant="ghost"
-              size="xs"
-              aria-pressed={active}
-              className={`relative h-auto gap-0.5 px-1 py-0 text-caption font-medium tracking-[0.08em] uppercase before:absolute before:-inset-1 before:content-[''] ${
-                active ? "text-text-primary" : "text-text-tertiary"
-              }`}
-              onClick={() => onSort(key)}
-            >
-              {TOKEN_SORT_LABEL[key]}
-              {active && <ArrowDown size={10} aria-hidden />}
-            </Button>
-          </TooltipControl>
-        );
-      })}
-    </span>
+    <RichTooltip content={<StateTooltip state={state} />}>
+      <span className={`inline-flex items-center gap-1 ${LEVEL_TEXT[state.level]}`}>
+        {glyphFor(state, size)}
+        <span className="sr-only">{state.label}</span>
+      </span>
+    </RichTooltip>
   );
 }
 
-type CheckboxChange = ComponentProps<typeof CheckboxControl>["onCheckedChange"];
-
 interface LeadingCellProps {
   skill: InstalledSkill;
-  selectionMode: boolean;
-  checked: boolean;
-  onCheckedChange: CheckboxChange;
+  state: RowState | null;
   glyphSize: number;
   onOpen: () => void;
   onAct: (label: string) => void;
 }
 
-/** The row's leading cell: a checkbox sized to exactly fill `--glyph-hit` in select mode (zero
- * layout shift), otherwise the decision-state glyph (tooltipped) or the hover-only Ellipsis. */
-export function LeadingCell({
+/** The row's leading cell: the decision-state glyph behind a fixes menu, or nothing - the
+ * hover-only Ellipsis lives in `TrailingMenuCell` instead, since selection now has its own
+ * gutter column. */
+export function LeadingCell({ skill, state, glyphSize, onOpen, onAct }: LeadingCellProps) {
+  if (!isDecision(state)) return null;
+  return (
+    <SkillRowMenu
+      skill={skill}
+      state={state}
+      trigger={<RowGlyph state={state} size={glyphSize} />}
+      triggerClassName={HIT_CLASS}
+      triggerAriaLabel={state?.label}
+      onOpen={onOpen}
+      onAct={onAct}
+    />
+  );
+}
+
+interface TrailingMenuCellProps {
+  skill: InstalledSkill;
+  state: RowState | null;
+  glyphSize: number;
+  visible: boolean;
+  onOpen: () => void;
+  onAct: (label: string) => void;
+}
+
+/** The row's trailing Ellipsis menu: revealed on row hover/focus-within, or held visible while
+ * the row is checked (`visible`) or its own popup is open. No opacity transition. */
+export function TrailingMenuCell({
   skill,
-  selectionMode,
-  checked,
-  onCheckedChange,
+  state,
   glyphSize,
+  visible,
   onOpen,
   onAct,
-}: LeadingCellProps) {
-  if (selectionMode) {
-    return (
-      <span
-        className="inline-flex size-(--glyph-hit) shrink-0 items-center justify-center"
-        onClick={(e) => e.stopPropagation()}
-      >
-        <CheckboxControl
-          checked={checked}
-          onCheckedChange={onCheckedChange}
-          ariaLabel={`Select ${skill.name}`}
-        />
-      </span>
-    );
-  }
-
-  const state: RowState | null = rowState(skill);
-  if (state && isDecision(state)) {
-    return (
-      <SkillRowMenu
-        skill={skill}
-        state={state}
-        trigger={
-          <RichTooltip content={<StateTooltip state={state} />}>
-            <span className={`inline-flex ${LEVEL_TEXT[state.level]}`}>
-              {glyphFor(state, glyphSize)}
-            </span>
-          </RichTooltip>
-        }
-        triggerClassName={HIT_CLASS}
-        triggerAriaLabel={state.label}
-        onOpen={onOpen}
-        onAct={onAct}
-      />
-    );
-  }
+}: TrailingMenuCellProps) {
   return (
     <SkillRowMenu
       skill={skill}
       state={state}
       trigger={<Ellipsis size={glyphSize} aria-hidden />}
-      triggerClassName={`${HIT_CLASS} text-text-tertiary opacity-0 group-hover:opacity-100 group-focus-within:opacity-100 data-[popup-open]:opacity-100 transition-opacity duration-150`}
+      triggerClassName={`${HIT_CLASS} text-text-tertiary data-[popup-open]:opacity-100 ${
+        visible ? "opacity-100" : "opacity-0 group-hover:opacity-100 group-focus-within:opacity-100"
+      }`}
       triggerAriaLabel={`Actions · ${skill.name}`}
       onOpen={onOpen}
       onAct={onAct}
     />
+  );
+}
+
+interface SelectionCellProps {
+  skill: InstalledSkill;
+  checked: boolean;
+  visible: boolean;
+  onCheckedChange: CheckboxChange;
+}
+
+/** The 20px checkbox gutter: `opacity-0` until the row is hovered, focus-within, checked, or any
+ * row in the table is checked (`visible`). No transition. */
+export function SelectionCell({ skill, checked, visible, onCheckedChange }: SelectionCellProps) {
+  return (
+    <span
+      className={`inline-flex w-5 shrink-0 items-center justify-center ${
+        checked || visible
+          ? "opacity-100"
+          : "opacity-0 group-hover:opacity-100 group-focus-within:opacity-100"
+      }`}
+      onClick={(e) => e.stopPropagation()}
+    >
+      <CheckboxControl
+        checked={checked}
+        onCheckedChange={onCheckedChange}
+        ariaLabel={`Select ${skill.name}`}
+      />
+    </span>
   );
 }

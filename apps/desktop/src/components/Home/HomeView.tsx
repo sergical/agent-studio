@@ -7,9 +7,8 @@
 // ============================================================================
 
 import { useState } from "react";
-import type { ReactNode } from "react";
-import { ChevronDown } from "lucide-react";
-import { Button, Collapsible, CollapsiblePanel, CollapsibleTrigger } from "@skill-studio/ui";
+import type { CSSProperties, KeyboardEvent, ReactNode } from "react";
+import { Button, Collapsible, CollapsiblePanel } from "@skill-studio/ui";
 import {
   attentionGroups,
   homeInvocationCounts,
@@ -38,21 +37,40 @@ import type {
 } from "@skill-studio/lib";
 import { useAppStore } from "../../store/appStore";
 import { PageShell } from "../Shell/PageShell";
-import { DEFAULT_HARNESS_LIST } from "../SkillList/skill-row-state";
+import { GroupHead } from "../SkillList/GroupHead";
+import { DEFAULT_HARNESS_LIST, rowState, whereFacts } from "../SkillList/skill-row-state";
 import { HarnessStack } from "../SkillList/HarnessStack";
+import { ROW_CLASS, RowGlyph, SkillNameCell } from "../SkillList/SkillRowCells";
+import { SkillLocationCell } from "../SkillList/SkillLocationCell";
 import { InfoPopover } from "../ui/InfoPopover";
 import { MaterializeRootDialog } from "../ui/MaterializeRootDialog";
 import { TooltipControl } from "../ui/TooltipControl";
 
+/** Home's row's glyph hit box - the same size Skills uses, so the two lists line up. */
+const HOME_GLYPH_HIT = 28;
+const HOME_GLYPH_SIZE = 14;
+
 const RECENTLY_USED_COUNT = 5;
 const MAX_ROWS_PER_GROUP = 6;
+
+/** A row's `aria-rowindex`/`tabIndex` facts. */
+interface RowPosition {
+  rowIndex: number;
+  isFirst: boolean;
+}
+
+/** A row's `aria-rowindex`/`tabIndex` facts from its group's start offset and its position in
+ * that group - pure, so groups needn't share a mutable counter. */
+function rowAt(start: number, i: number): RowPosition {
+  return { rowIndex: start + i + 1, isFirst: start + i === 0 };
+}
 
 /** Text link style shared by every "Show all"/"Show everything"/"Learn more" affordance on Home. */
 const LINK_CLASS = "h-auto gap-1 p-0 text-small";
 
 /** One inbox row's trailing action - a text button or, on the "Recently used" rows, a plain count. */
 const ROW_ACTION_CLASS =
-  "h-9 min-w-10 justify-end p-0 text-right text-small text-text-tertiary hover:bg-transparent hover:text-accent";
+  "h-9 max-w-full justify-end truncate p-0 text-right text-small text-text-tertiary hover:bg-transparent hover:text-accent";
 
 /** The one filter that can be active at a time: a stat tile or the idle bar segment. */
 type HomeFilter = "broken" | "warn" | "upd" | "unused";
@@ -66,56 +84,69 @@ interface HomeViewProps {
   onSelectSkill: (name: string) => void;
 }
 
-/** One row of any inbox group: severity dot, name + harness marks, detail, one action. */
-function InboxRow({
-  severity,
+/**
+ * One row of any inbox group - the Stack row Skills uses, with the tokens
+ * column replaced by the group's own detail text and action node. The state
+ * glyph comes from `rowState(skill)`, not the group's own severity, so a
+ * skill with no state (e.g. a plain "recently used" row) shows no glyph.
+ */
+function HomeRow({
   skill,
   detail,
   action,
   onOpen,
+  rowIndex,
+  isFirst,
 }: {
-  severity?: "error" | "warning";
   skill: InstalledSkill;
   detail: ReactNode;
   action: ReactNode;
   onOpen: () => void;
+  rowIndex: number;
+  isFirst: boolean;
 }) {
+  function handleKeyDown(e: KeyboardEvent<HTMLDivElement>) {
+    if (e.key === "Enter") {
+      e.preventDefault();
+      onOpen();
+    }
+  }
   return (
-    <div className="grid h-9 grid-cols-[6px_minmax(0,260px)_minmax(0,1fr)_auto] items-center gap-3 border-b border-border-subtle py-0 pr-3 pl-4">
-      <span className="inline-flex size-1.5 shrink-0">
-        <span
-          className={`size-1.5 rounded-full ${severity === "error" ? "bg-error" : severity === "warning" ? "bg-warning" : ""}`}
-          aria-hidden="true"
-        />
-        {severity && <span className="sr-only">{severity === "error" ? "Error" : "Warning"}</span>}
-      </span>
-      <span className="flex min-w-0 items-center gap-2">
-        <Button
-          variant="ghost"
-          className="h-auto min-w-0 truncate p-0 text-left text-body text-text-primary hover:bg-transparent hover:text-accent"
-          onClick={onOpen}
-          title={skill.name}
-        >
-          {skill.name}
-        </Button>
+    <div
+      role="row"
+      aria-rowindex={rowIndex}
+      tabIndex={isFirst ? 0 : -1}
+      onClick={onOpen}
+      onKeyDown={handleKeyDown}
+      className={`${ROW_CLASS} grid-cols-[var(--glyph-hit)_minmax(0,1fr)_160px_148px_minmax(0,1fr)_88px] gap-x-3 px-3 hover:bg-bg-secondary focus-visible:outline-2 focus-visible:outline-accent -outline-offset-2`}
+      style={
+        // SAFETY: `--glyph-hit` is a custom property, not a known CSSProperties key; React
+        // passes it through to the style attribute as-is.
+        { "--glyph-hit": `${HOME_GLYPH_HIT}px` } as CSSProperties
+      }
+    >
+      {/* Not `contents`: `RowGlyph` renders nothing when the skill has no state, and a `contents`
+          wrapper around no children drops out of the grid, shifting every column after it. */}
+      <div role="gridcell" className="flex items-center justify-center">
+        <RowGlyph state={rowState(skill)} size={HOME_GLYPH_SIZE} />
+      </div>
+      <div role="gridcell" className="contents">
+        <SkillNameCell skill={skill} />
+      </div>
+      <div role="gridcell" className="contents">
+        <SkillLocationCell locations={whereFacts(skill, DEFAULT_HARNESS_LIST).locations} />
+      </div>
+      <div role="gridcell" className="contents">
         <HarnessStack skill={skill} harnessList={DEFAULT_HARNESS_LIST} />
-      </span>
-      <span className="select-text truncate text-small text-text-tertiary">{detail}</span>
-      {action}
-    </div>
-  );
-}
-
-/** A group's sticky header: chevron, label, count, spacer, optional extra action. Sits inside a `Collapsible`, whose `data-panel-open` drives the chevron. */
-function GroupHead({ label, count, extra }: { label: string; count: number; extra?: ReactNode }) {
-  return (
-    <div className="sticky top-0 z-1 flex h-8.5 w-full items-center gap-2 border-t border-b border-border-subtle bg-bg-secondary px-3">
-      <CollapsibleTrigger className="group/head flex h-full flex-1 items-center gap-2 text-left text-small font-semibold text-text-primary">
-        <ChevronDown className="size-3.5 shrink-0 -rotate-90 text-text-tertiary transition-transform group-data-panel-open/head:rotate-0" />
-        {label}
-        <span className="font-normal text-text-tertiary tabular-nums">{count}</span>
-      </CollapsibleTrigger>
-      {extra}
+      </div>
+      <div role="gridcell" className="contents">
+        <span className="select-text truncate text-small text-text-tertiary">{detail}</span>
+      </div>
+      {/* Not `contents`: a fixed-width, right-aligned box so the action column's size never
+          depends on its own content - that's what let the row's `1fr` columns drift per group. */}
+      <div role="gridcell" className="flex min-w-0 items-center justify-end overflow-hidden">
+        {action}
+      </div>
     </div>
   );
 }
@@ -608,6 +639,18 @@ export function HomeView({ snapshot, isLoading, onSelectSkill }: HomeViewProps) 
   };
   const goToInvocation = (invocation: InvocationPolicy) => goToSkills({ invocation });
 
+  // Row semantics match Skills: one continuous `aria-rowindex` across every visible group, and
+  // `tabIndex={0}` on only the very first rendered row - computed as plain offsets (each group's
+  // rendered count, capped at `MAX_ROWS_PER_GROUP` except "Recently used", which has none) rather
+  // than a mutable counter, so groups render independently of one another.
+  const groupCount = (id: GroupId, total: number, capped = true) =>
+    isGroupVisible(id) ? (capped ? Math.min(total, MAX_ROWS_PER_GROUP) : total) : 0;
+  const brokenStart = 0;
+  const warnStart = brokenStart + groupCount("broken", broken.length);
+  const updStart = warnStart + groupCount("warn", warnings.length);
+  const unusedStart = updStart + groupCount("upd", updates.length);
+  const recStart = unusedStart + groupCount("unused", unused.length);
+
   return (
     <PageShell title="Home">
       <HomeStatTiles
@@ -630,7 +673,7 @@ export function HomeView({ snapshot, isLoading, onSelectSkill }: HomeViewProps) 
         toggleFilter={toggleFilter}
       />
 
-      <div className="flex flex-col">
+      <div className="flex flex-col" role="grid" aria-label="Home">
         {filter && (
           <div className="flex h-9 items-center gap-2.5 px-3 text-small text-text-tertiary">
             Showing one group ·{" "}
@@ -649,30 +692,39 @@ export function HomeView({ snapshot, isLoading, onSelectSkill }: HomeViewProps) 
         {broken.length > 0 && isGroupVisible("broken") && (
           <Collapsible
             data-group="broken"
+            role="rowgroup"
             open={isGroupExpanded("broken")}
             onOpenChange={() => toggleGroup("broken")}
           >
-            <GroupHead label="Broken" count={broken.length} />
+            <div role="row">
+              <div role="gridcell">
+                <GroupHead label="Broken" count={broken.length} />
+              </div>
+            </div>
             <CollapsiblePanel>
               <div className="flex flex-col">
-                {broken.slice(0, MAX_ROWS_PER_GROUP).map((issue) => (
-                  <InboxRow
-                    key={`${issue.kind}-${issue.skill.name}-${issue.detail}`}
-                    severity="error"
-                    skill={issue.skill}
-                    onOpen={() => onSelectSkill(issue.skill.name)}
-                    detail={<span title={issue.detail}>{issue.detail}</span>}
-                    action={
-                      <Button
-                        variant="ghost"
-                        className={ROW_ACTION_CLASS}
-                        onClick={() => onSelectSkill(issue.skill.name)}
-                      >
-                        {issueActionLabel(issue.kind)}
-                      </Button>
-                    }
-                  />
-                ))}
+                {broken.slice(0, MAX_ROWS_PER_GROUP).map((issue, i) => {
+                  const { rowIndex, isFirst } = rowAt(brokenStart, i);
+                  return (
+                    <HomeRow
+                      key={`${issue.kind}-${issue.skill.name}-${issue.detail}`}
+                      skill={issue.skill}
+                      rowIndex={rowIndex}
+                      isFirst={isFirst}
+                      onOpen={() => onSelectSkill(issue.skill.name)}
+                      detail={<span>{issue.detail}</span>}
+                      action={
+                        <Button
+                          variant="ghost"
+                          className={ROW_ACTION_CLASS}
+                          onClick={() => onSelectSkill(issue.skill.name)}
+                        >
+                          {issueActionLabel(issue.kind)}
+                        </Button>
+                      }
+                    />
+                  );
+                })}
                 {broken.length > MAX_ROWS_PER_GROUP && (
                   <ShowAllLink
                     count={broken.length}
@@ -688,36 +740,45 @@ export function HomeView({ snapshot, isLoading, onSelectSkill }: HomeViewProps) 
         {warnings.length > 0 && isGroupVisible("warn") && (
           <Collapsible
             data-group="warn"
+            role="rowgroup"
             open={isGroupExpanded("warn")}
             onOpenChange={() => toggleGroup("warn")}
           >
-            <GroupHead label="Warnings" count={warnings.length} />
+            <div role="row">
+              <div role="gridcell">
+                <GroupHead label="Warnings" count={warnings.length} />
+              </div>
+            </div>
             <CollapsiblePanel>
               <div className="flex flex-col">
-                {warnings.slice(0, MAX_ROWS_PER_GROUP).map((issue: HealthIssue) => (
-                  <InboxRow
-                    key={`${issue.kind}-${issue.skill.name}-${issue.detail}`}
-                    severity="warning"
-                    skill={issue.skill}
-                    onOpen={() => onSelectSkill(issue.skill.name)}
-                    detail={<span title={issue.detail}>{issue.detail}</span>}
-                    action={
-                      <WarningRowAction
-                        issue={issue}
-                        onCompare={() => openSkill(issue.skill.name, undefined, "compare")}
-                        onConvertLinkedRoot={(harness, harnessLabel, root) =>
-                          setLinkedRootDialog({
-                            target: lifecycleTargetForHarnessRoot(issue.skill, harness, root),
-                            harness,
-                            harnessLabel,
-                            root,
-                          })
-                        }
-                        onOpen={() => onSelectSkill(issue.skill.name)}
-                      />
-                    }
-                  />
-                ))}
+                {warnings.slice(0, MAX_ROWS_PER_GROUP).map((issue: HealthIssue, i) => {
+                  const { rowIndex, isFirst } = rowAt(warnStart, i);
+                  return (
+                    <HomeRow
+                      key={`${issue.kind}-${issue.skill.name}-${issue.detail}`}
+                      skill={issue.skill}
+                      rowIndex={rowIndex}
+                      isFirst={isFirst}
+                      onOpen={() => onSelectSkill(issue.skill.name)}
+                      detail={<span>{issue.detail}</span>}
+                      action={
+                        <WarningRowAction
+                          issue={issue}
+                          onCompare={() => openSkill(issue.skill.name, undefined, "compare")}
+                          onConvertLinkedRoot={(harness, harnessLabel, root) =>
+                            setLinkedRootDialog({
+                              target: lifecycleTargetForHarnessRoot(issue.skill, harness, root),
+                              harness,
+                              harnessLabel,
+                              root,
+                            })
+                          }
+                          onOpen={() => onSelectSkill(issue.skill.name)}
+                        />
+                      }
+                    />
+                  );
+                })}
                 {warnings.length > MAX_ROWS_PER_GROUP && (
                   <ShowAllLink
                     count={warnings.length}
@@ -737,33 +798,40 @@ export function HomeView({ snapshot, isLoading, onSelectSkill }: HomeViewProps) 
             onToggle={() => toggleGroup("upd")}
             onSelectSkill={onSelectSkill}
             onShowAll={() => setActiveView({ kind: "skills" })}
+            start={updStart}
           />
         )}
 
         {unused.length > 0 && isGroupVisible("unused") && (
           <Collapsible
             data-group="unused"
+            role="rowgroup"
             open={isGroupExpanded("unused")}
             onOpenChange={() => toggleGroup("unused")}
           >
-            <GroupHead label="Not used in the last 30 days" count={unused.length} />
+            <div role="row">
+              <div role="gridcell">
+                <GroupHead label="Not used in the last 30 days" count={unused.length} />
+              </div>
+            </div>
             <CollapsiblePanel>
               <div className="flex flex-col">
-                {unused.slice(0, MAX_ROWS_PER_GROUP).map((skill) => {
+                {unused.slice(0, MAX_ROWS_PER_GROUP).map((skill, i) => {
                   const projectDeployment = skill.deployments.find((d) => d.project_path);
                   const scopeLabel = projectDeployment?.project_path
                     ? (projectDeployment.project_path.split("/").filter(Boolean).pop() ?? "Global")
                     : "Global";
                   const modelInvocable = skill.invocation !== "user-only";
+                  const { rowIndex, isFirst } = rowAt(unusedStart, i);
                   return (
-                    <InboxRow
+                    <HomeRow
                       key={skill.name}
                       skill={skill}
+                      rowIndex={rowIndex}
+                      isFirst={isFirst}
                       onOpen={() => onSelectSkill(skill.name)}
                       detail={
-                        <span
-                          title={`${scopeLabel} · installed ${formatRelativeTime(skill.installed_at)}`}
-                        >
+                        <span>
                           {scopeLabel} · installed {formatRelativeTime(skill.installed_at)} ·{" "}
                           {modelInvocable ? (
                             "description in every prompt"
@@ -805,29 +873,39 @@ export function HomeView({ snapshot, isLoading, onSelectSkill }: HomeViewProps) 
         {recent.length > 0 && isGroupVisible("rec") && (
           <Collapsible
             data-group="rec"
+            role="rowgroup"
             open={isGroupExpanded("rec")}
             onOpenChange={() => toggleGroup("rec")}
           >
-            <GroupHead label="Recently used" count={recent.length} />
+            <div role="row">
+              <div role="gridcell">
+                <GroupHead label="Recently used" count={recent.length} />
+              </div>
+            </div>
             <CollapsiblePanel>
               <div className="flex flex-col">
-                {recent.map(({ skill, lastUsed, projectLabel, usesIn30Days }) => (
-                  <InboxRow
-                    key={skill.name}
-                    skill={skill}
-                    onOpen={() => onSelectSkill(skill.name)}
-                    detail={
-                      <span>
-                        {projectLabel ?? "Global"} · {formatRelativeTime(lastUsed)}
-                      </span>
-                    }
-                    action={
-                      <span className={`${ROW_ACTION_CLASS} tabular-nums`}>
-                        {usesIn30Days} uses
-                      </span>
-                    }
-                  />
-                ))}
+                {recent.map(({ skill, lastUsed, projectLabel, usesIn30Days }, i) => {
+                  const { rowIndex, isFirst } = rowAt(recStart, i);
+                  return (
+                    <HomeRow
+                      key={skill.name}
+                      skill={skill}
+                      rowIndex={rowIndex}
+                      isFirst={isFirst}
+                      onOpen={() => onSelectSkill(skill.name)}
+                      detail={
+                        <span>
+                          {projectLabel ?? "Global"} · {formatRelativeTime(lastUsed)}
+                        </span>
+                      }
+                      action={
+                        <span className={`${ROW_ACTION_CLASS} tabular-nums`}>
+                          {usesIn30Days} uses
+                        </span>
+                      }
+                    />
+                  );
+                })}
                 <ShowAllLink
                   count={0}
                   label="See all activity"
@@ -860,12 +938,15 @@ function UpdatesGroup({
   onToggle,
   onSelectSkill,
   onShowAll,
+  start,
 }: {
   updates: InstalledSkill[];
   isExpanded: boolean;
   onToggle: () => void;
   onSelectSkill: (name: string) => void;
   onShowAll: () => void;
+  /** This group's offset into the page's continuous `aria-rowindex` sequence. */
+  start: number;
 }) {
   const [isUpdatingAll, setIsUpdatingAll] = useState(false);
   const addToast = useAppStore((state) => state.addToast);
@@ -903,48 +984,57 @@ function UpdatesGroup({
   };
 
   return (
-    <Collapsible data-group="upd" open={isExpanded} onOpenChange={onToggle}>
-      <GroupHead
-        label="Updates"
-        count={updates.length}
-        extra={
-          updates.length > 1 && (
-            <Button
-              variant="link"
-              className="h-auto p-0 text-small disabled:text-text-quaternary"
-              onClick={(e) => {
-                e.stopPropagation();
-                handleUpdateAll();
-              }}
-              disabled={isUpdatingAll}
-            >
-              {isUpdatingAll ? "Updating…" : "Update all"}
-            </Button>
-          )
-        }
-      />
+    <Collapsible data-group="upd" role="rowgroup" open={isExpanded} onOpenChange={onToggle}>
+      <div role="row">
+        <div role="gridcell">
+          <GroupHead
+            label="Updates"
+            count={updates.length}
+            extra={
+              updates.length > 1 && (
+                <Button
+                  variant="link"
+                  className="h-auto p-0 text-small disabled:text-text-quaternary"
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    handleUpdateAll();
+                  }}
+                  disabled={isUpdatingAll}
+                >
+                  {isUpdatingAll ? "Updating…" : "Update all"}
+                </Button>
+              )
+            }
+          />
+        </div>
+      </div>
       <CollapsiblePanel>
         <div className="flex flex-col">
-          {updates.slice(0, MAX_ROWS_PER_GROUP).map((skill) => (
-            <InboxRow
-              key={skill.name}
-              skill={skill}
-              onOpen={() => onSelectSkill(skill.name)}
-              detail={
-                <>
-                  {skill.content_hash && skill.update_commit && (
+          {updates.slice(0, MAX_ROWS_PER_GROUP).map((skill, i) => {
+            const { rowIndex, isFirst } = rowAt(start, i);
+            return (
+              <HomeRow
+                key={skill.name}
+                skill={skill}
+                rowIndex={rowIndex}
+                isFirst={isFirst}
+                onOpen={() => onSelectSkill(skill.name)}
+                detail={
+                  <>
+                    {skill.content_hash && skill.update_commit && (
+                      <span className="font-mono text-caption whitespace-nowrap text-text-tertiary">
+                        {shortSha(skill.content_hash)} → {shortSha(skill.update_commit)}
+                      </span>
+                    )}{" "}
                     <span className="font-mono text-caption whitespace-nowrap text-text-tertiary">
-                      {shortSha(skill.content_hash)} → {shortSha(skill.update_commit)}
+                      {formatTokens(skill.description_tokens)} tokens
                     </span>
-                  )}{" "}
-                  <span className="font-mono text-caption whitespace-nowrap text-text-tertiary">
-                    {formatTokens(skill.description_tokens)} tokens
-                  </span>
-                </>
-              }
-              action={<PullLatestButton skill={skill} />}
-            />
-          ))}
+                  </>
+                }
+                action={<PullLatestButton skill={skill} />}
+              />
+            );
+          })}
           {updates.length > MAX_ROWS_PER_GROUP && (
             <ShowAllLink count={updates.length} label="Show all" onClick={onShowAll} />
           )}
