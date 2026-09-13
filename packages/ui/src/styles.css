@@ -90,13 +90,5 @@
   --color-input: var(--color-border);
   --color-ring: var(--color-border-focus);
 
-  --radius-sm: var(--radius-xs);
-  --radius-md: var(--radius-sm);
-  --radius-lg: var(--radius-md);
-  --radius-xl: var(--radius-lg);
-  --radius-2xl: var(--radius-xl);
-  --radius-3xl: var(--radius-xl);
-  --radius-4xl: var(--radius-xl);
-
   --font-heading: var(--font-sans);
 }
