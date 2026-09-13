@@ -5,10 +5,8 @@
 // ============================================================================
 
 import { useEffect, useRef } from "react";
-import { Button } from "@skill-studio/ui";
 import { HarnessIcon } from "../ui/HarnessIcon";
 import { PageShell } from "../Shell/PageShell";
-import { useAppStore } from "../../store/appStore";
 import type { LearnSection } from "../../store/appStore";
 
 interface LearnViewProps {
@@ -29,7 +27,6 @@ const SECTIONS: { key: LearnSection; title: string }[] = [
  * page top.
  */
 export function LearnView({ section }: LearnViewProps) {
-  const setActiveView = useAppStore((state) => state.setActiveView);
   const headingRefs = useRef(new Map<LearnSection, HTMLHeadingElement>());
 
   useEffect(() => {
@@ -40,18 +37,7 @@ export function LearnView({ section }: LearnViewProps) {
   }, [section]);
 
   return (
-    <PageShell
-      title="Learn"
-      actions={
-        <Button
-          variant="ghost"
-          className="h-auto shrink-0 gap-1.5 p-1 text-small text-text-tertiary"
-          onClick={() => setActiveView({ kind: "home" })}
-        >
-          ← Home
-        </Button>
-      }
-    >
+    <PageShell title="Learn">
       <div className="grid grid-cols-[180px_minmax(0,1fr)] items-start gap-8">
         <nav className="sticky top-6 flex flex-col gap-0.5">
           {SECTIONS.map(({ key, title }) => (

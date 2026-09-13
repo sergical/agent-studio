@@ -12,7 +12,7 @@ import { SkillCoverageMatrix } from "../Coverage/SkillCoverageMatrix";
 import { ScanPartialBanner } from "./ScanPartialBanner";
 import { SkillListTable } from "./SkillListTable";
 import type { SortMode } from "../../lib/skill-list-sort";
-import { SkillListFilterBar } from "./SkillListFilterBar";
+import { SkillListActiveFilters, SkillListFilterBar } from "./SkillListFilterBar";
 import { registerSkillProjects, unregisterSkillProject } from "../../lib/skill-api";
 import { collectDashboardIssues } from "@skill-studio/lib";
 import { applySkillListFilter, isProjectScope } from "@skill-studio/lib";
@@ -127,22 +127,30 @@ export function SkillsView({ snapshot, onSelectSkill }: SkillsViewProps) {
   };
 
   return (
-    <PageShell title="Skills">
-      {snapshot?.scan_partial && <ScanPartialBanner observations={snapshot.scan_observations} />}
-      <SkillListFilterBar
+    <PageShell
+      title="Skills"
+      toolbar={
+        <SkillListFilterBar
+          filter={filter}
+          onChange={setSkillListFilter}
+          projects={projects}
+          onAddProject={handleAddProject}
+          onRemoveProject={handleRemoveProject}
+          showCoverage={showCoverage}
+          onToggleCoverage={setShowCoverage}
+          resultCount={rows.length}
+          sort={sort}
+          onSortChange={setSort}
+          snapshot={snapshot}
+        />
+      }
+    >
+      <SkillListActiveFilters
         filter={filter}
         onChange={setSkillListFilter}
         onReset={resetSkillListFilter}
-        projects={projects}
-        onAddProject={handleAddProject}
-        onRemoveProject={handleRemoveProject}
-        showCoverage={showCoverage}
-        onToggleCoverage={setShowCoverage}
-        resultCount={rows.length}
-        sort={sort}
-        onSortChange={setSort}
-        snapshot={snapshot}
       />
+      {snapshot?.scan_partial && <ScanPartialBanner observations={snapshot.scan_observations} />}
       {showCoverage ? (
         <SkillCoverageMatrix skills={rows} onSelectSkill={onSelectSkill} />
       ) : (

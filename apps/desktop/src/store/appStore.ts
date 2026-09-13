@@ -88,6 +88,9 @@ interface AppState {
   skillListFilter: SkillListFilter;
   setSkillListFilter: (patch: Partial<SkillListFilter>) => void;
   resetSkillListFilter: () => void;
+  /** Bumped by the sidebar's search icon so the filter bar's search input can focus itself. */
+  skillSearchFocusRequest: number;
+  requestSkillSearchFocus: () => void;
   /** Whether the Skills view shows the coverage matrix instead of the table. */
   showCoverage: boolean;
   setShowCoverage: (show: boolean) => void;
@@ -246,6 +249,10 @@ export const useAppStore = create<AppState>((set, get) => ({
         ? { skillListFilter }
         : { skillListFilter, selectedSkillPaths: new Set(), selectionMode: false };
     }),
+
+  skillSearchFocusRequest: 0,
+  requestSkillSearchFocus: () =>
+    set((state) => ({ skillSearchFocusRequest: state.skillSearchFocusRequest + 1 })),
 
   showCoverage: false,
   setShowCoverage: (show) => set({ showCoverage: show }),

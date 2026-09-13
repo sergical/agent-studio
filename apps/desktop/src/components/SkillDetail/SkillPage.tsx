@@ -6,8 +6,6 @@
 // ============================================================================
 
 import { useCallback, useEffect, useEffectEvent, useRef, useState } from "react";
-import { ArrowLeft } from "lucide-react";
-import { Button } from "@skill-studio/ui";
 import {
   forkSkill,
   previewSkillFrontmatterRepair,
@@ -25,8 +23,10 @@ import {
 import type { Deployment, FrontmatterRepairPreview, InstalledSkill } from "@skill-studio/lib";
 import type { ActiveView } from "../../store/appStore";
 import { useAppStore } from "../../store/appStore";
+import { PageShell } from "../Shell/PageShell";
 import { DiscardChangesDialog } from "./DiscardChangesDialog";
 import { InstalledSkillHeader } from "./InstalledSkillHeader";
+import { backLabel } from "./skill-page-nav";
 import { SkillAssistantDrawer } from "./SkillAssistantDrawer";
 import { SkillAssistantPanel } from "./SkillAssistantPanel";
 import { useSkillAssistantNavigation } from "./skill-assistant-view-policy";
@@ -367,31 +367,19 @@ export function SkillPage({
   };
 
   if (!skill) {
+    const name = activeView.kind === "skill" ? activeView.name : "";
     return (
-      <div className="mx-auto flex max-w-[1200px] flex-col gap-6 px-8 pt-9 pb-7">
-        <div className="flex items-center gap-4">
-          <Button
-            variant="ghost"
-            className="h-auto shrink-0 gap-1.5 p-1 text-small text-text-tertiary"
-            onClick={onBack}
-            aria-label="Back"
-          >
-            <ArrowLeft size={16} />
-            <span>{from.kind === "home" ? "Home" : "Back"}</span>
-          </Button>
-        </div>
+      <PageShell title={name} parent={{ label: backLabel(from), onClick: onBack }}>
         <p className="text-body text-text-tertiary">This skill is no longer installed.</p>
-      </div>
+      </PageShell>
     );
   }
 
   return (
-    <div className="mx-auto flex max-w-[1200px] flex-col gap-6 px-8 pt-9 pb-7">
+    <PageShell title={skill.name} parent={{ label: backLabel(from), onClick: onBack }}>
       <InstalledSkillHeader
         skill={skill}
         deployment={deployment ?? undefined}
-        from={from}
-        onBack={onBack}
         onRemoveComplete={onRemoveComplete}
         isAssistantOpen={isAssistantOpen}
         onOpenAssistant={openAssistant}
@@ -487,6 +475,6 @@ export function SkillPage({
           setPendingDiscard(null);
         }}
       />
-    </div>
+    </PageShell>
   );
 }

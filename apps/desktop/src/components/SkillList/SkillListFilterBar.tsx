@@ -4,6 +4,8 @@
 // the sidebar - see the design rule in spec-ux-1.md section C.
 // ============================================================================
 
+import { useEffect, useRef } from "react";
+import type { KeyboardEvent } from "react";
 import { ChevronDown, LayoutGrid, List, ListFilter, Search, X } from "lucide-react";
 import { ask } from "@tauri-apps/plugin-dialog";
 import { Button, Input, ToggleGroup, ToggleGroupItem } from "@skill-studio/ui";
@@ -25,6 +27,7 @@ import { TooltipControl } from "../ui/TooltipControl";
 import { SORT_ITEMS, isSortMode } from "../../lib/skill-list-sort";
 import type { SortMode } from "../../lib/skill-list-sort";
 import { singleSelectToggleValue } from "../../lib/single-select-toggle-group";
+import { useAppStore } from "../../store/appStore";
 
 // No "plugin" here: plugin-shipped skills have their own place (PluginSkillsView).
 const SOURCE_KINDS: SkillSourceKind[] = ["dotagents", "skills-sh", "in-repo", "manual", "fork"];
@@ -55,8 +58,6 @@ const SEGMENTED_TRIGGER_CLASS =
 interface SkillListFilterBarProps {
   filter: SkillListFilter;
   onChange: (filter: SkillListFilter) => void;
-  /** "Clear all" on the active-chips row - must replace the whole filter, not merge a patch (a merge would keep the very fields being cleared). */
-  onReset: () => void;
   projects: string[];
   onAddProject: () => void;
   /** Stops tracking `path` - "Stop tracking" on the project menu's row for the selected project. */
@@ -121,7 +122,6 @@ function filterMenuCount(filter: SkillListFilter): number {
 export function SkillListFilterBar({
   filter,
   onChange,
-  onReset,
   projects,
   onAddProject,
   onRemoveProject,
@@ -148,18 +148,31 @@ export function SkillListFilterBar({
     await onRemoveProject(path);
   }
 
-  const activeCount = activeFilterCount(filter);
   const selectedProject = isProjectScope(filter.scope) ? filter.scope.project : undefined;
+  const searchInputRef = useRef<HTMLInputElement>(null);
+  const searchFocusRequest = useAppStore((state) => state.skillSearchFocusRequest);
+  useEffect(() => {
+    if (searchFocusRequest > 0) searchInputRef.current?.focus();
+  }, [searchFocusRequest]);
+
+  function handleSearchKeyDown(e: KeyboardEvent<HTMLInputElement>) {
+    if (e.key === "Escape") {
+      onChange({ ...filter, query: "" });
+      searchInputRef.current?.blur();
+    }
+  }
 
   return (
-    <div className="flex flex-col gap-2.5">
-      <div className="flex flex-wrap items-center gap-2.5">
-        <div className="relative flex w-60 items-center text-text-tertiary">
-          <Search size={13} className="pointer-events-none absolute left-3" />
+    <div className="flex w-full items-center gap-2">
+      <div className="flex items-center gap-2">
+        <div className="relative flex w-48 items-center text-text-tertiary">
+          <Search size={12} className="pointer-events-none absolute left-2.5" />
           <Input
-            className="h-(--control-height) w-full pr-3 pl-8"
+            ref={searchInputRef}
+            className="h-(--control-height) w-full pr-2 pl-7"
             value={filter.query}
             onChange={(e) => onChange({ ...filter, query: e.target.value })}
+            onKeyDown={handleSearchKeyDown}
             placeholder="Filter skills…"
             aria-label="Filter skills"
           />
@@ -172,10 +185,10 @@ export function SkillListFilterBar({
             value={filter.scope === "all" || filter.scope === "global" ? [filter.scope] : []}
             onValueChange={(next) => singleSelectToggleValue<"all" | "global">(next, setScope)}
           >
-            <ToggleGroupItem value="all" className="h-full px-3 text-body">
+            <ToggleGroupItem value="all" className="h-full px-2.5 text-body">
               All
             </ToggleGroupItem>
-            <ToggleGroupItem value="global" className="h-full px-3 text-body">
+            <ToggleGroupItem value="global" className="h-full px-2.5 text-body">
               Global
             </ToggleGroupItem>
           </ToggleGroup>
@@ -295,9 +308,9 @@ export function SkillListFilterBar({
             ))}
           </MenuRadioGroup>
         </MenuControl>
+      </div>
 
-        <div className="flex-1" />
-
+      <div className="ml-auto flex items-center gap-2">
         <span className="whitespace-nowrap text-small tabular-nums text-text-tertiary">
           {resultCount} skill{resultCount !== 1 ? "s" : ""}
         </span>
@@ -339,56 +352,74 @@ export function SkillListFilterBar({
           </TooltipControl>
         </ToggleGroup>
       </div>
+    </div>
+  );
+}
 
-      {activeCount > 0 && (
-        <div className="flex flex-wrap items-center gap-1.5">
-          {filter.scope !== "all" && (
-            <ActiveChip
-              label={
-                filter.scope === "global"
-                  ? "Global"
-                  : filter.scope === "parked"
-                    ? "Parked"
-                    : projectScopeLabel(filter)
-              }
-              onClear={() => setScope("all")}
-            />
-          )}
-          {filter.harness && (
-            <ActiveChip
-              label={filter.harness}
-              onClear={() => onChange({ ...filter, harness: undefined })}
-            />
-          )}
-          {filter.source && (
-            <ActiveChip
-              label={SOURCE_KIND_LABELS[filter.source]}
-              onClear={() => onChange({ ...filter, source: undefined })}
-            />
-          )}
-          {filter.issue && (
-            <ActiveChip
-              label={filter.issue === "any" ? "Has issues" : filter.issue}
-              onClear={() => onChange({ ...filter, issue: undefined })}
-            />
-          )}
-          {filter.invocation && (
-            <ActiveChip
-              label={INVOCATION_LABELS[filter.invocation]}
-              onClear={() => onChange({ ...filter, invocation: undefined })}
-            />
-          )}
-          {filter.usage && (
-            <ActiveChip
-              label={USAGE_LABELS[filter.usage]}
-              onClear={() => onChange({ ...filter, usage: undefined })}
-            />
-          )}
-          <Button variant="ghost" size="xs" className="px-2 text-text-tertiary" onClick={onReset}>
-            Clear all
-          </Button>
-        </div>
+interface SkillListActiveFiltersProps {
+  filter: SkillListFilter;
+  onChange: (filter: SkillListFilter) => void;
+  /** "Clear all" - must replace the whole filter, not merge a patch (a merge would keep the very fields being cleared). */
+  onReset: () => void;
+}
+
+/**
+ * The removable chip row for the Skills view's active filters. Rendered as
+ * its own content row above the list (not inside the fixed-height toolbar)
+ * so a wide set of active filters never clips against the toolbar's 40px
+ * height.
+ */
+export function SkillListActiveFilters({ filter, onChange, onReset }: SkillListActiveFiltersProps) {
+  const activeCount = activeFilterCount(filter);
+  if (activeCount === 0) return null;
+
+  return (
+    <div className="flex flex-wrap items-center gap-1.5">
+      {filter.scope !== "all" && (
+        <ActiveChip
+          label={
+            filter.scope === "global"
+              ? "Global"
+              : filter.scope === "parked"
+                ? "Parked"
+                : projectScopeLabel(filter)
+          }
+          onClear={() => onChange({ ...filter, scope: "all" })}
+        />
       )}
+      {filter.harness && (
+        <ActiveChip
+          label={filter.harness}
+          onClear={() => onChange({ ...filter, harness: undefined })}
+        />
+      )}
+      {filter.source && (
+        <ActiveChip
+          label={SOURCE_KIND_LABELS[filter.source]}
+          onClear={() => onChange({ ...filter, source: undefined })}
+        />
+      )}
+      {filter.issue && (
+        <ActiveChip
+          label={filter.issue === "any" ? "Has issues" : filter.issue}
+          onClear={() => onChange({ ...filter, issue: undefined })}
+        />
+      )}
+      {filter.invocation && (
+        <ActiveChip
+          label={INVOCATION_LABELS[filter.invocation]}
+          onClear={() => onChange({ ...filter, invocation: undefined })}
+        />
+      )}
+      {filter.usage && (
+        <ActiveChip
+          label={USAGE_LABELS[filter.usage]}
+          onClear={() => onChange({ ...filter, usage: undefined })}
+        />
+      )}
+      <Button variant="ghost" size="xs" className="px-2 text-text-tertiary" onClick={onReset}>
+        Clear all
+      </Button>
     </div>
   );
 }

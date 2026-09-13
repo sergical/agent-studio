@@ -5,10 +5,10 @@
 // ============================================================================
 
 import { useEffect, useRef, useState } from "react";
-import type { KeyboardEvent } from "react";
 import {
   Activity as ActivityIcon,
   BookOpen,
+  Layers,
   LayoutDashboard,
   Moon,
   Package,
@@ -20,7 +20,7 @@ import {
   Settings as SettingsIcon,
   Sun,
 } from "lucide-react";
-import { Button, Input } from "@skill-studio/ui";
+import { Button } from "@skill-studio/ui";
 import { ownSkillsView, pluginSkillsView } from "@skill-studio/lib";
 import { defaultSkillListFilter } from "@skill-studio/lib";
 import { isFeatureEnabled } from "../../lib/feature-flags";
@@ -71,7 +71,7 @@ export function Sidebar({ snapshot, emittedSnapshotRevision, requestRescan }: Si
   const openAddSkillSheet = useAppStore((state) => state.openAddSkillSheet);
   const resolvedTheme = useAppStore((state) => state.resolvedTheme);
   const setTheme = useAppStore((state) => state.setTheme);
-  const searchInputRef = useRef<HTMLInputElement>(null);
+  const requestSkillSearchFocus = useAppStore((state) => state.requestSkillSearchFocus);
 
   const own = ownSkillsView(snapshot?.skills ?? []);
   const skillsCount = own.length;
@@ -84,19 +84,9 @@ export function Sidebar({ snapshot, emittedSnapshotRevision, requestRescan }: Si
   const skillsActive = anchorView.kind === "skills" && !inParked;
   const packsEnabled = isFeatureEnabled("skill-packs");
 
-  // Typing while on another view switches to Skills directly in the change
-  // handler, so the query always has somewhere to act - no effect-based
-  // redirect, which would otherwise fire on every store update.
-  function handleSearchChange(value: string) {
-    setSkillListFilter({ query: value });
+  function goToSearch() {
     if (anchorView.kind !== "skills") setActiveView({ kind: "skills" });
-  }
-
-  function handleSearchKeyDown(e: KeyboardEvent<HTMLInputElement>) {
-    if (e.key === "Escape") {
-      setSkillListFilter({ query: "" });
-      searchInputRef.current?.blur();
-    }
+    requestSkillSearchFocus();
   }
 
   useEffect(() => {
@@ -131,114 +121,120 @@ export function Sidebar({ snapshot, emittedSnapshotRevision, requestRescan }: Si
   const spinning = pendingRescanSnapshotRevision !== null;
 
   const itemClass = (active: boolean) =>
-    `grid h-[30px] w-full grid-cols-[15px_minmax(0,1fr)_auto] gap-2 rounded-sm px-2.5 text-left text-body ${
-      active ? "bg-accent-soft text-text-primary" : "text-text-secondary"
-    }`;
-  const iconButtonClass = "rounded-sm text-text-tertiary";
+    `grid h-6.5 w-full grid-cols-[14px_minmax(0,1fr)_auto] items-center gap-2 rounded-sm px-2 text-left text-body ${active ? "bg-bg-active text-text-primary" : "text-text-secondary hover:bg-bg-hover hover:text-text-primary"}`;
+  const iconButtonClass = "rounded-sm text-text-tertiary hover:text-text-primary";
 
   return (
-    <nav className="flex w-60 shrink-0 flex-col overflow-hidden border-r border-border bg-bg-secondary">
+    <nav className="flex w-60 shrink-0 flex-col overflow-hidden">
       <div data-tauri-drag-region className="h-9 shrink-0" />
-      <div className="flex flex-col gap-px px-2.5 pt-1 pb-2.5">
-        <Input
-          ref={searchInputRef}
-          type="search"
-          aria-label="Search skills"
-          placeholder="Search skills…"
-          value={skillListFilter.query}
-          onChange={(e) => handleSearchChange(e.target.value)}
-          onKeyDown={handleSearchKeyDown}
-        />
-        <Button
-          variant="default"
-          className="mt-1.5 h-[30px] gap-1.5 rounded-sm bg-accent-soft text-body text-text-primary"
-          onClick={() => openAddSkillSheet()}
-        >
-          <Plus size={15} />
-          <span>Add skill</span>
-        </Button>
+      <div className="flex h-7 shrink-0 items-center justify-between pr-1.5 pl-3.5">
+        <span className="text-small font-semibold text-text-primary">Skill Studio</span>
+        <div className="flex items-center gap-0.5">
+          <TooltipControl content="Search skills">
+            <Button
+              variant="ghost"
+              size="icon-xs"
+              className={iconButtonClass}
+              aria-label="Search skills"
+              onClick={goToSearch}
+            >
+              <Search size={14} />
+            </Button>
+          </TooltipControl>
+          <TooltipControl content="Add skill">
+            <Button
+              variant="ghost"
+              size="icon-xs"
+              className={iconButtonClass}
+              aria-label="Add skill"
+              onClick={() => openAddSkillSheet()}
+            >
+              <Plus size={14} />
+            </Button>
+          </TooltipControl>
+        </div>
       </div>
 
       <div className="flex min-h-0 flex-1 flex-col overflow-y-auto">
-      <div className="flex flex-col gap-px px-2.5 pb-2.5 first:pt-3">
-        <Button
-          variant="ghost"
-          className={itemClass(anchorView.kind === "home")}
-          onClick={() => setActiveView({ kind: "home" })}
-        >
-          <LayoutDashboard size={15} />
-          <span className="min-w-0 truncate">Home</span>
-        </Button>
-        <Button
-          variant="ghost"
-          className={itemClass(skillsActive)}
-          onClick={() => {
-            if (inParked) setSkillListFilter(defaultSkillListFilter());
-            setActiveView({ kind: "skills" });
-          }}
-        >
-          <Search size={15} />
-          <span className="min-w-0 truncate">Skills</span>
-          {skillsCount > 0 && (
-            <span className="text-right text-caption tabular-nums text-text-tertiary">
-              {skillsCount}
-            </span>
-          )}
-        </Button>
-        {pluginCount > 0 && (
+        <div className="flex flex-col gap-px px-2 pt-2.5">
           <Button
             variant="ghost"
-            className={itemClass(anchorView.kind === "plugins")}
-            onClick={() => setActiveView({ kind: "plugins" })}
+            className={itemClass(anchorView.kind === "home")}
+            onClick={() => setActiveView({ kind: "home" })}
           >
-            <Puzzle size={15} />
-            <span className="min-w-0 truncate">Plugins</span>
-            <span className="text-right text-caption tabular-nums text-text-tertiary">
-              {pluginCount}
-            </span>
+            <LayoutDashboard size={14} />
+            <span className="min-w-0 truncate">Home</span>
           </Button>
-        )}
-        <Button
-          variant="ghost"
-          className={itemClass(anchorView.kind === "activity")}
-          onClick={() => setActiveView({ kind: "activity" })}
-        >
-          <ActivityIcon size={15} />
-          <span className="min-w-0 truncate">Activity</span>
-        </Button>
-        {packsEnabled && (
           <Button
             variant="ghost"
-            className={itemClass(anchorView.kind === "packs")}
-            onClick={() => setActiveView({ kind: "packs" })}
-          >
-            <Package size={15} />
-            <span className="min-w-0 truncate">Packs</span>
-          </Button>
-        )}
-      </div>
-
-      {parkedCount > 0 && (
-        <div className="flex flex-col gap-px px-2.5 pb-2.5 first:pt-3">
-          <Button
-            variant="ghost"
-            className={itemClass(anchorView.kind === "skills" && inParked)}
+            className={itemClass(skillsActive)}
             onClick={() => {
-              setSkillListFilter({ ...defaultSkillListFilter(), scope: "parked" });
+              if (inParked) setSkillListFilter(defaultSkillListFilter());
               setActiveView({ kind: "skills" });
             }}
           >
-            <PackageOpen size={15} />
-            <span className="min-w-0 truncate">Parked</span>
-            <span className="text-right text-caption tabular-nums text-text-tertiary">
-              {parkedCount}
-            </span>
+            <Layers size={14} />
+            <span className="min-w-0 truncate">Skills</span>
+            {skillsCount > 0 && (
+              <span className="text-right text-caption tabular-nums text-text-tertiary">
+                {skillsCount}
+              </span>
+            )}
           </Button>
+          {pluginCount > 0 && (
+            <Button
+              variant="ghost"
+              className={itemClass(anchorView.kind === "plugins")}
+              onClick={() => setActiveView({ kind: "plugins" })}
+            >
+              <Puzzle size={14} />
+              <span className="min-w-0 truncate">Plugins</span>
+              <span className="text-right text-caption tabular-nums text-text-tertiary">
+                {pluginCount}
+              </span>
+            </Button>
+          )}
+          <Button
+            variant="ghost"
+            className={itemClass(anchorView.kind === "activity")}
+            onClick={() => setActiveView({ kind: "activity" })}
+          >
+            <ActivityIcon size={14} />
+            <span className="min-w-0 truncate">Activity</span>
+          </Button>
+          {packsEnabled && (
+            <Button
+              variant="ghost"
+              className={itemClass(anchorView.kind === "packs")}
+              onClick={() => setActiveView({ kind: "packs" })}
+            >
+              <Package size={14} />
+              <span className="min-w-0 truncate">Packs</span>
+            </Button>
+          )}
         </div>
-      )}
+
+        {parkedCount > 0 && (
+          <div className="flex flex-col gap-px px-2 pt-3">
+            <Button
+              variant="ghost"
+              className={itemClass(anchorView.kind === "skills" && inParked)}
+              onClick={() => {
+                setSkillListFilter({ ...defaultSkillListFilter(), scope: "parked" });
+                setActiveView({ kind: "skills" });
+              }}
+            >
+              <PackageOpen size={14} />
+              <span className="min-w-0 truncate">Parked</span>
+              <span className="text-right text-caption tabular-nums text-text-tertiary">
+                {parkedCount}
+              </span>
+            </Button>
+          </div>
+        )}
       </div>
 
-      <div className="mt-auto flex select-none items-center justify-between gap-2 border-t border-border-subtle px-2.5 py-2">
+      <div className="mt-auto flex select-none items-center justify-between gap-2 px-2 py-1.5">
         <TooltipControl content={rescanTooltip(snapshot?.scanned_at)}>
           <Button
             variant="ghost"

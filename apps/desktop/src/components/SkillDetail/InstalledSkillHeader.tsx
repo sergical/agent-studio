@@ -4,13 +4,12 @@
 // ============================================================================
 
 import type { RefObject } from "react";
-import { ArrowLeft, AlertTriangle, MoreHorizontal, PanelRight } from "lucide-react";
+import { AlertTriangle, MoreHorizontal, PanelRight } from "lucide-react";
 import { Button } from "@skill-studio/ui";
 import { isBlockingSpecViolation } from "@skill-studio/lib";
 import { trialHoursLeft } from "@skill-studio/lib";
 import type { Deployment, FrontmatterRepairPreview, InstalledSkill } from "@skill-studio/lib";
 import { isFeatureEnabled } from "../../lib/feature-flags";
-import type { ActiveView } from "../../store/appStore";
 import { MenuControl, MenuItem, MenuSeparator } from "../ui/MenuControl";
 import { TooltipControl } from "../ui/TooltipControl";
 import { SKILL_ASSISTANT_DRAWER_ID } from "./SkillAssistantDrawer";
@@ -21,8 +20,6 @@ interface InstalledSkillHeaderProps {
   skill: InstalledSkill;
   /** The deployment whose SKILL.md the page renders - the header's violation line follows it. */
   deployment?: Deployment;
-  from: ActiveView;
-  onBack: () => void;
   onRemoveComplete: () => void;
   /** Whether the assistant drawer is open, for the trigger's `aria-expanded`. */
   isAssistantOpen: boolean;
@@ -32,23 +29,6 @@ interface InstalledSkillHeaderProps {
   frontmatterRepair?: FrontmatterRepairPreview | null;
   onFixYaml: () => void;
   onEditManually: () => void;
-}
-
-/** The back button's label: the name of the view the page was opened from. */
-function backLabel(from: ActiveView): string {
-  switch (from.kind) {
-    case "home":
-      return "Home";
-    case "skills":
-      return "Skills";
-    case "activity":
-      return "Activity";
-    case "packs":
-      return "Packs";
-    default:
-      // `ActiveView`'s "skill" kind never nests as its own `from` (see `openSkill`).
-      return "Back";
-  }
 }
 
 /** "Parked · Aug 25, 2026" / "Parked" when the timestamp is missing or unparseable. */
@@ -74,8 +54,6 @@ function trialChipLabel(expiresAt: string): string {
 export function InstalledSkillHeader({
   skill,
   deployment,
-  from,
-  onBack,
   onRemoveComplete,
   isAssistantOpen,
   onOpenAssistant,
@@ -103,89 +81,78 @@ export function InstalledSkillHeader({
 
   return (
     <header className="flex flex-col gap-4">
-      <div className="flex items-center justify-between gap-4">
-        <Button
-          variant="ghost"
-          className="h-auto shrink-0 gap-1.5 p-1 text-small text-text-tertiary"
-          onClick={onBack}
-          aria-label="Back"
-        >
-          <ArrowLeft size={16} />
-          <span>{backLabel(from)}</span>
-        </Button>
-        <div className="flex shrink-0 items-center gap-2">
-          {actions.primaryAction && (
-            <Button onClick={actions.primaryAction.run} disabled={actions.primaryAction.busy}>
-              {actions.primaryAction.busy ? "Working…" : actions.primaryAction.label}
-            </Button>
-          )}
-          {assistantEnabled && (
-            <Button
-              ref={assistantTriggerRef}
-              variant="outline"
-              className="h-(--control-height) gap-1.5 rounded-sm px-3 text-body aria-expanded:border-border-focus aria-expanded:text-accent"
-              onClick={onOpenAssistant}
-              aria-expanded={isAssistantOpen}
-              aria-controls={isAssistantOpen ? SKILL_ASSISTANT_DRAWER_ID : undefined}
-              title="Assistant"
-            >
-              <PanelRight size={16} />
-              <span>Assistant</span>
-            </Button>
-          )}
-          <MenuControl
-            triggerClassName="flex h-(--control-height) w-(--control-height) cursor-pointer items-center justify-center rounded-sm border border-border text-text-secondary transition-colors hover:bg-bg-tertiary hover:text-text-primary"
-            triggerAriaLabel="More actions"
-            trigger={<MoreHorizontal size={16} />}
-            align="end"
+      <div className="flex items-center justify-end gap-2">
+        {actions.primaryAction && (
+          <Button onClick={actions.primaryAction.run} disabled={actions.primaryAction.busy}>
+            {actions.primaryAction.busy ? "Working…" : actions.primaryAction.label}
+          </Button>
+        )}
+        {assistantEnabled && (
+          <Button
+            ref={assistantTriggerRef}
+            variant="outline"
+            className="h-(--control-height) gap-1.5 rounded-sm px-3 text-body aria-expanded:border-border-focus aria-expanded:text-accent"
+            onClick={onOpenAssistant}
+            aria-expanded={isAssistantOpen}
+            aria-controls={isAssistantOpen ? SKILL_ASSISTANT_DRAWER_ID : undefined}
+            title="Assistant"
           >
-            <MenuItem closeOnClick onClick={actions.reveal} disabled={!actions.path}>
-              Reveal in Finder
-            </MenuItem>
-            <MenuItem closeOnClick onClick={actions.openEditor} disabled={!actions.path}>
-              Open in editor
-            </MenuItem>
-            <MenuItem closeOnClick onClick={actions.copyPath} disabled={!actions.path}>
-              Copy path
-            </MenuItem>
-            <MenuSeparator />
+            <PanelRight size={16} />
+            <span>Assistant</span>
+          </Button>
+        )}
+        <MenuControl
+          triggerClassName="flex h-(--control-height) w-(--control-height) cursor-pointer items-center justify-center rounded-sm border border-border text-text-secondary transition-colors hover:bg-bg-tertiary hover:text-text-primary"
+          triggerAriaLabel="More actions"
+          trigger={<MoreHorizontal size={16} />}
+          align="end"
+        >
+          <MenuItem closeOnClick onClick={actions.reveal} disabled={!actions.path}>
+            Reveal in Finder
+          </MenuItem>
+          <MenuItem closeOnClick onClick={actions.openEditor} disabled={!actions.path}>
+            Open in editor
+          </MenuItem>
+          <MenuItem closeOnClick onClick={actions.copyPath} disabled={!actions.path}>
+            Copy path
+          </MenuItem>
+          <MenuSeparator />
+          <MenuItem
+            closeOnClick
+            onClick={actions.parkAction.run}
+            disabled={actions.parkAction.busy}
+          >
+            {actions.parkAction.label}
+          </MenuItem>
+          {actions.forkAction && (
             <MenuItem
               closeOnClick
-              onClick={actions.parkAction.run}
-              disabled={actions.parkAction.busy}
+              onClick={actions.forkAction.run}
+              disabled={actions.forkAction.busy}
             >
-              {actions.parkAction.label}
+              {actions.forkAction.label}
             </MenuItem>
-            {actions.forkAction && (
+          )}
+          {actions.removeAction && (
+            <>
+              <MenuSeparator />
               <MenuItem
                 closeOnClick
-                onClick={actions.forkAction.run}
-                disabled={actions.forkAction.busy}
+                variant="destructive"
+                onClick={actions.removeAction.run}
+                disabled={actions.removeAction.busy}
               >
-                {actions.forkAction.label}
+                Remove
               </MenuItem>
-            )}
-            {actions.removeAction && (
-              <>
-                <MenuSeparator />
-                <MenuItem
-                  closeOnClick
-                  variant="destructive"
-                  onClick={actions.removeAction.run}
-                  disabled={actions.removeAction.busy}
-                >
-                  Remove
-                </MenuItem>
-              </>
-            )}
-          </MenuControl>
-        </div>
+            </>
+          )}
+        </MenuControl>
       </div>
 
       <div className="grid w-full grid-cols-1 gap-6 min-[900px]:grid-cols-[minmax(0,1.35fr)_minmax(260px,1fr)] min-[900px]:gap-8">
         <div className="flex min-w-0 flex-col gap-4">
           <div>
-            <h1 className="text-title font-semibold text-text-primary">{skill.name}</h1>
+            <h2 className="text-heading-lg font-semibold text-text-primary">{skill.name}</h2>
             {skill.description && (
               <p className="mt-3 max-w-[65ch] select-text text-pretty text-body leading-[1.5] text-text-secondary">
                 {skill.description}

@@ -136,16 +136,17 @@ function App() {
 
   return (
     <TooltipProvider delay={400}>
-      <div className="flex h-screen overflow-hidden bg-[var(--color-bg-primary)]">
+      <div className="flex h-screen overflow-hidden bg-bg-secondary">
         <Sidebar
           snapshot={snapshot}
           emittedSnapshotRevision={emittedSnapshotRevision}
           requestRescan={requestRescan}
         />
-        <div className="relative flex min-w-0 flex-1 flex-col">
-          {/* Overlay title-bar band: the window stays draggable from the top edge without pushing page content down. Matches the 28px macOS title-bar height. */}
-          <div data-tauri-drag-region className="absolute inset-x-0 top-0 z-10 h-7" />
-          <main className="min-h-0 flex-1 overflow-y-auto [scrollbar-gutter:stable]">{main}</main>
+        <div className="flex min-w-0 flex-1 flex-col pr-2 pb-2">
+          <div data-tauri-drag-region className="h-9 shrink-0" />
+          <main className="flex min-h-0 flex-1 flex-col overflow-hidden rounded-md border border-border bg-bg-primary">
+            {main}
+          </main>
         </div>
 
         <AddSkillSheet />
