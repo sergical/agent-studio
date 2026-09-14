@@ -43,8 +43,9 @@ interface SidebarProps {
 }
 
 const itemClass = (active: boolean) =>
-  `grid h-6.5 w-full grid-cols-[14px_minmax(0,1fr)_auto] items-center gap-2 rounded-sm px-2 text-left text-body ${active ? "bg-bg-active text-text-primary" : "text-text-secondary hover:bg-bg-hover hover:text-text-primary"}`;
-const iconButtonClass = "rounded-sm text-text-tertiary hover:text-text-primary";
+  `grid h-6.5 w-full grid-cols-[14px_minmax(0,1fr)_auto] items-center gap-2 rounded-sm px-2 text-left text-body ${active ? "bg-bg-active text-text-primary" : "text-text-secondary hover:bg-bg-hover hover:text-text-primary"} active:bg-bg-pressed`;
+const iconButtonClass =
+  "rounded-sm text-text-tertiary hover:text-text-primary active:bg-bg-pressed";
 
 /**
  * Tracks one rescan at a time: `spinning` is fully derived from the pending

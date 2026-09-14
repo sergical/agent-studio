@@ -34,6 +34,8 @@
   --color-bg-elevated: oklch(0.197 0.006 285.84);
   --color-bg-hover: oklch(1 0 0 / 0.04);
   --color-bg-active: oklch(1 0 0 / 0.07);
+  /* Held down. Native controls darken while pressed, they do not move. */
+  --color-bg-pressed: oklch(1 0 0 / 0.12);
 
   /* Borders - solid in dark mode, alpha in light */
   --color-border: oklch(0.271 0.009 285.77);
@@ -142,6 +144,7 @@
   --color-bg-elevated: oklch(1 0 0);
   --color-bg-hover: oklch(0 0 0 / 0.04);
   --color-bg-active: oklch(0 0 0 / 0.08);
+  --color-bg-pressed: oklch(0 0 0 / 0.13);
 
   --color-border: oklch(0 0 0 / 0.08);
   --color-border-subtle: oklch(0 0 0 / 0.04);

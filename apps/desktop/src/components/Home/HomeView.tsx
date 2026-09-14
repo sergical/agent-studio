@@ -114,7 +114,7 @@ function HomeStatTiles({
       <div className="group/stat relative flex">
         <Button
           variant="outline"
-          className={`h-auto flex-1 flex-col items-stretch gap-1 rounded-md border-border-subtle bg-bg-elevated px-4 py-3.5 justify-start text-left active:translate-y-0 active:scale-98 aria-pressed:border-accent aria-pressed:bg-accent-softer ${
+          className={`h-auto flex-1 flex-col items-stretch gap-1 rounded-md border-border-subtle bg-bg-elevated px-4 py-3.5 justify-start text-left active:scale-98 aria-pressed:border-accent aria-pressed:bg-accent-softer ${
             broken.length > 0 ? "[&_.home-stat-value]:text-error" : ""
           }`}
           aria-pressed={filter === "broken"}
@@ -140,7 +140,7 @@ function HomeStatTiles({
       <div className="group/stat relative flex">
         <Button
           variant="outline"
-          className={`h-auto flex-1 flex-col items-stretch gap-1 rounded-md border-border-subtle bg-bg-elevated px-4 py-3.5 justify-start text-left active:translate-y-0 active:scale-98 aria-pressed:border-accent aria-pressed:bg-accent-softer ${
+          className={`h-auto flex-1 flex-col items-stretch gap-1 rounded-md border-border-subtle bg-bg-elevated px-4 py-3.5 justify-start text-left active:scale-98 aria-pressed:border-accent aria-pressed:bg-accent-softer ${
             warnings.length > 0 ? "[&_.home-stat-value]:text-warning" : ""
           }`}
           aria-pressed={filter === "warn"}
@@ -166,7 +166,7 @@ function HomeStatTiles({
       <div className="flex">
         <Button
           variant="outline"
-          className="h-auto flex-1 flex-col items-stretch gap-1 rounded-md border-border-subtle bg-bg-elevated px-4 py-3.5 justify-start text-left active:translate-y-0 active:scale-98 aria-pressed:border-accent aria-pressed:bg-accent-softer"
+          className="h-auto flex-1 flex-col items-stretch gap-1 rounded-md border-border-subtle bg-bg-elevated px-4 py-3.5 justify-start text-left active:scale-98 aria-pressed:border-accent aria-pressed:bg-accent-softer"
           aria-pressed={filter === "upd"}
           onClick={() => toggleFilter("upd")}
         >

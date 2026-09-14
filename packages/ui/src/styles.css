@@ -85,6 +85,7 @@
   --color-muted: var(--color-bg-tertiary);
   --color-muted-foreground: var(--color-text-tertiary);
   --color-highlight: var(--color-bg-hover);
+  --color-pressed: var(--color-bg-pressed);
   --color-highlight-foreground: var(--color-text-primary);
   --color-destructive: var(--color-error);
   --color-input: var(--color-border);
