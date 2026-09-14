@@ -27,12 +27,12 @@ await page.click('button:has-text("Add skill")');
 await page.click('[role="tab"]:has-text("Browse skills.sh")');
 
 // Search
-await page.fill('input[placeholder*="Search"]', 'database');
+await page.fill('input[placeholder*="Search"]', "database");
 await page.waitForTimeout(350); // Debounce delay
 // Results should update
 
 // Browse popular skills (no search)
-await page.fill('input[placeholder*="Search"]', '');
+await page.fill('input[placeholder*="Search"]', "");
 await page.waitForTimeout(350);
 // Popular skills should show
 
@@ -40,11 +40,11 @@ await page.waitForTimeout(350);
 const loadMoreButton = page.locator('button:has-text("Load more")');
 if (await loadMoreButton.isVisible()) {
   await loadMoreButton.click();
-  await page.waitForSelector('.skill-card', { timeout: 5000 });
+  await page.waitForSelector(".skill-card", { timeout: 5000 });
 }
 
 // Open skill detail
-await page.click('.skill-card:first-child');
+await page.click(".skill-card:first-child");
 await page.waitForSelector('[data-testid="skill-detail-panel"]');
 
 // Install from detail
@@ -53,6 +53,7 @@ await page.waitForSelector('[role="dialog"]:has-text("Installing")');
 ```
 
 Selectors:
+
 - Add button: `button:has-text("Add skill")`
 - Browse tab: `[role="tab"]:has-text("Browse skills.sh")`
 - Search input: `input[placeholder*="Search"]` or by label
@@ -75,6 +76,7 @@ Selectors:
 ## Branches
 
 ### Happy path
+
 1. User opens Add Skill sheet → defaults to "Add by source" tab
 2. User clicks "Browse skills.sh" tab → fetches popular skills
 3. User types search query → debounces 300ms → fetches search results
@@ -82,26 +84,31 @@ Selectors:
 5. User clicks Install → progress modal shows → toast on success → sheet closes
 
 ### Empty / first-run states
+
 - No search query → shows popular skills sorted by install count
 - No results for query → "No skills found" message
 - No installed skills yet → Installed tab shows empty state
 
 ### Duplicate / already installed
+
 - Skill already installed → card shows checkmark badge, "Installed" chip
 - Install button disabled or shows "Already installed" state
 
 ### Failure / error states
+
 - **Server unreachable** → `BrowseErrorEmptyState` with retry button
 - **Search API error** → toast notification, old results remain visible
 - **Install failure** → error toast with message, modal closes
 - **Load more failure** → error toast, pagination button re-enables
 
 ### Cancellation / close mid-flow
+
 - Close sheet while browsing → state persists (search query, scroll position)
 - Close sheet during install → install continues in background, toast shows result
 - Cancel search mid-typing → debounce cancels pending fetch, old results stay
 
 ### Loading / progress states
+
 - **Initial load** → "Loading skills…" skeleton cards
 - **Search in progress** → spinner in search bar, old results stay visible
 - **Loading more** → "Loading more…" text on button, button disabled
@@ -110,6 +117,7 @@ Selectors:
 ## Benchmarks & improvement
 
 ### Observable metrics
+
 - **Search latency**: Debounce delay (300ms) + API roundtrip + render
   - Measure: Start typing → results appear
   - Target: < 1s total (300ms debounce + 500ms API + 200ms render)
@@ -124,12 +132,14 @@ Selectors:
   - Target: > 95% (failures usually network or auth issues)
 
 ### Current instrumentation
+
 - `isLoading` / `isLoadingMore` flags track fetch state
 - Toast notifications on success/failure (no timing logged)
 - No per-operation latency metrics
 - No search analytics (query frequency, null results, etc.)
 
 ### Suggested measurements for verification
+
 - **Search responsiveness**: Measure time from last keystroke to results rendered
 - **Pagination performance**: Time from "Load more" click to new cards visible
 - **Install duration**: Track `npx skills add` command execution time (backend Rust span)
@@ -137,6 +147,7 @@ Selectors:
 - **Error rate by type**: Count server unreachable vs API errors vs install failures
 
 ### Improvement levers
+
 - **Increase debounce** to 400-500ms (reduces API load, slightly worse UX for slow typers)
 - **Virtual scrolling** for skill cards (currently renders all in DOM; 1000+ results could lag)
 - **Prefetch popular skills** on sheet open (even before tab switch; ~300ms saved)
@@ -157,6 +168,7 @@ After each interaction:
 - **Server error**: `BrowseErrorEmptyState` replaces results, shows retry button
 
 Invariants:
+
 - Search query always visible in search bar (persists across tab switches)
 - Installed badge only shows for skills present in `installedSkills` array
 - Detail panel only shows for one skill at a time (clicking another card replaces content)

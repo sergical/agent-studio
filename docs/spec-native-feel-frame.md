@@ -35,12 +35,24 @@ The old absolute `h-7` drag band goes. `main` no longer scrolls; each page scrol
   <span className="text-small font-semibold text-text-primary">Skill Studio</span>
   <div className="flex items-center gap-0.5">
     <TooltipControl content="Search skills">
-      <Button variant="ghost" size="icon-xs" className={iconButtonClass} aria-label="Search skills" onClick={goToSearch}>
+      <Button
+        variant="ghost"
+        size="icon-xs"
+        className={iconButtonClass}
+        aria-label="Search skills"
+        onClick={goToSearch}
+      >
         <Search size={14} />
       </Button>
     </TooltipControl>
     <TooltipControl content="Add skill">
-      <Button variant="ghost" size="icon-xs" className={iconButtonClass} aria-label="Add skill" onClick={() => openAddSkillSheet()}>
+      <Button
+        variant="ghost"
+        size="icon-xs"
+        className={iconButtonClass}
+        aria-label="Add skill"
+        onClick={() => openAddSkillSheet()}
+      >
         <Plus size={14} />
       </Button>
     </TooltipControl>
@@ -48,7 +60,8 @@ The old absolute `h-7` drag band goes. `main` no longer scrolls; each page scrol
 </div>
 ```
 
-  `goToSearch`: `if (anchorView.kind !== "skills") setActiveView({ kind: "skills" }); requestSkillSearchFocus();` where `requestSkillSearchFocus` is a new store action (section 4). Delete `searchInputRef`, `handleSearchChange`, `handleSearchKeyDown`, and any effect that only served the removed input (check lines 57–105; keep effects that serve other state). Drop unused imports (`Input`, `KeyboardEvent`). The `Search` icon is currently used on the Skills nav item; change that item's icon to `Layers` (lucide) so the two are not confused.
+`goToSearch`: `if (anchorView.kind !== "skills") setActiveView({ kind: "skills" }); requestSkillSearchFocus();` where `requestSkillSearchFocus` is a new store action (section 4). Delete `searchInputRef`, `handleSearchChange`, `handleSearchKeyDown`, and any effect that only served the removed input (check lines 57–105; keep effects that serve other state). Drop unused imports (`Input`, `KeyboardEvent`). The `Search` icon is currently used on the Skills nav item; change that item's icon to `Layers` (lucide) so the two are not confused.
+
 - Items: `itemClass` becomes `` `grid h-6.5 w-full grid-cols-[14px_minmax(0,1fr)_auto] items-center gap-2 rounded-sm px-2 text-left text-body ${active ? "bg-bg-active text-text-primary" : "text-text-secondary hover:bg-bg-hover hover:text-text-primary"}` ``. Icon `size={14}` on every nav item. Counts stay `text-caption tabular-nums text-text-tertiary`.
 - Group wrappers: `flex flex-col gap-px px-2 pt-2.5` for the first group and `flex flex-col gap-px px-2 pt-3` for the Parked group (drop `pb-2.5` and `first:pt-3`).
 - Footer (line ~240): remove `border-t border-border-subtle`; keep `mt-auto flex items-center justify-between gap-2 px-2 py-1.5`. Sync button and Learn/Settings icons unchanged.
@@ -80,12 +93,21 @@ Render:
     <div className="flex min-w-0 items-center gap-1.5 text-small">
       {parent && (
         <>
-          <Button variant="ghost" size="xs" className="h-6 rounded-sm px-1.5 text-small text-text-tertiary hover:text-text-primary" onClick={parent.onClick}>{parent.label}</Button>
+          <Button
+            variant="ghost"
+            size="xs"
+            className="h-6 rounded-sm px-1.5 text-small text-text-tertiary hover:text-text-primary"
+            onClick={parent.onClick}
+          >
+            {parent.label}
+          </Button>
           <ChevronRight size={12} className="shrink-0 text-text-quaternary" />
         </>
       )}
       <h1 className="m-0 truncate text-small font-medium text-text-primary">{title}</h1>
-      {subtitle && <span className="min-w-0 truncate text-small text-text-tertiary">· {subtitle}</span>}
+      {subtitle && (
+        <span className="min-w-0 truncate text-small text-text-tertiary">· {subtitle}</span>
+      )}
     </div>
     {actions && <div className="flex shrink-0 items-center gap-1.5">{actions}</div>}
   </header>
@@ -95,7 +117,9 @@ Render:
     </div>
   )}
   <div className="min-h-0 flex-1 overflow-y-auto [scrollbar-gutter:stable]">
-    <div className={`mx-auto flex w-full flex-col gap-5 px-6 pt-5 pb-7 ${width === "narrow" ? "max-w-180" : "max-w-300"}`}>
+    <div
+      className={`mx-auto flex w-full flex-col gap-5 px-6 pt-5 pb-7 ${width === "narrow" ? "max-w-180" : "max-w-300"}`}
+    >
       {children}
     </div>
   </div>
@@ -105,6 +129,7 @@ Render:
 Update the header comment. Sticky elements inside views (Home `GroupHead` `sticky top-0`, Learn `sticky top-6`) now stick inside the scroll div; confirm in the browser check.
 
 Callers:
+
 - `SkillsView.tsx`: pass `<SkillListFilterBar .../>` as `toolbar` instead of a child. `ScanPartialBanner` stays the first child.
 - `SkillActivityView.tsx`, `PluginSkillsView.tsx`: unchanged (subtitle now inline).
 - `LearnView.tsx`: remove the `actions` "← Home" button (the sidebar navigates).
@@ -115,6 +140,7 @@ Callers:
 ## 4. Filter bar in the toolbar (`SkillListFilterBar.tsx`)
 
 The toolbar is one 40px row; make the bar single-line and compact:
+
 - Root `flex flex-col gap-2.5` → `flex w-full items-center gap-2`. The inner `flex flex-wrap items-center gap-2.5` wrapper becomes `flex items-center gap-2` and the trailing group (result count, sort, view toggle) gets `ml-auto`.
 - Search wrapper `w-60` → `w-48`; `Search` icon `size={13}` → `12`, `left-3` → `left-2.5`, input `pl-8` → `pl-7`, `pr-3` → `pr-2`.
 - Every control already reads `h-(--control-height)`, so they become 28px through the toolbar wrapper. `ToggleGroupItem` `px-3` → `px-2.5`. Result count stays `text-small tabular-nums text-text-tertiary`.

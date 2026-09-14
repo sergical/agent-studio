@@ -28,8 +28,9 @@ describe("applyAddSkillOperationEvent", () => {
 
   it("permits a fresh submit after decline and ignores a late parent event", () => {
     let trackedOperationId: string | undefined;
-    expect(applyAddSkillOperationEvent(undefined, event("op-1", 5, "cancelled"), trackedOperationId))
-      .toBeUndefined();
+    expect(
+      applyAddSkillOperationEvent(undefined, event("op-1", 5, "cancelled"), trackedOperationId),
+    ).toBeUndefined();
 
     trackedOperationId = "op-2";
     const fresh = event("op-2", 1, "queued");

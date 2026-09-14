@@ -37,17 +37,18 @@ A value that can be edited is a ghost `Button` (full width, left-aligned,
 `h-7 px-1.5 -mx-1.5`) whose accessible name is "<Label>: <value>, edit".
 Read-only values are plain text, selectable (`select-text`).
 
-| Property | Value shown | Edit in place |
-| --- | --- | --- |
-| Location | "Global", project names, or "Global + 2 projects"; drift shows a warning glyph | No mutation exists. The value is a button that scrolls `SkillLocationsCard` into view and focuses its heading. Name: "Location: …, show locations". |
-| Harnesses | `HarnessStack` plus count | Popover listing every harness the skill can reach, each with a `Switch` calling `setHarnessEnabled` (the same call `SkillLocationScope` uses). Disabled while pending; errors toast. |
-| Invocation | "Both", "User only", "Model only", or "Mixed" | If all deployments share one policy: a `Select` calling `setSkillInvocation` for each deployment path (the same call `SkillLocationsCard` uses). If policies differ: plain text "Mixed" plus a button to show locations. |
-| Source | repo in mono (`getsentry/skills`), provenance label under it | Read-only. If an update is available, an "Update" ghost button calls `updateSkill` (reuse the existing handler). |
-| Lifecycle | owner and managed/unmanaged | Read-only. |
-| Tokens | prompt and full, `tabular-nums` | Read-only. |
-| Installed / Modified | dates | Read-only. |
+| Property             | Value shown                                                                    | Edit in place                                                                                                                                                                                                            |
+| -------------------- | ------------------------------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| Location             | "Global", project names, or "Global + 2 projects"; drift shows a warning glyph | No mutation exists. The value is a button that scrolls `SkillLocationsCard` into view and focuses its heading. Name: "Location: …, show locations".                                                                      |
+| Harnesses            | `HarnessStack` plus count                                                      | Popover listing every harness the skill can reach, each with a `Switch` calling `setHarnessEnabled` (the same call `SkillLocationScope` uses). Disabled while pending; errors toast.                                     |
+| Invocation           | "Both", "User only", "Model only", or "Mixed"                                  | If all deployments share one policy: a `Select` calling `setSkillInvocation` for each deployment path (the same call `SkillLocationsCard` uses). If policies differ: plain text "Mixed" plus a button to show locations. |
+| Source               | repo in mono (`getsentry/skills`), provenance label under it                   | Read-only. If an update is available, an "Update" ghost button calls `updateSkill` (reuse the existing handler).                                                                                                         |
+| Lifecycle            | owner and managed/unmanaged                                                    | Read-only.                                                                                                                                                                                                               |
+| Tokens               | prompt and full, `tabular-nums`                                                | Read-only.                                                                                                                                                                                                               |
+| Installed / Modified | dates                                                                          | Read-only.                                                                                                                                                                                                               |
 
 Rules for editable values (from the audit):
+
 - Click or Enter opens the editor and focuses it. Enter or selecting commits;
   Escape cancels. Focus returns to the value button afterwards.
 - Saves announce "Saved" and errors announce the message through one

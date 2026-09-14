@@ -9,6 +9,7 @@ Line numbers are from commit b758cc4 and shift with later edits.
 ## Foundations (shared edits, do before steps 3-5)
 
 Focus and contrast
+
 - Focus rings are too faint. `HIT_CLASS` (`SkillRowCells.tsx:34`) uses
   `outline-border` (1.3:1). The kit `ring-ring/50` (`button.tsx:14`, `toggle.tsx:12`,
   `select.tsx:45`, `radio-group.tsx:27`) is about 1.9:1 dark, 1.6:1 light.
@@ -22,6 +23,7 @@ Focus and contrast
 - Dark theme: white text on accent Button is 3.21:1; darken the accent fill.
 
 Motion
+
 - No duration or easing tokens. Add to `App.css @theme`:
   `--ease-out-quint: cubic-bezier(0.23,1,0.32,1)`,
   `--ease-drawer: cubic-bezier(0.32,0.72,0,1)`,
@@ -48,6 +50,7 @@ Motion
 - `motion` is in `apps/desktop/package.json` but never imported.
 
 Labels and semantics
+
 - `aria-label` on a plain `span` is ignored: `HarnessMark.tsx:115,160`,
   `SkillCoverageMatrix.tsx:75-90`. Add `role="img"` or `sr-only` text.
 - Harness label omits disabled and parked (`HarnessMark.tsx:47-57`).
@@ -67,6 +70,7 @@ Labels and semantics
 ## Requirements for steps 3-5
 
 Lists (step 3)
+
 - The list is a `grid` or `listbox` with one tab stop. Rows are not bare
   `div onClick` (`SkillListTable.tsx:265`): they get focus, Enter opens, and
   an accent focus ring separate from the selected style.
@@ -75,6 +79,7 @@ Lists (step 3)
 - Row actions stay reachable without hover.
 
 Keyboard (step 4)
+
 - Palette: no open or close animation, instant highlight, no smooth scroll.
   Modal dialog with a combobox input (`aria-activedescendant`) over a
   `listbox`; focus returns to the prior element on close; polite result count;
@@ -85,6 +90,7 @@ Keyboard (step 4)
   `.` or Shift+F10 opens the row menu.
 
 Detail (step 5)
+
 - Rail is `aside aria-label="Properties"`. Each value is a button named
   "Property: value, edit". Enter commits, Esc cancels, focus returns to the
   value. Saves and errors are announced. Esc in the rail does not go back.

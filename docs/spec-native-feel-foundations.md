@@ -108,6 +108,7 @@ runtime (eval `getComputedStyle` on elements with `rounded-sm`, `rounded-md`,
 Expand to at least 24px with a pseudo-element (`relative` plus
 `before:absolute before:-inset-[Npx] before:content-['']`), and widen gaps so
 neighbouring hit areas do not overlap:
+
 - Sidebar switcher and footer icon buttons (22-24px).
 - `ScanPartialBanner.tsx` dismiss button.
 - `InfoPopover.tsx` trigger (14px, expand to 28px).

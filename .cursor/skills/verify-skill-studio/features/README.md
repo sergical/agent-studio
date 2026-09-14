@@ -5,6 +5,7 @@ Comprehensive documentation of every user-facing surface, workflow, and interact
 ## Purpose
 
 This feature map provides:
+
 1. **Complete coverage** - Every view, modal, dialog, and interaction documented
 2. **Playwright driving instructions** - Selectors and code examples for automated verification
 3. **Branch documentation** - Happy paths, empty states, failures, cancellations, and edge cases
@@ -16,12 +17,14 @@ This feature map provides:
 ### Primary Views & Navigation
 
 **[Sidebar Navigation](./sidebar-navigation.md)**
+
 - Search box with auto-navigation to Skills view
 - Add skill button
 - View links (Home, Skills, Plugins, Activity, Packs, Parked)
 - Footer controls: rescan, Learn, Settings, theme toggle
 
 **[Home Dashboard](./home-dashboard.md)**
+
 - Stat tiles: Broken, Warnings, Updates (clickable filters with InfoPopover explainers)
 - Invocation/cost lane card: segmented bars by policy and usage, clickable segments
 - Inbox groups: Broken, Warnings, Updates, Unused (30d), Recently Used (collapsible, max 6 rows, "Show all" footer links)
@@ -30,6 +33,7 @@ This feature map provides:
 - Filter interactions (tile click → filtered view, "Show everything" to clear)
 
 **[Skills Management](./skills-management.md)**
+
 - Filter bar: search input, scope (All/Global/Project dropdown), Filter menu (harness, source), result count, sort selector, view toggle
 - Active filter chips (second row when filters active, "Clear all" button)
 - Selection mode: "Select" button, header checkbox, row checkboxes (keyed by path), shift-click range select, "Create pack" action
@@ -37,18 +41,21 @@ This feature map provides:
 - SkillListTable: sortable columns (name/used/cost), skill location cells, invocation chips, empty states
 
 **[Plugins View](./plugins-view.md)**
+
 - Read-only skills from native plugin caches
 - Claude Code (`~/.claude/plugins/cache`)
 - Codex (`~/.codex/plugins/cache`)
 - No edit/fork/remove actions (plugin-managed)
 
 **[Activity Tracking](./activity-tracking.md)**
+
 - Invocation heatmap: 52-week × 7-day GitHub-style grid, 5 intensity levels, hover tooltips, month/weekday labels
 - By Skill table: window selector (24h/7d/30d), clickable rows, columns (name, last used, invocations, projects)
 - By Project table: 30d only, basename labels, full path tooltips, sorted by count
 - History section: event log (200 events max), per-row actions (Restore, Reveal in Finder), restore flow with drift guard confirmation
 
 **[Packs Management](./packs-management.md)**
+
 - Create pack (bundle selected skills)
 - Update pack (rebuild tree from skill list)
 - Publish pack (push to GitHub via `gh` CLI)
@@ -56,6 +63,7 @@ This feature map provides:
 - Delete pack (local only, GitHub untouched)
 
 **[Learn Sections](./learn-sections.md)**
+
 - Deep-linkable explainer sections
 - Broken and warnings (dead links, spec violations, copies differ)
 - Who can invoke (per-harness invocation controls)
@@ -63,6 +71,7 @@ This feature map provides:
 - Not used in 30 days (transcript-based usage tracking)
 
 **[Settings](./settings.md)**
+
 - Open in Editor picker: radio group (Automatic + detected editors), saves immediately on selection, empty state when no editors detected
 - skills.sh API key: password input, "Save" button, status line (direct vs server mode), key never refetched
 - Theme: managed in sidebar footer (sun/moon icon toggle), not in SettingsView component
@@ -71,6 +80,7 @@ This feature map provides:
 ### Skill Detail & Operations
 
 **[Skill Detail Page](./skill-detail.md)**
+
 - Header: Back button (dynamic label), skill name, primary action (Pull/Remove), assistant trigger, overflow menu (Compare/View history/Open/Duplicate), chips (source/invocation/issues), metadata line
 - Locations card: per-deployment rows (harness icon, scope badge, path, enable/disable toggle, Open in editor, Reveal in Finder), unresolved deployments (grayed, italic)
 - Markdown card: display mode (rendered markdown, "Edit" button) / edit mode (Monaco editor, "Discard"/"Save" buttons, fork-before-save for dotagents/skills-sh)
@@ -80,6 +90,7 @@ This feature map provides:
 - SkillAssistantDrawer: right-side overlay, AI chat interface, apply flow for SKILL.md edits
 
 **[Add Skill Sheet](./add-skill-sheet.md)**
+
 - Source field with live parsing (GitHub owner/repo, URLs, git URLs, local paths)
 - GitHub skill listing (auto-discover multiple SKILL.md files in repos)
 - Multiple skill selection (checkboxes when repo contains 2+ skills)
@@ -90,6 +101,7 @@ This feature map provides:
 - Validation and progress feedback
 
 **[SkillStore Browse](./skillstore-browse.md)**
+
 - Search skills.sh catalog (36,000+ skills)
 - Browse popular skills (install count sorted)
 - Pagination (50 per page, "Load more" button)
@@ -99,6 +111,7 @@ This feature map provides:
 - Tabs: Browse (catalog) vs Installed (local skills)
 
 **[Skill Operations](./skill-operations.md)**
+
 - **Install** - via Add Skill or SkillStore (dotagents/skills-sh/copy methods)
 - **Update** - pull latest from upstream (dotagents sync, skills.sh re-install, fork pull)
 - **Remove** - uninstall from global or project scope (confirmation dialog)
@@ -114,6 +127,7 @@ This feature map provides:
 ## Coverage Overview
 
 ### Documentation Status
+
 - ✅ **Fully Mapped**: 14 surfaces - all primary views, skill detail, operations, and sub-features documented to full depth
 - 📝 **Partially Mapped**: 0 - all surfaces expanded with complete sub-features, branches, benchmarks, and end states
 - ❌ **Not Mapped**: 0 - every surface has documentation
@@ -121,12 +135,14 @@ This feature map provides:
 See **[COVERAGE.md](./COVERAGE.md)** for the complete matrix of all surfaces, modals, sub-features, and their verification status.
 
 ### Verification Status
+
 - **Proven**: 0 (none yet verified with Playwright + evidence)
 - **Mapped but Unproven**: 14 (all documented, Playwright examples provided, verification pending)
 
 ## How to Use This Map
 
 ### For Verification Engineers
+
 1. **Pick a feature file** - Each markdown file is one user-facing surface or workflow
 2. **Read "How to get to it"** - User's perspective on accessing the feature
 3. **Follow "Driving it with Playwright"** - Code examples and selectors
@@ -135,12 +151,14 @@ See **[COVERAGE.md](./COVERAGE.md)** for the complete matrix of all surfaces, mo
 6. **Validate benchmarks** - Measure latency, success rates per "Benchmarks & improvement"
 
 ### For Developers
+
 1. **Reference when changing behavior** - Feature files document current state
 2. **Update after refactors** - Keep selectors and flows in sync with code
 3. **Add new features** - Follow existing H2 structure (sub-features, driving, gotchas, branches, benchmarks, end state)
 4. **Check gotchas** - Understand edge cases and constraints before modifying
 
 ### For Product/QA
+
 1. **Audit completeness** - COVERAGE.md shows which surfaces are documented vs gaps
 2. **Review critical paths** - Home → Add Skill → Install is the most common flow
 3. **Identify risk areas** - Complex flows (fork/unfork, trial restore, multi-skill install) need extra scrutiny
@@ -170,11 +188,13 @@ Every feature file follows this template:
 ## Testing Strategy
 
 ### Phase 1: Smoke Test (Launch + Doctor)
+
 - Verify Tauri dev server starts (`npm run tauri dev`)
 - Doctor checks: port 1420 responds, tmux session alive, node process owns port
 - Navigate to each primary view, capture one screenshot per view
 
 ### Phase 2: Core Workflows
+
 - Install skill (dotagents, GitHub single, skills.sh)
 - Update skill (Home "Pull latest")
 - Remove skill (detail overflow menu)
@@ -182,6 +202,7 @@ Every feature file follows this template:
 - Search skills (sidebar + Skills view filter)
 
 ### Phase 3: Advanced Workflows
+
 - Multi-skill GitHub repo install
 - Fork, edit, unfork flow
 - Create pack, publish pack
@@ -190,6 +211,7 @@ Every feature file follows this template:
 - Activity event restore
 
 ### Phase 4: Edge Cases & Failures
+
 - Install duplicate skill (warning toast)
 - Update without internet (error toast)
 - Fork plugin skill (button hidden)

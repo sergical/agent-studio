@@ -52,16 +52,16 @@ same row so the two pages look like one product.
   - **Needs attention**: `isDecision(rowState(...))` is true.
   - **Healthy**: `rowState(...)` is null and the skill is not parked.
   - **Parked**: `skill.parked` (or `rowState` kind `parked`).
-  Put the bucketing in one exported function next to `rowState` in
-  `skill-row-state.tsx` (for example `rowGroup(skill, ...) => "attention" | "healthy" | "parked"`),
-  so the palette in step 4 can reuse it.
+    Put the bucketing in one exported function next to `rowState` in
+    `skill-row-state.tsx` (for example `rowGroup(skill, ...) => "attention" | "healthy" | "parked"`),
+    so the palette in step 4 can reuse it.
 - Sorting from the Sort dropdown applies inside each group.
 - Hide empty groups. If only one group has rows, still show its header.
 - Group header: a 28px row, `text-small font-medium text-text-secondary`,
   chevron (`text-text-tertiary`, rotates, `motion-reduce:transition-none`),
   label, count `tabular-nums text-text-tertiary`. Sticky at the top of the
   scroll area (`sticky top-0 z-1 bg-bg-primary`), with a `border-b
-  border-border-subtle`. Use the kit `Collapsible` like Home's `GroupHead`
+border-border-subtle`. Use the kit `Collapsible` like Home's `GroupHead`
   does; reuse `GroupHead` by moving it to a shared file in
   `components/SkillList/` if its shape fits, instead of writing a second one.
 - The trigger is a real button with `aria-expanded`; its accessible name
