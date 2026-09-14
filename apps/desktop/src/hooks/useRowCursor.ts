@@ -84,17 +84,17 @@ export function useRowCursor({
   scrollToKey,
 }: UseRowCursorOptions): RowCursor {
   const active = activeProp ?? true;
-  const [cursorKey, setCursorKey] = useState<string | null>(
-    (initialKey && keys.includes(initialKey) ? initialKey : keys[0]) ?? null,
-  );
+  // The key and its index move together: the index is what the cursor falls back to once its key
+  // leaves `keys`, so it can't be derived from `keys` at that point.
+  const [cursor, setCursor] = useState(() => {
+    const key = (initialKey && keys.includes(initialKey) ? initialKey : keys[0]) ?? null;
+    return { key, index: key === null ? 0 : keys.indexOf(key) };
+  });
   const rowsRef = useRef(new Map<string, HTMLDivElement>());
   const gridRef = useRef<HTMLDivElement | null>(null);
   /** Set by `scrollAndFocus` when a key's row isn't mounted yet - the row's own `rowRef` callback
    * focuses it once it attaches, then clears this. */
   const pendingFocusKeyRef = useRef<string | null>(null);
-  // State, not a ref: the fallback below reads it during render, and a ref's `current` can't be
-  // read there.
-  const [lastIndex, setLastIndex] = useState(0);
   const pendingExpandRef = useRef<string | null>(null);
   const [statusText, setStatusText] = useState("");
   const statusTimerRef = useRef<number | undefined>(undefined);
@@ -102,13 +102,13 @@ export function useRowCursor({
   // The cursor survives a re-sort or filter change when its key is still visible; otherwise it
   // falls back to the nearest row by its previous index, so the cursor never silently vanishes -
   // derived on every render instead of written back into state, since it's fully determined by
-  // `cursorKey`, `keys`, and the last moved-to index.
+  // `cursor` and `keys`.
   const effectiveCursorKey =
     keys.length === 0
       ? null
-      : cursorKey !== null && keys.includes(cursorKey)
-        ? cursorKey
-        : (keys[Math.min(lastIndex, keys.length - 1)] ?? null);
+      : cursor.key !== null && keys.includes(cursor.key)
+        ? cursor.key
+        : (keys[Math.min(cursor.index, keys.length - 1)] ?? null);
 
   function scrollAndFocus(key: string) {
     const el = rowsRef.current.get(key);
@@ -137,8 +137,7 @@ export function useRowCursor({
     if (key === undefined) return;
     const index = keys.indexOf(key);
     if (index === -1) return;
-    setLastIndex(index);
-    setCursorKey(key);
+    setCursor({ key, index });
     scrollAndFocus(key);
     announce(key);
     if (extend) onExtend?.(key);
@@ -156,7 +155,10 @@ export function useRowCursor({
     );
     if (firstInGroup) moveTo(firstInGroup, false);
   });
+  // Not derived state: the target row is found in the DOM after the expanded group commits.
+  // react-doctor-disable-next-line react-doctor/no-derived-state-effect
   useEffect(() => {
+    // react-doctor-disable-next-line react-doctor/no-derived-state
     focusExpandedGroup(keys);
   }, [keys]);
 
