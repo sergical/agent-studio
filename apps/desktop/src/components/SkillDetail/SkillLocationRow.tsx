@@ -15,6 +15,99 @@ import { SkillLocationMenu } from "./SkillLocationMenu";
 import { rowMenu, tipLines } from "./skill-location-status";
 import type { LocationAction, LocationRow } from "./skill-location-status";
 
+/** The label tooltip: just the row's path, or the path plus its symlink target for a link row. */
+function labelTipFor(row: LocationRow) {
+  if (row.kind === "link" && row.deployment?.symlink_target) {
+    return [
+      { text: homeRelativePath(row.path), mono: true as const },
+      { text: `→ ${homeRelativePath(row.deployment.symlink_target)}`, mono: true as const },
+    ];
+  }
+  return [{ text: homeRelativePath(row.path), mono: true as const }];
+}
+
+/**
+ * The switch slot: a live switch where the row has one of its own, a
+ * disabled-but-explained switch for an always-on reader or a
+ * plugin-disabled-by-Claude row, or an empty placeholder to keep columns
+ * aligned.
+ */
+function LocationRowSwitch({
+  row,
+  onAction,
+}: {
+  row: LocationRow;
+  onAction: (action: LocationAction) => void;
+}) {
+  if (row.hasSwitch) {
+    return (
+      <SwitchControl
+        checked={row.switchOn}
+        onCheckedChange={(next) =>
+          onAction(
+            row.kind === "reader"
+              ? {
+                  kind: "set-reader-enabled",
+                  target: row.lifecycleTarget,
+                  agent: row.harness,
+                  enabled: next,
+                }
+              : { kind: "set-enabled", deployment: row.deployment!, enabled: next },
+          )
+        }
+        ariaLabel={`Enabled for ${row.harnessLabel}`}
+      />
+    );
+  }
+
+  const isAlwaysOnReader = row.kind === "reader";
+  if (isAlwaysOnReader) {
+    return (
+      <TooltipControl
+        content={
+          row.switchOn
+            ? `Always on because ${row.harnessLabel} has no per-skill switch.`
+            : `Off because this skill is disabled in the Universal folder.`
+        }
+      >
+        <span className="inline-flex">
+          <SwitchControl
+            checked={row.switchOn}
+            disabled
+            onCheckedChange={() => undefined}
+            ariaLabel={
+              row.switchOn
+                ? `Always enabled for ${row.harnessLabel}`
+                : `Disabled for ${row.harnessLabel} while this skill is off`
+            }
+          />
+        </span>
+      </TooltipControl>
+    );
+  }
+
+  const pluginDisabledByClaudeLabel =
+    row.kind === "plugin" && row.deployment?.disabled_by === "claude-plugin-disabled"
+      ? `Off because the ${row.deployment.plugin?.name ?? "plugin"} plugin is disabled in Claude Code.`
+      : null;
+  if (pluginDisabledByClaudeLabel) {
+    return (
+      <TooltipControl content={pluginDisabledByClaudeLabel}>
+        <span className="inline-flex">
+          <SwitchControl
+            checked={false}
+            disabled
+            onCheckedChange={() => undefined}
+            ariaLabel={pluginDisabledByClaudeLabel}
+          />
+        </span>
+      </TooltipControl>
+    );
+  }
+
+  return <span className="w-6" aria-hidden="true" />;
+}
+
 export function SkillLocationRow({
   row,
   scopeLabel,
@@ -26,18 +119,7 @@ export function SkillLocationRow({
 }) {
   const menu = rowMenu(row, scopeLabel);
   const tip = tipLines(row.conditions);
-  const isAlwaysOnReader = row.kind === "reader" && !row.hasSwitch;
-  const pluginDisabledByClaudeLabel =
-    row.kind === "plugin" && row.deployment?.disabled_by === "claude-plugin-disabled"
-      ? `Off because the ${row.deployment.plugin?.name ?? "plugin"} plugin is disabled in Claude Code.`
-      : null;
-  const labelTip =
-    row.kind === "link" && row.deployment?.symlink_target
-      ? [
-          { text: homeRelativePath(row.path), mono: true as const },
-          { text: `→ ${homeRelativePath(row.deployment.symlink_target)}`, mono: true as const },
-        ]
-      : [{ text: homeRelativePath(row.path), mono: true as const }];
+  const labelTip = labelTipFor(row);
 
   return (
     <div className="grid h-9 grid-cols-[20px_minmax(0,1fr)_auto] items-center gap-3 rounded-sm px-2 hover:bg-bg-hover">
@@ -70,58 +152,7 @@ export function SkillLocationRow({
         <span className="truncate text-caption text-text-tertiary">{row.caption}</span>
       </span>
       <span className="flex shrink-0 items-center gap-1">
-        {row.hasSwitch ? (
-          <SwitchControl
-            checked={row.switchOn}
-            onCheckedChange={(next) =>
-              onAction(
-                row.kind === "reader"
-                  ? {
-                      kind: "set-reader-enabled",
-                      target: row.lifecycleTarget,
-                      agent: row.harness,
-                      enabled: next,
-                    }
-                  : { kind: "set-enabled", deployment: row.deployment!, enabled: next },
-              )
-            }
-            ariaLabel={`Enabled for ${row.harnessLabel}`}
-          />
-        ) : isAlwaysOnReader ? (
-          <TooltipControl
-            content={
-              row.switchOn
-                ? `Always on because ${row.harnessLabel} has no per-skill switch.`
-                : `Off because this skill is disabled in the Universal folder.`
-            }
-          >
-            <span className="inline-flex">
-              <SwitchControl
-                checked={row.switchOn}
-                disabled
-                onCheckedChange={() => undefined}
-                ariaLabel={
-                  row.switchOn
-                    ? `Always enabled for ${row.harnessLabel}`
-                    : `Disabled for ${row.harnessLabel} while this skill is off`
-                }
-              />
-            </span>
-          </TooltipControl>
-        ) : pluginDisabledByClaudeLabel ? (
-          <TooltipControl content={pluginDisabledByClaudeLabel}>
-            <span className="inline-flex">
-              <SwitchControl
-                checked={false}
-                disabled
-                onCheckedChange={() => undefined}
-                ariaLabel={pluginDisabledByClaudeLabel}
-              />
-            </span>
-          </TooltipControl>
-        ) : (
-          <span className="w-6" aria-hidden="true" />
-        )}
+        <LocationRowSwitch row={row} onAction={onAction} />
         <SkillLocationMenu
           entries={menu.entries}
           danger={menu.danger}

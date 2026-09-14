@@ -67,6 +67,154 @@ function MarkdownSkeleton() {
   );
 }
 
+interface CardHeaderProps {
+  deployment?: Deployment;
+  deploymentUnresolved: boolean;
+  ownDeploymentOptions: Deployment[];
+  isEditing: boolean;
+  canEdit: boolean;
+  editState: SkillMarkdownEditState;
+  onSelectDeployment: (path: string) => void;
+  onStartEdit: () => void;
+}
+
+/** SKILL.md's own header: title, the copy picker/label, and Edit or the "Unsaved changes" hint. */
+function CardHeader({
+  deployment,
+  deploymentUnresolved,
+  ownDeploymentOptions,
+  isEditing,
+  canEdit,
+  editState,
+  onSelectDeployment,
+  onStartEdit,
+}: CardHeaderProps) {
+  return (
+    <div className="flex items-center justify-between gap-3 text-body font-semibold text-text-primary">
+      <span>SKILL.md</span>
+      <span className="flex min-w-0 items-center gap-2">
+        {deployment &&
+          !deploymentUnresolved &&
+          (ownDeploymentOptions.length > 1 && !isEditing ? (
+            <SelectControl
+              ariaLabel="Copy to show and edit"
+              value={deployment.path}
+              onValueChange={onSelectDeployment}
+              items={ownDeploymentOptions.map((d) => ({
+                value: d.path,
+                label: deploymentLabel(d),
+              }))}
+            />
+          ) : (
+            <TooltipControl content={[{ text: deployment.path, mono: true }]}>
+              <span className="truncate text-caption font-normal text-text-tertiary">
+                {deploymentLabel(deployment)}
+              </span>
+            </TooltipControl>
+          ))}
+        {editState.kind === "editing"
+          ? editState.isDirty && <span className="text-caption text-warning">Unsaved changes</span>
+          : canEdit && (
+              <Button variant="outline" size="sm" onClick={onStartEdit}>
+                Edit
+              </Button>
+            )}
+      </span>
+    </div>
+  );
+}
+
+interface CardBodyProps {
+  deploymentUnresolved: boolean;
+  ownDeploymentOptions: Deployment[];
+  onSelectDeployment: (path: string) => void;
+  isPluginManaged: boolean;
+  pluginManagedText: string;
+  editState: SkillMarkdownEditState;
+  rawContent: string | null;
+  saveLabel: string;
+  onSave: (content: string) => void;
+  onCancelEdit: () => void;
+  onDirtyChange: (isDirty: boolean) => void;
+  isLoadingContent: boolean;
+  loadError: string | null;
+  onRetry: () => void;
+}
+
+/** The card's one content slot: unresolved-copy picker, plugin notice, editor, skeleton, error, rendered markdown, or empty state - in that precedence. */
+function CardBody({
+  deploymentUnresolved,
+  ownDeploymentOptions,
+  onSelectDeployment,
+  isPluginManaged,
+  pluginManagedText,
+  editState,
+  rawContent,
+  saveLabel,
+  onSave,
+  onCancelEdit,
+  onDirtyChange,
+  isLoadingContent,
+  loadError,
+  onRetry,
+}: CardBodyProps) {
+  if (deploymentUnresolved) {
+    return (
+      <div className="m-0 p-3 text-body leading-[1.5] text-text-secondary">
+        <p>The copy you opened is no longer installed.</p>
+        {ownDeploymentOptions.length > 0 && (
+          <div className="flex flex-wrap gap-2">
+            {ownDeploymentOptions.map((d) => (
+              <Button
+                key={d.path}
+                variant="outline"
+                size="sm"
+                onClick={() => onSelectDeployment(d.path)}
+              >
+                {deploymentLabel(d)}
+              </Button>
+            ))}
+          </div>
+        )}
+      </div>
+    );
+  }
+  if (isPluginManaged) {
+    return (
+      <p className="m-0 select-text p-3 text-body leading-[1.5] text-text-secondary">
+        {pluginManagedText}
+      </p>
+    );
+  }
+  if (editState.kind === "editing" && rawContent !== null) {
+    return (
+      <SkillMarkdownEditor
+        initialContent={editState.openedContent}
+        isSaving={editState.isSaving}
+        saveLabel={saveLabel}
+        onSave={onSave}
+        onCancel={onCancelEdit}
+        onDirtyChange={onDirtyChange}
+      />
+    );
+  }
+  if (isLoadingContent) return <MarkdownSkeleton />;
+  if (loadError) {
+    return (
+      <div className="m-0 flex items-center justify-between gap-3 p-3 text-body leading-[1.5] text-error">
+        <span className="select-text">{loadError}</span>
+        <Button variant="outline" size="sm" onClick={onRetry}>
+          Retry
+        </Button>
+      </div>
+    );
+  }
+  if (rawContent !== null) {
+    return <SkillMarkdown content={stripFrontmatter(rawContent)} className="px-4 py-3" />;
+  }
+  return <p className="m-0 px-3 py-6 text-small text-text-tertiary">No content available</p>;
+}
+
 export function SkillMarkdownCard({
   skill,
   isPluginManaged,
@@ -94,85 +242,32 @@ export function SkillMarkdownCard({
 
   return (
     <div className="flex flex-col gap-1 rounded-lg border border-border-subtle p-4">
-      <div className="flex items-center justify-between gap-3 text-body font-semibold text-text-primary">
-        <span>SKILL.md</span>
-        <span className="flex min-w-0 items-center gap-2">
-          {deployment &&
-            !deploymentUnresolved &&
-            (ownDeploymentOptions.length > 1 && !isEditing ? (
-              <SelectControl
-                ariaLabel="Copy to show and edit"
-                value={deployment.path}
-                onValueChange={onSelectDeployment}
-                items={ownDeploymentOptions.map((d) => ({
-                  value: d.path,
-                  label: deploymentLabel(d),
-                }))}
-              />
-            ) : (
-              <TooltipControl content={[{ text: deployment.path, mono: true }]}>
-                <span className="truncate text-caption font-normal text-text-tertiary">
-                  {deploymentLabel(deployment)}
-                </span>
-              </TooltipControl>
-            ))}
-          {editState.kind === "editing"
-            ? editState.isDirty && (
-                <span className="text-caption text-warning">Unsaved changes</span>
-              )
-            : canEdit && (
-                <Button variant="outline" size="sm" onClick={onStartEdit}>
-                  Edit
-                </Button>
-              )}
-        </span>
-      </div>
-
-      {deploymentUnresolved ? (
-        <div className="m-0 p-3 text-body leading-[1.5] text-text-secondary">
-          <p>The copy you opened is no longer installed.</p>
-          {ownDeploymentOptions.length > 0 && (
-            <div className="flex flex-wrap gap-2">
-              {ownDeploymentOptions.map((d) => (
-                <Button
-                  key={d.path}
-                  variant="outline"
-                  size="sm"
-                  onClick={() => onSelectDeployment(d.path)}
-                >
-                  {deploymentLabel(d)}
-                </Button>
-              ))}
-            </div>
-          )}
-        </div>
-      ) : isPluginManaged ? (
-        <p className="m-0 select-text p-3 text-body leading-[1.5] text-text-secondary">
-          {pluginManagedText}
-        </p>
-      ) : editState.kind === "editing" && rawContent !== null ? (
-        <SkillMarkdownEditor
-          initialContent={editState.openedContent}
-          isSaving={editState.isSaving}
-          saveLabel={saveLabel}
-          onSave={onSave}
-          onCancel={onCancelEdit}
-          onDirtyChange={onDirtyChange}
-        />
-      ) : isLoadingContent ? (
-        <MarkdownSkeleton />
-      ) : loadError ? (
-        <div className="m-0 flex items-center justify-between gap-3 p-3 text-body leading-[1.5] text-error">
-          <span className="select-text">{loadError}</span>
-          <Button variant="outline" size="sm" onClick={onRetry}>
-            Retry
-          </Button>
-        </div>
-      ) : rawContent !== null ? (
-        <SkillMarkdown content={stripFrontmatter(rawContent)} className="px-4 py-3" />
-      ) : (
-        <p className="m-0 px-3 py-6 text-small text-text-tertiary">No content available</p>
-      )}
+      <CardHeader
+        deployment={deployment}
+        deploymentUnresolved={deploymentUnresolved}
+        ownDeploymentOptions={ownDeploymentOptions}
+        isEditing={isEditing}
+        canEdit={canEdit}
+        editState={editState}
+        onSelectDeployment={onSelectDeployment}
+        onStartEdit={onStartEdit}
+      />
+      <CardBody
+        deploymentUnresolved={deploymentUnresolved}
+        ownDeploymentOptions={ownDeploymentOptions}
+        onSelectDeployment={onSelectDeployment}
+        isPluginManaged={isPluginManaged}
+        pluginManagedText={pluginManagedText}
+        editState={editState}
+        rawContent={rawContent}
+        saveLabel={saveLabel}
+        onSave={onSave}
+        onCancelEdit={onCancelEdit}
+        onDirtyChange={onDirtyChange}
+        isLoadingContent={isLoadingContent}
+        loadError={loadError}
+        onRetry={onRetry}
+      />
     </div>
   );
 }
