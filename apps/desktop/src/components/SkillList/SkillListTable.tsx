@@ -370,9 +370,6 @@ export function SkillListTable({
               role="grid"
               aria-label="Skills"
               aria-rowcount={rows.length}
-              // `overflow-clip`, not `overflow-hidden`: both clip rows to the rounded border, but
-              // `hidden` makes the grid a scroll container, which stops the group headers sticking.
-              className="overflow-clip rounded-md border border-border"
               onKeyDown={onGridKeyDown}
             >
               {GROUP_ORDER.map((group) => {

@@ -22,6 +22,26 @@ interface PageShellProps {
 }
 
 /**
+ * The first word in the header: a top-level page's title, or the parent crumb on a child page.
+ * One disabled-or-enabled button for both, so "Skills" doesn't move when it becomes a link.
+ */
+function RootCrumb({ label, onClick }: { label: string; onClick?: () => void }) {
+  return (
+    <Button
+      variant="ghost"
+      size="xs"
+      disabled={!onClick}
+      // -7px = the 6px hover padding plus the button's 1px transparent border, so the text starts
+      // at the header's own padding edge.
+      className="-ml-[7px] h-6 min-w-0 rounded-sm px-1.5 text-small text-text-tertiary hover:text-text-primary disabled:text-text-primary disabled:opacity-100"
+      onClick={onClick}
+    >
+      <span className="truncate">{label}</span>
+    </Button>
+  );
+}
+
+/**
  * A `<section>` with a one-line header (parent crumb, title, actions on the
  * right), an optional toolbar row, and a scrolling content area below.
  */
@@ -36,24 +56,23 @@ export function PageShell({
 }: PageShellProps) {
   return (
     <section className="flex min-h-0 flex-1 flex-col">
-      <header className="flex h-10 shrink-0 items-center justify-between gap-3 border-b border-border-subtle px-4">
+      {/* With a toolbar, header and toolbar read as one block: only the toolbar draws the line. The
+          header keeps a transparent border so its content centres the same with or without one. */}
+      <header
+        className={`flex h-10 shrink-0 items-center justify-between gap-3 border-b px-4 ${toolbar ? "border-transparent" : "border-border-subtle"}`}
+      >
         <div className="flex min-w-0 items-center gap-1.5 text-small">
-          {parent && (
+          {parent ? (
             <>
-              <Button
-                variant="ghost"
-                size="xs"
-                // The negative margin cancels the hover padding so the label's text starts where a
-                // top-level page's title does - otherwise "Skills" jumps right when it becomes a crumb.
-                className="-ml-1.5 h-6 rounded-sm px-1.5 text-small text-text-tertiary hover:text-text-primary"
-                onClick={parent.onClick}
-              >
-                {parent.label}
-              </Button>
+              <RootCrumb label={parent.label} onClick={parent.onClick} />
               <ChevronRight size={12} className="shrink-0 text-text-quaternary" />
+              <h1 className="m-0 truncate text-small font-medium text-text-primary">{title}</h1>
             </>
+          ) : (
+            <h1 className="m-0 flex min-w-0">
+              <RootCrumb label={title} />
+            </h1>
           )}
-          <h1 className="m-0 truncate text-small font-medium text-text-primary">{title}</h1>
           {subtitle && (
             <span className="min-w-0 truncate text-small text-text-tertiary">· {subtitle}</span>
           )}

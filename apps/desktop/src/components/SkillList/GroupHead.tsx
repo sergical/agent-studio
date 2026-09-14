@@ -25,7 +25,7 @@ export function GroupHead({
   groupId?: string;
 }) {
   return (
-    <div className="sticky top-0 z-1 flex h-7 w-full items-center gap-2 border-b border-border-subtle bg-bg-primary px-3">
+    <div className="sticky top-0 z-1 flex h-7 w-full items-center gap-2 rounded-sm bg-bg-secondary px-3">
       <CollapsibleTrigger
         data-group-header={groupId}
         className="group/head flex h-full flex-1 items-center gap-2 text-left text-small font-medium text-text-secondary"
