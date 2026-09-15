@@ -1,0 +1,58 @@
+name: Desktop frontend
+
+on:
+  pull_request:
+    paths:
+      - "apps/desktop/**"
+      - "packages/lib/**"
+      - "packages/ui/**"
+      - "package.json"
+      - "package-lock.json"
+      - ".oxlintrc.json"
+      - "tools/oxlint/**"
+      - ".github/workflows/desktop-frontend.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: desktop-frontend-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  frontend:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      NODE_OPTIONS: --max-old-space-size=3072
+      SENTRY_DSN: ""
+      VITE_SENTRY_DSN: ""
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: "24"
+          cache: npm
+      - run: npm ci --ignore-scripts --no-audit --no-fund
+      - name: Typecheck desktop
+        run: npm run typecheck
+      - name: Lint desktop and shared UI
+        run: npx --no-install oxlint apps/desktop/src packages/lib/src packages/ui/src --deny-warnings
+      - name: Desktop tests
+        run: npm run test -w skill-studio -- --maxWorkers=1 --reporter=default --reporter=junit --outputFile.junit="$RUNNER_TEMP/desktop-tests.xml"
+      - name: Shared library tests
+        run: npm run test -w @skill-studio/lib -- --maxWorkers=1 --reporter=default --reporter=junit --outputFile.junit="$RUNNER_TEMP/lib-tests.xml"
+      - name: Build desktop frontend
+        working-directory: apps/desktop
+        run: npx --no-install vite build
+      - name: Retain test reports briefly
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: desktop-test-reports
+          path: ${{ runner.temp }}/*-tests.xml
+          retention-days: 3
+          if-no-files-found: ignore
