@@ -4553,12 +4553,13 @@ mod tests {
     #[test]
     fn ordinary_candidate_reports_a_failed_manifest_once() {
         let tmp = tempfile::tempdir().unwrap();
-        let skill = tmp.path().join(".claude/skills/alpha");
+        let home = tmp.path().canonicalize().unwrap();
+        let skill = home.join(".claude/skills/alpha");
         write_skill(&skill, "alpha");
         let manifest = skill.join("plugin.json");
         fs::create_dir(&manifest).unwrap();
 
-        let report = discover_skill_candidates(tmp.path(), &[]);
+        let report = discover_skill_candidates(&home, &[]);
         assert_eq!(report.candidates.len(), 1);
         assert_eq!(
             report

@@ -868,6 +868,7 @@ impl PreparedPluginAncestry {
         pass: &mut ManifestReadPass<'_>,
         issues: &mut Vec<DiscoveryReadIssue>,
     ) -> PluginEvidence {
+        let issues_start = issues.len();
         issues.extend(self.issues.iter().cloned());
         let resolved = self.resolved.materialize(pass, &self.harness, issues);
         if matches!(resolved, PluginEvidence::Confirmed(_)) {
@@ -876,7 +877,13 @@ impl PreparedPluginAncestry {
         let Some(lexical) = &self.lexical else {
             return resolved;
         };
-        let lexical = lexical.materialize(pass, &self.harness, issues);
+        let mut lexical_issues = Vec::new();
+        let lexical = lexical.materialize(pass, &self.harness, &mut lexical_issues);
+        for issue in lexical_issues {
+            if !issues[issues_start..].contains(&issue) {
+                issues.push(issue);
+            }
+        }
         if matches!(lexical, PluginEvidence::Confirmed(_)) {
             lexical
         } else if matches!(resolved, PluginEvidence::Unknown)

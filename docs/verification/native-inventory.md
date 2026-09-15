@@ -138,3 +138,13 @@ and the original coordination case passed (0.08 s test). Formatting passed.
 Preflight: 44% memory free, 59 GiB disk free; two Cargo workers, one test thread.
 Peak test memory was not measured. Linux CI and focused review of this fix remain
 pending. Existing native evidence predates this shared write primitive correction.
+
+The directory-sync fix received a fresh review with no actionable findings. Linux
+run 35013729750 passed 409 tests and failed only the manifest-warning count case
+(five explicit skips). Its physical and lexical paths coincide on Linux, causing
+identical diagnostics to be appended twice. Canonicalizing the fixture reproduced
+this on macOS (2 warnings instead of 1). The fix removes identical lexical warnings
+already recorded for the same candidate, retaining distinct warnings and both
+ownership checks. The regression now passes (2.49 s build, 0.24 s test); all 52
+plugin tests pass (6.68 s). Formatting passed. Memory free was 46%, disk free
+59 GiB; peak test memory was not measured. Focused review and final CI remain.
