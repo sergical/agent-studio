@@ -112,3 +112,47 @@ checks missing-key startup refusal, and validates both maps. It opens no listene
 and sends no external requests. The separate runtime tests exercise shutdown
 through temporary Unix sockets. Neither test establishes deployed Sentry receipt,
 production dependency packaging or supervisor behavior.
+
+## Remote verification — 2026-09-15
+
+The reviewed code at `36f8e29841bf5a090572f899934ffe44d5080e92` was rebuilt and
+exercised through its compiled `createNodeRequestHandler` with instrumentation
+preloaded. No listener or deployment was started. Two synthetic requests produced
+health 200 and a stubbed upstream failure 502. The SDK completed its bounded flush
+and the process exited (0.54 s command wall time; peak memory was not measured).
+
+Destination: `sergtech/skill-studio-api`, environment `verification`, release
+`skill-studio-api@36f8e298-remote-20260915`. Sampling was 1 for this two-request
+check only. No real upstream key or request data was used. Account inspection used
+Executor's personal Sentry MCP connection. Read-back confirmed:
+
+- [Error SKILL-STUDIO-API-1](https://sergtech.sentry.io/issues/SKILL-STUDIO-API-1),
+  event `9c4fb9c786d64ff895fd9578db91f9b7`, at 16:02:18 UTC.
+- Two `api.request.completed` logs linked to the request traces.
+- Three spans for the failed request: server, Hono middleware and upstream.
+- Two `api.request.count` samples of 1 and two `api.request.duration` samples,
+  0.928 ms and 17.368 ms. These fixture timings are not a performance baseline.
+
+[Failed-request trace](https://sergtech.sentry.io/explore/traces/trace/6c8400856f354457baba4ee3035dd2c1)
+and [health trace](https://sergtech.sentry.io/explore/traces/trace/860e94c87c8144b196643f14af16247b)
+provide the correlation identifiers for logs and metrics. Search each dataset in
+the API project for the verification timestamp; the error also carries the release
+and environment above. These links remain subject to Sentry retention; no ongoing
+test export was enabled and custom retention has not been verified.
+
+Acceptance remains incomplete:
+
+- The error's transaction and middleware span read `OTHER unmatched`; the server
+  span has the correct route. Error attribution needs correction.
+- First-party frames remain `app:///dist/server.js`; source-map resolution is not
+  verified. The issue's code location points to a different repository, so release
+  and repository mapping also need correction.
+- Synthetic query/header markers are absent from the returned event summary,
+  but the server added geographic context. Full payload redaction and server-side
+  privacy configuration remain unverified; this is not a complete redaction pass.
+- Production deployment, alert delivery, and retention configuration remain open.
+
+The first read-back hit an internal connector error. A read-only retry succeeded;
+no duplicate test requests were sent. Metric search succeeded with the metrics
+dataset's default fields after the natural-language query was rejected. No raw
+telemetry payload files were retained locally.
