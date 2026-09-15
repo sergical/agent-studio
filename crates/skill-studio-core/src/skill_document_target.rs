@@ -351,9 +351,8 @@ impl SkillDocumentTarget {
             removed = true;
             after_commit()?;
             self.directory
-                .try_clone()
+                .open(".")
                 .map_err(|error| error.to_string())?
-                .into_std_file()
                 .sync_all()
                 .map_err(|error| error.to_string())?;
             let receipt = DocumentReceipt {
@@ -444,9 +443,8 @@ impl SkillDocumentTarget {
             owned_temp = None;
             after_commit()?;
             self.directory
-                .try_clone()
+                .open(".")
                 .map_err(|error| error.to_string())?
-                .into_std_file()
                 .sync_all()
                 .map_err(|error| error.to_string())?;
             let metadata = self.verify(proposed)?;
@@ -579,9 +577,8 @@ impl SkillDocumentTarget {
             }
             after_commit()?;
             self.directory
-                .try_clone()
+                .open(".")
                 .map_err(|e| e.to_string())?
-                .into_std_file()
                 .sync_all()
                 .map_err(|e| e.to_string())?;
             let published = self.verify(proposed)?;

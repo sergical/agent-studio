@@ -126,3 +126,15 @@ production behavior changed. The FIFO regression passed locally (5.57 s build,
 0.01 s test); formatting passed. Test peak memory was not measured. Preflight:
 42% memory free, 59 GiB disk free, no competing task-owned process. The next CI
 run checks the final core suite. No native rebuild is required for this test-only fix.
+
+The second Linux run (35013402107) passed formatting/Clippy but reported 325 passed,
+85 failed and 5 ignored tests. The first failure was directory fsync returning
+EBADF after publication; its panic poisoned the shared test gate and caused a
+cascade. Three document-target sync sites now open `.` relative to the retained
+directory capability before fsync, instead of cloning a possible Linux O_PATH
+handle. No sync errors are suppressed and no ambient path lookup was added.
+Local macOS verification: 11 document-target tests passed (3.64 s build, 0.18 s tests),
+and the original coordination case passed (0.08 s test). Formatting passed.
+Preflight: 44% memory free, 59 GiB disk free; two Cargo workers, one test thread.
+Peak test memory was not measured. Linux CI and focused review of this fix remain
+pending. Existing native evidence predates this shared write primitive correction.
