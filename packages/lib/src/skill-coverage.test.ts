@@ -19,6 +19,11 @@ import type { Deployment, InstalledSkill } from "./skill-types";
 
 function fixtureDeployment(overrides: Partial<Deployment> = {}): Deployment {
   return {
+    id: "fixture-deployment",
+    destination: "per-harness",
+    owner_kind: "dotagents",
+    mutability: "mutable",
+    backing: { kind: "canonical" },
     agent: "Claude Code",
     scope: "global",
     path: "/home/.claude/skills/find-bugs",
