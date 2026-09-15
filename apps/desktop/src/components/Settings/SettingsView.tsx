@@ -6,17 +6,15 @@
 // ============================================================================
 
 import { useEffect, useState } from "react";
-import { Check, Globe, SquarePen } from "lucide-react";
+import { Check, SquarePen } from "lucide-react";
 import { RadioGroup, RadioGroupItem } from "@skill-studio/ui";
 import {
   getPreferredEditor,
-  getSkillsShAccess,
   listInstalledEditors,
   setPreferredEditor,
   type EditorOption,
 } from "../../lib/skill-api";
 import { useAppStore } from "../../store/appStore";
-import { skillsShAccessStatusText, type SkillsShAccessState } from "./skills-sh-access-status";
 
 /** The always-available first choice: the first installed editor Skill Studio knows about. */
 function automaticOption(editors: EditorOption[]) {
@@ -113,53 +111,10 @@ function EditorPicker() {
   );
 }
 
-/**
- * Read-only: the app browses through the Skill Studio server, so there is no key to enter here.
- * A developer override stays in `~/.agents/skill-studio.json` (see `api::resolve_skills_sh_access`).
- */
-function SkillsShAccessSetting() {
-  const addToast = useAppStore((state) => state.addToast);
-  const [accessState, setAccessState] = useState<SkillsShAccessState>({ kind: "loading" });
-
-  useEffect(() => {
-    let cancelled = false;
-    getSkillsShAccess()
-      .then((status) => {
-        if (!cancelled) setAccessState({ kind: "available", access: status });
-      })
-      .catch((err) => {
-        if (!cancelled) setAccessState({ kind: "unavailable" });
-        addToast({
-          type: "error",
-          title: "Couldn't read your skills.sh access mode",
-          message: err instanceof Error ? err.message : "Unknown error",
-        });
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, [addToast]);
-
-  const accessStatus = skillsShAccessStatusText(accessState);
-
-  return (
-    <div className="flex flex-col gap-3 rounded-lg border border-border-subtle p-4">
-      <div className="flex items-center gap-2 text-body font-semibold text-text-primary">
-        <Globe size={15} className="text-text-tertiary" />
-        skills.sh
-      </div>
-      {accessStatus && (
-        <p className="m-0 select-text text-small text-text-tertiary">{accessStatus}</p>
-      )}
-    </div>
-  );
-}
-
 export function SettingsView() {
   return (
     <div className="flex flex-col gap-4 p-6">
       <h1 className="m-0 text-heading font-semibold text-text-primary">Settings</h1>
-      <SkillsShAccessSetting />
       <EditorPicker />
     </div>
   );

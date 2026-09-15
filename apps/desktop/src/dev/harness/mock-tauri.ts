@@ -232,8 +232,6 @@ export function installMockTauri(initial: SkillSnapshot): HarnessControl {
             skills: [{ name: "frontend-design", path: "frontend-design" }],
             truncated: false,
           };
-        case "get_skills_sh_access":
-          return { mode: "server", server_url: "http://127.0.0.1:8787/api/v1" };
         case "search_skills":
         case "get_popular_skills":
           return { has_more: false, skills: [] };

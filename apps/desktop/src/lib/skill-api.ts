@@ -30,7 +30,6 @@ import type {
   PullResult,
   SkillDetails,
   SkillEvent,
-  SkillsShAccessInfo,
   SkillSnapshot,
   UpdatePackResult,
 } from "@skill-studio/lib";
@@ -59,23 +58,6 @@ export async function applySkillFrontmatterRepair(
 // ============================================================================
 // Search API
 // ============================================================================
-
-/**
- * Whether discovery goes straight to skills.sh with a developer-override key
- * (`mode: "direct"`) or through the local Skill Studio server (`mode:
- * "server"`, with its URL). Never returns the key itself.
- */
-export async function getSkillsShAccess(): Promise<SkillsShAccessInfo> {
-  return invoke("get_skills_sh_access");
-}
-
-/**
- * Save `key` as the skills.sh API key. Trimmed and rejected server-side if
- * empty.
- */
-export async function setSkillsShApiKey(key: string): Promise<void> {
-  return invoke("set_skills_sh_api_key", { key });
-}
 
 /**
  * Search for skills on skills.sh. The v1 search endpoint has no pagination -
