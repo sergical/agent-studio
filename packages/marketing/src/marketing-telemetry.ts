@@ -9,6 +9,13 @@ type MarketingEnvironment = Pick<ImportMetaEnv, "MODE"> & {
 };
 type SpanJSON = NonNullable<Event["spans"]>[number];
 
+type Envelope = Parameters<ReturnType<NonNullable<Sentry.BrowserOptions["transport"]>>["send"]>[0];
+type LogOrMetricItem = Extract<Envelope[1][number], [{ type: "log" | "trace_metric" }, unknown]>;
+
+function isLogOrMetricItem(item: Envelope[1][number]): item is LogOrMetricItem {
+  return item[0].type === "log" || item[0].type === "trace_metric";
+}
+
 function safeFrame(frame: StackFrame): StackFrame {
   let filename = "<external>";
   try {
@@ -122,6 +129,22 @@ export function initializeMarketingTelemetry(
     tracesSampleRate,
     defaultIntegrations: false,
     integrations: [
+      {
+        name: "MarketingTelemetryPrivacy",
+        setup(client) {
+          client.on("beforeEnvelope", (envelope) => {
+            const trace = envelope[0].trace;
+            // oxlint-disable-next-line anti-slop/no-runtime-typeof -- The SDK header is unknown; validate its container before replacing the label.
+            if (trace && typeof trace === "object" && "transaction" in trace) {
+              trace.transaction = "marketing.page";
+            }
+            // The SDK merges scope attributes after the log and metric filters.
+            for (const [, payload] of envelope[1].filter(isLogOrMetricItem)) {
+              for (const item of payload.items) item.attributes = {};
+            }
+          });
+        },
+      },
       Sentry.globalHandlersIntegration(),
       Sentry.browserTracingIntegration({
         traceFetch: false,
@@ -163,8 +186,17 @@ export function recordMarketingBootstrap(): void {
   });
 }
 
+const captureHandledReactError: ReturnType<typeof Sentry.reactErrorHandler> = (
+  error,
+  errorInfo,
+) => {
+  Sentry.captureReactException(error, errorInfo, {
+    mechanism: { handled: true, type: "auto.function.react.error_handler" },
+  });
+};
+
 export const marketingReactErrors = {
   onUncaughtError: Sentry.reactErrorHandler(),
-  onCaughtError: Sentry.reactErrorHandler(),
-  onRecoverableError: Sentry.reactErrorHandler(),
+  onCaughtError: captureHandledReactError,
+  onRecoverableError: captureHandledReactError,
 };

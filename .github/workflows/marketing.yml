@@ -51,7 +51,7 @@ jobs:
           VITE_SENTRY_ENVIRONMENT: test
           VITE_SENTRY_TRACES_SAMPLE_RATE: "1"
       - name: Verify private source maps
-        run: python3 tools/verification/verify-web-observability-build.py --surface marketing --build-root packages/marketing/dist-observability --release marketing-ci-fixture --dsn https://public@example.invalid/1 --output "$RUNNER_TEMP/marketing-build.json"
+        run: python3 tools/verification/verify-web-observability-build.py --surface marketing --disabled-build-root packages/marketing/dist --build-root packages/marketing/dist-observability --release marketing-ci-fixture --dsn https://public@example.invalid/1 --output "$RUNNER_TEMP/marketing-build.json"
       - name: Retain test report briefly
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4

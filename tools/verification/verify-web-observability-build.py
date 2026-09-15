@@ -8,10 +8,20 @@ import re
 parser = argparse.ArgumentParser(description=__doc__)
 parser.add_argument('--surface', choices=('desktop', 'marketing'), required=True)
 parser.add_argument('--build-root', type=Path, required=True)
+parser.add_argument('--disabled-build-root', type=Path)
 parser.add_argument('--release', required=True)
 parser.add_argument('--dsn', required=True)
 parser.add_argument('--output', type=Path, required=True)
 args = parser.parse_args()
+if args.disabled_build_root:
+    disabled_root = args.disabled_build_root.resolve(strict=True)
+    assert (disabled_root / 'index.html').is_file(), 'Missing disabled entry page'
+    disabled_assets = sorted(disabled_root.rglob('*.js'))
+    assert disabled_assets, 'No disabled JavaScript'
+    for asset in disabled_assets:
+        script = asset.read_text()
+        for marker in ('__SENTRY__', 'sentry.javascript', 'sentry.io', f'{args.surface}-telemetry'):
+            assert marker not in asset.name and marker not in script, ('Telemetry in disabled build', asset, marker)
 root = args.build_root.resolve(strict=True)
 assert (root / 'index.html').is_file(), 'Missing built entry page'
 assets = sorted(root.rglob('*.js'))
@@ -67,6 +77,7 @@ assert any(f'{args.surface}-instrument.ts' in source for source in sources), 'Mi
 assert any(f'{args.surface}-telemetry.ts' in source for source in sources), 'Missing telemetry source'
 assert any('@sentry/' in source for source in sources), 'Missing Sentry SDK source maps'
 result = {'surface': args.surface, 'release': args.release,
+          'disabled_build_checked': args.disabled_build_root is not None,
           'release_assets': release_assets, 'enabled_dsn_assets': dsn_assets,
           'javascript_files': len(assets),
           'javascript_bytes': sum(report['bytes'] for report in reports),

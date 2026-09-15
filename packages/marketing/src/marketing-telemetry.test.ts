@@ -12,6 +12,7 @@ type Envelope = Parameters<ReturnType<NonNullable<Sentry.BrowserOptions["transpo
 afterEach(async () => {
   await Sentry.close(2000);
   Sentry.getCurrentScope().setClient(undefined);
+  Sentry.getIsolationScope().removeAttribute("private-isolation-key");
 });
 
 it("leaves telemetry disabled without a DSN", () => {
@@ -51,7 +52,9 @@ it("exports sanitized React errors, spans, logs and metrics to a fixture transpo
       flush: async () => true,
     }),
   );
+  Sentry.getIsolationScope().setAttribute("private-isolation-key", "private-isolation-value");
   Sentry.withScope((scope) => {
+    scope.setAttribute("private-scope-key", "private-scope-value");
     scope.setUser({ email: "private-email" });
     scope.setExtra("body", "private-body");
     Sentry.startSpan(
@@ -69,6 +72,12 @@ it("exports sanitized React errors, spans, logs and metrics to a fixture transpo
       },
     );
   });
+  Sentry.startInactiveSpan({
+    name: 'button[aria-label="private-dom-label"]',
+    op: "ui.interaction.click",
+    experimental: { standalone: true },
+    forceTransaction: true,
+  }).end();
   Sentry.captureEvent({
     exception: {
       values: [
@@ -118,6 +127,11 @@ it("exports sanitized React errors, spans, logs and metrics to a fixture transpo
   const types = items.map((item) => item[0].type);
   expect(types.filter((type) => type === "event")).toHaveLength(2);
   expect(types).toContain("transaction");
+  expect(types).toContain("span");
+  const interactionEnvelope = envelopes.find((envelope) =>
+    envelope[1].some((item) => item[0].type === "span"),
+  );
+  expect(interactionEnvelope?.[0].trace).toMatchObject({ transaction: "marketing.page" });
   expect(types).toContain("log");
   expect(types).toContain("trace_metric");
   const eventSchema = z.object({
@@ -133,4 +147,31 @@ it("exports sanitized React errors, spans, logs and metrics to a fixture transpo
     expect(container.items).toHaveLength(1);
     expect(container.items[0].trace_id).toBe(transaction.contexts.trace.trace_id);
   }
+});
+
+it.each([
+  ["onUncaughtError", false],
+  ["onCaughtError", true],
+  ["onRecoverableError", true],
+] as const)("classifies %s with handled=%s", async (hook, handled) => {
+  const envelopes: Envelope[] = [];
+  initializeMarketingTelemetry(
+    { MODE: "test", VITE_SENTRY_DSN: "https://public@example.invalid/1" },
+    () => ({
+      send: async (envelope) => {
+        envelopes.push(envelope);
+        return {};
+      },
+      flush: async () => true,
+    }),
+  );
+  marketingReactErrors[hook](new Error("private-render-error"), {
+    componentStack: "private-component",
+  });
+  await Sentry.flush(2000);
+  const items = envelopes.flatMap<Envelope[1][number]>((envelope) => envelope[1]);
+  const events = items.filter((item) => item[0].type === "event");
+  expect(events).toHaveLength(1);
+  expect(events[0][1]).toMatchObject({ exception: { values: [{ mechanism: { handled } }] } });
+  expect(JSON.stringify(envelopes)).not.toContain("private-");
 });

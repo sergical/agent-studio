@@ -53,6 +53,27 @@ Background the page to flush interaction timing. Inspect only captured payloads
 for marker removal. Repeat against the disabled build, then close the browser,
 stop the fixture process, and delete captures and temporary builds.
 
+## Review corrections
+
+Independent review found that Sentry 10.73 merges scope attributes after log and
+metric filters and derives standalone interaction envelope headers before the
+span filter. A `beforeEnvelope` integration now clears serialized log/metric
+attributes and fixes the header transaction to `marketing.page`. Tests use both
+current and isolation scope markers and an actual SDK standalone span named
+with a private DOM label. Trace identifiers remain correlated.
+
+Caught and recoverable React errors now export `handled: true`; uncaught errors
+remain unhandled. The three hook cases are checked separately. CI also scans the
+disabled build for telemetry chunk and SDK markers, alongside enabled map checks.
+
+Eleven tests passed in 0.754 s after the final source edit, with typecheck,
+scoped lint/format and whitespace checks. Disabled and enabled builds took
+0.437 s and 0.603 s of Vite time. Their map/exclusion verifier passed before the
+final erased type annotation and function declaration adjustment; final CI
+checks the committed build. Preflight: 46% memory free and 66 GiB disk free.
+Peak memory was not collected. No browser, listener or remote export ran for
+these corrections. The fresh cleanup pass was a no-op.
+
 ## Open release checks
 
 Remote Sentry receipt, source-map upload/symbolication, alert routing, retention
@@ -64,4 +85,4 @@ Source SHA-256 `src/main.tsx`: `8dc60e67cbaa2e97ebb5869c9732ebfc1f93978c502fccf6
 
 Source SHA-256 `src/marketing-instrument.ts`: `27de93d0addb67ea7ea4fbd6a750dfbbed2f8ea5534b20c909a01510adb4fea2`.
 
-Source SHA-256 `src/marketing-telemetry.ts`: `bf7d43f71c3eab7d583d98c64768331a9f5afc7b8aaf431202f9f68521c4203d`.
+Source SHA-256 `src/marketing-telemetry.ts`: `5dea9dec4b6254092d93e7f9cb0aa1fdb300d004c536c80181f045e58f863a62`.
