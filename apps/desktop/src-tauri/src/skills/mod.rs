@@ -4,14 +4,14 @@
 // ============================================================================
 
 pub mod add_method_defaults;
-pub mod agents;
+pub use skill_studio_core::skill_agents as agents;
 pub mod api;
 pub mod codex_skill_config;
 pub mod commands;
 pub mod dotagents_ledger;
 pub mod event_commands;
 pub mod event_store;
-pub mod frontmatter;
+pub use skill_studio_core::skill_document as frontmatter;
 pub mod gh_cli;
 pub mod github_skill_listing;
 pub mod lock_file;

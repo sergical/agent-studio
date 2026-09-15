@@ -3519,6 +3519,7 @@ dependencies = [
  "serde_json",
  "serde_yaml",
  "sha2 0.11.0",
+ "skill-studio-core",
  "tauri",
  "tauri-build",
  "tauri-plugin-dialog",
@@ -3529,6 +3530,14 @@ dependencies = [
  "toml_edit 0.23.10+spec-1.0.0",
  "ulid",
  "urlencoding",
+]
+
+[[package]]
+name = "skill-studio-core"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_yaml",
 ]
 
 [[package]]
