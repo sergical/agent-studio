@@ -148,3 +148,15 @@ already recorded for the same candidate, retaining distinct warnings and both
 ownership checks. The regression now passes (2.49 s build, 0.24 s test); all 52
 plugin tests pass (6.68 s). Formatting passed. Memory free was 46%, disk free
 59 GiB; peak test memory was not measured. Focused review and final CI remain.
+
+## Integration reconciliation follow-up
+
+The larger integration worktree exposed a direct-harness refusal regression:
+unreadable scope lock records could leave a standalone harness deployment Manual.
+Ownership classification now checks failed records for the candidate's exact
+scope/project before allowing fallback ownership. Confirmed plugin evidence remains
+authoritative. The core lock-failure test also covers a direct harness candidate.
+All 53 ownership tests pass (1.17 s). In the integration worktree, all 52 refresh
+tests pass (7.10 s build, 6.04 s tests), six Settings tests pass, and frontend
+typechecking passes. Fresh review, CI and final native validation of this follow-up
+are pending; earlier acceptance does not prove this new candidate complete.

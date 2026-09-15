@@ -998,6 +998,14 @@ pub fn classify_lifecycle_owner(
     };
     if matches!(report.registry, OwnershipInput::Failed(_))
         || matching_input.is_some_and(ScopedOwnershipInputs::is_failed)
+        || report.scopes.iter().any(|scope| {
+            scope.project_path == candidate.project_path
+                && matches!(
+                    (&scope.scope, candidate.scope.as_str()),
+                    (InstallScope::Global, "global") | (InstallScope::Project, "project")
+                )
+                && scope.is_failed()
+        })
         || has_unread_ownership_input_for_actual_target(candidate, &report.scopes)
     {
         return (
@@ -3420,6 +3428,20 @@ mod tests {
         );
         assert_eq!(owner, LifecycleOwnerKind::Unknown);
         assert_eq!(id, None);
+
+        let mut harness = candidate.clone();
+        harness.path = home.join(".claude/skills/find-bugs");
+        assert_eq!(
+            classify_lifecycle_owner(
+                &harness,
+                &report,
+                SkillDestination::PerHarness,
+                "harness",
+                &Default::default(),
+            )
+            .0,
+            LifecycleOwnerKind::Unknown,
+        );
 
         let mut plugin = candidate;
         plugin.plugin = PluginEvidence::Confirmed(crate::skill_plugins::PluginInfo {
