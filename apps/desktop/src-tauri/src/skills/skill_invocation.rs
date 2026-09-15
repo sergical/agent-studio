@@ -3,7 +3,7 @@
 // Sets a skill's invocation policy - "Both" (default), "User only"
 // (`disable-model-invocation: true`), or "Model only" (`user-invocable:
 // false`) - by rewriting just those two frontmatter keys, leaving every
-// other line of `SKILL.md` byte-identical. See frontmatter.rs's
+// other line of `SKILL.md` byte-identical. See skill_document.rs's
 // `InvocationPolicy`/`invocation_policy` for how the reverse direction
 // (parsing) works.
 //

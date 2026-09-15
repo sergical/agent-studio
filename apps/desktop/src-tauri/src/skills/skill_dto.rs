@@ -3,7 +3,7 @@
 // Serialized shapes sent to the frontend over Tauri IPC: skills.sh API
 // responses, installed-skill records, and installation request/response
 // types. Lock file structs live in lock_file.rs, agent identifiers in
-// agents.rs, SKILL.md frontmatter in frontmatter.rs, and source provenance
+// skill_agents.rs, SKILL.md frontmatter in skill_document.rs, and source provenance
 // in provenance.rs.
 // ============================================================================
 

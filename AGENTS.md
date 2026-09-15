@@ -121,10 +121,8 @@ npm run check
 │           ├── src/
 │           │   ├── skills/
 │           │   │   ├── mod.rs
-│           │   │   ├── agents.rs         # AgentId, agent paths
 │           │   │   ├── api.rs            # skills.sh HTTP client
 │           │   │   ├── commands.rs       # Tauri IPC commands
-│           │   │   ├── frontmatter.rs    # SKILL.md frontmatter parsing/validation
 │           │   │   ├── lock_file.rs      # ~/.agents/.skill-lock.json
 │           │   │   ├── plugins.rs        # Native plugin cache enumeration
 │           │   │   ├── provenance.rs     # Source-kind classification
@@ -133,6 +131,11 @@ npm run check
 │           │   ├── lib.rs                # Library entry
 │           │   └── main.rs               # Rust entry point
 │           └── Cargo.toml                # Rust dependencies
+├── crates/
+│   └── skill-studio-core/         # Shared Rust skill primitives
+│       └── src/
+│           ├── skill_agents.rs    # AgentId, agent paths
+│           └── skill_document.rs  # SKILL.md frontmatter parsing/validation
 ├── packages/
 │   └── ui/                       # Shared UI package placeholder (@skill-studio/ui)
 ├── tools/
@@ -295,7 +298,7 @@ let home = get_home_dir().ok_or("Could not find home directory")?;
 | Tauri commands        | `apps/desktop/src-tauri/src/skills/commands.rs`   |
 | Scanner               | `apps/desktop/src-tauri/src/skills/scan.rs`       |
 | Provenance            | `apps/desktop/src-tauri/src/skills/provenance.rs` |
-| Agent paths           | `apps/desktop/src-tauri/src/skills/agents.rs`     |
+| Agent paths           | `crates/skill-studio-core/src/skill_agents.rs`    |
 | Lint config           | `.oxlintrc.json`                                  |
 | Format config         | `.oxfmtrc.json`                                   |
 | Tauri Config          | `apps/desktop/src-tauri/tauri.conf.json`          |
@@ -368,4 +371,4 @@ Tracks installed skills with their sources and hashes:
 | pi          | `.pi/skills/`                       | `~/.pi/agent/skills/`                        |
 | shared      | `.agents/skills/`                   | `~/.agents/skills/`                          |
 
-`npx skills` can still target the full agent list; see `apps/desktop/src-tauri/src/skills/agents.rs` for `AgentId`.
+`npx skills` can still target the full agent list; see `crates/skill-studio-core/src/skill_agents.rs` for `AgentId`.
