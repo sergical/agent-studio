@@ -7,7 +7,7 @@ Region: `https://us.sentry.io`.
 | Surface | Project slug | Project ID | DSN configuration |
 | --- | --- | --- | --- |
 | Desktop React | `skill-studio-desktop-react` | `4512090766901248` | `VITE_DESKTOP_SENTRY_DSN` |
-| Desktop Rust | `skill-studio-desktop-rust` | `4512090767622144` | `SKILL_STUDIO_DESKTOP_SENTRY_DSN` |
+| Desktop Rust | `skill-studio-desktop-rust` | `4512090767622144` | Build: `SKILL_STUDIO_DESKTOP_SENTRY_DSN`; runtime override: `SKILL_STUDIO_SENTRY_DSN` |
 | Hono API (Node) | `skill-studio-api` | `4512090768474112` | `SENTRY_DSN` |
 | Marketing React | `skill-studio-marketing` | `4512090769391616` | `VITE_SENTRY_DSN` |
 
