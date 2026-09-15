@@ -127,7 +127,7 @@ export function initializeApiTelemetry(
 ): ReturnType<typeof Sentry.init> {
   const dsn = env.SENTRY_DSN?.trim();
   if (!dsn) return undefined;
-  const tracesSampleRate = Number(env.SENTRY_TRACES_SAMPLE_RATE ?? "0.1");
+  const tracesSampleRate = Number(env.SENTRY_TRACES_SAMPLE_RATE?.trim() || "0.1");
   if (!Number.isFinite(tracesSampleRate) || tracesSampleRate < 0 || tracesSampleRate > 1) {
     throw new Error("SENTRY_TRACES_SAMPLE_RATE must be between 0 and 1");
   }

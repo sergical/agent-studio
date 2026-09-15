@@ -26,6 +26,21 @@ it("stays uninitialized without a DSN and rejects invalid sampling", () => {
   ).toThrow("SENTRY_TRACES_SAMPLE_RATE must be between 0 and 1");
 });
 
+it.each([
+  ["", 0.1],
+  ["   ", 0.1],
+  ["0", 0],
+])("resolves trace sampling %j to %s", (configured, expected) => {
+  const client = initializeApiTelemetry(
+    {
+      SENTRY_DSN: "https://public@example.invalid/1",
+      SENTRY_TRACES_SAMPLE_RATE: String(configured),
+    },
+    () => ({ send: async () => ({}), flush: async () => true }),
+  );
+  expect(client?.getOptions().tracesSampleRate).toBe(expected);
+});
+
 it("exports correlated sanitized requests, upstream errors, logs and metrics without network", async () => {
   const envelopes: Envelope[] = [];
   const client = initializeApiTelemetry(
