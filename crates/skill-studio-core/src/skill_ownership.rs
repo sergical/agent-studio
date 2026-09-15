@@ -2068,8 +2068,11 @@ mod tests {
 
         let (sender, receiver) = mpsc::channel();
         let reader_project = project.clone();
-        let reader =
-            thread::spawn(move || sender.send(load_ownership_inputs(&home, &[reader_project])));
+        let reader = thread::spawn(move || {
+            sender
+                .send(load_ownership_inputs(&home, &[reader_project]))
+                .map_err(|_| ())
+        });
         match receiver.recv_timeout(Duration::from_secs(1)) {
             Ok(report) => {
                 reader.join().unwrap().unwrap();

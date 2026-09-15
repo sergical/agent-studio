@@ -114,5 +114,15 @@ native diagnostics and source baselines remain in `/tmp/skill-studio-delivery`.
 Fresh correction simplification completed with no edits. Root recomputed source
 identity `477fc63fe65d9429199dcacb0f45e2b3132a511ab9ff8ca1b909ed7f1cbc4120`
 and confirmed the no-op. A separate fresh read-only correction review completed with no actionable introduced
-defects and no edits. Root inspected its result. Remaining: commit, draft PR and CI. Whole-extraction review is already complete; these
+defects and no edits. Root inspected its result. Delivered in draft PR #93; CI remains pending. Whole-extraction review is already complete; these
 passes cover the five corrected files against the saved pre-correction baseline.
+
+## CI follow-up
+
+The first Ubuntu CI run (35013222751) passed formatting but Rust 1.98 Clippy rejected
+a large channel-send error returned by a test thread. The test now maps that error
+to unit; the existing double unwrap still fails on thread or send errors. No
+production behavior changed. The FIFO regression passed locally (5.57 s build,
+0.01 s test); formatting passed. Test peak memory was not measured. Preflight:
+42% memory free, 59 GiB disk free, no competing task-owned process. The next CI
+run checks the final core suite. No native rebuild is required for this test-only fix.
