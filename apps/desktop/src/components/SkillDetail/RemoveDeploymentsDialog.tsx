@@ -89,7 +89,7 @@ export function RemoveDeploymentsDialog({
           </AlertDialogDescription>
         </AlertDialogHeader>
         {removalError && (
-          <p role="alert" className="text-sm text-error">
+          <p role="alert" className="text-sm text-error [overflow-wrap:anywhere]">
             {removalError}
           </p>
         )}
