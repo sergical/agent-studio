@@ -39,6 +39,8 @@ jobs:
       - run: npm ci --ignore-scripts --no-audit --no-fund
       - name: Typecheck desktop
         run: npm run typecheck
+      - name: Typecheck shared library
+        run: npx --no-install tsc --project packages/lib/tsconfig.json --noEmit
       - name: Lint desktop and shared UI
         run: npx --no-install oxlint apps/desktop/src packages/lib/src packages/ui/src --deny-warnings
       - name: Desktop tests
