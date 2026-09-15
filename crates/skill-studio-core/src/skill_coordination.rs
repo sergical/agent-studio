@@ -508,7 +508,7 @@ impl FinalizedWriteLease<'_> {
         }
     }
 
-    #[cfg(test)]
+    #[cfg(any(test, feature = "event-store"))]
     pub(crate) fn validate_tree_move(
         &self,
         source: &Path,
@@ -518,7 +518,7 @@ impl FinalizedWriteLease<'_> {
         self.validate_entry_move(source, destination)
     }
 
-    #[cfg(test)]
+    #[cfg(any(test, feature = "event-store"))]
     pub(crate) fn validate_entry_move(
         &self,
         source: &Path,
@@ -540,13 +540,13 @@ impl FinalizedWriteLease<'_> {
         Ok(())
     }
 
-    #[cfg(test)]
+    #[cfg(any(test, feature = "event-store"))]
     pub(crate) fn validate_state_tree(&self, path: &Path) -> Result<(), String> {
         self.validate_state_tree_prepared(path)
             .map_err(|error| error.to_string())
     }
 
-    #[cfg(test)]
+    #[cfg(any(test, feature = "event-store"))]
     pub(crate) fn validate_state_tree_prepared(
         &self,
         path: &Path,

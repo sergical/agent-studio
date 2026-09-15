@@ -21,3 +21,28 @@ pub mod skill_read;
 pub mod skill_registry_projection;
 pub mod skill_scope;
 pub mod skill_service;
+
+#[cfg(all(unix, feature = "event-store"))]
+pub mod skill_backup_copy;
+#[cfg(all(unix, feature = "event-store"))]
+pub mod skill_backup_reservation;
+#[cfg(all(unix, feature = "event-store"))]
+pub mod skill_backup_source;
+#[cfg(all(unix, feature = "event-store"))]
+pub mod skill_copy_registry_removal;
+#[cfg(all(unix, feature = "event-store"))]
+pub mod skill_copy_removal;
+#[cfg(all(unix, feature = "event-store"))]
+pub mod skill_event;
+#[cfg(all(unix, feature = "event-store"))]
+pub mod skill_event_binding;
+#[cfg(all(unix, feature = "event-store"))]
+pub mod skill_event_operations;
+#[cfg(all(unix, feature = "event-store"))]
+pub mod skill_event_schema;
+#[cfg(all(unix, feature = "event-store"))]
+pub mod skill_event_statements;
+#[cfg(all(unix, feature = "event-store"))]
+pub mod skill_event_store;
+#[cfg(all(unix, feature = "event-store"))]
+pub mod skill_tree_move;

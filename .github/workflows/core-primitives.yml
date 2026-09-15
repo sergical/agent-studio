@@ -33,9 +33,9 @@ jobs:
         with:
           persist-credentials: false
       - run: cargo fmt --check
-      - run: cargo clippy --locked --all-targets -- -D warnings
+      - run: cargo clippy --locked --features event-store --all-targets -- -D warnings
       - name: Test shared core
-        run: cargo test --locked 2>&1 | tee "$RUNNER_TEMP/core-tests.log"
+        run: cargo test --locked --features event-store 2>&1 | tee "$RUNNER_TEMP/core-tests.log"
       - name: Retain test results briefly
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4

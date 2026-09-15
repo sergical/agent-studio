@@ -104,6 +104,12 @@ fn open_event_store(app: &tauri::App) -> Option<skills::event_store::EventStore>
                     );
                 }
             }
+            if let Err(error) = dirs::home_dir()
+                .ok_or_else(|| "Could not find home directory".to_string())
+                .and_then(|home| skills::skill_copy_recovery::recover_at_startup(&store, &home))
+            {
+                eprintln!("[event_store] Copy removal recovery needs review: {error}");
+            }
         }
         Err(e) => eprintln!("[event_store] startup reconcile failed: {e}"),
     }
@@ -129,13 +135,14 @@ pub fn run() {
             app.manage(skills::skill_agent_runner::SkillAgentRunnerState::default());
             app.manage(skills::skill_run_target::SkillRunTargetState::default());
             app.manage(skills::skill_fork::ForkMutationLock::default());
-            skills::skill_update_check::spawn_update_check_loop(app.handle().clone());
-            skills::skill_trial::spawn_trial_expiry_loop(app.handle().clone());
 
             let event_store = open_event_store(app);
             app.manage(skills::event_commands::EventStoreState(
                 std::sync::Mutex::new(event_store),
             ));
+            skills::skill_update_check::spawn_update_check_loop(app.handle().clone());
+            skills::skill_trial::spawn_trial_expiry_loop(app.handle().clone());
+            skills::skill_refresh::request_snapshot_rebuild(app.handle());
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![

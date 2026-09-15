@@ -17,6 +17,7 @@ import {
   AlertDialogTitle,
 } from "@skill-studio/ui";
 import { removeSkill } from "../../lib/skill-api";
+import { errorMessage } from "../../lib/error-message";
 import {
   skillDeploymentRemovalPreview,
   skillRemovalAvailability,
@@ -42,6 +43,7 @@ export function RemoveDeploymentsDialog({
   onClose: () => void;
 }) {
   const [isRemoving, setIsRemoving] = useState(false);
+  const [removalError, setRemovalError] = useState<string | null>(null);
   const addToast = useAppStore((state) => state.addToast);
   const skillName = skill.name;
   const removalAvailability = deployment
@@ -54,6 +56,7 @@ export function RemoveDeploymentsDialog({
 
   const handleRemove = () => {
     if (!removalAvailability.available) return;
+    setRemovalError(null);
     setIsRemoving(true);
     removeSkill(removalAvailability.preview.target)
       .then((result) => {
@@ -61,10 +64,12 @@ export function RemoveDeploymentsDialog({
         onClose();
       })
       .catch((err) => {
+        const message = errorMessage(err, "The removal did not complete.");
+        setRemovalError(message);
         addToast({
           type: "error",
           title: "Couldn't remove",
-          message: err instanceof Error ? err.message : "Unknown error",
+          message,
         });
       })
       .finally(() => setIsRemoving(false));
@@ -83,6 +88,11 @@ export function RemoveDeploymentsDialog({
               : removalAvailability.reason}
           </AlertDialogDescription>
         </AlertDialogHeader>
+        {removalError && (
+          <p role="alert" className="text-sm text-error [overflow-wrap:anywhere]">
+            {removalError}
+          </p>
+        )}
         <AlertDialogFooter>
           <AlertDialogCancel onClick={onClose} disabled={isRemoving}>
             Cancel
