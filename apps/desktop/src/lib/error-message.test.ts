@@ -8,8 +8,16 @@ describe("errorMessage", () => {
     );
   });
 
-  it("preserves empty Tauri string rejections", () => {
-    expect(errorMessage("")).toBe("");
+  it("uses the fallback for empty Tauri string rejections", () => {
+    expect(errorMessage("", "Removal failed")).toBe("Removal failed");
+  });
+
+  it("uses the fallback for whitespace-only rejections", () => {
+    expect(errorMessage("  ", "Removal failed")).toBe("Removal failed");
+  });
+
+  it("uses the fallback for an empty Error message", () => {
+    expect(errorMessage(new Error(""), "Removal failed")).toBe("Removal failed");
   });
 
   it("preserves Error messages", () => {
