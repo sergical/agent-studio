@@ -1,0 +1,52 @@
+name: API
+
+on:
+  pull_request:
+    paths:
+      - "apps/server/**"
+      - "package.json"
+      - "package-lock.json"
+      - ".oxlintrc.json"
+      - ".oxfmtrc.json"
+      - "tools/oxlint/**"
+      - ".github/workflows/api.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: api-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  api:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      NODE_OPTIONS: --max-old-space-size=3072
+      SENTRY_DSN: ""
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: "24"
+          cache: npm
+      - run: npm ci --ignore-scripts --no-audit --no-fund
+      - run: npm run typecheck -w @skill-studio/server
+      - run: npx --no-install oxlint apps/server --deny-warnings
+      - run: npx --no-install oxfmt --check apps/server .github/workflows/api.yml
+      - name: API tests
+        run: npm run test -w @skill-studio/server -- --maxWorkers=1 --reporter=default --reporter=junit --outputFile.junit="$RUNNER_TEMP/api-tests.xml"
+      - run: npm run build -w @skill-studio/server
+      - run: npm run test:production-build -w @skill-studio/server
+      - name: Retain test report briefly
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: api-test-report
+          path: ${{ runner.temp }}/api-tests.xml
+          retention-days: 3
+          if-no-files-found: ignore

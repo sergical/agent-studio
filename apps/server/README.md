@@ -18,3 +18,97 @@ The server refuses to start without it. `PORT` defaults to `8787`, bound to
 - `GET /health` -> `{ ok: true }`, no upstream call
 - `GET /api/v1/skills`, `GET /api/v1/skills/search`, `GET /api/v1/skills/:owner/:repo/:slug`
   -> proxied to `https://skills.sh/api/v1`, query string passed through verbatim
+
+## API telemetry
+
+The Node entry point preloads `src/instrument.ts` before the server module. The
+supported npm command includes this preload. A separate runtime command must
+preserve the order: `node --import tsx --import ./src/instrument.ts src/server.ts`
+from this package directory. Local dev servers still run through portless in a
+managed terminal pane, as required by the repository instructions.
+
+| Variable                    | Meaning                                                         |
+| --------------------------- | --------------------------------------------------------------- |
+| `SENTRY_DSN`                | Enables telemetry; absent or blank leaves the SDK uninitialized |
+| `SENTRY_RELEASE`            | Deployed release identifier; required for release verification  |
+| `SENTRY_ENVIRONMENT`        | Deployment environment; defaults to `development`               |
+| `SENTRY_TRACES_SAMPLE_RATE` | Number from 0 through 1; defaults to `0.1`                      |
+
+The pinned SDKs are `@sentry/hono` and `@sentry/node` 10.73.0. The integration
+follows the [official Node Hono setup](https://github.com/getsentry/sentry-javascript/blob/develop/packages/hono/README.md).
+The API creates one isolated request trace around raw-target validation and
+routing, with child spans for upstream work. Failed upstream fetches and Hono
+handler errors produce error events. Request logs, request counts, and request
+duration distributions share trace context. Trace sampling does not sample
+logs or metrics: each request produces one Sentry log and two request metrics.
+Stdout request records are best effort. While stdout needs drain or is destroyed,
+the API skips new stdout records and increments `api.request.stdout_dropped` in
+Sentry with the same bounded method/route/status labels. It resumes stdout logging
+after drain. This bounds additional request-log buffering; it does not make a
+synchronous stdout sink nonblocking or establish a total SDK memory budget.
+The drop counter is exported only when telemetry is enabled. The
+`src/request-telemetry.test.ts` fixture verifies this backpressure behavior.
+
+Export hooks retain fixed method/route labels, HTTP status, timings, trace IDs,
+and configured release/environment metadata. They discard request data, headers,
+query text, exception messages, user data, source context, arbitrary log messages,
+and arbitrary metric names. Exception frames retain only known API source file
+names and line/column numbers, with paths rewritten to `app:///src/`; external
+frames lose their filenames. This conservative policy reduces error detail.
+It is not proof that deployed source maps resolve those paths.
+
+Automatic HTTP instrumentation, outgoing trace propagation, console capture,
+breadcrumbs, and profiling are disabled. Hono's default error console output is
+replaced with the same generic 500 response; the SDK middleware captures the
+error once. Existing upstream response bodies remain unchanged. SIGINT/SIGTERM
+stop accepting connections and allow two seconds for active connections. The
+runtime then aborts upstream fetch/body reads, destroys remaining client
+connections, waits up to two seconds for handlers, and requests a two-second SDK
+flush. Repeated signals share the same shutdown. Complete shutdown exits zero;
+unsettled handlers or failed flush exit one. A referenced 6.5-second watchdog
+exits one if the transport does not honor its deadline. This bound assumes the
+Node event loop can run; it cannot interrupt synchronous blocking code.
+
+Unix-socket child-process fixtures verify idle, header-pending, body-pending,
+repeated-signal, disabled-telemetry, ignored-abort, and stalled-transport cases.
+Cancelled upstream work is recorded as a 503 request, with no error event.
+Header/body cancellation prevents false success telemetry during shutdown.
+These tests use the production runtime and handler factories but fixture
+upstream and telemetry transports. They do not prove remote flush delivery or
+the behavior of a deployment supervisor.
+
+Local acceptance uses an in-memory Sentry transport. The
+`src/api-telemetry.test.ts` fixture proves envelope shape, correlation,
+concurrent request isolation, and fixture sanitization without sending events.
+Production ingestion, source maps, alert routing, distributed trace propagation,
+and deployment shutdown remain release checks.
+
+## Production build
+
+```sh
+npm run build --workspace apps/server
+npm run test:production-build --workspace apps/server
+npm run start --workspace apps/server
+```
+
+Build uses the pinned esbuild version to produce Node ESM entry points in `dist`.
+Package dependencies stay external; deploy the package with its production
+`node_modules`, not just the two JavaScript files. The start command preloads
+`dist/instrument.js` before `dist/server.js`. It does not require tsx or load the
+repository `.env`; the deployment supplies `SKILLS_SH_API_KEY`, `PORT` and the
+Sentry variables above. The existing loopback-only bind remains unchanged: this
+command does not expose the service publicly or configure a reverse proxy.
+
+External `.js.map` files contain source content and have no sourceMappingURL in
+the JavaScript. Retain them privately for upload and release evidence. Do not
+serve them. The telemetry filter preserves only exact `server.js` and
+`instrument.js` bundle names under `app:///dist/`, with line/column data, so the
+upload must match those artifact names and the configured release. Upload and
+production symbolication have not been verified.
+
+`test:production-build` requires a completed build. It runs child Node processes
+with an isolated test environment, checks compiled health and traversal rejection,
+checks missing-key startup refusal, and validates both maps. It opens no listener
+and sends no external requests. The separate runtime tests exercise shutdown
+through temporary Unix sockets. Neither test establishes deployed Sentry receipt,
+production dependency packaging or supervisor behavior.

@@ -7,9 +7,11 @@
 // behalf.
 // ============================================================================
 
-import { serve } from "@hono/node-server";
+import * as Sentry from "@sentry/hono/node";
 import { Hono } from "hono";
 import type { ContentfulStatusCode } from "hono/utils/http-status";
+import { logRequestCompleted } from "./request-telemetry";
+import { createApiRuntime, handleTerminationSignals } from "./api-runtime";
 
 const UPSTREAM_BASE = "https://skills.sh/api/v1";
 const DEFAULT_PORT = 8787;
@@ -40,13 +42,34 @@ export function upstreamUrl(path: string, search: string): string {
  * relaying the upstream's status and JSON body verbatim - a non-2xx upstream
  * response is still relayed as-is. Only a failure to reach skills.sh at all
  * (network error, DNS, etc.) maps to a `{ error }` body. */
-export async function proxyGet(apiKey: string, path: string, search: string): Promise<ProxyResult> {
+export async function proxyGet(
+  apiKey: string,
+  path: string,
+  search: string,
+  signal?: AbortSignal,
+): Promise<ProxyResult> {
+  return Sentry.startSpan({ name: "skills.upstream", op: "http.client" }, async (span) => {
+    const result = await fetchUpstream(apiKey, path, search, signal);
+    span.setAttribute("http.response.status_code", result.status);
+    if (result.status >= 500) span.setStatus({ code: 2 });
+    return result;
+  });
+}
+
+async function fetchUpstream(
+  apiKey: string,
+  path: string,
+  search: string,
+  signal?: AbortSignal,
+): Promise<ProxyResult> {
   let response: Response;
   try {
-    response = await fetch(upstreamUrl(path, search), {
-      headers: { Authorization: `Bearer ${apiKey}` },
-    });
+    const options: RequestInit = { headers: { Authorization: `Bearer ${apiKey}` } };
+    if (signal) options.signal = signal;
+    response = await fetch(upstreamUrl(path, search), options);
   } catch (e) {
+    if (signal?.aborted) return { status: 503, body: { error: "Server shutting down" } };
+    Sentry.captureException(e);
     return {
       status: 502,
       body: { error: e instanceof Error ? e.message : "Failed to reach skills.sh" },
@@ -55,6 +78,7 @@ export async function proxyGet(apiKey: string, path: string, search: string): Pr
   const body = await response
     .json()
     .catch(() => ({ error: "skills.sh returned a non-JSON response" }));
+  if (signal?.aborted) return { status: 503, body: { error: "Server shutting down" } };
   return { status: response.status, body };
 }
 
@@ -144,20 +168,26 @@ function hasMalformedSkillDetailEncoding(url: string): boolean {
 
 /** Builds the Hono app for `apiKey` - split out from `main` so tests can
  * exercise routes without starting a real listener. */
-export function createApp(apiKey: string): Hono {
+export function createApp(apiKey: string, signal?: AbortSignal): Hono {
   const app = new Hono();
+  app.onError((_error, context) => context.text("Internal Server Error", 500));
+  if (Sentry.getClient()) app.use("*", Sentry.sentry(app));
 
   app.use("*", async (c, next) => {
-    const start = Date.now();
+    const start = performance.now();
     await next();
-    const ms = Date.now() - start;
-    process.stdout.write(`${c.req.method} ${c.req.path} ${c.res.status} ${ms}ms\n`);
+    logRequestCompleted({
+      method: c.req.method,
+      route: c.req.routePath,
+      status: c.res.status,
+      durationMs: performance.now() - start,
+    });
   });
 
   app.get("/health", (c) => c.json({ ok: true }));
 
   app.get("/api/v1/skills", async (c) => {
-    const { status, body } = await proxyGet(apiKey, "/skills", new URL(c.req.url).search);
+    const { status, body } = await proxyGet(apiKey, "/skills", new URL(c.req.url).search, signal);
     // SAFETY: `status` is skills.sh's own response status, always a valid
     // HTTP status code - Hono's `ContentfulStatusCode` union just doesn't
     // widen back to `number`.
@@ -165,7 +195,12 @@ export function createApp(apiKey: string): Hono {
   });
 
   app.get("/api/v1/skills/search", async (c) => {
-    const { status, body } = await proxyGet(apiKey, "/skills/search", new URL(c.req.url).search);
+    const { status, body } = await proxyGet(
+      apiKey,
+      "/skills/search",
+      new URL(c.req.url).search,
+      signal,
+    );
     // SAFETY: see the /api/v1/skills handler above.
     return c.json(body, status as ContentfulStatusCode);
   });
@@ -180,6 +215,7 @@ export function createApp(apiKey: string): Hono {
       apiKey,
       `/skills/${segments.map((segment) => encodeURIComponent(segment)).join("/")}`,
       new URL(c.req.url).search,
+      signal,
     );
     // SAFETY: see the /api/v1/skills handler above.
     return c.json(body, status as ContentfulStatusCode);
@@ -191,21 +227,33 @@ export function createApp(apiKey: string): Hono {
 }
 
 /** Creates the production Node fetch seam that rejects unsafe raw targets before Hono routing. */
-export function createNodeRequestHandler(apiKey: string) {
-  const app = createApp(apiKey);
-  return (request: Request, env: RawNodeRequestEnvironment): Response | Promise<Response> => {
-    if (!isAllowedRawRequestTarget(env.incoming.url)) {
-      return Response.json({ error: "Invalid request path" }, { status: 400 });
-    }
-    return app.fetch(request, env);
-  };
+export function createNodeRequestHandler(apiKey: string, signal?: AbortSignal) {
+  const app = createApp(apiKey, signal);
+  return (request: Request, env: RawNodeRequestEnvironment): Response | Promise<Response> =>
+    Sentry.withIsolationScope(() =>
+      Sentry.startSpan({ name: "api.request", op: "http.server", forceTransaction: true }, () => {
+        const start = performance.now();
+        if (!isAllowedRawRequestTarget(env.incoming.url)) {
+          logRequestCompleted({
+            method: request.method,
+            route: "unmatched",
+            status: 400,
+            durationMs: performance.now() - start,
+          });
+          return Response.json({ error: "Invalid request path" }, { status: 400 });
+        }
+        return app.fetch(request, env);
+      }),
+    );
 }
 
 function main() {
   const apiKey = requireApiKey(process.env);
   const port = Number(process.env.PORT) || DEFAULT_PORT;
-  serve({ fetch: createNodeRequestHandler(apiKey), port, hostname: HOST }, (info) => {
-    process.stdout.write(`Skill Studio server listening on http://${HOST}:${info.port}\n`);
+  const runtime = createApiRuntime((signal) => createNodeRequestHandler(apiKey, signal));
+  handleTerminationSignals(runtime);
+  runtime.server.listen(port, HOST, () => {
+    process.stdout.write(`Skill Studio server listening on http://${HOST}:${port}\n`);
   });
 }
 
