@@ -10,6 +10,12 @@ import { METHOD_LABEL, ROUTE_LABEL } from "./request-telemetry-labels";
 import type { Event, StackFrame } from "@sentry/hono/node";
 
 type SpanJSON = NonNullable<Event["spans"]>[number];
+type Envelope = Parameters<ReturnType<NonNullable<Sentry.NodeOptions["transport"]>>["send"]>[0];
+type LogOrMetricItem = Extract<Envelope[1][number], [{ type: "log" | "trace_metric" }, unknown]>;
+
+function isLogOrMetricItem(item: Envelope[1][number]): item is LogOrMetricItem {
+  return item[0].type === "log" || item[0].type === "trace_metric";
+}
 
 const SOURCE_ROOT = fileURLToPath(new URL("./", import.meta.url));
 
@@ -140,6 +146,30 @@ export function initializeApiTelemetry(
     tracesSampleRate,
     defaultIntegrations: false,
     integrations: [
+      {
+        name: "ApiTelemetryPrivacy",
+        setup(client) {
+          client.on("beforeEnvelope", (envelope) => {
+            // Scope attributes are merged after the SDK log and metric filters.
+            for (const [, payload] of envelope[1].filter(isLogOrMetricItem)) {
+              for (const item of payload.items) {
+                const labels = HTTP_ATTRIBUTES.parse({
+                  method: item.attributes?.method?.value,
+                  route: item.attributes?.route?.value,
+                  status: item.attributes?.status?.value,
+                });
+                item.attributes = {
+                  method: { type: "string", value: labels.method },
+                  route: { type: "string", value: labels.route },
+                };
+                if (labels.status !== undefined) {
+                  item.attributes.status = { type: "integer", value: labels.status };
+                }
+              }
+            }
+          });
+        },
+      },
       Sentry.onUncaughtExceptionIntegration(),
       Sentry.onUnhandledRejectionIntegration(),
     ],

@@ -293,3 +293,42 @@ it("keeps route attribution isolated when concurrent requests fail in reverse or
   expect(errors.sort()).toEqual(routes.map((route) => `GET ${route}`).sort());
   expect(JSON.stringify(envelopes)).not.toContain("private-");
 });
+
+it("removes merged scope attributes while retaining sanitized log and metric labels", async () => {
+  const envelopes: Envelope[] = [];
+  initializeApiTelemetry(
+    { SENTRY_DSN: "https://public@example.invalid/1", SENTRY_TRACES_SAMPLE_RATE: "0" },
+    () => ({
+      send: async (envelope) => {
+        envelopes.push(envelope);
+        return {};
+      },
+      flush: async () => true,
+    }),
+  );
+  await Sentry.withIsolationScope(async (isolation) => {
+    isolation.setAttribute("private-isolation", "private-value");
+    isolation.setAttribute("status", "private-status");
+    Sentry.withScope((scope) => {
+      scope.setAttribute("private-current", "private-value");
+      const attributes = { method: "GET", route: "/health" };
+      Sentry.logger.info("api.request.completed", attributes);
+      Sentry.metrics.count("api.request.count", 1, { attributes });
+    });
+    await Sentry.flush(2000);
+  });
+  expect(JSON.stringify(envelopes)).not.toContain("private-");
+  const items = envelopes.flatMap<Envelope[1][number]>((envelope) => envelope[1]);
+  expect(items.map((item) => item[0].type).sort()).toEqual(["log", "trace_metric"]);
+  const schema = z.object({
+    items: z.array(z.object({ attributes: z.record(z.string(), z.unknown()) })),
+  });
+  for (const item of items) {
+    const records = schema.parse(item[1]).items;
+    expect(records).toHaveLength(1);
+    expect(records[0].attributes).toEqual({
+      method: { type: "string", value: "GET" },
+      route: { type: "string", value: "/health" },
+    });
+  }
+});

@@ -157,6 +157,15 @@ fixed test compilation; the server build/typecheck, scoped lint/format and
 whitespace checks passed. The second remote check used that compiled candidate.
 No listener remained and no raw payload files were retained.
 
+The subsequent scope-attribute review found that Sentry 10.73 merges scope data
+after `beforeSendLog` and `beforeSendMetric`. The API now validates serialized
+method, route and status labels immediately before transport and removes all
+other log/metric attributes. The fixture injects private current/isolation scope
+attributes and an invalid inherited status. Fifteen focused tests passed in
+0.821 s, including existing request trace correlation, followed by typecheck,
+scoped lint/format and whitespace checks. Peak memory was not measured; no
+browser, remote export or persistent capture ran for this correction.
+
 Acceptance remains incomplete:
 
 - First-party frames remain `app:///dist/server.js`; source-map resolution is not
