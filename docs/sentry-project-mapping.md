@@ -36,8 +36,9 @@ Peak process memory was not measured; no test artifacts were generated.
 1. Extract and review the existing instrumentation in bounded PRs. Check each
    outgoing signal's redaction before enabling export.
 2. Bind each build/runtime to the project above and an explicit environment.
-   Verify release identity: the current Rust identity uses the package version;
-   JavaScript release labels are configurable. Establish an unambiguous mapping
+   Verify release identity: Rust uses the package version plus an optional
+   `SKILL_STUDIO_DESKTOP_BUILD_REVISION` build value; JavaScript release labels
+   are configurable. Establish an unambiguous mapping
    between the delivered binary, assets, and uploaded artifacts.
 3. Configure a designated test destination with bounded retention before a
    bounded remote telemetry check. Normal test suites must keep export disabled.
