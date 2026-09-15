@@ -140,10 +140,25 @@ the API project for the verification timestamp; the error also carries the relea
 and environment above. These links remain subject to Sentry retention; no ongoing
 test export was enabled and custom retention has not been verified.
 
+The first check found `OTHER unmatched` on the error and middleware span. The
+route correction sets allowlisted labels before the handler runs and keeps them
+isolated per request. A second compiled synthetic failure returned 502 and flushed
+successfully (0.43 s; peak memory not measured). Executor read-back confirmed:
+
+- Release `skill-studio-api@route-fix-20260915`, environment `verification`.
+- Event `51dc8902c35d4ef984b69062e7ae5fdb` at 16:13:45 UTC in the same issue.
+- [Corrected trace](https://sergtech.sentry.io/explore/traces/trace/0664e2c229ec4208801fad15c1064d38):
+  error, server and middleware use `GET /api/v1/skills/search`; upstream uses
+  `skills.upstream`. Returned summaries exclude synthetic private markers.
+
+Focused verification: 14 telemetry tests passed in 0.869 s, including concurrent
+failures completed in reverse order. A subsequent erased generic type annotation
+fixed test compilation; the server build/typecheck, scoped lint/format and
+whitespace checks passed. The second remote check used that compiled candidate.
+No listener remained and no raw payload files were retained.
+
 Acceptance remains incomplete:
 
-- The error's transaction and middleware span read `OTHER unmatched`; the server
-  span has the correct route. Error attribution needs correction.
 - First-party frames remain `app:///dist/server.js`; source-map resolution is not
   verified. The issue's code location points to a different repository, so release
   and repository mapping also need correction.

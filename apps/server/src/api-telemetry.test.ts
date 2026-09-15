@@ -90,7 +90,10 @@ it("exports correlated sanitized requests, upstream errors, logs and metrics wit
   expect(types).toContain("trace_metric");
   const traceContext = z.object({ trace_id: z.string(), span_id: z.string() });
   const eventSchema = z.object({ contexts: z.object({ trace: traceContext }) });
-  const error = eventSchema.parse(items.find((item) => item[0].type === "event")?.[1]);
+  const error = eventSchema
+    .extend({ transaction: z.string() })
+    .parse(items.find((item) => item[0].type === "event")?.[1]);
+  expect(error.transaction).toBe("GET /api/v1/skills/:owner/:repo/:slug");
   const transaction = eventSchema
     .extend({ spans: z.array(z.object({ op: z.string(), span_id: z.string() })) })
     .parse(items.find((item) => item[0].type === "transaction")?.[1]);
@@ -105,6 +108,7 @@ it("exports correlated sanitized requests, upstream errors, logs and metrics wit
     }
   }
   expect(wire).toContain("skills.upstream");
+  expect(wire).not.toContain("OTHER unmatched");
   expect(wire).toContain("api.request.count");
   expect(wire).toContain("api.request.duration");
   const metricSchema = z.object({
@@ -243,5 +247,49 @@ it("exports correlated sanitized requests, upstream errors, logs and metrics wit
       .flatMap<Envelope[1][number]>((envelope) => envelope[1])
       .filter((item) => item[0].type === "event"),
   ).toHaveLength(1);
+  expect(JSON.stringify(envelopes)).not.toContain("private-");
+});
+
+it("keeps route attribution isolated when concurrent requests fail in reverse order", async () => {
+  const envelopes: Envelope[] = [];
+  initializeApiTelemetry(
+    { SENTRY_DSN: "https://public@example.invalid/1", SENTRY_TRACES_SAMPLE_RATE: "0" },
+    () => ({
+      send: async (envelope) => {
+        envelopes.push(envelope);
+        return {};
+      },
+      flush: async () => true,
+    }),
+  );
+  vi.spyOn(process.stdout, "write").mockReturnValue(true);
+  const failures: Array<() => void> = [];
+  vi.stubGlobal(
+    "fetch",
+    vi.fn(
+      () =>
+        new Promise<Response>((_resolve, reject) => {
+          failures.push(() => reject(new Error("private-request-data")));
+        }),
+    ),
+  );
+  const { createNodeRequestHandler } = await import("./server");
+  const handler = createNodeRequestHandler("private-api-key");
+  const routes = ["/api/v1/skills", "/api/v1/skills/search"];
+  const pending = routes.map((route) =>
+    handler(new Request(`http://fixture${route}?q=private-query`), {
+      incoming: { url: `${route}?q=private-query` },
+    }),
+  );
+  await vi.waitFor(() => expect(failures).toHaveLength(2));
+  for (const fail of [...failures].reverse()) fail();
+  expect((await Promise.all(pending)).map((response) => response.status)).toEqual([502, 502]);
+  await Sentry.flush(2000);
+  const schema = z.object({ transaction: z.string() });
+  const errors = envelopes
+    .flatMap<Envelope[1][number]>((envelope) => envelope[1])
+    .filter((item) => item[0].type === "event")
+    .map((item) => schema.parse(item[1]).transaction);
+  expect(errors.sort()).toEqual(routes.map((route) => `GET ${route}`).sort());
   expect(JSON.stringify(envelopes)).not.toContain("private-");
 });

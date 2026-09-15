@@ -66,8 +66,8 @@ function safeOperation(operation: SpanJSON["op"]): string {
   }
 }
 
-function safeSpan(span: SpanJSON): SpanJSON {
-  const attributes = safeAttributes(span.data);
+function safeSpan(span: SpanJSON, requestLabels?: { method: string; route: string }): SpanJSON {
+  const attributes = safeAttributes({ ...span.data, ...requestLabels });
   return {
     trace_id: span.trace_id,
     span_id: span.span_id,
@@ -84,7 +84,7 @@ function safeSpan(span: SpanJSON): SpanJSON {
 
 function safeEvent(event: Event): Event {
   const trace = event.contexts?.trace;
-  const attributes = safeAttributes(trace?.data);
+  const attributes = safeAttributes(event.contexts?.["api.request"] ?? trace?.data);
   return {
     event_id: event.event_id,
     type: event.type,
@@ -117,7 +117,9 @@ function safeEvent(event: Event): Event {
           })),
         }
       : undefined,
-    spans: event.spans?.map(safeSpan),
+    spans: event.spans?.map((span) =>
+      safeSpan(span, { method: attributes.method, route: attributes.route }),
+    ),
   };
 }
 
@@ -150,7 +152,7 @@ export function initializeApiTelemetry(
     transport,
     beforeSend: (event) => ({ ...safeEvent(event), type: undefined }),
     beforeSendTransaction: (event) => ({ ...safeEvent(event), type: "transaction" }),
-    beforeSendSpan: safeSpan,
+    beforeSendSpan: (span) => safeSpan(span),
     beforeSendLog: (log) =>
       log.message === "api.request.completed"
         ? {

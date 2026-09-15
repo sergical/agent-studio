@@ -11,6 +11,7 @@ import * as Sentry from "@sentry/hono/node";
 import { Hono } from "hono";
 import type { ContentfulStatusCode } from "hono/utils/http-status";
 import { logRequestCompleted } from "./request-telemetry";
+import { methodLabel, routeLabel } from "./request-telemetry-labels";
 import { createApiRuntime, handleTerminationSignals } from "./api-runtime";
 
 const UPSTREAM_BASE = "https://skills.sh/api/v1";
@@ -173,16 +174,26 @@ export function createApp(apiKey: string, signal?: AbortSignal): Hono {
   app.onError((_error, context) => context.text("Internal Server Error", 500));
   if (Sentry.getClient()) app.use("*", Sentry.sentry(app));
 
-  app.use("*", async (c, next) => {
-    const start = performance.now();
-    await next();
-    logRequestCompleted({
-      method: c.req.method,
-      route: c.req.routePath,
-      status: c.res.status,
-      durationMs: performance.now() - start,
-    });
-  });
+  app.use("*", (c, next) =>
+    Sentry.withScope(async (scope) => {
+      const labels = {
+        method: methodLabel(c.req.method),
+        route:
+          c.req.matchedRoutes
+            .map((route) => routeLabel(route.path))
+            .find((route) => route !== "unmatched") ?? "unmatched",
+      };
+      scope.setContext("api.request", labels);
+      const start = performance.now();
+      await next();
+      logRequestCompleted({
+        method: c.req.method,
+        route: c.req.routePath,
+        status: c.res.status,
+        durationMs: performance.now() - start,
+      });
+    }),
+  );
 
   app.get("/health", (c) => c.json({ ok: true }));
 
