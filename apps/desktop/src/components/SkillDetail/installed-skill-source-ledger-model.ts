@@ -28,6 +28,7 @@ const LIFECYCLE_OWNER_LABELS = {
   manual: "Manual",
   "wildcard-dotagents": "Ambiguous",
   ambiguous: "Ambiguous",
+  unknown: "Unknown",
 } satisfies Record<LifecycleOwnerKind, string>;
 
 function displayLedgerDate(value: string | undefined): string | undefined {
@@ -38,6 +39,7 @@ function displayLedgerDate(value: string | undefined): string | undefined {
 }
 
 function sourceLedgerLabel(skill: InstalledSkill): string {
+  if (skill.source_kind === "unknown") return "Unknown source";
   if (skill.source_kind === "plugin") {
     const pluginName = pluginLabelForSkill(skill);
     return pluginName ? `Plugin · ${pluginName}` : "Agent plugin";

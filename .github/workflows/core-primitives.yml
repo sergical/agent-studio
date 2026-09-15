@@ -26,6 +26,7 @@ jobs:
       RUST_TEST_THREADS: "1"
     defaults:
       run:
+        shell: bash
         working-directory: crates/skill-studio-core
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
@@ -33,4 +34,13 @@ jobs:
           persist-credentials: false
       - run: cargo fmt --check
       - run: cargo clippy --locked --all-targets -- -D warnings
-      - run: cargo test --locked
+      - name: Test shared core
+        run: cargo test --locked 2>&1 | tee "$RUNNER_TEMP/core-tests.log"
+      - name: Retain test results briefly
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: core-tests
+          path: ${{ runner.temp }}/core-tests.log
+          retention-days: 3
+          if-no-files-found: ignore

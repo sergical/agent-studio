@@ -82,3 +82,15 @@ describe("sharedFolderSwitchPolicy", () => {
     ).not.toContain("park");
   });
 });
+
+it("refuses shared-folder switching and mutation menus for unknown ownership", () => {
+  const skill = skillWithDeployments([sharedDeployment({ owner_kind: "unknown" })]);
+  const group = buildScopeGroups(skill)[0];
+  const policy = sharedFolderSwitchPolicy(group);
+  expect(policy.disabled).toBe(true);
+  expect(policy.actionForCheckedChange(false)).toBeNull();
+  expect(policy.actionForCheckedChange(true)).toBeNull();
+  const menu = rowMenu(group.shared!, group.label);
+  expect(menu.entries.map((entry) => entry.action.kind)).toEqual(["reveal"]);
+  expect(menu.danger).toEqual([]);
+});

@@ -16,6 +16,7 @@ import {
   setSkillsShApiKey,
   type EditorOption,
 } from "../../lib/skill-api";
+import { SkillFolderSettings } from "./SkillFolderSettings";
 import { useAppStore } from "../../store/appStore";
 import { skillsShAccessStatusText, type SkillsShAccessState } from "./skills-sh-access-status";
 
@@ -198,6 +199,7 @@ export function SettingsView() {
   return (
     <div className="flex flex-col gap-4 p-6">
       <h1 className="m-0 text-heading font-semibold text-text-primary">Settings</h1>
+      <SkillFolderSettings />
       <SkillsShKeySetting />
       <EditorPicker />
     </div>

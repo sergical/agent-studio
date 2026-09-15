@@ -66,6 +66,37 @@ function fixtureSkill(overrides: Partial<InstalledSkill> = {}): InstalledSkill {
 }
 
 describe("buildScopeGroups", () => {
+  it("blocks generated reader switches and menus when the shared owner is unknown", () => {
+    const [group] = buildScopeGroups(
+      fixtureSkill({
+        deployments: [
+          fixtureDeployment({ owner_kind: "unknown", disabled_readers: ["codex", "open-code"] }),
+        ],
+      }),
+    );
+    for (const harness of ["codex", "open-code"]) {
+      const row = group.rows.find((candidate) => candidate.harness === harness)!;
+      expect(row.deployment).toBeNull();
+      expect(row.ownerKind).toBe("unknown");
+      expect(rowMenu(row, group.label).entries.map((entry) => entry.action.kind)).toEqual([
+        "reveal",
+      ]);
+      const markup = renderToStaticMarkup(
+        createElement(
+          TooltipProvider,
+          null,
+          createElement(SkillLocationRow, {
+            row,
+            scopeLabel: group.label,
+            onAction: () => undefined,
+          }),
+        ),
+      );
+      const control = markup.match(/<[^>]*role="switch"[^>]*>/)?.[0];
+      expect(control).toContain('aria-disabled="true"');
+    }
+  });
+
   it("flags a broken link with the error dot and its relink/remove menu", () => {
     const claude = fixtureDeployment({
       agent: "Claude Code",
@@ -531,6 +562,15 @@ describe("buildInvocationFiles / invocationFooterNote", () => {
 });
 
 describe("buildInvocationFiles editability", () => {
+  it("refuses invocation edits when ownership is unknown", () => {
+    const skill = fixtureSkill({
+      source_kind: "unknown",
+      deployments: [fixtureDeployment({ owner_kind: "unknown" })],
+    });
+    const files = buildInvocationFiles(buildScopeGroups(skill), skill);
+    expect(files[0].editable).toBe(false);
+    expect(files[0].disabledReason).toContain("ownership is unknown");
+  });
   it("keeps the global Universal folder editable even when the skill is managed", () => {
     const shared = fixtureDeployment();
     const skill = fixtureSkill({ deployments: [shared], source_kind: "dotagents" });

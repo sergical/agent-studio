@@ -232,8 +232,10 @@ mod tests {
         use std::collections::BTreeMap;
 
         skill_refresh::SkillSnapshot {
+            read_warnings: Vec::new(),
             revision: 0,
             skills: vec![InstalledSkill {
+                update_sources: Vec::new(),
                 name: "foo".to_string(),
                 source: "manual".to_string(),
                 source_type: "manual".to_string(),
@@ -389,6 +391,21 @@ mod tests {
             dotagents_remove_args("foo", InstallScope::Global),
             vec!["-y", "@sentry/dotagents", "remove", "foo"]
         );
+    }
+
+    #[test]
+    fn write_refused_for_unknown_ownership() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path().join("foo");
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("SKILL.md");
+        std::fs::write(&path, "original").unwrap();
+        let mut snapshot = fixture_snapshot(&dir, None);
+        snapshot.skills[0].deployments[0].owner_kind =
+            super::super::skill_ownership::LifecycleOwnerKind::Unknown;
+        let error = check_skill_md_write_allowed(Some(&snapshot), &path).unwrap_err();
+        assert!(error.contains("ownership is unknown"));
+        assert_eq!(std::fs::read_to_string(path).unwrap(), "original");
     }
 
     #[test]
@@ -2272,11 +2289,22 @@ pub(crate) fn check_skill_md_write_allowed(
             "Path is not an installed skill: {}",
             path.display()
         )),
-        Some(d) if d.plugin.is_some() => {
-            Err("Skill is managed by a plugin and cannot be edited here".to_string())
-        }
-        Some(_) => Ok(()),
+        Some(deployment) => check_skill_md_deployment_write_allowed(deployment),
     }
+}
+
+pub(crate) fn check_skill_md_deployment_write_allowed(
+    deployment: &super::skill_dto::Deployment,
+) -> Result<(), String> {
+    if deployment.owner_kind == super::skill_ownership::LifecycleOwnerKind::Unknown {
+        return Err(
+            "Skill ownership is unknown. Resolve the read warning before editing.".to_string(),
+        );
+    }
+    if deployment.plugin.is_some() {
+        return Err("Skill is managed by a plugin and cannot be edited here".to_string());
+    }
+    Ok(())
 }
 
 /// Runs every check `write_installed_skill_md` and

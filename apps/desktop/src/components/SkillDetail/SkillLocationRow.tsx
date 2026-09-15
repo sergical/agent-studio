@@ -69,6 +69,7 @@ export function SkillLocationRow({
         {row.hasSwitch ? (
           <SwitchControl
             checked={row.switchOn}
+            disabled={row.ownerKind === "unknown"}
             onCheckedChange={(next) =>
               onAction(
                 row.kind === "reader"

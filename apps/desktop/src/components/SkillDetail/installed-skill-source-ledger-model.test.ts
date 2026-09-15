@@ -3,6 +3,7 @@
 // ============================================================================
 
 import { describe, expect, it } from "vitest";
+import { SOURCE_KIND_LABELS } from "@skill-studio/lib";
 import type { Deployment, InstalledSkill } from "@skill-studio/lib";
 import { buildInstalledSkillSourceLedgerModel } from "./installed-skill-source-ledger-model";
 
@@ -52,6 +53,21 @@ function ledgerSkill(overrides: Partial<InstalledSkill> = {}): InstalledSkill {
 }
 
 describe("buildInstalledSkillSourceLedgerModel", () => {
+  it("labels incomplete ownership without treating it as a local skill", () => {
+    const skill = ledgerSkill({
+      source_kind: "unknown",
+      source: "manual",
+      deployments: [
+        ledgerDeployment({ owner_kind: "unknown", owner_id: undefined, mutability: "read-only" }),
+      ],
+    });
+    const model = buildInstalledSkillSourceLedgerModel(skill);
+    expect(SOURCE_KIND_LABELS[skill.source_kind]).toBe("Unknown source");
+    expect(model.source).toBe("Unknown source");
+    expect(model.lifecycleOwner).toBe("Unknown");
+    expect(model.lifecycleManagement).toBe("Read-only");
+  });
+
   it("deduplicates a verified dependent link under its skills.sh owner", () => {
     const canonical = ledgerDeployment();
     const dependent = ledgerDeployment({

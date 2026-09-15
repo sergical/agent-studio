@@ -591,3 +591,21 @@ export function onSkillSnapshot(cb: (snapshot: SkillSnapshot) => void): Promise<
     cb(event.payload);
   });
 }
+
+export interface SkillScopeConfig {
+  backing_roots: string[];
+  plugin_ownership_roots: string[];
+}
+
+export interface SkillScopeSettings {
+  config: SkillScopeConfig;
+  environment_override: boolean;
+}
+
+export async function getSkillScopeSettings(): Promise<SkillScopeSettings> {
+  return invoke("get_skill_scope_settings");
+}
+
+export async function setSkillScopeSettings(config: SkillScopeConfig): Promise<void> {
+  return invoke("set_skill_scope_settings", { config });
+}

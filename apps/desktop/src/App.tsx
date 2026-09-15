@@ -140,7 +140,18 @@ function App() {
           emittedSnapshotRevision={emittedSnapshotRevision}
           requestRescan={requestRescan}
         />
-        <main className="flex-1 overflow-y-auto">{main}</main>
+        <main className="flex-1 overflow-y-auto">
+          {snapshot?.read_warnings?.length ? (
+            <div
+              role="alert"
+              className="m-4 rounded-md border border-warning bg-warning-soft px-3 py-2 text-small text-text-primary"
+            >
+              <span className="font-medium">Some skill data is incomplete.</span>{" "}
+              {snapshot.read_warnings.map((warning) => warning.message).join(" ")}
+            </div>
+          ) : null}
+          {main}
+        </main>
 
         <AddSkillSheet />
         <Toaster

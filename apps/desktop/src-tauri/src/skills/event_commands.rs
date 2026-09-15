@@ -691,8 +691,10 @@ mod tests {
         }
 
         SkillSnapshot {
+            read_warnings: Vec::new(),
             revision: 0,
             skills: vec![InstalledSkill {
+                update_sources: Vec::new(),
                 name: "find-bugs".to_string(),
                 source: "manual".to_string(),
                 source_type: "manual".to_string(),

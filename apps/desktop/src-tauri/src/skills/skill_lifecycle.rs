@@ -368,6 +368,7 @@ mod tests {
 
     fn dep(id: &str, name: &str, path: &str, scope: &str, dest: SkillDestination) -> Deployment {
         Deployment {
+            owner_revision: None,
             id: id.to_string(),
             destination: dest,
             owner_kind: LifecycleOwnerKind::SkillsSh,
@@ -405,8 +406,10 @@ mod tests {
 
     fn snapshot(deployments: Vec<Deployment>) -> SkillSnapshot {
         SkillSnapshot {
+            read_warnings: Vec::new(),
             revision: 0,
             skills: vec![InstalledSkill {
+                update_sources: Vec::new(),
                 name: "find-bugs".to_string(),
                 source: "o/r".to_string(),
                 source_type: "github".to_string(),

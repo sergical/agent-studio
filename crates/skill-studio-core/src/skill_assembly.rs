@@ -1,5 +1,5 @@
 // ============================================================================
-// Skills Module - Skill Assembly
+// Skill Studio Core - Inventory Assembly
 // Pure merge of SkillCandidate facts into InstalledSkill records, one per
 // skill name across all its deployments. Never touches the filesystem -
 // every rule here is testable with hand-built candidates.
@@ -8,16 +8,16 @@
 use std::collections::HashMap;
 use std::path::Path;
 
-use super::lock_file::SkillLockFile;
-use super::provenance::{classify_source_kind, SourceKind};
-use super::skill_candidate::SkillCandidate;
-use super::skill_deployment::{
+use crate::skill_candidate::{PluginEvidence, SkillCandidate};
+use crate::skill_deployment::{
     id_for_candidate, BackingRelationship, DeploymentCandidate, DeploymentMutability,
     SkillDestination,
 };
-use super::skill_dto::{Deployment, DisabledBy, InstalledSkill};
-use super::skill_fork_registry::CopyDeploymentRecord;
-use super::skill_ownership::{classify_lifecycle_owner, OwnershipLedgers};
+use crate::skill_fork_registry::CopyDeploymentRecord;
+use crate::skill_inventory::{Deployment, DisabledBy, InstalledSkill};
+use crate::skill_lock_file::SkillLockFile;
+use crate::skill_ownership::{classify_lifecycle_owner, OwnershipReadReport};
+use crate::skill_provenance::{classify_source_kind, SourceKind};
 
 /// Build a fresh InstalledSkill, seeding metadata from the lock file entry
 /// when one exists for this skill name, or generic "local directory"
@@ -48,7 +48,6 @@ fn new_installed_skill(
         };
 
     InstalledSkill {
-        update_sources: Vec::new(),
         name: name.to_string(),
         source,
         source_type,
@@ -59,6 +58,7 @@ fn new_installed_skill(
         has_update: false,
         update_owner_ids: Vec::new(),
         update_owners: Vec::new(),
+        update_sources: Vec::new(),
         update_commit: None,
         update_commit_at: None,
         source_kind,
@@ -80,7 +80,7 @@ fn new_installed_skill(
         trials: Vec::new(),
         parked: false,
         parked_at: None,
-        invocation: crate::skills::frontmatter::InvocationPolicy::Both,
+        invocation: crate::skill_document::InvocationPolicy::Both,
     }
 }
 
@@ -92,7 +92,7 @@ fn new_installed_skill(
 pub fn assemble_installed_skills(
     candidates: Vec<SkillCandidate>,
     lock: &SkillLockFile,
-    ledgers: &[OwnershipLedgers],
+    ownership: &OwnershipReadReport,
     copy_records: &std::collections::BTreeMap<String, CopyDeploymentRecord>,
 ) -> Vec<InstalledSkill> {
     let mut by_name: HashMap<String, InstalledSkill> = HashMap::new();
@@ -114,8 +114,8 @@ pub fn assemble_installed_skills(
             shared_via_whole_dir_link: candidate.shared_via_whole_dir_link,
         });
         let (owner_kind, owner_id, scoped_kind) =
-            classify_lifecycle_owner(&candidate, ledgers, destination, &id, copy_records);
-        let source_kind = if ledgers.is_empty() {
+            classify_lifecycle_owner(&candidate, ownership, destination, &id, copy_records);
+        let source_kind = if ownership.scopes.is_empty() {
             classify_source_kind(&candidate, lock)
         } else {
             scoped_kind
@@ -123,6 +123,25 @@ pub fn assemble_installed_skills(
         let record = by_name
             .entry(candidate.name.clone())
             .or_insert_with(|| new_installed_skill(&candidate.name, lock, source_kind));
+
+        let (update_source, mut owner_revision) =
+            crate::skill_ownership::source_evidence_for_candidate(
+                &candidate, ownership, owner_kind,
+            );
+        if owner_kind == crate::skill_ownership::LifecycleOwnerKind::Copy {
+            owner_revision = copy_records.get(&id).and_then(|record| {
+                crate::skill_fork_registry::RegistryOwnerRecord::Copy(record).revision()
+            });
+        }
+        if let Some(source) = update_source {
+            if !record
+                .update_sources
+                .iter()
+                .any(|current| current.owner_id == source.owner_id)
+            {
+                record.update_sources.push(source);
+            }
+        }
 
         if source_kind < record.source_kind {
             record.source_kind = source_kind;
@@ -159,11 +178,11 @@ pub fn assemble_installed_skills(
         }
 
         record.deployments.push(Deployment {
-            owner_revision: None,
             id,
             destination,
             owner_kind,
             owner_id,
+            owner_revision,
             mutability: if owner_kind.is_mutable() {
                 DeploymentMutability::Mutable
             } else {
@@ -174,7 +193,10 @@ pub fn assemble_installed_skills(
             scope: candidate.scope.clone(),
             path: candidate.path.to_string_lossy().to_string(),
             is_symlink: candidate.is_symlink,
-            plugin: candidate.plugin.clone(),
+            plugin: match &candidate.plugin {
+                PluginEvidence::Confirmed(plugin) => Some(plugin.clone()),
+                PluginEvidence::Absent | PluginEvidence::Unknown => None,
+            },
             symlink_target: candidate
                 .symlink_target
                 .as_ref()
@@ -196,7 +218,7 @@ pub fn assemble_installed_skills(
             codex_implicit_invocation: None,
             shared_via_whole_dir_link: candidate.shared_via_whole_dir_link,
             spec_violations: candidate.spec_violations.clone(),
-            invocation: super::frontmatter::invocation_policy(candidate.frontmatter.as_ref()).0,
+            invocation: crate::skill_document::invocation_policy(candidate.frontmatter.as_ref()).0,
         });
     }
 
@@ -210,6 +232,11 @@ pub fn assemble_installed_skills(
 
     let mut skills: Vec<InstalledSkill> = by_name.into_values().collect();
     propagate_verified_linked_owners(&mut skills);
+    for skill in &mut skills {
+        skill
+            .update_sources
+            .sort_by(|left, right| left.owner_id.cmp(&right.owner_id));
+    }
     // HashMap order is random per process; a stable name order keeps every
     // list (Home updates, Skills) from reshuffling between rescans.
     skills.sort_by(|a, b| a.name.cmp(&b.name));
@@ -283,8 +310,12 @@ pub(crate) fn propagate_verified_linked_owners(skills: &mut [InstalledSkill]) {
                     deployment_id: canonical_id.clone(),
                 };
             }
-            deployment.owner_kind = *owner_kind;
-            deployment.owner_id.clone_from(owner_id);
+            if deployment.owner_kind != crate::skill_ownership::LifecycleOwnerKind::Unknown {
+                deployment.owner_kind = *owner_kind;
+                deployment.owner_id.clone_from(owner_id);
+            } else {
+                deployment.owner_id = None;
+            }
             deployment.mutability = DeploymentMutability::ReadOnly;
         }
     }
@@ -296,7 +327,8 @@ mod tests {
     use std::path::PathBuf;
 
     use super::*;
-    use crate::skills::lock_file::InstalledSkillEntry;
+    use crate::skill_lock_file::InstalledSkillEntry;
+    use crate::skill_ownership::LifecycleOwnerKind;
 
     fn candidate(name: &str, root_label: &str) -> SkillCandidate {
         SkillCandidate {
@@ -310,8 +342,7 @@ mod tests {
             resolved_path: None,
             symlink_is_broken: false,
             symlink_error: None,
-            plugin: None,
-            shared_root_has_lock_entry: false,
+            plugin: PluginEvidence::Absent,
             frontmatter: None,
             frontmatter_fields: BTreeMap::new(),
             spec_violations: Vec::new(),
@@ -323,7 +354,7 @@ mod tests {
             content_hash: String::new(),
             modified_at: None,
             folder_truncated: false,
-            in_git_repo: false,
+            git_repo: crate::skill_candidate::GitRepoEvidence::Absent,
             studio_disabled: false,
             shared_via_whole_dir_link: false,
         }
@@ -337,12 +368,54 @@ mod tests {
     }
 
     #[test]
-    fn precedence_dotagents_beats_plugin_beats_skills_sh_beats_manual() {
-        let mut dotagents = candidate("my-skill", "shared");
-        dotagents.shared_root_has_lock_entry = true;
+    fn unknown_git_provenance_stays_visible_without_ownership_input() {
+        let mut unknown = candidate("my-skill", "Codex");
+        unknown.git_repo = crate::skill_candidate::GitRepoEvidence::Unknown;
+        let skills = assemble_installed_skills(
+            vec![unknown],
+            &empty_lock(),
+            &OwnershipReadReport::empty(),
+            &Default::default(),
+        );
 
+        assert_eq!(skills.len(), 1);
+        assert_eq!(skills[0].source_kind, SourceKind::Unknown);
+        assert_eq!(skills[0].deployments.len(), 1);
+        let deployment = &skills[0].deployments[0];
+        assert_eq!(deployment.owner_kind, LifecycleOwnerKind::Unknown);
+        assert_eq!(deployment.mutability, DeploymentMutability::ReadOnly);
+        assert_eq!(deployment.owner_id, None);
+    }
+
+    #[test]
+    fn unknown_plugin_evidence_precedes_the_dotagents_path_heuristic() {
+        let mut unknown = candidate("my-skill", "Codex");
+        unknown.plugin = PluginEvidence::Unknown;
+        unknown.is_symlink = true;
+        unknown.symlink_target = Some(PathBuf::from("/fixture/.agents/skills/my-skill"));
+        let skills = assemble_installed_skills(
+            vec![unknown],
+            &empty_lock(),
+            &OwnershipReadReport::empty(),
+            &Default::default(),
+        );
+
+        assert_eq!(skills[0].source_kind, SourceKind::Unknown);
+        assert_eq!(
+            skills[0].deployments[0].owner_kind,
+            LifecycleOwnerKind::Unknown
+        );
+        assert_eq!(
+            skills[0].deployments[0].mutability,
+            DeploymentMutability::ReadOnly
+        );
+        assert_eq!(skills[0].deployments[0].owner_id, None);
+    }
+
+    #[test]
+    fn plugin_beats_skills_sh_and_manual_without_ownership_input() {
         let mut plugin = candidate("my-skill", "Claude Code");
-        plugin.plugin = Some(crate::skills::skill_dto::PluginInfo {
+        plugin.plugin = PluginEvidence::Confirmed(crate::skill_plugins::PluginInfo {
             name: "some-plugin".to_string(),
             version: None,
             harness: "Claude Code".to_string(),
@@ -351,14 +424,14 @@ mod tests {
         let manual = candidate("my-skill", "Codex");
 
         let skills = assemble_installed_skills(
-            vec![manual, plugin, dotagents],
+            vec![manual, plugin],
             &empty_lock(),
-            &[],
+            &OwnershipReadReport::empty(),
             &Default::default(),
         );
         assert_eq!(skills.len(), 1);
-        assert_eq!(skills[0].source_kind, SourceKind::Dotagents);
-        assert_eq!(skills[0].deployments.len(), 3);
+        assert_eq!(skills[0].source_kind, SourceKind::Plugin);
+        assert_eq!(skills[0].deployments.len(), 2);
     }
 
     #[test]
@@ -370,7 +443,7 @@ mod tests {
                 candidate("mid", "pi"),
             ],
             &empty_lock(),
-            &[],
+            &OwnershipReadReport::empty(),
             &Default::default(),
         );
         let names: Vec<&str> = skills.iter().map(|s| s.name.as_str()).collect();
@@ -383,8 +456,12 @@ mod tests {
         let b = candidate("my-skill", "Codex");
         let c = candidate("my-skill", "pi");
 
-        let skills =
-            assemble_installed_skills(vec![a, b, c], &empty_lock(), &[], &Default::default());
+        let skills = assemble_installed_skills(
+            vec![a, b, c],
+            &empty_lock(),
+            &OwnershipReadReport::empty(),
+            &Default::default(),
+        );
         assert_eq!(skills.len(), 1);
         assert_eq!(skills[0].deployments.len(), 3);
     }
@@ -396,7 +473,12 @@ mod tests {
         let mut b = candidate("my-skill", "Codex");
         b.spec_violations = vec!["missing required frontmatter field: description".to_string()];
 
-        let skills = assemble_installed_skills(vec![a, b], &empty_lock(), &[], &Default::default());
+        let skills = assemble_installed_skills(
+            vec![a, b],
+            &empty_lock(),
+            &OwnershipReadReport::empty(),
+            &Default::default(),
+        );
         assert_eq!(skills[0].spec_violations.len(), 1);
     }
 
@@ -417,7 +499,12 @@ mod tests {
             },
         );
 
-        let skills = assemble_installed_skills(vec![c], &lock, &[], &Default::default());
+        let skills = assemble_installed_skills(
+            vec![c],
+            &lock,
+            &OwnershipReadReport::empty(),
+            &Default::default(),
+        );
         let skill = &skills[0];
         assert_eq!(skill.source, "obra/write-tests");
         assert_eq!(
@@ -443,7 +530,12 @@ mod tests {
             },
         );
 
-        let skills = assemble_installed_skills(vec![], &lock, &[], &Default::default());
+        let skills = assemble_installed_skills(
+            vec![],
+            &lock,
+            &OwnershipReadReport::empty(),
+            &Default::default(),
+        );
         assert_eq!(skills.len(), 1);
         assert!(skills[0].deployments.is_empty());
         assert_eq!(skills[0].source_kind, SourceKind::SkillsSh);
@@ -462,8 +554,12 @@ mod tests {
         valid.folder_bytes = 100;
         valid.file_count = 3;
 
-        let skills =
-            assemble_installed_skills(vec![broken, valid], &empty_lock(), &[], &Default::default());
+        let skills = assemble_installed_skills(
+            vec![broken, valid],
+            &empty_lock(),
+            &OwnershipReadReport::empty(),
+            &Default::default(),
+        );
         assert_eq!(skills.len(), 1);
         assert_eq!(skills[0].deployments.len(), 2);
         assert_eq!(skills[0].content_hash, "hash-codex");
@@ -482,8 +578,12 @@ mod tests {
         let mut c = candidate("my-skill", "pi");
         c.content_hash = "hash-a".to_string();
 
-        let skills =
-            assemble_installed_skills(vec![a, b, c], &empty_lock(), &[], &Default::default());
+        let skills = assemble_installed_skills(
+            vec![a, b, c],
+            &empty_lock(),
+            &OwnershipReadReport::empty(),
+            &Default::default(),
+        );
         assert_eq!(skills[0].content_hashes.len(), 2);
     }
 
@@ -497,7 +597,7 @@ mod tests {
         let skills = assemble_installed_skills(
             vec![global, project],
             &empty_lock(),
-            &[],
+            &OwnershipReadReport::empty(),
             &Default::default(),
         );
         assert_eq!(skills.len(), 1);
@@ -520,7 +620,7 @@ mod tests {
         let global = candidate("motion", "Claude Code");
         let mut project = candidate("motion", "Claude Code");
         project.scope = "project".to_string();
-        project.frontmatter = Some(crate::skills::frontmatter::SkillFrontmatter {
+        project.frontmatter = Some(crate::skill_document::SkillFrontmatter {
             disable_model_invocation: Some(true),
             ..Default::default()
         });
@@ -528,23 +628,23 @@ mod tests {
         let skills = assemble_installed_skills(
             vec![global, project],
             &empty_lock(),
-            &[],
+            &OwnershipReadReport::empty(),
             &Default::default(),
         );
         assert_eq!(skills.len(), 1);
 
-        let by_scope: HashMap<&str, crate::skills::frontmatter::InvocationPolicy> = skills[0]
+        let by_scope: HashMap<&str, crate::skill_document::InvocationPolicy> = skills[0]
             .deployments
             .iter()
             .map(|d| (d.scope.as_str(), d.invocation))
             .collect();
         assert_eq!(
             by_scope.get("global"),
-            Some(&crate::skills::frontmatter::InvocationPolicy::Both)
+            Some(&crate::skill_document::InvocationPolicy::Both)
         );
         assert_eq!(
             by_scope.get("project"),
-            Some(&crate::skills::frontmatter::InvocationPolicy::UserOnly)
+            Some(&crate::skill_document::InvocationPolicy::UserOnly)
         );
     }
 
@@ -555,7 +655,12 @@ mod tests {
         let mut b = candidate("my-skill", "Codex");
         b.content_hash = "hash-b".to_string();
 
-        let skills = assemble_installed_skills(vec![a, b], &empty_lock(), &[], &Default::default());
+        let skills = assemble_installed_skills(
+            vec![a, b],
+            &empty_lock(),
+            &OwnershipReadReport::empty(),
+            &Default::default(),
+        );
         assert_eq!(skills[0].content_hashes.len(), 2);
 
         let by_agent: HashMap<&str, &str> = skills[0]

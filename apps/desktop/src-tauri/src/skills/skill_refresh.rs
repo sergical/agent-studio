@@ -16,15 +16,13 @@ use std::time::{Duration, Instant};
 
 use chrono::{DateTime, NaiveDate, Timelike, Utc};
 use notify_debouncer_mini::new_debouncer;
-use notify_debouncer_mini::notify::{RecommendedWatcher, RecursiveMode};
+use notify_debouncer_mini::notify::{RecommendedWatcher, RecursiveMode, Watcher};
 use notify_debouncer_mini::Debouncer;
 use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Emitter, Manager};
 
 use super::agents;
-use super::lock_file;
 use super::project_discovery;
-use super::skill_assembly;
 use super::skill_discovery;
 use super::skill_dto::{Deployment, InstalledSkill};
 use super::skill_fork_registry::TrialScope;
@@ -33,6 +31,10 @@ use super::skill_invocations::{
 };
 use super::skill_run_history::{self, SkillRunSummary};
 use super::skill_update_check::{self, UpdateCheckSummary};
+use skill_studio_core::skill_ledger_inventory::LedgerOnlySkill;
+use skill_studio_core::skill_service::{
+    InventoryRead, ReplacementSafety, ScanError, ScopedSkillService, SkillScope,
+};
 
 /// Event emitted on the main window whenever the snapshot is (re)built.
 pub const SNAPSHOT_EVENT: &str = "skills://snapshot";
@@ -64,6 +66,8 @@ pub struct SkillSnapshot {
     #[serde(default)]
     pub revision: u64,
     pub skills: Vec<InstalledSkill>,
+    #[serde(default)]
+    pub read_warnings: Vec<SkillSnapshotReadWarning>,
     pub projects: Vec<String>,
     pub invocations: Vec<SkillInvocationStats>,
     pub heatmap: InvocationHeatmap,
@@ -82,6 +86,20 @@ pub struct SkillSnapshot {
     /// `opencode_skill_permission::detect_config_kind`.
     #[serde(default)]
     pub opencode_config_kind: Option<super::opencode_skill_permission::OpencodeConfigKind>,
+}
+
+/// A scoped input failure that makes one part of snapshot metadata incomplete.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(tag = "kind", rename_all = "kebab-case")]
+pub enum SkillSnapshotReadWarning {
+    OwnershipIncomplete {
+        message: String,
+        issues: Vec<skill_studio_core::skill_ownership::OwnershipReadIssue>,
+    },
+    DiscoveryIncomplete {
+        message: String,
+        issues: Vec<skill_studio_core::skill_read::DiscoveryReadIssue>,
+    },
 }
 
 /// One filesystem path the background watcher should track, and whether
@@ -131,12 +149,8 @@ pub struct SkillRefreshState {
     /// `skill_update_check` persists its result - read on every full rebuild
     /// to fill `has_update`/`update_check`.
     update_check_path: PathBuf,
-    /// `SkillContentFacts` computed by past rebuilds, keyed by canonical
-    /// skill dir - see `skill_discovery::SkillFactsCache`. Lives for the
-    /// process's whole lifetime (unlike the cache `discover_skill_candidates`
-    /// builds and discards per call) so a rebuild triggered by one small
-    /// change doesn't re-hash and re-tokenize every other skill's SKILL.md.
-    facts_cache: Arc<Mutex<skill_discovery::SkillFactsCache>>,
+    /// Keeps the scoped discovery cache for consecutive refreshes of the same roots.
+    inventory_service: Arc<Mutex<Option<ScopedSkillService>>>,
 }
 
 impl SkillRefreshState {
@@ -259,7 +273,7 @@ pub fn init(app: &AppHandle) -> SkillRefreshState {
                 .app_data_dir()
                 .unwrap_or_else(|_| PathBuf::from(".")),
         ),
-        facts_cache: Arc::new(Mutex::new(skill_discovery::SkillFactsCache::default())),
+        inventory_service: Arc::new(Mutex::new(None)),
     };
 
     let app_handle = app.clone();
@@ -372,8 +386,8 @@ pub fn rebuild_snapshot_now(
     // below, so a rebuild that straddles an hour boundary doesn't record the
     // new hour against cutoffs computed for the old one.
     let now = Utc::now();
-    let mut facts_cache = state
-        .facts_cache
+    let mut inventory_service = state
+        .inventory_service
         .lock()
         .map_err(|e| format!("facts cache lock poisoned: {e}"))?;
     let (built, report) = build_snapshot(
@@ -381,15 +395,15 @@ pub fn rebuild_snapshot_now(
         &extra_projects,
         &excluded_projects,
         &mut invocation_index,
-        &mut facts_cache,
+        &mut inventory_service,
         BuildPaths {
             cache_path: &state.cache_path,
             runs_root: &state.runs_root,
             update_check_path: &state.update_check_path,
         },
         now,
-    );
-    drop(facts_cache);
+    )?;
+    drop(inventory_service);
     drop(invocation_index);
 
     if report.incomplete {
@@ -512,18 +526,22 @@ pub fn reconcile_skill_names_and_emit(
         .filter(|project| !excluded_projects.contains(&project.to_string_lossy().to_string()))
         .collect();
 
-    let candidates = {
-        let mut facts_cache = state
-            .facts_cache
+    let inventory = {
+        let mut service = state
+            .inventory_service
             .lock()
-            .map_err(|error| format!("facts cache lock poisoned: {error}"))?;
-        skill_discovery::discover_named_skill_candidates_cached(
-            &home,
-            &projects,
-            &names,
-            &mut facts_cache,
-        )
+            .map_err(|error| format!("inventory service lock poisoned: {error}"))?;
+        read_snapshot_inventory(&home, &projects, &mut service, Some(&names))
+            .inspect_err(|_| state.mark_skills_dirty())?
     };
+    if !matches!(&inventory.replacement_safety, ReplacementSafety::Safe { names: selected } if selected == &names)
+    {
+        state.mark_skills_dirty();
+        return Err(
+            "Named inventory membership or ownership is incomplete; a full refresh is required"
+                .into(),
+        );
+    }
     let mut targeted_paths: BTreeSet<PathBuf> = agents::skill_roots(&home, &projects)
         .into_iter()
         .flat_map(|root| {
@@ -537,23 +555,15 @@ pub fn reconcile_skill_names_and_emit(
             })
         })
         .collect();
-    targeted_paths.extend(candidates.iter().map(|candidate| candidate.path.clone()));
-    let lock =
-        lock_file::read_lock_file_at(&lock_file::lock_file_path(&home)).map_err(|error| {
-            state.mark_skills_dirty();
-            format!("Targeted skill reconciliation could not read lock file: {error}")
-        })?;
-    let ledgers = super::skill_ownership::load_ownership_ledgers(&home, &projects);
-    let fork_registry = super::skill_fork_registry::read_fork_registry(&home).map_err(|error| {
-        state.mark_skills_dirty();
-        format!("Targeted skill reconciliation could not read lifecycle registry: {error}")
-    })?;
-    let mut replacements = skill_assembly::assemble_installed_skills(
-        candidates,
-        &lock,
-        &ledgers,
-        &fork_registry.copies,
+    targeted_paths.extend(
+        inventory
+            .skills
+            .iter()
+            .flat_map(|skill| &skill.deployments)
+            .map(|deployment| PathBuf::from(&deployment.path)),
     );
+    let (mut replacements, _ledger_only, read_warnings, fork_registry) =
+        snapshot_inventory_projection(&home, inventory, Some(&names));
     let current_owner_ids: Vec<String> = current
         .skills
         .iter()
@@ -577,7 +587,12 @@ pub fn reconcile_skill_names_and_emit(
     sort_snapshot_skills(&mut replacements);
 
     let mut built = current;
-    replace_snapshot_deployments(&mut built.skills, &targeted_paths, replacements);
+    for warning in read_warnings {
+        if !built.read_warnings.contains(&warning) {
+            built.read_warnings.push(warning);
+        }
+    }
+    replace_snapshot_deployments(&mut built.skills, &names, &targeted_paths, replacements);
     built.scanned_at = Utc::now().to_rfc3339();
     state.mark_skills_dirty();
     publish_skill_snapshot(app, state, built)?;
@@ -586,15 +601,19 @@ pub fn reconcile_skill_names_and_emit(
 
 fn replace_snapshot_deployments(
     skills: &mut Vec<InstalledSkill>,
+    names: &BTreeSet<String>,
     targeted_paths: &BTreeSet<PathBuf>,
     replacements: Vec<InstalledSkill>,
 ) {
-    for skill in skills.iter_mut() {
+    skills.retain_mut(|skill| {
+        if skill.deployments.is_empty() {
+            return !names.contains(&skill.name);
+        }
         skill
             .deployments
             .retain(|deployment| !targeted_paths.contains(Path::new(&deployment.path)));
-    }
-    skills.retain(|skill| !skill.deployments.is_empty());
+        !skill.deployments.is_empty()
+    });
     skills.extend(replacements);
     sort_snapshot_skills(skills);
 }
@@ -733,13 +752,13 @@ fn run_refresh_loop(app: AppHandle, state: SkillRefreshState) {
             return;
         }
     };
-    let mut watched: BTreeSet<PathBuf> = BTreeSet::new();
+    let mut watched: BTreeMap<PathBuf, bool> = BTreeMap::new();
 
     // Start watching before the initial scan so a change made while the
     // first scan is running is never missed.
     let initial_projects = project_discovery::discover_skill_projects(&home);
     reconcile_watchers(
-        &mut debouncer,
+        debouncer.watcher(),
         &mut watched,
         &desired_watch_paths(&home, &initial_projects),
     );
@@ -819,7 +838,7 @@ fn reconcile_watchers_from_snapshot(
     home: &Path,
     state: &SkillRefreshState,
     debouncer: &mut Debouncer<RecommendedWatcher>,
-    watched: &mut BTreeSet<PathBuf>,
+    watched: &mut BTreeMap<PathBuf, bool>,
 ) {
     let projects: Vec<PathBuf> = state
         .snapshot
@@ -835,35 +854,54 @@ fn reconcile_watchers_from_snapshot(
         .into_iter()
         .map(PathBuf::from)
         .collect();
-    reconcile_watchers(debouncer, watched, &desired_watch_paths(home, &projects));
+    reconcile_watchers(
+        debouncer.watcher(),
+        watched,
+        &desired_watch_paths(home, &projects),
+    );
 }
 
-/// Watch every existing path in `desired` that isn't already watched, and
-/// unwatch every currently-watched path that's no longer in `desired` (it
-/// vanished, or the project it belonged to left the desired set). Notify
+/// Replace watches when their path or recursion mode changes. Notify
 /// errors are logged, never propagated: a watch failure on one path
 /// shouldn't stop the others from being (un)watched.
 fn reconcile_watchers(
-    debouncer: &mut Debouncer<RecommendedWatcher>,
-    watched: &mut BTreeSet<PathBuf>,
+    watcher: &mut dyn Watcher,
+    watched: &mut BTreeMap<PathBuf, bool>,
     desired: &[WatchPath],
 ) {
-    let desired_paths: BTreeSet<&PathBuf> = desired.iter().map(|w| &w.path).collect();
-
+    let desired_modes: BTreeMap<&PathBuf, bool> =
+        desired.iter().map(|w| (&w.path, w.recursive)).collect();
     let stale: Vec<PathBuf> = watched
         .iter()
-        .filter(|p| !desired_paths.contains(p))
-        .cloned()
+        .filter(|(path, recursive)| {
+            desired_modes
+                .get(path)
+                .is_none_or(|mode| mode != *recursive)
+        })
+        .map(|(path, _)| path.clone())
         .collect();
     for path in stale {
-        if let Err(e) = debouncer.watcher().unwatch(&path) {
-            eprintln!("skill refresh: failed to unwatch {}: {e}", path.display());
+        match watcher.unwatch(&path) {
+            Ok(()) => {
+                watched.remove(&path);
+            }
+            Err(error)
+                if matches!(
+                    error.kind,
+                    notify_debouncer_mini::notify::ErrorKind::WatchNotFound
+                ) =>
+            {
+                watched.remove(&path);
+            }
+            Err(error) => eprintln!(
+                "skill refresh: failed to unwatch {}: {error}",
+                path.display()
+            ),
         }
-        watched.remove(&path);
     }
 
     for wp in desired {
-        if watched.contains(&wp.path) || !wp.path.exists() {
+        if watched.contains_key(&wp.path) || !wp.path.exists() {
             continue;
         }
         let mode = if wp.recursive {
@@ -871,11 +909,14 @@ fn reconcile_watchers(
         } else {
             RecursiveMode::NonRecursive
         };
-        match debouncer.watcher().watch(&wp.path, mode) {
+        match watcher.watch(&wp.path, mode) {
             Ok(()) => {
-                watched.insert(wp.path.clone());
+                watched.insert(wp.path.clone(), wp.recursive);
             }
-            Err(e) => eprintln!("skill refresh: failed to watch {}: {e}", wp.path.display()),
+            Err(error) => eprintln!(
+                "skill refresh: failed to watch {}: {error}",
+                wp.path.display()
+            ),
         }
     }
 }
@@ -999,6 +1040,10 @@ fn apply_skill_snapshot_overlays(
                 skill.update_owner_ids.push(owner_id.to_string());
             }
             skill.update_owners.push(super::skill_dto::OwnerUpdateInfo {
+                error: None,
+                comparison: Default::default(),
+                last_verified_comparison: None,
+                actionable: false,
                 owner_id: owner_id.to_string(),
                 latest_commit: state.latest_commit.clone(),
                 latest_commit_at: state.latest_commit_at.clone(),
@@ -1173,15 +1218,121 @@ fn apply_skill_snapshot_overlays(
     }
 }
 
+fn bind_inventory_service<'a>(
+    home: &Path,
+    project_paths: &[PathBuf],
+    service: &'a mut Option<ScopedSkillService>,
+) -> Result<&'a mut ScopedSkillService, String> {
+    let scope = super::skill_scope_config::desktop_skill_scope(home, project_paths)?;
+    if service
+        .as_ref()
+        .is_none_or(|current| current.scope() != scope)
+    {
+        *service = Some(ScopedSkillService::bind(scope).map_err(|error| error.to_string())?);
+    }
+    Ok(service.as_mut().expect("service is bound above"))
+}
+
+fn read_snapshot_inventory(
+    home: &Path,
+    project_paths: &[PathBuf],
+    service: &mut Option<ScopedSkillService>,
+    names: Option<&BTreeSet<String>>,
+) -> Result<InventoryRead, String> {
+    let result = bind_inventory_service(home, project_paths, service)?
+        .scan(names, Some(Duration::from_secs(30)));
+    if matches!(
+        &result,
+        Err(ScanError::Coordination(
+            skill_studio_core::skill_service::CoordinationFailure::Changed
+                | skill_studio_core::skill_service::CoordinationFailure::Unavailable { .. }
+        ))
+    ) {
+        *service = None;
+    }
+    result.map_err(|error| error.to_string())
+}
+
+fn snapshot_inventory_projection(
+    home: &Path,
+    mut inventory: InventoryRead,
+    names: Option<&BTreeSet<String>>,
+) -> (
+    Vec<InstalledSkill>,
+    Vec<LedgerOnlySkill>,
+    Vec<SkillSnapshotReadWarning>,
+    skill_studio_core::skill_fork_registry::ForkRegistry,
+) {
+    let mut lock = inventory.ownership.global_lock();
+    let deployed_names = inventory
+        .skills
+        .iter()
+        .map(|skill| skill.name.as_str())
+        .collect::<BTreeSet<_>>();
+    lock.skills.retain(|name, _| {
+        !deployed_names.contains(name.as_str()) && names.is_none_or(|names| names.contains(name))
+    });
+    let mut compatibility_rows = skill_studio_core::skill_assembly::assemble_installed_skills(
+        Vec::new(),
+        &lock,
+        &inventory.ownership,
+        &Default::default(),
+    );
+    if let skill_studio_core::skill_ownership::OwnershipInput::Loaded(registry) =
+        &inventory.ownership.registry
+    {
+        skill_studio_core::skill_registry_projection::apply_registry_facts(
+            home,
+            &mut compatibility_rows,
+            registry,
+        );
+    }
+    inventory.skills.extend(compatibility_rows);
+    inventory
+        .skills
+        .sort_by(|left, right| left.name.cmp(&right.name));
+    let unknown_owner = inventory.skills.iter().any(|skill| {
+        skill.deployments.iter().any(|deployment| {
+            deployment.owner_kind == super::skill_ownership::LifecycleOwnerKind::Unknown
+        })
+    });
+    inventory.discovery_issues.retain(|issue| {
+        issue.kind != skill_studio_core::skill_read::DiscoveryReadIssueKind::GitScopeBoundary
+            || unknown_owner
+    });
+    let mut warnings = Vec::new();
+    if !inventory.discovery_issues.is_empty() {
+        warnings.push(SkillSnapshotReadWarning::DiscoveryIncomplete {
+            message: format!(
+                "{} discovery issues. Some skills may be missing or have incomplete details.",
+                inventory.discovery_issues.len()
+            ),
+            issues: inventory.discovery_issues,
+        });
+    }
+    let failures = inventory.ownership.failures();
+    if !failures.is_empty() {
+        warnings.push(SkillSnapshotReadWarning::OwnershipIncomplete {
+            message: format!("{} ownership inputs could not be read. Affected deployments are unavailable for lifecycle changes.", failures.len()),
+            issues: failures,
+        });
+    }
+    let registry = match inventory.ownership.registry {
+        skill_studio_core::skill_ownership::OwnershipInput::Loaded(registry) => registry,
+        _ => Default::default(),
+    };
+    (inventory.skills, inventory.ledger_only, warnings, registry)
+}
+
 fn build_snapshot(
     home: &Path,
     extra_projects: &[PathBuf],
     excluded_projects: &BTreeSet<String>,
     invocation_index: &mut SkillInvocationIndex,
-    facts_cache: &mut skill_discovery::SkillFactsCache,
+    inventory_service: &mut Option<ScopedSkillService>,
     paths: BuildPaths,
     now: DateTime<Utc>,
-) -> (SkillSnapshot, RefreshReport) {
+) -> Result<(SkillSnapshot, RefreshReport), String> {
     let total_start = Instant::now();
     let BuildPaths {
         cache_path,
@@ -1204,23 +1355,13 @@ fn build_snapshot(
     let projects_ms = projects_start.elapsed().as_millis();
 
     let discovery_start = Instant::now();
-    let candidates =
-        skill_discovery::discover_skill_candidates_cached(home, &project_paths, facts_cache);
+    let inventory = read_snapshot_inventory(home, &project_paths, inventory_service, None)?;
     let discovery_ms = discovery_start.elapsed().as_millis();
-    let (facts_hits, facts_total) = facts_cache.last_pass_stats();
-
-    let lock = lock_file::read_lock_file_at(&lock_file::lock_file_path(home)).unwrap_or_else(|e| {
-        eprintln!("skill refresh: failed to read lock file: {e}");
-        lock_file::empty_lock_file()
-    });
-    let ledgers = super::skill_ownership::load_ownership_ledgers(home, &project_paths);
-    let fork_registry = super::skill_fork_registry::read_fork_registry_or_default(home);
-    let mut skills = skill_assembly::assemble_installed_skills(
-        candidates,
-        &lock,
-        &ledgers,
-        &fork_registry.copies,
-    );
+    let (facts_hits, facts_total) = inventory_service
+        .as_ref()
+        .map_or((0, 0), ScopedSkillService::last_pass_stats);
+    let (mut skills, _ledger_only, read_warnings, fork_registry) =
+        snapshot_inventory_projection(home, inventory, None);
 
     let update_store = skill_update_check::read_update_check_store_at(update_check_path);
     let update_check = skill_update_check::summarize(&update_store);
@@ -1250,6 +1391,7 @@ fn build_snapshot(
     let snapshot = SkillSnapshot {
         revision: 0,
         skills,
+        read_warnings,
         projects: project_paths
             .into_iter()
             .map(|p| p.to_string_lossy().to_string())
@@ -1271,7 +1413,7 @@ fn build_snapshot(
         "skill refresh: full rebuild {total_ms} ms (projects {projects_ms} ms, discovery {discovery_ms} ms, invocations {invocations_ms} ms, assembly+rest {rest_ms} ms; {skill_count} skills, facts cache hits {facts_hits}/{facts_total})"
     );
 
-    (snapshot, report)
+    Ok((snapshot, report))
 }
 
 /// Which kind of rebuild a single filesystem-watch event implies.
@@ -1366,16 +1508,105 @@ pub fn desired_watch_paths(home: &Path, projects: &[PathBuf]) -> Vec<WatchPath> 
         add(&mut merged, project.clone(), false);
     }
 
+    if let Ok(scope) = super::skill_scope_config::desktop_skill_scope(home, projects) {
+        add_scope_watch_paths(&mut merged, &scope);
+    }
+
     merged
         .into_iter()
         .map(|(path, recursive)| WatchPath { path, recursive })
         .collect()
 }
 
+fn add_scope_watch_paths(merged: &mut BTreeMap<PathBuf, bool>, scope: &SkillScope) {
+    for root in scope
+        .backing_roots
+        .iter()
+        .chain(&scope.plugin_ownership_roots)
+    {
+        merged.insert(root.clone(), true);
+        if let Some(parent) = root.parent().filter(|parent| parent.parent().is_some()) {
+            merged.entry(parent.to_path_buf()).or_insert(false);
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use std::fs;
+
+    #[test]
+    fn folder_settings_replace_existing_watch_modes() {
+        use notify_debouncer_mini::notify::{
+            Config, EventHandler, Result as NotifyResult, WatcherKind,
+        };
+        #[derive(Default)]
+        struct RecordingWatcher {
+            calls: Vec<Option<RecursiveMode>>,
+        }
+        impl Watcher for RecordingWatcher {
+            fn new<F: EventHandler>(_: F, _: Config) -> NotifyResult<Self> {
+                Ok(Self::default())
+            }
+            fn watch(&mut self, _: &Path, mode: RecursiveMode) -> NotifyResult<()> {
+                self.calls.push(Some(mode));
+                Ok(())
+            }
+            fn unwatch(&mut self, _: &Path) -> NotifyResult<()> {
+                self.calls.push(None);
+                Ok(())
+            }
+            fn kind() -> WatcherKind {
+                WatcherKind::NullWatcher
+            }
+        }
+        let root = tempfile::tempdir().unwrap();
+        let path = root.path().to_path_buf();
+        let mut watched = BTreeMap::new();
+        let mut watcher = RecordingWatcher::default();
+        for recursive in [false, true, true, false] {
+            reconcile_watchers(
+                &mut watcher,
+                &mut watched,
+                &[WatchPath {
+                    path: path.clone(),
+                    recursive,
+                }],
+            );
+            assert_eq!(watched.get(&path), Some(&recursive));
+        }
+        assert_eq!(
+            watcher.calls,
+            vec![
+                Some(RecursiveMode::NonRecursive),
+                None,
+                Some(RecursiveMode::Recursive),
+                None,
+                Some(RecursiveMode::NonRecursive)
+            ]
+        );
+    }
+
+    #[test]
+    fn configured_roots_are_watched_recursively_without_downgrading_parent_watches() {
+        let scope = super::super::skill_scope_config::configured_scope(
+            Path::new("/home/tester"),
+            &[],
+            Some(
+                r#"{"backing_roots":["/data/skills","/external"],"plugin_ownership_roots":["/plugins/cache"]}"#,
+            ),
+        )
+        .unwrap();
+        let mut watched = BTreeMap::from([(PathBuf::from("/data"), true)]);
+        add_scope_watch_paths(&mut watched, &scope);
+        assert_eq!(watched.get(Path::new("/data/skills")), Some(&true));
+        assert_eq!(watched.get(Path::new("/plugins/cache")), Some(&true));
+        assert_eq!(watched.get(Path::new("/plugins")), Some(&false));
+        assert_eq!(watched.get(Path::new("/data")), Some(&true));
+        assert_eq!(watched.get(Path::new("/external")), Some(&true));
+        assert!(!watched.contains_key(Path::new("/")));
+    }
 
     #[test]
     fn desired_watch_paths_includes_global_roots_and_parents() {
@@ -1499,14 +1730,15 @@ mod tests {
             std::slice::from_ref(&project),
             &BTreeSet::new(),
             &mut invocation_index,
-            &mut skill_discovery::SkillFactsCache::default(),
+            &mut None,
             BuildPaths {
                 cache_path: &cache_path,
                 runs_root: tmp.path(),
                 update_check_path: &tmp.path().join("update-check.json"),
             },
             Utc::now(),
-        );
+        )
+        .unwrap();
 
         assert!(snapshot
             .projects
@@ -1550,14 +1782,15 @@ mod tests {
             &[],
             &BTreeSet::new(),
             &mut invocation_index,
-            &mut skill_discovery::SkillFactsCache::default(),
+            &mut None,
             BuildPaths {
                 cache_path: &cache_path,
                 runs_root: tmp.path(),
                 update_check_path: &tmp.path().join("update-check.json"),
             },
             Utc::now(),
-        );
+        )
+        .unwrap();
 
         let skill = snapshot
             .skills
@@ -1615,14 +1848,15 @@ mod tests {
             std::slice::from_ref(&project),
             &BTreeSet::new(),
             &mut invocation_index,
-            &mut skill_discovery::SkillFactsCache::default(),
+            &mut None,
             BuildPaths {
                 cache_path: &cache_path,
                 runs_root: tmp.path(),
                 update_check_path: &tmp.path().join("update-check.json"),
             },
             Utc::now(),
-        );
+        )
+        .unwrap();
 
         let skill = snapshot
             .skills
@@ -1631,11 +1865,52 @@ mod tests {
             .unwrap();
         assert_eq!(
             skill.source_kind,
-            super::super::provenance::SourceKind::Manual
+            super::super::provenance::SourceKind::Unknown
         );
+        assert!(!snapshot.read_warnings.is_empty());
         assert!(skill.fork.is_none());
         assert_eq!(skill.deployments.len(), 1);
         assert_eq!(skill.deployments[0].scope, "project");
+    }
+
+    #[test]
+    fn known_ownership_skips_git_boundary_warning_but_keeps_metadata_failures() {
+        for escaped_git_marker in [false, true] {
+            let temp = tempfile::tempdir().unwrap();
+            let home = temp.path().join("home");
+            let skill = home.join(".agents/skills/example");
+            fs::create_dir_all(&skill).unwrap();
+            fs::write(
+                skill.join("SKILL.md"),
+                "---\nname: example\ndescription: fixture\n---\nbody",
+            )
+            .unwrap();
+            fs::write(
+                home.join(".agents/.skill-lock.json"),
+                serde_json::json!({
+                    "version": 3, "skills": {"example": {
+                        "source": "fixture/example", "sourceType": "github",
+                        "sourceUrl": "https://github.com/fixture/example",
+                        "skillFolderHash": "fixture", "installedAt": "2026-09-15T00:00:00Z",
+                        "updatedAt": "2026-09-15T00:00:00Z"
+                    }}
+                })
+                .to_string(),
+            )
+            .unwrap();
+            if escaped_git_marker {
+                let outside = temp.path().join("outside");
+                fs::create_dir(&outside).unwrap();
+                std::os::unix::fs::symlink(outside, skill.join(".git")).unwrap();
+            }
+            let inventory = read_snapshot_inventory(&home, &[], &mut None, None).unwrap();
+            assert_eq!(
+                inventory.skills[0].deployments[0].owner_kind,
+                super::super::skill_ownership::LifecycleOwnerKind::SkillsSh
+            );
+            let (_, _, warnings, _) = snapshot_inventory_projection(&home, inventory, None);
+            assert_eq!(!warnings.is_empty(), escaped_git_marker, "{warnings:?}");
+        }
     }
 
     #[test]
@@ -1704,14 +1979,15 @@ mod tests {
             &[],
             &BTreeSet::new(),
             &mut invocation_index,
-            &mut skill_discovery::SkillFactsCache::default(),
+            &mut None,
             BuildPaths {
                 cache_path: &cache_path,
                 runs_root: tmp.path(),
                 update_check_path: &update_check_path,
             },
             Utc::now(),
-        );
+        )
+        .unwrap();
 
         let foo = snapshot.skills.iter().find(|s| s.name == "foo").unwrap();
         // The lock file belongs to this temporary home, not the process home.
@@ -1780,14 +2056,15 @@ mod tests {
             std::slice::from_ref(&project),
             &BTreeSet::new(),
             &mut invocation_index,
-            &mut skill_discovery::SkillFactsCache::default(),
+            &mut None,
             BuildPaths {
                 cache_path: &tmp.path().join("cache.json"),
                 runs_root: tmp.path(),
                 update_check_path: &tmp.path().join("update-check.json"),
             },
             Utc::now(),
-        );
+        )
+        .unwrap();
 
         let foo = snapshot
             .skills
@@ -1855,14 +2132,15 @@ mod tests {
             &[],
             &BTreeSet::new(),
             &mut invocation_index,
-            &mut skill_discovery::SkillFactsCache::default(),
+            &mut None,
             BuildPaths {
                 cache_path: &tmp.path().join("cache.json"),
                 runs_root: tmp.path(),
                 update_check_path: &tmp.path().join("update-check.json"),
             },
             Utc::now(),
-        );
+        )
+        .unwrap();
 
         let foo = snapshot
             .skills
@@ -1880,7 +2158,7 @@ mod tests {
     fn differing_owner_updates_keep_only_per_owner_commit_metadata() {
         let tmp = tempfile::tempdir().unwrap();
         let home = tmp.path().join("home");
-        let project = tmp.path().join("project");
+        let project = home.join("project");
         let lock = serde_json::json!({
             "version": 3,
             "skills": { "foo": {
@@ -1909,14 +2187,15 @@ mod tests {
             std::slice::from_ref(&project),
             &BTreeSet::new(),
             &mut invocation_index,
-            &mut skill_discovery::SkillFactsCache::default(),
+            &mut None,
             BuildPaths {
                 cache_path: &cache_path,
                 runs_root: tmp.path(),
                 update_check_path: &update_check_path,
             },
             Utc::now(),
-        );
+        )
+        .unwrap();
         let foo = initial
             .skills
             .iter()
@@ -1958,14 +2237,15 @@ mod tests {
             std::slice::from_ref(&project),
             &BTreeSet::new(),
             &mut invocation_index,
-            &mut skill_discovery::SkillFactsCache::default(),
+            &mut None,
             BuildPaths {
                 cache_path: &cache_path,
                 runs_root: tmp.path(),
                 update_check_path: &update_check_path,
             },
             Utc::now(),
-        );
+        )
+        .unwrap();
         let foo = snapshot
             .skills
             .iter()
@@ -2003,14 +2283,15 @@ mod tests {
             std::slice::from_ref(&project),
             &excluded,
             &mut invocation_index,
-            &mut skill_discovery::SkillFactsCache::default(),
+            &mut None,
             BuildPaths {
                 cache_path: &cache_path,
                 runs_root: tmp.path(),
                 update_check_path: &tmp.path().join("update-check.json"),
             },
             Utc::now(),
-        );
+        )
+        .unwrap();
 
         assert!(!snapshot
             .projects
@@ -2037,14 +2318,15 @@ mod tests {
             std::slice::from_ref(&home),
             &BTreeSet::new(),
             &mut invocation_index,
-            &mut skill_discovery::SkillFactsCache::default(),
+            &mut None,
             BuildPaths {
                 cache_path: &cache_path,
                 runs_root: tmp.path(),
                 update_check_path: &tmp.path().join("update-check.json"),
             },
             Utc::now(),
-        );
+        )
+        .unwrap();
 
         assert!(!snapshot
             .projects
@@ -2081,8 +2363,10 @@ mod tests {
         use super::super::skill_dto::{Deployment, InstalledSkill};
 
         SkillSnapshot {
+            read_warnings: Vec::new(),
             revision: 0,
             skills: vec![InstalledSkill {
+                update_sources: Vec::new(),
                 name: "foo".to_string(),
                 source: "manual".to_string(),
                 source_type: "manual".to_string(),
@@ -2161,7 +2445,7 @@ mod tests {
             cache_path: PathBuf::from("/dev/null"),
             runs_root: PathBuf::from("/dev/null"),
             update_check_path: PathBuf::from("/dev/null"),
-            facts_cache: Arc::new(Mutex::new(skill_discovery::SkillFactsCache::default())),
+            inventory_service: Arc::new(Mutex::new(None)),
         }
     }
 
@@ -2243,7 +2527,12 @@ mod tests {
         updated.deployments[0].id = "z".to_string();
         let targeted_paths = ["/old", "/remove"].into_iter().map(PathBuf::from).collect();
 
-        replace_snapshot_deployments(&mut skills, &targeted_paths, vec![updated, added]);
+        replace_snapshot_deployments(
+            &mut skills,
+            &BTreeSet::new(),
+            &targeted_paths,
+            vec![updated, added],
+        );
 
         assert_eq!(
             skills
@@ -2262,6 +2551,33 @@ mod tests {
                 .collect::<Vec<_>>(),
             vec!["a", "z"]
         );
+    }
+
+    #[test]
+    fn targeted_replacement_preserves_unrelated_lock_only_rows() {
+        let mut unrelated = fixture_snapshot(Path::new("/unrelated")).skills.remove(0);
+        unrelated.name = "unrelated".into();
+        unrelated.deployments.clear();
+        unrelated.description = Some("keep this ledger entry".into());
+        let mut updated = unrelated.clone();
+        updated.name = "updated".into();
+        let mut removed = unrelated.clone();
+        removed.name = "removed".into();
+        let mut replacement = updated.clone();
+        replacement.description = Some("new ledger entry".into());
+        let mut skills = vec![unrelated, updated, removed];
+        let names = ["updated".into(), "removed".into()].into_iter().collect();
+
+        replace_snapshot_deployments(&mut skills, &names, &BTreeSet::new(), vec![replacement]);
+
+        assert_eq!(skills.len(), 2);
+        assert_eq!(skills[0].name, "unrelated");
+        assert_eq!(
+            skills[0].description.as_deref(),
+            Some("keep this ledger entry")
+        );
+        assert_eq!(skills[1].name, "updated");
+        assert_eq!(skills[1].description.as_deref(), Some("new ledger entry"));
     }
 
     #[test]
@@ -2284,7 +2600,12 @@ mod tests {
         let targeted_paths = [PathBuf::from("/root/lexical-name")].into_iter().collect();
         let mut skills = vec![stale, unrelated];
 
-        replace_snapshot_deployments(&mut skills, &targeted_paths, vec![replacement]);
+        replace_snapshot_deployments(
+            &mut skills,
+            &BTreeSet::new(),
+            &targeted_paths,
+            vec![replacement],
+        );
 
         assert_eq!(skills.len(), 2);
         assert!(skills.iter().any(|skill| skill.name == "foo"));

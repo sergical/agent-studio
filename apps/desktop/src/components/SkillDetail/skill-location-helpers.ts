@@ -28,6 +28,7 @@ interface SharedFolderSwitchPolicy {
  * already disabled, which must stay re-enableable.
  */
 export function canToggleHarness(deployment: Deployment): boolean {
+  if (deployment.owner_kind === "unknown") return false;
   const id = agentIdFromDeploymentLabel(deployment.agent) ?? "";
   if (!HARNESSES_WITH_PER_SKILL_DISABLE.includes(id)) return false;
   if (deployment.disabled) return true;
@@ -37,10 +38,11 @@ export function canToggleHarness(deployment: Deployment): boolean {
 
 /** Keep Project Universal visibility read-only; only the Global switch may park or unpark. */
 export function sharedFolderSwitchPolicy(group: ScopeGroup): SharedFolderSwitchPolicy {
+  const canToggle = group.isGlobal && group.shared?.deployment?.owner_kind !== "unknown";
   return {
     checked: group.shared?.switchOn ?? false,
-    disabled: !group.isGlobal,
+    disabled: !canToggle,
     actionForCheckedChange: (enabled) =>
-      group.isGlobal ? (enabled ? { kind: "unpark" } : { kind: "park" }) : null,
+      canToggle ? (enabled ? { kind: "unpark" } : { kind: "park" }) : null,
   };
 }

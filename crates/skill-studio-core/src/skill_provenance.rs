@@ -12,15 +12,33 @@
 
 use std::path::Path;
 
-use super::lock_file::SkillLockFile;
-use super::skill_candidate::SkillCandidate;
+use serde::{Deserialize, Serialize};
+
+use crate::skill_candidate::{GitRepoEvidence, PluginEvidence, SkillCandidate};
+use crate::skill_lock_file::SkillLockFile;
 
 /// How a skill made it onto disk. Serializes to the same kebab-case strings
 /// the frontend has always used ("skills-sh", "plugin", "dotagents",
 /// "manual"), so this is a drop-in replacement for the old stringly-typed
 /// source_kind field. Declaration order doubles as precedence order via the
 /// derived `Ord`.
-pub use skill_studio_core::skill_provenance::SourceKind;
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum SourceKind {
+    Dotagents,
+    Plugin,
+    SkillsSh,
+    /// A plain directory with no skill-manager provenance, but sitting
+    /// inside a git working tree - see `SkillCandidate::git_repo`.
+    InRepo,
+    Manual,
+    Unknown,
+    /// Detached from its dotagents/skills.sh ledger via "Fork" so local
+    /// edits survive `sync`/`update` - see `skill_fork_registry`.
+    /// `classify_source_kind` never returns this; it's assigned afterward by
+    /// `skill_refresh::build_snapshot` from the fork registry.
+    Fork,
+}
 
 /// True when `path` resolves under a `.agents/skills/` directory, the
 /// deployment location getsentry/dotagents symlinks skills into.
@@ -37,6 +55,10 @@ fn resolves_into_dotagents(path: &Path) -> bool {
 /// Classify how a skill candidate got onto disk. See module docs for the
 /// precedence order.
 pub fn classify_source_kind(candidate: &SkillCandidate, lock: &SkillLockFile) -> SourceKind {
+    if matches!(candidate.plugin, PluginEvidence::Unknown) {
+        return SourceKind::Unknown;
+    }
+
     if candidate.is_symlink {
         if let Some(target) = &candidate.symlink_target {
             if resolves_into_dotagents(target) {
@@ -45,11 +67,7 @@ pub fn classify_source_kind(candidate: &SkillCandidate, lock: &SkillLockFile) ->
         }
     }
 
-    if candidate.root_label == "shared" && candidate.shared_root_has_lock_entry {
-        return SourceKind::Dotagents;
-    }
-
-    if candidate.plugin.is_some() {
+    if matches!(candidate.plugin, PluginEvidence::Confirmed(_)) {
         return SourceKind::Plugin;
     }
 
@@ -57,15 +75,23 @@ pub fn classify_source_kind(candidate: &SkillCandidate, lock: &SkillLockFile) ->
         return SourceKind::SkillsSh;
     }
 
-    if candidate.in_git_repo {
-        return SourceKind::InRepo;
+    match candidate.git_repo {
+        GitRepoEvidence::Present => SourceKind::InRepo,
+        GitRepoEvidence::Absent => SourceKind::Manual,
+        GitRepoEvidence::Unknown | GitRepoEvidence::Truncated => SourceKind::Unknown,
     }
-
-    SourceKind::Manual
 }
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn unknown_source_wire_value_is_explicit() {
+        assert_eq!(
+            serde_json::to_string(&super::SourceKind::Unknown).unwrap(),
+            "\"unknown\""
+        );
+    }
+
     use std::collections::{BTreeMap, HashMap};
     use std::path::PathBuf;
 
@@ -83,8 +109,7 @@ mod tests {
             resolved_path: None,
             symlink_is_broken: false,
             symlink_error: None,
-            plugin: None,
-            shared_root_has_lock_entry: false,
+            plugin: PluginEvidence::Absent,
             frontmatter: None,
             frontmatter_fields: BTreeMap::new(),
             spec_violations: Vec::new(),
@@ -96,7 +121,7 @@ mod tests {
             content_hash: String::new(),
             modified_at: None,
             folder_truncated: false,
-            in_git_repo: false,
+            git_repo: GitRepoEvidence::Absent,
             studio_disabled: false,
             shared_via_whole_dir_link: false,
         }
@@ -122,7 +147,7 @@ mod tests {
     #[test]
     fn plugin_candidate_is_detected() {
         let mut candidate = base_candidate("lint-code", "Claude Code");
-        candidate.plugin = Some(super::super::skill_dto::PluginInfo {
+        candidate.plugin = PluginEvidence::Confirmed(crate::skill_plugins::PluginInfo {
             name: "sentry-toolkit".to_string(),
             version: Some("1.0.0".to_string()),
             harness: "Claude Code".to_string(),
@@ -138,7 +163,7 @@ mod tests {
         let mut lock = empty_lock();
         lock.skills.insert(
             "write-tests".to_string(),
-            crate::skills::lock_file::InstalledSkillEntry {
+            crate::skill_lock_file::InstalledSkillEntry {
                 source: "obra/write-tests".to_string(),
                 source_type: "github".to_string(),
                 source_url: "https://github.com/obra/write-tests".to_string(),
@@ -163,7 +188,7 @@ mod tests {
     #[test]
     fn plain_directory_in_a_git_repo_is_in_repo() {
         let mut candidate = base_candidate("my-notes", "Claude Code");
-        candidate.in_git_repo = true;
+        candidate.git_repo = GitRepoEvidence::Present;
         let kind = classify_source_kind(&candidate, &empty_lock());
         assert_eq!(kind, SourceKind::InRepo);
     }
@@ -171,11 +196,11 @@ mod tests {
     #[test]
     fn lock_file_entry_beats_in_git_repo() {
         let mut candidate = base_candidate("write-tests", "Claude Code");
-        candidate.in_git_repo = true;
+        candidate.git_repo = GitRepoEvidence::Present;
         let mut lock = empty_lock();
         lock.skills.insert(
             "write-tests".to_string(),
-            crate::skills::lock_file::InstalledSkillEntry {
+            crate::skill_lock_file::InstalledSkillEntry {
                 source: "obra/write-tests".to_string(),
                 source_type: "github".to_string(),
                 source_url: "https://github.com/obra/write-tests".to_string(),
@@ -191,18 +216,42 @@ mod tests {
     }
 
     #[test]
-    fn shared_root_with_agents_lock_is_dotagents() {
-        let mut candidate = base_candidate("some-skill", "shared");
-        candidate.shared_root_has_lock_entry = true;
-
-        let kind = classify_source_kind(&candidate, &empty_lock());
-        assert_eq!(kind, SourceKind::Dotagents);
-    }
-
-    #[test]
     fn shared_root_without_agents_lock_falls_back_to_manual() {
         let candidate = base_candidate("some-skill", "shared");
         let kind = classify_source_kind(&candidate, &empty_lock());
         assert_eq!(kind, SourceKind::Manual);
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn broken_symlink_into_dotagents_still_classifies_dotagents() {
+        let tmp = tempfile::tempdir().unwrap();
+        let home = tmp.path();
+        let claude_skills = home.join(".claude/skills");
+        std::fs::create_dir_all(&claude_skills).unwrap();
+        let link = claude_skills.join("gone-skill");
+        std::os::unix::fs::symlink(home.join(".agents/skills/gone-skill"), &link).unwrap();
+
+        let context = crate::skill_discovery::SkillDiscoveryReadContext::bind(
+            home.to_path_buf(),
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+        );
+        let candidates = crate::skill_discovery::discover_skill_candidates(&context).candidates;
+        let found = candidates
+            .iter()
+            .find(|candidate| candidate.path == link)
+            .expect("broken symlink candidate found");
+
+        assert!(found.symlink_is_broken);
+        assert_eq!(
+            found.symlink_target.as_deref(),
+            Some(home.join(".agents/skills/gone-skill").as_path())
+        );
+        assert_eq!(
+            classify_source_kind(found, &empty_lock()),
+            SourceKind::Dotagents
+        );
     }
 }

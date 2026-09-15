@@ -8,8 +8,6 @@
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
-use serde::{Deserialize, Serialize};
-
 use super::dotagents_ledger::{self, DotagentsSkill};
 use super::lock_file::{self, SkillLockFile};
 use super::provenance::SourceKind;
@@ -22,44 +20,7 @@ use super::skill_dto::InstallScope;
 use super::skill_fork_registry::CopyDeploymentRecord;
 
 /// The owner allowed to change a deployment. Read-only kinds use `None`.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
-#[serde(rename_all = "kebab-case")]
-pub enum LifecycleOwnerKind {
-    SkillsSh,
-    Dotagents,
-    Copy,
-    Fork,
-    Plugin,
-    InRepo,
-    #[default]
-    Manual,
-    WildcardDotagents,
-    Ambiguous,
-}
-
-impl LifecycleOwnerKind {
-    pub fn as_str(self) -> &'static str {
-        match self {
-            Self::SkillsSh => "skills-sh",
-            Self::Dotagents => "dotagents",
-            Self::Copy => "copy",
-            Self::Fork => "fork",
-            Self::Plugin => "plugin",
-            Self::InRepo => "in-repo",
-            Self::Manual => "manual",
-            Self::WildcardDotagents => "wildcard-dotagents",
-            Self::Ambiguous => "ambiguous",
-        }
-    }
-
-    /// True when Skill Studio may run an owner adapter against this kind.
-    pub fn is_mutable(self) -> bool {
-        matches!(
-            self,
-            Self::SkillsSh | Self::Dotagents | Self::Copy | Self::Fork
-        )
-    }
-}
+pub use skill_studio_core::skill_ownership::LifecycleOwnerKind;
 
 /// One ledger that can own Universal deployments in a given `.agents` root.
 #[derive(Debug, Clone)]

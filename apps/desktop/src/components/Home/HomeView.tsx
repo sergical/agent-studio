@@ -652,7 +652,7 @@ export function HomeView({ snapshot, isLoading, onSelectSkill }: HomeViewProps) 
           </div>
         )}
 
-        {allClear && !filter && (
+        {allClear && !filter && !snapshot.read_warnings?.length && (
           <p className="flex h-full items-center justify-center text-wrap-pretty text-text-tertiary">
             All clear. Nothing needs attention.
           </p>

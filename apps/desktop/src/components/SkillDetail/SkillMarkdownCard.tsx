@@ -82,7 +82,12 @@ export function SkillMarkdownCard({
   onDirtyChange,
 }: SkillMarkdownCardProps) {
   const isEditing = editState.kind === "editing";
-  const canEdit = !isEditing && !isPluginManaged && !deploymentUnresolved && rawContent !== null;
+  const canEdit =
+    !isEditing &&
+    !isPluginManaged &&
+    !deploymentUnresolved &&
+    deployment?.owner_kind !== "unknown" &&
+    rawContent !== null;
 
   return (
     <div className="flex flex-col gap-1 rounded-lg border border-border-subtle p-4">

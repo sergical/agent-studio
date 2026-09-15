@@ -23,6 +23,7 @@ import type {
   InstalledSkill,
   InvocationPolicy,
   LifecycleTarget,
+  LifecycleOwnerKind,
 } from "@skill-studio/lib";
 import type { TooltipLine } from "../ui/TooltipControl";
 
@@ -101,6 +102,7 @@ interface BaseLocationRow {
   deployment: Deployment | null;
   /** Exact deployment used by lifecycle actions, including synthesized reader rows. */
   lifecycleTarget: LifecycleTarget;
+  ownerKind: LifecycleOwnerKind;
   hasSwitch: boolean;
   switchOn: boolean;
   invocation: InvocationPolicy | null;
@@ -168,6 +170,12 @@ function fileEditability(
   skill: InstalledSkill,
   deployment: Deployment,
 ): Pick<InvocationFile, "editable" | "disabledReason"> {
+  if (deployment.owner_kind === "unknown") {
+    return {
+      editable: false,
+      disabledReason: "Skill ownership is unknown. Resolve the read warning before editing.",
+    };
+  }
   if (kind === "plugin") {
     return {
       editable: false,
@@ -536,6 +544,7 @@ export function buildScopeGroups(skill: InstalledSkill): ScopeGroup[] {
             conditions,
             level: topLevel(conditions),
             deployment: sharedDeployment,
+            ownerKind: sharedDeployment.owner_kind,
             lifecycleTarget: { deployment_id: sharedDeployment.id },
             hasSwitch: true,
             switchOn: !sharedDeployment.disabled && !parkedScope,
@@ -567,6 +576,7 @@ export function buildScopeGroups(skill: InstalledSkill): ScopeGroup[] {
         conditions,
         level: topLevel(conditions),
         deployment: d,
+        ownerKind: d.owner_kind,
         lifecycleTarget: { deployment_id: d.id },
         hasSwitch: !d.symlink_is_broken && kind !== "plugin",
         switchOn: !d.disabled && !parkedScope,
@@ -595,6 +605,7 @@ export function buildScopeGroups(skill: InstalledSkill): ScopeGroup[] {
           conditions,
           level: topLevel(conditions),
           deployment: null,
+          ownerKind: shared.ownerKind,
           lifecycleTarget: shared.lifecycleTarget,
           hasSwitch,
           switchOn: !disabledForReader && !parkedScope,
@@ -835,6 +846,18 @@ export function rowMenu(
   scopeLabel: string,
   projectPath: string | null = null,
 ): RowMenuResult {
+  if (row.ownerKind === "unknown") {
+    return {
+      entries: [
+        {
+          label: "Reveal in Finder",
+          action: { kind: "reveal", path: row.path, label: row.harnessLabel },
+        },
+      ],
+      danger: [],
+      hint: "Skill ownership is unknown. Resolve the read warning before making changes.",
+    };
+  }
   const plain: MenuEntry[] = [];
   const danger: MenuEntry[] = [];
   const seen = new Set<string>();

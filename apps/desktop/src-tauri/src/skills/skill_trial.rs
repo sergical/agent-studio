@@ -1215,6 +1215,7 @@ mod tests {
                     });
                 }
                 Some(InstalledSkill {
+                    update_sources: Vec::new(),
                     name: parsed.name,
                     source: "test".to_string(),
                     source_type: "test".to_string(),
@@ -1251,6 +1252,7 @@ mod tests {
             })
             .collect();
         super::super::skill_refresh::SkillSnapshot {
+            read_warnings: Vec::new(),
             revision: 0,
             skills,
             projects: Vec::new(),

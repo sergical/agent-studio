@@ -18,7 +18,7 @@
 use std::fs;
 use std::path::{Path, PathBuf};
 
-use super::commands::canonicalize_skill_md;
+use super::commands::{canonicalize_skill_md, check_skill_md_deployment_write_allowed};
 use super::frontmatter::{invocation_policy, parse_frontmatter, InvocationPolicy};
 use super::skill_deployment::parse_deployment_id;
 use super::skill_dto::Deployment;
@@ -366,9 +366,7 @@ pub fn set_skill_invocation(
         .clone()
         .ok_or_else(|| format!("Invocation target is stale: {path} is not an installed skill"))?;
     let deployment = exact_snapshot_invocation_deployment(&snapshot, &name, &path_buf)?;
-    if deployment.plugin.is_some() {
-        return Err("Skill is managed by a plugin and cannot be edited here".to_string());
-    }
+    check_skill_md_deployment_write_allowed(deployment)?;
     let is_codex_deployment = deployment.agent == "Codex";
     let canonical = canonicalize_skill_md(&path_buf, &path)?;
 
@@ -394,8 +392,10 @@ mod tests {
         use super::super::skill_invocations::InvocationHeatmap;
 
         SkillSnapshot {
+            read_warnings: Vec::new(),
             revision: 1,
             skills: vec![InstalledSkill {
+                update_sources: Vec::new(),
                 name: "find-bugs".to_string(),
                 source: "manual".to_string(),
                 source_type: "manual".to_string(),

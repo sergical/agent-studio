@@ -147,7 +147,14 @@ export interface SkillsShAccessInfo {
  * disk with no other provenance signal), or "fork" (detached from its
  * dotagents/skills.sh ledger via Fork - see `ForkInfo`).
  */
-export type SkillSourceKind = "skills-sh" | "plugin" | "dotagents" | "in-repo" | "manual" | "fork";
+export type SkillSourceKind =
+  | "skills-sh"
+  | "plugin"
+  | "dotagents"
+  | "in-repo"
+  | "manual"
+  | "fork"
+  | "unknown";
 
 /** Badge label for each source_kind, shared by SkillBrowser and SkillDetailPanel. */
 export const SOURCE_KIND_LABELS = {
@@ -157,6 +164,7 @@ export const SOURCE_KIND_LABELS = {
   "in-repo": "in repo",
   manual: "manual",
   fork: "fork",
+  unknown: "Unknown source",
 } as const satisfies Record<SkillSourceKind, string>;
 
 /**
@@ -377,6 +385,7 @@ export type LifecycleOwnerKind =
   | "in-repo"
   | "manual"
   | "wildcard-dotagents"
+  | "unknown"
   | "ambiguous";
 
 /** Exact deployment or explicit owner group passed to lifecycle commands. */
@@ -682,6 +691,7 @@ export interface InvocationHeatmap {
  * skills/skill_refresh.rs.
  */
 export interface SkillSnapshot {
+  read_warnings?: SkillSnapshotReadWarning[];
   /** Process-local publication order. Revision 0 is a legacy bootstrap snapshot. */
   revision: number;
   skills: InstalledSkill[];
@@ -696,6 +706,49 @@ export interface SkillSnapshot {
   /** Which OpenCode config format is present, `undefined` when neither exists. */
   opencode_config_kind?: "json" | "jsonc";
 }
+
+/** A snapshot input failure that leaves a specific ownership scope incomplete. */
+export type DiscoveryReadIssueKind =
+  | "root"
+  | "entry"
+  | "metadata"
+  | "git-scope-boundary"
+  | "skill-document"
+  | "resource"
+  | "cap"
+  | "tokenizer"
+  | "plugin-manifest";
+
+export interface DiscoveryReadIssue {
+  kind: DiscoveryReadIssueKind;
+  path: string;
+  message: string;
+}
+
+export type OwnershipReadIssueKind =
+  | "skills-root"
+  | "skills-sh-lock"
+  | "dotagents-lock"
+  | "dotagents-manifest"
+  | "lifecycle-registry";
+
+export interface OwnershipReadIssue {
+  kind: OwnershipReadIssueKind;
+  path: string;
+  message: string;
+}
+
+export type SkillSnapshotReadWarning =
+  | {
+      kind: "ownership-incomplete";
+      message: string;
+      issues: OwnershipReadIssue[];
+    }
+  | {
+      kind: "discovery-incomplete";
+      message: string;
+      issues: DiscoveryReadIssue[];
+    };
 
 /**
  * `SkillSnapshot.update_check` and `checkSkillUpdatesNow`'s return shape: a

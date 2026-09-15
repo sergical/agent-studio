@@ -159,6 +159,8 @@ pub fn run() {
             skills::skill_frontmatter_repair::apply_skill_frontmatter_repair,
             skills::commands::open_skill_path,
             skills::commands::list_installed_editors,
+            skills::skill_scope_config::get_skill_scope_settings,
+            skills::skill_scope_config::set_skill_scope_settings,
             skills::commands::get_preferred_editor,
             skills::commands::set_preferred_editor,
             skills::skill_update_check::check_skill_updates_now,

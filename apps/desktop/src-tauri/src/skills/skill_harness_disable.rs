@@ -974,8 +974,10 @@ mod tests {
             })
             .collect();
         SkillSnapshot {
+            read_warnings: Vec::new(),
             revision: 0,
             skills: vec![InstalledSkill {
+                update_sources: Vec::new(),
                 name: "find-bugs".to_string(),
                 source: "copy".to_string(),
                 source_type: "copy".to_string(),
