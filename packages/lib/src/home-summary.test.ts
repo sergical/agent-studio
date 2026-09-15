@@ -21,6 +21,11 @@ import type {
 
 function fixtureDeployment(overrides: Partial<Deployment> = {}): Deployment {
   return {
+    id: "fixture-deployment",
+    destination: "per-harness",
+    owner_kind: "dotagents",
+    mutability: "mutable",
+    backing: { kind: "canonical" },
     agent: "Claude Code",
     scope: "global",
     path: "/home/.claude/skills/find-bugs",
@@ -74,6 +79,7 @@ function fixtureStats(overrides: Partial<SkillInvocationStats> = {}): SkillInvoc
 
 function fixtureSnapshot(overrides: Partial<SkillSnapshot> = {}): SkillSnapshot {
   return {
+    revision: 0,
     skills: [],
     projects: [],
     invocations: [],

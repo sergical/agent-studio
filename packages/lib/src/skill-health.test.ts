@@ -17,6 +17,11 @@ import type { Deployment, InstalledSkill } from "./skill-types";
 /** Minimal `Deployment` fixture, overridable per test. */
 function fixtureDeployment(overrides: Partial<Deployment> = {}): Deployment {
   return {
+    id: "fixture-deployment",
+    destination: "per-harness",
+    owner_kind: "dotagents",
+    mutability: "mutable",
+    backing: { kind: "canonical" },
     agent: "shared",
     scope: "global",
     path: "/home/.agents/skills/agent-browser",

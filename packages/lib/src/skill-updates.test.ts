@@ -35,6 +35,7 @@ function fixtureSkill(overrides: Partial<InstalledSkill> = {}): InstalledSkill {
 
 function fixtureSnapshot(skills: InstalledSkill[]): SkillSnapshot {
   return {
+    revision: 0,
     skills,
     projects: [],
     invocations: [],
