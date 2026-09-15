@@ -1478,7 +1478,9 @@ pub fn list_skill_projects(
 /// Check if a skill is installed
 #[tauri::command]
 pub fn is_skill_installed(skill_name: String) -> Result<bool, String> {
-    lock_file::is_skill_installed(&skill_name)
+    let home = dirs::home_dir().ok_or("Could not find home directory")?;
+    let lock = lock_file::read_lock_file_at(&lock_file::lock_file_path(&home))?;
+    Ok(lock.skills.contains_key(&skill_name))
 }
 
 /// Get all supported agent targets

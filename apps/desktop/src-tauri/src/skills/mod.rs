@@ -14,7 +14,7 @@ pub mod event_store;
 pub use skill_studio_core::skill_document as frontmatter;
 pub mod gh_cli;
 pub mod github_skill_listing;
-pub mod lock_file;
+pub use skill_studio_core::skill_lock_file as lock_file;
 pub mod opencode_skill_permission;
 pub mod plugins;
 pub mod project_discovery;

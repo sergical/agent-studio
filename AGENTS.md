@@ -123,7 +123,6 @@ npm run check
 │           │   │   ├── mod.rs
 │           │   │   ├── api.rs            # skills.sh HTTP client
 │           │   │   ├── commands.rs       # Tauri IPC commands
-│           │   │   ├── lock_file.rs      # ~/.agents/.skill-lock.json
 │           │   │   ├── plugins.rs        # Native plugin cache enumeration
 │           │   │   ├── provenance.rs     # Source-kind classification
 │           │   │   ├── scan.rs           # Installed-skill directory scanner
@@ -136,6 +135,7 @@ npm run check
 │       └── src/
 │           ├── skill_agents.rs    # AgentId, agent paths
 │           └── skill_document.rs  # SKILL.md frontmatter parsing/validation
+│           └── skill_lock_file.rs # ~/.agents/.skill-lock.json
 ├── packages/
 │   └── ui/                       # Shared UI package placeholder (@skill-studio/ui)
 ├── tools/

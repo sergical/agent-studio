@@ -538,10 +538,11 @@ pub fn reconcile_skill_names_and_emit(
         })
         .collect();
     targeted_paths.extend(candidates.iter().map(|candidate| candidate.path.clone()));
-    let lock = lock_file::read_lock_file().map_err(|error| {
-        state.mark_skills_dirty();
-        format!("Targeted skill reconciliation could not read lock file: {error}")
-    })?;
+    let lock =
+        lock_file::read_lock_file_at(&lock_file::lock_file_path(&home)).map_err(|error| {
+            state.mark_skills_dirty();
+            format!("Targeted skill reconciliation could not read lock file: {error}")
+        })?;
     let ledgers = super::skill_ownership::load_ownership_ledgers(&home, &projects);
     let fork_registry = super::skill_fork_registry::read_fork_registry(&home).map_err(|error| {
         state.mark_skills_dirty();
@@ -1208,12 +1209,9 @@ fn build_snapshot(
     let discovery_ms = discovery_start.elapsed().as_millis();
     let (facts_hits, facts_total) = facts_cache.last_pass_stats();
 
-    let lock = lock_file::read_lock_file().unwrap_or_else(|e| {
+    let lock = lock_file::read_lock_file_at(&lock_file::lock_file_path(home)).unwrap_or_else(|e| {
         eprintln!("skill refresh: failed to read lock file: {e}");
-        lock_file::SkillLockFile {
-            version: 3,
-            skills: std::collections::HashMap::new(),
-        }
+        lock_file::empty_lock_file()
     });
     let ledgers = super::skill_ownership::load_ownership_ledgers(home, &project_paths);
     let fork_registry = super::skill_fork_registry::read_fork_registry_or_default(home);
@@ -1641,8 +1639,8 @@ mod tests {
     }
 
     #[test]
-    fn build_snapshot_reads_update_check_store_at_the_production_path() {
-        // Regression test: `update_check_path` is already the full file
+    fn build_snapshot_reads_update_store_and_supplied_home_lock_file() {
+        // `update_check_path` is already the full file
         // path (`<app data>/skill-studio/update-check.json`), computed the
         // same way `skill_refresh::init` computes it. Reading it through
         // `read_update_check_store` (which joins that suffix again) would
@@ -1716,6 +1714,12 @@ mod tests {
         );
 
         let foo = snapshot.skills.iter().find(|s| s.name == "foo").unwrap();
+        // The lock file belongs to this temporary home, not the process home.
+        assert_eq!(foo.source, "someorg/foo");
+        assert_eq!(
+            foo.source_kind,
+            super::super::provenance::SourceKind::SkillsSh
+        );
         assert_eq!(
             foo.deployments[0].owner_id.as_deref(),
             Some(seeded_owner_id)

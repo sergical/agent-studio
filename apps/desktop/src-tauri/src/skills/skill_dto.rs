@@ -2,7 +2,7 @@
 // Skills Module - skill_dto
 // Serialized shapes sent to the frontend over Tauri IPC: skills.sh API
 // responses, installed-skill records, and installation request/response
-// types. Lock file structs live in lock_file.rs, agent identifiers in
+// types. Lock file structs live in skill_lock_file.rs in the core crate, agent identifiers in
 // skill_agents.rs, SKILL.md frontmatter in skill_document.rs, and source provenance
 // in provenance.rs.
 // ============================================================================
@@ -109,7 +109,7 @@ pub struct SkillEventDto {
 // Installed Skill Types
 // ============================================================================
 // InstalledSkillEntry and SkillLockFile (the raw lock-file shapes) live in
-// lock_file.rs, next to the code that reads and writes them.
+// skill_lock_file.rs in the core crate, next to the code that reads them.
 
 /// A plugin that shipped a skill, per the agent-plugins.org convention
 /// (Claude Code / Codex plugin caches, or any directory with a `plugin.json`
