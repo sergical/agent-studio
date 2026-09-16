@@ -8,7 +8,11 @@ pub mod skill_document;
 pub mod skill_document_target;
 pub mod skill_document_write;
 pub mod skill_dotagents_ledger;
+#[cfg(all(unix, feature = "event-store"))]
+pub mod skill_fork_creation;
 pub mod skill_fork_registry;
+#[cfg(all(unix, feature = "event-store"))]
+pub mod skill_fork_transition;
 pub mod skill_frontmatter_repair;
 pub mod skill_inventory;
 pub mod skill_ledger_inventory;

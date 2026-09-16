@@ -12,9 +12,11 @@
 
 use std::collections::BTreeSet;
 use std::fs;
-use std::path::{Path, PathBuf};
+use std::io::{Read, Write};
+use std::path::{Component, Path, PathBuf};
 use std::process::Command;
 
+use flate2::read::GzDecoder;
 use serde::{Deserialize, Serialize};
 use tauri::Manager;
 
@@ -31,7 +33,7 @@ use super::skill_fs::copy_dir_all;
 use super::skill_install_plan::{skills_sh_universal_add_args, SkillInstallSpec};
 use super::skill_lifecycle::skills_sh_remove_args_for_scope;
 use super::skill_process::{
-    run_controlled_command_to_file, AddOperationControl, ControlledProcessError,
+    run_controlled_command_to_file_limited, AddOperationControl, ControlledProcessError,
     MAX_PROCESS_OUTPUT_BYTES,
 };
 use super::skill_refresh::{self, SkillRefreshState};
@@ -233,6 +235,24 @@ pub struct RealUpstreamFetch {
     pub cache_dir: PathBuf,
 }
 
+const MAX_FORK_ARCHIVE_BYTES: usize = 64 * 1024 * 1024;
+const MAX_FORK_EXPANDED_BYTES: usize = 256 * 1024 * 1024;
+const MAX_FORK_ARCHIVE_ENTRIES: usize = 10_000;
+const MAX_FORK_ARCHIVE_DEPTH: usize = 32;
+
+#[derive(Clone, Copy)]
+struct ForkArchiveLimits {
+    expanded_bytes: usize,
+    entries: usize,
+    depth: usize,
+}
+
+const FORK_ARCHIVE_LIMITS: ForkArchiveLimits = ForkArchiveLimits {
+    expanded_bytes: MAX_FORK_EXPANDED_BYTES,
+    entries: MAX_FORK_ARCHIVE_ENTRIES,
+    depth: MAX_FORK_ARCHIVE_DEPTH,
+};
+
 impl UpstreamFetch for RealUpstreamFetch {
     fn fetch_skill_dir(
         &self,
@@ -289,19 +309,20 @@ impl RealUpstreamFetch {
         fs::create_dir_all(&self.cache_dir)
             .map_err(|e| format!("Failed to create {}: {e}", self.cache_dir.display()))?;
 
-        let unique = format!("{}-{}", std::process::id(), commit);
+        let unique = format!("{}-{}-{}", std::process::id(), commit, ulid::Ulid::new());
         let tarball_path = self.cache_dir.join(format!("fork-pull-{unique}.tar.gz"));
         let extract_dir = self.cache_dir.join(format!("fork-pull-extract-{unique}"));
         let cleanup = TempCleanup {
             paths: vec![tarball_path.clone(), extract_dir.clone()],
         };
 
-        run_controlled_command_to_file(
+        run_controlled_command_to_file_limited(
             &self.gh_bin,
             &["api".to_string(), format!("repos/{repo}/tarball/{commit}")],
             None,
             control,
             &tarball_path,
+            MAX_FORK_ARCHIVE_BYTES,
             MAX_PROCESS_OUTPUT_BYTES,
         )
         .map_err(ControlledProcessError::into_message)?;
@@ -309,20 +330,7 @@ impl RealUpstreamFetch {
         control.check_message()?;
         fs::create_dir_all(&extract_dir)
             .map_err(|e| format!("Failed to create {}: {e}", extract_dir.display()))?;
-        run_controlled_command_to_file(
-            Path::new("tar"),
-            &[
-                "-xzf".to_string(),
-                tarball_path.to_string_lossy().into_owned(),
-                "-C".to_string(),
-                extract_dir.to_string_lossy().into_owned(),
-            ],
-            None,
-            control,
-            Path::new("/dev/null"),
-            MAX_PROCESS_OUTPUT_BYTES,
-        )
-        .map_err(ControlledProcessError::into_message)?;
+        extract_fork_archive(&tarball_path, &extract_dir, control)?;
         control.check_message()?;
 
         Ok(ExtractedRepo {
@@ -330,6 +338,208 @@ impl RealUpstreamFetch {
             _cleanup: cleanup,
         })
     }
+}
+
+fn archive_path_components(
+    path: &Path,
+    limits: ForkArchiveLimits,
+) -> Result<Vec<&std::ffi::OsStr>, String> {
+    let mut components = Vec::new();
+    for component in path.components() {
+        match component {
+            Component::Normal(name) => components.push(name),
+            _ => return Err("Refusing unsafe path in fetched tarball".to_string()),
+        }
+    }
+    if components.is_empty() || components.len() > limits.depth {
+        return Err("Fetched tarball path exceeds safety limits".to_string());
+    }
+    Ok(components)
+}
+
+fn ensure_extract_directory(
+    root: &Path,
+    components: &[&std::ffi::OsStr],
+) -> Result<PathBuf, String> {
+    let mut current = root.to_path_buf();
+    for component in components {
+        current.push(component);
+        match fs::symlink_metadata(&current) {
+            Ok(metadata) if metadata.is_dir() && !metadata.file_type().is_symlink() => {}
+            Ok(_) => return Err("Refusing tarball entry through a non-directory path".to_string()),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                fs::create_dir(&current)
+                    .map_err(|error| format!("Failed to create {}: {error}", current.display()))?;
+            }
+            Err(error) => return Err(format!("Failed to inspect {}: {error}", current.display())),
+        }
+    }
+    Ok(current)
+}
+
+fn extract_fork_archive(
+    tarball_path: &Path,
+    extract_dir: &Path,
+    control: &AddOperationControl,
+) -> Result<(), String> {
+    extract_fork_archive_with_limits(tarball_path, extract_dir, control, FORK_ARCHIVE_LIMITS)
+}
+
+struct ControlledArchiveReader<R> {
+    inner: R,
+    control: AddOperationControl,
+    remaining: usize,
+}
+
+impl<R: Read> Read for ControlledArchiveReader<R> {
+    fn read(&mut self, buffer: &mut [u8]) -> std::io::Result<usize> {
+        self.control
+            .check_message()
+            .map_err(std::io::Error::other)?;
+        let read_limit = buffer.len().min(self.remaining.saturating_add(1));
+        let count = self.inner.read(&mut buffer[..read_limit])?;
+        if count > self.remaining {
+            return Err(std::io::Error::other(
+                "Fetched tarball exceeded expanded byte limit",
+            ));
+        }
+        self.remaining -= count;
+        Ok(count)
+    }
+}
+
+fn extract_fork_archive_with_limits(
+    tarball_path: &Path,
+    extract_dir: &Path,
+    control: &AddOperationControl,
+    limits: ForkArchiveLimits,
+) -> Result<(), String> {
+    let file = fs::File::open(tarball_path)
+        .map_err(|error| format!("Failed to open {}: {error}", tarball_path.display()))?;
+    let reader = ControlledArchiveReader {
+        inner: GzDecoder::new(file),
+        control: control.clone(),
+        remaining: limits.expanded_bytes,
+    };
+    let mut archive = tar::Archive::new(reader);
+    let mut expanded_bytes = 0usize;
+    let mut entries = 0usize;
+    let mut top_level = None;
+    #[cfg(unix)]
+    let mut directory_modes = Vec::new();
+    for entry in archive
+        .entries()
+        .map_err(|error| format!("Failed to read fetched tarball: {error}"))?
+    {
+        control.check_message()?;
+        entries += 1;
+        if entries > limits.entries {
+            return Err(format!(
+                "Fetched tarball exceeded {} entry limit",
+                limits.entries
+            ));
+        }
+        let mut entry =
+            entry.map_err(|error| format!("Failed to read fetched tarball entry: {error}"))?;
+        let entry_path = entry
+            .path()
+            .map_err(|error| format!("Failed to read fetched tarball path: {error}"))?;
+        let components = archive_path_components(&entry_path, limits)?;
+        if let Some(ref top) = top_level {
+            if top != components[0] {
+                return Err("Fetched tarball has more than one top-level directory".to_string());
+            }
+        } else {
+            top_level = Some(components[0].to_os_string());
+        }
+        let destination = extract_dir.join(&entry_path);
+        ensure_extract_directory(extract_dir, &components[..components.len() - 1])?;
+        let kind = entry.header().entry_type();
+        if kind.is_dir() {
+            ensure_extract_directory(extract_dir, &components)?;
+            #[cfg(unix)]
+            directory_modes.push((
+                destination.clone(),
+                entry.header().mode().map_err(|e| e.to_string())?,
+            ));
+        } else if kind.is_file() {
+            if fs::symlink_metadata(&destination).is_ok() {
+                return Err("Refusing duplicate fetched tarball entry".to_string());
+            }
+            let mut output = fs::OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .open(&destination)
+                .map_err(|error| format!("Failed to create {}: {error}", destination.display()))?;
+            let mut buffer = [0_u8; 64 * 1024];
+            loop {
+                control.check_message()?;
+                let count = entry
+                    .read(&mut buffer)
+                    .map_err(|error| format!("Failed to read fetched tarball entry: {error}"))?;
+                if count == 0 {
+                    break;
+                }
+                if count > limits.expanded_bytes.saturating_sub(expanded_bytes) {
+                    return Err(format!(
+                        "Fetched tarball exceeded {} expanded byte limit",
+                        limits.expanded_bytes
+                    ));
+                }
+                output.write_all(&buffer[..count]).map_err(|error| {
+                    format!("Failed to write {}: {error}", destination.display())
+                })?;
+                expanded_bytes += count;
+            }
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                let mode = entry
+                    .header()
+                    .mode()
+                    .map_err(|error| format!("Failed to read fetched tarball mode: {error}"))?;
+                fs::set_permissions(&destination, fs::Permissions::from_mode(mode)).map_err(
+                    |error| {
+                        format!(
+                            "Failed to set permissions on {}: {error}",
+                            destination.display()
+                        )
+                    },
+                )?;
+            }
+        } else if kind.is_symlink() {
+            let target = entry
+                .link_name()
+                .map_err(|error| format!("Failed to read fetched tarball link: {error}"))?
+                .ok_or_else(|| "Fetched tarball symlink has no target".to_string())?;
+            if fs::symlink_metadata(&destination).is_ok() {
+                return Err("Refusing duplicate fetched tarball entry".to_string());
+            }
+            #[cfg(unix)]
+            std::os::unix::fs::symlink(&target, &destination)
+                .map_err(|error| format!("Failed to create {}: {error}", destination.display()))?;
+            #[cfg(not(unix))]
+            return Err(
+                "Symlink-preserving archive extraction is only supported on Unix".to_string(),
+            );
+        } else {
+            return Err("Refusing unsupported fetched tarball entry type".to_string());
+        }
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        directory_modes.sort_by_key(|(path, _)| std::cmp::Reverse(path.components().count()));
+        for (path, mode) in directory_modes {
+            control.check_message()?;
+            fs::set_permissions(path, fs::Permissions::from_mode(mode))
+                .map_err(|e| e.to_string())?;
+        }
+    }
+    if top_level.is_none() {
+        return Err("Fetched tarball was empty".to_string());
+    }
+    Ok(())
 }
 
 /// A tarball already extracted under `extract_dir`, kept alive for as long
@@ -353,7 +563,14 @@ impl RepoSnapshot for ExtractedRepo {
     ) -> Result<(), String> {
         control.check_message()?;
         let source_dir = locate_extracted_skill_dir(&self.extract_dir, path)?;
-        super::skill_fs::copy_dir_all_controlled(&source_dir, into, control)
+        super::skill_fs::copy_dir_preserving_symlinks_controlled_bounded(
+            &source_dir,
+            into,
+            control,
+            MAX_FORK_EXPANDED_BYTES,
+            MAX_FORK_ARCHIVE_ENTRIES,
+            MAX_FORK_ARCHIVE_DEPTH,
+        )
     }
 }
 
@@ -379,22 +596,36 @@ impl Drop for TempCleanup {
 /// `RealUpstreamFetch::fetch_skill_dir` so the tarball-locating logic is
 /// testable without a network call.
 fn locate_extracted_skill_dir(extract_dir: &Path, path: &str) -> Result<PathBuf, String> {
-    let top = fs::read_dir(extract_dir)
+    let mut top_entries = fs::read_dir(extract_dir)
         .map_err(|e| format!("Failed to read {}: {e}", extract_dir.display()))?
         .filter_map(|e| e.ok())
-        .find(|e| e.path().is_dir())
-        .ok_or_else(|| "Tarball had no top-level directory".to_string())?
+        .filter(|entry| {
+            entry
+                .file_type()
+                .map(|kind| kind.is_dir() && !kind.is_symlink())
+                .unwrap_or(false)
+        });
+    let top = top_entries
+        .next()
+        .ok_or("Tarball had no top-level directory")?
         .path();
-
-    let candidate = top.join(path);
-    let canonical_extract = fs::canonicalize(extract_dir)
-        .map_err(|e| format!("Failed to resolve {}: {e}", extract_dir.display()))?;
-    let canonical_candidate = fs::canonicalize(&candidate)
-        .map_err(|_| format!("{path} was not found in the fetched tarball"))?;
-    if !canonical_candidate.starts_with(&canonical_extract) {
-        return Err("Refusing to extract a path outside the tarball".to_string());
+    if top_entries.next().is_some() {
+        return Err("Tarball had more than one top-level directory".to_string());
     }
-    Ok(canonical_candidate)
+    let components = archive_path_components(Path::new(path), FORK_ARCHIVE_LIMITS)?;
+    let mut candidate = top;
+    for component in components {
+        candidate.push(component);
+        let metadata = fs::symlink_metadata(&candidate)
+            .map_err(|_| format!("{path} was not found in the fetched tarball"))?;
+        if metadata.file_type().is_symlink() {
+            return Err("Refusing to extract a path through a tarball symlink".to_string());
+        }
+        if !metadata.is_dir() {
+            return Err(format!("{path} was not found in the fetched tarball"));
+        }
+    }
+    Ok(candidate)
 }
 
 /// Every relative file path (`/`-separated) under `dir`, skipping `.git` and
@@ -960,15 +1191,40 @@ impl ForkMutationLock {
 }
 
 #[tauri::command]
-pub fn fork_skill(
+pub async fn fork_skill(
     target: super::skill_dto::LifecycleTarget,
     app: tauri::AppHandle,
-    refresh_state: tauri::State<SkillRefreshState>,
-    update_check_state: tauri::State<UpdateCheckState>,
-    fork_lock: tauri::State<ForkMutationLock>,
 ) -> Result<ForkRecord, String> {
+    let operation_app = app.clone();
+    let result =
+        tauri::async_runtime::spawn_blocking(move || fork_skill_blocking(target, operation_app))
+            .await
+            .map_err(|error| format!("Fork worker failed: {error}"));
+    skill_refresh::request_snapshot_rebuild(&app);
+    result?
+}
+
+fn require_exact_fork_deployment_target(
+    target: &super::skill_dto::LifecycleTarget,
+) -> Result<(), String> {
+    target
+        .deployment_id
+        .as_deref()
+        .ok_or("Fork needs one Global Universal deployment_id")?;
+    if target.owner_id.is_some() {
+        return Err("Fork targets one Global Universal deployment, not an owner group".to_string());
+    }
+    Ok(())
+}
+
+fn fork_skill_blocking(
+    target: super::skill_dto::LifecycleTarget,
+    app: tauri::AppHandle,
+) -> Result<ForkRecord, String> {
+    let refresh_state = app.state::<SkillRefreshState>();
+    let fork_lock = app.state::<ForkMutationLock>();
     let _guard = fork_lock.try_acquire()?;
-    let _ = &update_check_state; // shares the same guard-free lookup path as pull/unfork
+    require_exact_fork_deployment_target(&target)?;
     let home = dirs::home_dir().ok_or("Could not find home directory")?;
     let app_data = app
         .path()
@@ -988,32 +1244,88 @@ pub fn fork_skill(
         &target,
         "Fork",
     )?;
-    let snapshot = resolved.snapshot;
-    let id = target
-        .deployment_id
-        .as_deref()
-        .ok_or("Fork needs one Global Universal deployment_id")?;
-    if target.owner_id.is_some() {
-        return Err("Fork targets one Global Universal deployment, not an owner group".to_string());
-    }
-    let (skill, deployment) = super::skill_lifecycle::find_deployment(&snapshot, id)?;
-    super::skill_lifecycle::revalidate_deployment(deployment, id)?;
-    super::skill_lifecycle::require_direct_deployment_mutable(deployment, "Fork")?;
-    super::skill_lifecycle::require_global_universal_park_target(deployment)
+    super::skill_lifecycle::require_global_universal_park_target(&resolved.deployment)
         .map_err(|_| "Fork is only available for the Global Universal folder.".to_string())?;
+    if resolved.deployment.owner_kind != super::skill_ownership::LifecycleOwnerKind::Dotagents {
+        return fork_skill_with(
+            &home,
+            &app_data,
+            &resolved.skill.name,
+            Path::new(&resolved.deployment.path),
+            &RealLedgerTool,
+            &fetch,
+            lookup.as_ref(),
+        );
+    }
 
-    let result = fork_skill_with(
-        &home,
-        &app_data,
-        &skill.name,
-        Path::new(&deployment.path),
-        &RealLedgerTool,
-        &fetch,
-        lookup.as_ref(),
-    );
-    skill_refresh::request_snapshot_rebuild(&app);
-    let _ = &refresh_state;
-    result
+    let owner_revision = resolved
+        .deployment
+        .owner_revision
+        .clone()
+        .ok_or("Fork is not available: dotagents owner revision is missing")?;
+    let agents = home.join(".agents");
+    let lock = std::fs::read_to_string(agents.join("agents.lock"))
+        .map_err(|error| format!("Could not read fresh agents.lock: {error}"))?;
+    let manifest = std::fs::read_to_string(agents.join("agents.toml"))
+        .map_err(|error| format!("Could not read fresh agents.toml: {error}"))?;
+    let expected_source =
+        skill_studio_core::skill_dotagents_ledger::DotagentsDetachIntent::from_documents(
+            &resolved.skill.name,
+            &lock,
+            &manifest,
+        )?
+        .fork_source()?;
+    let staging = app_data
+        .join("skill-studio/cache")
+        .join(format!("dotagents-fork-{}", ulid::Ulid::new()));
+    let _cleanup = TempCleanup {
+        paths: vec![staging.clone()],
+    };
+    let control = AddOperationControl::bounded_default();
+    fetch.fetch_skill_dir_controlled(
+        expected_source.repo(),
+        expected_source.path(),
+        expected_source.commit(),
+        &staging,
+        &control,
+    )?;
+    control.check_message()?;
+
+    let projects = resolved
+        .snapshot
+        .projects
+        .iter()
+        .map(PathBuf::from)
+        .collect::<Vec<_>>();
+    let scope = super::skill_scope_config::desktop_skill_scope(&home, &projects)?;
+    let mut service = skill_studio_core::skill_service::ScopedSkillService::bind(scope)
+        .map_err(|error| error.to_string())?;
+    let request = skill_studio_core::skill_fork_creation::ForkCreationRequest {
+        deployment_id: resolved.deployment.id,
+        expected_owner_revision: owner_revision,
+        expected_source,
+    };
+    let event_state = app.state::<super::event_commands::EventStoreState>();
+    let events = event_state
+        .0
+        .lock()
+        .map_err(|_| "Event store lock is unavailable")?;
+    let store = events.as_ref().ok_or("Event store is unavailable")?;
+    skill_studio_core::skill_fork_creation::create_dotagents_fork(
+        &mut service,
+        store,
+        &request,
+        &staging,
+        super::skill_copy_recovery::removal_limits(),
+        Some(std::time::Duration::from_secs(30)),
+        skill_studio_core::skill_service::CancellationToken::default(),
+    )
+    .map(|outcome| outcome.record)
+    .map_err(|error| match (error.event_id, error.recovery_required) {
+        (Some(id), true) => format!("{} (event {id} requires recovery)", error.message),
+        (Some(id), false) => format!("{} (event {id} was rolled back)", error.message),
+        (None, _) => error.message,
+    })
 }
 
 // ============================================================================
@@ -1553,7 +1865,215 @@ fn resolve_recorded_fork_target(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use flate2::write::GzEncoder;
+    use flate2::Compression;
     use std::sync::Mutex;
+
+    fn append_archive_file(
+        builder: &mut tar::Builder<GzEncoder<fs::File>>,
+        path: &str,
+        bytes: &[u8],
+    ) {
+        let mut header = tar::Header::new_gnu();
+        header.set_size(bytes.len() as u64);
+        header.set_mode(0o644);
+        header.set_cksum();
+        builder.append_data(&mut header, path, bytes).unwrap();
+    }
+
+    #[cfg(unix)]
+    fn append_archive_symlink(
+        builder: &mut tar::Builder<GzEncoder<fs::File>>,
+        path: &str,
+        target: &str,
+    ) {
+        let mut header = tar::Header::new_gnu();
+        header.set_entry_type(tar::EntryType::Symlink);
+        header.set_size(0);
+        header.set_mode(0o777);
+        header.set_link_name(target).unwrap();
+        header.set_cksum();
+        builder
+            .append_data(&mut header, path, std::io::empty())
+            .unwrap();
+    }
+
+    fn write_archive(path: &Path, add: impl FnOnce(&mut tar::Builder<GzEncoder<fs::File>>)) {
+        let file = fs::File::create(path).unwrap();
+        let encoder = GzEncoder::new(file, Compression::default());
+        let mut builder = tar::Builder::new(encoder);
+        add(&mut builder);
+        builder.finish().unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn controlled_fetch_preserves_archive_symlinks_and_cleans_scratch() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let tmp = tempfile::tempdir().unwrap();
+        let archive = tmp.path().join("fixture.tar.gz");
+        write_archive(&archive, |builder| {
+            let mut header = tar::Header::new_gnu();
+            header.set_entry_type(tar::EntryType::Directory);
+            header.set_size(0);
+            header.set_mode(0o750);
+            header.set_cksum();
+            builder
+                .append_data(
+                    &mut header,
+                    "owner-repo-sha/skills/example",
+                    std::io::empty(),
+                )
+                .unwrap();
+            append_archive_file(builder, "owner-repo-sha/skills/example/SKILL.md", b"body");
+            append_archive_symlink(builder, "owner-repo-sha/skills/example/valid", "SKILL.md");
+            append_archive_symlink(builder, "owner-repo-sha/skills/example/dangling", "missing");
+        });
+        let gh = tmp.path().join("gh-fixture");
+        fs::write(&gh, format!("#!/bin/sh\ncat '{}'\n", archive.display())).unwrap();
+        fs::set_permissions(&gh, fs::Permissions::from_mode(0o755)).unwrap();
+        let cache_dir = tmp.path().join("cache");
+        let destination = tmp.path().join("staging");
+        RealUpstreamFetch {
+            gh_bin: gh,
+            cache_dir: cache_dir.clone(),
+        }
+        .fetch_skill_dir_controlled(
+            "owner/repo",
+            "skills/example",
+            "sha",
+            &destination,
+            &AddOperationControl::bounded_default(),
+        )
+        .unwrap();
+
+        assert_eq!(
+            fs::metadata(&destination).unwrap().permissions().mode() & 0o777,
+            0o750
+        );
+        assert_eq!(
+            fs::read_link(destination.join("valid")).unwrap(),
+            Path::new("SKILL.md")
+        );
+        assert_eq!(
+            fs::read_link(destination.join("dangling")).unwrap(),
+            Path::new("missing")
+        );
+        assert_eq!(
+            fs::read_to_string(destination.join("SKILL.md")).unwrap(),
+            "body"
+        );
+        assert_eq!(fs::read_dir(cache_dir).unwrap().count(), 0);
+    }
+
+    #[test]
+    fn controlled_archive_refuses_unsafe_paths() {
+        assert!(
+            archive_path_components(Path::new("../../escape"), FORK_ARCHIVE_LIMITS)
+                .unwrap_err()
+                .contains("unsafe")
+        );
+    }
+
+    #[test]
+    fn controlled_archive_limits_reject_entries_depth_and_expanded_bytes_before_writes() {
+        let tmp = tempfile::tempdir().unwrap();
+        let archive = tmp.path().join("limits.tar.gz");
+        write_archive(&archive, |builder| {
+            append_archive_file(builder, "top/first", b"1234");
+            append_archive_file(builder, "top/second", b"5678");
+        });
+        let control = AddOperationControl::bounded_default();
+        let entries = tmp.path().join("entries");
+        fs::create_dir(&entries).unwrap();
+        assert!(extract_fork_archive_with_limits(
+            &archive,
+            &entries,
+            &control,
+            ForkArchiveLimits {
+                expanded_bytes: 8192,
+                entries: 1,
+                depth: 4
+            },
+        )
+        .unwrap_err()
+        .contains("entry limit"));
+
+        let expanded = tmp.path().join("expanded");
+        fs::create_dir(&expanded).unwrap();
+        assert!(extract_fork_archive_with_limits(
+            &archive,
+            &expanded,
+            &control,
+            ForkArchiveLimits {
+                expanded_bytes: 3,
+                entries: 4,
+                depth: 4
+            },
+        )
+        .unwrap_err()
+        .contains("expanded byte limit"));
+        assert!(!expanded.join("top/first").exists());
+
+        let depth = tmp.path().join("depth");
+        fs::create_dir(&depth).unwrap();
+        assert!(extract_fork_archive_with_limits(
+            &archive,
+            &depth,
+            &control,
+            ForkArchiveLimits {
+                expanded_bytes: 8192,
+                entries: 4,
+                depth: 1
+            },
+        )
+        .unwrap_err()
+        .contains("path exceeds"));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn controlled_archive_refuses_file_through_archive_symlink() {
+        let tmp = tempfile::tempdir().unwrap();
+        let archive = tmp.path().join("link-traversal.tar.gz");
+        write_archive(&archive, |builder| {
+            append_archive_symlink(builder, "top/skills", "/tmp");
+            append_archive_file(builder, "top/skills/escape", b"no");
+        });
+        let extract = tmp.path().join("extract");
+        fs::create_dir(&extract).unwrap();
+        let error =
+            extract_fork_archive(&archive, &extract, &AddOperationControl::bounded_default())
+                .unwrap_err();
+        assert!(error.contains("non-directory"));
+        assert!(!Path::new("/tmp/escape").exists());
+    }
+
+    #[test]
+    fn fork_command_requires_one_exact_deployment_target() {
+        let exact = super::super::skill_dto::LifecycleTarget {
+            deployment_id: Some("deployment".into()),
+            owner_id: None,
+        };
+        assert!(require_exact_fork_deployment_target(&exact).is_ok());
+
+        let grouped = super::super::skill_dto::LifecycleTarget {
+            deployment_id: Some("deployment".into()),
+            owner_id: Some("owner".into()),
+        };
+        assert!(require_exact_fork_deployment_target(&grouped)
+            .unwrap_err()
+            .contains("not an owner group"));
+
+        let missing = super::super::skill_dto::LifecycleTarget {
+            deployment_id: None,
+            owner_id: None,
+        };
+        assert!(require_exact_fork_deployment_target(&missing)
+            .unwrap_err()
+            .contains("deployment_id"));
+    }
 
     /// Records every `remove`/`reinstall` call so tests can assert "called
     /// once with the right OriginTool" without shelling out to `npx`.

@@ -14,6 +14,178 @@ use std::path::Path;
 
 use serde::{Deserialize, Serialize};
 
+/// The exact selected dotagents rows that a Fork removes.  The full provider
+/// documents remain outside this value so callers can retain unknown fields.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct DotagentsDetachIntent {
+    name: String,
+    locked: toml::Value,
+    declared: toml::Value,
+}
+
+/// Upstream identity recorded by dotagents.  This identifies the requested
+/// fetch; it does not assert anything about fetched bytes.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct DotagentsForkSource {
+    source: String,
+    repo: String,
+    path: String,
+    commit: String,
+    declared_ref: Option<String>,
+}
+
+impl DotagentsForkSource {
+    pub fn source(&self) -> &str {
+        &self.source
+    }
+    pub fn repo(&self) -> &str {
+        &self.repo
+    }
+    pub fn path(&self) -> &str {
+        &self.path
+    }
+    pub fn commit(&self) -> &str {
+        &self.commit
+    }
+    pub fn declared_ref(&self) -> Option<&str> {
+        self.declared_ref.as_deref()
+    }
+}
+
+impl DotagentsDetachIntent {
+    pub fn name(&self) -> &str {
+        &self.name
+    }
+
+    pub fn from_documents(name: &str, lock: &str, manifest: &str) -> Result<Self, String> {
+        if name.is_empty() || name.contains(['/', '\\']) || matches!(name, "." | ".." | "*") {
+            return Err("Detach requires an exact skill name".into());
+        }
+        let lock: toml::Value = toml::from_str(lock).map_err(|error| error.to_string())?;
+        let manifest: toml::Value = toml::from_str(manifest).map_err(|error| error.to_string())?;
+        if lock.get("version").and_then(toml::Value::as_integer) != Some(1)
+            || manifest.get("version").and_then(toml::Value::as_integer) != Some(1)
+        {
+            return Err("Fork requires version 1 provider documents".into());
+        }
+        let locked = lock
+            .get("skills")
+            .and_then(toml::Value::as_table)
+            .and_then(|skills| skills.get(name))
+            .cloned()
+            .ok_or("Detach requires a locked skill")?;
+        let mut selected = manifest
+            .get("skills")
+            .and_then(toml::Value::as_array)
+            .ok_or("Detach requires a named manifest entry")?
+            .iter()
+            .filter(|skill| skill.get("name").and_then(toml::Value::as_str) == Some(name));
+        let declared = selected
+            .next()
+            .cloned()
+            .ok_or("Detach requires a named manifest entry")?;
+        if selected.next().is_some() {
+            return Err("Detach requires exactly one named manifest entry".into());
+        }
+        if !locked.is_table() || !declared.is_table() {
+            return Err("Selected provider rows have an invalid shape".into());
+        }
+        Ok(Self {
+            name: name.into(),
+            locked,
+            declared,
+        })
+    }
+
+    pub fn fork_source(&self) -> Result<DotagentsForkSource, String> {
+        let source = self
+            .locked
+            .get("source")
+            .and_then(toml::Value::as_str)
+            .ok_or("Fork source is missing")?;
+        let repo = github_repo_from_source(source)
+            .ok_or("Fork source must identify a GitHub repository")?;
+        let commit = self
+            .locked
+            .get("resolved_commit")
+            .and_then(toml::Value::as_str)
+            .ok_or("Fork requires an installed commit")?;
+        if !matches!(commit.len(), 40 | 64)
+            || !commit
+                .bytes()
+                .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+        {
+            return Err("Fork requires a full lowercase installed commit ID".into());
+        }
+        let path = self.locked.get("resolved_path").map_or(Ok(""), |value| {
+            value.as_str().ok_or("Fork source path must be a string")
+        })?;
+        let path = if path == "." { "" } else { path };
+        if !path.is_empty()
+            && (path.contains(['\\', '\0'])
+                || path.split('/').any(|part| matches!(part, "" | "." | "..")))
+        {
+            return Err("Fork source path must be repository-relative".into());
+        }
+        let declared_ref = self
+            .declared
+            .get("ref")
+            .map(|value| {
+                value
+                    .as_str()
+                    .map(str::to_owned)
+                    .ok_or("Declared fork ref must be a string")
+            })
+            .transpose()?;
+        Ok(DotagentsForkSource {
+            source: source.into(),
+            repo,
+            path: path.into(),
+            commit: commit.into(),
+            declared_ref,
+        })
+    }
+
+    /// Produce documents that retain every non-selected TOML value.
+    pub fn propose_document_detach(
+        &self,
+        lock: &str,
+        manifest: &str,
+    ) -> Result<(String, String), String> {
+        if Self::from_documents(&self.name, lock, manifest)? != *self {
+            return Err("Detach proposal no longer matches the selected entries".into());
+        }
+        let mut lock_edit = lock
+            .parse::<toml_edit::DocumentMut>()
+            .map_err(|error| error.to_string())?;
+        let mut manifest_edit = manifest
+            .parse::<toml_edit::DocumentMut>()
+            .map_err(|error| error.to_string())?;
+        if lock_edit.to_string() != lock || manifest_edit.to_string() != manifest {
+            return Err(
+                "Provider syntax cannot be edited without unrelated formatting changes".into(),
+            );
+        }
+        lock_edit
+            .get_mut("skills")
+            .and_then(toml_edit::Item::as_table_like_mut)
+            .ok_or("Lock skills cannot be edited as a table")?
+            .remove(&self.name);
+        let rows = manifest_edit
+            .get_mut("skills")
+            .and_then(toml_edit::Item::as_array_of_tables_mut)
+            .ok_or("Manifest skills cannot be edited as an array")?;
+        let index = rows
+            .iter()
+            .position(|row| row.get("name").and_then(toml_edit::Item::as_str) == Some(&self.name))
+            .ok_or("Detach proposal no longer matches the selected entries")?;
+        rows.remove(index);
+        Ok((lock_edit.to_string(), manifest_edit.to_string()))
+    }
+}
+
 /// One skill declared in `agents.lock` (joined with `agents.toml` for its ref).
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct DotagentsSkill {
@@ -186,6 +358,18 @@ fn parse_toml<T: for<'de> Deserialize<'de>>(content: &str, path: &Path) -> Resul
 mod tests {
     use super::*;
     use std::fs;
+    #[test]
+    fn detach_refuses_duplicate_selected_manifest_rows() {
+        let lock = "version = 1\n[skills.sample]\nsource = 'owner/repo'\n";
+        let manifest = "version = 1\n[[skills]]\nname = 'sample'\nref = 'main'\n";
+        let intent = DotagentsDetachIntent::from_documents("sample", lock, manifest).unwrap();
+        for branch in ["main", "other"] {
+            let duplicate = format!("{manifest}[[skills]]\nname = 'sample'\nref = '{branch}'\n");
+            assert!(DotagentsDetachIntent::from_documents("sample", lock, &duplicate).is_err());
+            assert!(intent.propose_document_detach(lock, &duplicate).is_err());
+        }
+    }
+
     #[test]
     fn github_repo_from_source_handles_plain_slug() {
         assert_eq!(

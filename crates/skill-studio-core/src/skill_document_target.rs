@@ -28,6 +28,39 @@ pub struct SkillRegistryTarget {
     document: SkillDocumentTarget,
 }
 
+/// Fixed dotagents provider documents.  These wrappers keep Fork publication
+/// within the same retained-document protocol as the registry.
+pub struct DotagentsLockTarget {
+    document: SkillDocumentTarget,
+}
+
+pub struct DotagentsManifestTarget {
+    document: SkillDocumentTarget,
+}
+
+macro_rules! provider_target {
+    ($type:ident, $name:literal) => {
+        impl $type {
+            pub fn bind(agents_directory: &Path) -> Result<Self, String> {
+                Ok(Self {
+                    document: SkillDocumentTarget::bind_child(agents_directory, $name)?,
+                })
+            }
+            pub fn replace(
+                &self,
+                lease: &mut crate::skill_coordination::FinalizedWriteLease<'_>,
+                expected: &[u8],
+                proposed: &[u8],
+            ) -> Result<(), DocumentWriteFailure> {
+                self.document.replace(lease, expected, proposed)
+            }
+        }
+    };
+}
+
+provider_target!(DotagentsLockTarget, "agents.lock");
+provider_target!(DotagentsManifestTarget, "agents.toml");
+
 impl SkillRegistryTarget {
     pub fn bind(authorized_agents_directory: &Path) -> Result<Self, String> {
         Ok(Self {

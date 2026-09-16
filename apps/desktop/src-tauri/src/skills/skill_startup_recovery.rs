@@ -59,6 +59,16 @@ fn recover_with_scope(
             )
             .map(|_| ());
         }
+        if row.kind == skill_studio_core::skill_fork_creation::EVENT_KIND {
+            return skill_studio_core::skill_fork_creation::recover_dotagents_fork(
+                &mut service,
+                store,
+                row,
+                super::skill_copy_recovery::removal_limits(),
+                Some(std::time::Duration::from_secs(30)),
+            )
+            .map(|_| ());
+        }
         if super::skill_copy_repair::is_copy_event(&row.kind) {
             return super::skill_copy_repair::recover(&mut service, store, row);
         }
@@ -270,5 +280,45 @@ mod tests {
         let error = recover_in_order(&store, |_| Ok(())).unwrap_err();
         assert!(error.contains("left event pending unresolved"));
         assert_eq!(store.get("pending").unwrap().unwrap().status, "pending");
+    }
+
+    #[test]
+    fn dotagents_fork_creation_is_dispatched_by_the_ordered_recovery_loop() {
+        let temp = tempfile::tempdir().unwrap();
+        let home = temp.path().join("home");
+        std::fs::create_dir_all(home.join(".agents/skills")).unwrap();
+        let store = EventStore::open(&temp.path().join("state")).unwrap();
+        store
+            .record(
+                "fork-creation",
+                EventDraft {
+                    kind: skill_studio_core::skill_fork_creation::EVENT_KIND.into(),
+                    skill: "sample".into(),
+                    harness: Some("universal".into()),
+                    scope: Some("global".into()),
+                    project_path: None,
+                    payload: serde_json::Value::Null,
+                    inverse: None,
+                    backup_dir: Some("backups/fork-creation".into()),
+                    restorable: false,
+                },
+            )
+            .unwrap();
+        let error = recover_all(
+            SkillScope {
+                home,
+                projects: vec![],
+                backing_roots: vec![],
+                plugin_ownership_roots: vec![],
+            },
+            &store,
+        )
+        .unwrap_err();
+        assert!(error.contains("fork-creation:"), "{error}");
+        assert!(!error.contains("unsupported startup recovery"), "{error}");
+        assert_eq!(
+            store.get("fork-creation").unwrap().unwrap().status,
+            "pending"
+        );
     }
 }

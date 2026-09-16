@@ -40,6 +40,131 @@ pub(crate) fn copy_dir_preserving_symlinks(src: &Path, dst: &Path) -> Result<(),
     copy_skill_tree(src, dst, SkillTreeCopyMode::PreserveSymlinks)
 }
 
+pub(crate) fn copy_dir_preserving_symlinks_controlled_bounded(
+    src: &Path,
+    dst: &Path,
+    control: &super::skill_process::AddOperationControl,
+    max_bytes: usize,
+    max_entries: usize,
+    max_depth: usize,
+) -> Result<(), String> {
+    struct Budget {
+        bytes: usize,
+        entries: usize,
+        max_bytes: usize,
+        max_entries: usize,
+        max_depth: usize,
+    }
+    fn copy(
+        src: &Path,
+        dst: &Path,
+        depth: usize,
+        budget: &mut Budget,
+        control: &super::skill_process::AddOperationControl,
+    ) -> Result<(), String> {
+        let (max_bytes, max_entries, max_depth) =
+            (budget.max_bytes, budget.max_entries, budget.max_depth);
+        control.check_message()?;
+        if depth > max_depth {
+            return Err(format!(
+                "Skill staging exceeded {max_depth} directory depth limit"
+            ));
+        }
+        fs::create_dir_all(dst).map_err(|e| format!("Failed to create {}: {e}", dst.display()))?;
+        for entry in
+            fs::read_dir(src).map_err(|e| format!("Failed to read {}: {e}", src.display()))?
+        {
+            control.check_message()?;
+            budget.entries += 1;
+            if budget.entries > max_entries {
+                return Err(format!("Skill staging exceeded {max_entries} entry limit"));
+            }
+            let entry = entry.map_err(|e| format!("Failed to read a directory entry: {e}"))?;
+            let source = entry.path();
+            let destination = dst.join(entry.file_name());
+            let kind = entry
+                .file_type()
+                .map_err(|e| format!("Failed to stat {}: {e}", source.display()))?;
+            if kind.is_symlink() {
+                create_symlink(
+                    &fs::read_link(&source)
+                        .map_err(|e| format!("Failed to read symlink {}: {e}", source.display()))?,
+                    &destination,
+                )?;
+            } else if kind.is_dir() {
+                copy(&source, &destination, depth + 1, budget, control)?;
+            } else if kind.is_file() {
+                let mut options = fs::OpenOptions::new();
+                options.read(true);
+                #[cfg(unix)]
+                {
+                    use std::os::unix::fs::OpenOptionsExt;
+                    options.custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK);
+                }
+                let mut input = options
+                    .open(&source)
+                    .map_err(|e| format!("Failed to open {}: {e}", source.display()))?;
+                if !input
+                    .metadata()
+                    .map_err(|e| format!("Failed to stat {}: {e}", source.display()))?
+                    .is_file()
+                {
+                    return Err(format!(
+                        "Refused to stage non-regular file: {}",
+                        source.display()
+                    ));
+                }
+                let mut output = fs::File::create(&destination)
+                    .map_err(|e| format!("Failed to create {}: {e}", destination.display()))?;
+                let mut buffer = [0_u8; 64 * 1024];
+                loop {
+                    control.check_message()?;
+                    let count = input
+                        .read(&mut buffer)
+                        .map_err(|e| format!("Failed to read {}: {e}", source.display()))?;
+                    if count == 0 {
+                        break;
+                    }
+                    if count > max_bytes.saturating_sub(budget.bytes) {
+                        return Err(format!("Skill staging exceeded {max_bytes} byte limit"));
+                    }
+                    output
+                        .write_all(&buffer[..count])
+                        .map_err(|e| format!("Failed to write {}: {e}", destination.display()))?;
+                    budget.bytes += count;
+                }
+                output
+                    .set_permissions(input.metadata().map_err(|e| e.to_string())?.permissions())
+                    .map_err(|e| format!("Failed to retain staging permissions: {e}"))?;
+            } else {
+                return Err(format!(
+                    "Refused to stage unsupported special file: {}",
+                    source.display()
+                ));
+            }
+        }
+        fs::set_permissions(
+            dst,
+            fs::metadata(src).map_err(|e| e.to_string())?.permissions(),
+        )
+        .map_err(|e| format!("Failed to retain staging directory permissions: {e}"))?;
+        Ok(())
+    }
+    copy(
+        src,
+        dst,
+        0,
+        &mut Budget {
+            bytes: 0,
+            entries: 0,
+            max_bytes,
+            max_entries,
+            max_depth,
+        },
+        control,
+    )
+}
+
 fn copy_skill_tree(src: &Path, dst: &Path, mode: SkillTreeCopyMode) -> Result<(), String> {
     copy_skill_tree_with_check(src, dst, mode, &mut || Ok(()))
 }
@@ -143,6 +268,53 @@ mod tests {
 
     #[cfg(unix)]
     use std::os::unix::fs::symlink;
+
+    #[test]
+    fn bounded_staging_refuses_each_limit_and_retains_link_and_mode() {
+        let temp = tempfile::tempdir().unwrap();
+        let src = temp.path().join("source");
+        fs::create_dir_all(src.join("nested")).unwrap();
+        fs::write(src.join("script"), b"body").unwrap();
+        let control = super::super::skill_process::AddOperationControl::bounded_default();
+        for (i, limits) in [(0, (0, 10, 4)), (1, (100, 0, 4)), (2, (100, 10, 0))] {
+            let destination = temp.path().join(format!("refused-{i}"));
+            assert!(copy_dir_preserving_symlinks_controlled_bounded(
+                &src,
+                &destination,
+                &control,
+                limits.0,
+                limits.1,
+                limits.2
+            )
+            .is_err());
+        }
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            fs::set_permissions(src.join("script"), fs::Permissions::from_mode(0o755)).unwrap();
+            symlink("missing", src.join("dangling")).unwrap();
+        }
+        let destination = temp.path().join("accepted");
+        copy_dir_preserving_symlinks_controlled_bounded(&src, &destination, &control, 100, 10, 4)
+            .unwrap();
+        assert_eq!(fs::read(destination.join("script")).unwrap(), b"body");
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            assert_eq!(
+                fs::metadata(destination.join("script"))
+                    .unwrap()
+                    .permissions()
+                    .mode()
+                    & 0o777,
+                0o755
+            );
+            assert_eq!(
+                fs::read_link(destination.join("dangling")).unwrap(),
+                Path::new("missing")
+            );
+        }
+    }
 
     #[test]
     fn copies_files_and_skips_symlinks() {

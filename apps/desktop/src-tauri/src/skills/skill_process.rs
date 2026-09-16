@@ -6,7 +6,7 @@
 // thread; this helper is what the background worker calls instead.
 // ============================================================================
 
-use std::io::Read;
+use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -122,6 +122,58 @@ fn drain_pipe_bounded<R: Read>(mut reader: R, sink: Arc<Mutex<Vec<u8>>>, max: us
                 }
             }
         }
+    }
+}
+
+fn drain_pipe_to_file_bounded<R: Read>(
+    mut reader: R,
+    path: &Path,
+    control: AddOperationControl,
+    max: usize,
+    failure: Arc<Mutex<Option<ControlledProcessError>>>,
+) {
+    let mut output = match std::fs::File::create(path) {
+        Ok(file) => file,
+        Err(error) => {
+            *failure.lock().expect("output failure lock") =
+                Some(ControlledProcessError::Failed(format!(
+                    "Failed to create command output {}: {error}",
+                    path.display()
+                )));
+            return;
+        }
+    };
+    let mut total = 0usize;
+    let mut chunk = [0u8; 64 * 1024];
+    loop {
+        if let Err(error) = control.check() {
+            *failure.lock().expect("output failure lock") = Some(error);
+            return;
+        }
+        let count = match reader.read(&mut chunk) {
+            Ok(0) => return,
+            Ok(count) => count,
+            Err(error) => {
+                *failure.lock().expect("output failure lock") =
+                    Some(ControlledProcessError::Failed(format!(
+                        "Failed to read command output: {error}"
+                    )));
+                return;
+            }
+        };
+        if count > max.saturating_sub(total) {
+            *failure.lock().expect("output failure lock") = Some(ControlledProcessError::Failed(
+                format!("Command output exceeded {max} byte limit"),
+            ));
+            return;
+        }
+        if let Err(error) = output.write_all(&chunk[..count]) {
+            *failure.lock().expect("output failure lock") = Some(ControlledProcessError::Failed(
+                format!("Failed to write command output {}: {error}", path.display()),
+            ));
+            return;
+        }
+        total += count;
     }
 }
 
@@ -287,7 +339,15 @@ pub fn run_controlled_command_output(
     control: &AddOperationControl,
     max_output_bytes: usize,
 ) -> Result<Vec<u8>, ControlledProcessError> {
-    run_controlled_command_io(program, args, cwd, control, max_output_bytes, None)
+    run_controlled_command_io(
+        program,
+        args,
+        cwd,
+        control,
+        max_output_bytes,
+        max_output_bytes,
+        None,
+    )
 }
 
 /// Run a command under one operation deadline with stdout redirected to a
@@ -300,12 +360,34 @@ pub fn run_controlled_command_to_file(
     output_path: &Path,
     max_output_bytes: usize,
 ) -> Result<(), ControlledProcessError> {
+    run_controlled_command_to_file_limited(
+        program,
+        args,
+        cwd,
+        control,
+        output_path,
+        max_output_bytes,
+        max_output_bytes,
+    )
+}
+
+/// Run a command with a separately bounded stdout file and diagnostic stderr.
+pub fn run_controlled_command_to_file_limited(
+    program: &Path,
+    args: &[String],
+    cwd: Option<&Path>,
+    control: &AddOperationControl,
+    output_path: &Path,
+    max_file_bytes: usize,
+    max_diagnostic_bytes: usize,
+) -> Result<(), ControlledProcessError> {
     run_controlled_command_io(
         program,
         args,
         cwd,
         control,
-        max_output_bytes,
+        max_file_bytes,
+        max_diagnostic_bytes,
         Some(output_path.to_path_buf()),
     )
     .map(|_| ())
@@ -316,26 +398,18 @@ fn run_controlled_command_io(
     args: &[String],
     cwd: Option<&Path>,
     control: &AddOperationControl,
-    max_output_bytes: usize,
+    max_stdout_bytes: usize,
+    max_stderr_bytes: usize,
     output_path: Option<PathBuf>,
 ) -> Result<Vec<u8>, ControlledProcessError> {
+    let writes_file = output_path.is_some();
     control.check()?;
     let mut command = Command::new(program);
     command
         .args(args)
         .stdin(Stdio::null())
         .stderr(Stdio::piped());
-    if let Some(path) = &output_path {
-        let file = std::fs::File::create(path).map_err(|error| {
-            ControlledProcessError::Failed(format!(
-                "Failed to create command output {}: {error}",
-                path.display()
-            ))
-        })?;
-        command.stdout(Stdio::from(file));
-    } else {
-        command.stdout(Stdio::piped());
-    }
+    command.stdout(Stdio::piped());
     if let Some(dir) = cwd {
         command.current_dir(dir);
     }
@@ -351,16 +425,33 @@ fn run_controlled_command_io(
     let pid = child.id();
     let stdout_buf = Arc::new(Mutex::new(Vec::new()));
     let stderr_buf = Arc::new(Mutex::new(Vec::new()));
+    let output_failure = Arc::new(Mutex::new(None));
     let stdout_thread = child.stdout.take().map(|stdout| {
-        let sink = Arc::clone(&stdout_buf);
-        thread::spawn(move || drain_pipe_bounded(stdout, sink, max_output_bytes))
+        if let Some(path) = output_path {
+            let failure = Arc::clone(&output_failure);
+            let control = control.clone();
+            thread::spawn(move || {
+                drain_pipe_to_file_bounded(stdout, &path, control, max_stdout_bytes, failure)
+            })
+        } else {
+            let sink = Arc::clone(&stdout_buf);
+            thread::spawn(move || drain_pipe_bounded(stdout, sink, max_stdout_bytes))
+        }
     });
     let stderr_thread = child.stderr.take().map(|stderr| {
         let sink = Arc::clone(&stderr_buf);
-        thread::spawn(move || drain_pipe_bounded(stderr, sink, max_output_bytes))
+        thread::spawn(move || drain_pipe_bounded(stderr, sink, max_stderr_bytes))
     });
 
     let mut outcome = loop {
+        if let Some(error) = output_failure
+            .lock()
+            .ok()
+            .and_then(|mut guard| guard.take())
+        {
+            terminate_and_reap(&mut child, pid);
+            break Err(error);
+        }
         match child.try_wait() {
             Ok(Some(status)) if status.success() => {
                 break Ok(stdout_buf
@@ -405,10 +496,39 @@ fn run_controlled_command_io(
         }
     };
     if let Some(handle) = stdout_thread {
-        join_finished_reader(handle);
+        if writes_file {
+            while !handle.is_finished() && outcome.is_ok() {
+                if let Err(error) = control.check() {
+                    terminate_and_reap(&mut child, pid);
+                    outcome = Err(error);
+                } else {
+                    thread::sleep(Duration::from_millis(5));
+                }
+            }
+            if handle.is_finished() {
+                if handle.join().is_err() {
+                    outcome = Err(ControlledProcessError::Failed(
+                        "Command output writer panicked".into(),
+                    ));
+                }
+            } else {
+                join_finished_reader(handle);
+            }
+        } else {
+            join_finished_reader(handle);
+        }
     }
     if let Some(handle) = stderr_thread {
         join_finished_reader(handle);
+    }
+    if outcome.is_ok() {
+        if let Some(error) = output_failure
+            .lock()
+            .ok()
+            .and_then(|mut guard| guard.take())
+        {
+            outcome = Err(error);
+        }
     }
     if outcome.is_ok() {
         outcome = Ok(stdout_buf
@@ -449,7 +569,45 @@ pub fn run_controlled_npx_with_control(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::fs;
     use std::sync::atomic::AtomicBool;
+
+    #[cfg(unix)]
+    #[test]
+    fn bounded_file_output_rejects_a_fast_successful_overflow() {
+        let tmp = tempfile::tempdir().unwrap();
+        let output = tmp.path().join("output");
+        let error = run_controlled_command_to_file_limited(
+            Path::new("sh"),
+            &["-c".to_string(), "head -c 2048 /dev/zero".to_string()],
+            None,
+            &AddOperationControl::bounded_default(),
+            &output,
+            1024,
+            MAX_PROCESS_OUTPUT_BYTES,
+        )
+        .unwrap_err();
+        assert!(error.into_message().contains("exceeded 1024 byte limit"));
+        assert!(fs::metadata(output).unwrap().len() <= 1024);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn bounded_file_output_waits_for_the_complete_writer_after_child_exit() {
+        let tmp = tempfile::tempdir().unwrap();
+        let output = tmp.path().join("output");
+        run_controlled_command_to_file_limited(
+            Path::new("sh"),
+            &["-c".into(), "(sleep 0.35; printf complete) & exit 0".into()],
+            None,
+            &AddOperationControl::new(Arc::new(AtomicBool::new(false)), Duration::from_secs(2)),
+            &output,
+            1024,
+            MAX_PROCESS_OUTPUT_BYTES,
+        )
+        .unwrap();
+        assert_eq!(fs::read(output).unwrap(), b"complete");
+    }
 
     #[test]
     fn cancelled_before_spawn_does_not_start_a_child() {

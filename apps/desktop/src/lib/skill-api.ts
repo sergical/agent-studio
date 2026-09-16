@@ -231,7 +231,11 @@ export async function setPreferredEditor(appName: string | null): Promise<void> 
  * dotagents wildcard entry.
  */
 export async function forkSkill(target: LifecycleTarget): Promise<ForkRecord> {
-  return invoke("fork_skill", { target });
+  try {
+    return await invoke("fork_skill", { target });
+  } catch (cause) {
+    throw cause instanceof Error ? cause : new Error(errorMessage(cause, "Fork failed"));
+  }
 }
 
 /**

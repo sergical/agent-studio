@@ -513,6 +513,48 @@ impl FinalizedWriteLease<'_> {
         }
     }
 
+    pub(crate) fn read_ownership_registry(
+        &self,
+        path: &Path,
+        limit: usize,
+    ) -> Result<Option<Vec<u8>>, String> {
+        self.revalidate().map_err(|error| error.to_string())?;
+        let absent = self
+            .ownership
+            .as_ref()
+            .ok_or("Lease has no retained ownership inputs")?
+            .registry_was_absent(path)?;
+        let bytes = if absent {
+            None
+        } else {
+            Some(self.read(path, limit).map_err(|error| error.to_string())?)
+        };
+        self.revalidate().map_err(|error| error.to_string())?;
+        Ok(bytes)
+    }
+
+    pub(crate) fn read_current_ownership_registry(
+        &self,
+        path: &Path,
+        limit: usize,
+    ) -> Result<Option<Vec<u8>>, String> {
+        self.revalidate().map_err(|error| error.to_string())?;
+        let bytes = if let Some(receipt) = self.published.get(path) {
+            Some(receipt.read(limit)?)
+        } else if self
+            .ownership
+            .as_ref()
+            .ok_or("Lease has no retained ownership inputs")?
+            .registry_was_absent(path)?
+        {
+            None
+        } else {
+            Some(self.read(path, limit).map_err(|error| error.to_string())?)
+        };
+        self.revalidate().map_err(|error| error.to_string())?;
+        Ok(bytes)
+    }
+
     pub(crate) fn fold_resource(
         &self,
         path: &Path,
