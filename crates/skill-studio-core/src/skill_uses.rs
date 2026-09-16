@@ -12,10 +12,22 @@ use serde::{Deserialize, Serialize};
 
 use crate::discovery_sources::DiscoverySources;
 
+mod codex;
 mod opencode;
+pub use codex::{codex_skill_name_from_package, parse_codex_uses};
 pub use opencode::{
     parse_opencode_message, parse_opencode_part, OpenCodeMessageRow, OpenCodePartRow,
 };
+
+/// Facts a transcript states once, in a header line, that later lines need.
+/// The host keeps one per transcript file between refreshes.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TranscriptContext {
+    /// Session id from the header.
+    pub session: Option<String>,
+    /// Working folder from the header.
+    pub project_path: Option<String>,
+}
 
 /// How a skill use started.
 #[derive(
@@ -305,21 +317,102 @@ pub fn skill_name_from_skill_md_path(path: &str) -> Option<&str> {
     }
 }
 
+/// True when `command` redirects into a path ending `SKILL.md` (`>` or
+/// `>>`), so [`skill_names_read_by_shell`] treats the whole command as a
+/// write rather than a read.
+fn redirects_into_skill_md(command: &str) -> bool {
+    let stop = |c: char| c.is_whitespace() || matches!(c, ';' | '&' | '|' | '(' | ')');
+    let mut search_from = 0;
+    while let Some(rel) = command[search_from..].find('>') {
+        let gt = search_from + rel;
+        let mut after = gt + 1;
+        if command[after..].starts_with('>') {
+            after += 1;
+        }
+        after += command[after..]
+            .find(|c: char| c != ' ' && c != '\t')
+            .unwrap_or(command[after..].len());
+        let rest = &command[after..];
+        let end = rest.find(stop).unwrap_or(rest.len());
+        let token = rest[..end].trim_matches(|c| c == '\'' || c == '"' || c == '`');
+        if token.ends_with("SKILL.md") {
+            return true;
+        }
+        search_from = gt + 1;
+    }
+    false
+}
+
+/// Names of the skills whose `SKILL.md` a shell command prints: the command
+/// is split into `;`/`&`/`|`/newline segments (covers `&&`, `||`, `2>&1`),
+/// and a segment counts as a read when its first word's verb (the text
+/// after the last `/`) is `cat`, `head`, `tail`, `nl`, `less`, `more`, `bat`,
+/// or `sed` with a `-n`/`--quiet`/`--silent` argument and no `-i*`/
+/// `--in-place` argument. A command that redirects into a `SKILL.md`
+/// (`>`/`>>`) is a write, not a read, and yields nothing at all.
+pub fn skill_names_read_by_shell(command: &str) -> Vec<&str> {
+    if redirects_into_skill_md(command) {
+        return Vec::new();
+    }
+    let mut out: Vec<&str> = Vec::new();
+    for segment in command.split(['\n', ';', '&', '|']) {
+        let words: Vec<&str> = segment
+            .split_ascii_whitespace()
+            .map(|w| w.trim_matches(|c| c == '\'' || c == '"' || c == '`' || c == '(' || c == ')'))
+            .filter(|w| !w.is_empty())
+            .collect();
+        let Some(first) = words.first() else {
+            continue;
+        };
+        let verb = first.rsplit('/').next().unwrap_or(first);
+        let is_read = match verb {
+            "cat" | "head" | "tail" | "nl" | "less" | "more" | "bat" => true,
+            "sed" => {
+                let has_quiet = words[1..]
+                    .iter()
+                    .any(|w| matches!(*w, "-n" | "--quiet" | "--silent"));
+                let has_in_place = words[1..]
+                    .iter()
+                    .any(|w| w.starts_with("-i") || w.starts_with("--in-place"));
+                has_quiet && !has_in_place
+            }
+            _ => false,
+        };
+        if !is_read {
+            continue;
+        }
+        for word in &words[1..] {
+            if let Some(name) = skill_name_from_skill_md_path(word) {
+                if !out.contains(&name) {
+                    out.push(name);
+                }
+            }
+        }
+    }
+    out
+}
+
 /// Fast-path substrings a line must contain before it's worth a full JSON
-/// parse: a `Skill` tool_use, or a typed command block.
+/// parse: a `Skill` tool_use, a typed command block, or a `SKILL.md` path
+/// (a `Read` or `Bash` file read).
 const SKILL_TOOL_MARKER: &str = "\"name\":\"Skill\"";
 const COMMAND_MARKER: &str = "<command-name>";
+const SKILL_MD_MARKER: &str = "SKILL.md";
 
 /// Parses one Claude Code transcript's text (newline-delimited JSON) into
-/// skill uses: an `Agent` use per `Skill` tool_use block, and a `User` use
-/// per typed slash command line. Never panics: a malformed line, a missing
-/// timestamp, or an unrecognized shape is skipped rather than failing the
-/// whole file.
+/// skill uses: an `Agent` use per `Skill` tool_use block, a `User` use per
+/// typed slash command line, and a `FileRead` use per `Read` or `Bash`
+/// tool_use block that reads a skill's `SKILL.md` directly. Never panics: a
+/// malformed line, a missing timestamp, or an unrecognized shape is skipped
+/// rather than failing the whole file.
 pub fn parse_claude_code_uses(text: &str) -> Vec<SkillInvocation> {
     let mut out = Vec::new();
 
     for line in text.lines() {
-        if !line.contains(SKILL_TOOL_MARKER) && !line.contains(COMMAND_MARKER) {
+        if !line.contains(SKILL_TOOL_MARKER)
+            && !line.contains(COMMAND_MARKER)
+            && !line.contains(SKILL_MD_MARKER)
+        {
             continue;
         }
         let Ok(record) = serde_json::from_str::<serde_json::Value>(line) else {
@@ -342,6 +435,16 @@ pub fn parse_claude_code_uses(text: &str) -> Vec<SkillInvocation> {
             .map(|s| s.to_string());
 
         let record_type = record.get("type").and_then(|v| v.as_str());
+        let mut push = |skill: &str, trigger: SkillTrigger| {
+            out.push(SkillInvocation {
+                skill: skill.to_string(),
+                harness: crate::identity::AgentId::CLAUDE_CODE.to_string(),
+                trigger,
+                at,
+                project_path: project_path.clone(),
+                session: session.clone(),
+            });
+        };
 
         if record_type == Some("assistant") {
             let Some(content) = record
@@ -355,24 +458,42 @@ pub fn parse_claude_code_uses(text: &str) -> Vec<SkillInvocation> {
                 if block.get("type").and_then(|v| v.as_str()) != Some("tool_use") {
                     continue;
                 }
-                if block.get("name").and_then(|v| v.as_str()) != Some("Skill") {
-                    continue;
+                let tool_name = block.get("name").and_then(|v| v.as_str());
+                let input = block.get("input");
+                match tool_name {
+                    Some("Skill") => {
+                        let Some(skill) =
+                            input.and_then(|i| i.get("skill")).and_then(|v| v.as_str())
+                        else {
+                            continue;
+                        };
+                        push(skill, SkillTrigger::Agent);
+                    }
+                    Some("Read") => {
+                        let Some(file_path) = input
+                            .and_then(|i| i.get("file_path"))
+                            .and_then(|v| v.as_str())
+                        else {
+                            continue;
+                        };
+                        let Some(name) = skill_name_from_skill_md_path(file_path) else {
+                            continue;
+                        };
+                        push(name, SkillTrigger::FileRead);
+                    }
+                    Some("Bash") => {
+                        let Some(command) = input
+                            .and_then(|i| i.get("command"))
+                            .and_then(|v| v.as_str())
+                        else {
+                            continue;
+                        };
+                        for name in skill_names_read_by_shell(command) {
+                            push(name, SkillTrigger::FileRead);
+                        }
+                    }
+                    _ => {}
                 }
-                let Some(skill) = block
-                    .get("input")
-                    .and_then(|i| i.get("skill"))
-                    .and_then(|v| v.as_str())
-                else {
-                    continue;
-                };
-                out.push(SkillInvocation {
-                    skill: skill.to_string(),
-                    harness: crate::identity::AgentId::CLAUDE_CODE.to_string(),
-                    trigger: SkillTrigger::Agent,
-                    at,
-                    project_path: project_path.clone(),
-                    session: session.clone(),
-                });
             }
         } else if record_type == Some("user") {
             if record.get("isMeta").and_then(|v| v.as_bool()) == Some(true) {
@@ -403,14 +524,7 @@ pub fn parse_claude_code_uses(text: &str) -> Vec<SkillInvocation> {
             if name.is_empty() {
                 continue;
             }
-            out.push(SkillInvocation {
-                skill: name.to_string(),
-                harness: crate::identity::AgentId::CLAUDE_CODE.to_string(),
-                trigger: SkillTrigger::User,
-                at,
-                project_path: project_path.clone(),
-                session: session.clone(),
-            });
+            push(name, SkillTrigger::User);
         }
     }
 
@@ -469,6 +583,50 @@ mod tests {
         );
     }
 
+    #[test]
+    fn skill_names_read_by_shell_rules() {
+        assert_eq!(
+            skill_names_read_by_shell("sed -n '1,200p' /u/.codex/skills/foo/SKILL.md"),
+            vec!["foo"]
+        );
+        assert_eq!(
+            skill_names_read_by_shell("cat ~/.claude/skills/foo/SKILL.md | head"),
+            vec!["foo"]
+        );
+        assert_eq!(
+            skill_names_read_by_shell(r#"/bin/cat "/x/skills/foo/SKILL.md""#),
+            vec!["foo"]
+        );
+        assert_eq!(
+            skill_names_read_by_shell("head -n 50 /x/skills/foo/SKILL.md 2>&1"),
+            vec!["foo"]
+        );
+        assert!(skill_names_read_by_shell("wc -l /x/skills/foo/SKILL.md").is_empty());
+        assert!(skill_names_read_by_shell("sed -i '' 's/a/b/' /x/skills/foo/SKILL.md").is_empty());
+        assert!(skill_names_read_by_shell("sed 's/a/b/' /x/skills/foo/SKILL.md").is_empty());
+        assert_eq!(
+            skill_names_read_by_shell("ls /x/skills/foo/SKILL.md && cat /x/skills/bar/SKILL.md"),
+            vec!["bar"]
+        );
+        assert_eq!(
+            skill_names_read_by_shell(
+                "cat /x/skills/foo/SKILL.md /y/skills/bar/SKILL.md; nl /x/skills/foo/SKILL.md"
+            ),
+            vec!["foo", "bar"]
+        );
+        assert!(skill_names_read_by_shell(
+            "printf x > /x/skills/foo/SKILL.md; cat /x/skills/foo/SKILL.md"
+        )
+        .is_empty());
+        assert!(skill_names_read_by_shell(r#"cat a >> "/x/skills/foo/SKILL.md""#).is_empty());
+        assert!(skill_names_read_by_shell("cat /x/foo/SKILL.md").is_empty());
+        assert_eq!(
+            skill_names_read_by_shell("(cd /x && cat skills/foo/SKILL.md)"),
+            vec!["foo"]
+        );
+        assert!(skill_names_read_by_shell("").is_empty());
+    }
+
     fn filter<'a>(
         known_skills: &'a BTreeSet<String>,
         sources: &'a DiscoverySources,
@@ -525,6 +683,61 @@ mod tests {
     fn command_name_mentioned_mid_text_gives_nothing() {
         let text = r#"{"type":"user","timestamp":"2026-08-01T12:00:00Z","message":{"content":"just chatting about <command-name>/deploy</command-name> today"}}"#;
         assert!(parse_claude_code_uses(text).is_empty());
+    }
+
+    fn read_tool_use_line(file_path: &str, timestamp: &str, session: &str) -> String {
+        format!(
+            r#"{{"type":"assistant","timestamp":"{timestamp}","sessionId":"{session}","message":{{"content":[{{"type":"tool_use","name":"Read","input":{{"file_path":"{file_path}"}}}}]}}}}"#
+        )
+    }
+
+    fn bash_tool_use_line(command: &str, timestamp: &str, session: &str) -> String {
+        format!(
+            r#"{{"type":"assistant","timestamp":"{timestamp}","sessionId":"{session}","message":{{"content":[{{"type":"tool_use","name":"Bash","input":{{"command":"{command}"}}}}]}}}}"#
+        )
+    }
+
+    #[test]
+    fn read_tool_use_under_a_skills_root_gives_a_file_read() {
+        let text = read_tool_use_line(
+            "/Users/me/.claude/skills/foo/SKILL.md",
+            "2026-08-01T12:00:00Z",
+            "sess-1",
+        );
+        let uses = parse_claude_code_uses(&text);
+        assert_eq!(uses.len(), 1);
+        assert_eq!(uses[0].skill, "foo");
+        assert_eq!(uses[0].trigger, SkillTrigger::FileRead);
+        assert_eq!(uses[0].session.as_deref(), Some("sess-1"));
+    }
+
+    #[test]
+    fn read_tool_use_outside_a_skills_root_gives_nothing() {
+        let text = read_tool_use_line("/Users/me/notes/SKILL.md", "2026-08-01T12:00:00Z", "s1");
+        assert!(parse_claude_code_uses(&text).is_empty());
+    }
+
+    #[test]
+    fn bash_cat_of_a_skill_md_gives_a_file_read() {
+        let text = bash_tool_use_line(
+            "cat /Users/me/.claude/skills/foo/SKILL.md",
+            "2026-08-01T12:00:00Z",
+            "sess-1",
+        );
+        let uses = parse_claude_code_uses(&text);
+        assert_eq!(uses.len(), 1);
+        assert_eq!(uses[0].skill, "foo");
+        assert_eq!(uses[0].trigger, SkillTrigger::FileRead);
+    }
+
+    #[test]
+    fn bash_wc_of_a_skill_md_gives_nothing() {
+        let text = bash_tool_use_line(
+            "wc -l /Users/me/.claude/skills/foo/SKILL.md",
+            "2026-08-01T12:00:00Z",
+            "s1",
+        );
+        assert!(parse_claude_code_uses(&text).is_empty());
     }
 
     #[test]

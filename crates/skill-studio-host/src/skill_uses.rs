@@ -1,11 +1,18 @@
 //! Skill-use index: parses each enabled harness's own session history for
 //! skill uses and keeps a per-source cache so a refresh only re-reads what
 //! changed. Two kinds of source exist: append-only JSONL transcripts,
-//! resumed from a byte offset (Claude Code), and SQLite databases, re-queried
-//! from a `time_updated` watermark (OpenCode). Read discipline mirrors
-//! `discovery.rs`: only regular files are opened, each transcript line is
-//! capped so a pathological line can't be buffered in full, and a file/run
-//! byte budget bounds worst-case I/O per refresh.
+//! resumed from a byte offset (Claude Code, Codex), and SQLite databases,
+//! re-queried from a `time_updated` watermark (OpenCode). Read discipline
+//! mirrors `discovery.rs`: only regular files are opened, each transcript
+//! line is capped so a pathological line can't be buffered in full, and a
+//! file/run byte budget bounds worst-case I/O per refresh.
+//!
+//! A transcript source's `parse` function takes a
+//! [`TranscriptContext`](skill_studio_core::skill_uses::TranscriptContext),
+//! carried across lines and (for a resumed, not reparsed, file) across
+//! refreshes - Codex states its session id and project path once, in a
+//! header line, rather than repeating them on every line the way Claude Code
+//! does.
 //!
 //! `SOURCES` is the table of harnesses this index reads from. Adding a
 //! harness later means adding a row, not reworking `refresh`.
@@ -22,8 +29,8 @@ use skill_studio_core::discovery_sources::DiscoverySources;
 use skill_studio_core::identity::AgentId;
 use skill_studio_core::skill_uses::parse_claude_code_uses;
 use skill_studio_core::skill_uses::{
-    skill_heatmap, skill_stats, InvocationHeatmap, SkillInvocation, SkillInvocationStats,
-    SkillUseFilter,
+    parse_codex_uses, skill_heatmap, skill_stats, InvocationHeatmap, SkillInvocation,
+    SkillInvocationStats, SkillUseFilter, TranscriptContext,
 };
 
 use crate::opencode_db::{opencode_databases, OPENCODE_DATA_ROOT};
@@ -85,6 +92,13 @@ struct IndexedTranscript {
     /// alone can't tell the difference.
     #[serde(default)]
     tail_sample: Vec<u8>,
+    /// State the transcript's `parse` function carries across lines (see the
+    /// module doc). Resumed alongside `parsed_bytes` when a refresh appends;
+    /// reset to [`TranscriptContext::default`] whenever the file is
+    /// reparsed from byte 0, so a rewritten file's uses never carry a stale
+    /// session or project path.
+    #[serde(default)]
+    context: TranscriptContext,
 }
 
 /// How many bytes of a transcript's already-parsed tail are kept for
@@ -177,7 +191,7 @@ enum UseReader {
     /// offset.
     Transcripts {
         list: fn(&Path) -> SourceListing,
-        parse: fn(&str) -> Vec<SkillInvocation>,
+        parse: fn(&str, &mut TranscriptContext) -> Vec<SkillInvocation>,
     },
     /// SQLite databases, re-queried from a `time_updated` watermark.
     Databases {
@@ -257,21 +271,36 @@ fn claude_code_root(home: &Path) -> PathBuf {
 
 /// Lists Claude Code's transcripts: `<home>/.claude/projects/<project>/*.jsonl`
 /// and `<home>/.claude/projects/<project>/<session>/subagents/*.jsonl`. A
-/// failed listing of the `projects` root or of a `<project>` directory marks
-/// the listing incomplete; a missing `subagents` directory is normal (most
-/// sessions have no subagents) and does not.
+/// missing `projects` root is normal (Claude Code was never installed) and
+/// yields an empty, complete listing; any other failure to list it, or a
+/// failed listing of a `<project>` directory, marks the listing incomplete.
+/// A missing `subagents` directory is normal (most sessions have no
+/// subagents) and does not.
 fn list_claude_code_transcripts(home: &Path) -> SourceListing {
     let mut files = Vec::new();
     let mut listed_dirs = BTreeSet::new();
     let mut incomplete = false;
 
     let projects_dir = claude_code_root(home);
-    let Ok(project_dirs) = fs::read_dir(&projects_dir) else {
-        return SourceListing {
-            files,
-            listed_dirs,
-            incomplete: true,
-        };
+    let project_dirs = match fs::read_dir(&projects_dir) {
+        Ok(dirs) => dirs,
+        // No Claude Code on this machine: an empty listing, not a failure,
+        // so the desktop refresh loop (which re-runs while `incomplete` is
+        // set) doesn't spin forever for a user who never installed it.
+        Err(e) if e.kind() == io::ErrorKind::NotFound => {
+            return SourceListing {
+                files,
+                listed_dirs,
+                incomplete: false,
+            };
+        }
+        Err(_) => {
+            return SourceListing {
+                files,
+                listed_dirs,
+                incomplete: true,
+            };
+        }
     };
     for project_dir in project_dirs.flatten() {
         let dir = project_dir.path();
@@ -316,8 +345,99 @@ fn list_claude_code_transcripts(home: &Path) -> SourceListing {
     }
 }
 
+/// Adapts [`parse_claude_code_uses`] to the [`UseReader::Transcripts`]
+/// `parse` signature. Claude Code repeats its session id and cwd on every
+/// record, so unlike Codex it needs no [`TranscriptContext`].
+fn parse_claude_code_uses_with_context(
+    text: &str,
+    _context: &mut TranscriptContext,
+) -> Vec<SkillInvocation> {
+    parse_claude_code_uses(text)
+}
+
 fn opencode_root(home: &Path) -> PathBuf {
     home.join(OPENCODE_DATA_ROOT)
+}
+
+/// Codex keeps its own directory, not shared with OpenCode's.
+const CODEX_ROOT: &str = ".codex";
+/// Codex's live rollouts.
+const CODEX_SESSIONS_DIR: &str = ".codex/sessions";
+/// Rollouts Codex has moved aside (still readable, never appended to again).
+const CODEX_ARCHIVED_SESSIONS_DIR: &str = ".codex/archived_sessions";
+
+fn codex_root(home: &Path) -> PathBuf {
+    home.join(CODEX_ROOT)
+}
+
+/// How many directory levels [`list_codex_rollouts`] descends below each of
+/// `.codex/sessions` and `.codex/archived_sessions`: enough for the dated
+/// `YYYY/MM/DD` layout with room to spare, without walking the rest of
+/// `.codex` (plugin caches, logs, state databases - all churn constantly and
+/// hold no skill-use signal) should a rollout ever nest deeper than expected.
+const CODEX_WALK_DEPTH: u32 = 4;
+
+/// Lists Codex's rollout transcripts: `<home>/.codex/sessions/**/*.jsonl`
+/// and `<home>/.codex/archived_sessions/**/*.jsonl`, walked to
+/// [`CODEX_WALK_DEPTH`] levels below each. A missing top dir is normal
+/// (Codex was never installed, or has archived nothing yet); any other
+/// failure to list a directory marks the listing incomplete.
+fn list_codex_rollouts(home: &Path) -> SourceListing {
+    let mut files = Vec::new();
+    let mut listed_dirs = BTreeSet::new();
+    let mut incomplete = false;
+
+    for top in [CODEX_SESSIONS_DIR, CODEX_ARCHIVED_SESSIONS_DIR] {
+        walk_codex_dir(
+            &home.join(top),
+            CODEX_WALK_DEPTH,
+            &mut files,
+            &mut listed_dirs,
+            &mut incomplete,
+        );
+    }
+
+    SourceListing {
+        files,
+        listed_dirs,
+        incomplete,
+    }
+}
+
+/// One directory's share of [`list_codex_rollouts`]: lists `dir`, collects
+/// its `.jsonl` files, and (while `depth_remaining` allows) recurses into
+/// its real (non-symlink) subdirectories.
+fn walk_codex_dir(
+    dir: &Path,
+    depth_remaining: u32,
+    files: &mut Vec<PathBuf>,
+    listed_dirs: &mut BTreeSet<PathBuf>,
+    incomplete: &mut bool,
+) {
+    let entries = match fs::read_dir(dir) {
+        Ok(entries) => entries,
+        Err(e) if e.kind() == io::ErrorKind::NotFound => return,
+        Err(_) => {
+            *incomplete = true;
+            return;
+        }
+    };
+    listed_dirs.insert(dir.to_path_buf());
+
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if is_jsonl(&path) {
+            files.push(path);
+            continue;
+        }
+        if depth_remaining == 0 {
+            continue;
+        }
+        let is_real_dir = fs::symlink_metadata(&path).is_ok_and(|m| m.file_type().is_dir());
+        if is_real_dir {
+            walk_codex_dir(&path, depth_remaining - 1, files, listed_dirs, incomplete);
+        }
+    }
 }
 
 /// Every harness this index reads uses from, in the order they're processed.
@@ -327,13 +447,33 @@ const SOURCES: &[UseSource] = &[
         root: claude_code_root,
         reader: UseReader::Transcripts {
             list: list_claude_code_transcripts,
-            parse: parse_claude_code_uses,
+            parse: parse_claude_code_uses_with_context,
         },
         watch: &[SourceWatch {
             dir: CLAUDE_PROJECTS_ROOT,
             recursive: true,
             accepts: any_name,
         }],
+    },
+    UseSource {
+        harness: AgentId::CODEX,
+        root: codex_root,
+        reader: UseReader::Transcripts {
+            list: list_codex_rollouts,
+            parse: parse_codex_uses,
+        },
+        watch: &[
+            SourceWatch {
+                dir: CODEX_SESSIONS_DIR,
+                recursive: true,
+                accepts: any_name,
+            },
+            SourceWatch {
+                dir: CODEX_ARCHIVED_SESSIONS_DIR,
+                recursive: true,
+                accepts: any_name,
+            },
+        ],
     },
     UseSource {
         harness: AgentId::OPEN_CODE,
@@ -536,7 +676,7 @@ impl SkillInvocationIndex {
         home: &Path,
         source: &UseSource,
         list: fn(&Path) -> SourceListing,
-        parse: fn(&str) -> Vec<SkillInvocation>,
+        parse: fn(&str, &mut TranscriptContext) -> Vec<SkillInvocation>,
         run_budget: &mut u64,
         report: &mut SkillUseRefreshReport,
     ) {
@@ -557,7 +697,8 @@ impl SkillInvocationIndex {
             let size = meta.len();
             let modified = meta.modified().unwrap_or(SystemTime::UNIX_EPOCH);
 
-            let (start_offset, mut uses, skip_to_newline) = match self.files.get(&path) {
+            let (start_offset, mut uses, skip_to_newline, mut context) = match self.files.get(&path)
+            {
                 Some(existing)
                     if existing.size == size
                         && existing.modified == modified
@@ -570,9 +711,11 @@ impl SkillInvocationIndex {
                     // at exactly the old length. Reparse from scratch
                     // rather than trusting a byte-for-byte-identical-
                     // looking cache entry.
-                    (0, Vec::new(), false)
+                    (0, Vec::new(), false, TranscriptContext::default())
                 }
-                Some(existing) if size < existing.parsed_bytes => (0, Vec::new(), false),
+                Some(existing) if size < existing.parsed_bytes => {
+                    (0, Vec::new(), false, TranscriptContext::default())
+                }
                 Some(existing) => {
                     let current_tail = read_tail_sample(&path, existing.parsed_bytes);
                     if current_tail != existing.tail_sample {
@@ -580,16 +723,17 @@ impl SkillInvocationIndex {
                         // longer match what we parsed last time: this
                         // wasn't a plain append, so the cached uses may
                         // be stale.
-                        (0, Vec::new(), false)
+                        (0, Vec::new(), false, TranscriptContext::default())
                     } else {
                         (
                             existing.parsed_bytes,
                             existing.uses.clone(),
                             existing.skipping_line,
+                            existing.context.clone(),
                         )
                     }
                 }
-                None => (0, Vec::new(), false),
+                None => (0, Vec::new(), false, TranscriptContext::default()),
             };
 
             if *run_budget == 0 {
@@ -608,7 +752,7 @@ impl SkillInvocationIndex {
                 continue;
             };
             let parsed_bytes = start_offset + consumed;
-            uses.extend(parse(&text));
+            uses.extend(parse(&text, &mut context));
             if parsed_bytes < size {
                 report.incomplete = true;
             }
@@ -625,6 +769,7 @@ impl SkillInvocationIndex {
                     uses,
                     skipping_line,
                     tail_sample,
+                    context,
                 },
             );
         }
@@ -1021,7 +1166,7 @@ mod tests {
     }
 
     #[test]
-    fn unreadable_projects_dir_keeps_cached_files_and_reports_incomplete() {
+    fn missing_projects_dir_keeps_cached_files_and_is_not_incomplete() {
         let tmp = tempfile::tempdir().unwrap();
         let home = tmp.path();
         write_transcript(
@@ -1037,14 +1182,37 @@ mod tests {
         index.refresh(home, &sources);
         assert_eq!(stats(&index, &known_skills, &sources).len(), 1);
 
-        // Point at a home whose `.claude/projects` doesn't exist: the
-        // listing of the root itself fails.
+        // Point at a home whose `.claude/projects` doesn't exist: a user
+        // without Claude Code must not be stuck `incomplete` forever (that
+        // drives the desktop's 5s rebuild loop).
         let missing_home = tmp.path().join("missing-home");
         fs::create_dir_all(&missing_home).unwrap();
         let report = index.refresh(&missing_home, &sources);
-        assert!(report.incomplete);
+        assert!(!report.incomplete);
         assert_eq!(report.files_dropped, 0);
         assert_eq!(stats(&index, &known_skills, &sources).len(), 1);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn permission_denied_projects_dir_reports_incomplete() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let tmp = tempfile::tempdir().unwrap();
+        let home = tmp.path();
+        let projects_dir = home.join(CLAUDE_PROJECTS_ROOT);
+        fs::create_dir_all(&projects_dir).unwrap();
+        fs::set_permissions(&projects_dir, fs::Permissions::from_mode(0o000)).unwrap();
+
+        let mut index = SkillInvocationIndex::default();
+        let sources = DiscoverySources::default();
+        let report = index.refresh(home, &sources);
+
+        // Restore permissions so the tempdir can be cleaned up regardless of
+        // the assertion outcome.
+        fs::set_permissions(&projects_dir, fs::Permissions::from_mode(0o755)).unwrap();
+
+        assert!(report.incomplete);
     }
 
     #[test]
@@ -1566,6 +1734,14 @@ mod tests {
             path: home.join(OPENCODE_DATA_ROOT),
             recursive: false,
         }));
+        assert!(paths.contains(&SkillUseWatchPath {
+            path: home.join(CODEX_SESSIONS_DIR),
+            recursive: true,
+        }));
+        assert!(paths.contains(&SkillUseWatchPath {
+            path: home.join(CODEX_ARCHIVED_SESSIONS_DIR),
+            recursive: true,
+        }));
     }
 
     #[test]
@@ -1604,6 +1780,298 @@ mod tests {
             &home,
             &home.join(".claude/settings.json")
         ));
+
+        assert!(is_skill_use_change(
+            &home,
+            &home.join(".codex/sessions/2026/09/16/rollout-x.jsonl"),
+        ));
+        assert!(is_skill_use_change(
+            &home,
+            &home.join(".codex/archived_sessions/rollout-x.jsonl"),
+        ));
+        assert!(!is_skill_use_change(
+            &home,
+            &home.join(".codex/config.toml")
+        ));
+        assert!(!is_skill_use_change(
+            &home,
+            &home.join(".codex/log/codex-tui.log"),
+        ));
+    }
+
+    mod codex_rollouts {
+        use super::*;
+
+        fn rollout_line(record_type: &str, timestamp: &str, payload: &str) -> String {
+            format!(r#"{{"type":"{record_type}","timestamp":"{timestamp}","payload":{payload}}}"#)
+        }
+
+        fn session_meta_line(id: &str, cwd: &str) -> String {
+            format!(r#"{{"type":"session_meta","payload":{{"id":"{id}","cwd":"{cwd}"}}}}"#)
+        }
+
+        fn skill_block_line(timestamp: &str, name: &str) -> String {
+            rollout_line(
+                "response_item",
+                timestamp,
+                &format!(
+                    r#"{{"type":"message","role":"user","content":[{{"type":"input_text","text":"<skill>\n<name>{name}</name>\n<path>/u/.codex/skills/{name}/SKILL.md</path>\n"}}]}}"#
+                ),
+            )
+        }
+
+        fn exec_cat_line(timestamp: &str, path: &str) -> String {
+            rollout_line(
+                "response_item",
+                timestamp,
+                &format!(
+                    r#"{{"type":"custom_tool_call","name":"exec","input":"tools.exec_command({{\"cmd\": \"cat {path}\"}})"}}"#
+                ),
+            )
+        }
+
+        fn write_rollout(dir: &Path, name: &str, lines: &[String]) -> PathBuf {
+            fs::create_dir_all(dir).unwrap();
+            let path = dir.join(name);
+            let mut content = lines.join("\n");
+            content.push('\n');
+            fs::write(&path, content).unwrap();
+            path
+        }
+
+        fn known(skills: &[&str]) -> StdBTreeSet<String> {
+            skills.iter().map(|s| s.to_string()).collect()
+        }
+
+        #[test]
+        fn issue_acceptance_user_and_file_read_uses_are_counted() {
+            let tmp = tempfile::tempdir().unwrap();
+            let home = tmp.path();
+            write_rollout(
+                &home.join(CODEX_SESSIONS_DIR).join("2026/09/16"),
+                "a.jsonl",
+                &[
+                    session_meta_line("sess-a", "/proj-a"),
+                    skill_block_line("2026-09-16T12:00:00Z", "foo"),
+                    exec_cat_line("2026-09-16T12:00:01Z", "/u/.codex/skills/foo/SKILL.md"),
+                ],
+            );
+            write_rollout(
+                &home.join(CODEX_SESSIONS_DIR).join("2026/09/16"),
+                "b.jsonl",
+                &[
+                    session_meta_line("sess-b", "/proj-b"),
+                    exec_cat_line("2026-09-16T12:00:00Z", "/u/.codex/skills/bar/SKILL.md"),
+                    exec_cat_line("2026-09-16T12:00:01Z", "/x/foo/SKILL.md"),
+                ],
+            );
+
+            let mut index = SkillInvocationIndex::default();
+            let known_skills = known(&["foo", "bar"]);
+            let sources = DiscoverySources::default();
+            index.refresh(home, &sources);
+            let stats = stats(&index, &known_skills, &sources);
+            let by_skill: BTreeMap<&str, &SkillInvocationStats> =
+                stats.iter().map(|s| (s.skill.as_str(), s)).collect();
+            assert_eq!(by_skill.len(), 2);
+            assert_eq!(by_skill["foo"].total, 1);
+            assert_eq!(by_skill["foo"].by_trigger_30_days.user, 1);
+            assert_eq!(by_skill["bar"].total, 1);
+            assert_eq!(by_skill["bar"].by_trigger_30_days.file_read, 1);
+        }
+
+        #[test]
+        fn a_flat_archived_session_file_is_read() {
+            let tmp = tempfile::tempdir().unwrap();
+            let home = tmp.path();
+            write_rollout(
+                &home.join(CODEX_ARCHIVED_SESSIONS_DIR),
+                "old.jsonl",
+                &[
+                    session_meta_line("sess-a", "/proj-a"),
+                    skill_block_line("2026-09-16T12:00:00Z", "foo"),
+                ],
+            );
+
+            let mut index = SkillInvocationIndex::default();
+            let known_skills = known(&["foo"]);
+            let sources = DiscoverySources::default();
+            index.refresh(home, &sources);
+            let stats = stats(&index, &known_skills, &sources);
+            assert_eq!(stats.len(), 1);
+            assert_eq!(stats[0].skill, "foo");
+        }
+
+        #[test]
+        fn append_resumes_and_carries_context_from_the_first_refresh() {
+            let tmp = tempfile::tempdir().unwrap();
+            let home = tmp.path();
+            let dir = home.join(CODEX_SESSIONS_DIR).join("2026/09/16");
+            let path = write_rollout(&dir, "a.jsonl", &[session_meta_line("sess-a", "/proj-a")]);
+
+            let mut index = SkillInvocationIndex::default();
+            let known_skills = known(&["foo"]);
+            let sources = DiscoverySources::default();
+            index.refresh(home, &sources);
+
+            let mut content = fs::read_to_string(&path).unwrap();
+            content.push_str(&skill_block_line("2026-09-16T12:05:00Z", "foo"));
+            content.push('\n');
+            let appended_len = content.len() as u64 - fs::metadata(&path).unwrap().len();
+            fs::write(&path, &content).unwrap();
+
+            let report = index.refresh(home, &sources);
+            assert_eq!(
+                report.bytes_read, appended_len,
+                "the file must be resumed, not reparsed from 0"
+            );
+            let stats = stats(&index, &known_skills, &sources);
+            assert_eq!(stats.len(), 1);
+            assert_eq!(stats[0].skill, "foo");
+            assert_eq!(
+                stats[0].by_project_30_days.get("/proj-a"),
+                Some(&1),
+                "expected the session/project from the first refresh's context"
+            );
+        }
+
+        #[test]
+        fn a_rewrite_with_a_different_session_meta_carries_the_new_session() {
+            let tmp = tempfile::tempdir().unwrap();
+            let home = tmp.path();
+            let dir = home.join(CODEX_SESSIONS_DIR).join("2026/09/16");
+            let path = write_rollout(
+                &dir,
+                "a.jsonl",
+                &[
+                    session_meta_line("sess-a", "/proj-a"),
+                    skill_block_line("2026-09-16T12:00:00Z", "foo"),
+                ],
+            );
+
+            let mut index = SkillInvocationIndex::default();
+            let known_skills = known(&["foo"]);
+            let sources = DiscoverySources::default();
+            index.refresh(home, &sources);
+            assert_eq!(
+                stats(&index, &known_skills, &sources)[0]
+                    .by_project_30_days
+                    .get("/proj-a"),
+                Some(&1)
+            );
+
+            let mut content = session_meta_line("sess-b", "/proj-b");
+            content.push('\n');
+            content.push_str(&skill_block_line("2026-09-16T12:00:00Z", "foo"));
+            content.push('\n');
+            fs::write(&path, content).unwrap();
+
+            index.refresh(home, &sources);
+            let stats = stats(&index, &known_skills, &sources);
+            assert_eq!(stats.len(), 1);
+            assert_eq!(stats[0].by_project_30_days.get("/proj-b"), Some(&1));
+        }
+
+        #[test]
+        fn moving_a_file_from_sessions_to_archived_counts_its_use_once() {
+            let tmp = tempfile::tempdir().unwrap();
+            let home = tmp.path();
+            let dir = home.join(CODEX_SESSIONS_DIR).join("2026/09/16");
+            let path = write_rollout(
+                &dir,
+                "a.jsonl",
+                &[
+                    session_meta_line("sess-a", "/proj-a"),
+                    skill_block_line("2026-09-16T12:00:00Z", "foo"),
+                ],
+            );
+
+            let mut index = SkillInvocationIndex::default();
+            let known_skills = known(&["foo"]);
+            let sources = DiscoverySources::default();
+            index.refresh(home, &sources);
+            assert_eq!(stats(&index, &known_skills, &sources)[0].total, 1);
+
+            let archived_dir = home.join(CODEX_ARCHIVED_SESSIONS_DIR);
+            fs::create_dir_all(&archived_dir).unwrap();
+            fs::rename(&path, archived_dir.join("a.jsonl")).unwrap();
+
+            index.refresh(home, &sources);
+            let stats = stats(&index, &known_skills, &sources);
+            assert_eq!(stats.len(), 1);
+            assert_eq!(stats[0].total, 1, "the use must not be doubled");
+        }
+
+        #[test]
+        fn switching_codex_off_stops_reads_and_on_resumes_counting() {
+            let tmp = tempfile::tempdir().unwrap();
+            let home = tmp.path();
+            write_rollout(
+                &home.join(CODEX_SESSIONS_DIR).join("2026/09/16"),
+                "a.jsonl",
+                &[
+                    session_meta_line("sess-a", "/proj-a"),
+                    skill_block_line("2026-09-16T12:00:00Z", "foo"),
+                ],
+            );
+
+            let mut index = SkillInvocationIndex::default();
+            let known_skills = known(&["foo"]);
+            let mut off = DiscoverySources::default();
+            off.set(AgentId::CODEX, false);
+            index.refresh(home, &off);
+            assert!(stats(&index, &known_skills, &off).is_empty());
+
+            let enabled = DiscoverySources::default();
+            index.refresh(home, &enabled);
+            assert_eq!(stats(&index, &known_skills, &enabled).len(), 1);
+        }
+
+        #[test]
+        fn no_codex_and_no_claude_projects_is_not_incomplete() {
+            let tmp = tempfile::tempdir().unwrap();
+            let home = tmp.path();
+            let mut index = SkillInvocationIndex::default();
+            let sources = DiscoverySources::default();
+            let report = index.refresh(home, &sources);
+            assert!(!report.incomplete);
+        }
+
+        #[test]
+        fn a_cache_written_before_context_still_loads() {
+            let tmp = tempfile::tempdir().unwrap();
+            let home = tmp.path();
+            write_rollout(
+                &home.join(CODEX_SESSIONS_DIR).join("2026/09/16"),
+                "a.jsonl",
+                &[
+                    session_meta_line("sess-a", "/proj-a"),
+                    skill_block_line("2026-09-16T12:00:00Z", "foo"),
+                ],
+            );
+            let mut index = SkillInvocationIndex::default();
+            let sources = DiscoverySources::default();
+            index.refresh(home, &sources);
+            let cache_path = tmp.path().join("cache/skill-uses.json");
+            index.save(&cache_path).unwrap();
+
+            // Simulate a cache written before this change: drop `context`
+            // from every cached file entry.
+            let raw = fs::read_to_string(&cache_path).unwrap();
+            let mut value: serde_json::Value = serde_json::from_str(&raw).unwrap();
+            if let Some(files) = value.get_mut("files").and_then(|v| v.as_object_mut()) {
+                for entry in files.values_mut() {
+                    if let Some(obj) = entry.as_object_mut() {
+                        obj.remove("context");
+                    }
+                }
+            }
+            fs::write(&cache_path, serde_json::to_string(&value).unwrap()).unwrap();
+
+            let loaded = SkillInvocationIndex::load_or_empty(&cache_path);
+            let known_skills = known(&["foo"]);
+            assert_eq!(stats(&loaded, &known_skills, &sources).len(), 1);
+        }
     }
 
     mod opencode_databases {

@@ -439,6 +439,7 @@ const PI_SETTINGS_DOC: &str = "https://pi.dev/docs/latest/settings";
 const PI_SESSIONS_DOC: &str = "https://pi.dev/docs/latest/sessions";
 const CODE_SURVEY: &str = "apps/desktop/src-tauri/src/skills/agents.rs";
 const CLAUDE_TRANSCRIPT_READER: &str = "crates/skill-studio-host/src/skill_uses.rs";
+const CODEX_TRANSCRIPT_READER: &str = "crates/skill-studio-core/src/skill_uses/codex.rs";
 const ONE_LEVEL_READER: &str =
     "one-level readers never reach <root>/.skill-studio-disabled/<skill>/SKILL.md";
 
@@ -578,8 +579,11 @@ fn codex() -> HarnessFacts {
             relative_path: Some(".codex/plugins/cache".into()),
         },
         usage_source: UsageSourceSpec {
-            shape: Support::Unknown,
-            relative_path: None,
+            // The record shape is not documented, but the desktop reads
+            // `<skill>` blocks and skill-reading tool calls from these
+            // rollout transcripts today.
+            shape: Support::Yes(Evidence::inferred(CODEX_TRANSCRIPT_READER)),
+            relative_path: Some(".codex/sessions".into()),
         },
         runner: RunnerSpec {
             binary: Some("codex".into()),
