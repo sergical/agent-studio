@@ -161,7 +161,10 @@ fn execute_change(
     let absent_sidecar = sidecar
         .as_ref()
         .and_then(|edit| edit.original().is_none().then_some(sidecar_path.as_path()));
-    if sidecar.as_ref().is_some_and(|edit| edit.original().is_some()) {
+    if sidecar
+        .as_ref()
+        .is_some_and(|edit| edit.original().is_some())
+    {
         sources.push(
             BackupSourceRoot::bind(&record.path.join("agents"))
                 .and_then(|root| root.select(OsStr::new("openai.yaml")))
