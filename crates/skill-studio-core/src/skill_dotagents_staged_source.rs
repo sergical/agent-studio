@@ -805,7 +805,7 @@ mod tests {
             let root = BackupStateRoot::bind(temp.path()).unwrap();
             let reserved = root.reserve_managed_source("operation-v2").unwrap();
             let cache = reserved.cache_path().unwrap();
-            let source = cache.join("owner/repo/skills/alpha");
+            let source = cache.join("github.com/owner/repo/skills/alpha");
             fs::create_dir_all(&source).unwrap();
             fs::write(source.join("SKILL.md"), b"upstream v2").unwrap();
             let stage = reserved.stage_path().unwrap();
