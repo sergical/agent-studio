@@ -1,13 +1,14 @@
 //! Skill-use index: parses each enabled harness's own session history for
-//! skill uses and keeps a per-file cache so a refresh only re-parses
-//! transcripts whose size or mtime changed. Read discipline mirrors
-//! `discovery.rs`: only regular files are opened, each line is capped so a
-//! pathological line can't be buffered in full, and a file/run byte budget
-//! bounds worst-case I/O per refresh.
+//! skill uses and keeps a per-source cache so a refresh only re-reads what
+//! changed. Two kinds of source exist: append-only JSONL transcripts,
+//! resumed from a byte offset (Claude Code), and SQLite databases, re-queried
+//! from a `time_updated` watermark (OpenCode). Read discipline mirrors
+//! `discovery.rs`: only regular files are opened, each transcript line is
+//! capped so a pathological line can't be buffered in full, and a file/run
+//! byte budget bounds worst-case I/O per refresh.
 //!
-//! `SOURCES` is the table of harnesses this index reads from; today it holds
-//! one entry (Claude Code). Adding a harness later means adding a row, not
-//! reworking `refresh`.
+//! `SOURCES` is the table of harnesses this index reads from. Adding a
+//! harness later means adding a row, not reworking `refresh`.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
@@ -24,6 +25,10 @@ use skill_studio_core::skill_uses::{
     skill_heatmap, skill_stats, InvocationHeatmap, SkillInvocation, SkillInvocationStats,
     SkillUseFilter,
 };
+
+use crate::opencode_db::{opencode_databases, OPENCODE_DATA_ROOT};
+
+mod opencode;
 
 /// A single line examined while parsing a transcript is capped at this many
 /// bytes; a line that overruns the cap is drained and skipped (not parsed,
@@ -86,24 +91,103 @@ struct IndexedTranscript {
 /// rewrite detection (see `IndexedTranscript::tail_sample`).
 const TAIL_SAMPLE_BYTES: u64 = 64;
 
+/// Size and mtime of a database file and of its `-wal` file, used to tell a
+/// changed database from an unchanged one without reopening it. `0` /
+/// `UNIX_EPOCH` when a file (typically the `-wal`) is absent.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+struct DatabaseStamp {
+    db_size: u64,
+    db_modified: SystemTime,
+    wal_size: u64,
+    wal_modified: SystemTime,
+}
+
+impl Default for DatabaseStamp {
+    fn default() -> Self {
+        Self {
+            db_size: 0,
+            db_modified: SystemTime::UNIX_EPOCH,
+            wal_size: 0,
+            wal_modified: SystemTime::UNIX_EPOCH,
+        }
+    }
+}
+
+fn file_size_and_mtime(path: &Path) -> (u64, SystemTime) {
+    fs::metadata(path)
+        .map(|meta| {
+            (
+                meta.len(),
+                meta.modified().unwrap_or(SystemTime::UNIX_EPOCH),
+            )
+        })
+        .unwrap_or((0, SystemTime::UNIX_EPOCH))
+}
+
+fn database_stamp(path: &Path) -> DatabaseStamp {
+    let (db_size, db_modified) = file_size_and_mtime(path);
+    let mut wal = path.as_os_str().to_owned();
+    wal.push("-wal");
+    let (wal_size, wal_modified) = file_size_and_mtime(Path::new(&wal));
+    DatabaseStamp {
+        db_size,
+        db_modified,
+        wal_size,
+        wal_modified,
+    }
+}
+
+/// A database's cached parse result, keyed by [`DatabaseStamp`] so a refresh
+/// can tell whether it needs to be re-queried.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+struct IndexedDatabase {
+    stamp: DatabaseStamp,
+    /// Highest `time_updated` seen per table (`session_message`, `part`), so
+    /// a refresh only re-queries rows that changed since the last pass.
+    watermarks: BTreeMap<String, i64>,
+    /// Uses per row id (keyed `"<table>:<id>"`), only for rows that gave at
+    /// least one use.
+    rows: BTreeMap<String, Vec<SkillInvocation>>,
+}
+
 /// Outcome of one `SkillInvocationIndex::refresh` call.
 #[derive(Debug, Clone, Default)]
 pub struct SkillUseRefreshReport {
     /// Number of transcript files re-parsed (in full or in part) this call.
     pub files_reparsed: usize,
-    /// Number of cached files removed because they no longer exist.
+    /// Number of cached files or databases removed because they no longer
+    /// exist.
     pub files_dropped: usize,
     /// Total bytes read from transcripts this call.
     pub bytes_read: u64,
+    /// Number of databases successfully re-queried this call (their stamp
+    /// had changed since the last refresh).
+    pub databases_read: usize,
     /// Set when a per-file or per-run budget stopped a file short of EOF, or
-    /// a source's own listing failed; the file (if any) is left with
+    /// a source's own listing failed; a short file is left with
     /// `parsed_bytes < size` so a later refresh resumes and finishes
     /// draining the backlog.
     pub incomplete: bool,
 }
 
+/// How one [`UseSource`] reads its uses: an append-only transcript, resumed
+/// from a byte offset, or a SQLite database, re-queried from a watermark.
+enum UseReader {
+    /// Append-only JSONL transcripts, parsed incrementally from a byte
+    /// offset.
+    Transcripts {
+        list: fn(&Path) -> SourceListing,
+        parse: fn(&str) -> Vec<SkillInvocation>,
+    },
+    /// SQLite databases, re-queried from a `time_updated` watermark.
+    Databases {
+        list: fn(&Path) -> Vec<PathBuf>,
+        read: fn(&Path, &mut IndexedDatabase) -> bool,
+    },
+}
+
 /// One harness's session history this index reads uses from: where to find
-/// its transcripts (`list`) and how to parse one transcript's text (`parse`).
+/// it under `home` (`root`) and how to read it (`reader`).
 struct UseSource {
     /// `AgentId` wire name, e.g. `AgentId::CLAUDE_CODE`.
     harness: &'static str,
@@ -112,8 +196,37 @@ struct UseSource {
     /// switched-off source's cached files are left untouched even if their
     /// directory is later removed.
     root: fn(&Path) -> PathBuf,
-    list: fn(&Path) -> SourceListing,
-    parse: fn(&str) -> Vec<SkillInvocation>,
+    reader: UseReader,
+    /// Where the app should watch on disk for changes that can add, change,
+    /// or remove this source's uses - see [`skill_use_watch_paths`].
+    watch: &'static [SourceWatch],
+}
+
+/// A directory under `home` whose changes can add, change, or remove this
+/// source's uses.
+struct SourceWatch {
+    /// Relative to `home`.
+    dir: &'static str,
+    recursive: bool,
+    /// Which changed file names under `dir` matter.
+    accepts: fn(&str) -> bool,
+}
+
+/// Matches any file name - Claude Code's transcript directory has no
+/// name-based filter, since every file under it can hold uses.
+fn any_name(_: &str) -> bool {
+    true
+}
+
+/// True when `name` is an OpenCode database file, or that database's `-wal`
+/// sidecar. `-shm` is excluded on purpose: a read-only reader (ours
+/// included) can touch `-shm` just by opening the database, so treating it
+/// as a use-changing event would make our own reads queue another refresh.
+fn is_opencode_database_or_wal(name: &str) -> bool {
+    match name.strip_suffix("-wal") {
+        Some(db_name) => crate::opencode_db::is_opencode_database_name(db_name),
+        None => crate::opencode_db::is_opencode_database_name(name),
+    }
 }
 
 /// One source's listing of the transcript files it found under `home`.
@@ -203,20 +316,94 @@ fn list_claude_code_transcripts(home: &Path) -> SourceListing {
     }
 }
 
+fn opencode_root(home: &Path) -> PathBuf {
+    home.join(OPENCODE_DATA_ROOT)
+}
+
 /// Every harness this index reads uses from, in the order they're processed.
-const SOURCES: &[UseSource] = &[UseSource {
-    harness: AgentId::CLAUDE_CODE,
-    root: claude_code_root,
-    list: list_claude_code_transcripts,
-    parse: parse_claude_code_uses,
-}];
+const SOURCES: &[UseSource] = &[
+    UseSource {
+        harness: AgentId::CLAUDE_CODE,
+        root: claude_code_root,
+        reader: UseReader::Transcripts {
+            list: list_claude_code_transcripts,
+            parse: parse_claude_code_uses,
+        },
+        watch: &[SourceWatch {
+            dir: CLAUDE_PROJECTS_ROOT,
+            recursive: true,
+            accepts: any_name,
+        }],
+    },
+    UseSource {
+        harness: AgentId::OPEN_CODE,
+        root: opencode_root,
+        reader: UseReader::Databases {
+            list: opencode_databases,
+            read: opencode::read_database,
+        },
+        watch: &[SourceWatch {
+            dir: OPENCODE_DATA_ROOT,
+            recursive: false,
+            accepts: is_opencode_database_or_wal,
+        }],
+    },
+];
+
+/// A directory the app should watch so session-history changes refresh
+/// skill uses.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SkillUseWatchPath {
+    /// The directory to watch, absolute (`home` joined with the source's
+    /// relative watch dir).
+    pub path: PathBuf,
+    /// Whether the watch should recurse into subdirectories.
+    pub recursive: bool,
+}
+
+/// Every directory to watch for skill-use changes, for every source
+/// (switched-off harnesses included: a refresh skips them anyway, and the
+/// watch set then doesn't depend on settings).
+pub fn skill_use_watch_paths(home: &Path) -> Vec<SkillUseWatchPath> {
+    SOURCES
+        .iter()
+        .flat_map(|source| source.watch)
+        .map(|watch| SkillUseWatchPath {
+            path: home.join(watch.dir),
+            recursive: watch.recursive,
+        })
+        .collect()
+}
+
+/// True when a change at `path` can change skill uses: `path` is under a
+/// recursive watch dir, or directly inside a non-recursive one, and its
+/// file name passes that watch's `accepts`. For a recursive watch, a path
+/// equal to the dir itself or any path under it counts, and `accepts` is
+/// applied to the path's file name.
+pub fn is_skill_use_change(home: &Path, path: &Path) -> bool {
+    SOURCES.iter().flat_map(|source| source.watch).any(|watch| {
+        let dir = home.join(watch.dir);
+        if !path.starts_with(&dir) {
+            return false;
+        }
+        if !watch.recursive && path.parent() != Some(dir.as_path()) {
+            return false;
+        }
+        path.file_name()
+            .and_then(|name| name.to_str())
+            .is_some_and(watch.accepts)
+    })
+}
 
 /// Index of skill uses parsed from local harness session history, cached per
-/// file so unchanged files are never re-parsed. `file_budget`/`run_budget`
-/// are not persisted (see `with_budgets` for the test-only override).
+/// file or database so unchanged sources are never re-read. `file_budget`/
+/// `run_budget` are not persisted (see `with_budgets` for the test-only
+/// override).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SkillInvocationIndex {
     files: BTreeMap<PathBuf, IndexedTranscript>,
+    #[serde(default)]
+    databases: BTreeMap<PathBuf, IndexedDatabase>,
     #[serde(skip, default = "default_file_budget")]
     file_budget: u64,
     #[serde(skip, default = "default_run_budget")]
@@ -227,6 +414,7 @@ impl Default for SkillInvocationIndex {
     fn default() -> Self {
         Self {
             files: BTreeMap::new(),
+            databases: BTreeMap::new(),
             file_budget: MAX_FILE_BYTES,
             run_budget: MAX_RUN_BYTES,
         }
@@ -241,8 +429,19 @@ impl SkillInvocationIndex {
     fn with_budgets(file_bytes: u64, run_bytes: u64) -> Self {
         Self {
             files: BTreeMap::new(),
+            databases: BTreeMap::new(),
             file_budget: file_bytes,
             run_budget: run_bytes,
+        }
+    }
+
+    /// Test-only: forces the next refresh to treat `path` as changed
+    /// regardless of its actual stamp, sidestepping filesystem mtime
+    /// granularity that a fast rewrite-and-refresh test can otherwise race.
+    #[cfg(test)]
+    fn clear_database_stamp(&mut self, path: &Path) {
+        if let Some(entry) = self.databases.get_mut(path) {
+            entry.stamp = DatabaseStamp::default();
         }
     }
 
@@ -293,110 +492,141 @@ impl SkillInvocationIndex {
         fs::rename(&tmp_path, cache_path).map_err(|e| e.to_string())
     }
 
-    /// Re-parses only the transcript files (under every enabled source in
-    /// `SOURCES`) whose size or mtime changed since the last refresh, and
-    /// drops files that no longer exist. A source whose harness is switched
-    /// off in `sources` is skipped entirely: it is neither listed nor does
-    /// it drop any of its previously cached files. Never panics: unreadable
-    /// dirs/files/lines are skipped.
+    /// Re-reads every enabled source in `SOURCES` that changed since the
+    /// last refresh - transcript files by size/mtime, databases by
+    /// [`DatabaseStamp`] - and drops cached entries that no longer exist. A
+    /// source whose harness is switched off in `sources` is skipped
+    /// entirely: it is neither listed nor does it drop any of its previously
+    /// cached entries. Never panics: unreadable dirs/files/databases are
+    /// skipped.
     pub fn refresh(&mut self, home: &Path, sources: &DiscoverySources) -> SkillUseRefreshReport {
         let mut report = SkillUseRefreshReport::default();
         let mut run_budget = self.run_budget;
-        let mut seen: BTreeSet<PathBuf> = BTreeSet::new();
-        let mut listed_dirs: BTreeSet<PathBuf> = BTreeSet::new();
-        let mut owned_roots: Vec<PathBuf> = Vec::new();
 
         for source in SOURCES {
             if !sources.is_enabled(source.harness) {
                 continue;
             }
-            owned_roots.push((source.root)(home));
-            let listing = (source.list)(home);
-            if listing.incomplete {
+            match &source.reader {
+                UseReader::Transcripts { list, parse } => {
+                    self.refresh_transcripts(
+                        home,
+                        source,
+                        *list,
+                        *parse,
+                        &mut run_budget,
+                        &mut report,
+                    );
+                }
+                UseReader::Databases { list, read } => {
+                    self.refresh_databases(home, source, *list, *read, &mut report);
+                }
+            }
+        }
+
+        report
+    }
+
+    /// One [`UseReader::Transcripts`] source's share of `refresh`: lists its
+    /// files, re-parses the ones that changed (resuming from their cached
+    /// byte offset), and drops cached files under this source's root that
+    /// are no longer listed and no longer exist.
+    fn refresh_transcripts(
+        &mut self,
+        home: &Path,
+        source: &UseSource,
+        list: fn(&Path) -> SourceListing,
+        parse: fn(&str) -> Vec<SkillInvocation>,
+        run_budget: &mut u64,
+        report: &mut SkillUseRefreshReport,
+    ) {
+        let owned_root = (source.root)(home);
+        let listing = list(home);
+        if listing.incomplete {
+            report.incomplete = true;
+        }
+        let listed_dirs = listing.listed_dirs;
+        let mut seen: BTreeSet<PathBuf> = BTreeSet::new();
+
+        for path in listing.files {
+            seen.insert(path.clone());
+
+            let Ok(meta) = fs::metadata(&path) else {
+                continue;
+            };
+            let size = meta.len();
+            let modified = meta.modified().unwrap_or(SystemTime::UNIX_EPOCH);
+
+            let (start_offset, mut uses, skip_to_newline) = match self.files.get(&path) {
+                Some(existing)
+                    if existing.size == size
+                        && existing.modified == modified
+                        && existing.parsed_bytes >= size =>
+                {
+                    continue;
+                }
+                Some(existing) if existing.size == size && existing.parsed_bytes >= size => {
+                    // Same size, but the mtime moved: rewritten in place
+                    // at exactly the old length. Reparse from scratch
+                    // rather than trusting a byte-for-byte-identical-
+                    // looking cache entry.
+                    (0, Vec::new(), false)
+                }
+                Some(existing) if size < existing.parsed_bytes => (0, Vec::new(), false),
+                Some(existing) => {
+                    let current_tail = read_tail_sample(&path, existing.parsed_bytes);
+                    if current_tail != existing.tail_sample {
+                        // The bytes just before our resume point no
+                        // longer match what we parsed last time: this
+                        // wasn't a plain append, so the cached uses may
+                        // be stale.
+                        (0, Vec::new(), false)
+                    } else {
+                        (
+                            existing.parsed_bytes,
+                            existing.uses.clone(),
+                            existing.skipping_line,
+                        )
+                    }
+                }
+                None => (0, Vec::new(), false),
+            };
+
+            if *run_budget == 0 {
+                report.incomplete = true;
+                continue;
+            }
+
+            let file_budget = self.file_budget.min(*run_budget);
+            let Some((text, consumed, skipping_line)) = read_transcript_from_offset(
+                &path,
+                start_offset,
+                file_budget,
+                run_budget,
+                skip_to_newline,
+            ) else {
+                continue;
+            };
+            let parsed_bytes = start_offset + consumed;
+            uses.extend(parse(&text));
+            if parsed_bytes < size {
                 report.incomplete = true;
             }
-            listed_dirs.extend(listing.listed_dirs);
 
-            for path in listing.files {
-                seen.insert(path.clone());
-
-                let Ok(meta) = fs::metadata(&path) else {
-                    continue;
-                };
-                let size = meta.len();
-                let modified = meta.modified().unwrap_or(SystemTime::UNIX_EPOCH);
-
-                let (start_offset, mut uses, skip_to_newline) = match self.files.get(&path) {
-                    Some(existing)
-                        if existing.size == size
-                            && existing.modified == modified
-                            && existing.parsed_bytes >= size =>
-                    {
-                        continue;
-                    }
-                    Some(existing) if existing.size == size && existing.parsed_bytes >= size => {
-                        // Same size, but the mtime moved: rewritten in place
-                        // at exactly the old length. Reparse from scratch
-                        // rather than trusting a byte-for-byte-identical-
-                        // looking cache entry.
-                        (0, Vec::new(), false)
-                    }
-                    Some(existing) if size < existing.parsed_bytes => (0, Vec::new(), false),
-                    Some(existing) => {
-                        let current_tail = read_tail_sample(&path, existing.parsed_bytes);
-                        if current_tail != existing.tail_sample {
-                            // The bytes just before our resume point no
-                            // longer match what we parsed last time: this
-                            // wasn't a plain append, so the cached uses may
-                            // be stale.
-                            (0, Vec::new(), false)
-                        } else {
-                            (
-                                existing.parsed_bytes,
-                                existing.uses.clone(),
-                                existing.skipping_line,
-                            )
-                        }
-                    }
-                    None => (0, Vec::new(), false),
-                };
-
-                if run_budget == 0 {
-                    report.incomplete = true;
-                    continue;
-                }
-
-                let file_budget = self.file_budget.min(run_budget);
-                let Some((text, consumed, skipping_line)) = read_transcript_from_offset(
-                    &path,
-                    start_offset,
-                    file_budget,
-                    &mut run_budget,
-                    skip_to_newline,
-                ) else {
-                    continue;
-                };
-                let parsed_bytes = start_offset + consumed;
-                uses.extend((source.parse)(&text));
-                if parsed_bytes < size {
-                    report.incomplete = true;
-                }
-
-                report.files_reparsed += 1;
-                report.bytes_read += consumed;
-                let tail_sample = read_tail_sample(&path, parsed_bytes);
-                self.files.insert(
-                    path,
-                    IndexedTranscript {
-                        size,
-                        modified,
-                        parsed_bytes,
-                        uses,
-                        skipping_line,
-                        tail_sample,
-                    },
-                );
-            }
+            report.files_reparsed += 1;
+            report.bytes_read += consumed;
+            let tail_sample = read_tail_sample(&path, parsed_bytes);
+            self.files.insert(
+                path,
+                IndexedTranscript {
+                    size,
+                    modified,
+                    parsed_bytes,
+                    uses,
+                    skipping_line,
+                    tail_sample,
+                },
+            );
         }
 
         let before = self.files.len();
@@ -410,8 +640,7 @@ impl SkillInvocationIndex {
             if listed_dirs.contains(parent) {
                 return false;
             }
-            let owned = owned_roots.iter().any(|root| path.starts_with(root));
-            if !owned {
+            if !path.starts_with(&owned_root) {
                 return true;
             }
             // The parent wasn't listed successfully this refresh, but its
@@ -422,8 +651,61 @@ impl SkillInvocationIndex {
                 Err(e) if e.kind() == io::ErrorKind::NotFound
             )
         });
-        report.files_dropped = before - self.files.len();
-        report
+        report.files_dropped += before - self.files.len();
+    }
+
+    /// One [`UseReader::Databases`] source's share of `refresh`: lists its
+    /// databases, re-queries the ones whose [`DatabaseStamp`] changed, and
+    /// drops cached databases under this source's root that are no longer
+    /// listed and no longer exist.
+    fn refresh_databases(
+        &mut self,
+        home: &Path,
+        source: &UseSource,
+        list: fn(&Path) -> Vec<PathBuf>,
+        read: fn(&Path, &mut IndexedDatabase) -> bool,
+        report: &mut SkillUseRefreshReport,
+    ) {
+        let owned_root = (source.root)(home);
+        let mut seen: BTreeSet<PathBuf> = BTreeSet::new();
+
+        for path in list(home) {
+            seen.insert(path.clone());
+            let stamp = database_stamp(&path);
+            if self
+                .databases
+                .get(&path)
+                .is_some_and(|existing| existing.stamp == stamp)
+            {
+                continue;
+            }
+
+            let mut entry = self.databases.get(&path).cloned().unwrap_or_default();
+            if read(&path, &mut entry) {
+                entry.stamp = stamp;
+                self.databases.insert(path, entry);
+                report.databases_read += 1;
+            }
+            // A failed read leaves the old cached stamp in place, so the
+            // next refresh retries it on its own - `report.incomplete`
+            // wouldn't add anything here, and a persistently unreadable
+            // database would otherwise wedge it on forever.
+        }
+
+        let before = self.databases.len();
+        self.databases.retain(|path, _| {
+            if seen.contains(path) {
+                return true;
+            }
+            if !path.starts_with(&owned_root) {
+                return true;
+            }
+            !matches!(
+                fs::symlink_metadata(path),
+                Err(e) if e.kind() == io::ErrorKind::NotFound
+            )
+        });
+        report.files_dropped += before - self.databases.len();
     }
 
     /// Per-skill use totals across every cached transcript, with the rolling
@@ -447,8 +729,23 @@ impl SkillInvocationIndex {
         skill_heatmap(self.all_uses(), filter, days, now)
     }
 
+    /// File uses plus database uses. A database row id (`"<table>:<id>"`)
+    /// that appears in more than one database (`opencode-next.db` rows get
+    /// copied into `opencode.db`) counts once: databases are visited in
+    /// path order and the first one to have a row wins.
     fn all_uses(&self) -> impl Iterator<Item = &SkillInvocation> {
-        self.files.values().flat_map(|t| t.uses.iter())
+        let mut seen_row_ids: BTreeSet<&str> = BTreeSet::new();
+        let database_uses: Vec<&SkillInvocation> = self
+            .databases
+            .values()
+            .flat_map(|database| database.rows.iter())
+            .filter(move |(row_id, _)| seen_row_ids.insert(row_id.as_str()))
+            .flat_map(|(_, uses)| uses.iter())
+            .collect();
+        self.files
+            .values()
+            .flat_map(|t| t.uses.iter())
+            .chain(database_uses)
     }
 }
 
@@ -1255,5 +1552,754 @@ mod tests {
         let report = index.refresh(home, &sources);
         assert_eq!(report.files_dropped, 1);
         assert!(stats(&index, &known_skills, &sources).is_empty());
+    }
+
+    #[test]
+    fn skill_use_watch_paths_covers_claude_projects_and_opencode_data() {
+        let home = PathBuf::from("/home/tester");
+        let paths = skill_use_watch_paths(&home);
+        assert!(paths.contains(&SkillUseWatchPath {
+            path: home.join(CLAUDE_PROJECTS_ROOT),
+            recursive: true,
+        }));
+        assert!(paths.contains(&SkillUseWatchPath {
+            path: home.join(OPENCODE_DATA_ROOT),
+            recursive: false,
+        }));
+    }
+
+    #[test]
+    fn is_skill_use_change_matches_opencode_databases_and_claude_transcripts() {
+        let home = PathBuf::from("/home/tester");
+        assert!(is_skill_use_change(
+            &home,
+            &home.join(".local/share/opencode/opencode.db"),
+        ));
+        assert!(is_skill_use_change(
+            &home,
+            &home.join(".local/share/opencode/opencode-next.db-wal"),
+        ));
+        assert!(is_skill_use_change(
+            &home,
+            &home.join(CLAUDE_PROJECTS_ROOT).join("-p/abc.jsonl"),
+        ));
+
+        assert!(!is_skill_use_change(
+            &home,
+            &home.join(".local/share/opencode/opencode.db-shm"),
+        ));
+        assert!(!is_skill_use_change(
+            &home,
+            &home.join(".local/share/opencode/auth.json"),
+        ));
+        assert!(!is_skill_use_change(
+            &home,
+            &home.join(".local/share/opencode/storage/session/x.json"),
+        ));
+        assert!(!is_skill_use_change(
+            &home,
+            &home.join(".local/share/opencode/log/x.log"),
+        ));
+        assert!(!is_skill_use_change(
+            &home,
+            &home.join(".claude/settings.json")
+        ));
+    }
+
+    mod opencode_databases {
+        use super::*;
+        use rusqlite::{params, Connection};
+
+        fn opencode_db_path(home: &Path, name: &str) -> PathBuf {
+            opencode_root(home).join(name)
+        }
+
+        /// A temp `home` with the OpenCode data dir created and
+        /// `opencode.db`'s path (not yet an actual database file) under it.
+        fn temp_opencode_db_home() -> (tempfile::TempDir, PathBuf) {
+            let tmp = tempfile::tempdir().unwrap();
+            let db_path = opencode_db_path(tmp.path(), "opencode.db");
+            fs::create_dir_all(db_path.parent().unwrap()).unwrap();
+            (tmp, db_path)
+        }
+
+        /// A timestamp within the 30-day rolling window, `offset_ms` after a
+        /// fixed point a few minutes ago - tests that assert on
+        /// `by_trigger_30_days`/`by_project_30_days` need a real recent
+        /// timestamp, not an arbitrary epoch-adjacent one.
+        fn recent_ms(offset_ms: i64) -> i64 {
+            (Utc::now() - chrono::Duration::minutes(5)).timestamp_millis() + offset_ms
+        }
+
+        fn create_message_table(conn: &Connection) {
+            conn.execute_batch(
+                "CREATE TABLE session_message (
+                    id TEXT PRIMARY KEY,
+                    session_id TEXT,
+                    type TEXT,
+                    time_created INTEGER,
+                    time_updated INTEGER,
+                    data TEXT
+                )",
+            )
+            .unwrap();
+        }
+
+        fn create_part_table(conn: &Connection) {
+            conn.execute_batch(
+                "CREATE TABLE part (
+                    id TEXT PRIMARY KEY,
+                    session_id TEXT,
+                    time_created INTEGER,
+                    time_updated INTEGER,
+                    data TEXT
+                )",
+            )
+            .unwrap();
+        }
+
+        fn create_session_table(conn: &Connection) {
+            conn.execute_batch("CREATE TABLE session (id TEXT PRIMARY KEY, directory TEXT)")
+                .unwrap();
+        }
+
+        fn create_session_v2_table(conn: &Connection) {
+            conn.execute_batch("CREATE TABLE session_v2 (id TEXT PRIMARY KEY, directory TEXT)")
+                .unwrap();
+        }
+
+        fn insert_session(conn: &Connection, id: &str, directory: &str) {
+            conn.execute(
+                "INSERT INTO session (id, directory) VALUES (?1, ?2)",
+                params![id, directory],
+            )
+            .unwrap();
+        }
+
+        fn insert_session_v2(conn: &Connection, id: &str, directory: &str) {
+            conn.execute(
+                "INSERT INTO session_v2 (id, directory) VALUES (?1, ?2)",
+                params![id, directory],
+            )
+            .unwrap();
+        }
+
+        fn insert_message(
+            conn: &Connection,
+            id: &str,
+            session_id: &str,
+            kind: &str,
+            time_created: i64,
+            time_updated: i64,
+            data: &str,
+        ) {
+            conn.execute(
+                "INSERT INTO session_message (id, session_id, type, time_created, time_updated, data) \
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+                params![id, session_id, kind, time_created, time_updated, data],
+            )
+            .unwrap();
+        }
+
+        fn insert_part(
+            conn: &Connection,
+            id: &str,
+            session_id: &str,
+            time_created: i64,
+            time_updated: i64,
+            data: &str,
+        ) {
+            conn.execute(
+                "INSERT INTO part (id, session_id, time_created, time_updated, data) \
+                 VALUES (?1, ?2, ?3, ?4, ?5)",
+                params![id, session_id, time_created, time_updated, data],
+            )
+            .unwrap();
+        }
+
+        fn skill_tool_message(id: &str, status: &str, skill: &str) -> String {
+            format!(
+                r#"{{"content":[{{"type":"tool","id":"{id}","name":"skill","state":{{"status":"{status}","input":{{"id":"{skill}"}}}}}}]}}"#
+            )
+        }
+
+        fn read_tool_message(id: &str, path: &str) -> String {
+            format!(
+                r#"{{"content":[{{"type":"tool","id":"{id}","name":"read","state":{{"status":"completed","input":{{"path":"{path}"}}}}}}]}}"#
+            )
+        }
+
+        #[test]
+        fn skill_row_gives_one_user_use_with_project_from_session_v2() {
+            let (tmp, db_path) = temp_opencode_db_home();
+            let home = tmp.path();
+            {
+                let conn = Connection::open(&db_path).unwrap();
+                create_message_table(&conn);
+                create_session_table(&conn);
+                create_session_v2_table(&conn);
+                insert_session(&conn, "s1", "/legacy-proj");
+                insert_session_v2(&conn, "s1", "/proj-v2");
+                insert_message(
+                    &conn,
+                    "m1",
+                    "s1",
+                    "skill",
+                    recent_ms(0),
+                    recent_ms(0),
+                    r#"{"skill":"deploy","name":"deploy"}"#,
+                );
+            }
+
+            let mut index = SkillInvocationIndex::default();
+            let known_skills = known(&["deploy"]);
+            let sources = DiscoverySources::default();
+            index.refresh(home, &sources);
+            let stats = stats(&index, &known_skills, &sources);
+            assert_eq!(stats.len(), 1);
+            assert_eq!(stats[0].skill, "deploy");
+            assert_eq!(stats[0].by_trigger_30_days.user, 1);
+            assert_eq!(
+                stats[0].by_project_30_days.get("/proj-v2"),
+                Some(&1),
+                "expected the session_v2 directory, not the session one"
+            );
+        }
+
+        #[test]
+        fn skill_row_without_session_v2_uses_session_directory() {
+            let (tmp, db_path) = temp_opencode_db_home();
+            let home = tmp.path();
+            {
+                let conn = Connection::open(&db_path).unwrap();
+                create_message_table(&conn);
+                create_session_table(&conn);
+                insert_session(&conn, "s1", "/legacy-proj");
+                insert_message(
+                    &conn,
+                    "m1",
+                    "s1",
+                    "skill",
+                    recent_ms(0),
+                    recent_ms(0),
+                    r#"{"skill":"deploy"}"#,
+                );
+            }
+
+            let mut index = SkillInvocationIndex::default();
+            let known_skills = known(&["deploy"]);
+            let sources = DiscoverySources::default();
+            index.refresh(home, &sources);
+            let stats = stats(&index, &known_skills, &sources);
+            assert_eq!(stats.len(), 1);
+            assert_eq!(stats[0].by_project_30_days.get("/legacy-proj"), Some(&1));
+        }
+
+        #[test]
+        fn skill_tool_completed_gives_agent_use_and_error_gives_nothing() {
+            let (tmp, db_path) = temp_opencode_db_home();
+            let home = tmp.path();
+            {
+                let conn = Connection::open(&db_path).unwrap();
+                create_message_table(&conn);
+                insert_message(
+                    &conn,
+                    "m1",
+                    "s1",
+                    "assistant",
+                    recent_ms(0),
+                    recent_ms(0),
+                    &skill_tool_message("c1", "completed", "deploy"),
+                );
+                insert_message(
+                    &conn,
+                    "m2",
+                    "s1",
+                    "assistant",
+                    recent_ms(1),
+                    recent_ms(1),
+                    &skill_tool_message("c2", "error", "deploy"),
+                );
+            }
+
+            let mut index = SkillInvocationIndex::default();
+            let known_skills = known(&["deploy"]);
+            let sources = DiscoverySources::default();
+            index.refresh(home, &sources);
+            let stats = stats(&index, &known_skills, &sources);
+            assert_eq!(stats.len(), 1);
+            assert_eq!(stats[0].total, 1);
+            assert_eq!(stats[0].by_trigger_30_days.agent, 1);
+        }
+
+        #[test]
+        fn read_tool_on_known_skill_md_path_gives_file_read_others_give_nothing() {
+            let (tmp, db_path) = temp_opencode_db_home();
+            let home = tmp.path();
+            {
+                let conn = Connection::open(&db_path).unwrap();
+                create_message_table(&conn);
+                insert_message(
+                    &conn,
+                    "m1",
+                    "s1",
+                    "assistant",
+                    recent_ms(0),
+                    recent_ms(0),
+                    &read_tool_message("c1", "/x/.claude/skills/foo/SKILL.md"),
+                );
+                insert_message(
+                    &conn,
+                    "m2",
+                    "s1",
+                    "assistant",
+                    recent_ms(1),
+                    recent_ms(1),
+                    &read_tool_message("c2", "/x/notes.md"),
+                );
+                insert_message(
+                    &conn,
+                    "m3",
+                    "s1",
+                    "assistant",
+                    recent_ms(2),
+                    recent_ms(2),
+                    r#"{"content":[{"type":"tool","id":"c3","name":"shell","state":{"status":"completed","input":{"command":"cat /x/.claude/skills/foo/SKILL.md"}}}]}"#,
+                );
+            }
+
+            let mut index = SkillInvocationIndex::default();
+            let known_skills = known(&["foo"]);
+            let sources = DiscoverySources::default();
+            index.refresh(home, &sources);
+            let stats = stats(&index, &known_skills, &sources);
+            assert_eq!(stats.len(), 1);
+            assert_eq!(stats[0].skill, "foo");
+            assert_eq!(stats[0].total, 1);
+            assert_eq!(stats[0].by_trigger_30_days.file_read, 1);
+        }
+
+        #[test]
+        fn part_read_row_with_file_path_uses_session_directory() {
+            let (tmp, db_path) = temp_opencode_db_home();
+            let home = tmp.path();
+            {
+                let conn = Connection::open(&db_path).unwrap();
+                create_part_table(&conn);
+                create_session_table(&conn);
+                insert_session(&conn, "s1", "/proj");
+                insert_part(
+                    &conn,
+                    "p1",
+                    "s1",
+                    recent_ms(0),
+                    recent_ms(0),
+                    r#"{"type":"tool","tool":"read","callID":"c1","state":{"status":"completed","input":{"filePath":"/x/.claude/skills/foo/SKILL.md"}}}"#,
+                );
+            }
+
+            let mut index = SkillInvocationIndex::default();
+            let known_skills = known(&["foo"]);
+            let sources = DiscoverySources::default();
+            index.refresh(home, &sources);
+            let stats = stats(&index, &known_skills, &sources);
+            assert_eq!(stats.len(), 1);
+            assert_eq!(stats[0].skill, "foo");
+            assert_eq!(stats[0].by_project_30_days.get("/proj"), Some(&1));
+        }
+
+        #[test]
+        fn second_refresh_with_no_change_reads_no_databases() {
+            let (tmp, db_path) = temp_opencode_db_home();
+            let home = tmp.path();
+            {
+                let conn = Connection::open(&db_path).unwrap();
+                create_message_table(&conn);
+                insert_message(
+                    &conn,
+                    "m1",
+                    "s1",
+                    "skill",
+                    1000,
+                    1000,
+                    r#"{"skill":"deploy"}"#,
+                );
+            }
+
+            let mut index = SkillInvocationIndex::default();
+            let sources = DiscoverySources::default();
+            let first = index.refresh(home, &sources);
+            assert_eq!(first.databases_read, 1);
+
+            let second = index.refresh(home, &sources);
+            assert_eq!(second.databases_read, 0);
+        }
+
+        #[test]
+        fn a_later_row_is_counted_without_doubling_the_earlier_one() {
+            let (tmp, db_path) = temp_opencode_db_home();
+            let home = tmp.path();
+            {
+                let conn = Connection::open(&db_path).unwrap();
+                create_message_table(&conn);
+                insert_message(
+                    &conn,
+                    "m1",
+                    "s1",
+                    "skill",
+                    1000,
+                    1000,
+                    r#"{"skill":"deploy"}"#,
+                );
+            }
+
+            let mut index = SkillInvocationIndex::default();
+            let known_skills = known(&["deploy", "lint"]);
+            let sources = DiscoverySources::default();
+            index.refresh(home, &sources);
+            assert_eq!(stats(&index, &known_skills, &sources)[0].total, 1);
+
+            {
+                let conn = Connection::open(&db_path).unwrap();
+                insert_message(
+                    &conn,
+                    "m2",
+                    "s1",
+                    "skill",
+                    2000,
+                    2000,
+                    r#"{"skill":"lint"}"#,
+                );
+            }
+            index.clear_database_stamp(&db_path);
+            let report = index.refresh(home, &sources);
+            assert_eq!(report.databases_read, 1);
+            let stats = stats(&index, &known_skills, &sources);
+            let total: u32 = stats.iter().map(|s| s.total).sum();
+            assert_eq!(total, 2, "old row must not be doubled");
+        }
+
+        #[test]
+        fn updating_a_row_in_place_gives_exactly_one_use() {
+            let (tmp, db_path) = temp_opencode_db_home();
+            let home = tmp.path();
+            {
+                let conn = Connection::open(&db_path).unwrap();
+                create_message_table(&conn);
+                insert_message(
+                    &conn,
+                    "m1",
+                    "s1",
+                    "assistant",
+                    1000,
+                    1000,
+                    &skill_tool_message("c1", "running", "deploy"),
+                );
+            }
+
+            let mut index = SkillInvocationIndex::default();
+            let known_skills = known(&["deploy"]);
+            let sources = DiscoverySources::default();
+            index.refresh(home, &sources);
+            assert_eq!(stats(&index, &known_skills, &sources)[0].total, 1);
+
+            {
+                let conn = Connection::open(&db_path).unwrap();
+                conn.execute(
+                    "UPDATE session_message SET data = ?1, time_updated = ?2 WHERE id = 'm1'",
+                    params![skill_tool_message("c1", "completed", "deploy"), 2000],
+                )
+                .unwrap();
+            }
+            index.clear_database_stamp(&db_path);
+            index.refresh(home, &sources);
+            let stats = stats(&index, &known_skills, &sources);
+            assert_eq!(stats.len(), 1);
+            assert_eq!(stats[0].total, 1);
+        }
+
+        #[test]
+        fn deleting_a_row_removes_its_use() {
+            let (tmp, db_path) = temp_opencode_db_home();
+            let home = tmp.path();
+            {
+                let conn = Connection::open(&db_path).unwrap();
+                create_message_table(&conn);
+                insert_message(
+                    &conn,
+                    "keep",
+                    "s1",
+                    "skill",
+                    500,
+                    500,
+                    r#"{"skill":"lint"}"#,
+                );
+                insert_message(
+                    &conn,
+                    "del",
+                    "s1",
+                    "skill",
+                    1000,
+                    1000,
+                    r#"{"skill":"deploy"}"#,
+                );
+            }
+
+            let mut index = SkillInvocationIndex::default();
+            let known_skills = known(&["deploy", "lint"]);
+            let sources = DiscoverySources::default();
+            index.refresh(home, &sources);
+            let total: u32 = stats(&index, &known_skills, &sources)
+                .iter()
+                .map(|s| s.total)
+                .sum();
+            assert_eq!(total, 2);
+
+            {
+                let conn = Connection::open(&db_path).unwrap();
+                conn.execute("DELETE FROM session_message WHERE id = 'del'", [])
+                    .unwrap();
+            }
+            index.clear_database_stamp(&db_path);
+            index.refresh(home, &sources);
+            let stats = stats(&index, &known_skills, &sources);
+            let names: BTreeSet<&str> = stats.iter().map(|s| s.skill.as_str()).collect();
+            assert_eq!(names, BTreeSet::from(["lint"]));
+        }
+
+        #[test]
+        fn same_row_id_in_two_databases_counts_once() {
+            let tmp = tempfile::tempdir().unwrap();
+            let home = tmp.path();
+            for name in ["opencode.db", "opencode-next.db"] {
+                let db_path = opencode_db_path(home, name);
+                fs::create_dir_all(db_path.parent().unwrap()).unwrap();
+                let conn = Connection::open(&db_path).unwrap();
+                create_message_table(&conn);
+                insert_message(
+                    &conn,
+                    "m1",
+                    "s1",
+                    "skill",
+                    1000,
+                    1000,
+                    r#"{"skill":"deploy"}"#,
+                );
+            }
+
+            let mut index = SkillInvocationIndex::default();
+            let known_skills = known(&["deploy"]);
+            let sources = DiscoverySources::default();
+            index.refresh(home, &sources);
+            let stats = stats(&index, &known_skills, &sources);
+            assert_eq!(stats.len(), 1);
+            assert_eq!(stats[0].total, 1);
+        }
+
+        #[test]
+        fn switched_off_source_reads_nothing_and_keeps_cached_uses() {
+            let (tmp, db_path) = temp_opencode_db_home();
+            let home = tmp.path();
+            {
+                let conn = Connection::open(&db_path).unwrap();
+                create_message_table(&conn);
+                insert_message(
+                    &conn,
+                    "m1",
+                    "s1",
+                    "skill",
+                    1000,
+                    1000,
+                    r#"{"skill":"deploy"}"#,
+                );
+            }
+
+            let mut index = SkillInvocationIndex::default();
+            let known_skills = known(&["deploy"]);
+            let enabled = DiscoverySources::default();
+            index.refresh(home, &enabled);
+            assert_eq!(stats(&index, &known_skills, &enabled).len(), 1);
+
+            let mut off = DiscoverySources::default();
+            off.set(AgentId::OPEN_CODE, false);
+            let report = index.refresh(home, &off);
+            assert_eq!(report.databases_read, 0);
+            assert!(stats(&index, &known_skills, &off).is_empty());
+
+            let report = index.refresh(home, &enabled);
+            assert_eq!(
+                report.databases_read, 0,
+                "stamp was never touched while off"
+            );
+            assert_eq!(stats(&index, &known_skills, &enabled).len(), 1);
+        }
+
+        #[test]
+        fn deleting_the_database_file_drops_its_entry() {
+            let (tmp, db_path) = temp_opencode_db_home();
+            let home = tmp.path();
+            {
+                let conn = Connection::open(&db_path).unwrap();
+                create_message_table(&conn);
+                insert_message(
+                    &conn,
+                    "m1",
+                    "s1",
+                    "skill",
+                    1000,
+                    1000,
+                    r#"{"skill":"deploy"}"#,
+                );
+            }
+
+            let mut index = SkillInvocationIndex::default();
+            let known_skills = known(&["deploy"]);
+            let sources = DiscoverySources::default();
+            index.refresh(home, &sources);
+            assert_eq!(stats(&index, &known_skills, &sources).len(), 1);
+
+            fs::remove_file(&db_path).unwrap();
+            let report = index.refresh(home, &sources);
+            assert_eq!(report.files_dropped, 1);
+            assert!(stats(&index, &known_skills, &sources).is_empty());
+        }
+
+        #[test]
+        fn refresh_never_creates_wal_or_shm_sidecars() {
+            let (tmp, db_path) = temp_opencode_db_home();
+            let home = tmp.path();
+            {
+                let conn = Connection::open(&db_path).unwrap();
+                create_message_table(&conn);
+                insert_message(
+                    &conn,
+                    "m1",
+                    "s1",
+                    "skill",
+                    1000,
+                    1000,
+                    r#"{"skill":"deploy"}"#,
+                );
+            }
+
+            let mut index = SkillInvocationIndex::default();
+            let sources = DiscoverySources::default();
+            index.refresh(home, &sources);
+
+            let mut wal = db_path.as_os_str().to_owned();
+            wal.push("-wal");
+            let mut shm = db_path.as_os_str().to_owned();
+            shm.push("-shm");
+            assert!(!Path::new(&wal).exists());
+            assert!(!Path::new(&shm).exists());
+        }
+
+        #[test]
+        fn cache_round_trip_keeps_database_uses_and_a_files_only_cache_still_loads() {
+            let (tmp, db_path) = temp_opencode_db_home();
+            let home = tmp.path();
+            {
+                let conn = Connection::open(&db_path).unwrap();
+                create_message_table(&conn);
+                insert_message(
+                    &conn,
+                    "m1",
+                    "s1",
+                    "skill",
+                    1000,
+                    1000,
+                    r#"{"skill":"deploy"}"#,
+                );
+            }
+
+            let mut index = SkillInvocationIndex::default();
+            let known_skills = known(&["deploy"]);
+            let sources = DiscoverySources::default();
+            index.refresh(home, &sources);
+
+            let cache_path = tmp.path().join("cache/skill-uses.json");
+            index.save(&cache_path).unwrap();
+            let loaded = SkillInvocationIndex::load_or_empty(&cache_path);
+            let stats = stats(&loaded, &known_skills, &sources);
+            assert_eq!(stats.len(), 1);
+            assert_eq!(stats[0].skill, "deploy");
+
+            let files_only = tmp.path().join("files-only.json");
+            fs::write(&files_only, r#"{"files":{}}"#).unwrap();
+            let loaded = SkillInvocationIndex::load_or_empty(&files_only);
+            assert!(loaded.files.is_empty());
+            assert!(loaded.databases.is_empty());
+        }
+
+        #[test]
+        fn a_row_with_a_null_time_created_is_skipped_and_the_other_row_still_counts() {
+            let (tmp, db_path) = temp_opencode_db_home();
+            let home = tmp.path();
+            {
+                let conn = Connection::open(&db_path).unwrap();
+                create_message_table(&conn);
+                create_part_table(&conn);
+                conn.execute(
+                    "INSERT INTO session_message (id, session_id, type, time_created, \
+                     time_updated, data) VALUES ('bad', 's1', 'skill', NULL, 1000, ?1)",
+                    params![r#"{"skill":"deploy"}"#],
+                )
+                .unwrap();
+                insert_message(
+                    &conn,
+                    "good",
+                    "s1",
+                    "skill",
+                    2000,
+                    2000,
+                    r#"{"skill":"lint"}"#,
+                );
+                conn.execute(
+                    "INSERT INTO part (id, session_id, time_created, time_updated, data) \
+                     VALUES ('bad-part', 's1', NULL, 1000, ?1)",
+                    params![r#"{"type":"tool","tool":"skill","state":{"status":"completed","input":{"name":"deploy"}}}"#],
+                )
+                .unwrap();
+            }
+
+            let mut index = SkillInvocationIndex::default();
+            let known_skills = known(&["deploy", "lint"]);
+            let sources = DiscoverySources::default();
+            let report = index.refresh(home, &sources);
+            assert_eq!(report.databases_read, 1);
+            let stats = stats(&index, &known_skills, &sources);
+            let names: BTreeSet<&str> = stats.iter().map(|s| s.skill.as_str()).collect();
+            assert_eq!(
+                names,
+                BTreeSet::from(["lint"]),
+                "the bad row must not fail the read"
+            );
+        }
+
+        #[test]
+        fn an_unreadable_database_file_reads_nothing_and_never_sets_incomplete() {
+            let tmp = tempfile::tempdir().unwrap();
+            let home = tmp.path();
+            // An existing (empty) Claude Code projects dir, so this test's
+            // `incomplete` assertion is about the OpenCode read failure, not
+            // an unrelated missing-directory failure on the other source.
+            fs::create_dir_all(home.join(CLAUDE_PROJECTS_ROOT)).unwrap();
+            let db_path = opencode_db_path(home, "opencode.db");
+            fs::create_dir_all(db_path.parent().unwrap()).unwrap();
+            fs::write(&db_path, b"not a database").unwrap();
+
+            let mut index = SkillInvocationIndex::default();
+            let sources = DiscoverySources::default();
+            let report = index.refresh(home, &sources);
+            assert_eq!(report.databases_read, 0);
+            assert!(
+                !report.incomplete,
+                "a failed database read must not force a re-run loop"
+            );
+            assert!(
+                index.databases.is_empty(),
+                "a failed read must not cache the file's stamp"
+            );
+        }
     }
 }

@@ -13,15 +13,15 @@ use std::collections::BTreeSet;
 use std::fs;
 use std::io::{BufRead, BufReader, Read};
 use std::path::{Path, PathBuf};
-use std::time::{Duration, SystemTime};
+use std::time::SystemTime;
 
-use rusqlite::{Connection, OpenFlags};
 use skill_studio_core::discovery_sources::DiscoverySources;
 use skill_studio_core::error::CoreError;
 use skill_studio_core::identity::AgentId;
 use skill_studio_core::ports::ProjectDiscovery;
 
 use crate::fs::RealFs;
+use crate::opencode_db::{open_opencode_database, opencode_databases, OPENCODE_DATA_ROOT};
 
 /// Skill directories (relative to a project root) whose presence marks a
 /// directory as a real skills project, not just any directory a session
@@ -281,14 +281,6 @@ fn cursor_workspace_folder(path: &Path) -> Option<PathBuf> {
     url::Url::parse(folder).ok()?.to_file_path().ok()
 }
 
-/// OpenCode's data dir at its default `$XDG_DATA_HOME` location.
-const OPENCODE_DATA_ROOT: &str = ".local/share/opencode";
-
-/// OpenCode's database is `opencode.db` on the latest, beta, and prod
-/// channels and `opencode-<channel>.db` on every other channel (`next` for
-/// the v2 beta, `local` for source builds), so one machine can hold several.
-const MAX_OPENCODE_DATABASES: usize = 16;
-
 /// Project rows read per database, and legacy project files read in total.
 const MAX_OPENCODE_PROJECTS: usize = 10_000;
 
@@ -298,57 +290,17 @@ const MAX_OPENCODE_PROJECTS: usize = 10_000;
 fn opencode_worktrees(home: &Path) -> Vec<PathBuf> {
     let root = home.join(OPENCODE_DATA_ROOT);
     let mut out = opencode_legacy_worktrees(&root.join("storage/project"));
-    let Ok(entries) = fs::read_dir(&root) else {
-        return out;
-    };
-    let mut databases: Vec<PathBuf> = entries
-        .flatten()
-        .map(|entry| entry.path())
-        .filter(|path| {
-            path.file_name()
-                .and_then(|name| name.to_str())
-                .is_some_and(|name| {
-                    name == "opencode.db"
-                        || (name.starts_with("opencode-") && name.ends_with(".db"))
-                })
-        })
-        .filter(|path| is_regular_file(path))
-        .collect();
-    databases.sort();
-    for database in databases.iter().take(MAX_OPENCODE_DATABASES) {
-        out.extend(opencode_database_worktrees(database));
+    for database in opencode_databases(home) {
+        out.extend(opencode_database_worktrees(&database));
     }
     out
 }
 
-/// `project.worktree` values from one OpenCode database. OpenCode keeps its
-/// database in WAL mode, and a plain read-only open creates the `-wal` and
-/// `-shm` files when they are missing. So the database is opened as
-/// immutable unless both files exist, which is the case while OpenCode runs
-/// and rows that are only in the WAL must still be seen.
+/// `project.worktree` values from one OpenCode database.
 fn opencode_database_worktrees(database: &Path) -> Vec<PathBuf> {
-    let live = ["-wal", "-shm"].iter().all(|suffix| {
-        let mut sidecar = database.as_os_str().to_owned();
-        sidecar.push(suffix);
-        Path::new(&sidecar).exists()
-    });
-    let Ok(mut uri) = url::Url::from_file_path(database) else {
+    let Some(conn) = open_opencode_database(database) else {
         return Vec::new();
     };
-    uri.set_query(Some(if live {
-        "mode=ro"
-    } else {
-        "mode=ro&immutable=1"
-    }));
-    let Ok(conn) = Connection::open_with_flags(
-        uri.as_str(),
-        OpenFlags::SQLITE_OPEN_READ_ONLY
-            | OpenFlags::SQLITE_OPEN_URI
-            | OpenFlags::SQLITE_OPEN_NO_MUTEX,
-    ) else {
-        return Vec::new();
-    };
-    let _ = conn.busy_timeout(Duration::from_millis(250));
     let Ok(mut statement) = conn.prepare("SELECT worktree FROM project LIMIT ?1") else {
         return Vec::new();
     };
@@ -551,6 +503,7 @@ impl ProjectDiscovery for HostProjectDiscovery {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use rusqlite::Connection;
 
     #[test]
     fn codex_config_toml_projects_are_parsed_and_filtered() {

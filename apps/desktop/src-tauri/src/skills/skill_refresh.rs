@@ -1621,31 +1621,47 @@ fn is_under_plugin_cache(path: &Path, home: &Path) -> bool {
         || path.starts_with(home.join(".codex/plugins/cache"))
 }
 
-/// Classify a single filesystem-watch event. Claude Code names each project
-/// directory under `claude_projects_dir` after the session's cwd, so a new
-/// cwd always shows up as a new directory there: only an entry directly
-/// under `claude_projects_dir` can change the project set. Every other path
-/// under it is a transcript (new, changed, or deleted) and only needs the
-/// invocation index refreshed; the index drops files that no longer exist.
-/// Transcript-based project discovery reads under a byte budget and can
-/// return a slightly different set on each run, so comparing project sets
-/// is not a usable signal. Outside `claude_projects_dir`, only paths that
-/// can actually change `snapshot.skills` - a skill directory, a native
-/// plugin cache, a known config/lock file, or a harness directory being
-/// created/removed - trigger a rebuild; everything else (for example a git
-/// worktree's build output under a project's `.claude/worktrees/*/target`)
-/// is ignored.
+/// Classify a single filesystem-watch event. A path that is itself one of
+/// `skill_studio_host::skill_use_watch_paths`' directories (created or
+/// removed) triggers a full rebuild first, so the watch set gets reconciled
+/// even though the directory didn't exist at startup. Claude Code names each
+/// project directory under `claude_projects_dir` after the session's cwd, so
+/// a new cwd always shows up as a new directory there: only an entry
+/// directly under `claude_projects_dir` can change the project set. Every
+/// other path under it is a transcript (new, changed, or deleted) and only
+/// needs the invocation index refreshed; the index drops files that no
+/// longer exist. Transcript-based project discovery reads under a byte
+/// budget and can return a slightly different set on each run, so comparing
+/// project sets is not a usable signal. A change under any other harness's
+/// session-history directory named by `skill_studio_host::is_skill_use_change`
+/// (OpenCode's database, so far) is likewise invocations-only. Outside
+/// `claude_projects_dir`, only paths that can actually change
+/// `snapshot.skills` - a skill directory, a native plugin cache, a known
+/// config/lock file, or a harness directory being created/removed - trigger
+/// a rebuild; everything else (for example a git worktree's build output
+/// under a project's `.claude/worktrees/*/target`) is ignored.
 pub fn classify_watch_event(
     path: &Path,
     home: &Path,
     claude_projects_dir: &Path,
 ) -> WatchEventKind {
+    if skill_studio_host::skill_use_watch_paths(home)
+        .iter()
+        .any(|watch| watch.path == path)
+    {
+        return WatchEventKind::Skills;
+    }
+
     if path.starts_with(claude_projects_dir) {
         return if path.parent() == Some(claude_projects_dir) {
             WatchEventKind::Skills
         } else {
             WatchEventKind::Invocations
         };
+    }
+
+    if skill_studio_host::is_skill_use_change(home, path) {
+        return WatchEventKind::Invocations;
     }
 
     let is_skills_change = has_skill_dir_component(path)
@@ -1668,16 +1684,18 @@ pub fn classify_watch_event(
 /// the currently known project paths: each global skill root and its parent
 /// (so a directory created later is still picked up), each native plugin
 /// cache and its parent, the lock file's and Codex config's containing
-/// directories, the Claude Code transcripts directory (recursive, since
-/// invocations and project discovery both depend on it) and its parent, and
-/// for each project, only its skill roots: `<project>/<sub>/skills`
-/// (recursive, plus `<project>/.opencode/skill` for OpenCode's legacy
-/// singular dir), `<project>/<sub>` itself (non-recursive, so a `skills` dir
-/// created later is still seen), and the project root (non-recursive, so a
-/// `.claude` etc. created later is still seen). Watching only the skill
-/// roots - rather than each `<project>/<sub>` recursively - keeps unrelated
-/// churn under a harness dir (for example a git worktree's build output
-/// under `.claude/worktrees/*/target`) from triggering a rebuild.
+/// directories, every harness's session-history directory named by
+/// `skill_studio_host::skill_use_watch_paths` (Claude Code's transcripts
+/// recursively, OpenCode's database directory non-recursively) and each of
+/// their parents, and for each project, only its skill roots:
+/// `<project>/<sub>/skills` (recursive, plus `<project>/.opencode/skill` for
+/// OpenCode's legacy singular dir), `<project>/<sub>` itself (non-recursive,
+/// so a `skills` dir created later is still seen), and the project root
+/// (non-recursive, so a `.claude` etc. created later is still seen).
+/// Watching only the skill roots - rather than each `<project>/<sub>`
+/// recursively - keeps unrelated churn under a harness dir (for example a
+/// git worktree's build output under `.claude/worktrees/*/target`) from
+/// triggering a rebuild.
 pub fn desired_watch_paths(home: &Path, projects: &[PathBuf]) -> Vec<WatchPath> {
     let mut merged: BTreeMap<PathBuf, bool> = BTreeMap::new();
     let add = |merged: &mut BTreeMap<PathBuf, bool>, path: PathBuf, recursive: bool| {
@@ -1707,7 +1725,16 @@ pub fn desired_watch_paths(home: &Path, projects: &[PathBuf]) -> Vec<WatchPath> 
 
     add(&mut merged, home.join(".agents"), false);
     add(&mut merged, home.join(".codex"), false);
-    add(&mut merged, home.join(".claude/projects"), true);
+    for watch in skill_studio_host::skill_use_watch_paths(home) {
+        // A dir that doesn't exist yet at startup is skipped by
+        // `reconcile_watchers`, so its parent is watched too (non-recursive)
+        // - the same pattern the global skill roots above use - and
+        // `classify_watch_event` reconciles the watch set once it appears.
+        if let Some(parent) = watch.path.parent() {
+            add(&mut merged, parent.to_path_buf(), false);
+        }
+        add(&mut merged, watch.path, watch.recursive);
+    }
     add(&mut merged, home.join(".claude"), false);
 
     for project in projects {
@@ -1818,6 +1845,18 @@ mod tests {
         paths.sort();
         paths.dedup();
         assert_eq!(before, paths.len());
+    }
+
+    #[test]
+    fn desired_watch_paths_watches_opencode_data_dir_non_recursively() {
+        let home = PathBuf::from("/home/tester");
+        let paths = desired_watch_paths(&home, &[]);
+        assert!(paths
+            .iter()
+            .any(|w| w.path == home.join(".local/share/opencode") && !w.recursive));
+        assert!(paths
+            .iter()
+            .any(|w| w.path == home.join(".local/share") && !w.recursive));
     }
 
     #[test]
@@ -1938,6 +1977,63 @@ mod tests {
         assert_eq!(
             classify_watch_event(&path, &home, &claude_projects),
             WatchEventKind::Skills
+        );
+    }
+
+    #[test]
+    fn classify_watch_event_opencode_database_is_invocations() {
+        let home = PathBuf::from("/home/tester");
+        let claude_projects = home.join(".claude/projects");
+        let opencode_dir = home.join(".local/share/opencode");
+        assert_eq!(
+            classify_watch_event(&opencode_dir.join("opencode.db"), &home, &claude_projects),
+            WatchEventKind::Invocations
+        );
+        assert_eq!(
+            classify_watch_event(
+                &opencode_dir.join("opencode-next.db-wal"),
+                &home,
+                &claude_projects
+            ),
+            WatchEventKind::Invocations
+        );
+        assert_eq!(
+            classify_watch_event(
+                &opencode_dir.join("opencode.db-shm"),
+                &home,
+                &claude_projects
+            ),
+            WatchEventKind::Ignored
+        );
+        assert_eq!(
+            classify_watch_event(
+                &opencode_dir.join("storage/session/x.json"),
+                &home,
+                &claude_projects
+            ),
+            WatchEventKind::Ignored
+        );
+    }
+
+    #[test]
+    fn classify_watch_event_watch_dir_itself_created_or_removed_is_skills() {
+        let home = PathBuf::from("/home/tester");
+        let claude_projects = home.join(".claude/projects");
+        assert_eq!(
+            classify_watch_event(&claude_projects, &home, &claude_projects),
+            WatchEventKind::Skills
+        );
+        assert_eq!(
+            classify_watch_event(&home.join(".local/share/opencode"), &home, &claude_projects),
+            WatchEventKind::Skills
+        );
+        assert_eq!(
+            classify_watch_event(
+                &home.join(".local/share/other-app/x.db"),
+                &home,
+                &claude_projects
+            ),
+            WatchEventKind::Ignored
         );
     }
 

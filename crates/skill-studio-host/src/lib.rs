@@ -23,6 +23,7 @@ mod fs;
 mod history;
 mod ids;
 mod lease;
+mod opencode_db;
 mod sink;
 mod skill_uses;
 mod tools;
@@ -35,5 +36,8 @@ pub use history::{hash_entry, NoHistoryOpener, SqliteHistoryOpener};
 pub use ids::UlidIds;
 pub use lease::FileLease;
 pub use sink::{NoopSink, StderrSink};
-pub use skill_uses::{SkillInvocationIndex, SkillUseRefreshReport};
+pub use skill_uses::{
+    is_skill_use_change, skill_use_watch_paths, SkillInvocationIndex, SkillUseRefreshReport,
+    SkillUseWatchPath,
+};
 pub use tools::PathToolLookup;

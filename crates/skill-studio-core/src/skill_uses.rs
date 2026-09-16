@@ -12,6 +12,11 @@ use serde::{Deserialize, Serialize};
 
 use crate::discovery_sources::DiscoverySources;
 
+mod opencode;
+pub use opencode::{
+    parse_opencode_message, parse_opencode_part, OpenCodeMessageRow, OpenCodePartRow,
+};
+
 /// How a skill use started.
 #[derive(
     Debug, Copy, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize, JsonSchema,
@@ -281,6 +286,25 @@ pub fn skill_heatmap<'a>(
     InvocationHeatmap { days: result }
 }
 
+/// The skill name in a path that ends `/skills/<name>/SKILL.md` or
+/// `/skill/<name>/SKILL.md`. Used to recognize a plain file read of a
+/// skill's own doc as a use of that skill.
+pub fn skill_name_from_skill_md_path(path: &str) -> Option<&str> {
+    let segments: Vec<&str> = path.split('/').collect();
+    let len = segments.len();
+    if len < 3 || segments[len - 1] != "SKILL.md" {
+        return None;
+    }
+    let name = segments[len - 2];
+    if name.is_empty() || name == "." || name == ".." {
+        return None;
+    }
+    match segments[len - 3] {
+        "skills" | "skill" => Some(name),
+        _ => None,
+    }
+}
+
 /// Fast-path substrings a line must contain before it's worth a full JSON
 /// parse: a `Skill` tool_use, or a typed command block.
 const SKILL_TOOL_MARKER: &str = "\"name\":\"Skill\"";
@@ -411,6 +435,38 @@ mod tests {
 
     fn known(skills: &[&str]) -> BTreeSet<String> {
         skills.iter().map(|s| s.to_string()).collect()
+    }
+
+    #[test]
+    fn skill_name_from_skill_md_path_rules() {
+        assert_eq!(
+            skill_name_from_skill_md_path("/Users/me/.claude/skills/foo/SKILL.md"),
+            Some("foo")
+        );
+        assert_eq!(
+            skill_name_from_skill_md_path(".config/opencode/skill/foo/SKILL.md"),
+            Some("foo")
+        );
+        assert_eq!(
+            skill_name_from_skill_md_path(
+                "/home/me/.codex/plugins/cache/m/p/1.0/skills/foo/SKILL.md"
+            ),
+            Some("foo")
+        );
+        assert_eq!(skill_name_from_skill_md_path("/x/foo/SKILL.md"), None);
+        assert_eq!(skill_name_from_skill_md_path("/x/skills/SKILL.md"), None);
+        assert_eq!(
+            skill_name_from_skill_md_path("/x/skills/foo/bar/SKILL.md"),
+            None
+        );
+        assert_eq!(
+            skill_name_from_skill_md_path("/x/skills/foo/skill.md"),
+            None
+        );
+        assert_eq!(
+            skill_name_from_skill_md_path("/x/skills/foo/SKILL.md.bak"),
+            None
+        );
     }
 
     fn filter<'a>(
