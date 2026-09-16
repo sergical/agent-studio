@@ -333,7 +333,9 @@ export function Sidebar({ snapshot, emittedSnapshotRevision, requestRescan }: Si
   return (
     <nav className="flex w-60 shrink-0 flex-col overflow-hidden">
       <div data-tauri-drag-region className="h-9 shrink-0" />
-      <div className="flex h-7 shrink-0 items-center justify-between pr-1.5 pl-3.5">
+      {/* 41px = the page panel's 1px top border plus PageShell's 40px header, so this title sits on
+          the same line as the page title. */}
+      <div className="flex h-[41px] shrink-0 items-center justify-between pr-1.5 pl-3.5">
         <span className="text-small font-semibold text-text-primary">Skill Studio</span>
         <div className="flex items-center gap-0.5">
           {/* The sidebar switcher row only fits two icons without crowding, so the command
