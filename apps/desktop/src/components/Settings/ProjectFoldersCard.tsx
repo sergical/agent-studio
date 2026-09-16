@@ -8,8 +8,8 @@
 // ============================================================================
 
 import { useEffect, useEffectEvent, useRef, useState } from "react";
-import { AlertTriangle, FolderOpen, Plus } from "lucide-react";
-import { Button } from "@skill-studio/ui";
+import { AlertTriangle, ChevronDown, FolderOpen, Plus } from "lucide-react";
+import { Button, Collapsible, CollapsiblePanel, CollapsibleTrigger } from "@skill-studio/ui";
 import {
   deploymentLabelFromAgentId,
   homeRelativePath,
@@ -106,11 +106,96 @@ function FolderRow({
   );
 }
 
+/** The folder list, closed behind a one-line summary until opened. */
+function FolderList({
+  folders,
+  sources,
+  skillCounts,
+  open,
+  onOpenChange,
+  onStopTracking,
+  onRemove,
+}: {
+  folders: ProjectFolder[] | null;
+  sources: DiscoverySourceSetting[] | null;
+  skillCounts: Map<string, number>;
+  open: boolean;
+  onOpenChange: (open: boolean) => void;
+  onStopTracking: (path: string) => void;
+  onRemove: (path: string) => void;
+}) {
+  if (folders === null || sources === null) {
+    return (
+      <p className="m-0 rounded-md border border-border-subtle px-3 py-2 text-small text-text-tertiary">
+        Looking for project folders…
+      </p>
+    );
+  }
+
+  if (folders.length === 0) {
+    const enabledLabels: string[] = [];
+    for (const source of sources) {
+      if (source.enabled) enabledLabels.push(deploymentLabelFromAgentId(source.harness));
+    }
+    return (
+      <p className="m-0 rounded-md border border-border-subtle px-3 py-2 text-small text-text-tertiary">
+        {enabledLabels.length === 0
+          ? "Search is off for every harness, so only folders you add appear here."
+          : `No project folders with skills yet. Skill Studio searched the history of ${joinWithAnd(
+              enabledLabels,
+            )}. If your project is somewhere else, add it by hand.`}
+      </p>
+    );
+  }
+
+  const missingCount = folders.filter((folder) => folder.missing).length;
+  return (
+    // No overflow-hidden here: the global :focus-visible outline sits 2px outside the trigger and
+    // would be clipped.
+    <Collapsible
+      open={open}
+      onOpenChange={onOpenChange}
+      className="rounded-md border border-border-subtle"
+    >
+      <CollapsibleTrigger className="group/folders flex h-9 w-full items-center gap-2 rounded-md px-3 text-left text-small text-text-secondary transition-colors hover:bg-bg-hover data-panel-open:rounded-b-none">
+        <ChevronDown
+          aria-hidden
+          className="size-3.5 shrink-0 -rotate-90 text-text-tertiary transition-transform motion-reduce:transition-none group-data-panel-open/folders:rotate-0"
+        />
+        <span className="font-medium tabular-nums">
+          {folders.length} {folders.length === 1 ? "folder" : "folders"}
+        </span>
+        {missingCount > 0 && (
+          <span className="flex items-center gap-1 text-text-tertiary">
+            <span aria-hidden="true">·</span>
+            <AlertTriangle size={12} className="text-warning" aria-hidden="true" />
+            <span className="tabular-nums">{missingCount}</span> not found
+          </span>
+        )}
+      </CollapsibleTrigger>
+      <CollapsiblePanel>
+        <ul className="m-0 list-none border-t border-border-subtle p-0">
+          {folders.map((folder) => (
+            <FolderRow
+              key={folder.path}
+              folder={folder}
+              skillCount={skillCounts.get(folder.path) ?? 0}
+              onStopTracking={onStopTracking}
+              onRemove={onRemove}
+            />
+          ))}
+        </ul>
+      </CollapsiblePanel>
+    </Collapsible>
+  );
+}
+
 export function ProjectFoldersCard({ snapshot }: ProjectFoldersCardProps) {
   const addToast = useAppStore((state) => state.addToast);
   const { addProject, stopTracking, removeProject } = useProjectFolderActions();
   const [folders, setFolders] = useState<ProjectFolder[] | null>(null);
   const [sources, setSources] = useState<DiscoverySourceSetting[] | null>(null);
+  const [foldersOpen, setFoldersOpen] = useState(false);
   const requestId = useRef(0);
 
   const refetchFolders = () => {
@@ -156,7 +241,9 @@ export function ProjectFoldersCard({ snapshot }: ProjectFoldersCardProps) {
 
   const handleAddFolder = async () => {
     const added = await addProject();
-    if (added) refetchFolders();
+    if (!added) return;
+    setFoldersOpen(true);
+    refetchFolders();
   };
 
   const handleStopTracking = async (path: string) => {
@@ -187,12 +274,6 @@ export function ProjectFoldersCard({ snapshot }: ProjectFoldersCardProps) {
       });
     }
   };
-
-  const isLoading = folders === null || sources === null;
-  const enabledLabels: string[] = [];
-  for (const source of sources ?? []) {
-    if (source.enabled) enabledLabels.push(deploymentLabelFromAgentId(source.harness));
-  }
 
   return (
     <SettingsCard
@@ -231,33 +312,15 @@ export function ProjectFoldersCard({ snapshot }: ProjectFoldersCardProps) {
         </div>
       </div>
 
-      <div className="rounded-md border border-border-subtle divide-y divide-border-subtle">
-        {isLoading ? (
-          <p className="m-0 px-3 py-2 text-small text-text-tertiary">
-            Looking for project folders…
-          </p>
-        ) : folders.length === 0 ? (
-          <p className="m-0 px-3 py-2 text-small text-text-tertiary">
-            {enabledLabels.length === 0
-              ? "Search is off for every harness, so only folders you add appear here."
-              : `No project folders with skills yet. Skill Studio searched the history of ${joinWithAnd(
-                  enabledLabels,
-                )}. If your project is somewhere else, add it by hand.`}
-          </p>
-        ) : (
-          <ul className="m-0 list-none p-0">
-            {folders.map((folder) => (
-              <FolderRow
-                key={folder.path}
-                folder={folder}
-                skillCount={skillCounts.get(folder.path) ?? 0}
-                onStopTracking={handleStopTracking}
-                onRemove={handleRemove}
-              />
-            ))}
-          </ul>
-        )}
-      </div>
+      <FolderList
+        folders={folders}
+        sources={sources}
+        skillCounts={skillCounts}
+        open={foldersOpen}
+        onOpenChange={setFoldersOpen}
+        onStopTracking={handleStopTracking}
+        onRemove={handleRemove}
+      />
     </SettingsCard>
   );
 }
