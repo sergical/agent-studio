@@ -1284,7 +1284,10 @@ mod tests {
         for index in 0..201 {
             let id = format!("done-{index}");
             store
-                .record(&id, draft("install", &id, serde_json::json!({}), None, None))
+                .record(
+                    &id,
+                    draft("install", &id, serde_json::json!({}), None, None),
+                )
                 .unwrap();
             store.finish(&id, EventStatus::Done).unwrap();
         }
