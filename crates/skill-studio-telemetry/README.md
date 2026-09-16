@@ -55,11 +55,21 @@ and allocation costs still need measurement. The sender bounds are below.
 
 Error/fatal events tagged as cancelled, scope_busy, scope_deadline_exceeded, or
 scope_changed are dropped. Normal callers must still avoid reporting expected
-outcomes as errors. Raw exception text, native stacks, debug images, breadcrumbs,
-user data, requests, and unrecognized context are omitted. This protects privacy
-but does not satisfy native symbolication or meaningful crash grouping. Do not
-enable production error export until a native frame/image policy is implemented
-and verified.
+outcomes as errors. Desktop errors retain the last eight exceptions and last 128
+frames per stack. Frames contain only nonzero absolute instruction addresses;
+exceptions use a fixed type and omit their text. The first 128 debug images are
+examined. Matching Apple/Symbolic images retain typed identifiers, numeric address
+ranges and VM addresses, with a fixed image name. Other images and metadata are
+dropped. This can omit a matching image beyond the inspection limit. Relative or
+addressless frames are dropped. Native platform is set only when frames survive.
+Existing non-desktop surfaces still omit all native diagnostics.
+
+Raw exception text, source context, symbols, paths, locals, threads, breadcrumbs,
+user data, requests and unrecognized context remain omitted. Tests prove the final
+encoded payload policy, not remote symbolication. The session currently uses
+`Client::from` with default integrations disabled; the desktop also omits the
+backtrace/debug-images features. Capture integration must be wired explicitly and
+verified with matching build symbols before production error reporting is accepted.
 
 Tests use hostile typed data and the actual SDK with an in-memory transport.
 They prove four-signal trace correlation and retained read/scan nesting after
@@ -181,5 +191,19 @@ run. Production source remained unchanged; the earlier full-test result applies.
 Tests use in-memory sinks and joined temporary loopback peers. They send no
 production telemetry. CI repeats formatting, strict Clippy and tests with two
 build workers, one test thread, a ten-minute deadline and three-day test-log
-retention. Application wiring, native acceptance, remote receipt and the native
-frame/image policy remain separate delivery requirements.
+retention. Application wiring, native acceptance and remote receipt remain separate delivery
+requirements. The subsequent native frame/image policy is recorded below.
+
+## Native envelope verification — September 16, 2026
+
+Five native envelope tests and five existing privacy tests passed (1.38 s compile,
+0.07 s tests). They cover retained Apple/Symbolic identifiers, private-field removal,
+tail limits, image inspection limits, empty/overflow/half-open ranges, unsupported
+images, invalid frames, and unchanged non-desktop filtering. Strict all-target
+Clippy and formatting passed. Two Cargo workers and one test thread reused the
+existing cache. Preflight: 54% memory free and 61 GiB disk free. Peak memory was
+not measured. No network export, server, app launch, or full local suite was used.
+The fixture is committed source; no raw captures or temporary logs are retained.
+
+This change does not enable capture integrations, upload symbols, or establish
+remote symbolication. Those requirements remain open for desktop monitoring.

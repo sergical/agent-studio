@@ -5,6 +5,7 @@ use std::io::{self, Write};
 
 const MAX_ITEMS: usize = 64;
 const MAX_CHILDREN: usize = 128;
+const MAX_EXCEPTIONS: usize = 8;
 const MAX_ENCODED_BYTES: usize = 256 * 1024;
 
 pub struct SanitizedEnvelope(Vec<u8>);
@@ -244,7 +245,111 @@ fn sanitize_transaction(
     })
 }
 
-fn sanitize_event(input: Event<'static>, identity: &TelemetryIdentity) -> Option<Event<'static>> {
+fn sanitize_stacktrace(mut input: Stacktrace) -> Option<Stacktrace> {
+    let keep_from = input.frames.len().saturating_sub(MAX_CHILDREN);
+    let frames: Vec<_> = input
+        .frames
+        .drain(keep_from..)
+        .filter_map(|frame| {
+            if !matches!(frame.addr_mode.as_deref(), None | Some("abs")) {
+                return None;
+            }
+            let address = frame.instruction_addr.filter(|address| address.0 != 0)?;
+            Some(Frame {
+                instruction_addr: Some(address),
+                ..Default::default()
+            })
+        })
+        .collect();
+    (!frames.is_empty()).then_some(Stacktrace {
+        frames,
+        ..Default::default()
+    })
+}
+
+fn sanitize_native_diagnostics(input: &mut Event<'static>) {
+    input.stacktrace = input.stacktrace.take().and_then(sanitize_stacktrace);
+    let keep_from = input.exception.values.len().saturating_sub(MAX_EXCEPTIONS);
+    input.exception.values = input
+        .exception
+        .values
+        .drain(keep_from..)
+        .filter_map(|exception| {
+            sanitize_stacktrace(exception.stacktrace?).map(|stacktrace| Exception {
+                ty: "SkillStudioError".into(),
+                stacktrace: Some(stacktrace),
+                ..Default::default()
+            })
+        })
+        .collect();
+    let addresses: Vec<_> = input
+        .stacktrace
+        .iter()
+        .chain(
+            input
+                .exception
+                .values
+                .iter()
+                .filter_map(|exception| exception.stacktrace.as_ref()),
+        )
+        .flat_map(|stack| {
+            stack
+                .frames
+                .iter()
+                .filter_map(|frame| frame.instruction_addr)
+        })
+        .collect();
+    let images = std::mem::take(&mut input.debug_meta.to_mut().images)
+        .into_iter()
+        .take(MAX_CHILDREN)
+        .filter_map(|image| {
+            let (base, size) = match &image {
+                DebugImage::Apple(image) => (image.image_addr.0, image.image_size),
+                DebugImage::Symbolic(image) => (image.image_addr.0, image.image_size),
+                _ => return None,
+            };
+            let end = base.checked_add(size)?;
+            if !addresses
+                .iter()
+                .any(|address| (base..end).contains(&address.0))
+            {
+                return None;
+            }
+            match image {
+                DebugImage::Apple(image) => Some(DebugImage::Apple(AppleDebugImage {
+                    name: "native-image".into(),
+                    uuid: image.uuid,
+                    image_addr: image.image_addr,
+                    image_size: image.image_size,
+                    image_vmaddr: image.image_vmaddr,
+                    arch: None,
+                    cpu_type: None,
+                    cpu_subtype: None,
+                })),
+                DebugImage::Symbolic(image) => Some(DebugImage::Symbolic(SymbolicDebugImage {
+                    name: "native-image".into(),
+                    id: image.id,
+                    image_addr: image.image_addr,
+                    image_size: image.image_size,
+                    image_vmaddr: image.image_vmaddr,
+                    arch: None,
+                    code_id: None,
+                    debug_file: None,
+                })),
+                _ => None,
+            }
+        })
+        .collect();
+    input.debug_meta = std::borrow::Cow::Owned(DebugMeta {
+        images,
+        ..Default::default()
+    });
+}
+
+fn sanitize_event(
+    mut input: Event<'static>,
+    identity: &TelemetryIdentity,
+) -> Option<Event<'static>> {
     if !matches!(input.level, Level::Error | Level::Fatal) {
         return None;
     }
@@ -256,7 +361,22 @@ fn sanitize_event(input: Event<'static>, identity: &TelemetryIdentity) -> Option
     }) {
         return None;
     }
+    if identity.surface == "desktop" {
+        sanitize_native_diagnostics(&mut input);
+    } else {
+        input.stacktrace = None;
+        input.exception = Default::default();
+        input.debug_meta = Default::default();
+    }
     Some(Event {
+        platform: if input.stacktrace.is_some() || !input.exception.values.is_empty() {
+            "native".into()
+        } else {
+            Event::default().platform
+        },
+        stacktrace: input.stacktrace,
+        exception: input.exception,
+        debug_meta: input.debug_meta,
         event_id: input.event_id,
         timestamp: input.timestamp,
         level: input.level,
