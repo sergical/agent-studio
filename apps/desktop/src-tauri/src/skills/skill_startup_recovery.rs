@@ -79,6 +79,15 @@ fn recover_with_scope(
             )
             .map(|_| ());
         }
+        if row.kind == skill_studio_core::skill_fork_pull::EVENT_KIND {
+            return skill_studio_core::skill_fork_pull::recover_fork_pull(
+                &mut service,
+                store,
+                row,
+                super::skill_copy_recovery::removal_limits(),
+                Some(std::time::Duration::from_secs(30)),
+            );
+        }
         if super::skill_copy_repair::is_copy_event(&row.kind) {
             return super::skill_copy_repair::recover(&mut service, store, row);
         }
@@ -330,5 +339,42 @@ mod tests {
             store.get("fork-creation").unwrap().unwrap().status,
             "pending"
         );
+    }
+
+    #[test]
+    fn fork_pull_is_dispatched_by_the_ordered_recovery_loop() {
+        let temp = tempfile::tempdir().unwrap();
+        let home = temp.path().join("home");
+        std::fs::create_dir_all(home.join(".agents/skills")).unwrap();
+        let store = EventStore::open(&temp.path().join("state")).unwrap();
+        store
+            .record(
+                "fork-pull",
+                EventDraft {
+                    kind: skill_studio_core::skill_fork_pull::EVENT_KIND.into(),
+                    skill: "sample".into(),
+                    harness: Some("universal".into()),
+                    scope: Some("global".into()),
+                    project_path: None,
+                    payload: serde_json::Value::Null,
+                    inverse: None,
+                    backup_dir: Some("backups/fork-pull".into()),
+                    restorable: false,
+                },
+            )
+            .unwrap();
+        let error = recover_all(
+            SkillScope {
+                home,
+                projects: vec![],
+                backing_roots: vec![],
+                plugin_ownership_roots: vec![],
+            },
+            &store,
+        )
+        .unwrap_err();
+        assert!(error.contains("fork-pull:"), "{error}");
+        assert!(!error.contains("unsupported startup recovery"), "{error}");
+        assert_eq!(store.get("fork-pull").unwrap().unwrap().status, "pending");
     }
 }

@@ -68,6 +68,8 @@ function kindLabel(kind: string): string {
       return "Undid copy repair";
     case "redo_copy_frontmatter":
       return "Reapplied copy repair";
+    case "pull_fork_upstream":
+      return "Pulled upstream";
     default:
       return kind.replace(/_/g, " ");
   }

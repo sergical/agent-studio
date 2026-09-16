@@ -180,7 +180,15 @@ function PullLatestButton({ skill }: { skill: InstalledSkill }) {
     try {
       if (skill.source_kind === "fork") {
         const result = await pullForkUpstream(lifecycleTargetForPark(skill));
-        addToast({ type: "success", title: result.message ?? `Merged ${skill.name}` });
+        if (result.conflicts.length > 0) {
+          addToast({
+            type: "warning",
+            title: `${result.conflicts.length} conflicts in ${skill.name}`,
+            message: result.conflicts.join(", "),
+          });
+        } else {
+          addToast({ type: "success", title: result.message ?? `Merged ${skill.name}` });
+        }
       } else {
         const summary = await updateSkillOwners(skill, updateSkill);
         addToast({
@@ -913,13 +921,15 @@ function UpdatesGroup({
     let failures = 0;
     let attempted = 0;
     let succeeded = 0;
+    let conflicts = 0;
     for (const skill of updates) {
       try {
         if (skill.source_kind === "fork") {
           // react-doctor-disable-next-line react-doctor/async-await-in-loop -- update-all runs sequentially on purpose; concurrent `npx skills update` calls race on ~/.agents/.skill-lock.json
-          await pullForkUpstream(lifecycleTargetForPark(skill));
+          const result = await pullForkUpstream(lifecycleTargetForPark(skill));
           attempted += 1;
           succeeded += 1;
+          conflicts += result.conflicts.length;
         } else {
           // react-doctor-disable-next-line react-doctor/async-await-in-loop -- update-all runs sequentially on purpose; concurrent `npx skills update` calls race on ~/.agents/.skill-lock.json
           const summary = await updateSkillOwners(skill, updateSkill);
@@ -933,9 +943,14 @@ function UpdatesGroup({
       }
     }
     addToast({
-      type: failures > 0 ? "warning" : "success",
+      type: failures > 0 || conflicts > 0 ? "warning" : "success",
       title: `Updated ${succeeded} of ${attempted} deployment${attempted === 1 ? "" : "s"}`,
-      message: failures > 0 ? `${failures} failed` : undefined,
+      message:
+        failures > 0
+          ? `${failures} failed${conflicts > 0 ? `; ${conflicts} conflicts need resolution` : ""}`
+          : conflicts > 0
+            ? `${conflicts} conflicts need resolution`
+            : undefined,
     });
     setIsUpdatingAll(false);
   };

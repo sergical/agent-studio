@@ -244,7 +244,11 @@ export async function forkSkill(target: LifecycleTarget): Promise<ForkRecord> {
  * the new upstream commit.
  */
 export async function pullForkUpstream(target: LifecycleTarget): Promise<PullResult> {
-  return invoke("pull_fork_upstream", { target });
+  try {
+    return await invoke("pull_fork_upstream", { target });
+  } catch (cause) {
+    throw cause instanceof Error ? cause : new Error(errorMessage(cause, "Pull failed"));
+  }
 }
 
 /**

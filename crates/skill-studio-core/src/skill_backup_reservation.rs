@@ -192,6 +192,23 @@ pub(crate) fn valid_id(id: &str) -> bool {
 }
 
 impl BackupStateRoot {
+    pub(crate) fn discard_owned_root(
+        self,
+        expected_device: u64,
+        expected_inode: u64,
+    ) -> io::Result<()> {
+        let metadata = self.directory.dir_metadata()?;
+        if (metadata.dev(), metadata.ino()) != (expected_device, expected_inode)
+            || metadata.mode() & 0o777 != 0o700
+        {
+            return Err(io::Error::other(
+                "Owned preparation was replaced; preserving it",
+            ));
+        }
+        self.scope.revalidate_roots().map_err(|_| changed())?;
+        self.directory.remove_open_dir_all()
+    }
+
     #[cfg(feature = "event-store")]
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn restore_verified_fork_live(

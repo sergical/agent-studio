@@ -10,6 +10,8 @@ pub mod skill_document_write;
 pub mod skill_dotagents_ledger;
 #[cfg(all(unix, feature = "event-store"))]
 pub mod skill_fork_creation;
+#[cfg(all(unix, feature = "event-store"))]
+pub mod skill_fork_pull;
 pub mod skill_fork_registry;
 #[cfg(all(unix, feature = "event-store"))]
 pub mod skill_fork_transition;
@@ -52,6 +54,8 @@ pub mod skill_event_statements;
 pub mod skill_event_store;
 #[cfg(all(unix, feature = "event-store"))]
 pub mod skill_fork_removal;
+#[cfg(all(unix, feature = "event-store"))]
+pub mod skill_tree_exchange;
 #[cfg(all(unix, feature = "event-store"))]
 pub mod skill_tree_move;
 

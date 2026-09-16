@@ -202,7 +202,7 @@ export function useSkillPageActions(
 
   const doPullUpstream = () =>
     runAction(addToast, setIsPulling, "Pull upstream failed", async () => {
-      const result = await pullForkUpstream(lifecycleTargetForSkill(skill, "global"));
+      const result = await pullForkUpstream(lifecycleTargetForPark(skill));
       if (result.message) {
         addToast({ type: "info", title: result.message });
       } else if (result.conflicts.length > 0) {

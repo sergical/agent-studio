@@ -362,7 +362,9 @@ pub fn run_controlled_command_output(
         max_output_bytes,
         max_output_bytes,
         None,
+        &[0],
     )
+    .map(|output| output.stdout)
 }
 
 /// Run a command under one operation deadline with stdout redirected to a
@@ -404,10 +406,41 @@ pub fn run_controlled_command_to_file_limited(
         max_file_bytes,
         max_diagnostic_bytes,
         Some(output_path.to_path_buf()),
+        &[0],
     )
     .map(|_| ())
 }
 
+pub struct ControlledCommandOutput {
+    pub status_code: i32,
+    pub stdout: Vec<u8>,
+}
+
+#[allow(clippy::too_many_arguments)]
+pub fn run_controlled_command_to_file_accepting(
+    program: &Path,
+    args: &[String],
+    cwd: Option<&Path>,
+    control: &AddOperationControl,
+    output_path: &Path,
+    max_file_bytes: usize,
+    max_diagnostic_bytes: usize,
+    accepted_codes: &[i32],
+) -> Result<i32, ControlledProcessError> {
+    run_controlled_command_io(
+        program,
+        args,
+        cwd,
+        control,
+        max_file_bytes,
+        max_diagnostic_bytes,
+        Some(output_path.to_path_buf()),
+        accepted_codes,
+    )
+    .map(|output| output.status_code)
+}
+
+#[allow(clippy::too_many_arguments)]
 fn run_controlled_command_io(
     program: &Path,
     args: &[String],
@@ -416,7 +449,8 @@ fn run_controlled_command_io(
     max_stdout_bytes: usize,
     max_stderr_bytes: usize,
     output_path: Option<PathBuf>,
-) -> Result<Vec<u8>, ControlledProcessError> {
+    accepted_codes: &[i32],
+) -> Result<ControlledCommandOutput, ControlledProcessError> {
     let writes_file = output_path.is_some();
     control.check()?;
     let mut command = Command::new(program);
@@ -468,11 +502,18 @@ fn run_controlled_command_io(
             break Err(error);
         }
         match child.try_wait() {
-            Ok(Some(status)) if status.success() => {
-                break Ok(stdout_buf
-                    .lock()
-                    .map(|bytes| bytes.clone())
-                    .unwrap_or_default())
+            Ok(Some(status))
+                if status
+                    .code()
+                    .is_some_and(|code| accepted_codes.contains(&code)) =>
+            {
+                break Ok(ControlledCommandOutput {
+                    status_code: status.code().unwrap_or(0),
+                    stdout: stdout_buf
+                        .lock()
+                        .map(|bytes| bytes.clone())
+                        .unwrap_or_default(),
+                })
             }
             Ok(Some(status)) => {
                 let stderr = stderr_buf
@@ -546,10 +587,12 @@ fn run_controlled_command_io(
         }
     }
     if outcome.is_ok() {
-        outcome = Ok(stdout_buf
-            .lock()
-            .map(|bytes| bytes.clone())
-            .unwrap_or_default());
+        if let Ok(output) = &mut outcome {
+            output.stdout = stdout_buf
+                .lock()
+                .map(|bytes| bytes.clone())
+                .unwrap_or_default();
+        }
     }
     outcome
 }
@@ -622,6 +665,54 @@ mod tests {
         .unwrap_err();
         assert!(error.into_message().contains("exceeded 1024 byte limit"));
         assert!(fs::metadata(output).unwrap().len() <= 1024);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn accepted_nonzero_exit_keeps_bounded_merge_output() {
+        let tmp = tempfile::tempdir().unwrap();
+        let output = tmp.path().join("output");
+        let status = run_controlled_command_to_file_accepting(
+            Path::new("sh"),
+            &["-c".into(), "printf conflict; exit 3".into()],
+            None,
+            &AddOperationControl::bounded_default(),
+            &output,
+            1024,
+            MAX_PROCESS_OUTPUT_BYTES,
+            &[0, 1, 2, 3],
+        )
+        .unwrap();
+        assert_eq!(status, 3);
+        assert_eq!(fs::read(output).unwrap(), b"conflict");
+
+        let overflow = tmp.path().join("overflow");
+        let error = run_controlled_command_to_file_accepting(
+            Path::new("sh"),
+            &["-c".into(), "head -c 2048 /dev/zero; exit 1".into()],
+            None,
+            &AddOperationControl::bounded_default(),
+            &overflow,
+            1024,
+            MAX_PROCESS_OUTPUT_BYTES,
+            &[0, 1],
+        )
+        .unwrap_err();
+        assert!(error.into_message().contains("exceeded 1024 byte limit"));
+
+        let timeout = tmp.path().join("timeout");
+        let error = run_controlled_command_to_file_accepting(
+            Path::new("sleep"),
+            &["30".into()],
+            None,
+            &AddOperationControl::new(Arc::new(AtomicBool::new(false)), Duration::from_millis(80)),
+            &timeout,
+            1024,
+            MAX_PROCESS_OUTPUT_BYTES,
+            &[0, 1],
+        )
+        .unwrap_err();
+        assert_eq!(error, ControlledProcessError::TimedOut);
     }
 
     #[cfg(unix)]

@@ -10,14 +10,12 @@
 // testable with fakes.
 // ============================================================================
 
-use std::collections::BTreeSet;
 use std::fs;
 use std::io::{Read, Write};
 use std::path::{Component, Path, PathBuf};
 use std::process::Command;
 
 use flate2::read::GzDecoder;
-use serde::{Deserialize, Serialize};
 use tauri::Manager;
 
 use super::commands::{dotagents_add_args, dotagents_remove_args};
@@ -33,8 +31,9 @@ use super::skill_fs::copy_dir_all;
 use super::skill_install_plan::{skills_sh_universal_add_args, SkillInstallSpec};
 use super::skill_lifecycle::skills_sh_remove_args_for_scope;
 use super::skill_process::{
-    run_controlled_command_to_file_limited, run_controlled_npx_with_control_and_guard,
-    AddOperationControl, ControlledProcessError, MAX_PROCESS_OUTPUT_BYTES,
+    run_controlled_command_to_file_accepting, run_controlled_command_to_file_limited,
+    run_controlled_npx_with_control_and_guard, AddOperationControl, ControlledProcessError,
+    MAX_PROCESS_OUTPUT_BYTES,
 };
 use super::skill_refresh::{self, SkillRefreshState};
 use super::skill_update_check::{self, CommitLookup, GhCommitLookup, UpdateCheckState};
@@ -589,6 +588,40 @@ impl Drop for TempCleanup {
     }
 }
 
+struct PullPreparationCleanup(Option<skill_studio_core::skill_fork_pull::ForkPullPreparation>);
+
+impl PullPreparationCleanup {
+    fn new(preparation: skill_studio_core::skill_fork_pull::ForkPullPreparation) -> Self {
+        Self(Some(preparation))
+    }
+
+    fn preparation(&self) -> &skill_studio_core::skill_fork_pull::ForkPullPreparation {
+        self.0.as_ref().expect("Pull preparation is available")
+    }
+
+    fn take(&mut self) -> skill_studio_core::skill_fork_pull::ForkPullPreparation {
+        self.0.take().expect("Pull preparation is available")
+    }
+
+    fn cancel_with_error(mut self, message: String) -> Result<PullResult, String> {
+        let preparation = self.0.take().expect("Pull preparation is available");
+        match skill_studio_core::skill_fork_pull::cancel_fork_pull(&preparation) {
+            Ok(()) => Err(message),
+            Err(cleanup) => Err(format!(
+                "{message}; Pull preparation was preserved: {cleanup}"
+            )),
+        }
+    }
+}
+
+impl Drop for PullPreparationCleanup {
+    fn drop(&mut self) {
+        if let Some(preparation) = self.0.take() {
+            let _ = skill_studio_core::skill_fork_pull::cancel_fork_pull(&preparation);
+        }
+    }
+}
+
 /// Finds `<top>/<path>` inside an already-extracted GitHub tarball
 /// (`gh api repos/{repo}/tarball/{sha}` always has exactly one top-level
 /// `<owner>-<repo>-<sha7>/` directory), and refuses a `path` that would
@@ -626,33 +659,6 @@ fn locate_extracted_skill_dir(extract_dir: &Path, path: &str) -> Result<PathBuf,
         }
     }
     Ok(candidate)
-}
-
-/// Every relative file path (`/`-separated) under `dir`, skipping `.git` and
-/// symlinks. Empty when `dir` doesn't exist.
-fn collect_relative_files(dir: &Path, out: &mut BTreeSet<String>) {
-    fn walk(root: &Path, dir: &Path, out: &mut BTreeSet<String>) {
-        let Ok(entries) = fs::read_dir(dir) else {
-            return;
-        };
-        for entry in entries.filter_map(|e| e.ok()) {
-            if entry.file_name() == ".git" {
-                continue;
-            }
-            let Ok(file_type) = entry.file_type() else {
-                continue;
-            };
-            if file_type.is_symlink() {
-                continue;
-            }
-            if file_type.is_dir() {
-                walk(root, &entry.path(), out);
-            } else if let Ok(rel) = entry.path().strip_prefix(root) {
-                out.insert(rel.to_string_lossy().replace('\\', "/"));
-            }
-        }
-    }
-    walk(dir, dir, out);
 }
 
 // ============================================================================
@@ -1421,434 +1427,235 @@ fn fork_skill_blocking(
         (None, _) => error.message,
     })
 }
-
 // ============================================================================
 // Pull upstream
 // ============================================================================
 
-/// What one `pull_fork_upstream` call did.
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
-pub struct PullResult {
-    pub from_commit: String,
-    pub to_commit: String,
-    pub merged: Vec<String>,
-    pub conflicts: Vec<String>,
-    pub added: Vec<String>,
-    pub removed: Vec<String>,
-    pub unchanged: usize,
-    /// Set to "Already up to date" when `to_commit == from_commit`; `None`
-    /// otherwise.
-    pub message: Option<String>,
+pub type PullResult = skill_studio_core::skill_fork_pull::ForkPullResult;
+
+struct DesktopPullTextMerge<'a> {
+    control: &'a AddOperationControl,
+    scratch_root: PathBuf,
 }
 
-/// True when `bytes` contains a NUL byte - `git merge-file` operates on
-/// text, so a file with a NUL is treated as binary regardless of whether the
-/// rest of it happens to be valid UTF-8.
-fn is_binary(bytes: &[u8]) -> bool {
-    bytes.contains(&0)
-}
-
-/// What a finished `git merge-file -p mine base theirs` run means, decided
-/// from its exit status alone. Pulled out of `three_way_merge_text` so it's
-/// unit-testable without spawning a process. Per `git merge-file`'s
-/// documented contract: exit 0 is a clean merge; a positive exit up to 127
-/// is that many conflicted hunks, with stdout holding the marked-up merge to
-/// keep either way; anything else - a signal, a status `>= 128`, or empty
-/// stdout despite non-empty inputs (the merge silently produced nothing) -
-/// means the result can't be trusted, and the caller must abort rather than
-/// write it anywhere.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum MergeExitClass {
-    Clean,
-    Conflicts(usize),
-    Error,
-}
-
-fn classify_merge_exit(
-    code: Option<i32>,
-    stdout_len: usize,
-    inputs_nonempty: bool,
-) -> MergeExitClass {
-    if inputs_nonempty && stdout_len == 0 {
-        return MergeExitClass::Error;
-    }
-    match code {
-        Some(0) => MergeExitClass::Clean,
-        Some(n) if (1..=127).contains(&n) => MergeExitClass::Conflicts(n as usize),
-        _ => MergeExitClass::Error,
-    }
-}
-
-/// A resolved `three_way_merge_text` run: the merged bytes plus whether it
-/// was clean or left conflict markers behind.
-enum MergeOutcome {
-    Clean(Vec<u8>),
-    Conflicts(Vec<u8>),
-}
-
-/// Runs `git merge-file -p mine base theirs` in a scratch dir. Returns
-/// `Err` (never writing `stdout` anywhere) when `classify_merge_exit` can't
-/// trust the result - see its doc comment - so a `pull_fork_upstream` that
-/// hits this aborts the whole pull instead of writing a bogus merge.
-fn three_way_merge_text(
-    mine: &[u8],
-    base: &[u8],
-    theirs: &[u8],
-    rel: &str,
-) -> Result<MergeOutcome, String> {
-    // `tempfile` is a dev-only dependency, so production code builds its own
-    // scratch dir under the system temp dir instead.
-    let scratch = std::env::temp_dir().join(format!(
-        "skill-studio-merge-{}-{}",
-        std::process::id(),
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map(|d| d.as_nanos())
-            .unwrap_or(0)
-    ));
-    fs::create_dir_all(&scratch).map_err(|e| format!("Failed to create scratch dir: {e}"))?;
-    let _cleanup = TempCleanup {
-        paths: vec![scratch.clone()],
-    };
-    fs::write(scratch.join("mine"), mine)
-        .map_err(|e| format!("Failed to write scratch file: {e}"))?;
-    fs::write(scratch.join("base"), base)
-        .map_err(|e| format!("Failed to write scratch file: {e}"))?;
-    fs::write(scratch.join("theirs"), theirs)
-        .map_err(|e| format!("Failed to write scratch file: {e}"))?;
-
-    let output = Command::new("git")
-        .args(["merge-file", "-p", "mine", "base", "theirs"])
-        .current_dir(&scratch)
-        .output()
-        .map_err(|e| format!("Failed to run git merge-file on {rel}: {e}"))?;
-
-    let inputs_nonempty = !mine.is_empty() || !base.is_empty() || !theirs.is_empty();
-    match classify_merge_exit(output.status.code(), output.stdout.len(), inputs_nonempty) {
-        MergeExitClass::Clean => Ok(MergeOutcome::Clean(output.stdout)),
-        MergeExitClass::Conflicts(_) => Ok(MergeOutcome::Conflicts(output.stdout)),
-        MergeExitClass::Error => Err(format!(
-            "git merge-file on {rel} exited unexpectedly (status {:?}); aborting the pull",
-            output.status.code()
-        )),
-    }
-}
-
-/// Writes `bytes` at `root/rel`, creating parent directories as needed - the
-/// staging-tree equivalent of what used to be an in-place write to the live
-/// tree.
-fn write_staged(root: &Path, rel: &str, bytes: &[u8]) -> Result<(), String> {
-    let dest = root.join(rel);
-    if let Some(parent) = dest.parent() {
-        fs::create_dir_all(parent)
-            .map_err(|e| format!("Failed to create {}: {e}", parent.display()))?;
-    }
-    fs::write(&dest, bytes).map_err(|e| format!("Failed to write {}: {e}", dest.display()))
-}
-
-/// Renames `src` to `dst`, falling back to copy-then-remove when the rename
-/// fails (e.g. across filesystems).
-fn rename_or_copy(src: &Path, dst: &Path) -> Result<(), String> {
-    if fs::rename(src, dst).is_ok() {
-        return Ok(());
-    }
-    copy_dir_all(src, dst)?;
-    fs::remove_dir_all(src).map_err(|e| format!("Failed to remove {}: {e}", src.display()))
-}
-
-/// Atomically swaps the staged merge result into place: `mine_dir` becomes
-/// `staging_live`, `base_dir` becomes `staging_base`, and the registry's
-/// `base_commit` advances to `to_commit` - in that order, backing up the two
-/// live directories first so any failure before the registry write can be
-/// rolled back and reported without touching the on-disk live tree or base
-/// beyond what's undone here.
-#[allow(clippy::too_many_arguments)]
-fn swap_in_pull_result(
-    home: &Path,
-    app_data: &Path,
-    name: &str,
-    mine_dir: &Path,
-    base_dir: &Path,
-    staging_live: &Path,
-    staging_base: &Path,
-    to_commit: &str,
-    registry: &mut ForkRegistry,
-) -> Result<(), String> {
-    let scratch = app_data.join("skill-studio").join("forks").join(name);
-    let live_backup = scratch.join("live-backup");
-    let old_base_backup = scratch.join("old-base-backup");
-    for backup in [&live_backup, &old_base_backup] {
-        if backup.exists() {
-            fs::remove_dir_all(backup)
-                .map_err(|e| format!("Failed to clear {}: {e}", backup.display()))?;
+impl skill_studio_core::skill_fork_pull::ForkPullTextMerge for DesktopPullTextMerge<'_> {
+    fn merge(
+        &self,
+        mine: &[u8],
+        base: &[u8],
+        theirs: &[u8],
+        relative_path: &Path,
+        max_output: u64,
+    ) -> Result<skill_studio_core::skill_fork_pull::ForkPullTextMergeResult, String> {
+        self.control.check_message()?;
+        fs::create_dir_all(&self.scratch_root).map_err(|error| error.to_string())?;
+        let scratch = self
+            .scratch_root
+            .join(format!("merge-{}", ulid::Ulid::new()));
+        fs::create_dir(&scratch).map_err(|error| error.to_string())?;
+        let _cleanup = TempCleanup {
+            paths: vec![scratch.clone()],
+        };
+        for (name, bytes) in [("mine", mine), ("base", base), ("theirs", theirs)] {
+            fs::write(scratch.join(name), bytes).map_err(|error| error.to_string())?;
+        }
+        let output = scratch.join("merged");
+        let args = vec![
+            "merge-file".to_string(),
+            "-p".to_string(),
+            "mine".to_string(),
+            "base".to_string(),
+            "theirs".to_string(),
+        ];
+        let accepted = (0..=127).collect::<Vec<_>>();
+        let status = run_controlled_command_to_file_accepting(
+            Path::new("git"),
+            &args,
+            Some(&scratch),
+            self.control,
+            &output,
+            usize::try_from(max_output).unwrap_or(usize::MAX),
+            MAX_PROCESS_OUTPUT_BYTES,
+            &accepted,
+        )
+        .map_err(ControlledProcessError::into_message)?;
+        let bytes = fs::read(&output).map_err(|error| {
+            format!(
+                "Failed to read merged output for {}: {error}",
+                relative_path.display()
+            )
+        })?;
+        if status == 0 {
+            Ok(skill_studio_core::skill_fork_pull::ForkPullTextMergeResult::Clean(bytes))
+        } else {
+            Ok(skill_studio_core::skill_fork_pull::ForkPullTextMergeResult::Conflicts(bytes))
         }
     }
-
-    fs::rename(mine_dir, &live_backup)
-        .map_err(|e| format!("Failed to back up the live tree of {name}: {e}"))?;
-
-    if let Err(e) = rename_or_copy(staging_live, mine_dir) {
-        let _ = rename_or_copy(&live_backup, mine_dir);
-        let _ = fs::remove_dir_all(&live_backup);
-        return Err(format!(
-            "Failed to install the merged tree for {name}, rolled back the live tree: {e}"
-        ));
-    }
-
-    if let Err(e) = fs::rename(base_dir, &old_base_backup) {
-        let _ = fs::remove_dir_all(mine_dir);
-        let _ = rename_or_copy(&live_backup, mine_dir);
-        let _ = fs::remove_dir_all(&live_backup);
-        return Err(format!(
-            "Failed to back up {name}'s old base snapshot, rolled back the live tree: {e}"
-        ));
-    }
-
-    if let Err(e) = rename_or_copy(staging_base, base_dir) {
-        let _ = rename_or_copy(&old_base_backup, base_dir);
-        let _ = fs::remove_dir_all(mine_dir);
-        let _ = rename_or_copy(&live_backup, mine_dir);
-        let _ = fs::remove_dir_all(&live_backup);
-        return Err(format!(
-            "Failed to install {name}'s new base snapshot, rolled back the live tree and base: {e}"
-        ));
-    }
-
-    if let Some(rec) = registry.forks.get_mut(name) {
-        rec.base_commit = to_commit.to_string();
-    }
-    if let Err(e) = write_fork_registry(home, registry) {
-        let _ = fs::remove_dir_all(base_dir);
-        let _ = rename_or_copy(&old_base_backup, base_dir);
-        let _ = fs::remove_dir_all(mine_dir);
-        let _ = rename_or_copy(&live_backup, mine_dir);
-        let _ = fs::remove_dir_all(&live_backup);
-        return Err(format!(
-            "Failed to record {name}'s pull, rolled back the live tree and base: {e}"
-        ));
-    }
-
-    let _ = fs::remove_dir_all(&live_backup);
-    let _ = fs::remove_dir_all(&old_base_backup);
-    Ok(())
-}
-
-/// `pull_fork_upstream`'s logic, taking `home`/`app_data` directly and the
-/// two traits as fakeable dependencies.
-///
-/// The merged tree and the new base snapshot are built in scratch staging
-/// directories, never touching `mine_dir`/`base_dir` directly, so any
-/// failure while fetching, diffing, or merging leaves the live tree and the
-/// old base exactly as they were - `swap_in_pull_result` is the only place
-/// that mutates them, and it does so as close to atomically as the
-/// filesystem allows.
-pub fn pull_fork_upstream_with(
-    home: &Path,
-    app_data: &Path,
-    name: &str,
-    fetch: &dyn UpstreamFetch,
-    lookup: &dyn CommitLookup,
-) -> Result<PullResult, String> {
-    let mut registry = read_fork_registry(home)?;
-    let record = registry
-        .forks
-        .get(name)
-        .cloned()
-        .ok_or_else(|| format!("`{name}` is not forked"))?;
-
-    let store = skill_update_check::read_update_check_store(app_data);
-    let owner_id = format!("owner:v1/global/{name}");
-    let to_commit = match store
-        .owners
-        .get(&owner_id)
-        .and_then(|state| state.latest_commit.clone())
-    {
-        Some(commit) => commit,
-        None => match lookup.latest_commit(&super::skill_update_check::CommitQuery {
-            repo: &record.repo,
-            path: &record.path,
-            source_ref: record.declared_ref.as_deref(),
-            until: None,
-        })? {
-            Some((sha, _)) => sha,
-            None => {
-                return Err(format!(
-                    "Could not determine {name}'s latest upstream commit"
-                ))
-            }
-        },
-    };
-
-    if to_commit == record.base_commit {
-        return Ok(PullResult {
-            from_commit: record.base_commit,
-            to_commit,
-            message: Some("Already up to date".to_string()),
-            ..Default::default()
-        });
-    }
-
-    let mine_dir = if record.skill_dir.as_os_str().is_empty() {
-        home.join(".agents").join("skills").join(name)
-    } else {
-        record.skill_dir.clone()
-    };
-    let base_dir = fork_snapshot_dir(app_data, name);
-    let scratch = app_data.join("skill-studio").join("forks").join(name);
-    let staging_live = scratch.join("staging-live");
-    let staging_base = scratch.join("staging-base");
-    for staging in [&staging_live, &staging_base] {
-        if staging.exists() {
-            fs::remove_dir_all(staging).map_err(|e| format!("Failed to clear scratch dir: {e}"))?;
-        }
-    }
-    // The freshly fetched upstream tree doubles as both the "theirs" side of
-    // the merge and (verbatim) the new base snapshot once the pull commits.
-    fetch.fetch_skill_dir(&record.repo, &record.path, &to_commit, &staging_base)?;
-    fs::create_dir_all(&staging_live)
-        .map_err(|e| format!("Failed to create {}: {e}", staging_live.display()))?;
-    let cleanup_staging = TempCleanup {
-        paths: vec![staging_live.clone(), staging_base.clone()],
-    };
-
-    let mut all_paths: BTreeSet<String> = BTreeSet::new();
-    collect_relative_files(&base_dir, &mut all_paths);
-    collect_relative_files(&mine_dir, &mut all_paths);
-    collect_relative_files(&staging_base, &mut all_paths);
-
-    let mut result = PullResult {
-        from_commit: record.base_commit.clone(),
-        to_commit: to_commit.clone(),
-        ..Default::default()
-    };
-
-    for rel in &all_paths {
-        let base_bytes = fs::read(base_dir.join(rel)).ok();
-        let mine_bytes = fs::read(mine_dir.join(rel)).ok();
-        let theirs_bytes = fs::read(staging_base.join(rel)).ok();
-
-        match (base_bytes, mine_bytes, theirs_bytes) {
-            (None, None, Some(theirs)) => {
-                write_staged(&staging_live, rel, &theirs)?;
-                result.added.push(rel.clone());
-            }
-            (None, Some(mine), None) => {
-                // Mine-only - added locally with no base or upstream copy -
-                // carried forward untouched, and not counted as "unchanged"
-                // since it was never compared to anything.
-                write_staged(&staging_live, rel, &mine)?;
-            }
-            (Some(base), None, Some(theirs)) => {
-                if base == theirs {
-                    // Upstream never actually changed it - the local
-                    // deletion wins, nothing to restore.
-                } else {
-                    // Upstream changed a file we deleted locally: restore it
-                    // so the change isn't silently lost, but flag it.
-                    write_staged(&staging_live, rel, &theirs)?;
-                    result.conflicts.push(rel.clone());
-                }
-            }
-            (Some(base), Some(mine), None) => {
-                if base == mine {
-                    result.removed.push(rel.clone());
-                } else {
-                    // Deleted upstream, but changed locally: keep mine and
-                    // flag it.
-                    write_staged(&staging_live, rel, &mine)?;
-                    result.conflicts.push(rel.clone());
-                }
-            }
-            (base, Some(mine), Some(theirs)) => {
-                let base_eq_theirs = base.as_ref().is_some_and(|b| *b == theirs);
-                let base_eq_mine = base.as_ref().is_some_and(|b| *b == mine);
-                if mine == theirs {
-                    write_staged(&staging_live, rel, &mine)?;
-                    result.unchanged += 1;
-                } else if base_eq_theirs {
-                    // Mine changed, theirs didn't: keep mine as-is.
-                    write_staged(&staging_live, rel, &mine)?;
-                } else if base_eq_mine {
-                    write_staged(&staging_live, rel, &theirs)?;
-                    result.merged.push(rel.clone());
-                } else {
-                    let base_bytes = base.as_deref().unwrap_or(&[]);
-                    if is_binary(&mine) || is_binary(base_bytes) || is_binary(&theirs) {
-                        // Binary and all three differ: keep mine, flag it,
-                        // never hand it to `git merge-file`.
-                        write_staged(&staging_live, rel, &mine)?;
-                        result.conflicts.push(rel.clone());
-                    } else {
-                        match three_way_merge_text(&mine, base_bytes, &theirs, rel)? {
-                            MergeOutcome::Clean(merged) => {
-                                write_staged(&staging_live, rel, &merged)?;
-                                result.merged.push(rel.clone());
-                            }
-                            MergeOutcome::Conflicts(merged) => {
-                                write_staged(&staging_live, rel, &merged)?;
-                                result.conflicts.push(rel.clone());
-                            }
-                        }
-                    }
-                }
-            }
-            // Deleted on both sides, or nothing anywhere: nothing to carry
-            // into the merged tree.
-            (Some(_), None, None) | (None, None, None) => {}
-        }
-    }
-
-    swap_in_pull_result(
-        home,
-        app_data,
-        name,
-        &mine_dir,
-        &base_dir,
-        &staging_live,
-        &staging_base,
-        &to_commit,
-        &mut registry,
-    )?;
-    drop(cleanup_staging);
-
-    Ok(result)
 }
 
 #[tauri::command]
-pub fn pull_fork_upstream(
+pub async fn pull_fork_upstream(
     target: super::skill_dto::LifecycleTarget,
     app: tauri::AppHandle,
-    refresh_state: tauri::State<SkillRefreshState>,
-    update_check_state: tauri::State<UpdateCheckState>,
-    fork_lock: tauri::State<ForkMutationLock>,
 ) -> Result<PullResult, String> {
+    let operation_app = app.clone();
+    let result = tauri::async_runtime::spawn_blocking(move || {
+        pull_fork_upstream_blocking(target, operation_app)
+    })
+    .await
+    .map_err(|error| format!("Pull worker failed: {error}"))?;
+    skill_refresh::request_snapshot_rebuild(&app);
+    result
+}
+
+fn pull_fork_upstream_blocking(
+    target: super::skill_dto::LifecycleTarget,
+    app: tauri::AppHandle,
+) -> Result<PullResult, String> {
+    let refresh_state = app.state::<SkillRefreshState>();
+    let fork_lock = app.state::<ForkMutationLock>();
     let _guard = fork_lock.try_acquire()?;
-    let _ = &update_check_state;
     let home = dirs::home_dir().ok_or("Could not find home directory")?;
     let app_data = app
         .path()
         .app_data_dir()
-        .map_err(|e| format!("Could not resolve app data dir: {e}"))?;
-    let lookup = resolve_lookup();
-    let fetch = RealUpstreamFetch {
-        gh_bin: skill_update_check::resolve_gh_binary()
-            .ok_or_else(|| "Run Check now first".to_string())?,
-        cache_dir: app_data.join("skill-studio").join("cache"),
-    };
-
+        .map_err(|error| format!("Could not resolve app data dir: {error}"))?;
     let resolved = super::skill_lifecycle::resolve_fresh_lifecycle_target(
         &app,
         &refresh_state,
         &target,
         "Pull upstream",
     )?;
-    let (name, _) = resolve_recorded_fork_target(&resolved.snapshot, &target, &home)?;
-    let result = pull_fork_upstream_with(&home, &app_data, &name, &fetch, lookup.as_ref());
-    skill_refresh::request_snapshot_rebuild(&app);
-    let _ = &refresh_state;
-    result
+    let (name, record) = resolve_recorded_fork_target(&resolved.snapshot, &target, &home)?;
+    if resolved.deployment.owner_kind != super::skill_ownership::LifecycleOwnerKind::Fork {
+        return Err("Pull requires one fresh Global Universal Fork".into());
+    }
+    let owner_revision = resolved
+        .deployment
+        .owner_revision
+        .clone()
+        .ok_or("Pull is not available: Fork owner revision is missing")?;
+    let store_state = skill_update_check::read_update_check_store(&app_data);
+    let owner_id = format!("owner:v1/global/{name}");
+    let lookup = resolve_lookup();
+    let to_commit = match store_state
+        .owners
+        .get(&owner_id)
+        .and_then(|state| state.latest_commit.clone())
+    {
+        Some(commit) => commit,
+        None => lookup
+            .latest_commit(&super::skill_update_check::CommitQuery {
+                repo: &record.repo,
+                path: &record.path,
+                source_ref: record.declared_ref.as_deref(),
+                until: None,
+            })?
+            .map(|(commit, _)| commit)
+            .ok_or_else(|| format!("Could not determine {name}'s latest upstream commit"))?,
+    };
+    let projects = resolved
+        .snapshot
+        .projects
+        .iter()
+        .map(PathBuf::from)
+        .collect::<Vec<_>>();
+    let scope = super::skill_scope_config::desktop_skill_scope(&home, &projects)?;
+    let mut service = skill_studio_core::skill_service::ScopedSkillService::bind(scope)
+        .map_err(|error| error.to_string())?;
+    let request = skill_studio_core::skill_fork_pull::ForkPullRequest {
+        deployment_id: resolved.deployment.id,
+        expected_owner_revision: owner_revision,
+        to_commit,
+    };
+    let limits = super::skill_copy_recovery::removal_limits();
+    let event_state = app.state::<super::event_commands::EventStoreState>();
+    let preparation = {
+        let events = event_state
+            .0
+            .lock()
+            .map_err(|_| "Event store lock is unavailable")?;
+        let store = events.as_ref().ok_or("Event store is unavailable")?;
+        match skill_studio_core::skill_fork_pull::prepare_fork_pull_inputs(
+            &mut service,
+            store,
+            &request,
+            limits,
+            Some(std::time::Duration::from_secs(30)),
+            skill_studio_core::skill_service::CancellationToken::default(),
+        )? {
+            skill_studio_core::skill_fork_pull::ForkPullPreparationOutcome::UpToDate(result) => {
+                return Ok(result)
+            }
+            skill_studio_core::skill_fork_pull::ForkPullPreparationOutcome::Prepared(prepared) => {
+                prepared
+            }
+        }
+    };
+    let mut preparation_cleanup = PullPreparationCleanup::new(preparation);
+    let control = AddOperationControl::bounded_default();
+    let fetch_root = app_data
+        .join("skill-studio/cache")
+        .join(format!("pull-{}", preparation_cleanup.preparation().id()));
+    let upstream = fetch_root.join("upstream");
+    if fs::symlink_metadata(&fetch_root).is_ok() {
+        return preparation_cleanup.cancel_with_error(format!(
+            "Pull fetch staging already exists at {}; preserving it",
+            fetch_root.display()
+        ));
+    }
+    if let Err(error) = fs::create_dir_all(&fetch_root) {
+        return preparation_cleanup.cancel_with_error(error.to_string());
+    }
+    let _fetch_cleanup = TempCleanup {
+        paths: vec![fetch_root.clone()],
+    };
+    let Some(gh_bin) = skill_update_check::resolve_gh_binary() else {
+        return preparation_cleanup.cancel_with_error("Run Check now first".into());
+    };
+    let fetch = RealUpstreamFetch {
+        gh_bin,
+        cache_dir: app_data.join("skill-studio/cache"),
+    };
+    if let Err(error) = fetch.fetch_skill_dir_controlled(
+        preparation_cleanup.preparation().repo(),
+        preparation_cleanup.preparation().source_path(),
+        preparation_cleanup.preparation().to_commit(),
+        &upstream,
+        &control,
+    ) {
+        return preparation_cleanup.cancel_with_error(error);
+    }
+    let merger = DesktopPullTextMerge {
+        control: &control,
+        scratch_root: fetch_root.join("merges"),
+    };
+    let result = {
+        let events = event_state
+            .0
+            .lock()
+            .map_err(|_| "Event store lock is unavailable")?;
+        let store = events.as_ref().ok_or("Event store is unavailable")?;
+        let preparation = preparation_cleanup.take();
+        skill_studio_core::skill_fork_pull::commit_fork_pull(
+            &mut service,
+            store,
+            preparation,
+            &upstream,
+            &merger,
+            limits,
+            Some(std::time::Duration::from_secs(30)),
+            skill_studio_core::skill_service::CancellationToken::default(),
+        )
+    };
+    result.map_err(|error| match (error.event_id, error.recovery_required) {
+        (Some(id), true) => format!("{} (event {id} requires recovery)", error.message),
+        (Some(id), false) => format!("{} (event {id} was rolled back)", error.message),
+        (None, _) => error.message,
+    })
 }
 
+// ============================================================================
 // ============================================================================
 // Un-fork
 // ============================================================================
@@ -2505,22 +2312,6 @@ mod tests {
             fs::read_to_string(home.join(".agents/skills/find-bugs/SKILL.md")).unwrap(),
             "line one\nmine edit\n"
         );
-
-        // Upstream moved on and touched the same line the local edit did:
-        // Pull must report a conflict, not silently take theirs.
-        seed_update_check_latest(&app_data, "find-bugs", &"b".repeat(40));
-        let fetch_at_pull = FakeFetch {
-            files: vec![("SKILL.md", "line one\ntheirs edit\n")],
-        };
-        let result = pull_fork_upstream_with(
-            &home,
-            &app_data,
-            "find-bugs",
-            &fetch_at_pull,
-            &NeverCalledLookup,
-        )
-        .unwrap();
-        assert_eq!(result.conflicts, vec!["SKILL.md".to_string()]);
     }
 
     /// Finding 7: forking a same-named copy that isn't the shared folder
@@ -3191,122 +2982,6 @@ mod tests {
         assert_eq!(ledger.remove_calls.lock().unwrap().len(), 0);
     }
 
-    fn seed_registry(
-        home: &Path,
-        app_data: &Path,
-        name: &str,
-        base_commit: &str,
-        mine_content: &str,
-    ) {
-        let mut registry = read_fork_registry(home).unwrap();
-        registry.forks.insert(
-            name.to_string(),
-            ForkRecord {
-                deployment_id: String::new(),
-                skill_dir: PathBuf::new(),
-                forked_at: "2026-01-01T00:00:00Z".to_string(),
-                origin_tool: OriginTool::Dotagents,
-                origin_source: "getsentry/find-bugs".to_string(),
-                repo: "getsentry/find-bugs".to_string(),
-                path: "skills/find-bugs".to_string(),
-                declared_ref: None,
-                base_commit: base_commit.to_string(),
-            },
-        );
-        write_fork_registry(home, &registry).unwrap();
-        write_file(
-            &fork_snapshot_dir(app_data, name).join("SKILL.md"),
-            mine_content,
-        );
-        write_file(
-            &home.join(".agents/skills").join(name).join("SKILL.md"),
-            mine_content,
-        );
-    }
-
-    fn seed_update_check_latest(app_data: &Path, name: &str, latest_commit: &str) {
-        use super::super::skill_update_check::{GhStatus, SkillUpdateState, UpdateCheckStore};
-        use std::collections::BTreeMap;
-        fs::create_dir_all(app_data.join("skill-studio")).unwrap();
-        let store = UpdateCheckStore {
-            version: 2,
-            checked_at: Some("2026-01-01T00:00:00Z".to_string()),
-            gh_status: GhStatus::Ok,
-            owners: BTreeMap::from([(
-                format!("owner:v1/global/{name}"),
-                SkillUpdateState {
-                    repo: "getsentry/find-bugs".to_string(),
-                    path: Some("skills/find-bugs".to_string()),
-                    source_ref: None,
-                    installed_commit: None,
-                    latest_commit: Some(latest_commit.to_string()),
-                    latest_commit_at: None,
-                    checked_at: "2026-01-01T00:00:00Z".to_string(),
-                    error: None,
-                    lock_updated_at: None,
-                    baseline_identity: None,
-                    comparison: Default::default(),
-                    last_verified_comparison: None,
-                },
-            )]),
-            legacy_skills: BTreeMap::new(),
-        };
-        fs::write(
-            app_data.join("skill-studio/update-check.json"),
-            serde_json::to_string(&store).unwrap(),
-        )
-        .unwrap();
-    }
-
-    #[test]
-    fn pull_already_up_to_date_when_commits_match() {
-        let tmp = tempfile::tempdir().unwrap();
-        let home = tmp.path().join("home");
-        let app_data = tmp.path().join("data");
-        let commit = "a".repeat(40);
-        seed_registry(&home, &app_data, "find-bugs", &commit, "same body");
-        seed_update_check_latest(&app_data, "find-bugs", &commit);
-
-        let fetch = FakeFetch { files: vec![] };
-        let result =
-            pull_fork_upstream_with(&home, &app_data, "find-bugs", &fetch, &NeverCalledLookup)
-                .unwrap();
-        assert_eq!(result.message.as_deref(), Some("Already up to date"));
-        assert!(result.merged.is_empty() && result.conflicts.is_empty());
-    }
-
-    #[test]
-    fn pull_clean_merge_takes_theirs_when_base_equals_mine() {
-        let tmp = tempfile::tempdir().unwrap();
-        let home = tmp.path().join("home");
-        let app_data = tmp.path().join("data");
-        seed_registry(
-            &home,
-            &app_data,
-            "find-bugs",
-            &"a".repeat(40),
-            "shared body",
-        );
-        seed_update_check_latest(&app_data, "find-bugs", &"b".repeat(40));
-
-        let fetch = FakeFetch {
-            files: vec![("SKILL.md", "updated upstream body")],
-        };
-        let result =
-            pull_fork_upstream_with(&home, &app_data, "find-bugs", &fetch, &NeverCalledLookup)
-                .unwrap();
-
-        assert_eq!(result.merged, vec!["SKILL.md".to_string()]);
-        assert!(result.conflicts.is_empty());
-        let mine = fs::read_to_string(home.join(".agents/skills/find-bugs/SKILL.md")).unwrap();
-        assert_eq!(mine, "updated upstream body");
-        // The snapshot advances to the new base commit.
-        assert_eq!(
-            read_fork_registry(&home).unwrap().forks["find-bugs"].base_commit,
-            "b".repeat(40)
-        );
-    }
-
     #[test]
     fn fork_mutation_lock_refuses_a_concurrent_second_acquire() {
         let lock = ForkMutationLock::default();
@@ -3317,254 +2992,6 @@ mod tests {
         // Released - a later call succeeds.
         assert!(lock.try_acquire().is_ok());
     }
-
-    #[test]
-    fn classify_merge_exit_covers_clean_conflicts_and_untrustworthy_results() {
-        // Clean merge.
-        assert_eq!(
-            classify_merge_exit(Some(0), 10, true),
-            MergeExitClass::Clean
-        );
-        // 1..=127 conflicted hunks, with a non-empty merge on stdout.
-        assert_eq!(
-            classify_merge_exit(Some(1), 10, true),
-            MergeExitClass::Conflicts(1)
-        );
-        assert_eq!(
-            classify_merge_exit(Some(127), 10, true),
-            MergeExitClass::Conflicts(127)
-        );
-        // Signal-terminated / spawn-failure caller convention: no exit code.
-        assert_eq!(classify_merge_exit(None, 10, true), MergeExitClass::Error);
-        // Status >= 128 is untrustworthy, not "128 conflicts".
-        assert_eq!(
-            classify_merge_exit(Some(128), 10, true),
-            MergeExitClass::Error
-        );
-        // Empty stdout despite non-empty inputs means the merge produced
-        // nothing worth trusting, even for an exit code that would otherwise
-        // read as clean or conflicted.
-        assert_eq!(classify_merge_exit(Some(0), 0, true), MergeExitClass::Error);
-        assert_eq!(classify_merge_exit(Some(1), 0, true), MergeExitClass::Error);
-        // All-empty inputs legitimately produce empty stdout - not an error.
-        assert_eq!(
-            classify_merge_exit(Some(0), 0, false),
-            MergeExitClass::Clean
-        );
-    }
-
-    #[test]
-    fn pull_conflict_produces_markers_and_is_listed() {
-        let tmp = tempfile::tempdir().unwrap();
-        let home = tmp.path().join("home");
-        let app_data = tmp.path().join("data");
-        seed_registry(
-            &home,
-            &app_data,
-            "find-bugs",
-            &"a".repeat(40),
-            "line one\nbase line\n",
-        );
-        // Mine diverges from base.
-        write_file(
-            &home.join(".agents/skills/find-bugs/SKILL.md"),
-            "line one\nmine line\n",
-        );
-        seed_update_check_latest(&app_data, "find-bugs", &"b".repeat(40));
-
-        let fetch = FakeFetch {
-            files: vec![("SKILL.md", "line one\ntheirs line\n")],
-        };
-        let result =
-            pull_fork_upstream_with(&home, &app_data, "find-bugs", &fetch, &NeverCalledLookup)
-                .unwrap();
-
-        assert_eq!(result.conflicts, vec!["SKILL.md".to_string()]);
-        let mine = fs::read_to_string(home.join(".agents/skills/find-bugs/SKILL.md")).unwrap();
-        assert!(mine.contains("<<<<<<<"));
-    }
-
-    /// Restores a directory's permissions on drop, so a fault-injection test
-    /// that locks a directory down doesn't leave the tempdir un-removable
-    /// even if an assertion panics first.
-    struct RestorePerms(PathBuf, std::fs::Permissions);
-    impl Drop for RestorePerms {
-        fn drop(&mut self) {
-            let _ = std::fs::set_permissions(&self.0, self.1.clone());
-        }
-    }
-
-    #[test]
-    fn pull_swap_failure_leaves_live_tree_base_and_registry_unchanged() {
-        use std::os::unix::fs::PermissionsExt;
-
-        let tmp = tempfile::tempdir().unwrap();
-        let home = tmp.path().join("home");
-        let app_data = tmp.path().join("data");
-        seed_registry(&home, &app_data, "find-bugs", &"a".repeat(40), "body");
-        seed_update_check_latest(&app_data, "find-bugs", &"b".repeat(40));
-
-        // Lock down the parent of `mine_dir` so `swap_in_pull_result`'s first
-        // rename (mine -> live-backup) fails with a permission error.
-        let skills_root = home.join(".agents").join("skills");
-        let original_perms = std::fs::metadata(&skills_root).unwrap().permissions();
-        let _restore = RestorePerms(skills_root.clone(), original_perms.clone());
-        let mut locked = original_perms;
-        locked.set_mode(0o555);
-        std::fs::set_permissions(&skills_root, locked).unwrap();
-
-        let fetch = FakeFetch {
-            files: vec![("SKILL.md", "upstream changed it")],
-        };
-        let err =
-            pull_fork_upstream_with(&home, &app_data, "find-bugs", &fetch, &NeverCalledLookup)
-                .unwrap_err();
-        assert!(err.contains("Failed to back up the live tree"));
-
-        drop(_restore); // restore write access before reading back through it
-
-        assert_eq!(
-            fs::read_to_string(skills_root.join("find-bugs/SKILL.md")).unwrap(),
-            "body"
-        );
-        assert_eq!(
-            fs::read_to_string(fork_snapshot_dir(&app_data, "find-bugs").join("SKILL.md")).unwrap(),
-            "body"
-        );
-        assert_eq!(
-            read_fork_registry(&home).unwrap().forks["find-bugs"].base_commit,
-            "a".repeat(40)
-        );
-    }
-
-    #[test]
-    fn pull_added_upstream_only_file_is_added() {
-        let tmp = tempfile::tempdir().unwrap();
-        let home = tmp.path().join("home");
-        let app_data = tmp.path().join("data");
-        seed_registry(&home, &app_data, "find-bugs", &"a".repeat(40), "body");
-        seed_update_check_latest(&app_data, "find-bugs", &"b".repeat(40));
-
-        let fetch = FakeFetch {
-            files: vec![("SKILL.md", "body"), ("NEW.md", "new upstream file")],
-        };
-        let result =
-            pull_fork_upstream_with(&home, &app_data, "find-bugs", &fetch, &NeverCalledLookup)
-                .unwrap();
-
-        assert_eq!(result.added, vec!["NEW.md".to_string()]);
-        assert!(home.join(".agents/skills/find-bugs/NEW.md").exists());
-    }
-
-    #[test]
-    fn pull_removed_upstream_file_unchanged_locally_is_deleted() {
-        let tmp = tempfile::tempdir().unwrap();
-        let home = tmp.path().join("home");
-        let app_data = tmp.path().join("data");
-        seed_registry(&home, &app_data, "find-bugs", &"a".repeat(40), "body");
-        write_file(
-            &fork_snapshot_dir(&app_data, "find-bugs").join("OLD.md"),
-            "old file",
-        );
-        write_file(&home.join(".agents/skills/find-bugs/OLD.md"), "old file");
-        seed_update_check_latest(&app_data, "find-bugs", &"b".repeat(40));
-
-        let fetch = FakeFetch {
-            files: vec![("SKILL.md", "body")], // OLD.md gone upstream
-        };
-        let result =
-            pull_fork_upstream_with(&home, &app_data, "find-bugs", &fetch, &NeverCalledLookup)
-                .unwrap();
-
-        assert_eq!(result.removed, vec!["OLD.md".to_string()]);
-        assert!(!home.join(".agents/skills/find-bugs/OLD.md").exists());
-    }
-
-    #[test]
-    fn pull_theirs_modified_mine_deleted_restores_theirs_and_conflicts() {
-        let tmp = tempfile::tempdir().unwrap();
-        let home = tmp.path().join("home");
-        let app_data = tmp.path().join("data");
-        seed_registry(&home, &app_data, "find-bugs", &"a".repeat(40), "body");
-        write_file(
-            &fork_snapshot_dir(&app_data, "find-bugs").join("SHARED.md"),
-            "base",
-        );
-        // Deleted locally - no file at all under `mine_dir`.
-        seed_update_check_latest(&app_data, "find-bugs", &"b".repeat(40));
-
-        let fetch = FakeFetch {
-            files: vec![("SKILL.md", "body"), ("SHARED.md", "upstream changed it")],
-        };
-        let result =
-            pull_fork_upstream_with(&home, &app_data, "find-bugs", &fetch, &NeverCalledLookup)
-                .unwrap();
-
-        assert_eq!(result.conflicts, vec!["SHARED.md".to_string()]);
-        assert_eq!(
-            fs::read_to_string(home.join(".agents/skills/find-bugs/SHARED.md")).unwrap(),
-            "upstream changed it"
-        );
-    }
-
-    #[test]
-    fn pull_mine_modified_theirs_deleted_keeps_mine_and_conflicts() {
-        let tmp = tempfile::tempdir().unwrap();
-        let home = tmp.path().join("home");
-        let app_data = tmp.path().join("data");
-        seed_registry(&home, &app_data, "find-bugs", &"a".repeat(40), "body");
-        write_file(
-            &fork_snapshot_dir(&app_data, "find-bugs").join("SHARED.md"),
-            "base",
-        );
-        write_file(
-            &home.join(".agents/skills/find-bugs/SHARED.md"),
-            "my local edit",
-        );
-        seed_update_check_latest(&app_data, "find-bugs", &"b".repeat(40));
-
-        let fetch = FakeFetch {
-            files: vec![("SKILL.md", "body")], // SHARED.md removed upstream
-        };
-        let result =
-            pull_fork_upstream_with(&home, &app_data, "find-bugs", &fetch, &NeverCalledLookup)
-                .unwrap();
-
-        assert_eq!(result.conflicts, vec!["SHARED.md".to_string()]);
-        assert_eq!(
-            fs::read_to_string(home.join(".agents/skills/find-bugs/SHARED.md")).unwrap(),
-            "my local edit"
-        );
-    }
-
-    #[test]
-    fn pull_leaves_a_local_only_file_untouched() {
-        let tmp = tempfile::tempdir().unwrap();
-        let home = tmp.path().join("home");
-        let app_data = tmp.path().join("data");
-        seed_registry(&home, &app_data, "find-bugs", &"a".repeat(40), "body");
-        write_file(
-            &home.join(".agents/skills/find-bugs/NOTES.md"),
-            "my private notes",
-        );
-        seed_update_check_latest(&app_data, "find-bugs", &"b".repeat(40));
-
-        let fetch = FakeFetch {
-            files: vec![("SKILL.md", "body")],
-        };
-        let result =
-            pull_fork_upstream_with(&home, &app_data, "find-bugs", &fetch, &NeverCalledLookup)
-                .unwrap();
-
-        assert!(!result.added.contains(&"NOTES.md".to_string()));
-        assert!(!result.removed.contains(&"NOTES.md".to_string()));
-        assert!(!result.conflicts.contains(&"NOTES.md".to_string()));
-        assert_eq!(
-            fs::read_to_string(home.join(".agents/skills/find-bugs/NOTES.md")).unwrap(),
-            "my private notes"
-        );
-    }
-
     #[test]
     fn skills_sh_unfork_argv_keeps_source_ref_skill_and_global_scope() {
         let record = ForkRecord {
@@ -3758,6 +3185,9 @@ mod tests {
         assert!(found.join("SKILL.md").exists());
 
         let err = locate_extracted_skill_dir(&extract_dir, "../../etc").unwrap_err();
-        assert!(err.contains("outside") || err.contains("not found"));
+        assert!(
+            err.contains("unsafe") || err.contains("outside") || err.contains("not found"),
+            "{err}"
+        );
     }
 }
