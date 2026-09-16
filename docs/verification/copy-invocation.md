@@ -174,3 +174,14 @@ and hash-checked after confirmed app exit. Modified fixture state restored; revi
 backup and wildcard fixture removed. Test peak/process-tree memory not measured.
 
 Final source identity: `c34130caafef351c3ed0036f17299dee855d2df62812fff22fc9ce07e4f54332`.
+
+## Linux CI correction
+
+Initial CI found one formatting-only backup guard issue, corrected in `42ffa3c`.
+Run 35059242763 then passed formatting and Clippy but failed sidecar creation:
+cloning a retained directory handle and calling fsync produced EBADF on Linux.
+Later failures included the resulting poisoned process coordination gate.
+The creation path now opens `.` relative to the authorized directory before sync,
+matching existing core write paths. The focused absent-sidecar creation test
+passes on macOS (5.86 s compile, 0.06 s test). Linux CI remains required; macOS
+native evidence alone does not prove the platform correction.

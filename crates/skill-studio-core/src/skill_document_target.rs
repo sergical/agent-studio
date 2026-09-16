@@ -141,9 +141,8 @@ impl CodexInvocationTarget {
                 None
             };
             parent
-                .try_clone()
+                .open(".")
                 .map_err(|error| before(error.to_string()))?
-                .into_std_file()
                 .sync_all()
                 .map_err(|error| before(error.to_string()))?;
             scope
