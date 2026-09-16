@@ -1,9 +1,10 @@
-//! [`ProjectDiscovery`] over Codex's recent-projects config and Claude Code
-//! session transcripts.
+//! [`ProjectDiscovery`] over the project history each harness keeps under the
+//! home directory.
 //!
-//! The union of Codex's `~/.codex/config.toml` recent projects and Claude
-//! Code transcript working directories, filtered to directories that hold a
-//! skill dir for one of the first-class agents.
+//! The union of Codex's `~/.codex/config.toml` recent projects, the working
+//! directories in Claude Code and pi session transcripts, and the folders in
+//! Cursor's workspace storage, filtered to directories that hold a skill dir
+//! for one of the first-class agents.
 
 use std::collections::BTreeSet;
 use std::fs;
@@ -55,14 +56,24 @@ const MAX_TRANSCRIPT_LINE_BYTES: usize = 64 * 1024;
 /// lines could otherwise still cost an unbounded amount of I/O.
 const MAX_TRANSCRIPT_FILE_BYTES: u64 = 4 * 1024 * 1024;
 
-/// Total bytes one discovery run may read across every project. This bounds
-/// one refresh even when no transcript carries a recognizable `cwd` (e.g.
-/// after a transcript schema change).
+/// Total bytes one discovery run may read under one transcript root. This
+/// bounds one refresh even when no transcript carries a recognizable `cwd`
+/// (e.g. after a transcript schema change).
 const MAX_TRANSCRIPT_TOTAL_BYTES: u64 = 64 * 1024 * 1024;
 
-/// Transcript files one discovery run may try to open. This independently
-/// bounds empty and unreadable files, which do not consume the byte budget.
+/// Transcript files one discovery run may try to open under one transcript
+/// root. This independently bounds empty and unreadable files, which do not
+/// consume the byte budget.
 const MAX_TRANSCRIPT_ATTEMPTS: usize = 10_000;
+
+/// Claude Code keeps one directory per project here. The directory name
+/// encodes the path lossily, so the `cwd` inside the transcripts is read.
+const CLAUDE_TRANSCRIPT_ROOT: &str = ".claude/projects";
+
+/// pi keeps one `--<cwd with / \ : as ->--` directory per project here. That
+/// name cannot be decoded for folders whose own names contain `-`, so the
+/// `cwd` in each session's header record is read instead.
+const PI_TRANSCRIPT_ROOT: &str = ".pi/agent/sessions";
 
 struct TranscriptScanLimits {
     remaining_bytes: u64,
@@ -157,22 +168,23 @@ fn cwd_from_transcript(path: &Path, limits: &mut TranscriptScanLimits) -> Option
     None
 }
 
-/// The distinct `cwd` values recorded in Claude Code project transcripts.
-/// Each encoded project directory can represent more than one real path, so
-/// every `*.jsonl` file is scanned newest-first within the total byte budget.
-fn claude_transcript_cwds(home: &Path) -> Vec<PathBuf> {
-    claude_transcript_cwds_within(
-        home,
+/// The distinct `cwd` values recorded in the transcripts under `root`, which
+/// holds one directory of `*.jsonl` files per project. Each encoded project
+/// directory can represent more than one real path, so every `*.jsonl` file
+/// is scanned newest-first within the total byte budget.
+fn transcript_cwds(root: &Path) -> Vec<PathBuf> {
+    transcript_cwds_within(
+        root,
         TranscriptScanLimits::new(MAX_TRANSCRIPT_TOTAL_BYTES, MAX_TRANSCRIPT_ATTEMPTS),
     )
 }
 
-/// `claude_transcript_cwds` with explicit operation-wide limits. Stops
-/// scanning and returns what it found when either limit is spent.
-fn claude_transcript_cwds_within(home: &Path, mut limits: TranscriptScanLimits) -> Vec<PathBuf> {
+/// `transcript_cwds` with explicit limits. Stops scanning and returns what it
+/// found when either limit is spent.
+fn transcript_cwds_within(root: &Path, mut limits: TranscriptScanLimits) -> Vec<PathBuf> {
     let mut out = BTreeSet::new();
 
-    let Ok(project_dirs) = fs::read_dir(home.join(".claude/projects")) else {
+    let Ok(project_dirs) = fs::read_dir(root) else {
         return Vec::new();
     };
     let mut project_dirs: Vec<_> = project_dirs.flatten().collect();
@@ -221,6 +233,61 @@ fn claude_transcript_cwds_within(home: &Path, mut limits: TranscriptScanLimits) 
     out.into_iter().collect()
 }
 
+/// Cursor inherits VS Code's per-workspace storage: one
+/// `<hash>/workspace.json` per opened folder. Cursor does not document the
+/// location, so every OS's home-relative VS Code path is tried (macOS, Linux,
+/// Windows).
+const CURSOR_WORKSPACE_STORAGE_ROOTS: &[&str] = &[
+    "Library/Application Support/Cursor/User/workspaceStorage",
+    ".config/Cursor/User/workspaceStorage",
+    "AppData/Roaming/Cursor/User/workspaceStorage",
+];
+
+/// A real `workspace.json` is about 100 bytes.
+const MAX_WORKSPACE_JSON_BYTES: u64 = 64 * 1024;
+
+/// `workspace.json` files one discovery run may try to open.
+const MAX_CURSOR_WORKSPACES: usize = 10_000;
+
+/// Local folders Cursor has opened. Multi-root workspaces (`workspace`) and
+/// remote folders (`vscode-remote://`) name no local project root and are
+/// skipped.
+fn cursor_workspace_folders(home: &Path) -> Vec<PathBuf> {
+    let mut out = Vec::new();
+    let mut remaining = MAX_CURSOR_WORKSPACES;
+    for root in CURSOR_WORKSPACE_STORAGE_ROOTS {
+        let Ok(entries) = fs::read_dir(home.join(root)) else {
+            continue;
+        };
+        for entry in entries.flatten() {
+            if remaining == 0 {
+                return out;
+            }
+            remaining -= 1;
+            out.extend(cursor_workspace_folder(
+                &entry.path().join("workspace.json"),
+            ));
+        }
+    }
+    out
+}
+
+fn cursor_workspace_folder(path: &Path) -> Option<PathBuf> {
+    // Opening a FIFO would block the refresh, so only regular files are read.
+    if !fs::symlink_metadata(path).is_ok_and(|m| m.file_type().is_file()) {
+        return None;
+    }
+    let mut content = String::new();
+    fs::File::open(path)
+        .ok()?
+        .take(MAX_WORKSPACE_JSON_BYTES)
+        .read_to_string(&mut content)
+        .ok()?;
+    let value: serde_json::Value = serde_json::from_str(&content).ok()?;
+    let folder = value.get("folder")?.as_str()?;
+    url::Url::parse(folder).ok()?.to_file_path().ok()
+}
+
 /// True when `path` is inside Skill Studio's own scratch root - the
 /// assistant's Test and Audit runs create a throwaway project there and
 /// Claude Code records a transcript for it, which would otherwise be adopted
@@ -241,13 +308,16 @@ fn is_home_root(home: &Path, path: &Path) -> bool {
     canonical(path) == canonical(home)
 }
 
-/// Union of every project directory discoverable from Codex config and
-/// Claude Code transcripts, filtered to directories that exist and have at
-/// least one first-class agent's skill dir. Sorted and deduped.
+/// Union of every project directory discoverable from Codex config, Claude
+/// Code and pi transcripts, and Cursor workspace storage, filtered to
+/// directories that exist and have at least one first-class agent's skill
+/// dir. Sorted and deduped.
 pub fn discover_skill_projects(home: &Path) -> Vec<PathBuf> {
     let mut paths: BTreeSet<PathBuf> = BTreeSet::new();
     paths.extend(codex_project_paths(home));
-    paths.extend(claude_transcript_cwds(home));
+    paths.extend(transcript_cwds(&home.join(CLAUDE_TRANSCRIPT_ROOT)));
+    paths.extend(transcript_cwds(&home.join(PI_TRANSCRIPT_ROOT)));
+    paths.extend(cursor_workspace_folders(home));
 
     paths
         .into_iter()
@@ -262,14 +332,13 @@ pub fn discover_skill_projects(home: &Path) -> Vec<PathBuf> {
         .collect()
 }
 
-/// `ProjectDiscovery` backed by Codex's recent-projects config and Claude
-/// Code session transcripts under the home directory
-/// ([`ports::ProjectDiscovery`](ProjectDiscovery)).
+/// `ProjectDiscovery` backed by the harness project histories under the home
+/// directory ([`ports::ProjectDiscovery`](ProjectDiscovery)).
 pub struct HostProjectDiscovery;
 
 impl HostProjectDiscovery {
     /// Builds a discovery adapter. Holds no state; every call re-reads the
-    /// Codex config and transcripts under the given home.
+    /// harness histories under the given home.
     pub fn new() -> Self {
         HostProjectDiscovery
     }
@@ -331,12 +400,16 @@ mod tests {
             fs::create_dir_all(home.join(format!("proj{i}/.claude/skills"))).unwrap();
         }
 
-        let unbounded =
-            claude_transcript_cwds_within(home, TranscriptScanLimits::new(u64::MAX, usize::MAX));
+        let unbounded = transcript_cwds_within(
+            &home.join(CLAUDE_TRANSCRIPT_ROOT),
+            TranscriptScanLimits::new(u64::MAX, usize::MAX),
+        );
         assert_eq!(unbounded.len(), 10);
 
-        let bounded =
-            claude_transcript_cwds_within(home, TranscriptScanLimits::new(2_500, usize::MAX));
+        let bounded = transcript_cwds_within(
+            &home.join(CLAUDE_TRANSCRIPT_ROOT),
+            TranscriptScanLimits::new(2_500, usize::MAX),
+        );
         assert!(
             bounded.len() <= 3,
             "budget should stop the scan early: {bounded:?}"
@@ -375,7 +448,7 @@ mod tests {
         fs::File::open(&empty).unwrap().set_modified(now).unwrap();
 
         let limits = TranscriptScanLimits::new(u64::MAX, 2);
-        let found = claude_transcript_cwds_within(home, limits);
+        let found = transcript_cwds_within(&home.join(CLAUDE_TRANSCRIPT_ROOT), limits);
 
         assert!(found.is_empty());
     }
@@ -721,6 +794,112 @@ mod tests {
 
         let found = discover_skill_projects(home);
         assert_eq!(found, vec![project]);
+    }
+
+    /// pi's directory name for `<home>/my-pi-project` decodes to
+    /// `<home>/my/pi/project`, so this only passes when the header is read.
+    #[test]
+    fn pi_session_header_cwd_is_discovered() {
+        let tmp = tempfile::tempdir().unwrap();
+        let home = tmp.path();
+        let project = home.join("my-pi-project");
+        fs::create_dir_all(project.join(".pi/skills")).unwrap();
+
+        let encoded: String = project
+            .to_string_lossy()
+            .chars()
+            .map(|c| {
+                if matches!(c, '/' | '\\' | ':') {
+                    '-'
+                } else {
+                    c
+                }
+            })
+            .collect();
+        let session_dir = home.join(PI_TRANSCRIPT_ROOT).join(format!("--{encoded}--"));
+        fs::create_dir_all(&session_dir).unwrap();
+        fs::write(
+            session_dir.join("2026-09-16T10-00-00-000Z_0192.jsonl"),
+            format!(
+                "{}\n{}\n",
+                serde_json::json!({
+                    "type": "session",
+                    "version": 3,
+                    "id": "0192",
+                    "timestamp": "2026-09-16T10:00:00.000Z",
+                    "cwd": project,
+                }),
+                r#"{"type":"message","id":"a1","parentId":null}"#,
+            ),
+        )
+        .unwrap();
+
+        assert_eq!(discover_skill_projects(home), vec![project]);
+    }
+
+    fn write_cursor_workspace(home: &Path, hash: &str, workspace_json: &str) {
+        let dir = home.join(CURSOR_WORKSPACE_STORAGE_ROOTS[0]).join(hash);
+        fs::create_dir_all(&dir).unwrap();
+        fs::write(dir.join("workspace.json"), workspace_json).unwrap();
+    }
+
+    #[test]
+    fn cursor_workspace_folder_uri_is_decoded_and_discovered() {
+        let tmp = tempfile::tempdir().unwrap();
+        let home = tmp.path();
+        let project = home.join("cursor project");
+        fs::create_dir_all(project.join(".cursor/skills")).unwrap();
+
+        let uri = url::Url::from_file_path(&project).unwrap();
+        assert!(uri.as_str().contains("%20"));
+        write_cursor_workspace(
+            home,
+            "0a1b2c",
+            &serde_json::json!({ "folder": uri.as_str() }).to_string(),
+        );
+
+        assert_eq!(discover_skill_projects(home), vec![project]);
+    }
+
+    /// Cursor records the home itself when a window is opened on it.
+    #[test]
+    fn cursor_workspace_at_the_home_directory_discovers_nothing() {
+        let tmp = tempfile::tempdir().unwrap();
+        let home = tmp.path();
+        fs::create_dir_all(home.join(".cursor/skills")).unwrap();
+
+        let uri = url::Url::from_file_path(home).unwrap();
+        write_cursor_workspace(
+            home,
+            "home",
+            &serde_json::json!({ "folder": uri.as_str() }).to_string(),
+        );
+
+        assert!(discover_skill_projects(home).is_empty());
+    }
+
+    #[test]
+    fn cursor_workspaces_without_a_local_folder_are_skipped() {
+        let tmp = tempfile::tempdir().unwrap();
+        let home = tmp.path();
+        let project = home.join("multi-root");
+        fs::create_dir_all(project.join(".cursor/skills")).unwrap();
+        let workspace_file =
+            url::Url::from_file_path(project.join("multi.code-workspace")).unwrap();
+
+        write_cursor_workspace(
+            home,
+            "remote",
+            r#"{"folder":"vscode-remote://ssh-remote%2Bbox/home/me/app"}"#,
+        );
+        write_cursor_workspace(
+            home,
+            "multi",
+            &serde_json::json!({ "workspace": workspace_file.as_str() }).to_string(),
+        );
+        write_cursor_workspace(home, "broken", "{not json");
+
+        assert!(cursor_workspace_folders(home).is_empty());
     }
 
     #[test]
