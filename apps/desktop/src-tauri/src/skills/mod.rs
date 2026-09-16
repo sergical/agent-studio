@@ -45,6 +45,7 @@ pub mod skill_ownership;
 pub mod skill_pack;
 pub mod skill_park;
 pub mod skill_process;
+pub(crate) mod skill_project_authority;
 pub mod skill_refresh;
 pub mod skill_run_history;
 pub mod skill_run_target;
@@ -63,3 +64,6 @@ pub use skill_refresh::{SkillRefreshState, SkillSnapshot};
 pub(crate) mod skill_copy_repair;
 pub(crate) mod skill_document_operation;
 pub(crate) mod skill_startup_recovery;
+
+#[cfg(target_os = "macos")]
+pub(crate) mod skill_document_save;

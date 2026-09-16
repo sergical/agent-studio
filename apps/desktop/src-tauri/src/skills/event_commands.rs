@@ -141,10 +141,7 @@ fn restore_skill_event_blocking(
         return Ok(());
     }
     if super::skill_copy_repair::is_copy_event(&target.kind) {
-        let projects = super::project_discovery::discover_skill_projects(&home)
-            .into_iter()
-            .filter(|path| path != &home)
-            .collect::<Vec<_>>();
+        let projects = super::skill_project_authority::scoped_projects(&home, [])?;
         let scope = super::skill_scope_config::desktop_skill_scope(&home, &projects)?;
         let mut service = ScopedSkillService::bind(scope).map_err(|error| error.to_string())?;
         let transaction = super::skill_md_write::begin_skill_md_write_transaction()?;
@@ -688,6 +685,9 @@ mod tests {
         let temp = tempfile::tempdir().unwrap();
         let store = EventStore::open(temp.path()).unwrap();
         for kind in [
+            "edit_copy_document",
+            "undo_copy_document",
+            "redo_copy_document",
             "repair_copy_frontmatter",
             "undo_copy_frontmatter",
             "redo_copy_frontmatter",

@@ -64,6 +64,15 @@ impl CopyRepairTransition {
         Ok(())
     }
 
+    pub(crate) fn before(&self) -> &CopyDeploymentRecord {
+        &self.before
+    }
+
+    #[cfg(all(unix, feature = "event-store"))]
+    pub(crate) fn after(&self) -> &CopyDeploymentRecord {
+        &self.after
+    }
+
     pub fn apply(&self, registry: &mut ForkRegistry) -> Result<bool, String> {
         self.replace(registry, &self.before, &self.after)
     }

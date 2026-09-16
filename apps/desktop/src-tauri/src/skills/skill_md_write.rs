@@ -1,6 +1,10 @@
+#[cfg(any(test, not(target_os = "macos")))]
 pub(crate) use skill_studio_core::skill_document_write::{
-    begin_skill_md_write_transaction, write_skill_md, write_skill_md_compare_and_swap,
-    SkillMdWriteTransaction,
+    write_skill_md, write_skill_md_compare_and_swap,
+};
+
+pub(crate) use skill_studio_core::skill_document_write::{
+    begin_skill_md_write_transaction, SkillMdWriteTransaction,
 };
 
 #[cfg(test)]

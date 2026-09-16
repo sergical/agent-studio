@@ -272,6 +272,27 @@ impl VerifiedCopyRepairBackup {
         Ok(result)
     }
 
+    pub(crate) fn read_edit(
+        authorized_state: &Path,
+        event_id: &str,
+        intent: &crate::skill_copy_document_edit::CopyDocumentEditIntent,
+        lease: &FinalizedWriteLease<'_>,
+    ) -> Result<Self, String> {
+        intent.validate_record()?;
+        let result = Self::read_documents(
+            authorized_state,
+            event_id,
+            &intent.transition().before().path.join("SKILL.md"),
+            intent.registry_path(),
+            lease,
+            crate::skill_copy_document_edit::MAX_COPY_DOCUMENT_EDIT_BYTES,
+        )?;
+        let (document, registry) = result.originals();
+        intent.validate_originals(document, registry)?;
+        result.revalidate(lease)?;
+        Ok(result)
+    }
+
     fn read_documents(
         authorized_state: &Path,
         event_id: &str,

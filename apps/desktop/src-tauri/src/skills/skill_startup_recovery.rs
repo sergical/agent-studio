@@ -65,10 +65,7 @@ pub(crate) fn recover_at_startup(store: &EventStore, home: &std::path::Path) -> 
         if let Some(scope) = &scope {
             return Ok(Clone::clone(scope));
         }
-        let projects = super::project_discovery::discover_skill_projects(home)
-            .into_iter()
-            .filter(|path| path != home)
-            .collect::<Vec<_>>();
+        let projects = super::skill_project_authority::scoped_projects(home, [])?;
         let configured = super::skill_scope_config::desktop_skill_scope(home, &projects)?;
         scope = Some(configured.clone());
         Ok(configured)

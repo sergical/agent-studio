@@ -27,7 +27,11 @@ export type DocumentOperationRequest =
         };
       };
     }
-  | { command: "restore_skill_event"; args: { eventId: string; force: boolean } };
+  | { command: "restore_skill_event"; args: { eventId: string; force: boolean } }
+  | {
+      command: "write_installed_skill_md_if_unchanged";
+      args: { path: string; expectedContent: string; content: string };
+    };
 
 export interface DocumentOperationTransport {
   subscribeStarted: (receive: (operationId: string) => void) => Promise<() => void>;

@@ -178,8 +178,12 @@ export async function writeInstalledSkillMdIfUnchanged(
   path: string,
   expectedContent: string,
   content: string,
+  onStarted?: (operationId: string) => void,
 ): Promise<void> {
-  return invoke("write_installed_skill_md_if_unchanged", { path, expectedContent, content });
+  return runDocumentOperation(
+    { command: "write_installed_skill_md_if_unchanged", args: { path, expectedContent, content } },
+    onStarted,
+  );
 }
 
 /**

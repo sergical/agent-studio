@@ -7,6 +7,9 @@
 
 import { useCallback, useEffect, useEffectEvent, useRef, useState } from "react";
 import { ArrowLeft } from "lucide-react";
+import { Button } from "@skill-studio/ui";
+import { useDocumentCancellation } from "../../hooks/useDocumentCancellation";
+import { DocumentOperationCancelled } from "../../lib/skill-document-operation";
 import {
   forkSkill,
   previewSkillFrontmatterRepair,
@@ -66,6 +69,7 @@ function useSkillMdContent({ skill, skillMdPath, deployment, addToast }: UseSkil
   const [isLoadingContent, setIsLoadingContent] = useState(false);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [isSaving, setIsSaving] = useState(false);
+  const saveCancellation = useDocumentCancellation();
 
   /** The SKILL.md path the page currently shows - every async read or apply checks against it so a late result for a previous skill is dropped instead of landing on this one. */
   const currentSkillMdPathRef = useRef<string | undefined>(undefined);
@@ -107,7 +111,9 @@ function useSkillMdContent({ skill, skillMdPath, deployment, addToast }: UseSkil
 
   // A dotagents/skills.sh-managed skill would have its edits overwritten by
   // the next sync/update - saving forks it first so the edit sticks.
-  const needsForkToSave = skill?.source_kind === "dotagents" || skill?.source_kind === "skills-sh";
+  const needsForkToSave =
+    deployment?.owner_kind !== "copy" &&
+    (skill?.source_kind === "dotagents" || skill?.source_kind === "skills-sh");
 
   // A Promise chain, not a try/finally statement, so the compiler can still
   // optimize this component (it doesn't support `finally` clauses yet).
@@ -115,6 +121,7 @@ function useSkillMdContent({ skill, skillMdPath, deployment, addToast }: UseSkil
     // Ignore a duplicate save request (e.g. Cmd+S fired while the Save
     // button's own click is already in flight).
     if (!skill || !skillMdPath || isSaving) return;
+    saveCancellation.reset();
     setIsSaving(true);
 
     // A fork failure already shows its own toast and must skip the write -
@@ -139,13 +146,18 @@ function useSkillMdContent({ skill, skillMdPath, deployment, addToast }: UseSkil
         if (forkFailed) return;
         return saveSkillEditorDraft(
           { path: skillMdPath, openedContent, draftContent: content },
-          writeInstalledSkillMdIfUnchanged,
+          (path, expected, proposed) =>
+            writeInstalledSkillMdIfUnchanged(path, expected, proposed, saveCancellation.onStarted),
         ).then((savedDraft) => {
           setRawContent(savedDraft.openedContent);
           onSaved();
         });
       })
       .catch((err) => {
+        if (err instanceof DocumentOperationCancelled) {
+          addToast({ type: "info", title: "Save cancelled", message: "Your draft is still open." });
+          return;
+        }
         const message = err instanceof Error ? err.message : String(err);
         const isConflict = message.includes("SKILL.md changed on disk since it was loaded");
         if (isConflict) loadContent(skillMdPath, false);
@@ -158,6 +170,7 @@ function useSkillMdContent({ skill, skillMdPath, deployment, addToast }: UseSkil
         });
       })
       .finally(() => {
+        saveCancellation.reset();
         setIsSaving(false);
       });
   };
@@ -178,6 +191,7 @@ function useSkillMdContent({ skill, skillMdPath, deployment, addToast }: UseSkil
     isLoadingContent,
     loadError,
     isSaving,
+    saveCancellation,
     needsForkToSave,
     loadContent,
     handleSave,
@@ -341,6 +355,7 @@ export function SkillPage({
     isLoadingContent,
     loadError,
     isSaving,
+    saveCancellation,
     needsForkToSave,
     loadContent,
     handleSave: saveContent,
@@ -421,6 +436,18 @@ export function SkillPage({
 
       <div className="flex min-w-0 flex-col gap-6">
         <SkillLocationsCard skill={skill} onCompareCopies={() => setIsCompareOpen(true)} />
+
+        {isSaving && saveCancellation.canCancel && (
+          <div className="flex justify-end">
+            <Button
+              variant="outline"
+              disabled={saveCancellation.isCancelling}
+              onClick={() => void saveCancellation.cancel()}
+            >
+              {saveCancellation.isCancelling ? "Stopping save…" : "Stop save"}
+            </Button>
+          </div>
+        )}
 
         {deployment && isDeploymentBroken ? (
           <SkillRepairCard skill={skill} deployment={deployment} />

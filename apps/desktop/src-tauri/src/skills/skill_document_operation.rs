@@ -1,3 +1,56 @@
+#[derive(Debug, serde::Serialize)]
+#[serde(tag = "code", rename_all = "snake_case")]
+pub enum DocumentSaveError {
+    Cancelled,
+    Failed { message: String },
+}
+
+impl From<String> for DocumentSaveError {
+    fn from(message: String) -> Self {
+        Self::Failed { message }
+    }
+}
+impl From<&str> for DocumentSaveError {
+    fn from(message: &str) -> Self {
+        message.to_owned().into()
+    }
+}
+impl std::fmt::Display for DocumentSaveError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Cancelled => f.write_str("Save cancelled"),
+            Self::Failed { message } => f.write_str(message),
+        }
+    }
+}
+impl std::error::Error for DocumentSaveError {}
+
+impl From<skill_studio_core::skill_service::PreparedContentError> for DocumentSaveError {
+    fn from(error: skill_studio_core::skill_service::PreparedContentError) -> Self {
+        if error.is_cancelled() {
+            Self::Cancelled
+        } else {
+            Self::Failed {
+                message: error.to_string(),
+            }
+        }
+    }
+}
+
+impl From<skill_studio_core::skill_service::WritePreparationError> for DocumentSaveError {
+    fn from(error: skill_studio_core::skill_service::WritePreparationError) -> Self {
+        use skill_studio_core::skill_service::{
+            CoordinationFailure, ScanError, WritePreparationError,
+        };
+        match error {
+            WritePreparationError::Scan(ScanError::Coordination(
+                CoordinationFailure::Cancelled,
+            )) => Self::Cancelled,
+            other => other.to_string().into(),
+        }
+    }
+}
+
 use std::sync::{Arc, Mutex};
 
 use skill_studio_core::skill_service::CancellationToken;
@@ -135,6 +188,18 @@ pub fn cancel_document_operation(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn save_error_wire_contract_preserves_failure_details() {
+        assert_eq!(
+            serde_json::to_value(DocumentSaveError::Cancelled).unwrap(),
+            serde_json::json!({"code": "cancelled"})
+        );
+        assert_eq!(
+            serde_json::to_value(DocumentSaveError::from("Recovery remains unresolved")).unwrap(),
+            serde_json::json!({"code": "failed", "message": "Recovery remains unresolved"})
+        );
+    }
 
     #[test]
     fn exit_cancels_work_and_waits_for_its_final_release() {

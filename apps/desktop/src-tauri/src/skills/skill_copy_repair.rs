@@ -1,4 +1,5 @@
 use super::event_store::{EventRow, EventStore};
+use super::skill_document_operation::DocumentSaveError;
 use skill_studio_core::{
     skill_frontmatter_repair::BoundFrontmatterRepairRequest,
     skill_repair_execution as execution,
@@ -7,10 +8,68 @@ use skill_studio_core::{
 use std::time::{Duration, Instant};
 
 pub(crate) fn is_copy_event(kind: &str) -> bool {
+    is_copy_edit_event(kind)
+        || matches!(
+            kind,
+            "repair_copy_frontmatter" | "undo_copy_frontmatter" | "redo_copy_frontmatter"
+        )
+}
+
+pub(crate) fn is_copy_edit_event(kind: &str) -> bool {
     matches!(
         kind,
-        "repair_copy_frontmatter" | "undo_copy_frontmatter" | "redo_copy_frontmatter"
+        "edit_copy_document" | "undo_copy_document" | "redo_copy_document"
     )
+}
+
+pub(crate) fn apply_edit(
+    service: &mut ScopedSkillService,
+    store: &EventStore,
+    request: &skill_studio_core::skill_copy_document_edit::CopyDocumentEditRequest,
+    id: &str,
+    cancellation: CancellationToken,
+) -> Result<(), DocumentSaveError> {
+    use skill_studio_core::skill_copy_document_edit::{
+        execute_copy_document_edit, CopyDocumentEditPreparation, DocumentEditPreparationError,
+    };
+    let prepared = service
+        .prepare_copy_document_edit(
+            request,
+            std::slice::from_ref(&store.app_data),
+            Some(Duration::from_secs(30)),
+            cancellation,
+        )
+        .map_err(|error| match error {
+            DocumentEditPreparationError::Inventory(error) => DocumentSaveError::from(error),
+            DocumentEditPreparationError::Content(error) if error.is_cancelled() => {
+                DocumentSaveError::Cancelled
+            }
+            other => DocumentSaveError::from(other.to_string()),
+        })?;
+    let result = match prepared {
+        CopyDocumentEditPreparation::Unchanged { .. } => Ok(()),
+        CopyDocumentEditPreparation::Ready(prepared) => {
+            execute_copy_document_edit(*prepared, store, id).map(|_| ())
+        }
+    };
+    if let Err(error) = &result {
+        use skill_studio_core::skill_copy_document_edit::{
+            DocumentEditCause, DocumentEditPublication,
+        };
+        if error.cause == DocumentEditCause::Cancelled
+            && error.publication == DocumentEditPublication::NotPublished
+            && store.get(id)?.is_none()
+        {
+            return Err(DocumentSaveError::Cancelled);
+        }
+    }
+    settle(
+        service,
+        store,
+        id,
+        result.map_err(|error| error.to_string()),
+    )
+    .map_err(Into::into)
 }
 
 fn linked_event(store: &EventStore, row: &EventRow, field: &str) -> Result<EventRow, String> {
@@ -56,7 +115,17 @@ pub(crate) fn restore(
     if force {
         return Err("Copy restore cannot overwrite changed content or ownership".into());
     }
-
+    if is_copy_edit_event(&row.kind) {
+        let prepared = service
+            .prepare_copy_document_reversal(row, store, Some(Duration::from_secs(30)), cancellation)
+            .map_err(|error| error.to_string())?;
+        let result = skill_studio_core::skill_copy_document_edit::execute_copy_document_reversal(
+            prepared, store, id,
+        )
+        .map(|_| ())
+        .map_err(|error| error.to_string());
+        return settle(service, store, id, result);
+    }
     let timeout = Some(Duration::from_secs(30));
     let result = match row.kind.as_str() {
         "repair_copy_frontmatter" | "redo_copy_frontmatter" => {
@@ -112,7 +181,16 @@ pub(crate) fn recover(
     let deadline = Instant::now() + Duration::from_secs(30);
     let remaining = || Some(deadline.saturating_duration_since(Instant::now()));
     let token = CancellationToken::default();
-
+    if is_copy_edit_event(&row.kind) {
+        let prepared = service
+            .prepare_copy_document_edit_recovery(row, store, remaining(), token)
+            .map_err(|error| error.to_string())?;
+        return skill_studio_core::skill_copy_document_edit::recover_copy_document_edit(
+            prepared, store,
+        )
+        .map(|_| ())
+        .map_err(|error| error.to_string());
+    }
     let result = match row.kind.as_str() {
         "repair_copy_frontmatter" => {
             let prepared = service

@@ -505,6 +505,126 @@ impl GuardedEventStore<'_> {
         })
     }
 
+    pub(crate) fn validate_copy_document_source(
+        &self,
+        lease: &FinalizedWriteLease<'_>,
+        source: &crate::skill_copy_document_edit::CopyDocumentEditSource,
+    ) -> Result<(), String> {
+        self.validate(lease)?;
+        self.check_copy_document_source(source)?;
+        self.validate(lease)
+    }
+
+    fn check_copy_document_source(
+        &self,
+        source: &crate::skill_copy_document_edit::CopyDocumentEditSource,
+    ) -> Result<(), String> {
+        let current = self
+            .store
+            .get(&source.snapshot().id)?
+            .ok_or("Copy edit source is missing")?;
+        if serde_json::to_value(&current).map_err(|e| e.to_string())?
+            != serde_json::to_value(source.snapshot()).map_err(|e| e.to_string())?
+            || current.status != "done"
+            || current.reverted_by.is_some()
+        {
+            return Err("Copy edit source changed or was already reversed".into());
+        }
+        if let Some(reference) = source.origin() {
+            let origin = self
+                .store
+                .get(&reference.event_id)?
+                .ok_or("Copy edit origin is missing")?;
+            reference.validate_claim(&origin, &current.id, &current.kind, source.intent())?;
+        }
+        Ok(())
+    }
+
+    pub(crate) fn record_copy_document_reversal(
+        &self,
+        lease: &FinalizedWriteLease<'_>,
+        source: &crate::skill_copy_document_edit::CopyDocumentEditSource,
+        id: &str,
+        intent: &crate::skill_copy_document_edit::CopyDocumentEditIntent,
+    ) -> Result<(), EventWriteFailure> {
+        let draft = source
+            .reversal_draft(id, intent)
+            .map_err(EventWriteFailure::BeforeWrite)?;
+        self.write(lease, || {
+            let transaction = self.transaction(lease)?;
+            self.check_unresolved()?;
+            self.check_copy_document_source(source)?;
+            self.store.record(id, draft)?;
+            let count = transaction.execute(
+                "UPDATE events SET reverted_by = ?1 WHERE id = ?2 AND status = 'done' AND reverted_by IS NULL",
+                params![id, &source.snapshot().id],
+            ).map_err(|e| e.to_string())?;
+            if count != 1 { return Err("Copy document source is no longer available".into()); }
+            transaction.commit().map_err(|e| e.to_string())
+        })
+    }
+
+    pub(crate) fn validate_copy_document_edit_recovery(
+        &self,
+        lease: &FinalizedWriteLease<'_>,
+        event: &crate::skill_copy_document_edit::CopyDocumentEditRecoveryEvent,
+    ) -> Result<(), String> {
+        self.validate(lease)?;
+        self.check_copy_document_edit_recovery(event)?;
+        self.validate(lease)
+    }
+
+    fn check_copy_document_edit_recovery(
+        &self,
+        event: &crate::skill_copy_document_edit::CopyDocumentEditRecoveryEvent,
+    ) -> Result<(), String> {
+        let current = self
+            .store
+            .get(&event.snapshot().id)?
+            .ok_or("Copy edit recovery event is missing")?;
+        if serde_json::to_value(current).map_err(|error| error.to_string())?
+            != serde_json::to_value(event.snapshot()).map_err(|error| error.to_string())?
+        {
+            return Err("Copy edit event changed since preparation".into());
+        }
+        if let Some(reference) = event.source() {
+            let source = self
+                .store
+                .get(&reference.event_id)?
+                .ok_or("Copy edit source is missing")?;
+            reference.validate_claim(
+                &source,
+                &event.snapshot().id,
+                &event.snapshot().kind,
+                event.intent(),
+            )?;
+        }
+        Ok(())
+    }
+
+    pub(crate) fn finish_copy_document_edit_recovery(
+        &self,
+        lease: &FinalizedWriteLease<'_>,
+        event: &crate::skill_copy_document_edit::CopyDocumentEditRecoveryEvent,
+        status: EventStatus,
+    ) -> Result<(), EventWriteFailure> {
+        self.write(lease, || {
+            let transaction = self.transaction(lease)?;
+            self.check_copy_document_edit_recovery(event)?;
+            crate::skill_event_statements::finish_recovery_snapshot(&transaction, event.snapshot(), status, None)?;
+            if matches!(status, EventStatus::Failed) {
+                if let Some(reference) = event.source() {
+                    let count = transaction.execute(
+                        "UPDATE events SET reverted_by = NULL WHERE id = ?1 AND status = 'done' AND reverted_by = ?2",
+                        params![&reference.event_id, &event.snapshot().id],
+                    ).map_err(|e| e.to_string())?;
+                    if count != 1 { return Err("Copy edit source claim changed".into()); }
+                }
+            }
+            transaction.commit().map_err(|e| e.to_string())
+        })
+    }
+
     pub fn validate_copy_recovery(
         &self,
         lease: &FinalizedWriteLease<'_>,

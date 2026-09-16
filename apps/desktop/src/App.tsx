@@ -74,7 +74,15 @@ function App() {
         }
       }
       for (const path of excludedProjects) {
-        unregisterSkillProject(path);
+        try {
+          await unregisterSkillProject(path);
+        } catch (err) {
+          addToast({
+            type: "error",
+            title: "Couldn't restore project exclusions",
+            message: err instanceof Error ? err.message : "Unknown error",
+          });
+        }
       }
     })();
   }, [userAddedProjects, excludedProjects, removeProject, addToast]);

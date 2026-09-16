@@ -26,6 +26,7 @@ use super::skill_lifecycle::{
     dotagents_update_args, ledger_matching_deployment, rebuild_fresh_lifecycle_snapshot,
     resolve_lifecycle_target, skills_sh_remove_args_for_scope, skills_sh_update_args,
 };
+#[cfg(any(test, not(target_os = "macos")))]
 use super::skill_md_write::{write_skill_md, write_skill_md_compare_and_swap};
 use super::skill_refresh::{self, SkillRefreshState};
 use super::skill_trial;
@@ -164,6 +165,9 @@ pub fn get_installed_skills(
     app: tauri::AppHandle,
 ) -> Result<Vec<InstalledSkill>, String> {
     let requested = project_paths.unwrap_or_default();
+    let home = dirs::home_dir().ok_or("Could not find home directory")?;
+    let requested = skill_refresh::drop_home_directory_from_batch(requested, &home);
+    let requested = super::skill_project_authority::track(&home, requested)?;
     let snapshot = refresh_state.snapshot.read().ok().and_then(|g| g.clone());
 
     if let Some(snapshot) = &snapshot {
@@ -174,6 +178,7 @@ pub fn get_installed_skills(
         }
     }
 
+    refresh_state.unexclude_projects(requested.clone());
     refresh_state.add_extra_projects(requested);
     let rebuilt = skill_refresh::rebuild_snapshot_now(&app, &refresh_state)?;
     Ok(rebuilt.skills)
@@ -1732,6 +1737,7 @@ pub fn read_installed_skill_md(
 /// the current snapshot, or a `SKILL.md` owned by a plugin-managed
 /// deployment (the harness owns that file, not the user). Pulled out of the
 /// command so it's testable without a `tauri::AppHandle`.
+#[cfg(any(test, not(target_os = "macos")))]
 pub(crate) fn check_skill_md_write_allowed(
     snapshot: Option<&skill_refresh::SkillSnapshot>,
     path: &std::path::Path,
@@ -1765,6 +1771,7 @@ pub(crate) fn check_skill_md_deployment_write_allowed(
 /// `write_installed_skill_md_if_unchanged` share - ownership, canonicalization,
 /// the size limit, and the plugin-managed refusal - and returns the canonical
 /// path to write to.
+#[cfg(not(target_os = "macos"))]
 fn validate_skill_md_write(
     path: &str,
     content: &str,
@@ -1786,41 +1793,100 @@ fn validate_skill_md_write(
     Ok(canonical)
 }
 
-/// Write `content` to an installed skill's `SKILL.md`, for the detail
-/// drawer's inline editor. Same ownership check as `read_installed_skill_md`,
-/// plus a refusal when the owning deployment is plugin-managed. Marks the
-/// snapshot dirty afterward so the background loop picks up the new content
-/// and token/byte counts, rather than rescanning every skill on this thread.
+/// Saves through fresh scoped ownership checks on the owned document worker.
 #[tauri::command]
-pub fn write_installed_skill_md(
+pub async fn write_installed_skill_md(
     path: String,
     content: String,
     app: tauri::AppHandle,
-    refresh_state: tauri::State<SkillRefreshState>,
+    operation_id: Option<String>,
 ) -> Result<(), String> {
-    let canonical = validate_skill_md_write(&path, &content, &refresh_state)?;
-    write_skill_md(&canonical, &content)?;
-    skill_refresh::request_snapshot_rebuild(&app);
-    Ok(())
+    save_installed_document(path, None, content, app, operation_id)
+        .await
+        .map_err(|error| error.to_string())
 }
 
-/// Like `write_installed_skill_md`, but refuses the write (rather than
-/// silently overwriting) when the file's current content doesn't match
-/// `expected_content` - the copy the caller last loaded. Used by Audit
-/// proposal Apply and the inline editor to detect an ordinary stale baseline
-/// before writing.
+/// Retains the editor's loaded-text conflict guard for both Copy and direct saves.
 #[tauri::command]
-pub fn write_installed_skill_md_if_unchanged(
+pub async fn write_installed_skill_md_if_unchanged(
     path: String,
     expected_content: String,
     content: String,
     app: tauri::AppHandle,
-    refresh_state: tauri::State<SkillRefreshState>,
-) -> Result<(), String> {
-    let canonical = validate_skill_md_write(&path, &content, &refresh_state)?;
-    write_skill_md_compare_and_swap(&canonical, &expected_content, &content)?;
-    skill_refresh::request_snapshot_rebuild(&app);
-    Ok(())
+    operation_id: Option<String>,
+) -> Result<(), super::skill_document_operation::DocumentSaveError> {
+    save_installed_document(path, Some(expected_content), content, app, operation_id).await
+}
+
+async fn save_installed_document(
+    path: String,
+    expected: Option<String>,
+    content: String,
+    app: tauri::AppHandle,
+    operation_id: Option<String>,
+) -> Result<(), super::skill_document_operation::DocumentSaveError> {
+    let operation = super::skill_document_operation::DocumentOperation::start(&app, operation_id)?;
+    tauri::async_runtime::spawn_blocking(move || {
+        let _operation = operation;
+        let result = (|| {
+            if _operation.cancellation.is_cancelled() {
+                return Err(super::skill_document_operation::DocumentSaveError::Cancelled);
+            }
+            let fork_lock = app.state::<super::skill_fork::ForkMutationLock>();
+            let _fork = fork_lock.try_acquire()?;
+            let refresh = app.state::<SkillRefreshState>();
+            #[cfg(target_os = "macos")]
+            {
+                let snapshot = refresh
+                    .snapshot
+                    .read()
+                    .map_err(|_| "Skill snapshot is unavailable")?
+                    .clone()
+                    .ok_or("Skill inventory has not loaded")?;
+                let deployment = super::skill_document_save::selected_deployment(
+                    &snapshot.skills,
+                    std::path::Path::new(&path),
+                )?;
+                let home = dirs::home_dir().ok_or("Could not find home directory")?;
+                let projects = super::skill_project_authority::scoped_projects(&home, [])?;
+                let scope = super::skill_scope_config::desktop_skill_scope(&home, &projects)?;
+                let event_state = app.state::<super::event_commands::EventStoreState>();
+                let events = event_state
+                    .0
+                    .lock()
+                    .map_err(|_| "Event store lock is unavailable")?;
+                let store = events.as_ref().ok_or("Event store is unavailable")?;
+                super::skill_document_save::save(
+                    scope,
+                    store,
+                    &deployment.id,
+                    expected.as_deref(),
+                    &content,
+                    _operation.cancellation.clone(),
+                )
+            }
+            #[cfg(not(target_os = "macos"))]
+            {
+                let canonical = validate_skill_md_write(&path, &content, &refresh)?;
+                match expected {
+                    Some(expected) => {
+                        write_skill_md_compare_and_swap(&canonical, &expected, &content)
+                    }
+                    None => write_skill_md(&canonical, &content),
+                }
+                .map_err(super::skill_document_operation::DocumentSaveError::from)
+            }
+        })();
+        if !matches!(
+            result,
+            Err(super::skill_document_operation::DocumentSaveError::Cancelled)
+        ) {
+            skill_refresh::request_snapshot_rebuild(&app);
+        }
+        result
+    })
+    .await
+    .map_err(|error| format!("Document save task failed: {error}"))?
 }
 
 /// Reveal a skill's folder in Finder, or open it in the user's default

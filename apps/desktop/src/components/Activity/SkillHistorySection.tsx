@@ -31,6 +31,7 @@ function iconForKind(kind: string, className: string) {
   const props = { size: 14, className: `shrink-0 ${className}` };
   switch (kind) {
     case "undo_copy_frontmatter":
+    case "undo_copy_document":
     case "restore":
       return <Undo2 {...props} />;
     case "unlink_harness":
@@ -55,6 +56,12 @@ function iconForKind(kind: string, className: string) {
 /** "unlink harness" from "unlink_harness", for kinds with no friendlier label. */
 function kindLabel(kind: string): string {
   switch (kind) {
+    case "edit_copy_document":
+      return "Edited copy";
+    case "undo_copy_document":
+      return "Undid copy edit";
+    case "redo_copy_document":
+      return "Redid copy edit";
     case "repair_copy_frontmatter":
       return "Repaired copy";
     case "undo_copy_frontmatter":
@@ -70,6 +77,11 @@ function kindLabel(kind: string): string {
 function restoreDescription(event: SkillEvent): string {
   const skillPart = event.skill ? `${event.skill}` : (event.harness ?? "this item");
   switch (event.kind) {
+    case "edit_copy_document":
+    case "redo_copy_document":
+      return `Undo the edit to ${skillPart}`;
+    case "undo_copy_document":
+      return `Redo the edit to ${skillPart}`;
     case "repair_copy_frontmatter":
     case "redo_copy_frontmatter":
       return `Undo the YAML repair for ${skillPart}`;
@@ -99,8 +111,15 @@ function EventRow({ event, onRestored }: { event: SkillEvent; onRestored: () => 
     "undo_copy_frontmatter",
     "redo_copy_frontmatter",
   ].includes(event.kind);
-  const restoreLabel =
-    event.kind === "undo_copy_frontmatter"
+  const isCopyEdit = ["edit_copy_document", "undo_copy_document", "redo_copy_document"].includes(
+    event.kind,
+  );
+  const isCopyChange = isCopyRepair || isCopyEdit;
+  const restoreLabel = isCopyEdit
+    ? event.kind === "undo_copy_document"
+      ? "Redo edit"
+      : "Undo edit"
+    : event.kind === "undo_copy_frontmatter"
       ? "Redo repair"
       : isCopyRepair
         ? "Undo repair"
@@ -130,7 +149,7 @@ function EventRow({ event, onRestored }: { event: SkillEvent; onRestored: () => 
     cancellation.reset();
     setIsRestoring(true);
     try {
-      await restoreSkillEvent(event.id, force, isCopyRepair ? cancellation.onStarted : undefined);
+      await restoreSkillEvent(event.id, force, isCopyChange ? cancellation.onStarted : undefined);
       addToast({
         type: "success",
         title: event.kind === "undo_copy_frontmatter" ? "Repair reapplied" : "Restored",
@@ -199,7 +218,7 @@ function EventRow({ event, onRestored }: { event: SkillEvent; onRestored: () => 
           Reveal in Finder
         </button>
       )}
-      {isRestoring && isCopyRepair && (
+      {isRestoring && isCopyChange && (
         <button
           type="button"
           onClick={cancellation.cancel}

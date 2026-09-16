@@ -26,7 +26,12 @@ const repairRequest: DocumentOperationRequest = {
   },
 };
 
-it.each([restoreRequest, repairRequest])(
+const saveRequest: DocumentOperationRequest = {
+  command: "write_installed_skill_md_if_unchanged",
+  args: { path: "/fixture/SKILL.md", expectedContent: "before", content: "after" },
+};
+
+it.each([restoreRequest, repairRequest, saveRequest])(
   "retains admission and matches cancellation for $command",
   async (request) => {
     const unlisten = vi.fn();

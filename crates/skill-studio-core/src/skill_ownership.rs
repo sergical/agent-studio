@@ -981,14 +981,12 @@ pub fn classify_lifecycle_owner(
     deployment_id: &str,
     copy_records: &std::collections::BTreeMap<String, CopyDeploymentRecord>,
 ) -> (LifecycleOwnerKind, Option<String>, SourceKind) {
+    let plugin_unknown = matches!(candidate.plugin, PluginEvidence::Unknown);
     match candidate.plugin {
         PluginEvidence::Confirmed(_) => {
             return (LifecycleOwnerKind::Plugin, None, SourceKind::Plugin);
         }
-        PluginEvidence::Unknown => {
-            return (LifecycleOwnerKind::Unknown, None, SourceKind::Unknown);
-        }
-        PluginEvidence::Absent => {}
+        PluginEvidence::Unknown | PluginEvidence::Absent => {}
     }
 
     let selection = ownership_inputs_for_candidate(candidate, &report.scopes);
@@ -1021,6 +1019,10 @@ pub fn classify_lifecycle_owner(
 
     if copy_record_matches_candidate(copy_records, deployment_id, candidate, destination) {
         return (LifecycleOwnerKind::Copy, None, SourceKind::Manual);
+    }
+
+    if plugin_unknown {
+        return (LifecycleOwnerKind::Unknown, None, SourceKind::Unknown);
     }
 
     if copy_records.contains_key(deployment_id) {
@@ -2946,6 +2948,83 @@ mod tests {
             &records,
         );
         assert_eq!(owner, LifecycleOwnerKind::Manual);
+    }
+
+    #[test]
+    fn outside_home_project_copy_can_override_unknown_plugin_ancestry() {
+        let temp = tempfile::tempdir().unwrap();
+        let home = temp.path().join("home");
+        let project = temp.path().join("outside-project");
+        let skill_dir = project.join(".agents/skills/sample");
+        fs::create_dir_all(&skill_dir).unwrap();
+        fs::write(
+            skill_dir.join("SKILL.md"),
+            "---\nname: sample\ndescription: Fixture\n---\nBody\n",
+        )
+        .unwrap();
+        let context = crate::skill_plugins::SkillDiscoveryReadContext::bind(
+            home.clone(),
+            vec![project.clone()],
+            vec![],
+            vec![],
+        );
+        let candidate = crate::skill_discovery::discover_skill_candidates(&context)
+            .candidates
+            .into_iter()
+            .find(|candidate| candidate.path == skill_dir)
+            .unwrap();
+        assert_eq!(candidate.project_path.as_deref(), Some(project.as_path()));
+        assert!(matches!(candidate.plugin, PluginEvidence::Unknown));
+
+        let (deployment_id, destination, _) = crate::skill_deployment::id_for_candidate(
+            crate::skill_deployment::DeploymentCandidate {
+                name: &candidate.name,
+                root_label: &candidate.root_label,
+                scope: &candidate.scope,
+                path: &candidate.path,
+                project_path: candidate.project_path.as_deref().and_then(Path::to_str),
+                is_symlink: candidate.is_symlink,
+                symlink_target: candidate.symlink_target.as_deref(),
+                resolved_path: candidate.resolved_path.as_deref(),
+                shared_via_whole_dir_link: candidate.shared_via_whole_dir_link,
+            },
+        );
+        let record = CopyDeploymentRecord {
+            deployment_id: deployment_id.clone(),
+            name: candidate.name.clone(),
+            path: candidate.path.clone(),
+            scope: InstallScope::Project,
+            destination,
+            slot: "universal".to_string(),
+            project_path: Some(project.to_string_lossy().into_owned()),
+            content_hash: candidate.content_hash.clone(),
+            disabled: false,
+        };
+        let registry = crate::skill_fork_registry::ForkRegistry {
+            copies: BTreeMap::from([(deployment_id.clone(), record)]),
+            ..Default::default()
+        };
+        fs::create_dir_all(home.join(".agents")).unwrap();
+        fs::write(
+            home.join(".agents/skill-studio.json"),
+            serde_json::to_vec(&registry).unwrap(),
+        )
+        .unwrap();
+        let report = load_ownership_inputs(&home, std::slice::from_ref(&project));
+        let records = report.copy_records();
+        assert_eq!(records.len(), 1);
+
+        assert_eq!(
+            classify_lifecycle_owner(&candidate, &report, destination, &deployment_id, &records,).0,
+            LifecycleOwnerKind::Copy
+        );
+
+        let mut changed = candidate;
+        changed.content_hash = "different-content".to_string();
+        assert_eq!(
+            classify_lifecycle_owner(&changed, &report, destination, &deployment_id, &records,).0,
+            LifecycleOwnerKind::Unknown
+        );
     }
 
     fn discover_copy_candidate(home: &Path, skill_dir: &Path) -> SkillCandidate {

@@ -321,7 +321,7 @@ fn is_home_directory(path: &Path, home: &Path) -> bool {
 /// rest. A single legacy home-dir entry (e.g. from a persisted project list)
 /// shouldn't disable every other path in the same batch. Pulled out of
 /// `register_skill_projects` so it's testable without a `tauri::State`.
-fn drop_home_directory_from_batch(paths: Vec<String>, home: &Path) -> Vec<String> {
+pub(crate) fn drop_home_directory_from_batch(paths: Vec<String>, home: &Path) -> Vec<String> {
     paths
         .into_iter()
         .filter(|path| {
@@ -337,26 +337,33 @@ fn drop_home_directory_from_batch(paths: Vec<String>, home: &Path) -> Vec<String
 /// Register project paths the caller cares about (e.g. one the user just
 /// opened) so future rebuilds always include them, even though
 /// `project_discovery` hasn't found them via a Codex/Claude Code config yet.
-/// Returns immediately on success; a full rebuild follows on the background
-/// thread.
+/// Persists the authority before updating memory; a full rebuild follows on
+/// the background thread.
 #[tauri::command]
 pub fn register_skill_projects(
     paths: Vec<String>,
     state: tauri::State<SkillRefreshState>,
 ) -> Result<(), String> {
     let home = dirs::home_dir().ok_or("Could not find home directory")?;
-    let valid = drop_home_directory_from_batch(paths, &home);
+    let valid =
+        super::skill_project_authority::track(&home, drop_home_directory_from_batch(paths, &home))?;
     state.unexclude_projects(valid.clone());
     state.add_extra_projects(valid);
     Ok(())
 }
 
 /// Un-register a caller-registered project path (e.g. one the user closed)
-/// so future rebuilds stop including it. Returns immediately; a full rebuild
-/// follows on the background thread.
+/// so future rebuilds and recovery exclude it. Persists the exclusion before
+/// updating memory; a full rebuild follows on the background thread.
 #[tauri::command]
-pub fn unregister_skill_project(path: String, state: tauri::State<SkillRefreshState>) {
+pub fn unregister_skill_project(
+    path: String,
+    state: tauri::State<SkillRefreshState>,
+) -> Result<(), String> {
+    let home = dirs::home_dir().ok_or("Could not find home directory")?;
+    super::skill_project_authority::exclude(&home, &path)?;
     state.remove_extra_project(&path);
+    Ok(())
 }
 
 /// Build a full snapshot right now on the calling thread, store it, and emit
@@ -1340,18 +1347,11 @@ fn build_snapshot(
         update_check_path,
     } = paths;
     let projects_start = Instant::now();
-    let mut project_paths: BTreeSet<PathBuf> = project_discovery::discover_skill_projects(home)
-        .into_iter()
-        .collect();
-    project_paths.extend(extra_projects.iter().cloned());
-    let project_paths: Vec<PathBuf> = project_paths
-        .into_iter()
-        .filter(|p| !excluded_projects.contains(&p.to_string_lossy().to_string()))
-        // The home directory is the global scope (it holds ~/.claude/skills,
-        // ~/.agents/skills, ...), never a project - even if a stray session
-        // transcript recorded it as a cwd.
-        .filter(|p| !is_home_directory(p, home))
-        .collect();
+    let project_paths: Vec<PathBuf> =
+        super::skill_project_authority::scoped_projects(home, extra_projects.iter().cloned())?
+            .into_iter()
+            .filter(|p| !excluded_projects.contains(&p.to_string_lossy().to_string()))
+            .collect();
     let projects_ms = projects_start.elapsed().as_millis();
 
     let discovery_start = Instant::now();
