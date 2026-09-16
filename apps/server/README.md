@@ -160,11 +160,34 @@ No listener remained and no raw payload files were retained.
 The subsequent scope-attribute review found that Sentry 10.73 merges scope data
 after `beforeSendLog` and `beforeSendMetric`. The API now validates serialized
 method, route and status labels immediately before transport and removes all
-other log/metric attributes. The fixture injects private current/isolation scope
+other request/scope log and metric attributes. The fixture injects private current/isolation scope
 attributes and an invalid inherited status. Fifteen focused tests passed in
 0.821 s, including existing request trace correlation, followed by typecheck,
 scoped lint/format and whitespace checks. Peak memory was not measured; no
 browser, remote export or persistent capture ran for this correction.
+
+September 16 label correction: final envelope filtering now reconstructs
+`sentry.environment` and `sentry.release` from initialization configuration.
+It does not trust same-named scope attributes. Ten focused telemetry tests pass,
+including default/blank/whitespace environments, absent release, configured identity
+and spoofed scope labels. Errors, logs and metrics agree on the environment.
+Typecheck, scoped lint/format and whitespace checks pass. The final test run took
+0.459 s (0.101 s tests). Peak memory was not measured.
+
+One bounded SDK export used the changed source directly (no listener or deployment),
+environment `verification`, release `skill-studio-api@verify-labels-20260916-410fc1e3dd64`.
+Source SHA-256: `410fc1e3dd643800ca8a467f7efcc0d0a149af83cfd11f4b78f968348fde2276`.
+At 05:41:01 UTC, Executor's personal Sentry connection confirmed one completion log
+and two metric samples (`api.request.count` = 1, `api.request.duration` = 1 ms),
+all with trace `e53b092562c94eaabdeacc0eda86cf13`. Queries using both
+`environment:verification` and the exact release returned all three records.
+[Verification trace](https://sergtech.sentry.io/explore/traces/trace/e53b092562c94eaabdeacc0eda86cf13).
+The later blank-environment correction leaves this explicit verification value
+unchanged, so receipt evidence is reused without another export.
+These synthetic values are not performance measurements. Bounded SDK close returned
+true and the process exited in 0.79 s. Receipt initially lagged; read-only queries
+were repeated without another export. This verifies label filtering and correlation,
+not deployed production behavior. Remote records remain subject to Sentry retention.
 
 Acceptance remains incomplete:
 

@@ -294,41 +294,74 @@ it("keeps route attribution isolated when concurrent requests fail in reverse or
   expect(JSON.stringify(envelopes)).not.toContain("private-");
 });
 
-it("removes merged scope attributes while retaining sanitized log and metric labels", async () => {
-  const envelopes: Envelope[] = [];
-  initializeApiTelemetry(
-    { SENTRY_DSN: "https://public@example.invalid/1", SENTRY_TRACES_SAMPLE_RATE: "0" },
-    () => ({
-      send: async (envelope) => {
-        envelopes.push(envelope);
-        return {};
+it.each([
+  { environment: undefined, release: undefined, expectedEnvironment: "development" },
+  { environment: "", release: undefined, expectedEnvironment: "development" },
+  { environment: "   ", release: undefined, expectedEnvironment: "development" },
+  {
+    environment: "verification",
+    release: "skill-studio-api@verification",
+    expectedEnvironment: "verification",
+  },
+])(
+  "retains configured telemetry identity and excludes scope data: %j",
+  async ({ environment, release, expectedEnvironment }) => {
+    const envelopes: Envelope[] = [];
+    initializeApiTelemetry(
+      {
+        SENTRY_DSN: "https://public@example.invalid/1",
+        SENTRY_TRACES_SAMPLE_RATE: "0",
+        SENTRY_ENVIRONMENT: environment,
+        SENTRY_RELEASE: release,
       },
-      flush: async () => true,
-    }),
-  );
-  await Sentry.withIsolationScope(async (isolation) => {
-    isolation.setAttribute("private-isolation", "private-value");
-    isolation.setAttribute("status", "private-status");
-    Sentry.withScope((scope) => {
-      scope.setAttribute("private-current", "private-value");
-      const attributes = { method: "GET", route: "/health" };
-      Sentry.logger.info("api.request.completed", attributes);
-      Sentry.metrics.count("api.request.count", 1, { attributes });
+      () => ({
+        send: async (envelope) => {
+          envelopes.push(envelope);
+          return {};
+        },
+        flush: async () => true,
+      }),
+    );
+    await Sentry.withIsolationScope(async (isolation) => {
+      isolation.setAttribute("private-isolation", "private-value");
+      isolation.setAttribute("sentry.environment", "private-environment");
+      isolation.setAttribute("sentry.release", "private-release");
+      isolation.setAttribute("status", "private-status");
+      Sentry.withScope((scope) => {
+        scope.setAttribute("private-current", "private-value");
+        const attributes = { method: "GET", route: "/health" };
+        Sentry.captureException(new Error("private-failure"));
+        Sentry.logger.info("api.request.completed", attributes);
+        Sentry.metrics.count("api.request.count", 1, { attributes });
+      });
+      await Sentry.flush(2000);
     });
-    await Sentry.flush(2000);
-  });
-  expect(JSON.stringify(envelopes)).not.toContain("private-");
-  const items = envelopes.flatMap<Envelope[1][number]>((envelope) => envelope[1]);
-  expect(items.map((item) => item[0].type).sort()).toEqual(["log", "trace_metric"]);
-  const schema = z.object({
-    items: z.array(z.object({ attributes: z.record(z.string(), z.unknown()) })),
-  });
-  for (const item of items) {
-    const records = schema.parse(item[1]).items;
-    expect(records).toHaveLength(1);
-    expect(records[0].attributes).toEqual({
-      method: { type: "string", value: "GET" },
-      route: { type: "string", value: "/health" },
+    expect(JSON.stringify(envelopes)).not.toContain("private-");
+    const items = envelopes.flatMap<Envelope[1][number]>((envelope) => envelope[1]);
+    expect(items.map((item) => item[0].type).sort()).toEqual(["event", "log", "trace_metric"]);
+    const schema = z.object({
+      items: z.array(z.object({ attributes: z.record(z.string(), z.unknown()) })),
     });
-  }
-});
+    for (const item of items) {
+      if (item[0].type === "event") {
+        expect(item[1]).toMatchObject({ environment: expectedEnvironment });
+        continue;
+      }
+      const records = schema.parse(item[1]).items;
+      expect(records).toHaveLength(1);
+      const expected = {
+        method: { type: "string", value: "GET" },
+        route: { type: "string", value: "/health" },
+        "sentry.environment": { type: "string", value: expectedEnvironment },
+      };
+      if (release) {
+        expect(records[0].attributes).toEqual({
+          ...expected,
+          "sentry.release": { type: "string", value: release },
+        });
+      } else {
+        expect(records[0].attributes).toEqual(expected);
+      }
+    }
+  },
+);
