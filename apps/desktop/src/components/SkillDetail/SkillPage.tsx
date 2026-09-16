@@ -73,12 +73,15 @@ function useSkillMdContent({ skill, skillMdPath, deployment, addToast }: UseSkil
 
   /** The SKILL.md path the page currently shows - every async read or apply checks against it so a late result for a previous skill is dropped instead of landing on this one. */
   const currentSkillMdPathRef = useRef<string | undefined>(undefined);
+  const contentReadSequence = useRef(0);
 
   /** Reads SKILL.md at `path`; `showSkeleton` swaps the card for the loading skeleton (initial load and retry), a silent reload keeps the current content up until the read lands. */
   const loadContent = useCallback((path: string, showSkeleton: boolean) => {
     setLoadError(null);
     if (showSkeleton) setIsLoadingContent(true);
-    const isCurrent = () => currentSkillMdPathRef.current === path;
+    const sequence = ++contentReadSequence.current;
+    const isCurrent = () =>
+      currentSkillMdPathRef.current === path && contentReadSequence.current === sequence;
     readInstalledSkillMd(path)
       .then((content) => {
         if (isCurrent()) setRawContent(content);
@@ -107,7 +110,11 @@ function useSkillMdContent({ skill, skillMdPath, deployment, addToast }: UseSkil
     // react-doctor-disable-next-line react-hooks-js/set-state-in-effect -- resets load state before the same external load below fires for the new path
     setLoadError(null);
     if (skillMdPath) loadContent(skillMdPath, !isCopySwitch);
-  }, [skill?.name, skillMdPath, loadContent]);
+    return () => {
+      contentReadSequence.current += 1;
+    };
+    // oxlint-disable-next-line react/exhaustive-effect-dependencies -- A content hash change invalidates the external file read even when its path is unchanged.
+  }, [skill?.name, skillMdPath, deployment?.content_hash, loadContent]);
 
   // A dotagents/skills.sh-managed skill would have its edits overwritten by
   // the next sync/update - saving forks it first so the edit sticks.

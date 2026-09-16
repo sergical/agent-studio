@@ -9,7 +9,7 @@
 // access via the user's own `gh` login; the app stores no tokens.
 // ============================================================================
 
-use std::collections::{BTreeMap, VecDeque};
+use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Mutex;
@@ -19,11 +19,13 @@ use chrono::Utc;
 use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Manager};
 
-use super::dotagents_ledger;
 use super::skill_agent_runner::{is_executable_file, pick_executable_line};
-use super::skill_dto::InstallScope;
-use super::skill_ownership::{load_ownership_ledgers, owner_id_for};
 use super::skill_refresh;
+use skill_studio_core::skill_deployment::InstallScope;
+use skill_studio_core::skill_inventory::OwnerUpdateSource;
+use skill_studio_core::skill_ownership::{
+    load_ownership_inputs, update_source_for_owner, LifecycleOwnerKind,
+};
 
 /// How often the background loop re-checks for updates.
 pub const UPDATE_CHECK_INTERVAL: Duration = Duration::from_secs(6 * 60 * 60);
@@ -39,7 +41,9 @@ const LOOKUP_POOL_SIZE: usize = 4;
 #[derive(Debug, Serialize, Deserialize, Clone, Default)]
 pub struct SkillUpdateState {
     pub repo: String,
-    pub path: String,
+    pub path: Option<String>,
+    #[serde(default)]
+    pub source_ref: Option<String>,
     pub installed_commit: Option<String>,
     pub latest_commit: Option<String>,
     pub latest_commit_at: Option<String>,
@@ -51,7 +55,19 @@ pub struct SkillUpdateState {
     /// skills, which get `installed_commit` straight from `agents.lock`.
     #[serde(default)]
     pub lock_updated_at: Option<String>,
+    /// Identity of the evidence used to derive the installed revision. A
+    /// project content hash is not a Git commit and therefore cannot fill it.
+    #[serde(default)]
+    pub baseline_identity: Option<String>,
+    #[serde(default)]
+    pub comparison: UpdateComparison,
+    /// The most recent exact-source comparison that completed without an
+    /// error. This keeps a known update visible after a later failed refresh.
+    #[serde(default)]
+    pub last_verified_comparison: Option<UpdateComparison>,
 }
+
+pub use skill_studio_core::skill_inventory::UpdateComparison;
 
 /// Result of `gh api ... commits`, or why it couldn't be run.
 #[derive(Debug, Serialize, Deserialize, Clone, PartialEq, Eq, Default)]
@@ -74,9 +90,9 @@ pub struct UpdateCheckStore {
     pub gh_status: GhStatus,
     #[serde(default)]
     pub owners: BTreeMap<String, SkillUpdateState>,
-    /// Version 1 used skill names as keys. It is read only as a conservative
-    /// migration source and is never serialized again.
-    #[serde(skip)]
+    /// Version 1 used skill names as keys. Keep this migration source on disk
+    /// when an ownership failure prevents the next check from migrating it.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub(crate) legacy_skills: BTreeMap<String, SkillUpdateState>,
 }
 
@@ -94,6 +110,33 @@ impl Default for UpdateCheckStore {
 
 fn update_store_version() -> u32 {
     2
+}
+
+fn normalize_run_wide_failure(store: &mut UpdateCheckStore) {
+    let reason = match &store.gh_status {
+        GhStatus::Missing => Some("The gh executable is not available.".to_string()),
+        GhStatus::Failed(message) => Some(message.clone()),
+        GhStatus::Ok | GhStatus::NotLoggedIn => None,
+    };
+    let Some(reason) = reason else { return };
+    for state in store
+        .owners
+        .values_mut()
+        .chain(store.legacy_skills.values_mut())
+    {
+        if state.last_verified_comparison.is_none()
+            && matches!(
+                state.comparison,
+                UpdateComparison::Equal | UpdateComparison::Different
+            )
+        {
+            state.last_verified_comparison = Some(state.comparison.clone());
+        }
+        state.error = Some(reason.clone());
+        state.comparison = UpdateComparison::UnknownWithReason {
+            reason: reason.clone(),
+        };
+    }
 }
 
 /// The `SkillSnapshot.update_check` shape sent to the frontend: a flattened,
@@ -148,13 +191,19 @@ pub fn read_update_check_store_at(path: &Path) -> UpdateCheckStore {
         }
     };
     if value.get("owners").is_some() {
-        return serde_json::from_value(value).unwrap_or_else(|e| {
-            eprintln!(
-                "skill update check: failed to parse {}: {e}",
-                path.display()
-            );
-            UpdateCheckStore::default()
-        });
+        return serde_json::from_value(value).map_or_else(
+            |e| {
+                eprintln!(
+                    "skill update check: failed to parse {}: {e}",
+                    path.display()
+                );
+                UpdateCheckStore::default()
+            },
+            |mut store: UpdateCheckStore| {
+                normalize_run_wide_failure(&mut store);
+                store
+            },
+        );
     }
     #[derive(Deserialize)]
     struct LegacyStore {
@@ -171,12 +220,16 @@ pub fn read_update_check_store_at(path: &Path) -> UpdateCheckStore {
             );
             UpdateCheckStore::default()
         },
-        |legacy| UpdateCheckStore {
-            version: update_store_version(),
-            checked_at: legacy.checked_at,
-            gh_status: legacy.gh_status,
-            owners: BTreeMap::new(),
-            legacy_skills: legacy.skills,
+        |legacy| {
+            let mut store = UpdateCheckStore {
+                version: update_store_version(),
+                checked_at: legacy.checked_at,
+                gh_status: legacy.gh_status,
+                owners: BTreeMap::new(),
+                legacy_skills: legacy.skills,
+            };
+            normalize_run_wide_failure(&mut store);
+            store
         },
     )
 }
@@ -206,9 +259,14 @@ fn write_store(app_data: &Path, store: &UpdateCheckStore) -> Result<(), String> 
 /// True when `installed_commit` and `latest_commit` are both known and
 /// differ.
 pub fn has_update(state: &SkillUpdateState) -> bool {
-    match (&state.installed_commit, &state.latest_commit) {
-        (Some(installed), Some(latest)) => installed != latest,
-        _ => false,
+    state.error.is_none() && state.comparison == UpdateComparison::Different
+}
+
+/// Return the comparison only when it was proved during the current check.
+fn verified_comparison(comparison: &UpdateComparison) -> Option<UpdateComparison> {
+    match comparison {
+        UpdateComparison::Equal | UpdateComparison::Different => Some(comparison.clone()),
+        UpdateComparison::Unknown | UpdateComparison::UnknownWithReason { .. } => None,
     }
 }
 
@@ -219,22 +277,46 @@ pub fn state_for_owner<'a>(
     store: &'a UpdateCheckStore,
     owner_id: &str,
     current_owner_ids: &[String],
+    current_source: &OwnerUpdateSource,
 ) -> Option<&'a SkillUpdateState> {
     if let Some(state) = store.owners.get(owner_id) {
-        return Some(state);
+        return state_matches_source(state, current_source).then_some(state);
     }
-    let parsed = super::skill_ownership::parse_owner_id(owner_id)?;
+    let parsed = skill_studio_core::skill_ownership::parse_owner_id(owner_id)?;
     if parsed.scope != InstallScope::Global {
         return None;
     }
     let matching = current_owner_ids
         .iter()
-        .filter_map(|id| super::skill_ownership::parse_owner_id(id))
-        .filter(|candidate| candidate.name == parsed.name)
-        .count();
+        .filter(|id| {
+            skill_studio_core::skill_ownership::parse_owner_id(id)
+                .is_some_and(|candidate| candidate.name == parsed.name)
+        })
+        .collect::<BTreeSet<_>>()
+        .len();
     (matching == 1)
         .then(|| store.legacy_skills.get(&parsed.name))
         .flatten()
+        .filter(|state| state_matches_source(state, current_source))
+}
+
+fn state_matches_source(state: &SkillUpdateState, source: &OwnerUpdateSource) -> bool {
+    let compatible_pinned_baseline = state.baseline_identity.is_none()
+        && source.source_ref.is_none()
+        && source
+            .baseline_identity
+            .as_deref()
+            .and_then(|identity| {
+                identity
+                    .strip_prefix("dotagents-installed-commit:")
+                    .or_else(|| identity.strip_prefix("fork-base-commit:"))
+            })
+            .filter(|commit| !commit.is_empty())
+            .is_some_and(|commit| state.installed_commit.as_deref() == Some(commit));
+    state.repo == source.repo
+        && state.path == source.path
+        && state.source_ref == source.source_ref
+        && (state.baseline_identity == source.baseline_identity || compatible_pinned_baseline)
 }
 
 /// Flatten `store` into the DTO the frontend reads off `SkillSnapshot`.
@@ -267,27 +349,28 @@ pub trait CommitLookup: Sync {
     /// path has no commits (yet). `Err` messages from the real `gh`
     /// implementation may contain "gh auth login", which `run_update_check`
     /// treats as "not logged in" and stops on.
-    fn latest_commit(
-        &self,
-        repo: &str,
-        path: &str,
-        until: Option<&str>,
-    ) -> Result<Option<(String, String)>, String>;
+    fn latest_commit(&self, query: &CommitQuery<'_>) -> Result<Option<(String, String)>, String>;
 
     /// Add-operation lookup. Legacy implementations keep working, while the
     /// real implementation applies the shared cancellation and deadline.
     fn latest_commit_controlled(
         &self,
-        repo: &str,
-        path: &str,
-        until: Option<&str>,
+        query: &CommitQuery<'_>,
         control: &super::skill_process::AddOperationControl,
     ) -> Result<Option<(String, String)>, String> {
         control.check_message()?;
-        let result = self.latest_commit(repo, path, until);
+        let result = self.latest_commit(query);
         control.check_message()?;
         result
     }
+}
+
+#[derive(Debug, Clone, Copy)]
+pub struct CommitQuery<'a> {
+    pub repo: &'a str,
+    pub path: &'a str,
+    pub source_ref: Option<&'a str>,
+    pub until: Option<&'a str>,
 }
 
 /// Real `CommitLookup` backed by the `gh` CLI.
@@ -296,19 +379,13 @@ pub struct GhCommitLookup {
 }
 
 impl CommitLookup for GhCommitLookup {
-    fn latest_commit(
-        &self,
-        repo: &str,
-        path: &str,
-        until: Option<&str>,
-    ) -> Result<Option<(String, String)>, String> {
-        let mut api_path = format!(
-            "repos/{repo}/commits?path={}&per_page=1",
-            urlencoding::encode(path)
-        );
-        if let Some(until) = until {
-            api_path.push_str(&format!("&until={}", urlencoding::encode(until)));
-        }
+    fn latest_commit(&self, query: &CommitQuery<'_>) -> Result<Option<(String, String)>, String> {
+        let resolved_ref = query
+            .source_ref
+            .map(|source_ref| resolve_commit_ref(&self.gh_bin, query.repo, source_ref))
+            .transpose()?;
+        let api_path =
+            commit_api_path(query.repo, query.path, resolved_ref.as_deref(), query.until);
 
         let stdout_bytes = super::gh_cli::run_gh(
             &self.gh_bin,
@@ -338,18 +415,17 @@ impl CommitLookup for GhCommitLookup {
 
     fn latest_commit_controlled(
         &self,
-        repo: &str,
-        path: &str,
-        until: Option<&str>,
+        query: &CommitQuery<'_>,
         control: &super::skill_process::AddOperationControl,
     ) -> Result<Option<(String, String)>, String> {
-        let mut api_path = format!(
-            "repos/{repo}/commits?path={}&per_page=1",
-            urlencoding::encode(path)
-        );
-        if let Some(until) = until {
-            api_path.push_str(&format!("&until={}", urlencoding::encode(until)));
-        }
+        let resolved_ref = query
+            .source_ref
+            .map(|source_ref| {
+                resolve_commit_ref_controlled(&self.gh_bin, query.repo, source_ref, control)
+            })
+            .transpose()?;
+        let api_path =
+            commit_api_path(query.repo, query.path, resolved_ref.as_deref(), query.until);
         let stdout = super::gh_cli::run_gh_controlled(
             &self.gh_bin,
             &[
@@ -369,6 +445,73 @@ impl CommitLookup for GhCommitLookup {
         }
         Ok(Some((sha, parts.next().unwrap_or_default().to_string())))
     }
+}
+
+fn commit_ref_api_path(repo: &str, source_ref: &str) -> String {
+    format!("repos/{repo}/commits/{}", urlencoding::encode(source_ref))
+}
+
+fn parse_resolved_commit(stdout: &[u8], source_ref: &str) -> Result<String, String> {
+    let commit = String::from_utf8_lossy(stdout).trim().to_string();
+    if commit.is_empty() {
+        Err(format!("GitHub did not resolve source ref {source_ref}"))
+    } else {
+        Ok(commit)
+    }
+}
+
+fn resolve_commit_ref(gh_bin: &Path, repo: &str, source_ref: &str) -> Result<String, String> {
+    let stdout = super::gh_cli::run_gh(
+        gh_bin,
+        &[
+            "api",
+            &commit_ref_api_path(repo, source_ref),
+            "--jq",
+            ".sha",
+        ],
+        None,
+    )
+    .map_err(|error| error.message())?;
+    parse_resolved_commit(&stdout, source_ref)
+}
+
+fn resolve_commit_ref_controlled(
+    gh_bin: &Path,
+    repo: &str,
+    source_ref: &str,
+    control: &super::skill_process::AddOperationControl,
+) -> Result<String, String> {
+    let stdout = super::gh_cli::run_gh_controlled(
+        gh_bin,
+        &[
+            "api",
+            &commit_ref_api_path(repo, source_ref),
+            "--jq",
+            ".sha",
+        ],
+        control,
+    )
+    .map_err(|error| error.message())?;
+    parse_resolved_commit(&stdout, source_ref)
+}
+
+fn commit_api_path(
+    repo: &str,
+    path: &str,
+    resolved_ref: Option<&str>,
+    until: Option<&str>,
+) -> String {
+    let mut api_path = format!(
+        "repos/{repo}/commits?path={}&per_page=1",
+        urlencoding::encode(path)
+    );
+    if let Some(resolved_ref) = resolved_ref.filter(|value| !value.is_empty()) {
+        api_path.push_str(&format!("&sha={}", urlencoding::encode(resolved_ref)));
+    }
+    if let Some(until) = until {
+        api_path.push_str(&format!("&until={}", urlencoding::encode(until)));
+    }
+    api_path
 }
 
 /// Resolve `gh` on `$PATH` via a login shell, the same way
@@ -395,43 +538,63 @@ fn is_not_logged_in(message: &str) -> bool {
 /// determined.
 #[derive(Clone)]
 struct Candidate {
-    owner_id: String,
     name: String,
     scope: InstallScope,
-    repo: String,
-    path: String,
+    source: OwnerUpdateSource,
     kind: CandidateKind,
 }
 
 #[derive(Clone)]
 enum CandidateKind {
     /// `installed_commit` comes straight from `agents.lock`.
-    Dotagents { installed_commit: Option<String> },
+    Dotagents {
+        installed_commit: Option<String>,
+    },
     /// `installed_commit` is the newest commit at or before this lock
     /// entry's `updatedAt` - queried unless the cached baseline is still
     /// valid for the same `updatedAt`.
-    SkillsSh { updated_at: String },
+    SkillsSh {
+        updated_at: String,
+    },
+    Unknown {
+        reason: String,
+    },
 }
 
 /// Build the candidate list from the dotagents ledger and the skills.sh lock
 /// file under `home/.agents`, dotagents winning over skills.sh for a name
 /// present in both (matches `provenance::SourceKind`'s precedence). Manual
 /// and plugin skills have no ledger entry, so they're never candidates.
-fn build_candidates(home: &Path, project_paths: &[PathBuf]) -> Vec<Candidate> {
+fn build_candidates(home: &Path, project_paths: &[PathBuf]) -> Result<Vec<Candidate>, String> {
     // A fork's `base_commit` is the pinned "installed" side of the compare -
     // exactly the shape `CandidateKind::Dotagents` already models - and a
     // fork wins over a same-named ledger entry, same as dotagents wins over
     // skills.sh: it's the more specific, more recently established source.
-    let fork_registry = super::skill_fork_registry::read_fork_registry_or_default(home);
+    let ownership = load_ownership_inputs(home, project_paths);
+    if let Some(issue) = ownership.failures().first() {
+        return Err(format!(
+            "Ownership input {} could not be read: {}",
+            issue.path, issue.message
+        ));
+    }
+    let fork_registry = match &ownership.registry {
+        skill_studio_core::skill_ownership::OwnershipInput::Loaded(registry) => registry.clone(),
+        skill_studio_core::skill_ownership::OwnershipInput::Absent
+        | skill_studio_core::skill_ownership::OwnershipInput::Failed(_) => Default::default(),
+    };
     let mut candidates: Vec<Candidate> = fork_registry
         .forks
         .iter()
         .map(|(name, record)| Candidate {
-            owner_id: format!("owner:v1/global/{name}"),
             name: name.clone(),
             scope: InstallScope::Global,
-            repo: record.repo.clone(),
-            path: record.path.clone(),
+            source: OwnerUpdateSource {
+                owner_id: format!("owner:v1/global/{name}"),
+                repo: record.repo.clone(),
+                path: Some(record.path.clone()),
+                source_ref: record.declared_ref.clone(),
+                baseline_identity: Some(format!("fork-base-commit:{}", record.base_commit)),
+            },
             kind: CandidateKind::Dotagents {
                 installed_commit: Some(record.base_commit.clone()),
             },
@@ -440,8 +603,10 @@ fn build_candidates(home: &Path, project_paths: &[PathBuf]) -> Vec<Candidate> {
     let fork_names: std::collections::BTreeSet<String> =
         fork_registry.forks.keys().cloned().collect();
 
-    for ledger in load_ownership_ledgers(home, project_paths) {
-        let owner_id = |name: &str| owner_id_for(&ledger, name);
+    for scope in &ownership.scopes {
+        let ledger = scope
+            .as_ledger()
+            .map_err(|issue| format!("{}: {}", issue.path, issue.message))?;
         let global_fork = ledger.scope == InstallScope::Global;
         let mut dotagents_names: std::collections::BTreeSet<String> = ledger
             .dotagents
@@ -455,56 +620,87 @@ fn build_candidates(home: &Path, project_paths: &[PathBuf]) -> Vec<Candidate> {
             if global_fork && fork_names.contains(&skill.name) {
                 return None;
             }
-            let id = owner_id(&skill.name);
-            skill.github_repo.clone().map(|repo| Candidate {
-                owner_id: id,
-                name: skill.name.clone(),
-                scope: ledger.scope.clone(),
-                repo,
-                path: skill.path.clone(),
-                kind: CandidateKind::Dotagents {
-                    installed_commit: skill.installed_commit.clone(),
+            update_source_for_owner(&ledger, &skill.name, LifecycleOwnerKind::Dotagents).map(
+                |source| Candidate {
+                    name: skill.name.clone(),
+                    scope: ledger.scope.clone(),
+                    source,
+                    kind: CandidateKind::Dotagents {
+                        installed_commit: skill.installed_commit.clone(),
+                    },
                 },
-            })
+            )
         }));
 
         for (name, entry) in &ledger.lock.skills {
-            if dotagents_names.contains(name) || entry.source_type != "github" {
+            if dotagents_names.contains(name)
+                || ledger
+                    .project_lock
+                    .as_ref()
+                    .is_some_and(|lock| lock.skills.contains_key(name))
+                || entry.source_type != "github"
+            {
                 continue;
             }
-            let Some(repo) = dotagents_ledger::github_repo_from_source(&entry.source) else {
+            let Some(source) = update_source_for_owner(&ledger, name, LifecycleOwnerKind::SkillsSh)
+            else {
                 continue;
             };
-            let Some(skill_path) = &entry.skill_path else {
-                continue;
-            };
-            let path = skill_path
-                .strip_suffix("/SKILL.md")
-                .unwrap_or(skill_path)
-                .to_string();
             let updated_at = if entry.updated_at.is_empty() {
                 entry.installed_at.clone()
             } else {
                 entry.updated_at.clone()
             };
+            let has_path = source.path.is_some();
             candidates.push(Candidate {
-                owner_id: owner_id(name),
                 name: name.clone(),
                 scope: ledger.scope.clone(),
-                repo,
-                path,
-                kind: CandidateKind::SkillsSh { updated_at },
+                source,
+                kind: if has_path {
+                    CandidateKind::SkillsSh { updated_at }
+                } else {
+                    CandidateKind::Unknown {
+                        reason: "The skills.sh ledger has no GitHub skill path.".to_string(),
+                    }
+                },
             });
+        }
+
+        // The current project ledger is a separate wire format. It wins over
+        // the compatible legacy entry for the same name, but its content hash
+        // is never treated as a Git commit baseline.
+        if let Some(project_lock) = &ledger.project_lock {
+            for (name, entry) in &project_lock.skills {
+                if dotagents_names.contains(name) || entry.source_type != "github" {
+                    continue;
+                }
+                let Some(source) =
+                    update_source_for_owner(&ledger, name, LifecycleOwnerKind::SkillsSh)
+                else {
+                    continue;
+                };
+                let has_path = source.path.is_some();
+                candidates.push(Candidate {
+                    name: name.clone(),
+                    scope: ledger.scope.clone(),
+                    source,
+                    kind: CandidateKind::Unknown {
+                        reason: if has_path {
+                            "The project ledger has no proved Git commit baseline.".to_string()
+                        } else {
+                            "The project ledger has no GitHub skill path.".to_string()
+                        },
+                    },
+                });
+            }
         }
     }
 
-    candidates.sort_by(|a, b| a.owner_id.cmp(&b.owner_id));
-    candidates
+    candidates.sort_by(|a, b| a.source.owner_id.cmp(&b.source.owner_id));
+    Ok(candidates)
 }
 
 /// Check one candidate, given the previous run's state for it (if any).
-/// Returns `None` when `stop` was already set before this candidate could be
-/// looked up at all - the caller falls back to the previous state, if any.
 fn check_candidate(
     candidate: &Candidate,
     previous: Option<&SkillUpdateState>,
@@ -512,24 +708,31 @@ fn check_candidate(
     stop: &AtomicBool,
     not_logged_in_message: &Mutex<Option<String>>,
     now: &str,
-) -> Option<SkillUpdateState> {
-    if stop.load(Ordering::SeqCst) {
-        return None;
-    }
+) -> SkillUpdateState {
+    let previous = previous.filter(|state| state_matches_source(state, &candidate.source));
 
     let mut error: Option<String> = None;
-    let mut stopped = false;
+    let mut stopped = stop.load(Ordering::SeqCst);
+    if stopped {
+        error = Some(
+            not_logged_in_message
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .clone()
+                .unwrap_or_else(|| {
+                    "The update check stopped before this owner was checked.".into()
+                }),
+        );
+    }
     // Only set for `SkillsSh` candidates, and only once the baseline lookup
     // for `updated_at` actually succeeds (or was already cached for that
-    // exact `updated_at`). A failed lookup falls back to the previous
-    // installed_commit but must NOT record the new `updated_at` here, or the
-    // next run's cache check would treat the stale fallback as a valid
-    // baseline for `updated_at` forever and never retry the lookup.
+    // exact source evidence). A failed lookup leaves the installed revision
+    // unknown so a stale revision cannot validate changed ledger evidence.
     let mut lock_updated_at: Option<String> = None;
 
     let installed_commit = match &candidate.kind {
         CandidateKind::Dotagents { installed_commit } => installed_commit.clone(),
-        CandidateKind::SkillsSh { updated_at } => {
+        CandidateKind::SkillsSh { updated_at } if !stopped => {
             let cached = previous.filter(|p| {
                 p.installed_commit.is_some() && p.lock_updated_at.as_deref() == Some(updated_at)
             });
@@ -537,7 +740,12 @@ fn check_candidate(
                 lock_updated_at = Some(updated_at.clone());
                 cached.installed_commit.clone()
             } else {
-                match lookup.latest_commit(&candidate.repo, &candidate.path, Some(updated_at)) {
+                match lookup.latest_commit(&CommitQuery {
+                    repo: &candidate.source.repo,
+                    path: candidate.source.path.as_deref().unwrap_or_default(),
+                    source_ref: candidate.source.source_ref.as_deref(),
+                    until: Some(updated_at),
+                }) {
                     Ok(found) => {
                         lock_updated_at = Some(updated_at.clone());
                         found.map(|(sha, _)| sha)
@@ -546,22 +754,20 @@ fn check_candidate(
                         stop.store(true, Ordering::SeqCst);
                         *not_logged_in_message
                             .lock()
-                            .unwrap_or_else(|e| e.into_inner()) = Some(e);
+                            .unwrap_or_else(|e| e.into_inner()) = Some(e.clone());
                         stopped = true;
-                        // Keep whatever baseline key (if any) the previous
-                        // run recorded, so a retry happens once this stops
-                        // short-circuiting.
-                        lock_updated_at = previous.and_then(|p| p.lock_updated_at.clone());
-                        previous.and_then(|p| p.installed_commit.clone())
+                        error = Some(e);
+                        None
                     }
                     Err(e) => {
                         error = Some(e);
-                        lock_updated_at = previous.and_then(|p| p.lock_updated_at.clone());
-                        previous.and_then(|p| p.installed_commit.clone())
+                        None
                     }
                 }
             }
         }
+        CandidateKind::SkillsSh { .. } => None,
+        CandidateKind::Unknown { .. } => None,
     };
 
     let (latest_commit, latest_commit_at) = if stopped {
@@ -569,15 +775,21 @@ fn check_candidate(
             previous.and_then(|p| p.latest_commit.clone()),
             previous.and_then(|p| p.latest_commit_at.clone()),
         )
-    } else {
-        match lookup.latest_commit(&candidate.repo, &candidate.path, None) {
+    } else if let Some(path) = candidate.source.path.as_deref() {
+        match lookup.latest_commit(&CommitQuery {
+            repo: &candidate.source.repo,
+            path,
+            source_ref: candidate.source.source_ref.as_deref(),
+            until: None,
+        }) {
             Ok(Some((sha, date))) => (Some(sha), Some(date)),
             Ok(None) => (None, None),
             Err(e) if is_not_logged_in(&e) => {
                 stop.store(true, Ordering::SeqCst);
                 *not_logged_in_message
                     .lock()
-                    .unwrap_or_else(|e| e.into_inner()) = Some(e);
+                    .unwrap_or_else(|e| e.into_inner()) = Some(e.clone());
+                error = Some(e);
                 (
                     previous.and_then(|p| p.latest_commit.clone()),
                     previous.and_then(|p| p.latest_commit_at.clone()),
@@ -591,18 +803,47 @@ fn check_candidate(
                 )
             }
         }
+    } else {
+        (None, None)
     };
 
-    Some(SkillUpdateState {
-        repo: candidate.repo.clone(),
-        path: candidate.path.clone(),
+    let comparison = match &candidate.kind {
+        _ if error.is_some() => UpdateComparison::UnknownWithReason {
+            reason: error.clone().unwrap_or_default(),
+        },
+        CandidateKind::Unknown { reason } => UpdateComparison::UnknownWithReason {
+            reason: reason.clone(),
+        },
+        _ => match (&installed_commit, &latest_commit) {
+            (Some(installed), Some(latest)) if installed == latest => UpdateComparison::Equal,
+            (Some(_), Some(_)) => UpdateComparison::Different,
+            _ => UpdateComparison::UnknownWithReason {
+                reason: "The installed Git revision could not be proved.".to_string(),
+            },
+        },
+    };
+    let last_verified_comparison = verified_comparison(&comparison).or_else(|| {
+        previous.and_then(|state| {
+            state
+                .last_verified_comparison
+                .clone()
+                .or_else(|| verified_comparison(&state.comparison))
+        })
+    });
+    SkillUpdateState {
+        repo: candidate.source.repo.clone(),
+        path: candidate.source.path.clone(),
+        source_ref: candidate.source.source_ref.clone(),
         installed_commit,
         latest_commit,
         latest_commit_at,
         checked_at: now.to_string(),
         error,
         lock_updated_at,
-    })
+        baseline_identity: candidate.source.baseline_identity.clone(),
+        comparison,
+        last_verified_comparison,
+    }
 }
 
 /// Build owner candidates, optionally filter by owner ID, check them in a
@@ -618,10 +859,24 @@ fn run_update_check_impl(
     let previous = read_update_check_store(app_data);
     let now = Utc::now().to_rfc3339();
 
-    let all_candidates = build_candidates(home, project_paths);
+    let all_candidates = match build_candidates(home, project_paths) {
+        Ok(candidates) => candidates,
+        Err(error) => {
+            let mut store = UpdateCheckStore {
+                checked_at: Some(now),
+                gh_status: GhStatus::Failed(error),
+                ..previous
+            };
+            normalize_run_wide_failure(&mut store);
+            if let Err(error) = write_store(app_data, &store) {
+                eprintln!("skill update check: failed to write store: {error}");
+            }
+            return store;
+        }
+    };
     let mut candidates = all_candidates.clone();
     if let Some(only) = only_owner_ids {
-        candidates.retain(|candidate| only.contains(&candidate.owner_id));
+        candidates.retain(|candidate| only.contains(&candidate.source.owner_id));
     }
 
     let stop = AtomicBool::new(false);
@@ -641,31 +896,23 @@ fn run_update_check_impl(
                         .filter(|other| other.name == candidate.name)
                         .count()
                         == 1;
-                let prev_state = previous.owners.get(&candidate.owner_id).or_else(|| {
+                let prev_state = previous.owners.get(&candidate.source.owner_id).or_else(|| {
                     legacy_is_unambiguous
                         .then(|| previous.legacy_skills.get(&candidate.name))
                         .flatten()
                 });
-                if let Some(state) = check_candidate(
+                let state = check_candidate(
                     &candidate,
                     prev_state,
                     lookup,
                     &stop,
                     &not_logged_in_message,
                     &now,
-                ) {
-                    computed
-                        .lock()
-                        .unwrap_or_else(|e| e.into_inner())
-                        .insert(candidate.owner_id.clone(), state);
-                } else if let Some(state) = prev_state {
-                    // Stop was already set before this one could be looked
-                    // up; keep whatever we knew about it before.
-                    computed
-                        .lock()
-                        .unwrap_or_else(|e| e.into_inner())
-                        .insert(candidate.owner_id.clone(), state.clone());
-                }
+                );
+                computed
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .insert(candidate.source.owner_id.clone(), state);
             });
         }
     });
@@ -678,7 +925,19 @@ fn run_update_check_impl(
 
     let computed = computed.into_inner().unwrap_or_else(|e| e.into_inner());
     let owners = if only_owner_ids.is_some() {
-        let mut merged = previous.owners.clone();
+        let current_sources: BTreeMap<_, _> = all_candidates
+            .iter()
+            .map(|candidate| (&candidate.source.owner_id, &candidate.source))
+            .collect();
+        let mut merged = previous
+            .owners
+            .into_iter()
+            .filter(|(owner_id, state)| {
+                current_sources
+                    .get(owner_id)
+                    .is_some_and(|source| state_matches_source(state, source))
+            })
+            .collect::<BTreeMap<_, _>>();
         merged.extend(computed);
         merged
     } else {
@@ -750,13 +1009,14 @@ fn run_update_check_now(
         ),
         None => {
             let previous = read_update_check_store(app_data);
-            let store = UpdateCheckStore {
+            let mut store = UpdateCheckStore {
                 version: update_store_version(),
                 checked_at: Some(Utc::now().to_rfc3339()),
                 gh_status: GhStatus::Missing,
                 owners: previous.owners,
                 legacy_skills: previous.legacy_skills,
             };
+            normalize_run_wide_failure(&mut store);
             if let Err(e) = write_store(app_data, &store) {
                 eprintln!("skill update check: failed to write store: {e}");
             }
@@ -913,9 +1173,11 @@ mod tests {
     /// Records every `latest_commit` call and returns scripted answers by
     /// call index, so tests can assert both "what was asked" and "what came
     /// back".
+    type LookupCall = (String, String, Option<String>, Option<String>);
+
     #[derive(Default)]
     struct FakeLookup {
-        calls: StdMutex<Vec<(String, String, Option<String>)>>,
+        calls: StdMutex<Vec<LookupCall>>,
         answers: StdMutex<VecDeque<LookupAnswer>>,
     }
 
@@ -935,16 +1197,258 @@ mod tests {
     impl CommitLookup for FakeLookup {
         fn latest_commit(
             &self,
-            repo: &str,
-            path: &str,
-            until: Option<&str>,
+            query: &CommitQuery<'_>,
         ) -> Result<Option<(String, String)>, String> {
             self.calls.lock().unwrap().push((
-                repo.to_string(),
-                path.to_string(),
-                until.map(|s| s.to_string()),
+                query.repo.to_string(),
+                query.path.to_string(),
+                query.until.map(|s| s.to_string()),
+                query.source_ref.map(|value| value.to_string()),
             ));
             self.answers.lock().unwrap().pop_front().unwrap_or(Ok(None))
+        }
+    }
+
+    #[test]
+    fn explicit_ref_is_resolved_before_filtered_history_query() {
+        assert_eq!(
+            commit_ref_api_path("org/repo", "tags/release/v1"),
+            "repos/org/repo/commits/tags%2Frelease%2Fv1"
+        );
+        assert_eq!(
+            commit_api_path("org/repo", "skills/write-tests", Some("aabbcc"), None,),
+            "repos/org/repo/commits?path=skills%2Fwrite-tests&per_page=1&sha=aabbcc"
+        );
+    }
+
+    #[test]
+    fn stopped_candidate_does_not_adopt_stale_source_evidence() {
+        let candidate = Candidate {
+            name: "write-tests".to_string(),
+            scope: InstallScope::Project,
+            source: OwnerUpdateSource {
+                owner_id: "owner:v1/project/example/write-tests".to_string(),
+                repo: "org/replacement".to_string(),
+                path: Some("skills/write-tests".to_string()),
+                source_ref: Some("release".to_string()),
+                baseline_identity: Some("project-computed-hash:new".to_string()),
+            },
+            kind: CandidateKind::Unknown {
+                reason: "No installed revision".to_string(),
+            },
+        };
+        let previous = SkillUpdateState {
+            repo: "org/old".to_string(),
+            path: Some("skills/write-tests".to_string()),
+            source_ref: Some("main".to_string()),
+            latest_commit: Some("stale".to_string()),
+            baseline_identity: Some("project-computed-hash:old".to_string()),
+            comparison: UpdateComparison::Different,
+            ..Default::default()
+        };
+        let stop = AtomicBool::new(true);
+        let message = Mutex::new(Some("gh auth login".to_string()));
+        let lookup = FakeLookup::default();
+
+        let state = check_candidate(
+            &candidate,
+            Some(&previous),
+            &lookup,
+            &stop,
+            &message,
+            "checked-now",
+        );
+
+        assert_eq!(lookup.call_count(), 0);
+        assert_eq!(state.repo, "org/replacement");
+        assert_eq!(state.latest_commit, None);
+        assert_eq!(state.error.as_deref(), Some("gh auth login"));
+        assert!(matches!(
+            state.comparison,
+            UpdateComparison::UnknownWithReason { .. }
+        ));
+    }
+
+    #[test]
+    fn source_match_requires_a_real_pinned_commit_for_legacy_baseline_compatibility() {
+        let source = OwnerUpdateSource {
+            owner_id: "owner:v1/global/find-bugs".to_string(),
+            repo: "getsentry/find-bugs".to_string(),
+            path: Some("skills/find-bugs".to_string()),
+            source_ref: None,
+            baseline_identity: Some("project-computed-hash:current".to_string()),
+        };
+        let missing_baseline = SkillUpdateState {
+            repo: source.repo.clone(),
+            path: source.path.clone(),
+            source_ref: None,
+            installed_commit: None,
+            baseline_identity: None,
+            ..Default::default()
+        };
+        assert!(!state_matches_source(&missing_baseline, &source));
+
+        let pinned_source = OwnerUpdateSource {
+            baseline_identity: Some("dotagents-installed-commit:abc".to_string()),
+            ..source
+        };
+        let pinned_legacy = SkillUpdateState {
+            installed_commit: Some("abc".to_string()),
+            ..missing_baseline
+        };
+        assert!(state_matches_source(&pinned_legacy, &pinned_source));
+    }
+
+    #[test]
+    fn failed_ownership_check_preserves_cached_results_and_avoids_lookups() {
+        for filename in [
+            ".skill-lock.json",
+            "agents.lock",
+            "agents.toml",
+            "skill-studio.json",
+        ] {
+            let tmp = tempfile::tempdir().unwrap();
+            let home = tmp.path().join("home");
+            let app_data = tmp.path().join("data");
+            fs::create_dir_all(home.join(".agents")).unwrap();
+            let input = home.join(".agents").join(filename);
+            fs::write(&input, "{ broken").unwrap();
+            let previous = UpdateCheckStore {
+                owners: BTreeMap::from([(
+                    "owner:v1/global/alpha".to_string(),
+                    SkillUpdateState {
+                        repo: "fixture/repo".to_string(),
+                        latest_commit: Some("cached".to_string()),
+                        comparison: UpdateComparison::Different,
+                        ..Default::default()
+                    },
+                )]),
+                ..Default::default()
+            };
+            write_store(&app_data, &previous).unwrap();
+            let lookup = FakeLookup::default();
+            let result = run_update_check(&home, &app_data, &lookup);
+            assert_eq!(lookup.call_count(), 0);
+            assert!(
+                matches!(&result.gh_status, GhStatus::Failed(message) if message.contains(input.to_string_lossy().as_ref()))
+            );
+            let state = result.owners.get("owner:v1/global/alpha").unwrap();
+            assert_eq!(state.latest_commit.as_deref(), Some("cached"));
+            assert_eq!(
+                state.last_verified_comparison,
+                Some(UpdateComparison::Different)
+            );
+            assert!(matches!(
+                state.comparison,
+                UpdateComparison::UnknownWithReason { .. }
+            ));
+            assert!(!has_update(state));
+            assert_eq!(summarize(&result).updates_available, 0);
+            let persisted = read_update_check_store(&app_data);
+            assert_eq!(persisted.gh_status, result.gh_status);
+            assert!(!has_update(
+                persisted.owners.get("owner:v1/global/alpha").unwrap()
+            ));
+        }
+    }
+
+    #[test]
+    fn failed_ownership_check_persists_legacy_update_results_until_migration() {
+        let tmp = tempfile::tempdir().unwrap();
+        let home = tmp.path().join("home");
+        let app_data = tmp.path().join("data");
+        fs::create_dir_all(home.join(".agents")).unwrap();
+        fs::write(home.join(".agents/agents.lock"), "{ broken").unwrap();
+        let path = update_check_path(&app_data);
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
+        fs::write(
+            &path,
+            serde_json::json!({
+                "checked_at": "2026-01-01T00:00:00Z",
+                "gh_status": {"kind": "ok"},
+                "skills": {
+                    "find-bugs": {
+                        "repo": "fixture/repo",
+                        "path": "skills/find-bugs",
+                        "installed_commit": "old",
+                        "latest_commit": "cached",
+                        "latest_commit_at": "2026-01-01T00:00:00Z",
+                        "checked_at": "2026-01-01T00:00:00Z",
+                        "error": null
+                    }
+                }
+            })
+            .to_string(),
+        )
+        .unwrap();
+
+        let lookup = FakeLookup::default();
+        let result = run_update_check(&home, &app_data, &lookup);
+        assert_eq!(lookup.call_count(), 0);
+        assert_eq!(
+            result
+                .legacy_skills
+                .get("find-bugs")
+                .and_then(|state| state.latest_commit.as_deref()),
+            Some("cached")
+        );
+        let persisted = read_update_check_store(&app_data);
+        assert_eq!(persisted.gh_status, result.gh_status);
+        assert_eq!(
+            persisted
+                .legacy_skills
+                .get("find-bugs")
+                .and_then(|state| state.latest_commit.as_deref()),
+            Some("cached")
+        );
+        let raw: serde_json::Value =
+            serde_json::from_str(&fs::read_to_string(path).unwrap()).unwrap();
+        assert!(raw.get("legacy_skills").is_some());
+    }
+
+    #[test]
+    fn persisted_missing_or_failed_check_never_restores_a_stale_update() {
+        for gh_status in [
+            serde_json::json!({"kind": "missing"}),
+            serde_json::json!({"kind": "failed", "message": "ownership unavailable"}),
+        ] {
+            let tmp = tempfile::tempdir().unwrap();
+            let app_data = tmp.path().join("data");
+            let path = update_check_path(&app_data);
+            fs::create_dir_all(path.parent().unwrap()).unwrap();
+            fs::write(
+                &path,
+                serde_json::json!({
+                    "version": 2,
+                    "checked_at": null,
+                    "gh_status": gh_status,
+                    "owners": {
+                        "owner:v1/global/find-bugs": {
+                            "repo": "org/find-bugs",
+                            "path": "skills/find-bugs",
+                            "latest_commit": "new",
+                            "checked_at": "2026-01-01T00:00:00Z",
+                            "comparison": {"kind": "different"}
+                        }
+                    }
+                })
+                .to_string(),
+            )
+            .unwrap();
+
+            let store = read_update_check_store(&app_data);
+            let state = store.owners.get("owner:v1/global/find-bugs").unwrap();
+            assert!(matches!(
+                state.comparison,
+                UpdateComparison::UnknownWithReason { .. }
+            ));
+            assert_eq!(
+                state.last_verified_comparison,
+                Some(UpdateComparison::Different)
+            );
+            assert!(state.error.is_some());
+            assert!(!has_update(state));
+            assert_eq!(summarize(&store).updates_available, 0);
         }
     }
 
@@ -953,12 +1457,10 @@ mod tests {
     impl CommitLookup for RepoLookup {
         fn latest_commit(
             &self,
-            repo: &str,
-            _path: &str,
-            _until: Option<&str>,
+            query: &CommitQuery<'_>,
         ) -> Result<Option<(String, String)>, String> {
             Ok(Some((
-                format!("latest-{repo}"),
+                format!("latest-{}", query.repo),
                 "2026-02-01T00:00:00Z".to_string(),
             )))
         }
@@ -967,12 +1469,7 @@ mod tests {
     struct AlwaysErrorLookup;
 
     impl CommitLookup for AlwaysErrorLookup {
-        fn latest_commit(
-            &self,
-            _repo: &str,
-            _path: &str,
-            _until: Option<&str>,
-        ) -> Result<Option<(String, String)>, String> {
+        fn latest_commit(&self, _: &CommitQuery<'_>) -> Result<Option<(String, String)>, String> {
             Err("offline".to_string())
         }
     }
@@ -1011,6 +1508,34 @@ resolved_commit = "{commit}"
         });
         fs::write(
             home.join(".agents/.skill-lock.json"),
+            serde_json::to_string(&json).unwrap(),
+        )
+        .unwrap();
+    }
+
+    fn write_project_lock(
+        project: &Path,
+        name: &str,
+        source: &str,
+        skill_path: Option<&str>,
+        source_ref: Option<&str>,
+        computed_hash: &str,
+    ) {
+        fs::create_dir_all(project).unwrap();
+        let json = serde_json::json!({
+            "version": 1,
+            "skills": {
+                name: {
+                    "source": source,
+                    "sourceType": "github",
+                    "computedHash": computed_hash,
+                    "skillPath": skill_path,
+                    "ref": source_ref,
+                }
+            }
+        });
+        fs::write(
+            project.join("skills-lock.json"),
             serde_json::to_string(&json).unwrap(),
         )
         .unwrap();
@@ -1151,6 +1676,196 @@ resolved_commit = "{commit}"
     }
 
     #[test]
+    fn timestamp_free_project_entry_preserves_ref_and_hash_evidence() {
+        let tmp = tempfile::tempdir().unwrap();
+        let home = tmp.path().join("home");
+        let project = tmp.path().join("project");
+        let app_data = tmp.path().join("data");
+        write_project_lock(
+            &project,
+            "write-tests",
+            "org/project",
+            Some("skills/write-tests/SKILL.md"),
+            Some("release"),
+            "project-hash",
+        );
+        let latest = "d".repeat(40);
+        let lookup = FakeLookup::with_answers(vec![Ok(Some((
+            latest.clone(),
+            "2026-02-01T00:00:00Z".to_string(),
+        )))]);
+
+        let store = run_update_check_with_projects(&home, &[project], &app_data, &lookup);
+        let state = store.owners.values().next().unwrap();
+
+        assert_eq!(lookup.call_count(), 1);
+        assert_eq!(
+            lookup.calls.lock().unwrap()[0],
+            (
+                "org/project".to_string(),
+                "skills/write-tests".to_string(),
+                None,
+                Some("release".to_string()),
+            )
+        );
+        assert_eq!(state.installed_commit, None);
+        assert_eq!(state.latest_commit.as_deref(), Some(latest.as_str()));
+        assert_eq!(
+            state.baseline_identity.as_deref(),
+            Some("project-computed-hash:project-hash")
+        );
+        assert!(matches!(
+            state.comparison,
+            UpdateComparison::UnknownWithReason { .. }
+        ));
+        assert!(!has_update(state));
+    }
+
+    #[test]
+    fn project_entry_without_skill_path_does_not_query_repository_history() {
+        let tmp = tempfile::tempdir().unwrap();
+        let home = tmp.path().join("home");
+        let project = tmp.path().join("project");
+        let app_data = tmp.path().join("data");
+        write_project_lock(
+            &project,
+            "write-tests",
+            "org/project",
+            None,
+            Some("release"),
+            "project-hash",
+        );
+        let lookup = FakeLookup::default();
+
+        let store = run_update_check_with_projects(&home, &[project], &app_data, &lookup);
+        let state = store.owners.values().next().unwrap();
+
+        assert_eq!(lookup.call_count(), 0);
+        assert_eq!(state.path, None);
+        assert_eq!(state.latest_commit, None);
+        assert!(matches!(
+            &state.comparison,
+            UpdateComparison::UnknownWithReason { reason } if reason.contains("no GitHub skill path")
+        ));
+    }
+
+    #[test]
+    fn compatible_current_and_legacy_project_ledgers_make_one_candidate() {
+        let tmp = tempfile::tempdir().unwrap();
+        let home = tmp.path().join("home");
+        let project = tmp.path().join("project");
+        let app_data = tmp.path().join("data");
+        write_skill_lock(
+            &project,
+            "write-tests",
+            "org/project",
+            "skills/write-tests/SKILL.md",
+            "2026-01-15T00:00:00Z",
+        );
+        write_project_lock(
+            &project,
+            "write-tests",
+            "org/project",
+            Some("skills/write-tests/SKILL.md"),
+            None,
+            "project-hash",
+        );
+        let lookup = FakeLookup::with_answers(vec![Ok(Some((
+            "latest".to_string(),
+            "2026-02-01T00:00:00Z".to_string(),
+        )))]);
+
+        let store = run_update_check_with_projects(&home, &[project], &app_data, &lookup);
+
+        assert_eq!(store.owners.len(), 1);
+        assert_eq!(lookup.call_count(), 1);
+        assert_eq!(
+            store
+                .owners
+                .values()
+                .next()
+                .unwrap()
+                .baseline_identity
+                .as_deref(),
+            Some("project-computed-hash:project-hash")
+        );
+    }
+
+    #[test]
+    fn project_source_and_content_changes_invalidate_cached_revision() {
+        for (source, path, source_ref, computed_hash) in [
+            (
+                "org/replacement",
+                Some("skills/write-tests/SKILL.md"),
+                Some("main"),
+                "hash-one",
+            ),
+            (
+                "org/project",
+                Some("skills/replacement/SKILL.md"),
+                Some("main"),
+                "hash-one",
+            ),
+            (
+                "org/project",
+                Some("skills/write-tests/SKILL.md"),
+                Some("release"),
+                "hash-one",
+            ),
+            (
+                "org/project",
+                Some("skills/write-tests/SKILL.md"),
+                Some("main"),
+                "hash-two",
+            ),
+        ] {
+            let tmp = tempfile::tempdir().unwrap();
+            let home = tmp.path().join("home");
+            let project = tmp.path().join("project");
+            let app_data = tmp.path().join("data");
+            write_project_lock(
+                &project,
+                "write-tests",
+                "org/project",
+                Some("skills/write-tests/SKILL.md"),
+                Some("main"),
+                "hash-one",
+            );
+            run_update_check_with_projects(
+                &home,
+                std::slice::from_ref(&project),
+                &app_data,
+                &FakeLookup::with_answers(vec![Ok(Some((
+                    "cached-latest".to_string(),
+                    "2026-02-01T00:00:00Z".to_string(),
+                )))]),
+            );
+            write_project_lock(
+                &project,
+                "write-tests",
+                source,
+                path,
+                source_ref,
+                computed_hash,
+            );
+
+            let store = run_update_check_with_projects(
+                &home,
+                &[project],
+                &app_data,
+                &FakeLookup::with_answers(vec![Err("offline".to_string())]),
+            );
+            let state = store.owners.values().next().unwrap();
+            assert_eq!(state.latest_commit, None);
+            assert_eq!(state.error.as_deref(), Some("offline"));
+            assert!(matches!(
+                &state.comparison,
+                UpdateComparison::UnknownWithReason { reason } if reason == "offline"
+            ));
+        }
+    }
+
+    #[test]
     fn skills_sh_baseline_retries_after_updated_at_changes_and_lookup_fails() {
         let tmp = tempfile::tempdir().unwrap();
         let home = tmp.path().join("home");
@@ -1194,17 +1909,14 @@ resolved_commit = "{commit}"
         ]);
         let store2 = run_update_check(&home, &app_data, &lookup2);
         let state2 = store2.owners.get("owner:v1/global/write-tests").unwrap();
-        // Stale baseline kept, but not recorded as valid for the new
-        // updatedAt - and an error surfaces so the UI can show it.
-        assert_eq!(
-            state2.installed_commit.as_deref(),
-            Some(baseline_sha.as_str())
-        );
+        // The changed ledger evidence invalidates the old installed revision.
+        assert_eq!(state2.installed_commit, None);
         assert_eq!(state2.error.as_deref(), Some("network unreachable"));
-        assert_ne!(
-            state2.lock_updated_at.as_deref(),
-            Some("2026-02-15T00:00:00Z")
-        );
+        assert_eq!(state2.lock_updated_at, None);
+        assert!(matches!(
+            state2.comparison,
+            UpdateComparison::UnknownWithReason { .. }
+        ));
 
         // Next run must retry the baseline lookup instead of trusting the
         // stale fallback forever.
@@ -1222,52 +1934,68 @@ resolved_commit = "{commit}"
 
     #[test]
     fn forked_skill_is_a_candidate_pinned_to_its_base_commit_and_wins_over_the_ledger() {
-        use super::super::skill_fork_registry::{ForkRecord, ForkRegistry, OriginTool};
+        use skill_studio_core::skill_fork_registry::{ForkRecord, ForkRegistry, OriginTool};
 
-        let tmp = tempfile::tempdir().unwrap();
-        let home = tmp.path().join("home");
-        let app_data = tmp.path().join("data");
-        // A ledger entry for the same name would normally win via dotagents,
-        // but the fork must take precedence and use its own base_commit.
-        write_agents_lock(
-            &home,
-            "find-bugs",
-            "getsentry/find-bugs",
-            "skills/find-bugs",
-            "z".repeat(40).as_str(),
-        );
+        for path in ["skills/find-bugs", ""] {
+            let tmp = tempfile::tempdir().unwrap();
+            let home = tmp.path().join("home");
+            let app_data = tmp.path().join("data");
+            // A ledger entry for the same name would normally win via dotagents,
+            // but the fork must take precedence and use its own base_commit.
+            write_agents_lock(
+                &home,
+                "find-bugs",
+                "getsentry/find-bugs",
+                "skills/find-bugs",
+                "z".repeat(40).as_str(),
+            );
 
-        let mut registry = ForkRegistry::default();
-        let base_commit = "a".repeat(40);
-        registry.forks.insert(
-            "find-bugs".to_string(),
-            ForkRecord {
-                deployment_id: String::new(),
-                skill_dir: PathBuf::new(),
-                forked_at: "2026-01-01T00:00:00Z".to_string(),
-                origin_tool: OriginTool::Dotagents,
-                origin_source: "getsentry/find-bugs".to_string(),
+            let mut registry = ForkRegistry::default();
+            let base_commit = "a".repeat(40);
+            registry.forks.insert(
+                "find-bugs".to_string(),
+                ForkRecord {
+                    deployment_id: String::new(),
+                    skill_dir: PathBuf::new(),
+                    forked_at: "2026-01-01T00:00:00Z".to_string(),
+                    origin_tool: OriginTool::Dotagents,
+                    origin_source: "getsentry/find-bugs".to_string(),
+                    repo: "getsentry/find-bugs".to_string(),
+                    path: path.to_string(),
+                    declared_ref: None,
+                    base_commit: base_commit.clone(),
+                },
+            );
+            skill_studio_core::skill_fork_registry::write_fork_registry(&home, &registry).unwrap();
+
+            let lookup = FakeLookup::with_answers(vec![Ok(Some((
+                "b".repeat(40),
+                "2026-02-01T00:00:00Z".to_string(),
+            )))]);
+            let store = run_update_check(&home, &app_data, &lookup);
+
+            assert_eq!(lookup.call_count(), 1); // one candidate, not two
+            let state = store.owners.get("owner:v1/global/find-bugs").unwrap();
+            assert_eq!(
+                state.installed_commit.as_deref(),
+                Some(base_commit.as_str())
+            );
+            assert!(has_update(state));
+            let source = OwnerUpdateSource {
+                owner_id: "owner:v1/global/find-bugs".to_string(),
                 repo: "getsentry/find-bugs".to_string(),
-                path: "skills/find-bugs".to_string(),
-                declared_ref: None,
-                base_commit: base_commit.clone(),
-            },
-        );
-        super::super::skill_fork_registry::write_fork_registry(&home, &registry).unwrap();
-
-        let lookup = FakeLookup::with_answers(vec![Ok(Some((
-            "b".repeat(40),
-            "2026-02-01T00:00:00Z".to_string(),
-        )))]);
-        let store = run_update_check(&home, &app_data, &lookup);
-
-        assert_eq!(lookup.call_count(), 1); // one candidate, not two
-        let state = store.owners.get("owner:v1/global/find-bugs").unwrap();
-        assert_eq!(
-            state.installed_commit.as_deref(),
-            Some(base_commit.as_str())
-        );
-        assert!(has_update(state));
+                path: Some(path.to_string()),
+                source_ref: None,
+                baseline_identity: Some(format!("fork-base-commit:{base_commit}")),
+            };
+            assert!(state_for_owner(
+                &store,
+                &source.owner_id,
+                &[source.owner_id.clone()],
+                &source
+            )
+            .is_some());
+        }
     }
 
     #[test]
@@ -1326,13 +2054,17 @@ resolved_commit = "{commit}"
                 "owner:v1/global/find-bugs".to_string(),
                 SkillUpdateState {
                     repo: "getsentry/find-bugs".to_string(),
-                    path: "skills/find-bugs".to_string(),
+                    path: Some("skills/find-bugs".to_string()),
                     installed_commit: Some(commit.clone()),
                     latest_commit: Some(previous_latest.clone()),
                     latest_commit_at: Some("2026-01-01T00:00:00Z".to_string()),
                     checked_at: "2026-01-01T00:00:00Z".to_string(),
                     error: None,
                     lock_updated_at: None,
+                    source_ref: None,
+                    baseline_identity: Some(format!("dotagents-installed-commit:{commit}")),
+                    comparison: UpdateComparison::Different,
+                    last_verified_comparison: Some(UpdateComparison::Different),
                 },
             )]),
             legacy_skills: BTreeMap::new(),
@@ -1348,6 +2080,15 @@ resolved_commit = "{commit}"
             Some(previous_latest.as_str())
         );
         assert_eq!(state.error.as_deref(), Some("network unreachable"));
+        assert!(matches!(
+            state.comparison,
+            UpdateComparison::UnknownWithReason { .. }
+        ));
+        assert_eq!(
+            state.last_verified_comparison,
+            Some(UpdateComparison::Different)
+        );
+        assert!(!has_update(state));
     }
 
     #[test]
@@ -1414,14 +2155,14 @@ resolved_commit = "{commit}"
             &RepoLookup,
         );
         let global = store.owners.get("owner:v1/global/shared-name").unwrap();
-        let project_a_id = owner_id_for(
-            &load_ownership_ledgers(&home, std::slice::from_ref(&project_a))[1],
-            "shared-name",
-        );
-        let project_b_id = owner_id_for(
-            &load_ownership_ledgers(&home, std::slice::from_ref(&project_b))[1],
-            "shared-name",
-        );
+        let project_a_inputs = load_ownership_inputs(&home, std::slice::from_ref(&project_a));
+        let project_a_ledger = project_a_inputs.scopes[1].as_ledger().unwrap();
+        let project_a_id =
+            skill_studio_core::skill_ownership::owner_id_for(&project_a_ledger, "shared-name");
+        let project_b_inputs = load_ownership_inputs(&home, std::slice::from_ref(&project_b));
+        let project_b_ledger = project_b_inputs.scopes[1].as_ledger().unwrap();
+        let project_b_id =
+            skill_studio_core::skill_ownership::owner_id_for(&project_b_ledger, "shared-name");
         let a = store.owners.get(&project_a_id).unwrap();
         let b = store.owners.get(&project_b_id).unwrap();
 
@@ -1433,6 +2174,101 @@ resolved_commit = "{commit}"
         assert_eq!(b.repo, "org/project-b");
         assert_eq!(b.installed_commit.as_deref(), Some("project-b-old"));
         assert_ne!(project_a_id, project_b_id);
+    }
+
+    #[test]
+    fn same_name_current_project_ledgers_keep_distinct_sources() {
+        let tmp = tempfile::tempdir().unwrap();
+        let home = tmp.path().join("home");
+        let project_a = tmp.path().join("project-a");
+        let project_b = tmp.path().join("project-b");
+        let app_data = tmp.path().join("data");
+        write_project_lock(
+            &project_a,
+            "shared-name",
+            "org/project-a",
+            Some("skills/a/SKILL.md"),
+            None,
+            "hash-a",
+        );
+        write_project_lock(
+            &project_b,
+            "shared-name",
+            "org/project-b",
+            Some("skills/b/SKILL.md"),
+            None,
+            "hash-b",
+        );
+
+        let store =
+            run_update_check_with_projects(&home, &[project_a, project_b], &app_data, &RepoLookup);
+        let repos = store
+            .owners
+            .values()
+            .map(|state| state.repo.as_str())
+            .collect::<std::collections::BTreeSet<_>>();
+
+        assert_eq!(store.owners.len(), 2);
+        assert_eq!(
+            repos,
+            std::collections::BTreeSet::from(["org/project-a", "org/project-b"])
+        );
+        assert!(store
+            .owners
+            .values()
+            .all(|state| matches!(state.comparison, UpdateComparison::UnknownWithReason { .. })));
+    }
+
+    #[test]
+    fn targeted_check_drops_unselected_state_with_changed_evidence() {
+        let tmp = tempfile::tempdir().unwrap();
+        let home = tmp.path().join("home");
+        let project_a = tmp.path().join("project-a");
+        let project_b = tmp.path().join("project-b");
+        let app_data = tmp.path().join("data");
+        write_project_lock(
+            &project_a,
+            "shared-name",
+            "org/project-a",
+            Some("skills/a/SKILL.md"),
+            None,
+            "hash-a",
+        );
+        write_project_lock(
+            &project_b,
+            "shared-name",
+            "org/project-b",
+            Some("skills/b/SKILL.md"),
+            None,
+            "hash-b",
+        );
+        let projects = [project_a.clone(), project_b.clone()];
+        let initial = run_update_check_with_projects(&home, &projects, &app_data, &RepoLookup);
+        let selected_owner = initial
+            .owners
+            .iter()
+            .find(|(_, state)| state.repo == "org/project-a")
+            .map(|(owner_id, _)| owner_id.clone())
+            .unwrap();
+        write_project_lock(
+            &project_b,
+            "shared-name",
+            "org/project-b",
+            Some("skills/b/SKILL.md"),
+            None,
+            "changed-hash-b",
+        );
+
+        let store = run_update_check_for_owners(
+            &home,
+            &projects,
+            &app_data,
+            &RepoLookup,
+            std::slice::from_ref(&selected_owner),
+        );
+
+        assert_eq!(store.owners.len(), 1);
+        assert!(store.owners.contains_key(&selected_owner));
     }
 
     #[test]
@@ -1472,6 +2308,46 @@ resolved_commit = "{commit}"
         assert_eq!(persisted["version"], 2);
         assert!(persisted.get("owners").is_some());
         assert!(persisted.get("skills").is_none());
+    }
+
+    #[test]
+    fn legacy_state_accepts_repeated_global_owner_ids_but_not_distinct_same_name_owners() {
+        let owner_id = "owner:v1/global/find-bugs".to_string();
+        let source = OwnerUpdateSource {
+            owner_id: owner_id.clone(),
+            repo: "org/global".to_string(),
+            path: Some("skills/find-bugs".to_string()),
+            source_ref: None,
+            baseline_identity: Some("dotagents-installed-commit:old".to_string()),
+        };
+        let state = SkillUpdateState {
+            repo: source.repo.clone(),
+            path: source.path.clone(),
+            installed_commit: Some("old".to_string()),
+            ..Default::default()
+        };
+        let store = UpdateCheckStore {
+            legacy_skills: BTreeMap::from([("find-bugs".to_string(), state)]),
+            ..Default::default()
+        };
+
+        assert!(state_for_owner(
+            &store,
+            &owner_id,
+            &[owner_id.clone(), owner_id.clone()],
+            &source,
+        )
+        .is_some());
+        assert!(state_for_owner(
+            &store,
+            &owner_id,
+            &[
+                owner_id.clone(),
+                "owner:v1/project/%2Fp/find-bugs".to_string(),
+            ],
+            &source,
+        )
+        .is_none());
     }
 
     #[test]
@@ -1537,12 +2413,27 @@ resolved_commit = "{commit}"
             "a".repeat(40).as_str(),
         );
 
+        run_update_check(
+            &home,
+            &app_data,
+            &FakeLookup::with_answers(vec![Ok(Some((
+                "b".repeat(40),
+                "2026-02-01T00:00:00Z".to_string(),
+            )))]),
+        );
         let lookup = FakeLookup::with_answers(vec![Err(
             "gh: To get started with GitHub CLI, run: gh auth login".to_string(),
         )]);
         let store = run_update_check(&home, &app_data, &lookup);
 
         assert_eq!(store.gh_status, GhStatus::NotLoggedIn);
+        let state = store.owners.get("owner:v1/global/find-bugs").unwrap();
+        assert!(state.error.as_deref().is_some_and(is_not_logged_in));
+        assert!(matches!(
+            state.comparison,
+            UpdateComparison::UnknownWithReason { .. }
+        ));
+        assert!(!has_update(state));
     }
 
     #[test]

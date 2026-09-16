@@ -171,7 +171,10 @@ export function skillGlobalRemovalTarget(skill: SkillLifecycleView): LifecycleTa
 export function skillUpdateOwnerTargets(
   skill: Pick<InstalledSkill, "update_owner_ids" | "update_owners">,
 ): LifecycleTarget[] {
-  const ownerIds = skill.update_owners?.map((update) => update.owner_id) ?? skill.update_owner_ids;
+  const ownerIds =
+    skill.update_owners
+      ?.filter((update) => update.actionable === true)
+      .map((update) => update.owner_id) ?? skill.update_owner_ids;
   return [...new Set(ownerIds)].map((owner_id) => ({ owner_id }));
 }
 
@@ -200,6 +203,18 @@ export function skillUpdateAvailability(
     skillUpdateOwnerTargets(skill).flatMap(({ owner_id }) => owner_id ?? []),
   );
   if (!updateOwnerIds.has(ownerId)) {
+    const comparison = skill.update_owners?.find(
+      (update) => update.owner_id === ownerId,
+    )?.comparison;
+    if (comparison?.kind !== "equal") {
+      return {
+        available: false,
+        reason:
+          comparison?.kind === "unknown-with-reason"
+            ? comparison.reason
+            : "The selected deployment's update status is unknown.",
+      };
+    }
     return { available: false, reason: "The selected deployment is up to date." };
   }
   return { available: true, target: { owner_id: ownerId } };

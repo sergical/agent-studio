@@ -1121,9 +1121,7 @@ mod tests {
     impl CommitLookup for NeverLookup {
         fn latest_commit(
             &self,
-            _: &str,
-            _: &str,
-            _: Option<&str>,
+            _: &super::super::skill_update_check::CommitQuery<'_>,
         ) -> Result<Option<(String, String)>, String> {
             panic!("lookup should not have been called");
         }

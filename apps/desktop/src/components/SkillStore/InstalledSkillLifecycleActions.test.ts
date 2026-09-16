@@ -1,4 +1,7 @@
+import { createElement } from "react";
+import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it } from "vitest";
+import { InstalledSkillLifecycleActions } from "./InstalledSkillLifecycleActions";
 import { skillUpdateAvailability } from "../../lib/skill-lifecycle-target";
 import type { Deployment, InstalledSkill } from "@skill-studio/lib";
 
@@ -33,8 +36,19 @@ const skill = {
   ],
   update_owner_ids: [globalOwner, secondProjectOwner],
   update_owners: [
-    { owner_id: globalOwner, latest_commit: "global-next" },
-    { owner_id: secondProjectOwner, latest_commit: "project-next" },
+    {
+      owner_id: globalOwner,
+      latest_commit: "global-next",
+      comparison: { kind: "different" },
+      actionable: true,
+    },
+    { owner_id: firstProjectOwner, comparison: { kind: "equal" }, actionable: false },
+    {
+      owner_id: secondProjectOwner,
+      latest_commit: "project-next",
+      comparison: { kind: "different" },
+      actionable: true,
+    },
   ],
 } satisfies Pick<InstalledSkill, "name" | "deployments" | "update_owner_ids" | "update_owners">;
 
@@ -81,4 +95,53 @@ describe("InstalledSkillLifecycleActions update selection", () => {
     expect(availability.available).toBe(false);
     if (!availability.available) expect(availability.reason).toContain("specific deployment");
   });
+});
+
+it("renders the disabled update and its Unknown reason in the store drawer", () => {
+  const installed: InstalledSkill = {
+    ...skill,
+    deployments: [deployment("global", globalOwner)],
+    source: "acme/x",
+    source_type: "github",
+    source_kind: "skills-sh",
+    installed_at: "",
+    has_update: false,
+    update_owner_ids: [],
+    update_owners: [
+      {
+        owner_id: globalOwner,
+        actionable: false,
+        comparison: { kind: "unknown-with-reason", reason: "GitHub lookup failed" },
+      },
+    ],
+    has_spec: false,
+    spec_violations: [],
+    skill_md_tokens: 0,
+    description_tokens: 0,
+    folder_bytes: 0,
+    file_count: 1,
+    content_hash: "x",
+    content_hashes: ["x"],
+    frontmatter_fields: {},
+    folder_truncated: false,
+    parked: false,
+    invocation: "both",
+  };
+  const markup = renderToStaticMarkup(
+    createElement(InstalledSkillLifecycleActions, {
+      skill: {
+        id: "acme/x/x",
+        name: "x",
+        top_source: "acme/x",
+        installs: 1,
+        is_installed: true,
+        installed_info: installed,
+      },
+      onInstallComplete: () => {},
+      onRemoveComplete: () => {},
+    }),
+  );
+  expect(markup).toContain("Update Skill");
+  expect(markup).toContain("GitHub lookup failed");
+  expect(markup).toMatch(/<button[^>]*disabled[^>]*>[\s\S]*?Update Skill/);
 });

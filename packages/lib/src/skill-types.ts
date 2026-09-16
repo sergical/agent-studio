@@ -354,7 +354,17 @@ export interface OwnerUpdateInfo {
   owner_id: string;
   latest_commit?: string;
   latest_commit_at?: string;
+  error?: string;
+  comparison?: UpdateComparison;
+  last_verified_comparison?: UpdateComparison;
+  actionable?: boolean;
 }
+
+export type UpdateComparison =
+  | { kind: "equal" }
+  | { kind: "different" }
+  | { kind: "unknown" }
+  | { kind: "unknown-with-reason"; reason: string };
 
 /**
  * Hours left until `expiresAt`, rounded down, for the trial chip - see

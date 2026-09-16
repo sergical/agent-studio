@@ -23,8 +23,8 @@ use super::skill_editor;
 use super::skill_fork;
 use super::skill_fork_registry;
 use super::skill_lifecycle::{
-    dotagents_update_args, ledger_matching_deployment, rebuild_fresh_lifecycle_snapshot,
-    resolve_lifecycle_target, skills_sh_remove_args_for_scope, skills_sh_update_args,
+    dotagents_update_args, rebuild_fresh_lifecycle_snapshot, resolve_lifecycle_target,
+    skills_sh_remove_args_for_scope, skills_sh_update_args,
 };
 #[cfg(any(test, not(target_os = "macos")))]
 use super::skill_md_write::{write_skill_md, write_skill_md_compare_and_swap};
@@ -467,6 +467,106 @@ mod tests {
 
         let err = check_skill_md_write_allowed(Some(&snapshot), &outside).unwrap_err();
         assert!(err.contains("not an installed skill"));
+    }
+
+    #[test]
+    fn update_inputs_refuse_only_the_target_scope_and_shared_registry_failures() {
+        let tmp = tempfile::tempdir().unwrap();
+        let home = tmp.path().join("home");
+        let project = tmp.path().join("project");
+        std::fs::create_dir_all(project.join(".agents")).unwrap();
+        std::fs::write(project.join(".agents/agents.toml"), "[broken").unwrap();
+        let report = skill_studio_core::skill_ownership::load_ownership_inputs(
+            &home,
+            std::slice::from_ref(&project),
+        );
+        let mut deployment = fixture_snapshot(&home.join(".agents/skills/alpha"), None).skills[0]
+            .deployments[0]
+            .clone();
+        deployment.scope = "global".to_string();
+        deployment.project_path = None;
+        assert!(update_ledger_from_inputs(&report, &deployment).is_ok());
+        deployment.scope = "project".to_string();
+        deployment.project_path = Some(project.to_string_lossy().to_string());
+        assert!(update_ledger_from_inputs(&report, &deployment).is_err());
+        std::fs::create_dir_all(home.join(".agents")).unwrap();
+        std::fs::write(home.join(".agents/skill-studio.json"), "{broken").unwrap();
+        let report = skill_studio_core::skill_ownership::load_ownership_inputs(&home, &[]);
+        deployment.scope = "global".to_string();
+        deployment.project_path = None;
+        assert!(update_ledger_from_inputs(&report, &deployment).is_err());
+    }
+
+    #[test]
+    fn fresh_update_evidence_requires_a_source_matched_current_difference() {
+        use skill_studio_core::skill_inventory::OwnerUpdateSource;
+
+        let owner_id = "owner:v1/global/find-bugs".to_string();
+        let source = OwnerUpdateSource {
+            owner_id: owner_id.clone(),
+            repo: "getsentry/find-bugs".to_string(),
+            path: Some("skills/find-bugs".to_string()),
+            source_ref: Some("main".to_string()),
+            baseline_identity: Some("dotagents-installed-commit:a".to_string()),
+        };
+        for (comparison, error, repo, expected_available) in [
+            (
+                skill_update_check::UpdateComparison::Equal,
+                None,
+                "getsentry/find-bugs",
+                false,
+            ),
+            (
+                skill_update_check::UpdateComparison::Unknown,
+                None,
+                "getsentry/find-bugs",
+                false,
+            ),
+            (
+                skill_update_check::UpdateComparison::Different,
+                Some("offline".to_string()),
+                "getsentry/find-bugs",
+                false,
+            ),
+            (
+                skill_update_check::UpdateComparison::Different,
+                None,
+                "other/find-bugs",
+                false,
+            ),
+            (
+                skill_update_check::UpdateComparison::Different,
+                None,
+                "getsentry/find-bugs",
+                true,
+            ),
+        ] {
+            let store = skill_update_check::UpdateCheckStore {
+                owners: std::collections::BTreeMap::from([(
+                    owner_id.clone(),
+                    skill_update_check::SkillUpdateState {
+                        repo: repo.to_string(),
+                        path: Some("skills/find-bugs".to_string()),
+                        source_ref: Some("main".to_string()),
+                        baseline_identity: Some("dotagents-installed-commit:a".to_string()),
+                        error,
+                        comparison,
+                        ..Default::default()
+                    },
+                )]),
+                ..Default::default()
+            };
+            assert_eq!(
+                require_fresh_update_evidence(
+                    &store,
+                    &owner_id,
+                    std::slice::from_ref(&owner_id),
+                    &source
+                )
+                .is_ok(),
+                expected_available
+            );
+        }
     }
 
     #[test]
@@ -1984,19 +2084,73 @@ pub fn set_preferred_editor(app_name: Option<String>) -> Result<(), String> {
 pub async fn update_skill(
     target: LifecycleTarget,
     app: tauri::AppHandle,
-    refresh_state: tauri::State<'_, SkillRefreshState>,
-    update_check_state: tauri::State<'_, skill_update_check::UpdateCheckState>,
-    fork_lock: tauri::State<'_, skill_fork::ForkMutationLock>,
 ) -> Result<InstallResult, String> {
+    tauri::async_runtime::spawn_blocking(move || update_skill_blocking(target, app))
+        .await
+        .map_err(|error| format!("Update worker failed: {error}"))?
+}
+
+fn update_ledger_from_inputs(
+    ownership: &skill_studio_core::skill_ownership::OwnershipReadReport,
+    deployment: &skill_studio_core::skill_inventory::Deployment,
+) -> Result<skill_studio_core::skill_ownership::OwnershipLedgers, String> {
+    if let skill_studio_core::skill_ownership::OwnershipInput::Failed(issue) = &ownership.registry {
+        return Err(format!(
+            "Update is not available: {}: {}",
+            issue.path, issue.message
+        ));
+    }
+    let scope = ownership
+        .scopes
+        .iter()
+        .find(|input| {
+            matches!(
+                (&input.scope, deployment.scope.as_str()),
+                (
+                    skill_studio_core::skill_deployment::InstallScope::Global,
+                    "global"
+                ) | (
+                    skill_studio_core::skill_deployment::InstallScope::Project,
+                    "project"
+                )
+            ) && input.project_path.as_deref()
+                == deployment.project_path.as_deref().map(std::path::Path::new)
+        })
+        .ok_or("Update is not available: the matching ownership scope is missing")?;
+    scope
+        .as_ledger()
+        .map_err(|issue| format!("Update is not available: {}: {}", issue.path, issue.message))
+}
+
+fn require_fresh_update_evidence<'a>(
+    store: &'a skill_update_check::UpdateCheckStore,
+    owner_id: &str,
+    current_owner_ids: &[String],
+    source: &skill_studio_core::skill_inventory::OwnerUpdateSource,
+) -> Result<&'a skill_update_check::SkillUpdateState, String> {
+    skill_update_check::state_for_owner(store, owner_id, current_owner_ids, source)
+        .filter(|state| skill_update_check::has_update(state))
+        .ok_or_else(|| {
+            "Update is not available: the selected owner has no fresh update evidence".to_string()
+        })
+}
+
+fn update_skill_blocking(
+    target: LifecycleTarget,
+    app: tauri::AppHandle,
+) -> Result<InstallResult, String> {
+    let refresh_state = app.state::<SkillRefreshState>();
+    let update_check_state = app.state::<skill_update_check::UpdateCheckState>();
+    let fork_lock = app.state::<skill_fork::ForkMutationLock>();
     let _guard = fork_lock.try_acquire()?;
     let home = dirs::home_dir().ok_or("Could not find home directory")?;
     let snapshot = rebuild_fresh_lifecycle_snapshot(&app, &refresh_state)?;
     let (skill, deployment) = resolve_lifecycle_target(&snapshot, &target, "Update")?;
     let skill_name = skill.name;
     let scope = if deployment.scope == "global" {
-        super::skill_dto::InstallScope::Global
+        skill_studio_core::skill_deployment::InstallScope::Global
     } else if deployment.scope == "project" {
-        super::skill_dto::InstallScope::Project
+        skill_studio_core::skill_deployment::InstallScope::Project
     } else {
         return Err(format!(
             "Update is not available for {} scope",
@@ -2004,73 +2158,92 @@ pub async fn update_skill(
         ));
     };
     let project_paths: Vec<std::path::PathBuf> = snapshot.projects.iter().map(Into::into).collect();
-    let ledgers = super::skill_ownership::load_ownership_ledgers(&home, &project_paths);
+    let ownership =
+        skill_studio_core::skill_ownership::load_ownership_inputs(&home, &project_paths);
+    let ledger = update_ledger_from_inputs(&ownership, &deployment)?;
+    let owner_id = deployment
+        .owner_id
+        .as_deref()
+        .ok_or("Update is not available: the selected deployment has no owner identity")?;
+    let source = skill
+        .update_sources
+        .iter()
+        .find(|source| source.owner_id == owner_id)
+        .ok_or("Update is not available: the selected owner has no source evidence")?;
+    let current_owner_ids: Vec<String> = snapshot
+        .skills
+        .iter()
+        .flat_map(|skill| skill.deployments.iter())
+        .filter_map(|deployment| deployment.owner_id.clone())
+        .collect();
+    let app_data = app
+        .path()
+        .app_data_dir()
+        .map_err(|error| format!("Could not resolve app data dir: {error}"))?;
+    let store = skill_update_check::read_update_check_store(&app_data);
+    let update_state = require_fresh_update_evidence(&store, owner_id, &current_owner_ids, source)?;
 
     let (tool, args): (&str, Vec<String>) = match deployment.owner_kind {
-        super::skill_ownership::LifecycleOwnerKind::Dotagents => {
-            let ledger = ledger_matching_deployment(&ledgers, &deployment)
-                .ok_or("Update is not available: the matching ownership ledger is missing")?;
+        skill_studio_core::skill_ownership::LifecycleOwnerKind::Dotagents => {
             let entry = ledger
                 .dotagents
                 .iter()
                 .find(|entry| entry.name == skill_name);
-            let latest_commit = if entry.is_some_and(|e| e.declared_ref.is_some()) {
-                let app_data = app
-                    .path()
-                    .app_data_dir()
-                    .unwrap_or_else(|_| std::path::PathBuf::from("."));
-                let store = skill_update_check::read_update_check_store(&app_data);
-                let owner_id = deployment.owner_id.as_deref().ok_or(
-                    "Update is not available: the selected deployment has no owner identity",
-                )?;
-                let current_owner_ids: Vec<String> = snapshot
-                    .skills
-                    .iter()
-                    .flat_map(|skill| skill.deployments.iter())
-                    .filter_map(|deployment| deployment.owner_id.clone())
-                    .collect();
-                skill_update_check::state_for_owner(&store, owner_id, &current_owner_ids)
-                    .and_then(|state| state.latest_commit.clone())
+            let entry = entry.map(|entry| super::dotagents_ledger::DotagentsSkill {
+                name: entry.name.clone(),
+                source: entry.source.clone(),
+                github_repo: entry.github_repo.clone(),
+                path: entry.path.clone(),
+                installed_commit: entry.installed_commit.clone(),
+                declared_ref: entry.declared_ref.clone(),
+                has_manifest_row: entry.has_manifest_row,
+            });
+            let latest_commit = if entry
+                .as_ref()
+                .is_some_and(|entry| entry.declared_ref.is_some())
+            {
+                update_state.latest_commit.clone()
             } else {
                 None
             };
-            let args =
-                dotagents_update_args(&skill_name, entry, latest_commit.as_deref(), scope.clone())?;
+            let args = dotagents_update_args(
+                &skill_name,
+                entry.as_ref(),
+                latest_commit.as_deref(),
+                scope.clone(),
+            )?;
             ("dotagents", args)
         }
-        super::skill_ownership::LifecycleOwnerKind::SkillsSh => {
+        skill_studio_core::skill_ownership::LifecycleOwnerKind::SkillsSh => {
             ("skills-sh", skills_sh_update_args(&skill_name, scope))
         }
-        super::skill_ownership::LifecycleOwnerKind::Fork => {
+        skill_studio_core::skill_ownership::LifecycleOwnerKind::Fork => {
             return Err("Forked skills update with Pull upstream".to_string())
         }
         _ => return Err("Update is not available for this deployment owner".to_string()),
     };
 
     let npx_command = format!("npx {}", args.join(" "));
-    let mut command = Command::new("npx");
-    command.args(&args);
-    if let Some(project_path) = &deployment.project_path {
-        command.current_dir(project_path);
-    }
-    let output = command
-        .output()
-        .map_err(|e| format!("Failed to execute npx: {}", e))?;
+    let cwd = match deployment.scope.as_str() {
+        "project" => Some(std::path::Path::new(
+            deployment
+                .project_path
+                .as_deref()
+                .ok_or("Update is not available: project target has no project path")?,
+        )),
+        _ => None,
+    };
+    let output = super::skill_process::run_controlled_npx(
+        &args,
+        cwd,
+        &std::sync::atomic::AtomicBool::new(false),
+        super::skill_process::DEFAULT_ADD_PROCESS_TIMEOUT,
+    );
 
-    let stderr = String::from_utf8_lossy(&output.stderr).to_string();
+    skill_update_check::check_now_for_owner(&app, &update_check_state, owner_id, &project_paths);
+    skill_refresh::request_snapshot_rebuild(&app);
 
-    if output.status.success() {
-        let owner_id = deployment
-            .owner_id
-            .as_deref()
-            .ok_or("Update is not available: the selected deployment has no owner identity")?;
-        skill_update_check::check_now_for_owner(
-            &app,
-            &update_check_state,
-            owner_id,
-            &project_paths,
-        );
-        skill_refresh::request_snapshot_rebuild(&app);
+    if output.is_ok() {
         Ok(InstallResult {
             success: true,
             skill_name,
@@ -2084,7 +2257,17 @@ pub async fn update_skill(
             success: false,
             skill_name,
             installed_path: None,
-            error: Some(stderr),
+            error: output.err().map(|error| match error {
+                super::skill_process::ControlledProcessError::Cancelled => {
+                    "Update was cancelled; skill files may have changed.".to_string()
+                }
+                super::skill_process::ControlledProcessError::TimedOut => {
+                    "Update timed out; skill files may have changed.".to_string()
+                }
+                super::skill_process::ControlledProcessError::Failed(message) => {
+                    format!("Update failed; skill files may have changed: {message}")
+                }
+            }),
             tool: Some(tool.to_string()),
             command: Some(npx_command),
         })

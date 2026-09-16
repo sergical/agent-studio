@@ -1033,27 +1033,37 @@ fn apply_skill_snapshot_overlays(
     }
 
     for skill in skills.iter_mut() {
-        for deployment in &skill.deployments {
-            let Some(owner_id) = deployment.owner_id.as_deref() else {
+        for source in &skill.update_sources {
+            let owner_id = &source.owner_id;
+            let Some(state) = skill_update_check::state_for_owner(
+                update_store,
+                owner_id,
+                current_owner_ids,
+                source,
+            ) else {
+                skill.update_owners.push(super::skill_dto::OwnerUpdateInfo {
+                    owner_id: owner_id.clone(),
+                    latest_commit: None,
+                    latest_commit_at: None,
+                    error: None,
+                    comparison: Default::default(),
+                    last_verified_comparison: None,
+                    actionable: false,
+                });
                 continue;
             };
-            let Some(state) =
-                skill_update_check::state_for_owner(update_store, owner_id, current_owner_ids)
-                    .filter(|state| skill_update_check::has_update(state))
-            else {
-                continue;
-            };
-            if !skill.update_owner_ids.iter().any(|id| id == owner_id) {
-                skill.update_owner_ids.push(owner_id.to_string());
+            let actionable = skill_update_check::has_update(state);
+            if actionable && !skill.update_owner_ids.iter().any(|id| id == owner_id) {
+                skill.update_owner_ids.push(owner_id.clone());
             }
             skill.update_owners.push(super::skill_dto::OwnerUpdateInfo {
-                error: None,
-                comparison: Default::default(),
-                last_verified_comparison: None,
-                actionable: false,
-                owner_id: owner_id.to_string(),
+                owner_id: owner_id.clone(),
                 latest_commit: state.latest_commit.clone(),
                 latest_commit_at: state.latest_commit_at.clone(),
+                error: state.error.clone(),
+                comparison: state.comparison.clone(),
+                last_verified_comparison: state.last_verified_comparison.clone(),
+                actionable,
             });
         }
         skill.has_update = !skill.update_owner_ids.is_empty();
@@ -1967,6 +1977,9 @@ mod tests {
                     "checked_at": Utc::now().to_rfc3339(),
                     "error": null,
                     "lock_updated_at": null,
+                    "source_ref": null,
+                    "baseline_identity": "global-updated-at:2026-01-01T00:00:00Z:folder-hash:abc",
+                    "comparison": { "kind": "different" },
                 }
             }
         });
@@ -2217,7 +2230,9 @@ mod tests {
                         "latest_commit": if index == 0 { "b".repeat(40) } else { "c".repeat(40) },
                         "latest_commit_at": if index == 0 { "2026-02-01T00:00:00Z" } else { "2026-03-01T00:00:00Z" },
                         "checked_at": Utc::now().to_rfc3339(), "error": null,
-                        "lock_updated_at": null
+                        "lock_updated_at": null, "source_ref": null,
+                        "baseline_identity": "global-updated-at:2026-01-01T00:00:00Z:folder-hash:abc",
+                        "comparison": { "kind": "different" }
                     }),
                 )
             },

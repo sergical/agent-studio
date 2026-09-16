@@ -108,9 +108,16 @@ function lifecycleManagementLabel(
 
 function updateStateLabel(skill: InstalledSkill): string {
   const ownerCount = new Set(
-    (skill.update_owners?.map((owner) => owner.owner_id) ?? skill.update_owner_ids).filter(Boolean),
+    (
+      skill.update_owners
+        ?.filter((owner) => owner.actionable === true)
+        .map((owner) => owner.owner_id) ?? skill.update_owner_ids
+    ).filter(Boolean),
   ).size;
-  if (ownerCount === 0) return "Up to date";
+  if (ownerCount === 0) {
+    const unknown = skill.update_owners?.some((owner) => owner.comparison?.kind !== "equal");
+    return unknown ? "Unknown" : "Up to date";
+  }
   if (ownerCount === 1) return "1 update available";
   return `${ownerCount} owner updates available`;
 }

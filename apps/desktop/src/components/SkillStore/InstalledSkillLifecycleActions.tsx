@@ -73,6 +73,8 @@ export function InstalledSkillLifecycleActions({
     installedSkill && selectedLifecycleScope
       ? skillUpdateAvailability(installedSkill, selectedLifecycleScope)
       : null;
+  const hasUpdateStatus =
+    (installedSkill?.update_owners?.length ?? installedSkill?.update_owner_ids.length ?? 0) > 0;
   const updateDisabledReason =
     updateAvailability && !updateAvailability.available ? updateAvailability.reason : null;
 
@@ -160,7 +162,7 @@ export function InstalledSkillLifecycleActions({
           )}
         </div>
       )}
-      {(installedSkill?.update_owner_ids.length ?? 0) > 0 && (
+      {hasUpdateStatus && (
         <Button
           className={`${ACTION_BUTTON_CLASS} bg-accent text-text-on-accent hover:bg-accent-hover`}
           onClick={handleUpdate}
@@ -179,7 +181,7 @@ export function InstalledSkillLifecycleActions({
           )}
         </Button>
       )}
-      {updateDisabledReason && (installedSkill?.update_owner_ids.length ?? 0) > 0 && (
+      {updateDisabledReason && hasUpdateStatus && (
         <p className="m-0 text-caption text-text-tertiary">{updateDisabledReason}</p>
       )}
       <Button

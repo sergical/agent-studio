@@ -182,9 +182,7 @@ struct UnavailableLookup(String);
 impl CommitLookup for UnavailableLookup {
     fn latest_commit(
         &self,
-        _repo: &str,
-        _path: &str,
-        _until: Option<&str>,
+        _: &super::skill_update_check::CommitQuery<'_>,
     ) -> Result<Option<(String, String)>, String> {
         Err(self.0.clone())
     }
@@ -506,7 +504,12 @@ fn resolve_fork_origin(
                 } else {
                     Some(entry.updated_at.as_str())
                 };
-                match lookup.latest_commit(&repo, &path, until)? {
+                match lookup.latest_commit(&super::skill_update_check::CommitQuery {
+                    repo: &repo,
+                    path: &path,
+                    source_ref: None,
+                    until,
+                })? {
                     Some((sha, _)) => sha,
                     None => return Err(format!("Could not determine {name}'s installed commit")),
                 }
@@ -1255,7 +1258,12 @@ pub fn pull_fork_upstream_with(
         .and_then(|state| state.latest_commit.clone())
     {
         Some(commit) => commit,
-        None => match lookup.latest_commit(&record.repo, &record.path, None)? {
+        None => match lookup.latest_commit(&super::skill_update_check::CommitQuery {
+            repo: &record.repo,
+            path: &record.path,
+            source_ref: record.declared_ref.as_deref(),
+            until: None,
+        })? {
             Some((sha, _)) => sha,
             None => {
                 return Err(format!(
@@ -1589,9 +1597,7 @@ mod tests {
     impl CommitLookup for NeverCalledLookup {
         fn latest_commit(
             &self,
-            _: &str,
-            _: &str,
-            _: Option<&str>,
+            _: &super::skill_update_check::CommitQuery<'_>,
         ) -> Result<Option<(String, String)>, String> {
             panic!("lookup should not have been called");
         }
@@ -2616,13 +2622,17 @@ mod tests {
                 format!("owner:v1/global/{name}"),
                 SkillUpdateState {
                     repo: "getsentry/find-bugs".to_string(),
-                    path: "skills/find-bugs".to_string(),
+                    path: Some("skills/find-bugs".to_string()),
+                    source_ref: None,
                     installed_commit: None,
                     latest_commit: Some(latest_commit.to_string()),
                     latest_commit_at: None,
                     checked_at: "2026-01-01T00:00:00Z".to_string(),
                     error: None,
                     lock_updated_at: None,
+                    baseline_identity: None,
+                    comparison: Default::default(),
+                    last_verified_comparison: None,
                 },
             )]),
             legacy_skills: BTreeMap::new(),

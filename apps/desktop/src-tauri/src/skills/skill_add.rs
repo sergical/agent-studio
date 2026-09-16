@@ -129,9 +129,7 @@ struct Unavailable(String);
 impl CommitLookup for Unavailable {
     fn latest_commit(
         &self,
-        _repo: &str,
-        _path: &str,
-        _until: Option<&str>,
+        _: &super::skill_update_check::CommitQuery<'_>,
     ) -> Result<Option<(String, String)>, String> {
         Err(self.0.clone())
     }
@@ -843,7 +841,15 @@ fn add_via_copy(
                         let commit = match &request.source.git_ref {
                             Some(r) => r.clone(),
                             None => lookup
-                                .latest_commit_controlled(&repo, &path, None, control)?
+                                .latest_commit_controlled(
+                                    &super::skill_update_check::CommitQuery {
+                                        repo: &repo,
+                                        path: &path,
+                                        source_ref: None,
+                                        until: None,
+                                    },
+                                    control,
+                                )?
                                 .map(|(sha, _)| sha)
                                 .ok_or_else(|| {
                                     format!("Could not determine {name}'s latest commit")
@@ -1295,7 +1301,15 @@ fn open_repo_snapshot(
     let commit = match &request.source.git_ref {
         Some(r) => r.clone(),
         None => lookup
-            .latest_commit_controlled(&repo, &path, None, control)?
+            .latest_commit_controlled(
+                &super::skill_update_check::CommitQuery {
+                    repo: &repo,
+                    path: &path,
+                    source_ref: None,
+                    until: None,
+                },
+                control,
+            )?
             .map(|(sha, _)| sha)
             .ok_or_else(|| format!("Could not determine {repo}'s latest commit"))?,
     };
@@ -1415,9 +1429,7 @@ mod tests {
     impl CommitLookup for NeverCalledLookup {
         fn latest_commit(
             &self,
-            _: &str,
-            _: &str,
-            _: Option<&str>,
+            _: &super::skill_update_check::CommitQuery<'_>,
         ) -> Result<Option<(String, String)>, String> {
             panic!("lookup should not have been called");
         }
@@ -1813,9 +1825,7 @@ mod tests {
         impl CommitLookup for FakeLookup {
             fn latest_commit(
                 &self,
-                _: &str,
-                _: &str,
-                _: Option<&str>,
+                _: &super::super::skill_update_check::CommitQuery<'_>,
             ) -> Result<Option<(String, String)>, String> {
                 Ok(Some(("a".repeat(40), "2026-01-01T00:00:00Z".to_string())))
             }

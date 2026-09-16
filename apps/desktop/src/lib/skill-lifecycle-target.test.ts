@@ -286,6 +286,32 @@ describe("skill update owner targets", () => {
     ]);
   });
 
+  it("does not turn unknown evidence into an update mutation", () => {
+    expect(
+      skillUpdateOwnerTargets({
+        update_owner_ids: [],
+        update_owners: [{ owner_id: "owner:v1/project/%2Fp/x", comparison: { kind: "unknown" } }],
+      }),
+    ).toEqual([]);
+  });
+
+  it("does not turn a failed refresh with a remembered update into a mutation", () => {
+    expect(
+      skillUpdateOwnerTargets({
+        update_owner_ids: ["owner:v1/project/%2Fp/x"],
+        update_owners: [
+          {
+            owner_id: "owner:v1/project/%2Fp/x",
+            error: "offline",
+            comparison: { kind: "unknown-with-reason", reason: "offline" },
+            last_verified_comparison: { kind: "different" },
+            actionable: false,
+          },
+        ],
+      }),
+    ).toEqual([]);
+  });
+
   it("updates mixed Global and Project owners and reports a partial failure", async () => {
     const seen: string[] = [];
     const summary = await updateSkillOwners(

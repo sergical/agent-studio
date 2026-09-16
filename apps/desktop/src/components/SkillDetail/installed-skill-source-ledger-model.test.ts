@@ -263,6 +263,33 @@ describe("buildInstalledSkillSourceLedgerModel", () => {
     ).toBe("2 owner updates available");
   });
 
+  it("does not count current or unknown owners as available updates", () => {
+    const updateState = (update_owners: InstalledSkill["update_owners"]) =>
+      buildInstalledSkillSourceLedgerModel(ledgerSkill({ update_owners })).updateState;
+    expect(
+      updateState([{ owner_id: "owner-1", comparison: { kind: "equal" }, actionable: false }]),
+    ).toBe("Up to date");
+    expect(
+      updateState([{ owner_id: "owner-1", comparison: { kind: "unknown" }, actionable: false }]),
+    ).toBe("Unknown");
+    expect(
+      updateState([
+        {
+          owner_id: "owner-1",
+          comparison: { kind: "unknown-with-reason", reason: "offline" },
+          last_verified_comparison: { kind: "different" },
+          actionable: false,
+        },
+      ]),
+    ).toBe("Unknown");
+    expect(
+      updateState([
+        { owner_id: "owner-1", comparison: { kind: "different" }, actionable: true },
+        { owner_id: "owner-2", comparison: { kind: "equal" }, actionable: false },
+      ]),
+    ).toBe("1 update available");
+  });
+
   it("shows an unknown install date and omits a missing modification date", () => {
     const model = buildInstalledSkillSourceLedgerModel(
       ledgerSkill({ installed_at: "", modified_at: undefined }),
