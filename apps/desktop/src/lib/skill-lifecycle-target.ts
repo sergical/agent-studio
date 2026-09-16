@@ -83,6 +83,20 @@ export function lifecycleTargetForDeployment(deployment: Deployment): LifecycleT
   return { deployment_id: deployment.id };
 }
 
+export function skillGlobalForkTarget(skill: SkillLifecycleView): LifecycleTarget {
+  const deployments = skill.deployments.filter(
+    (deployment) =>
+      deployment.scope === "global" &&
+      deployment.destination === "universal" &&
+      deployment.backing.kind === "canonical" &&
+      deployment.mutability === "mutable",
+  );
+  if (deployments.length !== 1) {
+    throw new Error(`${skill.name} needs one mutable Global Universal deployment`);
+  }
+  return lifecycleTargetForDeployment(deployments[0]);
+}
+
 /** Resolve the exact whole-directory-link deployment behind a linked-root repair row. */
 export function lifecycleTargetForHarnessRoot(
   skill: SkillLifecycleView,

@@ -88,6 +88,10 @@ fn recover_with_scope(
                 Some(std::time::Duration::from_secs(30)),
             );
         }
+        #[cfg(target_os = "macos")]
+        if matches!(row.kind.as_str(), "unfork_dotagents" | "unfork_skills_sh") {
+            return super::skill_native_unfork::recover_pending(load_scope()?, store, row);
+        }
         if super::skill_copy_repair::is_copy_event(&row.kind) {
             return super::skill_copy_repair::recover(&mut service, store, row);
         }

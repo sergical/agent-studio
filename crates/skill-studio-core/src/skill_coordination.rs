@@ -579,6 +579,19 @@ impl FinalizedWriteLease<'_> {
         Ok(count)
     }
 
+    pub(crate) fn validate_published_document(
+        &self,
+        path: &Path,
+        expected: &[u8],
+    ) -> Result<(), String> {
+        self.revalidate().map_err(|error| error.to_string())?;
+        self.published
+            .get(path)
+            .ok_or("Document has no publication receipt in this lease")?
+            .verify_content(expected)?;
+        self.revalidate().map_err(|error| error.to_string())
+    }
+
     pub(crate) fn validate_registry_creation(&self, path: &Path) -> Result<(), String> {
         self.revalidate().map_err(|error| error.to_string())?;
         if self.published.contains_key(path)

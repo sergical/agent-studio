@@ -41,6 +41,7 @@ ulid = "1"
 flate2 = "1"
 tar = { version = "0.4", default-features = false }
 
+tempfile = "3"
+
 [dev-dependencies]
 skill-studio-core = { path = "../../../crates/skill-studio-core", features = ["test-support"] }
-tempfile = "3"

@@ -29,6 +29,8 @@ pub mod skill_scope;
 pub mod skill_service;
 #[cfg(all(unix, feature = "event-store"))]
 pub mod skill_skills_sh_fork_creation;
+#[cfg(all(unix, feature = "event-store"))]
+pub mod skill_skills_sh_lock_transition;
 
 #[cfg(all(unix, feature = "event-store"))]
 pub mod skill_backup_copy;
@@ -72,9 +74,15 @@ pub mod skill_repair_recovery_event;
 pub mod skill_repair_execution;
 
 #[cfg(all(unix, feature = "event-store"))]
+pub mod skill_unfork_preparation;
+
+#[cfg(all(unix, feature = "event-store"))]
 pub mod skill_backup_manifest;
 
 #[cfg(all(unix, feature = "event-store"))]
 pub mod skill_copy_document_edit;
 
 pub mod skill_invocation_edit;
+
+#[cfg(all(unix, feature = "event-store"))]
+mod skill_skills_sh_copy;

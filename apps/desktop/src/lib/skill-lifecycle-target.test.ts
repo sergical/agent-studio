@@ -4,6 +4,7 @@ import {
   lifecycleTargetForHarnessRoot,
   lifecycleTargetForSkill,
   lifecycleTargetForTrial,
+  skillGlobalForkTarget,
   skillGlobalRemovalTarget,
   skillLifecycleScopeSelection,
   skillMutableLifecycleScopes,
@@ -33,6 +34,35 @@ function deployment(id: string, ownerId?: string, projectPath?: string): Deploym
     disabled: false,
   };
 }
+
+describe("skillGlobalForkTarget", () => {
+  it("targets the global canonical deployment even when it has an owner and readers", () => {
+    const canonical = deployment("global", "owner:fork");
+    const linked = {
+      ...deployment("linked", "owner:fork"),
+      backing: { kind: "linked-to", deployment_id: canonical.id } as const,
+    };
+    const skill = {
+      name: "x",
+      source_kind: "manual",
+      deployments: [deployment("project", "owner:project", "/p"), linked, canonical],
+    } satisfies Pick<InstalledSkill, "name" | "deployments" | "source_kind">;
+    expect(skillGlobalForkTarget(skill)).toEqual({ deployment_id: "global" });
+  });
+
+  it("refuses missing, ambiguous and read-only global deployments", () => {
+    for (const deployments of [
+      [deployment("project", undefined, "/p")],
+      [deployment("a"), deployment("b")],
+      [{ ...deployment("per-harness"), destination: "per-harness" as const }],
+      [{ ...deployment("read-only"), mutability: "read-only" as const }],
+    ]) {
+      expect(() =>
+        skillGlobalForkTarget({ name: "x", source_kind: "manual", deployments }),
+      ).toThrow("needs one mutable Global Universal deployment");
+    }
+  });
+});
 
 describe("lifecycleTargetForSkill", () => {
   it("targets the selected deployment instead of its aggregate name", () => {

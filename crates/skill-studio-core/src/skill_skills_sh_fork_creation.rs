@@ -349,7 +349,7 @@ fn baseline_path(store: &EventStore, name: &str) -> PathBuf {
         .join("base")
 }
 
-struct UniqueJson(Value);
+pub(crate) struct UniqueJson(pub(crate) Value);
 
 impl<'de> Deserialize<'de> for UniqueJson {
     fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
@@ -407,7 +407,7 @@ impl<'de> Deserialize<'de> for UniqueJson {
     }
 }
 
-fn json_document(bytes: &[u8]) -> Result<Value, String> {
+pub(crate) fn json_document(bytes: &[u8]) -> Result<Value, String> {
     if bytes.len() > MAX_DOCUMENT_BYTES {
         return Err("skills.sh lock exceeds its size limit".into());
     }

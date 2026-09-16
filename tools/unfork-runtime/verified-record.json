@@ -1,0 +1,7 @@
+{
+  "provider_version": "3.0.1",
+  "provider_tree_identity": "tree-v1:b3c3d4108edc84b5e950db100908c2759861c570ea63cdc89d99f5aa2205cfea",
+  "node_version": "v24.19.0",
+  "node_content_digest": "sha256:27db838bb204ef7c21df2931f5656e4c8fb32e6e947f363a402b49714d32b5b1",
+  "copy_contract": "dotagents-3.0.1-default-node-copy"
+}

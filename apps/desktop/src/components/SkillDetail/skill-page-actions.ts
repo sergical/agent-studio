@@ -8,6 +8,7 @@
 
 import { useState } from "react";
 import { ask } from "@tauri-apps/plugin-dialog";
+import { errorMessage } from "../../lib/error-message";
 import {
   forkSkill,
   keepSkillTrial,
@@ -22,8 +23,8 @@ import {
 import {
   lifecycleTargetForDeployment,
   lifecycleTargetForPark,
-  lifecycleTargetForSkill,
   lifecycleTargetForTrial,
+  skillGlobalForkTarget,
   skillGlobalRemovalTarget,
   updateSkillOwners,
 } from "../../lib/skill-lifecycle-target";
@@ -61,7 +62,7 @@ async function runAction(
     addToast({
       type: "error",
       title: errorTitle,
-      message: err instanceof Error ? err.message : "Unknown error",
+      message: errorMessage(err),
     });
   } finally {
     setBusy(false);
@@ -191,7 +192,7 @@ export function useSkillPageActions(
     );
     if (!confirmed) return;
     await runAction(addToast, setIsUnforking, "Un-fork failed", async () => {
-      await unforkSkill(lifecycleTargetForSkill(skill, "global"));
+      await unforkSkill(skillGlobalForkTarget(skill));
       addToast({
         type: "success",
         title: "Un-forked",

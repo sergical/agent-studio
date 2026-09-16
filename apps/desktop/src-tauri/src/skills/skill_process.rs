@@ -14,6 +14,8 @@ use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::{Duration, Instant};
 
+use skill_studio_core::skill_service::CancellationToken;
+
 /// How long a cancelled or timed-out child gets after SIGTERM before SIGKILL.
 pub const PROCESS_CANCEL_GRACE: Duration = Duration::from_secs(2);
 
@@ -69,6 +71,10 @@ impl AddOperationControl {
 
     pub fn check_message(&self) -> Result<(), String> {
         self.check().map_err(ControlledProcessError::into_message)
+    }
+
+    pub fn cancellation_token(&self) -> CancellationToken {
+        CancellationToken::from_shared_deadline(Arc::clone(&self.cancel), self.deadline)
     }
 
     fn cancel_flag(&self) -> &AtomicBool {
@@ -367,6 +373,24 @@ pub fn run_controlled_command_output(
     .map(|output| output.stdout)
 }
 
+/// Run a fully configured command under one operation deadline and return
+/// bounded stdout. The caller retains control of its environment and cwd.
+pub fn run_controlled_prepared_command_output(
+    command: Command,
+    control: &AddOperationControl,
+    max_output_bytes: usize,
+) -> Result<Vec<u8>, ControlledProcessError> {
+    run_controlled_prepared_command_io(
+        command,
+        control,
+        max_output_bytes,
+        max_output_bytes,
+        None,
+        &[0],
+    )
+    .map(|output| output.stdout)
+}
+
 /// Run a command under one operation deadline with stdout redirected to a
 /// file. Diagnostic stderr remains bounded in memory.
 pub fn run_controlled_command_to_file(
@@ -451,8 +475,6 @@ fn run_controlled_command_io(
     output_path: Option<PathBuf>,
     accepted_codes: &[i32],
 ) -> Result<ControlledCommandOutput, ControlledProcessError> {
-    let writes_file = output_path.is_some();
-    control.check()?;
     let mut command = Command::new(program);
     command
         .args(args)
@@ -462,6 +484,30 @@ fn run_controlled_command_io(
     if let Some(dir) = cwd {
         command.current_dir(dir);
     }
+    run_controlled_prepared_command_io(
+        command,
+        control,
+        max_stdout_bytes,
+        max_stderr_bytes,
+        output_path,
+        accepted_codes,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn run_controlled_prepared_command_io(
+    mut command: Command,
+    control: &AddOperationControl,
+    max_stdout_bytes: usize,
+    max_stderr_bytes: usize,
+    output_path: Option<PathBuf>,
+    accepted_codes: &[i32],
+) -> Result<ControlledCommandOutput, ControlledProcessError> {
+    let program = PathBuf::from(command.get_program());
+    let writes_file = output_path.is_some();
+    control.check()?;
+    command.stdin(Stdio::null()).stderr(Stdio::piped());
+    command.stdout(Stdio::piped());
     #[cfg(unix)]
     {
         use std::os::unix::process::CommandExt;
@@ -551,6 +597,24 @@ fn run_controlled_command_io(
             }
         }
     };
+    #[cfg(unix)]
+    while process_group_exists(pid) {
+        if let Some(error) = output_failure
+            .lock()
+            .ok()
+            .and_then(|mut guard| guard.take())
+        {
+            outcome = Err(error);
+        }
+        if let Err(error) = control.check() {
+            outcome = Err(error);
+        }
+        if outcome.is_err() {
+            terminate_and_reap(&mut child, pid);
+            break;
+        }
+        thread::sleep(Duration::from_millis(5));
+    }
     if let Some(handle) = stdout_thread {
         if writes_file {
             while !handle.is_finished() && outcome.is_ok() {
@@ -800,6 +864,41 @@ mod tests {
             !alive,
             "descendant {descendant_pid} survived process-group kill"
         );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn successful_parent_cannot_leave_a_writer_running() {
+        let temp = tempfile::tempdir().unwrap();
+        let mut command = Command::new("/bin/sh");
+        command.current_dir(temp.path()).args([
+            "-c",
+            "sh -c 'trap \"\" TERM; echo $$ > child.pid; while :; do printf x >> writes; sleep 0.02; done' & while [ ! -f child.pid ]; do sleep 0.01; done; exit 0",
+        ]);
+        let error = run_controlled_prepared_command_output(
+            command,
+            &AddOperationControl::new(Arc::new(AtomicBool::new(false)), Duration::from_millis(250)),
+            MAX_PROCESS_OUTPUT_BYTES,
+        )
+        .unwrap_err();
+        assert_eq!(error, ControlledProcessError::TimedOut);
+        let pid: i32 = std::fs::read_to_string(temp.path().join("child.pid"))
+            .unwrap()
+            .trim()
+            .parse()
+            .unwrap();
+        let deadline = Instant::now() + Duration::from_secs(1);
+        // SAFETY: signal zero only checks whether the fixture process still exists.
+        while unsafe { libc::kill(pid, 0) } == 0 {
+            assert!(
+                Instant::now() < deadline,
+                "writer survived parent exit cleanup"
+            );
+            thread::sleep(Duration::from_millis(5));
+        }
+        let bytes = std::fs::read(temp.path().join("writes")).unwrap();
+        thread::sleep(Duration::from_millis(50));
+        assert_eq!(std::fs::read(temp.path().join("writes")).unwrap(), bytes);
     }
 
     #[cfg(unix)]

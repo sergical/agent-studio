@@ -41,6 +41,8 @@ pub mod skill_invocations;
 pub mod skill_lifecycle;
 pub mod skill_materialize;
 pub mod skill_md_write;
+#[cfg(target_os = "macos")]
+mod skill_native_unfork;
 pub mod skill_ownership;
 pub mod skill_pack;
 pub mod skill_park;
@@ -52,6 +54,8 @@ pub mod skill_run_target;
 pub(crate) mod skill_scope_config;
 pub mod skill_trial;
 pub mod skill_trust_policy;
+#[cfg(target_os = "macos")]
+mod skill_unfork_provider;
 pub mod skill_update_check;
 
 pub use agents::*;
@@ -67,3 +71,6 @@ pub(crate) mod skill_startup_recovery;
 
 #[cfg(target_os = "macos")]
 pub(crate) mod skill_document_save;
+
+#[cfg(target_os = "macos")]
+mod skill_skills_sh_unfork;

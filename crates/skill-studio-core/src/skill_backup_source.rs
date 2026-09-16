@@ -1,5 +1,6 @@
 //! A backup source name and its recorded path derived from one retained root.
 use crate::{skill_backup_copy::valid_component, skill_scope::SkillReadScope};
+use cap_fs_ext::DirExt;
 use cap_std::fs::{Dir, DirBuilder, DirBuilderExt, MetadataExt};
 use std::{
     ffi::{OsStr, OsString},
@@ -50,6 +51,45 @@ impl BackupSourceRoot {
         self.directory.try_clone()
     }
 
+    pub(crate) fn select_relative(&self, path: &Path) -> io::Result<BackupSource> {
+        if path.as_os_str().len() > 4096
+            || path.as_os_str().is_empty()
+            || path
+                .components()
+                .any(|part| !matches!(part, Component::Normal(name) if valid_component(name)))
+        {
+            return Err(io::Error::other("Invalid relative backup source"));
+        }
+        let mut directory = self.directory()?;
+        for component in path
+            .parent()
+            .ok_or_else(|| io::Error::other("Missing source parent"))?
+            .components()
+        {
+            directory = directory.open_dir_nofollow(component.as_os_str())?;
+        }
+        let source = BackupSource {
+            scope: self.scope.clone(),
+            directory,
+            name: path
+                .file_name()
+                .ok_or_else(|| io::Error::other("Missing source name"))?
+                .to_owned(),
+            original_path: self.path.join(path),
+        };
+        if source
+            .original_path
+            .to_str()
+            .is_none_or(|path| path.len() > 4096)
+        {
+            return Err(io::Error::other(
+                "Backup source path exceeds supported layout",
+            ));
+        }
+        source.revalidate()?;
+        Ok(source)
+    }
+
     /// Selects one child; its absence/presence is checked when copying.
     pub fn select(&self, name: &OsStr) -> io::Result<BackupSource> {
         if !valid_component(name) {
@@ -77,6 +117,22 @@ impl BackupSourceRoot {
 }
 
 impl BackupSource {
+    pub fn inspect(
+        &self,
+        limits: crate::skill_backup_copy::BackupCopyLimits,
+        cancellation: &crate::skill_coordination::CancellationToken,
+    ) -> io::Result<crate::skill_backup_copy::BackupCopyReport> {
+        self.revalidate()?;
+        let report = crate::skill_backup_copy::inspect_entry(
+            &self.directory,
+            &self.name,
+            limits,
+            cancellation,
+        )?;
+        self.revalidate()?;
+        Ok(report)
+    }
+
     pub(crate) fn create_directory(&self) -> io::Result<()> {
         self.revalidate()?;
         match self.directory.symlink_metadata(&self.name) {

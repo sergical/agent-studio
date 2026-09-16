@@ -1,12 +1,19 @@
 //! Destination capabilities for new backup operations. Source authorization,
 //! complete mutation effects and recovery remain responsibilities of the service.
 pub use crate::skill_backup_copy::{BackupCopyLimits, BackupCopyReport};
+#[path = "skill_managed_source.rs"]
+mod managed_source;
 use crate::skill_scope::SkillReadScope;
-use cap_fs_ext::{DirExt, FollowSymlinks, OpenOptionsFollowExt};
-use cap_std::fs::{Dir, Metadata, MetadataExt, OpenOptions, OpenOptionsExt};
+use cap_fs_ext::{DirExt, FollowSymlinks, OpenOptionsExt, OpenOptionsFollowExt};
+use cap_std::fs::{Dir, Metadata, MetadataExt, OpenOptions};
+pub use managed_source::{
+    DotagentsStagedSourceReceipt, DotagentsStagedSourceReceiptV2, DotagentsStagedSourceReference,
+    ManagedSourceReference, ReservedManagedSource, SealedManagedSource, SkillsShReinstallRequest,
+    SkillsShStagedSourceReceipt, SkillsShStagedSourceReference,
+};
 use std::{
     io,
-    io::{Read, Write},
+    io::Write,
     path::{Path, PathBuf},
     sync::atomic::{AtomicU64, Ordering},
 };
@@ -14,9 +21,9 @@ use std::{
 static ATOMIC_FILE_COUNTER: AtomicU64 = AtomicU64::new(0);
 
 pub struct BackupStateRoot {
-    pub(crate) path: std::path::PathBuf,
     scope: SkillReadScope,
     directory: Dir,
+    pub(crate) path: PathBuf,
 }
 
 pub struct ReservedBackup<'root> {
@@ -32,27 +39,15 @@ pub struct ExistingBackup<'root> {
 }
 
 impl ExistingBackup<'_> {
-    pub fn revalidate(&self) -> io::Result<()> {
-        self.binding.revalidate()
-    }
-
     pub(crate) fn discard(self) -> io::Result<()> {
         self.binding.discard()
     }
 
-    pub fn verify_entry(
-        &self,
-        name: &std::ffi::OsStr,
-        expected_identity: &str,
-        limits: BackupCopyLimits,
-        cancellation: &crate::skill_coordination::CancellationToken,
-    ) -> io::Result<BackupCopyReport> {
-        self.binding
-            .verify_entry(name, expected_identity, limits, cancellation)
-    }
-
     pub(crate) fn verify_file(&self, name: &str, expected: &[u8]) -> io::Result<()> {
-        self.verify_file_with(name, expected, || {})
+        if self.read_record(name, expected.len())? != expected {
+            return Err(io::Error::other("Saved Fork document evidence changed"));
+        }
+        Ok(())
     }
 
     pub(crate) fn open_file(&self, name: &str) -> io::Result<cap_std::fs::File> {
@@ -78,40 +73,37 @@ impl ExistingBackup<'_> {
         Ok(file)
     }
 
-    fn verify_file_with(
+    pub(crate) fn operation_id(&self) -> &str {
+        &self.binding.id
+    }
+
+    pub(crate) fn read_record(&self, name: &str, limit: usize) -> io::Result<Vec<u8>> {
+        self.binding.read_record(name, limit)
+    }
+
+    #[cfg(feature = "event-store")]
+    pub(crate) fn read_tree_record(
         &self,
+        tree: &str,
         name: &str,
-        expected: &[u8],
-        after_read: impl FnOnce(),
-    ) -> io::Result<()> {
-        if !crate::skill_backup_copy::valid_component(std::ffi::OsStr::new(name)) {
-            return Err(io::Error::other("Invalid evidence file name"));
+        limit: usize,
+    ) -> io::Result<Vec<u8>> {
+        if !crate::skill_backup_copy::valid_component(std::ffi::OsStr::new(tree)) {
+            return Err(io::Error::other("Invalid backup tree name"));
         }
         self.revalidate()?;
-        let mut options = OpenOptions::new();
-        options.read(true).follow(FollowSymlinks::No);
-        #[cfg(unix)]
-        options.custom_flags(libc::O_NONBLOCK);
-        let mut file = self.binding.directory.open_with(name, &options)?;
-        let before = file.metadata()?;
-        if !before.is_file() {
-            return Err(io::Error::other("Evidence is not a regular file"));
+        let directory = self.binding.directory.open_dir_nofollow(tree)?;
+        let retained = directory.dir_metadata()?;
+        let bytes = read_record_file(&directory, name, limit)?;
+        if !same_directory(&retained, &self.binding.directory.symlink_metadata(tree)?) {
+            return Err(changed());
         }
-        let mut actual = Vec::new();
-        (&mut file)
-            .take(expected.len() as u64 + 1)
-            .read_to_end(&mut actual)?;
-        after_read();
-        if actual != expected
-            || !crate::skill_backup_copy::unchanged(&before, &file.metadata()?)
-            || !crate::skill_backup_copy::unchanged(
-                &before,
-                &self.binding.directory.symlink_metadata(name)?,
-            )
-        {
-            return Err(io::Error::other("Saved Fork document evidence changed"));
-        }
-        self.revalidate()
+        self.revalidate()?;
+        Ok(bytes)
+    }
+
+    pub fn revalidate(&self) -> io::Result<()> {
+        self.binding.revalidate()
     }
 
     pub(crate) fn copy_verified_tree_to(
@@ -168,6 +160,17 @@ impl ExistingBackup<'_> {
             .map_err(io::Error::other)?;
         sync_directory(&destination.directory)?;
         Ok(report)
+    }
+
+    pub fn verify_entry(
+        &self,
+        name: &std::ffi::OsStr,
+        expected_identity: &str,
+        limits: BackupCopyLimits,
+        cancellation: &crate::skill_coordination::CancellationToken,
+    ) -> io::Result<BackupCopyReport> {
+        self.binding
+            .verify_entry(name, expected_identity, limits, cancellation)
     }
 }
 
@@ -861,6 +864,141 @@ impl BackupStateRoot {
         Ok(path.join("base"))
     }
 
+    #[cfg(any())]
+    pub(crate) fn publish_fork_base(
+        &self,
+        lease: &crate::skill_coordination::FinalizedWriteLease<'_>,
+        name: &str,
+        reference: &crate::skill_fork_snapshot::ForkSnapshotReference,
+        limits: BackupCopyLimits,
+        cancellation: &crate::skill_coordination::CancellationToken,
+        validate_owner: impl Fn() -> Result<(), String>,
+    ) -> Result<PathBuf, String> {
+        use crate::skill_fork_snapshot::ForkSnapshotReceipt;
+        use std::ffi::OsStr;
+        lease.validate_state_tree(&self.path)?;
+        validate_owner()?;
+        if !crate::skill_backup_copy::valid_component(OsStr::new(name)) {
+            return Err("Invalid fork base cache name".into());
+        }
+        let backup = self
+            .open_existing(reference.operation_id())
+            .map_err(|error| error.to_string())?;
+        let receipt = ForkSnapshotReceipt::read(&backup, reference, limits, cancellation)?;
+        let mut directory = self
+            .directory
+            .try_clone()
+            .map_err(|error| error.to_string())?;
+        let mut path = self.path.clone();
+        for child in ["skill-studio", "forks", name] {
+            match directory.create_dir(child) {
+                Ok(()) => sync_directory(&directory).map_err(|error| error.to_string())?,
+                Err(error) if error.kind() == io::ErrorKind::AlreadyExists => {}
+                Err(error) => return Err(error.to_string()),
+            }
+            directory = directory
+                .open_dir_nofollow(child)
+                .map_err(|error| error.to_string())?;
+            path.push(child);
+        }
+        let cache = BackupStateRoot::bind(&path).map_err(|error| error.to_string())?;
+        if !same_directory(
+            &directory
+                .dir_metadata()
+                .map_err(|error| error.to_string())?,
+            &cache
+                .directory
+                .dir_metadata()
+                .map_err(|error| error.to_string())?,
+        ) {
+            return Err("Fork cache directory changed during binding".into());
+        }
+        let verify = || -> Result<(), String> {
+            cache
+                .scope
+                .revalidate_roots()
+                .map_err(|error| error.to_string())?;
+            validate_owner()?;
+            let report = crate::skill_backup_copy::inspect_entry(
+                &directory,
+                OsStr::new("base"),
+                limits,
+                cancellation,
+            )
+            .map_err(|error| error.to_string())?;
+            if report.tree_identity != receipt.upstream_identity() {
+                return Err(
+                    "Existing fork merge base differs from the verified upstream snapshot".into(),
+                );
+            }
+            cache
+                .scope
+                .revalidate_roots()
+                .map_err(|error| error.to_string())?;
+            validate_owner()
+        };
+        match directory.symlink_metadata("base") {
+            Ok(_) => {
+                verify()?;
+                return Ok(path.join("base"));
+            }
+            Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+            Err(error) => return Err(error.to_string()),
+        }
+        let stage_name = format!(".base-{}", ulid::Ulid::new());
+        directory
+            .create_dir(&stage_name)
+            .map_err(|error| error.to_string())?;
+        let stage_directory = directory
+            .open_dir_nofollow(&stage_name)
+            .map_err(|error| error.to_string())?;
+        let stage =
+            BackupStateRoot::bind(&path.join(&stage_name)).map_err(|error| error.to_string())?;
+        if !same_directory(
+            &stage_directory
+                .dir_metadata()
+                .map_err(|error| error.to_string())?,
+            &stage
+                .directory
+                .dir_metadata()
+                .map_err(|error| error.to_string())?,
+        ) {
+            return Err("Fork base staging changed during binding".into());
+        }
+        ForkSnapshotReceipt::copy_upstream_base(&backup, reference, &stage, limits, cancellation)?;
+        cache
+            .scope
+            .revalidate_roots()
+            .map_err(|error| error.to_string())?;
+        stage
+            .scope
+            .revalidate_roots()
+            .map_err(|error| error.to_string())?;
+        validate_owner()?;
+        #[cfg(any(target_vendor = "apple", target_os = "linux", target_os = "android"))]
+        rustix::fs::renameat_with(
+            &stage.directory,
+            "base",
+            &directory,
+            "base",
+            rustix::fs::RenameFlags::NOREPLACE,
+        )
+        .map_err(|error| error.to_string())?;
+        #[cfg(not(any(target_vendor = "apple", target_os = "linux", target_os = "android")))]
+        return Err("Atomic merge-base publication is unsupported on this platform".into());
+        sync_directory(&directory).map_err(|error| error.to_string())?;
+        verify()?;
+        stage
+            .scope
+            .revalidate_roots()
+            .map_err(|error| error.to_string())?;
+        directory
+            .remove_dir(&stage_name)
+            .map_err(|error| error.to_string())?;
+        sync_directory(&directory).map_err(|error| error.to_string())?;
+        Ok(path.join("base"))
+    }
+
     /// Bind an explicit existing root. No ambient HOME or cwd is consulted.
     pub fn bind(path: &Path) -> io::Result<Self> {
         if !path.is_absolute() {
@@ -880,7 +1018,7 @@ impl BackupStateRoot {
         })
     }
 
-    fn resolved_path(&self) -> io::Result<PathBuf> {
+    pub(crate) fn resolved_path(&self) -> io::Result<PathBuf> {
         self.scope
             .resolved_dir_path(&self.path)
             .map_err(io::Error::other)
@@ -937,21 +1075,40 @@ impl BackupStateRoot {
     }
 }
 
-impl ReservedBackup<'_> {
-    pub fn revalidate(&self) -> io::Result<()> {
-        self.root.scope.revalidate_roots().map_err(|_| changed())?;
-        if !same_directory(
-            &self.root.directory.symlink_metadata("backups")?,
-            &self.container.dir_metadata()?,
-        ) || !same_directory(
-            &self.container.symlink_metadata(&self.id)?,
-            &self.directory.dir_metadata()?,
-        ) {
-            return Err(changed());
-        }
-        Ok(())
+fn read_record_file(directory: &Dir, name: &str, limit: usize) -> io::Result<Vec<u8>> {
+    use cap_fs_ext::{FollowSymlinks, OpenOptionsFollowExt, OpenOptionsSyncExt};
+    use std::io::Read;
+    if !crate::skill_backup_copy::valid_component(std::ffi::OsStr::new(name)) {
+        return Err(io::Error::other("Invalid backup record name"));
     }
+    let before = directory.symlink_metadata(name)?;
+    if !before.is_file() || before.nlink() != 1 || before.len() > limit as u64 {
+        return Err(io::Error::other("Invalid backup record file"));
+    }
+    let mut file = directory.open_with(
+        name,
+        OpenOptions::new()
+            .read(true)
+            .follow(FollowSymlinks::No)
+            .nonblock(true),
+    )?;
+    if !crate::skill_backup_copy::unchanged(&before, &file.metadata()?) {
+        return Err(changed());
+    }
+    let mut bytes = Vec::new();
+    Read::by_ref(&mut file)
+        .take(limit as u64 + 1)
+        .read_to_end(&mut bytes)?;
+    if bytes.len() > limit
+        || !crate::skill_backup_copy::unchanged(&before, &file.metadata()?)
+        || !crate::skill_backup_copy::unchanged(&before, &directory.symlink_metadata(name)?)
+    {
+        return Err(changed());
+    }
+    Ok(bytes)
+}
 
+impl ReservedBackup<'_> {
     pub(crate) fn file_identity(&self, name: &str) -> io::Result<(u64, u64)> {
         if !crate::skill_backup_copy::valid_component(std::ffi::OsStr::new(name)) {
             return Err(io::Error::other("Invalid evidence file name"));
@@ -981,6 +1138,27 @@ impl ReservedBackup<'_> {
         sync_directory(&self.container)?;
         sync_directory(&self.root.directory)?;
         self.root.scope.revalidate_roots().map_err(|_| changed())
+    }
+
+    pub(crate) fn read_record(&self, name: &str, limit: usize) -> io::Result<Vec<u8>> {
+        self.revalidate()?;
+        let bytes = read_record_file(&self.directory, name, limit)?;
+        self.revalidate()?;
+        Ok(bytes)
+    }
+
+    pub fn revalidate(&self) -> io::Result<()> {
+        self.root.scope.revalidate_roots().map_err(|_| changed())?;
+        if !same_directory(
+            &self.root.directory.symlink_metadata("backups")?,
+            &self.container.dir_metadata()?,
+        ) || !same_directory(
+            &self.container.symlink_metadata(&self.id)?,
+            &self.directory.dir_metadata()?,
+        ) {
+            return Err(changed());
+        }
+        Ok(())
     }
 
     /// Copy from an explicitly supplied source directory capability. Limits and
@@ -1124,31 +1302,6 @@ impl ReservedBackup<'_> {
 mod tests {
     use super::*;
     use std::fs;
-
-    #[test]
-    fn evidence_read_refuses_replacement_and_in_place_changes() {
-        for replace in [true, false] {
-            let temp = tempfile::tempdir().unwrap();
-            let root = BackupStateRoot::bind(temp.path()).unwrap();
-            let backup = root.reserve("evidence").unwrap();
-            backup.write_new_file("document", b"expected").unwrap();
-            drop(backup);
-            let backup = root.open_existing("evidence").unwrap();
-            let path = temp.path().join("backups/evidence/document");
-            assert!(backup
-                .verify_file_with("document", b"expected", || {
-                    if replace {
-                        let replacement = temp.path().join("replacement");
-                        fs::write(&replacement, b"changed").unwrap();
-                        fs::rename(replacement, &path).unwrap();
-                    } else {
-                        fs::write(&path, b"changed").unwrap();
-                    }
-                })
-                .is_err());
-            assert_eq!(fs::read(path).unwrap(), b"changed");
-        }
-    }
 
     #[test]
     fn reopens_saved_tree_without_creating_missing_operations() {

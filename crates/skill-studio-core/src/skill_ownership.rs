@@ -468,6 +468,7 @@ impl PreparedOwnershipRead {
                     input.kind,
                     OwnershipReadIssueKind::DotagentsLock
                         | OwnershipReadIssueKind::DotagentsManifest
+                        | OwnershipReadIssueKind::SkillsShLock
                 ))
                 && (matches!(input.observation, OwnershipInput::Loaded(_))
                     || (input.path == self.registry.path

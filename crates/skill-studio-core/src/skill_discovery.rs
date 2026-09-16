@@ -2852,7 +2852,12 @@ impl DiscoveryMembershipProof {
         if self.agent_roots.iter().all(|root| {
             if let (Some(observation), Some(parent)) = (&root.observation, root.path.parent()) {
                 if root.unchanged && !root.absent {
-                    for name in ["skill-studio.json", "agents.lock", "agents.toml"] {
+                    for name in [
+                        "skill-studio.json",
+                        "agents.lock",
+                        "agents.toml",
+                        ".skill-lock.json",
+                    ] {
                         let sibling = parent.join(name);
                         if published(&sibling) {
                             return scope

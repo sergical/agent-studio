@@ -36,7 +36,7 @@ use super::skill_process::{
     MAX_PROCESS_OUTPUT_BYTES,
 };
 use super::skill_refresh::{self, SkillRefreshState};
-use super::skill_update_check::{self, CommitLookup, GhCommitLookup, UpdateCheckState};
+use super::skill_update_check::{self, CommitLookup, GhCommitLookup};
 
 // ============================================================================
 // Traits - real implementations shell out / hit the network; tests use fakes.
@@ -1687,36 +1687,90 @@ pub fn unfork_skill_with(
     let _ = fs::remove_dir_all(fork_snapshot_dir(app_data, name));
     Ok(())
 }
-
-#[tauri::command]
-pub fn unfork_skill(
-    target: super::skill_dto::LifecycleTarget,
-    app: tauri::AppHandle,
-    refresh_state: tauri::State<SkillRefreshState>,
-    update_check_state: tauri::State<UpdateCheckState>,
-    fork_lock: tauri::State<ForkMutationLock>,
-) -> Result<(), String> {
-    let _guard = fork_lock.try_acquire()?;
-    let _ = &update_check_state;
-    let home = dirs::home_dir().ok_or("Could not find home directory")?;
-    let app_data = app
-        .path()
-        .app_data_dir()
-        .map_err(|e| format!("Could not resolve app data dir: {e}"))?;
-
-    let resolved = super::skill_lifecycle::resolve_fresh_lifecycle_target(
-        &app,
-        &refresh_state,
-        &target,
-        "Unfork",
-    )?;
-    let (name, _) = resolve_recorded_fork_target(&resolved.snapshot, &target, &home)?;
-    let result = unfork_skill_with(&home, &app_data, &name, &RealLedgerTool);
-    skill_refresh::request_snapshot_rebuild(&app);
-    let _ = &refresh_state;
-    result
+#[cfg(any(test, target_os = "macos"))]
+fn uses_native_unfork(record: &ForkRecord) -> bool {
+    matches!(
+        record.origin_tool,
+        OriginTool::Dotagents | OriginTool::SkillsSh
+    )
 }
 
+#[tauri::command]
+pub async fn unfork_skill(
+    target: super::skill_dto::LifecycleTarget,
+    app: tauri::AppHandle,
+) -> Result<(), String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let fork_lock = app.state::<ForkMutationLock>();
+        let _guard = fork_lock.try_acquire()?;
+        let refresh_state = app.state::<SkillRefreshState>();
+        let home = dirs::home_dir().ok_or("Could not find home directory")?;
+        let app_data = app
+            .path()
+            .app_data_dir()
+            .map_err(|e| format!("Could not resolve app data dir: {e}"))?;
+
+        let resolved = super::skill_lifecycle::resolve_fresh_lifecycle_target(
+            &app,
+            &refresh_state,
+            &target,
+            "Unfork",
+        )?;
+        #[cfg(target_os = "macos")]
+        let (name, record) = resolve_recorded_fork_target(&resolved.snapshot, &target, &home)?;
+        #[cfg(not(target_os = "macos"))]
+        let (name, _) = resolve_recorded_fork_target(&resolved.snapshot, &target, &home)?;
+        #[cfg(target_os = "macos")]
+        let result = if uses_native_unfork(&record) {
+            let id = target
+                .deployment_id
+                .as_deref()
+                .ok_or("Unfork lifecycle needs one Global Universal deployment_id")?;
+            let (_, deployment) = super::skill_lifecycle::find_deployment(&resolved.snapshot, id)?;
+            let resource_root = app
+                .path()
+                .resource_dir()
+                .map_err(|error| format!("Could not resolve packaged Unfork runtime: {error}"))?;
+            let provider = super::skill_native_unfork::load_packaged_runtime(&resource_root)?;
+            if record.origin_tool == OriginTool::SkillsSh {
+                super::skill_skills_sh_unfork::apply(
+                    super::skill_native_unfork::NativeUnforkTarget {
+                        home: &home,
+                        app_data: &app_data,
+                        deployment_id: &deployment.id,
+                        owner_revision: deployment
+                            .owner_revision
+                            .as_deref()
+                            .ok_or("Unfork owner revision is missing")?,
+                        live: Path::new(&deployment.path),
+                    },
+                    &record,
+                    provider,
+                )
+            } else {
+                super::skill_native_unfork::apply(
+                    &home,
+                    &app_data,
+                    deployment.id.clone(),
+                    deployment
+                        .owner_revision
+                        .clone()
+                        .ok_or("Unfork owner revision is missing")?,
+                    Path::new(&deployment.path),
+                    provider,
+                )
+            }
+        } else {
+            unfork_skill_with(&home, &app_data, &name, &RealLedgerTool)
+        };
+        #[cfg(not(target_os = "macos"))]
+        let result = unfork_skill_with(&home, &app_data, &name, &RealLedgerTool);
+        skill_refresh::request_snapshot_rebuild(&app);
+        result
+    })
+    .await
+    .map_err(|error| format!("Unfork worker failed: {error}"))?
+}
 fn resolve_recorded_fork_target(
     snapshot: &super::skill_refresh::SkillSnapshot,
     target: &super::skill_dto::LifecycleTarget,

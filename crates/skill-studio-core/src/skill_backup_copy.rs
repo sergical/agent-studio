@@ -467,6 +467,37 @@ fn dotagents_link_target(source: &Path, target: &Path) -> io::Result<PathBuf> {
     Ok(result)
 }
 
+pub(crate) fn inspect_dotagents_copy(
+    source: &crate::skill_backup_source::BackupSource,
+    limits: BackupCopyLimits,
+    cancellation: &CancellationToken,
+) -> io::Result<BackupCopyReport> {
+    source.revalidate()?;
+    if source.name == ".git"
+        || limits.max_depth > 128
+        || !source.directory.symlink_metadata(&source.name)?.is_dir()
+    {
+        return Err(refused("Invalid provider copy source or depth limit"));
+    }
+    let mut walker = TreeWalker {
+        limits,
+        cancellation,
+        report: BackupCopyReport::default(),
+        sync_source: false,
+    };
+    let (fingerprint, tree_identity) = walker.entry(
+        &source.directory,
+        &source.name,
+        None,
+        0,
+        Some(&source.original_path),
+    )?;
+    source.revalidate()?;
+    walker.report.fingerprint = fingerprint;
+    walker.report.tree_identity = tree_identity;
+    Ok(walker.report)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

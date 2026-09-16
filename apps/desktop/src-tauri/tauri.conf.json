@@ -6,7 +6,7 @@
   "build": {
     "beforeDevCommand": "npm run dev",
     "devUrl": "http://localhost:1420",
-    "beforeBuildCommand": "npm run build",
+    "beforeBuildCommand": "node ../../tools/unfork-runtime/materialize.mjs && npm run build",
     "frontendDist": "../dist"
   },
   "app": {

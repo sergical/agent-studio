@@ -256,6 +256,55 @@ impl<'store> GuardedEventStore<'store> {
             transaction.commit().map_err(|error| error.to_string())
         })
     }
+
+    pub(crate) fn advance_dotagents_unfork_provider(
+        &self,
+        lease: &FinalizedWriteLease<'_>,
+        expected: &crate::skill_unfork_preparation::PendingDotagentsUnforkEvent,
+        next: crate::skill_unfork_preparation::UnforkProviderState,
+    ) -> Result<crate::skill_unfork_preparation::PendingDotagentsUnforkEvent, EventWriteFailure>
+    {
+        let payload = serde_json::to_value(
+            expected
+                .advance_payload(next)
+                .map_err(EventWriteFailure::BeforeWrite)?,
+        )
+        .map_err(|error| EventWriteFailure::BeforeWrite(error.to_string()))?;
+        let current = self.replace_pending_payload(lease, expected.event(), payload)?;
+        crate::skill_unfork_preparation::PendingDotagentsUnforkEvent::from_row(&current)
+            .map_err(EventWriteFailure::MayHaveWritten)
+    }
+
+    pub(crate) fn advance_skills_sh_unfork_provider(
+        &self,
+        lease: &FinalizedWriteLease<'_>,
+        expected: &crate::skill_unfork_preparation::PendingSkillsShUnforkEvent,
+        next: crate::skill_unfork_preparation::SkillsShUnforkProviderState,
+    ) -> Result<crate::skill_unfork_preparation::PendingSkillsShUnforkEvent, EventWriteFailure>
+    {
+        let payload = expected
+            .advance_payload(next)
+            .map_err(EventWriteFailure::BeforeWrite)?;
+        let current = self.replace_pending_payload(lease, expected.event(), payload)?;
+        crate::skill_unfork_preparation::PendingSkillsShUnforkEvent::from_row(&current)
+            .map_err(EventWriteFailure::MayHaveWritten)
+    }
+
+    pub(crate) fn resolve_unstarted_dotagents_unfork(
+        &self,
+        lease: &FinalizedWriteLease<'_>,
+        event: &crate::skill_unfork_preparation::PendingDotagentsUnforkEvent,
+    ) -> Result<(), EventWriteFailure> {
+        self.finish_recovery_snapshot(lease, event.event(), EventStatus::Failed, None)
+    }
+
+    pub(crate) fn abandon_may_have_started_dotagents_unfork(
+        &self,
+        lease: &FinalizedWriteLease<'_>,
+        event: &crate::skill_unfork_preparation::PendingDotagentsUnforkEvent,
+    ) -> Result<(), EventWriteFailure> {
+        self.finish_recovery_snapshot(lease, event.event(), EventStatus::Failed, None)
+    }
 }
 
 impl GuardedEventStore<'_> {

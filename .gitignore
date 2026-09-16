@@ -24,3 +24,6 @@ lerna-debug.log*
 *.sw?
 
 .env
+
+# Verified runtime resources are generated at desktop build time.
+/apps/desktop/src-tauri/resources/

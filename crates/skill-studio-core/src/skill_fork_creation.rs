@@ -114,9 +114,10 @@ impl ForkCreationIntent {
             std::str::from_utf8(&self.lock_before).map_err(|_| "Saved agents.lock is not UTF-8")?;
         let manifest_before = std::str::from_utf8(&self.manifest_before)
             .map_err(|_| "Saved agents.toml is not UTF-8")?;
-        let (lock_after, manifest_after) =
+        let proposal =
             DotagentsDetachIntent::from_documents(&self.name, lock_before, manifest_before)?
                 .propose_document_detach(lock_before, manifest_before)?;
+        let (lock_after, manifest_after) = (proposal.lock(), proposal.manifest());
         self.registry_transition.validate()?;
         self.registry_transition
             .apply_document(self.registry_before.as_deref().unwrap_or(EMPTY_REGISTRY))?;
@@ -279,7 +280,8 @@ fn prepare_admission<'a>(
     if source != request.expected_source {
         return Err("Fork source changed before admission".into());
     }
-    let (lock_after, manifest_after) = detach.propose_document_detach(lock_text, manifest_text)?;
+    let proposal = detach.propose_document_detach(lock_text, manifest_text)?;
+    let (lock_after, manifest_after) = (proposal.lock().to_owned(), proposal.manifest().to_owned());
     let registry_before = lease.read_ownership_registry(&registry_path, MAX_DOCUMENT_BYTES)?;
     let live_tree = tree(&skill_dir, limits, &cancellation)?;
     let upstream_tree = tree(upstream_path, limits, &cancellation)?;

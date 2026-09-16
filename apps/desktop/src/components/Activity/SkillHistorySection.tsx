@@ -70,6 +70,10 @@ function kindLabel(kind: string): string {
       return "Reapplied copy repair";
     case "pull_fork_upstream":
       return "Pulled upstream";
+    case "unfork_dotagents":
+      return "Restored Dotagents management";
+    case "unfork_skills_sh":
+      return "Restored skills.sh management";
     default:
       return kind.replace(/_/g, " ");
   }
@@ -246,11 +250,9 @@ function EventRow({ event, onRestored }: { event: SkillEvent; onRestored: () => 
 
 /**
  * The Activity view's History section: every event store row, newest first.
- * Fetched on mount and refetched after a successful restore - the backend
- * already re-emits `skills://snapshot` on its own after a mutating command,
- * so nothing else needs to be triggered here.
+ * Backend mutations emit a fresh snapshot after their event reaches its final state.
  */
-export function SkillHistorySection() {
+export function SkillHistorySection({ scannedAt }: { scannedAt: string | undefined }) {
   const [events, setEvents] = useState<SkillEvent[] | null>(null);
   const addToast = useAppStore((state) => state.addToast);
 
@@ -261,7 +263,8 @@ export function SkillHistorySection() {
         if (!cancelled) setEvents(rows);
       })
       .catch((err) => {
-        if (!cancelled) setEvents([]);
+        if (cancelled) return;
+        setEvents([]);
         addToast({
           type: "error",
           title: "Couldn't load history",
@@ -271,8 +274,8 @@ export function SkillHistorySection() {
     return () => {
       cancelled = true;
     };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+    // oxlint-disable-next-line react/exhaustive-effect-dependencies -- Completion snapshots invalidate independently stored event rows.
+  }, [scannedAt, addToast]);
 
   const refresh = () => {
     listSkillEvents()

@@ -38,6 +38,12 @@ pub struct DotagentsManifestTarget {
     document: SkillDocumentTarget,
 }
 
+/// Fixed skills.sh provider lock. It cannot address arbitrary files below
+/// the authorized `.agents` directory.
+pub struct SkillsShLockTarget {
+    document: SkillDocumentTarget,
+}
+
 macro_rules! provider_target {
     ($type:ident, $name:literal) => {
         impl $type {
@@ -60,6 +66,7 @@ macro_rules! provider_target {
 
 provider_target!(DotagentsLockTarget, "agents.lock");
 provider_target!(DotagentsManifestTarget, "agents.toml");
+provider_target!(SkillsShLockTarget, ".skill-lock.json");
 
 impl SkillRegistryTarget {
     pub fn bind(authorized_agents_directory: &Path) -> Result<Self, String> {
@@ -125,6 +132,38 @@ impl SkillRegistryTarget {
             }
         }
         lease.record_document(result)
+    }
+}
+
+#[cfg(feature = "event-store")]
+pub(crate) enum ProviderDocument {
+    Lock,
+    Manifest,
+}
+
+#[cfg(feature = "event-store")]
+pub(crate) struct ProviderDocumentTarget(SkillDocumentTarget);
+
+#[cfg(feature = "event-store")]
+impl ProviderDocumentTarget {
+    pub(crate) fn bind(parent: &Path, document: ProviderDocument) -> Result<Self, String> {
+        SkillDocumentTarget::bind_child(
+            parent,
+            match document {
+                ProviderDocument::Lock => "agents.lock",
+                ProviderDocument::Manifest => "agents.toml",
+            },
+        )
+        .map(Self)
+    }
+
+    pub(crate) fn replace(
+        &self,
+        lease: &mut crate::skill_coordination::FinalizedWriteLease<'_>,
+        expected: &[u8],
+        proposed: &[u8],
+    ) -> Result<(), DocumentWriteFailure> {
+        self.0.replace(lease, expected, proposed)
     }
 }
 
