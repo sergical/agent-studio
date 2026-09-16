@@ -106,3 +106,12 @@ Final combined application acceptance remains separate. No merge or deployment.
 
 Temporary evidence is summarized in `native-final-results.json` outside the repository.
 Disposable bundles and superseded logs are removed after recording results.
+
+CI correction: the first core job stopped at core-package Clippy; the earlier
+local desktop invocation had not linted this dependency as a primary package.
+The correction adds narrow enum-size/argument-count exceptions, combines identical
+merge branches, removes one needless reference, and clarifies fixture conditionals.
+Core `cargo clippy --offline --locked --features event-store --all-targets -- -D
+warnings` now passes (7.14s); all12 focused Pull tests pass (8.19s). No persistence,
+merge result, or desktop behavior changes; native evidence above is retained.
+Frontend CI35145123422 passes (55s). The replacement core job remains pending.

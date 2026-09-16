@@ -50,6 +50,7 @@ pub struct ForkPullResult {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[allow(clippy::large_enum_variant)]
 pub enum ForkPullPreparationOutcome {
     UpToDate(ForkPullResult),
     Prepared(ForkPullPreparation),
@@ -697,6 +698,7 @@ fn walk_tree(
     limits: BackupCopyLimits,
     cancellation: &CancellationToken,
 ) -> Result<BTreeMap<PathBuf, TreeNode>, String> {
+    #[allow(clippy::too_many_arguments)]
     fn visit(
         root: &Path,
         relative: &Path,
@@ -889,26 +891,25 @@ fn merge_nodes(
                             let text = !mine_bytes.contains(&0)
                                 && !theirs_bytes.contains(&0)
                                 && !base_bytes.contains(&0);
-                            let (bytes, has_conflict) = if mine_bytes == theirs_bytes {
-                                (mine_bytes.clone(), false)
-                            } else if theirs_bytes == base_bytes {
-                                (mine_bytes.clone(), false)
-                            } else if mine_bytes == base_bytes {
-                                (theirs_bytes.clone(), false)
-                            } else if text {
-                                match text_merge.merge(
-                                    mine_bytes,
-                                    base_bytes,
-                                    theirs_bytes,
-                                    &path,
-                                    limits.max_bytes,
-                                )? {
-                                    ForkPullTextMergeResult::Clean(bytes) => (bytes, false),
-                                    ForkPullTextMergeResult::Conflicts(bytes) => (bytes, true),
-                                }
-                            } else {
-                                (mine_bytes.clone(), true)
-                            };
+                            let (bytes, has_conflict) =
+                                if mine_bytes == theirs_bytes || theirs_bytes == base_bytes {
+                                    (mine_bytes.clone(), false)
+                                } else if mine_bytes == base_bytes {
+                                    (theirs_bytes.clone(), false)
+                                } else if text {
+                                    match text_merge.merge(
+                                        mine_bytes,
+                                        base_bytes,
+                                        theirs_bytes,
+                                        &path,
+                                        limits.max_bytes,
+                                    )? {
+                                        ForkPullTextMergeResult::Clean(bytes) => (bytes, false),
+                                        ForkPullTextMergeResult::Conflicts(bytes) => (bytes, true),
+                                    }
+                                } else {
+                                    (mine_bytes.clone(), true)
+                                };
                             if bytes.len() as u64 > limits.max_bytes
                                 || (bytes.is_empty()
                                     && (!mine_bytes.is_empty()
@@ -1101,6 +1102,7 @@ fn revalidate_originals(
     lease.revalidate().map_err(|error| error.to_string())
 }
 
+#[allow(clippy::too_many_arguments)]
 fn copy_evidence(
     store: &EventStore,
     preparation: &ForkPullPreparation,
@@ -1142,7 +1144,7 @@ fn copy_evidence(
                     cancellation,
                 )
                 .map_err(|error| error.to_string())?;
-            if &report.tree_identity != expected {
+            if report.tree_identity != expected {
                 return Err("Fork Pull candidate evidence changed while copied".into());
             }
         }
@@ -1733,8 +1735,12 @@ mod tests {
                 &source,
             );
             let record = ForkRecord {
-                deployment_id: (!legacy).then_some(id.clone()).unwrap_or_default(),
-                skill_dir: (!legacy).then_some(source.clone()).unwrap_or_default(),
+                deployment_id: if legacy { String::new() } else { id.clone() },
+                skill_dir: if legacy {
+                    PathBuf::new()
+                } else {
+                    source.clone()
+                },
                 forked_at: "2026-09-16T00:00:00Z".into(),
                 origin_tool,
                 origin_source: "owner/repo".into(),
