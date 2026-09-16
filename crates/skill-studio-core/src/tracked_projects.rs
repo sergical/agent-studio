@@ -80,6 +80,14 @@ impl TrackedProjects {
         }
     }
 
+    /// Removes `path` from `added` only. Unlike [`Self::untrack`], this
+    /// records no exclusion, so discovery can still find the folder later -
+    /// for a folder the user added by hand and now wants gone, not one they
+    /// want discovery to stop offering.
+    pub fn forget(&mut self, path: &Path) {
+        self.added.retain(|p| p != path);
+    }
+
     /// `candidates` plus `added`, minus paths that no longer exist, paths
     /// excluded by canonical path, and the home itself.
     ///
@@ -187,6 +195,17 @@ mod tests {
         projects.untrack(Path::new("/home/u/a"));
         assert!(projects.added.is_empty());
         assert_eq!(projects.excluded, [PathBuf::from("/home/u/a")]);
+    }
+
+    #[test]
+    fn forget_removes_from_added_without_excluding() {
+        let mut projects = TrackedProjects {
+            added: vec![PathBuf::from("/home/u/a")],
+            ..Default::default()
+        };
+        projects.forget(Path::new("/home/u/a"));
+        assert!(projects.added.is_empty());
+        assert!(projects.excluded.is_empty());
     }
 
     #[test]

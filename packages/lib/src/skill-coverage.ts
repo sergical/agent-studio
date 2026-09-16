@@ -50,6 +50,28 @@ export function agentIdFromDeploymentLabel(label: string): AgentId | "shared" | 
   }
 }
 
+/** The inverse of `agentIdFromDeploymentLabel`: a wire harness id (e.g. from
+ * `DiscoverySourceSetting.harness`) to the label a deployment/agent chip
+ * shows. Falls back to the id itself for one this function doesn't know. */
+export function deploymentLabelFromAgentId(id: string): string {
+  switch (id) {
+    case "claude-code":
+      return "Claude Code";
+    case "codex":
+      return "Codex";
+    case "open-code":
+      return "OpenCode";
+    case "pi":
+      return "pi";
+    case "cursor":
+      return "Cursor";
+    case "grok-build":
+      return "Grok Build";
+    default:
+      return id;
+  }
+}
+
 /**
  * True when a deployment's symlink doesn't resolve: either the target is
  * confirmed missing (`symlink_is_broken`), or resolving it failed for some

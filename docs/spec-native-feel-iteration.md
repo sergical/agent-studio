@@ -65,3 +65,17 @@ built app. The frontend therefore gets a harness mode:
 
 - Properties rail on the right: Location, Harnesses, Invocation, Source, Tokens,
   each editable in place. The assistant stays a drawer.
+
+## 6. Settings
+
+Decided on 2026-09-16 from the `#proto-settings` prototype, which had three variants.
+
+- Direction: **Cards**. Each topic gets one bordered card with an icon, a title, one sentence that says what the setting does, and the control.
+- Rejected: **Rows**. The whole page fit on one screen, but there was no room to explain a setting. The editor list also collapsed into a select, so you could not see which editors are installed.
+- Rejected: **Sections**. It added a second navigation column beside the app sidebar, and with four sections that column was three-quarters empty.
+- Project folders card, changed from the prototype:
+  - Each row says where the folder came from: found in harness history, or added by you. The row action depends on this. A found folder offers "Stop tracking", because it would otherwise come back on the next scan. A folder you added offers "Remove".
+  - A folder you added that no longer exists stays in the list, marked "Folder not found", so it does not disappear without a trace.
+  - The empty state names the harness histories that were searched. Adding a folder by hand is the alternative, not the first step.
+  - The per-harness search switches are on this card, because they decide what the list contains.
+  - The row action is always visible, not only on hover, so keyboard users can reach it.

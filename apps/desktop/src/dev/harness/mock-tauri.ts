@@ -14,7 +14,9 @@ import { z } from "zod";
 import type {
   AddSkillOperationEvent,
   Deployment,
+  DiscoverySourceSetting,
   InstalledSkill,
+  ProjectFolder,
   SkillSnapshot,
   TrackedProjects,
 } from "@skill-studio/lib";
@@ -73,6 +75,14 @@ function isObjectInvokeArgs(payload: InvokeArgs | undefined): payload is ObjectI
   );
 }
 
+/** Seeded into `trackedProjects.added` below: a folder added by hand that no longer exists, so the
+ * Settings "Project folders" card always has a "Folder not found" row to show. */
+const ARCHIVED_CLIENT_PROJECT = `${HARNESS_HOME}/src/archived-client`;
+
+/** The six discovery harnesses, in the display order `discovery_harnesses()` yields on the Rust
+ * side - see `crates/skill-studio-host/src/discovery.rs`'s `HISTORY_SOURCES`. */
+const DISCOVERY_HARNESSES = ["claude-code", "codex", "open-code", "pi", "cursor", "grok-build"];
+
 /** Installs the mock Tauri IPC layer and returns the control the harness (or the marketing
  * capture page) drives it with. */
 export function installMockTauri(initial: SkillSnapshot): HarnessControl {
@@ -81,7 +91,10 @@ export function installMockTauri(initial: SkillSnapshot): HarnessControl {
   // Mirrors the backend's `~/.agents/skill-studio.json` `projects` key - the register/unregister/
   // import handlers below mutate it with the same track/untrack rules as `TrackedProjects` in
   // `crates/skill-studio-core`, and `get_tracked_projects` reads it back.
-  let trackedProjects: TrackedProjects = { added: [], excluded: [] };
+  let trackedProjects: TrackedProjects = { added: [ARCHIVED_CLIENT_PROJECT], excluded: [] };
+  const discoverySources = new Map<string, boolean>(
+    DISCOVERY_HARNESSES.map((harness) => [harness, true]),
+  );
 
   function snapshotTrackedProjects(): TrackedProjects {
     return { added: [...trackedProjects.added], excluded: [...trackedProjects.excluded] };
@@ -103,6 +116,38 @@ export function installMockTauri(initial: SkillSnapshot): HarnessControl {
       added: trackedProjects.added.filter((p) => p !== path),
       excluded: [...new Set([...trackedProjects.excluded, path])],
     };
+  }
+
+  /** Removes the path from `added` only, recording no exclusion - mirrors `TrackedProjects::forget`. */
+  function forgetProject(path: string): void {
+    trackedProjects = {
+      ...trackedProjects,
+      added: trackedProjects.added.filter((p) => p !== path),
+    };
+  }
+
+  function discoverySourceSettings(): DiscoverySourceSetting[] {
+    return DISCOVERY_HARNESSES.map((harness) => ({
+      harness,
+      enabled: discoverySources.get(harness) ?? false,
+    }));
+  }
+
+  /** Mirrors `skill_project_folders::project_folders`: the fixture snapshot's projects, labelled
+   * `discovered` unless the user added them by hand, followed by any added folder missing from
+   * the snapshot's project list (not found on disk). */
+  function projectFolders(): ProjectFolder[] {
+    const addedSet = new Set(trackedProjects.added);
+    const rows: ProjectFolder[] = currentSnapshot.projects.map((path) => ({
+      path,
+      source: addedSet.has(path) ? "added" : "discovered",
+      missing: false,
+    }));
+    const listedPaths = new Set(rows.map((row) => row.path));
+    for (const path of trackedProjects.added) {
+      if (!listedPaths.has(path)) rows.push({ path, source: "added", missing: true });
+    }
+    return rows;
   }
 
   async function publish(next: SkillSnapshot): Promise<void> {
@@ -239,6 +284,24 @@ export function installMockTauri(initial: SkillSnapshot): HarnessControl {
           excluded.forEach((path) => untrackProject(path));
           return snapshotTrackedProjects();
         }
+        case "remove_skill_project": {
+          const path = z.string().parse(payload.path);
+          forgetProject(path);
+          return snapshotTrackedProjects();
+        }
+        case "get_discovery_sources":
+          return discoverySourceSettings();
+        case "set_discovery_source": {
+          const harness = z.string().parse(payload.harness);
+          const enabled = z.boolean().parse(payload.enabled);
+          if (!discoverySources.has(harness)) {
+            throw new Error(`Unknown discovery source: ${harness}`);
+          }
+          discoverySources.set(harness, enabled);
+          return discoverySourceSettings();
+        }
+        case "list_project_folders":
+          return projectFolders();
         case "open_skill_path":
         case "set_preferred_editor":
         case "restore_trashed_skill":

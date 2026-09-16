@@ -8,6 +8,7 @@
 import { useEffect, useState } from "react";
 import { Check, SquarePen } from "lucide-react";
 import { RadioGroup, RadioGroupItem } from "@skill-studio/ui";
+import type { SkillSnapshot } from "@skill-studio/lib";
 import {
   getPreferredEditor,
   listInstalledEditors,
@@ -15,6 +16,8 @@ import {
   type EditorOption,
 } from "../../lib/skill-api";
 import { useAppStore } from "../../store/appStore";
+import { SettingsCard } from "./SettingsCard";
+import { ProjectFoldersCard } from "./ProjectFoldersCard";
 
 /** The always-available first choice: the first installed editor Skill Studio knows about. */
 function automaticOption(editors: EditorOption[]) {
@@ -70,15 +73,11 @@ function EditorPicker() {
   const options = [automaticOption(editors), ...editors];
 
   return (
-    <div className="flex flex-col gap-3 rounded-lg border border-border-subtle p-4">
-      <div className="flex items-center gap-2 text-body font-semibold text-text-primary">
-        <SquarePen size={15} className="text-text-tertiary" />
-        Open in editor
-      </div>
-      <p className="m-0 max-w-prose text-small text-text-tertiary">
-        The application a skill folder opens in from the Locations card. Automatic picks the first
-        code editor found in your Applications folders.
-      </p>
+    <SettingsCard
+      icon={<SquarePen size={15} className="text-text-tertiary" />}
+      title="Open in editor"
+      description="The application a skill folder opens in from the Locations card. Automatic picks the first code editor found in your Applications folders."
+    >
       {isLoading ? (
         <p className="m-0 text-small text-text-tertiary">Looking for installed editors…</p>
       ) : (
@@ -107,15 +106,20 @@ function EditorPicker() {
           No known code editor was found in your Applications folders.
         </p>
       )}
-    </div>
+    </SettingsCard>
   );
 }
 
-export function SettingsView() {
+interface SettingsViewProps {
+  snapshot: SkillSnapshot | undefined;
+}
+
+export function SettingsView({ snapshot }: SettingsViewProps) {
   return (
     <div className="flex flex-col gap-4 p-6">
       <h1 className="m-0 text-heading font-semibold text-text-primary">Settings</h1>
       <EditorPicker />
+      <ProjectFoldersCard snapshot={snapshot} />
     </div>
   );
 }

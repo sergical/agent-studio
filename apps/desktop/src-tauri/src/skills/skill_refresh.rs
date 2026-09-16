@@ -332,6 +332,27 @@ pub fn unregister_skill_project(
     Ok(projects)
 }
 
+/// "Remove" for a folder the user added by hand; unlike `unregister_skill_project`
+/// it records no exclusion, so discovery can offer the folder again if it
+/// later finds it in a harness's own history. Returns the saved lists; a full
+/// rebuild follows on the background thread when they changed.
+#[tauri::command]
+pub fn remove_skill_project(
+    path: String,
+    state: tauri::State<SkillRefreshState>,
+) -> Result<TrackedProjects, String> {
+    let home = dirs::home_dir().ok_or("Could not find home directory")?;
+    let (projects, changed) = update_registry_section(
+        &home,
+        |registry| &mut registry.projects,
+        |tracked| tracked.forget(Path::new(&path)),
+    )?;
+    if changed {
+        state.mark_skills_dirty();
+    }
+    Ok(projects)
+}
+
 /// One-time migration from the desktop's old `localStorage`-only lists: track
 /// `added` and untrack `excluded` in a single write, so a caller doesn't leave
 /// the file in a half-migrated state if it's interrupted partway. Returns the
@@ -2479,6 +2500,22 @@ mod tests {
         assert!(changed);
         assert!(projects.added.is_empty());
         assert_eq!(projects.excluded, vec![project]);
+    }
+
+    #[test]
+    fn update_tracked_projects_forget_removes_without_excluding() {
+        let tmp = tempfile::tempdir().unwrap();
+        let home = tmp.path().join("home");
+        fs::create_dir_all(&home).unwrap();
+        let project = PathBuf::from("/tmp/a-project");
+        update_tracked_projects(&home, |tracked| tracked.track([project.clone()])).unwrap();
+
+        let (projects, changed) =
+            update_tracked_projects(&home, |tracked| tracked.forget(&project)).unwrap();
+
+        assert!(changed);
+        assert!(projects.added.is_empty());
+        assert!(projects.excluded.is_empty());
     }
 
     #[test]

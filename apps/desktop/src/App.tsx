@@ -180,7 +180,7 @@ function App() {
       main = <LearnView section={activeView.section} />;
       break;
     case "settings":
-      main = <SettingsView />;
+      main = <SettingsView snapshot={snapshot} />;
       break;
     case "skill": {
       // Opened from Packs, Learn, or Settings: none of those keep a list worth reviving, so the

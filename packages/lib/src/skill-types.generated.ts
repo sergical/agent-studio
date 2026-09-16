@@ -90,6 +90,10 @@ export type PackImportPreflightResult =
       status: "needs-trust";
     };
 /**
+ * Where a [`ProjectFolder`] came from - decides which action the row offers.
+ */
+export type ProjectFolderSource = "discovered" | "added";
+/**
  * One of the four first-class agents a skill run can target.
  */
 export type HarnessId = "claude-code" | "codex" | "open-code" | "pi";
@@ -404,6 +408,24 @@ export interface SkillSearchResult {
   name: string;
   tags: string[] | null;
   top_source: string | null;
+}
+/**
+ * One row of the Settings "Project folders" card.
+ */
+export interface ProjectFolder {
+  /**
+   * True when the path no longer exists on disk - shown as "Folder not
+   * found" instead of being dropped, since a folder the user added by
+   * hand shouldn't disappear from the list without a trace.
+   */
+  missing: boolean;
+  /**
+   * The path as the caller or the file gave it, same as
+   * `SkillSnapshot::projects` - deployments' `project_path` compares
+   * against this exact string.
+   */
+  path: string;
+  source: ProjectFolderSource;
 }
 /**
  * What one `pull_fork_upstream` call did.

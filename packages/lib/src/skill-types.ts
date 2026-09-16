@@ -63,6 +63,9 @@ export type {
   UpdatePackResult,
   LifecycleTarget,
   TrackedProjects,
+  DiscoverySourceSetting,
+  ProjectFolder,
+  ProjectFolderSource,
 } from "./skill-types.generated";
 
 import type { Deployment, InstalledSkill, SkillSearchResult } from "./skill-types.generated";

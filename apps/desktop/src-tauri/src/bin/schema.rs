@@ -25,6 +25,7 @@ use skill_studio_lib::skills::skill_invocations::{InvocationHeatmap, SkillInvoca
 use skill_studio_lib::skills::skill_pack::{
     ImportResult, PackImportPreflightResult, PackImportRequest, PackInfo, UpdatePackResult,
 };
+use skill_studio_lib::skills::skill_project_folders::{ProjectFolder, ProjectFolderSource};
 use skill_studio_lib::skills::skill_refresh::{DiscoverySourceSetting, SkillSnapshot};
 
 #[derive(JsonSchema)]
@@ -58,6 +59,8 @@ struct WireTypes {
     lifecycle_target: LifecycleTarget,
     tracked_projects: TrackedProjects,
     discovery_source_setting: DiscoverySourceSetting,
+    project_folder: ProjectFolder,
+    project_folder_source: ProjectFolderSource,
 }
 
 fn main() {

@@ -5,19 +5,13 @@
 // ============================================================================
 
 import { useState } from "react";
-import { homeDir } from "@tauri-apps/api/path";
-import { open } from "@tauri-apps/plugin-dialog";
 import { PageShell } from "../Shell/PageShell";
 import { SkillCoverageMatrix } from "../Coverage/SkillCoverageMatrix";
 import { ScanPartialBanner } from "./ScanPartialBanner";
 import { SkillListTable } from "./SkillListTable";
 import type { SortMode } from "../../lib/skill-list-sort";
 import { SkillListActiveFilters, SkillListFilterBar } from "./SkillListFilterBar";
-import {
-  invokeErrorMessage,
-  registerSkillProjects,
-  unregisterSkillProject,
-} from "../../lib/skill-api";
+import { useProjectFolderActions } from "../../hooks/useProjectFolderActions";
 import { collectDashboardIssues } from "@skill-studio/lib";
 import { applySkillListFilter, isProjectScope } from "@skill-studio/lib";
 import type { SkillListFilter } from "@skill-studio/lib";
@@ -67,9 +61,8 @@ export function SkillsView({ snapshot, onSelectSkill, active }: SkillsViewProps)
   const lastClosedSkillName = useAppStore((state) => state.lastClosedSkillName);
   const userAddedProjects = useAppStore((state) => state.userAddedProjects);
   const excludedProjects = useAppStore((state) => state.excludedProjects);
-  const setTrackedProjects = useAppStore((state) => state.setTrackedProjects);
-  const addToast = useAppStore((state) => state.addToast);
   const openAddSkillSheet = useAppStore((state) => state.openAddSkillSheet);
+  const { addProject, stopTracking } = useProjectFolderActions();
 
   const excludedProjectSet = new Set(excludedProjects);
   const projects = Array.from(
@@ -83,53 +76,10 @@ export function SkillsView({ snapshot, onSelectSkill, active }: SkillsViewProps)
   const issues = collectDashboardIssues(baseSkills);
   const rows = applySkillListFilter(baseSkills, filter, issues, snapshot?.invocations);
 
+  /** Adds a project via the shared hook, then switches the scope to it. */
   const handleAddProject = async () => {
-    const selected = await open({ directory: true, multiple: false, title: "Add Project" });
-    if (!selected) return;
-
-    const home = await homeDir().catch(() => null);
-    if (home && selected === home) {
-      addToast({
-        type: "error",
-        title: "Can't add the home directory",
-        message: "It's the global scope, not a project.",
-      });
-      return;
-    }
-
-    try {
-      const projects = await registerSkillProjects([selected]);
-      setTrackedProjects(projects);
-      setSkillListFilter({ scope: { project: selected } });
-    } catch (err) {
-      addToast({
-        type: "error",
-        title: "Couldn't add project",
-        message: invokeErrorMessage(err),
-      });
-    }
-  };
-
-  /**
-   * Un-registers `path` with the backend first; the store (and the scope,
-   * if it was the active project) only updates once that succeeds, so a
-   * failed unregister leaves tracking state unchanged and reports an error
-   * instead of silently un-tracking a project the backend still has.
-   */
-  const handleRemoveProject = async (path: string) => {
-    try {
-      setTrackedProjects(await unregisterSkillProject(path));
-    } catch (err) {
-      addToast({
-        type: "error",
-        title: "Couldn't stop tracking project",
-        message: invokeErrorMessage(err),
-      });
-      return;
-    }
-    if (isProjectScope(filter.scope) && filter.scope.project === path) {
-      setSkillListFilter({ scope: "all" });
-    }
+    const added = await addProject();
+    if (added) setSkillListFilter({ scope: { project: added } });
   };
 
   return (
@@ -141,7 +91,7 @@ export function SkillsView({ snapshot, onSelectSkill, active }: SkillsViewProps)
           onChange={setSkillListFilter}
           projects={projects}
           onAddProject={handleAddProject}
-          onRemoveProject={handleRemoveProject}
+          onRemoveProject={stopTracking}
           showCoverage={showCoverage}
           onToggleCoverage={setShowCoverage}
           resultCount={rows.length}

@@ -12,6 +12,7 @@ import type {
   AddSkillResult,
   AddSkillsRequest,
   AgentId,
+  DiscoverySourceSetting,
   ImportResult,
   InstallResult,
   ForkRecord,
@@ -27,6 +28,7 @@ import type {
   PackImportRequest,
   PackMember,
   PaginatedSkillsResponse,
+  ProjectFolder,
   PullResult,
   SkillDetails,
   SkillEvent,
@@ -139,6 +141,46 @@ export async function registerSkillProjects(paths: string[]): Promise<TrackedPro
  */
 export async function unregisterSkillProject(path: string): Promise<TrackedProjects> {
   return invoke("unregister_skill_project", { path });
+}
+
+/**
+ * Remove a folder the user added by hand from the saved list, recording no
+ * exclusion - unlike `unregisterSkillProject`, discovery can offer the
+ * folder again later. Returns the updated list, already persisted; listen
+ * for `onSkillSnapshot` to see the rebuilt skill scan that follows.
+ */
+export async function removeSkillProject(path: string): Promise<TrackedProjects> {
+  return invoke("remove_skill_project", { path });
+}
+
+/**
+ * The saved per-harness discovery switches, in display order - see the
+ * Settings "Project folders" card.
+ */
+export async function getDiscoverySources(): Promise<DiscoverySourceSetting[]> {
+  return invoke("get_discovery_sources");
+}
+
+/**
+ * Switch one discovery harness's history search on or off. Returns the
+ * updated switches, already persisted; listen for `onSkillSnapshot` to see
+ * the rebuilt skill scan that follows.
+ */
+export async function setDiscoverySource(
+  harness: string,
+  enabled: boolean,
+): Promise<DiscoverySourceSetting[]> {
+  return invoke("set_discovery_source", { harness, enabled });
+}
+
+/**
+ * Every project folder discovery found or the user added by hand, labelled
+ * by source, for the Settings "Project folders" card. A harness-history
+ * scan runs on every call, so this is not cheap - callers should refetch on
+ * a meaningful change, not on every render.
+ */
+export async function listProjectFolders(): Promise<ProjectFolder[]> {
+  return invoke("list_project_folders");
 }
 
 /**
