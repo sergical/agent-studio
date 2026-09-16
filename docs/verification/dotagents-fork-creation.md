@@ -5,7 +5,8 @@ September 16, 2026. Review base: `0822f71982953a7fbd76ec6e2359a681ba96c50f`
 no-op. Independent review found gaps in fetched symlink preservation, fetch size
 limits, saved-document evidence validation, and duplicate manifest row handling.
 Corrections and independent review are complete; corrected native acceptance is
-recorded below. CI and integration reconciliation remain outstanding.
+recorded below. PR113 code commit `4a6de23` passes CI; integration reconciliation
+and independent port review are complete. Final combined release acceptance is open.
 
 ## Reviewed corrections — September 16
 
@@ -50,7 +51,10 @@ Corrected native acceptance passed on binary
 Build79.23s, maximum process RSS1,424,244,736bytes, zero swaps. Test/application
 peaks unmeasured. Corrected native fixture generation passed1 case in0.74s. Task
 native apps were stopped after verification. Two superseded builds were not launched.
-CI, commit/PR and integration reconciliation remain outstanding.
+Published as [PR113](https://github.com/sergical/agent-studio/pull/113), code
+`4a6de23eb892128d300f347b10f5c444c98fd7d6`. Core CI35123157425 passes
+(587 tests, 16 ignored; 143.88s tests, 3m41s job); frontend35123157407 and
+GitGuardian pass. CI artifacts retain three days.
 
 ## Product outcome
 
@@ -66,12 +70,12 @@ selected deployment, owner revision and source after fetch. An owner-group reque
 is refused. Skills.sh keeps its existing route; this packet does not accept its
 ordinary Fork durability, Pull, or Unfork.
 
-## Native evidence
+## Earlier candidate native evidence
 
-Final tested source identity (sorted changed/untracked source path NUL bytes NUL,
+Earlier tested source identity (sorted changed/untracked source path NUL bytes NUL,
 excluding docs):
 `01114f8100d6e76d733a5b3143c60bc301bd14dcbaa37362694def63677dd54b`.
-Final packaged binary SHA256:
+Earlier packaged binary SHA256:
 `9d87f1fc51f4b421cdd84c199ca37c62da8d957d690997cf12615869f699f557`.
 
 Actual Tauri windows were controlled with native accessibility tools. Fixtures
@@ -144,5 +148,27 @@ claimed. All native test processes were stopped and exit checked.
 A failure inside backup reservation after directory creation but before its retained
 handle is returned can leave an unjournaled directory. Definite failures after a
 successful reservation now remove the owned reservation. Uncertain event writes
-retain evidence. Raw logs and fixtures remain temporarily for final review;
-disposable artifacts will be removed after their conclusions are retained.
+retain evidence. Both task test apps exited. Removed consumed app bundles, forward
+and successful-restart fixtures, superseded build logs (59,815,172 bytes) and native
+caches. Unresolved conflict/evidence fixtures, reproduction tools and current
+diagnostics remain under the task temporary directory.
+
+## Integration acceptance
+
+Integration source identity:
+`ed1dc31a86f1df4a6db9fcb7d2cc06dedc849322fc8a431741d18d37fb1d1c2c`.
+The port adapts proposal accessors and reuses the existing bounded saved-document
+reader, process runner and archive parser. It preserves existing receipt and
+Pull/Unfork paths. Staging preserves links and modes; archive extraction retains
+explicit directory modes. No integration Cargo dependency changed. Independent
+port review found no issue.
+
+Scoped checks pass: core Fork 11/1 ignored (9.60s), archive 5 (0.03s), startup 7
+(1.42s), exact-target 1 and staging 1. Desktop check (5.71s), strict Clippy (8.46s),
+frontend typecheck and scoped lint/format pass. Cargo used offline locked resolution,
+two workers and one test thread; Node heap was bounded to 3072 MiB. Peak test RSS
+was not measured. No native build or full suite was repeated for the port. Final
+combined native acceptance remains open.
+
+Consumed integration preimages were deleted after review. The retained manifest is
+`/tmp/skill-studio-delivery/fork-creation/integration-acceptance.json`.
