@@ -17,6 +17,12 @@ so replacing the lock file cannot bypass a running provider.
 Packaged Tauri binary: `8b4aa708eeb394d6c66e436b643bb2288b0ad5889a71f39ee03571b0cd93bc13`.
 Source identity: `b5aaf8d45ba5f433dd3cf825dc66a52dee05ce4104599a7f39f37d6d5c9a894f`
 (sorted changed source paths, NUL, file bytes, NUL; comparison base `bad81c5`).
+Native acceptance used commit `88b506e`. Linux CI subsequently required the
+mechanical fixed-size slice iterator spelling `as_chunks::<2>().0.iter()` in the
+hex parser; strict local Clippy passes after that change. Native results are reused
+for this behavior-preserving lint correction. The final combined candidate still
+requires its release acceptance.
+
 The frontend source is unchanged from that base and uses its accepted compiled assets.
 Native automation used the macOS application accessibility surface at `tauri://localhost`.
 Fixture homes denied network access and access to the real user home.
