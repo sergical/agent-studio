@@ -55,8 +55,9 @@ Final binary SHA256:
 
 The first native pass found stale document text and false update counts; those
 were corrected and the final pass above repeated their acceptance cases.
-Process-launch failure is handled by the shared runner but has not had a dedicated
-native injection in this packet. No application-kill/OS-restart provider rollback
+Provider launch failure was injected by temporarily removing only the fixture npx
+executable. The native app reported the missing executable, cleared busy state, and
+retry reached the restored provider without restarting the app. No application-kill/OS-restart provider rollback
 is claimed; refresh on next startup reads actual files and manager records.
 
 ## Limits and resources
@@ -73,5 +74,12 @@ swaps. Preflight: 51% memory free and 58 GiB disk available. Node heap capped at
 3072 MiB; one heavy workload at a time. These are build measurements, not a native
 application memory benchmark.
 
-App/provider/build processes exited. Disposable fixture cleanup and PR CI results
-will be recorded before batch acceptance. No merge or deployment performed.
+App/provider/build processes exited. Disposable bundle, home/project fixtures, raw
+logs and unique app cache were removed. Compact preparation/provider/harness scripts
+remain in the task temporary directory; no test application remains running.
+
+[PR102 CI](https://github.com/sergical/agent-studio/actions/runs/35069202720) at code
+commit `17178be` passed in 44 s: 173 desktop tests, 150 shared-library tests, both
+typechecks, lint and frontend build. Test reports have three-day retention. This
+subsequent evidence-only edit does not invalidate the tested code. No merge or
+deployment performed.
