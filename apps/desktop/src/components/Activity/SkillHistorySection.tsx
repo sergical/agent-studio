@@ -5,6 +5,8 @@
 // ============================================================================
 
 import { useEffect, useState } from "react";
+import { useDocumentCancellation } from "../../hooks/useDocumentCancellation";
+import { errorMessage } from "../../lib/error-message";
 import { ask } from "@tauri-apps/plugin-dialog";
 import {
   Archive,
@@ -28,6 +30,7 @@ const HARNESS_LABEL_BY_ID = new Map<string, string>(HARNESS_LABELS);
 function iconForKind(kind: string, className: string) {
   const props = { size: 14, className: `shrink-0 ${className}` };
   switch (kind) {
+    case "undo_copy_frontmatter":
     case "restore":
       return <Undo2 {...props} />;
     case "unlink_harness":
@@ -51,13 +54,27 @@ function iconForKind(kind: string, className: string) {
 
 /** "unlink harness" from "unlink_harness", for kinds with no friendlier label. */
 function kindLabel(kind: string): string {
-  return kind.replace(/_/g, " ");
+  switch (kind) {
+    case "repair_copy_frontmatter":
+      return "Repaired copy";
+    case "undo_copy_frontmatter":
+      return "Undid copy repair";
+    case "redo_copy_frontmatter":
+      return "Reapplied copy repair";
+    default:
+      return kind.replace(/_/g, " ");
+  }
 }
 
 /** What a restore's confirm dialog names as "what will be put back" - the inverse of the event's own kind. */
 function restoreDescription(event: SkillEvent): string {
   const skillPart = event.skill ? `${event.skill}` : (event.harness ?? "this item");
   switch (event.kind) {
+    case "repair_copy_frontmatter":
+    case "redo_copy_frontmatter":
+      return `Undo the YAML repair for ${skillPart}`;
+    case "undo_copy_frontmatter":
+      return `Reapply the YAML repair for ${skillPart}`;
     case "unlink_harness":
       return `Restore ${skillPart}'s link for ${event.harness ?? "its harness"}`;
     case "explode_shared_dir":
@@ -76,6 +93,18 @@ function restoreDescription(event: SkillEvent): string {
 function EventRow({ event, onRestored }: { event: SkillEvent; onRestored: () => void }) {
   const addToast = useAppStore((state) => state.addToast);
   const [isRestoring, setIsRestoring] = useState(false);
+  const cancellation = useDocumentCancellation();
+  const isCopyRepair = [
+    "repair_copy_frontmatter",
+    "undo_copy_frontmatter",
+    "redo_copy_frontmatter",
+  ].includes(event.kind);
+  const restoreLabel =
+    event.kind === "undo_copy_frontmatter"
+      ? "Redo repair"
+      : isCopyRepair
+        ? "Undo repair"
+        : "Restore";
   const isFailed = event.status === "failed";
   const isInterrupted = event.status === "interrupted";
   const icon = iconForKind(
@@ -98,14 +127,17 @@ function EventRow({ event, onRestored }: { event: SkillEvent; onRestored: () => 
   };
 
   const runRestore = async (force: boolean) => {
+    cancellation.reset();
     setIsRestoring(true);
     try {
-      await restoreSkillEvent(event.id, force);
-      addToast({ type: "success", title: "Restored", message: restoreDescription(event) });
-      onRestored();
-      setIsRestoring(false);
+      await restoreSkillEvent(event.id, force, isCopyRepair ? cancellation.onStarted : undefined);
+      addToast({
+        type: "success",
+        title: event.kind === "undo_copy_frontmatter" ? "Repair reapplied" : "Restored",
+        message: restoreDescription(event),
+      });
     } catch (err) {
-      const message = err instanceof Error ? err.message : "Unknown error";
+      const message = errorMessage(err);
       if (!force && shouldOfferForceRestore(event, message)) {
         const proceed = await ask(
           `${message}\n\nRestoring anyway will back up the current content first, so it stays restorable.`,
@@ -113,19 +145,21 @@ function EventRow({ event, onRestored }: { event: SkillEvent; onRestored: () => 
         );
         if (proceed) {
           await runRestore(true);
-          setIsRestoring(false);
           return;
         }
       } else {
         addToast({ type: "error", title: "Restore failed", message });
       }
+    } finally {
       setIsRestoring(false);
+      cancellation.reset();
+      onRestored();
     }
   };
 
   const handleRestoreClick = async () => {
     const confirmed = await ask(`${restoreDescription(event)}?`, {
-      title: "Restore",
+      title: restoreLabel,
       kind: "info",
     });
     if (!confirmed) return;
@@ -165,6 +199,16 @@ function EventRow({ event, onRestored }: { event: SkillEvent; onRestored: () => 
           Reveal in Finder
         </button>
       )}
+      {isRestoring && isCopyRepair && (
+        <button
+          type="button"
+          onClick={cancellation.cancel}
+          disabled={!cancellation.canCancel || cancellation.isCancelling}
+          className="shrink-0 rounded-sm border border-border-subtle px-2 py-1 text-small disabled:opacity-50"
+        >
+          {cancellation.isCancelling ? "Stopping…" : "Stop restore"}
+        </button>
+      )}
       {canRestoreSkillEvent(event) && (
         <button
           type="button"
@@ -172,7 +216,7 @@ function EventRow({ event, onRestored }: { event: SkillEvent; onRestored: () => 
           onClick={handleRestoreClick}
           disabled={isRestoring}
         >
-          Restore
+          {restoreLabel}
         </button>
       )}
     </div>

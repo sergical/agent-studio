@@ -46,3 +46,18 @@ pub mod skill_event_statements;
 pub mod skill_event_store;
 #[cfg(all(unix, feature = "event-store"))]
 pub mod skill_tree_move;
+
+#[cfg(all(unix, feature = "event-store"))]
+pub mod skill_copy_repair;
+#[cfg(all(unix, feature = "event-store"))]
+pub mod skill_repair_backup;
+#[cfg(all(unix, feature = "event-store"))]
+pub mod skill_repair_intent;
+#[cfg(all(unix, feature = "event-store"))]
+pub mod skill_repair_recovery_event;
+
+#[cfg(all(unix, feature = "event-store"))]
+pub mod skill_repair_execution;
+
+#[cfg(all(unix, feature = "event-store"))]
+pub mod skill_backup_manifest;

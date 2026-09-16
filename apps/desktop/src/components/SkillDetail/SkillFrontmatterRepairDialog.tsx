@@ -4,6 +4,7 @@
 // ============================================================================
 
 import { useState } from "react";
+import { useDocumentCancellation } from "../../hooks/useDocumentCancellation";
 import { PatchDiff } from "@pierre/diffs/react";
 import {
   Button,
@@ -40,37 +41,46 @@ export function SkillFrontmatterRepairDialog({
   onEditManually,
 }: SkillFrontmatterRepairDialogProps) {
   const [applying, setApplying] = useState<FrontmatterRepairApplyMode | null>(null);
+  const [applyError, setApplyError] = useState<string | null>(null);
+  const cancellation = useDocumentCancellation();
   const addToast = useAppStore((state) => state.addToast);
   const theme = diffTheme(useAppStore((state) => state.resolvedTheme));
   const apply = (mode: FrontmatterRepairApplyMode) => {
+    cancellation.reset();
+    setApplyError(null);
     setApplying(mode);
-    applySkillFrontmatterRepair(target, preview, mode)
+    applySkillFrontmatterRepair(target, preview, mode, cancellation.onStarted)
       .then(() => {
         addToast({ type: "success", title: "YAML fixed" });
         onApplied();
         onClose();
       })
-      .catch((error) =>
+      .catch((error) => {
+        const message = error instanceof Error ? error.message : "Unknown error";
+        setApplyError(message);
         addToast({
           type: "error",
           title: "Couldn't fix YAML",
-          message: error instanceof Error ? error.message : "Unknown error",
-        }),
-      )
-      .finally(() => setApplying(null));
+          message,
+        });
+      })
+      .finally(() => {
+        setApplying(null);
+        cancellation.reset();
+      });
   };
 
   return (
-    <Dialog open onOpenChange={(open) => !open && onClose()}>
-      <DialogContent className="max-w-3xl">
+    <Dialog open onOpenChange={(open) => !open && applying === null && onClose()}>
+      <DialogContent className="sm:max-w-3xl">
         <DialogHeader>
           <DialogTitle>Preview YAML fix</DialogTitle>
-          <DialogDescription>
+          <DialogDescription className="break-words">
             {preview.reason} This preview is for {homeRelativePath(preview.path)} ({preview.scope}).
             Nothing changes until you choose an action.
           </DialogDescription>
         </DialogHeader>
-        <div className="max-h-[55vh] overflow-auto rounded-sm border border-border-subtle">
+        <div className="min-w-0 max-h-[55vh] overflow-auto rounded-sm border border-border-subtle">
           <PatchDiff
             patch={unifiedSkillMdDiff(preview.original_content, preview.proposed_content)}
             options={{ theme, disableFileHeader: true }}
@@ -81,9 +91,18 @@ export function SkillFrontmatterRepairDialog({
             Fix installed copy keeps managed ownership. A later update can overwrite this fix.
           </p>
         )}
-        <DialogFooter>
-          <Button variant="outline" onClick={onClose} disabled={applying !== null}>
-            Cancel
+        {applyError && (
+          <p role="alert" className="m-0 break-words text-small text-destructive">
+            Couldn't fix YAML: {applyError}
+          </p>
+        )}
+        <DialogFooter className="sm:flex-wrap">
+          <Button
+            variant="outline"
+            onClick={applying === null ? onClose : cancellation.cancel}
+            disabled={applying !== null && (!cancellation.canCancel || cancellation.isCancelling)}
+          >
+            {cancellation.isCancelling ? "Stopping…" : applying === null ? "Cancel" : "Stop repair"}
           </Button>
           <Button
             variant="outline"

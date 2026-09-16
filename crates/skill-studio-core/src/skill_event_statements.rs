@@ -102,3 +102,21 @@ pub(crate) fn finish_recovery_snapshot(
     }
     Ok(())
 }
+
+pub(crate) fn finish_pending(
+    connection: &Connection,
+    id: &str,
+    status: EventStatus,
+    inverse_json: Option<&str>,
+) -> Result<(), String> {
+    let affected = connection
+        .execute(
+            "UPDATE events SET status = ?1, inverse = ?2 WHERE id = ?3 AND status = 'pending'",
+            params![status.as_str(), inverse_json, id],
+        )
+        .map_err(|error| error.to_string())?;
+    if affected != 1 {
+        return Err("Event is missing or is no longer pending".into());
+    }
+    Ok(())
+}

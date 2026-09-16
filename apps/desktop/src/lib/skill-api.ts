@@ -1,3 +1,4 @@
+import { runDocumentOperation } from "./skill-document-operation";
 // ============================================================================
 // Skill Studio - skill-api
 // Tauri IPC communication for skills.sh integration
@@ -45,15 +46,22 @@ export async function applySkillFrontmatterRepair(
   target: LifecycleTarget,
   preview: FrontmatterRepairPreview,
   mode: FrontmatterRepairApplyMode,
+  onStarted?: (operationId: string) => void,
 ): Promise<void> {
-  return invoke("apply_skill_frontmatter_repair", {
-    request: {
-      target,
-      proposal_id: preview.proposal_id,
-      expected_content_fingerprint: preview.expected_content_fingerprint,
-      mode,
+  return runDocumentOperation(
+    {
+      command: "apply_skill_frontmatter_repair",
+      args: {
+        request: {
+          target,
+          proposal_id: preview.proposal_id,
+          expected_content_fingerprint: preview.expected_content_fingerprint,
+          mode,
+        },
+      },
     },
-  });
+    onStarted,
+  );
 }
 
 // ============================================================================
@@ -516,8 +524,15 @@ export async function listSkillEvents(limit?: number, skill?: string): Promise<S
  * path unless `force` is set, in which case the current (drifted) content is
  * itself backed up and restorable before the inverse is applied.
  */
-export async function restoreSkillEvent(eventId: string, force: boolean): Promise<void> {
-  return invoke("restore_skill_event", { eventId, force });
+export async function restoreSkillEvent(
+  eventId: string,
+  force: boolean,
+  onStarted?: (operationId: string) => void,
+): Promise<void> {
+  return runDocumentOperation(
+    { command: "restore_skill_event", args: { eventId, force } },
+    onStarted,
+  );
 }
 
 /**

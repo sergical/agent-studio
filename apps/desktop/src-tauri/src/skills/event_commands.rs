@@ -9,8 +9,11 @@
 // `Err` instead of panicking at startup.
 // ============================================================================
 
+use super::skill_document_operation::{check_document_cancellation, DocumentOperation};
+use skill_studio_core::skill_service::{CancellationToken, ScopedSkillService};
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
+use tauri::Manager;
 
 use super::agents::AgentId;
 use super::event_store::{EventRow, EventStore};
@@ -32,15 +35,19 @@ fn locked_store(
 }
 
 fn dto_from_row(store: &EventStore, home: &Path, row: EventRow) -> SkillEventDto {
-    let restorable = row.restorable
+    let restorable = (row.restorable
         && row.inverse.is_some()
         && row.reverted_by.is_none()
-        && matches!(row.status.as_str(), "done" | "failed" | "interrupted");
+        && matches!(row.status.as_str(), "done" | "failed" | "interrupted"))
+        || (super::skill_copy_repair::is_copy_event(&row.kind)
+            && row.status == "done"
+            && row.reverted_by.is_none());
     let backup_path = row
         .backup_dir
         .as_ref()
         .map(|dir| store.app_data.join(dir).to_string_lossy().into_owned());
     let force_restorable = restorable
+        && !super::skill_copy_repair::is_copy_event(&row.kind)
         && row.kind != "make_independent_copy"
         && (row.kind != "explode_shared_dir"
             || skill_materialize::restore_guard_for_explode(store, &row, home).is_ok());
@@ -81,13 +88,37 @@ pub fn list_skill_events(
 /// its skills are individually disabled (`restore_guard_for_explode`), and
 /// unregisters the materialized root once such a restore succeeds.
 #[tauri::command]
-pub fn restore_skill_event(
+pub async fn restore_skill_event(
+    event_id: String,
+    force: bool,
+    app: tauri::AppHandle,
+    operation_id: Option<String>,
+) -> Result<(), String> {
+    let operation = DocumentOperation::start(&app, operation_id)?;
+    tauri::async_runtime::spawn_blocking(move || {
+        let _operation = operation;
+        restore_skill_event_blocking(
+            event_id,
+            force,
+            app.clone(),
+            app.state::<ForkMutationLock>(),
+            app.state::<EventStoreState>(),
+            _operation.cancellation.clone(),
+        )
+    })
+    .await
+    .map_err(|error| format!("Restore task failed: {error}"))?
+}
+
+fn restore_skill_event_blocking(
     event_id: String,
     force: bool,
     app: tauri::AppHandle,
     fork_lock: tauri::State<ForkMutationLock>,
     event_store: tauri::State<EventStoreState>,
+    cancellation: CancellationToken,
 ) -> Result<(), String> {
+    check_document_cancellation(&cancellation)?;
     let _guard = fork_lock.try_acquire()?;
     let guard = locked_store(&event_store)?;
     let store = guard.as_ref().ok_or("Event store is unavailable")?;
@@ -108,6 +139,27 @@ pub fn restore_skill_event(
         drop(guard);
         skill_refresh::request_snapshot_rebuild(&app);
         return Ok(());
+    }
+    if super::skill_copy_repair::is_copy_event(&target.kind) {
+        let projects = super::project_discovery::discover_skill_projects(&home)
+            .into_iter()
+            .filter(|path| path != &home)
+            .collect::<Vec<_>>();
+        let scope = super::skill_scope_config::desktop_skill_scope(&home, &projects)?;
+        let mut service = ScopedSkillService::bind(scope).map_err(|error| error.to_string())?;
+        let transaction = super::skill_md_write::begin_skill_md_write_transaction()?;
+        let result = super::skill_copy_repair::restore(
+            &mut service,
+            store,
+            &target,
+            force,
+            &super::event_store::allocate_id(),
+            cancellation,
+        );
+        drop(transaction);
+        drop(guard);
+        skill_refresh::request_snapshot_rebuild(&app);
+        return result;
     }
     store.restore(&event_id, force)?;
     if target.kind == "explode_shared_dir" {
@@ -630,6 +682,47 @@ pub fn repair_skill_link(
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn copy_repair_history_routes_only_completed_unclaimed_rows_without_force() {
+        use super::super::event_store::{EventDraft, EventStatus};
+        let temp = tempfile::tempdir().unwrap();
+        let store = EventStore::open(temp.path()).unwrap();
+        for kind in [
+            "repair_copy_frontmatter",
+            "undo_copy_frontmatter",
+            "redo_copy_frontmatter",
+        ] {
+            store
+                .record(
+                    kind,
+                    EventDraft {
+                        kind: kind.into(),
+                        skill: "sample".into(),
+                        harness: None,
+                        scope: Some("global".into()),
+                        project_path: None,
+                        payload: serde_json::Value::Null,
+                        inverse: None,
+                        backup_dir: None,
+                        restorable: false,
+                    },
+                )
+                .unwrap();
+            let pending = store.get(kind).unwrap().unwrap();
+            assert!(!dto_from_row(&store, temp.path(), pending).restorable);
+            store.finish(kind, EventStatus::Done).unwrap();
+            let row = store.get(kind).unwrap().unwrap();
+            assert!(!row.restorable);
+            assert!(row.inverse.is_none());
+            let dto = dto_from_row(&store, temp.path(), row.clone());
+            assert!(dto.restorable);
+            assert!(!dto.force_restorable);
+            let mut claimed = row;
+            claimed.reverted_by = Some("next".into());
+            assert!(!dto_from_row(&store, temp.path(), claimed).restorable);
+        }
+    }
+
     use super::super::event_store::{allocate_id, EventDraft, EventStatus, InverseOp};
     use super::*;
     use std::collections::BTreeMap;

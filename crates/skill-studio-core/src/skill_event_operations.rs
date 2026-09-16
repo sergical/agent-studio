@@ -6,6 +6,7 @@ use crate::{
     skill_event_binding::EventConnectionBinding,
     skill_event_store::EventStore,
 };
+use rusqlite::params;
 use serde_json::Value;
 
 #[derive(Debug)]
@@ -160,17 +161,6 @@ impl<'store> GuardedEventStore<'store> {
             .map_err(EventWriteFailure::MayHaveWritten)
     }
 
-    pub fn next_recovery_event(
-        &self,
-        lease: &FinalizedWriteLease<'_>,
-    ) -> Result<Option<crate::skill_event::EventRow>, String> {
-        self.validate(lease)?;
-        let id = crate::skill_event_statements::unresolved_event(&self.store.conn)?;
-        let row = id.map(|id| self.store.get(&id)).transpose()?.flatten();
-        self.validate(lease)?;
-        Ok(row)
-    }
-
     fn check_unresolved(&self) -> Result<(), String> {
         crate::skill_event_statements::require_recovered(&self.store.conn)
     }
@@ -215,5 +205,381 @@ impl<'store> GuardedEventStore<'store> {
             )?;
             transaction.commit().map_err(|error| error.to_string())
         })
+    }
+}
+
+impl GuardedEventStore<'_> {
+    pub fn next_recovery_event(
+        &self,
+        lease: &FinalizedWriteLease<'_>,
+    ) -> Result<Option<crate::skill_event::EventRow>, String> {
+        self.validate(lease)?;
+        let id = crate::skill_event_statements::unresolved_event(&self.store.conn)?;
+        let row = id.map(|id| self.store.get(&id)).transpose()?.flatten();
+        self.validate(lease)?;
+        Ok(row)
+    }
+
+    pub fn finish_recovery(
+        &self,
+        lease: &FinalizedWriteLease<'_>,
+        event: &crate::skill_repair_recovery_event::RepairRecoveryEvent,
+        status: EventStatus,
+        inverse: Option<Value>,
+    ) -> Result<(), EventWriteFailure> {
+        self.finish_recovery_snapshot(lease, event.snapshot(), status, inverse)
+    }
+
+    pub fn record_copy_undo(
+        &self,
+        lease: &FinalizedWriteLease<'_>,
+        source: &crate::skill_repair_recovery_event::CopyRepairUndoSource,
+        undo_id: &str,
+    ) -> Result<RecordedCopyUndo, EventWriteFailure> {
+        if !crate::skill_backup_reservation::valid_id(undo_id) || undo_id == source.id() {
+            return Err(EventWriteFailure::BeforeWrite(
+                "Invalid copy undo ID".into(),
+            ));
+        }
+        let expected = serde_json::to_value(source.snapshot())
+            .map_err(|error| EventWriteFailure::BeforeWrite(error.to_string()))?;
+        let mut recorded = None;
+        self.write(lease, || {
+            let transaction = self.transaction(lease)?;
+            self.check_unresolved()?;
+            let current = self.store.get(source.id())?.ok_or("Copy undo source is missing")?;
+            if serde_json::to_value(&current).map_err(|error| error.to_string())? != expected {
+                return Err("Copy undo source changed since preparation".into());
+            }
+            self.store.record(undo_id, EventDraft {
+                kind: "undo_copy_frontmatter".into(), skill: current.skill, harness: current.harness,
+                scope: current.scope, project_path: current.project_path,
+                payload: serde_json::json!({"target_event": source.id(), "repair": source.intent()}),
+                inverse: None, backup_dir: Some(format!("backups/{undo_id}")), restorable: false,
+            })?;
+            let count = transaction.execute("UPDATE events SET reverted_by = ?1 WHERE id = ?2 AND reverted_by IS NULL AND status = 'done'", params![undo_id, source.id()]).map_err(|error| error.to_string())?;
+            if count != 1 { return Err("Copy undo source is no longer available".into()); }
+            let mut expected_source = source.snapshot().clone();
+            expected_source.reverted_by = Some(undo_id.into());
+            recorded = Some(RecordedCopyUndo { source: expected_source,
+                undo: self.store.get(undo_id)?.ok_or("Recorded undo is missing")? });
+            transaction.commit().map_err(|error| error.to_string())
+        })?;
+        recorded
+            .ok_or_else(|| EventWriteFailure::MayHaveWritten("Copy undo receipt is missing".into()))
+    }
+
+    pub fn record_copy_redo(
+        &self,
+        lease: &FinalizedWriteLease<'_>,
+        source: &crate::skill_repair_recovery_event::CopyRepairRedoSource,
+        intent: &crate::skill_copy_repair::CopyRepairRedoIntent,
+        redo_id: &str,
+    ) -> Result<RecordedCopyRedo, EventWriteFailure> {
+        if !crate::skill_backup_reservation::valid_id(redo_id)
+            || redo_id == source.source().id
+            || redo_id == source.undo().id
+        {
+            return Err(EventWriteFailure::BeforeWrite(
+                "Invalid copy redo ID".into(),
+            ));
+        }
+        intent
+            .validate_source(source)
+            .map_err(EventWriteFailure::BeforeWrite)?;
+        let payload = serde_json::to_value(intent)
+            .map_err(|error| EventWriteFailure::BeforeWrite(error.to_string()))?;
+        let mut recorded = None;
+        self.write(lease, || {
+            let transaction = self.transaction(lease)?;
+            self.check_unresolved()?;
+            self.validate_copy_undo_pair(source.source(), source.undo())?;
+            let original = source.source();
+            self.store.record(redo_id, EventDraft {
+                kind: "redo_copy_frontmatter".into(), skill: original.skill.clone(), harness: original.harness.clone(),
+                scope: original.scope.clone(), project_path: original.project_path.clone(), payload,
+                inverse: None, backup_dir: Some(format!("backups/{redo_id}")), restorable: false,
+            })?;
+            let count = transaction.execute("UPDATE events SET reverted_by = ?1 WHERE id = ?2 AND reverted_by IS NULL AND status = 'done'", params![redo_id, &source.undo().id]).map_err(|error| error.to_string())?;
+            if count != 1 { return Err("Copy redo undo source is no longer available".into()); }
+            let mut undo = source.undo().clone();
+            undo.reverted_by = Some(redo_id.into());
+            recorded = Some(RecordedCopyRedo { source: original.clone(), undo,
+                redo: self.store.get(redo_id)?.ok_or("Recorded redo is missing")? });
+            transaction.commit().map_err(|error| error.to_string())
+        })?;
+        recorded
+            .ok_or_else(|| EventWriteFailure::MayHaveWritten("Copy redo receipt is missing".into()))
+    }
+
+    pub fn finish_copy_redo(
+        &self,
+        lease: &FinalizedWriteLease<'_>,
+        recorded: &RecordedCopyRedo,
+    ) -> Result<(), EventWriteFailure> {
+        self.finish_copy_redo_rows(
+            lease,
+            &recorded.source,
+            &recorded.undo,
+            &recorded.redo,
+            true,
+        )
+    }
+
+    pub fn read_copy_redo_recovery(
+        &self,
+        lease: &FinalizedWriteLease<'_>,
+        redo: &crate::skill_event::EventRow,
+    ) -> Result<crate::skill_repair_recovery_event::CopyRedoRecoveryEvent, String> {
+        self.validate(lease)?;
+        let source_id = redo
+            .payload
+            .get("source_event")
+            .and_then(Value::as_str)
+            .ok_or("Redo source ID is missing")?;
+        let undo_id = redo
+            .payload
+            .get("undo_event")
+            .and_then(Value::as_str)
+            .ok_or("Redo undo ID is missing")?;
+        let source = self.store.get(source_id)?.ok_or("Redo source is missing")?;
+        let undo = self.store.get(undo_id)?.ok_or("Redo undo is missing")?;
+        let event = crate::skill_repair_recovery_event::CopyRedoRecoveryEvent::from_rows(
+            &source, &undo, redo,
+        )?;
+        self.validate_copy_redo_recovery(lease, &event)?;
+        Ok(event)
+    }
+
+    pub fn validate_copy_redo_recovery(
+        &self,
+        lease: &FinalizedWriteLease<'_>,
+        event: &crate::skill_repair_recovery_event::CopyRedoRecoveryEvent,
+    ) -> Result<(), String> {
+        self.validate(lease)?;
+        self.validate_copy_redo_rows(event.source(), event.undo(), event.redo())?;
+        self.validate(lease)
+    }
+
+    fn validate_copy_redo_rows(
+        &self,
+        source: &crate::skill_event::EventRow,
+        undo: &crate::skill_event::EventRow,
+        redo: &crate::skill_event::EventRow,
+    ) -> Result<(), String> {
+        self.validate_copy_undo_pair(source, undo)?;
+        let current = self
+            .store
+            .get(&redo.id)?
+            .ok_or("Copy redo event is missing")?;
+        if serde_json::to_value(current).map_err(|error| error.to_string())?
+            != serde_json::to_value(redo).map_err(|error| error.to_string())?
+        {
+            return Err("Copy redo event changed".into());
+        }
+        Ok(())
+    }
+
+    pub fn finish_copy_redo_recovery(
+        &self,
+        lease: &FinalizedWriteLease<'_>,
+        event: &crate::skill_repair_recovery_event::CopyRedoRecoveryEvent,
+        applied: bool,
+    ) -> Result<(), EventWriteFailure> {
+        self.finish_copy_redo_rows(lease, event.source(), event.undo(), event.redo(), applied)
+    }
+
+    fn finish_copy_redo_rows(
+        &self,
+        lease: &FinalizedWriteLease<'_>,
+        source: &crate::skill_event::EventRow,
+        undo: &crate::skill_event::EventRow,
+        redo: &crate::skill_event::EventRow,
+        applied: bool,
+    ) -> Result<(), EventWriteFailure> {
+        self.write(lease, || {
+            let transaction = self.transaction(lease)?;
+            self.validate_copy_redo_rows(source, undo, redo)?;
+            let status = if applied { "done" } else { "failed" };
+            let count = transaction.execute("UPDATE events SET status = ?1 WHERE id = ?2 AND status = ?3", params![status, &redo.id, &redo.status]).map_err(|error| error.to_string())?;
+            if count != 1 { return Err("Copy redo is no longer eligible".into()); }
+            if !applied {
+                let count = transaction.execute("UPDATE events SET reverted_by = NULL WHERE id = ?1 AND reverted_by = ?2 AND status = 'done'", params![&undo.id, &redo.id]).map_err(|error| error.to_string())?;
+                if count != 1 { return Err("Copy redo undo claim changed".into()); }
+            }
+            transaction.commit().map_err(|error| error.to_string())
+        })
+    }
+
+    pub fn finish_copy_undo(
+        &self,
+        lease: &FinalizedWriteLease<'_>,
+        recorded: &RecordedCopyUndo,
+    ) -> Result<(), EventWriteFailure> {
+        self.finish_copy_undo_pair(lease, &recorded.source, &recorded.undo, true)
+    }
+
+    pub fn read_copy_undo_recovery(
+        &self,
+        lease: &FinalizedWriteLease<'_>,
+        undo: &crate::skill_event::EventRow,
+    ) -> Result<crate::skill_repair_recovery_event::CopyUndoRecoveryEvent, String> {
+        self.validate(lease)?;
+        let source_id = undo
+            .payload
+            .get("target_event")
+            .and_then(Value::as_str)
+            .ok_or("Copy undo source ID is missing")?;
+        let source = self
+            .store
+            .get(source_id)?
+            .ok_or("Copy undo source is missing")?;
+        let event =
+            crate::skill_repair_recovery_event::CopyUndoRecoveryEvent::from_rows(&source, undo)?;
+        self.validate_copy_undo_recovery(lease, &event)?;
+        Ok(event)
+    }
+
+    pub fn validate_copy_undo_recovery(
+        &self,
+        lease: &FinalizedWriteLease<'_>,
+        event: &crate::skill_repair_recovery_event::CopyUndoRecoveryEvent,
+    ) -> Result<(), String> {
+        self.validate(lease)?;
+        self.validate_copy_undo_pair(event.source(), event.undo())?;
+        self.validate(lease)
+    }
+
+    pub fn finish_copy_undo_recovery(
+        &self,
+        lease: &FinalizedWriteLease<'_>,
+        event: &crate::skill_repair_recovery_event::CopyUndoRecoveryEvent,
+        applied: bool,
+    ) -> Result<(), EventWriteFailure> {
+        self.finish_copy_undo_pair(lease, event.source(), event.undo(), applied)
+    }
+
+    fn validate_copy_undo_pair(
+        &self,
+        source: &crate::skill_event::EventRow,
+        undo: &crate::skill_event::EventRow,
+    ) -> Result<(), String> {
+        for expected in [source, undo] {
+            let current = self
+                .store
+                .get(&expected.id)?
+                .ok_or("Copy undo event is missing")?;
+            if serde_json::to_value(current).map_err(|error| error.to_string())?
+                != serde_json::to_value(expected).map_err(|error| error.to_string())?
+            {
+                return Err("Copy undo event or source claim changed".into());
+            }
+        }
+        Ok(())
+    }
+
+    fn finish_copy_undo_pair(
+        &self,
+        lease: &FinalizedWriteLease<'_>,
+        source: &crate::skill_event::EventRow,
+        undo: &crate::skill_event::EventRow,
+        applied: bool,
+    ) -> Result<(), EventWriteFailure> {
+        self.write(lease, || {
+            let transaction = self.transaction(lease)?;
+            self.validate_copy_undo_pair(source, undo)?;
+            let status = if applied { "done" } else { "failed" };
+            let count = transaction.execute(
+                "UPDATE events SET status = ?1 WHERE id = ?2 AND status = ?3",
+                params![status, &undo.id, &undo.status],
+            ).map_err(|error| error.to_string())?;
+            if count != 1 { return Err("Copy undo is no longer eligible".into()); }
+            if !applied {
+                let count = transaction.execute(
+                    "UPDATE events SET reverted_by = NULL WHERE id = ?1 AND reverted_by = ?2 AND status = 'done'",
+                    params![&source.id, &undo.id],
+                ).map_err(|error| error.to_string())?;
+                if count != 1 { return Err("Copy undo source claim changed".into()); }
+            }
+            transaction.commit().map_err(|error| error.to_string())
+        })
+    }
+
+    pub fn validate_copy_recovery(
+        &self,
+        lease: &FinalizedWriteLease<'_>,
+        event: &crate::skill_repair_recovery_event::CopyRepairRecoveryEvent,
+    ) -> Result<(), String> {
+        self.validate(lease)?;
+        let current = self
+            .store
+            .get(event.id())?
+            .ok_or("Copy recovery event is missing")?;
+        if serde_json::to_value(current).map_err(|error| error.to_string())?
+            != serde_json::to_value(event.snapshot()).map_err(|error| error.to_string())?
+        {
+            return Err("Copy recovery event changed since preparation".into());
+        }
+        self.validate(lease)
+    }
+
+    pub fn finish_copy_recovery(
+        &self,
+        lease: &FinalizedWriteLease<'_>,
+        event: &crate::skill_repair_recovery_event::CopyRepairRecoveryEvent,
+        status: EventStatus,
+    ) -> Result<(), EventWriteFailure> {
+        self.finish_recovery_snapshot(lease, event.snapshot(), status, None)
+    }
+
+    pub fn finish_pending(
+        &self,
+        lease: &FinalizedWriteLease<'_>,
+        id: &str,
+        status: EventStatus,
+        inverse: Option<Value>,
+    ) -> Result<(), EventWriteFailure> {
+        let inverse = inverse
+            .map(|value| serde_json::to_string(&value))
+            .transpose()
+            .map_err(|error| EventWriteFailure::BeforeWrite(error.to_string()))?;
+        self.write(lease, || {
+            crate::skill_event_statements::finish_pending(
+                &self.store.conn,
+                id,
+                status,
+                inverse.as_deref(),
+            )
+        })
+    }
+}
+
+#[derive(Debug)]
+pub struct RecordedCopyUndo {
+    source: crate::skill_event::EventRow,
+    undo: crate::skill_event::EventRow,
+}
+#[derive(Debug)]
+pub struct RecordedCopyRedo {
+    source: crate::skill_event::EventRow,
+    undo: crate::skill_event::EventRow,
+    redo: crate::skill_event::EventRow,
+}
+
+impl GuardedEventStore<'_> {
+    pub fn require_recovered(&self, lease: &FinalizedWriteLease<'_>) -> Result<(), String> {
+        self.require_recovered_prepared(lease)
+            .map_err(|error| error.to_string())
+    }
+}
+
+impl GuardedEventStore<'_> {
+    pub fn require_recovered_prepared(
+        &self,
+        lease: &FinalizedWriteLease<'_>,
+    ) -> Result<(), PreparedContentError> {
+        self.validate_prepared(lease)?;
+        self.check_unresolved()?;
+        self.validate_prepared(lease)
     }
 }

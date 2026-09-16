@@ -211,6 +211,7 @@ export interface Deployment {
   destination: SkillDestination;
   owner_kind: LifecycleOwnerKind;
   owner_id?: string;
+  owner_revision?: string;
   mutability: "mutable" | "read-only";
   backing:
     | { kind: "canonical" }

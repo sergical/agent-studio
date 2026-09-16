@@ -23,26 +23,12 @@ use super::skill_md_write::{begin_skill_md_write_transaction, SkillMdWriteTransa
 use super::skill_ownership::LifecycleOwnerKind;
 use super::skill_refresh::{self, SkillRefreshState};
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "kebab-case")]
-pub enum FrontmatterRepairApplyMode {
-    ApplyFix,
-    FixInstalledCopy,
-    ForkAndFix,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct FrontmatterRepairPreview {
-    pub deployment_id: String,
-    pub path: String,
-    pub scope: String,
-    pub reason: String,
-    pub expected_content_fingerprint: String,
-    pub proposal_id: String,
-    pub original_content: String,
-    pub proposed_content: String,
-    pub allowed_apply_modes: Vec<FrontmatterRepairApplyMode>,
-}
+use super::skill_document_operation::{check_document_cancellation, DocumentOperation};
+use skill_studio_core::skill_frontmatter_repair::BoundFrontmatterRepairRequest;
+pub use skill_studio_core::skill_frontmatter_repair::{
+    FrontmatterRepairApplyMode, FrontmatterRepairPreview,
+};
+use skill_studio_core::skill_service::{CancellationToken, ScopedSkillService};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ApplyFrontmatterRepairRequest {
@@ -277,13 +263,46 @@ fn exact_target<'a>(
 }
 
 #[tauri::command]
-pub fn preview_skill_frontmatter_repair(
+pub async fn preview_skill_frontmatter_repair(
+    target: LifecycleTarget,
+    app: tauri::AppHandle,
+) -> Result<FrontmatterRepairPreview, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        preview_skill_frontmatter_repair_blocking(
+            target,
+            app.clone(),
+            app.state::<SkillRefreshState>(),
+        )
+    })
+    .await
+    .map_err(|error| format!("Repair preview task failed: {error}"))?
+}
+
+fn preview_skill_frontmatter_repair_blocking(
     target: LifecycleTarget,
     app: tauri::AppHandle,
     refresh_state: tauri::State<SkillRefreshState>,
 ) -> Result<FrontmatterRepairPreview, String> {
     let snapshot = super::skill_lifecycle::rebuild_fresh_lifecycle_snapshot(&app, &refresh_state)?;
-    preview_from_deployment(exact_target(&snapshot, &target)?)
+    let deployment = exact_target(&snapshot, &target)?;
+    if deployment.owner_kind == LifecycleOwnerKind::Copy {
+        let home = dirs::home_dir().ok_or("Could not find home directory")?;
+        let projects = snapshot
+            .projects
+            .iter()
+            .map(PathBuf::from)
+            .collect::<Vec<_>>();
+        let scope = super::skill_scope_config::desktop_skill_scope(&home, &projects)?;
+        let mut service = ScopedSkillService::bind(scope).map_err(|error| error.to_string())?;
+        return service
+            .preview_frontmatter_repair(
+                &deployment.id,
+                Some(std::time::Duration::from_secs(30)),
+                CancellationToken::default(),
+            )
+            .map_err(|error| error.to_string());
+    }
+    preview_from_deployment(deployment)
 }
 
 fn finish_repair_write(
@@ -403,13 +422,36 @@ fn reconcile_interrupted_frontmatter_repair_with(
 }
 
 #[tauri::command]
-pub fn apply_skill_frontmatter_repair(
+pub async fn apply_skill_frontmatter_repair(
+    request: ApplyFrontmatterRepairRequest,
+    app: tauri::AppHandle,
+    operation_id: Option<String>,
+) -> Result<(), String> {
+    let operation = DocumentOperation::start(&app, operation_id)?;
+    tauri::async_runtime::spawn_blocking(move || {
+        let _operation = operation;
+        apply_skill_frontmatter_repair_blocking(
+            request,
+            app.clone(),
+            app.state::<SkillRefreshState>(),
+            app.state::<ForkMutationLock>(),
+            app.state::<EventStoreState>(),
+            _operation.cancellation.clone(),
+        )
+    })
+    .await
+    .map_err(|error| format!("Repair task failed: {error}"))?
+}
+
+fn apply_skill_frontmatter_repair_blocking(
     request: ApplyFrontmatterRepairRequest,
     app: tauri::AppHandle,
     refresh_state: tauri::State<SkillRefreshState>,
     fork_lock: tauri::State<ForkMutationLock>,
     event_store: tauri::State<EventStoreState>,
+    cancellation: CancellationToken,
 ) -> Result<(), String> {
+    check_document_cancellation(&cancellation)?;
     let ApplyFrontmatterRepairRequest {
         target,
         proposal_id,
@@ -419,6 +461,38 @@ pub fn apply_skill_frontmatter_repair(
     let _guard = fork_lock.try_acquire()?;
     let snapshot = super::skill_lifecycle::rebuild_fresh_lifecycle_snapshot(&app, &refresh_state)?;
     let deployment = exact_target(&snapshot, &target)?.clone();
+    if deployment.owner_kind == LifecycleOwnerKind::Copy {
+        let home = dirs::home_dir().ok_or("Could not find home directory")?;
+        let projects = snapshot
+            .projects
+            .iter()
+            .map(PathBuf::from)
+            .collect::<Vec<_>>();
+        let scope = super::skill_scope_config::desktop_skill_scope(&home, &projects)?;
+        let mut service = ScopedSkillService::bind(scope).map_err(|error| error.to_string())?;
+        let guard = event_store.0.lock().map_err(|error| error.to_string())?;
+        let store = guard.as_ref().ok_or("Event store is unavailable")?;
+        let transaction = begin_skill_md_write_transaction()?;
+        let request = BoundFrontmatterRepairRequest {
+            deployment_id: deployment.id.clone(),
+            proposal_id,
+            expected_content_fingerprint,
+            mode,
+        };
+        let result = super::skill_copy_repair::apply(
+            &mut service,
+            store,
+            &request,
+            &allocate_id(),
+            cancellation,
+        );
+        drop(transaction);
+        drop(guard);
+        skill_refresh::request_snapshot_rebuild(&app);
+        return result;
+    }
+    check_document_cancellation(&cancellation)?;
+
     let skill_md = PathBuf::from(&deployment.path).join("SKILL.md");
     let name = super::skill_deployment::parse_deployment_id(&deployment.id)
         .map(|id| id.name)

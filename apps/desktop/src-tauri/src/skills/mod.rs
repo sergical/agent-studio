@@ -59,3 +59,7 @@ pub use github_skill_listing::{GithubSkillEntry, GithubSkillListing};
 pub use provenance::SourceKind;
 pub use skill_dto::*;
 pub use skill_refresh::{SkillRefreshState, SkillSnapshot};
+
+pub(crate) mod skill_copy_repair;
+pub(crate) mod skill_document_operation;
+pub(crate) mod skill_startup_recovery;

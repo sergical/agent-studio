@@ -1468,3 +1468,1065 @@ mod tests {
         }
     }
 }
+
+#[derive(Debug)]
+pub enum RepairPreviewError {
+    Scan(ScanError),
+    IncompleteInventory,
+    TargetNotFound,
+    AmbiguousTarget,
+    DocumentUnavailable,
+    UnsupportedRepair,
+}
+impl RepairPreviewError {
+    pub fn code(&self) -> &'static str {
+        match self {
+            Self::Scan(error) => error.code(),
+            Self::IncompleteInventory => "incomplete_inventory",
+            Self::TargetNotFound => "target_not_found",
+            Self::AmbiguousTarget => "ambiguous_target",
+            Self::DocumentUnavailable => "document_unavailable",
+            Self::UnsupportedRepair => "unsupported_repair",
+        }
+    }
+}
+impl std::fmt::Display for RepairPreviewError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str(self.code())
+    }
+}
+impl std::error::Error for RepairPreviewError {}
+
+pub struct PreparedRepairSelection<'scope> {
+    owner_kind: crate::skill_ownership::LifecycleOwnerKind,
+    preview: crate::skill_frontmatter_repair::FrontmatterRepairPreview,
+    mode: crate::skill_frontmatter_repair::FrontmatterRepairApplyMode,
+    lease: crate::skill_coordination::FinalizedWriteLease<'scope>,
+}
+
+impl<'scope> PreparedRepairSelection<'scope> {
+    pub fn owner_kind(&self) -> crate::skill_ownership::LifecycleOwnerKind {
+        self.owner_kind
+    }
+
+    pub fn preview(&self) -> &crate::skill_frontmatter_repair::FrontmatterRepairPreview {
+        &self.preview
+    }
+
+    pub fn into_parts(
+        self,
+    ) -> (
+        crate::skill_frontmatter_repair::FrontmatterRepairPreview,
+        crate::skill_frontmatter_repair::FrontmatterRepairApplyMode,
+        crate::skill_coordination::FinalizedWriteLease<'scope>,
+    ) {
+        (self.preview, self.mode, self.lease)
+    }
+}
+
+#[cfg(all(unix, feature = "event-store"))]
+pub struct PreparedCopyRepairSelection<'scope> {
+    selection: PreparedRepairSelection<'scope>,
+    transition: crate::skill_copy_repair::CopyRepairTransition,
+    registry_path: PathBuf,
+    registry_original: Vec<u8>,
+    registry_proposed: Vec<u8>,
+    content: crate::skill_discovery::PreparedCopyRepairContent,
+    content_scope: crate::skill_scope::SkillReadScope,
+    folder_hashes: (String, String),
+}
+
+#[cfg(all(unix, feature = "event-store"))]
+impl<'scope> PreparedCopyRepairSelection<'scope> {
+    pub fn preview(&self) -> &crate::skill_frontmatter_repair::FrontmatterRepairPreview {
+        self.selection.preview()
+    }
+
+    #[cfg(feature = "event-store")]
+    pub(crate) fn into_execution_parts(
+        self,
+    ) -> (PreparedRepairSelection<'scope>, PathBuf, Vec<u8>, Vec<u8>) {
+        (
+            self.selection,
+            self.registry_path,
+            self.registry_original,
+            self.registry_proposed,
+        )
+    }
+
+    pub fn transition(&self) -> &crate::skill_copy_repair::CopyRepairTransition {
+        &self.transition
+    }
+
+    pub fn registry_change(&self) -> (&std::path::Path, &[u8], &[u8]) {
+        (
+            &self.registry_path,
+            &self.registry_original,
+            &self.registry_proposed,
+        )
+    }
+
+    pub fn revalidate(&self) -> Result<(), String> {
+        let hashes = self.content.hashes(
+            &self.content_scope,
+            &self.selection.lease,
+            self.preview().original_content.as_bytes(),
+            self.preview().proposed_content.as_bytes(),
+        )?;
+        if hashes != self.folder_hashes {
+            return Err("Prepared copy repair folder changed".into());
+        }
+        self.selection
+            .lease
+            .revalidate()
+            .map_err(|error| error.to_string())
+    }
+}
+
+#[cfg(all(unix, feature = "event-store"))]
+pub struct PreparedCopyRepairRecovery<'scope> {
+    pub(crate) event: crate::skill_repair_recovery_event::CopyRepairRecoveryEvent,
+    pub(crate) state: crate::skill_copy_repair::CopyRepairObservedState,
+    pub(crate) registry_original: Vec<u8>,
+    pub(crate) lease: crate::skill_coordination::FinalizedWriteLease<'scope>,
+    backup: crate::skill_repair_backup::VerifiedCopyRepairBackup,
+    content: crate::skill_discovery::PreparedCopyRepairContent,
+    content_scope: crate::skill_scope::SkillReadScope,
+    document: Vec<u8>,
+}
+
+#[cfg(all(unix, feature = "event-store"))]
+impl PreparedCopyRepairRecovery<'_> {
+    pub fn state(&self) -> crate::skill_copy_repair::CopyRepairObservedState {
+        self.state
+    }
+    pub fn revalidate(&self) -> Result<(), String> {
+        self.backup.revalidate(&self.lease)?;
+        let (hash, _) = self.content.hashes(
+            &self.content_scope,
+            &self.lease,
+            &self.document,
+            &self.document,
+        )?;
+        let state = self.event.intent().classify_observed(
+            &self.document,
+            &self.registry_original,
+            &hash,
+        )?;
+        if state != self.state {
+            return Err("Copy recovery state changed".into());
+        }
+        Ok(())
+    }
+}
+
+#[cfg(all(unix, feature = "event-store"))]
+pub struct PreparedCopyRedoRecovery<'scope> {
+    pub(crate) event: crate::skill_repair_recovery_event::CopyRedoRecoveryEvent,
+    pub(crate) state: crate::skill_copy_repair::CopyRepairObservedState,
+    pub(crate) registry_original: Vec<u8>,
+    pub(crate) lease: crate::skill_coordination::FinalizedWriteLease<'scope>,
+    backup: crate::skill_repair_backup::VerifiedCopyRedoBackups,
+    content: crate::skill_discovery::PreparedCopyRepairContent,
+    content_scope: crate::skill_scope::SkillReadScope,
+    document: Vec<u8>,
+}
+
+#[cfg(all(unix, feature = "event-store"))]
+impl PreparedCopyRedoRecovery<'_> {
+    pub fn state(&self) -> crate::skill_copy_repair::CopyRepairObservedState {
+        self.state
+    }
+    pub fn revalidate(&self) -> Result<(), String> {
+        self.backup.revalidate(&self.lease)?;
+        let (hash, _) = self.content.hashes(
+            &self.content_scope,
+            &self.lease,
+            &self.document,
+            &self.document,
+        )?;
+        let state = self.event.intent().repair.classify_observed(
+            &self.document,
+            &self.registry_original,
+            &hash,
+        )?;
+        if state != self.state {
+            return Err("Copy redo recovery state changed".into());
+        }
+        Ok(())
+    }
+}
+
+#[cfg(all(unix, feature = "event-store"))]
+pub struct PreparedCopyUndoRecovery<'scope> {
+    pub(crate) event: crate::skill_repair_recovery_event::CopyUndoRecoveryEvent,
+    pub(crate) state: crate::skill_copy_repair::CopyUndoObservedState,
+    pub(crate) registry_original: Vec<u8>,
+    pub(crate) lease: crate::skill_coordination::FinalizedWriteLease<'scope>,
+    backup: crate::skill_repair_backup::VerifiedCopyUndoBackups,
+    content: crate::skill_discovery::PreparedCopyRepairContent,
+    content_scope: crate::skill_scope::SkillReadScope,
+    document: Vec<u8>,
+}
+
+#[cfg(all(unix, feature = "event-store"))]
+impl PreparedCopyUndoRecovery<'_> {
+    pub fn state(&self) -> crate::skill_copy_repair::CopyUndoObservedState {
+        self.state
+    }
+    pub fn revalidate(&self) -> Result<(), String> {
+        self.backup.revalidate(&self.lease)?;
+        let (hash, _) = self.content.hashes(
+            &self.content_scope,
+            &self.lease,
+            &self.document,
+            &self.document,
+        )?;
+        let state = self.event.intent().classify_undo_observed(
+            &self.document,
+            &self.registry_original,
+            &hash,
+        )?;
+        if state != self.state {
+            return Err("Copy undo recovery state changed".into());
+        }
+        Ok(())
+    }
+}
+
+#[cfg(all(unix, feature = "event-store"))]
+pub struct PreparedCopyRepairUndo<'scope> {
+    pub(crate) source: crate::skill_repair_recovery_event::CopyRepairUndoSource,
+    pub(crate) plan: crate::skill_copy_repair::CopyRepairUndoPlan,
+    pub(crate) lease: crate::skill_coordination::FinalizedWriteLease<'scope>,
+    backup: crate::skill_repair_backup::VerifiedCopyRepairBackup,
+    content: crate::skill_discovery::PreparedCopyRepairContent,
+    content_scope: crate::skill_scope::SkillReadScope,
+}
+
+#[cfg(all(unix, feature = "event-store"))]
+impl PreparedCopyRepairUndo<'_> {
+    pub fn plan(&self) -> &crate::skill_copy_repair::CopyRepairUndoPlan {
+        &self.plan
+    }
+    pub fn revalidate(&self) -> Result<(), String> {
+        self.backup.revalidate(&self.lease)?;
+        let document = self.plan.document_change().0;
+        let (hash, _) =
+            self.content
+                .hashes(&self.content_scope, &self.lease, document, document)?;
+        if self
+            .source
+            .intent()
+            .classify_observed(document, self.plan.registry_change().0, &hash)?
+            != crate::skill_copy_repair::CopyRepairObservedState::Applied
+        {
+            return Err("Copy undo target no longer matches the repaired state".into());
+        }
+        Ok(())
+    }
+}
+
+#[cfg(all(unix, feature = "event-store"))]
+pub struct PreparedCopyRepairRedo<'scope> {
+    pub(crate) source: crate::skill_repair_recovery_event::CopyRepairRedoSource,
+    pub(crate) plan: crate::skill_copy_repair::CopyRepairRedoPlan,
+    pub(crate) lease: crate::skill_coordination::FinalizedWriteLease<'scope>,
+    backup: crate::skill_repair_backup::VerifiedCopyUndoBackups,
+    content: crate::skill_discovery::PreparedCopyRepairContent,
+    content_scope: crate::skill_scope::SkillReadScope,
+}
+
+#[cfg(all(unix, feature = "event-store"))]
+impl PreparedCopyRepairRedo<'_> {
+    pub fn plan(&self) -> &crate::skill_copy_repair::CopyRepairRedoPlan {
+        &self.plan
+    }
+    pub fn revalidate(&self) -> Result<(), String> {
+        self.backup.revalidate(&self.lease)?;
+        let document = self.plan.document_change().0;
+        let (hash, _) =
+            self.content
+                .hashes(&self.content_scope, &self.lease, document, document)?;
+        if self.source.intent().classify_undo_observed(
+            document,
+            self.plan.registry_change().0,
+            &hash,
+        )? != crate::skill_copy_repair::CopyUndoObservedState::Restored
+        {
+            return Err("Copy redo target no longer matches the undone state".into());
+        }
+        Ok(())
+    }
+}
+
+#[cfg(all(unix, feature = "event-store"))]
+pub(crate) fn exact_repair_deployment<'a>(
+    inventory: &'a InventoryRead,
+    id: &str,
+) -> Result<&'a crate::skill_inventory::Deployment, WritePreparationError> {
+    let mut matches = inventory
+        .skills
+        .iter()
+        .flat_map(|skill| &skill.deployments)
+        .filter(|deployment| deployment.id == id);
+    let deployment = matches.next().ok_or_else(|| {
+        WritePreparationError::InvalidRepairSelection("Selected deployment is absent".into())
+    })?;
+    if matches.next().is_some() {
+        return Err(WritePreparationError::InvalidRepairSelection(
+            "Selected deployment is ambiguous".into(),
+        ));
+    }
+    Ok(deployment)
+}
+
+#[cfg(all(unix, feature = "event-store"))]
+impl ScopedSkillService {
+    pub fn prepare_repair_selection(
+        &mut self,
+        request: &crate::skill_frontmatter_repair::BoundFrontmatterRepairRequest,
+        additional_trees: &[PathBuf],
+        timeout: Option<Duration>,
+        cancellation: CancellationToken,
+    ) -> Result<PreparedRepairSelection<'_>, WritePreparationError> {
+        let selected = crate::skill_deployment::parse_deployment_id(&request.deployment_id)
+            .ok_or_else(|| {
+                WritePreparationError::InvalidRepairSelection("Invalid deployment ID".into())
+            })?;
+        let names = BTreeSet::from([selected.name]);
+        let (inventory, lease) =
+            self.prepare_write_inventory(Some(&names), additional_trees, timeout, cancellation)?;
+        let deployment = exact_repair_deployment(&inventory, &request.deployment_id)?;
+        let path = PathBuf::from(&deployment.path).join("SKILL.md");
+        let bytes = lease
+            .read(&path, MAX_REPAIR_DOCUMENT_BYTES)
+            .map_err(|error| WritePreparationError::InvalidRepairSelection(error.to_string()))?;
+        let preview = request
+            .validate(deployment, &bytes)
+            .map_err(WritePreparationError::InvalidRepairSelection)?;
+        lease.revalidate()?;
+        Ok(PreparedRepairSelection {
+            owner_kind: deployment.owner_kind,
+            preview,
+            mode: request.mode,
+            lease,
+        })
+    }
+
+    pub fn prepare_copy_repair_selection(
+        &mut self,
+        request: &crate::skill_frontmatter_repair::BoundFrontmatterRepairRequest,
+        additional_trees: &[PathBuf],
+        timeout: Option<Duration>,
+        cancellation: CancellationToken,
+    ) -> Result<PreparedCopyRepairSelection<'_>, WritePreparationError> {
+        let registry_path = self.context.home().join(".agents/skill-studio.json");
+        let selection = self.prepare_repair_selection(
+            request,
+            additional_trees,
+            timeout,
+            cancellation.clone(),
+        )?;
+        let invalid = WritePreparationError::InvalidRepairSelection;
+        if selection.owner_kind() != crate::skill_ownership::LifecycleOwnerKind::Copy {
+            return Err(invalid(
+                "Selected repair is not owned by a copy record".into(),
+            ));
+        }
+        let skill_dir = PathBuf::from(&selection.preview().path);
+        let content_scope =
+            crate::skill_scope::SkillReadScope::bind(std::slice::from_ref(&skill_dir))
+                .map_err(|error| invalid(error.to_string()))?;
+        let content = crate::skill_discovery::PreparedCopyRepairContent::enumerate_cancellable(
+            &content_scope,
+            &skill_dir,
+            &cancellation,
+        )
+        .map_err(invalid)?;
+        let (original_hash, proposed_hash) = content
+            .hashes(
+                &content_scope,
+                &selection.lease,
+                selection.preview().original_content.as_bytes(),
+                selection.preview().proposed_content.as_bytes(),
+            )
+            .map_err(invalid)?;
+        let registry_original = selection
+            .lease
+            .read(&registry_path, 8 * 1024 * 1024)
+            .map_err(|error| invalid(error.to_string()))?;
+        let registry: crate::skill_fork_registry::ForkRegistry =
+            serde_json::from_slice(&registry_original)
+                .map_err(|error| invalid(error.to_string()))?;
+        let record = registry
+            .copies
+            .get(&request.deployment_id)
+            .ok_or_else(|| invalid("Copy registry record is missing".into()))?;
+        if record.content_hash != original_hash {
+            return Err(invalid(
+                "Copy folder does not match its registry hash".into(),
+            ));
+        }
+        let folder_hashes = (original_hash, proposed_hash.clone());
+        let transition =
+            crate::skill_copy_repair::CopyRepairTransition::new(record.clone(), proposed_hash)
+                .map_err(invalid)?;
+        let registry_proposed = transition
+            .apply_document(&registry_original)
+            .map_err(invalid)?;
+        selection.lease.revalidate()?;
+        Ok(PreparedCopyRepairSelection {
+            selection,
+            transition,
+            registry_path,
+            registry_original,
+            registry_proposed,
+            content,
+            content_scope,
+            folder_hashes,
+        })
+    }
+
+    pub fn prepare_copy_repair_recovery(
+        &mut self,
+        row: &crate::skill_event::EventRow,
+        store: &crate::skill_event_store::EventStore,
+        timeout: Option<Duration>,
+        cancellation: CancellationToken,
+    ) -> Result<PreparedCopyRepairRecovery<'_>, WritePreparationError> {
+        let invalid = WritePreparationError::InvalidRepairSelection;
+        let event = crate::skill_repair_recovery_event::CopyRepairRecoveryEvent::from_row(row)
+            .map_err(invalid)?;
+        let intent = event.intent();
+        if intent.registry_path != self.context.home().join(".agents/skill-studio.json") {
+            return Err(invalid(
+                "Copy recovery registry is outside the selected home".into(),
+            ));
+        }
+        let names = BTreeSet::from([intent.document.name.clone()]);
+        let (inventory, lease) = self.prepare_write_inventory(
+            Some(&names),
+            std::slice::from_ref(&store.app_data),
+            timeout,
+            cancellation.clone(),
+        )?;
+        let deployment = exact_repair_deployment(&inventory, &intent.document.deployment_id)?;
+        if std::path::Path::new(&deployment.path) != intent.document.path
+            || deployment.is_symlink
+            || deployment.plugin.is_some()
+            || deployment.disabled != intent.transition.is_disabled()
+            || !matches!(
+                deployment.owner_kind,
+                crate::skill_ownership::LifecycleOwnerKind::Copy
+                    | crate::skill_ownership::LifecycleOwnerKind::Unknown
+                    | crate::skill_ownership::LifecycleOwnerKind::Manual
+                    | crate::skill_ownership::LifecycleOwnerKind::InRepo
+            )
+        {
+            return Err(invalid(format!(
+                "Copy recovery target ownership or location changed: {:?}",
+                deployment.owner_kind
+            )));
+        }
+        let backup = crate::skill_repair_backup::VerifiedCopyRepairBackup::read(
+            &store.app_data,
+            &event,
+            &lease,
+        )
+        .map_err(invalid)?;
+        let document = lease
+            .read(
+                &intent.document.path.join("SKILL.md"),
+                MAX_REPAIR_DOCUMENT_BYTES,
+            )
+            .map_err(|error| invalid(error.to_string()))?;
+        let registry_original = lease
+            .read(&intent.registry_path, 8 * 1024 * 1024)
+            .map_err(|error| invalid(error.to_string()))?;
+        let content_scope =
+            crate::skill_scope::SkillReadScope::bind(std::slice::from_ref(&intent.document.path))
+                .map_err(|error| invalid(error.to_string()))?;
+        let content = crate::skill_discovery::PreparedCopyRepairContent::enumerate_cancellable(
+            &content_scope,
+            &intent.document.path,
+            &cancellation,
+        )
+        .map_err(invalid)?;
+        let (hash, _) = content
+            .hashes(&content_scope, &lease, &document, &document)
+            .map_err(invalid)?;
+        let state = intent
+            .classify_observed(&document, &registry_original, &hash)
+            .map_err(invalid)?;
+        let prepared = PreparedCopyRepairRecovery {
+            event,
+            state,
+            registry_original,
+            lease,
+            backup,
+            content,
+            content_scope,
+            document,
+        };
+        prepared.revalidate().map_err(invalid)?;
+        Ok(prepared)
+    }
+
+    pub fn prepare_copy_redo_recovery(
+        &mut self,
+        source_row: &crate::skill_event::EventRow,
+        undo_row: &crate::skill_event::EventRow,
+        redo_row: &crate::skill_event::EventRow,
+        store: &crate::skill_event_store::EventStore,
+        timeout: Option<Duration>,
+        cancellation: CancellationToken,
+    ) -> Result<PreparedCopyRedoRecovery<'_>, WritePreparationError> {
+        let invalid = WritePreparationError::InvalidRepairSelection;
+        let event = crate::skill_repair_recovery_event::CopyRedoRecoveryEvent::from_rows(
+            source_row, undo_row, redo_row,
+        )
+        .map_err(invalid)?;
+        let intent = &event.intent().repair;
+        if intent.registry_path != self.context.home().join(".agents/skill-studio.json") {
+            return Err(invalid(
+                "Copy redo recovery registry is outside the selected home".into(),
+            ));
+        }
+        let names = BTreeSet::from([intent.document.name.clone()]);
+        let (inventory, lease) = self.prepare_write_inventory(
+            Some(&names),
+            std::slice::from_ref(&store.app_data),
+            timeout,
+            cancellation.clone(),
+        )?;
+        let deployment = exact_repair_deployment(&inventory, &intent.document.deployment_id)?;
+        if std::path::Path::new(&deployment.path) != intent.document.path
+            || deployment.is_symlink
+            || deployment.plugin.is_some()
+            || deployment.disabled != intent.transition.is_disabled()
+            || !matches!(
+                deployment.owner_kind,
+                crate::skill_ownership::LifecycleOwnerKind::Copy
+                    | crate::skill_ownership::LifecycleOwnerKind::Unknown
+                    | crate::skill_ownership::LifecycleOwnerKind::Manual
+                    | crate::skill_ownership::LifecycleOwnerKind::InRepo
+            )
+        {
+            return Err(invalid(format!(
+                "Copy redo recovery target ownership or location changed: {:?}",
+                deployment.owner_kind
+            )));
+        }
+        let backup = crate::skill_repair_backup::VerifiedCopyRedoBackups::read(
+            &store.app_data,
+            &event,
+            &lease,
+        )
+        .map_err(invalid)?;
+        let document = lease
+            .read(
+                &intent.document.path.join("SKILL.md"),
+                MAX_REPAIR_DOCUMENT_BYTES,
+            )
+            .map_err(|error| invalid(error.to_string()))?;
+        let registry_original = lease
+            .read(&intent.registry_path, 8 * 1024 * 1024)
+            .map_err(|error| invalid(error.to_string()))?;
+        let content_scope =
+            crate::skill_scope::SkillReadScope::bind(std::slice::from_ref(&intent.document.path))
+                .map_err(|error| invalid(error.to_string()))?;
+        let content = crate::skill_discovery::PreparedCopyRepairContent::enumerate_cancellable(
+            &content_scope,
+            &intent.document.path,
+            &cancellation,
+        )
+        .map_err(invalid)?;
+        let (hash, _) = content
+            .hashes(&content_scope, &lease, &document, &document)
+            .map_err(invalid)?;
+        let state = intent
+            .classify_observed(&document, &registry_original, &hash)
+            .map_err(invalid)?;
+        let prepared = PreparedCopyRedoRecovery {
+            event,
+            state,
+            registry_original,
+            lease,
+            backup,
+            content,
+            content_scope,
+            document,
+        };
+        prepared.revalidate().map_err(invalid)?;
+        Ok(prepared)
+    }
+
+    pub fn prepare_copy_undo_recovery(
+        &mut self,
+        source_row: &crate::skill_event::EventRow,
+        undo_row: &crate::skill_event::EventRow,
+        store: &crate::skill_event_store::EventStore,
+        timeout: Option<Duration>,
+        cancellation: CancellationToken,
+    ) -> Result<PreparedCopyUndoRecovery<'_>, WritePreparationError> {
+        let invalid = WritePreparationError::InvalidRepairSelection;
+        let event = crate::skill_repair_recovery_event::CopyUndoRecoveryEvent::from_rows(
+            source_row, undo_row,
+        )
+        .map_err(invalid)?;
+        let intent = event.intent();
+        if intent.registry_path != self.context.home().join(".agents/skill-studio.json") {
+            return Err(invalid(
+                "Copy undo recovery registry is outside the selected home".into(),
+            ));
+        }
+        let names = BTreeSet::from([intent.document.name.clone()]);
+        let (inventory, lease) = self.prepare_write_inventory(
+            Some(&names),
+            std::slice::from_ref(&store.app_data),
+            timeout,
+            cancellation.clone(),
+        )?;
+        let deployment = exact_repair_deployment(&inventory, &intent.document.deployment_id)?;
+        if std::path::Path::new(&deployment.path) != intent.document.path
+            || deployment.is_symlink
+            || deployment.plugin.is_some()
+            || deployment.disabled != intent.transition.is_disabled()
+            || !matches!(
+                deployment.owner_kind,
+                crate::skill_ownership::LifecycleOwnerKind::Copy
+                    | crate::skill_ownership::LifecycleOwnerKind::Unknown
+                    | crate::skill_ownership::LifecycleOwnerKind::Manual
+                    | crate::skill_ownership::LifecycleOwnerKind::InRepo
+            )
+        {
+            return Err(invalid(format!(
+                "Copy undo recovery target ownership or location changed: {:?}",
+                deployment.owner_kind
+            )));
+        }
+        let backup = crate::skill_repair_backup::VerifiedCopyUndoBackups::read(
+            &store.app_data,
+            &event,
+            &lease,
+        )
+        .map_err(invalid)?;
+        let document = lease
+            .read(
+                &intent.document.path.join("SKILL.md"),
+                MAX_REPAIR_DOCUMENT_BYTES,
+            )
+            .map_err(|error| invalid(error.to_string()))?;
+        let registry_original = lease
+            .read(&intent.registry_path, 8 * 1024 * 1024)
+            .map_err(|error| invalid(error.to_string()))?;
+        let content_scope =
+            crate::skill_scope::SkillReadScope::bind(std::slice::from_ref(&intent.document.path))
+                .map_err(|error| invalid(error.to_string()))?;
+        let content = crate::skill_discovery::PreparedCopyRepairContent::enumerate_cancellable(
+            &content_scope,
+            &intent.document.path,
+            &cancellation,
+        )
+        .map_err(invalid)?;
+        let (hash, _) = content
+            .hashes(&content_scope, &lease, &document, &document)
+            .map_err(invalid)?;
+        let state = intent
+            .classify_undo_observed(&document, &registry_original, &hash)
+            .map_err(invalid)?;
+        let prepared = PreparedCopyUndoRecovery {
+            event,
+            state,
+            registry_original,
+            lease,
+            backup,
+            content,
+            content_scope,
+            document,
+        };
+        prepared.revalidate().map_err(invalid)?;
+        Ok(prepared)
+    }
+
+    pub fn prepare_copy_repair_undo(
+        &mut self,
+        row: &crate::skill_event::EventRow,
+        store: &crate::skill_event_store::EventStore,
+        timeout: Option<Duration>,
+        cancellation: CancellationToken,
+    ) -> Result<PreparedCopyRepairUndo<'_>, WritePreparationError> {
+        let invalid = WritePreparationError::InvalidRepairSelection;
+        let source = crate::skill_repair_recovery_event::CopyRepairUndoSource::from_row(row)
+            .map_err(invalid)?;
+        let intent = source.intent();
+        if intent.registry_path != self.context.home().join(".agents/skill-studio.json") {
+            return Err(invalid(
+                "Copy undo registry is outside the selected home".into(),
+            ));
+        }
+        let names = BTreeSet::from([intent.document.name.clone()]);
+        let (inventory, lease) = self.prepare_write_inventory(
+            Some(&names),
+            std::slice::from_ref(&store.app_data),
+            timeout,
+            cancellation.clone(),
+        )?;
+        let deployment = exact_repair_deployment(&inventory, &intent.document.deployment_id)?;
+        if std::path::Path::new(&deployment.path) != intent.document.path
+            || deployment.is_symlink
+            || deployment.plugin.is_some()
+            || deployment.disabled != intent.transition.is_disabled()
+            || deployment.owner_kind != crate::skill_ownership::LifecycleOwnerKind::Copy
+        {
+            return Err(invalid(format!(
+                "Copy undo target ownership or location changed: {:?}",
+                deployment.owner_kind
+            )));
+        }
+        let backup = crate::skill_repair_backup::VerifiedCopyRepairBackup::read_undo_source(
+            &store.app_data,
+            &source,
+            &lease,
+        )
+        .map_err(invalid)?;
+        let document = lease
+            .read(
+                &intent.document.path.join("SKILL.md"),
+                MAX_REPAIR_DOCUMENT_BYTES,
+            )
+            .map_err(|error| invalid(error.to_string()))?;
+        let registry_original = lease
+            .read(&intent.registry_path, 8 * 1024 * 1024)
+            .map_err(|error| invalid(error.to_string()))?;
+        let content_scope =
+            crate::skill_scope::SkillReadScope::bind(std::slice::from_ref(&intent.document.path))
+                .map_err(|error| invalid(error.to_string()))?;
+        let content = crate::skill_discovery::PreparedCopyRepairContent::enumerate_cancellable(
+            &content_scope,
+            &intent.document.path,
+            &cancellation,
+        )
+        .map_err(invalid)?;
+        let (hash, _) = content
+            .hashes(&content_scope, &lease, &document, &document)
+            .map_err(invalid)?;
+        let plan = crate::skill_copy_repair::CopyRepairUndoPlan::from_observed(
+            &source,
+            &backup,
+            &document,
+            &registry_original,
+            &hash,
+        )
+        .map_err(invalid)?;
+        let prepared = PreparedCopyRepairUndo {
+            source,
+            plan,
+            lease,
+            backup,
+            content,
+            content_scope,
+        };
+        prepared.revalidate().map_err(invalid)?;
+        Ok(prepared)
+    }
+
+    pub fn prepare_copy_repair_redo(
+        &mut self,
+        source_row: &crate::skill_event::EventRow,
+        undo_row: &crate::skill_event::EventRow,
+        store: &crate::skill_event_store::EventStore,
+        timeout: Option<Duration>,
+        cancellation: CancellationToken,
+    ) -> Result<PreparedCopyRepairRedo<'_>, WritePreparationError> {
+        let invalid = WritePreparationError::InvalidRepairSelection;
+        let source = crate::skill_repair_recovery_event::CopyRepairRedoSource::from_rows(
+            source_row, undo_row,
+        )
+        .map_err(invalid)?;
+        let intent = source.intent();
+        if intent.registry_path != self.context.home().join(".agents/skill-studio.json") {
+            return Err(invalid(
+                "Copy redo registry is outside the selected home".into(),
+            ));
+        }
+        let names = BTreeSet::from([intent.document.name.clone()]);
+        let (inventory, lease) = self.prepare_write_inventory(
+            Some(&names),
+            std::slice::from_ref(&store.app_data),
+            timeout,
+            cancellation.clone(),
+        )?;
+        let deployment = exact_repair_deployment(&inventory, &intent.document.deployment_id)?;
+        if std::path::Path::new(&deployment.path) != intent.document.path
+            || deployment.is_symlink
+            || deployment.plugin.is_some()
+            || deployment.disabled != intent.transition.is_disabled()
+            || deployment.owner_kind != crate::skill_ownership::LifecycleOwnerKind::Copy
+        {
+            return Err(invalid(format!(
+                "Copy redo target ownership or location changed: {:?}",
+                deployment.owner_kind
+            )));
+        }
+        let backup = crate::skill_repair_backup::VerifiedCopyUndoBackups::read_redo_source(
+            &store.app_data,
+            &source,
+            &lease,
+        )
+        .map_err(invalid)?;
+        let document = lease
+            .read(
+                &intent.document.path.join("SKILL.md"),
+                MAX_REPAIR_DOCUMENT_BYTES,
+            )
+            .map_err(|error| invalid(error.to_string()))?;
+        let registry_original = lease
+            .read(&intent.registry_path, 8 * 1024 * 1024)
+            .map_err(|error| invalid(error.to_string()))?;
+        let content_scope =
+            crate::skill_scope::SkillReadScope::bind(std::slice::from_ref(&intent.document.path))
+                .map_err(|error| invalid(error.to_string()))?;
+        let content = crate::skill_discovery::PreparedCopyRepairContent::enumerate_cancellable(
+            &content_scope,
+            &intent.document.path,
+            &cancellation,
+        )
+        .map_err(invalid)?;
+        let (hash, _) = content
+            .hashes(&content_scope, &lease, &document, &document)
+            .map_err(invalid)?;
+        let plan = crate::skill_copy_repair::CopyRepairRedoPlan::from_observed(
+            &source,
+            &backup,
+            &document,
+            &registry_original,
+            &hash,
+        )
+        .map_err(invalid)?;
+        let prepared = PreparedCopyRepairRedo {
+            source,
+            plan,
+            lease,
+            backup,
+            content,
+            content_scope,
+        };
+        prepared.revalidate().map_err(invalid)?;
+        Ok(prepared)
+    }
+
+    pub fn preview_frontmatter_repair(
+        &mut self,
+        deployment_id: &str,
+        timeout: Option<Duration>,
+        cancellation: CancellationToken,
+    ) -> Result<crate::skill_frontmatter_repair::FrontmatterRepairPreview, RepairPreviewError> {
+        let span = tracing::info_span!(
+            "skill.repair.preview",
+            outcome = "running",
+            error_code = tracing::field::Empty,
+            duration_ms = tracing::field::Empty
+        );
+        let _entered = span.enter();
+        let started = Instant::now();
+        let result = self.preview_frontmatter_repair_read(deployment_id, timeout, cancellation);
+        let (outcome, code) = match &result {
+            Ok(_) => ("complete", "none"),
+            Err(RepairPreviewError::IncompleteInventory) => ("partial", "incomplete_inventory"),
+            Err(RepairPreviewError::Scan(ScanError::Coordination(
+                CoordinationFailure::Cancelled,
+            ))) => ("cancelled", "cancelled"),
+            Err(error) => ("failed", error.code()),
+        };
+        let duration_ms = started.elapsed().as_secs_f64() * 1000.0;
+        span.record("outcome", outcome);
+        span.record("error_code", code);
+        span.record("duration_ms", duration_ms);
+        tracing::info!(
+            outcome,
+            error_code = code,
+            duration_ms,
+            "skill.repair.preview.finished"
+        );
+        result
+    }
+
+    fn preview_frontmatter_repair_read(
+        &mut self,
+        deployment_id: &str,
+        timeout: Option<Duration>,
+        cancellation: CancellationToken,
+    ) -> Result<crate::skill_frontmatter_repair::FrontmatterRepairPreview, RepairPreviewError> {
+        let selected = crate::skill_deployment::parse_deployment_id(deployment_id)
+            .ok_or(RepairPreviewError::TargetNotFound)?;
+        let names = BTreeSet::from([selected.name]);
+        let (inventory, guard) = self
+            .scan_read_guarded(Some(&names), timeout, Some(cancellation))
+            .map_err(RepairPreviewError::Scan)?;
+        if !inventory_read_blockers(
+            &inventory.scope,
+            inventory.extent,
+            &inventory.source_coverage,
+            &inventory.ownership,
+        )
+        .is_empty()
+        {
+            return Err(RepairPreviewError::IncompleteInventory);
+        }
+        let mut matches = inventory
+            .skills
+            .iter()
+            .flat_map(|skill| &skill.deployments)
+            .filter(|deployment| deployment.id == deployment_id);
+        let deployment = matches.next().ok_or(RepairPreviewError::TargetNotFound)?;
+        if matches.next().is_some() {
+            return Err(RepairPreviewError::AmbiguousTarget);
+        }
+        if matches!(
+            deployment.owner_kind,
+            crate::skill_ownership::LifecycleOwnerKind::Unknown
+                | crate::skill_ownership::LifecycleOwnerKind::Ambiguous
+        ) {
+            return Err(RepairPreviewError::IncompleteInventory);
+        }
+        let path = PathBuf::from(&deployment.path).join("SKILL.md");
+        let scope = self.context.read_scope();
+        let guard = guard
+            .extend_with_files(scope, std::slice::from_ref(&path))
+            .and_then(|guard| guard.finalize(scope))
+            .map_err(|error| RepairPreviewError::Scan(error.into()))?;
+        let bytes = guard.read(&path, MAX_REPAIR_DOCUMENT_BYTES);
+        guard
+            .check_cancelled()
+            .map_err(|error| RepairPreviewError::Scan(error.into()))?;
+        guard
+            .revalidate()
+            .map_err(|error| RepairPreviewError::Scan(error.into()))?;
+        let bytes = bytes.map_err(|_| RepairPreviewError::DocumentUnavailable)?;
+        let preview =
+            crate::skill_frontmatter_repair::preview_frontmatter_repair(deployment, &bytes);
+        guard
+            .revalidate()
+            .map_err(|error| RepairPreviewError::Scan(error.into()))?;
+        self.context
+            .revalidate_roots()
+            .map_err(|_| RepairPreviewError::Scan(CoordinationFailure::Changed.into()))?;
+        guard
+            .check_cancelled()
+            .map_err(|error| RepairPreviewError::Scan(error.into()))?;
+        preview.map_err(|_| RepairPreviewError::UnsupportedRepair)
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RepairRecoveryDocumentState {
+    Original,
+    Proposed,
+}
+
+#[cfg(all(unix, feature = "event-store"))]
+pub struct PreparedRepairRecovery<'scope> {
+    deployment: crate::skill_inventory::Deployment,
+    document_state: RepairRecoveryDocumentState,
+    lease: crate::skill_coordination::FinalizedWriteLease<'scope>,
+}
+
+#[cfg(all(unix, feature = "event-store"))]
+impl<'scope> PreparedRepairRecovery<'scope> {
+    pub fn into_parts(
+        self,
+    ) -> (
+        crate::skill_inventory::Deployment,
+        RepairRecoveryDocumentState,
+        crate::skill_coordination::FinalizedWriteLease<'scope>,
+    ) {
+        (self.deployment, self.document_state, self.lease)
+    }
+}
+
+#[cfg(all(unix, feature = "event-store"))]
+pub struct PreparedRepairEventRecovery<'scope> {
+    event: crate::skill_repair_recovery_event::RepairRecoveryEvent,
+    recovery: PreparedRepairRecovery<'scope>,
+}
+
+#[cfg(all(unix, feature = "event-store"))]
+impl<'scope> PreparedRepairEventRecovery<'scope> {
+    pub fn into_parts(
+        self,
+    ) -> (
+        crate::skill_repair_recovery_event::RepairRecoveryEvent,
+        PreparedRepairRecovery<'scope>,
+    ) {
+        (self.event, self.recovery)
+    }
+}
+
+#[cfg(all(unix, feature = "event-store"))]
+impl ScopedSkillService {
+    pub fn prepare_repair_event_recovery(
+        &mut self,
+        row: &crate::skill_event::EventRow,
+        additional_trees: &[PathBuf],
+        timeout: Option<Duration>,
+        cancellation: CancellationToken,
+    ) -> Result<PreparedRepairEventRecovery<'_>, WritePreparationError> {
+        let event = crate::skill_repair_recovery_event::RepairRecoveryEvent::from_row(row)
+            .map_err(WritePreparationError::InvalidRepairSelection)?;
+        let recovery =
+            self.prepare_repair_recovery(event.intent(), additional_trees, timeout, cancellation)?;
+        Ok(PreparedRepairEventRecovery { event, recovery })
+    }
+    pub fn prepare_repair_recovery(
+        &mut self,
+        intent: &crate::skill_repair_intent::FrontmatterRepairIntent,
+        additional_trees: &[PathBuf],
+        timeout: Option<Duration>,
+        cancellation: CancellationToken,
+    ) -> Result<PreparedRepairRecovery<'_>, WritePreparationError> {
+        intent
+            .validate_record()
+            .map_err(WritePreparationError::InvalidRepairSelection)?;
+        let names = BTreeSet::from([intent.name.clone()]);
+        let (inventory, lease) =
+            self.prepare_write_inventory(Some(&names), additional_trees, timeout, cancellation)?;
+        let deployment = exact_repair_deployment(&inventory, &intent.deployment_id)?;
+        if std::path::Path::new(&deployment.path) != intent.path {
+            return Err(WritePreparationError::InvalidRepairSelection(
+                "Recovery target path changed".into(),
+            ));
+        }
+        if intent.mode != crate::skill_frontmatter_repair::FrontmatterRepairApplyMode::ForkAndFix {
+            intent
+                .validate_direct_recovery_deployment(deployment)
+                .map_err(WritePreparationError::InvalidRepairSelection)?;
+        }
+        let bytes = lease
+            .read(
+                &PathBuf::from(&deployment.path).join("SKILL.md"),
+                MAX_REPAIR_DOCUMENT_BYTES,
+            )
+            .map_err(|error| WritePreparationError::InvalidRepairSelection(error.to_string()))?;
+        let fingerprint = crate::skill_frontmatter_repair::content_fingerprint(&bytes);
+        let document_state = if fingerprint == intent.expected_content_fingerprint {
+            intent
+                .validate_original(&bytes)
+                .map_err(WritePreparationError::InvalidRepairSelection)?;
+            RepairRecoveryDocumentState::Original
+        } else if fingerprint == intent.proposed_content_fingerprint {
+            RepairRecoveryDocumentState::Proposed
+        } else {
+            return Err(WritePreparationError::InvalidRepairSelection(
+                "Recovery document differs from both sides of the intent".into(),
+            ));
+        };
+        lease.revalidate()?;
+        Ok(PreparedRepairRecovery {
+            deployment: deployment.clone(),
+            document_state,
+            lease,
+        })
+    }
+}

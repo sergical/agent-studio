@@ -245,11 +245,11 @@ export function InstalledSkillHeader({
         <InstalledSkillSourceLedger skill={skill} />
       </div>
 
-      {blockingViolations.length > 0 && (
+      {(blockingViolations.length > 0 || frontmatterRepair) && (
         <div className="flex items-center gap-2 text-small text-error">
           <AlertTriangle size={13} />
-          <span>{blockingViolations.join("; ")}</span>
-          {hasMalformedYaml && (
+          <span>{blockingViolations.join("; ") || frontmatterRepair?.reason}</span>
+          {(hasMalformedYaml || frontmatterRepair) && (
             <Button
               size="sm"
               variant="outline"

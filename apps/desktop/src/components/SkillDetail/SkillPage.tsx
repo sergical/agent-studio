@@ -212,7 +212,10 @@ export function SkillPage({
   const isEditing = editorOpenedContent !== null;
   const [isEditorDirty, setIsEditorDirty] = useState(false);
   const [isCompareOpen, setIsCompareOpen] = useState(false);
-  const [frontmatterRepair, setFrontmatterRepair] = useState<FrontmatterRepairPreview | null>(null);
+  const [frontmatterRepair, setFrontmatterRepair] = useState<{
+    context: string;
+    preview: FrontmatterRepairPreview;
+  } | null>(null);
   const [isFrontmatterRepairOpen, setIsFrontmatterRepairOpen] = useState(false);
   const assistantTriggerRef = useRef<HTMLButtonElement>(null);
 
@@ -301,20 +304,37 @@ export function SkillPage({
     deployment && !isDeploymentBroken ? skillMdPathForDeployment(deployment) : undefined;
   const isPluginManaged = Boolean(deployment?.plugin);
 
+  const repairDeploymentId = deployment?.id;
+  const repairContext = JSON.stringify([
+    repairDeploymentId,
+    deployment?.content_hash,
+    deployment?.owner_kind,
+    deployment?.owner_revision,
+    deployment?.mutability,
+    deployment?.disabled,
+    Boolean(deployment?.plugin),
+    hasMalformedYamlWarning(deployment ?? undefined),
+  ]);
+  const hasMalformedYaml = hasMalformedYamlWarning(deployment ?? undefined);
   useEffect(() => {
-    if (!deployment || !hasMalformedYamlWarning(deployment)) return;
+    setFrontmatterRepair(null);
+    if (!repairDeploymentId || !hasMalformedYaml) return;
     let ignore = false;
-    previewSkillFrontmatterRepair(lifecycleTargetForDeployment(deployment))
+    previewSkillFrontmatterRepair({ deployment_id: repairDeploymentId })
       .then((preview) => {
-        if (!ignore && preview.deployment_id === deployment.id) setFrontmatterRepair(preview);
+        if (!ignore && preview.deployment_id === repairDeploymentId)
+          setFrontmatterRepair({ context: repairContext, preview });
       })
       .catch(() => undefined);
     return () => {
       ignore = true;
     };
-  }, [deployment]);
+  }, [repairDeploymentId, repairContext, hasMalformedYaml]);
   const selectedFrontmatterRepair =
-    frontmatterRepair?.deployment_id === deployment?.id ? frontmatterRepair : null;
+    frontmatterRepair?.context === repairContext &&
+    frontmatterRepair.preview.deployment_id === deployment?.id
+      ? frontmatterRepair.preview
+      : null;
 
   const {
     rawContent,

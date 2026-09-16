@@ -1,10 +1,15 @@
+#[cfg(test)]
 use std::path::Path;
+#[cfg(test)]
 use std::time::Duration;
 
 use skill_studio_core::skill_backup_reservation::BackupCopyLimits;
+#[cfg(test)]
 use skill_studio_core::skill_copy_removal::{recover_copy_removal, EVENT_KIND};
+#[cfg(test)]
 use skill_studio_core::skill_service::ScopedSkillService;
 
+#[cfg(test)]
 use super::event_store::EventStore;
 
 pub(crate) fn removal_limits() -> BackupCopyLimits {
@@ -15,6 +20,7 @@ pub(crate) fn removal_limits() -> BackupCopyLimits {
     }
 }
 
+#[cfg(test)]
 pub(crate) fn recover_at_startup(store: &EventStore, home: &Path) -> Result<(), String> {
     let rows = store.interrupted_events_of_kind(EVENT_KIND)?;
     if rows.is_empty() {

@@ -267,13 +267,13 @@ pub(crate) struct CoordinatedReadGuard {
 
 /// Retains the completed read plan and its scope without an extension path.
 /// This lease permits only planned reads; it does not authorize writes.
-#[cfg(test)]
+#[cfg(any(test, feature = "event-store"))]
 pub(crate) struct FinalizedReadLease<'scope> {
     guard: CoordinatedReadGuard,
     scope: &'scope SkillReadScope,
 }
 
-#[cfg(test)]
+#[cfg(any(test, feature = "event-store"))]
 impl FinalizedReadLease<'_> {
     pub(crate) fn read(&self, path: &Path, limit: usize) -> Result<Vec<u8>, ScopedReadError> {
         self.guard.read(self.scope, path, limit)
@@ -942,7 +942,7 @@ impl CoordinatedReadGuard {
         })
     }
 
-    #[cfg(test)]
+    #[cfg(any(test, feature = "event-store"))]
     pub(crate) fn finalize(
         self,
         scope: &SkillReadScope,
@@ -2009,6 +2009,79 @@ fn backoff(
     }
     thread::sleep(deadline.remaining().min(Duration::from_millis(2)));
     Ok(())
+}
+
+#[cfg(all(unix, feature = "event-store"))]
+impl FinalizedWriteLease<'_> {
+    pub fn backup_documents(
+        &self,
+        root: &crate::skill_backup_reservation::BackupStateRoot,
+        id: &str,
+        sources: Vec<crate::skill_backup_source::BackupSource>,
+        limits: crate::skill_backup_reservation::BackupCopyLimits,
+    ) -> Result<crate::skill_event::BackupManifest, String> {
+        self.backup_documents_prepared(root, id, sources, limits)
+            .map_err(|error| error.to_string())
+    }
+    pub fn backup_documents_prepared(
+        &self,
+        root: &crate::skill_backup_reservation::BackupStateRoot,
+        id: &str,
+        sources: Vec<crate::skill_backup_source::BackupSource>,
+        limits: crate::skill_backup_reservation::BackupCopyLimits,
+    ) -> Result<crate::skill_event::BackupManifest, PreparedContentError> {
+        self.validate_state_tree_prepared(&root.path)?;
+        if sources.is_empty() || sources.len() > self.guard.files.len() {
+            return Err("Backup documents must be a nonempty subset of planned files".into());
+        }
+        let mut unique = std::collections::BTreeSet::new();
+        for source in &sources {
+            if !unique.insert(source.original_path.clone()) {
+                return Err("Backup documents must be unique".into());
+            }
+            source.revalidate().map_err(PreparedContentError::from)?;
+            if !source
+                .directory
+                .symlink_metadata(&source.name)
+                .map_err(PreparedContentError::from)?
+                .is_file()
+            {
+                return Err("Backup document must be a regular file entry".into());
+            }
+            self.validate_document(&source.original_path)
+                .map_err(PreparedContentError::from)?;
+        }
+        let cancellation = self
+            .guard
+            .guard
+            .deadline
+            .cancellation
+            .clone()
+            .unwrap_or_default();
+        let mut builder = crate::skill_backup_manifest::BackupManifestBuilder::new(
+            root,
+            id,
+            limits,
+            cancellation,
+        )
+        .map_err(PreparedContentError::from)?;
+        for source in sources {
+            builder = builder
+                .add_source(source)
+                .map_err(PreparedContentError::from)?;
+        }
+        self.revalidate().map_err(PreparedContentError::from)?;
+        let manifest = builder.finish().map_err(PreparedContentError::from)?;
+        self.revalidate().map_err(PreparedContentError::from)?;
+        Ok(manifest)
+    }
+}
+
+#[cfg(any(test, feature = "event-store"))]
+impl FinalizedReadLease<'_> {
+    pub(crate) fn check_cancelled(&self) -> Result<(), CoordinationFailure> {
+        self.guard.check_cancelled()
+    }
 }
 
 #[cfg(test)]

@@ -7,6 +7,7 @@ use cap_std::fs::{Dir, Metadata, MetadataExt, OpenOptions};
 use std::{io, io::Write, path::Path};
 
 pub struct BackupStateRoot {
+    pub(crate) path: std::path::PathBuf,
     scope: SkillReadScope,
     directory: Dir,
 }
@@ -76,6 +77,7 @@ impl BackupStateRoot {
         Ok(Self {
             scope,
             directory: directory.into(),
+            path: path.to_path_buf(),
         })
     }
 
