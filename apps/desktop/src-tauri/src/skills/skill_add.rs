@@ -466,7 +466,11 @@ fn add_via_skills_sh(
     };
     let args = skills_sh_universal_add_args(&repo, skill_name.as_deref(), &spec)?;
 
-    runner.run_npx(&args, None)?;
+    let cwd = match request.scope {
+        InstallScope::Global => None,
+        InstallScope::Project => request.project_path.as_deref().map(Path::new),
+    };
+    runner.run_npx(&args, cwd)?;
 
     let result_name =
         skill_name.unwrap_or_else(|| repo.split('/').next_back().unwrap_or(&repo).to_string());
@@ -1669,12 +1673,95 @@ mod tests {
     }
 
     #[test]
+    fn skills_sh_project_add_uses_project_as_the_child_cwd() {
+        let tmp = tempfile::tempdir().unwrap();
+        let project = tmp.path().join("project");
+        let source = github_source("getsentry/find-bugs", None, Some("find-bugs"));
+        let mut request = base_request(source, AddMethod::SkillsSh);
+        request.scope = InstallScope::Project;
+        request.project_path = Some(project.to_string_lossy().to_string());
+        let runner = FakeRunner::default();
+
+        add_skill_with(
+            tmp.path(),
+            &request,
+            &runner,
+            &NeverCalledFetch,
+            &NeverCalledLookup,
+        )
+        .unwrap();
+
+        let calls = runner.calls.lock().unwrap();
+        assert_eq!(calls.len(), 1);
+        assert_eq!(calls[0].1, Some(project));
+        assert!(!calls[0].0.contains(&"--cwd".to_string()));
+        assert!(!calls[0].0.contains(&"--global".to_string()));
+    }
+
+    #[test]
+    fn skills_sh_rejects_an_empty_project_path_before_running_the_cli() {
+        let tmp = tempfile::tempdir().unwrap();
+        let source = github_source("getsentry/find-bugs", None, Some("find-bugs"));
+        let mut request = base_request(source, AddMethod::SkillsSh);
+        request.scope = InstallScope::Project;
+        request.project_path = Some(String::new());
+        let runner = FakeRunner::default();
+
+        let error = add_skill_with(
+            tmp.path(),
+            &request,
+            &runner,
+            &NeverCalledFetch,
+            &NeverCalledLookup,
+        )
+        .unwrap_err();
+
+        assert_eq!(error, "Project scope needs a project path");
+        assert!(runner.calls.lock().unwrap().is_empty());
+    }
+
+    #[test]
+    fn skills_sh_project_batch_uses_project_as_each_child_cwd() {
+        let tmp = tempfile::tempdir().unwrap();
+        let project = tmp.path().join("project");
+        let mut request = batch_request(
+            github_source("kentcdodds/kcd-skills", Some("skills"), None),
+            AddMethod::SkillsSh,
+            vec![
+                entry("visual-recap", "skills/visual-recap"),
+                entry("other", "skills/other"),
+            ],
+        );
+        request.scope = InstallScope::Project;
+        request.project_path = Some(project.to_string_lossy().to_string());
+        let runner = FakeRunner::default();
+
+        add_skills_with(
+            tmp.path(),
+            &request,
+            &runner,
+            &NeverCalledFetch,
+            &NeverCalledLookup,
+        )
+        .unwrap();
+
+        let calls = runner.calls.lock().unwrap();
+        assert_eq!(calls.len(), 2);
+        for (args, cwd) in calls.iter() {
+            assert_eq!(cwd, &Some(project.clone()));
+            assert!(!args.contains(&"--cwd".to_string()));
+            assert!(!args.contains(&"--global".to_string()));
+        }
+    }
+
+    #[test]
     fn skills_sh_argv_uses_skill_and_agent_flags() {
         let tmp = tempfile::tempdir().unwrap();
         let home = tmp.path().to_path_buf();
         let source = github_source("getsentry/find-bugs", None, Some("find-bugs"));
         let mut request = base_request(source, AddMethod::SkillsSh);
         request.agents = vec![AgentId::ClaudeCode, AgentId::GrokBuild];
+        request.project_path = Some("/incidental/project".to_string());
 
         let runner = FakeRunner::default();
         let result = add_skill_with(
@@ -1693,6 +1780,8 @@ mod tests {
         assert!(args.contains(&"claude-code".to_string()));
         // Grok Build must never reach the CLI's argv.
         assert!(!args.contains(&"grok-build".to_string()));
+        assert!(args.contains(&"--global".to_string()));
+        assert_eq!(calls[0].1, None);
     }
 
     #[test]

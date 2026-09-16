@@ -4,7 +4,7 @@
 
 import { InstalledSkillLifecycleActions } from "./InstalledSkillLifecycleActions";
 import { SkillStoreInstallFlow } from "./SkillStoreInstallFlow";
-import type { SkillWithStatus } from "@skill-studio/lib";
+import type { AddSkillRequest, SkillWithStatus } from "@skill-studio/lib";
 
 /** Result reported after a skills.sh install or update attempt. */
 export interface SkillInstallCompletion {
@@ -17,7 +17,8 @@ export interface SkillInstallCompletion {
 interface InstallControlsProps {
   skill: SkillWithStatus;
   resolvedTopSource: string | null;
-  onInstallStart: (skillName: string) => void;
+  isInstalling: boolean;
+  onInstallStart: (skillName: string, request: AddSkillRequest) => void;
   onInstallComplete: (result: SkillInstallCompletion) => void;
   onRemoveComplete: () => void;
 }
@@ -26,6 +27,7 @@ interface InstallControlsProps {
 export function InstallControls({
   skill,
   resolvedTopSource,
+  isInstalling,
   onInstallStart,
   onInstallComplete,
   onRemoveComplete,
@@ -35,6 +37,7 @@ export function InstallControls({
       <SkillStoreInstallFlow
         skill={skill}
         resolvedTopSource={resolvedTopSource}
+        isInstalling={isInstalling}
         onInstallStart={onInstallStart}
         onInstallComplete={onInstallComplete}
       />

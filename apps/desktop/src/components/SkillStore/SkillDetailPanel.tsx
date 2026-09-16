@@ -9,12 +9,13 @@ import { SkillContent } from "./SkillContent";
 import { InstallControls } from "./InstallControls";
 import { getSkillDetails } from "../../lib/skill-api";
 import { useAppStore } from "../../store/appStore";
-import type { SkillDetails, SkillWithStatus } from "@skill-studio/lib";
+import type { AddSkillRequest, SkillDetails, SkillWithStatus } from "@skill-studio/lib";
 
 interface SkillDetailPanelProps {
   skill: SkillWithStatus;
+  isInstalling: boolean;
   onClose: () => void;
-  onInstallStart: (skillName: string) => void;
+  onInstallStart: (skillName: string, request: AddSkillRequest) => void;
   onInstallComplete: (result: {
     success: boolean;
     error?: string;
@@ -26,6 +27,7 @@ interface SkillDetailPanelProps {
 
 export function SkillDetailPanel({
   skill,
+  isInstalling,
   onClose,
   onInstallStart,
   onInstallComplete,
@@ -90,6 +92,7 @@ export function SkillDetailPanel({
       <InstallControls
         skill={skill}
         resolvedTopSource={resolvedTopSource}
+        isInstalling={isInstalling}
         onInstallStart={onInstallStart}
         onInstallComplete={onInstallComplete}
         onRemoveComplete={onRemoveComplete}

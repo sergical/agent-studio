@@ -2,18 +2,33 @@
 // SkillStore - Main skill discovery and management view
 // ============================================================================
 
-import { useState, useEffect, useCallback, useRef } from "react";
+import { useState, useEffect, useCallback, useReducer, useRef } from "react";
 import { Button, Drawer, Tabs, TabsContent, TabsList, TabsTrigger } from "@skill-studio/ui";
 import { SkillSearchBar } from "./SkillSearchBar";
 import { SkillBrowser } from "./SkillBrowser";
 import { SkillDetailPanel } from "./SkillDetailPanel";
 import { InstallProgressModal } from "./InstallProgressModal";
-import { searchSkills, getInstalledSkills, getPopularSkills } from "../../lib/skill-api";
+import {
+  cancelAddSkillOperation,
+  getAddSkillOperation,
+  getInstalledSkills,
+  getPopularSkills,
+  onAddSkillOperation,
+  searchSkills,
+  startAddSkillOperation,
+} from "../../lib/skill-api";
+import { createStoreInstallOperationController } from "./skill-store-install-operation";
 import type {
+  AddSkillOperationEvent,
+  AddSkillRequest,
   SkillSearchResult,
   InstalledSkill,
   SkillWithStatus,
-  InstallProgressState,
+} from "@skill-studio/lib";
+import {
+  addSkillFinishAction,
+  isAddSkillOperationCancellable,
+  isAddSkillOperationTerminal,
 } from "@skill-studio/lib";
 import { useAppStore } from "../../store/appStore";
 
@@ -275,7 +290,12 @@ export function SkillStore({ compact = false }: SkillStoreProps = {}) {
   // from whichever list (browse or installed) is current each render, so a
   // status change (e.g. install completing) is reflected without a sync effect.
   const [selectedSkillName, setSelectedSkillName] = useState<string | null>(null);
-  const [installProgress, setInstallProgress] = useState<InstallProgressState | null>(null);
+  const [installOperation, setInstallOperation] = useState<
+    { skillName: string; event: AddSkillOperationEvent; statusError?: string } | undefined
+  >(undefined);
+  const [isCancellingInstall, setIsCancellingInstall] = useState(false);
+  const installSkillNameRef = useRef("");
+  const consumedInstallOperationRef = useRef<string | undefined>(undefined);
 
   const addToast = useAppStore((state) => state.addToast);
   const projects = useAppStore((state) => state.userAddedProjects);
@@ -295,13 +315,90 @@ export function SkillStore({ compact = false }: SkillStoreProps = {}) {
     retry,
   } = useSkillStoreData(projects, addToast);
 
-  const handleInstallStart = (skillName: string) => {
-    setInstallProgress({
-      isInstalling: true,
-      skillName,
-      stage: "starting",
-      message: "Starting installation…",
-    });
+  const [installController] = useReducer(
+    (controller: ReturnType<typeof createStoreInstallOperationController>) => controller,
+    undefined,
+    () =>
+      createStoreInstallOperationController({
+        api: {
+          listen: onAddSkillOperation,
+          start: startAddSkillOperation,
+          read: getAddSkillOperation,
+          cancel: cancelAddSkillOperation,
+        },
+        createOperationId: () => crypto.randomUUID(),
+        onEvent: (event) => {
+          setInstallOperation((current) => ({
+            skillName:
+              current?.event.operation_id === event.operation_id
+                ? current.skillName
+                : installSkillNameRef.current,
+            event,
+          }));
+        },
+        onStatusError: (statusError) => {
+          setInstallOperation((current) => (current ? { ...current, statusError } : current));
+        },
+      }),
+  );
+
+  useEffect(() => {
+    return () => installController.dispose();
+  }, [installController]);
+
+  useEffect(() => {
+    if (!installOperation || !isAddSkillOperationTerminal(installOperation.event.phase)) return;
+    const { event } = installOperation;
+    if (consumedInstallOperationRef.current === event.operation_id) return;
+
+    consumedInstallOperationRef.current = event.operation_id;
+    installController.release(event.operation_id);
+    setIsCancellingInstall(false);
+    const finish = addSkillFinishAction(event);
+    if (finish.kind === "success") {
+      addToast({ type: "success", title: finish.title });
+      const warningMessage = [finish.message, finish.failedMessage].filter(Boolean).join("; ");
+      if (warningMessage) {
+        addToast({
+          type: "warning",
+          title: finish.failedTitle ?? `Installed ${installOperation.skillName}`,
+          message: warningMessage,
+        });
+      }
+    } else {
+      addToast({ type: "error", title: "Installation Failed", message: finish.error });
+    }
+    void loadInstalledSkills();
+  }, [addToast, installController, installOperation, loadInstalledSkills]);
+
+  const handleInstallStart = (skillName: string, request: AddSkillRequest) => {
+    if (installController.activeOperationId()) return;
+
+    installSkillNameRef.current = skillName;
+    consumedInstallOperationRef.current = undefined;
+    setIsCancellingInstall(false);
+    void installController.start(request);
+  };
+
+  const handleInstallCancel = async () => {
+    if (
+      !installOperation ||
+      (!isAddSkillOperationCancellable(installOperation.event.phase) &&
+        installOperation.event.phase !== "needs-trust")
+    ) {
+      return;
+    }
+    setIsCancellingInstall(true);
+    try {
+      await installController.cancel();
+    } catch (error) {
+      setIsCancellingInstall(false);
+      addToast({
+        type: "error",
+        title: "Could not cancel installation",
+        message: error instanceof Error ? error.message : "Unknown error",
+      });
+    }
   };
 
   const handleInstallComplete = (result: {
@@ -332,7 +429,6 @@ export function SkillStore({ compact = false }: SkillStoreProps = {}) {
         message: result.error || "Unknown error",
       });
     }
-    setInstallProgress(null);
   };
 
   const handleRemoveComplete = () => {
@@ -466,6 +562,9 @@ export function SkillStore({ compact = false }: SkillStoreProps = {}) {
         {selectedSkill && (
           <SkillDetailPanel
             skill={selectedSkill}
+            isInstalling={Boolean(
+              installOperation && !isAddSkillOperationTerminal(installOperation.event.phase),
+            )}
             onClose={() => setSelectedSkillName(null)}
             onInstallStart={handleInstallStart}
             onInstallComplete={handleInstallComplete}
@@ -474,8 +573,21 @@ export function SkillStore({ compact = false }: SkillStoreProps = {}) {
         )}
       </Drawer>
 
-      {installProgress && (
-        <InstallProgressModal progress={installProgress} onClose={() => setInstallProgress(null)} />
+      {installOperation && (
+        <InstallProgressModal
+          skillName={installOperation.skillName}
+          operation={installOperation.event}
+          statusError={installOperation.statusError}
+          isCancelling={isCancellingInstall}
+          onCancel={handleInstallCancel}
+          onClose={() => {
+            if (isAddSkillOperationTerminal(installOperation.event.phase)) {
+              setInstallOperation(undefined);
+            } else {
+              void handleInstallCancel();
+            }
+          }}
+        />
       )}
     </div>
   );

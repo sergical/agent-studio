@@ -142,4 +142,40 @@ describe("add skill operation phase policy", () => {
       failedMessage: "other: already exists",
     });
   });
+
+  it("keeps a cancel acknowledgement pending until the terminal event arrives", () => {
+    const acknowledgement = event("op-1", 3, "installing");
+    expect(isAddSkillOperationTerminal(acknowledgement.phase)).toBe(false);
+    expect(addSkillOperationProgressCopy(acknowledgement)).toBe("installing");
+
+    const terminal = event("op-1", 4, "cancelled");
+    expect(isAddSkillOperationTerminal(terminal.phase)).toBe(true);
+    expect(addSkillFinishAction(terminal)).toEqual({ kind: "error", error: "Cancelled" });
+  });
+
+  it("keeps start refusal and cleanup warnings visible", () => {
+    expect(
+      addSkillFinishAction({ ...event("op-1", 1, "failed"), error: "Operation slots are full" }),
+    ).toEqual({
+      kind: "error",
+      error: "Operation slots are full",
+    });
+    expect(
+      addSkillFinishAction({
+        ...event("op-2", 4, "completed"),
+        result: {
+          name: "visual-recap",
+          tool: "skills-sh",
+          command: "npx skills",
+          deployments_created: [],
+          warning: "Installed, but trial cleanup needs attention",
+        },
+      }),
+    ).toEqual({
+      kind: "success",
+      title: "Added visual-recap",
+      message: "Installed, but trial cleanup needs attention",
+      openName: "visual-recap",
+    });
+  });
 });

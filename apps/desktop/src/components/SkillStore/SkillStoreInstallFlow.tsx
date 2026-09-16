@@ -15,10 +15,16 @@ import {
   universalDisabledHarnesses,
   universalInstallHarnesses,
 } from "./universal-install-visibility";
-import { addSkill, getAddMethodDefaults } from "../../lib/skill-api";
+import { getAddMethodDefaults } from "../../lib/skill-api";
 import { useAppStore } from "../../store/appStore";
 import type { SkillInstallCompletion } from "./InstallControls";
-import type { AgentId, InstallScope, SkillDestination, SkillWithStatus } from "@skill-studio/lib";
+import type {
+  AddSkillRequest,
+  AgentId,
+  InstallScope,
+  SkillDestination,
+  SkillWithStatus,
+} from "@skill-studio/lib";
 
 const ACTION_BUTTON_CLASS =
   "h-(--control-height) w-full justify-center gap-2 rounded-md px-3.5 text-body font-medium";
@@ -29,7 +35,8 @@ const ignoreHarnessChange = () => {};
 interface SkillStoreInstallFlowProps {
   skill: SkillWithStatus;
   resolvedTopSource: string | null;
-  onInstallStart: (skillName: string) => void;
+  isInstalling: boolean;
+  onInstallStart: (skillName: string, request: AddSkillRequest) => void;
   onInstallComplete: (result: SkillInstallCompletion) => void;
 }
 
@@ -37,6 +44,7 @@ interface SkillStoreInstallFlowProps {
 export function SkillStoreInstallFlow({
   skill,
   resolvedTopSource,
+  isInstalling,
   onInstallStart,
   onInstallComplete,
 }: SkillStoreInstallFlowProps) {
@@ -47,7 +55,6 @@ export function SkillStoreInstallFlow({
   const [destination, setDestination] = useState<SkillDestination>("universal");
   const [installScope, setInstallScope] = useState<InstallScope>("global");
   const [selectedProject, setSelectedProject] = useState<string | null>(null);
-  const [isInstalling, setIsInstalling] = useState(false);
   const availableProjects = useAppStore((state) => state.userAddedProjects);
   const addProject = useAppStore((state) => state.addProject);
 
@@ -97,8 +104,6 @@ export function SkillStoreInstallFlow({
   const handleInstall = () => {
     if (installScope === "project" && !selectedProject) return;
 
-    setIsInstalling(true);
-    onInstallStart(skill.name);
     const repoSource = skill.top_source || resolvedTopSource;
     if (!repoSource) {
       onInstallComplete({
@@ -106,11 +111,10 @@ export function SkillStoreInstallFlow({
         error: `Cannot install ${skill.name}: no GitHub repository is recorded.`,
         skillName: skill.name,
       });
-      setIsInstalling(false);
       return;
     }
 
-    addSkill({
+    onInstallStart(skill.name, {
       source: {
         kind: "github",
         repo: repoSource,
@@ -129,21 +133,7 @@ export function SkillStoreInstallFlow({
       ),
       project_path: installScope === "project" ? (selectedProject ?? undefined) : undefined,
       trial: false,
-    })
-      .then((result) => {
-        onInstallComplete({ success: true, skillName: result.name, warning: result.warning });
-      })
-      .catch((error) => {
-        onInstallComplete({
-          success: false,
-          error:
-            error instanceof Error ? error.message : "Install failed without an error message.",
-          skillName: skill.name,
-        });
-      })
-      .finally(() => {
-        setIsInstalling(false);
-      });
+    });
   };
 
   return (

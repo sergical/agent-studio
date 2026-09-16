@@ -42,12 +42,10 @@ pub fn skills_sh_universal_add_args(
     match spec.scope {
         InstallScope::Global => args.push("--global".to_string()),
         InstallScope::Project => {
-            let path = spec
-                .project_path
+            spec.project_path
                 .as_deref()
+                .filter(|path| !path.is_empty())
                 .ok_or("Project scope needs a project path")?;
-            args.push("--cwd".to_string());
-            args.push(path.to_string());
         }
     }
     if let Some(name) = skill_name {
@@ -157,7 +155,7 @@ mod tests {
     }
 
     #[test]
-    fn project_universal_uses_cwd_not_global() {
+    fn project_universal_validates_path_without_a_cwd_flag() {
         let spec = SkillInstallSpec {
             scope: InstallScope::Project,
             destination: SkillDestination::Universal,
@@ -165,8 +163,8 @@ mod tests {
             harnesses: vec![],
         };
         let argv = skills_sh_universal_add_args("o/r", None, &spec).unwrap();
-        assert!(argv.contains(&"--cwd".to_string()));
-        assert!(argv.contains(&"/work/app".to_string()));
+        assert!(!argv.contains(&"--cwd".to_string()));
+        assert!(!argv.contains(&"/work/app".to_string()));
         assert!(!argv.contains(&"--global".to_string()));
     }
 
