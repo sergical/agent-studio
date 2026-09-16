@@ -889,6 +889,22 @@ export interface SkillsShAccessInfo {
   server_url: string | null;
 }
 /**
+ * Folders added or excluded from project discovery, as recorded under the
+ * `projects` key of `~/.agents/skill-studio.json`.
+ */
+export interface TrackedProjects {
+  /**
+   * Folders discovery should cover even when it would not find them on
+   * its own.
+   */
+  added: string[];
+  /**
+   * Folders discovery should skip even when it would otherwise find
+   * them.
+   */
+  excluded: string[];
+}
+/**
  * Result of `update_skill_pack`: whether the rebuilt tree actually differed
  * from the pack's last commit.
  */

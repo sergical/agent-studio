@@ -1,10 +1,9 @@
-//! [`ProjectDiscovery`] over Claude Code session transcripts.
+//! [`ProjectDiscovery`] over Codex's recent-projects config and Claude Code
+//! session transcripts.
 //!
-//! Ported from `apps/desktop/src-tauri/src/skills/project_discovery.rs`. The
-//! desktop version also unions in Codex's `~/.codex/config.toml` recent
-//! projects; that half is left out here because it needs a `toml`
-//! dependency this crate does not otherwise carry; add it back at the CLI
-//! layer if a caller wants that source too.
+//! The union of Codex's `~/.codex/config.toml` recent projects and Claude
+//! Code transcript working directories, filtered to directories that hold a
+//! skill dir for one of the first-class agents.
 
 use std::collections::BTreeSet;
 use std::fs;
@@ -28,6 +27,22 @@ const SKILL_DIR_MARKERS: &[&str] = &[
     ".grok/skills",
     ".agents/skills",
 ];
+
+/// Project paths recorded in Codex's `[projects."/abs/path"]` config
+/// sections (`~/.codex/config.toml`).
+fn codex_project_paths(home: &Path) -> Vec<PathBuf> {
+    let Ok(content) = fs::read_to_string(home.join(".codex/config.toml")) else {
+        return Vec::new();
+    };
+    let Ok(value) = content.parse::<toml::Table>() else {
+        return Vec::new();
+    };
+    value
+        .get("projects")
+        .and_then(|v| v.as_table())
+        .map(|table| table.keys().map(PathBuf::from).collect())
+        .unwrap_or_default()
+}
 
 /// Lines examined per transcript file, and the max size of a single line,
 /// before giving up on that file and falling back to the next-newest one.
@@ -226,11 +241,15 @@ fn is_home_root(home: &Path, path: &Path) -> bool {
     canonical(path) == canonical(home)
 }
 
-/// Every project directory discoverable from Claude Code transcripts under
-/// `home`, filtered to directories that exist and have at least one
-/// first-class agent's skill dir. Sorted and deduped.
-fn discover_transcript_projects(home: &Path) -> Vec<PathBuf> {
-    claude_transcript_cwds(home)
+/// Union of every project directory discoverable from Codex config and
+/// Claude Code transcripts, filtered to directories that exist and have at
+/// least one first-class agent's skill dir. Sorted and deduped.
+pub fn discover_skill_projects(home: &Path) -> Vec<PathBuf> {
+    let mut paths: BTreeSet<PathBuf> = BTreeSet::new();
+    paths.extend(codex_project_paths(home));
+    paths.extend(claude_transcript_cwds(home));
+
+    paths
         .into_iter()
         .filter(|p| {
             p.exists()
@@ -243,33 +262,123 @@ fn discover_transcript_projects(home: &Path) -> Vec<PathBuf> {
         .collect()
 }
 
-/// `ProjectDiscovery` backed by Claude Code session transcripts under the
-/// home directory ([`ports::ProjectDiscovery`](ProjectDiscovery)).
-pub struct TranscriptProjectDiscovery;
+/// `ProjectDiscovery` backed by Codex's recent-projects config and Claude
+/// Code session transcripts under the home directory
+/// ([`ports::ProjectDiscovery`](ProjectDiscovery)).
+pub struct HostProjectDiscovery;
 
-impl TranscriptProjectDiscovery {
+impl HostProjectDiscovery {
     /// Builds a discovery adapter. Holds no state; every call re-reads the
-    /// transcripts under the given home.
+    /// Codex config and transcripts under the given home.
     pub fn new() -> Self {
-        TranscriptProjectDiscovery
+        HostProjectDiscovery
     }
 }
 
-impl Default for TranscriptProjectDiscovery {
+impl Default for HostProjectDiscovery {
     fn default() -> Self {
-        TranscriptProjectDiscovery::new()
+        HostProjectDiscovery::new()
     }
 }
 
-impl ProjectDiscovery for TranscriptProjectDiscovery {
+impl ProjectDiscovery for HostProjectDiscovery {
     fn discover_projects(&self, home_root: &Path) -> Result<Vec<PathBuf>, CoreError> {
-        Ok(discover_transcript_projects(home_root))
+        Ok(discover_skill_projects(home_root))
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn codex_config_toml_projects_are_parsed_and_filtered() {
+        let tmp = tempfile::tempdir().unwrap();
+        let home = tmp.path();
+        let project = home.join("my-project");
+        fs::create_dir_all(project.join(".codex/skills")).unwrap();
+
+        fs::create_dir_all(home.join(".codex")).unwrap();
+        fs::write(
+            home.join(".codex/config.toml"),
+            format!(
+                "[projects.\"{}\"]\ntrusted = true\n",
+                project.to_string_lossy()
+            ),
+        )
+        .unwrap();
+
+        let found = discover_skill_projects(home);
+        assert_eq!(found, vec![project]);
+    }
+
+    #[test]
+    fn operation_wide_byte_budget_stops_transcript_scanning() {
+        let tmp = tempfile::tempdir().unwrap();
+        let home = tmp.path();
+        // Ten project dirs, each with a 1 KiB transcript that carries no cwd
+        // until the very last line; a small total budget must stop the scan
+        // before it reaches most of them.
+        for i in 0..10 {
+            let dir = home.join(format!(".claude/projects/-p{i}"));
+            fs::create_dir_all(&dir).unwrap();
+            let filler = format!("{{\"type\":\"x\",\"pad\":\"{}\"}}\n", "a".repeat(900));
+            let cwd_line = format!(
+                "{{\"cwd\":\"{}\"}}\n",
+                home.join(format!("proj{i}")).display()
+            );
+            fs::write(dir.join("s.jsonl"), format!("{filler}{cwd_line}")).unwrap();
+            fs::create_dir_all(home.join(format!("proj{i}/.claude/skills"))).unwrap();
+        }
+
+        let unbounded =
+            claude_transcript_cwds_within(home, TranscriptScanLimits::new(u64::MAX, usize::MAX));
+        assert_eq!(unbounded.len(), 10);
+
+        let bounded =
+            claude_transcript_cwds_within(home, TranscriptScanLimits::new(2_500, usize::MAX));
+        assert!(
+            bounded.len() <= 3,
+            "budget should stop the scan early: {bounded:?}"
+        );
+    }
+
+    #[test]
+    fn empty_and_invalid_transcripts_exhaust_attempt_limit() {
+        let tmp = tempfile::tempdir().unwrap();
+        let home = tmp.path();
+        let project = home.join("older-valid-project");
+        fs::create_dir_all(project.join(".claude/skills")).unwrap();
+
+        let transcript_dir = home.join(".claude/projects/-attempt-limit");
+        fs::create_dir_all(&transcript_dir).unwrap();
+        let valid = transcript_dir.join("oldest-valid.jsonl");
+        fs::write(
+            &valid,
+            format!(r#"{{"type":"user","cwd":"{}"}}"#, project.display()),
+        )
+        .unwrap();
+        let invalid = transcript_dir.join("middle-invalid.jsonl");
+        fs::write(&invalid, "not json\n").unwrap();
+        let empty = transcript_dir.join("newest-empty.jsonl");
+        fs::write(&empty, "").unwrap();
+
+        let now = SystemTime::now();
+        fs::File::open(&valid)
+            .unwrap()
+            .set_modified(now - std::time::Duration::from_secs(120))
+            .unwrap();
+        fs::File::open(&invalid)
+            .unwrap()
+            .set_modified(now - std::time::Duration::from_secs(60))
+            .unwrap();
+        fs::File::open(&empty).unwrap().set_modified(now).unwrap();
+
+        let limits = TranscriptScanLimits::new(u64::MAX, 2);
+        let found = claude_transcript_cwds_within(home, limits);
+
+        assert!(found.is_empty());
+    }
 
     #[test]
     fn claude_transcript_cwd_is_parsed_and_filtered() {
@@ -289,8 +398,7 @@ mod tests {
         )
         .unwrap();
 
-        let discovery = TranscriptProjectDiscovery::new();
-        let found = discovery.discover_projects(home).unwrap();
+        let found = discover_skill_projects(home);
         assert_eq!(found, vec![project]);
     }
 
@@ -316,7 +424,7 @@ mod tests {
         )
         .unwrap();
 
-        let discovery = TranscriptProjectDiscovery::new();
+        let discovery = HostProjectDiscovery::new();
         let found = discovery.discover_projects(home).unwrap();
         assert!(
             found.is_empty(),
@@ -325,55 +433,102 @@ mod tests {
     }
 
     #[test]
-    fn projects_without_a_skill_dir_are_filtered_out() {
+    fn colliding_claude_project_directory_discovers_every_transcript_cwd() {
+        fn claude_project_dir_name(path: &Path) -> String {
+            path.to_string_lossy()
+                .chars()
+                .map(|character| {
+                    if character.is_ascii_alphanumeric() {
+                        character
+                    } else {
+                        '-'
+                    }
+                })
+                .collect()
+        }
+
         let tmp = tempfile::tempdir().unwrap();
         let home = tmp.path();
-        let project = home.join("no-skills-here");
-        fs::create_dir_all(&project).unwrap();
+        let hyphenated_project = home.join("foo-bar");
+        let nested_project = home.join("foo/bar");
+        fs::create_dir_all(hyphenated_project.join(".claude/skills")).unwrap();
+        fs::create_dir_all(nested_project.join(".claude/skills")).unwrap();
 
-        let transcript_dir = home.join(".claude/projects/-no-skills-here");
+        let encoded_hyphenated = claude_project_dir_name(&hyphenated_project);
+        let encoded_nested = claude_project_dir_name(&nested_project);
+        assert_eq!(encoded_hyphenated, encoded_nested);
+
+        let transcript_dir = home.join(".claude/projects").join(encoded_hyphenated);
         fs::create_dir_all(&transcript_dir).unwrap();
+        let older = transcript_dir.join("older.jsonl");
         fs::write(
-            transcript_dir.join("session.jsonl"),
-            format!(r#"{{"type":"user","cwd":"{}"}}"#, project.to_string_lossy()),
-        )
-        .unwrap();
-
-        let discovery = TranscriptProjectDiscovery::new();
-        assert!(discovery.discover_projects(home).unwrap().is_empty());
-    }
-
-    #[test]
-    fn studio_scratch_path_is_excluded_but_a_normal_project_with_the_same_marker_is_kept() {
-        let tmp = tempfile::tempdir().unwrap();
-        let home = tmp.path();
-
-        let scratch = home
-            .join("Library/Caches/com.skillstudio.app/skill-studio/scratch/20260827-1")
-            .join(".agents/skills");
-        fs::create_dir_all(&scratch).unwrap();
-        let project = home.join("real-project");
-        fs::create_dir_all(project.join(".agents/skills")).unwrap();
-
-        let transcript_dir = home.join(".claude/projects/-mixed");
-        fs::create_dir_all(&transcript_dir).unwrap();
-        let scratch_project = scratch.parent().unwrap().parent().unwrap();
-        fs::write(
-            transcript_dir.join("a-scratch.jsonl"),
+            &older,
             format!(
                 r#"{{"type":"user","cwd":"{}"}}"#,
-                scratch_project.to_string_lossy()
+                nested_project.to_string_lossy()
             ),
         )
         .unwrap();
+        let newer = transcript_dir.join("newer.jsonl");
         fs::write(
-            transcript_dir.join("b-real.jsonl"),
-            format!(r#"{{"type":"user","cwd":"{}"}}"#, project.to_string_lossy()),
+            &newer,
+            format!(
+                r#"{{"type":"user","cwd":"{}"}}"#,
+                hyphenated_project.to_string_lossy()
+            ),
         )
         .unwrap();
 
-        let discovery = TranscriptProjectDiscovery::new();
-        let found = discovery.discover_projects(home).unwrap();
+        let now = SystemTime::now();
+        fs::File::open(&older)
+            .unwrap()
+            .set_modified(now - std::time::Duration::from_secs(60))
+            .unwrap();
+        fs::File::open(&newer).unwrap().set_modified(now).unwrap();
+
+        let found = discover_skill_projects(home);
+        assert_eq!(found, vec![nested_project, hyphenated_project]);
+    }
+
+    #[test]
+    fn whitespace_formatted_cwd_line_is_parsed() {
+        let tmp = tempfile::tempdir().unwrap();
+        let home = tmp.path();
+        let project = home.join("spaced-project");
+        fs::create_dir_all(project.join(".claude/skills")).unwrap();
+
+        let transcript_dir = home.join(".claude/projects/-spaced-project");
+        fs::create_dir_all(&transcript_dir).unwrap();
+        fs::write(
+            transcript_dir.join("session.jsonl"),
+            format!(
+                r#"{{ "type" : "user" ,   "cwd" :  "{}" , "message": {{}} }}"#,
+                project.to_string_lossy()
+            ),
+        )
+        .unwrap();
+
+        let found = discover_skill_projects(home);
+        assert_eq!(found, vec![project]);
+    }
+
+    #[test]
+    fn escaped_cwd_path_is_parsed() {
+        let tmp = tempfile::tempdir().unwrap();
+        let home = tmp.path();
+        let project = home.join("quo\"ted-project");
+        fs::create_dir_all(project.join(".claude/skills")).unwrap();
+
+        let transcript_dir = home.join(".claude/projects/-escaped-project");
+        fs::create_dir_all(&transcript_dir).unwrap();
+        let escaped = project.to_string_lossy().replace('"', "\\\"");
+        fs::write(
+            transcript_dir.join("session.jsonl"),
+            format!(r#"{{"type":"user","cwd":"{escaped}"}}"#),
+        )
+        .unwrap();
+
+        let found = discover_skill_projects(home);
         assert_eq!(found, vec![project]);
     }
 
@@ -400,22 +555,178 @@ mod tests {
         )
         .unwrap();
 
-        let now = SystemTime::now();
+        let now = std::time::SystemTime::now();
         fs::File::open(&older)
             .unwrap()
             .set_modified(now - std::time::Duration::from_secs(3600))
             .unwrap();
         fs::File::open(&newer).unwrap().set_modified(now).unwrap();
 
-        let discovery = TranscriptProjectDiscovery::new();
-        let found = discovery.discover_projects(home).unwrap();
+        let found = discover_skill_projects(home);
+        assert_eq!(found, vec![project]);
+    }
+
+    #[test]
+    fn oversized_line_abandons_the_file_without_panicking() {
+        let tmp = tempfile::tempdir().unwrap();
+        let home = tmp.path();
+        let project = home.join("huge-line-project");
+        // No skill dir here: the transcript's oversized line means its cwd
+        // is never found, so this project must not surface.
+        fs::create_dir_all(&project).unwrap();
+
+        let transcript_dir = home.join(".claude/projects/-huge-line-project");
+        fs::create_dir_all(&transcript_dir).unwrap();
+        let mut content = Vec::new();
+        // A 200 KiB line with no cwd, well past MAX_TRANSCRIPT_LINE_BYTES.
+        content.extend(vec![b'x'; 200 * 1024]);
+        content.push(b'\n');
+        // A cwd line follows in the same file, but the file is abandoned as
+        // soon as the oversized line is hit, so this must never be reached.
+        content.extend(
+            format!(r#"{{"type":"user","cwd":"{}"}}"#, project.to_string_lossy()).into_bytes(),
+        );
+        content.push(b'\n');
+        fs::write(transcript_dir.join("session.jsonl"), content).unwrap();
+
+        assert!(discover_skill_projects(home).is_empty());
+    }
+
+    #[test]
+    fn oversized_line_abandons_file_and_older_file_cwd_is_still_found() {
+        let tmp = tempfile::tempdir().unwrap();
+        let home = tmp.path();
+        let project = home.join("older-file-project-2");
+        fs::create_dir_all(project.join(".claude/skills")).unwrap();
+
+        let transcript_dir = home.join(".claude/projects/-older-file-project-2");
+        fs::create_dir_all(&transcript_dir).unwrap();
+
+        let older = transcript_dir.join("a-older.jsonl");
+        fs::write(
+            &older,
+            format!(r#"{{"type":"user","cwd":"{}"}}"#, project.to_string_lossy()),
+        )
+        .unwrap();
+
+        let newer = transcript_dir.join("b-newer.jsonl");
+        let mut content = Vec::new();
+        content.extend(vec![b'x'; 200 * 1024]);
+        content.push(b'\n');
+        content.extend(
+            format!(r#"{{"type":"user","cwd":"{}"}}"#, project.to_string_lossy()).into_bytes(),
+        );
+        content.push(b'\n');
+        fs::write(&newer, content).unwrap();
+
+        let now = std::time::SystemTime::now();
+        fs::File::open(&older)
+            .unwrap()
+            .set_modified(now - std::time::Duration::from_secs(3600))
+            .unwrap();
+        fs::File::open(&newer).unwrap().set_modified(now).unwrap();
+
+        let found = discover_skill_projects(home);
+        assert_eq!(found, vec![project]);
+    }
+
+    #[test]
+    fn non_regular_transcript_entry_is_skipped_without_error() {
+        let tmp = tempfile::tempdir().unwrap();
+        let home = tmp.path();
+        let project = home.join("dir-named-jsonl-project");
+        fs::create_dir_all(project.join(".claude/skills")).unwrap();
+
+        let transcript_dir = home.join(".claude/projects/-dir-named-jsonl-project");
+        // A directory named `*.jsonl`: it matches the extension filter but
+        // must never be opened as a transcript file.
+        fs::create_dir_all(transcript_dir.join("weird.jsonl")).unwrap();
+        fs::write(
+            transcript_dir.join("session.jsonl"),
+            format!(r#"{{"type":"user","cwd":"{}"}}"#, project.to_string_lossy()),
+        )
+        .unwrap();
+
+        let found = discover_skill_projects(home);
+        assert_eq!(found, vec![project]);
+    }
+
+    #[test]
+    fn cursor_and_grok_skill_dirs_count_as_project_markers() {
+        let tmp = tempfile::tempdir().unwrap();
+        let home = tmp.path();
+        let cursor_project = home.join("cursor-project");
+        fs::create_dir_all(cursor_project.join(".cursor/skills")).unwrap();
+        let grok_project = home.join("grok-project");
+        fs::create_dir_all(grok_project.join(".grok/skills")).unwrap();
+
+        fs::create_dir_all(home.join(".codex")).unwrap();
+        fs::write(
+            home.join(".codex/config.toml"),
+            format!(
+                "[projects.\"{}\"]\ntrusted = true\n[projects.\"{}\"]\ntrusted = true\n",
+                cursor_project.to_string_lossy(),
+                grok_project.to_string_lossy()
+            ),
+        )
+        .unwrap();
+
+        let projects = discover_skill_projects(home);
+        assert!(projects.contains(&cursor_project));
+        assert!(projects.contains(&grok_project));
+    }
+
+    #[test]
+    fn projects_without_a_skill_dir_are_filtered_out() {
+        let tmp = tempfile::tempdir().unwrap();
+        let home = tmp.path();
+        let project = home.join("no-skills-here");
+        fs::create_dir_all(&project).unwrap();
+
+        fs::create_dir_all(home.join(".codex")).unwrap();
+        fs::write(
+            home.join(".codex/config.toml"),
+            format!(
+                "[projects.\"{}\"]\ntrusted = true\n",
+                project.to_string_lossy()
+            ),
+        )
+        .unwrap();
+
+        assert!(discover_skill_projects(home).is_empty());
+    }
+
+    #[test]
+    fn studio_scratch_path_is_excluded_but_a_normal_project_with_the_same_marker_is_kept() {
+        let tmp = tempfile::tempdir().unwrap();
+        let home = tmp.path();
+
+        let scratch = home
+            .join("Library/Caches/com.skillstudio.app/skill-studio/scratch/20260827-1")
+            .join(".agents/skills");
+        fs::create_dir_all(&scratch).unwrap();
+        let project = home.join("real-project");
+        fs::create_dir_all(project.join(".agents/skills")).unwrap();
+
+        fs::create_dir_all(home.join(".codex")).unwrap();
+        fs::write(
+            home.join(".codex/config.toml"),
+            format!(
+                "[projects.\"{}\"]\ntrusted = true\n[projects.\"{}\"]\ntrusted = true\n",
+                scratch.ancestors().nth(2).unwrap().to_string_lossy(),
+                project.to_string_lossy()
+            ),
+        )
+        .unwrap();
+
+        let found = discover_skill_projects(home);
         assert_eq!(found, vec![project]);
     }
 
     #[test]
     fn empty_home_yields_no_projects() {
         let tmp = tempfile::tempdir().unwrap();
-        let discovery = TranscriptProjectDiscovery::new();
+        let discovery = HostProjectDiscovery::new();
         assert!(discovery.discover_projects(tmp.path()).unwrap().is_empty());
     }
 }

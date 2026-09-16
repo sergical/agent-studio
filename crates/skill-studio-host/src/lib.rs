@@ -3,10 +3,10 @@
 //! This crate holds no policy. Every type here implements one port trait
 //! from `skill_studio_core::ports` over the actual operating system: real
 //! files, the wall clock, fresh ids, advisory file locks, and a notice
-//! sink. It depends on nothing but `std`, `skill-studio-core`, `ulid`,
-//! `chrono`, and `serde_json`; no `tokio`, no `tauri`. Adapters that need an
-//! async runtime or Tauri state wrap these types rather than reimplement
-//! them.
+//! sink. Its dependencies are `std`, `skill-studio-core`, and a small set of
+//! parsing and platform crates (`ulid`, `chrono`, `serde_json`, `toml`,
+//! `rusqlite`); no `tokio`, no `tauri`. Adapters that need an async runtime
+//! or Tauri state wrap these types rather than reimplement them.
 //!
 //! [`default_ports`] wires the common case: real filesystem, real clock,
 //! monotonic ULIDs, file-lock leases, no history store yet, and discarded
@@ -28,7 +28,7 @@ mod tools;
 
 pub use builder::{default_ports, default_ports_with_discovery, default_ports_with_history};
 pub use clock::SystemClock;
-pub use discovery::TranscriptProjectDiscovery;
+pub use discovery::{discover_skill_projects, HostProjectDiscovery};
 pub use fs::RealFs;
 pub use history::{hash_entry, NoHistoryOpener, SqliteHistoryOpener};
 pub use ids::UlidIds;

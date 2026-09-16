@@ -52,9 +52,7 @@ fn build_runtime(with_history: bool) -> Result<Runtime, CoreError> {
         if runtime_scope.kind == skill_studio_core::scope::ScopeKind::Fixture {
             ports.discovery = None;
         } else {
-            ports.discovery = Some(Arc::new(
-                skill_studio_host::TranscriptProjectDiscovery::new(),
-            ));
+            ports.discovery = Some(Arc::new(skill_studio_host::HostProjectDiscovery::new()));
         }
         ports.tools = Some(Arc::new(skill_studio_host::PathToolLookup::new()));
     } else if runtime_scope.kind == skill_studio_core::scope::ScopeKind::Fixture {

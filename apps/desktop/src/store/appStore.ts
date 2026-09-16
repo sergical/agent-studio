@@ -8,7 +8,7 @@ import { defaultSkillListFilter, isProjectScope } from "@skill-studio/lib";
 import type { SkillListFilter } from "@skill-studio/lib";
 import { USAGE_WINDOWS } from "@skill-studio/lib";
 import type { UsageWindow } from "@skill-studio/lib";
-import type { Toast } from "@skill-studio/lib";
+import type { Toast, TrackedProjects } from "@skill-studio/lib";
 import { addToast } from "../lib/toast";
 import {
   loadStoredTheme,
@@ -99,17 +99,18 @@ interface AppState {
   setShowCoverage: (show: boolean) => void;
   // === Project Scope Selection ===
   // Directories the user has pointed at (via a folder picker), for
-  // project-scoped skill installs. Registered with the backend on startup
-  // and whenever the user adds one.
+  // project-scoped skill installs. Mirrors the `added` list backend commands
+  // (register/unregister/import) already persisted to
+  // `~/.agents/skill-studio.json` - set from their result, never written to
+  // directly.
   userAddedProjects: string[];
   // Directories the user explicitly removed from the Sidebar ("Stop
   // tracking"), including ones the backend discovers on its own (Codex
-  // config, Claude Code transcripts). Un-registered with the backend on
-  // startup and whenever the user removes one, so they don't reappear just
-  // because `project_discovery` still finds them.
+  // config, Claude Code transcripts). Mirrors that same file's `excluded`
+  // list, so they don't reappear just because discovery still finds them.
   excludedProjects: string[];
-  addProject: (path: string) => void;
-  removeProject: (path: string) => void;
+  /** Replaces both lists at once with a backend command's result - the one way this state changes. */
+  setTrackedProjects: (projects: TrackedProjects) => void;
 
   // === Usage Window ===
   // The invocation window ("24h" .. "30d") shown in the dashboard's top
@@ -161,10 +162,6 @@ interface AppState {
 // Helper Functions
 // ============================================================================
 
-/** localStorage key holding the remembered user-added project paths, one absolute path per line. */
-const PROJECT_PATHS_STORAGE_KEY = "project-paths";
-/** localStorage key holding the remembered excluded project paths, one absolute path per line. */
-const EXCLUDED_PROJECT_PATHS_STORAGE_KEY = "excluded-project-paths";
 /** localStorage key holding the remembered usage window. */
 const USAGE_WINDOW_STORAGE_KEY = "usage-window";
 const USAGE_WINDOWS_SET: Set<string> = new Set(USAGE_WINDOWS.map((w) => w.id));
@@ -176,22 +173,6 @@ function loadUsageWindow(): UsageWindow {
     return stored && USAGE_WINDOWS_SET.has(stored) ? (stored as UsageWindow) : "30d";
   } catch {
     return "30d";
-  }
-}
-
-function loadPathList(key: string): string[] {
-  try {
-    return (localStorage.getItem(key) ?? "").split("\n").filter(Boolean);
-  } catch {
-    return [];
-  }
-}
-
-function savePathList(key: string, paths: string[]): void {
-  try {
-    localStorage.setItem(key, paths.join("\n"));
-  } catch {
-    // Storage can be unavailable (quota, private mode); the list is only a convenience.
   }
 }
 
@@ -272,30 +253,11 @@ export const useAppStore = create<AppState>((set, get) => ({
   showCoverage: false,
   setShowCoverage: (show) => set({ showCoverage: show }),
 
-  userAddedProjects: loadPathList(PROJECT_PATHS_STORAGE_KEY),
-  excludedProjects: loadPathList(EXCLUDED_PROJECT_PATHS_STORAGE_KEY),
+  userAddedProjects: [],
+  excludedProjects: [],
 
-  addProject: (path) => {
-    const { userAddedProjects, excludedProjects } = get();
-    const updatedAdded = userAddedProjects.includes(path)
-      ? userAddedProjects
-      : [...userAddedProjects, path];
-    const updatedExcluded = excludedProjects.filter((p) => p !== path);
-    savePathList(PROJECT_PATHS_STORAGE_KEY, updatedAdded);
-    savePathList(EXCLUDED_PROJECT_PATHS_STORAGE_KEY, updatedExcluded);
-    set({ userAddedProjects: updatedAdded, excludedProjects: updatedExcluded });
-  },
-
-  removeProject: (path) => {
-    const { userAddedProjects, excludedProjects } = get();
-    const updatedAdded = userAddedProjects.filter((p) => p !== path);
-    const updatedExcluded = excludedProjects.includes(path)
-      ? excludedProjects
-      : [...excludedProjects, path];
-    savePathList(PROJECT_PATHS_STORAGE_KEY, updatedAdded);
-    savePathList(EXCLUDED_PROJECT_PATHS_STORAGE_KEY, updatedExcluded);
-    set({ userAddedProjects: updatedAdded, excludedProjects: updatedExcluded });
-  },
+  setTrackedProjects: (projects) =>
+    set({ userAddedProjects: projects.added, excludedProjects: projects.excluded }),
 
   usageWindow: loadUsageWindow(),
   setUsageWindow: (window) => {

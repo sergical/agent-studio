@@ -7,7 +7,7 @@ use skill_studio_core::harness::HarnessCatalog;
 use skill_studio_core::ports::Ports;
 
 use crate::clock::SystemClock;
-use crate::discovery::TranscriptProjectDiscovery;
+use crate::discovery::HostProjectDiscovery;
 use crate::fs::RealFs;
 use crate::history::{NoHistoryOpener, SqliteHistoryOpener};
 use crate::ids::UlidIds;
@@ -37,13 +37,13 @@ pub fn default_ports(lease_root: PathBuf, catalog: Arc<HarnessCatalog>) -> Ports
     }
 }
 
-/// [`default_ports`], plus [`TranscriptProjectDiscovery`] for
+/// [`default_ports`], plus [`HostProjectDiscovery`] for
 /// `ProjectSelection::Discover` and [`PathToolLookup`] for `PATH` lookups.
 ///
 /// [`ProjectSelection::Discover`]: skill_studio_core::scope::ProjectSelection::Discover
 pub fn default_ports_with_discovery(lease_root: PathBuf, catalog: Arc<HarnessCatalog>) -> Ports {
     Ports {
-        discovery: Some(Arc::new(TranscriptProjectDiscovery::new())),
+        discovery: Some(Arc::new(HostProjectDiscovery::new())),
         tools: Some(Arc::new(PathToolLookup::new())),
         ..default_ports(lease_root, catalog)
     }

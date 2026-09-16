@@ -31,8 +31,18 @@ import type {
   SkillDetails,
   SkillEvent,
   SkillSnapshot,
+  TrackedProjects,
   UpdatePackResult,
 } from "@skill-studio/lib";
+
+/** Tauri rejects a failed command with the Rust `Result::Err` string directly, not an `Error` -
+ * `err instanceof Error ? err.message : "Unknown error"` would discard it, so every catch block
+ * that surfaces an invoke failure as a toast goes through this instead. */
+export function invokeErrorMessage(cause: unknown): string {
+  if (cause instanceof Error) return cause.message;
+  if (cause == null) return "Unknown error";
+  return `${cause}`;
+}
 
 export async function previewSkillFrontmatterRepair(
   target: LifecycleTarget,
@@ -94,29 +104,54 @@ export async function getSkillDetails(skillId: string): Promise<SkillDetails> {
 
 /**
  * Get all installed skills, merged from a directory scan of the four
- * first-class agents (Claude Code, Codex, OpenCode, pi) and the lock file.
- * Pass known project directories so project-scoped skills are found too.
+ * first-class agents (Claude Code, Codex, OpenCode, pi) and the lock file,
+ * over the tracked project list already saved in
+ * `~/.agents/skill-studio.json` - the same list `getTrackedProjects` reads.
  */
-export async function getInstalledSkills(projectPaths?: string[]): Promise<InstalledSkill[]> {
-  return invoke("get_installed_skills", { projectPaths });
+export async function getInstalledSkills(): Promise<InstalledSkill[]> {
+  return invoke("get_installed_skills");
 }
 
 /**
- * Register project paths the caller cares about (e.g. one the user just
- * opened) so future background rebuilds always include them. Returns
- * immediately; listen for `onSkillSnapshot` to see the result.
+ * The saved project list from `~/.agents/skill-studio.json`'s `projects`
+ * key - the same list the CLI and the MCP server scan against.
  */
-export async function registerSkillProjects(paths: string[]): Promise<void> {
+export async function getTrackedProjects(): Promise<TrackedProjects> {
+  return invoke("get_tracked_projects");
+}
+
+/**
+ * Add project paths the caller cares about (e.g. one the user just opened)
+ * to the saved list, un-excluding any of them that were previously stopped.
+ * Returns the updated list, already persisted; listen for `onSkillSnapshot`
+ * to see the rebuilt skill scan that follows.
+ */
+export async function registerSkillProjects(paths: string[]): Promise<TrackedProjects> {
   return invoke("register_skill_projects", { paths });
 }
 
 /**
- * Un-register a project path (e.g. one the user closed) so future
- * background rebuilds stop including it. Returns immediately; listen for
- * `onSkillSnapshot` to see the result.
+ * Move a project path (e.g. one the user "Stop tracking"-ed) from added to
+ * excluded in the saved list, so future scans skip it even if discovery
+ * would otherwise find it again. Returns the updated list, already
+ * persisted; listen for `onSkillSnapshot` to see the rebuilt skill scan
+ * that follows.
  */
-export async function unregisterSkillProject(path: string): Promise<void> {
+export async function unregisterSkillProject(path: string): Promise<TrackedProjects> {
   return invoke("unregister_skill_project", { path });
+}
+
+/**
+ * One-shot migration of the desktop's old localStorage project lists into
+ * the saved `~/.agents/skill-studio.json` list: `added` is registered,
+ * `excluded` is un-registered. Callers should clear the localStorage
+ * entries only after this resolves.
+ */
+export async function importTrackedProjects(
+  added: string[],
+  excluded: string[],
+): Promise<TrackedProjects> {
+  return invoke("import_tracked_projects", { added, excluded });
 }
 
 /**

@@ -13,7 +13,11 @@ import { ScanPartialBanner } from "./ScanPartialBanner";
 import { SkillListTable } from "./SkillListTable";
 import type { SortMode } from "../../lib/skill-list-sort";
 import { SkillListActiveFilters, SkillListFilterBar } from "./SkillListFilterBar";
-import { registerSkillProjects, unregisterSkillProject } from "../../lib/skill-api";
+import {
+  invokeErrorMessage,
+  registerSkillProjects,
+  unregisterSkillProject,
+} from "../../lib/skill-api";
 import { collectDashboardIssues } from "@skill-studio/lib";
 import { applySkillListFilter, isProjectScope } from "@skill-studio/lib";
 import type { SkillListFilter } from "@skill-studio/lib";
@@ -63,8 +67,7 @@ export function SkillsView({ snapshot, onSelectSkill, active }: SkillsViewProps)
   const lastClosedSkillName = useAppStore((state) => state.lastClosedSkillName);
   const userAddedProjects = useAppStore((state) => state.userAddedProjects);
   const excludedProjects = useAppStore((state) => state.excludedProjects);
-  const addProject = useAppStore((state) => state.addProject);
-  const removeProject = useAppStore((state) => state.removeProject);
+  const setTrackedProjects = useAppStore((state) => state.setTrackedProjects);
   const addToast = useAppStore((state) => state.addToast);
   const openAddSkillSheet = useAppStore((state) => state.openAddSkillSheet);
 
@@ -95,14 +98,14 @@ export function SkillsView({ snapshot, onSelectSkill, active }: SkillsViewProps)
     }
 
     try {
-      await registerSkillProjects([selected]);
-      addProject(selected);
+      const projects = await registerSkillProjects([selected]);
+      setTrackedProjects(projects);
       setSkillListFilter({ scope: { project: selected } });
     } catch (err) {
       addToast({
         type: "error",
         title: "Couldn't add project",
-        message: err instanceof Error ? err.message : "Unknown error",
+        message: invokeErrorMessage(err),
       });
     }
   };
@@ -115,16 +118,15 @@ export function SkillsView({ snapshot, onSelectSkill, active }: SkillsViewProps)
    */
   const handleRemoveProject = async (path: string) => {
     try {
-      await unregisterSkillProject(path);
+      setTrackedProjects(await unregisterSkillProject(path));
     } catch (err) {
       addToast({
         type: "error",
         title: "Couldn't stop tracking project",
-        message: err instanceof Error ? err.message : "Unknown error",
+        message: invokeErrorMessage(err),
       });
       return;
     }
-    removeProject(path);
     if (isProjectScope(filter.scope) && filter.scope.project === path) {
       setSkillListFilter({ scope: "all" });
     }

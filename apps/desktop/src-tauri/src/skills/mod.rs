@@ -17,7 +17,6 @@ pub mod gh_cli;
 pub mod github_skill_listing;
 pub mod lock_file;
 pub mod opencode_skill_permission;
-pub mod project_discovery;
 pub mod skill_add;
 pub mod skill_add_operation;
 pub mod skill_agent_runner;

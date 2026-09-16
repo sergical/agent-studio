@@ -221,8 +221,10 @@ pub fn run() {
             // Background refresh / invocation snapshot
             skills::skill_refresh::get_skill_snapshot,
             skills::skill_refresh::request_skill_rescan,
+            skills::skill_refresh::get_tracked_projects,
             skills::skill_refresh::register_skill_projects,
             skills::skill_refresh::unregister_skill_project,
+            skills::skill_refresh::import_tracked_projects,
             // Local harness runner
             skills::skill_agent_runner::start_skill_agent_run,
             skills::skill_agent_runner::cancel_skill_agent_run,

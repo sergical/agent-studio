@@ -15,7 +15,12 @@ import {
   universalDisabledHarnesses,
   universalInstallHarnesses,
 } from "./universal-install-visibility";
-import { addSkill, getAddMethodDefaults } from "../../lib/skill-api";
+import {
+  addSkill,
+  getAddMethodDefaults,
+  invokeErrorMessage,
+  registerSkillProjects,
+} from "../../lib/skill-api";
 import { useAppStore } from "../../store/appStore";
 import type { SkillInstallCompletion } from "./InstallControls";
 import { toWireParsedSkillSource } from "@skill-studio/lib";
@@ -50,7 +55,8 @@ export function SkillStoreInstallFlow({
   const [selectedProject, setSelectedProject] = useState<string | null>(null);
   const [isInstalling, setIsInstalling] = useState(false);
   const availableProjects = useAppStore((state) => state.userAddedProjects);
-  const addProject = useAppStore((state) => state.addProject);
+  const setTrackedProjects = useAppStore((state) => state.setTrackedProjects);
+  const addToast = useAppStore((state) => state.addToast);
 
   useEffect(() => {
     let cancelled = false;
@@ -89,9 +95,18 @@ export function SkillStoreInstallFlow({
       multiple: false,
       title: "Select Project Directory",
     });
-    if (selected) {
-      addProject(selected);
-      setSelectedProject(selected);
+    if (!selected) return;
+    // Installing into the folder does not depend on tracking it, so the pick
+    // stands even when the saved list cannot be written.
+    setSelectedProject(selected);
+    try {
+      setTrackedProjects(await registerSkillProjects([selected]));
+    } catch (err) {
+      addToast({
+        type: "error",
+        title: "Couldn't save project folder",
+        message: invokeErrorMessage(err),
+      });
     }
   };
 

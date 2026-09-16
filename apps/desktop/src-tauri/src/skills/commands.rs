@@ -12,7 +12,6 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use super::agents::{AgentId, AgentTarget};
 use super::api;
 use super::lock_file;
-use super::project_discovery;
 use super::skill_add::{CommandRunner, RealCommandRunner};
 use super::skill_agent_runner::validate_skill_dir_name;
 use super::skill_dto::{
@@ -151,42 +150,27 @@ pub async fn get_skill_details(skill_id: String) -> Result<SkillDetails, String>
 }
 
 /// Get all installed skills. Returns the background-refreshed snapshot's
-/// skills (see `skill_refresh`) when it already accounts for every path in
-/// `project_paths` and no mutation is pending (`skills_dirty`); otherwise
-/// registers the missing paths and rebuilds the snapshot synchronously (so
-/// this read-after-write sees fresh data), which also covers the case where
-/// the background snapshot hasn't landed yet or a mutation just landed and
-/// the background rebuild hasn't caught up.
+/// skills (see `skill_refresh`) when one exists and no mutation is pending
+/// (`skills_dirty`); otherwise rebuilds the snapshot synchronously (so a
+/// read right after a write, or the very first read before the background
+/// thread's initial build has landed, still sees fresh data). The project
+/// list comes from `~/.agents/skill-studio.json` (see
+/// `skill_refresh::effective_project_paths`), not from the caller.
 #[tauri::command]
 pub fn get_installed_skills(
-    project_paths: Option<Vec<String>>,
     refresh_state: tauri::State<SkillRefreshState>,
     app: tauri::AppHandle,
 ) -> Result<Vec<InstalledSkill>, String> {
-    let requested = project_paths.unwrap_or_default();
     let snapshot = refresh_state.snapshot.read().ok().and_then(|g| g.clone());
 
     if let Some(snapshot) = &snapshot {
-        if !refresh_state.is_skills_dirty()
-            && snapshot_covers_projects(&requested, &snapshot.projects)
-        {
+        if !refresh_state.is_skills_dirty() {
             return Ok(snapshot.skills.clone());
         }
     }
 
-    refresh_state.add_extra_projects(requested);
     let rebuilt = skill_refresh::rebuild_snapshot_now(&app, &refresh_state)?;
     Ok(rebuilt.skills)
-}
-
-/// Whether the *published* snapshot already accounts for every path in
-/// `requested`. Pulled out into a pure function so it can be unit tested:
-/// this must only compare against `snapshot.projects`, never against
-/// caller-registered `extra_projects`, since a path registered but not yet
-/// rebuilt into the snapshot would otherwise look "covered" while the
-/// snapshot's `skills` still doesn't include it.
-fn snapshot_covers_projects(requested: &[String], snapshot_projects: &[String]) -> bool {
-    requested.iter().all(|p| snapshot_projects.contains(p))
 }
 
 #[cfg(test)]
@@ -200,23 +184,6 @@ mod tests {
             self.0.fetch_add(1, Ordering::SeqCst);
             Ok(())
         }
-    }
-
-    #[test]
-    fn snapshot_covers_projects_requires_published_membership() {
-        let snapshot_projects = vec!["/work/known".to_string()];
-
-        assert!(snapshot_covers_projects(
-            &["/work/known".to_string()],
-            &snapshot_projects
-        ));
-        // A caller-registered path that hasn't landed in the snapshot yet
-        // must NOT be treated as covered, even though it would be in
-        // `extra_projects`.
-        assert!(!snapshot_covers_projects(
-            &["/work/not-yet-rebuilt".to_string()],
-            &snapshot_projects
-        ));
     }
 
     /// A minimal `SkillSnapshot` with one skill deployed at `dep_dir`, with
@@ -1477,7 +1444,7 @@ pub fn list_skill_projects(
     }
 
     let home = dirs::home_dir().ok_or("Could not find home directory")?;
-    Ok(project_discovery::discover_skill_projects(&home)
+    Ok(skill_refresh::effective_project_paths(&home)
         .into_iter()
         .map(|p| p.to_string_lossy().to_string())
         .collect())

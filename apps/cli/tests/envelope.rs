@@ -355,6 +355,65 @@ fn home_flag_writes_nothing_outside_the_given_directory() {
     std::fs::remove_dir_all(&home).ok();
 }
 
+/// `--home` picks up the folders the user added or stopped tracking from
+/// `<home>/.agents/skill-studio.json` - the same file the desktop and the MCP
+/// server read.
+#[test]
+fn home_flag_applies_the_saved_project_list() {
+    let home = tempfile::tempdir().unwrap().keep();
+    std::fs::create_dir_all(home.join("kept")).unwrap();
+    std::fs::create_dir_all(home.join("dropped-by-exclude")).unwrap();
+    // "deleted" is named in `added` but never created on disk.
+    std::fs::create_dir_all(home.join(".agents")).unwrap();
+    let registry = serde_json::json!({
+        "projects": {
+            "added": [
+                home.join("kept"),
+                home.join("dropped-by-exclude"),
+                home.join("deleted"),
+                home.clone(),
+            ],
+            "excluded": [home.join("dropped-by-exclude")],
+        }
+    });
+    std::fs::write(
+        home.join(".agents").join("skill-studio.json"),
+        serde_json::to_vec(&registry).unwrap(),
+    )
+    .unwrap();
+
+    let run = run(&["scan", "--home", home.to_str().unwrap(), "--json"]);
+    assert_eq!(run.json["status"], "ok", "{:?}", run.json);
+    let projects: Vec<PathBuf> = run.json["scope"]["projects"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|p| Path::new(p.as_str().unwrap()).canonicalize().unwrap())
+        .collect();
+    assert_eq!(
+        projects,
+        [home.join("kept").canonicalize().unwrap()],
+        "dropped-by-exclude is excluded, deleted is missing, and home is never a project"
+    );
+
+    std::fs::remove_dir_all(&home).ok();
+}
+
+/// A malformed registry file downgrades to "nothing tracked", not a scan
+/// failure - matching [`skill_studio_core::tracked_projects::TrackedProjects::read`].
+#[test]
+fn a_malformed_project_registry_still_scans_with_no_projects() {
+    let home = tempfile::tempdir().unwrap().keep();
+    std::fs::create_dir_all(home.join(".agents")).unwrap();
+    std::fs::write(home.join(".agents").join("skill-studio.json"), b"not json").unwrap();
+
+    let run = run(&["scan", "--home", home.to_str().unwrap(), "--json"]);
+    assert_eq!(run.json["status"], "ok", "{:?}", run.json);
+    assert_eq!(run.json["scope"]["projects"], serde_json::json!([]));
+
+    std::fs::remove_dir_all(&home).ok();
+}
+
 /// A write command (`restore`, here) never blocks on a held lease: it
 /// surfaces the ordinary `scope_busy` envelope at exit 3, the same as a
 /// read command would.

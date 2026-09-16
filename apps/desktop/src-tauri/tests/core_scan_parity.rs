@@ -75,6 +75,7 @@ use skill_studio_core::testing::{fixtures, FakeClock, FakeIds, FakeLease, NoHist
 use skill_studio_host::RealFs;
 
 use skill_studio_lib::skill_dto::InstalledSkill;
+use skill_studio_lib::skill_fork_registry::{read_fork_registry, write_fork_registry};
 use skill_studio_lib::skill_invocations::SkillInvocationIndex;
 use skill_studio_lib::skill_refresh::{build_snapshot, BuildPaths};
 
@@ -246,11 +247,11 @@ fn home_env_lock() -> &'static std::sync::Mutex<()> {
 }
 
 fn run_desktop(name: &str, home: &Path) -> BTreeMap<String, Vec<Value>> {
-    let extra_projects: Vec<PathBuf> = if name == "project" {
-        vec![home.join("proj")]
-    } else {
-        Vec::new()
-    };
+    if name == "project" {
+        let mut registry = read_fork_registry(home).unwrap();
+        registry.projects.added = vec![home.join("proj")];
+        write_fork_registry(home, &registry).unwrap();
+    }
     let cache_path = home.join(".cache/invocations.json");
     let runs_root = home.join(".data/runs");
     let update_check_path = home.join(".data/update-check.json");
@@ -265,14 +266,8 @@ fn run_desktop(name: &str, home: &Path) -> BTreeMap<String, Vec<Value>> {
     unsafe {
         std::env::set_var("HOME", home);
     }
-    let (snapshot, _report) = build_snapshot(
-        home,
-        &extra_projects,
-        &Default::default(),
-        &mut invocation_index,
-        paths,
-        chrono::Utc::now(),
-    );
+    let (snapshot, _report) =
+        build_snapshot(home, &mut invocation_index, paths, chrono::Utc::now());
     unsafe {
         match &previous_home {
             Some(v) => std::env::set_var("HOME", v),

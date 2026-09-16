@@ -62,6 +62,7 @@ export type {
   SkillsShAccessInfo,
   UpdatePackResult,
   LifecycleTarget,
+  TrackedProjects,
 } from "./skill-types.generated";
 
 import type { Deployment, InstalledSkill, SkillSearchResult } from "./skill-types.generated";

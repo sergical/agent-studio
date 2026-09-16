@@ -164,7 +164,7 @@ fn guard_new_opencode_deployment(
             visible.push(("global".to_string(), None));
         }
     }
-    let mut projects = super::project_discovery::discover_skill_projects(home);
+    let mut projects = skill_studio_host::discover_skill_projects(home);
     if let Some(project) = parsed.project_path.as_deref() {
         let project = PathBuf::from(project);
         if !projects.contains(&project) {

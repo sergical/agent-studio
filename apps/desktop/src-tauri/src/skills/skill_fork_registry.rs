@@ -23,6 +23,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
+use skill_studio_core::tracked_projects::TrackedProjects;
 
 use super::skill_deployment::SkillDestination;
 use super::skill_dto::InstallScope;
@@ -292,6 +293,16 @@ pub struct ForkRegistry {
     /// by default: `kentcdodds/kcd-skills` still needs confirmation.
     #[serde(default, skip_serializing_if = "BTreeSet::is_empty")]
     pub trusted_dotagents_sources: BTreeSet<String>,
+    /// Folders the user added by hand or stopped tracking - the core's
+    /// [`TrackedProjects`], saved here so the CLI, the MCP server, and every
+    /// version of the desktop app discover the same projects.
+    #[serde(default, skip_serializing_if = "TrackedProjects::is_empty")]
+    pub projects: TrackedProjects,
+    /// Every top-level key this build doesn't know about. Keeps a write from
+    /// erasing a field a newer or older build added - the file is shared
+    /// with the CLI and with whichever app version last wrote it.
+    #[serde(flatten)]
+    pub unknown: serde_json::Map<String, serde_json::Value>,
 }
 
 pub const CURRENT_REGISTRY_VERSION: u32 = 4;
@@ -318,6 +329,8 @@ impl Default for ForkRegistry {
             server_url: None,
             preferred_editor: None,
             trusted_dotagents_sources: BTreeSet::new(),
+            projects: TrackedProjects::default(),
+            unknown: serde_json::Map::new(),
         }
     }
 }
@@ -350,7 +363,7 @@ pub fn read_fork_registry(home: &Path) -> Result<ForkRegistry, String> {
         Err(e) => return Err(format!("Failed to read {}: {e}", path.display())),
     };
     serde_json::from_str(&content).map_err(|_| {
-        "~/.agents/skill-studio.json is malformed; fix or move it before forking".to_string()
+        "~/.agents/skill-studio.json is malformed; fix or move it, then try again".to_string()
     })
 }
 
@@ -471,6 +484,51 @@ mod tests {
         assert_ne!(global_key, project_key);
         assert_eq!(name_from_trial_key(&global_key), "find-bugs");
         assert_eq!(name_from_trial_key(&project_key), "find-bugs");
+    }
+
+    #[test]
+    fn an_unknown_top_level_key_survives_read_then_write() {
+        let tmp = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(tmp.path().join(".agents")).unwrap();
+        std::fs::write(
+            tmp.path().join(".agents/skill-studio.json"),
+            r#"{"version":4,"a_future_field":{"nested":true}}"#,
+        )
+        .unwrap();
+
+        let reg = read_fork_registry(tmp.path()).unwrap();
+        assert_eq!(
+            reg.unknown.get("a_future_field"),
+            Some(&serde_json::json!({"nested": true}))
+        );
+        write_fork_registry(tmp.path(), &reg).unwrap();
+
+        let reloaded = read_fork_registry(tmp.path()).unwrap();
+        assert_eq!(
+            reloaded.unknown.get("a_future_field"),
+            Some(&serde_json::json!({"nested": true}))
+        );
+    }
+
+    #[test]
+    fn projects_round_trips() {
+        let tmp = tempfile::tempdir().unwrap();
+        let mut reg = ForkRegistry::default();
+        reg.projects.added.push(tmp.path().join("proj"));
+        write_fork_registry(tmp.path(), &reg).unwrap();
+
+        let reloaded = read_fork_registry(tmp.path()).unwrap();
+        assert_eq!(reloaded.projects.added, [tmp.path().join("proj")]);
+    }
+
+    #[test]
+    fn an_empty_projects_list_is_not_written() {
+        let tmp = tempfile::tempdir().unwrap();
+        write_fork_registry(tmp.path(), &ForkRegistry::default()).unwrap();
+
+        let content =
+            std::fs::read_to_string(tmp.path().join(".agents/skill-studio.json")).unwrap();
+        assert!(!content.contains("\"projects\""));
     }
 
     #[test]

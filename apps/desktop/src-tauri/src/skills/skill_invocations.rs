@@ -3,7 +3,7 @@
 // Parses Claude Code transcripts (~/.claude/projects/<dir>/*.jsonl) for
 // Skill tool_use invocations and keeps a per-file cache so a refresh only
 // re-parses transcripts whose size or mtime changed. Read discipline mirrors
-// project_discovery.rs: only regular files are opened, each line is capped
+// crates/skill-studio-host/src/discovery.rs: only regular files are opened, each line is capped
 // so a pathological line can't be buffered in full, and a file/run byte
 // budget bounds worst-case I/O per refresh.
 // ============================================================================

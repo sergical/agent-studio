@@ -13,6 +13,7 @@ use serde::{Deserialize, Serialize};
 use crate::error::{CoreError, ErrorCode};
 use crate::identity::sha256_hex;
 use crate::ports::{LeaseKey, ProjectDiscovery, ScopeFs};
+use crate::tracked_projects::TrackedProjects;
 
 /// Default wait for a shared lease on a read operation.
 pub const DEFAULT_READ_TIMEOUT_MS: u64 = 2_000;
@@ -181,9 +182,10 @@ pub struct NormalizedScope {
     /// The home root.
     pub home: PhysicalRoot,
     /// Projects the scope covers. Under [`ProjectSelection::Discover`] these
-    /// come from the [`ProjectDiscovery`] port at normalization time; the
-    /// list never grows afterwards, so lease keys and `contains` are fixed
-    /// for the life of the runtime.
+    /// come from the [`ProjectDiscovery`] port plus the added folders saved
+    /// in `~/.agents/skill-studio.json` at normalization time; the list
+    /// never grows afterwards, so lease keys and `contains` are fixed for
+    /// the life of the runtime.
     pub projects: Vec<PhysicalRoot>,
     /// Directory that holds `events.sqlite3` and `backups/`.
     pub history_root: PathBuf,
@@ -210,8 +212,12 @@ impl NormalizedScope {
     /// Resolves aliases and validates the scope, discovering projects
     /// through `discovery` under [`ProjectSelection::Discover`].
     ///
-    /// Discovered candidates that no longer exist are dropped; excluded
-    /// paths are removed by canonical path. The home is never a project.
+    /// Discovered candidates are joined with the folders the user added by
+    /// hand, recorded in `~/.agents/skill-studio.json`'s `projects.added`
+    /// (see [`crate::tracked_projects::TrackedProjects`]). Candidates that
+    /// no longer exist are dropped; paths in `projects.excluded` or in
+    /// `exclude` are removed by canonical path. The home is never a
+    /// project - here it is silently dropped rather than an error.
     pub fn normalize_with_discovery(
         raw: &RuntimeScope,
         fs: &dyn ScopeFs,
@@ -245,16 +251,13 @@ impl NormalizedScope {
                     )
                     .at(&raw.home_root));
                 };
-                let excluded: Vec<PathBuf> = exclude
-                    .iter()
-                    .filter_map(|p| fs.canonicalize(p).ok())
-                    .collect();
-                discovery
-                    .discover_projects(&raw.home_root)?
-                    .iter()
-                    .filter_map(|p| physical(fs, p).ok())
-                    .filter(|p| !excluded.contains(&p.canonical))
-                    .collect()
+                let mut tracked = TrackedProjects::read(fs, &raw.home_root);
+                tracked.excluded.extend(exclude.iter().cloned());
+                tracked.resolve(
+                    fs,
+                    &raw.home_root,
+                    discovery.discover_projects(&raw.home_root)?,
+                )
             }
         };
         projects.sort_by(|a, b| a.canonical.cmp(&b.canonical));
@@ -404,7 +407,7 @@ mod tests {
     }
 
     #[test]
-    fn discovery_fills_projects_and_refuses_the_home() {
+    fn discovery_fills_projects_and_drops_the_home() {
         use crate::testing::FakeProjectDiscovery;
         let fs = FixtureBuilder::new()
             .dir("/home/u")
@@ -436,12 +439,51 @@ mod tests {
             "discovered roots are leased"
         );
 
+        // Under Discover, a home found by discovery is dropped rather than
+        // an error - unlike Explicit, where naming the home fails the scope.
         let discovery = FakeProjectDiscovery {
             projects: vec![PathBuf::from("/home/u")],
         };
-        let err =
-            NormalizedScope::normalize_with_discovery(&scope, &fs, Some(&discovery)).unwrap_err();
-        assert_eq!(err.code, ErrorCode::InvalidScope, "home is never a project");
+        let normalized =
+            NormalizedScope::normalize_with_discovery(&scope, &fs, Some(&discovery)).unwrap();
+        assert!(normalized.projects.is_empty(), "home is never a project");
+    }
+
+    #[test]
+    fn normalize_with_discovery_applies_the_saved_project_list() {
+        use crate::testing::FakeProjectDiscovery;
+        let fs = FixtureBuilder::new()
+            .dir("/home/u")
+            .dir("/home/u/found")
+            .dir("/home/u/added")
+            .dir("/home/u/config-excluded")
+            .dir("/home/u/request-excluded")
+            .file(
+                "/home/u/.agents/skill-studio.json",
+                br#"{"projects":{"added":["/home/u/added","/home/u"],"excluded":["/home/u/config-excluded"]}}"#,
+            )
+            .build_fs();
+        let mut scope = RuntimeScope::live("/home/u", "/home/u/.local/share/skill-studio");
+        scope.projects = ProjectSelection::Discover {
+            exclude: vec![PathBuf::from("/home/u/request-excluded")],
+        };
+        let discovery = FakeProjectDiscovery {
+            projects: vec![
+                PathBuf::from("/home/u/found"),
+                PathBuf::from("/home/u/config-excluded"),
+                PathBuf::from("/home/u/request-excluded"),
+            ],
+        };
+
+        let normalized =
+            NormalizedScope::normalize_with_discovery(&scope, &fs, Some(&discovery)).unwrap();
+        let found: Vec<_> = normalized.projects.iter().map(|p| &p.lexical).collect();
+        assert_eq!(
+            found,
+            [Path::new("/home/u/added"), Path::new("/home/u/found")],
+            "the config's `added` folder appears, its `excluded` folder and the \
+             request's own `exclude` are both removed, and home in `added` does not fail"
+        );
     }
 
     #[test]

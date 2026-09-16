@@ -5,7 +5,6 @@
 // ============================================================================
 
 import { useEffect, useRef } from "react";
-import { homeDir } from "@tauri-apps/api/path";
 import { TooltipProvider } from "@skill-studio/ui";
 import { Toaster } from "sonner";
 import { AddSkillSheet } from "./components/AddSkill/AddSkillSheet";
@@ -23,11 +22,13 @@ import { useAppShortcuts } from "./hooks/useAppShortcuts";
 import { useNativeShell } from "./hooks/useNativeShell";
 import { useSkillSnapshot } from "./hooks/useSkillSnapshot";
 import {
+  getTrackedProjects,
+  importTrackedProjects,
+  invokeErrorMessage,
   onTrialExpired,
-  registerSkillProjects,
   restoreTrashedSkill,
-  unregisterSkillProject,
 } from "./lib/skill-api";
+import { clearLegacyProjectPaths, readLegacyProjectPaths } from "./lib/legacy-project-paths";
 import type { ActiveView } from "./store/appStore";
 import { useAppStore } from "./store/appStore";
 import "./App.css";
@@ -48,50 +49,38 @@ function App() {
   const activeView = useAppStore((state) => state.activeView);
   const openSkill = useAppStore((state) => state.openSkill);
   const closeSkill = useAppStore((state) => state.closeSkill);
-  const userAddedProjects = useAppStore((state) => state.userAddedProjects);
-  const excludedProjects = useAppStore((state) => state.excludedProjects);
-  const removeProject = useAppStore((state) => state.removeProject);
+  const setTrackedProjects = useAppStore((state) => state.setTrackedProjects);
   const addToast = useAppStore((state) => state.addToast);
 
   const onSelectSkill = (name: string, deploymentPath?: string) => openSkill(name, deploymentPath);
 
-  // Re-register the user's remembered projects, and re-apply their remembered
-  // exclusions, with the backend once on startup, so future background
-  // rebuilds always reflect both. A legacy persisted entry equal to the home
-  // directory (the global scope, never a project) is dropped rather than
-  // sent - the backend would refuse it anyway.
-  const didRegisterStartupProjects = useRef(false);
+  // Load the tracked project list once on startup. A machine with leftover
+  // localStorage entries imports them into `~/.agents/skill-studio.json`
+  // first (home-directory entries are the backend's job to drop, same as any
+  // other add) and clears localStorage only once that import succeeds; every
+  // other machine reads the saved list straight from the backend.
+  const didLoadStartupProjects = useRef(false);
   useEffect(() => {
-    if (didRegisterStartupProjects.current) return;
-    didRegisterStartupProjects.current = true;
+    if (didLoadStartupProjects.current) return;
+    didLoadStartupProjects.current = true;
 
     (async () => {
-      const home = await homeDir().catch(() => null);
-      const projectsToRegister = home
-        ? userAddedProjects.filter((path) => path !== home)
-        : userAddedProjects;
-      if (home) {
-        for (const path of userAddedProjects) {
-          if (path === home) removeProject(path);
-        }
-      }
-
-      if (projectsToRegister.length > 0) {
-        try {
-          await registerSkillProjects(projectsToRegister);
-        } catch (err) {
-          addToast({
-            type: "error",
-            title: "Couldn't restore tracked projects",
-            message: err instanceof Error ? err.message : "Unknown error",
-          });
-        }
-      }
-      for (const path of excludedProjects) {
-        unregisterSkillProject(path);
+      const legacy = readLegacyProjectPaths();
+      try {
+        const projects = legacy
+          ? await importTrackedProjects(legacy.added, legacy.excluded)
+          : await getTrackedProjects();
+        setTrackedProjects(projects);
+        if (legacy) clearLegacyProjectPaths();
+      } catch (err) {
+        addToast({
+          type: "error",
+          title: "Couldn't load project folders",
+          message: invokeErrorMessage(err),
+        });
       }
     })();
-  }, [userAddedProjects, excludedProjects, removeProject, addToast]);
+  }, [setTrackedProjects, addToast]);
 
   // A trial expiring is driven by the backend's own timer, not a user
   // action here - surface it as a toast with a Restore action rather than

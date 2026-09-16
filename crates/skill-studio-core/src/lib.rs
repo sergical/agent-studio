@@ -35,6 +35,7 @@ mod ownership;
 pub mod ports;
 pub mod scope;
 pub mod snapshot;
+pub mod tracked_projects;
 
 #[cfg(any(test, feature = "testing"))]
 pub mod testing;

@@ -44,8 +44,10 @@ import {
   getAddMethodDefaults,
   getAddSkillOperation,
   importSkillPack,
+  invokeErrorMessage,
   listGithubSkills,
   onAddSkillOperation,
+  registerSkillProjects,
   startAddSkillOperation,
   startAddSkillsOperation,
 } from "../../lib/skill-api";
@@ -1347,7 +1349,7 @@ export function AddSkillSheet() {
   const openSkill = useAppStore((state) => state.openSkill);
   const addToast = useAppStore((state) => state.addToast);
   const userAddedProjects = useAppStore((state) => state.userAddedProjects);
-  const addProject = useAppStore((state) => state.addProject);
+  const setTrackedProjects = useAppStore((state) => state.setTrackedProjects);
 
   const [form, dispatch] = useReducer(formReducer, undefined, initialFormState);
   const {
@@ -1460,9 +1462,18 @@ export function AddSkillSheet() {
 
   const handleBrowseProject = async () => {
     const selected = await open({ directory: true, multiple: false, title: "Select Project" });
-    if (selected) {
-      addProject(selected);
-      dispatch({ type: "set_project_path", path: selected });
+    if (!selected) return;
+    // Installing into the folder does not depend on tracking it, so the pick
+    // stands even when the saved list cannot be written.
+    dispatch({ type: "set_project_path", path: selected });
+    try {
+      setTrackedProjects(await registerSkillProjects([selected]));
+    } catch (err) {
+      addToast({
+        type: "error",
+        title: "Couldn't save project folder",
+        message: invokeErrorMessage(err),
+      });
     }
   };
 

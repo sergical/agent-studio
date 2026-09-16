@@ -16,6 +16,7 @@ import type {
   Deployment,
   InstalledSkill,
   SkillSnapshot,
+  TrackedProjects,
 } from "@skill-studio/lib";
 import {
   deployment,
@@ -77,6 +78,32 @@ function isObjectInvokeArgs(payload: InvokeArgs | undefined): payload is ObjectI
 export function installMockTauri(initial: SkillSnapshot): HarnessControl {
   let currentSnapshot = initial;
   const addOperations = new Map<string, AddSkillOperationEvent>();
+  // Mirrors the backend's `~/.agents/skill-studio.json` `projects` key - the register/unregister/
+  // import handlers below mutate it with the same track/untrack rules as `TrackedProjects` in
+  // `crates/skill-studio-core`, and `get_tracked_projects` reads it back.
+  let trackedProjects: TrackedProjects = { added: [], excluded: [] };
+
+  function snapshotTrackedProjects(): TrackedProjects {
+    return { added: [...trackedProjects.added], excluded: [...trackedProjects.excluded] };
+  }
+
+  /** Appends each path to `added` if not already there; removes it from `excluded`. */
+  function trackProjects(paths: string[]): void {
+    const excludedSet = new Set(trackedProjects.excluded);
+    paths.forEach((path) => excludedSet.delete(path));
+    trackedProjects = {
+      added: [...new Set([...trackedProjects.added, ...paths])],
+      excluded: [...excludedSet],
+    };
+  }
+
+  /** Removes the path from `added`; appends it to `excluded` if not already there. */
+  function untrackProject(path: string): void {
+    trackedProjects = {
+      added: trackedProjects.added.filter((p) => p !== path),
+      excluded: [...new Set([...trackedProjects.excluded, path])],
+    };
+  }
 
   async function publish(next: SkillSnapshot): Promise<void> {
     currentSnapshot = {
@@ -193,8 +220,25 @@ export function installMockTauri(initial: SkillSnapshot): HarnessControl {
         case "request_skill_rescan":
           await publish(currentSnapshot);
           return undefined;
-        case "register_skill_projects":
-        case "unregister_skill_project":
+        case "get_tracked_projects":
+          return snapshotTrackedProjects();
+        case "register_skill_projects": {
+          const paths = z.array(z.string()).parse(payload.paths);
+          trackProjects(paths);
+          return snapshotTrackedProjects();
+        }
+        case "unregister_skill_project": {
+          const path = z.string().parse(payload.path);
+          untrackProject(path);
+          return snapshotTrackedProjects();
+        }
+        case "import_tracked_projects": {
+          const added = z.array(z.string()).parse(payload.added);
+          const excluded = z.array(z.string()).parse(payload.excluded);
+          trackProjects(added);
+          excluded.forEach((path) => untrackProject(path));
+          return snapshotTrackedProjects();
+        }
         case "open_skill_path":
         case "set_preferred_editor":
         case "restore_trashed_skill":

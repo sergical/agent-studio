@@ -221,9 +221,7 @@ fn build_runtime_write<T: ops::Outcome + serde::Serialize>(
     if runtime_scope.kind == skill_studio_core::scope::ScopeKind::Fixture {
         ports.discovery = None;
     } else {
-        ports.discovery = Some(Arc::new(
-            skill_studio_host::TranscriptProjectDiscovery::new(),
-        ));
+        ports.discovery = Some(Arc::new(skill_studio_host::HostProjectDiscovery::new()));
     }
     ports.tools = Some(Arc::new(skill_studio_host::PathToolLookup::new()));
     Runtime::new(&runtime_scope, ports).map_err(|err| {

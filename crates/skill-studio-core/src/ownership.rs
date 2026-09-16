@@ -18,8 +18,15 @@ use crate::ports::ScopeFs;
 
 /// Largest ownership ledger file the core will read. Matches
 /// [`lock_file::LOCK_FILE_MAX_BYTES`]; a file over this size is treated as
-/// absent rather than partially parsed.
-const OWNERSHIP_LEDGER_MAX_BYTES: u64 = 8 * 1024 * 1024;
+/// absent rather than partially parsed. Shared with
+/// [`crate::tracked_projects`], which reads the same file.
+pub(crate) const OWNERSHIP_LEDGER_MAX_BYTES: u64 = 8 * 1024 * 1024;
+
+/// `<home>/.agents/skill-studio.json` - Skill Studio's own bookkeeping file,
+/// shared by [`read_home_registry`] and [`crate::tracked_projects`].
+pub(crate) fn skill_studio_json_path(home: &Path) -> PathBuf {
+    home.join(".agents").join("skill-studio.json")
+}
 
 /// One skill named in `agents.lock`, joined with whether `agents.toml` also
 /// declares it by name. Mirrors the desktop's `DotagentsSkill`
@@ -184,7 +191,7 @@ struct RawHomeRegistry {
 /// read-only callers (`read_fork_registry_or_default`), which downgrade
 /// that same failure to "nothing recorded" rather than failing the scan.
 pub(crate) fn read_home_registry(fs: &dyn ScopeFs, home: &Path) -> HomeRegistry {
-    let path = home.join(".agents").join("skill-studio.json");
+    let path = skill_studio_json_path(home);
     let Ok(bytes) = fs.read_capped(&path, OWNERSHIP_LEDGER_MAX_BYTES) else {
         return HomeRegistry::default();
     };
