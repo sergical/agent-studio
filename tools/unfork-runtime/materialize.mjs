@@ -66,6 +66,12 @@ function treeIdentity(root) {
 }
 
 function verify(root) {
+  const license = path.join(root, "NODE-LICENSE");
+  if (
+    !fs.lstatSync(license).isFile() ||
+    fileDigest(license) !== "148eacf7863ef4329224a29398623077200a27194aa075569faf4a0a85566ca5"
+  )
+    throw new Error("Node license mismatch");
   const node = path.join(root, "bin/node");
   const metadata = fs.lstatSync(node);
   if (!metadata.isFile() || !(metadata.mode & 0o111))

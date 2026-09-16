@@ -95,3 +95,9 @@ eight-case skills.sh adapter check passes (31.92 seconds), and Dotagents interru
 publication recovery passes (14.56 seconds). Native UI evidence above predates
 these two review corrections; their affected behavior is covered by these focused
 regressions. Final combined native acceptance remains a separate release gate.
+
+The runtime verifier also requires the exact Node license from the pinned archive.
+A missing or altered NODE-LICENSE refuses verification; the valid copy passes.
+The same verifier runs before generated-resource reuse and in --verify mode.
+Both normal reuse and the existing packaged bundle pass this corrected check.
+Temporary license-test runtime copies were removed after recording results.
