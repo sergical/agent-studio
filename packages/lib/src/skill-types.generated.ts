@@ -586,6 +586,11 @@ export interface SkillInvocationStats {
     [k: string]: number;
   };
   /**
+   * Hourly use buckets, grouped by (hour, harness, trigger, project),
+   * over the last 365 days.
+   */
+  by_hour: SkillUseHour[];
+  /**
    * Use counts by full project path, over the last 30 days only.
    */
   by_project_30_days: {
@@ -620,6 +625,32 @@ export interface SkillInvocationStats {
    * Total counted uses across every cached transcript.
    */
   total: number;
+}
+/**
+ * One hour's worth of uses for one (harness, trigger, project) combination,
+ * for the Activity page's hourly heatmap and day details.
+ */
+export interface SkillUseHour {
+  /**
+   * Counted uses in this hour for this (harness, trigger, project).
+   */
+  count: number;
+  /**
+   * Which harness recorded these uses.
+   */
+  harness: string;
+  /**
+   * Whole hours since the Unix epoch, UTC.
+   */
+  hour: number;
+  /**
+   * The project directory these uses happened in, if recorded.
+   */
+  project_path: string | null;
+  /**
+   * How these uses started.
+   */
+  trigger: "user" | "agent" | "file_read";
 }
 /**
  * Use counts by trigger, over the last 30 days only.

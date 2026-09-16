@@ -52,6 +52,8 @@ export type {
   SkillInvocation,
   SkillSnapshot,
   SkillInvocationStats,
+  SkillTrigger,
+  SkillUseHour,
   InstalledSkill,
   Deployment,
   PluginInfo,

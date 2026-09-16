@@ -89,6 +89,22 @@ pub struct SkillTriggerCounts {
     pub file_read: u32,
 }
 
+/// One hour's worth of uses for one (harness, trigger, project) combination,
+/// for the Activity page's hourly heatmap and day details.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct SkillUseHour {
+    /// Whole hours since the Unix epoch, UTC.
+    pub hour: u32,
+    /// Which harness recorded these uses.
+    pub harness: String,
+    /// How these uses started.
+    pub trigger: SkillTrigger,
+    /// The project directory these uses happened in, if recorded.
+    pub project_path: Option<String>,
+    /// Counted uses in this hour for this (harness, trigger, project).
+    pub count: u32,
+}
+
 /// Per-skill use summary sent to the frontend.
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct SkillInvocationStats {
@@ -114,6 +130,9 @@ pub struct SkillInvocationStats {
     pub by_harness_30_days: BTreeMap<String, u32>,
     /// Use counts by trigger, over the last 30 days only.
     pub by_trigger_30_days: SkillTriggerCounts,
+    /// Hourly use buckets, grouped by (hour, harness, trigger, project),
+    /// over the last 365 days.
+    pub by_hour: Vec<SkillUseHour>,
 }
 
 /// Per-day use counts for the heatmap (date "YYYY-MM-DD" -> count).
@@ -220,6 +239,7 @@ pub fn skill_stats<'a>(
         by_day: BTreeMap<String, u32>,
         by_harness_30_days: BTreeMap<String, u32>,
         by_trigger_30_days: SkillTriggerCounts,
+        by_hour: BTreeMap<(u32, String, SkillTrigger, Option<String>), u32>,
     }
 
     let cutoff_24h = now - chrono::Duration::hours(24);
@@ -241,6 +261,7 @@ pub fn skill_stats<'a>(
             by_day: BTreeMap::new(),
             by_harness_30_days: BTreeMap::new(),
             by_trigger_30_days: SkillTriggerCounts::default(),
+            by_hour: BTreeMap::new(),
         });
         acc.total += 1;
         if use_.at >= cutoff_24h {
@@ -272,6 +293,14 @@ pub fn skill_stats<'a>(
         if use_.at >= cutoff_365 {
             let day = use_.at.format("%Y-%m-%d").to_string();
             *acc.by_day.entry(day).or_insert(0) += 1;
+            let hour = (use_.at.timestamp() / 3600) as u32;
+            let key = (
+                hour,
+                use_.harness.clone(),
+                use_.trigger,
+                use_.project_path.clone(),
+            );
+            *acc.by_hour.entry(key).or_insert(0) += 1;
         }
     }
 
@@ -289,6 +318,19 @@ pub fn skill_stats<'a>(
             by_day: acc.by_day,
             by_harness_30_days: acc.by_harness_30_days,
             by_trigger_30_days: acc.by_trigger_30_days,
+            by_hour: acc
+                .by_hour
+                .into_iter()
+                .map(
+                    |((hour, harness, trigger, project_path), count)| SkillUseHour {
+                        hour,
+                        harness,
+                        trigger,
+                        project_path,
+                        count,
+                    },
+                )
+                .collect(),
         })
         .collect()
 }
@@ -609,6 +651,7 @@ pub fn parse_claude_code_uses(text: &str) -> Vec<SkillInvocation> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use chrono::Timelike;
 
     fn skill_tool_use_line(skill: &str, timestamp: &str, cwd: &str, session: &str) -> String {
         format!(
@@ -1069,6 +1112,65 @@ mod tests {
         assert_eq!(stats[0].by_project_30_days.get("/proj-b"), Some(&1));
         let today = now.format("%Y-%m-%d").to_string();
         assert_eq!(stats[0].by_day.get(&today), Some(&2));
+    }
+
+    #[test]
+    fn by_hour_groups_same_hour_and_splits_on_harness_trigger_or_project() {
+        let known_skills = known(&["write-tests"]);
+        let sources = DiscoverySources::default();
+        let now = Utc::now();
+        let hour_start = now - chrono::Duration::minutes(now.minute() as i64);
+
+        let mut same_hour_second = agent_use(
+            "write-tests",
+            None,
+            hour_start + chrono::Duration::minutes(10),
+        );
+        same_hour_second.project_path = Some("/proj".to_string());
+        let mut same_hour_first = agent_use("write-tests", None, hour_start);
+        same_hour_first.project_path = Some("/proj".to_string());
+
+        let mut different_project = agent_use("write-tests", None, hour_start);
+        different_project.project_path = Some("/other".to_string());
+
+        let mut different_trigger = same_hour_first.clone();
+        different_trigger.trigger = SkillTrigger::User;
+
+        let too_old = agent_use("write-tests", None, now - chrono::Duration::days(366));
+
+        let uses = [
+            same_hour_first,
+            same_hour_second,
+            different_project,
+            different_trigger,
+            too_old,
+        ];
+        let stats = skill_stats(&uses, &filter(&known_skills, &sources), now);
+        assert_eq!(stats.len(), 1);
+        let by_hour = &stats[0].by_hour;
+
+        let proj_agent = by_hour
+            .iter()
+            .find(|b| {
+                b.project_path.as_deref() == Some("/proj") && b.trigger == SkillTrigger::Agent
+            })
+            .expect("grouped same-hour bucket present");
+        assert_eq!(proj_agent.count, 2, "two same-hour agent uses should merge");
+
+        let other_project = by_hour
+            .iter()
+            .find(|b| b.project_path.as_deref() == Some("/other"))
+            .expect("different project makes a separate bucket");
+        assert_eq!(other_project.count, 1);
+
+        let user_trigger = by_hour
+            .iter()
+            .find(|b| b.trigger == SkillTrigger::User)
+            .expect("different trigger makes a separate bucket");
+        assert_eq!(user_trigger.count, 1);
+
+        let total: u32 = by_hour.iter().map(|b| b.count).sum();
+        assert_eq!(total, 4, "the 366-day-old use is excluded from by_hour");
     }
 
     #[test]
