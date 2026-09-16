@@ -274,6 +274,26 @@ impl EventStore {
             .map_err(|e| format!("Failed to read event row: {e}"))
     }
 
+    /// Returns whether an unfinished event still needs recovery. A completed
+    /// restore resolves its source event; a failed restore leaves it visible.
+    pub fn has_interrupted_events(&self) -> Result<bool, String> {
+        self.conn
+            .query_row(
+                "SELECT EXISTS(
+                    SELECT 1 FROM events AS event
+                    WHERE event.status = 'interrupted'
+                      AND NOT EXISTS (
+                        SELECT 1 FROM events AS restoration
+                        WHERE restoration.id = event.reverted_by
+                          AND restoration.status = 'done'
+                      )
+                )",
+                [],
+                |row| row.get::<_, bool>(0),
+            )
+            .map_err(|error| format!("Failed to query interrupted events: {error}"))
+    }
+
     /// Lists active events of one kind for dependency guards. Failed and
     /// already-restored events cannot own live filesystem state.
     pub fn active_events_of_kind(&self, kind: &str) -> Result<Vec<EventRow>, String> {
@@ -1241,6 +1261,80 @@ mod tests {
 
         let filtered = store.list(10, Some("alpha")).unwrap();
         assert_eq!(filtered.len(), 2);
+    }
+
+    #[test]
+    fn interrupted_status_ignores_history_limit_and_resolved_events() {
+        let tmp = tempfile::tempdir().unwrap();
+        let store = store(tmp.path());
+
+        store
+            .record(
+                "interrupted",
+                draft("install", "interrupted", serde_json::json!({}), None, None),
+            )
+            .unwrap();
+        store
+            .conn
+            .execute(
+                "UPDATE events SET status = 'interrupted' WHERE id = 'interrupted'",
+                [],
+            )
+            .unwrap();
+        for index in 0..201 {
+            let id = format!("done-{index}");
+            store
+                .record(&id, draft("install", &id, serde_json::json!({}), None, None))
+                .unwrap();
+            store.finish(&id, EventStatus::Done).unwrap();
+        }
+
+        assert_eq!(store.list(200, None).unwrap().len(), 200);
+        assert!(store.has_interrupted_events().unwrap());
+
+        store
+            .conn
+            .execute(
+                "UPDATE events SET reverted_by = 'done-0' WHERE id = 'interrupted'",
+                [],
+            )
+            .unwrap();
+        assert!(!store.has_interrupted_events().unwrap());
+
+        store
+            .record(
+                "failed",
+                draft("install", "failed", serde_json::json!({}), None, None),
+            )
+            .unwrap();
+        store.finish("failed", EventStatus::Failed).unwrap();
+        assert!(!store.has_interrupted_events().unwrap());
+
+        store
+            .conn
+            .execute(
+                "UPDATE events SET reverted_by = 'failed' WHERE id = 'interrupted'",
+                [],
+            )
+            .unwrap();
+        assert!(store.has_interrupted_events().unwrap());
+
+        store
+            .conn
+            .execute(
+                "UPDATE events SET reverted_by = 'done-0' WHERE id = 'interrupted'",
+                [],
+            )
+            .unwrap();
+        assert!(!store.has_interrupted_events().unwrap());
+
+        store
+            .record(
+                "pending",
+                draft("install", "pending", serde_json::json!({}), None, None),
+            )
+            .unwrap();
+        assert!(!store.has_interrupted_events().unwrap());
     }
 
     #[test]

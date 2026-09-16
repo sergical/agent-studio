@@ -38,7 +38,9 @@ import type {
   SkillSnapshot,
 } from "@skill-studio/lib";
 import { useAppStore } from "../../store/appStore";
+import type { InterruptedSkillEventsStatus } from "../../hooks/useInterruptedSkillEvents";
 import { PageShell } from "../Shell/PageShell";
+import { HomeRecoveryStatus, canShowAllClear } from "./HomeRecoveryStatus";
 import { HarnessIcon, harnessIdFromLabel } from "../ui/HarnessIcon";
 import { InfoPopover } from "../ui/InfoPopover";
 import { MaterializeRootDialog } from "../ui/MaterializeRootDialog";
@@ -65,6 +67,8 @@ interface HomeViewProps {
   snapshot: SkillSnapshot | undefined;
   isLoading: boolean;
   onSelectSkill: (name: string) => void;
+  recoveryStatus: InterruptedSkillEventsStatus;
+  retryRecoveryStatus: () => void;
 }
 
 /** The harness marks for one skill's deployments - muted when every deployment for that harness is disabled or parked. */
@@ -301,7 +305,7 @@ function WarningRowAction({
 function HomeSkeleton() {
   const bar = "animate-pulse rounded-xs bg-bg-tertiary motion-reduce:animate-none";
   return (
-    <PageShell title="Home">
+    <>
       <div className="grid grid-cols-3 gap-3" aria-hidden="true">
         {["Broken", "Warnings", "Updates"].map((label) => (
           <div
@@ -339,7 +343,7 @@ function HomeSkeleton() {
       <span className="sr-only" role="status">
         Scanning installed skills…
       </span>
-    </PageShell>
+    </>
   );
 }
 
@@ -565,7 +569,13 @@ function InvocationCostCard({
  * grouped inbox list - the columns any of these three surfaces would
  * otherwise leave the user to reconstruct by hand.
  */
-export function HomeView({ snapshot, isLoading, onSelectSkill }: HomeViewProps) {
+export function HomeView({
+  snapshot,
+  isLoading,
+  onSelectSkill,
+  recoveryStatus,
+  retryRecoveryStatus,
+}: HomeViewProps) {
   const setActiveView = useAppStore((state) => state.setActiveView);
   const setSkillListFilter = useAppStore((state) => state.setSkillListFilter);
   const openSkill = useAppStore((state) => state.openSkill);
@@ -579,15 +589,25 @@ export function HomeView({ snapshot, isLoading, onSelectSkill }: HomeViewProps) 
     root: string;
   } | null>(null);
 
+  const recoveryNotice = (
+    <HomeRecoveryStatus
+      status={recoveryStatus}
+      onRetry={retryRecoveryStatus}
+      onViewActivity={() => setActiveView({ kind: "activity" })}
+    />
+  );
+
   if (!snapshot) {
-    if (isLoading) {
-      return <HomeSkeleton />;
-    }
     return (
       <PageShell title="Home">
-        <p className="flex h-full items-center justify-center text-wrap-pretty text-text-tertiary">
-          No skill snapshot yet.
-        </p>
+        {recoveryNotice}
+        {isLoading ? (
+          <HomeSkeleton />
+        ) : (
+          <p className="flex h-full items-center justify-center text-wrap-pretty text-text-tertiary">
+            No skill snapshot yet.
+          </p>
+        )}
       </PageShell>
     );
   }
@@ -601,7 +621,13 @@ export function HomeView({ snapshot, isLoading, onSelectSkill }: HomeViewProps) 
   const unused = unusedSkills(own, snapshot.invocations);
   const recent = recentlyUsedSkills(snapshot.skills, snapshot.invocations, RECENTLY_USED_COUNT);
 
-  const allClear = broken.length === 0 && warnings.length === 0 && updates.length === 0;
+  const allClear = canShowAllClear(
+    broken.length > 0 ||
+      warnings.length > 0 ||
+      updates.length > 0 ||
+      !!snapshot.read_warnings?.length,
+    recoveryStatus,
+  );
 
   const toggleFilter = (id: HomeFilter) => setFilter((cur) => (cur === id ? null : id));
   const isGroupVisible = (id: GroupId) => filter === null || filter === id;
@@ -622,6 +648,8 @@ export function HomeView({ snapshot, isLoading, onSelectSkill }: HomeViewProps) 
 
   return (
     <PageShell title="Home">
+      {recoveryNotice}
+
       <HomeStatTiles
         broken={broken}
         warnings={warnings}
@@ -652,7 +680,7 @@ export function HomeView({ snapshot, isLoading, onSelectSkill }: HomeViewProps) 
           </div>
         )}
 
-        {allClear && !filter && !snapshot.read_warnings?.length && (
+        {allClear && !filter && (
           <p className="flex h-full items-center justify-center text-wrap-pretty text-text-tertiary">
             All clear. Nothing needs attention.
           </p>

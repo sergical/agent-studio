@@ -19,6 +19,7 @@ import { PluginSkillsView } from "./components/SkillList/PluginSkillsView";
 import { PacksView } from "./components/Packs/PacksView";
 import { SkillPage } from "./components/SkillDetail/SkillPage";
 import { useSkillSnapshot } from "./hooks/useSkillSnapshot";
+import { useInterruptedSkillEvents } from "./hooks/useInterruptedSkillEvents";
 import {
   onTrialExpired,
   registerSkillProjects,
@@ -30,6 +31,7 @@ import "./App.css";
 
 function App() {
   const { snapshot, emittedSnapshotRevision, isLoading, requestRescan } = useSkillSnapshot();
+  const recoveryStatus = useInterruptedSkillEvents(emittedSnapshotRevision);
   const resolvedTheme = useAppStore((state) => state.resolvedTheme);
   const activeView = useAppStore((state) => state.activeView);
   const openSkill = useAppStore((state) => state.openSkill);
@@ -114,7 +116,15 @@ function App() {
 
   let main: React.ReactNode;
   if (activeView.kind === "home") {
-    main = <HomeView snapshot={snapshot} isLoading={isLoading} onSelectSkill={onSelectSkill} />;
+    main = (
+      <HomeView
+        snapshot={snapshot}
+        isLoading={isLoading}
+        onSelectSkill={onSelectSkill}
+        recoveryStatus={recoveryStatus.status}
+        retryRecoveryStatus={recoveryStatus.retry}
+      />
+    );
   } else if (activeView.kind === "skills") {
     main = <SkillsView snapshot={snapshot} onSelectSkill={onSelectSkill} />;
   } else if (activeView.kind === "plugins") {

@@ -528,6 +528,11 @@ export async function listSkillEvents(limit?: number, skill?: string): Promise<S
   return invoke("list_skill_events", { limit, skill });
 }
 
+/** Whether an unfinished event requires review in Activity. */
+export async function hasInterruptedSkillEvents(): Promise<boolean> {
+  return invoke("has_interrupted_skill_events");
+}
+
 /**
  * Undoes one event. Refused with a drift-guard message naming the drifted
  * path unless `force` is set, in which case the current (drifted) content is

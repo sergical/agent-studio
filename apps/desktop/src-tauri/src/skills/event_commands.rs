@@ -84,6 +84,19 @@ pub fn list_skill_events(
         .collect())
 }
 
+/// Checks for unfinished recovery events without loading the Activity history.
+#[tauri::command]
+pub async fn has_interrupted_skill_events(app: tauri::AppHandle) -> Result<bool, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let event_store = app.state::<EventStoreState>();
+        let guard = locked_store(&event_store)?;
+        let store = guard.as_ref().ok_or("Event store is unavailable")?;
+        store.has_interrupted_events()
+    })
+    .await
+    .map_err(|error| format!("Interrupted event check failed: {error}"))?
+}
+
 /// Undoes one event. Refuses an `explode_shared_dir` restore while any of
 /// its skills are individually disabled (`restore_guard_for_explode`), and
 /// unregisters the materialized root once such a restore succeeds.
