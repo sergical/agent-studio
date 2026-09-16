@@ -31,7 +31,7 @@ Final binary SHA256:
 | Global skills.sh success | Directory and lock entry removed; list count changed from five to four. |
 | Silent provider exit | Exit7 becomes `npx exited with code 7`; original skill remains; action returns from busy state. |
 | Trial-record cleanup failure | Provider removed skill then corrupted disposable registry; UI explicitly says removal occurred but trial cleanup failed. Inventory removes the skill and displays incomplete ownership warning. Registry restored after test. |
-| Slow dotagents removal | Settings rendered while fixture provider PID50546 was independently confirmed live after navigation. |
+| Slow dotagents removal | Settings rendered while fixture provider PID50546 was independently confirmed live after navigation; operation later completed and inventory refreshed. |
 | Copy wrapper regression | Exact managed Copy and Codex link removed through core; independent same-name Claude directory and content retained; dialog declares no Undo and closes on completion. |
 
 The first partial-failure run exposed an `Unknown error` toast. Normalizing Tauri
@@ -73,3 +73,12 @@ Fixture and build scripts are retained temporarily under
 Raw output and the native bundle are disposable after final evidence is recorded.
 CI retains test reports for three days. Merge, deployment and final combined
 release acceptance remain separate.
+
+## Delivery status
+
+Draft [PR103](https://github.com/sergical/agent-studio/pull/103), code commit
+`8c7082839eaadc7d285c0b226ddf9e13f2343bc6`, stacked on PR102.
+[CI35072324156](https://github.com/sergical/agent-studio/actions/runs/35072324156)
+passed frontend/shared tests, typechecks, lint and build in44s; GitGuardian passed.
+Native app, provider and build processes exited. Disposable bundle, homes/project,
+raw logs and unique cache were removed; compact fixture/build scripts remain.
