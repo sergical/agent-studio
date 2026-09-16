@@ -61,6 +61,19 @@ export function useProjectFolderActions() {
     }
   };
 
+  /** Saves a path or `*` pattern typed by hand ("Type a path or pattern…"). Resolves to `null` on
+   * success (after the same store refresh `addProject` does), or the backend's error message on
+   * failure, so the caller can show it inline instead of a toast. */
+  const addTypedPath = async (value: string): Promise<string | null> => {
+    try {
+      const projects = await registerSkillProjects([value]);
+      setTrackedProjects(projects);
+      return null;
+    } catch (err) {
+      return invokeErrorMessage(err);
+    }
+  };
+
   /**
    * Un-registers `path` (a discovered folder's "Stop tracking") with the
    * backend first; the store (and the scope, if it was the active project)
@@ -98,5 +111,5 @@ export function useProjectFolderActions() {
     resetScopeToAll(path);
   };
 
-  return { addProject, stopTracking, removeProject };
+  return { addProject, addTypedPath, stopTracking, removeProject };
 }

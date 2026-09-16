@@ -421,6 +421,12 @@ export interface SkillSearchResult {
  */
 export interface ProjectFolder {
   /**
+   * `None` for a plain folder; for a `*`-suffixed pattern, how many of
+   * its currently matching folders are in the resolved set. A pattern
+   * gets one row of its own instead of one row per matched folder.
+   */
+  matches: number | null;
+  /**
    * True when the path no longer exists on disk - shown as "Folder not
    * found" instead of being dropped, since a folder the user added by
    * hand shouldn't disappear from the list without a trace.

@@ -19,23 +19,10 @@ use skill_studio_core::discovery_sources::DiscoverySources;
 use skill_studio_core::error::CoreError;
 use skill_studio_core::identity::AgentId;
 use skill_studio_core::ports::ProjectDiscovery;
+use skill_studio_core::tracked_projects::SKILL_DIR_MARKERS;
 
 use crate::fs::RealFs;
 use crate::opencode_db::{open_opencode_database, opencode_databases, OPENCODE_DATA_ROOT};
-
-/// Skill directories (relative to a project root) whose presence marks a
-/// directory as a real skills project, not just any directory a session
-/// happened to run in.
-const SKILL_DIR_MARKERS: &[&str] = &[
-    ".claude/skills",
-    ".codex/skills",
-    ".opencode/skills",
-    ".opencode/skill",
-    ".pi/skills",
-    ".cursor/skills",
-    ".grok/skills",
-    ".agents/skills",
-];
 
 /// Project paths recorded in Codex's `[projects."/abs/path"]` config
 /// sections (`~/.codex/config.toml`).

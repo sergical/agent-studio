@@ -22,7 +22,7 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use skill_studio_core::discovery_sources::DiscoverySources;
 use skill_studio_core::skill_uses::{InvocationHeatmap, SkillInvocationStats, SkillUseFilter};
-use skill_studio_core::tracked_projects::TrackedProjects;
+use skill_studio_core::tracked_projects::{self, TrackedProjects};
 use skill_studio_host::{SkillInvocationIndex, SkillUseRefreshReport};
 use tauri::{AppHandle, Emitter, Manager};
 
@@ -292,11 +292,29 @@ pub fn get_tracked_projects() -> Result<TrackedProjects, String> {
     Ok(super::skill_fork_registry::read_fork_registry(&home)?.projects)
 }
 
+/// Runs each incoming path through `tracked_projects::entry_to_save`,
+/// returning the values to store or the first error - so a picker path
+/// (already absolute and existing) keeps working unchanged while a typed
+/// path or `*` pattern is checked the same way the Settings form checks it.
+fn validate_projects_to_save(
+    fs: &dyn skill_studio_core::ports::ScopeFs,
+    home: &Path,
+    paths: Vec<String>,
+) -> Result<Vec<PathBuf>, String> {
+    paths
+        .into_iter()
+        .map(|path| tracked_projects::entry_to_save(fs, home, &path))
+        .collect()
+}
+
 /// Register project paths the caller cares about (e.g. one the user just
-/// opened) so every surface - not just this process - always includes them,
-/// even though `skill_studio_host::discover_skill_projects` hasn't found them
-/// via a Codex/Claude Code config yet. Returns the saved lists; a full
-/// rebuild follows on the background thread when they changed.
+/// opened, or one typed by hand as a plain path or a `*` pattern) so every
+/// surface - not just this process - always includes them, even though
+/// `skill_studio_host::discover_skill_projects` hasn't found them via a
+/// Codex/Claude Code config yet. The first invalid entry
+/// (`validate_projects_to_save`) aborts the whole batch before anything is
+/// saved. Returns the saved lists; a full rebuild follows on the background
+/// thread when they changed.
 #[tauri::command]
 pub fn register_skill_projects(
     paths: Vec<String>,
@@ -304,10 +322,11 @@ pub fn register_skill_projects(
 ) -> Result<TrackedProjects, String> {
     let home = dirs::home_dir().ok_or("Could not find home directory")?;
     let valid = drop_home_directory_from_batch(paths, &home);
+    let to_save = validate_projects_to_save(&skill_studio_host::RealFs, &home, valid)?;
     let (projects, changed) = update_registry_section(
         &home,
         |registry| &mut registry.projects,
-        |tracked| tracked.track(valid.into_iter().map(PathBuf::from)),
+        |tracked| tracked.track(to_save),
     )?;
     if changed {
         state.mark_skills_dirty();
@@ -2682,6 +2701,38 @@ mod tests {
         let result = drop_home_directory_from_batch(batch, &home);
 
         assert_eq!(result, vec![valid_project.to_string_lossy().to_string()]);
+    }
+
+    #[test]
+    fn validate_projects_to_save_accepts_a_pattern() {
+        let tmp = tempfile::tempdir().unwrap();
+        let home = tmp.path().join("home");
+        fs::create_dir_all(home.join("src/a")).unwrap();
+
+        let saved = validate_projects_to_save(
+            &skill_studio_host::RealFs,
+            &home,
+            vec!["~/src/*".to_string()],
+        )
+        .unwrap();
+
+        assert_eq!(saved, vec![PathBuf::from("~/src/*")]);
+    }
+
+    #[test]
+    fn validate_projects_to_save_rejects_a_star_that_is_not_the_last_part() {
+        let tmp = tempfile::tempdir().unwrap();
+        let home = tmp.path().join("home");
+        fs::create_dir_all(&home).unwrap();
+
+        let err = validate_projects_to_save(
+            &skill_studio_host::RealFs,
+            &home,
+            vec!["~/src/app-*".to_string()],
+        )
+        .unwrap_err();
+
+        assert!(err.contains("Only the last part"));
     }
 
     #[test]

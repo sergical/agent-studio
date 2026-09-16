@@ -11,6 +11,7 @@ import type { InvokeArgs } from "@tauri-apps/api/core";
 import { emit } from "@tauri-apps/api/event";
 import { mockIPC, mockWindows } from "@tauri-apps/api/mocks";
 import { z } from "zod";
+import { isProjectPattern } from "@skill-studio/lib";
 import type {
   AddSkillOperationEvent,
   Deployment,
@@ -133,19 +134,54 @@ export function installMockTauri(initial: SkillSnapshot): HarnessControl {
     }));
   }
 
+  /** Expands a leading `~` against the harness's home, mirroring `tracked_projects`'s own
+   * expansion, so a pattern's parent can be compared against snapshot project paths. */
+  function expandMockHome(path: string): string {
+    if (path === "~") return HARNESS_HOME;
+    if (path.startsWith("~/")) return `${HARNESS_HOME}${path.slice(1)}`;
+    return path;
+  }
+
+  /** The folder a `*` pattern's children live in. */
+  function patternParent(pattern: string): string {
+    const withoutStar = pattern.slice(0, -1).replace(/\/$/, "") || "/";
+    return expandMockHome(withoutStar);
+  }
+
   /** Mirrors `skill_project_folders::project_folders`: the fixture snapshot's projects, labelled
-   * `discovered` unless the user added them by hand, followed by any added folder missing from
-   * the snapshot's project list (not found on disk). */
+   * `discovered` unless the user added them by hand, one row per `*` pattern in `added` instead of
+   * one row per folder it matches (a matched child is hidden unless it's also a plain added
+   * entry), followed by any plain added folder missing from the snapshot's project list (not
+   * found on disk). */
   function projectFolders(): ProjectFolder[] {
     const addedSet = new Set(trackedProjects.added);
-    const rows: ProjectFolder[] = currentSnapshot.projects.map((path) => ({
-      path,
-      source: addedSet.has(path) ? "added" : "discovered",
-      missing: false,
-    }));
+    const patterns = trackedProjects.added.filter(isProjectPattern);
+    const plainAddedSet = new Set(trackedProjects.added.filter((path) => !isProjectPattern(path)));
+    const patternEntries = patterns.map((pattern) => ({ pattern, parent: patternParent(pattern) }));
+    const patternParents = new Set(patternEntries.map((entry) => entry.parent));
+
+    const rows: ProjectFolder[] = [];
+    for (const path of currentSnapshot.projects) {
+      const parent = path.slice(0, path.lastIndexOf("/"));
+      if (patternParents.has(parent) && !plainAddedSet.has(path)) continue;
+      rows.push({
+        path,
+        source: addedSet.has(path) ? "added" : "discovered",
+        missing: false,
+        matches: null,
+      });
+    }
+    for (const { pattern, parent } of patternEntries) {
+      const matches = currentSnapshot.projects.filter(
+        (path) => path.slice(0, path.lastIndexOf("/")) === parent,
+      ).length;
+      rows.push({ path: pattern, source: "added", missing: false, matches });
+    }
+
     const listedPaths = new Set(rows.map((row) => row.path));
-    for (const path of trackedProjects.added) {
-      if (!listedPaths.has(path)) rows.push({ path, source: "added", missing: true });
+    for (const path of plainAddedSet) {
+      if (!listedPaths.has(path))
+        rows.push({ path, source: "added", missing: true, matches: null });
     }
     return rows;
   }
@@ -268,7 +304,20 @@ export function installMockTauri(initial: SkillSnapshot): HarnessControl {
         case "get_tracked_projects":
           return snapshotTrackedProjects();
         case "register_skill_projects": {
-          const paths = z.array(z.string()).parse(payload.paths);
+          const typed = z.array(z.string()).parse(payload.paths);
+          for (const path of typed) {
+            const segments = path.split("/");
+            const strayStar = segments.some(
+              (segment, i) =>
+                segment.includes("*") && !(i === segments.length - 1 && segment === "*"),
+            );
+            if (strayStar) {
+              throw new Error("Only the last part of a path can be *, as in ~/src/*.");
+            }
+          }
+          // A pattern is saved exactly as typed; a plain path is expanded, matching the backend's
+          // `entry_to_save`.
+          const paths = typed.map((path) => (isProjectPattern(path) ? path : expandMockHome(path)));
           trackProjects(paths);
           return snapshotTrackedProjects();
         }

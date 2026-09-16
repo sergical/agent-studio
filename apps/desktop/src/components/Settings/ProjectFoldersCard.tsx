@@ -8,8 +8,15 @@
 // ============================================================================
 
 import { useEffect, useEffectEvent, useRef, useState } from "react";
-import { AlertTriangle, ChevronDown, FolderOpen, Plus } from "lucide-react";
-import { Button, Collapsible, CollapsiblePanel, CollapsibleTrigger } from "@skill-studio/ui";
+import type { RefObject } from "react";
+import { AlertTriangle, Asterisk, ChevronDown, FolderOpen, Plus } from "lucide-react";
+import {
+  Button,
+  buttonVariants,
+  Collapsible,
+  CollapsiblePanel,
+  CollapsibleTrigger,
+} from "@skill-studio/ui";
 import {
   deploymentLabelFromAgentId,
   homeRelativePath,
@@ -26,8 +33,10 @@ import {
 } from "../../lib/skill-api";
 import { useAppStore } from "../../store/appStore";
 import { useProjectFolderActions } from "../../hooks/useProjectFolderActions";
+import { MenuControl, MenuItem } from "../ui/MenuControl";
 import { HarnessIcon } from "../ui/HarnessIcon";
 import { SwitchControl } from "../ui/SwitchControl";
+import { ProjectFolderAddForm } from "./ProjectFolderAddForm";
 import { SettingsCard } from "./SettingsCard";
 
 interface ProjectFoldersCardProps {
@@ -56,6 +65,52 @@ function countSkillsByProject(snapshot: SkillSnapshot | undefined): Map<string, 
   return counts;
 }
 
+/** The row's secondary line: a missing-folder warning, a pattern's match count, or a plain
+ * folder's discovered/added label and skill count. Split out of `FolderRow` to keep it a single
+ * flat branch instead of nested ternaries. */
+function FolderSecondaryText({
+  folder,
+  isDiscovered,
+  isPattern,
+  skillCount,
+}: {
+  folder: ProjectFolder;
+  isDiscovered: boolean;
+  isPattern: boolean;
+  skillCount: number;
+}) {
+  if (folder.missing) {
+    return (
+      <>
+        <AlertTriangle size={12} className="text-warning" aria-hidden="true" />
+        Folder not found · Added by you
+      </>
+    );
+  }
+  if (isPattern) {
+    return (
+      <>
+        Added by you
+        {" · "}
+        <span className="tabular-nums">
+          {folder.matches === 0
+            ? "No matching folders"
+            : `${folder.matches} ${folder.matches === 1 ? "folder" : "folders"}`}
+        </span>
+      </>
+    );
+  }
+  return (
+    <>
+      {isDiscovered ? "Found in harness history" : "Added by you"}
+      {" · "}
+      <span className="tabular-nums">
+        {skillCount} {skillCount === 1 ? "skill" : "skills"}
+      </span>
+    </>
+  );
+}
+
 function FolderRow({
   folder,
   skillCount,
@@ -69,28 +124,24 @@ function FolderRow({
 }) {
   const displayPath = homeRelativePath(folder.path);
   const isDiscovered = folder.source === "discovered";
+  const isPattern = folder.matches != null;
 
   return (
     <li className="flex min-w-0 items-center gap-3 px-3 py-2">
       <div className="min-w-0 flex-1">
-        <p className="m-0 truncate text-body text-text-primary" title={folder.path}>
+        <p
+          className={`m-0 truncate text-body text-text-primary ${isPattern ? "font-mono" : ""}`}
+          title={folder.path}
+        >
           {displayPath}
         </p>
         <p className="m-0 flex items-center gap-1 overflow-hidden whitespace-nowrap text-small text-text-tertiary">
-          {folder.missing ? (
-            <>
-              <AlertTriangle size={12} className="text-warning" aria-hidden="true" />
-              Folder not found · Added by you
-            </>
-          ) : (
-            <>
-              {isDiscovered ? "Found in harness history" : "Added by you"}
-              {" · "}
-              <span className="tabular-nums">
-                {skillCount} {skillCount === 1 ? "skill" : "skills"}
-              </span>
-            </>
-          )}
+          <FolderSecondaryText
+            folder={folder}
+            isDiscovered={isDiscovered}
+            isPattern={isPattern}
+            skillCount={skillCount}
+          />
         </p>
       </div>
       <Button
@@ -115,6 +166,10 @@ function FolderList({
   onOpenChange,
   onStopTracking,
   onRemove,
+  addFormOpen,
+  onAddTypedPath,
+  onCloseAddForm,
+  triggerRef,
 }: {
   folders: ProjectFolder[] | null;
   sources: DiscoverySourceSetting[] | null;
@@ -123,6 +178,11 @@ function FolderList({
   onOpenChange: (open: boolean) => void;
   onStopTracking: (path: string) => void;
   onRemove: (path: string) => void;
+  addFormOpen: boolean;
+  onAddTypedPath: (value: string) => Promise<string | null>;
+  onCloseAddForm: () => void;
+  /** Focused after the add form closes, so focus doesn't drop to the body. */
+  triggerRef: RefObject<HTMLButtonElement | null>;
 }) {
   if (folders === null || sources === null) {
     return (
@@ -132,7 +192,7 @@ function FolderList({
     );
   }
 
-  if (folders.length === 0) {
+  if (folders.length === 0 && !addFormOpen) {
     const enabledLabels: string[] = [];
     for (const source of sources) {
       if (source.enabled) enabledLabels.push(deploymentLabelFromAgentId(source.harness));
@@ -149,6 +209,12 @@ function FolderList({
   }
 
   const missingCount = folders.filter((folder) => folder.missing).length;
+  // A plain folder counts as one; a pattern counts as however many of its matched folders made
+  // the resolved set, so this line reads like "N folders" even though one pattern is one row.
+  const folderCount = folders.reduce(
+    (total, folder) => (folder.missing ? total : total + (folder.matches ?? 1)),
+    0,
+  );
   return (
     // No overflow-hidden here: the global :focus-visible outline sits 2px outside the trigger and
     // would be clipped.
@@ -157,13 +223,16 @@ function FolderList({
       onOpenChange={onOpenChange}
       className="rounded-md border border-border-subtle"
     >
-      <CollapsibleTrigger className="group/folders flex h-9 w-full items-center gap-2 rounded-md px-3 text-left text-small text-text-secondary transition-colors hover:bg-bg-hover data-panel-open:rounded-b-none">
+      <CollapsibleTrigger
+        ref={triggerRef}
+        className="group/folders flex h-9 w-full items-center gap-2 rounded-md px-3 text-left text-small text-text-secondary transition-colors hover:bg-bg-hover data-panel-open:rounded-b-none"
+      >
         <ChevronDown
           aria-hidden
           className="size-3.5 shrink-0 -rotate-90 text-text-tertiary transition-transform motion-reduce:transition-none group-data-panel-open/folders:rotate-0"
         />
         <span className="font-medium tabular-nums">
-          {folders.length} {folders.length === 1 ? "folder" : "folders"}
+          {folderCount} {folderCount === 1 ? "folder" : "folders"}
         </span>
         {missingCount > 0 && (
           <span className="flex items-center gap-1 text-text-tertiary">
@@ -174,6 +243,7 @@ function FolderList({
         )}
       </CollapsibleTrigger>
       <CollapsiblePanel>
+        {addFormOpen && <ProjectFolderAddForm onAdd={onAddTypedPath} onClose={onCloseAddForm} />}
         <ul className="m-0 list-none border-t border-border-subtle p-0">
           {folders.map((folder) => (
             <FolderRow
@@ -192,11 +262,13 @@ function FolderList({
 
 export function ProjectFoldersCard({ snapshot }: ProjectFoldersCardProps) {
   const addToast = useAppStore((state) => state.addToast);
-  const { addProject, stopTracking, removeProject } = useProjectFolderActions();
+  const { addProject, addTypedPath, stopTracking, removeProject } = useProjectFolderActions();
   const [folders, setFolders] = useState<ProjectFolder[] | null>(null);
   const [sources, setSources] = useState<DiscoverySourceSetting[] | null>(null);
   const [foldersOpen, setFoldersOpen] = useState(false);
+  const [addFormOpen, setAddFormOpen] = useState(false);
   const requestId = useRef(0);
+  const foldersTriggerRef = useRef<HTMLButtonElement>(null);
 
   const refetchFolders = () => {
     const id = ++requestId.current;
@@ -246,6 +318,24 @@ export function ProjectFoldersCard({ snapshot }: ProjectFoldersCardProps) {
     refetchFolders();
   };
 
+  const handleStartTyping = () => {
+    setFoldersOpen(true);
+    setAddFormOpen(true);
+  };
+
+  // Cancel, Escape, and a successful Add all close the form through this one path, so focus
+  // always lands back on the "N folders" trigger instead of dropping to the body.
+  const closeAddForm = () => {
+    setAddFormOpen(false);
+    foldersTriggerRef.current?.focus();
+  };
+
+  const handleAddTypedPath = async (value: string): Promise<string | null> => {
+    const error = await addTypedPath(value);
+    if (!error) refetchFolders();
+    return error;
+  };
+
   const handleStopTracking = async (path: string) => {
     await stopTracking(path);
     refetchFolders();
@@ -281,10 +371,26 @@ export function ProjectFoldersCard({ snapshot }: ProjectFoldersCardProps) {
       title="Project folders"
       description="Skill Studio finds project folders in the history of the harnesses below and shows the skills inside them. Add a folder it missed, or stop tracking one you don't need."
       action={
-        <Button variant="outline" size="sm" onClick={handleAddFolder}>
-          <Plus size={14} />
-          Add folder…
-        </Button>
+        <MenuControl
+          triggerClassName={buttonVariants({ variant: "outline", size: "sm" })}
+          triggerAriaLabel="Add folder"
+          trigger={
+            <>
+              <Plus size={14} aria-hidden="true" />
+              Add folder
+              <ChevronDown size={12} aria-hidden="true" />
+            </>
+          }
+        >
+          <MenuItem closeOnClick onClick={handleAddFolder}>
+            <FolderOpen size={14} aria-hidden="true" />
+            Choose a folder…
+          </MenuItem>
+          <MenuItem closeOnClick onClick={handleStartTyping}>
+            <Asterisk size={14} aria-hidden="true" />
+            Type a path or pattern…
+          </MenuItem>
+        </MenuControl>
       }
     >
       <div className="flex flex-col gap-2">
@@ -320,6 +426,10 @@ export function ProjectFoldersCard({ snapshot }: ProjectFoldersCardProps) {
         onOpenChange={setFoldersOpen}
         onStopTracking={handleStopTracking}
         onRemove={handleRemove}
+        addFormOpen={addFormOpen}
+        onAddTypedPath={handleAddTypedPath}
+        onCloseAddForm={closeAddForm}
+        triggerRef={foldersTriggerRef}
       />
     </SettingsCard>
   );

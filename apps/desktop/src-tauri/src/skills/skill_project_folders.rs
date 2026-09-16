@@ -11,7 +11,7 @@ use std::path::{Path, PathBuf};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use skill_studio_core::ports::ScopeFs;
-use skill_studio_core::tracked_projects::TrackedProjects;
+use skill_studio_core::tracked_projects::{self, expand_home, TrackedProjects};
 
 /// Where a [`ProjectFolder`] came from - decides which action the row offers.
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
@@ -37,11 +37,16 @@ pub struct ProjectFolder {
     /// found" instead of being dropped, since a folder the user added by
     /// hand shouldn't disappear from the list without a trace.
     pub missing: bool,
+    /// `None` for a plain folder; for a `*`-suffixed pattern, how many of
+    /// its currently matching folders are in the resolved set. A pattern
+    /// gets one row of its own instead of one row per matched folder.
+    pub matches: Option<u32>,
 }
 
 /// Builds the card's rows from `discovered` (this run's discovery pass) and
 /// `tracked` (the saved added/excluded lists): the folders `tracked.resolve`
-/// would hand to a snapshot, labelled by source, plus any `tracked.added`
+/// would hand to a snapshot, labelled by source, one row per `*` pattern
+/// instead of one row per folder it matched, plus any plain `tracked.added`
 /// path that no longer exists.
 pub fn project_folders(
     fs: &dyn ScopeFs,
@@ -54,9 +59,31 @@ pub fn project_folders(
         .filter_map(|p| fs.canonicalize(p).ok())
         .collect();
 
+    // Canonical, not lexical: a plain added path reached through a symlink must still match the
+    // resolved root's canonical path, or it would lose its row whenever a pattern also matches it.
+    let plain_added_canonical: Vec<PathBuf> = tracked
+        .added
+        .iter()
+        .filter(|path| !tracked_projects::is_pattern(path))
+        .filter_map(|path| fs.canonicalize(&expand_home(path, home)).ok())
+        .collect();
+
+    let pattern_matches = tracked.pattern_matches(fs, home);
+    let pattern_child_canonical: Vec<PathBuf> = pattern_matches
+        .iter()
+        .flat_map(|pm| pm.folders.iter())
+        .filter_map(|p| fs.canonicalize(p).ok())
+        .collect();
+
     let resolved = tracked.resolve(fs, home, discovered);
     let mut rows: Vec<ProjectFolder> = resolved
         .iter()
+        .filter(|root| {
+            let pattern_only = pattern_child_canonical.contains(&root.canonical)
+                && !discovered_canonical.contains(&root.canonical)
+                && !plain_added_canonical.contains(&root.canonical);
+            !pattern_only
+        })
         .map(|root| {
             let source = if discovered_canonical.contains(&root.canonical) {
                 ProjectFolderSource::Discovered
@@ -67,19 +94,37 @@ pub fn project_folders(
                 path: root.lexical.to_string_lossy().to_string(),
                 source,
                 missing: false,
+                matches: None,
             }
         })
         .collect();
+
+    for pm in &pattern_matches {
+        let matched = pm
+            .folders
+            .iter()
+            .filter_map(|folder| fs.canonicalize(folder).ok())
+            .filter(|canonical| resolved.iter().any(|root| &root.canonical == canonical))
+            .count() as u32;
+        rows.push(ProjectFolder {
+            path: pm.pattern.to_string_lossy().to_string(),
+            source: ProjectFolderSource::Added,
+            missing: !pm.parent_found,
+            matches: Some(matched),
+        });
+    }
 
     rows.extend(
         tracked
             .added
             .iter()
-            .filter(|path| fs.canonicalize(path).is_err())
+            .filter(|path| !tracked_projects::is_pattern(path))
+            .filter(|path| fs.canonicalize(&expand_home(path, home)).is_err())
             .map(|path| ProjectFolder {
                 path: path.to_string_lossy().to_string(),
                 source: ProjectFolderSource::Added,
                 missing: true,
+                matches: None,
             }),
     );
     rows
@@ -134,6 +179,7 @@ mod tests {
                 path: project.to_string_lossy().to_string(),
                 source: ProjectFolderSource::Discovered,
                 missing: false,
+                matches: None,
             }]
         );
     }
@@ -152,6 +198,7 @@ mod tests {
                 path: project.to_string_lossy().to_string(),
                 source: ProjectFolderSource::Added,
                 missing: false,
+                matches: None,
             }]
         );
     }
@@ -175,6 +222,7 @@ mod tests {
                 path: project.to_string_lossy().to_string(),
                 source: ProjectFolderSource::Discovered,
                 missing: false,
+                matches: None,
             }]
         );
     }
@@ -195,11 +243,13 @@ mod tests {
                     path: project.to_string_lossy().to_string(),
                     source: ProjectFolderSource::Added,
                     missing: false,
+                    matches: None,
                 },
                 ProjectFolder {
                     path: missing.to_string_lossy().to_string(),
                     source: ProjectFolderSource::Added,
                     missing: true,
+                    matches: None,
                 },
             ]
         );
@@ -225,5 +275,92 @@ mod tests {
         };
         let rows = project_folders(&skill_studio_host::RealFs, &home, vec![], &tracked);
         assert!(rows.is_empty());
+    }
+
+    #[test]
+    fn pattern_gets_one_row_with_a_count_and_no_child_rows() {
+        let tmp = tempfile::tempdir().unwrap();
+        let home = tmp.path().join("home");
+        fs::create_dir_all(home.join("src/a/.claude/skills/x")).unwrap();
+        fs::write(home.join("src/a/.claude/skills/x/SKILL.md"), "").unwrap();
+        fs::create_dir_all(home.join("src/b/.claude/skills/x")).unwrap();
+        fs::write(home.join("src/b/.claude/skills/x/SKILL.md"), "").unwrap();
+
+        let tracked = TrackedProjects {
+            added: vec![PathBuf::from("~/src/*")],
+            ..Default::default()
+        };
+        let rows = project_folders(&skill_studio_host::RealFs, &home, vec![], &tracked);
+
+        assert_eq!(
+            rows,
+            [ProjectFolder {
+                path: "~/src/*".to_string(),
+                source: ProjectFolderSource::Added,
+                missing: false,
+                matches: Some(2),
+            }]
+        );
+    }
+
+    #[test]
+    fn a_pattern_child_that_is_also_discovered_keeps_its_discovered_row() {
+        let tmp = tempfile::tempdir().unwrap();
+        let home = tmp.path().join("home");
+        let project = home.join("src/a");
+        fs::create_dir_all(project.join(".claude/skills/x")).unwrap();
+        fs::write(project.join(".claude/skills/x/SKILL.md"), "").unwrap();
+
+        let tracked = TrackedProjects {
+            added: vec![PathBuf::from("~/src/*")],
+            ..Default::default()
+        };
+        let rows = project_folders(
+            &skill_studio_host::RealFs,
+            &home,
+            vec![project.clone()],
+            &tracked,
+        );
+
+        assert_eq!(
+            rows,
+            [
+                ProjectFolder {
+                    path: project.to_string_lossy().to_string(),
+                    source: ProjectFolderSource::Discovered,
+                    missing: false,
+                    matches: None,
+                },
+                ProjectFolder {
+                    path: "~/src/*".to_string(),
+                    source: ProjectFolderSource::Added,
+                    missing: false,
+                    matches: Some(1),
+                },
+            ]
+        );
+    }
+
+    #[test]
+    fn a_pattern_with_a_missing_parent_is_a_missing_row() {
+        let tmp = tempfile::tempdir().unwrap();
+        let home = tmp.path().join("home");
+        fs::create_dir_all(&home).unwrap();
+
+        let tracked = TrackedProjects {
+            added: vec![PathBuf::from("~/nope/*")],
+            ..Default::default()
+        };
+        let rows = project_folders(&skill_studio_host::RealFs, &home, vec![], &tracked);
+
+        assert_eq!(
+            rows,
+            [ProjectFolder {
+                path: "~/nope/*".to_string(),
+                source: ProjectFolderSource::Added,
+                missing: true,
+                matches: Some(0),
+            }]
+        );
     }
 }

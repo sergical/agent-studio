@@ -4,7 +4,7 @@
 // ============================================================================
 
 import { create } from "zustand";
-import { defaultSkillListFilter, isProjectScope } from "@skill-studio/lib";
+import { defaultSkillListFilter, isProjectPattern, isProjectScope } from "@skill-studio/lib";
 import type { SkillListFilter } from "@skill-studio/lib";
 import { ALL_ACTIVITY, USAGE_WINDOWS } from "@skill-studio/lib";
 import type { ActivityFilter, UsageWindow } from "@skill-studio/lib";
@@ -102,7 +102,9 @@ interface AppState {
   // project-scoped skill installs. Mirrors the `added` list backend commands
   // (register/unregister/import) already persisted to
   // `~/.agents/skill-studio.json` - set from their result, never written to
-  // directly.
+  // directly. Excludes `*` patterns - not a folder itself, so not a valid
+  // install target; the folders it matches already come through
+  // `snapshot.projects`.
   userAddedProjects: string[];
   // Directories the user explicitly removed from the Sidebar ("Stop
   // tracking"), including ones the backend discovers on its own (Codex
@@ -267,7 +269,12 @@ export const useAppStore = create<AppState>((set, get) => ({
   excludedProjects: [],
 
   setTrackedProjects: (projects) =>
-    set({ userAddedProjects: projects.added, excludedProjects: projects.excluded }),
+    set({
+      // A `*` pattern isn't a folder itself - the folders it matches already come through
+      // `snapshot.projects`, so it would only show up as a bogus install target here.
+      userAddedProjects: projects.added.filter((path) => !isProjectPattern(path)),
+      excludedProjects: projects.excluded,
+    }),
 
   usageWindow: loadUsageWindow(),
   setUsageWindow: (window) => {
