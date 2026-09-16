@@ -247,7 +247,7 @@ fn parse_terminal_editor(output: &str) -> Option<String> {
     visual.or(editor)
 }
 
-/// Runs `program args...` and returns everything printed on stdout up to and
+/// Runs `command` and returns everything printed on stdout up to and
 /// including the first line containing `end_marker`, or `None` on a spawn
 /// failure, a broken pipe, or `timeout`.
 ///
@@ -261,14 +261,8 @@ fn parse_terminal_editor(output: &str) -> Option<String> {
 /// killed and reaped either way; the reader thread is left to finish (or
 /// block) on its own instead of being joined, since joining could still hang
 /// on that same held-open pipe.
-fn run_with_timeout(
-    program: &str,
-    args: &[String],
-    end_marker: &str,
-    timeout: Duration,
-) -> Option<String> {
-    let mut child = Command::new(program)
-        .args(args)
+fn run_with_timeout(mut command: Command, end_marker: &str, timeout: Duration) -> Option<String> {
+    let mut child = command
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::null())
@@ -305,12 +299,25 @@ fn run_with_timeout(
     result
 }
 
+/// The login shell command that prints `$VISUAL`/`$EDITOR`. Both are removed
+/// from the environment it inherits, so only the shell's own startup files
+/// set them: `npm run` exports `EDITOR=vi` when none is set, and a dev build
+/// started through it would otherwise show that fallback as the user's editor.
+fn login_shell_probe(shell: &str) -> Command {
+    let mut command = Command::new(shell);
+    command
+        .env_remove("VISUAL")
+        .env_remove("EDITOR")
+        .arg("-lic")
+        .arg(shell_probe_script());
+    command
+}
+
 /// Runs the login shell once to read `$VISUAL`/`$EDITOR`. stdin is closed so
 /// an interactive shell can't block on a prompt.
 fn read_login_shell_editor() -> Option<String> {
     let shell = std::env::var("SHELL").unwrap_or_else(|_| "/bin/zsh".to_string());
-    let args = vec!["-lic".to_string(), shell_probe_script()];
-    let output = run_with_timeout(&shell, &args, MARKER_END, SHELL_PROBE_TIMEOUT)?;
+    let output = run_with_timeout(login_shell_probe(&shell), MARKER_END, SHELL_PROBE_TIMEOUT)?;
     parse_terminal_editor(&output)
 }
 
@@ -742,6 +749,18 @@ mod tests {
     }
 
     #[test]
+    fn login_shell_probe_drops_an_inherited_editor() {
+        let probe = login_shell_probe("/bin/zsh");
+        let removed: Vec<_> = probe
+            .get_envs()
+            .filter(|(_, value)| value.is_none())
+            .map(|(key, _)| key.to_os_string())
+            .collect();
+        assert!(removed.contains(&"VISUAL".into()), "{removed:?}");
+        assert!(removed.contains(&"EDITOR".into()), "{removed:?}");
+    }
+
+    #[test]
     fn run_with_timeout_stops_at_the_end_marker_even_with_stdout_held_open() {
         // The trailing `sleep 10 &` simulates an rc file that leaves a
         // background process (ssh-agent, gpg-agent, ...) attached to the
@@ -750,13 +769,10 @@ mod tests {
         let script = format!(
             "echo {MARKER_START}; echo VISUAL=nvim; echo EDITOR=vi; echo {MARKER_END}; sleep 10 &"
         );
+        let mut command = Command::new("/bin/sh");
+        command.arg("-c").arg(script);
         let start = std::time::Instant::now();
-        let output = run_with_timeout(
-            "/bin/sh",
-            &["-c".to_string(), script],
-            MARKER_END,
-            Duration::from_secs(5),
-        );
+        let output = run_with_timeout(command, MARKER_END, Duration::from_secs(5));
         assert!(
             start.elapsed() < Duration::from_secs(2),
             "{:?}",
@@ -768,13 +784,10 @@ mod tests {
 
     #[test]
     fn run_with_timeout_gives_up_after_the_timeout() {
+        let mut command = Command::new("/bin/sh");
+        command.arg("-c").arg("sleep 10");
         let start = std::time::Instant::now();
-        let output = run_with_timeout(
-            "/bin/sh",
-            &["-c".to_string(), "sleep 10".to_string()],
-            MARKER_END,
-            Duration::from_millis(200),
-        );
+        let output = run_with_timeout(command, MARKER_END, Duration::from_millis(200));
         assert!(
             start.elapsed() < Duration::from_secs(1),
             "{:?}",
