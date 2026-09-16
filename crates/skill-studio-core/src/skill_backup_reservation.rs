@@ -8,7 +8,10 @@ use std::{
     io,
     io::{Read, Write},
     path::{Path, PathBuf},
+    sync::atomic::{AtomicU64, Ordering},
 };
+
+static ATOMIC_FILE_COUNTER: AtomicU64 = AtomicU64::new(0);
 
 pub struct BackupStateRoot {
     pub(crate) path: std::path::PathBuf,
@@ -50,6 +53,29 @@ impl ExistingBackup<'_> {
 
     pub(crate) fn verify_file(&self, name: &str, expected: &[u8]) -> io::Result<()> {
         self.verify_file_with(name, expected, || {})
+    }
+
+    pub(crate) fn open_file(&self, name: &str) -> io::Result<cap_std::fs::File> {
+        if !crate::skill_backup_copy::valid_component(std::ffi::OsStr::new(name)) {
+            return Err(io::Error::other("Invalid evidence file name"));
+        }
+        self.revalidate()?;
+        let mut options = OpenOptions::new();
+        options.read(true).follow(FollowSymlinks::No);
+        #[cfg(unix)]
+        options.custom_flags(libc::O_NONBLOCK);
+        let file = self.binding.directory.open_with(name, &options)?;
+        let metadata = file.metadata()?;
+        if !metadata.is_file()
+            || !crate::skill_backup_copy::unchanged(
+                &metadata,
+                &self.binding.directory.symlink_metadata(name)?,
+            )
+        {
+            return Err(io::Error::other("Evidence file binding changed"));
+        }
+        self.revalidate()?;
+        Ok(file)
     }
 
     fn verify_file_with(
@@ -168,6 +194,273 @@ pub(crate) fn valid_id(id: &str) -> bool {
 impl BackupStateRoot {
     #[cfg(feature = "event-store")]
     #[allow(clippy::too_many_arguments)]
+    pub(crate) fn restore_verified_fork_live(
+        &self,
+        lease: &crate::skill_coordination::FinalizedWriteLease<'_>,
+        skills_dir: &Path,
+        name: &str,
+        event_id: &str,
+        expected_identity: &str,
+        limits: BackupCopyLimits,
+        cancellation: &crate::skill_coordination::CancellationToken,
+        validate_intent: impl Fn() -> Result<(), String>,
+        mut after_partial_verify: impl FnMut() -> Result<(), String>,
+        mut after_stage: impl FnMut() -> Result<(), String>,
+        mut after_publish: impl FnMut() -> Result<(), String>,
+    ) -> Result<bool, String> {
+        use std::ffi::OsStr;
+
+        lease.validate_state_tree(skills_dir)?;
+        validate_intent()?;
+        if !crate::skill_backup_copy::valid_component(OsStr::new(name)) {
+            return Err("Invalid live Fork skill name".into());
+        }
+        let backup = self
+            .open_existing(event_id)
+            .map_err(|error| error.to_string())?;
+        backup
+            .verify_entry(OsStr::new("live"), expected_identity, limits, cancellation)
+            .map_err(|error| error.to_string())?;
+        let destination = Self::bind(skills_dir).map_err(|error| error.to_string())?;
+        let stage_name = format!(".skill-studio-fork-live-{event_id}");
+        let inspect = |directory: &Dir, child: &str| -> Result<Option<String>, String> {
+            match directory.symlink_metadata(child) {
+                Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(None),
+                Err(error) => Err(error.to_string()),
+                Ok(metadata) if metadata.is_dir() && !metadata.file_type().is_symlink() => {
+                    crate::skill_backup_copy::inspect_entry(
+                        directory,
+                        OsStr::new(child),
+                        limits,
+                        cancellation,
+                    )
+                    .map(|report| Some(report.tree_identity))
+                    .map_err(|error| error.to_string())
+                }
+                Ok(_) => Err(format!(
+                    "Fork live entry {child} is not an independent directory"
+                )),
+            }
+        };
+        if let Some(identity) = inspect(&destination.directory, name)? {
+            if identity != expected_identity {
+                return Err("Refusing to overwrite a changed live Fork tree".into());
+            }
+            if let Ok(metadata) = destination.directory.symlink_metadata(&stage_name) {
+                if !metadata.is_dir() || metadata.file_type().is_symlink() {
+                    return Err("Fork live staging was replaced".into());
+                }
+                let stage_path = skills_dir.join(&stage_name);
+                let stage = Self::bind(&stage_path).map_err(|error| error.to_string())?;
+                let metadata = stage
+                    .directory
+                    .dir_metadata()
+                    .map_err(|error| error.to_string())?;
+                let marker = format!(
+                    "{event_id}:{}:{}:{expected_identity}",
+                    metadata.dev(),
+                    metadata.ino()
+                );
+                backup
+                    .verify_file("live-stage-owner", marker.as_bytes())
+                    .map_err(|error| error.to_string())?;
+                if stage
+                    .directory
+                    .entries()
+                    .map_err(|error| error.to_string())?
+                    .next()
+                    .is_some()
+                {
+                    return Err("Published Fork live staging is not empty".into());
+                }
+                stage
+                    .directory
+                    .remove_open_dir()
+                    .map_err(|error| error.to_string())?;
+                sync_directory(&destination.directory).map_err(|error| error.to_string())?;
+            }
+            return Ok(true);
+        }
+        if matches!(destination.directory.symlink_metadata(&stage_name), Err(error) if error.kind() == io::ErrorKind::NotFound)
+        {
+            destination
+                .directory
+                .create_dir(&stage_name)
+                .map_err(|error| error.to_string())?;
+            sync_directory(&destination.directory).map_err(|error| error.to_string())?;
+        }
+        let stage_path = skills_dir.join(&stage_name);
+        let stage = Self::bind(&stage_path).map_err(|error| error.to_string())?;
+        let metadata = stage
+            .directory
+            .dir_metadata()
+            .map_err(|error| error.to_string())?;
+        let marker = format!(
+            "{event_id}:{}:{}:{expected_identity}",
+            metadata.dev(),
+            metadata.ino()
+        );
+        match backup
+            .binding
+            .directory
+            .symlink_metadata("live-stage-owner")
+        {
+            Err(error) if error.kind() == io::ErrorKind::NotFound => {
+                if stage
+                    .directory
+                    .entries()
+                    .map_err(|error| error.to_string())?
+                    .next()
+                    .is_some()
+                {
+                    return Err("Unowned Fork staging is not empty; preserving it".into());
+                }
+                backup
+                    .binding
+                    .write_new_file_atomic("live-stage-owner", marker.as_bytes())
+                    .map_err(|error| error.to_string())?;
+            }
+            Err(error) => return Err(error.to_string()),
+            Ok(_) => backup
+                .verify_file("live-stage-owner", marker.as_bytes())
+                .map_err(|error| error.to_string())?,
+        }
+        if let Some(identity) = inspect(&stage.directory, "live")? {
+            if identity != expected_identity {
+                if backup
+                    .binding
+                    .directory
+                    .symlink_metadata("live-stage-ready")
+                    .is_ok()
+                {
+                    return Err("Completed Fork staging changed; preserving it".into());
+                }
+                let verified = crate::skill_backup_copy::verify_partial_copy(
+                    &backup.binding.directory,
+                    OsStr::new("live"),
+                    &stage.directory,
+                    OsStr::new("live"),
+                    limits,
+                    cancellation,
+                )
+                .map_err(|error| error.to_string())?;
+                stage
+                    .scope
+                    .revalidate_roots()
+                    .map_err(|error| error.to_string())?;
+                backup
+                    .verify_file("live-stage-owner", marker.as_bytes())
+                    .map_err(|error| error.to_string())?;
+                if crate::skill_backup_copy::inspect_entry(
+                    &stage.directory,
+                    OsStr::new("live"),
+                    limits,
+                    cancellation,
+                )
+                .map_err(|error| error.to_string())?
+                    != verified
+                {
+                    return Err("Partial Fork staging changed before retry".into());
+                }
+                let partial = stage
+                    .directory
+                    .open_dir_nofollow("live")
+                    .map_err(|error| error.to_string())?;
+                after_partial_verify()?;
+                partial
+                    .remove_open_dir_all()
+                    .map_err(|error| error.to_string())?;
+                sync_directory(&stage.directory).map_err(|error| error.to_string())?;
+                if stage.directory.symlink_metadata("live").is_ok() {
+                    return Err("Partial Fork staging was replaced; preserving it".into());
+                }
+            }
+        }
+        if matches!(stage.directory.symlink_metadata("live"), Err(error) if error.kind() == io::ErrorKind::NotFound)
+        {
+            backup
+                .copy_verified_tree_to(
+                    OsStr::new("live"),
+                    expected_identity,
+                    &stage,
+                    OsStr::new("live"),
+                    limits,
+                    cancellation,
+                )
+                .map_err(|error| error.to_string())?;
+            backup
+                .binding
+                .write_new_file_atomic("live-stage-ready", marker.as_bytes())
+                .map_err(|error| error.to_string())?;
+            return Ok(false);
+        }
+        match backup
+            .binding
+            .directory
+            .symlink_metadata("live-stage-ready")
+        {
+            Err(error) if error.kind() == io::ErrorKind::NotFound => {
+                backup
+                    .binding
+                    .write_new_file_atomic("live-stage-ready", marker.as_bytes())
+                    .map_err(|error| error.to_string())?;
+                return Ok(false);
+            }
+            Err(error) => return Err(error.to_string()),
+            Ok(_) => backup
+                .verify_file("live-stage-ready", marker.as_bytes())
+                .map_err(|error| error.to_string())?,
+        }
+        after_stage()?;
+        lease.revalidate().map_err(|error| error.to_string())?;
+        validate_intent()?;
+        stage
+            .scope
+            .revalidate_roots()
+            .map_err(|error| error.to_string())?;
+        destination
+            .scope
+            .revalidate_roots()
+            .map_err(|error| error.to_string())?;
+        backup
+            .verify_file("live-stage-owner", marker.as_bytes())
+            .map_err(|error| error.to_string())?;
+        if inspect(&stage.directory, "live")?.as_deref() != Some(expected_identity) {
+            return Err("Fork live staging changed after completion".into());
+        }
+        if destination.directory.symlink_metadata(name).is_ok() {
+            return Err("Refusing to overwrite a live skill during Fork recovery".into());
+        }
+        #[cfg(any(target_vendor = "apple", target_os = "linux", target_os = "android"))]
+        rustix::fs::renameat_with(
+            &stage.directory,
+            "live",
+            &destination.directory,
+            name,
+            rustix::fs::RenameFlags::NOREPLACE,
+        )
+        .map_err(|error| error.to_string())?;
+        #[cfg(not(any(target_vendor = "apple", target_os = "linux", target_os = "android")))]
+        return Err("Atomic live Fork publication is unsupported on this platform".into());
+        sync_directory(&destination.directory).map_err(|error| error.to_string())?;
+        after_publish()?;
+        if inspect(&destination.directory, name)?.as_deref() != Some(expected_identity) {
+            return Err("Published live Fork tree differs from immutable evidence".into());
+        }
+        stage
+            .scope
+            .revalidate_roots()
+            .map_err(|error| error.to_string())?;
+        stage
+            .directory
+            .remove_open_dir()
+            .map_err(|error| error.to_string())?;
+        sync_directory(&destination.directory).map_err(|error| error.to_string())?;
+        Ok(true)
+    }
+
+    #[cfg(feature = "event-store")]
+    #[allow(clippy::too_many_arguments)]
     pub(crate) fn publish_verified_fork_base(
         &self,
         lease: &crate::skill_coordination::FinalizedWriteLease<'_>,
@@ -278,10 +571,22 @@ impl BackupStateRoot {
                 return Err("Published Fork base has no matching prior-base journal".into());
             }
             if directory.symlink_metadata(&stage_name).is_ok() {
-                let stage = directory
-                    .open_dir_nofollow(&stage_name)
+                let stage = BackupStateRoot::bind(&path.join(&stage_name))
+                    .map_err(|error| error.to_string())?;
+                let metadata = stage
+                    .directory
+                    .dir_metadata()
+                    .map_err(|error| error.to_string())?;
+                let marker = format!(
+                    "{event_id}:{}:{}:{upstream_identity}",
+                    metadata.dev(),
+                    metadata.ino()
+                );
+                backup
+                    .verify_file("base-stage-owner", marker.as_bytes())
                     .map_err(|error| error.to_string())?;
                 if stage
+                    .directory
                     .entries()
                     .map_err(|error| error.to_string())?
                     .next()
@@ -289,8 +594,9 @@ impl BackupStateRoot {
                 {
                     return Err("Published Fork base has a non-empty staging directory".into());
                 }
-                directory
-                    .remove_dir(&stage_name)
+                stage
+                    .directory
+                    .remove_open_dir()
                     .map_err(|error| error.to_string())?;
                 sync_directory(&directory).map_err(|error| error.to_string())?;
             }
@@ -337,29 +643,30 @@ impl BackupStateRoot {
             }
             None => {}
         }
-        if directory.symlink_metadata(&stage_name).is_ok() {
-            let reusable = directory
-                .open_dir_nofollow(&stage_name)
-                .ok()
-                .and_then(|stage| {
-                    crate::skill_backup_copy::inspect_entry(
-                        &stage,
-                        OsStr::new("base"),
-                        limits,
-                        cancellation,
-                    )
-                    .ok()
-                })
-                .is_some_and(|report| report.tree_identity == upstream_identity);
-            if !reusable {
-                directory
-                    .remove_dir_all(&stage_name)
-                    .map_err(|error| error.to_string())?;
-                sync_directory(&directory).map_err(|error| error.to_string())?;
-            }
-        }
-        if matches!(directory.symlink_metadata(&stage_name), Err(error) if error.kind() == io::ErrorKind::NotFound)
+        let stage_exists = match directory.symlink_metadata(&stage_name) {
+            Ok(metadata) if metadata.is_dir() && !metadata.file_type().is_symlink() => true,
+            Ok(_) => return Err("Fork base staging was replaced".into()),
+            Err(error) if error.kind() == io::ErrorKind::NotFound => false,
+            Err(error) => return Err(error.to_string()),
+        };
+        let owner_exists = match backup
+            .binding
+            .directory
+            .symlink_metadata("base-stage-owner")
         {
+            Ok(metadata) if metadata.is_file() && !metadata.file_type().is_symlink() => true,
+            Ok(_) => return Err("Fork base staging ownership evidence was replaced".into()),
+            Err(error) if error.kind() == io::ErrorKind::NotFound => false,
+            Err(error) => return Err(error.to_string()),
+        };
+        if !stage_exists && owner_exists {
+            return Err(
+                "Owned Fork base staging is missing; preserving current cache state".into(),
+            );
+        }
+        let created_stage = !stage_exists;
+        let claim_empty_stage = stage_exists && !owner_exists;
+        if created_stage {
             directory
                 .create_dir(&stage_name)
                 .map_err(|error| error.to_string())?;
@@ -380,6 +687,117 @@ impl BackupStateRoot {
                 .map_err(|error| error.to_string())?,
         ) {
             return Err("Fork base staging changed during binding".into());
+        }
+        let stage_metadata = stage
+            .directory
+            .dir_metadata()
+            .map_err(|error| error.to_string())?;
+        let marker = format!(
+            "{event_id}:{}:{}:{upstream_identity}",
+            stage_metadata.dev(),
+            stage_metadata.ino()
+        );
+        if created_stage || claim_empty_stage {
+            if stage
+                .directory
+                .entries()
+                .map_err(|error| error.to_string())?
+                .next()
+                .is_some()
+            {
+                return Err("Unowned Fork base staging is not empty; preserving it".into());
+            }
+            lease.revalidate().map_err(|error| error.to_string())?;
+            stage
+                .scope
+                .revalidate_roots()
+                .map_err(|error| error.to_string())?;
+            validate_intent()?;
+            if backup
+                .binding
+                .directory
+                .symlink_metadata("base-stage-owner")
+                .is_ok()
+                || stage
+                    .directory
+                    .entries()
+                    .map_err(|error| error.to_string())?
+                    .next()
+                    .is_some()
+            {
+                return Err("Fork base staging changed while ownership was claimed".into());
+            }
+            backup
+                .binding
+                .write_new_file_atomic("base-stage-owner", marker.as_bytes())
+                .map_err(|error| error.to_string())?;
+        } else {
+            backup
+                .verify_file("base-stage-owner", marker.as_bytes())
+                .map_err(|error| error.to_string())?;
+        }
+        let mut entries = stage
+            .directory
+            .entries()
+            .map_err(|error| error.to_string())?
+            .map(|entry| entry.map(|entry| entry.file_name()))
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|error| error.to_string())?;
+        entries.sort();
+        if entries.iter().any(|entry| entry != OsStr::new("base")) {
+            return Err("Owned Fork base staging contains unexpected data; preserving it".into());
+        }
+        let staged = match stage.directory.symlink_metadata("base") {
+            Err(error) if error.kind() == io::ErrorKind::NotFound => None,
+            Err(error) => return Err(error.to_string()),
+            Ok(metadata) if metadata.is_dir() && !metadata.file_type().is_symlink() => Some(
+                crate::skill_backup_copy::inspect_entry(
+                    &stage.directory,
+                    OsStr::new("base"),
+                    limits,
+                    cancellation,
+                )
+                .map_err(|error| error.to_string())?,
+            ),
+            Ok(_) => return Err("Fork base staging tree was replaced".into()),
+        };
+        if let Some(report) = staged {
+            if report.tree_identity != upstream_identity {
+                let verified = crate::skill_backup_copy::verify_partial_copy(
+                    &backup.binding.directory,
+                    OsStr::new("upstream"),
+                    &stage.directory,
+                    OsStr::new("base"),
+                    limits,
+                    cancellation,
+                )
+                .map_err(|error| error.to_string())?;
+                let partial = stage
+                    .directory
+                    .open_dir_nofollow("base")
+                    .map_err(|error| error.to_string())?;
+                if crate::skill_backup_copy::inspect_entry(
+                    &stage.directory,
+                    OsStr::new("base"),
+                    limits,
+                    cancellation,
+                )
+                .map_err(|error| error.to_string())?
+                    != verified
+                {
+                    return Err("Partial Fork base staging changed before retry".into());
+                }
+                backup
+                    .verify_file("base-stage-owner", marker.as_bytes())
+                    .map_err(|error| error.to_string())?;
+                partial
+                    .remove_open_dir_all()
+                    .map_err(|error| error.to_string())?;
+                sync_directory(&stage.directory).map_err(|error| error.to_string())?;
+                if stage.directory.symlink_metadata("base").is_ok() {
+                    return Err("Partial Fork base staging was replaced; preserving it".into());
+                }
+            }
         }
         if matches!(stage.directory.symlink_metadata("base"), Err(error) if error.kind() == io::ErrorKind::NotFound)
         {
@@ -418,8 +836,9 @@ impl BackupStateRoot {
             .scope
             .revalidate_roots()
             .map_err(|error| error.to_string())?;
-        directory
-            .remove_dir(&stage_name)
+        stage
+            .directory
+            .remove_open_dir()
             .map_err(|error| error.to_string())?;
         sync_directory(&directory).map_err(|error| error.to_string())?;
         Ok(path.join("base"))
@@ -516,6 +935,29 @@ impl ReservedBackup<'_> {
         Ok(())
     }
 
+    pub(crate) fn file_identity(&self, name: &str) -> io::Result<(u64, u64)> {
+        if !crate::skill_backup_copy::valid_component(std::ffi::OsStr::new(name)) {
+            return Err(io::Error::other("Invalid evidence file name"));
+        }
+        self.revalidate()?;
+        let mut options = OpenOptions::new();
+        options.read(true).follow(FollowSymlinks::No);
+        #[cfg(unix)]
+        options.custom_flags(libc::O_NONBLOCK);
+        let file = self.directory.open_with(name, &options)?;
+        let metadata = file.metadata()?;
+        if !metadata.is_file()
+            || !crate::skill_backup_copy::unchanged(
+                &metadata,
+                &self.directory.symlink_metadata(name)?,
+            )
+        {
+            return Err(io::Error::other("Evidence file binding changed"));
+        }
+        self.revalidate()?;
+        Ok((metadata.dev(), metadata.ino()))
+    }
+
     pub(crate) fn discard(self) -> io::Result<()> {
         self.revalidate()?;
         self.container.remove_dir_all(&self.id)?;
@@ -569,6 +1011,67 @@ impl ReservedBackup<'_> {
     /// Existing files and symlinks are refused. Failure may leave a partial file.
     pub fn write_new_file(&self, name: &str, bytes: &[u8]) -> io::Result<()> {
         self.write_new_file_with(name, bytes, || {})
+    }
+
+    pub(crate) fn write_new_file_atomic(&self, name: &str, bytes: &[u8]) -> io::Result<()> {
+        self.write_new_file_atomic_with(name, bytes, || Ok(()))
+    }
+
+    fn write_new_file_atomic_with(
+        &self,
+        name: &str,
+        bytes: &[u8],
+        before_publish: impl FnOnce() -> io::Result<()>,
+    ) -> io::Result<()> {
+        if name.is_empty()
+            || name == "."
+            || name == ".."
+            || name.len() > 200
+            || name.contains(['/', '\\', '\0'])
+        {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "Backup file name must be one component",
+            ));
+        }
+        self.revalidate()?;
+        let mut allocated = None;
+        for _ in 0..64 {
+            let counter = ATOMIC_FILE_COUNTER.fetch_add(1, Ordering::Relaxed);
+            let temporary = format!(".{name}.{}.{}.tmp", std::process::id(), counter);
+            match self
+                .directory
+                .open_with(&temporary, OpenOptions::new().write(true).create_new(true))
+            {
+                Ok(file) => {
+                    allocated = Some((temporary, file));
+                    break;
+                }
+                Err(error) if error.kind() == io::ErrorKind::AlreadyExists => continue,
+                Err(error) => return Err(error),
+            }
+        }
+        let (temporary, mut file) = allocated
+            .ok_or_else(|| io::Error::other("Could not reserve an atomic marker temporary file"))?;
+        file.write_all(bytes)?;
+        file.sync_all()?;
+        drop(file);
+        before_publish()?;
+        self.revalidate()?;
+        #[cfg(any(target_vendor = "apple", target_os = "linux", target_os = "android"))]
+        rustix::fs::renameat_with(
+            &self.directory,
+            &temporary,
+            &self.directory,
+            name,
+            rustix::fs::RenameFlags::NOREPLACE,
+        )?;
+        #[cfg(not(any(target_vendor = "apple", target_os = "linux", target_os = "android")))]
+        return Err(io::Error::other(
+            "Atomic backup marker publication is unsupported on this platform",
+        ));
+        sync_directory(&self.directory)?;
+        self.revalidate()
     }
 
     fn write_new_file_with(
@@ -733,6 +1236,61 @@ mod tests {
             b"saved"
         );
         assert!(root.reserve("fixture").is_err());
+    }
+
+    #[test]
+    fn interrupted_atomic_marker_publication_leaves_final_name_absent() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = BackupStateRoot::bind(temp.path()).unwrap();
+        let operation = root.reserve("fixture").unwrap();
+        let interrupted =
+            operation.write_new_file_atomic_with("live-stage-owner", b"complete marker", || {
+                Err(io::Error::other("stop before publish"))
+            });
+
+        assert!(interrupted.is_err());
+        let directory = temp.path().join("backups/fixture");
+        assert!(!directory.join("live-stage-owner").exists());
+        assert_eq!(
+            fs::read_dir(&directory)
+                .unwrap()
+                .filter_map(Result::ok)
+                .filter(|entry| entry.file_name().to_string_lossy().ends_with(".tmp"))
+                .count(),
+            1
+        );
+
+        operation
+            .write_new_file_atomic("live-stage-owner", b"complete marker")
+            .unwrap();
+        assert_eq!(
+            fs::read(directory.join("live-stage-owner")).unwrap(),
+            b"complete marker"
+        );
+    }
+
+    #[test]
+    fn atomic_marker_publication_preserves_and_skips_stale_temporary_file() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = BackupStateRoot::bind(temp.path()).unwrap();
+        let operation = root.reserve("fixture").unwrap();
+        let counter = ATOMIC_FILE_COUNTER.load(Ordering::Relaxed);
+        let directory = temp.path().join("backups/fixture");
+        let stale = directory.join(format!(
+            ".live-stage-owner.{}.{counter}.tmp",
+            std::process::id()
+        ));
+        fs::write(&stale, b"interrupted temporary file").unwrap();
+
+        operation
+            .write_new_file_atomic("live-stage-owner", b"complete marker")
+            .unwrap();
+
+        assert_eq!(fs::read(stale).unwrap(), b"interrupted temporary file");
+        assert_eq!(
+            fs::read(directory.join("live-stage-owner")).unwrap(),
+            b"complete marker"
+        );
     }
 
     #[test]

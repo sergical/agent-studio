@@ -244,6 +244,18 @@ pub fn run_controlled_command(
     timeout: Duration,
     max_output_bytes: usize,
 ) -> Result<(), ControlledProcessError> {
+    run_controlled_command_with_guard(program, args, cwd, cancel, timeout, max_output_bytes, None)
+}
+
+fn run_controlled_command_with_guard(
+    program: &str,
+    args: &[String],
+    cwd: Option<&Path>,
+    cancel: &AtomicBool,
+    timeout: Duration,
+    max_output_bytes: usize,
+    provider_guard: Option<&skill_studio_core::skill_skills_sh_fork_creation::ProviderProcessGuard>,
+) -> Result<(), ControlledProcessError> {
     if cancel.load(Ordering::SeqCst) {
         return Err(ControlledProcessError::Cancelled);
     }
@@ -261,6 +273,9 @@ pub fn run_controlled_command(
     {
         use std::os::unix::process::CommandExt;
         command.process_group(0);
+    }
+    if let Some(guard) = provider_guard {
+        guard.inherit_by(&mut command);
     }
 
     let mut child = command.spawn().map_err(|error| {
@@ -563,6 +578,24 @@ pub fn run_controlled_npx_with_control(
         control.cancel_flag(),
         timeout,
         MAX_PROCESS_OUTPUT_BYTES,
+    )
+}
+
+pub fn run_controlled_npx_with_control_and_guard(
+    args: &[String],
+    cwd: Option<&Path>,
+    control: &AddOperationControl,
+    provider_guard: &skill_studio_core::skill_skills_sh_fork_creation::ProviderProcessGuard,
+) -> Result<(), ControlledProcessError> {
+    let timeout = control.remaining()?;
+    run_controlled_command_with_guard(
+        "npx",
+        args,
+        cwd,
+        control.cancel_flag(),
+        timeout,
+        MAX_PROCESS_OUTPUT_BYTES,
+        Some(provider_guard),
     )
 }
 

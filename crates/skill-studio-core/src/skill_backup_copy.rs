@@ -282,6 +282,124 @@ pub(crate) fn copy_entry(
     Ok(copier.report)
 }
 
+pub(crate) fn verify_partial_copy(
+    source: &Dir,
+    source_name: &OsStr,
+    partial: &Dir,
+    partial_name: &OsStr,
+    limits: BackupCopyLimits,
+    cancellation: &CancellationToken,
+) -> io::Result<BackupCopyReport> {
+    fn compare(
+        source: &Dir,
+        partial: &Dir,
+        source_name: &OsStr,
+        partial_name: &OsStr,
+        depth: usize,
+        remaining: &mut BackupCopyLimits,
+        cancellation: &CancellationToken,
+    ) -> io::Result<()> {
+        if cancellation.is_cancelled() || depth > remaining.max_depth || remaining.max_entries == 0
+        {
+            return Err(refused("Partial copy verification limit or cancellation"));
+        }
+        remaining.max_entries -= 1;
+        let expected = source.symlink_metadata(source_name)?;
+        let actual = partial.symlink_metadata(partial_name)?;
+        if expected.file_type().is_symlink() && actual.file_type().is_symlink() {
+            if source.read_link_contents(source_name)?
+                != partial.read_link_contents(partial_name)?
+            {
+                return Err(refused("Partial copy has a changed symlink"));
+            }
+        } else if expected.is_dir() && actual.is_dir() {
+            let input = source.open_dir_nofollow(source_name)?;
+            let output = partial.open_dir_nofollow(partial_name)?;
+            for entry in output.entries()? {
+                let child = entry?.file_name();
+                if !valid_component(&child) {
+                    return Err(refused("Invalid partial copy name"));
+                }
+                compare(
+                    &input,
+                    &output,
+                    &child,
+                    &child,
+                    depth + 1,
+                    remaining,
+                    cancellation,
+                )?;
+            }
+            if !unchanged(&actual, &output.dir_metadata()?) {
+                return Err(refused(
+                    "Partial copy directory changed during verification",
+                ));
+            }
+        } else if expected.is_file() && actual.is_file() && actual.nlink() == 1 {
+            if actual.len() > expected.len() || actual.len() > remaining.max_bytes {
+                return Err(refused(
+                    "Partial copy file exceeds its source or byte limit",
+                ));
+            }
+            remaining.max_bytes -= actual.len();
+            let options = OpenOptions::new()
+                .read(true)
+                .follow(FollowSymlinks::No)
+                .nonblock(true)
+                .clone();
+            let mut input = source.open_with(source_name, &options)?;
+            let mut output = partial.open_with(partial_name, &options)?;
+            if !unchanged(&expected, &input.metadata()?) || !unchanged(&actual, &output.metadata()?)
+            {
+                return Err(refused("Partial copy file binding changed"));
+            }
+            let mut left = actual.len();
+            let mut expected_bytes = [0u8; 65536];
+            let mut actual_bytes = [0u8; 65536];
+            while left > 0 {
+                if cancellation.is_cancelled() {
+                    return Err(refused("Partial copy verification cancelled"));
+                }
+                let count = left.min(expected_bytes.len() as u64) as usize;
+                input.read_exact(&mut expected_bytes[..count])?;
+                output.read_exact(&mut actual_bytes[..count])?;
+                if expected_bytes[..count] != actual_bytes[..count] {
+                    return Err(refused("Partial copy contains changed bytes"));
+                }
+                left -= count as u64;
+            }
+            if !unchanged(&expected, &input.metadata()?) || !unchanged(&actual, &output.metadata()?)
+            {
+                return Err(refused("Partial copy file changed during verification"));
+            }
+        } else {
+            return Err(refused("Partial copy entry differs from its source type"));
+        }
+        if !unchanged(&expected, &source.symlink_metadata(source_name)?)
+            || !unchanged(&actual, &partial.symlink_metadata(partial_name)?)
+        {
+            return Err(refused("Partial copy entry changed during verification"));
+        }
+        Ok(())
+    }
+    let before = inspect_entry(partial, partial_name, limits, cancellation)?;
+    let mut remaining = limits;
+    compare(
+        source,
+        partial,
+        source_name,
+        partial_name,
+        0,
+        &mut remaining,
+        cancellation,
+    )?;
+    let after = inspect_entry(partial, partial_name, limits, cancellation)?;
+    if before != after {
+        return Err(refused("Partial copy changed during verification"));
+    }
+    Ok(after)
+}
+
 pub(crate) fn inspect_entry(
     source: &Dir,
     name: &OsStr,

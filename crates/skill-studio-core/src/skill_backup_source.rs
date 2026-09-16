@@ -45,6 +45,11 @@ impl BackupSourceRoot {
         })
     }
 
+    pub(crate) fn directory(&self) -> io::Result<Dir> {
+        self.scope.revalidate_roots().map_err(io::Error::other)?;
+        self.directory.try_clone()
+    }
+
     /// Selects one child; its absence/presence is checked when copying.
     pub fn select(&self, name: &OsStr) -> io::Result<BackupSource> {
         if !valid_component(name) {

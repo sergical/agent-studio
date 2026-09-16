@@ -25,6 +25,8 @@ pub mod skill_read;
 pub mod skill_registry_projection;
 pub mod skill_scope;
 pub mod skill_service;
+#[cfg(all(unix, feature = "event-store"))]
+pub mod skill_skills_sh_fork_creation;
 
 #[cfg(all(unix, feature = "event-store"))]
 pub mod skill_backup_copy;

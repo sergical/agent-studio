@@ -33,8 +33,8 @@ use super::skill_fs::copy_dir_all;
 use super::skill_install_plan::{skills_sh_universal_add_args, SkillInstallSpec};
 use super::skill_lifecycle::skills_sh_remove_args_for_scope;
 use super::skill_process::{
-    run_controlled_command_to_file_limited, AddOperationControl, ControlledProcessError,
-    MAX_PROCESS_OUTPUT_BYTES,
+    run_controlled_command_to_file_limited, run_controlled_npx_with_control_and_guard,
+    AddOperationControl, ControlledProcessError, MAX_PROCESS_OUTPUT_BYTES,
 };
 use super::skill_refresh::{self, SkillRefreshState};
 use super::skill_update_check::{self, CommitLookup, GhCommitLookup, UpdateCheckState};
@@ -1246,6 +1246,100 @@ fn fork_skill_blocking(
     )?;
     super::skill_lifecycle::require_global_universal_park_target(&resolved.deployment)
         .map_err(|_| "Fork is only available for the Global Universal folder.".to_string())?;
+    if resolved.deployment.owner_kind == super::skill_ownership::LifecycleOwnerKind::SkillsSh {
+        for variable in ["XDG_CONFIG_HOME", "XDG_STATE_HOME"] {
+            if std::env::var_os(variable).is_some_and(|value| !value.is_empty()) {
+                return Err(format!(
+                    "Fork cannot run skills.sh while {variable} redirects its provider paths"
+                ));
+            }
+        }
+        let owner_revision = resolved
+            .deployment
+            .owner_revision
+            .clone()
+            .ok_or("Fork is not available: skills.sh owner revision is missing")?;
+        let origin = resolve_fork_origin(
+            &home.join(".agents"),
+            &app_data,
+            &resolved.skill.name,
+            lookup.as_ref(),
+        )?;
+        if origin.tool != OriginTool::SkillsSh {
+            return Err("Fresh Fork owner no longer matches the skills.sh lock".into());
+        }
+        let staging = app_data
+            .join("skill-studio/cache")
+            .join(format!("skills-sh-fork-{}", ulid::Ulid::new()));
+        let _cleanup = TempCleanup {
+            paths: vec![staging.clone()],
+        };
+        let control = AddOperationControl::bounded_default();
+        fetch.fetch_skill_dir_controlled(
+            &origin.repo,
+            &origin.path,
+            &origin.base_commit,
+            &staging,
+            &control,
+        )?;
+        control.check_message()?;
+        let projects = resolved
+            .snapshot
+            .projects
+            .iter()
+            .map(PathBuf::from)
+            .collect::<Vec<_>>();
+        let scope = super::skill_scope_config::desktop_skill_scope(&home, &projects)?;
+        let mut service = skill_studio_core::skill_service::ScopedSkillService::bind(scope)
+            .map_err(|error| error.to_string())?;
+        let request = skill_studio_core::skill_skills_sh_fork_creation::SkillsShForkRequest {
+            deployment_id: resolved.deployment.id,
+            expected_owner_revision: owner_revision,
+            expected_source: skill_studio_core::skill_skills_sh_fork_creation::SkillsShForkSource {
+                origin_source: origin.origin_source,
+                repo: origin.repo,
+                path: origin.path,
+                base_commit: origin.base_commit,
+            },
+        };
+        let mut remove_args =
+            skills_sh_remove_args_for_scope(&resolved.skill.name, InstallScope::Global);
+        remove_args.extend(["--agent".into(), "universal".into()]);
+        let event_state = app.state::<super::event_commands::EventStoreState>();
+        let events = event_state
+            .0
+            .lock()
+            .map_err(|_| "Event store lock is unavailable")?;
+        let store = events.as_ref().ok_or("Event store is unavailable")?;
+        return skill_studio_core::skill_skills_sh_fork_creation::create_skills_sh_fork(
+            &mut service,
+            store,
+            &request,
+            &staging,
+            super::skill_copy_recovery::removal_limits(),
+            Some(std::time::Duration::from_secs(30)),
+            skill_studio_core::skill_service::CancellationToken::default(),
+            |provider_guard| {
+                run_controlled_npx_with_control_and_guard(
+                    &remove_args,
+                    None,
+                    &control,
+                    provider_guard,
+                )
+                .map_err(|error| match error {
+                    ControlledProcessError::Cancelled => "Provider operation cancelled".into(),
+                    ControlledProcessError::TimedOut => "Provider operation timed out".into(),
+                    ControlledProcessError::Failed(message) => message,
+                })
+            },
+        )
+        .map(|outcome| outcome.record)
+        .map_err(|error| match (error.event_id, error.recovery_required) {
+            (Some(id), true) => format!("{} (event {id} requires recovery)", error.message),
+            (Some(id), false) => format!("{} (event {id} is recorded as failed)", error.message),
+            (None, _) => error.message,
+        });
+    }
     if resolved.deployment.owner_kind != super::skill_ownership::LifecycleOwnerKind::Dotagents {
         return fork_skill_with(
             &home,

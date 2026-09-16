@@ -184,6 +184,56 @@ impl<'store> GuardedEventStore<'store> {
             .map_err(EventWriteFailure::MayHaveWritten)
     }
 
+    pub(crate) fn replace_pending_payload(
+        &self,
+        lease: &FinalizedWriteLease<'_>,
+        expected: &crate::skill_event::EventRow,
+        proposed: Value,
+    ) -> Result<crate::skill_event::EventRow, EventWriteFailure> {
+        if !matches!(expected.status.as_str(), "pending" | "interrupted")
+            || expected.reverted_by.is_some()
+        {
+            return Err(EventWriteFailure::BeforeWrite(
+                "Event is not eligible for a payload transition".into(),
+            ));
+        }
+        let expected_value = serde_json::to_value(expected)
+            .map_err(|error| EventWriteFailure::BeforeWrite(error.to_string()))?;
+        let proposed = serde_json::to_string(&proposed)
+            .map_err(|error| EventWriteFailure::BeforeWrite(error.to_string()))?;
+        let mut updated = None;
+        self.write(lease, || {
+            let transaction = self.transaction(lease)?;
+            let current = self
+                .store
+                .get(&expected.id)?
+                .ok_or("Pending event disappeared before its payload transition")?;
+            if serde_json::to_value(&current).map_err(|error| error.to_string())?
+                != expected_value
+            {
+                return Err("Pending event changed before its payload transition".into());
+            }
+            let changed = transaction
+                .execute(
+                    "UPDATE events SET payload = ?1 WHERE id = ?2 AND status = ?3 AND status IN ('pending', 'interrupted') AND reverted_by IS NULL",
+                    params![proposed, current.id, current.status],
+                )
+                .map_err(|error| error.to_string())?;
+            if changed != 1 {
+                return Err("Event is no longer eligible for a payload transition".into());
+            }
+            updated = Some(
+                self.store
+                    .get(&expected.id)?
+                    .ok_or("Updated event disappeared")?,
+            );
+            transaction.commit().map_err(|error| error.to_string())
+        })?;
+        updated.ok_or_else(|| {
+            EventWriteFailure::MayHaveWritten("Event payload transition receipt is missing".into())
+        })
+    }
+
     pub(crate) fn finish_recovery_snapshot(
         &self,
         lease: &FinalizedWriteLease<'_>,
