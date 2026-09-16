@@ -3859,6 +3859,7 @@ name = "skill-studio-host"
 version = "0.1.0"
 dependencies = [
  "chrono",
+ "percent-encoding",
  "rusqlite",
  "serde",
  "serde_json",

@@ -3,7 +3,8 @@
 //!
 //! The union of Codex's `~/.codex/config.toml` recent projects, the working
 //! directories in Claude Code and pi session transcripts, the folders in
-//! Cursor's workspace storage, and the project worktrees OpenCode records,
+//! Cursor's workspace storage, the project worktrees OpenCode records, and
+//! the working directories Grok Build names its session folders after,
 //! filtered to directories that hold a skill dir for one of the first-class
 //! agents.
 
@@ -376,21 +377,61 @@ fn opencode_legacy_worktrees(dir: &Path) -> Vec<PathBuf> {
         .collect()
 }
 
-/// Cursor workspace records and OpenCode project records are each well under
-/// 1 KiB.
-const MAX_SMALL_JSON_BYTES: u64 = 64 * 1024;
+/// Grok Build's session store at its default `$GROK_HOME` location. Each
+/// child directory is named for the working directory its sessions ran in,
+/// by `encode_cwd_dirname` in Grok's `xai-grok-config/src/paths.rs`.
+const GROK_SESSIONS_ROOT: &str = ".grok/sessions";
 
-fn read_small_json(path: &Path) -> Option<serde_json::Value> {
+/// Session store entries one discovery run may look at.
+const MAX_GROK_SESSION_DIRS: usize = 10_000;
+
+fn grok_session_cwds(home: &Path) -> Vec<PathBuf> {
+    let Ok(entries) = fs::read_dir(home.join(GROK_SESSIONS_ROOT)) else {
+        return Vec::new();
+    };
+    entries
+        .flatten()
+        .take(MAX_GROK_SESSION_DIRS)
+        .filter(|entry| entry.file_type().is_ok_and(|kind| kind.is_dir()))
+        .filter_map(|entry| grok_session_cwd(&entry.path()))
+        .filter(|path| path.is_absolute())
+        .collect()
+}
+
+/// Grok names the directory by the percent-encoded cwd while that fits in
+/// 255 bytes. A longer cwd gets a `<slug>-<hash>` name and a `.cwd` file
+/// that holds the path. A slug never decodes to an absolute path, which is
+/// how Grok's own `decode_cwd_from_dirname` tells the two apart.
+fn grok_session_cwd(dir: &Path) -> Option<PathBuf> {
+    let name = dir.file_name()?.to_str()?;
+    if let Ok(decoded) = percent_encoding::percent_decode_str(name).decode_utf8() {
+        let path = PathBuf::from(decoded.into_owned());
+        if path.is_absolute() {
+            return Some(path);
+        }
+    }
+    read_small_file(&dir.join(".cwd")).map(|cwd| PathBuf::from(cwd.trim()))
+}
+
+/// Cursor workspace records, OpenCode project records, and Grok `.cwd` files
+/// each hold one path and a few fields.
+const MAX_SMALL_FILE_BYTES: u64 = 64 * 1024;
+
+fn read_small_file(path: &Path) -> Option<String> {
     if !is_regular_file(path) {
         return None;
     }
     let mut content = String::new();
     fs::File::open(path)
         .ok()?
-        .take(MAX_SMALL_JSON_BYTES)
+        .take(MAX_SMALL_FILE_BYTES)
         .read_to_string(&mut content)
         .ok()?;
-    serde_json::from_str(&content).ok()
+    Some(content)
+}
+
+fn read_small_json(path: &Path) -> Option<serde_json::Value> {
+    serde_json::from_str(&read_small_file(path)?).ok()
 }
 
 /// Opening a FIFO blocks, and a symlink can point anywhere, so history files
@@ -420,9 +461,10 @@ fn is_home_root(home: &Path, path: &Path) -> bool {
 }
 
 /// Union of every project directory discoverable from Codex config, Claude
-/// Code and pi transcripts, Cursor workspace storage, and OpenCode's project
-/// records, filtered to directories that exist and have at least one
-/// first-class agent's skill dir. Sorted and deduped.
+/// Code and pi transcripts, Cursor workspace storage, OpenCode's project
+/// records, and Grok Build's session folders, filtered to directories that
+/// exist and have at least one first-class agent's skill dir. Sorted and
+/// deduped.
 pub fn discover_skill_projects(home: &Path) -> Vec<PathBuf> {
     let mut paths: BTreeSet<PathBuf> = BTreeSet::new();
     paths.extend(codex_project_paths(home));
@@ -430,6 +472,7 @@ pub fn discover_skill_projects(home: &Path) -> Vec<PathBuf> {
     paths.extend(transcript_cwds(&home.join(PI_TRANSCRIPT_ROOT)));
     paths.extend(cursor_workspace_folders(home));
     paths.extend(opencode_worktrees(home));
+    paths.extend(grok_session_cwds(home));
 
     paths
         .into_iter()
@@ -1213,6 +1256,84 @@ mod tests {
         assert_eq!(file_names(&root), names_before);
         assert_eq!(size_and_mtime(&database), database_before);
         assert_eq!(size_and_mtime(&wal), wal_before);
+    }
+
+    fn grok_sessions_root(home: &Path) -> PathBuf {
+        let root = home.join(GROK_SESSIONS_ROOT);
+        fs::create_dir_all(&root).unwrap();
+        root
+    }
+
+    fn grok_project(home: &Path, name: &str) -> PathBuf {
+        let project = home.join(name);
+        fs::create_dir_all(project.join(".grok/skills")).unwrap();
+        project
+    }
+
+    /// Grok's `urlencoding::encode` leaves only the RFC 3986 unreserved
+    /// characters as they are.
+    const GROK_ENCODED: &percent_encoding::AsciiSet = &percent_encoding::NON_ALPHANUMERIC
+        .remove(b'-')
+        .remove(b'_')
+        .remove(b'.')
+        .remove(b'~');
+
+    fn grok_dirname(cwd: &Path) -> String {
+        percent_encoding::utf8_percent_encode(cwd.to_str().unwrap(), GROK_ENCODED).to_string()
+    }
+
+    #[test]
+    fn grok_session_folder_name_is_decoded_to_the_project() {
+        let tmp = tempfile::tempdir().unwrap();
+        let home = tmp.path();
+        let root = grok_sessions_root(home);
+        let project = grok_project(home, "my project-名前");
+        let session = root.join(grok_dirname(&project)).join("019a-session");
+        fs::create_dir_all(&session).unwrap();
+
+        assert!(!root.join(grok_dirname(&project)).join(".cwd").exists());
+        assert_eq!(discover_skill_projects(home), vec![project]);
+    }
+
+    #[test]
+    fn long_grok_cwd_is_read_from_the_cwd_file() {
+        let tmp = tempfile::tempdir().unwrap();
+        let home = tmp.path();
+        let root = grok_sessions_root(home);
+        let project = grok_project(home, &["deep"; 60].join("/"));
+        let dir = root.join("deep-0123456789abcdef");
+        fs::create_dir_all(&dir).unwrap();
+        fs::write(dir.join(".cwd"), format!("{}\n", project.display())).unwrap();
+
+        assert!(grok_dirname(&project).len() > 255);
+        assert_eq!(discover_skill_projects(home), vec![project]);
+    }
+
+    #[test]
+    fn malformed_grok_session_folders_are_skipped() {
+        let tmp = tempfile::tempdir().unwrap();
+        let home = tmp.path();
+        let root = grok_sessions_root(home);
+        let project = grok_project(home, "kept");
+        fs::create_dir_all(root.join(grok_dirname(&project))).unwrap();
+        // Invalid UTF-8 once decoded, a relative path, a slug with no `.cwd`
+        // file, and a plain file named like an encoded project.
+        fs::create_dir_all(root.join("%FF%FE")).unwrap();
+        fs::create_dir_all(root.join("relative%2Fpath")).unwrap();
+        fs::create_dir_all(root.join("orphan-0123456789abcdef")).unwrap();
+        let file_project = grok_project(home, "file");
+        fs::write(root.join(grok_dirname(&file_project)), "").unwrap();
+
+        assert_eq!(grok_session_cwds(home), vec![project.clone()]);
+        assert_eq!(discover_skill_projects(home), vec![project]);
+    }
+
+    #[test]
+    fn missing_grok_home_yields_no_grok_projects() {
+        let tmp = tempfile::tempdir().unwrap();
+        assert!(grok_session_cwds(tmp.path()).is_empty());
+        fs::create_dir_all(tmp.path().join(".grok")).unwrap();
+        assert!(grok_session_cwds(tmp.path()).is_empty());
     }
 
     #[test]
