@@ -438,6 +438,7 @@ const CLAUDE_TRANSCRIPT_READER: &str = "crates/skill-studio-host/src/skill_uses.
 const CODEX_TRANSCRIPT_READER: &str = "crates/skill-studio-core/src/skill_uses/codex.rs";
 const PI_TRANSCRIPT_READER: &str = "crates/skill-studio-core/src/skill_uses/pi.rs";
 const CURSOR_TRANSCRIPT_READER: &str = "crates/skill-studio-core/src/skill_uses/cursor.rs";
+const GROK_TRANSCRIPT_READER: &str = "crates/skill-studio-core/src/skill_uses/grok.rs";
 const OPENCODE_USE_READER: &str = "crates/skill-studio-core/src/skill_uses/opencode.rs";
 const ONE_LEVEL_READER: &str =
     "one-level readers never reach <root>/.skill-studio-disabled/<skill>/SKILL.md";
@@ -851,8 +852,8 @@ fn grok_build() -> HarnessFacts {
             relative_path: Some(".grok/plugins".into()),
         },
         usage_source: UsageSourceSpec {
-            shape: Support::Unknown,
-            relative_path: None,
+            shape: Support::Yes(Evidence::inferred(GROK_TRANSCRIPT_READER)),
+            relative_path: Some(".grok/sessions".into()),
         },
         runner: RunnerSpec {
             binary: None,

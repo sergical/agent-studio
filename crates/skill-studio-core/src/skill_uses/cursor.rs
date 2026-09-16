@@ -97,6 +97,7 @@ mod tests {
         TranscriptContext {
             session: Some(session.to_string()),
             project_path: Some(project_path.to_string()),
+            ..Default::default()
         }
     }
 

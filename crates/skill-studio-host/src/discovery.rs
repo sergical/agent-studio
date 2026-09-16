@@ -339,8 +339,9 @@ fn opencode_legacy_worktrees(dir: &Path) -> Vec<PathBuf> {
 /// by `encode_cwd_dirname` in Grok's `xai-grok-config/src/paths.rs`.
 const GROK_SESSIONS_ROOT: &str = ".grok/sessions";
 
-/// Session store entries one discovery run may look at.
-const MAX_GROK_SESSION_DIRS: usize = 10_000;
+/// Session store entries one discovery run may look at. Shared with
+/// `skill_uses.rs`'s `list_grok_sessions`, which walks the same tree.
+pub(crate) const MAX_GROK_SESSION_DIRS: usize = 10_000;
 
 fn grok_session_cwds(home: &Path) -> Vec<PathBuf> {
     let Ok(entries) = fs::read_dir(home.join(GROK_SESSIONS_ROOT)) else {
@@ -359,7 +360,7 @@ fn grok_session_cwds(home: &Path) -> Vec<PathBuf> {
 /// 255 bytes. A longer cwd gets a `<slug>-<hash>` name and a `.cwd` file
 /// that holds the path. A slug never decodes to an absolute path, which is
 /// how Grok's own `decode_cwd_from_dirname` tells the two apart.
-fn grok_session_cwd(dir: &Path) -> Option<PathBuf> {
+pub(crate) fn grok_session_cwd(dir: &Path) -> Option<PathBuf> {
     let name = dir.file_name()?.to_str()?;
     if let Ok(decoded) = percent_encoding::percent_decode_str(name).decode_utf8() {
         let path = PathBuf::from(decoded.into_owned());

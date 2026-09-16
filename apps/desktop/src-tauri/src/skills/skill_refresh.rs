@@ -2070,6 +2070,36 @@ mod tests {
     }
 
     #[test]
+    fn classify_watch_event_grok_session_is_invocations_and_image_is_ignored() {
+        let home = PathBuf::from("/home/tester");
+        let claude_projects = home.join(".claude/projects");
+        assert_eq!(
+            classify_watch_event(
+                &home.join(".grok/sessions/p/s/updates.jsonl"),
+                &home,
+                &claude_projects
+            ),
+            WatchEventKind::Invocations
+        );
+        assert_eq!(
+            classify_watch_event(
+                &home.join(".grok/sessions/p/s/summary.json"),
+                &home,
+                &claude_projects
+            ),
+            WatchEventKind::Invocations
+        );
+        assert_eq!(
+            classify_watch_event(
+                &home.join(".grok/sessions/p/s/images/a.png"),
+                &home,
+                &claude_projects
+            ),
+            WatchEventKind::Ignored
+        );
+    }
+
+    #[test]
     fn classify_watch_event_watch_dir_itself_created_or_removed_is_skills() {
         let home = PathBuf::from("/home/tester");
         let claude_projects = home.join(".claude/projects");

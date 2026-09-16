@@ -14,10 +14,12 @@ use crate::discovery_sources::DiscoverySources;
 
 mod codex;
 mod cursor;
+mod grok;
 mod opencode;
 mod pi;
 pub use codex::{codex_skill_name_from_package, parse_codex_uses};
 pub use cursor::parse_cursor_uses;
+pub use grok::parse_grok_uses;
 pub use opencode::{
     parse_opencode_message, parse_opencode_part, OpenCodeMessageRow, OpenCodePartRow,
 };
@@ -31,6 +33,14 @@ pub struct TranscriptContext {
     pub session: Option<String>,
     /// Working folder from the header.
     pub project_path: Option<String>,
+    /// When the session was forked. Lines at or before it were copied from
+    /// the parent session.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub forked_at: Option<DateTime<Utc>>,
+    /// Tool call ids that already gave a use. Some transcripts write one call
+    /// on several lines.
+    #[serde(default, skip_serializing_if = "BTreeSet::is_empty")]
+    pub counted_calls: BTreeSet<String>,
 }
 
 /// How a skill use started.

@@ -17,8 +17,9 @@
 //! `SOURCES` is the table of harnesses this index reads from: Claude Code,
 //! pi, and Cursor each watch one transcript root; Codex watches two
 //! (`sessions`, `archived_sessions`); OpenCode reads its SQLite databases
-//! instead of JSONL. Adding a harness later means adding a row, not
-//! reworking `refresh`.
+//! instead of JSONL; Grok Build watches `.grok/sessions` and only lists a
+//! session's `updates.jsonl` once its `summary.json` also exists. Adding a
+//! harness later means adding a row, not reworking `refresh`.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
@@ -32,11 +33,12 @@ use skill_studio_core::discovery_sources::DiscoverySources;
 use skill_studio_core::identity::AgentId;
 use skill_studio_core::skill_uses::parse_claude_code_uses;
 use skill_studio_core::skill_uses::{
-    parse_codex_uses, parse_cursor_uses, parse_pi_uses, skill_heatmap, skill_stats,
-    InvocationHeatmap, SkillInvocation, SkillInvocationStats, SkillUseFilter, TranscriptContext,
+    parse_codex_uses, parse_cursor_uses, parse_grok_uses, parse_pi_uses, skill_heatmap,
+    skill_stats, InvocationHeatmap, SkillInvocation, SkillInvocationStats, SkillUseFilter,
+    TranscriptContext,
 };
 
-use crate::discovery::cursor_workspace_folders;
+use crate::discovery::{cursor_workspace_folders, grok_session_cwd, MAX_GROK_SESSION_DIRS};
 use crate::opencode_db::{opencode_databases, OPENCODE_DATA_ROOT};
 
 mod opencode;
@@ -662,6 +664,154 @@ fn parse_cursor_uses_with_file(
     parse_cursor_uses(text, context, file.modified)
 }
 
+/// Grok Build keeps one directory per working folder here, each holding one
+/// subdirectory per session (`<encoded cwd>/<session id>/{updates.jsonl,
+/// summary.json}`); a session only counts once it has a `summary.json` (see
+/// `list_grok_sessions`).
+const GROK_SESSIONS_ROOT: &str = ".grok/sessions";
+
+/// `summary.json` is read only to check for `forked_at`; a file bigger than
+/// this is treated as not forked rather than read in full.
+const MAX_GROK_SUMMARY_BYTES: u64 = 1024 * 1024;
+
+fn grok_root(home: &Path) -> PathBuf {
+    home.join(GROK_SESSIONS_ROOT)
+}
+
+/// True when `rel` (relative to `.grok/sessions`) is a session's
+/// `updates.jsonl` or `summary.json`: `<cwd dir>/<session>/<file>`, exactly
+/// three components. A new `summary.json` must pass this watch, because
+/// `list_grok_sessions` otherwise skips the session until one exists.
+fn is_grok_session_file(rel: &Path) -> bool {
+    rel.components().count() == 3
+        && matches!(
+            rel.file_name().and_then(|n| n.to_str()),
+            Some("updates.jsonl") | Some("summary.json")
+        )
+}
+
+/// Lists Grok Build's session transcripts: for each real (non-symlink)
+/// working-folder directory under `<home>/.grok/sessions`, each real
+/// (non-symlink) session directory whose `updates.jsonl` and `summary.json`
+/// are both regular files. A session with no `summary.json` yet is skipped,
+/// not counted incomplete - it isn't a session until Grok Build finishes
+/// writing one. A missing `.grok/sessions` is normal (Grok Build was never
+/// installed); any other failure to list a directory marks the listing
+/// incomplete.
+fn list_grok_sessions(home: &Path) -> SourceListing {
+    let mut files = Vec::new();
+    let mut listed_dirs = BTreeSet::new();
+    let mut incomplete = false;
+
+    let sessions_dir = home.join(GROK_SESSIONS_ROOT);
+    let cwd_dirs = match fs::read_dir(&sessions_dir) {
+        Ok(dirs) => dirs,
+        Err(e) if e.kind() == io::ErrorKind::NotFound => {
+            return SourceListing {
+                files,
+                listed_dirs,
+                incomplete: false,
+            };
+        }
+        Err(_) => {
+            return SourceListing {
+                files,
+                listed_dirs,
+                incomplete: true,
+            };
+        }
+    };
+    listed_dirs.insert(sessions_dir.clone());
+
+    for cwd_entry in cwd_dirs.flatten().take(MAX_GROK_SESSION_DIRS) {
+        let cwd_dir = cwd_entry.path();
+        let is_real_dir = fs::symlink_metadata(&cwd_dir).is_ok_and(|m| m.file_type().is_dir());
+        if !is_real_dir {
+            continue;
+        }
+        let session_entries = match fs::read_dir(&cwd_dir) {
+            Ok(entries) => entries,
+            Err(e) if e.kind() == io::ErrorKind::NotFound => continue,
+            Err(_) => {
+                incomplete = true;
+                continue;
+            }
+        };
+        listed_dirs.insert(cwd_dir.clone());
+
+        for session_entry in session_entries.flatten() {
+            let session_dir = session_entry.path();
+            let is_real_session_dir =
+                fs::symlink_metadata(&session_dir).is_ok_and(|m| m.file_type().is_dir());
+            if !is_real_session_dir {
+                continue;
+            }
+            listed_dirs.insert(session_dir.clone());
+
+            let updates = session_dir.join("updates.jsonl");
+            let summary = session_dir.join("summary.json");
+            if is_regular_file(&updates) && is_regular_file(&summary) {
+                files.push(updates);
+            }
+        }
+    }
+
+    SourceListing {
+        files,
+        listed_dirs,
+        incomplete,
+    }
+}
+
+/// `summary.json`'s only key this reader needs; unknown keys are ignored.
+#[derive(Deserialize)]
+struct GrokSummary {
+    forked_at: Option<String>,
+}
+
+/// The session directory's `summary.json` `forked_at`, parsed as RFC 3339 -
+/// `None` when there is no fork, the file is missing or oversized
+/// (see [`MAX_GROK_SUMMARY_BYTES`]), or its `forked_at` doesn't parse.
+fn grok_forked_at(session_dir: &Path) -> Option<DateTime<Utc>> {
+    let path = session_dir.join("summary.json");
+    let meta = fs::metadata(&path).ok()?;
+    if meta.len() > MAX_GROK_SUMMARY_BYTES {
+        return None;
+    }
+    let content = fs::read_to_string(&path).ok()?;
+    let summary: GrokSummary = serde_json::from_str(&content).ok()?;
+    DateTime::parse_from_rfc3339(&summary.forked_at?)
+        .ok()
+        .map(|at| at.with_timezone(&Utc))
+}
+
+/// Adapts [`parse_grok_uses`] to the [`UseReader::Transcripts`] `parse`
+/// signature. Grok Build's `updates.jsonl` lines carry no session id or
+/// project path of their own, so the first call for a file fills the context
+/// from the file's path (the session directory name, and its parent decoded
+/// by `discovery.rs`'s `grok_session_cwd`) and from `summary.json`'s
+/// `forked_at`, before parsing; later calls (a resumed, appended file) reuse
+/// the context already stored alongside it.
+fn parse_grok_uses_with_file(
+    file: &TranscriptFile,
+    text: &str,
+    context: &mut TranscriptContext,
+) -> Vec<SkillInvocation> {
+    if context.session.is_none() {
+        let session_dir = file.path.parent();
+        context.session = session_dir
+            .and_then(|dir| dir.file_name())
+            .and_then(|name| name.to_str())
+            .map(str::to_string);
+        context.project_path = session_dir
+            .and_then(|dir| dir.parent())
+            .and_then(grok_session_cwd)
+            .map(|cwd| cwd.to_string_lossy().into_owned());
+        context.forked_at = session_dir.and_then(grok_forked_at);
+    }
+    parse_grok_uses(text, context, file.modified)
+}
+
 /// Every harness this index reads uses from, in the order they're processed.
 const SOURCES: &[UseSource] = &[
     UseSource {
@@ -734,6 +884,19 @@ const SOURCES: &[UseSource] = &[
             dir: CURSOR_PROJECTS_ROOT,
             recursive: true,
             accepts: is_cursor_transcript_path,
+        }],
+    },
+    UseSource {
+        harness: AgentId::GROK_BUILD,
+        root: grok_root,
+        reader: UseReader::Transcripts {
+            list: list_grok_sessions,
+            parse: parse_grok_uses_with_file,
+        },
+        watch: &[SourceWatch {
+            dir: GROK_SESSIONS_ROOT,
+            recursive: true,
+            accepts: is_grok_session_file,
         }],
     },
 ];
@@ -2003,6 +2166,10 @@ mod tests {
             path: home.join(CURSOR_PROJECTS_ROOT),
             recursive: true,
         }));
+        assert!(paths.contains(&SkillUseWatchPath {
+            path: home.join(GROK_SESSIONS_ROOT),
+            recursive: true,
+        }));
     }
 
     #[test]
@@ -2078,6 +2245,31 @@ mod tests {
         assert!(!is_skill_use_change(
             &home,
             &home.join(".pi/agent/settings.json"),
+        ));
+
+        assert!(is_skill_use_change(
+            &home,
+            &home.join(".grok/sessions/p/s/updates.jsonl"),
+        ));
+        assert!(is_skill_use_change(
+            &home,
+            &home.join(".grok/sessions/p/s/summary.json"),
+        ));
+        assert!(!is_skill_use_change(
+            &home,
+            &home.join(".grok/sessions/p/s/images/a.png"),
+        ));
+        assert!(!is_skill_use_change(
+            &home,
+            &home.join(".grok/sessions/p/s")
+        ));
+        assert!(!is_skill_use_change(
+            &home,
+            &home.join(".grok/sessions/p/s/.cwd")
+        ));
+        assert!(!is_skill_use_change(
+            &home,
+            &home.join(".grok/settings.json")
         ));
     }
 
@@ -2617,6 +2809,284 @@ mod tests {
                 cursor_project_dir_name(Path::new("/Users/a/my.app/x_y")),
                 "Users-a-my-app-x-y"
             );
+        }
+    }
+
+    mod grok_sessions {
+        use super::*;
+
+        /// Matches `discovery.rs`'s `grok_dirname` test helper: Grok's own
+        /// `urlencoding::encode` leaves only the RFC 3986 unreserved
+        /// characters as they are.
+        const GROK_ENCODED: &percent_encoding::AsciiSet = &percent_encoding::NON_ALPHANUMERIC
+            .remove(b'-')
+            .remove(b'_')
+            .remove(b'.')
+            .remove(b'~');
+
+        fn grok_dirname(cwd: &Path) -> String {
+            percent_encoding::utf8_percent_encode(cwd.to_str().unwrap(), GROK_ENCODED).to_string()
+        }
+
+        /// A timestamp a few minutes ago plus `offset_secs`, so tests that
+        /// assert on `total`/`by_trigger_30_days` land inside the rolling
+        /// windows regardless of when the test runs.
+        fn recent_secs(offset_secs: i64) -> i64 {
+            (Utc::now() - chrono::Duration::minutes(5)).timestamp() + offset_secs
+        }
+
+        fn grok_line(timestamp: i64, update: serde_json::Value) -> String {
+            serde_json::json!({
+                "timestamp": timestamp,
+                "method": "session/update",
+                "params": {"update": update},
+            })
+            .to_string()
+        }
+
+        fn read_update(tool_call_id: &str, path: &str) -> serde_json::Value {
+            serde_json::json!({
+                "sessionUpdate": "tool_call_update",
+                "toolCallId": tool_call_id,
+                "_meta": {"x.ai/tool": {"kind": "read", "input": {"path": path}}},
+            })
+        }
+
+        fn skill_update(tool_call_id: &str, name: &str) -> serde_json::Value {
+            serde_json::json!({
+                "sessionUpdate": "tool_call",
+                "toolCallId": tool_call_id,
+                "title": format!("Skill: {name}"),
+                "kind": "other",
+            })
+        }
+
+        fn user_chunk_update(text: &str) -> serde_json::Value {
+            serde_json::json!({
+                "sessionUpdate": "user_message_chunk",
+                "content": {"type": "text", "text": text},
+            })
+        }
+
+        fn write_grok_updates(session_dir: &Path, lines: &[String]) -> PathBuf {
+            fs::create_dir_all(session_dir).unwrap();
+            let path = session_dir.join("updates.jsonl");
+            let mut content = lines.join("\n");
+            content.push('\n');
+            fs::write(&path, content).unwrap();
+            path
+        }
+
+        fn write_grok_summary(session_dir: &Path, forked_at: Option<&DateTime<Utc>>) {
+            fs::create_dir_all(session_dir).unwrap();
+            let mut value = serde_json::json!({});
+            if let Some(forked_at) = forked_at {
+                value["forked_at"] = serde_json::json!(forked_at.to_rfc3339());
+            }
+            fs::write(session_dir.join("summary.json"), value.to_string()).unwrap();
+        }
+
+        fn known(skills: &[&str]) -> StdBTreeSet<String> {
+            skills.iter().map(|s| s.to_string()).collect()
+        }
+
+        #[test]
+        fn issue_acceptance_file_read_agent_and_user_uses_carry_session_and_project() {
+            let tmp = tempfile::tempdir().unwrap();
+            let home = tmp.path();
+            let project = home.join("proj");
+            let encoded = grok_dirname(&project);
+            let session_dir = home.join(GROK_SESSIONS_ROOT).join(&encoded).join("s1");
+            write_grok_updates(
+                &session_dir,
+                &[
+                    grok_line(recent_secs(0), read_update("tc1", "/x/skills/foo/SKILL.md")),
+                    grok_line(recent_secs(1), skill_update("tc2", "bar")),
+                    grok_line(recent_secs(2), user_chunk_update("/baz go")),
+                ],
+            );
+            write_grok_summary(&session_dir, None);
+
+            let mut index = SkillInvocationIndex::default();
+            let known_skills = known(&["foo", "bar", "baz"]);
+            let sources = DiscoverySources::default();
+            index.refresh(home, &sources);
+            let stats = stats(&index, &known_skills, &sources);
+            let by_skill: BTreeMap<&str, &SkillInvocationStats> =
+                stats.iter().map(|s| (s.skill.as_str(), s)).collect();
+            assert_eq!(by_skill["foo"].total, 1);
+            assert_eq!(by_skill["foo"].by_trigger_30_days.file_read, 1);
+            assert_eq!(by_skill["bar"].total, 1);
+            assert_eq!(by_skill["bar"].by_trigger_30_days.agent, 1);
+            assert_eq!(by_skill["baz"].total, 1);
+            assert_eq!(by_skill["baz"].by_trigger_30_days.user, 1);
+            assert_eq!(
+                by_skill["foo"]
+                    .by_project_30_days
+                    .get(&project.to_string_lossy().into_owned()),
+                Some(&1),
+                "expected the decoded cwd as the project path"
+            );
+        }
+
+        #[test]
+        fn fork_skips_copied_lines_and_counts_each_sessions_new_uses() {
+            let tmp = tempfile::tempdir().unwrap();
+            let home = tmp.path();
+            let project = home.join("proj");
+            let encoded = grok_dirname(&project);
+            let forked_at = Utc::now() - chrono::Duration::minutes(1);
+            let before = forked_at.timestamp() - 5;
+            let after = forked_at.timestamp() + 5;
+
+            let s1 = home.join(GROK_SESSIONS_ROOT).join(&encoded).join("s1");
+            write_grok_updates(
+                &s1,
+                &[
+                    grok_line(before, read_update("tc1", "/x/skills/foo/SKILL.md")),
+                    grok_line(before, skill_update("tc2", "bar")),
+                    grok_line(before, user_chunk_update("/baz go")),
+                ],
+            );
+            write_grok_summary(&s1, None);
+
+            let s2 = home.join(GROK_SESSIONS_ROOT).join(&encoded).join("s2");
+            write_grok_updates(
+                &s2,
+                &[
+                    grok_line(before, read_update("tc1", "/x/skills/foo/SKILL.md")),
+                    grok_line(before, skill_update("tc2", "bar")),
+                    grok_line(before, user_chunk_update("/baz go")),
+                    grok_line(after, skill_update("tc3", "bar")),
+                ],
+            );
+            write_grok_summary(&s2, Some(&forked_at));
+
+            let mut index = SkillInvocationIndex::default();
+            let known_skills = known(&["foo", "bar", "baz"]);
+            let sources = DiscoverySources::default();
+            index.refresh(home, &sources);
+            let stats = stats(&index, &known_skills, &sources);
+            let by_skill: BTreeMap<&str, &SkillInvocationStats> =
+                stats.iter().map(|s| (s.skill.as_str(), s)).collect();
+            assert_eq!(
+                by_skill["bar"].total, 2,
+                "one from s1, one from s2's new line"
+            );
+            assert_eq!(by_skill["foo"].total, 1);
+            assert_eq!(by_skill["baz"].total, 1);
+        }
+
+        #[test]
+        fn a_session_without_summary_json_is_not_read_until_it_is_written() {
+            let tmp = tempfile::tempdir().unwrap();
+            let home = tmp.path();
+            let project = home.join("proj");
+            let encoded = grok_dirname(&project);
+            let session_dir = home.join(GROK_SESSIONS_ROOT).join(&encoded).join("s1");
+            write_grok_updates(
+                &session_dir,
+                &[grok_line(recent_secs(0), skill_update("tc1", "bar"))],
+            );
+
+            let mut index = SkillInvocationIndex::default();
+            let known_skills = known(&["bar"]);
+            let sources = DiscoverySources::default();
+            let report = index.refresh(home, &sources);
+            assert!(!report.incomplete);
+            assert!(stats(&index, &known_skills, &sources).is_empty());
+
+            write_grok_summary(&session_dir, None);
+            index.refresh(home, &sources);
+            assert_eq!(stats(&index, &known_skills, &sources).len(), 1);
+        }
+
+        #[test]
+        fn switching_grok_build_off_stops_reads_and_on_resumes_counting() {
+            let tmp = tempfile::tempdir().unwrap();
+            let home = tmp.path();
+            let project = home.join("proj");
+            let encoded = grok_dirname(&project);
+            let session_dir = home.join(GROK_SESSIONS_ROOT).join(&encoded).join("s1");
+            write_grok_updates(
+                &session_dir,
+                &[grok_line(recent_secs(0), skill_update("tc1", "bar"))],
+            );
+            write_grok_summary(&session_dir, None);
+
+            let mut index = SkillInvocationIndex::default();
+            let known_skills = known(&["bar"]);
+            let mut off = DiscoverySources::default();
+            off.set(AgentId::GROK_BUILD, false);
+            index.refresh(home, &off);
+            assert!(stats(&index, &known_skills, &off).is_empty());
+
+            let enabled = DiscoverySources::default();
+            index.refresh(home, &enabled);
+            assert_eq!(stats(&index, &known_skills, &enabled).len(), 1);
+        }
+
+        #[test]
+        fn no_grok_home_is_not_incomplete() {
+            let tmp = tempfile::tempdir().unwrap();
+            let home = tmp.path();
+            let mut index = SkillInvocationIndex::default();
+            let sources = DiscoverySources::default();
+            let report = index.refresh(home, &sources);
+            assert!(!report.incomplete);
+        }
+
+        #[test]
+        fn resuming_a_file_keeps_counted_calls_and_ignores_a_repeated_id() {
+            let tmp = tempfile::tempdir().unwrap();
+            let home = tmp.path();
+            let project = home.join("proj");
+            let encoded = grok_dirname(&project);
+            let session_dir = home.join(GROK_SESSIONS_ROOT).join(&encoded).join("s1");
+            let path = write_grok_updates(
+                &session_dir,
+                &[grok_line(recent_secs(0), skill_update("tc1", "bar"))],
+            );
+            write_grok_summary(&session_dir, None);
+
+            let mut index = SkillInvocationIndex::default();
+            let known_skills = known(&["bar"]);
+            let sources = DiscoverySources::default();
+            index.refresh(home, &sources);
+            assert_eq!(stats(&index, &known_skills, &sources)[0].total, 1);
+
+            let mut content = fs::read_to_string(&path).unwrap();
+            content.push_str(&grok_line(recent_secs(1), skill_update("tc1", "bar")));
+            content.push('\n');
+            fs::write(&path, &content).unwrap();
+
+            index.refresh(home, &sources);
+            assert_eq!(stats(&index, &known_skills, &sources)[0].total, 1);
+        }
+
+        #[test]
+        fn deleting_summary_json_drops_the_sessions_cached_uses() {
+            let tmp = tempfile::tempdir().unwrap();
+            let home = tmp.path();
+            let project = home.join("proj");
+            let encoded = grok_dirname(&project);
+            let session_dir = home.join(GROK_SESSIONS_ROOT).join(&encoded).join("s1");
+            write_grok_updates(
+                &session_dir,
+                &[grok_line(recent_secs(0), skill_update("tc1", "bar"))],
+            );
+            write_grok_summary(&session_dir, None);
+
+            let mut index = SkillInvocationIndex::default();
+            let known_skills = known(&["bar"]);
+            let sources = DiscoverySources::default();
+            index.refresh(home, &sources);
+            assert_eq!(stats(&index, &known_skills, &sources).len(), 1);
+
+            fs::remove_file(session_dir.join("summary.json")).unwrap();
+            let report = index.refresh(home, &sources);
+            assert_eq!(report.files_dropped, 1);
+            assert!(stats(&index, &known_skills, &sources).is_empty());
         }
     }
 

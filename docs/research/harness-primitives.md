@@ -630,15 +630,15 @@ ran twice in that folder: once with "What is the probe word? Check your
 available skills first." (the model picks the skill), and once with the
 harness's typed syntax. Each row below lists what the session store recorded.
 
-| CLI and version                                           | Model picks                                     | Typed                                                                                    |
-| --------------------------------------------------------- | ----------------------------------------------- | ---------------------------------------------------------------------------------------- |
-| `claude -p --model haiku` (2.1.273)                       | `Skill` tool_use `{"skill":"probe-echo"}`       | `/probe-echo`: `<command-name>/probe-echo</command-name>` user text, no tool call        |
-| `codex exec` (codex-cli 0.154.0, originator `codex_exec`) | `exec` `cat .agents/skills/probe-echo/SKILL.md` | `$probe-echo …`: a user item that starts with `<skill>\n<name>probe-echo</name>`         |
-| `opencode2 run --standalone` (0.0.0-beta-17823)           | `skill` tool `{"id":"probe-echo"}`              | `/probe-echo …`: plain user text, then the same `skill` tool call; no `type='skill'` row |
-| `pi -p --approve` (0.84.4)                                | `read .agents/skills/probe-echo/SKILL.md`       | `/skill:probe-echo …`: user text starts with `<skill name="probe-echo" location="…">`    |
-| `pi -p` (0.84.4, folder not trusted)                      | `bash` find, then `read` of the file            | literal `/skill:probe-echo …`, because pi did not load the untrusted project skill       |
-| `cursor-agent -p` (2025.09.12)                            | not run: the CLI asks for a sign-in             | not run                                                                                  |
-| Grok Build                                                | not run: the CLI is not installed               | not run                                                                                  |
+| CLI and version                                           | Model picks                                                                    | Typed                                                                                    |
+| --------------------------------------------------------- | ------------------------------------------------------------------------------ | ---------------------------------------------------------------------------------------- |
+| `claude -p --model haiku` (2.1.273)                       | `Skill` tool_use `{"skill":"probe-echo"}`                                      | `/probe-echo`: `<command-name>/probe-echo</command-name>` user text, no tool call        |
+| `codex exec` (codex-cli 0.154.0, originator `codex_exec`) | `exec` `cat .agents/skills/probe-echo/SKILL.md`                                | `$probe-echo …`: a user item that starts with `<skill>\n<name>probe-echo</name>`         |
+| `opencode2 run --standalone` (0.0.0-beta-17823)           | `skill` tool `{"id":"probe-echo"}`                                             | `/probe-echo …`: plain user text, then the same `skill` tool call; no `type='skill'` row |
+| `pi -p --approve` (0.84.4)                                | `read .agents/skills/probe-echo/SKILL.md`                                      | `/skill:probe-echo …`: user text starts with `<skill name="probe-echo" location="…">`    |
+| `pi -p` (0.84.4, folder not trusted)                      | `bash` find, then `read` of the file                                           | literal `/skill:probe-echo …`, because pi did not load the untrusted project skill       |
+| `cursor-agent -p` (2025.09.12)                            | not run: the CLI asks for a sign-in                                            | not run                                                                                  |
+| Grok Build                                                | not run: the CLI is not installed and `~/.grok` does not exist on this machine | not run                                                                                  |
 
 Every run that started returned the probe word. The v1 `opencode run` stopped
 on the v2 config.
@@ -679,11 +679,34 @@ Local rollouts by `originator`: `Codex Desktop` has 79 of the 80 `<skill>`
 items (2,417 sessions) and `codex_exec` has 1 (the probe). The desktop app and
 `codex exec` therefore record `$name` the same way as the CLI.
 
+### Grok Build record shapes (verified-from-source, no local data)
+
+Source: github.com/xai-org/grok-build, branch main, fetched 2026-09-16, under
+`crates/codegen/`. No local counts: `~/.grok` does not exist on this machine.
+
+- Store: `~/.grok/sessions/<encoded cwd>/<session id>/updates.jsonl` plus
+  `summary.json` (`xai-grok-shell/src/session/storage/mod.rs` L670-800; long
+  cwd falls back to a `.cwd` file, `discovery.rs` `grok_session_cwd`).
+- Line envelope: `{"timestamp":<unix secs>,"method":"session/update","params":{"update":{...}}}`.
+  `method` absent means a legacy bare `{"sessionId","update"}` line;
+  `_x.ai/session/update` is an xAI extension to skip.
+- User turn: `sessionUpdate: "user_message_chunk"` with `content.text`
+  starting `/`; skip `_meta.hostTurn: true` echoes
+  (`slash_commands.rs` L579-1650, `turn.rs` L421-449).
+- Tool calls: canonical shape is `_meta["x.ai/tool"]` with `kind` and `input`
+  (`tool_taxonomy.rs` L27-230); Skill calls have no `input` and title
+  `Skill: {name}`, ACP kind `other`; ReadFile has `input.path`, ACP kind
+  `read`, `locations[0].path`; Bash has ACP kind `execute`
+  (`tool_calls.rs` L2115-2531).
+- Forks: a fork copies every parent line with a fresh timestamp but keeps
+  `toolCallId`, then writes `summary.json` with `forked_at` after the copy, so
+  every copied line's `timestamp` is `<=` it (`jsonl/copy.rs` L144-589).
+
 ### Not checked
 
 - Cursor typed `/skill-name`: `cursor-agent` needs `cursor-agent login`.
-- Grok Build record shapes: the CLI is not installed and `~/.grok` does not
-  exist.
+- Grok Build local counts: the CLI is not installed and `~/.grok` does not
+  exist on this machine (see source facts above).
 - Which OpenCode client calls `session.skill` (the TUI or the desktop app).
 
 ## Cross-harness capability matrix
