@@ -2,16 +2,18 @@
 //! home directory.
 //!
 //! The union of Codex's `~/.codex/config.toml` recent projects, the working
-//! directories in Claude Code and pi session transcripts, and the folders in
-//! Cursor's workspace storage, filtered to directories that hold a skill dir
-//! for one of the first-class agents.
+//! directories in Claude Code and pi session transcripts, the folders in
+//! Cursor's workspace storage, and the project worktrees OpenCode records,
+//! filtered to directories that hold a skill dir for one of the first-class
+//! agents.
 
 use std::collections::BTreeSet;
 use std::fs;
 use std::io::{BufRead, BufReader, Read};
 use std::path::{Path, PathBuf};
-use std::time::SystemTime;
+use std::time::{Duration, SystemTime};
 
+use rusqlite::{Connection, OpenFlags};
 use skill_studio_core::error::CoreError;
 use skill_studio_core::ports::ProjectDiscovery;
 
@@ -203,9 +205,7 @@ fn transcript_cwds_within(root: &Path, mut limits: TranscriptScanLimits) -> Vec<
         let mut transcripts: Vec<_> = entries
             .flatten()
             .filter(|e| e.path().extension().is_some_and(|ext| ext == "jsonl"))
-            // Only regular files: a symlink, FIFO, or directory named
-            // `*.jsonl` is never opened as a transcript.
-            .filter(|e| fs::symlink_metadata(e.path()).is_ok_and(|m| m.file_type().is_file()))
+            .filter(|e| is_regular_file(&e.path()))
             .collect();
         transcripts.sort_by(|left, right| {
             let left_modified = left
@@ -243,9 +243,6 @@ const CURSOR_WORKSPACE_STORAGE_ROOTS: &[&str] = &[
     "AppData/Roaming/Cursor/User/workspaceStorage",
 ];
 
-/// A real `workspace.json` is about 100 bytes.
-const MAX_WORKSPACE_JSON_BYTES: u64 = 64 * 1024;
-
 /// `workspace.json` files one discovery run may try to open.
 const MAX_CURSOR_WORKSPACES: usize = 10_000;
 
@@ -273,19 +270,133 @@ fn cursor_workspace_folders(home: &Path) -> Vec<PathBuf> {
 }
 
 fn cursor_workspace_folder(path: &Path) -> Option<PathBuf> {
-    // Opening a FIFO would block the refresh, so only regular files are read.
-    if !fs::symlink_metadata(path).is_ok_and(|m| m.file_type().is_file()) {
+    let value = read_small_json(path)?;
+    let folder = value.get("folder")?.as_str()?;
+    url::Url::parse(folder).ok()?.to_file_path().ok()
+}
+
+/// OpenCode's data dir at its default `$XDG_DATA_HOME` location.
+const OPENCODE_DATA_ROOT: &str = ".local/share/opencode";
+
+/// OpenCode's database is `opencode.db` on the latest, beta, and prod
+/// channels and `opencode-<channel>.db` on every other channel (`next` for
+/// the v2 beta, `local` for source builds), so one machine can hold several.
+const MAX_OPENCODE_DATABASES: usize = 16;
+
+/// Project rows read per database, and legacy project files read in total.
+const MAX_OPENCODE_PROJECTS: usize = 10_000;
+
+/// Worktrees of the projects OpenCode has opened, from the database of every
+/// channel and from the `storage/project/<id>.json` records that OpenCode
+/// wrote before it moved to SQLite.
+fn opencode_worktrees(home: &Path) -> Vec<PathBuf> {
+    let root = home.join(OPENCODE_DATA_ROOT);
+    let mut out = opencode_legacy_worktrees(&root.join("storage/project"));
+    let Ok(entries) = fs::read_dir(&root) else {
+        return out;
+    };
+    let mut databases: Vec<PathBuf> = entries
+        .flatten()
+        .map(|entry| entry.path())
+        .filter(|path| {
+            path.file_name()
+                .and_then(|name| name.to_str())
+                .is_some_and(|name| {
+                    name == "opencode.db"
+                        || (name.starts_with("opencode-") && name.ends_with(".db"))
+                })
+        })
+        .filter(|path| is_regular_file(path))
+        .collect();
+    databases.sort();
+    for database in databases.iter().take(MAX_OPENCODE_DATABASES) {
+        out.extend(opencode_database_worktrees(database));
+    }
+    out
+}
+
+/// `project.worktree` values from one OpenCode database. OpenCode keeps its
+/// database in WAL mode, and a plain read-only open creates the `-wal` and
+/// `-shm` files when they are missing. So the database is opened as
+/// immutable unless both files exist, which is the case while OpenCode runs
+/// and rows that are only in the WAL must still be seen.
+fn opencode_database_worktrees(database: &Path) -> Vec<PathBuf> {
+    let live = ["-wal", "-shm"].iter().all(|suffix| {
+        let mut sidecar = database.as_os_str().to_owned();
+        sidecar.push(suffix);
+        Path::new(&sidecar).exists()
+    });
+    let Ok(mut uri) = url::Url::from_file_path(database) else {
+        return Vec::new();
+    };
+    uri.set_query(Some(if live {
+        "mode=ro"
+    } else {
+        "mode=ro&immutable=1"
+    }));
+    let Ok(conn) = Connection::open_with_flags(
+        uri.as_str(),
+        OpenFlags::SQLITE_OPEN_READ_ONLY
+            | OpenFlags::SQLITE_OPEN_URI
+            | OpenFlags::SQLITE_OPEN_NO_MUTEX,
+    ) else {
+        return Vec::new();
+    };
+    let _ = conn.busy_timeout(Duration::from_millis(250));
+    let Ok(mut statement) = conn.prepare("SELECT worktree FROM project LIMIT ?1") else {
+        return Vec::new();
+    };
+    let Ok(rows) = statement.query_map([MAX_OPENCODE_PROJECTS as i64], |row| {
+        row.get::<_, String>(0)
+    }) else {
+        return Vec::new();
+    };
+    let worktrees: Vec<PathBuf> = rows
+        .flatten()
+        .map(PathBuf::from)
+        .filter(|path| path.is_absolute())
+        .collect();
+    worktrees
+}
+
+fn opencode_legacy_worktrees(dir: &Path) -> Vec<PathBuf> {
+    let Ok(entries) = fs::read_dir(dir) else {
+        return Vec::new();
+    };
+    entries
+        .flatten()
+        .map(|entry| entry.path())
+        .filter(|path| path.extension().is_some_and(|ext| ext == "json"))
+        .take(MAX_OPENCODE_PROJECTS)
+        .filter_map(|path| {
+            let value = read_small_json(&path)?;
+            value.get("worktree")?.as_str().map(PathBuf::from)
+        })
+        .filter(|path| path.is_absolute())
+        .collect()
+}
+
+/// Cursor workspace records and OpenCode project records are each well under
+/// 1 KiB.
+const MAX_SMALL_JSON_BYTES: u64 = 64 * 1024;
+
+fn read_small_json(path: &Path) -> Option<serde_json::Value> {
+    if !is_regular_file(path) {
         return None;
     }
     let mut content = String::new();
     fs::File::open(path)
         .ok()?
-        .take(MAX_WORKSPACE_JSON_BYTES)
+        .take(MAX_SMALL_JSON_BYTES)
         .read_to_string(&mut content)
         .ok()?;
-    let value: serde_json::Value = serde_json::from_str(&content).ok()?;
-    let folder = value.get("folder")?.as_str()?;
-    url::Url::parse(folder).ok()?.to_file_path().ok()
+    serde_json::from_str(&content).ok()
+}
+
+/// Opening a FIFO blocks, and a symlink can point anywhere, so history files
+/// are read only when they are regular files.
+fn is_regular_file(path: &Path) -> bool {
+    fs::symlink_metadata(path).is_ok_and(|m| m.file_type().is_file())
 }
 
 /// True when `path` is inside Skill Studio's own scratch root - the
@@ -309,15 +420,16 @@ fn is_home_root(home: &Path, path: &Path) -> bool {
 }
 
 /// Union of every project directory discoverable from Codex config, Claude
-/// Code and pi transcripts, and Cursor workspace storage, filtered to
-/// directories that exist and have at least one first-class agent's skill
-/// dir. Sorted and deduped.
+/// Code and pi transcripts, Cursor workspace storage, and OpenCode's project
+/// records, filtered to directories that exist and have at least one
+/// first-class agent's skill dir. Sorted and deduped.
 pub fn discover_skill_projects(home: &Path) -> Vec<PathBuf> {
     let mut paths: BTreeSet<PathBuf> = BTreeSet::new();
     paths.extend(codex_project_paths(home));
     paths.extend(transcript_cwds(&home.join(CLAUDE_TRANSCRIPT_ROOT)));
     paths.extend(transcript_cwds(&home.join(PI_TRANSCRIPT_ROOT)));
     paths.extend(cursor_workspace_folders(home));
+    paths.extend(opencode_worktrees(home));
 
     paths
         .into_iter()
@@ -900,6 +1012,207 @@ mod tests {
         write_cursor_workspace(home, "broken", "{not json");
 
         assert!(cursor_workspace_folders(home).is_empty());
+    }
+
+    /// A WAL-mode OpenCode-shaped database that never checkpoints on its own,
+    /// so rows stay in the `-wal` file while the connection is open. Dropping
+    /// the connection checkpoints and removes the `-wal` and `-shm` files.
+    fn opencode_db(path: &Path, worktrees: &[&Path]) -> Connection {
+        let conn = Connection::open(path).unwrap();
+        let mode: String = conn
+            .query_row("PRAGMA journal_mode=WAL", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(mode, "wal");
+        conn.execute_batch(
+            "PRAGMA wal_autocheckpoint=0;
+             CREATE TABLE project (id TEXT PRIMARY KEY, worktree TEXT NOT NULL);",
+        )
+        .unwrap();
+        for worktree in worktrees {
+            insert_opencode_project(&conn, worktree);
+        }
+        conn
+    }
+
+    fn insert_opencode_project(conn: &Connection, worktree: &Path) {
+        conn.execute(
+            "INSERT INTO project (id, worktree) VALUES (?1, ?2)",
+            (worktree.to_str().unwrap(), worktree.to_str().unwrap()),
+        )
+        .unwrap();
+    }
+
+    fn opencode_root(home: &Path) -> PathBuf {
+        let root = home.join(OPENCODE_DATA_ROOT);
+        fs::create_dir_all(&root).unwrap();
+        root
+    }
+
+    fn opencode_project(home: &Path, name: &str) -> PathBuf {
+        let project = home.join(name);
+        fs::create_dir_all(project.join(".opencode/skills")).unwrap();
+        project
+    }
+
+    fn write_legacy_opencode_project(root: &Path, id: &str, worktree: &Path) {
+        let dir = root.join("storage/project");
+        fs::create_dir_all(&dir).unwrap();
+        fs::write(
+            dir.join(format!("{id}.json")),
+            serde_json::json!({ "id": id, "worktree": worktree, "vcs": "git" }).to_string(),
+        )
+        .unwrap();
+    }
+
+    fn file_names(dir: &Path) -> Vec<String> {
+        let mut names: Vec<String> = fs::read_dir(dir)
+            .unwrap()
+            .flatten()
+            .map(|entry| entry.file_name().to_string_lossy().into_owned())
+            .collect();
+        names.sort();
+        names
+    }
+
+    fn size_and_mtime(path: &Path) -> (u64, SystemTime) {
+        let metadata = fs::metadata(path).unwrap();
+        (metadata.len(), metadata.modified().unwrap())
+    }
+
+    #[test]
+    fn opencode_rows_from_every_channel_database_are_discovered() {
+        let tmp = tempfile::tempdir().unwrap();
+        let home = tmp.path();
+        let root = opencode_root(home);
+        let stable = opencode_project(home, "stable");
+        let next = opencode_project(home, "next");
+
+        // OpenCode records sessions outside any project under worktree "/".
+        drop(opencode_db(
+            &root.join("opencode.db"),
+            &[&stable, Path::new("/")],
+        ));
+        drop(opencode_db(&root.join("opencode-next.db"), &[&next]));
+
+        assert_eq!(discover_skill_projects(home), vec![next, stable]);
+    }
+
+    #[test]
+    fn legacy_opencode_project_json_is_discovered_without_a_database() {
+        let tmp = tempfile::tempdir().unwrap();
+        let home = tmp.path();
+        let root = opencode_root(home);
+        let project = opencode_project(home, "legacy");
+        write_legacy_opencode_project(&root, "abc123", &project);
+        write_legacy_opencode_project(&root, "global", Path::new("relative/path"));
+
+        assert_eq!(discover_skill_projects(home), vec![project]);
+    }
+
+    #[test]
+    fn opencode_project_in_database_and_legacy_json_is_reported_once() {
+        let tmp = tempfile::tempdir().unwrap();
+        let home = tmp.path();
+        let root = opencode_root(home);
+        let project = opencode_project(home, "both");
+        drop(opencode_db(&root.join("opencode.db"), &[&project]));
+        write_legacy_opencode_project(&root, "abc123", &project);
+
+        assert_eq!(opencode_worktrees(home).len(), 2);
+        assert_eq!(discover_skill_projects(home), vec![project]);
+    }
+
+    #[test]
+    fn unreadable_and_foreign_databases_are_skipped() {
+        let tmp = tempfile::tempdir().unwrap();
+        let home = tmp.path();
+        let root = opencode_root(home);
+        let project = opencode_project(home, "local-build");
+        let foreign = opencode_project(home, "foreign");
+
+        fs::write(root.join("opencode.db"), b"").unwrap();
+        fs::write(root.join("opencode-garbage.db"), b"this is not a database").unwrap();
+        Connection::open(root.join("opencode-old.db"))
+            .unwrap()
+            .execute_batch("CREATE TABLE project (id TEXT PRIMARY KEY)")
+            .unwrap();
+        drop(opencode_db(&root.join("opencode-local.db"), &[&project]));
+        drop(opencode_db(&root.join("other.db"), &[&foreign]));
+
+        assert_eq!(opencode_worktrees(home), vec![project]);
+    }
+
+    #[test]
+    fn closed_opencode_database_is_read_without_creating_or_changing_files() {
+        let tmp = tempfile::tempdir().unwrap();
+        let home = tmp.path();
+        let root = opencode_root(home);
+        let project = opencode_project(home, "closed");
+        let database = root.join("opencode.db");
+        drop(opencode_db(&database, &[&project]));
+        let names_before = file_names(&root);
+        assert_eq!(names_before, ["opencode.db"]);
+        let database_before = size_and_mtime(&database);
+
+        assert_eq!(opencode_worktrees(home), vec![project]);
+
+        assert_eq!(file_names(&root), names_before);
+        assert_eq!(size_and_mtime(&database), database_before);
+    }
+
+    #[test]
+    fn live_opencode_database_rows_in_the_wal_are_read_without_changing_files() {
+        let tmp = tempfile::tempdir().unwrap();
+        let home = tmp.path();
+        let root = opencode_root(home);
+        let first = opencode_project(home, "first");
+        let second = opencode_project(home, "second");
+        let database = root.join("opencode.db");
+        let wal = root.join("opencode.db-wal");
+        let writer = opencode_db(&database, &[&first]);
+        let names_before = file_names(&root);
+        assert_eq!(
+            names_before,
+            ["opencode.db", "opencode.db-shm", "opencode.db-wal"]
+        );
+        let database_before = size_and_mtime(&database);
+        let wal_before = size_and_mtime(&wal);
+
+        assert_eq!(opencode_worktrees(home), vec![first.clone()]);
+
+        assert_eq!(file_names(&root), names_before);
+        assert_eq!(size_and_mtime(&database), database_before);
+        assert_eq!(size_and_mtime(&wal), wal_before);
+        insert_opencode_project(&writer, &second);
+        assert_eq!(opencode_worktrees(home), vec![first, second]);
+    }
+
+    /// The state OpenCode leaves after a crash: WAL files on disk and no
+    /// connection open, so the discovery connection is the last one to close.
+    #[test]
+    fn leftover_opencode_wal_is_read_without_changing_the_database_or_wal() {
+        let tmp = tempfile::tempdir().unwrap();
+        let home = tmp.path();
+        let root = opencode_root(home);
+        let project = opencode_project(home, "crashed");
+        let scratch = tmp.path().join("writer");
+        fs::create_dir_all(&scratch).unwrap();
+        let writer = opencode_db(&scratch.join("opencode.db"), &[&project]);
+        for name in ["opencode.db", "opencode.db-wal", "opencode.db-shm"] {
+            fs::copy(scratch.join(name), root.join(name)).unwrap();
+        }
+        drop(writer);
+        let database = root.join("opencode.db");
+        let wal = root.join("opencode.db-wal");
+        let names_before = file_names(&root);
+        let database_before = size_and_mtime(&database);
+        let wal_before = size_and_mtime(&wal);
+
+        assert_eq!(opencode_worktrees(home), vec![project]);
+
+        assert_eq!(file_names(&root), names_before);
+        assert_eq!(size_and_mtime(&database), database_before);
+        assert_eq!(size_and_mtime(&wal), wal_before);
     }
 
     #[test]
