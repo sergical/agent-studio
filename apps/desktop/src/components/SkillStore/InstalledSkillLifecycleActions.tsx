@@ -17,6 +17,7 @@ import {
 } from "@skill-studio/ui";
 import { ProjectDirectorySelect } from "./ProjectDirectorySelect";
 import { ScopeToggleGroup } from "./ScopeToggleGroup";
+import { useAppStore } from "../../store/appStore";
 import { removeSkill, updateSkill } from "../../lib/skill-api";
 import {
   skillLifecycleScopeSelection,
@@ -44,6 +45,7 @@ export function InstalledSkillLifecycleActions({
   onInstallComplete,
   onRemoveComplete,
 }: InstalledSkillLifecycleActionsProps) {
+  const addToast = useAppStore((state) => state.addToast);
   const installedSkill = skill.installed_info;
   const [lifecycleScope, setLifecycleScope] = useState<SkillLifecycleScopeSelection | null>(() =>
     installedSkill ? skillLifecycleScopeSelection(installedSkill) : null,
@@ -99,6 +101,15 @@ export function InstalledSkillLifecycleActions({
     return removeSkill(removalPreview.target)
       .then((result) => {
         if (result.success) onRemoveComplete();
+        else throw new Error(result.error ?? "Removal failed without an error message.");
+      })
+      .catch((error) => {
+        addToast({
+          type: "error",
+          title: "Remove failed",
+          message:
+            error instanceof Error ? error.message : "Removal failed without an error message.",
+        });
       })
       .finally(() => {
         setIsRemoving(false);

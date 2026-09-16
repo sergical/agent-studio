@@ -1,4 +1,5 @@
 import { runDocumentOperation } from "./skill-document-operation";
+import { errorMessage } from "./error-message";
 // ============================================================================
 // Skill Studio - skill-api
 // Tauri IPC communication for skills.sh integration
@@ -151,7 +152,11 @@ export async function unregisterSkillProject(path: string): Promise<void> {
  * side against the current snapshot and used as the CLI's working directory.
  */
 export async function removeSkill(target: LifecycleTarget): Promise<InstallResult> {
-  return invoke("remove_skill", { target });
+  try {
+    return await invoke("remove_skill", { target });
+  } catch (cause) {
+    throw cause instanceof Error ? cause : new Error(errorMessage(cause, "Removal failed"));
+  }
 }
 
 /**

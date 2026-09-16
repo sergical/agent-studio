@@ -13,7 +13,7 @@ use super::agents::{AgentId, AgentTarget};
 use super::api;
 use super::lock_file;
 use super::project_discovery;
-use super::skill_add::{CommandRunner, RealCommandRunner};
+use super::skill_add::CommandRunner;
 use super::skill_agent_runner::validate_skill_dir_name;
 use super::skill_dto::{
     InstallResult, InstallScope, InstalledSkill, LifecycleTarget, PaginatedSkillsResponse,
@@ -1462,9 +1462,46 @@ fn remove_dotagents_deployment_with(
 pub async fn remove_skill(
     target: LifecycleTarget,
     app: tauri::AppHandle,
-    refresh_state: tauri::State<'_, SkillRefreshState>,
-    fork_lock: tauri::State<'_, skill_fork::ForkMutationLock>,
 ) -> Result<InstallResult, String> {
+    let operation_app = app.clone();
+    let result =
+        tauri::async_runtime::spawn_blocking(move || remove_skill_blocking(target, operation_app))
+            .await
+            .map_err(|error| format!("Removal worker failed: {error}"));
+    skill_refresh::request_snapshot_rebuild(&app);
+    result?
+}
+
+struct RemovalCommandRunner;
+
+impl CommandRunner for RemovalCommandRunner {
+    fn run_npx(&self, args: &[String], cwd: Option<&Path>) -> Result<(), String> {
+        super::skill_process::run_controlled_npx(
+            args,
+            cwd,
+            &std::sync::atomic::AtomicBool::new(false),
+            super::skill_process::DEFAULT_ADD_PROCESS_TIMEOUT,
+        )
+        .map_err(|error| match error {
+            super::skill_process::ControlledProcessError::Cancelled => {
+                "Removal was cancelled; skill files may have changed.".to_string()
+            }
+            super::skill_process::ControlledProcessError::TimedOut => {
+                "Removal timed out; skill files may have changed.".to_string()
+            }
+            super::skill_process::ControlledProcessError::Failed(message) => {
+                format!("Removal failed; skill files may have changed: {message}")
+            }
+        })
+    }
+}
+
+fn remove_skill_blocking(
+    target: LifecycleTarget,
+    app: tauri::AppHandle,
+) -> Result<InstallResult, String> {
+    let refresh_state = app.state::<SkillRefreshState>();
+    let fork_lock = app.state::<skill_fork::ForkMutationLock>();
     // Held for the whole removal (ownership check, CLI removal or direct
     // delete, registry update, rebuild) so a concurrent fork/pull/unfork
     // can't race a removal - `ForkMutationLock` isn't reentrant, so
@@ -1484,7 +1521,16 @@ pub async fn remove_skill(
             deployment.scope
         ));
     };
-    let project_path = deployment.project_path.clone();
+    let project_path = match scope {
+        super::skill_dto::InstallScope::Global => None,
+        super::skill_dto::InstallScope::Project => Some(
+            deployment
+                .project_path
+                .clone()
+                .filter(|path| !path.is_empty())
+                .ok_or("Remove is not available: project target has no project path")?,
+        ),
+    };
     let global = scope == super::skill_dto::InstallScope::Global;
 
     // A forked skill is a plain directory under `.agents/skills`, in no
@@ -1499,7 +1545,7 @@ pub async fn remove_skill(
             deployment.id,
             deployment.path,
             deployment.content_hash,
-            app,
+            app.clone(),
         );
     }
 
@@ -1519,7 +1565,7 @@ pub async fn remove_skill(
                 scope,
                 project_path: project_path.as_deref().map(Path::new),
             },
-            &RealCommandRunner::new(),
+            &RemovalCommandRunner,
             |stage_root| std::fs::remove_dir_all(stage_root).map_err(|error| error.to_string()),
         )?;
         skill_trial::drop_trial_record(
@@ -1534,7 +1580,6 @@ pub async fn remove_skill(
                 "dotagents removed {skill_name}, but Skill Studio could not clear its trial record: {error}"
             )
         })?;
-        skill_refresh::request_snapshot_rebuild(&app);
         return Ok(InstallResult {
             success: true,
             skill_name,
@@ -1559,15 +1604,11 @@ pub async fn remove_skill(
                     .ok_or("Remove is not available: Copy owner revision is missing")?,
             };
             let projects: Vec<PathBuf> = snapshot.projects.iter().map(Into::into).collect();
-            drop(_guard);
-            let operation_app = app.clone();
-            let removal = tauri::async_runtime::spawn_blocking(move || {
-                let fork_lock = operation_app.state::<skill_fork::ForkMutationLock>();
-                let _guard = fork_lock.try_acquire()?;
+            let removal = (|| {
                 let scope = super::skill_scope_config::desktop_skill_scope(&home, &projects)?;
                 let mut service = skill_studio_core::skill_service::ScopedSkillService::bind(scope)
                     .map_err(|error| error.to_string())?;
-                let event_state = operation_app.state::<super::event_commands::EventStoreState>();
+                let event_state = app.state::<super::event_commands::EventStoreState>();
                 let events = event_state
                     .0
                     .lock()
@@ -1586,11 +1627,8 @@ pub async fn remove_skill(
                     (Some(id), false) => format!("{} (event {id} was rolled back)", error.message),
                     (None, _) => error.message,
                 })
-            })
-            .await
-            .map_err(|error| format!("Copy removal task failed: {error}"));
-            skill_refresh::request_snapshot_rebuild(&app);
-            removal??;
+            })();
+            removal?;
             return Ok(InstallResult {
                 success: true,
                 skill_name,
@@ -1603,55 +1641,38 @@ pub async fn remove_skill(
         _ => return Err("Remove is not available for this deployment owner".to_string()),
     };
 
-    // Log the command for debugging
-    eprintln!("[remove_skill] Running: npx {}", args.join(" "));
-
-    let mut command = Command::new("npx");
-    command.args(&args);
-    if let Some(path) = &project_path {
-        command.current_dir(path);
-    }
-    let output = command
-        .output()
-        .map_err(|e| format!("Failed to execute npx skills: {}", e))?;
-
-    let stdout = String::from_utf8_lossy(&output.stdout).to_string();
-    let stderr = String::from_utf8_lossy(&output.stderr).to_string();
-
-    eprintln!("[remove_skill] Exit code: {:?}", output.status.code());
-    eprintln!("[remove_skill] stdout: {}", stdout);
-    eprintln!("[remove_skill] stderr: {}", stderr);
-
-    if output.status.success() {
-        if let Some(home) = dirs::home_dir() {
-            if let Err(e) = skill_trial::drop_trial_record(
+    match RemovalCommandRunner.run_npx(&args, project_path.as_deref().map(Path::new)) {
+        Ok(()) => {
+            let home = dirs::home_dir().ok_or("Could not find home directory after removal")?;
+            skill_trial::drop_trial_record(
                 &home,
                 &deployment.id,
                 &skill_name,
                 trial_scope,
                 Path::new(&deployment.path),
-            ) {
-                eprintln!("[remove_skill] failed to drop trial record: {e}");
-            }
+            )
+            .map_err(|error| {
+                format!(
+                    "Removed {skill_name}, but Skill Studio could not clear its trial record: {error}"
+                )
+            })?;
+            Ok(InstallResult {
+                success: true,
+                skill_name,
+                installed_path: None,
+                error: None,
+                tool: None,
+                command: None,
+            })
         }
-        skill_refresh::request_snapshot_rebuild(&app);
-        Ok(InstallResult {
-            success: true,
-            skill_name,
-            installed_path: None,
-            error: None,
-            tool: None,
-            command: None,
-        })
-    } else {
-        Ok(InstallResult {
+        Err(error) => Ok(InstallResult {
             success: false,
             skill_name,
             installed_path: None,
-            error: Some(if stderr.is_empty() { stdout } else { stderr }),
+            error: Some(error),
             tool: None,
             command: None,
-        })
+        }),
     }
 }
 
