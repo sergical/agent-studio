@@ -240,26 +240,29 @@ export async function openSkillPath(path: string, mode: "reveal" | "editor"): Pr
   return invoke("open_skill_path", { path, mode });
 }
 
-/** One editor offered by the Settings picker - see the Rust `skill_editor`. */
+/** One editor offered by the Settings card - see the Rust `skill_editor`. */
 export interface EditorOption {
-  /** The macOS application name `open -a` takes, without `.app`. */
+  /** The value to save: a macOS application name, an absolute `.app` path, or `"$EDITOR"`. */
   app_name: string;
   label: string;
 }
 
-/** The known code editors actually installed on this machine. */
-export async function listInstalledEditors(): Promise<EditorOption[]> {
-  return invoke("list_installed_editors");
+/** Everything the Settings "Open in editor" card shows - see the Rust `skill_editor::EditorChoices`. */
+export interface EditorChoices {
+  automatic_label: string;
+  apps: EditorOption[];
+  terminal: EditorOption | null;
+  selected: string | null;
 }
 
-/** The app "Open in editor" uses, or `null` for the system default. */
-export async function getPreferredEditor(): Promise<string | null> {
-  return invoke("get_preferred_editor");
+/** The editor card's state: installed/saved apps, the `$EDITOR` row, and the current choice. */
+export async function getEditorChoices(): Promise<EditorChoices> {
+  return invoke("get_editor_choices");
 }
 
-/** `null` restores the system default. An editor that is not installed is refused. */
-export async function setPreferredEditor(appName: string | null): Promise<void> {
-  return invoke("set_preferred_editor", { appName });
+/** `null` restores the system default. A value that isn't usable is refused. */
+export async function setPreferredEditor(value: string | null): Promise<void> {
+  return invoke("set_preferred_editor", { appName: value });
 }
 
 // ============================================================================

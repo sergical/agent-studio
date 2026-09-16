@@ -21,6 +21,7 @@ import type {
   SkillSnapshot,
   TrackedProjects,
 } from "@skill-studio/lib";
+import type { EditorChoices, EditorOption } from "../../lib/skill-api";
 import {
   deployment,
   fallbackSkillContent,
@@ -96,6 +97,31 @@ export function installMockTauri(initial: SkillSnapshot): HarnessControl {
   const discoverySources = new Map<string, boolean>(
     DISCOVERY_HARNESSES.map((harness) => [harness, true]),
   );
+  // Mirrors `preferred_editor` in `~/.agents/skill-studio.json` - an app name, a `.app` path,
+  // or "$EDITOR", or `null` for the system default. See `skill_editor::EditorChoices`.
+  let editorPreference: string | null = null;
+  const KNOWN_EDITOR_APPS: EditorOption[] = [
+    { app_name: "Cursor", label: "Cursor" },
+    { app_name: "Visual Studio Code", label: "Visual Studio Code" },
+    { app_name: "IntelliJ IDEA Ultimate Edition", label: "IntelliJ IDEA Ultimate Edition" },
+  ];
+
+  function editorChoices(): EditorChoices {
+    const apps = [...KNOWN_EDITOR_APPS];
+    if (
+      editorPreference?.endsWith(".app") &&
+      !apps.some((app) => app.app_name === editorPreference)
+    ) {
+      const fileName = editorPreference.split("/").pop() ?? editorPreference;
+      apps.push({ app_name: editorPreference, label: fileName.replace(/\.app$/, "") });
+    }
+    return {
+      automatic_label: "Cursor (first found)",
+      apps,
+      terminal: { app_name: "$EDITOR", label: "nvim" },
+      selected: editorPreference,
+    };
+  }
 
   function snapshotTrackedProjects(): TrackedProjects {
     return { added: [...trackedProjects.added], excluded: [...trackedProjects.excluded] };
@@ -352,14 +378,14 @@ export function installMockTauri(initial: SkillSnapshot): HarnessControl {
         case "list_project_folders":
           return projectFolders();
         case "open_skill_path":
-        case "set_preferred_editor":
         case "restore_trashed_skill":
         case "unfork_skill":
           return undefined;
-        case "list_installed_editors":
-          return [];
-        case "get_preferred_editor":
-          return null;
+        case "get_editor_choices":
+          return editorChoices();
+        case "set_preferred_editor":
+          editorPreference = payload.appName == null ? null : String(payload.appName);
+          return undefined;
 
         case "read_installed_skill_md": {
           const path = String(payload.path);
@@ -680,8 +706,15 @@ export function installMockTauri(initial: SkillSnapshot): HarnessControl {
           return HARNESS_HOME;
         case "plugin:dialog|ask":
           return true;
-        case "plugin:dialog|open":
-          return null;
+        case "plugin:dialog|open": {
+          const parsedFilters = z
+            .object({ filters: z.array(z.object({ extensions: z.array(z.string()) })).optional() })
+            .safeParse(payload);
+          const wantsApp =
+            parsedFilters.success &&
+            (parsedFilters.data.filters ?? []).some((filter) => filter.extensions.includes("app"));
+          return wantsApp ? "/Applications/Zed Preview.app" : null;
+        }
         case "plugin:opener|open_url":
         case "plugin:opener|open_path":
         case "plugin:shell|open":

@@ -183,8 +183,7 @@ pub fn run() {
             skills::skill_frontmatter_repair::preview_skill_frontmatter_repair,
             skills::skill_frontmatter_repair::apply_skill_frontmatter_repair,
             skills::commands::open_skill_path,
-            skills::commands::list_installed_editors,
-            skills::commands::get_preferred_editor,
+            skills::commands::get_editor_choices,
             skills::commands::set_preferred_editor,
             skills::skill_update_check::check_skill_updates_now,
             // Fork / Pull upstream / Un-fork

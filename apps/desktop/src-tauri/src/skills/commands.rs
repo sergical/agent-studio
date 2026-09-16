@@ -2316,8 +2316,10 @@ pub fn write_installed_skill_md_if_unchanged(
 
 /// Reveal a skill's folder in Finder, or open it in the user's default
 /// editor, via macOS's `open` CLI. Restricted to paths belonging to a
-/// deployment in the current snapshot.
-#[tauri::command]
+/// deployment in the current snapshot. `async` so a cold `editor` mode - which
+/// can start the login shell to read `$EDITOR` - never runs on the main
+/// thread.
+#[tauri::command(async)]
 pub fn open_skill_path(
     path: String,
     mode: String,
@@ -2325,44 +2327,62 @@ pub fn open_skill_path(
 ) -> Result<(), String> {
     require_snapshot_owns_path(&refresh_state, std::path::Path::new(&path))?;
 
-    let args = match mode.as_str() {
-        "reveal" => vec!["-R".to_string()],
+    let mut script_to_clean_up: Option<PathBuf> = None;
+    let args: Vec<String> = match mode.as_str() {
+        "reveal" => vec!["-R".to_string(), path.clone()],
         // `-t` would mean the system default *text* editor, which is TextEdit
         // on a stock machine - see `skill_editor` for the setting behind this.
         "editor" => {
             let home = dirs::home_dir().ok_or("Could not find home directory")?;
-            skill_editor::open_editor_args(
-                skill_editor::preferred_editor(&home).as_deref(),
-                &skill_editor::installed_editors(&home),
-            )
+            match skill_editor::editor_launch(&home) {
+                skill_editor::EditorLaunch::Open(mut args) => {
+                    args.push(path.clone());
+                    args
+                }
+                skill_editor::EditorLaunch::Terminal { command } => {
+                    let script =
+                        skill_editor::write_terminal_launch_script(Path::new(&path), &command)?;
+                    let script_arg = script.to_string_lossy().to_string();
+                    script_to_clean_up = Some(script);
+                    vec![script_arg]
+                }
+            }
         }
         other => return Err(format!("Unknown open mode: {other}")),
     };
 
-    Command::new("open")
+    let output = Command::new("open")
         .args(&args)
-        .arg(&path)
         .output()
         .map_err(|e| format!("Failed to open {}: {}", path, e))?;
+
+    if !output.status.success() {
+        if let Some(script) = &script_to_clean_up {
+            let _ = std::fs::remove_file(script);
+        }
+        let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+        return Err(format!("Failed to open {}: {}", path, stderr));
+    }
     Ok(())
 }
 
-/// The editors installed on this machine, for the Settings picker.
+/// Everything the Settings "Open in editor" card shows: the automatic-row
+/// label, the installed/saved apps, the `$EDITOR` row (if any), and the
+/// still-usable saved choice. Reads the login shell for `$VISUAL`/`$EDITOR`,
+/// so it runs off the main thread.
 #[tauri::command]
-pub fn list_installed_editors() -> Result<Vec<skill_editor::EditorOption>, String> {
-    let home = dirs::home_dir().ok_or("Could not find home directory")?;
-    Ok(skill_editor::installed_editors(&home))
+pub async fn get_editor_choices() -> Result<skill_editor::EditorChoices, String> {
+    tauri::async_runtime::spawn_blocking(|| {
+        let home = dirs::home_dir().ok_or("Could not find home directory")?;
+        Ok(skill_editor::editor_choices(&home))
+    })
+    .await
+    .map_err(|e| format!("Failed to read editor choices: {e}"))?
 }
 
-/// The application "Open in editor" currently uses, or `None` for the system
-/// default.
-#[tauri::command]
-pub fn get_preferred_editor() -> Result<Option<String>, String> {
-    let home = dirs::home_dir().ok_or("Could not find home directory")?;
-    Ok(skill_editor::preferred_editor(&home))
-}
-
-#[tauri::command]
+/// `async` because saving `"$EDITOR"` can start the login shell to check that
+/// a terminal editor is actually set - see `skill_editor::set_preferred_editor`.
+#[tauri::command(async)]
 pub fn set_preferred_editor(app_name: Option<String>) -> Result<(), String> {
     let home = dirs::home_dir().ok_or("Could not find home directory")?;
     skill_editor::set_preferred_editor(&home, app_name)
