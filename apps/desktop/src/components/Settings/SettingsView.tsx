@@ -16,6 +16,7 @@ import {
   type EditorOption,
 } from "../../lib/skill-api";
 import { useAppStore } from "../../store/appStore";
+import { PageShell } from "../Shell/PageShell";
 import { SettingsCard } from "./SettingsCard";
 import { ProjectFoldersCard } from "./ProjectFoldersCard";
 
@@ -116,10 +117,9 @@ interface SettingsViewProps {
 
 export function SettingsView({ snapshot }: SettingsViewProps) {
   return (
-    <div className="flex flex-col gap-4 p-6">
-      <h1 className="m-0 text-heading font-semibold text-text-primary">Settings</h1>
+    <PageShell title="Settings" width="narrow">
       <EditorPicker />
       <ProjectFoldersCard snapshot={snapshot} />
-    </div>
+    </PageShell>
   );
 }
