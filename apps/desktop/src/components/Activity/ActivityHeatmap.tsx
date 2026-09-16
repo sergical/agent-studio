@@ -8,7 +8,7 @@
 import { useEffect, useId, useLayoutEffect, useRef, useState } from "react";
 import type { KeyboardEvent, MouseEvent, PointerEvent, ReactNode } from "react";
 import { createPortal } from "react-dom";
-import { formatDay, uses } from "@skill-studio/lib";
+import { formatDay, mondayLead, uses, weekColumns } from "@skill-studio/lib";
 
 const MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
 const SHADES = [0, 18, 36, 58, 82];
@@ -42,7 +42,9 @@ function useActiveKey(dates: string[], selected: string | null) {
     setPrevSelected(selected);
     if (selected) setActiveKey(selected);
   }
-  return [activeKey, setActiveKey] as const;
+  // A narrow grid drops its oldest weeks, so a day picked elsewhere can be outside `dates`.
+  const shownKey = dates.includes(activeKey) ? activeKey : dates[dates.length - 1];
+  return [shownKey, setActiveKey] as const;
 }
 
 interface GridProps {
@@ -110,11 +112,8 @@ export function ActivityHeatmap({
   const closedAt = useRef(0);
   const cardRef = useRef<HTMLDivElement>(null);
 
-  // Monday-aligned lead offset: the grid's first row is always Monday, so a
-  // date range that starts on any other weekday leaves blank slots before it
-  // instead of misaligning every day in the grid by that many rows.
-  const lead = (new Date(`${dates[0]}T00:00:00`).getDay() + 6) % 7;
-  const weeks = Math.ceil((lead + dates.length) / 7);
+  const lead = mondayLead(dates[0]);
+  const weeks = weekColumns(dates);
   const slots: (string | null)[] = Array.from({ length: weeks * 7 }, (_, i) =>
     i >= lead && i < lead + dates.length ? dates[i - lead] : null,
   );

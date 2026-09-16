@@ -147,6 +147,32 @@ export function heatmapDateRangeLocal(now: Date): HeatmapDateRange {
   return { start: dates[0], end: dates[dates.length - 1], dates };
 }
 
+/**
+ * Blank slots before `firstKey` in a heatmap whose first row is Monday, so a
+ * range that starts on any other weekday doesn't misalign every day by that
+ * many rows.
+ */
+export function mondayLead(firstKey: string): number {
+  return (new Date(`${firstKey}T00:00:00`).getDay() + 6) % 7;
+}
+
+/** Number of Monday-aligned week columns a heatmap needs to fit `dates`. */
+export function weekColumns(dates: string[]): number {
+  return Math.ceil((mondayLead(dates[0]) + dates.length) / 7);
+}
+
+/**
+ * The keys in the last `weeks` Monday-aligned week columns of `dates` (at
+ * least one). A trimmed result always starts on a Monday.
+ */
+export function recentWeeks(dates: string[], weeks: number): string[] {
+  if (dates.length === 0) return dates;
+  const lead = mondayLead(dates[0]);
+  const total = weekColumns(dates);
+  if (weeks >= total) return dates;
+  return dates.slice((total - Math.max(1, weeks)) * 7 - lead);
+}
+
 /** The `n` skills with the most invocations in `window`, descending; ties break by name. */
 export function topSkills(
   stats: SkillInvocationStats[],

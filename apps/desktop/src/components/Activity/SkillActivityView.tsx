@@ -64,34 +64,26 @@ export function SkillActivityView({ snapshot, onSelectSkill }: SkillActivityView
         </>
       ) : (
         <div className="@container">
-          <div className="grid gap-6 @[52rem]:grid-cols-[minmax(0,1fr)_18rem]">
-            <div className="flex min-w-0 flex-col gap-5">
-              <ActivityYear
-                stats={stats}
-                dates={lens.dates}
-                days={lens.days}
-                yearTotal={lens.yearTotal}
-                filter={lens.filter}
-                selected={day}
-                onSelect={setDay}
-              />
-              <ActivityBySkill
-                stats={stats}
-                filter={lens.filter}
-                now={now}
-                onOpenSkill={onSelectSkill}
-              />
-              <ActivityProjects stats={stats} filter={lens.filter} now={now} />
-              {/* In this column so the grid, the sticky aside's containing block, reaches the page
-                  bottom; a section below the grid would push the aside up out of view there. */}
-              <SkillHistorySection />
-            </div>
+          {/* Narrow: one column, the details panel between the heatmap and the lists. Wide: the
+              panel spans both rows of the right column, so its grid area (the sticky containing
+              block) reaches the page bottom. The `1fr` row takes any extra height the panel
+              needs, so the heatmap row never stretches. */}
+          <div className="grid grid-cols-1 gap-x-6 gap-y-5 @[52rem]:grid-cols-[minmax(0,1fr)_18rem] @[52rem]:grid-rows-[auto_1fr]">
+            <ActivityYear
+              stats={stats}
+              dates={lens.dates}
+              days={lens.days}
+              yearTotal={lens.yearTotal}
+              filter={lens.filter}
+              selected={day}
+              onSelect={setDay}
+            />
             <aside
               aria-label="Details"
               // 11rem covers the window's top and bottom insets, the page header and toolbar rows,
               // the sticky offset, and the page's bottom padding. Any taller and the grid's bottom
               // edge pushes the aside up past the sticky offset when scrolled to the end.
-              className="flex flex-col gap-5 self-start rounded-md border border-border-subtle bg-bg-secondary p-4 @[52rem]:sticky @[52rem]:top-5 @[52rem]:max-h-[calc(100dvh-11rem)] @[52rem]:overflow-y-auto"
+              className="flex flex-col gap-5 self-start rounded-md border border-border-subtle bg-bg-secondary p-4 @[52rem]:sticky @[52rem]:top-5 @[52rem]:col-start-2 @[52rem]:row-span-2 @[52rem]:row-start-1 @[52rem]:max-h-[calc(100dvh-11rem)] @[52rem]:overflow-y-auto"
             >
               {day ? (
                 <ActivityDayDetails
@@ -107,6 +99,16 @@ export function SkillActivityView({ snapshot, onSelectSkill }: SkillActivityView
                 <ActivityOverview stats={stats} filter={lens.filter} now={now} onOpenDay={setDay} />
               )}
             </aside>
+            <div className="flex min-w-0 flex-col gap-5 @[52rem]:col-start-1 @[52rem]:row-start-2">
+              <ActivityBySkill
+                stats={stats}
+                filter={lens.filter}
+                now={now}
+                onOpenSkill={onSelectSkill}
+              />
+              <ActivityProjects stats={stats} filter={lens.filter} now={now} />
+              <SkillHistorySection />
+            </div>
           </div>
         </div>
       )}
