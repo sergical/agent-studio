@@ -45,6 +45,8 @@ pub mod skill_event_statements;
 #[cfg(all(unix, feature = "event-store"))]
 pub mod skill_event_store;
 #[cfg(all(unix, feature = "event-store"))]
+pub mod skill_fork_removal;
+#[cfg(all(unix, feature = "event-store"))]
 pub mod skill_tree_move;
 
 #[cfg(all(unix, feature = "event-store"))]

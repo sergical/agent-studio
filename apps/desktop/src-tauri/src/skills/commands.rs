@@ -14,7 +14,6 @@ use super::api;
 use super::lock_file;
 use super::project_discovery;
 use super::skill_add::CommandRunner;
-use super::skill_agent_runner::validate_skill_dir_name;
 use super::skill_dto::{
     InstallResult, InstallScope, InstalledSkill, LifecycleTarget, PaginatedSkillsResponse,
     SkillDetails, SkillsShAccessInfo,
@@ -1104,65 +1103,6 @@ mod tests {
     }
 
     #[test]
-    fn fork_remove_registry_failure_restores_directory_and_persisted_record() {
-        use super::super::skill_fork_registry::{ForkRecord, OriginTool};
-
-        let tmp = tempfile::tempdir().unwrap();
-        let home = tmp.path().join("home");
-        let app_data = tmp.path().join("app-data");
-        let skill_dir = home.join(".agents/skills/find-bugs");
-        std::fs::create_dir_all(&skill_dir).unwrap();
-        std::fs::write(skill_dir.join("SKILL.md"), "original fork").unwrap();
-        let deployment_id = super::super::skill_deployment::deployment_id(
-            "find-bugs",
-            "global",
-            super::super::skill_deployment::SkillDestination::Universal,
-            "universal",
-            None,
-            &skill_dir,
-        );
-        let content_hash =
-            super::super::skill_discovery::live_skill_content_hash(&skill_dir).unwrap();
-        let mut registry = skill_fork_registry::read_fork_registry(&home).unwrap();
-        registry.forks.insert(
-            "find-bugs".to_string(),
-            ForkRecord {
-                deployment_id: deployment_id.clone(),
-                skill_dir: skill_dir.clone(),
-                forked_at: "2026-01-01T00:00:00Z".to_string(),
-                origin_tool: OriginTool::SkillsSh,
-                origin_source: "owner/repo".to_string(),
-                repo: "owner/repo".to_string(),
-                path: "skills/find-bugs".to_string(),
-                declared_ref: None,
-                base_commit: "a".repeat(40),
-            },
-        );
-        skill_fork_registry::write_fork_registry(&home, &registry).unwrap();
-
-        let error = remove_forked_skill_with(
-            &home,
-            &app_data,
-            "find-bugs",
-            &deployment_id,
-            &skill_dir,
-            &content_hash,
-            |_, _| Err("injected registry write failure".to_string()),
-        )
-        .unwrap_err();
-
-        assert!(error.contains("injected registry write failure"), "{error}");
-        assert_eq!(
-            std::fs::read_to_string(skill_dir.join("SKILL.md")).unwrap(),
-            "original fork"
-        );
-        assert!(skill_fork_registry::read_fork_registry(&home)
-            .unwrap()
-            .forks
-            .contains_key("find-bugs"));
-    }
-
-    #[test]
     fn dotagents_update_args_pinned_entry_needs_latest_commit() {
         let entry = dotagents_skill("find-bugs", Some("aaaa"), true);
         let err = dotagents_update_args("find-bugs", Some(&entry), None, InstallScope::Global)
@@ -1533,18 +1473,16 @@ fn remove_skill_blocking(
     };
     let global = scope == super::skill_dto::InstallScope::Global;
 
-    // A forked skill is a plain directory under `.agents/skills`, in no
-    // ledger the CLI could remove from - delete it directly and drop its
-    // fork-registry record and snapshot instead of shelling out. Forks only
-    // ever live in the shared global folder, so this only applies globally.
     let is_fork =
         global && deployment.owner_kind == super::skill_ownership::LifecycleOwnerKind::Fork;
     if is_fork {
         return remove_forked_skill(
             skill_name,
             deployment.id,
-            deployment.path,
-            deployment.content_hash,
+            deployment
+                .owner_revision
+                .ok_or("Remove is not available: Fork owner revision is missing")?,
+            snapshot.projects.iter().map(PathBuf::from).collect(),
             app.clone(),
         );
     }
@@ -1676,35 +1614,40 @@ fn remove_skill_blocking(
     }
 }
 
-/// `remove_skill`'s path for a forked skill: it's not in any ledger, so
-/// there's nothing for a CLI to remove - delete the directory directly and
-/// drop the fork-registry record and snapshot.
 fn remove_forked_skill(
     skill_name: String,
     deployment_id: String,
-    deployment_path: String,
-    deployment_content_hash: String,
+    expected_owner_revision: String,
+    projects: Vec<PathBuf>,
     app: tauri::AppHandle,
 ) -> Result<InstallResult, String> {
-    // Callers hold `ForkMutationLock` for the whole `remove_skill` call - the
-    // mutex isn't reentrant, so this function must not acquire it again.
-    validate_skill_dir_name(&skill_name)?;
     let home = dirs::home_dir().ok_or("Could not find home directory")?;
-    let app_data = app
-        .path()
-        .app_data_dir()
-        .unwrap_or_else(|_| std::path::PathBuf::from("."));
-    remove_forked_skill_with(
-        &home,
-        &app_data,
-        &skill_name,
-        &deployment_id,
-        Path::new(&deployment_path),
-        &deployment_content_hash,
-        skill_fork_registry::write_fork_registry,
-    )?;
-
-    skill_refresh::request_snapshot_rebuild(&app);
+    let scope = super::skill_scope_config::desktop_skill_scope(&home, &projects)?;
+    let mut service = skill_studio_core::skill_service::ScopedSkillService::bind(scope)
+        .map_err(|error| error.to_string())?;
+    let event_state = app.state::<super::event_commands::EventStoreState>();
+    let events = event_state
+        .0
+        .lock()
+        .map_err(|_| "Event store lock is unavailable")?;
+    let store = events.as_ref().ok_or("Event store is unavailable")?;
+    let request = skill_studio_core::skill_fork_removal::ForkRemovalRequest {
+        deployment_id,
+        expected_owner_revision,
+    };
+    skill_studio_core::skill_fork_removal::remove_fork_deployment(
+        &mut service,
+        store,
+        &request,
+        super::skill_copy_recovery::removal_limits(),
+        Some(std::time::Duration::from_secs(30)),
+        skill_studio_core::skill_service::CancellationToken::default(),
+    )
+    .map_err(|error| match (error.event_id, error.recovery_required) {
+        (Some(id), true) => format!("{} (event {id} requires recovery)", error.message),
+        (Some(id), false) => format!("{} (event {id} was rolled back)", error.message),
+        (None, _) => error.message,
+    })?;
     Ok(InstallResult {
         success: true,
         skill_name,
@@ -1714,100 +1657,6 @@ fn remove_forked_skill(
         command: None,
     })
 }
-
-fn remove_forked_skill_with(
-    home: &Path,
-    app_data: &Path,
-    skill_name: &str,
-    deployment_id: &str,
-    skill_dir: &Path,
-    deployment_content_hash: &str,
-    write_registry: impl FnOnce(&Path, &skill_fork_registry::ForkRegistry) -> Result<(), String>,
-) -> Result<(), String> {
-    let registry = skill_fork_registry::read_fork_registry(home)?;
-    let record = registry
-        .forks
-        .get(skill_name)
-        .cloned()
-        .ok_or_else(|| format!("`{skill_name}` is not forked"))?;
-    if (!record.deployment_id.is_empty() && record.deployment_id != deployment_id)
-        || (!record.skill_dir.as_os_str().is_empty() && record.skill_dir != skill_dir)
-    {
-        return Err("The fork record does not belong to the selected deployment".to_string());
-    }
-    let metadata = std::fs::symlink_metadata(skill_dir)
-        .map_err(|error| format!("Failed to inspect {}: {error}", skill_dir.display()))?;
-    if metadata.file_type().is_symlink() || !metadata.is_dir() {
-        return Err(format!(
-            "Fork removal refused: {} is no longer the selected directory",
-            skill_dir.display()
-        ));
-    }
-    let live_hash = super::skill_discovery::live_skill_content_hash(skill_dir)?;
-    if deployment_content_hash.is_empty() || live_hash != deployment_content_hash {
-        return Err(format!(
-            "Fork removal refused: {} content changed after discovery",
-            skill_dir.display()
-        ));
-    }
-
-    let original_fingerprint = super::event_store::fingerprint_path(skill_dir);
-    let stage_id = FORK_REMOVAL_COUNTER.fetch_add(1, Ordering::SeqCst);
-    let backup = home
-        .join(".agents")
-        .join("skills-trash")
-        .join(format!(".fork-remove-{}-{stage_id}", std::process::id()));
-    std::fs::create_dir_all(backup.parent().expect("backup has a parent"))
-        .map_err(|error| format!("Failed to create fork removal trash: {error}"))?;
-    std::fs::rename(skill_dir, &backup).map_err(|error| {
-        format!(
-            "Failed to stage {} for removal at {}: {error}",
-            skill_dir.display(),
-            backup.display()
-        )
-    })?;
-    if super::event_store::fingerprint_path(&backup) != original_fingerprint {
-        let _ = std::fs::rename(&backup, skill_dir);
-        return Err("Fork removal backup verification failed".to_string());
-    }
-
-    let mut updated_registry = registry.clone();
-    updated_registry.forks.remove(skill_name);
-    // Forking only ever applies to the global scope (see `skill_fork`), so
-    // a forked skill's trial, if any, is always keyed as global.
-    updated_registry
-        .trials
-        .remove(&skill_fork_registry::trial_key(
-            skill_fork_registry::TrialScope::Global,
-            skill_name,
-        ));
-    updated_registry
-        .trials
-        .remove(&skill_fork_registry::deployment_trial_key(deployment_id));
-    if let Err(write_error) = write_registry(home, &updated_registry) {
-        let restore_result = std::fs::rename(&backup, skill_dir);
-        return Err(match restore_result {
-            Ok(()) => format!(
-                "Failed to persist fork removal; restored {skill_name}: {write_error}"
-            ),
-            Err(restore_error) => format!(
-                "Failed to persist fork removal ({write_error}) and failed to restore {} from {}: {restore_error}",
-                skill_dir.display(),
-                backup.display()
-            ),
-        });
-    }
-    if let Err(error) = std::fs::remove_dir_all(&backup) {
-        eprintln!(
-            "[remove_skill] fork removal succeeded, but backup cleanup failed at {}: {error}",
-            backup.display()
-        );
-    }
-    let _ = std::fs::remove_dir_all(skill_fork_registry::fork_snapshot_dir(app_data, skill_name));
-    Ok(())
-}
-
-static FORK_REMOVAL_COUNTER: AtomicU64 = AtomicU64::new(0);
 
 /// Maximum number of bytes read from an installed skill's SKILL.md, to keep
 /// a runaway file from blocking the UI thread on a slow disk.

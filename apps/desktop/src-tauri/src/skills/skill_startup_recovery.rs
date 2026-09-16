@@ -49,6 +49,16 @@ fn recover_with_scope(
             )
             .map(|_| ());
         }
+        if row.kind == skill_studio_core::skill_fork_removal::EVENT_KIND {
+            return skill_studio_core::skill_fork_removal::recover_fork_removal(
+                &mut service,
+                store,
+                row,
+                super::skill_copy_recovery::removal_limits(),
+                Some(std::time::Duration::from_secs(30)),
+            )
+            .map(|_| ());
+        }
         if super::skill_copy_repair::is_copy_event(&row.kind) {
             return super::skill_copy_repair::recover(&mut service, store, row);
         }
