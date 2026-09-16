@@ -687,6 +687,13 @@
       "description": "Where a plugin-cache deployment came from, per the agent-plugins.org\nmanifest convention (`<cache>/<marketplace>/<plugin>/<version>/skills/`).",
       "type": "object",
       "properties": {
+        "enabled": {
+          "description": "Claude Code's `enabledPlugins[\"<plugin>@<marketplace>\"]` state:\n`Some(false)` when the harness has the plugin switched off,\n`Some(true)` when switched on, `None` when the harness records\nnothing for it (including every non-Claude-Code harness).",
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
         "marketplace": {
           "description": "Marketplace directory name.",
           "type": "string"
