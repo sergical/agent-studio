@@ -30,6 +30,68 @@ pub struct CopyDocumentEditRequest {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
+pub struct CopyInvocationSidecarIntent {
+    original_fingerprint: Option<String>,
+    proposed_content: Option<String>,
+}
+
+fn valid_content_fingerprint(value: &str) -> bool {
+    value.strip_prefix("sha256:").is_some_and(|hash| {
+        hash.len() == 64
+            && hash
+                .bytes()
+                .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+    })
+}
+
+impl CopyInvocationSidecarIntent {
+    fn from_edit(edit: &crate::skill_invocation_edit::CodexInvocationEdit) -> Self {
+        Self {
+            original_fingerprint: edit
+                .original()
+                .map(|text| content_fingerprint(text.as_bytes())),
+            proposed_content: edit.proposed().map(str::to_owned),
+        }
+    }
+
+    pub fn original_fingerprint(&self) -> Option<&str> {
+        self.original_fingerprint.as_deref()
+    }
+    pub fn proposed_content(&self) -> Option<&str> {
+        self.proposed_content.as_deref()
+    }
+
+    pub fn changes_content(&self) -> bool {
+        self.original_fingerprint
+            != self
+                .proposed_content
+                .as_ref()
+                .map(|text| content_fingerprint(text.as_bytes()))
+    }
+
+    pub fn validate_original(&self, original: Option<&[u8]>) -> Result<(), String> {
+        if self
+            .original_fingerprint
+            .as_deref()
+            .is_some_and(|value| !valid_content_fingerprint(value))
+            || self
+                .proposed_content
+                .as_ref()
+                .is_some_and(|text| text.len() > MAX_COPY_DOCUMENT_EDIT_BYTES)
+            || original.is_some_and(|bytes| bytes.len() > MAX_COPY_DOCUMENT_EDIT_BYTES)
+            || original.map(content_fingerprint) != self.original_fingerprint
+        {
+            return Err("Copy invocation sidecar originals or fingerprints changed".into());
+        }
+        if let Some(bytes) = original {
+            std::str::from_utf8(bytes).map_err(|_| "Copy sidecar original is not UTF-8")?;
+        }
+        Ok(())
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct CopyDocumentEditIntent {
     request: CopyDocumentEditRequest,
     proposed_content_fingerprint: String,
@@ -37,6 +99,8 @@ pub struct CopyDocumentEditIntent {
     registry_path: PathBuf,
     registry_before_fingerprint: String,
     registry_after_fingerprint: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    sidecar: Option<CopyInvocationSidecarIntent>,
 }
 
 impl CopyDocumentEditIntent {
@@ -49,6 +113,26 @@ impl CopyDocumentEditIntent {
         registry_original: &[u8],
         original_content: &[u8],
     ) -> Result<Self, String> {
+        Self::from_documents_with_sidecar(
+            request,
+            record,
+            proposed_folder_hash,
+            registry_path,
+            registry_original,
+            original_content,
+            None,
+        )
+    }
+
+    pub(crate) fn from_documents_with_sidecar(
+        request: CopyDocumentEditRequest,
+        record: CopyDeploymentRecord,
+        proposed_folder_hash: String,
+        registry_path: PathBuf,
+        registry_original: &[u8],
+        original_content: &[u8],
+        sidecar: Option<&crate::skill_invocation_edit::CodexInvocationEdit>,
+    ) -> Result<Self, String> {
         let transition = CopyRepairTransition::new(record, proposed_folder_hash)?;
         let registry_after = transition.apply_document(registry_original)?;
         let intent = Self {
@@ -58,10 +142,26 @@ impl CopyDocumentEditIntent {
             registry_path,
             registry_before_fingerprint: content_fingerprint(registry_original),
             registry_after_fingerprint: content_fingerprint(&registry_after),
+            sidecar: sidecar.map(CopyInvocationSidecarIntent::from_edit),
         };
         intent.validate_record()?;
         intent.validate_originals(original_content, registry_original)?;
+        intent.validate_sidecar_original(
+            sidecar.and_then(|edit| edit.original()).map(str::as_bytes),
+        )?;
         Ok(intent)
+    }
+
+    pub fn sidecar(&self) -> Option<&CopyInvocationSidecarIntent> {
+        self.sidecar.as_ref()
+    }
+
+    pub fn validate_sidecar_original(&self, original: Option<&[u8]>) -> Result<(), String> {
+        match &self.sidecar {
+            Some(sidecar) => sidecar.validate_original(original),
+            None if original.is_none() => Ok(()),
+            None => Err("Document-only edit has no sidecar participant".into()),
+        }
     }
 
     pub fn request(&self) -> &CopyDocumentEditRequest {
@@ -79,21 +179,29 @@ impl CopyDocumentEditIntent {
     pub fn validate_record(&self) -> Result<(), String> {
         self.transition.validate()?;
         let before = self.transition.before();
-        let valid_fingerprint = |value: &str| {
-            value.strip_prefix("sha256:").is_some_and(|hash| {
-                hash.len() == 64
-                    && hash
-                        .bytes()
-                        .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
-            })
-        };
+        let valid_fingerprint = valid_content_fingerprint;
         if self.request.deployment_id != before.deployment_id
             || RegistryOwnerRecord::Copy(before).revision().as_deref()
                 != Some(self.request.expected_owner_revision.as_str())
             || !valid_fingerprint(&self.request.expected_content_fingerprint)
             || content_fingerprint(self.request.proposed_content.as_bytes())
                 != self.proposed_content_fingerprint
-            || self.proposed_content_fingerprint == self.request.expected_content_fingerprint
+            || (self.proposed_content_fingerprint == self.request.expected_content_fingerprint
+                && self
+                    .sidecar
+                    .as_ref()
+                    .is_none_or(|edit| !edit.changes_content()))
+            || self.sidecar.as_ref().is_some_and(|edit| {
+                before.slot != "codex"
+                    || edit
+                        .original_fingerprint
+                        .as_deref()
+                        .is_some_and(|value| !valid_fingerprint(value))
+                    || edit
+                        .proposed_content
+                        .as_ref()
+                        .is_some_and(|text| text.len() > MAX_COPY_DOCUMENT_EDIT_BYTES)
+            })
             || self.request.proposed_content.len() > MAX_COPY_DOCUMENT_EDIT_BYTES
             || !self.registry_path.is_absolute()
             || self.registry_path.file_name() != Some(std::ffi::OsStr::new("skill-studio.json"))
@@ -155,6 +263,7 @@ pub struct PreparedCopyDocumentEdit<'scope> {
     intent: CopyDocumentEditIntent,
     original: Vec<u8>,
     registry_original: Vec<u8>,
+    sidecar: Option<crate::skill_invocation_edit::CodexInvocationEdit>,
     content: PreparedCopyRepairContent,
     content_scope: SkillReadScope,
     folder_hashes: (String, String),
@@ -171,11 +280,14 @@ impl PreparedCopyDocumentEdit<'_> {
     }
 
     pub(crate) fn revalidate_content(&self) -> Result<(), PreparedContentError> {
-        let hashes = self.content.hashes_with_document_limit(
+        let hashes = self.content.hashes_with_document_and_sidecar_limit(
             &self.content_scope,
             &self.lease,
-            &self.original,
-            self.intent.request().proposed_content.as_bytes(),
+            (
+                &self.original,
+                self.intent.request().proposed_content.as_bytes(),
+            ),
+            self.sidecar.as_ref(),
             MAX_COPY_DOCUMENT_EDIT_BYTES,
         )?;
         if hashes != self.folder_hashes {
@@ -189,11 +301,111 @@ impl PreparedCopyDocumentEdit<'_> {
             return Err("Prepared Copy edit registry changed".into());
         }
         self.intent.validate_originals(&self.original, &registry)?;
+        self.intent.validate_sidecar_original(
+            self.sidecar
+                .as_ref()
+                .and_then(|edit| edit.original())
+                .map(str::as_bytes),
+        )?;
         self.lease.revalidate().map_err(PreparedContentError::from)
     }
 }
 
 impl ScopedSkillService {
+    pub fn prepare_copy_invocation(
+        &mut self,
+        deployment_id: &str,
+        policy: crate::skill_document::InvocationPolicy,
+        additional_trees: &[PathBuf],
+        timeout: Option<Duration>,
+        cancellation: CancellationToken,
+    ) -> Result<CopyDocumentEditPreparation<'_>, DocumentEditPreparationError> {
+        let invalid = DocumentEditPreparationError::InvalidEdit;
+        let selected = crate::skill_deployment::parse_deployment_id(deployment_id)
+            .ok_or_else(|| invalid("Invalid deployment ID".into()))?;
+        let (inventory, lease) = self
+            .prepare_write_inventory(
+                Some(&BTreeSet::from([selected.name])),
+                additional_trees,
+                timeout,
+                cancellation.clone(),
+            )
+            .map_err(DocumentEditPreparationError::Inventory)?;
+        let deployment = inventory
+            .skills
+            .iter()
+            .flat_map(|skill| &skill.deployments)
+            .find(|deployment| deployment.id == deployment_id)
+            .ok_or_else(|| invalid("Copy invocation deployment is absent".into()))?;
+        let skill_dir = PathBuf::from(&deployment.path);
+        let original = lease
+            .read(&skill_dir.join("SKILL.md"), MAX_COPY_DOCUMENT_EDIT_BYTES)
+            .map_err(|error| invalid(error.to_string()))?;
+        let proposed = crate::skill_invocation_edit::rewrite_invocation_frontmatter(
+            std::str::from_utf8(&original)
+                .map_err(|_| invalid("Copy document is not UTF-8".into()))?,
+            policy,
+        )
+        .map_err(invalid)?;
+        let request = CopyDocumentEditRequest {
+            deployment_id: deployment_id.into(),
+            expected_owner_revision: deployment
+                .owner_revision
+                .clone()
+                .ok_or_else(|| invalid("Copy owner revision is absent".into()))?,
+            expected_content_fingerprint: content_fingerprint(&original),
+            proposed_content: proposed,
+        };
+        let sidecar = if selected.slot == "codex" {
+            let scope = SkillReadScope::bind(std::slice::from_ref(&skill_dir))
+                .map_err(|error| invalid(error.to_string()))?;
+            let original = match scope.observe_entry(&skill_dir, std::ffi::OsStr::new("agents")) {
+                Err(crate::skill_scope::ScopedReadError::Missing { .. }) => None,
+                Ok(entry)
+                    if entry.metadata.is_dir() && !entry.metadata.file_type().is_symlink() =>
+                {
+                    let parent = skill_dir.join("agents");
+                    match scope.observe_entry(&parent, std::ffi::OsStr::new("openai.yaml")) {
+                        Err(crate::skill_scope::ScopedReadError::Missing { .. }) => None,
+                        Ok(entry)
+                            if entry.metadata.is_file()
+                                && !entry.metadata.file_type().is_symlink() =>
+                        {
+                            Some(
+                                String::from_utf8(
+                                    lease
+                                        .read(
+                                            &parent.join("openai.yaml"),
+                                            MAX_COPY_DOCUMENT_EDIT_BYTES,
+                                        )
+                                        .map_err(|error| invalid(error.to_string()))?,
+                                )
+                                .map_err(|_| invalid("Copy sidecar is not UTF-8".into()))?,
+                            )
+                        }
+                        _ => {
+                            return Err(invalid(
+                                "Copy sidecar must be a regular scoped file".into(),
+                            ))
+                        }
+                    }
+                }
+                _ => {
+                    return Err(invalid(
+                        "Copy sidecar parent must be a regular scoped directory".into(),
+                    ))
+                }
+            };
+            Some(
+                crate::skill_invocation_edit::CodexInvocationEdit::new(original, policy)
+                    .map_err(invalid)?,
+            )
+        } else {
+            None
+        };
+        prepare_copy_edit_with_sidecar(&request, inventory, lease, &cancellation, sidecar.as_ref())
+    }
+
     pub fn prepare_copy_document_edit(
         &mut self,
         request: &CopyDocumentEditRequest,
@@ -226,8 +438,18 @@ fn prepare_copy_edit_with_inventory<'scope>(
     lease: FinalizedWriteLease<'scope>,
     cancellation: &CancellationToken,
 ) -> Result<CopyDocumentEditPreparation<'scope>, DocumentEditPreparationError> {
-    let content_error = DocumentEditPreparationError::Content;
+    prepare_copy_edit_with_sidecar(request, inventory, lease, cancellation, None)
+}
+
+fn prepare_copy_edit_with_sidecar<'scope>(
+    request: &CopyDocumentEditRequest,
+    inventory: crate::skill_service::InventoryRead,
+    mut lease: FinalizedWriteLease<'scope>,
+    cancellation: &CancellationToken,
+    sidecar: Option<&crate::skill_invocation_edit::CodexInvocationEdit>,
+) -> Result<CopyDocumentEditPreparation<'scope>, DocumentEditPreparationError> {
     let invalid = DocumentEditPreparationError::InvalidEdit;
+    let content_error = DocumentEditPreparationError::Content;
     let mut matches = inventory
         .skills
         .iter()
@@ -256,12 +478,17 @@ fn prepare_copy_edit_with_inventory<'scope>(
     let content =
         PreparedCopyRepairContent::enumerate_controlled(&content_scope, &skill_dir, cancellation)
             .map_err(content_error)?;
+    if sidecar.is_some_and(|edit| edit.original().is_none()) {
+        lease = lease
+            .retain_absent_invocation_sidecar(&skill_dir.join("agents/openai.yaml"))
+            .map_err(invalid)?;
+    }
     let folder_hashes = content
-        .hashes_with_document_limit(
+        .hashes_with_document_and_sidecar_limit(
             &content_scope,
             &lease,
-            &original,
-            request.proposed_content.as_bytes(),
+            (&original, request.proposed_content.as_bytes()),
+            sidecar,
             MAX_COPY_DOCUMENT_EDIT_BYTES,
         )
         .map_err(content_error)?;
@@ -284,24 +511,28 @@ fn prepare_copy_edit_with_inventory<'scope>(
     lease
         .revalidate()
         .map_err(|error| content_error(error.into()))?;
-    if original == request.proposed_content.as_bytes() {
+    if original == request.proposed_content.as_bytes()
+        && sidecar.is_none_or(|edit| edit.original() == edit.proposed())
+    {
         return Ok(CopyDocumentEditPreparation::Unchanged {
             deployment_id: request.deployment_id.clone(),
         });
     }
-    let intent = CopyDocumentEditIntent::from_documents(
+    let intent = CopyDocumentEditIntent::from_documents_with_sidecar(
         request.clone(),
         record.clone(),
         folder_hashes.1.clone(),
         registry_path,
         &registry_original,
         &original,
+        sidecar,
     )
     .map_err(invalid)?;
     let prepared = PreparedCopyDocumentEdit {
         intent,
         original,
         registry_original,
+        sidecar: sidecar.cloned(),
         content,
         content_scope,
         folder_hashes,
@@ -545,6 +776,157 @@ mod preparation_tests {
                 fs::read(&self.registry).unwrap(),
                 fs::read(&self.sibling).unwrap(),
             )
+        }
+    }
+
+    #[test]
+    fn invocation_sidecar_planned_hash_matches_complete_folder_after_create_update_remove() {
+        use crate::skill_document::InvocationPolicy;
+        use crate::skill_invocation_edit::CodexInvocationEdit;
+        for (original_sidecar, policy) in [
+            (None, InvocationPolicy::UserOnly),
+            (
+                Some("interface: {display_name: Sample}\n"),
+                InvocationPolicy::UserOnly,
+            ),
+            (
+                Some("policy: {allow_implicit_invocation: false}\n"),
+                InvocationPolicy::Both,
+            ),
+        ] {
+            let fixture = Fixture::new(false, true, false);
+            let sidecar_path = fixture.skill.join("agents/openai.yaml");
+            if let Some(bytes) = original_sidecar {
+                fs::create_dir_all(sidecar_path.parent().unwrap()).unwrap();
+                fs::write(&sidecar_path, bytes).unwrap();
+            }
+            let original = fs::read(fixture.skill.join("SKILL.md")).unwrap();
+            let change =
+                CodexInvocationEdit::new(original_sidecar.map(str::to_owned), policy).unwrap();
+            let mut service = ScopedSkillService::bind(fixture.scope.clone()).unwrap();
+            let (inventory, lease) = service
+                .prepare_write_inventory(
+                    None,
+                    &[],
+                    Some(Duration::from_secs(10)),
+                    CancellationToken::default(),
+                )
+                .unwrap();
+            let old_hash = inventory
+                .skills
+                .iter()
+                .flat_map(|skill| &skill.deployments)
+                .find(|deployment| std::path::Path::new(&deployment.path) == fixture.skill)
+                .unwrap()
+                .content_hash
+                .clone();
+            let scope = SkillReadScope::bind(std::slice::from_ref(&fixture.skill)).unwrap();
+            let content = PreparedCopyRepairContent::enumerate_controlled(
+                &scope,
+                &fixture.skill,
+                &CancellationToken::default(),
+            )
+            .unwrap();
+            let hashes = content
+                .hashes_with_document_and_sidecar_limit(
+                    &scope,
+                    &lease,
+                    (&original, fixture.request.proposed_content.as_bytes()),
+                    Some(&change),
+                    MAX_COPY_DOCUMENT_EDIT_BYTES,
+                )
+                .unwrap();
+            assert_eq!(hashes.0, old_hash);
+            assert_eq!(
+                fs::read(&sidecar_path).ok(),
+                original_sidecar.map(|text| text.as_bytes().to_vec())
+            );
+            fs::create_dir_all(sidecar_path.parent().unwrap()).unwrap();
+            fs::write(&sidecar_path, "external: changed\n").unwrap();
+            assert!(content
+                .hashes_with_document_and_sidecar_limit(
+                    &scope,
+                    &lease,
+                    (&original, fixture.request.proposed_content.as_bytes()),
+                    Some(&change),
+                    MAX_COPY_DOCUMENT_EDIT_BYTES,
+                )
+                .is_err());
+            drop(lease);
+            fs::write(
+                fixture.skill.join("SKILL.md"),
+                &fixture.request.proposed_content,
+            )
+            .unwrap();
+            match change.proposed() {
+                Some(bytes) => {
+                    fs::create_dir_all(sidecar_path.parent().unwrap()).unwrap();
+                    fs::write(&sidecar_path, bytes).unwrap();
+                }
+                None => {
+                    fs::remove_file(&sidecar_path).unwrap();
+                }
+            }
+            let mut observed = ScopedSkillService::bind(fixture.scope.clone()).unwrap();
+            let inventory = observed.scan(None, Some(Duration::from_secs(10))).unwrap();
+            let actual = inventory
+                .skills
+                .iter()
+                .flat_map(|skill| &skill.deployments)
+                .find(|deployment| std::path::Path::new(&deployment.path) == fixture.skill)
+                .unwrap();
+            assert_eq!(hashes.1, actual.content_hash);
+            assert_eq!(
+                fs::read_to_string(fixture.skill.join("resource.txt")).unwrap(),
+                "resource"
+            );
+        }
+    }
+
+    #[test]
+    fn copy_invocation_preparation_preserves_files_and_legacy_payload_shape() {
+        use crate::skill_document::InvocationPolicy;
+        for project in [false, true] {
+            for codex in [false, true] {
+                let fixture = Fixture::new(project, codex, false);
+                let before = fixture.bytes();
+                let mut service = ScopedSkillService::bind(fixture.scope.clone()).unwrap();
+                let CopyDocumentEditPreparation::Ready(prepared) = service
+                    .prepare_copy_invocation(
+                        &fixture.request.deployment_id,
+                        InvocationPolicy::UserOnly,
+                        &[],
+                        Some(Duration::from_secs(10)),
+                        CancellationToken::default(),
+                    )
+                    .unwrap()
+                else {
+                    panic!("policy change was not prepared")
+                };
+                prepared.revalidate().unwrap();
+                assert_eq!(fixture.bytes(), before);
+                assert!(!fixture.skill.join("agents").exists());
+                assert!(prepared
+                    .intent()
+                    .request()
+                    .proposed_content
+                    .contains("disable-model-invocation: true"));
+                assert_eq!(prepared.intent().sidecar().is_some(), codex);
+                let value = serde_json::to_value(prepared.intent()).unwrap();
+                assert_eq!(value.get("sidecar").is_some(), codex);
+                let decoded: CopyDocumentEditIntent =
+                    serde_json::from_value(value.clone()).unwrap();
+                decoded.validate_record().unwrap();
+                assert_eq!(serde_json::to_value(decoded).unwrap(), value);
+                if let Some(sidecar) = prepared.intent().sidecar() {
+                    assert!(sidecar.original_fingerprint().is_none());
+                    assert!(sidecar
+                        .proposed_content()
+                        .unwrap()
+                        .contains("allow_implicit_invocation: false"));
+                    assert!(sidecar.validate_original(Some(b"external")).is_err());
+                }
+            }
         }
     }
 

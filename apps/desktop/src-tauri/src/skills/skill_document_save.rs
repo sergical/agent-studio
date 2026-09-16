@@ -363,6 +363,62 @@ mod tests {
     }
 
     #[test]
+    fn desktop_copy_invocation_preserves_ownership_through_history_and_noop() {
+        use skill_studio_core::skill_document::InvocationPolicy;
+        for project in [false, true] {
+            let f = Fixture::with_disabled(project, true, true);
+            let store = EventStore::open(&f.scope.home.join("state")).unwrap();
+            let sibling = fs::read(&f.sibling).unwrap();
+            let mut service = ScopedSkillService::bind(f.scope.clone()).unwrap();
+            super::super::skill_copy_repair::apply_invocation(
+                &mut service,
+                &store,
+                &f.id,
+                InvocationPolicy::UserOnly,
+                "invocation-edit",
+                CancellationToken::default(),
+            )
+            .unwrap();
+            f.assert_copy();
+            let proposed = fs::read(f.skill.join("SKILL.md")).unwrap();
+            let proposed_sidecar = fs::read(f.skill.join("agents/openai.yaml")).unwrap();
+            super::super::skill_copy_repair::apply_invocation(
+                &mut service,
+                &store,
+                &f.id,
+                InvocationPolicy::UserOnly,
+                "invocation-noop",
+                CancellationToken::default(),
+            )
+            .unwrap();
+            assert!(store.get("invocation-noop").unwrap().is_none());
+            for (source, id) in [
+                ("invocation-edit", "invocation-undo"),
+                ("invocation-undo", "invocation-redo"),
+            ] {
+                let row = store.get(source).unwrap().unwrap();
+                super::super::skill_copy_repair::restore(
+                    &mut service,
+                    &store,
+                    &row,
+                    false,
+                    id,
+                    CancellationToken::default(),
+                )
+                .unwrap();
+                f.assert_copy();
+                assert_eq!(store.get(id).unwrap().unwrap().status, "done");
+                assert_eq!(fs::read(&f.sibling).unwrap(), sibling);
+            }
+            assert_eq!(fs::read(f.skill.join("SKILL.md")).unwrap(), proposed);
+            assert_eq!(
+                fs::read(f.skill.join("agents/openai.yaml")).unwrap(),
+                proposed_sidecar
+            );
+        }
+    }
+
+    #[test]
     fn desktop_copy_save_cancels_under_database_contention_and_can_retry() {
         for project in [false, true] {
             for per_harness in [false, true] {

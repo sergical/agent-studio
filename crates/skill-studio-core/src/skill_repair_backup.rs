@@ -206,6 +206,9 @@ pub struct VerifiedCopyRepairBackup {
     document: VerifiedRepairBackup,
     registry_metadata: Metadata,
     registry_original: Vec<u8>,
+    // None means this is a legacy document-only transaction. Some(None)
+    // records a proven absent Codex sidecar; Some(Some(..)) records its bytes.
+    sidecar: Option<Option<(Vec<u8>, Metadata)>>,
 }
 
 enum CopyBackupPhase {
@@ -257,6 +260,7 @@ impl VerifiedCopyRepairBackup {
             &intent.registry_path,
             lease,
             MAX_REPAIR_DOCUMENT_BYTES,
+            None,
         )?;
         let (original, registry_original) = result.originals();
         match phase {
@@ -286,9 +290,13 @@ impl VerifiedCopyRepairBackup {
             intent.registry_path(),
             lease,
             crate::skill_copy_document_edit::MAX_COPY_DOCUMENT_EDIT_BYTES,
+            intent
+                .sidecar()
+                .map(|_| intent.transition().before().path.join("agents/openai.yaml")),
         )?;
         let (document, registry) = result.originals();
         intent.validate_originals(document, registry)?;
+        intent.validate_sidecar_original(result.edit_originals().2)?;
         result.revalidate(lease)?;
         Ok(result)
     }
@@ -300,6 +308,7 @@ impl VerifiedCopyRepairBackup {
         registry_path: &Path,
         lease: &FinalizedWriteLease<'_>,
         document_limit: usize,
+        sidecar_path: Option<PathBuf>,
     ) -> Result<Self, String> {
         if !crate::skill_backup_reservation::valid_id(event_id) {
             return Err("Invalid copy repair backup ID".into());
@@ -321,8 +330,8 @@ impl VerifiedCopyRepairBackup {
             read_regular(&directory, "manifest.json", 64 * 1024)?;
         let manifest: BackupManifest =
             serde_json::from_slice(&manifest_bytes).map_err(|error| error.to_string())?;
-        if manifest.entries.len() != 2 {
-            return Err("Copy repair requires exactly two backup entries".into());
+        if manifest.entries.len() != if sidecar_path.is_some() { 3 } else { 2 } {
+            return Err("Copy backup has an unexpected entry count".into());
         }
         let (original, document_metadata) = read_regular(&directory, "0-SKILL.md", document_limit)?;
         let (registry_original, registry_metadata) =
@@ -344,6 +353,28 @@ impl VerifiedCopyRepairBackup {
                 return Err("Copy backup manifest does not match original bytes".into());
             }
         }
+        let sidecar = match sidecar_path {
+            None => None,
+            Some(path) => {
+                let entry = manifest
+                    .entries
+                    .get(path.to_str().ok_or("Copy sidecar label is not UTF-8")?)
+                    .ok_or("Copy backup manifest sidecar is missing")?;
+                if entry.fingerprint == "absent" && entry.relative_path.is_empty() {
+                    Some(None)
+                } else {
+                    if entry.relative_path != "2-openai.yaml" {
+                        return Err("Copy backup manifest sidecar label is invalid".into());
+                    }
+                    let (bytes, metadata) =
+                        read_regular(&directory, "2-openai.yaml", document_limit)?;
+                    if entry.fingerprint != fingerprint_regular_bytes(&bytes) {
+                        return Err("Copy backup manifest sidecar fingerprint changed".into());
+                    }
+                    Some(Some((bytes, metadata)))
+                }
+            }
+        };
         let result = Self {
             document: VerifiedRepairBackup {
                 scope,
@@ -358,6 +389,7 @@ impl VerifiedCopyRepairBackup {
             },
             registry_metadata,
             registry_original,
+            sidecar,
         };
         result.revalidate(lease)?;
         Ok(result)
@@ -365,6 +397,16 @@ impl VerifiedCopyRepairBackup {
 
     pub fn originals(&self) -> (&[u8], &[u8]) {
         (self.document.original(), &self.registry_original)
+    }
+
+    pub(crate) fn edit_originals(&self) -> (&[u8], &[u8], Option<&[u8]>) {
+        (
+            self.document.original(),
+            &self.registry_original,
+            self.sidecar
+                .as_ref()
+                .and_then(|sidecar| sidecar.as_ref().map(|(bytes, _)| bytes.as_slice())),
+        )
     }
 
     pub fn revalidate(&self, lease: &FinalizedWriteLease<'_>) -> Result<(), String> {
@@ -376,6 +418,15 @@ impl VerifiedCopyRepairBackup {
             .map_err(|error| error.to_string())?;
         if !same_file(&self.registry_metadata, &metadata) {
             return Err("Copy repair registry backup changed".into());
+        }
+        match (
+            &self.sidecar,
+            self.document.directory.symlink_metadata("2-openai.yaml"),
+        ) {
+            (None, Err(error)) if error.kind() == std::io::ErrorKind::NotFound => {}
+            (Some(None), Err(error)) if error.kind() == std::io::ErrorKind::NotFound => {}
+            (Some(Some((_, before))), Ok(after)) if same_file(before, &after) => {}
+            _ => return Err("Copy edit sidecar backup changed".into()),
         }
         Ok(())
     }

@@ -915,6 +915,24 @@ impl PreparedCopyRepairContent {
         proposed_document: &[u8],
         document_limit: usize,
     ) -> Result<(String, String), PreparedContentError> {
+        self.hashes_with_document_and_sidecar_limit(
+            scope,
+            lease,
+            (expected_document, proposed_document),
+            None,
+            document_limit,
+        )
+    }
+
+    pub(crate) fn hashes_with_document_and_sidecar_limit(
+        &self,
+        scope: &SkillReadScope,
+        lease: &crate::skill_coordination::FinalizedWriteLease<'_>,
+        document: (&[u8], &[u8]),
+        sidecar: Option<&crate::skill_invocation_edit::CodexInvocationEdit>,
+        document_limit: usize,
+    ) -> Result<(String, String), PreparedContentError> {
+        let (expected_document, proposed_document) = document;
         let revalidate = || -> Result<(), PreparedContentError> {
             lease.revalidate().map_err(PreparedContentError::from)?;
             if !self
@@ -924,6 +942,17 @@ impl PreparedCopyRepairContent {
                 .all(|directory| directory.revalidate(scope))
             {
                 return Err("Copy repair folder membership changed".into());
+            }
+            if sidecar.is_some_and(|change| change.original().is_none()) {
+                let parent = self
+                    .document
+                    .parent()
+                    .ok_or("Copy document has no parent")?;
+                match scope.resolved_path_metadata(&parent.join("agents/openai.yaml")) {
+                    Err(crate::skill_scope::ScopedReadError::Missing { .. }) => {}
+                    Err(error) => return Err(error.to_string().into()),
+                    Ok(_) => return Err("Copy invocation sidecar unexpectedly exists".into()),
+                }
             }
             Ok(())
         };
@@ -937,13 +966,78 @@ impl PreparedCopyRepairContent {
         if current != expected_document {
             return Err("Copy repair document changed".into());
         }
-        let mut files: Vec<_> = self.walk.hashable.iter().collect();
-        files.sort_by(|a, b| a.rel_path.cmp(&b.rel_path));
+        let sidecar_relative = PathBuf::from("agents/openai.yaml");
+        let mut files: Vec<_> = self
+            .walk
+            .hashable
+            .iter()
+            .map(|file| (file.rel_path.clone(), Some(file)))
+            .collect();
+        if let Some(change) = sidecar {
+            if change
+                .original()
+                .is_some_and(|bytes| bytes.len() > document_limit)
+                || change
+                    .proposed()
+                    .is_some_and(|bytes| bytes.len() > document_limit)
+            {
+                return Err("Copy invocation sidecar exceeds its limit".into());
+            }
+            let present = files.iter().any(|(path, _)| path == &sidecar_relative);
+            if present != change.original().is_some() {
+                return Err("Copy invocation sidecar presence changed".into());
+            }
+            if !present {
+                if change.proposed().is_some() && files.len() >= MAX_FOLDER_FILES {
+                    return Err("Copy invocation exceeds the folder file limit".into());
+                }
+                files.push((sidecar_relative.clone(), None));
+            }
+        }
+        files.sort_by(|a, b| a.0.cmp(&b.0));
         let mut original = Sha256::new();
         let mut proposed = Sha256::new();
         let mut total = 0u64;
-        for file in files {
+        let hash_file = |hasher: &mut Sha256, path: &Path, bytes: &[u8]| {
+            let relative = path.to_string_lossy();
+            hasher.update((relative.len() as u64).to_le_bytes());
+            hasher.update(relative.as_bytes());
+            hasher.update((bytes.len() as u64).to_le_bytes());
+            hasher.update(bytes);
+        };
+        for (relative_path, file) in files {
             revalidate()?;
+            if let Some(change) = sidecar.filter(|_| relative_path == sidecar_relative) {
+                let before = change.original().map(str::as_bytes);
+                let after = change.proposed().map(str::as_bytes);
+                let planned_bytes = before
+                    .map_or(0, <[u8]>::len)
+                    .max(after.map_or(0, <[u8]>::len)) as u64;
+                if planned_bytes > MAX_FOLDER_BYTES.saturating_sub(total) {
+                    return Err("Copy repair folder exceeds its limit".into());
+                }
+                if let Some(file) = file {
+                    let expected = before.ok_or("Copy invocation sidecar unexpectedly exists")?;
+                    let mut observed = Vec::new();
+                    lease.fold_resource(
+                        &file.observation.requested,
+                        document_limit as u64,
+                        &mut |bytes| observed.extend_from_slice(bytes),
+                    )?;
+                    if observed != expected || file.len != expected.len() as u64 {
+                        return Err("Copy invocation sidecar changed".into());
+                    }
+                }
+                if let Some(bytes) = before {
+                    hash_file(&mut original, &relative_path, bytes);
+                }
+                if let Some(bytes) = after {
+                    hash_file(&mut proposed, &relative_path, bytes);
+                }
+                total += planned_bytes;
+                continue;
+            }
+            let file = file.ok_or("Copy folder observation is absent")?;
             let planned_bytes = if file.observation.requested == self.document {
                 file.len.max(proposed_document.len() as u64)
             } else {
@@ -952,7 +1046,7 @@ impl PreparedCopyRepairContent {
             if planned_bytes > MAX_FOLDER_BYTES.saturating_sub(total) {
                 return Err("Copy repair folder exceeds its limit".into());
             }
-            let relative = file.rel_path.to_string_lossy();
+            let relative = relative_path.to_string_lossy();
             for hasher in [&mut original, &mut proposed] {
                 hasher.update((relative.len() as u64).to_le_bytes());
                 hasher.update(relative.as_bytes());
@@ -965,7 +1059,6 @@ impl PreparedCopyRepairContent {
                 original.update(expected_document);
                 proposed.update((proposed_document.len() as u64).to_le_bytes());
                 proposed.update(proposed_document);
-                total += file.len.max(proposed_document.len() as u64);
             } else {
                 proposed.update(file.len.to_le_bytes());
                 let count =
@@ -976,11 +1069,8 @@ impl PreparedCopyRepairContent {
                 if count != file.len {
                     return Err("Copy repair resource changed".into());
                 }
-                total += file.len;
             }
-            if total > MAX_FOLDER_BYTES {
-                return Err("Copy repair folder exceeds its limit".into());
-            }
+            total += planned_bytes;
         }
         revalidate()?;
         let encode = |hash: Sha256| {

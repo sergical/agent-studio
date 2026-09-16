@@ -64,3 +64,5 @@ pub mod skill_backup_manifest;
 
 #[cfg(all(unix, feature = "event-store"))]
 pub mod skill_copy_document_edit;
+
+pub mod skill_invocation_edit;

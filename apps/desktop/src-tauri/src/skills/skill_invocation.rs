@@ -17,167 +17,17 @@
 
 use std::fs;
 use std::path::{Path, PathBuf};
+use tauri::Manager;
 
 use super::commands::{canonicalize_skill_md, check_skill_md_deployment_write_allowed};
-use super::frontmatter::{invocation_policy, parse_frontmatter, InvocationPolicy};
+use super::frontmatter::InvocationPolicy;
 use super::skill_deployment::parse_deployment_id;
 use super::skill_dto::Deployment;
 use super::skill_md_write::begin_skill_md_write_transaction;
+use super::skill_ownership::LifecycleOwnerKind;
 use super::skill_refresh::{self, SkillRefreshState, SkillSnapshot};
 
-/// Strips a line's trailing terminator (`\r\n` or `\n`), if it has one - used
-/// to compare line *content* while the raw, terminator-included slice is kept
-/// around separately for byte-identical reconstruction.
-fn strip_terminator(raw: &str) -> &str {
-    raw.strip_suffix("\r\n")
-        .or_else(|| raw.strip_suffix('\n'))
-        .unwrap_or(raw)
-}
-
-/// A line at column 0 (no leading whitespace) with some content - the start
-/// of a new top-level YAML key. Blank lines and indented lines are
-/// continuations of whatever top-level key preceded them (a nested mapping,
-/// a block scalar body, or just blank padding).
-fn is_top_level_line(text: &str) -> bool {
-    !text.is_empty() && !text.starts_with(' ') && !text.starts_with('\t')
-}
-
-/// Whether `text` (a top-level line) is the given top-level `key`, i.e.
-/// matches `^<key>\s*:`.
-fn is_key(text: &str, key: &str) -> bool {
-    match text.strip_prefix(key) {
-        Some(rest) => rest.trim_start_matches([' ', '\t']).starts_with(':'),
-        None => false,
-    }
-}
-
-/// Groups `body` (the frontmatter's lines, one entry per line, sans
-/// terminator) into `[start, end)` spans, one per top-level key: a span
-/// starts at a column-0 line and extends through every blank or indented
-/// line that follows, up to (but not including) the next column-0 line.
-fn top_level_spans(body: &[&str]) -> Vec<(usize, usize)> {
-    let mut spans = Vec::new();
-    let mut i = 0;
-    while i < body.len() {
-        if !is_top_level_line(body[i]) {
-            // Malformed frontmatter (content before any top-level key) -
-            // skip rather than looping forever; nothing to attach it to.
-            i += 1;
-            continue;
-        }
-        let start = i;
-        i += 1;
-        while i < body.len()
-            && (body[i].is_empty() || body[i].starts_with(' ') || body[i].starts_with('\t'))
-        {
-            i += 1;
-        }
-        spans.push((start, i));
-    }
-    spans
-}
-
-/// Removes (or replaces) the top-level `disable-model-invocation`/
-/// `user-invocable` keys in `content`'s frontmatter block to match `policy`,
-/// inserting the new key (if any) right after the `description` key's span -
-/// after its block-scalar body, if it has one - or at the end of the
-/// frontmatter when there's no `description`. Every other byte - other keys
-/// (including a nested key that happens to share a name with one of these
-/// two), the body, blank lines, the line separator style (`\r\n` vs `\n`),
-/// and a missing final newline - is passed through unchanged. Errs when
-/// `content` has no `---`-fenced frontmatter block to edit, or when the
-/// result doesn't parse back to the requested `policy`.
-pub fn rewrite_invocation_frontmatter(
-    content: &str,
-    policy: InvocationPolicy,
-) -> Result<String, String> {
-    let sep = if content.contains("\r\n") {
-        "\r\n"
-    } else {
-        "\n"
-    };
-
-    // Raw segments keep each line's own terminator (or lack of one, for the
-    // last line) attached, so untouched lines can be re-emitted byte for
-    // byte instead of being rejoined with a terminator we chose ourselves.
-    let raw_lines: Vec<&str> = content.split_inclusive('\n').collect();
-    let lines: Vec<&str> = raw_lines.iter().copied().map(strip_terminator).collect();
-
-    if lines.first().map(|l| l.trim()) != Some("---") {
-        return Err("SKILL.md has no frontmatter to edit".to_string());
-    }
-    let close_idx = lines
-        .iter()
-        .enumerate()
-        .skip(1)
-        .find(|(_, l)| l.trim() == "---")
-        .map(|(i, _)| i)
-        .ok_or("SKILL.md frontmatter has no closing `---`")?;
-
-    let body: &[&str] = &lines[1..close_idx];
-    let body_raw: &[&str] = &raw_lines[1..close_idx];
-    let spans = top_level_spans(body);
-
-    let mut drop = vec![false; body.len()];
-    for &(start, end) in &spans {
-        if is_key(body[start], "disable-model-invocation") || is_key(body[start], "user-invocable")
-        {
-            for slot in drop.iter_mut().take(end).skip(start) {
-                *slot = true;
-            }
-        }
-    }
-    let description_span = spans
-        .iter()
-        .find(|&&(start, _)| is_key(body[start], "description"))
-        .copied();
-
-    let new_key = match policy {
-        InvocationPolicy::Both => None,
-        InvocationPolicy::UserOnly => Some("disable-model-invocation: true"),
-        InvocationPolicy::ModelOnly => Some("user-invocable: false"),
-    };
-
-    let mut out = String::new();
-    out.push_str(raw_lines[0]);
-    for idx in 0..body.len() {
-        if drop[idx] {
-            continue;
-        }
-        out.push_str(body_raw[idx]);
-        let at_description_end = description_span.is_some_and(|(_, end)| idx == end - 1);
-        if at_description_end {
-            if let Some(key) = new_key {
-                out.push_str(key);
-                out.push_str(sep);
-            }
-        }
-    }
-    if description_span.is_none() {
-        if let Some(key) = new_key {
-            out.push_str(key);
-            out.push_str(sep);
-        }
-    }
-    out.push_str(raw_lines[close_idx]);
-    for raw in &raw_lines[close_idx + 1..] {
-        out.push_str(raw);
-    }
-
-    let parsed = parse_frontmatter(&out);
-    let rewritten = parsed
-        .as_frontmatter()
-        .ok_or("Rewritten frontmatter failed to parse back".to_string())?;
-    let (rewritten_policy, _) = invocation_policy(Some(rewritten));
-    if rewritten_policy != policy {
-        return Err(
-            "Rewritten frontmatter does not round-trip to the requested invocation policy"
-                .to_string(),
-        );
-    }
-
-    Ok(out)
-}
+pub use skill_studio_core::skill_invocation_edit::rewrite_invocation_frontmatter;
 
 /// `~/.../<skill>/agents/openai.yaml` - Codex's own invocation-policy
 /// sidecar, next to `SKILL.md`.
@@ -351,12 +201,14 @@ fn exact_snapshot_invocation_deployment<'a>(
 }
 
 #[tauri::command]
-pub fn set_skill_invocation(
+pub async fn set_skill_invocation(
     name: String,
     path: String,
     policy: InvocationPolicy,
     app: tauri::AppHandle,
-    refresh_state: tauri::State<SkillRefreshState>,
+    refresh_state: tauri::State<'_, SkillRefreshState>,
+    fork_lock: tauri::State<'_, super::skill_fork::ForkMutationLock>,
+    event_store: tauri::State<'_, super::event_commands::EventStoreState>,
 ) -> Result<(), String> {
     let path_buf = PathBuf::from(&path);
     let snapshot = refresh_state
@@ -367,6 +219,48 @@ pub fn set_skill_invocation(
         .ok_or_else(|| format!("Invocation target is stale: {path} is not an installed skill"))?;
     let deployment = exact_snapshot_invocation_deployment(&snapshot, &name, &path_buf)?;
     check_skill_md_deployment_write_allowed(deployment)?;
+    if deployment.owner_kind == LifecycleOwnerKind::Copy {
+        let _ = (fork_lock, event_store);
+        let deployment_id = deployment.id.clone();
+        let copy_name = name.clone();
+        let copy_app = app.clone();
+        tauri::async_runtime::spawn_blocking(move || {
+            let fork_lock = copy_app.state::<super::skill_fork::ForkMutationLock>();
+            let _fork = fork_lock.try_acquire()?;
+            let home = dirs::home_dir().ok_or("Could not find home directory")?;
+            let projects = super::skill_project_authority::scoped_projects(&home, [])?;
+            let scope = super::skill_scope_config::desktop_skill_scope(&home, &projects)?;
+            let event_store = copy_app.state::<super::event_commands::EventStoreState>();
+            let store = event_store
+                .0
+                .lock()
+                .map_err(|_| "Event store lock is unavailable")?;
+            let store = store.as_ref().ok_or("Event store is unavailable")?;
+            let mut service = skill_studio_core::skill_service::ScopedSkillService::bind(scope)
+                .map_err(|error| error.to_string())?;
+            let result = super::skill_copy_repair::apply_invocation(
+                &mut service,
+                store,
+                &deployment_id,
+                policy,
+                &super::event_store::allocate_id(),
+                skill_studio_core::skill_service::CancellationToken::default(),
+            );
+            let refresh = copy_app.state::<SkillRefreshState>();
+            if let Err(error) =
+                skill_refresh::reconcile_skill_names_and_emit(&copy_app, &refresh, [copy_name], &[])
+            {
+                eprintln!(
+                    "[set_skill_invocation] targeted snapshot reconciliation failed: {error}"
+                );
+                refresh.mark_skills_dirty();
+            }
+            result
+        })
+        .await
+        .map_err(|error| format!("Invocation worker failed: {error}"))??;
+        return Ok(());
+    }
     let is_codex_deployment = deployment.agent == "Codex";
     let canonical = canonicalize_skill_md(&path_buf, &path)?;
 

@@ -2,7 +2,7 @@ use super::*;
 use crate::{
     skill_backup_reservation::{valid_id, BackupCopyLimits, BackupStateRoot},
     skill_backup_source::BackupSourceRoot,
-    skill_document_target::{SkillDocumentTarget, SkillRegistryTarget},
+    skill_document_target::{CodexInvocationTarget, SkillDocumentTarget, SkillRegistryTarget},
     skill_event::{EventDraft, EventRow, EventStatus},
     skill_event_operations::GuardedEventStore,
     skill_event_store::{fingerprint_regular_bytes, EventStore},
@@ -17,6 +17,7 @@ pub enum DocumentEditStage {
     Backup,
     Intent,
     Document,
+    Sidecar,
     Registry,
     Finish,
     Recover,
@@ -127,6 +128,7 @@ fn execute_change(
         intent,
         original,
         registry_original,
+        sidecar,
         mut lease,
         ..
     } = prepared;
@@ -155,20 +157,37 @@ fn execute_change(
                 .map_err(|e| before(DocumentEditStage::Backup, e.to_string()))?,
         );
     }
+    let sidecar_path = record.path.join("agents/openai.yaml");
+    let absent_sidecar = sidecar
+        .as_ref()
+        .and_then(|edit| edit.original().is_none().then_some(sidecar_path.as_path()));
+    if sidecar.as_ref().is_some_and(|edit| edit.original().is_some()) {
+        sources.push(
+            BackupSourceRoot::bind(&record.path.join("agents"))
+                .and_then(|root| root.select(OsStr::new("openai.yaml")))
+                .map_err(|e| before(DocumentEditStage::Backup, e.to_string()))?,
+        );
+    }
     let state = BackupStateRoot::bind(&store.app_data)
         .map_err(|e| before(DocumentEditStage::Backup, e.to_string()))?;
     checkpoint(DocumentEditStage::Prepare)
         .map_err(|error| before(DocumentEditStage::Prepare, error))?;
     let manifest = lease
-        .backup_documents_prepared(
+        .backup_documents_with_absent_sidecar_prepared(
             &state,
             event_id,
             sources,
             BackupCopyLimits {
-                max_bytes: (original.len() + registry_original.len()) as u64,
-                max_entries: 2,
+                max_bytes: (original.len()
+                    + registry_original.len()
+                    + sidecar
+                        .as_ref()
+                        .and_then(|edit| edit.original())
+                        .map_or(0, str::len)) as u64,
+                max_entries: 2 + u64::from(sidecar.is_some()),
                 max_depth: 0,
             },
+            absent_sidecar,
         )
         .map_err(|error| before_content(DocumentEditStage::Backup, error))?;
     for (path, bytes) in [
@@ -250,6 +269,29 @@ fn execute_change(
         )
         .map_err(|e| pending(DocumentEditStage::Document, e.to_string()))?;
     checkpoint(DocumentEditStage::Document).map_err(|e| pending(DocumentEditStage::Document, e))?;
+    if let Some(sidecar) = sidecar {
+        match (sidecar.original(), sidecar.proposed()) {
+            (None, Some(proposed)) => {
+                CodexInvocationTarget::create(&record.path, &mut lease, proposed.as_bytes())
+            }
+            (Some(expected), Some(proposed)) => CodexInvocationTarget::bind(&record.path)
+                .map_err(crate::skill_document_write::DocumentWriteFailure::BeforeReplace)
+                .and_then(|target| {
+                    target.replace(&mut lease, expected.as_bytes(), proposed.as_bytes())
+                }),
+            (Some(expected), None) => CodexInvocationTarget::bind(&record.path)
+                .map_err(crate::skill_document_write::DocumentWriteFailure::BeforeReplace)
+                .and_then(|target| target.remove(&mut lease, expected.as_bytes())),
+            // The selected Codex reader still participates in the event, even
+            // when its sidecar is absent at both endpoints. This preserves the
+            // proof that no external sidecar appeared between planning and
+            // ownership publication.
+            (None, None) => Ok(()),
+        }
+        .map_err(|e| pending(DocumentEditStage::Sidecar, e.to_string()))?;
+        checkpoint(DocumentEditStage::Sidecar)
+            .map_err(|e| pending(DocumentEditStage::Sidecar, e))?;
+    }
     events
         .validate_copy_document_edit_recovery(&lease, &event)
         .map_err(|e| pending(DocumentEditStage::Registry, e))?;
@@ -298,6 +340,7 @@ impl CopyDocumentEditRecoveryEvent {
 pub enum CopyDocumentEditObservedState {
     Original,
     DocumentApplied,
+    SidecarApplied,
     Applied,
 }
 
@@ -306,26 +349,18 @@ impl CopyDocumentEditIntent {
         &self,
         document: &[u8],
         registry: &[u8],
-        folder_hash: &str,
+        sidecar: Option<Option<&[u8]>>,
+        sidecar_original: Option<&[u8]>,
+        backward_hash: &str,
+        forward_hash: &str,
     ) -> Result<CopyDocumentEditObservedState, String> {
         self.validate_record()?;
         if document.len() > MAX_COPY_DOCUMENT_EDIT_BYTES || registry.len() > 8 * 1024 * 1024 {
             return Err("Copy edit observation exceeds its limit".into());
         }
-        let fingerprint = content_fingerprint(document);
-        let document_applied = if fingerprint == self.request.expected_content_fingerprint {
-            false
-        } else if fingerprint == self.proposed_content_fingerprint {
-            true
-        } else {
-            return Err("Copy edit document conflicts with its intent".into());
-        };
-        let expected = if document_applied {
-            self.transition.after()
-        } else {
-            self.transition.before()
-        };
-        if folder_hash != expected.content_hash {
+        if backward_hash != self.transition.before().content_hash
+            || forward_hash != self.transition.after().content_hash
+        {
             return Err("Copy edit resources conflict with its intent".into());
         }
         let registry: crate::skill_fork_registry::ForkRegistry =
@@ -334,18 +369,50 @@ impl CopyDocumentEditIntent {
             .copies
             .get(&self.request.deployment_id)
             .ok_or("Copy edit owner is missing")?;
-        let registry_applied = if current == self.transition.before() {
-            false
-        } else if current == self.transition.after() {
-            true
-        } else {
-            return Err("Copy edit ownership conflicts with its intent".into());
+        let document_before =
+            content_fingerprint(document) == self.request.expected_content_fingerprint;
+        let document_after = content_fingerprint(document) == self.proposed_content_fingerprint;
+        let registry_before = current == self.transition.before();
+        let registry_after = current == self.transition.after();
+        let (sidecar_before, sidecar_after) = match (self.sidecar(), sidecar) {
+            (None, None) => (true, true),
+            (Some(intent), Some(current)) => (
+                current == sidecar_original,
+                current == intent.proposed_content().map(str::as_bytes),
+            ),
+            _ => return Err("Copy edit sidecar participant changed".into()),
         };
-        match (document_applied, registry_applied) {
-            (false, false) => Ok(CopyDocumentEditObservedState::Original),
-            (true, false) => Ok(CopyDocumentEditObservedState::DocumentApplied),
-            (true, true) => Ok(CopyDocumentEditObservedState::Applied),
-            (false, true) => Err("Copy edit registry changed before its document".into()),
+        if !document_before && !document_after || !registry_before && !registry_after {
+            return Err("Copy edit ownership conflicts with its intent".into());
+        }
+        if self.sidecar().is_none() {
+            return match (
+                document_before,
+                document_after,
+                registry_before,
+                registry_after,
+            ) {
+                (true, _, true, _) => Ok(CopyDocumentEditObservedState::Original),
+                (_, true, true, _) => Ok(CopyDocumentEditObservedState::DocumentApplied),
+                (_, true, _, true) => Ok(CopyDocumentEditObservedState::Applied),
+                _ => Err("Copy edit publication order changed".into()),
+            };
+        }
+        // Check older prefixes first because equal endpoints carry no
+        // publication information (for example, an absent sidecar).
+        match (
+            document_before,
+            document_after,
+            sidecar_before,
+            sidecar_after,
+            registry_before,
+            registry_after,
+        ) {
+            (true, _, true, _, true, _) => Ok(CopyDocumentEditObservedState::Original),
+            (_, true, _, true, _, true) => Ok(CopyDocumentEditObservedState::Applied),
+            (_, true, _, true, true, _) => Ok(CopyDocumentEditObservedState::SidecarApplied),
+            (_, true, true, _, true, _) => Ok(CopyDocumentEditObservedState::DocumentApplied),
+            _ => Err("Copy edit publication order changed".into()),
         }
     }
 }
@@ -355,6 +422,7 @@ pub struct PreparedCopyDocumentEditRecovery<'scope> {
     backup: VerifiedCopyRepairBackup,
     document: Vec<u8>,
     registry: Vec<u8>,
+    sidecar: Option<Option<Vec<u8>>>,
     content: PreparedCopyRepairContent,
     content_scope: SkillReadScope,
     state: CopyDocumentEditObservedState,
@@ -363,20 +431,66 @@ pub struct PreparedCopyDocumentEditRecovery<'scope> {
 impl PreparedCopyDocumentEditRecovery<'_> {
     fn observe(&self) -> Result<CopyDocumentEditObservedState, String> {
         self.backup.revalidate(&self.lease)?;
-        let (hash, _) = self
+        let (original_document, _, original_sidecar) = self.backup.edit_originals();
+        let current_sidecar = self
+            .sidecar
+            .as_ref()
+            .map(|current| {
+                current
+                    .as_ref()
+                    .map(|bytes| String::from_utf8(bytes.clone()))
+                    .transpose()
+                    .map_err(|_| "Copy sidecar is not UTF-8")
+            })
+            .transpose()?;
+        let original_sidecar_text = original_sidecar
+            .map(std::str::from_utf8)
+            .transpose()
+            .map_err(|_| "Copy sidecar backup is not UTF-8")?
+            .map(str::to_owned);
+        let backward_sidecar = self.event.intent.sidecar().map(|_| {
+            crate::skill_invocation_edit::CodexInvocationEdit::from_endpoints(
+                current_sidecar.clone().flatten(),
+                original_sidecar_text.clone(),
+            )
+        });
+        let forward_sidecar = self.event.intent.sidecar().map(|intent| {
+            crate::skill_invocation_edit::CodexInvocationEdit::from_endpoints(
+                current_sidecar.clone().flatten(),
+                intent.proposed_content().map(str::to_owned),
+            )
+        });
+        let (_, backward_hash) = self
             .content
-            .hashes_with_document_limit(
+            .hashes_with_document_and_sidecar_limit(
                 &self.content_scope,
                 &self.lease,
-                &self.document,
-                &self.document,
+                (&self.document, original_document),
+                backward_sidecar.as_ref(),
                 MAX_COPY_DOCUMENT_EDIT_BYTES,
             )
             .map_err(|error| error.to_string())?;
-        let state = self
-            .event
-            .intent
-            .classify_observed(&self.document, &self.registry, &hash)?;
+        let (_, forward_hash) = self
+            .content
+            .hashes_with_document_and_sidecar_limit(
+                &self.content_scope,
+                &self.lease,
+                (
+                    &self.document,
+                    self.event.intent.request().proposed_content.as_bytes(),
+                ),
+                forward_sidecar.as_ref(),
+                MAX_COPY_DOCUMENT_EDIT_BYTES,
+            )
+            .map_err(|error| error.to_string())?;
+        let state = self.event.intent.classify_observed(
+            &self.document,
+            &self.registry,
+            self.sidecar.as_ref().map(|value| value.as_deref()),
+            original_sidecar,
+            &backward_hash,
+            &forward_hash,
+        )?;
         self.lease.revalidate().map_err(|e| e.to_string())?;
         Ok(state)
     }
@@ -397,7 +511,7 @@ impl ScopedSkillService {
         let event = CopyDocumentEditRecoveryEvent::from_row(row).map_err(invalid)?;
         let record = event.intent.transition().before();
         let names = BTreeSet::from([record.name.clone()]);
-        let (inventory, lease) = self
+        let (inventory, mut lease) = self
             .prepare_write_inventory(
                 Some(&names),
                 std::slice::from_ref(&store.app_data),
@@ -438,6 +552,49 @@ impl ScopedSkillService {
                 .map_err(invalid)?;
         let content_scope = SkillReadScope::bind(std::slice::from_ref(&record.path))
             .map_err(|e| invalid(e.to_string()))?;
+        let sidecar_path = record.path.join("agents/openai.yaml");
+        let sidecar = if event.intent.sidecar().is_some() {
+            let current = match content_scope.observe_entry(&record.path, OsStr::new("agents")) {
+                Err(crate::skill_scope::ScopedReadError::Missing { .. }) => None,
+                Ok(entry)
+                    if entry.metadata.is_dir() && !entry.metadata.file_type().is_symlink() =>
+                {
+                    match content_scope
+                        .observe_entry(&record.path.join("agents"), OsStr::new("openai.yaml"))
+                    {
+                        Err(crate::skill_scope::ScopedReadError::Missing { .. }) => None,
+                        Ok(entry)
+                            if entry.metadata.is_file()
+                                && !entry.metadata.file_type().is_symlink() =>
+                        {
+                            Some(
+                                lease
+                                    .read(&sidecar_path, MAX_COPY_DOCUMENT_EDIT_BYTES)
+                                    .map_err(|e| invalid(e.to_string()))?,
+                            )
+                        }
+                        _ => {
+                            return Err(invalid(
+                                "Copy sidecar must be a regular scoped file".into(),
+                            ))
+                        }
+                    }
+                }
+                _ => {
+                    return Err(invalid(
+                        "Copy sidecar parent must be a regular scoped directory".into(),
+                    ))
+                }
+            };
+            if current.is_none() {
+                lease = lease
+                    .retain_absent_invocation_sidecar(&sidecar_path)
+                    .map_err(invalid)?;
+            }
+            Some(current)
+        } else {
+            None
+        };
         let content = PreparedCopyRepairContent::enumerate_cancellable(
             &content_scope,
             &record.path,
@@ -455,6 +612,7 @@ impl ScopedSkillService {
             backup,
             document,
             registry,
+            sidecar,
             content,
             content_scope,
             state: CopyDocumentEditObservedState::Original,
@@ -490,6 +648,50 @@ pub fn recover_copy_document_edit(
         .validate_copy_document_edit_recovery(&prepared.lease, &prepared.event)
         .map_err(&error)?;
     if state == CopyDocumentEditObservedState::DocumentApplied {
+        if let Some(sidecar) = prepared.event.intent.sidecar() {
+            let skill_path = &prepared.event.intent.transition().before().path;
+            match (
+                prepared
+                    .sidecar
+                    .as_ref()
+                    .and_then(|current| current.as_deref()),
+                sidecar.proposed_content(),
+            ) {
+                (None, Some(proposed)) => CodexInvocationTarget::create(
+                    skill_path,
+                    &mut prepared.lease,
+                    proposed.as_bytes(),
+                ),
+                (Some(expected), Some(proposed)) => CodexInvocationTarget::bind(skill_path)
+                    .map_err(crate::skill_document_write::DocumentWriteFailure::BeforeReplace)
+                    .and_then(|target| {
+                        target.replace(&mut prepared.lease, expected, proposed.as_bytes())
+                    }),
+                (Some(expected), None) => CodexInvocationTarget::bind(skill_path)
+                    .map_err(crate::skill_document_write::DocumentWriteFailure::BeforeReplace)
+                    .and_then(|target| target.remove(&mut prepared.lease, expected)),
+                (None, None) => Ok(()),
+            }
+            .map_err(|e| error(e.to_string()))?;
+            prepared.sidecar = Some(
+                sidecar
+                    .proposed_content()
+                    .map(|content| content.as_bytes().to_vec()),
+            );
+            prepared
+                .lease
+                .validate_invocation_output(
+                    &skill_path.join("agents/openai.yaml"),
+                    sidecar.proposed_content().map(str::as_bytes),
+                )
+                .map_err(&error)?;
+        }
+    }
+    if matches!(
+        state,
+        CopyDocumentEditObservedState::DocumentApplied
+            | CopyDocumentEditObservedState::SidecarApplied
+    ) {
         let intent = &prepared.event.intent;
         let parent = intent
             .registry_path()
@@ -511,14 +713,15 @@ pub fn recover_copy_document_edit(
     } else {
         CopyDocumentEditObservedState::Applied
     };
-    if prepared.observe().map_err(&error)? != expected {
-        return Err(error("Copy edit recovery did not settle".into()));
-    }
     let status = if expected == CopyDocumentEditObservedState::Original {
         EventStatus::Failed
     } else {
         EventStatus::Done
     };
+    prepared
+        .lease
+        .revalidate()
+        .map_err(|failure| error(failure.to_string()))?;
     events
         .finish_copy_document_edit_recovery(&prepared.lease, &prepared.event, status)
         .map_err(|e| error(e.to_string()))?;
@@ -566,6 +769,87 @@ mod tests {
             }
         })
         .unwrap_err()
+    }
+
+    #[test]
+    fn copy_invocation_publishes_an_absent_codex_sidecar_with_the_document_and_registry() {
+        use crate::skill_document::InvocationPolicy;
+
+        let fixture = Fixture::new(false, true, false);
+        let store = EventStore::open(&fixture.scope.home.join("state")).unwrap();
+        let mut service = ScopedSkillService::bind(fixture.scope.clone()).unwrap();
+        let CopyDocumentEditPreparation::Ready(prepared) = service
+            .prepare_copy_invocation(
+                &fixture.request.deployment_id,
+                InvocationPolicy::UserOnly,
+                std::slice::from_ref(&store.app_data),
+                Some(Duration::from_secs(10)),
+                CancellationToken::default(),
+            )
+            .unwrap()
+        else {
+            panic!("expected invocation edit")
+        };
+        execute_copy_document_edit(*prepared, &store, ID).unwrap();
+        assert!(fs::read_to_string(fixture.skill.join("SKILL.md"))
+            .unwrap()
+            .contains("disable-model-invocation: true"));
+        assert!(fs::read_to_string(fixture.skill.join("agents/openai.yaml"))
+            .unwrap()
+            .contains("allow_implicit_invocation: false"));
+        assert_eq!(store.get(ID).unwrap().unwrap().status, "done");
+    }
+
+    #[test]
+    fn copy_invocation_recovers_after_document_and_sidecar_publication() {
+        use crate::skill_document::InvocationPolicy;
+
+        for stop_at in [DocumentEditStage::Document, DocumentEditStage::Sidecar] {
+            let fixture = Fixture::new(false, true, false);
+            let store = EventStore::open(&fixture.scope.home.join("state")).unwrap();
+            let mut service = ScopedSkillService::bind(fixture.scope.clone()).unwrap();
+            let CopyDocumentEditPreparation::Ready(prepared) = service
+                .prepare_copy_invocation(
+                    &fixture.request.deployment_id,
+                    InvocationPolicy::UserOnly,
+                    std::slice::from_ref(&store.app_data),
+                    Some(Duration::from_secs(10)),
+                    CancellationToken::default(),
+                )
+                .unwrap()
+            else {
+                panic!("expected invocation edit")
+            };
+            let error = execute_with(*prepared, &store, ID, |stage| {
+                (stage != stop_at)
+                    .then_some(())
+                    .ok_or_else(|| "interrupted".into())
+            })
+            .unwrap_err();
+            assert_eq!(error.stage, stop_at);
+            let row = store.get(ID).unwrap().unwrap();
+            let prepared = service
+                .prepare_copy_document_edit_recovery(
+                    &row,
+                    &store,
+                    Some(Duration::from_secs(10)),
+                    CancellationToken::default(),
+                )
+                .unwrap();
+            assert_eq!(
+                prepared.state(),
+                if stop_at == DocumentEditStage::Document {
+                    CopyDocumentEditObservedState::DocumentApplied
+                } else {
+                    CopyDocumentEditObservedState::SidecarApplied
+                }
+            );
+            assert_eq!(
+                recover_copy_document_edit(prepared, &store).unwrap(),
+                CopyDocumentEditObservedState::Applied
+            );
+            assert_eq!(store.get(ID).unwrap().unwrap().status, "done");
+        }
     }
 
     #[test]

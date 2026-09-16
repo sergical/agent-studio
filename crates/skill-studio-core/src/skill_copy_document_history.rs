@@ -91,6 +91,28 @@ fn validate_inverse(
     {
         return Err("Copy document reversal does not invert its source".into());
     }
+    let source_sidecar_after = source
+        .sidecar()
+        .and_then(|sidecar| sidecar.proposed_content())
+        .map(|content| content_fingerprint(content.as_bytes()));
+    let inverse_sidecar_before = inverse
+        .sidecar()
+        .and_then(|sidecar| sidecar.original_fingerprint())
+        .map(str::to_owned);
+    let source_sidecar_before = source
+        .sidecar()
+        .and_then(|sidecar| sidecar.original_fingerprint())
+        .map(str::to_owned);
+    let inverse_sidecar_after = inverse
+        .sidecar()
+        .and_then(|sidecar| sidecar.proposed_content())
+        .map(|content| content_fingerprint(content.as_bytes()));
+    if source.sidecar().is_some() != inverse.sidecar().is_some()
+        || source_sidecar_after != inverse_sidecar_before
+        || source_sidecar_before != inverse_sidecar_after
+    {
+        return Err("Copy document reversal does not invert its sidecar".into());
+    }
     Ok(())
 }
 
@@ -199,7 +221,7 @@ impl ScopedSkillService {
         let backup =
             VerifiedCopyRepairBackup::read_edit(&store.app_data, &row.id, &source.intent, &lease)
                 .map_err(invalid)?;
-        let (original, _) = backup.originals();
+        let (original, _, sidecar_original) = backup.edit_originals();
         let request = CopyDocumentEditRequest {
             deployment_id: source.intent.request().deployment_id.clone(),
             expected_owner_revision: RegistryOwnerRecord::Copy(source.intent.transition().after())
@@ -209,8 +231,30 @@ impl ScopedSkillService {
             proposed_content: String::from_utf8(original.to_vec())
                 .map_err(|error| invalid(error.to_string()))?,
         };
-        let CopyDocumentEditPreparation::Ready(change) =
-            prepare_copy_edit_with_inventory(&request, inventory, lease, &cancellation)?
+        let sidecar = source
+            .intent
+            .sidecar()
+            .map(|sidecar| -> Result<_, String> {
+                Ok(
+                    crate::skill_invocation_edit::CodexInvocationEdit::from_endpoints(
+                        sidecar.proposed_content().map(str::to_owned),
+                        sidecar_original
+                            .map(std::str::from_utf8)
+                            .transpose()
+                            .map_err(|_| "Copy sidecar backup is not UTF-8")?
+                            .map(str::to_owned),
+                    ),
+                )
+            })
+            .transpose()
+            .map_err(invalid)?;
+        let CopyDocumentEditPreparation::Ready(change) = prepare_copy_edit_with_sidecar(
+            &request,
+            inventory,
+            lease,
+            &cancellation,
+            sidecar.as_ref(),
+        )?
         else {
             return Err(invalid(
                 "Copy document reversal unexpectedly made no change".into(),
@@ -342,6 +386,106 @@ mod tests {
                         );
                     }
                     source = id;
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn invocation_history_restores_exact_sidecar_endpoints_and_copy_ownership() {
+        use crate::skill_document::InvocationPolicy::{Both, UserOnly};
+        for project in [false, true] {
+            for (original_policy, original_sidecar, proposed_policy) in [
+                (Both, None, UserOnly),
+                (Both, Some("interface: {display_name: Keep me}\n"), UserOnly),
+                (
+                    UserOnly,
+                    Some("policy: {allow_implicit_invocation: false}\n"),
+                    Both,
+                ),
+                (UserOnly, None, Both),
+                (UserOnly, None, UserOnly),
+            ] {
+                let fixture = Fixture::new(project, true, false);
+                let document = fixture.skill.join("SKILL.md");
+                let sidecar = fixture.skill.join("agents/openai.yaml");
+                let original = crate::skill_invocation_edit::rewrite_invocation_frontmatter(
+                    &fs::read_to_string(&document).unwrap(),
+                    original_policy,
+                )
+                .unwrap();
+                fs::write(&document, original).unwrap();
+                if let Some(content) = original_sidecar {
+                    fs::create_dir_all(sidecar.parent().unwrap()).unwrap();
+                    fs::write(&sidecar, content).unwrap();
+                }
+                let mut service = ScopedSkillService::bind(fixture.scope.clone()).unwrap();
+                let scanned = service.scan(None, Some(Duration::from_secs(10))).unwrap();
+                let deployment = scanned
+                    .skills
+                    .iter()
+                    .flat_map(|s| &s.deployments)
+                    .find(|d| d.id == fixture.request.deployment_id)
+                    .unwrap();
+                let mut registry: serde_json::Value =
+                    serde_json::from_slice(&fs::read(&fixture.registry).unwrap()).unwrap();
+                registry["copies"][&fixture.request.deployment_id]["content_hash"] =
+                    serde_json::json!(deployment.content_hash);
+                fs::write(&fixture.registry, serde_json::to_vec(&registry).unwrap()).unwrap();
+                let before = fixture.bytes();
+                let resource = fs::read(fixture.skill.join("resource.txt")).unwrap();
+                let store = EventStore::open(&fixture.scope.home.join("state")).unwrap();
+                let CopyDocumentEditPreparation::Ready(prepared) = service
+                    .prepare_copy_invocation(
+                        &fixture.request.deployment_id,
+                        proposed_policy,
+                        std::slice::from_ref(&store.app_data),
+                        Some(Duration::from_secs(10)),
+                        CancellationToken::default(),
+                    )
+                    .unwrap()
+                else {
+                    panic!("expected document or sidecar change")
+                };
+                execute_copy_document_edit(*prepared, &store, "invocation-source").unwrap();
+                let after = fixture.bytes();
+                let sidecar_after = fs::read(&sidecar).ok();
+                for (source, id, expected, expected_sidecar) in [
+                    (
+                        "invocation-source",
+                        "invocation-undo",
+                        &before,
+                        original_sidecar.map(str::as_bytes),
+                    ),
+                    (
+                        "invocation-undo",
+                        "invocation-redo",
+                        &after,
+                        sidecar_after.as_deref(),
+                    ),
+                ] {
+                    reverse(&mut service, &store, source, id);
+                    let actual = fixture.bytes();
+                    assert_eq!(actual.0, expected.0);
+                    assert_eq!(
+                        serde_json::from_slice::<serde_json::Value>(&actual.1).unwrap(),
+                        serde_json::from_slice::<serde_json::Value>(&expected.1).unwrap()
+                    );
+                    assert_eq!(actual.2, before.2);
+                    assert_eq!(fs::read(&sidecar).ok().as_deref(), expected_sidecar);
+                    assert_eq!(
+                        fs::read(fixture.skill.join("resource.txt")).unwrap(),
+                        resource
+                    );
+                    let scanned = service.scan(None, Some(Duration::from_secs(10))).unwrap();
+                    let deployment = scanned
+                        .skills
+                        .iter()
+                        .flat_map(|s| &s.deployments)
+                        .find(|d| d.id == fixture.request.deployment_id)
+                        .unwrap();
+                    assert_eq!(deployment.owner_kind, LifecycleOwnerKind::Copy);
+                    assert_eq!(store.get(id).unwrap().unwrap().status, "done");
                 }
             }
         }

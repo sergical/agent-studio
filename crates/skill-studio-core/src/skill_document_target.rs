@@ -99,6 +99,83 @@ impl SkillRegistryTarget {
 pub struct CodexInvocationTarget(SkillDocumentTarget);
 
 impl CodexInvocationTarget {
+    pub fn create(
+        authorized_skill_directory: &Path,
+        lease: &mut crate::skill_coordination::FinalizedWriteLease<'_>,
+        proposed: &[u8],
+    ) -> Result<(), DocumentWriteFailure> {
+        use cap_fs_ext::DirExt;
+        let path = authorized_skill_directory.join("agents/openai.yaml");
+        lease
+            .validate_invocation_creation(&path)
+            .map_err(DocumentWriteFailure::BeforeReplace)?;
+        let parent_was_absent = lease.invocation_parent_was_absent(&path);
+        let mut created_directory = false;
+        let result = (|| -> Result<DocumentReceipt, DocumentWriteFailure> {
+            let before = DocumentWriteFailure::BeforeReplace;
+            if proposed.len() > MAX_DOCUMENT_BYTES {
+                return Err(before("Document exceeds the 8 MiB write limit".into()));
+            }
+            let scope = SkillReadScope::bind(&[authorized_skill_directory.to_path_buf()])
+                .map_err(|error| before(error.to_string()))?;
+            let parent: Dir = scope
+                .clone_bound_directory(authorized_skill_directory)
+                .map_err(|error| before(error.to_string()))?
+                .into();
+            match parent.create_dir("agents") {
+                Ok(()) => created_directory = true,
+                Err(error)
+                    if error.kind() == std::io::ErrorKind::AlreadyExists && !parent_was_absent => {}
+                Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
+                    return Err(before("Invocation parent appeared before creation".into()));
+                }
+                Err(error) => return Err(before(error.to_string())),
+            }
+            let directory = if created_directory {
+                Some(
+                    parent
+                        .open_dir_nofollow("agents")
+                        .map_err(|error| before(error.to_string()))?,
+                )
+            } else {
+                None
+            };
+            parent
+                .try_clone()
+                .map_err(|error| before(error.to_string()))?
+                .into_std_file()
+                .sync_all()
+                .map_err(|error| before(error.to_string()))?;
+            scope
+                .revalidate_roots()
+                .map_err(|error| before(error.to_string()))?;
+            let target = Self::bind(authorized_skill_directory).map_err(before)?;
+            if let Some(directory) = directory {
+                let original = directory
+                    .dir_metadata()
+                    .map_err(|error| before(error.to_string()))?;
+                let current = target
+                    .0
+                    .directory
+                    .dir_metadata()
+                    .map_err(|error| before(error.to_string()))?;
+                if original.dev() != current.dev() || original.ino() != current.ino() {
+                    return Err(before("Invocation parent changed during creation".into()));
+                }
+            }
+            lease.validate_invocation_creation(&path).map_err(before)?;
+            target.0.create_with(proposed, || {})
+        })()
+        .map_err(|error| {
+            if created_directory {
+                DocumentWriteFailure::AfterReplace(error.to_string())
+            } else {
+                error
+            }
+        });
+        lease.record_document(result)
+    }
+
     pub fn bind(authorized_skill_directory: &Path) -> Result<Self, String> {
         SkillDocumentTarget::bind_child(&authorized_skill_directory.join("agents"), "openai.yaml")
             .map(Self)
@@ -134,6 +211,13 @@ pub(crate) struct DocumentReceipt {
 }
 
 impl DocumentReceipt {
+    pub(crate) fn verify_absence(&self) -> Result<(), String> {
+        if self.metadata.is_some() {
+            return Err("Publication receipt does not record absence".into());
+        }
+        self.revalidate()
+    }
+
     pub(crate) fn read(&self, limit: usize) -> Result<Vec<u8>, String> {
         self.revalidate()?;
         let Some(expected) = &self.metadata else {
@@ -624,6 +708,143 @@ mod tests {
         fs,
         os::unix::fs::{symlink, PermissionsExt},
     };
+
+    #[cfg(feature = "event-store")]
+    #[test]
+    fn absent_sidecar_backup_does_not_create_parent_and_creation_requires_proof() {
+        use crate::skill_backup_reservation::{BackupCopyLimits, BackupStateRoot};
+        use crate::skill_backup_source::BackupSourceRoot;
+        use crate::skill_coordination::{CoordinationMode, CoordinationPlan, DirectoryEffect};
+        for planned in [false, true] {
+            let temp = tempfile::tempdir().unwrap();
+            let skill = temp.path().join("sample");
+            let state = temp.path().join("state");
+            fs::create_dir_all(&skill).unwrap();
+            fs::create_dir_all(&state).unwrap();
+            let document = skill.join("SKILL.md");
+            let sidecar = skill.join("agents/openai.yaml");
+            fs::write(&document, b"original").unwrap();
+            let scope = SkillReadScope::bind(&[temp.path().to_path_buf()]).unwrap();
+            let mut lease = CoordinationPlan::new_fixture(
+                vec![
+                    DirectoryEffect::tree(&skill, CoordinationMode::Exclusive),
+                    DirectoryEffect::tree(&state, CoordinationMode::Exclusive),
+                ],
+                temp.path(),
+                None,
+            )
+            .unwrap()
+            .acquire()
+            .unwrap()
+            .finalize_write(&scope, std::slice::from_ref(&document))
+            .unwrap();
+            if planned {
+                lease = lease.retain_absent_invocation_sidecar(&sidecar).unwrap();
+            }
+            let backup = BackupStateRoot::bind(&state).unwrap();
+            let source = BackupSourceRoot::bind(&skill)
+                .unwrap()
+                .select(std::ffi::OsStr::new("SKILL.md"))
+                .unwrap();
+            let result = lease.backup_documents_with_absent_sidecar_prepared(
+                &backup,
+                "sidecar",
+                vec![source],
+                BackupCopyLimits {
+                    max_bytes: 64,
+                    max_entries: 2,
+                    max_depth: 0,
+                },
+                Some(&sidecar),
+            );
+            assert!(!skill.join("agents").exists());
+            if planned {
+                let manifest = result.unwrap();
+                let entry = manifest.entries.get(sidecar.to_str().unwrap()).unwrap();
+                assert_eq!(entry.fingerprint, "absent");
+                assert_eq!(entry.relative_path, "");
+                CodexInvocationTarget::create(&skill, &mut lease, b"policy: {}\n").unwrap();
+                assert_eq!(fs::read(&sidecar).unwrap(), b"policy: {}\n");
+                lease.revalidate().unwrap();
+                lease
+                    .validate_invocation_output(&sidecar, Some(b"policy: {}\n"))
+                    .unwrap();
+                assert!(CodexInvocationTarget::create(&skill, &mut lease, b"second").is_err());
+                fs::write(&sidecar, b"external").unwrap();
+                assert!(lease.revalidate().is_err());
+            } else {
+                assert!(result.is_err());
+                assert!(
+                    CodexInvocationTarget::create(&skill, &mut lease, b"policy: {}\n").is_err()
+                );
+                assert!(!skill.join("agents").exists());
+            }
+        }
+    }
+
+    #[test]
+    fn absent_sidecar_proof_refuses_a_linked_agents_parent() {
+        use crate::skill_coordination::{CoordinationMode, CoordinationPlan, DirectoryEffect};
+        let temp = tempfile::tempdir().unwrap();
+        let skill = temp.path().join("sample");
+        let redirected = temp.path().join("other");
+        fs::create_dir(&skill).unwrap();
+        fs::create_dir(&redirected).unwrap();
+        symlink(&redirected, skill.join("agents")).unwrap();
+        let document = skill.join("SKILL.md");
+        fs::write(&document, b"original").unwrap();
+        let scope = SkillReadScope::bind(&[temp.path().to_path_buf()]).unwrap();
+        let lease = CoordinationPlan::new_fixture(
+            vec![DirectoryEffect::tree(
+                temp.path(),
+                CoordinationMode::Exclusive,
+            )],
+            temp.path(),
+            None,
+        )
+        .unwrap()
+        .acquire()
+        .unwrap()
+        .finalize_write(&scope, &[document])
+        .unwrap();
+        assert!(lease
+            .retain_absent_invocation_sidecar(&skill.join("agents/openai.yaml"))
+            .is_err());
+        assert!(!redirected.join("openai.yaml").exists());
+    }
+
+    #[test]
+    fn absent_sidecar_creation_refuses_an_externally_added_parent() {
+        use crate::skill_coordination::{CoordinationMode, CoordinationPlan, DirectoryEffect};
+        let temp = tempfile::tempdir().unwrap();
+        let document = temp.path().join("SKILL.md");
+        let sidecar = temp.path().join("agents/openai.yaml");
+        fs::write(&document, b"original").unwrap();
+        let scope = SkillReadScope::bind(&[temp.path().to_path_buf()]).unwrap();
+        let mut lease = CoordinationPlan::new_fixture(
+            vec![DirectoryEffect::tree(
+                temp.path(),
+                CoordinationMode::Exclusive,
+            )],
+            temp.path(),
+            None,
+        )
+        .unwrap()
+        .acquire()
+        .unwrap()
+        .finalize_write(&scope, &[document])
+        .unwrap()
+        .retain_absent_invocation_sidecar(&sidecar)
+        .unwrap();
+        fs::create_dir(temp.path().join("agents")).unwrap();
+        fs::write(temp.path().join("agents/external.txt"), b"external").unwrap();
+        assert!(CodexInvocationTarget::create(temp.path(), &mut lease, b"policy: {}\n").is_err());
+        assert!(!sidecar.exists());
+        assert_eq!(
+            fs::read(temp.path().join("agents/external.txt")).unwrap(),
+            b"external"
+        );
+    }
 
     #[test]
     fn codex_sidecar_replacement_and_removal_require_the_planned_file() {

@@ -414,6 +414,27 @@ mod tests {
     }
 
     #[test]
+    fn write_refused_for_read_only_owner_without_plugin_metadata() {
+        use super::super::skill_ownership::LifecycleOwnerKind;
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("SKILL.md");
+        std::fs::write(&path, "original").unwrap();
+        for owner in [
+            LifecycleOwnerKind::Ambiguous,
+            LifecycleOwnerKind::WildcardDotagents,
+            LifecycleOwnerKind::Plugin,
+        ] {
+            let mut snapshot = fixture_snapshot(tmp.path(), None);
+            snapshot.skills[0].deployments[0].owner_kind = owner;
+            assert!(
+                check_skill_md_write_allowed(Some(&snapshot), &path).is_err(),
+                "{owner:?}"
+            );
+            assert_eq!(std::fs::read_to_string(&path).unwrap(), "original");
+        }
+    }
+
+    #[test]
     fn write_refused_for_plugin_deployment() {
         let tmp = tempfile::tempdir().unwrap();
         let dep_dir = tmp.path().join("foo");
@@ -1761,7 +1782,18 @@ pub(crate) fn check_skill_md_deployment_write_allowed(
             "Skill ownership is unknown. Resolve the read warning before editing.".to_string(),
         );
     }
-    if deployment.plugin.is_some() {
+    if matches!(
+        deployment.owner_kind,
+        super::skill_ownership::LifecycleOwnerKind::Ambiguous
+            | super::skill_ownership::LifecycleOwnerKind::WildcardDotagents
+    ) {
+        return Err(
+            "Skill ownership is not verified. Resolve the read warning before editing.".to_string(),
+        );
+    }
+    if deployment.plugin.is_some()
+        || deployment.owner_kind == super::skill_ownership::LifecycleOwnerKind::Plugin
+    {
         return Err("Skill is managed by a plugin and cannot be edited here".to_string());
     }
     Ok(())

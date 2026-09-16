@@ -72,6 +72,40 @@ pub(crate) fn apply_edit(
     .map_err(Into::into)
 }
 
+pub(crate) fn apply_invocation(
+    service: &mut ScopedSkillService,
+    store: &EventStore,
+    deployment_id: &str,
+    policy: skill_studio_core::skill_document::InvocationPolicy,
+    id: &str,
+    cancellation: CancellationToken,
+) -> Result<(), String> {
+    use skill_studio_core::skill_copy_document_edit::{
+        execute_copy_document_edit, CopyDocumentEditPreparation,
+    };
+    let prepared = service
+        .prepare_copy_invocation(
+            deployment_id,
+            policy,
+            std::slice::from_ref(&store.app_data),
+            Some(Duration::from_secs(30)),
+            cancellation,
+        )
+        .map_err(|error| error.to_string())?;
+    let result = match prepared {
+        CopyDocumentEditPreparation::Unchanged { .. } => Ok(()),
+        CopyDocumentEditPreparation::Ready(prepared) => {
+            execute_copy_document_edit(*prepared, store, id).map(|_| ())
+        }
+    };
+    settle(
+        service,
+        store,
+        id,
+        result.map_err(|error| error.to_string()),
+    )
+}
+
 fn linked_event(store: &EventStore, row: &EventRow, field: &str) -> Result<EventRow, String> {
     let id = row
         .payload

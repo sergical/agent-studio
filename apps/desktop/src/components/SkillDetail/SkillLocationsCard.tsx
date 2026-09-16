@@ -11,6 +11,7 @@
 import { useState } from "react";
 import { ToggleGroup, ToggleGroupItem } from "@skill-studio/ui";
 import { forkSkill } from "../../lib/skill-api";
+import { errorMessage } from "../../lib/error-message";
 import { lifecycleTargetForDeployment } from "../../lib/skill-lifecycle-target";
 import { singleSelectToggleValue } from "../../lib/single-select-toggle-group";
 import { useAppStore } from "../../store/appStore";
@@ -66,6 +67,9 @@ const TITLE_LINK_ACTIONS = {
 export function SkillLocationsCard({ skill, onCompareCopies }: SkillLocationsCardProps) {
   const addToast = useAppStore((state) => state.addToast);
   const [savingFile, setSavingFile] = useState<string | null>(null);
+  const [invocationError, setInvocationError] = useState<{ path: string; message: string } | null>(
+    null,
+  );
   const actions = useLocationActions(skill, onCompareCopies);
 
   const groups = buildScopeGroups(skill);
@@ -80,10 +84,12 @@ export function SkillLocationsCard({ skill, onCompareCopies }: SkillLocationsCar
   const handleSetInvocation = (file: InvocationFile, policy: InvocationPolicy) => {
     if (!file.editable || savingFile) return;
     setSavingFile(file.path);
+    setInvocationError(null);
     // Only the global Universal folder can need a fork before editing.
     // `fileEditability` prevents managed Project folders and copies from
     // reaching this branch.
-    const isManaged = skill.source_kind === "dotagents" || skill.source_kind === "skills-sh";
+    const isManaged =
+      file.deployment.owner_kind === "dotagents" || file.deployment.owner_kind === "skills-sh";
     const forkIfNeeded =
       isManaged && file.kind === "shared"
         ? forkSkill(lifecycleTargetForDeployment(file.deployment))
@@ -91,10 +97,12 @@ export function SkillLocationsCard({ skill, onCompareCopies }: SkillLocationsCar
     forkIfNeeded
       .then(() => setSkillInvocation(skill.name, `${file.path}/SKILL.md`, policy))
       .catch((err) => {
+        const message = errorMessage(err, "The invocation policy did not change.");
+        setInvocationError({ path: file.path, message });
         addToast({
           type: "error",
           title: "Couldn't change invocation policy",
-          message: err instanceof Error ? err.message : "Unknown error",
+          message,
         });
       })
       .finally(() => setSavingFile(null));
@@ -216,6 +224,11 @@ export function SkillLocationsCard({ skill, onCompareCopies }: SkillLocationsCar
               })()}
             </div>
           ))}
+          {invocationError && files.some((file) => file.path === invocationError.path) && (
+            <p role="alert" className="break-words text-small text-red-400">
+              Couldn't change invocation policy: {invocationError.message}
+            </p>
+          )}
           <p className="text-small text-text-tertiary">{invocationFooterNote(files, skill.name)}</p>
         </div>
       )}

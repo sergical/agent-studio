@@ -569,7 +569,7 @@ describe("buildInvocationFiles editability", () => {
     });
     const files = buildInvocationFiles(buildScopeGroups(skill), skill);
     expect(files[0].editable).toBe(false);
-    expect(files[0].disabledReason).toContain("ownership is unknown");
+    expect(files[0].disabledReason).toContain("not verified");
   });
   it("keeps the global Universal folder editable even when the skill is managed", () => {
     const shared = fixtureDeployment();
@@ -580,6 +580,7 @@ describe("buildInvocationFiles editability", () => {
 
   it("disables a managed project Universal folder", () => {
     const projectShared = fixtureDeployment({
+      owner_kind: "skills-sh",
       scope: "project",
       project_path: "/repo",
       path: "/repo/.agents/skills/find-bugs",
@@ -593,6 +594,7 @@ describe("buildInvocationFiles editability", () => {
   it("disables a managed copy", () => {
     const copy = fixtureDeployment({
       agent: "Cursor",
+      owner_kind: "dotagents",
       scope: "project",
       project_path: "/repo",
       is_symlink: false,
@@ -612,10 +614,35 @@ describe("buildInvocationFiles editability", () => {
       is_symlink: false,
       path: "/repo/.cursor/skills/find-bugs",
     });
-    const skill = fixtureSkill({ deployments: [copy], source_kind: "manual" });
+    const skill = fixtureSkill({ deployments: [copy], source_kind: "skills-sh" });
     const files = buildInvocationFiles(buildScopeGroups(skill), skill);
     expect(files[0]).toMatchObject({ kind: "copy", editable: true });
   });
+
+  it("keeps an owned Copy editable beside a same-name managed deployment", () => {
+    const managed = fixtureDeployment({ owner_kind: "dotagents" });
+    const copy = fixtureDeployment({
+      id: "dep:v1/project/codex/find-bugs",
+      agent: "Codex",
+      owner_kind: "copy",
+      scope: "project",
+      project_path: "/repo",
+      path: "/repo/.codex/skills/find-bugs",
+    });
+    const skill = fixtureSkill({ source_kind: "dotagents", deployments: [managed, copy] });
+    const files = buildInvocationFiles(buildScopeGroups(skill), skill);
+    expect(files.find((file) => file.path === copy.path)).toMatchObject({ editable: true });
+  });
+
+  it.each(["unknown", "ambiguous", "wildcard-dotagents"] as const)(
+    "refuses invocation edits for %s ownership",
+    (owner_kind) => {
+      const skill = fixtureSkill({ deployments: [fixtureDeployment({ owner_kind })] });
+      const [file] = buildInvocationFiles(buildScopeGroups(skill), skill);
+      expect(file).toMatchObject({ editable: false });
+      expect(file.disabledReason).toContain("not verified");
+    },
+  );
 
   it("disables a plugin file regardless of the skill's own source_kind", () => {
     const plugin = fixtureDeployment({

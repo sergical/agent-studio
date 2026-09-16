@@ -341,6 +341,60 @@ impl From<&str> for PreparedContentError {
     }
 }
 
+struct AbsentInvocationSidecar {
+    path: PathBuf,
+    parent: PathBuf,
+    resolved_parent: PathBuf,
+    identity: (u64, u64),
+}
+
+impl AbsentInvocationSidecar {
+    fn capture(scope: &SkillReadScope, path: &Path) -> Result<Self, String> {
+        use cap_std::fs::MetadataExt;
+        let mut parent = path.parent().ok_or("Invocation sidecar has no parent")?;
+        loop {
+            match scope.resolved_path_metadata(parent) {
+                Ok((resolved_parent, metadata)) if metadata.is_dir() => {
+                    return Ok(Self {
+                        path: path.to_path_buf(),
+                        parent: parent.to_path_buf(),
+                        resolved_parent,
+                        identity: (metadata.dev(), metadata.ino()),
+                    })
+                }
+                Err(ScopedReadError::Missing { .. }) => {
+                    parent = parent.parent().ok_or("Invocation parent is unavailable")?
+                }
+                _ => return Err("Invocation parent is not a scoped directory".into()),
+            }
+        }
+    }
+
+    fn revalidate_parent(&self, scope: &SkillReadScope) -> Result<(), CoordinationFailure> {
+        use cap_std::fs::MetadataExt;
+        let skill = self
+            .path
+            .parent()
+            .and_then(Path::parent)
+            .ok_or(CoordinationFailure::Changed)?;
+        match scope.observe_entry(skill, std::ffi::OsStr::new("agents")) {
+            Ok(entry) if entry.metadata.is_dir() && !entry.metadata.file_type().is_symlink() => {}
+            Err(ScopedReadError::Missing { .. }) if self.parent == skill => {}
+            _ => return Err(CoordinationFailure::Changed),
+        }
+        match scope.resolved_path_metadata(&self.parent) {
+            Ok((path, metadata))
+                if path == self.resolved_parent
+                    && metadata.is_dir()
+                    && (metadata.dev(), metadata.ino()) == self.identity =>
+            {
+                Ok(())
+            }
+            _ => Err(CoordinationFailure::Changed),
+        }
+    }
+}
+
 /// Frozen exclusive directory and file domains. The caller still owns effect
 /// completeness, ownership validation, intent persistence and recovery.
 pub struct FinalizedWriteLease<'scope> {
@@ -348,11 +402,85 @@ pub struct FinalizedWriteLease<'scope> {
     scope: &'scope SkillReadScope,
     published: BTreeMap<PathBuf, crate::skill_document_target::DocumentReceipt>,
     failed_after_replace: bool,
+    absent_invocation_sidecar: Option<AbsentInvocationSidecar>,
     ownership: Option<crate::skill_ownership::PreparedOwnershipRead>,
     discovery_membership: Option<crate::skill_discovery::DiscoveryMembershipProof>,
 }
 
 impl FinalizedWriteLease<'_> {
+    pub(crate) fn retain_absent_invocation_sidecar(mut self, path: &Path) -> Result<Self, String> {
+        self.revalidate().map_err(|error| error.to_string())?;
+        if self.absent_invocation_sidecar.is_some()
+            || path.file_name() != Some(std::ffi::OsStr::new("openai.yaml"))
+            || path.parent().and_then(Path::file_name) != Some(std::ffi::OsStr::new("agents"))
+            || !self.guard.guard.effects.iter().any(|effect| matches!(effect,
+                DirectoryEffect::Tree { path: root, mode: CoordinationMode::Exclusive } if path.starts_with(root)))
+            || !matches!(self.scope.resolved_path_metadata(path), Err(ScopedReadError::Missing { .. })) {
+            return Err("Invocation sidecar absence is not covered by this lease".into());
+        }
+        self.absent_invocation_sidecar = Some(AbsentInvocationSidecar::capture(self.scope, path)?);
+        self.revalidate().map_err(|error| error.to_string())?;
+        Ok(self)
+    }
+
+    pub(crate) fn invocation_parent_was_absent(&self, path: &Path) -> bool {
+        self.absent_invocation_sidecar
+            .as_ref()
+            .is_some_and(|proof| {
+                proof.path == path && path.parent() != Some(proof.parent.as_path())
+            })
+    }
+
+    pub(crate) fn validate_invocation_creation(&self, path: &Path) -> Result<(), String> {
+        self.revalidate().map_err(|error| error.to_string())?;
+        if self
+            .absent_invocation_sidecar
+            .as_ref()
+            .map(|proof| proof.path.as_path())
+            != Some(path)
+            || self.published.contains_key(path)
+        {
+            return Err("Invocation creation requires the retained original absence".into());
+        }
+        Ok(())
+    }
+
+    #[cfg(feature = "event-store")]
+    pub(crate) fn validate_invocation_output(
+        &self,
+        path: &Path,
+        expected: Option<&[u8]>,
+    ) -> Result<(), String> {
+        self.revalidate().map_err(|error| error.to_string())?;
+        if let Some(receipt) = self.published.get(path) {
+            match expected {
+                Some(bytes) => receipt.verify_content(bytes)?,
+                None => receipt.verify_absence()?,
+            }
+        } else {
+            match expected {
+                Some(bytes) => {
+                    let current = self
+                        .read(
+                            path,
+                            crate::skill_copy_document_edit::MAX_COPY_DOCUMENT_EDIT_BYTES,
+                        )
+                        .map_err(|error| error.to_string())?;
+                    if current != bytes {
+                        return Err("Invocation output does not match its intent".into());
+                    }
+                }
+                None if self
+                    .absent_invocation_sidecar
+                    .as_ref()
+                    .map(|proof| proof.path.as_path())
+                    == Some(path) => {}
+                None => return Err("Invocation absence has no retained proof".into()),
+            }
+        }
+        self.revalidate().map_err(|error| error.to_string())
+    }
+
     pub(crate) fn retain_membership(
         mut self,
         plugins: crate::skill_discovery::DiscoveryMembershipProof,
@@ -454,6 +582,18 @@ impl FinalizedWriteLease<'_> {
             return Err(CoordinationFailure::Changed);
         }
         self.guard.guard.revalidate()?;
+        if let Some(proof) = &self.absent_invocation_sidecar {
+            proof.revalidate_parent(self.scope)?;
+            let path = &proof.path;
+            if !self.published.contains_key(path)
+                && !matches!(
+                    self.scope.resolved_path_metadata(path),
+                    Err(ScopedReadError::Missing { .. })
+                )
+            {
+                return Err(CoordinationFailure::Changed);
+            }
+        }
 
         for receipt in self.published.values() {
             receipt
@@ -937,6 +1077,7 @@ impl CoordinatedReadGuard {
             scope,
             published: BTreeMap::new(),
             failed_after_replace: false,
+            absent_invocation_sidecar: None,
             ownership: None,
             discovery_membership: None,
         })
@@ -2030,6 +2171,21 @@ impl FinalizedWriteLease<'_> {
         sources: Vec<crate::skill_backup_source::BackupSource>,
         limits: crate::skill_backup_reservation::BackupCopyLimits,
     ) -> Result<crate::skill_event::BackupManifest, PreparedContentError> {
+        self.backup_documents_with_absent_sidecar_prepared(root, id, sources, limits, None)
+    }
+
+    pub(crate) fn backup_documents_with_absent_sidecar_prepared(
+        &self,
+        root: &crate::skill_backup_reservation::BackupStateRoot,
+        id: &str,
+        sources: Vec<crate::skill_backup_source::BackupSource>,
+        limits: crate::skill_backup_reservation::BackupCopyLimits,
+        absent_sidecar: Option<&Path>,
+    ) -> Result<crate::skill_event::BackupManifest, PreparedContentError> {
+        if let Some(path) = absent_sidecar {
+            self.validate_invocation_creation(path)
+                .map_err(PreparedContentError::from)?;
+        }
         self.validate_state_tree_prepared(&root.path)?;
         if sources.is_empty() || sources.len() > self.guard.files.len() {
             return Err("Backup documents must be a nonempty subset of planned files".into());
@@ -2068,6 +2224,11 @@ impl FinalizedWriteLease<'_> {
         for source in sources {
             builder = builder
                 .add_source(source)
+                .map_err(PreparedContentError::from)?;
+        }
+        if let Some(path) = absent_sidecar {
+            builder = builder
+                .add_absent_invocation_sidecar(self, path)
                 .map_err(PreparedContentError::from)?;
         }
         self.revalidate().map_err(PreparedContentError::from)?;

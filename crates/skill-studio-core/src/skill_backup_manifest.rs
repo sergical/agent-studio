@@ -52,6 +52,36 @@ impl<'root> BackupManifestBuilder<'root> {
         })
     }
 
+    pub(crate) fn add_absent_invocation_sidecar(
+        mut self,
+        lease: &crate::skill_coordination::FinalizedWriteLease<'_>,
+        path: &std::path::Path,
+    ) -> io::Result<Self> {
+        check_cancelled(&self.cancellation)?;
+        lease
+            .validate_invocation_creation(path)
+            .map_err(|error| invalid(&error))?;
+        let original = path
+            .to_str()
+            .ok_or_else(|| invalid("Sidecar path is not UTF-8"))?;
+        if self.remaining.max_entries == 0 || self.manifest.entries.contains_key(original) {
+            return Err(invalid(
+                "Absent sidecar exceeds backup limits or duplicates a source",
+            ));
+        }
+        self.manifest.entries.insert(
+            original.to_owned(),
+            BackupEntry {
+                relative_path: String::new(),
+                fingerprint: "absent".into(),
+            },
+        );
+        self.remaining.max_entries -= 1;
+        self.reservation.revalidate()?;
+        check_cancelled(&self.cancellation)?;
+        Ok(self)
+    }
+
     /// Consuming self prevents publication after an add failure. Source paths
     /// come from the bound root, never from a separate caller-supplied label.
     pub fn add_source(mut self, source: BackupSource) -> io::Result<Self> {
