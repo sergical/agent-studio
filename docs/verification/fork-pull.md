@@ -115,3 +115,34 @@ Core `cargo clippy --offline --locked --features event-store --all-targets -- -D
 warnings` now passes (7.14s); all12 focused Pull tests pass (8.19s). No persistence,
 merge result, or desktop behavior changes; native evidence above is retained.
 Frontend CI35145123422 passes (55s). The replacement core job remains pending.
+
+
+## Integration acceptance — September 16
+
+The combined `codex/shared-core-design` worktree retains later owner-update,
+process-streaming and recovery code. Port review corrected Home/mixed-owner
+routing to pass an exact Fork deployment ID. Native integration then found the
+generic content fingerprint guard rejected dangling resource links. The Pull
+adapter now uses fresh exact Fork identity/mutability checks; the unchanged core
+retains its own no-follow snapshots, ownership revision and lease revalidation.
+Generic lifecycle content guards remain unchanged. These integration corrections
+are retained in the combined worktree for its final review/commit series.
+
+Evidence:26routing tests,typecheck,lint,format;1adapter/core link regression
+(0.68s tests,30.50s compile),strict desktopClippy7.81s and rustfmt. Fresh
+simplification left no changes; independent correction review found no issue.
+Packaged native Home single Pull and Update all(clean+conflict) passed. The latter
+showed “Updated 2 of 2 deployments” and “1 conflicts need resolution”. Activity
+showed all three operations done with Reveal and no Undo. Both clean live/base
+trees equal upstream; conflict/local data, valid/dangling links, modes and unknown
+registry fields were checked.
+
+Source:`77bd093b77d03310a0adc49ced1ef809ace76430e646d77b37db9c5c23a4cf4b`.
+Binary:`92f57cae9082689e3c01883f7c7caa42c2aa46ccd9008f6faa188b5620547b6d`.
+Events:`01M2P07TT72W3MFZTMZ3KEE1BK`,`01M2P0AAF84H6SXYGDVY0JXYD8`,
+`01M2P0ABKNXADXGN1S7W832Y9M`. Build62.16s,max processRSS1,550,188,544bytes,
+zero swaps; runtime peak unmeasured. Managed sessions exited; the35,915,347-byte
+disposable bundle was removed. Final results and reproduction tools are retained
+under `/tmp/skill-studio-delivery/fork-pull/integration`. The initial refusal
+preserved live trees and emitted no Pull event. Combined release acceptance
+remains outstanding.
