@@ -13,11 +13,15 @@ use serde::{Deserialize, Serialize};
 use crate::discovery_sources::DiscoverySources;
 
 mod codex;
+mod cursor;
 mod opencode;
+mod pi;
 pub use codex::{codex_skill_name_from_package, parse_codex_uses};
+pub use cursor::parse_cursor_uses;
 pub use opencode::{
     parse_opencode_message, parse_opencode_part, OpenCodeMessageRow, OpenCodePartRow,
 };
+pub use pi::parse_pi_uses;
 
 /// Facts a transcript states once, in a header line, that later lines need.
 /// The host keeps one per transcript file between refreshes.
@@ -317,6 +321,27 @@ pub fn skill_name_from_skill_md_path(path: &str) -> Option<&str> {
     }
 }
 
+/// The skill name a relative-or-absolute `read` path names, resolving a
+/// relative path against `cwd` first (pi and Cursor both report a tool
+/// call's raw `path` argument, which may be relative to the harness's
+/// working folder rather than to the skill root). `path` starting with `/`
+/// or `~`, or no `cwd`, is checked as-is; otherwise every leading `./` is
+/// stripped and the rest is joined onto `cwd`. A `../` in the remainder is
+/// left unresolved rather than walked up (accepted gap: such a path is
+/// simply not recognized).
+fn skill_name_from_read_path(path: &str, cwd: Option<&str>) -> Option<String> {
+    if path.starts_with('/') || path.starts_with('~') || cwd.is_none() {
+        return skill_name_from_skill_md_path(path).map(str::to_string);
+    }
+    let cwd = cwd?;
+    let mut rest = path;
+    while let Some(stripped) = rest.strip_prefix("./") {
+        rest = stripped;
+    }
+    let joined = format!("{}/{}", cwd.trim_end_matches('/'), rest);
+    skill_name_from_skill_md_path(&joined).map(str::to_string)
+}
+
 /// True when `command` redirects into a path ending `SKILL.md` (`>` or
 /// `>>`), so [`skill_names_read_by_shell`] treats the whole command as a
 /// write rather than a read.
@@ -390,6 +415,46 @@ pub fn skill_names_read_by_shell(command: &str) -> Vec<&str> {
         }
     }
     out
+}
+
+/// Builds one [`SkillInvocation`] from a transcript's context and pushes it.
+/// Shared by every transcript parser; only the harness id differs between
+/// them.
+fn push_use(
+    out: &mut Vec<SkillInvocation>,
+    context: &TranscriptContext,
+    harness: &str,
+    skill: &str,
+    trigger: SkillTrigger,
+    at: DateTime<Utc>,
+) {
+    out.push(SkillInvocation {
+        skill: skill.to_string(),
+        harness: harness.to_string(),
+        trigger,
+        at,
+        project_path: context.project_path.clone(),
+        session: context.session.clone(),
+    });
+}
+
+/// One `FileRead` per skill whose `SKILL.md` one of `commands` prints. The
+/// commands all belong to one tool call, so a name counts once across them.
+fn push_shell_reads<S: AsRef<str>>(
+    out: &mut Vec<SkillInvocation>,
+    context: &TranscriptContext,
+    harness: &str,
+    commands: impl IntoIterator<Item = S>,
+    at: DateTime<Utc>,
+) {
+    let mut seen: BTreeSet<String> = BTreeSet::new();
+    for command in commands {
+        for name in skill_names_read_by_shell(command.as_ref()) {
+            if seen.insert(name.to_string()) {
+                push_use(out, context, harness, name, SkillTrigger::FileRead, at);
+            }
+        }
+    }
 }
 
 /// Fast-path substrings a line must contain before it's worth a full JSON
@@ -579,6 +644,35 @@ mod tests {
         );
         assert_eq!(
             skill_name_from_skill_md_path("/x/skills/foo/SKILL.md.bak"),
+            None
+        );
+    }
+
+    #[test]
+    fn skill_name_from_read_path_rules() {
+        assert_eq!(
+            skill_name_from_read_path("SKILL.md", Some("/x/skills/foo")),
+            Some("foo".to_string())
+        );
+        assert_eq!(
+            skill_name_from_read_path("./SKILL.md", Some("/x/skills/foo")),
+            Some("foo".to_string())
+        );
+        assert_eq!(
+            skill_name_from_read_path("skills/foo/SKILL.md", Some("/r")),
+            Some("foo".to_string())
+        );
+        assert_eq!(
+            skill_name_from_read_path("/a/skills/foo/SKILL.md", Some("/anywhere")),
+            Some("foo".to_string())
+        );
+        assert_eq!(
+            skill_name_from_read_path("/a/skills/foo/SKILL.md", None),
+            Some("foo".to_string())
+        );
+        assert_eq!(skill_name_from_read_path("SKILL.md", None), None);
+        assert_eq!(
+            skill_name_from_read_path("notes/SKILL.md", Some("/r")),
             None
         );
     }

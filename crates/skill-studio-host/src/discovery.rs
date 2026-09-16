@@ -255,7 +255,7 @@ const MAX_CURSOR_WORKSPACES: usize = 10_000;
 /// Local folders Cursor has opened. Multi-root workspaces (`workspace`) and
 /// remote folders (`vscode-remote://`) name no local project root and are
 /// skipped.
-fn cursor_workspace_folders(home: &Path) -> Vec<PathBuf> {
+pub(crate) fn cursor_workspace_folders(home: &Path) -> Vec<PathBuf> {
     let mut out = Vec::new();
     let mut remaining = MAX_CURSOR_WORKSPACES;
     for root in CURSOR_WORKSPACE_STORAGE_ROOTS {

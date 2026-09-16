@@ -14,8 +14,11 @@
 //! header line, rather than repeating them on every line the way Claude Code
 //! does.
 //!
-//! `SOURCES` is the table of harnesses this index reads from. Adding a
-//! harness later means adding a row, not reworking `refresh`.
+//! `SOURCES` is the table of harnesses this index reads from: Claude Code,
+//! pi, and Cursor each watch one transcript root; Codex watches two
+//! (`sessions`, `archived_sessions`); OpenCode reads its SQLite databases
+//! instead of JSONL. Adding a harness later means adding a row, not
+//! reworking `refresh`.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
@@ -29,10 +32,11 @@ use skill_studio_core::discovery_sources::DiscoverySources;
 use skill_studio_core::identity::AgentId;
 use skill_studio_core::skill_uses::parse_claude_code_uses;
 use skill_studio_core::skill_uses::{
-    parse_codex_uses, skill_heatmap, skill_stats, InvocationHeatmap, SkillInvocation,
-    SkillInvocationStats, SkillUseFilter, TranscriptContext,
+    parse_codex_uses, parse_cursor_uses, parse_pi_uses, skill_heatmap, skill_stats,
+    InvocationHeatmap, SkillInvocation, SkillInvocationStats, SkillUseFilter, TranscriptContext,
 };
 
+use crate::discovery::cursor_workspace_folders;
 use crate::opencode_db::{opencode_databases, OPENCODE_DATA_ROOT};
 
 mod opencode;
@@ -184,6 +188,16 @@ pub struct SkillUseRefreshReport {
     pub incomplete: bool,
 }
 
+/// What a transcript parser may need to know besides the text: where the
+/// file lives, and when it was last written (used by Cursor, whose lines
+/// carry no timestamp of their own).
+struct TranscriptFile<'a> {
+    home: &'a Path,
+    path: &'a Path,
+    /// The file's modification time, or now when the platform can't tell.
+    modified: DateTime<Utc>,
+}
+
 /// How one [`UseSource`] reads its uses: an append-only transcript, resumed
 /// from a byte offset, or a SQLite database, re-queried from a watermark.
 enum UseReader {
@@ -191,7 +205,7 @@ enum UseReader {
     /// offset.
     Transcripts {
         list: fn(&Path) -> SourceListing,
-        parse: fn(&str, &mut TranscriptContext) -> Vec<SkillInvocation>,
+        parse: fn(&TranscriptFile, &str, &mut TranscriptContext) -> Vec<SkillInvocation>,
     },
     /// SQLite databases, re-queried from a `time_updated` watermark.
     Databases {
@@ -222,25 +236,41 @@ struct SourceWatch {
     /// Relative to `home`.
     dir: &'static str,
     recursive: bool,
-    /// Which changed file names under `dir` matter.
-    accepts: fn(&str) -> bool,
+    /// Which changed paths under `dir` matter, given relative to `dir`.
+    accepts: fn(&Path) -> bool,
 }
 
-/// Matches any file name - Claude Code's transcript directory has no
-/// name-based filter, since every file under it can hold uses.
-fn any_name(_: &str) -> bool {
+/// Matches any path - Claude Code's and pi's transcript directories have no
+/// path-based filter, since every file under them can hold uses.
+fn any_path(_: &Path) -> bool {
     true
 }
 
-/// True when `name` is an OpenCode database file, or that database's `-wal`
-/// sidecar. `-shm` is excluded on purpose: a read-only reader (ours
-/// included) can touch `-shm` just by opening the database, so treating it
-/// as a use-changing event would make our own reads queue another refresh.
-fn is_opencode_database_or_wal(name: &str) -> bool {
+/// True when `rel` (a single file name: this watch is non-recursive) is an
+/// OpenCode database file, or that database's `-wal` sidecar. `-shm` is
+/// excluded on purpose: a read-only reader (ours included) can touch `-shm`
+/// just by opening the database, so treating it as a use-changing event
+/// would make our own reads queue another refresh.
+fn is_opencode_database_or_wal(rel: &Path) -> bool {
+    let Some(name) = rel.to_str() else {
+        return false;
+    };
     match name.strip_suffix("-wal") {
         Some(db_name) => crate::opencode_db::is_opencode_database_name(db_name),
         None => crate::opencode_db::is_opencode_database_name(name),
     }
+}
+
+/// True when the second component of `rel` (`<project>/agent-transcripts/
+/// ...`) is `agent-transcripts`. A recursive watch of `.cursor/projects`
+/// also sees Cursor's terminal logs and tool files under other project
+/// subdirectories: this keeps them out.
+fn is_cursor_transcript_path(rel: &Path) -> bool {
+    let mut components = rel.components();
+    components.next(); // <project>
+    components
+        .next()
+        .is_some_and(|c| c.as_os_str() == "agent-transcripts")
 }
 
 /// One source's listing of the transcript files it found under `home`.
@@ -347,12 +377,24 @@ fn list_claude_code_transcripts(home: &Path) -> SourceListing {
 
 /// Adapts [`parse_claude_code_uses`] to the [`UseReader::Transcripts`]
 /// `parse` signature. Claude Code repeats its session id and cwd on every
-/// record, so unlike Codex it needs no [`TranscriptContext`].
+/// record, so unlike Codex it needs no [`TranscriptContext`], and it never
+/// needs the file itself.
 fn parse_claude_code_uses_with_context(
+    _file: &TranscriptFile,
     text: &str,
     _context: &mut TranscriptContext,
 ) -> Vec<SkillInvocation> {
     parse_claude_code_uses(text)
+}
+
+/// Adapts [`parse_codex_uses`] to the [`UseReader::Transcripts`] `parse`
+/// signature; Codex never needs the file itself.
+fn parse_codex_uses_with_file(
+    _file: &TranscriptFile,
+    text: &str,
+    context: &mut TranscriptContext,
+) -> Vec<SkillInvocation> {
+    parse_codex_uses(text, context)
 }
 
 fn opencode_root(home: &Path) -> PathBuf {
@@ -388,7 +430,7 @@ fn list_codex_rollouts(home: &Path) -> SourceListing {
     let mut incomplete = false;
 
     for top in [CODEX_SESSIONS_DIR, CODEX_ARCHIVED_SESSIONS_DIR] {
-        walk_codex_dir(
+        walk_jsonl_files(
             &home.join(top),
             CODEX_WALK_DEPTH,
             &mut files,
@@ -404,10 +446,12 @@ fn list_codex_rollouts(home: &Path) -> SourceListing {
     }
 }
 
-/// One directory's share of [`list_codex_rollouts`]: lists `dir`, collects
-/// its `.jsonl` files, and (while `depth_remaining` allows) recurses into
-/// its real (non-symlink) subdirectories.
-fn walk_codex_dir(
+/// One directory's share of a source's listing: lists `dir`, collects its
+/// `.jsonl` files, and (while `depth_remaining` allows) recurses into its
+/// real (non-symlink) subdirectories. Shared by Codex, pi and Cursor. A
+/// missing `dir` is normal (nothing has been written there yet) and not an
+/// error; any other failure to list it marks `incomplete`.
+fn walk_jsonl_files(
     dir: &Path,
     depth_remaining: u32,
     files: &mut Vec<PathBuf>,
@@ -435,9 +479,187 @@ fn walk_codex_dir(
         }
         let is_real_dir = fs::symlink_metadata(&path).is_ok_and(|m| m.file_type().is_dir());
         if is_real_dir {
-            walk_codex_dir(&path, depth_remaining - 1, files, listed_dirs, incomplete);
+            walk_jsonl_files(&path, depth_remaining - 1, files, listed_dirs, incomplete);
         }
     }
+}
+
+/// pi keeps one directory per session here:
+/// `.pi/agent/sessions/<dir>/<file>.jsonl`.
+const PI_SESSIONS_ROOT: &str = ".pi/agent/sessions";
+
+/// How many directory levels [`list_pi_sessions`] descends below
+/// `.pi/agent/sessions` - one level covers the known layout, with the same
+/// room to spare as [`CODEX_WALK_DEPTH`].
+const PI_WALK_DEPTH: u32 = 4;
+
+fn pi_root(home: &Path) -> PathBuf {
+    home.join(PI_SESSIONS_ROOT)
+}
+
+/// Lists pi's session transcripts: `<home>/.pi/agent/sessions/**/*.jsonl`. A
+/// missing top dir is normal (pi was never installed); any other failure to
+/// list a directory marks the listing incomplete.
+fn list_pi_sessions(home: &Path) -> SourceListing {
+    let mut files = Vec::new();
+    let mut listed_dirs = BTreeSet::new();
+    let mut incomplete = false;
+
+    walk_jsonl_files(
+        &home.join(PI_SESSIONS_ROOT),
+        PI_WALK_DEPTH,
+        &mut files,
+        &mut listed_dirs,
+        &mut incomplete,
+    );
+
+    SourceListing {
+        files,
+        listed_dirs,
+        incomplete,
+    }
+}
+
+/// Adapts [`parse_pi_uses`] to the [`UseReader::Transcripts`] `parse`
+/// signature; pi never needs the file itself.
+fn parse_pi_uses_with_file(
+    _file: &TranscriptFile,
+    text: &str,
+    context: &mut TranscriptContext,
+) -> Vec<SkillInvocation> {
+    parse_pi_uses(text, context)
+}
+
+/// Cursor keeps one directory per opened project here, each holding its own
+/// `agent-transcripts` directory of session (and subagent) transcripts.
+const CURSOR_PROJECTS_ROOT: &str = ".cursor/projects";
+
+/// How many directory levels [`list_cursor_transcripts`] descends below each
+/// project's `agent-transcripts`: covers `<session>/<session>.jsonl` and
+/// `<session>/subagents/<id>.jsonl`, with a level of room to spare.
+const CURSOR_TRANSCRIPTS_WALK_DEPTH: u32 = 3;
+
+fn cursor_root(home: &Path) -> PathBuf {
+    home.join(CURSOR_PROJECTS_ROOT)
+}
+
+/// Lists Cursor's transcripts: for each real (non-symlink) directory under
+/// `<home>/.cursor/projects`, `<project>/agent-transcripts/**/*.jsonl`. A
+/// missing `.cursor/projects` is normal (Cursor was never installed); a
+/// missing `agent-transcripts` under a given project is normal too (most
+/// project dirs hold none). Any other failure to list a directory marks the
+/// listing incomplete.
+fn list_cursor_transcripts(home: &Path) -> SourceListing {
+    let mut files = Vec::new();
+    let mut listed_dirs = BTreeSet::new();
+    let mut incomplete = false;
+
+    let projects_dir = home.join(CURSOR_PROJECTS_ROOT);
+    let project_dirs = match fs::read_dir(&projects_dir) {
+        Ok(dirs) => dirs,
+        Err(e) if e.kind() == io::ErrorKind::NotFound => {
+            return SourceListing {
+                files,
+                listed_dirs,
+                incomplete: false,
+            };
+        }
+        Err(_) => {
+            return SourceListing {
+                files,
+                listed_dirs,
+                incomplete: true,
+            };
+        }
+    };
+    for project_dir in project_dirs.flatten() {
+        let dir = project_dir.path();
+        let is_real_dir = fs::symlink_metadata(&dir).is_ok_and(|m| m.file_type().is_dir());
+        if !is_real_dir {
+            continue;
+        }
+        walk_jsonl_files(
+            &dir.join("agent-transcripts"),
+            CURSOR_TRANSCRIPTS_WALK_DEPTH,
+            &mut files,
+            &mut listed_dirs,
+            &mut incomplete,
+        );
+    }
+
+    SourceListing {
+        files,
+        listed_dirs,
+        incomplete,
+    }
+}
+
+/// The directory directly under `agent-transcripts` in `path` - the
+/// session id, shared by a session's own transcript and its
+/// `subagents/<id>.jsonl` siblings.
+fn cursor_session_from_path(path: &Path) -> Option<String> {
+    let mut components = path.components();
+    loop {
+        let component = components.next()?;
+        if component.as_os_str() == "agent-transcripts" {
+            return components.next()?.as_os_str().to_str().map(str::to_string);
+        }
+    }
+}
+
+/// The directory name directly under `.cursor/projects` in `path` - the
+/// encoded project name [`cursor_project_dir_name`] produces.
+fn cursor_project_dir_from_path(home: &Path, path: &Path) -> Option<String> {
+    let rel = path.strip_prefix(home.join(CURSOR_PROJECTS_ROOT)).ok()?;
+    rel.components()
+        .next()?
+        .as_os_str()
+        .to_str()
+        .map(str::to_string)
+}
+
+/// Cursor's `projects/<name>` encoding of a workspace folder's absolute
+/// path: the path without its leading `/`, with every character that isn't
+/// an ASCII letter or digit replaced by `-`.
+fn cursor_project_dir_name(folder: &Path) -> String {
+    let s = folder.to_string_lossy();
+    let s = s.strip_prefix('/').unwrap_or(&s);
+    s.chars()
+        .map(|c| if c.is_ascii_alphanumeric() { c } else { '-' })
+        .collect()
+}
+
+/// The one Cursor workspace folder under `home` whose encoded name
+/// ([`cursor_project_dir_name`]) equals `project_dir_name`; `None` when no
+/// folder matches, or more than one does.
+fn cursor_project_path(home: &Path, project_dir_name: &str) -> Option<String> {
+    let mut matches = cursor_workspace_folders(home)
+        .into_iter()
+        .filter(|folder| cursor_project_dir_name(folder) == project_dir_name);
+    let first = matches.next()?;
+    if matches.next().is_some() {
+        return None;
+    }
+    Some(first.to_string_lossy().into_owned())
+}
+
+/// Adapts [`parse_cursor_uses`] to the [`UseReader::Transcripts`] `parse`
+/// signature. Cursor transcript lines carry no session id, project path, or
+/// timestamp of their own (see the core module doc), so the first call for
+/// a file fills the context from `file.path`/`file.home` before parsing;
+/// later calls (a resumed, appended file) reuse the context already stored
+/// alongside it, so the folder lookup only runs once per file.
+fn parse_cursor_uses_with_file(
+    file: &TranscriptFile,
+    text: &str,
+    context: &mut TranscriptContext,
+) -> Vec<SkillInvocation> {
+    if context.session.is_none() {
+        context.session = cursor_session_from_path(file.path);
+        context.project_path = cursor_project_dir_from_path(file.home, file.path)
+            .and_then(|name| cursor_project_path(file.home, &name));
+    }
+    parse_cursor_uses(text, context, file.modified)
 }
 
 /// Every harness this index reads uses from, in the order they're processed.
@@ -452,7 +674,7 @@ const SOURCES: &[UseSource] = &[
         watch: &[SourceWatch {
             dir: CLAUDE_PROJECTS_ROOT,
             recursive: true,
-            accepts: any_name,
+            accepts: any_path,
         }],
     },
     UseSource {
@@ -460,18 +682,18 @@ const SOURCES: &[UseSource] = &[
         root: codex_root,
         reader: UseReader::Transcripts {
             list: list_codex_rollouts,
-            parse: parse_codex_uses,
+            parse: parse_codex_uses_with_file,
         },
         watch: &[
             SourceWatch {
                 dir: CODEX_SESSIONS_DIR,
                 recursive: true,
-                accepts: any_name,
+                accepts: any_path,
             },
             SourceWatch {
                 dir: CODEX_ARCHIVED_SESSIONS_DIR,
                 recursive: true,
-                accepts: any_name,
+                accepts: any_path,
             },
         ],
     },
@@ -486,6 +708,32 @@ const SOURCES: &[UseSource] = &[
             dir: OPENCODE_DATA_ROOT,
             recursive: false,
             accepts: is_opencode_database_or_wal,
+        }],
+    },
+    UseSource {
+        harness: AgentId::PI,
+        root: pi_root,
+        reader: UseReader::Transcripts {
+            list: list_pi_sessions,
+            parse: parse_pi_uses_with_file,
+        },
+        watch: &[SourceWatch {
+            dir: PI_SESSIONS_ROOT,
+            recursive: true,
+            accepts: any_path,
+        }],
+    },
+    UseSource {
+        harness: AgentId::CURSOR,
+        root: cursor_root,
+        reader: UseReader::Transcripts {
+            list: list_cursor_transcripts,
+            parse: parse_cursor_uses_with_file,
+        },
+        watch: &[SourceWatch {
+            dir: CURSOR_PROJECTS_ROOT,
+            recursive: true,
+            accepts: is_cursor_transcript_path,
         }],
     },
 ];
@@ -516,22 +764,18 @@ pub fn skill_use_watch_paths(home: &Path) -> Vec<SkillUseWatchPath> {
 }
 
 /// True when a change at `path` can change skill uses: `path` is under a
-/// recursive watch dir, or directly inside a non-recursive one, and its
-/// file name passes that watch's `accepts`. For a recursive watch, a path
-/// equal to the dir itself or any path under it counts, and `accepts` is
-/// applied to the path's file name.
+/// recursive watch dir, or directly inside a non-recursive one, and the
+/// path relative to that dir passes the watch's `accepts`.
 pub fn is_skill_use_change(home: &Path, path: &Path) -> bool {
     SOURCES.iter().flat_map(|source| source.watch).any(|watch| {
         let dir = home.join(watch.dir);
-        if !path.starts_with(&dir) {
+        let Ok(rel) = path.strip_prefix(&dir) else {
+            return false;
+        };
+        if !watch.recursive && rel.components().count() != 1 {
             return false;
         }
-        if !watch.recursive && path.parent() != Some(dir.as_path()) {
-            return false;
-        }
-        path.file_name()
-            .and_then(|name| name.to_str())
-            .is_some_and(watch.accepts)
+        (watch.accepts)(rel)
     })
 }
 
@@ -676,7 +920,7 @@ impl SkillInvocationIndex {
         home: &Path,
         source: &UseSource,
         list: fn(&Path) -> SourceListing,
-        parse: fn(&str, &mut TranscriptContext) -> Vec<SkillInvocation>,
+        parse: fn(&TranscriptFile, &str, &mut TranscriptContext) -> Vec<SkillInvocation>,
         run_budget: &mut u64,
         report: &mut SkillUseRefreshReport,
     ) {
@@ -752,7 +996,16 @@ impl SkillInvocationIndex {
                 continue;
             };
             let parsed_bytes = start_offset + consumed;
-            uses.extend(parse(&text, &mut context));
+            let modified_utc = meta
+                .modified()
+                .map(DateTime::<Utc>::from)
+                .unwrap_or_else(|_| Utc::now());
+            let file = TranscriptFile {
+                home,
+                path: &path,
+                modified: modified_utc,
+            };
+            uses.extend(parse(&file, &text, &mut context));
             if parsed_bytes < size {
                 report.incomplete = true;
             }
@@ -1742,6 +1995,14 @@ mod tests {
             path: home.join(CODEX_ARCHIVED_SESSIONS_DIR),
             recursive: true,
         }));
+        assert!(paths.contains(&SkillUseWatchPath {
+            path: home.join(PI_SESSIONS_ROOT),
+            recursive: true,
+        }));
+        assert!(paths.contains(&SkillUseWatchPath {
+            path: home.join(CURSOR_PROJECTS_ROOT),
+            recursive: true,
+        }));
     }
 
     #[test]
@@ -1796,6 +2057,27 @@ mod tests {
         assert!(!is_skill_use_change(
             &home,
             &home.join(".codex/log/codex-tui.log"),
+        ));
+
+        assert!(is_skill_use_change(
+            &home,
+            &home.join(".pi/agent/sessions/d/f.jsonl"),
+        ));
+        assert!(is_skill_use_change(
+            &home,
+            &home.join(".cursor/projects/p/agent-transcripts/s/s.jsonl"),
+        ));
+        assert!(!is_skill_use_change(
+            &home,
+            &home.join(".cursor/projects/p/terminals/1.txt"),
+        ));
+        assert!(!is_skill_use_change(
+            &home,
+            &home.join(".cursor/projects/p")
+        ));
+        assert!(!is_skill_use_change(
+            &home,
+            &home.join(".pi/agent/settings.json"),
         ));
     }
 
@@ -2072,6 +2354,280 @@ mod tests {
             let known_skills = known(&["foo"]);
             assert_eq!(stats(&loaded, &known_skills, &sources).len(), 1);
         }
+    }
+
+    mod pi_sessions {
+        use super::*;
+
+        fn header_line(id: &str, cwd: &str) -> String {
+            format!(
+                r#"{{"type":"session","id":"{id}","cwd":"{cwd}","timestamp":"2026-09-16T11:00:00Z","version":"1.0.0"}}"#
+            )
+        }
+
+        fn user_skill_line(timestamp: &str, name: &str, location: &str) -> String {
+            format!(
+                r#"{{"type":"message","id":"m1","parentId":null,"timestamp":"{timestamp}","message":{{"role":"user","content":[{{"type":"text","text":"<skill name=\"{name}\" location=\"{location}\">"}}]}}}}"#
+            )
+        }
+
+        fn read_tool_call_line(timestamp: &str, path: &str) -> String {
+            format!(
+                r#"{{"type":"message","id":"m2","parentId":"m1","timestamp":"{timestamp}","message":{{"role":"assistant","content":[{{"type":"toolCall","name":"read","arguments":{{"path":"{path}"}}}}]}}}}"#
+            )
+        }
+
+        fn write_session(dir: &Path, name: &str, lines: &[String]) -> PathBuf {
+            fs::create_dir_all(dir).unwrap();
+            let path = dir.join(name);
+            let mut content = lines.join("\n");
+            content.push('\n');
+            fs::write(&path, content).unwrap();
+            path
+        }
+
+        fn known(skills: &[&str]) -> StdBTreeSet<String> {
+            skills.iter().map(|s| s.to_string()).collect()
+        }
+
+        #[test]
+        fn issue_acceptance_user_and_file_read_uses_are_counted() {
+            let tmp = tempfile::tempdir().unwrap();
+            let home = tmp.path();
+            write_session(
+                &home.join(PI_SESSIONS_ROOT).join("d"),
+                "a.jsonl",
+                &[
+                    header_line("sess-a", "/proj-a"),
+                    user_skill_line("2026-09-16T12:00:00Z", "foo", "/x/skills/foo/SKILL.md"),
+                    read_tool_call_line("2026-09-16T12:00:01Z", "/x/skills/bar/SKILL.md"),
+                    read_tool_call_line("2026-09-16T12:00:02Z", "/x/baz/SKILL.md"),
+                ],
+            );
+
+            let mut index = SkillInvocationIndex::default();
+            let known_skills = known(&["foo", "bar", "baz"]);
+            let sources = DiscoverySources::default();
+            index.refresh(home, &sources);
+            let stats = stats(&index, &known_skills, &sources);
+            let by_skill: BTreeMap<&str, &SkillInvocationStats> =
+                stats.iter().map(|s| (s.skill.as_str(), s)).collect();
+            assert_eq!(by_skill.len(), 2, "baz's read isn't under a skills root");
+            assert_eq!(by_skill["foo"].total, 1);
+            assert_eq!(by_skill["foo"].by_trigger_30_days.user, 1);
+            assert_eq!(by_skill["foo"].by_project_30_days.get("/proj-a"), Some(&1));
+            assert_eq!(by_skill["bar"].total, 1);
+            assert_eq!(by_skill["bar"].by_trigger_30_days.file_read, 1);
+            assert_eq!(by_skill["bar"].by_project_30_days.get("/proj-a"), Some(&1));
+        }
+
+        #[test]
+        fn switching_pi_off_stops_reads_and_on_resumes_counting() {
+            let tmp = tempfile::tempdir().unwrap();
+            let home = tmp.path();
+            write_session(
+                &home.join(PI_SESSIONS_ROOT).join("d"),
+                "a.jsonl",
+                &[
+                    header_line("sess-a", "/proj-a"),
+                    user_skill_line("2026-09-16T12:00:00Z", "foo", "/x/skills/foo/SKILL.md"),
+                ],
+            );
+
+            let mut index = SkillInvocationIndex::default();
+            let known_skills = known(&["foo"]);
+            let mut off = DiscoverySources::default();
+            off.set(AgentId::PI, false);
+            index.refresh(home, &off);
+            assert!(stats(&index, &known_skills, &off).is_empty());
+
+            let enabled = DiscoverySources::default();
+            index.refresh(home, &enabled);
+            assert_eq!(stats(&index, &known_skills, &enabled).len(), 1);
+        }
+    }
+
+    mod cursor_transcripts {
+        use super::*;
+
+        /// Matches `discovery.rs`'s `CURSOR_WORKSPACE_STORAGE_ROOTS[0]`.
+        const CURSOR_WORKSPACE_STORAGE_ROOT: &str =
+            "Library/Application Support/Cursor/User/workspaceStorage";
+
+        fn write_cursor_workspace(home: &Path, hash: &str, folder: &Path) {
+            let dir = home.join(CURSOR_WORKSPACE_STORAGE_ROOT).join(hash);
+            fs::create_dir_all(&dir).unwrap();
+            let uri = url::Url::from_file_path(folder).unwrap();
+            fs::write(
+                dir.join("workspace.json"),
+                serde_json::json!({ "folder": uri.as_str() }).to_string(),
+            )
+            .unwrap();
+        }
+
+        fn read_line(path: &str) -> String {
+            format!(
+                r#"{{"role":"assistant","message":{{"content":[{{"type":"tool_use","name":"Read","input":{{"path":"{path}"}}}}]}}}}"#
+            )
+        }
+
+        fn write_transcript(dir: &Path, name: &str, lines: &[String]) -> PathBuf {
+            fs::create_dir_all(dir).unwrap();
+            let path = dir.join(name);
+            let mut content = lines.join("\n");
+            content.push('\n');
+            fs::write(&path, content).unwrap();
+            path
+        }
+
+        fn known(skills: &[&str]) -> StdBTreeSet<String> {
+            skills.iter().map(|s| s.to_string()).collect()
+        }
+
+        #[test]
+        fn issue_acceptance_a_skill_read_gives_one_file_read_with_session_and_project() {
+            let tmp = tempfile::tempdir().unwrap();
+            let home = tmp.path();
+            let project_folder = home.join("proj");
+            write_cursor_workspace(home, "hash1", &project_folder);
+            let encoded = cursor_project_dir_name(&project_folder);
+
+            write_transcript(
+                &home
+                    .join(CURSOR_PROJECTS_ROOT)
+                    .join(&encoded)
+                    .join("agent-transcripts")
+                    .join("s1"),
+                "s1.jsonl",
+                &[
+                    read_line("/x/skills/foo/SKILL.md"),
+                    read_line("/x/notes/SKILL.md"),
+                ],
+            );
+
+            let mut index = SkillInvocationIndex::default();
+            let known_skills = known(&["foo"]);
+            let sources = DiscoverySources::default();
+            index.refresh(home, &sources);
+            let stats = stats(&index, &known_skills, &sources);
+            assert_eq!(stats.len(), 1, "the read outside a root must not count");
+            assert_eq!(stats[0].skill, "foo");
+            assert_eq!(stats[0].total, 1);
+            assert_eq!(
+                stats[0]
+                    .by_project_30_days
+                    .get(&project_folder.to_string_lossy().into_owned()),
+                Some(&1)
+            );
+        }
+
+        #[test]
+        fn a_subagent_file_shares_its_parents_session_and_dedupes_with_it() {
+            let tmp = tempfile::tempdir().unwrap();
+            let home = tmp.path();
+            let project_folder = home.join("proj");
+            write_cursor_workspace(home, "hash1", &project_folder);
+            let encoded = cursor_project_dir_name(&project_folder);
+            let session_dir = home
+                .join(CURSOR_PROJECTS_ROOT)
+                .join(&encoded)
+                .join("agent-transcripts")
+                .join("s1");
+
+            write_transcript(
+                &session_dir,
+                "s1.jsonl",
+                &[read_line("/x/skills/foo/SKILL.md")],
+            );
+            write_transcript(
+                &session_dir.join("subagents"),
+                "sub1.jsonl",
+                &[read_line("/x/skills/foo/SKILL.md")],
+            );
+
+            let mut index = SkillInvocationIndex::default();
+            let known_skills = known(&["foo"]);
+            let sources = DiscoverySources::default();
+            index.refresh(home, &sources);
+            let stats = stats(&index, &known_skills, &sources);
+            assert_eq!(stats.len(), 1);
+            assert_eq!(
+                stats[0].total, 1,
+                "the same session's file-read dedupe must collapse the subagent copy"
+            );
+        }
+
+        #[test]
+        fn no_matching_workspace_folder_still_counts_the_use_without_a_project_path() {
+            let tmp = tempfile::tempdir().unwrap();
+            let home = tmp.path();
+            write_transcript(
+                &home
+                    .join(CURSOR_PROJECTS_ROOT)
+                    .join("unknown-project")
+                    .join("agent-transcripts")
+                    .join("s1"),
+                "s1.jsonl",
+                &[read_line("/x/skills/foo/SKILL.md")],
+            );
+
+            let mut index = SkillInvocationIndex::default();
+            let known_skills = known(&["foo"]);
+            let sources = DiscoverySources::default();
+            index.refresh(home, &sources);
+            let stats = stats(&index, &known_skills, &sources);
+            assert_eq!(stats.len(), 1);
+            assert_eq!(stats[0].total, 1);
+            assert!(stats[0].by_project_30_days.is_empty());
+        }
+
+        #[test]
+        fn switching_cursor_off_stops_reads_and_on_resumes_counting() {
+            let tmp = tempfile::tempdir().unwrap();
+            let home = tmp.path();
+            write_transcript(
+                &home
+                    .join(CURSOR_PROJECTS_ROOT)
+                    .join("unknown-project")
+                    .join("agent-transcripts")
+                    .join("s1"),
+                "s1.jsonl",
+                &[read_line("/x/skills/foo/SKILL.md")],
+            );
+
+            let mut index = SkillInvocationIndex::default();
+            let known_skills = known(&["foo"]);
+            let mut off = DiscoverySources::default();
+            off.set(AgentId::CURSOR, false);
+            index.refresh(home, &off);
+            assert!(stats(&index, &known_skills, &off).is_empty());
+
+            let enabled = DiscoverySources::default();
+            index.refresh(home, &enabled);
+            assert_eq!(stats(&index, &known_skills, &enabled).len(), 1);
+        }
+
+        #[test]
+        fn cursor_project_dir_name_replaces_non_alphanumerics_and_strips_the_leading_slash() {
+            assert_eq!(
+                cursor_project_dir_name(Path::new("/Users/a/src/agent-studio")),
+                "Users-a-src-agent-studio"
+            );
+            assert_eq!(
+                cursor_project_dir_name(Path::new("/Users/a/my.app/x_y")),
+                "Users-a-my-app-x-y"
+            );
+        }
+    }
+
+    #[test]
+    fn no_pi_and_no_cursor_is_not_incomplete() {
+        let tmp = tempfile::tempdir().unwrap();
+        let home = tmp.path();
+        let mut index = SkillInvocationIndex::default();
+        let sources = DiscoverySources::default();
+        let report = index.refresh(home, &sources);
+        assert!(!report.incomplete);
     }
 
     mod opencode_databases {

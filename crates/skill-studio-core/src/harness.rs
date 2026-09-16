@@ -428,18 +428,17 @@ const CODEX_SKILLS_DOC: &str = "https://learn.chatgpt.com/docs/build-skills";
 const CODEX_PLUGINS_DOC: &str = "https://developers.openai.com/plugins/build/plugins";
 const OPENCODE_SKILLS_DOC: &str = "https://opencode.ai/v2/docs/skills/";
 const OPENCODE_MIGRATE_DOC: &str = "https://opencode.ai/v2/docs/migrate-v1/";
-// Cited in `docs/research/harness-primitives.md` for v1-specific facts
-// (the v2 baseline facts below cite `OPENCODE_SKILLS_DOC` instead).
-const OPENCODE_STORAGE_DOC: &str = "https://opencode.ai/docs/troubleshooting/";
 const PI_SKILLS_DOC: &str =
     "https://github.com/badlogic/pi-mono/blob/main/packages/coding-agent/docs/skills.md";
 const PI_PACKAGES_DOC: &str =
     "https://github.com/badlogic/pi-mono/blob/main/packages/coding-agent/docs/packages.md";
 const PI_SETTINGS_DOC: &str = "https://pi.dev/docs/latest/settings";
-const PI_SESSIONS_DOC: &str = "https://pi.dev/docs/latest/sessions";
 const CODE_SURVEY: &str = "apps/desktop/src-tauri/src/skills/agents.rs";
 const CLAUDE_TRANSCRIPT_READER: &str = "crates/skill-studio-host/src/skill_uses.rs";
 const CODEX_TRANSCRIPT_READER: &str = "crates/skill-studio-core/src/skill_uses/codex.rs";
+const PI_TRANSCRIPT_READER: &str = "crates/skill-studio-core/src/skill_uses/pi.rs";
+const CURSOR_TRANSCRIPT_READER: &str = "crates/skill-studio-core/src/skill_uses/cursor.rs";
+const OPENCODE_USE_READER: &str = "crates/skill-studio-core/src/skill_uses/opencode.rs";
 const ONE_LEVEL_READER: &str =
     "one-level readers never reach <root>/.skill-studio-disabled/<skill>/SKILL.md";
 
@@ -688,9 +687,8 @@ fn open_code() -> HarnessFacts {
             relative_path: None,
         },
         usage_source: UsageSourceSpec {
-            // v1 layout, not re-confirmed for v2.
-            shape: Support::Partial(Evidence::inferred(OPENCODE_STORAGE_DOC)),
-            relative_path: Some(".local/share/opencode/storage".into()),
+            shape: Support::Yes(Evidence::inferred(OPENCODE_USE_READER)),
+            relative_path: Some(".local/share/opencode".into()),
         },
         runner: RunnerSpec {
             binary: Some("opencode".into()),
@@ -759,9 +757,7 @@ fn pi() -> HarnessFacts {
             relative_path: Some(".pi/agent/npm".into()),
         },
         usage_source: UsageSourceSpec {
-            // JSONL per working directory; a skill load is not a distinct
-            // entry type.
-            shape: Support::Partial(Evidence::verified(PI_SESSIONS_DOC)),
+            shape: Support::Yes(Evidence::inferred(PI_TRANSCRIPT_READER)),
             relative_path: Some(".pi/agent/sessions".into()),
         },
         runner: RunnerSpec {
@@ -808,8 +804,8 @@ fn cursor() -> HarnessFacts {
             relative_path: None,
         },
         usage_source: UsageSourceSpec {
-            shape: Support::Unknown,
-            relative_path: None,
+            shape: Support::Yes(Evidence::inferred(CURSOR_TRANSCRIPT_READER)),
+            relative_path: Some(".cursor/projects".into()),
         },
         runner: RunnerSpec {
             binary: None,

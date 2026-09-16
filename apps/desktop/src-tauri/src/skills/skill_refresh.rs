@@ -2034,6 +2034,42 @@ mod tests {
     }
 
     #[test]
+    fn classify_watch_event_pi_session_is_invocations() {
+        let home = PathBuf::from("/home/tester");
+        let claude_projects = home.join(".claude/projects");
+        assert_eq!(
+            classify_watch_event(
+                &home.join(".pi/agent/sessions/d/f.jsonl"),
+                &home,
+                &claude_projects
+            ),
+            WatchEventKind::Invocations
+        );
+    }
+
+    #[test]
+    fn classify_watch_event_cursor_transcript_is_invocations_and_terminal_output_is_ignored() {
+        let home = PathBuf::from("/home/tester");
+        let claude_projects = home.join(".claude/projects");
+        assert_eq!(
+            classify_watch_event(
+                &home.join(".cursor/projects/p/agent-transcripts/s/s.jsonl"),
+                &home,
+                &claude_projects
+            ),
+            WatchEventKind::Invocations
+        );
+        assert_eq!(
+            classify_watch_event(
+                &home.join(".cursor/projects/p/terminals/1.txt"),
+                &home,
+                &claude_projects
+            ),
+            WatchEventKind::Ignored
+        );
+    }
+
+    #[test]
     fn classify_watch_event_watch_dir_itself_created_or_removed_is_skills() {
         let home = PathBuf::from("/home/tester");
         let claude_projects = home.join(".claude/projects");

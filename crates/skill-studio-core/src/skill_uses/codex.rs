@@ -5,12 +5,11 @@
 //! [`TranscriptContext`] through the whole file (see `docs/agent-skill-
 //! conventions.md` "Skill uses" for the record shapes).
 
-use std::collections::BTreeSet;
-
 use chrono::{DateTime, Utc};
 
+use crate::identity::AgentId;
 use crate::skill_uses::{
-    skill_name_from_skill_md_path, skill_names_read_by_shell, SkillInvocation, SkillTrigger,
+    push_shell_reads, push_use, skill_name_from_skill_md_path, SkillInvocation, SkillTrigger,
     TranscriptContext,
 };
 
@@ -20,23 +19,6 @@ const SESSION_META_MARKER: &str = "\"session_meta\"";
 const SKILL_BLOCK_MARKER: &str = "<skill>";
 const SKILL_MD_MARKER: &str = "SKILL.md";
 const SKILLS_NAMESPACE_MARKER: &str = "\"namespace\":\"skills\"";
-
-fn push_use(
-    out: &mut Vec<SkillInvocation>,
-    context: &TranscriptContext,
-    skill: &str,
-    trigger: SkillTrigger,
-    at: DateTime<Utc>,
-) {
-    out.push(SkillInvocation {
-        skill: skill.to_string(),
-        harness: crate::identity::AgentId::CODEX.to_string(),
-        trigger,
-        at,
-        project_path: context.project_path.clone(),
-        session: context.session.clone(),
-    });
-}
 
 /// The name in a user `<skill>\n<name>X</name>\n<path>P</path>...` block, or
 /// `None` when `text` doesn't open with that exact shape (many other lines
@@ -73,24 +55,6 @@ fn command_from_function_call_args(args: &serde_json::Value) -> Option<String> {
         }
     }
     Some(strings.join(" "))
-}
-
-/// One `FileRead` per skill whose `SKILL.md` one of `commands` prints. The
-/// commands all belong to one tool call, so a name counts once across them.
-fn push_shell_reads<S: AsRef<str>>(
-    out: &mut Vec<SkillInvocation>,
-    context: &TranscriptContext,
-    commands: impl IntoIterator<Item = S>,
-    at: DateTime<Utc>,
-) {
-    let mut seen: BTreeSet<String> = BTreeSet::new();
-    for command in commands {
-        for name in skill_names_read_by_shell(command.as_ref()) {
-            if seen.insert(name.to_string()) {
-                push_use(out, context, name, SkillTrigger::FileRead, at);
-            }
-        }
-    }
 }
 
 /// Parses one Codex rollout's text (newline-delimited JSON): a `User` use
@@ -163,7 +127,14 @@ pub fn parse_codex_uses(text: &str, context: &mut TranscriptContext) -> Vec<Skil
                         continue;
                     };
                     if let Some(name) = parse_skill_block(text) {
-                        push_use(&mut out, context, name, SkillTrigger::User, at);
+                        push_use(
+                            &mut out,
+                            context,
+                            AgentId::CODEX,
+                            name,
+                            SkillTrigger::User,
+                            at,
+                        );
                     }
                 }
             }
@@ -173,7 +144,13 @@ pub fn parse_codex_uses(text: &str, context: &mut TranscriptContext) -> Vec<Skil
                 let Some(input) = payload.get("input").and_then(|v| v.as_str()) else {
                     continue;
                 };
-                push_shell_reads(&mut out, context, exec_command_literals(input), at);
+                push_shell_reads(
+                    &mut out,
+                    context,
+                    AgentId::CODEX,
+                    exec_command_literals(input),
+                    at,
+                );
             }
             Some("function_call") => {
                 let name = payload.get("name").and_then(|v| v.as_str());
@@ -195,11 +172,18 @@ pub fn parse_codex_uses(text: &str, context: &mut TranscriptContext) -> Vec<Skil
                         continue;
                     };
                     if let Some(name) = codex_skill_name_from_package(package) {
-                        push_use(&mut out, context, name, SkillTrigger::Agent, at);
+                        push_use(
+                            &mut out,
+                            context,
+                            AgentId::CODEX,
+                            name,
+                            SkillTrigger::Agent,
+                            at,
+                        );
                     }
                 } else if matches!(name, Some("exec_command") | Some("shell")) {
                     if let Some(command) = command_from_function_call_args(&args) {
-                        push_shell_reads(&mut out, context, [command], at);
+                        push_shell_reads(&mut out, context, AgentId::CODEX, [command], at);
                     }
                 }
             }
