@@ -238,6 +238,16 @@ export interface AgentTarget {
   project_path: string;
 }
 /**
+ * One discovery harness's on/off switch, as Settings shows it. `enabled:
+ * false` means project discovery no longer reads that harness's own project
+ * history (Codex's `config.toml`, Claude Code's transcripts, ...) when
+ * looking for folders to add.
+ */
+export interface DiscoverySourceSetting {
+  enabled: boolean;
+  harness: string;
+}
+/**
  * One forked skill's provenance, enough to reinstall it from its origin
  * (`unfork_skill`) or to fetch its upstream at a specific commit
  * (`pull_fork_upstream`).

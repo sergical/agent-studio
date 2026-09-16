@@ -22,6 +22,7 @@
 #![deny(missing_docs)]
 #![forbid(unsafe_code)]
 
+pub mod discovery_sources;
 pub mod dto;
 pub mod error;
 pub mod events;

@@ -20,6 +20,7 @@ use notify_debouncer_mini::notify::{RecommendedWatcher, RecursiveMode};
 use notify_debouncer_mini::Debouncer;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
+use skill_studio_core::discovery_sources::DiscoverySources;
 use skill_studio_core::tracked_projects::TrackedProjects;
 use tauri::{AppHandle, Emitter, Manager};
 
@@ -27,7 +28,7 @@ use super::agents;
 use super::lock_file;
 use super::skill_assembly;
 use super::skill_dto::{Deployment, InstalledSkill};
-use super::skill_fork_registry::TrialScope;
+use super::skill_fork_registry::{ForkRegistry, TrialScope};
 use super::skill_harness_disable;
 use super::skill_invocations::{
     InvocationHeatmap, RefreshReport, SkillInvocationIndex, SkillInvocationStats,
@@ -257,30 +258,31 @@ fn drop_home_directory_from_batch(paths: Vec<String>, home: &Path) -> Vec<String
         .collect()
 }
 
-/// Read `<home>/.agents/skill-studio.json`'s `projects` key, apply `change`
-/// to it, and write the registry back only if `change` actually altered it -
-/// so a repeated add/remove doesn't touch the file's mtime or disturb a
+/// Read one field of `<home>/.agents/skill-studio.json`, apply `change` to
+/// it, and write the registry back only if `change` actually altered it - so
+/// a repeated add/remove/toggle doesn't touch the file's mtime or disturb a
 /// concurrent writer for no reason. Strict like `read_fork_registry`: a
 /// malformed file is an `Err` and is left byte-for-byte unchanged, never
 /// silently treated as empty.
-fn update_tracked_projects(
+fn update_registry_section<T: Clone + PartialEq>(
     home: &Path,
-    change: impl FnOnce(&mut TrackedProjects),
-) -> Result<(TrackedProjects, bool), String> {
+    section: fn(&mut ForkRegistry) -> &mut T,
+    change: impl FnOnce(&mut T),
+) -> Result<(T, bool), String> {
     let mut registry = super::skill_fork_registry::read_fork_registry(home)?;
-    let before = registry.projects.clone();
-    change(&mut registry.projects);
-    let changed = registry.projects != before;
+    let before = section(&mut registry).clone();
+    change(section(&mut registry));
+    let changed = *section(&mut registry) != before;
     if changed {
         super::skill_fork_registry::write_fork_registry(home, &registry)?;
     }
-    Ok((registry.projects, changed))
+    Ok((section(&mut registry).clone(), changed))
 }
 
 /// The saved project lists, straight off disk - unlike the other three
 /// commands here, this doesn't change anything, so it uses the strict
 /// `read_fork_registry` directly rather than going through
-/// `update_tracked_projects`.
+/// `update_registry_section`.
 #[tauri::command]
 pub fn get_tracked_projects() -> Result<TrackedProjects, String> {
     let home = dirs::home_dir().ok_or("Could not find home directory")?;
@@ -299,9 +301,11 @@ pub fn register_skill_projects(
 ) -> Result<TrackedProjects, String> {
     let home = dirs::home_dir().ok_or("Could not find home directory")?;
     let valid = drop_home_directory_from_batch(paths, &home);
-    let (projects, changed) = update_tracked_projects(&home, |tracked| {
-        tracked.track(valid.into_iter().map(PathBuf::from));
-    })?;
+    let (projects, changed) = update_registry_section(
+        &home,
+        |registry| &mut registry.projects,
+        |tracked| tracked.track(valid.into_iter().map(PathBuf::from)),
+    )?;
     if changed {
         state.mark_skills_dirty();
     }
@@ -317,9 +321,11 @@ pub fn unregister_skill_project(
     state: tauri::State<SkillRefreshState>,
 ) -> Result<TrackedProjects, String> {
     let home = dirs::home_dir().ok_or("Could not find home directory")?;
-    let (projects, changed) = update_tracked_projects(&home, |tracked| {
-        tracked.untrack(Path::new(&path));
-    })?;
+    let (projects, changed) = update_registry_section(
+        &home,
+        |registry| &mut registry.projects,
+        |tracked| tracked.untrack(Path::new(&path)),
+    )?;
     if changed {
         state.mark_skills_dirty();
     }
@@ -339,16 +345,89 @@ pub fn import_tracked_projects(
 ) -> Result<TrackedProjects, String> {
     let home = dirs::home_dir().ok_or("Could not find home directory")?;
     let added = drop_home_directory_from_batch(added, &home);
-    let (projects, changed) = update_tracked_projects(&home, |tracked| {
-        tracked.track(added.into_iter().map(PathBuf::from));
-        for path in &excluded {
-            tracked.untrack(Path::new(path));
-        }
-    })?;
+    let (projects, changed) = update_registry_section(
+        &home,
+        |registry| &mut registry.projects,
+        |tracked| {
+            tracked.track(added.into_iter().map(PathBuf::from));
+            for path in &excluded {
+                tracked.untrack(Path::new(path));
+            }
+        },
+    )?;
     if changed {
         state.mark_skills_dirty();
     }
     Ok(projects)
+}
+
+/// One discovery harness's on/off switch, as Settings shows it. `enabled:
+/// false` means project discovery no longer reads that harness's own project
+/// history (Codex's `config.toml`, Claude Code's transcripts, ...) when
+/// looking for folders to add.
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
+pub struct DiscoverySourceSetting {
+    pub harness: String,
+    pub enabled: bool,
+}
+
+/// `sources` mapped to one [`DiscoverySourceSetting`] per harness, in
+/// `discovery_harnesses`' display order.
+fn discovery_source_settings(sources: &DiscoverySources) -> Vec<DiscoverySourceSetting> {
+    skill_studio_host::discovery_harnesses()
+        .map(|harness| DiscoverySourceSetting {
+            harness: harness.to_string(),
+            enabled: sources.is_enabled(harness),
+        })
+        .collect()
+}
+
+/// The saved discovery switches, straight off disk - like `get_tracked_projects`,
+/// this doesn't change anything, so it uses the strict `read_fork_registry`
+/// directly rather than going through `update_registry_section`.
+#[tauri::command]
+pub fn get_discovery_sources() -> Result<Vec<DiscoverySourceSetting>, String> {
+    let home = dirs::home_dir().ok_or("Could not find home directory")?;
+    Ok(discovery_source_settings(
+        &super::skill_fork_registry::read_fork_registry(&home)?.discovery,
+    ))
+}
+
+/// Validate `harness`, flip its switch, and re-read the settings - the
+/// testable half of `set_discovery_source`, taking `home` directly so a test
+/// doesn't need Tauri state.
+fn set_discovery_source_at(
+    home: &Path,
+    harness: &str,
+    enabled: bool,
+) -> Result<(Vec<DiscoverySourceSetting>, bool), String> {
+    if !skill_studio_host::discovery_harnesses().any(|known| known == harness) {
+        return Err(format!("Unknown discovery source: {harness}"));
+    }
+    let (sources, changed) = update_registry_section(
+        home,
+        |registry| &mut registry.discovery,
+        |sources| sources.set(harness, enabled),
+    )?;
+    Ok((discovery_source_settings(&sources), changed))
+}
+
+/// Switch one discovery harness on or off (Settings' per-source toggle).
+/// Returns the saved switches; a full rebuild follows on the background
+/// thread when the switch actually changed, and its snapshot drops or regains
+/// the folders only that harness's history named.
+#[tauri::command]
+pub fn set_discovery_source(
+    harness: String,
+    enabled: bool,
+    state: tauri::State<SkillRefreshState>,
+) -> Result<Vec<DiscoverySourceSetting>, String> {
+    let home = dirs::home_dir().ok_or("Could not find home directory")?;
+    let (settings, changed) = set_discovery_source_at(&home, &harness, enabled)?;
+    if changed {
+        state.mark_skills_dirty();
+    }
+    Ok(settings)
 }
 
 /// Build a full snapshot right now on the calling thread, store it, and emit
@@ -1608,6 +1687,14 @@ mod tests {
         super::super::skill_fork_registry::write_fork_registry(home, &registry).unwrap();
     }
 
+    /// `update_registry_section` on the `projects` field.
+    fn update_tracked_projects(
+        home: &Path,
+        change: impl FnOnce(&mut TrackedProjects),
+    ) -> Result<(TrackedProjects, bool), String> {
+        update_registry_section(home, |registry| &mut registry.projects, change)
+    }
+
     #[test]
     fn desired_watch_paths_includes_global_roots_and_parents() {
         let home = PathBuf::from("/home/tester");
@@ -2813,5 +2900,112 @@ mod tests {
                 "targeted classification for {name} diverged from the full scan"
             );
         }
+    }
+
+    fn harness_enabled(settings: &[DiscoverySourceSetting], harness: &str) -> bool {
+        settings
+            .iter()
+            .find(|setting| setting.harness == harness)
+            .unwrap()
+            .enabled
+    }
+
+    #[test]
+    fn set_discovery_source_at_with_no_file_enables_every_harness_in_order() {
+        let tmp = tempfile::tempdir().unwrap();
+        let home = tmp.path().join("home");
+        fs::create_dir_all(&home).unwrap();
+
+        let harnesses: Vec<&str> = skill_studio_host::discovery_harnesses().collect();
+        let (settings, _) = set_discovery_source_at(&home, harnesses[0], true).unwrap();
+
+        assert_eq!(
+            settings
+                .iter()
+                .map(|s| s.harness.as_str())
+                .collect::<Vec<_>>(),
+            harnesses
+        );
+        assert!(settings.iter().all(|setting| setting.enabled));
+    }
+
+    #[test]
+    fn set_discovery_source_at_switches_a_harness_off_and_is_idempotent() {
+        let tmp = tempfile::tempdir().unwrap();
+        let home = tmp.path().join("home");
+        fs::create_dir_all(&home).unwrap();
+        let path = home.join(".agents/skill-studio.json");
+
+        let (settings, changed) = set_discovery_source_at(&home, "codex", false).unwrap();
+        assert!(changed);
+        assert!(!harness_enabled(&settings, "codex"));
+        let content = fs::read_to_string(&path).unwrap();
+        assert!(content.contains(r#""discovery""#));
+        let mtime_after_first = fs::metadata(&path).unwrap().modified().unwrap();
+
+        std::thread::sleep(std::time::Duration::from_millis(10));
+        let (settings_again, changed_again) =
+            set_discovery_source_at(&home, "codex", false).unwrap();
+        assert!(!changed_again);
+        assert!(!harness_enabled(&settings_again, "codex"));
+        assert_eq!(
+            fs::read_to_string(&path).unwrap(),
+            content,
+            "a repeated identical switch must not rewrite the file"
+        );
+        assert_eq!(
+            fs::metadata(&path).unwrap().modified().unwrap(),
+            mtime_after_first,
+            "a repeated identical switch must not touch the file's mtime"
+        );
+    }
+
+    #[test]
+    fn set_discovery_source_at_switching_back_on_removes_the_discovery_key() {
+        let tmp = tempfile::tempdir().unwrap();
+        let home = tmp.path().join("home");
+        fs::create_dir_all(&home).unwrap();
+        set_discovery_source_at(&home, "codex", false).unwrap();
+
+        let (settings, changed) = set_discovery_source_at(&home, "codex", true).unwrap();
+
+        assert!(changed);
+        assert!(harness_enabled(&settings, "codex"));
+        let content = fs::read_to_string(home.join(".agents/skill-studio.json")).unwrap();
+        assert!(!content.contains("\"discovery\""));
+    }
+
+    #[test]
+    fn set_discovery_source_at_an_unknown_harness_is_an_error_and_creates_no_file() {
+        let tmp = tempfile::tempdir().unwrap();
+        let home = tmp.path().join("home");
+        fs::create_dir_all(&home).unwrap();
+
+        let err = set_discovery_source_at(&home, "not-a-real-harness", false).unwrap_err();
+
+        assert!(err.contains("not-a-real-harness"));
+        assert!(!home.join(".agents/skill-studio.json").exists());
+    }
+
+    #[test]
+    fn set_discovery_source_at_preserves_unknown_discovery_and_top_level_keys() {
+        let tmp = tempfile::tempdir().unwrap();
+        let home = tmp.path().join("home");
+        fs::create_dir_all(home.join(".agents")).unwrap();
+        fs::write(
+            home.join(".agents/skill-studio.json"),
+            r#"{"discovery":{"future-harness":false},"from_the_future":42}"#,
+        )
+        .unwrap();
+
+        set_discovery_source_at(&home, "codex", false).unwrap();
+
+        let on_disk = super::super::skill_fork_registry::read_fork_registry(&home).unwrap();
+        assert!(!on_disk.discovery.is_enabled("future-harness"));
+        assert!(!on_disk.discovery.is_enabled("codex"));
+        assert_eq!(
+            on_disk.unknown.get("from_the_future"),
+            Some(&serde_json::json!(42))
+        );
     }
 }

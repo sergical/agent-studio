@@ -399,6 +399,62 @@ fn home_flag_applies_the_saved_project_list() {
     std::fs::remove_dir_all(&home).ok();
 }
 
+/// `--home` also honours `<home>/.agents/skill-studio.json`'s `discovery`
+/// key, which switches a harness's own project history off for discovery -
+/// the same file and key the desktop and the MCP server read.
+#[test]
+fn home_flag_applies_the_saved_discovery_switches() {
+    let home = tempfile::tempdir().unwrap().keep();
+    let codex_only = home.join("codex-only");
+    let claude_only = home.join("claude-only");
+    for project in [&codex_only, &claude_only] {
+        std::fs::create_dir_all(project.join(".agents/skills")).unwrap();
+    }
+    std::fs::create_dir_all(home.join(".codex")).unwrap();
+    std::fs::write(
+        home.join(".codex/config.toml"),
+        format!("[projects.\"{}\"]\n", codex_only.display()),
+    )
+    .unwrap();
+    std::fs::create_dir_all(home.join(".claude/projects/-a")).unwrap();
+    std::fs::write(
+        home.join(".claude/projects/-a/session.jsonl"),
+        format!(r#"{{"cwd":"{}"}}"#, claude_only.display()),
+    )
+    .unwrap();
+
+    let projects = |home: &Path| -> Vec<PathBuf> {
+        let run = run(&["scan", "--home", home.to_str().unwrap(), "--json"]);
+        assert_eq!(run.json["status"], "ok", "{:?}", run.json);
+        run.json["scope"]["projects"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|p| Path::new(p.as_str().unwrap()).canonicalize().unwrap())
+            .collect()
+    };
+
+    // Before the settings file exists, both harnesses' folders are found -
+    // proving the switch below is what removes codex-only, not something
+    // else about the fixture.
+    let before = projects(&home);
+    assert!(before.contains(&codex_only.canonicalize().unwrap()));
+    assert!(before.contains(&claude_only.canonicalize().unwrap()));
+
+    std::fs::create_dir_all(home.join(".agents")).unwrap();
+    std::fs::write(
+        home.join(".agents/skill-studio.json"),
+        serde_json::json!({ "discovery": { "codex": false } }).to_string(),
+    )
+    .unwrap();
+
+    let after = projects(&home);
+    assert!(!after.contains(&codex_only.canonicalize().unwrap()));
+    assert!(after.contains(&claude_only.canonicalize().unwrap()));
+
+    std::fs::remove_dir_all(&home).ok();
+}
+
 /// A malformed registry file downgrades to "nothing tracked", not a scan
 /// failure - matching [`skill_studio_core::tracked_projects::TrackedProjects::read`].
 #[test]

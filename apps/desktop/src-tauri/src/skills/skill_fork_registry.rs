@@ -23,6 +23,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
+use skill_studio_core::discovery_sources::DiscoverySources;
 use skill_studio_core::tracked_projects::TrackedProjects;
 
 use super::skill_deployment::SkillDestination;
@@ -298,6 +299,11 @@ pub struct ForkRegistry {
     /// version of the desktop app discover the same projects.
     #[serde(default, skip_serializing_if = "TrackedProjects::is_empty")]
     pub projects: TrackedProjects,
+    /// Per-harness project discovery switches - see
+    /// `skill_studio_core::discovery_sources::DiscoverySources`. Saved here so
+    /// the desktop app, the CLI, and the MCP server honour the same choice.
+    #[serde(default, skip_serializing_if = "DiscoverySources::is_empty")]
+    pub discovery: DiscoverySources,
     /// Every top-level key this build doesn't know about. Keeps a write from
     /// erasing a field a newer or older build added - the file is shared
     /// with the CLI and with whichever app version last wrote it.
@@ -330,6 +336,7 @@ impl Default for ForkRegistry {
             preferred_editor: None,
             trusted_dotagents_sources: BTreeSet::new(),
             projects: TrackedProjects::default(),
+            discovery: DiscoverySources::default(),
             unknown: serde_json::Map::new(),
         }
     }
@@ -529,6 +536,35 @@ mod tests {
         let content =
             std::fs::read_to_string(tmp.path().join(".agents/skill-studio.json")).unwrap();
         assert!(!content.contains("\"projects\""));
+    }
+
+    #[test]
+    fn discovery_switches_round_trip() {
+        let tmp = tempfile::tempdir().unwrap();
+        let mut reg = ForkRegistry::default();
+        reg.discovery.set("codex", false);
+        write_fork_registry(tmp.path(), &reg).unwrap();
+
+        let content =
+            std::fs::read_to_string(tmp.path().join(".agents/skill-studio.json")).unwrap();
+        assert!(content.contains(r#""discovery": {"#));
+        assert_eq!(
+            serde_json::from_str::<serde_json::Value>(&content).unwrap()["discovery"],
+            serde_json::json!({ "codex": false })
+        );
+
+        let reloaded = read_fork_registry(tmp.path()).unwrap();
+        assert_eq!(reloaded.discovery, reg.discovery);
+    }
+
+    #[test]
+    fn default_discovery_is_not_written() {
+        let tmp = tempfile::tempdir().unwrap();
+        write_fork_registry(tmp.path(), &ForkRegistry::default()).unwrap();
+
+        let content =
+            std::fs::read_to_string(tmp.path().join(".agents/skill-studio.json")).unwrap();
+        assert!(!content.contains("\"discovery\""));
     }
 
     #[test]

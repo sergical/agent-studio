@@ -25,7 +25,7 @@ use skill_studio_lib::skills::skill_invocations::{InvocationHeatmap, SkillInvoca
 use skill_studio_lib::skills::skill_pack::{
     ImportResult, PackImportPreflightResult, PackImportRequest, PackInfo, UpdatePackResult,
 };
-use skill_studio_lib::skills::skill_refresh::SkillSnapshot;
+use skill_studio_lib::skills::skill_refresh::{DiscoverySourceSetting, SkillSnapshot};
 
 #[derive(JsonSchema)]
 #[allow(dead_code)]
@@ -57,6 +57,7 @@ struct WireTypes {
     skill_invocation: SkillInvocation,
     lifecycle_target: LifecycleTarget,
     tracked_projects: TrackedProjects,
+    discovery_source_setting: DiscoverySourceSetting,
 }
 
 fn main() {

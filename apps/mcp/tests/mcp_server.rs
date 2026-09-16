@@ -373,6 +373,60 @@ async fn skill_studio_home_env_var_never_touches_the_real_data_root() {
     std::fs::remove_dir_all(&home).ok();
 }
 
+/// `SKILL_STUDIO_HOME` also honours `<home>/.agents/skill-studio.json`'s
+/// `discovery` key, which switches a harness's own project history off for
+/// discovery - the same file and key the desktop and the CLI read.
+#[tokio::test]
+async fn skill_studio_home_env_var_applies_the_saved_discovery_switches() {
+    let home = tempfile::tempdir().unwrap().keep();
+    let codex_only = home.join("codex-only");
+    let claude_only = home.join("claude-only");
+    for project in [&codex_only, &claude_only] {
+        std::fs::create_dir_all(project.join(".agents/skills")).unwrap();
+    }
+    std::fs::create_dir_all(home.join(".codex")).unwrap();
+    std::fs::write(
+        home.join(".codex/config.toml"),
+        format!("[projects.\"{}\"]\n", codex_only.display()),
+    )
+    .unwrap();
+    std::fs::create_dir_all(home.join(".claude/projects/-a")).unwrap();
+    std::fs::write(
+        home.join(".claude/projects/-a/session.jsonl"),
+        format!(r#"{{"cwd":"{}"}}"#, claude_only.display()),
+    )
+    .unwrap();
+    std::fs::create_dir_all(home.join(".agents")).unwrap();
+    std::fs::write(
+        home.join(".agents/skill-studio.json"),
+        serde_json::json!({ "discovery": { "codex": false } }).to_string(),
+    )
+    .unwrap();
+    let home = home.canonicalize().unwrap();
+
+    let env = [("SKILL_STUDIO_HOME", home.to_str().unwrap())];
+    let (client, _) = connect(&env).await;
+    let scan = call_scan(&client, None).await;
+    client.cancel().await.ok();
+
+    let projects: Vec<PathBuf> = scan["scope"]["projects"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|p| Path::new(p.as_str().unwrap()).canonicalize().unwrap())
+        .collect();
+    assert!(
+        !projects.contains(&codex_only.canonicalize().unwrap()),
+        "codex-only should be dropped by the switched-off codex source: {projects:?}"
+    );
+    assert!(
+        projects.contains(&claude_only.canonicalize().unwrap()),
+        "claude-only should still be discovered: {projects:?}"
+    );
+
+    std::fs::remove_dir_all(&home).ok();
+}
+
 /// Runs `skill-studio` (the CLI) and returns its parsed stdout envelope.
 fn run_cli(args: &[&str]) -> serde_json::Value {
     let output = std::process::Command::new(cli_bin())

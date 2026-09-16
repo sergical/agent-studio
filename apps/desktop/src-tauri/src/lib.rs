@@ -225,6 +225,8 @@ pub fn run() {
             skills::skill_refresh::register_skill_projects,
             skills::skill_refresh::unregister_skill_project,
             skills::skill_refresh::import_tracked_projects,
+            skills::skill_refresh::get_discovery_sources,
+            skills::skill_refresh::set_discovery_source,
             // Local harness runner
             skills::skill_agent_runner::start_skill_agent_run,
             skills::skill_agent_runner::cancel_skill_agent_run,

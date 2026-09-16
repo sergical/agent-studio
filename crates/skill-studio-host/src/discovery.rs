@@ -6,7 +6,8 @@
 //! Cursor's workspace storage, the project worktrees OpenCode records, and
 //! the working directories Grok Build names its session folders after,
 //! filtered to directories that hold a skill dir for one of the first-class
-//! agents.
+//! agents. A harness switched off in the `discovery` section of
+//! `~/.agents/skill-studio.json` is not read.
 
 use std::collections::BTreeSet;
 use std::fs;
@@ -15,8 +16,12 @@ use std::path::{Path, PathBuf};
 use std::time::{Duration, SystemTime};
 
 use rusqlite::{Connection, OpenFlags};
+use skill_studio_core::discovery_sources::DiscoverySources;
 use skill_studio_core::error::CoreError;
+use skill_studio_core::identity::AgentId;
 use skill_studio_core::ports::ProjectDiscovery;
+
+use crate::fs::RealFs;
 
 /// Skill directories (relative to a project root) whose presence marks a
 /// directory as a real skills project, not just any directory a session
@@ -460,19 +465,50 @@ fn is_home_root(home: &Path, path: &Path) -> bool {
     canonical(path) == canonical(home)
 }
 
-/// Union of every project directory discoverable from Codex config, Claude
-/// Code and pi transcripts, Cursor workspace storage, OpenCode's project
-/// records, and Grok Build's session folders, filtered to directories that
-/// exist and have at least one first-class agent's skill dir. Sorted and
-/// deduped.
+fn claude_transcript_cwds(home: &Path) -> Vec<PathBuf> {
+    transcript_cwds(&home.join(CLAUDE_TRANSCRIPT_ROOT))
+}
+
+fn pi_transcript_cwds(home: &Path) -> Vec<PathBuf> {
+    transcript_cwds(&home.join(PI_TRANSCRIPT_ROOT))
+}
+
+type HistorySource = fn(&Path) -> Vec<PathBuf>;
+
+/// Each harness whose history discovery reads, in the order a settings
+/// screen lists them, with the reader for that history.
+const HISTORY_SOURCES: &[(&str, HistorySource)] = &[
+    (AgentId::CLAUDE_CODE, claude_transcript_cwds),
+    (AgentId::CODEX, codex_project_paths),
+    (AgentId::OPEN_CODE, opencode_worktrees),
+    (AgentId::PI, pi_transcript_cwds),
+    (AgentId::CURSOR, cursor_workspace_folders),
+    (AgentId::GROK_BUILD, grok_session_cwds),
+];
+
+/// Ids of the harnesses whose history discovery can read, which are the
+/// keys of [`DiscoverySources`] that have an effect.
+pub fn discovery_harnesses() -> impl Iterator<Item = &'static str> {
+    HISTORY_SOURCES.iter().map(|(harness, _)| *harness)
+}
+
+/// [`discover_skill_projects_from`] with the switches saved under `home`.
 pub fn discover_skill_projects(home: &Path) -> Vec<PathBuf> {
+    discover_skill_projects_from(home, &DiscoverySources::read(&RealFs, home))
+}
+
+/// Union of every project directory nominated by an enabled harness's
+/// history (Codex config, Claude Code and pi transcripts, Cursor workspace
+/// storage, OpenCode's project records, and Grok Build's session folders),
+/// filtered to directories that exist and have at least one first-class
+/// agent's skill dir. Sorted and deduped.
+fn discover_skill_projects_from(home: &Path, sources: &DiscoverySources) -> Vec<PathBuf> {
     let mut paths: BTreeSet<PathBuf> = BTreeSet::new();
-    paths.extend(codex_project_paths(home));
-    paths.extend(transcript_cwds(&home.join(CLAUDE_TRANSCRIPT_ROOT)));
-    paths.extend(transcript_cwds(&home.join(PI_TRANSCRIPT_ROOT)));
-    paths.extend(cursor_workspace_folders(home));
-    paths.extend(opencode_worktrees(home));
-    paths.extend(grok_session_cwds(home));
+    for (harness, read_history) in HISTORY_SOURCES {
+        if sources.is_enabled(harness) {
+            paths.extend(read_history(home));
+        }
+    }
 
     paths
         .into_iter()
@@ -493,7 +529,8 @@ pub struct HostProjectDiscovery;
 
 impl HostProjectDiscovery {
     /// Builds a discovery adapter. Holds no state; every call re-reads the
-    /// harness histories under the given home.
+    /// discovery switches and the harness histories under the given home, so
+    /// a long-running server sees a changed switch on its next call.
     pub fn new() -> Self {
         HostProjectDiscovery
     }
@@ -1334,6 +1371,110 @@ mod tests {
         assert!(grok_session_cwds(tmp.path()).is_empty());
         fs::create_dir_all(tmp.path().join(".grok")).unwrap();
         assert!(grok_session_cwds(tmp.path()).is_empty());
+    }
+
+    /// A home where Codex nominates `codex-only` and `shared`, and Claude
+    /// Code nominates `claude-only` and `shared`.
+    fn two_harness_home(home: &Path) -> [PathBuf; 3] {
+        let [codex_only, claude_only, shared] =
+            ["codex-only", "claude-only", "shared"].map(|name| home.join(name));
+        for project in [&codex_only, &claude_only, &shared] {
+            fs::create_dir_all(project.join(".agents/skills")).unwrap();
+        }
+        fs::create_dir_all(home.join(".codex")).unwrap();
+        fs::write(
+            home.join(".codex/config.toml"),
+            format!(
+                "[projects.\"{}\"]\n[projects.\"{}\"]\n",
+                codex_only.display(),
+                shared.display()
+            ),
+        )
+        .unwrap();
+        for (session, project) in [("a", &claude_only), ("b", &shared)] {
+            let dir = home
+                .join(CLAUDE_TRANSCRIPT_ROOT)
+                .join(format!("-{session}"));
+            fs::create_dir_all(&dir).unwrap();
+            fs::write(
+                dir.join("session.jsonl"),
+                format!(r#"{{"cwd":"{}"}}"#, project.display()),
+            )
+            .unwrap();
+        }
+        [codex_only, claude_only, shared]
+    }
+
+    fn write_discovery_switches(home: &Path, switches: serde_json::Value) {
+        fs::create_dir_all(home.join(".agents")).unwrap();
+        fs::write(
+            home.join(".agents/skill-studio.json"),
+            serde_json::json!({ "discovery": switches }).to_string(),
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn every_harness_is_read_without_a_settings_file() {
+        let tmp = tempfile::tempdir().unwrap();
+        let home = tmp.path();
+        let [codex_only, claude_only, shared] = two_harness_home(home);
+
+        assert_eq!(
+            discover_skill_projects(home),
+            vec![claude_only, codex_only, shared]
+        );
+    }
+
+    #[test]
+    fn a_switched_off_harness_drops_only_the_folders_it_alone_nominates() {
+        let tmp = tempfile::tempdir().unwrap();
+        let home = tmp.path();
+        let [codex_only, claude_only, shared] = two_harness_home(home);
+
+        write_discovery_switches(home, serde_json::json!({ "codex": false }));
+        assert_eq!(
+            discover_skill_projects(home),
+            vec![claude_only.clone(), shared.clone()]
+        );
+
+        write_discovery_switches(home, serde_json::json!({ "claude-code": false }));
+        assert_eq!(discover_skill_projects(home), vec![codex_only, shared]);
+
+        write_discovery_switches(
+            home,
+            serde_json::json!({ "claude-code": false, "codex": false }),
+        );
+        assert!(discover_skill_projects(home).is_empty());
+    }
+
+    #[test]
+    fn unknown_discovery_keys_are_ignored() {
+        let tmp = tempfile::tempdir().unwrap();
+        let home = tmp.path();
+        let [codex_only, claude_only, shared] = two_harness_home(home);
+        write_discovery_switches(
+            home,
+            serde_json::json!({ "future-harness": false, "codex": true }),
+        );
+
+        assert_eq!(
+            discover_skill_projects(home),
+            vec![claude_only, codex_only, shared]
+        );
+    }
+
+    #[test]
+    fn every_history_source_has_a_distinct_switch() {
+        let harnesses: BTreeSet<&str> = discovery_harnesses().collect();
+        assert_eq!(harnesses.len(), HISTORY_SOURCES.len());
+        let mut off = DiscoverySources::default();
+        for harness in discovery_harnesses() {
+            off.set(harness, false);
+        }
+        let tmp = tempfile::tempdir().unwrap();
+        two_harness_home(tmp.path());
+        assert!(discover_skill_projects_from(tmp.path(), &off).is_empty());
     }
 
     #[test]
