@@ -461,11 +461,16 @@ fn source_of(kind: &AddSkillOperationKind) -> &super::skill_dto::ParsedSkillSour
     }
 }
 
-fn roots_of(home: &Path, kind: &AddSkillOperationKind) -> Vec<PathBuf> {
-    match kind {
+fn roots_of(home: &Path, kind: &AddSkillOperationKind) -> Result<Vec<PathBuf>, String> {
+    let (scope, project_path) = match kind {
+        AddSkillOperationKind::Single(request) => (&request.scope, request.project_path.as_deref()),
+        AddSkillOperationKind::Batch(request) => (&request.scope, request.project_path.as_deref()),
+    };
+    super::skill_install_plan::validate_project_target(scope, project_path)?;
+    Ok(match kind {
         AddSkillOperationKind::Single(request) => install_roots_for_single(home, request),
         AddSkillOperationKind::Batch(request) => install_roots_for_batch(home, request),
-    }
+    })
 }
 
 fn fetching_phase(kind: &AddSkillOperationKind) -> bool {
@@ -591,6 +596,21 @@ fn run_operation_body(
         |_| {},
     );
 
+    let roots = match roots_of(home, &kind) {
+        Ok(roots) => roots,
+        Err(error) => {
+            let _ = publish(
+                app,
+                state,
+                operation_id,
+                AddSkillOperationPhase::Failed,
+                error.clone(),
+                |event| event.error = Some(error),
+            );
+            return;
+        }
+    };
+
     if method_of(&kind) == AddMethod::Dotagents {
         match require_trusted_dotagents_source(home, source_of(&kind)) {
             Err(DotagentsSourceTrustError::Untrusted { identity }) => {
@@ -640,7 +660,6 @@ fn run_operation_body(
         );
     }
 
-    let roots = roots_of(home, &kind);
     let before = capture_root_entry_fingerprints(&roots);
     let _ = publish(
         app,
@@ -1478,6 +1497,88 @@ mod tests {
         assert_eq!(status.phase, AddSkillOperationPhase::Completed);
         assert_eq!(status.retry_of.as_deref(), Some("op-trust"));
         assert_eq!(status.result.as_ref().unwrap().name, "visual-recap");
+    }
+
+    #[test]
+    fn invalid_project_target_fails_single_and_batch_before_provider_work() {
+        struct NoProvider;
+        impl CommandRunner for NoProvider {
+            fn run_npx(&self, _: &[String], _: Option<&Path>) -> Result<(), String> {
+                panic!("invalid project must not invoke a provider");
+            }
+        }
+        for (method, destination) in [
+            (AddMethod::Dotagents, SkillDestination::Universal),
+            (AddMethod::SkillsSh, SkillDestination::Universal),
+            (AddMethod::Copy, SkillDestination::Universal),
+            (AddMethod::Copy, SkillDestination::PerHarness),
+        ] {
+            for project_path in [None, Some(String::new())] {
+                let tmp = tempfile::tempdir().unwrap();
+                let mut single = single_request("fixture/skills", "sample", method);
+                single.scope = InstallScope::Project;
+                single.project_path = project_path;
+                single.destination = destination;
+                single.agents = vec![crate::skills::agents::AgentId::ClaudeCode];
+                let batch = AddSkillsRequest {
+                    source: single.source.clone(),
+                    skills: vec![crate::skills::github_skill_listing::GithubSkillEntry {
+                        name: "sample".to_string(),
+                        path: "skills/sample".to_string(),
+                    }],
+                    method,
+                    destination,
+                    agents: single.agents.clone(),
+                    disabled_harnesses: vec![],
+                    scope: InstallScope::Project,
+                    project_path: single.project_path.clone(),
+                    trial: false,
+                };
+                assert_eq!(
+                    add_skill_with(tmp.path(), &single, &NoProvider, &NeverFetch, &NeverLookup)
+                        .unwrap_err(),
+                    "Project scope needs a project path"
+                );
+                assert_eq!(
+                    crate::skills::skill_add::add_skills_with(
+                        tmp.path(),
+                        &batch,
+                        &NoProvider,
+                        &NeverFetch,
+                        &NeverLookup
+                    )
+                    .unwrap_err(),
+                    "Project scope needs a project path"
+                );
+                for kind in [
+                    AddSkillOperationKind::Single(single),
+                    AddSkillOperationKind::Batch(batch),
+                ] {
+                    let state = AddSkillOperationState::default();
+                    state
+                        .begin("op-invalid-project".to_string(), kind, None)
+                        .unwrap();
+                    run_operation_body(
+                        None,
+                        &state,
+                        "op-invalid-project",
+                        tmp.path(),
+                        &NoProvider,
+                        &NeverFetch,
+                        &NeverLookup,
+                    );
+                    let status = state.snapshot("op-invalid-project").unwrap();
+                    assert_eq!(status.phase, AddSkillOperationPhase::Failed);
+                    assert_eq!(
+                        status.error.as_deref(),
+                        Some("Project scope needs a project path")
+                    );
+                    assert!(status.result.is_none());
+                    assert!(status.outcomes.is_none());
+                    assert_eq!(fs::read_dir(tmp.path()).unwrap().count(), 0);
+                }
+            }
+        }
     }
 
     #[test]

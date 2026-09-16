@@ -1991,7 +1991,7 @@ resolved_commit = "{commit}"
             assert!(state_for_owner(
                 &store,
                 &source.owner_id,
-                &[source.owner_id.clone()],
+                std::slice::from_ref(&source.owner_id),
                 &source
             )
             .is_some());

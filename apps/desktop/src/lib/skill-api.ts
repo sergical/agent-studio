@@ -131,9 +131,9 @@ export async function getInstalledSkills(projectPaths?: string[]): Promise<Insta
 /**
  * Register project paths the caller cares about (e.g. one the user just
  * opened) so future background rebuilds always include them. Returns
- * immediately; listen for `onSkillSnapshot` to see the result.
+ * the accepted paths; listen for `onSkillSnapshot` to see the rebuilt inventory.
  */
-export async function registerSkillProjects(paths: string[]): Promise<void> {
+export async function registerSkillProjects(paths: string[]): Promise<string[]> {
   return invoke("register_skill_projects", { paths });
 }
 

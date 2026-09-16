@@ -24,6 +24,16 @@ pub struct SkillInstallSpec {
     pub harnesses: Vec<AgentId>,
 }
 
+pub(crate) fn validate_project_target(
+    scope: &InstallScope,
+    project_path: Option<&str>,
+) -> Result<(), String> {
+    if *scope == InstallScope::Project && project_path.is_none_or(str::is_empty) {
+        return Err("Project scope needs a project path".to_string());
+    }
+    Ok(())
+}
+
 /// Universal skills.sh argv. Never includes Codex as a proxy for Universal.
 pub fn skills_sh_universal_add_args(
     repo_source: &str,
@@ -39,14 +49,9 @@ pub fn skills_sh_universal_add_args(
         repo_source.to_string(),
         "--yes".to_string(),
     ];
-    match spec.scope {
-        InstallScope::Global => args.push("--global".to_string()),
-        InstallScope::Project => {
-            spec.project_path
-                .as_deref()
-                .filter(|path| !path.is_empty())
-                .ok_or("Project scope needs a project path")?;
-        }
+    validate_project_target(&spec.scope, spec.project_path.as_deref())?;
+    if spec.scope == InstallScope::Global {
+        args.push("--global".to_string());
     }
     if let Some(name) = skill_name {
         args.push("--skill".to_string());

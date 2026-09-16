@@ -343,13 +343,13 @@ pub(crate) fn drop_home_directory_from_batch(paths: Vec<String>, home: &Path) ->
 pub fn register_skill_projects(
     paths: Vec<String>,
     state: tauri::State<SkillRefreshState>,
-) -> Result<(), String> {
+) -> Result<Vec<String>, String> {
     let home = dirs::home_dir().ok_or("Could not find home directory")?;
     let valid =
         super::skill_project_authority::track(&home, drop_home_directory_from_batch(paths, &home))?;
     state.unexclude_projects(valid.clone());
-    state.add_extra_projects(valid);
-    Ok(())
+    state.add_extra_projects(valid.clone());
+    Ok(valid)
 }
 
 /// Un-register a caller-registered project path (e.g. one the user closed)
@@ -2362,7 +2362,12 @@ mod tests {
         fs::create_dir_all(&home).unwrap();
         fs::create_dir_all(&valid_project).unwrap();
 
+        let home_alias = tmp.path().join("home-alias");
+        std::os::unix::fs::symlink(&home, &home_alias).unwrap();
         let batch = vec![
+            home_alias.to_string_lossy().to_string(),
+            home.join(".").to_string_lossy().to_string(),
+            format!("{}/", home.display()),
             home.to_string_lossy().to_string(),
             valid_project.to_string_lossy().to_string(),
         ];

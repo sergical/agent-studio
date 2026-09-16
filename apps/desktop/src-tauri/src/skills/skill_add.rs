@@ -1139,6 +1139,10 @@ pub fn add_skill_with(
     fetch: &dyn UpstreamFetch,
     lookup: &dyn CommitLookup,
 ) -> Result<AddSkillResult, String> {
+    super::skill_install_plan::validate_project_target(
+        &request.scope,
+        request.project_path.as_deref(),
+    )?;
     let control = runner.operation_control();
     if request.destination == SkillDestination::PerHarness && request.trial {
         return Err("Trials require the Universal destination".to_string());
@@ -1212,6 +1216,10 @@ pub fn add_skills_with_progress(
     lookup: &dyn CommitLookup,
     mut on_item: impl FnMut(usize, usize, &str),
 ) -> Result<Vec<AddSkillOutcome>, String> {
+    super::skill_install_plan::validate_project_target(
+        &request.scope,
+        request.project_path.as_deref(),
+    )?;
     let control = runner.operation_control();
     if request.destination == SkillDestination::PerHarness && request.trial {
         return Err("Trials require the Universal destination".to_string());

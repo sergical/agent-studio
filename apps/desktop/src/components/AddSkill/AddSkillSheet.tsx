@@ -46,6 +46,7 @@ import {
   importSkillPack,
   listGithubSkills,
   onAddSkillOperation,
+  registerSkillProjects,
   startAddSkillOperation,
   startAddSkillsOperation,
 } from "../../lib/skill-api";
@@ -53,6 +54,7 @@ import {
   applyAddSkillOperationEvent,
   listenForAddSkillOperation,
 } from "../../hooks/useAddSkillOperation";
+import { errorMessage } from "../../lib/error-message";
 import { singleSelectToggleValue } from "../../lib/single-select-toggle-group";
 import {
   addSkillFinishAction,
@@ -1292,9 +1294,16 @@ export function AddSkillSheet() {
 
   const handleBrowseProject = async () => {
     const selected = await open({ directory: true, multiple: false, title: "Select Project" });
-    if (selected) {
+    if (!selected) return;
+    try {
+      const registered = await registerSkillProjects([selected]);
+      if (!registered.includes(selected)) {
+        throw new Error("The home directory is the global scope, not a project.");
+      }
       addProject(selected);
       dispatch({ type: "set_project_path", path: selected });
+    } catch (cause) {
+      addToast({ type: "error", title: "Couldn't add project", message: errorMessage(cause) });
     }
   };
 
