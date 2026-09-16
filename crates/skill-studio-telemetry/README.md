@@ -66,15 +66,30 @@ Existing non-desktop surfaces still omit all native diagnostics.
 
 Raw exception text, source context, symbols, paths, locals, threads, breadcrumbs,
 user data, requests and unrecognized context remain omitted. Tests prove the final
-encoded payload policy, not remote symbolication. The session currently uses
-`Client::from` with default integrations disabled; the desktop also omits the
-backtrace/debug-images features. Capture integration must be wired explicitly and
-verified with matching build symbols before production error reporting is accepted.
+encoded payload policy, not remote symbolication. Desktop sessions explicitly
+install the pinned SDK stacktrace, debug-image and panic integrations. Other SDK
+default integrations remain disabled. When the SDK supplies a current-thread stack,
+its sanitized frames become the event stack; thread names, IDs and other metadata
+are still dropped. At most 128 thread entries are inspected.
+
+`desktop_error_sentry_layer` forwards ERROR events from the application crate roots
+`skill_studio_lib`, `skill_studio_core` and `skill_studio_desktop`. It ignores other
+targets, warning-level refusals and spans. Desktop startup must register this layer
+beside the existing read layer. Returned Result errors are not automatically
+reported; their callers must classify unexpected failures before logging ERROR.
+
+The SDK panic hook reports Rust panics and chains the prior hook. Its handler
+attempts to flush delivery. This does not capture native signals such as SIGSEGV,
+or prove successful delivery after an abort or process kill. Stack collection and
+SDK symbol resolution occur synchronously during error capture; debug-image setup
+also enumerates loaded images. These costs are not an application RSS or latency
+budget. Verify matching build symbols and production receipt before accepting
+production error reporting.
 
 Tests use hostile typed data and the actual SDK with an in-memory transport.
 They prove four-signal trace correlation and retained read/scan nesting after
-filtering. They do not prove remote receipt, IPC/worker propagation, panic
-capture, symbolication, or runtime overhead.
+filtering. They do not prove remote receipt, all IPC/worker propagation paths,
+symbolication, or runtime overhead.
 
 ```sh
 cargo test --offline --locked --manifest-path crates/skill-studio-telemetry/Cargo.toml
@@ -205,5 +220,22 @@ existing cache. Preflight: 54% memory free and 61 GiB disk free. Peak memory was
 not measured. No network export, server, app launch, or full local suite was used.
 The fixture is committed source; no raw captures or temporary logs are retained.
 
-This change does not enable capture integrations, upload symbols, or establish
-remote symbolication. Those requirements remain open for desktop monitoring.
+The subsequent SDK capture change below supplies capture integrations. Symbol
+upload and remote symbolication remain open for desktop monitoring.
+
+## Native SDK capture verification — September 16, 2026
+
+The production session-options builder was exercised with an isolated sink. An
+explicit SDK error, an application tracing error and a panic on a fresh worker
+thread each retained real native addresses and a matching nonempty debug-image
+identifier after final serialization. Private text and paths were absent. Dependency
+errors and application warnings were not forwarded by the desktop error layer.
+Non-desktop options do not install capture integrations. Current-thread selection
+and its inspection limit have a separate regression.
+
+All 40 crate tests passed after the dependency change (7.38 s compile, about 2.73 s
+tests); strict Clippy passed (3.71 s) and formatting passed. Two Cargo workers,
+one test thread and the existing cache were used. Preflight: 54% memory free,
+61 GiB disk free. Peak memory was not measured. Tests used fixture sinks and joined
+loopback peers; no production telemetry was sent. Packaged native startup, matching
+symbol upload and remote symbolication remain separate acceptance requirements.

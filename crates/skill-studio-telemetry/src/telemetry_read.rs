@@ -39,6 +39,25 @@ where
         .span_filter(|metadata| read_metadata_allowed(metadata) && metadata.is_span())
 }
 
+pub fn desktop_error_sentry_layer<S>() -> sentry_tracing::SentryLayer<S>
+where
+    S: tracing::Subscriber + for<'a> tracing_subscriber::registry::LookupSpan<'a>,
+{
+    sentry_tracing::layer()
+        .event_filter(|metadata| {
+            let application = matches!(
+                metadata.target().split("::").next(),
+                Some("skill_studio_lib" | "skill_studio_core" | "skill_studio_desktop")
+            );
+            if application && *metadata.level() == tracing::Level::ERROR {
+                sentry_tracing::EventFilter::Event
+            } else {
+                sentry_tracing::EventFilter::Ignore
+            }
+        })
+        .span_filter(|_| false)
+}
+
 pub fn read_metadata_allowed(metadata: &tracing::Metadata<'_>) -> bool {
     *metadata.level() == tracing::Level::INFO
         && (matches!(

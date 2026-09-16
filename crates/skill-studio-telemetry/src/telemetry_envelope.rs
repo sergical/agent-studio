@@ -269,6 +269,15 @@ fn sanitize_stacktrace(mut input: Stacktrace) -> Option<Stacktrace> {
 
 fn sanitize_native_diagnostics(input: &mut Event<'static>) {
     input.stacktrace = input.stacktrace.take().and_then(sanitize_stacktrace);
+    if input.stacktrace.is_none() {
+        input.stacktrace = input
+            .threads
+            .values
+            .iter_mut()
+            .take(MAX_CHILDREN)
+            .filter(|thread| thread.current)
+            .find_map(|thread| thread.stacktrace.take().and_then(sanitize_stacktrace));
+    }
     let keep_from = input.exception.values.len().saturating_sub(MAX_EXCEPTIONS);
     input.exception.values = input
         .exception

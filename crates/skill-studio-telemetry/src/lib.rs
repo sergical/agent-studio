@@ -15,7 +15,8 @@ pub use telemetry_transport::{SentryTransport, TransportSetupError, TransportSta
 mod telemetry_read;
 mod telemetry_session;
 pub use telemetry_read::{
-    read_metadata_allowed, read_sentry_layer, ReadContext, ReadOperation, ScanMetricsLayer,
+    desktop_error_sentry_layer, read_metadata_allowed, read_sentry_layer, ReadContext,
+    ReadOperation, ScanMetricsLayer,
 };
 pub use telemetry_session::{
     session_from_environment, session_from_environment_with_defaults, SentrySession,

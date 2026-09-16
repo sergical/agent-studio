@@ -26,15 +26,15 @@ impl SentrySession {
         if !rate.is_finite() || !(0.0..=1.0).contains(&rate) {
             return Err(SessionSetupError::InvalidSamplingRate);
         }
+        let desktop = identity.surface == "desktop";
         let transport =
             Arc::new(SentryTransport::http(dsn, identity).map_err(SessionSetupError::Transport)?);
-        let client = Arc::new(Client::from(
-            ClientOptions::new()
-                .dsn(&dsn.to_string())
-                .default_integrations(false)
-                .traces_sample_rate(rate)
-                .transport(transport.clone()),
-        ));
+        let client = Arc::new(Client::from(session_client_options(
+            dsn,
+            desktop,
+            rate,
+            transport.clone(),
+        )));
         Ok(Self { client, transport })
     }
     pub fn bind_main(&self) {
@@ -70,6 +70,28 @@ impl SentrySession {
             Ok(false) | Err(mpsc::RecvTimeoutError::Disconnected) => FlushOutcome::Failed,
             Err(mpsc::RecvTimeoutError::Timeout) => FlushOutcome::TimedOut,
         }
+    }
+}
+
+fn session_client_options(
+    dsn: &Dsn,
+    desktop: bool,
+    rate: f32,
+    transport: Arc<SentryTransport>,
+) -> ClientOptions {
+    let options = ClientOptions::new()
+        .dsn(&dsn.to_string())
+        .default_integrations(false)
+        .traces_sample_rate(rate)
+        .transport(transport);
+    if desktop {
+        options
+            .attach_stacktrace(true)
+            .add_integration(sentry_backtrace::AttachStacktraceIntegration)
+            .add_integration(sentry_debug_images::DebugImagesIntegration::new())
+            .add_integration(sentry_panic::PanicIntegration::new())
+    } else {
+        options
     }
 }
 
@@ -274,6 +296,149 @@ mod tests {
             FlushOutcome::Drained
         );
         assert!(Hub::main().client().is_none());
+    }
+
+    #[test]
+    fn desktop_session_captures_errors_and_worker_panics_with_private_native_stacks() {
+        use sentry_core::protocol::{DebugImage, Envelope, EnvelopeItem};
+        use tracing_subscriber::prelude::*;
+        let _serial = MAIN_HUB.lock().unwrap();
+        let _restore = RestoreMain(Hub::main().client());
+        let captured = Arc::new(Mutex::new(Vec::new()));
+        let sink = captured.clone();
+        let transport = Arc::new(
+            SentryTransport::with_sink(
+                TelemetryIdentity::new(
+                    TelemetrySurface::Desktop,
+                    TelemetryEnvironment::Test,
+                    (0, 1, 0),
+                ),
+                move |bytes| {
+                    sink.lock().unwrap().push(bytes.to_vec());
+                    Ok(())
+                },
+            )
+            .unwrap(),
+        );
+        let client = Arc::new(Client::from(session_client_options(
+            &"https://public@example.invalid/1".parse().unwrap(),
+            true,
+            0.0,
+            transport.clone(),
+        )));
+        let session = SentrySession { client, transport };
+        session.bind_main();
+        let hub = Arc::new(Hub::new(
+            Some(session.client.clone()),
+            Arc::new(Scope::default()),
+        ));
+        Hub::run(hub, || {
+            sentry_core::capture_message("PRIVATE /Users/private/error", sentry_core::Level::Error);
+            let subscriber = tracing_subscriber::registry()
+                .with(crate::read_sentry_layer())
+                .with(crate::desktop_error_sentry_layer());
+            tracing::subscriber::with_default(subscriber, || {
+                tracing::error!(target: "skill_studio_desktop::fixture", path = "PRIVATE /Users/private/skill.md", "PRIVATE error");
+                tracing::error!(target: "dependency::fixture", "PRIVATE ignored dependency");
+                tracing::warn!(target: "skill_studio_desktop::fixture", "PRIVATE expected refusal");
+            });
+        });
+        assert!(
+            std::thread::spawn(|| panic!("PRIVATE /Users/private/panic"))
+                .join()
+                .is_err()
+        );
+        assert_eq!(session.close(Duration::from_secs(2)), FlushOutcome::Drained);
+        let payloads = captured.lock().unwrap();
+        let mut events = Vec::new();
+        for bytes in payloads.iter() {
+            let text = std::str::from_utf8(bytes).unwrap();
+            assert!(!text.contains("PRIVATE"));
+            assert!(!text.contains("/Users/"));
+            for item in Envelope::from_slice(bytes).unwrap().into_items() {
+                if let EnvelopeItem::Event(event) = item {
+                    events.push(event);
+                }
+            }
+        }
+        assert_eq!(
+            events.len(),
+            3,
+            "one explicit error, one application trace error, one worker panic"
+        );
+        assert_eq!(
+            events
+                .iter()
+                .filter(|event| event.level == sentry_core::Level::Fatal)
+                .count(),
+            1
+        );
+        for event in events {
+            assert_eq!(event.platform, "native");
+            assert!(event.threads.values.is_empty());
+            let addresses: Vec<_> = event
+                .stacktrace
+                .iter()
+                .chain(
+                    event
+                        .exception
+                        .values
+                        .iter()
+                        .filter_map(|exception| exception.stacktrace.as_ref()),
+                )
+                .flat_map(|stack| {
+                    stack
+                        .frames
+                        .iter()
+                        .filter_map(|frame| frame.instruction_addr)
+                })
+                .collect();
+            assert!(!addresses.is_empty());
+            assert!(
+                event.debug_meta.images.iter().any(|image| {
+                    let (base, size, valid_id) = match image {
+                        DebugImage::Symbolic(image) => {
+                            (image.image_addr.0, image.image_size, !image.id.is_nil())
+                        }
+                        DebugImage::Apple(image) => {
+                            (image.image_addr.0, image.image_size, !image.uuid.is_nil())
+                        }
+                        _ => return false,
+                    };
+                    valid_id
+                        && base.checked_add(size).is_some_and(|end| {
+                            addresses
+                                .iter()
+                                .any(|address| (base..end).contains(&address.0))
+                        })
+                }),
+                "actual stack must retain a matching debug image"
+            );
+        }
+    }
+
+    #[test]
+    fn non_desktop_session_does_not_install_native_capture() {
+        let transport = Arc::new(
+            SentryTransport::with_sink(
+                TelemetryIdentity::new(
+                    TelemetrySurface::Cli,
+                    TelemetryEnvironment::Test,
+                    (0, 1, 0),
+                ),
+                |_| Ok(()),
+            )
+            .unwrap(),
+        );
+        let options = session_client_options(
+            &"https://public@example.invalid/1".parse().unwrap(),
+            false,
+            0.0,
+            transport.clone(),
+        );
+        assert!(!options.attach_stacktrace);
+        assert!(options.integrations.is_empty());
+        assert!(transport.shutdown(Duration::from_secs(1)));
     }
 
     fn packaged_defaults() -> SessionDefaults<'static> {

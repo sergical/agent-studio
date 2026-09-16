@@ -193,3 +193,31 @@ fn image_inspection_is_bounded_and_ranges_are_half_open() {
         .images
         .is_empty());
 }
+
+#[test]
+fn only_current_thread_stack_is_promoted_without_thread_metadata() {
+    let stack = json!({"frames":[{"instruction_addr":"0x1010","filename":PRIVATE}]});
+    let mut value = json!({"level":"error","threads":{"values":[
+        {"id":PRIVATE,"name":PRIVATE,"current":false,"stacktrace":stack.clone()},
+        {"id":PRIVATE,"name":PRIVATE,"current":true,"stacktrace":stack.clone()}
+    ]}});
+    let (event, bytes) = sanitize(value.clone(), TelemetrySurface::Desktop);
+    assert_eq!(
+        event.stacktrace.unwrap().frames[0].instruction_addr,
+        Some(Addr(0x1010))
+    );
+    assert!(event.threads.values.is_empty());
+    assert!(!bytes.contains("PRIVATE"));
+    value["threads"]["values"][1]["current"] = json!(false);
+    assert!(sanitize(value.clone(), TelemetrySurface::Desktop)
+        .0
+        .stacktrace
+        .is_none());
+    let mut threads = vec![json!({"current":false}); 128];
+    threads.push(json!({"current":true,"stacktrace":stack}));
+    value["threads"]["values"] = json!(threads);
+    assert!(sanitize(value, TelemetrySurface::Desktop)
+        .0
+        .stacktrace
+        .is_none());
+}
