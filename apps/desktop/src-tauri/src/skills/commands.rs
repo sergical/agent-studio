@@ -193,9 +193,9 @@ mod tests {
         plugin: Option<super::super::skill_dto::PluginInfo>,
     ) -> skill_refresh::SkillSnapshot {
         use super::super::skill_dto::{Deployment, InstalledSkill};
-        use super::super::skill_invocations::InvocationHeatmap;
         use super::super::SourceKind;
         use chrono::Utc;
+        use skill_studio_core::skill_uses::InvocationHeatmap;
         use std::collections::BTreeMap;
 
         skill_refresh::SkillSnapshot {

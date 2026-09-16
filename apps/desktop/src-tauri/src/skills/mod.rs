@@ -32,7 +32,6 @@ pub mod skill_harness_disable;
 pub mod skill_independent_copy;
 pub mod skill_install_plan;
 pub mod skill_invocation;
-pub mod skill_invocations;
 pub mod skill_lifecycle;
 pub mod skill_materialize;
 pub mod skill_md_write;

@@ -9,6 +9,7 @@
 //! walk - it is never constructed and is filtered out of the generated output.
 use schemars::generate::SchemaSettings;
 use schemars::JsonSchema;
+use skill_studio_core::skill_uses::{InvocationHeatmap, SkillInvocation, SkillTrigger};
 use skill_studio_core::tracked_projects::TrackedProjects;
 use skill_studio_lib::skills::add_method_defaults::AddMethodDefaults;
 use skill_studio_lib::skills::agents::AgentTarget;
@@ -21,7 +22,6 @@ use skill_studio_lib::skills::skill_dto::{
 use skill_studio_lib::skills::skill_fork::PullResult;
 use skill_studio_lib::skills::skill_fork_registry::{ForkRecord, PackMember};
 use skill_studio_lib::skills::skill_frontmatter_repair::FrontmatterRepairPreview;
-use skill_studio_lib::skills::skill_invocations::{InvocationHeatmap, SkillInvocation};
 use skill_studio_lib::skills::skill_pack::{
     ImportResult, PackImportPreflightResult, PackImportRequest, PackInfo, UpdatePackResult,
 };
@@ -56,6 +56,7 @@ struct WireTypes {
     pack_member: PackMember,
     pack_import_request: PackImportRequest,
     skill_invocation: SkillInvocation,
+    skill_trigger: SkillTrigger,
     lifecycle_target: LifecycleTarget,
     tracked_projects: TrackedProjects,
     discovery_source_setting: DiscoverySourceSetting,

@@ -390,8 +390,8 @@ mod tests {
 
     fn invocation_snapshot(deployments: Vec<Deployment>) -> SkillSnapshot {
         use super::super::skill_dto::InstalledSkill;
-        use super::super::skill_invocations::InvocationHeatmap;
         use super::super::SourceKind;
+        use skill_studio_core::skill_uses::InvocationHeatmap;
 
         SkillSnapshot {
             revision: 1,

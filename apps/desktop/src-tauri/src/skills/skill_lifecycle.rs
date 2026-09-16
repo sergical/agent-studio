@@ -361,9 +361,9 @@ mod tests {
     use crate::skills::skill_deployment::{
         deployment_id, BackingRelationship, DeploymentMutability,
     };
-    use crate::skills::skill_invocations::InvocationHeatmap;
     use crate::skills::SourceKind;
     use chrono::Utc;
+    use skill_studio_core::skill_uses::InvocationHeatmap;
     use std::collections::BTreeMap;
 
     fn dep(id: &str, name: &str, path: &str, scope: &str, dest: SkillDestination) -> Deployment {

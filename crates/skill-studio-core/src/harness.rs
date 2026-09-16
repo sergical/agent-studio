@@ -438,7 +438,7 @@ const PI_PACKAGES_DOC: &str =
 const PI_SETTINGS_DOC: &str = "https://pi.dev/docs/latest/settings";
 const PI_SESSIONS_DOC: &str = "https://pi.dev/docs/latest/sessions";
 const CODE_SURVEY: &str = "apps/desktop/src-tauri/src/skills/agents.rs";
-const CLAUDE_TRANSCRIPT_READER: &str = "apps/desktop/src-tauri/src/skills/skill_invocations.rs";
+const CLAUDE_TRANSCRIPT_READER: &str = "crates/skill-studio-host/src/skill_uses.rs";
 const ONE_LEVEL_READER: &str =
     "one-level readers never reach <root>/.skill-studio-disabled/<skill>/SKILL.md";
 

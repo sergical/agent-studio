@@ -731,7 +731,7 @@ mod tests {
             }],
             projects: Vec::new(),
             invocations: Vec::new(),
-            heatmap: super::super::skill_invocations::InvocationHeatmap::default(),
+            heatmap: skill_studio_core::skill_uses::InvocationHeatmap::default(),
             scanned_at: chrono::Utc::now().to_rfc3339(),
             last_test_by_skill: Default::default(),
             update_check: Default::default(),

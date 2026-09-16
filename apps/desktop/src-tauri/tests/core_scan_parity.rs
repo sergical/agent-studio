@@ -72,11 +72,10 @@ use skill_studio_core::scope::{ProjectSelection, RuntimeScope};
 use skill_studio_core::testing::golden::unique_temp_dir;
 use skill_studio_core::testing::{fixtures, FakeClock, FakeIds, FakeLease, NoHistory};
 
-use skill_studio_host::RealFs;
+use skill_studio_host::{RealFs, SkillInvocationIndex};
 
 use skill_studio_lib::skill_dto::InstalledSkill;
 use skill_studio_lib::skill_fork_registry::{read_fork_registry, write_fork_registry};
-use skill_studio_lib::skill_invocations::SkillInvocationIndex;
 use skill_studio_lib::skill_refresh::{build_snapshot, BuildPaths};
 
 /// One agent used by these fixtures, mapped from the desktop's display-name

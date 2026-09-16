@@ -35,6 +35,7 @@ pub mod ops;
 mod ownership;
 pub mod ports;
 pub mod scope;
+pub mod skill_uses;
 pub mod snapshot;
 pub mod tracked_projects;
 

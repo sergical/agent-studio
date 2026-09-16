@@ -117,6 +117,10 @@ export type DisabledBy =
  * removal from matching a later installation at the same path.
  */
 export type TrialStatus = "active" | "expiring" | "recovery-required";
+/**
+ * How a skill use started.
+ */
+export type SkillTrigger = "user" | "agent" | "file_read";
 
 /**
  * What the Add Skill sheet needs before it can pick sensible defaults.
@@ -345,9 +349,12 @@ export interface InstallResult {
   tool: string | null;
 }
 /**
- * Per-day invocation counts for the heatmap (date "YYYY-MM-DD" -> count).
+ * Per-day use counts for the heatmap (date "YYYY-MM-DD" -> count).
  */
 export interface InvocationHeatmap {
+  /**
+   * Counted uses per day.
+   */
   days: {
     [k: string]: number;
   };
@@ -488,16 +495,36 @@ export interface SkillEventDto {
   ts: string;
 }
 /**
- * One recorded skill invocation from an agent transcript.
+ * One recorded skill use from a harness's own session history.
  */
 export interface SkillInvocation {
   /**
-   * Which agent recorded this invocation, e.g. "Claude Code".
+   * When the use happened.
    */
-  agent: string;
   at: string;
+  /**
+   * Which harness recorded this use - an [`AgentId`](crate::identity::AgentId)
+   * wire name, e.g. [`AgentId::CLAUDE_CODE`](crate::identity::AgentId::CLAUDE_CODE).
+   */
+  harness: string;
+  /**
+   * The project directory the use happened in, if the harness recorded one.
+   */
   project_path: string | null;
+  /**
+   * The harness's own session id, used to dedupe file reads. Not every
+   * harness records one.
+   */
+  session?: string | null;
+  /**
+   * The skill's name, as recorded by the harness (may carry a
+   * `prefix:base` plugin qualifier).
+   */
   skill: string;
+  /**
+   * How the use started.
+   */
+  trigger: "user" | "agent" | "file_read";
 }
 /**
  * Everything the frontend needs about installed skills, discovered
@@ -543,28 +570,73 @@ export interface SkillSnapshot {
   update_check: UpdateCheckSummary;
 }
 /**
- * Per-skill invocation summary sent to the frontend.
+ * Per-skill use summary sent to the frontend.
  */
 export interface SkillInvocationStats {
   /**
-   * Per-day invocation counts, "YYYY-MM-DD" (UTC), over the last 365 days.
+   * Per-day use counts, "YYYY-MM-DD" (UTC), over the last 365 days.
    */
   by_day: {
     [k: string]: number;
   };
   /**
-   * Invocation counts by full project path, over the last 30 days only.
+   * Use counts by harness id, over the last 30 days only.
+   */
+  by_harness_30_days: {
+    [k: string]: number;
+  };
+  /**
+   * Use counts by full project path, over the last 30 days only.
    */
   by_project_30_days: {
     [k: string]: number;
   };
+  by_trigger_30_days: SkillTriggerCounts;
+  /**
+   * Counted uses in the last 14 days.
+   */
   last_14_days: number;
+  /**
+   * Counted uses in the last 24 hours.
+   */
   last_24_hours: number;
+  /**
+   * Counted uses in the last 30 days.
+   */
   last_30_days: number;
+  /**
+   * Counted uses in the last 7 days.
+   */
   last_7_days: number;
+  /**
+   * The most recent use's timestamp, RFC 3339.
+   */
   last_used: string | null;
+  /**
+   * The skill's name.
+   */
   skill: string;
+  /**
+   * Total counted uses across every cached transcript.
+   */
   total: number;
+}
+/**
+ * Use counts by trigger, over the last 30 days only.
+ */
+export interface SkillTriggerCounts {
+  /**
+   * Uses the model called as a tool.
+   */
+  agent: number;
+  /**
+   * Uses the model triggered by reading `SKILL.md` directly.
+   */
+  file_read: number;
+  /**
+   * Uses the user typed.
+   */
+  user: number;
 }
 /**
  * The cheap per-skill index `build_snapshot` reads for every skill's

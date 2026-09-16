@@ -1156,9 +1156,9 @@ mod tests {
         use super::super::frontmatter::InvocationPolicy;
         use super::super::skill_deployment::{BackingRelationship, DeploymentMutability};
         use super::super::skill_dto::{Deployment, InstalledSkill};
-        use super::super::skill_invocations::InvocationHeatmap;
         use super::super::skill_ownership::LifecycleOwnerKind;
         use super::super::SourceKind;
+        use skill_studio_core::skill_uses::InvocationHeatmap;
         use std::collections::BTreeMap;
 
         let registry = read_fork_registry(home).unwrap();

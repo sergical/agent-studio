@@ -1143,6 +1143,8 @@ export function buildHarnessSnapshot(skillCount = 0): SkillSnapshot {
         last_used: new Date(CAPTURE_NOW - 38 * 60_000).toISOString(),
         by_project_30_days: profile.byProject,
         by_day: byDay,
+        by_harness_30_days: { "claude-code": profile.windows[3] },
+        by_trigger_30_days: { user: 0, agent: profile.windows[3], file_read: 0 },
       };
     }),
     heatmap: { days: heatmapDays },

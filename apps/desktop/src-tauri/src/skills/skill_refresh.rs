@@ -21,7 +21,9 @@ use notify_debouncer_mini::Debouncer;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use skill_studio_core::discovery_sources::DiscoverySources;
+use skill_studio_core::skill_uses::{InvocationHeatmap, SkillInvocationStats, SkillUseFilter};
 use skill_studio_core::tracked_projects::TrackedProjects;
+use skill_studio_host::{SkillInvocationIndex, SkillUseRefreshReport};
 use tauri::{AppHandle, Emitter, Manager};
 
 use super::agents;
@@ -30,9 +32,6 @@ use super::skill_assembly;
 use super::skill_dto::{Deployment, InstalledSkill};
 use super::skill_fork_registry::{ForkRegistry, TrialScope};
 use super::skill_harness_disable;
-use super::skill_invocations::{
-    InvocationHeatmap, RefreshReport, SkillInvocationIndex, SkillInvocationStats,
-};
 use super::skill_run_history::{self, SkillRunSummary};
 use super::skill_update_check::{self, UpdateCheckSummary};
 
@@ -118,7 +117,7 @@ pub struct SkillRefreshState {
     /// The (UTC date, hour) of the last snapshot rebuild - full or
     /// invocations-only. The refresh loop compares this against the current
     /// hour on every tick so the wall-clock-dependent invocation windows in
-    /// `SkillInvocationIndex::stats` (24h/7d/14d/30d, by_day) get rebuilt on
+    /// `SkillInvocationIndex::stats_at` (24h/7d/14d/30d, by_day) get rebuilt on
     /// an hour boundary even when nothing on disk changed.
     last_built_hour: Arc<Mutex<Option<(NaiveDate, u32)>>>,
     cache_path: PathBuf,
@@ -177,6 +176,10 @@ fn hour_key(now: DateTime<Utc>) -> (NaiveDate, u32) {
 /// with `tauri::Builder::manage`.
 pub fn init(app: &AppHandle) -> SkillRefreshState {
     let cache_path = invocation_cache_path(app);
+    // Best-effort cleanup of the pre-rename cache file this replaced; a
+    // fresh index is rebuilt from the transcripts either way, so a failure
+    // here (e.g. it never existed) is not worth surfacing.
+    let _ = std::fs::remove_file(cache_path.with_file_name("skill-invocations.json"));
     let invocation_index = SkillInvocationIndex::load_or_empty(&cache_path);
 
     let state = SkillRefreshState {
@@ -718,20 +721,45 @@ fn rebuild_invocations_only(app: &AppHandle, state: &SkillRefreshState) -> Resul
         .map_err(|e| format!("rebuild lock poisoned: {e}"))?;
 
     let home = dirs::home_dir().ok_or("Could not find home directory")?;
+
+    // Read once, before taking the index lock: `known_skills` only exists if
+    // a full snapshot has already been built, and reusing it here (rather
+    // than rescanning skill directories) is what makes this path cheaper
+    // than `rebuild_snapshot_now`.
+    let known_skills: Option<BTreeSet<String>> = {
+        let guard = state
+            .snapshot
+            .read()
+            .map_err(|e| format!("snapshot lock poisoned: {e}"))?;
+        guard
+            .as_ref()
+            .map(|snapshot| snapshot.skills.iter().map(|s| s.name.clone()).collect())
+    };
+
+    let sources = DiscoverySources::read(&skill_studio_host::RealFs, &home);
     let mut invocation_index = state
         .invocation_index
         .lock()
         .map_err(|e| format!("invocation index lock poisoned: {e}"))?;
-    let report = invocation_index.refresh(&home.join(".claude/projects"));
+    let report = invocation_index.refresh(&home, &sources);
     if let Err(e) = invocation_index.save(&state.cache_path) {
         eprintln!("skill refresh: failed to save invocation cache: {e}");
     }
+
+    let Some(known_skills) = known_skills else {
+        return Ok(()); // no full snapshot yet; the next full rebuild covers this
+    };
+
     // Captured once and threaded through stats/heatmap/scanned_at/mark_built_at
     // below, so a rebuild that straddles an hour boundary doesn't record the
     // new hour against cutoffs computed for the old one.
     let now = Utc::now();
-    let invocations = invocation_index.stats_at(now);
-    let heatmap = invocation_index.heatmap_at(365, now);
+    let filter = SkillUseFilter {
+        known_skills: &known_skills,
+        sources: &sources,
+    };
+    let invocations = invocation_index.stats_at(now, &filter);
+    let heatmap = invocation_index.heatmap_at(365, now, &filter);
     drop(invocation_index);
 
     if report.incomplete {
@@ -744,7 +772,7 @@ fn rebuild_invocations_only(app: &AppHandle, state: &SkillRefreshState) -> Resul
             .read()
             .map_err(|e| format!("snapshot lock poisoned: {e}"))?;
         let Some(snapshot) = guard.as_ref() else {
-            return Ok(()); // no full snapshot yet; the next full rebuild covers this
+            return Ok(()); // the snapshot was cleared between the two reads above
         };
         let mut built = snapshot.clone();
         built.invocations = invocations;
@@ -805,7 +833,7 @@ fn invocation_cache_path(app: &AppHandle) -> PathBuf {
     app.path()
         .app_data_dir()
         .unwrap_or_else(|_| PathBuf::from("."))
-        .join("skill-invocations.json")
+        .join("skill-uses.json")
 }
 
 /// Runs for the app's lifetime on its own std thread (never the async
@@ -1429,7 +1457,7 @@ pub fn build_snapshot(
     invocation_index: &mut SkillInvocationIndex,
     paths: BuildPaths,
     now: DateTime<Utc>,
-) -> (SkillSnapshot, RefreshReport) {
+) -> (SkillSnapshot, SkillUseRefreshReport) {
     let total_start = Instant::now();
     let BuildPaths {
         cache_path,
@@ -1484,13 +1512,19 @@ pub fn build_snapshot(
     let overlays_ms = overlays_start.elapsed().as_millis();
 
     let invocations_start = Instant::now();
-    let report = invocation_index.refresh(&home.join(".claude/projects"));
+    let sources = DiscoverySources::read(&skill_studio_host::RealFs, home);
+    let report = invocation_index.refresh(home, &sources);
     if let Err(e) = invocation_index.save(cache_path) {
         eprintln!("skill refresh: failed to save invocation cache: {e}");
     }
     let invocations_ms = invocations_start.elapsed().as_millis();
 
     let skill_names: Vec<String> = skills.iter().map(|s| s.name.clone()).collect();
+    let known_skills: BTreeSet<String> = skill_names.iter().cloned().collect();
+    let use_filter = SkillUseFilter {
+        known_skills: &known_skills,
+        sources: &sources,
+    };
     let last_test_start = Instant::now();
     let last_test_by_skill = skill_run_history::read_last_test_index(runs_root, &skill_names)
         .into_iter()
@@ -1505,8 +1539,8 @@ pub fn build_snapshot(
             .into_iter()
             .map(|p| p.to_string_lossy().to_string())
             .collect(),
-        invocations: invocation_index.stats_at(now),
-        heatmap: invocation_index.heatmap_at(365, now),
+        invocations: invocation_index.stats_at(now, &use_filter),
+        heatmap: invocation_index.heatmap_at(365, now, &use_filter),
         scanned_at: now.to_rfc3339(),
         last_test_by_skill,
         update_check,

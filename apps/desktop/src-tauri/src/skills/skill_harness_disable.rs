@@ -930,10 +930,10 @@ mod tests {
         deployment_id, BackingRelationship, DeploymentMutability, SkillDestination,
     };
     use crate::skills::skill_dto::{Deployment, InstalledSkill};
-    use crate::skills::skill_invocations::InvocationHeatmap;
     use crate::skills::skill_ownership::LifecycleOwnerKind;
     use crate::skills::skill_refresh::SkillSnapshot;
     use crate::skills::SourceKind;
+    use skill_studio_core::skill_uses::InvocationHeatmap;
     use std::collections::BTreeMap;
     use std::fs;
 

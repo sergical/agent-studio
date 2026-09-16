@@ -24,6 +24,7 @@ mod history;
 mod ids;
 mod lease;
 mod sink;
+mod skill_uses;
 mod tools;
 
 pub use builder::{default_ports, default_ports_with_discovery, default_ports_with_history};
@@ -34,4 +35,5 @@ pub use history::{hash_entry, NoHistoryOpener, SqliteHistoryOpener};
 pub use ids::UlidIds;
 pub use lease::FileLease;
 pub use sink::{NoopSink, StderrSink};
+pub use skill_uses::{SkillInvocationIndex, SkillUseRefreshReport};
 pub use tools::PathToolLookup;
