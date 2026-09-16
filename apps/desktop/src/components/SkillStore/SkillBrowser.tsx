@@ -61,7 +61,7 @@ export function SkillBrowser({
   }
 
   return (
-    <div className="flex-1 overflow-y-auto px-7 py-5">
+    <div className="flex-1 overflow-y-auto py-5 pl-7 gutter-pr-7">
       <div className="grid grid-cols-[repeat(auto-fill,minmax(280px,1fr))] gap-4">
         {skills.map((skill) => (
           <SkillCard

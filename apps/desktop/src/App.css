@@ -128,11 +128,34 @@
   ::after {
     border-color: var(--color-border);
   }
+
+  /* The ::-webkit-scrollbar styling below turns every scrollbar into a classic
+     one that takes width, even where macOS would overlay it. A container that
+     starts to overflow would then narrow and reflow its content, so every
+     scroll container reserves the gutter up front. The substring match also
+     catches variant-prefixed classes (`md:overflow-y-auto`). Only vertical
+     scrollbars take inline space, so `overflow-x-auto` is left out. */
+  :where(
+    [class*="overflow-auto"],
+    [class*="overflow-scroll"],
+    [class*="overflow-y-auto"],
+    [class*="overflow-y-scroll"]
+  ) {
+    scrollbar-gutter: stable;
+  }
+}
+
+/* Right padding for a scroll container whose content must line up with
+   something outside it (a header, a toolbar): the reserved gutter already
+   supplies `--scrollbar-size` of that space. `gutter-pr-5` ≈ `pr-5`. */
+@utility gutter-pr-* {
+  padding-right: max(0px, calc(var(--spacing) * --value(number) - var(--scrollbar-size)));
 }
 :root {
   /* Default (and data-theme="dark"): native scrollbars, form controls, and
      window chrome match the app's dark chrome. */
   color-scheme: dark;
+  --scrollbar-size: 6px;
   /* Harness icon color for a disabled/parked deployment - derived so both
      themes get a legible mid-gray without a second hardcoded palette. */
   --color-icon-muted: color-mix(in srgb, var(--color-text-primary) 48%, var(--color-bg-primary));
@@ -213,8 +236,8 @@ body {
   -webkit-user-select: none;
 } /* Scrollbar styling */
 ::-webkit-scrollbar {
-  width: 6px;
-  height: 6px;
+  width: var(--scrollbar-size);
+  height: var(--scrollbar-size);
 }
 ::-webkit-scrollbar-track {
   background: transparent;

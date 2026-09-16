@@ -84,7 +84,7 @@ export function PageShell({
           {toolbar}
         </div>
       )}
-      <div className="min-h-0 flex-1 overflow-y-auto [scrollbar-gutter:stable]">
+      <div className="min-h-0 flex-1 overflow-y-auto">
         <div
           className={`mx-auto flex w-full flex-col gap-5 px-6 pt-5 pb-7 ${width === "narrow" ? "max-w-180" : "max-w-300"}`}
         >

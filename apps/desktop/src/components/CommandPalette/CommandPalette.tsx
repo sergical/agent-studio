@@ -231,7 +231,7 @@ export function CommandPalette({ snapshot, requestRescan }: CommandPaletteProps)
           id="command-palette-listbox"
           role="listbox"
           aria-label="Command palette results"
-          className="max-h-[420px] overflow-y-auto p-1"
+          className="max-h-[420px] overflow-y-auto py-1 pl-1 gutter-pr-1"
         >
           {sections.map(({ section, items: sectionItems }) => (
             <div key={section} role="group" aria-label={SECTION_LABEL[section]}>

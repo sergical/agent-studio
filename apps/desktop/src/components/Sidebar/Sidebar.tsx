@@ -101,7 +101,7 @@ function SidebarNavItems({
   setSkillListFilter,
 }: SidebarNavItemsProps) {
   return (
-    <div className="flex flex-col gap-px px-2 pt-2.5">
+    <div className="flex flex-col gap-px pt-2.5">
       <Button
         variant="ghost"
         className={itemClass(anchorView.kind === "home")}
@@ -185,7 +185,7 @@ function SidebarParkedSection({
   if (parkedCount === 0) return null;
   const active = anchorView.kind === "skills" && inParked;
   return (
-    <div className="flex flex-col gap-px px-2 pt-3">
+    <div className="flex flex-col gap-px pt-3">
       <Button
         variant="ghost"
         className={itemClass(active)}
@@ -366,7 +366,7 @@ export function Sidebar({ snapshot, emittedSnapshotRevision, requestRescan }: Si
         </div>
       </div>
 
-      <div className="flex min-h-0 flex-1 flex-col overflow-y-auto">
+      <div className="flex min-h-0 flex-1 flex-col overflow-y-auto pl-2 gutter-pr-2">
         <SidebarNavItems
           anchorView={anchorView}
           skillsActive={skillsActive}
