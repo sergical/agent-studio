@@ -86,3 +86,13 @@ manifest/lock entry; no real repository or user skill was modified.
 This batch does not add installation Undo or claim rollback of upstream provider
 changes. Fault-injection tests establish partial-outcome/cleanup behavior; native
 cases above establish UI wiring. Combined release acceptance remains separate.
+
+## Delivery
+
+Draft PR104: https://github.com/sergical/agent-studio/pull/104. Code commit
+`80ea5c6`. Review checkout contains only this bounded batch. App and build
+processes exited. Disposable bundle, homes/projects, source fixtures, raw logs and
+unique cache were removed after acceptance. Compact reproduction inputs remain
+under `/tmp/skill-studio-delivery/source-install/repro`; copy them into a fresh
+fixture root before use. CI35100661021 covers the committed frontend candidate;
+final integration reconciliation and combined release acceptance remain open.
