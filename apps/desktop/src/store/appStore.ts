@@ -6,8 +6,8 @@
 import { create } from "zustand";
 import { defaultSkillListFilter, isProjectScope } from "@skill-studio/lib";
 import type { SkillListFilter } from "@skill-studio/lib";
-import { USAGE_WINDOWS } from "@skill-studio/lib";
-import type { UsageWindow } from "@skill-studio/lib";
+import { ALL_ACTIVITY, USAGE_WINDOWS } from "@skill-studio/lib";
+import type { ActivityFilter, UsageWindow } from "@skill-studio/lib";
 import type { Toast, TrackedProjects } from "@skill-studio/lib";
 import { addToast } from "../lib/toast";
 import {
@@ -118,6 +118,16 @@ interface AppState {
   // switching it in one place is reflected in the other.
   usageWindow: UsageWindow;
   setUsageWindow: (window: UsageWindow) => void;
+
+  // === Activity Page ===
+  // Kept here so opening a skill from the Activity page and coming back
+  // keeps the filters and the open day. Session-only: a harness saved from
+  // an earlier run may have been turned off in Settings since.
+  activityFilter: ActivityFilter;
+  setActivityFilter: (filter: ActivityFilter) => void;
+  /** Local "YYYY-MM-DD" day whose details the Activity page shows, or null for the overview. */
+  activityDay: string | null;
+  setActivityDay: (dayKey: string | null) => void;
 
   // === Skill Page Assistant Drawer ===
   // Whether the skill page's assistant panel shows as a right-hand overlay
@@ -268,6 +278,11 @@ export const useAppStore = create<AppState>((set, get) => ({
     }
     set({ usageWindow: window });
   },
+
+  activityFilter: ALL_ACTIVITY,
+  setActivityFilter: (filter) => set({ activityFilter: filter }),
+  activityDay: null,
+  setActivityDay: (dayKey) => set({ activityDay: dayKey }),
 
   isAssistantOpen: false,
   setIsAssistantOpen: (open) => set({ isAssistantOpen: open }),

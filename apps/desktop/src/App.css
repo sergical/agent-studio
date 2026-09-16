@@ -272,7 +272,8 @@ body {
 :where(
   input[data-slot="input"],
   textarea[data-slot="textarea"],
-  [data-slot="button"]
+  [data-slot="button"],
+  [role="listbox"][aria-activedescendant]
 ):focus-visible {
   outline: none;
 } /* One frame of frozen transitions during a theme switch, so every
@@ -301,6 +302,15 @@ body {
   }
   to {
     opacity: 1;
+  }
+}
+/* Keyframe only - referenced via animate-[activityHoverCardIn_150ms_cubic-bezier(0.23,1,0.32,1)]
+   in ActivityHeatmap.tsx's hover card. That card is a plain portal div, not a Base UI popup, so
+   it can't use TooltipContent's data-open-driven animate-in classes. */
+@keyframes activityHoverCardIn {
+  from {
+    opacity: 0;
+    transform: scale(0.97);
   }
 }
 /* Assistant transcript */

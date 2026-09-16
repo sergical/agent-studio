@@ -1,24 +1,20 @@
 // ============================================================================
-// SkillActivityView - Full-page invocation history: a year heatmap, a
-// per-skill table for the shared usage window, and a 30-day per-project
-// breakdown
+// SkillActivityView - Docked layout: a year heatmap, by-skill and by-project
+// lists on the left; a right-hand panel that is always there, showing the
+// usage window's overview until a day is picked, then that day's details.
 // ============================================================================
 
-import {
-  formatRelativeTime,
-  heatmapDateRangeUtc,
-  invocationsInWindow,
-  topSkills,
-  USAGE_WINDOWS,
-} from "@skill-studio/lib";
 import type { SkillSnapshot } from "@skill-studio/lib";
-import { Button } from "@skill-studio/ui";
-import { useAppStore } from "../../store/appStore";
-import { PageShell } from "../Shell/PageShell";
-import { TooltipControl } from "../ui/TooltipControl";
-import { WindowSegmentedControl } from "../ui/WindowSegmentedControl";
-import { InvocationHeatmap } from "./InvocationHeatmap";
+import { ActivityBySkill } from "./ActivityBySkill";
+import { ActivityDayDetails } from "./ActivityDayDetails";
+import { ActivityFilters, useActivityLens } from "./ActivityFilters";
+import { ActivityOverview } from "./ActivityOverview";
+import { ActivityProjects } from "./ActivityProjects";
+import { ActivityYear } from "./ActivityYear";
 import { SkillHistorySection } from "./SkillHistorySection";
+import { useActivityEscape } from "./useActivityEscape";
+import { PageShell } from "../Shell/PageShell";
+import { useAppStore } from "../../store/appStore";
 
 interface SkillActivityViewProps {
   snapshot: SkillSnapshot | undefined;
@@ -26,148 +22,94 @@ interface SkillActivityViewProps {
 }
 
 /**
- * Every project's 30-day invocation total, keyed and sorted by full path so
- * two projects with the same basename (e.g. two checkouts of the same repo)
- * stay separate rows; `label` is the basename shown in the row.
- */
-function projectTotals(
-  snapshot: SkillSnapshot,
-): { project: string; label: string; count: number }[] {
-  const totals = new Map<string, number>();
-  for (const stat of snapshot.invocations) {
-    for (const [project, count] of Object.entries(stat.by_project_30_days)) {
-      totals.set(project, (totals.get(project) ?? 0) + count);
-    }
-  }
-  return [...totals.entries()]
-    .map(([project, count]) => ({
-      project,
-      label: project.split("/").filter(Boolean).pop() ?? project,
-      count,
-    }))
-    .sort((a, b) => b.count - a.count || a.project.localeCompare(b.project));
-}
-
-/**
- * Full activity history for own and plugin skills, from Claude Code
- * transcripts only. A year-long heatmap, a per-skill table filtered to the
- * shared usage window, and a 30-day per-project breakdown.
+ * Full activity history for own and plugin skills, from every harness with a
+ * usage reader that's turned on in Settings: a year-long heatmap, a per-skill
+ * table filtered to the shared usage window, a 30-day per-project breakdown,
+ * and a docked details panel for the day currently picked.
  */
 export function SkillActivityView({ snapshot, onSelectSkill }: SkillActivityViewProps) {
-  const usageWindow = useAppStore((state) => state.usageWindow);
-  const setUsageWindow = useAppStore((state) => state.setUsageWindow);
+  const day = useAppStore((state) => state.activityDay);
+  const setDay = useAppStore((state) => state.setActivityDay);
+  useActivityEscape(() => setDay(null));
 
-  // Anchored to the snapshot's own scan time (not just the render time), and
-  // re-derived whenever its UTC date changes, so the grid still advances past
-  // UTC midnight instead of freezing at whatever date the component first
-  // mounted.
-  const scannedAtUtcDateKey = (snapshot?.scanned_at ? new Date(snapshot.scanned_at) : new Date())
-    .toISOString()
-    .slice(0, 10);
-  // Computed once here and passed down to InvocationHeatmap, so the header
-  // total, the grid, and its aria-label all sum over the exact same 364-day
-  // UTC key list rather than three independently-computed ranges. Rebuilt
-  // from `scannedAtUtcDateKey` alone (midnight UTC of that date) rather than
-  // depending on a fresh `Date` instance, which changes identity every
-  // render even when the UTC date hasn't.
-  const heatmapDates = heatmapDateRangeUtc(new Date(`${scannedAtUtcDateKey}T00:00:00Z`)).dates;
-  const invocationsLastYear = heatmapDates.reduce(
-    (sum, key) => sum + (snapshot?.heatmap.days[key] ?? 0),
-    0,
-  );
-
-  const usedThisWindow = snapshot?.invocations.filter(
-    (s) => invocationsInWindow(s, usageWindow) > 0,
-  );
-  const bySkill = usedThisWindow
-    ? topSkills(usedThisWindow, usedThisWindow.length, usageWindow)
-    : [];
-
-  const byProject = snapshot ? projectTotals(snapshot) : [];
-
-  const windowLabel = USAGE_WINDOWS.find((w) => w.id === usageWindow)?.label ?? "30 days";
+  const stats = snapshot?.invocations ?? [];
+  // The snapshot's scan time, not the render time, so a stale snapshot doesn't make the window
+  // and the heatmap disagree about "now".
+  const now = snapshot?.scanned_at ? new Date(snapshot.scanned_at) : new Date();
+  const lens = useActivityLens(stats, now);
   const hasAnyInvocations = snapshot ? snapshot.invocations.some((s) => s.total > 0) : false;
 
   return (
     <PageShell
       title="Activity"
-      subtitle="From Claude Code transcripts. Codex, OpenCode and pi are not tracked yet."
+      subtitle="From every harness turned on in Settings"
+      toolbar={
+        <ActivityFilters
+          stats={stats}
+          harness={lens.harness}
+          setHarness={lens.setHarness}
+          trigger={lens.trigger}
+          setTrigger={lens.setTrigger}
+          clearFilter={lens.clearFilter}
+          enabledHarnesses={lens.enabledHarnesses}
+        />
+      }
     >
       {!snapshot || !hasAnyInvocations ? (
-        <p className="text-wrap-pretty text-body text-text-tertiary">
-          No invocations recorded yet.
-        </p>
-      ) : (
         <>
-          <div className="flex flex-col gap-3">
-            <div className="flex items-baseline justify-between gap-3">
-              <span className="text-caption font-medium tracking-[0.08em] text-text-tertiary uppercase">
-                Activity
-              </span>
-              <span className="text-small text-text-tertiary">
-                {invocationsLastYear.toLocaleString()} invocations in the last year
-              </span>
-            </div>
-            <InvocationHeatmap heatmap={snapshot.heatmap} dates={heatmapDates} />
-          </div>
-
-          <div className="flex flex-col gap-3">
-            <div className="flex items-baseline justify-between gap-3">
-              <span className="text-caption font-medium tracking-[0.08em] text-text-tertiary uppercase">
-                By skill
-              </span>
-              <WindowSegmentedControl value={usageWindow} onChange={setUsageWindow} />
-            </div>
-            {bySkill.length === 0 ? (
-              <p className="text-wrap-pretty text-body text-text-tertiary">
-                No invocations in the last {windowLabel}.
-              </p>
-            ) : (
-              <div className="flex flex-col">
-                {bySkill.map((stat) => (
-                  <Button
-                    key={stat.skill}
-                    variant="ghost"
-                    className="grid h-8 w-full grid-cols-[minmax(0,1fr)_72px_88px_72px] gap-3 rounded-none border-b border-border-subtle px-2 justify-start text-left"
-                    onClick={() => onSelectSkill(stat.skill)}
-                  >
-                    <span className="truncate text-body text-text-primary" title={stat.skill}>
-                      {stat.skill}
-                    </span>
-                    <span className="text-nowrap text-small text-text-tertiary tabular-nums">
-                      {stat.last_used ? formatRelativeTime(stat.last_used) : "never"}
-                    </span>
-                    <span className="text-right text-body text-text-secondary tabular-nums">
-                      {invocationsInWindow(stat, usageWindow)}
-                    </span>
-                    <span className="text-right text-body text-text-secondary tabular-nums">
-                      {Object.keys(stat.by_project_30_days).length}
-                    </span>
-                  </Button>
-                ))}
-              </div>
-            )}
-          </div>
-
-          <div className="flex flex-col gap-3">
-            <span className="text-caption font-medium tracking-[0.08em] text-text-tertiary uppercase">
-              By project, 30 days
-            </span>
-            <div className="flex flex-col">
-              {byProject.map(({ project, label, count }) => (
-                <TooltipControl key={project} content={[{ text: project, mono: true }]}>
-                  <div className="flex h-8 items-center justify-between gap-3 border-b border-border-subtle px-2">
-                    <span className="truncate text-body text-text-primary">{label}</span>
-                    <span className="text-body text-text-secondary tabular-nums">{count}</span>
-                  </div>
-                </TooltipControl>
-              ))}
-            </div>
-          </div>
+          <p className="text-wrap-pretty text-body text-text-tertiary">
+            No skill uses recorded yet.
+          </p>
+          <SkillHistorySection />
         </>
+      ) : (
+        <div className="@container">
+          <div className="grid gap-6 @[52rem]:grid-cols-[minmax(0,1fr)_18rem]">
+            <div className="flex min-w-0 flex-col gap-5">
+              <ActivityYear
+                stats={stats}
+                dates={lens.dates}
+                days={lens.days}
+                yearTotal={lens.yearTotal}
+                filter={lens.filter}
+                selected={day}
+                onSelect={setDay}
+              />
+              <ActivityBySkill
+                stats={stats}
+                filter={lens.filter}
+                now={now}
+                onOpenSkill={onSelectSkill}
+              />
+              <ActivityProjects stats={stats} filter={lens.filter} now={now} />
+              {/* In this column so the grid, the sticky aside's containing block, reaches the page
+                  bottom; a section below the grid would push the aside up out of view there. */}
+              <SkillHistorySection />
+            </div>
+            <aside
+              aria-label="Details"
+              // 11rem covers the window's top and bottom insets, the page header and toolbar rows,
+              // the sticky offset, and the page's bottom padding. Any taller and the grid's bottom
+              // edge pushes the aside up past the sticky offset when scrolled to the end.
+              className="flex flex-col gap-5 self-start rounded-md border border-border-subtle bg-bg-secondary p-4 @[52rem]:sticky @[52rem]:top-5 @[52rem]:max-h-[calc(100dvh-11rem)] @[52rem]:overflow-y-auto"
+            >
+              {day ? (
+                <ActivityDayDetails
+                  stats={stats}
+                  dayKey={day}
+                  filter={lens.filter}
+                  days={lens.days}
+                  dates={lens.dates}
+                  onChangeDay={setDay}
+                  onOpenSkill={onSelectSkill}
+                />
+              ) : (
+                <ActivityOverview stats={stats} filter={lens.filter} now={now} onOpenDay={setDay} />
+              )}
+            </aside>
+          </div>
+        </div>
       )}
-
-      <SkillHistorySection />
     </PageShell>
   );
 }

@@ -960,119 +960,324 @@ const fillerSkills = fillerSpecs.map((spec) =>
   }),
 );
 
-// --- Invocation history: ~8 skills get an entry in `invocations`/`heatmap` -
+// --- Invocation history: a seeded year of uses across every harness, so the
+// Activity page's heatmap, by-skill/by-project lists, and docked panel all
+// have something to show without a real disk scan.
 
-function distributeDays(total: number, count: number, startIndex: number): number[] {
-  const weights = Array.from({ length: count }, (_, index) => {
-    const day = startIndex + index;
-    const weekday = new Date(CAPTURE_NOW - day * 86_400_000).getUTCDay();
-    return weekday === 0 ? 0 : weekday === 6 ? 1 : 2 + ((day * 17) % 5);
-  });
-  const weightTotal = weights.reduce((sum, weight) => sum + weight, 0);
-  let cumulativeWeight = 0;
-  return weights.map((weight) => {
-    const previous = Math.floor((cumulativeWeight * total) / weightTotal);
-    cumulativeWeight += weight;
-    return Math.floor((cumulativeWeight * total) / weightTotal) - previous;
-  });
+/** Every fixture skill that gets simulated uses, busiest first by real-world plausibility. */
+const INVOCATION_SKILLS = [
+  "commit",
+  "code-review",
+  "agent-browser",
+  "release-notes",
+  "pdf-processing",
+  "sdk-migration",
+  "sentry-triage",
+  "prompt-caching",
+  "filesystem-audit",
+  "changelog-draft",
+  "test-flake-hunt",
+  "schema-migration-check",
+  "dependency-upgrade-plan",
+  "frontend-design",
+  "internal-runbook",
+  "api-client-codegen",
+  "worktree-cleanup",
+  "cross-repository-dependency-graph-builder",
+  "incident-postmortem",
+  "eslint-config-audit",
+  "storybook-story-gen",
+  "graphql-schema-diff",
+  "terraform-plan-review",
+  "kubernetes-manifest-lint",
+  "figma-token-sync",
+  "cron-schedule-explain",
+];
+
+const INVOCATION_PROJECTS = [
+  HARNESS_PROJECT,
+  ACME_PROJECT,
+  PERSONAL_PROJECT,
+  BACKEND_PROJECT,
+  MOBILE_PROJECT,
+];
+
+type FixtureTrigger = "user" | "agent" | "file_read";
+type FixtureHarness = "claude-code" | "codex" | "open-code" | "pi" | "cursor" | "grok-build";
+
+const DAY_COUNT = 364;
+
+/** The UTC "YYYY-MM-DD" key for the day `daysAgo` days before `CAPTURE_NOW`'s date, 0 = today. */
+function fixtureDateKey(daysAgo: number): string {
+  const date = new Date(CAPTURE_NOW);
+  date.setUTCHours(0, 0, 0, 0);
+  date.setUTCDate(date.getUTCDate() - daysAgo);
+  return date.toISOString().slice(0, 10);
 }
 
-function invocationDays(
-  windowTotals: [number, number, number, number],
-  earlier: number,
-): Record<string, number> {
-  const [today, sevenDays, fourteenDays, thirtyDays] = windowTotals;
-  const counts = [
-    today,
-    ...distributeDays(sevenDays - today, 6, 1),
-    ...distributeDays(fourteenDays - sevenDays, 7, 7),
-    ...distributeDays(thirtyDays - fourteenDays, 16, 14),
-    ...distributeDays(earlier, 335, 30),
-  ];
-  return Object.fromEntries(
-    counts.map((count, index) => {
-      const date = new Date(CAPTURE_NOW);
-      date.setUTCHours(0, 0, 0, 0);
-      date.setUTCDate(date.getUTCDate() - index);
-      return [date.toISOString().slice(0, 10), count];
-    }),
-  );
+/** Deterministic PRNG (mulberry32) so the fixture's numbers never change between reloads. */
+function mulberry32(seed: number): () => number {
+  let a = seed;
+  return () => {
+    a = (a + 0x6d2b79f5) | 0;
+    let t = Math.imul(a ^ (a >>> 15), 1 | a);
+    t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
 }
 
-interface InvocationProfile {
-  skill: string;
-  windows: [number, number, number, number];
-  earlier: number;
-  byProject: Record<string, number>;
+function cumulate(weights: number[]): number[] {
+  let sum = 0;
+  return weights.map((w) => (sum += w));
 }
 
-const invocationProfiles: InvocationProfile[] = [
+function pickWeighted(rand: () => number, cumulative: number[]): number {
+  const target = rand() * cumulative[cumulative.length - 1];
+  let lo = 0;
+  let hi = cumulative.length - 1;
+  while (lo < hi) {
+    const mid = (lo + hi) >> 1;
+    if (cumulative[mid] < target) lo = mid + 1;
+    else hi = mid;
+  }
+  return lo;
+}
+
+interface HarnessPlan {
+  id: FixtureHarness;
+  perYear: number;
+  mix: [FixtureTrigger, number][];
+  /** How many of the ranked skills this harness ever uses. */
+  skillCount: number;
+  /** 0..1 relative activity for `daysAgo` (0 = today, DAY_COUNT - 1 = oldest). */
+  weight: (daysAgo: number) => number;
+}
+
+const HARNESS_PLANS: HarnessPlan[] = [
   {
-    skill: "commit",
-    windows: [8, 42, 79, 128],
-    earlier: 1056,
-    byProject: { [HARNESS_PROJECT]: 81, [ACME_PROJECT]: 47 },
+    id: "claude-code",
+    perYear: 5100,
+    mix: [
+      ["agent", 0.68],
+      ["user", 0.32],
+    ],
+    skillCount: INVOCATION_SKILLS.length,
+    // Ramps up toward the present, like a project that has picked up steam.
+    weight: (daysAgo) => 0.55 + (0.45 * (DAY_COUNT - 1 - daysAgo)) / DAY_COUNT,
   },
   {
-    skill: "code-review",
-    windows: [4, 27, 51, 76],
-    earlier: 645,
-    byProject: { [HARNESS_PROJECT]: 63, [ACME_PROJECT]: 13 },
+    id: "codex",
+    perYear: 1450,
+    mix: [
+      ["file_read", 0.94],
+      ["user", 0.06],
+    ],
+    skillCount: 18,
+    weight: (daysAgo) => (daysAgo > 240 ? 0 : daysAgo < 60 ? 1 : 0.4),
   },
   {
-    skill: "agent-browser",
-    windows: [2, 15, 29, 44],
-    earlier: 423,
-    byProject: { [HARNESS_PROJECT]: 44 },
+    id: "open-code",
+    perYear: 780,
+    mix: [
+      ["agent", 0.85],
+      ["file_read", 0.14],
+      ["user", 0.01],
+    ],
+    skillCount: 12,
+    weight: (daysAgo) => (daysAgo > 300 ? 0 : daysAgo > 120 ? 1 : 0.2),
   },
   {
-    skill: "sentry-triage",
-    windows: [1, 9, 18, 31],
-    earlier: 210,
-    byProject: { [HARNESS_PROJECT]: 31 },
+    id: "pi",
+    perYear: 240,
+    mix: [["file_read", 1]],
+    skillCount: 7,
+    weight: (daysAgo) => (daysAgo > 110 ? 0 : 1),
   },
   {
-    skill: "prompt-caching",
-    windows: [3, 11, 22, 38],
-    earlier: 190,
-    byProject: { [HARNESS_PROJECT]: 20, [ACME_PROJECT]: 18 },
+    id: "cursor",
+    perYear: 110,
+    mix: [["file_read", 1]],
+    skillCount: 5,
+    weight: (daysAgo) => (daysAgo % 29 < 6 ? 1 : 0.1),
   },
   {
-    skill: "test-flake-hunt",
-    windows: [0, 5, 12, 19],
-    earlier: 88,
-    byProject: { [HARNESS_PROJECT]: 19 },
-  },
-  {
-    skill: "schema-migration-check",
-    windows: [1, 3, 7, 14],
-    earlier: 52,
-    byProject: { [HARNESS_PROJECT]: 14 },
-  },
-  {
-    skill: "release-notes",
-    windows: [0, 2, 4, 9],
-    earlier: 21,
-    byProject: { [HARNESS_PROJECT]: 9 },
+    id: "grok-build",
+    perYear: 95,
+    mix: [["file_read", 1]],
+    skillCount: 4,
+    weight: (daysAgo) => (daysAgo % 23 < 5 ? 1 : 0.1),
   },
 ];
 
-const invocationDaysBySkill = new Map(
-  invocationProfiles.map((profile) => [
-    profile.skill,
-    invocationDays(profile.windows, profile.earlier),
-  ]),
-);
+interface FixtureUse {
+  daysAgo: number;
+  /** 0-23, local to the fixture's own clock (UTC). */
+  hour: number;
+  skill: string;
+  harness: FixtureHarness;
+  trigger: FixtureTrigger;
+  project: string;
+}
 
-const heatmapDays = Object.fromEntries(
-  Object.keys(invocationDaysBySkill.get("commit") ?? {}).map((date) => [
-    date,
-    invocationProfiles.reduce(
-      (sum, profile) => sum + (invocationDaysBySkill.get(profile.skill)?.[date] ?? 0),
-      0,
-    ),
-  ]),
-);
+/** One seeded year of uses across every harness: daytime/evening-weighted hours, a busier
+ * recent quarter, and each harness favoring its own slice of the skill list. */
+function generateInvocations(): FixtureUse[] {
+  const rand = mulberry32(20260916);
+  const dayWeight = Array.from({ length: DAY_COUNT }, (_, daysAgo) => {
+    const weekday = new Date(CAPTURE_NOW - daysAgo * 86_400_000).getUTCDay();
+    const base = weekday === 0 ? 0.25 : weekday === 6 ? 0.4 : 1;
+    return base * (0.7 + rand() * 0.6);
+  });
+  const projectCumulative = cumulate([10, 6, 3, 2, 1]);
+  // Daytime and evening clustering: 8am-11pm, weighted toward the working day with an evening tail.
+  const hourWeights = Array.from({ length: 16 }, (_, i) => {
+    const hour = 8 + i;
+    return hour <= 18 ? 3 : hour <= 21 ? 2 : 1;
+  });
+  const hourCumulative = cumulate(hourWeights);
+
+  const uses: FixtureUse[] = [];
+  for (const plan of HARNESS_PLANS) {
+    const days = cumulate(dayWeight.map((w, daysAgo) => w * plan.weight(daysAgo)));
+    // Each harness favors a different slice of the skill list - shuffle before slicing.
+    const shuffled = [...INVOCATION_SKILLS];
+    for (let i = 0; i < shuffled.length; i++) {
+      if (rand() < 0.35) {
+        const j = Math.floor(rand() * shuffled.length);
+        [shuffled[i], shuffled[j]] = [shuffled[j], shuffled[i]];
+      }
+    }
+    const skills = shuffled.slice(0, plan.skillCount);
+    const skillCumulative = cumulate(skills.map((_, rank) => 1 / Math.pow(rank + 1, 1.05)));
+    const triggerCumulative = cumulate(plan.mix.map(([, share]) => share));
+    for (let n = 0; n < plan.perYear; n++) {
+      const daysAgo = DAY_COUNT - 1 - pickWeighted(rand, days);
+      uses.push({
+        daysAgo,
+        hour: 8 + pickWeighted(rand, hourCumulative),
+        skill: skills[pickWeighted(rand, skillCumulative)],
+        harness: plan.id,
+        trigger: plan.mix[pickWeighted(rand, triggerCumulative)][0],
+        project: INVOCATION_PROJECTS[pickWeighted(rand, projectCumulative)],
+      });
+    }
+  }
+  return uses;
+}
+
+const FIXTURE_USES = generateInvocations();
+
+/** Epoch-hour timestamp for one generated use, matching `SkillUseHour.hour`'s meaning. */
+function epochHourOf(use: FixtureUse): number {
+  const date = new Date(CAPTURE_NOW);
+  date.setUTCHours(0, 0, 0, 0);
+  date.setUTCDate(date.getUTCDate() - use.daysAgo);
+  return Math.floor(date.getTime() / 3_600_000) + use.hour;
+}
+
+interface FixtureSkillStats {
+  total: number;
+  last_used: string | null;
+  last_24_hours: number;
+  last_7_days: number;
+  last_14_days: number;
+  last_30_days: number;
+  by_day: Record<string, number>;
+  by_harness_30_days: Record<string, number>;
+  by_project_30_days: Record<string, number>;
+  by_trigger_30_days: Record<FixtureTrigger, number>;
+  by_hour: {
+    hour: number;
+    harness: string;
+    trigger: FixtureTrigger;
+    project_path: string | null;
+    count: number;
+  }[];
+}
+
+const CAPTURE_HOUR = Math.floor(CAPTURE_NOW / 3_600_000);
+const WINDOW_HOURS = {
+  "24h": 24,
+  "7d": 7 * 24,
+  "14d": 14 * 24,
+  "30d": 30 * 24,
+} satisfies Record<string, number>;
+
+/** Every generated use, aggregated into the exact shape `skill_stats()` produces on the Rust
+ * side, so the fixture's totals, windows, and hourly buckets always agree with each other. */
+function buildInvocationStats(): Map<string, FixtureSkillStats> {
+  const bySkill = new Map<string, FixtureSkillStats>();
+  const hourBuckets = new Map<string, Map<string, FixtureSkillStats["by_hour"][number]>>();
+
+  for (const use of FIXTURE_USES) {
+    let stats = bySkill.get(use.skill);
+    if (!stats) {
+      stats = {
+        total: 0,
+        last_used: null,
+        last_24_hours: 0,
+        last_7_days: 0,
+        last_14_days: 0,
+        last_30_days: 0,
+        by_day: {},
+        by_harness_30_days: {},
+        by_project_30_days: {},
+        by_trigger_30_days: { user: 0, agent: 0, file_read: 0 },
+        by_hour: [],
+      };
+      bySkill.set(use.skill, stats);
+      hourBuckets.set(use.skill, new Map());
+    }
+
+    const epochHour = epochHourOf(use);
+    const iso = new Date(epochHour * 3_600_000).toISOString();
+    stats.total++;
+    if (!stats.last_used || iso > stats.last_used) stats.last_used = iso;
+    const dayKey = fixtureDateKey(use.daysAgo);
+    stats.by_day[dayKey] = (stats.by_day[dayKey] ?? 0) + 1;
+
+    const hoursAgo = CAPTURE_HOUR - epochHour;
+    if (hoursAgo < WINDOW_HOURS["24h"]) stats.last_24_hours++;
+    if (hoursAgo < WINDOW_HOURS["7d"]) stats.last_7_days++;
+    if (hoursAgo < WINDOW_HOURS["14d"]) stats.last_14_days++;
+    if (hoursAgo < WINDOW_HOURS["30d"]) {
+      stats.last_30_days++;
+      stats.by_harness_30_days[use.harness] = (stats.by_harness_30_days[use.harness] ?? 0) + 1;
+      stats.by_project_30_days[use.project] = (stats.by_project_30_days[use.project] ?? 0) + 1;
+      stats.by_trigger_30_days[use.trigger]++;
+    }
+
+    const buckets = hourBuckets.get(use.skill)!;
+    const bucketKey = `${epochHour}|${use.harness}|${use.trigger}|${use.project}`;
+    const bucket = buckets.get(bucketKey);
+    if (bucket) {
+      bucket.count++;
+    } else {
+      buckets.set(bucketKey, {
+        hour: epochHour,
+        harness: use.harness,
+        trigger: use.trigger,
+        project_path: use.project,
+        count: 1,
+      });
+    }
+  }
+
+  for (const [skillName, buckets] of hourBuckets) {
+    const stats = bySkill.get(skillName);
+    if (stats) stats.by_hour = [...buckets.values()];
+  }
+  return bySkill;
+}
+
+const invocationStatsBySkill = buildInvocationStats();
+
+const heatmapDays: Record<string, number> = {};
+for (const stats of invocationStatsBySkill.values()) {
+  for (const [date, count] of Object.entries(stats.by_day)) {
+    heatmapDays[date] = (heatmapDays[date] ?? 0) + count;
+  }
+}
 
 const allSkills: InstalledSkill[] = [
   commitSkill,
@@ -1131,22 +1336,20 @@ export function buildHarnessSnapshot(skillCount = 0): SkillSnapshot {
     revision: 1,
     skills: padSkills(skillCount),
     projects: [HARNESS_PROJECT, ACME_PROJECT, PERSONAL_PROJECT, BACKEND_PROJECT, MOBILE_PROJECT],
-    invocations: invocationProfiles.map((profile) => {
-      const byDay = invocationDaysBySkill.get(profile.skill) ?? {};
-      return {
-        skill: profile.skill,
-        total: Object.values(byDay).reduce((sum, count) => sum + count, 0),
-        last_24_hours: profile.windows[0],
-        last_7_days: profile.windows[1],
-        last_14_days: profile.windows[2],
-        last_30_days: profile.windows[3],
-        last_used: new Date(CAPTURE_NOW - 38 * 60_000).toISOString(),
-        by_project_30_days: profile.byProject,
-        by_day: byDay,
-        by_harness_30_days: { "claude-code": profile.windows[3] },
-        by_trigger_30_days: { user: 0, agent: profile.windows[3], file_read: 0 },
-      };
-    }),
+    invocations: [...invocationStatsBySkill.entries()].map(([skill, stats]) => ({
+      skill,
+      total: stats.total,
+      last_24_hours: stats.last_24_hours,
+      last_7_days: stats.last_7_days,
+      last_14_days: stats.last_14_days,
+      last_30_days: stats.last_30_days,
+      last_used: stats.last_used,
+      by_project_30_days: stats.by_project_30_days,
+      by_day: stats.by_day,
+      by_harness_30_days: stats.by_harness_30_days,
+      by_trigger_30_days: stats.by_trigger_30_days,
+      by_hour: stats.by_hour,
+    })),
     heatmap: { days: heatmapDays },
     scanned_at: SCANNED_AT,
     scan_observations: [],

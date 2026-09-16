@@ -272,12 +272,10 @@ export function LearnView({ section }: LearnViewProps) {
               Not used in the last 30 days
             </h3>
             <p className="m-0">
-              Use is read from Claude Code transcripts (
-              <code className="rounded-[3px] bg-bg-tertiary px-1 py-px font-mono text-small text-text-primary">
-                ~/.claude/projects
-              </code>
-              ). Other harnesses do not record skill invocations yet, so a skill you run only from
-              Codex will show as unused.
+              Uses come from the history files of Claude Code, Codex, OpenCode, pi, Cursor, and Grok
+              Build. A harness you turn off under “Search history from” in Settings is left out of
+              every count. Each use also records how it started: you typed the skill’s name, the
+              model called the skill, or the model only opened its SKILL.md.
             </p>
           </section>
         </div>

@@ -30,6 +30,11 @@ export function shortProjectPath(path: string): string {
   return `~/${segments.slice(-2).join("/")}`;
 }
 
+/** A path's last segment, e.g. for showing a project without its full path. */
+export function basename(path: string): string {
+  return path.split("/").pop() ?? path;
+}
+
 /**
  * Everything before a path's last segment. Used wherever a deployment's
  * skills root has to be derived from the skill directory it points at.
