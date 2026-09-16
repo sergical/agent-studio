@@ -1,13 +1,16 @@
 # Harness skill and plugin primitives
 
-Research date: 2026-09-09. This document records what each harness supports for
-skills and plugins. Each fact has a source and a confidence level.
+Research date: 2026-09-09. The usage sections and section 7 were checked again
+on 2026-09-16. This document records what each harness supports for skills and
+plugins. Each fact has a source and a confidence level.
 
-| Level                | Meaning                                                         |
-| -------------------- | --------------------------------------------------------------- |
-| `verified-from-docs` | Read directly from the vendor's documentation or repository.    |
-| `inferred`           | Derived from a secondary source, an issue thread, or a summary. |
-| `unknown`            | Not found in any primary source. Treat as unverified.           |
+| Level                  | Meaning                                                                      |
+| ---------------------- | ---------------------------------------------------------------------------- |
+| `verified-from-docs`   | Read directly from the vendor's documentation or repository.                 |
+| `verified-from-source` | Read in the harness source code at the named path.                           |
+| `verified-live`        | Seen in local session history and in a live CLI run (section 7 has the run). |
+| `inferred`             | Derived from a secondary source, an issue thread, or a summary.              |
+| `unknown`              | Not found in any primary source. Treat as unverified.                        |
 
 Line references to `docs/agent-skill-conventions.md` are from the worktree
 `/Users/sergiydybskiy/src/agent-studio/.claude/worktrees/shared-core-primitives`.
@@ -184,13 +187,15 @@ clear after the next user message. The skill content stays in context
 
 ### Observation of usage
 
-The transcript JSONL shape for a Skill invocation
-(`~/.claude/projects/*/*.jsonl`, assistant `tool_use` with
-`{"name":"Skill","input":{"skill":"<name>"}}`) is claimed in
-`docs/agent-skill-conventions.md:137` and `docs/agent-skill-conventions.md:327`.
-No page on code.claude.com/docs documents this shape (searched skills, plugins,
-plugins-reference, discover-plugins). Confidence: unknown. Treat it as inferred
-from observed transcripts, not as a documented format.
+Transcripts are `~/.claude/projects/*/*.jsonl`; subagent transcripts are
+`~/.claude/projects/*/<session>/subagents/*.jsonl`. A model call is an assistant
+`tool_use` `{"name":"Skill","input":{"skill":"<name>","args"?}}`. A typed
+`/<name>` is a user text `<command-message><name></command-message>` plus
+`<command-name>/<name></command-name>`, with no tool call. Both are followed by
+an `isMeta` user message that starts with `Base directory for this skill:`.
+No page on code.claude.com/docs documents these shapes (searched skills,
+plugins, plugins-reference, discover-plugins). Confidence: verified-live
+(section 7).
 
 ## 3. OpenAI Codex CLI
 
@@ -283,7 +288,26 @@ Caveats:
 
 ### Observation of usage
 
-Not covered by the input. Unknown.
+Rollouts are `~/.codex/sessions/**/*.jsonl` and
+`~/.codex/archived_sessions/**/*.jsonl`. The `session_meta` record has `cwd` and
+`originator` (the surface: `Codex Desktop`, `codex_exec`, and others).
+
+- Typed `$<name>`: Codex adds a user `message` whose content item starts with
+  `<skill>\n<name>…</name>\n<path>…</path>`. The format is `SkillInstructions`
+  in openai/codex `codex-rs/ext/skills/src/fragments.rs`
+  (verified-from-source). The desktop app and `codex exec` write the same item
+  (verified-live).
+- Model choice: the model reads `SKILL.md` through the `exec` custom tool, for
+  example `cat …/SKILL.md` (verified-live). The docs say only "The system reads
+  the full `SKILL.md` instructions when a skill is selected for implicit use"
+  and name no tool (https://developers.openai.com/codex/skills,
+  verified-from-docs).
+- The source has a `skills` namespace tool with `read` and `list`
+  (`codex-rs/ext/skills/src/tools/`, verified-from-source). No local rollout
+  calls it, and neither the docs nor the changelog name it.
+
+The skill list in the instructions names every installed `SKILL.md` path on
+every turn, so a path in text is not a use.
 
 ## 4. OpenCode
 
@@ -387,9 +411,31 @@ replaces `tui.json(c)`; it configures the terminal client only, not skills
 ### Observation of usage
 
 v1 layout: `~/.local/share/opencode/log/` and
-`~/.local/share/opencode/storage/{message,part,session_diff,session}/`.
-Skill calls appear as `skill` tool calls in message storage. Not
-re-confirmed for v2 (https://opencode.ai/docs/troubleshooting/, inferred).
+`~/.local/share/opencode/storage/{message,part,session_diff,session}/`
+(https://opencode.ai/docs/troubleshooting/, verified-from-docs). The local v1
+`part` table and legacy `storage/part` files hold no `skill` calls.
+
+v2 writes the `session_message` table (`type`, `seq`, `data` JSON) in
+`~/.local/share/opencode/opencode.db`. The `opencode2` beta
+(`0.0.0-beta-17823`) wrote there, not to `opencode-next.db`. Older v2 builds
+wrote `opencode-next.db`, and all of its sessions are also in `opencode.db`, so
+a reader must dedupe by id. The folder is `session_v2.directory` (or
+`session.directory`) (verified-live).
+
+- Model call: an assistant `data.content[]` item
+  `{type:"tool", name:"skill", state:{input:{id:"<name>"}}}` (verified-live).
+  The dev source declares the input as `{ name: string }`
+  (`packages/core/src/tool/skill.ts`, and the "V2 Skill Tool" entry of
+  `specs/v2/schema-changelog.md`, verified-from-source). Read both keys.
+- User action: a `type='skill'` row with `data` `{skill, name, text, time}`.
+  The client's `session.skill` operation emits `session.skill.activated`, and
+  `packages/app/src/context/server-session-v2-reducer.ts` turns it into that
+  row (verified-from-source). On the dev branch the core `V2Session.skill`
+  returns `OperationUnavailableError`.
+- `opencode2 run "/<name> …"` does not use that action. It stores plain user
+  text, and the model then calls the `skill` tool (verified-live).
+- The v1 `opencode` binary (1.18.30) refuses a v2 config: "V2 permissions are
+  not supported by OpenCode V1".
 
 ## 5. pi
 
@@ -477,8 +523,21 @@ skill filtering uses `{"source": ..., "skills": [...]}`
 Sessions are stored at `~/.pi/agent/sessions/` as JSONL, one file per
 working directory. Override order:
 `--session-dir` > `PI_CODING_AGENT_SESSION_DIR` > `sessionDir` setting.
-A skill load is not a named entry type in the session format (unknown)
-(https://pi.dev/docs/latest/sessions, verified-from-docs).
+A skill load is not a named entry type in the session format
+(https://pi.dev/docs/latest/sessions, verified-from-docs). The `session` header
+record has `cwd`.
+
+- Typed `/skill:<name>`: `AgentSession._expandSkillCommand` replaces the text
+  with `<skill name="<name>" location="<path>">…</skill>` before it is stored,
+  in interactive mode and in `pi -p` (`dist/core/agent-session.js` in
+  `@earendil-works/pi-coding-agent` 0.84.4, verified-from-source and
+  verified-live). An unknown skill stays a literal `/skill:<name>`.
+- Project `.agents/skills` and trust-gated `.pi` resources load only in a
+  trusted project (`hasTrustRequiringProjectResources` in
+  `dist/core/trust-manager.js`). `pi -p` in an untrusted folder skips them;
+  `--approve` trusts the folder for one run.
+- Model choice: pi has no skill tool. The model reads the file with the `read`
+  tool (and sometimes `bash`) (verified-live).
 
 ## 6. skills.sh CLI and the `.agents` root
 
@@ -550,6 +609,83 @@ indexed skills.sh material (vercel-labs/skills README, verified-from-docs).
 
 Not covered by the input. Unknown.
 
+## 7. Skill-use signals (2026-09-16)
+
+Each skill use has one trigger: **user** (a typed command), **agent** (a skill
+tool call), or **file read** (the model reads `SKILL.md` with a file or shell
+tool). Grok Build's telemetry makes the same split with
+`SkillTrigger::{SlashCommand, SkillMdRead, SkillTool}` in xai-org/grok-build
+`crates/codegen/xai-grok-telemetry/src/events/skills.rs`. Its skill tool is
+"registered only by vendor-compat toolsets", and `skill_for_read_path` in
+`crates/codegen/xai-grok-shell/src/session/acp_session_impl/tool_calls.rs`
+counts a `read_file` only when the path matches a known skill's `SKILL.md`
+(verified-from-source). `docs/agent-skill-conventions.md` "Skill uses" has the
+record shapes a reader needs.
+
+### Live runs
+
+A scratch folder held one skill, `probe-echo`, in `.agents/skills/` and
+`.claude/skills/`. Its body tells the model to reply `PROBE-WORD-7731`. Each CLI
+ran twice in that folder: once with "What is the probe word? Check your
+available skills first." (the model picks the skill), and once with the
+harness's typed syntax. Each row below lists what the session store recorded.
+
+| CLI and version                                           | Model picks                                     | Typed                                                                                    |
+| --------------------------------------------------------- | ----------------------------------------------- | ---------------------------------------------------------------------------------------- |
+| `claude -p --model haiku` (2.1.273)                       | `Skill` tool_use `{"skill":"probe-echo"}`       | `/probe-echo`: `<command-name>/probe-echo</command-name>` user text, no tool call        |
+| `codex exec` (codex-cli 0.154.0, originator `codex_exec`) | `exec` `cat .agents/skills/probe-echo/SKILL.md` | `$probe-echo …`: a user item that starts with `<skill>\n<name>probe-echo</name>`         |
+| `opencode2 run --standalone` (0.0.0-beta-17823)           | `skill` tool `{"id":"probe-echo"}`              | `/probe-echo …`: plain user text, then the same `skill` tool call; no `type='skill'` row |
+| `pi -p --approve` (0.84.4)                                | `read .agents/skills/probe-echo/SKILL.md`       | `/skill:probe-echo …`: user text starts with `<skill name="probe-echo" location="…">`    |
+| `pi -p` (0.84.4, folder not trusted)                      | `bash` find, then `read` of the file            | literal `/skill:probe-echo …`, because pi did not load the untrusted project skill       |
+| `cursor-agent -p` (2025.09.12)                            | not run: the CLI asks for a sign-in             | not run                                                                                  |
+| Grok Build                                                | not run: the CLI is not installed               | not run                                                                                  |
+
+Every run that started returned the probe word. The v1 `opencode run` stopped
+on the v2 config.
+
+### Local history counts
+
+Counts on this machine on 2026-09-16, probe runs included. They show which
+signals hold real data.
+
+| Harness     | user                                         | agent                                                           | file read                                       |
+| ----------- | -------------------------------------------- | --------------------------------------------------------------- | ----------------------------------------------- |
+| Claude Code | 120 typed commands that match a skill folder | 238 `Skill` calls                                               | not counted                                     |
+| Codex       | 80 user items that start with `<skill>`      | 0 `skills` namespace calls                                      | 4,292 tool calls whose input names a `SKILL.md` |
+| OpenCode    | 8 `type='skill'` rows (`opencode.db`)        | 945 `skill` calls (`opencode.db`, `opencode-next.db` copies in) | 270 other tool calls on a `SKILL.md`            |
+| pi          | 3 user texts that start with `<skill name=`  | none                                                            | 270 `read` calls on a `SKILL.md`                |
+| Cursor      | 0                                            | none                                                            | 119 tool calls on a `SKILL.md`                  |
+
+In Codex, 492 more user items contain `<skill>` in the middle of the text
+(quoted skill content, not a use). The Codex file-read count includes `ls` and
+search commands; a reader keeps only reads inside a known skill root.
+
+### Codex surfaces
+
+The skills doc (https://developers.openai.com/codex/skills,
+verified-from-docs) says:
+
+- CLI: "Run `/skills` or type `$` to mention a skill".
+- IDE extension: "Type `$` to mention a skill".
+- ChatGPT: "Type `@` to select a skill from a picker".
+- Desktop app: "Open **Skills** in the sidebar to view and explore available
+  skills". No typed syntax is named.
+- `allow_implicit_invocation: false` under `policy` in `agents/openai.yaml`
+  stops model choice; "explicit `$skill` invocation still works".
+- No feature flag is named. The non-interactive page
+  (https://developers.openai.com/codex/noninteractive) does not mention skills.
+
+Local rollouts by `originator`: `Codex Desktop` has 79 of the 80 `<skill>`
+items (2,417 sessions) and `codex_exec` has 1 (the probe). The desktop app and
+`codex exec` therefore record `$name` the same way as the CLI.
+
+### Not checked
+
+- Cursor typed `/skill-name`: `cursor-agent` needs `cursor-agent login`.
+- Grok Build record shapes: the CLI is not installed and `~/.grok` does not
+  exist.
+- Which OpenCode client calls `session.skill` (the TUI or the desktop app).
+
 ## Cross-harness capability matrix
 
 Cells: `yes`, `no`, `partial`, or `unknown`, with the source. "doc" means the
@@ -565,7 +701,7 @@ official documentation listed in the harness section above.
 | Invocation control (model vs user)   | no: no fields (spec)              | yes: `disable-model-invocation`, `user-invocable` (skills doc)           | yes: `allow_implicit_invocation` in `agents/openai.yaml`; `$name` explicit (build-skills doc)                         | yes: `opencode/autoinvoke: false`, `slash: false` (v2 skills doc); v1 per-agent `permission.skill` `ask` | yes: `disable-model-invocation`, `/skill:name`, `enableSkillCommands` (skills.md)                                        | no                                                 |
 | Plugin cache on disk                 | no                                | yes: `~/.claude/plugins/cache/<mkt>/<plugin>/<ver>/` (plugins-reference) | yes: `~/.codex/plugins/cache/$MKT/$PLUGIN/$VER/` (plugins doc)                                                        | unknown: no documented on-disk skill cache in v2                                                         | yes: `~/.pi/agent/npm/`, `~/.pi/agent/git/<host>/<path>` (packages doc)                                                  | no                                                 |
 | Plugin manifest                      | no                                | yes: `.claude-plugin/plugin.json` (plugins doc)                          | yes: `plugin.json` with agent-plugins.org schema (plugins doc); `.codex-plugin/` folder unknown                       | yes: v2 `package.json` with `exports` map, `@opencode/plugin` (build/plugins doc); v1 has no manifest    | yes: `package.json` with `pi.*` keys (packages.md)                                                                       | no                                                 |
-| Usage observation                    | no                                | unknown: transcript JSONL shape not documented                           | unknown                                                                                                               | partial: v1 layout documented, not re-confirmed for v2 (troubleshooting doc)                             | partial: JSONL sessions per working directory; skill load is not a distinct entry type (sessions doc)                    | unknown                                            |
+| Usage observation                    | no                                | yes: `Skill` tool and `<command-name>` text (live; not in docs)          | yes: `<skill>` user item and `exec` reads of `SKILL.md` (source, live)                                                | yes: `skill` tool and `type='skill'` rows in `session_message` (source, live)                            | yes: `<skill name>` user text and `read` of `SKILL.md` (source, live)                                                    | no                                                 |
 | Lock file                            | no                                | no                                                                       | no                                                                                                                    | no                                                                                                       | no                                                                                                                       | yes: `~/.agents/.skill-lock.json` v3 (deepwiki)    |
 | Spec validator                       | yes: `skills-ref validate` (spec) | unknown                                                                  | unknown                                                                                                               | unknown                                                                                                  | unknown                                                                                                                  | unknown                                            |
 
@@ -578,7 +714,7 @@ A human must adjudicate each item. Line numbers refer to the worktree copy of
 | --- | ------------ | -------------------------------- | -------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | ----------------------------------------------------------------------------------------------------------------------------------------- | --------------- |
 | 1   | Claude Code  | lines 36, 106-111                | Claude Code has no native per-skill switch. Skill Studio must remove a symlink to disable a skill. | `settings.json` `skillOverrides` (`on`, `name-only`, `user-invocable-only`, `off`) disables a skill per scope without touching the filesystem.                                                                                                                                                               | https://code.claude.com/docs/en/skills                                                                                                    | contradiction   |
 | 2   | Claude Code  | Discovery paths table            | Claude Code roots are personal and project `.claude/skills/`.                                      | The table omits the enterprise managed-settings root (highest priority), the synced root `~/.claude/skills/synced/`, and skills-directory plugins (`<name>@skills-dir`).                                                                                                                                     | https://code.claude.com/docs/en/skills, https://code.claude.com/docs/en/plugins-reference                                                 | omission        |
-| 3   | Claude Code  | lines 137, 327                   | Transcript JSONL Skill invocation shape `{"name":"Skill","input":{"skill":"<name>"}}`.             | No official page documents this shape. Mark it as inferred from observed transcripts.                                                                                                                                                                                                                        | Not found on code.claude.com/docs                                                                                                         | unverified      |
+| 3   | Claude Code  | Skill uses, line 327             | Transcript JSONL Skill invocation shape `{"name":"Skill","input":{"skill":"<name>"}}`.             | Resolved 2026-09-16. No official page documents the shape, but live runs confirm it. A typed `/<name>` leaves `<command-name>` user text and no tool call; the Skill uses table now lists both.                                                                                                              | Section 7                                                                                                                                 | resolved        |
 | 4   | Codex        | line 121                         | Codex discovery paths are `.codex/skills/` (project) and `~/.codex/skills/` (global).              | Official docs list only `.agents/skills` roots (cwd, parent, repo root, `$HOME`) plus `/etc/codex/skills`. Issue #22590 requesting `.codex/skills` roots was reportedly closed as not planned. A third-party blog claims `~/.codex/skills/` and `~/.codex/skills/.system`. Re-verify in the codex-rs source. | https://learn.chatgpt.com/docs/build-skills, https://github.com/openai/codex/issues/22590, https://blog.fsck.com/2025/12/19/codex-skills/ | contradiction   |
 | 5   | OpenCode     | Discovery paths table            | Project `.opencode/skills/ (legacy skill/)`, global `~/.config/opencode/skills/ (legacy skill/)`.  | Resolved: the singular `skill/` path is the v1 legacy form, per the v2 migrate doc. v2 canonical is plural `.opencode/skills/`.                                                                                                                                                                              | https://opencode.ai/v2/docs/migrate-v1/                                                                                                   | resolved        |
 | 6   | OpenCode     | Per-harness disable row          | Only `permission.skill` allow, deny, ask.                                                          | Docs also confirm `tools: { skill: false }`, which removes the skill tool for one agent (v1, not re-confirmed in v2). Addition, not a contradiction.                                                                                                                                                         | https://opencode.ai/docs/skills.md                                                                                                        | omission        |
