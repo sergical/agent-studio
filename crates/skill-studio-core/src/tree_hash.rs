@@ -174,4 +174,26 @@ mod tests {
             "an empty directory must hash as git's well-known empty tree"
         );
     }
+
+    /// An untracked empty directory does not survive a fresh `git clone` -
+    /// git records no tree for it at all - so this exercises the same
+    /// omission with an in-memory fixture instead of relying on
+    /// `fixtures/tree-hash/skills/empty-dir/nothing-here` surviving a
+    /// clone of this repository.
+    #[test]
+    fn tree_hash_omits_an_empty_subdirectory_from_its_parent_or_names_the_leftover_entry() {
+        let with_empty_sibling = FixtureBuilder::new()
+            .dir("/skill/nothing-here")
+            .file("/skill/keepme/file.txt", b"kept\n")
+            .build_fs();
+        let without_empty_sibling = FixtureBuilder::new()
+            .file("/skill/keepme/file.txt", b"kept\n")
+            .build_fs();
+        let with_hash = tree_hash(&with_empty_sibling, Path::new("/skill")).unwrap();
+        let without_hash = tree_hash(&without_empty_sibling, Path::new("/skill")).unwrap();
+        assert_eq!(
+            with_hash, without_hash,
+            "an empty subdirectory must not appear as a tree entry in its parent"
+        );
+    }
 }
