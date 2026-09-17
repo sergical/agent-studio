@@ -49,7 +49,7 @@ libc = "0.2"
 rusqlite = { version = "0.40", features = ["bundled"] }
 ulid = "1"
 skill-studio-core = { path = "../../../crates/skill-studio-core" }
-skill-studio-host = { path = "../../../crates/skill-studio-host" }
+skill-studio-host = { path = "../../../crates/skill-studio-host", features = ["error-reporting"] }
 schemars = { version = "1", features = ["chrono04"] }
 
 [dev-dependencies]

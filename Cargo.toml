@@ -8,3 +8,12 @@ resolver = "2"
 # incremental debug builds.
 [profile.dev.package."*"]
 opt-level = 2
+
+# The release workflow uploads a .dSYM per target next to each DMG. Cargo's
+# default release profile carries no debug info, so dsymutil would emit an
+# empty bundle; line tables are enough to symbolicate crash reports and add
+# little to the binary, and "packed" writes them to a separate .dSYM beside
+# the binary in target/<triple>/release/ instead of into the executable.
+[profile.release]
+debug = "line-tables-only"
+split-debuginfo = "packed"

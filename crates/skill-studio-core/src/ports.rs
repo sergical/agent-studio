@@ -526,6 +526,18 @@ pub trait EventSink: Send + Sync {
     fn notify(&self, notice: CoreNotice);
 }
 
+/// Receives sanitized error reports. Must not block: queuing and flushing
+/// happen on the adapter's own schedule, never on the caller's thread.
+///
+/// This port is separate from [`Ports`]: reporting is a cross-cutting,
+/// opt-in side channel triggered by a panic or a command failure, not part
+/// of any op's own plumbing. An adapter wires it independently - see
+/// `skill_studio_host::sink::QueuedReportSink`.
+pub trait ReportSink: Send + Sync {
+    /// Queues one already-sanitized envelope for later delivery.
+    fn report(&self, envelope: crate::report_sanitizer::SanitizedEnvelope);
+}
+
 /// A child process to run.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct ProcessSpec {

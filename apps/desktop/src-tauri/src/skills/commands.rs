@@ -9,13 +9,12 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::atomic::{AtomicU64, Ordering};
 
-use super::agents::{AgentId, AgentTarget};
 use super::api;
 use super::skill_add::{CommandRunner, RealCommandRunner};
 use super::skill_agent_runner::validate_skill_dir_name;
 use super::skill_dto::{
     InstallResult, InstallScope, InstalledSkill, LifecycleTarget, PaginatedSkillsResponse,
-    SkillDetails, SkillsShAccessInfo,
+    SkillDetails,
 };
 use super::skill_editor;
 use super::skill_fork;
@@ -24,7 +23,7 @@ use super::skill_lifecycle::{
     dotagents_update_args, ledger_matching_deployment, rebuild_fresh_lifecycle_snapshot,
     resolve_lifecycle_target, skills_sh_remove_args_for_scope, skills_sh_update_args,
 };
-use super::skill_md_write::{write_skill_md, write_skill_md_compare_and_swap};
+use super::skill_md_write::write_skill_md_compare_and_swap;
 use super::skill_refresh::{self, SkillRefreshState};
 use super::skill_trial;
 use super::skill_update_check;
@@ -70,58 +69,6 @@ fn with_authorized_lifecycle_command_target<T>(
 ) -> Result<T, String> {
     let (skill, deployment) = resolve_lifecycle_target(snapshot, target, action)?;
     operation(skill, deployment)
-}
-
-/// `set_skills_sh_api_key`'s logic against an arbitrary home dir, so tests
-/// don't need to touch the real `~/.agents`.
-fn save_skills_sh_api_key(home: &std::path::Path, key: &str) -> Result<(), String> {
-    let trimmed = key.trim();
-    if trimmed.is_empty() {
-        return Err("The API key can't be empty".to_string());
-    }
-    let mut registry = skill_fork_registry::read_fork_registry(home)?;
-    registry.skills_sh_api_key = Some(trimmed.to_string());
-    skill_fork_registry::write_fork_registry(home, &registry)
-}
-
-/// `get_skills_sh_access`'s logic against an arbitrary home dir, so tests
-/// don't need to touch the real `~/.agents`.
-fn skills_sh_access_info(home: &std::path::Path) -> Result<SkillsShAccessInfo, String> {
-    Ok(match api::resolve_skills_sh_access(home)? {
-        api::SkillsShAccess::Direct { .. } => SkillsShAccessInfo {
-            mode: "direct".to_string(),
-            server_url: None,
-        },
-        api::SkillsShAccess::Server { base_url } => SkillsShAccessInfo {
-            mode: "server".to_string(),
-            server_url: Some(base_url.trim_end_matches("/api/v1").to_string()),
-        },
-    })
-}
-
-/// Whether discovery goes straight to skills.sh with a developer-override key
-/// (`"direct"`) or through the local Skill Studio server (`"server"`, with
-/// its URL) - the Settings page's status line and the Browse tab's error
-/// messaging both read this instead of the old key-only status.
-#[tauri::command]
-pub async fn get_skills_sh_access(app: tauri::AppHandle) -> Result<SkillsShAccessInfo, String> {
-    crate::timing_log::time_command_blocking(&app, "get_skills_sh_access", move || {
-        let home = dirs::home_dir().ok_or("Could not find home directory")?;
-        skills_sh_access_info(&home)
-    })
-    .await
-}
-
-/// Saves `key` as `skills_sh_api_key` in `~/.agents/skill-studio.json`,
-/// preserving every other field. Refuses an empty (or all-whitespace) key -
-/// the Settings page's Save button.
-#[tauri::command]
-pub async fn set_skills_sh_api_key(key: String, app: tauri::AppHandle) -> Result<(), String> {
-    crate::timing_log::time_command_blocking(&app, "set_skills_sh_api_key", move || {
-        let home = dirs::home_dir().ok_or("Could not find home directory")?;
-        save_skills_sh_api_key(&home, &key)
-    })
-    .await
 }
 
 /// Search for skills on skills.sh
@@ -196,6 +143,7 @@ pub async fn get_installed_skills(app: tauri::AppHandle) -> Result<Vec<Installed
 
 #[cfg(test)]
 mod tests {
+    use super::super::skill_md_write::write_skill_md;
     use super::*;
 
     struct CountingLifecycleRunner(std::sync::atomic::AtomicUsize);
@@ -1405,110 +1353,6 @@ mod tests {
             ]
         );
     }
-
-    #[test]
-    fn skills_sh_access_info_is_server_mode_before_a_key_is_set() {
-        let tmp = tempfile::tempdir().unwrap();
-        let info = skills_sh_access_info(tmp.path()).unwrap();
-        assert_eq!(info.mode, "server");
-        assert_eq!(info.server_url, Some("http://127.0.0.1:8787".to_string()));
-    }
-
-    #[test]
-    fn save_skills_sh_api_key_then_access_info_is_direct() {
-        let tmp = tempfile::tempdir().unwrap();
-        save_skills_sh_api_key(tmp.path(), "sk-test-key").unwrap();
-        let info = skills_sh_access_info(tmp.path()).unwrap();
-        assert_eq!(info.mode, "direct");
-        assert_eq!(info.server_url, None);
-    }
-
-    #[test]
-    fn save_skills_sh_api_key_rejects_a_blank_key() {
-        let tmp = tempfile::tempdir().unwrap();
-        let err = save_skills_sh_api_key(tmp.path(), "   ").unwrap_err();
-        assert!(err.contains("can't be empty"));
-    }
-
-    #[test]
-    fn save_skills_sh_api_key_preserves_other_registry_fields() {
-        let tmp = tempfile::tempdir().unwrap();
-        let mut registry = skill_fork_registry::read_fork_registry(tmp.path()).unwrap();
-        registry.preferred_editor = Some("Visual Studio Code".to_string());
-        skill_fork_registry::write_fork_registry(tmp.path(), &registry).unwrap();
-
-        save_skills_sh_api_key(tmp.path(), "sk-test-key").unwrap();
-
-        let round_tripped = skill_fork_registry::read_fork_registry(tmp.path()).unwrap();
-        assert_eq!(
-            round_tripped.preferred_editor,
-            Some("Visual Studio Code".to_string())
-        );
-        assert_eq!(
-            round_tripped.skills_sh_api_key,
-            Some("sk-test-key".to_string())
-        );
-    }
-}
-
-/// List project directories discovered from Codex config and Claude Code
-/// transcripts that have a first-class agent's skill directory. Returns the
-/// background snapshot's project list when one exists.
-#[tauri::command]
-pub async fn list_skill_projects(app: tauri::AppHandle) -> Result<Vec<String>, String> {
-    let timing_app = app.clone();
-    crate::timing_log::time_command_blocking(&timing_app, "list_skill_projects", move || {
-        let refresh_state = app.state::<SkillRefreshState>();
-        if let Ok(guard) = refresh_state.snapshot.read() {
-            if let Some(snapshot) = guard.as_ref() {
-                return Ok(snapshot.projects.clone());
-            }
-        }
-
-        let home = dirs::home_dir().ok_or("Could not find home directory")?;
-        Ok(skill_refresh::effective_project_paths(&home)
-            .into_iter()
-            .map(|p| p.to_string_lossy().to_string())
-            .collect())
-    })
-    .await
-}
-
-/// Check if a skill is installed
-#[tauri::command]
-pub async fn is_skill_installed(skill_name: String, app: tauri::AppHandle) -> Result<bool, String> {
-    let timing_app = app.clone();
-    crate::timing_log::time_command_blocking(&timing_app, "is_skill_installed", move || {
-        let home = dirs::home_dir().ok_or("Could not find home directory")?;
-        let fs = skill_studio_host::RealFs::new();
-        let path = skill_studio_core::lock_file::lock_file_path(&home);
-        let lock =
-            skill_studio_core::lock_file::read_lock_file(&fs, &path).map_err(|e| e.to_string())?;
-        Ok(skill_studio_core::lock_file::is_skill_installed(
-            &lock,
-            &skill_name,
-        ))
-    })
-    .await
-}
-
-/// Get all supported agent targets
-#[tauri::command]
-pub fn get_agent_targets(app: tauri::AppHandle) -> Vec<AgentTarget> {
-    crate::timing_log::time_command(&app, "get_agent_targets", move || {
-        let home = dirs::home_dir().unwrap_or_default();
-        let home_str = home.to_string_lossy();
-
-        AgentId::all()
-            .into_iter()
-            .map(|id| AgentTarget {
-                name: id.display_name().to_string(),
-                project_path: id.project_path().to_string(),
-                global_path: format!("{}/{}", home_str, id.global_path()),
-                id,
-            })
-            .collect()
-    })
 }
 
 fn remove_copy_deployment(
@@ -2325,32 +2169,14 @@ fn validate_skill_md_write(
 }
 
 /// Write `content` to an installed skill's `SKILL.md`, for the detail
-/// drawer's inline editor. Same ownership check as `read_installed_skill_md`,
-/// plus a refusal when the owning deployment is plugin-managed. Marks the
-/// snapshot dirty afterward so the background loop picks up the new content
-/// and token/byte counts, rather than rescanning every skill on this thread.
-#[tauri::command]
-pub async fn write_installed_skill_md(
-    path: String,
-    content: String,
-    app: tauri::AppHandle,
-) -> Result<(), String> {
-    let timing_app = app.clone();
-    crate::timing_log::time_command_blocking(&timing_app, "write_installed_skill_md", move || {
-        let refresh_state = app.state::<SkillRefreshState>();
-        let canonical = validate_skill_md_write(&path, &content, &refresh_state)?;
-        write_skill_md(&canonical, &content)?;
-        skill_refresh::request_snapshot_rebuild(&app);
-        Ok(())
-    })
-    .await
-}
-
-/// Like `write_installed_skill_md`, but refuses the write (rather than
-/// silently overwriting) when the file's current content doesn't match
-/// `expected_content` - the copy the caller last loaded. Used by Audit
-/// proposal Apply and the inline editor to detect an ordinary stale baseline
-/// before writing.
+/// drawer's inline editor and Audit proposal Apply. Same ownership check as
+/// `read_installed_skill_md`, plus a refusal when the owning deployment is
+/// plugin-managed. Refuses the write (rather than silently overwriting) when
+/// the file's current content doesn't match `expected_content` - the copy the
+/// caller last loaded, so an ordinary stale baseline is detected before
+/// writing. Marks the snapshot dirty afterward so the background loop picks
+/// up the new content and token/byte counts, rather than rescanning every
+/// skill on this thread.
 #[tauri::command]
 pub async fn write_installed_skill_md_if_unchanged(
     path: String,

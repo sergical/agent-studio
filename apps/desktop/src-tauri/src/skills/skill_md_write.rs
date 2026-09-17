@@ -69,7 +69,11 @@ pub(crate) fn begin_skill_md_write_transaction() -> Result<SkillMdWriteTransacti
     Ok(SkillMdWriteTransaction { _guard: guard })
 }
 
-/// Atomically replaces SKILL.md in one app-managed write transaction.
+/// Atomically replaces SKILL.md in one app-managed write transaction. Only
+/// `write_skill_md_compare_and_swap` writes SKILL.md in production; this
+/// plain (non-comparing) write survives as a test helper for the atomic
+/// replace primitive itself.
+#[cfg(test)]
 pub(crate) fn write_skill_md(path: &Path, content: &str) -> Result<(), String> {
     begin_skill_md_write_transaction()?.replace_text(path, content)
 }
