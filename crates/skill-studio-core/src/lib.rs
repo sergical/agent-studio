@@ -82,6 +82,12 @@ pub mod skill_backup_manifest;
 #[cfg(all(unix, feature = "event-store"))]
 pub mod skill_copy_document_edit;
 
+pub mod skill_copy_move;
+#[cfg(all(unix, feature = "event-store"))]
+pub mod skill_copy_move_intent;
+#[cfg(all(unix, feature = "event-store"))]
+pub mod skill_copy_visibility;
+
 pub mod skill_invocation_edit;
 
 #[cfg(all(unix, feature = "event-store"))]

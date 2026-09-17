@@ -258,6 +258,10 @@ impl RegistryOwnerRecord<'_> {
     }
 }
 
+pub fn copy_owner_revision(record: &CopyDeploymentRecord) -> Option<String> {
+    RegistryOwnerRecord::Copy(record).revision()
+}
+
 /// `~/.agents/skill-studio.json`'s shape.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ForkRegistry {

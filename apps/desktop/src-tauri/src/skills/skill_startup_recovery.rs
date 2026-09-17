@@ -1,6 +1,7 @@
 use super::event_store::{EventRow, EventStore};
 use rusqlite::OptionalExtension;
 use skill_studio_core::skill_service::{ScopedSkillService, SkillScope};
+use std::time::Duration;
 
 #[cfg(test)]
 pub(crate) fn recover_all(scope: SkillScope, store: &EventStore) -> Result<usize, String> {
@@ -35,6 +36,19 @@ fn recover_with_scope(
             return super::skill_frontmatter_repair::reconcile_interrupted_frontmatter_repair(
                 store, home, row,
             );
+        }
+        if row.kind == "move_copy_deployment" {
+            let _transaction = super::skill_md_write::begin_skill_md_write_transaction()?;
+            let mut service =
+                ScopedSkillService::bind(load_scope()?).map_err(|error| error.to_string())?;
+            return skill_studio_core::skill_copy_visibility::recover_copy_visibility(
+                &mut service,
+                store,
+                row,
+                super::skill_harness_disable::copy_visibility_limits(),
+                Some(Duration::from_secs(30)),
+            )
+            .map(|_| ());
         }
         let _transaction = super::skill_md_write::begin_skill_md_write_transaction()?;
         let mut service =

@@ -34,20 +34,112 @@ fn locked_store(
         .map_err(|e| format!("event store lock poisoned: {e}"))
 }
 
+fn legacy_copy_move_guard(store: &EventStore, home: &Path, row: &EventRow) -> Result<(), String> {
+    let mut endpoints = Vec::new();
+    let mut current = row.clone();
+    let mut visited = std::collections::BTreeSet::new();
+    loop {
+        if visited.len() >= 64 || !visited.insert(current.id.clone()) {
+            return Err("Cannot verify legacy restore ancestry".into());
+        }
+        let Some(value) = &current.inverse else {
+            break;
+        };
+        let inverse: super::event_store::InverseOp = serde_json::from_value(value.clone())
+            .map_err(|error| format!("Cannot verify legacy restore: {error}"))?;
+        match inverse {
+            super::event_store::InverseOp::MoveBack { from, to, .. } => {
+                endpoints.extend([from, to]);
+                break;
+            }
+            super::event_store::InverseOp::RestoreBackup { path, .. } => {
+                endpoints.push(path);
+                if current.kind != "restore" {
+                    break;
+                }
+                let parent = current
+                    .payload
+                    .get("target_event")
+                    .and_then(serde_json::Value::as_str)
+                    .ok_or("Cannot verify legacy restore origin")?;
+                current = store
+                    .get(parent)?
+                    .ok_or("Legacy restore origin is missing")?;
+            }
+            _ => break,
+        }
+    }
+    if endpoints.is_empty() {
+        return Ok(());
+    }
+    let registry = super::skill_fork_registry::read_fork_registry(home)?;
+    let aliases = |path: &Path| {
+        let mut paths = vec![path.to_path_buf()];
+        paths.extend(normalize_link_path(path));
+        paths.extend(std::fs::canonicalize(path).ok());
+        paths
+    };
+    for endpoint in &endpoints {
+        if !endpoint.is_absolute()
+            || endpoint
+                .components()
+                .any(|part| matches!(part, std::path::Component::ParentDir))
+        {
+            return Err("Cannot verify legacy restore path".into());
+        }
+        for record in registry.copies.values() {
+            if !record.path.is_absolute() {
+                return Err("Cannot verify Copy ownership for legacy restore".into());
+            }
+            if aliases(endpoint).iter().any(|endpoint| {
+                aliases(&record.path)
+                    .iter()
+                    .any(|owned| endpoint.starts_with(owned) || owned.starts_with(endpoint))
+            }) {
+                return Err("This older visibility event cannot safely restore Copy ownership. Use the Copy's current Enable or Disable control instead.".into());
+            }
+        }
+    }
+    Ok(())
+}
+
+fn restore_legacy_event(
+    store: &EventStore,
+    home: &Path,
+    row: &EventRow,
+    force: bool,
+) -> Result<(), String> {
+    legacy_copy_move_guard(store, home, row)?;
+    store.restore(&row.id, force).map(|_| ())
+}
+
 fn dto_from_row(store: &EventStore, home: &Path, row: EventRow) -> SkillEventDto {
+    let copy_visibility = (row.kind == "move_copy_deployment")
+        .then(|| {
+            row.payload
+                .pointer("/transition/after/disabled")
+                .and_then(serde_json::Value::as_bool)
+        })
+        .flatten();
     let restorable = (row.restorable
         && row.inverse.is_some()
         && row.reverted_by.is_none()
         && matches!(row.status.as_str(), "done" | "failed" | "interrupted"))
+        || (row.kind == "move_copy_deployment"
+            && row.status == "done"
+            && row.reverted_by.is_none()
+            && skill_studio_core::skill_copy_move_intent::CopyMoveIntent::from_event(&row).is_ok())
         || (super::skill_copy_repair::is_copy_event(&row.kind)
             && row.status == "done"
             && row.reverted_by.is_none());
+    let restorable = restorable && legacy_copy_move_guard(store, home, &row).is_ok();
     let backup_path = row
         .backup_dir
         .as_ref()
         .map(|dir| store.app_data.join(dir).to_string_lossy().into_owned());
     let force_restorable = restorable
         && !super::skill_copy_repair::is_copy_event(&row.kind)
+        && row.kind != "move_copy_deployment"
         && row.kind != "make_independent_copy"
         && (row.kind != "explode_shared_dir"
             || skill_materialize::restore_guard_for_explode(store, &row, home).is_ok());
@@ -62,6 +154,22 @@ fn dto_from_row(store: &EventStore, home: &Path, row: EventRow) -> SkillEventDto
         status: row.status,
         restorable,
         force_restorable,
+        history_label: copy_visibility.map(|disabled| {
+            if disabled {
+                "Disabled Copy deployment"
+            } else {
+                "Enabled Copy deployment"
+            }
+            .to_string()
+        }),
+        reversal_label: (restorable && copy_visibility.is_some()).then(|| {
+            if copy_visibility == Some(true) {
+                "Enable"
+            } else {
+                "Disable"
+            }
+            .to_string()
+        }),
         reverted_by: row.reverted_by,
         backup_path,
     }
@@ -153,6 +261,30 @@ fn restore_skill_event_blocking(
         skill_refresh::request_snapshot_rebuild(&app);
         return Ok(());
     }
+    if target.kind == "move_copy_deployment" {
+        if force {
+            return Err(
+                "Copy visibility reversal cannot force overwrite changed content or ownership"
+                    .into(),
+            );
+        }
+        let projects = super::skill_project_authority::scoped_projects(&home, [])?;
+        let scope = super::skill_scope_config::desktop_skill_scope(&home, &projects)?;
+        let mut service = ScopedSkillService::bind(scope).map_err(|error| error.to_string())?;
+        let result = skill_studio_core::skill_copy_visibility::reverse_copy_visibility(
+            &mut service,
+            store,
+            &event_id,
+            super::skill_harness_disable::copy_visibility_limits(),
+            Some(std::time::Duration::from_secs(30)),
+            cancellation,
+        )
+        .map(|_| ())
+        .map_err(super::skill_harness_disable::copy_visibility_error);
+        drop(guard);
+        skill_refresh::request_snapshot_rebuild(&app);
+        return result;
+    }
     if super::skill_copy_repair::is_copy_event(&target.kind) {
         let projects = super::skill_project_authority::scoped_projects(&home, [])?;
         let scope = super::skill_scope_config::desktop_skill_scope(&home, &projects)?;
@@ -171,7 +303,7 @@ fn restore_skill_event_blocking(
         skill_refresh::request_snapshot_rebuild(&app);
         return result;
     }
-    store.restore(&event_id, force)?;
+    restore_legacy_event(store, &home, &target, force)?;
     if target.kind == "explode_shared_dir" {
         if let Some(root) = target.payload.get("root").and_then(|v| v.as_str()) {
             store.unregister_materialized_root(Path::new(root))?;
@@ -741,6 +873,166 @@ mod tests {
     use std::collections::BTreeMap;
     use std::fs;
     use std::os::unix::fs::symlink;
+
+    #[test]
+    fn legacy_copy_move_history_refuses_both_endpoints_and_force_without_effects() {
+        for kind in ["move_aside_disable", "move_aside_restore", "restore"] {
+            for owns_source in [true, false] {
+                let temp = tempfile::tempdir().unwrap();
+                let home = temp.path();
+                fs::create_dir_all(home.join(".agents")).unwrap();
+                let store = EventStore::open(&home.join("app-data")).unwrap();
+                let from = home.join(".cursor/skills/.skill-studio-disabled/sample");
+                let to = home.join(".cursor/skills/sample");
+                fs::create_dir_all(&from).unwrap();
+                fs::write(from.join("SKILL.md"), "preserved").unwrap();
+                let owned = if owns_source { &from } else { &to };
+                let registry = serde_json::json!({"version":4,"copies":{"legacy-copy":{
+                    "deployment_id":"legacy-copy","name":"sample","path":owned,
+                    "scope":"global","destination":"per-harness","slot":"cursor",
+                    "disabled":owns_source,"content_hash":"old-hash"
+                }}});
+                let registry_path = home.join(".agents/skill-studio.json");
+                let registry_bytes = serde_json::to_vec(&registry).unwrap();
+                fs::write(&registry_path, &registry_bytes).unwrap();
+                let id = allocate_id();
+                store
+                    .record(
+                        &id,
+                        EventDraft {
+                            kind: kind.into(),
+                            skill: "sample".into(),
+                            harness: None,
+                            scope: None,
+                            project_path: None,
+                            payload: serde_json::json!({"from":to,"to":from}),
+                            inverse: Some(
+                                serde_json::to_value(InverseOp::MoveBack {
+                                    from: from.clone(),
+                                    to: to.clone(),
+                                    pre_fingerprint: "before".into(),
+                                    post_fingerprint: Some("absent".into()),
+                                })
+                                .unwrap(),
+                            ),
+                            backup_dir: None,
+                            restorable: true,
+                        },
+                    )
+                    .unwrap();
+                store.finish(&id, EventStatus::Done).unwrap();
+                let row = store.get(&id).unwrap().unwrap();
+                let dto = dto_from_row(&store, home, row.clone());
+                assert!(!dto.restorable && !dto.force_restorable);
+                for force in [false, true] {
+                    assert!(restore_legacy_event(&store, home, &row, force)
+                        .unwrap_err()
+                        .contains("current Enable or Disable"));
+                }
+                assert_eq!(
+                    fs::read_to_string(from.join("SKILL.md")).unwrap(),
+                    "preserved"
+                );
+                assert!(!to.exists());
+                assert_eq!(fs::read(&registry_path).unwrap(), registry_bytes);
+                assert!(store.get(&id).unwrap().unwrap().reverted_by.is_none());
+                fs::write(&registry_path, "invalid registry").unwrap();
+                assert!(restore_legacy_event(&store, home, &row, true).is_err());
+                assert!(!dto_from_row(&store, home, row.clone()).restorable);
+                fs::write(&registry_path, r#"{"version":4,"copies":{}}"#).unwrap();
+                assert!(dto_from_row(&store, home, row.clone()).restorable);
+                restore_legacy_event(&store, home, &row, false).unwrap();
+                assert_eq!(
+                    fs::read_to_string(to.join("SKILL.md")).unwrap(),
+                    "preserved"
+                );
+                assert!(!from.exists());
+                let restore_id = store.get(&id).unwrap().unwrap().reverted_by.unwrap();
+                let descendant = store.get(&restore_id).unwrap().unwrap();
+                assert_eq!(descendant.inverse.as_ref().unwrap()["op"], "restore_backup");
+                assert!(dto_from_row(&store, home, descendant.clone()).restorable);
+                fs::write(&registry_path, &registry_bytes).unwrap();
+                assert!(!dto_from_row(&store, home, descendant.clone()).restorable);
+                for force in [false, true] {
+                    assert!(restore_legacy_event(&store, home, &descendant, force).is_err());
+                }
+                assert_eq!(
+                    fs::read_to_string(to.join("SKILL.md")).unwrap(),
+                    "preserved"
+                );
+                assert_eq!(fs::read(&registry_path).unwrap(), registry_bytes);
+                assert!(store
+                    .get(&restore_id)
+                    .unwrap()
+                    .unwrap()
+                    .reverted_by
+                    .is_none());
+            }
+        }
+    }
+
+    #[test]
+    fn copy_visibility_history_requires_valid_completed_unclaimed_intent() {
+        use skill_studio_core::{
+            skill_copy_move::CopyMoveTransition,
+            skill_copy_move_intent::CopyMoveIntent,
+            skill_deployment::{deployment_id, InstallScope, SkillDestination},
+            skill_fork_registry::CopyDeploymentRecord,
+        };
+        let temp = tempfile::tempdir().unwrap();
+        let store = EventStore::open(&temp.path().join("app-data")).unwrap();
+        let path = temp.path().join(".cursor/skills/sample");
+        let before = CopyDeploymentRecord {
+            deployment_id: deployment_id(
+                "sample",
+                "global",
+                SkillDestination::PerHarness,
+                "cursor",
+                None,
+                &path,
+            ),
+            name: "sample".into(),
+            path,
+            scope: InstallScope::Global,
+            destination: SkillDestination::PerHarness,
+            slot: "cursor".into(),
+            project_path: None,
+            content_hash: "a".repeat(64),
+            disabled: false,
+        };
+        let intent = CopyMoveIntent::new(
+            CopyMoveTransition::new(before, false).unwrap(),
+            format!("tree-v1:{}", "b".repeat(64)),
+            temp.path().join(".agents/skill-studio.json"),
+        )
+        .unwrap();
+        let id = allocate_id();
+        store.record(&id, intent.event_draft().unwrap()).unwrap();
+        let pending = dto_from_row(&store, temp.path(), store.get(&id).unwrap().unwrap());
+        assert!(!pending.restorable);
+        assert!(pending.reversal_label.is_none());
+        store.finish(&id, EventStatus::Done).unwrap();
+        let row = store.get(&id).unwrap().unwrap();
+        let completed = dto_from_row(&store, temp.path(), row.clone());
+        assert!(completed.restorable);
+        assert!(!completed.force_restorable);
+        assert_eq!(
+            completed.history_label.as_deref(),
+            Some("Disabled Copy deployment")
+        );
+        assert_eq!(completed.reversal_label.as_deref(), Some("Enable"));
+        let mut claimed = row.clone();
+        claimed.reverted_by = Some(allocate_id());
+        let claimed = dto_from_row(&store, temp.path(), claimed);
+        assert!(!claimed.restorable);
+        assert!(claimed.reversal_label.is_none());
+        let mut invalid = row;
+        invalid.payload["transition"]["after"]["path"] = serde_json::json!("/unrelated");
+        let invalid = dto_from_row(&store, temp.path(), invalid);
+        assert!(!invalid.restorable);
+        assert!(!invalid.force_restorable);
+        assert!(invalid.reversal_label.is_none());
+    }
 
     #[test]
     fn event_dto_keeps_non_restorable_backend_policy() {

@@ -184,6 +184,99 @@ impl<'store> GuardedEventStore<'store> {
             .map_err(EventWriteFailure::MayHaveWritten)
     }
 
+    pub(crate) fn record_copy_move_reversal(
+        &self,
+        lease: &FinalizedWriteLease<'_>,
+        source: &crate::skill_event::EventRow,
+        id: &str,
+        intent: &crate::skill_copy_move_intent::CopyMoveIntent,
+    ) -> Result<(), EventWriteFailure> {
+        let expected = serde_json::to_value(source)
+            .map_err(|error| EventWriteFailure::BeforeWrite(error.to_string()))?;
+        self.write(lease, || {
+            let transaction = self.transaction(lease)?;
+            self.check_unresolved()?;
+            let current = self.store.get(&source.id)?.ok_or("Copy visibility source is missing")?;
+            if serde_json::to_value(&current).map_err(|error| error.to_string())? != expected {
+                return Err("Copy visibility source changed since preparation".into());
+            }
+            let source_intent = crate::skill_copy_move_intent::CopyMoveIntent::from_event(source)?;
+            self.check_copy_move_claim(source, &source_intent)?;
+            let expected_intent = intent.clone().reversing(source)?;
+            if serde_json::to_value(&expected_intent).map_err(|error| error.to_string())?
+                != serde_json::to_value(intent).map_err(|error| error.to_string())?
+            {
+                return Err("Copy visibility source reference does not match".into());
+            }
+            if !crate::skill_backup_reservation::valid_id(id) || id == source.id {
+                return Err("Invalid Copy visibility reversal ID".into());
+            }
+            self.store.record(id, intent.event_draft()?)?;
+            let count = transaction
+                .execute(
+                    "UPDATE events SET reverted_by = ?1 WHERE id = ?2 AND status = 'done' AND reverted_by IS NULL",
+                    params![id, &source.id],
+                )
+                .map_err(|error| error.to_string())?;
+            if count != 1 {
+                return Err("Copy visibility source is already claimed".into());
+            }
+            transaction.commit().map_err(|error| error.to_string())
+        })
+    }
+
+    fn check_copy_move_claim(
+        &self,
+        row: &crate::skill_event::EventRow,
+        intent: &crate::skill_copy_move_intent::CopyMoveIntent,
+    ) -> Result<(), String> {
+        if let Some(reference) = intent.source() {
+            let source = self
+                .store
+                .get(&reference.event_id)?
+                .ok_or("Copy visibility origin is missing")?;
+            intent.validate_source_claim(&source, &row.id)?;
+        }
+        Ok(())
+    }
+
+    pub(crate) fn validate_copy_move_claim(
+        &self,
+        lease: &FinalizedWriteLease<'_>,
+        row: &crate::skill_event::EventRow,
+        intent: &crate::skill_copy_move_intent::CopyMoveIntent,
+    ) -> Result<(), String> {
+        self.validate(lease)?;
+        self.check_copy_move_claim(row, intent)?;
+        self.validate(lease)
+    }
+
+    pub(crate) fn finish_copy_move_recovery(
+        &self,
+        lease: &FinalizedWriteLease<'_>,
+        row: &crate::skill_event::EventRow,
+        intent: &crate::skill_copy_move_intent::CopyMoveIntent,
+        status: EventStatus,
+    ) -> Result<(), EventWriteFailure> {
+        self.write(lease, || {
+            let transaction = self.transaction(lease)?;
+            self.check_copy_move_claim(row, intent)?;
+            crate::skill_event_statements::finish_recovery_snapshot(&transaction, row, status, None)?;
+            if matches!(status, EventStatus::Failed) {
+                if let Some(reference) = intent.source() {
+                    let count = transaction.execute(
+                        "UPDATE events SET reverted_by = NULL WHERE id = ?1 AND status = 'done' AND reverted_by = ?2",
+                        params![&reference.event_id, &row.id],
+                    ).map_err(|error| error.to_string())?;
+                    if count != 1 {
+                        return Err("Copy visibility source claim changed".into());
+                    }
+                }
+            }
+            transaction.commit().map_err(|error| error.to_string())
+        })
+    }
+
     pub(crate) fn replace_pending_payload(
         &self,
         lease: &FinalizedWriteLease<'_>,

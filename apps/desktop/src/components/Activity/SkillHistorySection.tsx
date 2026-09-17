@@ -103,6 +103,8 @@ function restoreDescription(event: SkillEvent): string {
       return `Restore ${skillPart}'s exact Universal link`;
     case "move_aside_disable":
       return `Restore ${skillPart} to its original location`;
+    case "move_copy_deployment":
+      return `${event.reversal_label ?? "Reverse visibility"} ${skillPart}`;
     default:
       return `Undo "${kindLabel(event.kind)}" for ${skillPart}`;
   }
@@ -121,15 +123,17 @@ function EventRow({ event, onRestored }: { event: SkillEvent; onRestored: () => 
     event.kind,
   );
   const isCopyChange = isCopyRepair || isCopyEdit;
-  const restoreLabel = isCopyEdit
-    ? event.kind === "undo_copy_document"
-      ? "Redo edit"
-      : "Undo edit"
-    : event.kind === "undo_copy_frontmatter"
-      ? "Redo repair"
-      : isCopyRepair
-        ? "Undo repair"
-        : "Restore";
+  const restoreLabel =
+    event.reversal_label ??
+    (isCopyEdit
+      ? event.kind === "undo_copy_document"
+        ? "Redo edit"
+        : "Undo edit"
+      : event.kind === "undo_copy_frontmatter"
+        ? "Redo repair"
+        : isCopyRepair
+          ? "Undo repair"
+          : "Restore");
   const isFailed = event.status === "failed";
   const isInterrupted = event.status === "interrupted";
   const icon = iconForKind(
@@ -201,7 +205,9 @@ function EventRow({ event, onRestored }: { event: SkillEvent; onRestored: () => 
       <span className="min-w-0 flex-1 truncate text-body text-text-primary" title={event.skill}>
         {event.skill || (event.harness ?? kindLabel(event.kind))}
       </span>
-      <span className="text-small text-text-tertiary">{kindLabel(event.kind)}</span>
+      <span className="text-small text-text-tertiary">
+        {event.history_label ?? kindLabel(event.kind)}
+      </span>
       {harnessLabel && (
         <span className="shrink-0 text-small text-text-tertiary">{harnessLabel}</span>
       )}

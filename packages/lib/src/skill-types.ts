@@ -791,6 +791,8 @@ export interface SkillEvent {
   restorable: boolean;
   /** False when bypassing drift checks could cross an independent Copy boundary. */
   force_restorable: boolean;
+  history_label?: string;
+  reversal_label?: string;
   reverted_by?: string;
   /** Absolute path to this event's backup directory, for a "Reveal in Finder" action. */
   backup_path?: string;
