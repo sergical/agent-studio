@@ -127,12 +127,11 @@ fn cwd_from_transcript(path: &Path, limits: &mut TranscriptScanLimits) -> Option
         let line_cap = (MAX_TRANSCRIPT_LINE_BYTES as u64 + 1).min(budget);
         let read = reader.by_ref().take(line_cap).read_until(b'\n', &mut buf);
         match read {
-            Ok(0) => break, // EOF
+            Ok(0) | Err(_) => break, // EOF, or a read error treated the same way
             Ok(n) => {
                 budget = budget.saturating_sub(n as u64);
                 limits.consume_bytes(n as u64);
             }
-            Err(_) => break,
         }
         let oversized =
             buf.len() as u64 > MAX_TRANSCRIPT_LINE_BYTES as u64 && buf.last() != Some(&b'\n');
@@ -291,9 +290,8 @@ fn opencode_database_worktrees(database: &Path) -> Vec<PathBuf> {
     let Ok(mut statement) = conn.prepare("SELECT worktree FROM project LIMIT ?1") else {
         return Vec::new();
     };
-    let Ok(rows) = statement.query_map([MAX_OPENCODE_PROJECTS as i64], |row| {
-        row.get::<_, String>(0)
-    }) else {
+    let limit = i64::try_from(MAX_OPENCODE_PROJECTS).unwrap_or(i64::MAX);
+    let Ok(rows) = statement.query_map([limit], |row| row.get::<_, String>(0)) else {
         return Vec::new();
     };
     let worktrees: Vec<PathBuf> = rows
@@ -1346,7 +1344,7 @@ mod tests {
         [codex_only, claude_only, shared]
     }
 
-    fn write_discovery_switches(home: &Path, switches: serde_json::Value) {
+    fn write_discovery_switches(home: &Path, switches: &serde_json::Value) {
         fs::create_dir_all(home.join(".agents")).unwrap();
         fs::write(
             home.join(".agents/skill-studio.json"),
@@ -1373,18 +1371,18 @@ mod tests {
         let home = tmp.path();
         let [codex_only, claude_only, shared] = two_harness_home(home);
 
-        write_discovery_switches(home, serde_json::json!({ "codex": false }));
+        write_discovery_switches(home, &serde_json::json!({ "codex": false }));
         assert_eq!(
             discover_skill_projects(home),
             vec![claude_only.clone(), shared.clone()]
         );
 
-        write_discovery_switches(home, serde_json::json!({ "claude-code": false }));
+        write_discovery_switches(home, &serde_json::json!({ "claude-code": false }));
         assert_eq!(discover_skill_projects(home), vec![codex_only, shared]);
 
         write_discovery_switches(
             home,
-            serde_json::json!({ "claude-code": false, "codex": false }),
+            &serde_json::json!({ "claude-code": false, "codex": false }),
         );
         assert!(discover_skill_projects(home).is_empty());
     }
@@ -1396,7 +1394,7 @@ mod tests {
         let [codex_only, claude_only, shared] = two_harness_home(home);
         write_discovery_switches(
             home,
-            serde_json::json!({ "future-harness": false, "codex": true }),
+            &serde_json::json!({ "future-harness": false, "codex": true }),
         );
 
         assert_eq!(

@@ -12,6 +12,7 @@
 //! `blob <len>\0<bytes>` and `tree <len>\0<entries>`, both sha1'd - purely
 //! against [`ScopeFs`], with no `git` binary involved.
 
+use std::fmt::Write as _;
 use std::path::Path;
 
 use sha1::{Digest, Sha1};
@@ -43,7 +44,11 @@ const MODE_TREE: &[u8] = b"40000";
 /// well-known empty tree, `4b825dc642cb6eb9a060e54bf8d69288fbee4904`.
 pub fn tree_hash(fs: &dyn ScopeFs, dir: &Path) -> Result<String, CoreError> {
     let sha = hash_dir(fs, dir)?.unwrap_or_else(|| hash_object(b"tree", &[]));
-    Ok(sha.iter().map(|b| format!("{b:02x}")).collect())
+    let mut hex = String::with_capacity(sha.len() * 2);
+    for byte in sha {
+        write!(hex, "{byte:02x}").ok();
+    }
+    Ok(hex)
 }
 
 /// One sorted tree entry, formatted git's way: `<mode> <name>\0<20-byte sha>`.

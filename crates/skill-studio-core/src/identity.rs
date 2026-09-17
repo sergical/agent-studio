@@ -4,7 +4,7 @@
 //! and `owner:v1` formats stay as they are; the newtypes only stop callers
 //! from building or parsing them outside the core.
 
-use std::fmt;
+use std::fmt::{self, Write as _};
 use std::path::{Path, PathBuf};
 
 use schemars::JsonSchema;
@@ -233,6 +233,14 @@ impl DeploymentId {
     pub fn as_str(&self) -> &str {
         &self.0
     }
+
+    /// Builds an id from a string `ops` already assembled with
+    /// [`Self::PREFIX`], skipping the `parse` round trip for a value that
+    /// cannot fail its own invariant.
+    pub(crate) fn derived(raw: String) -> Self {
+        debug_assert!(raw.starts_with(Self::PREFIX));
+        DeploymentId(raw)
+    }
 }
 
 /// Opaque lifecycle owner id.
@@ -264,6 +272,14 @@ impl OwnerId {
     /// Returns the wire string.
     pub fn as_str(&self) -> &str {
         &self.0
+    }
+
+    /// Builds an id from a string `ops` already assembled with
+    /// [`Self::PREFIX`], skipping the `parse` round trip for a value that
+    /// cannot fail its own invariant.
+    pub(crate) fn derived(raw: String) -> Self {
+        debug_assert!(raw.starts_with(Self::PREFIX));
+        OwnerId(raw)
     }
 }
 
@@ -533,7 +549,7 @@ pub fn sha256_hex(data: &[u8]) -> String {
     }
     let mut out = String::with_capacity(64);
     for word in h {
-        out.push_str(&format!("{word:08x}"));
+        write!(out, "{word:08x}").ok();
     }
     out
 }

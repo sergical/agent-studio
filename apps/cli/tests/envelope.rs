@@ -1,3 +1,8 @@
+// Integration test binaries aren't covered by the lib crate's
+// `cfg_attr(test, allow(...))`: this file compiles as its own crate, so
+// the same allow needs to be declared here too.
+#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+
 //! End-to-end tests: runs the built `skill-studio` binary against
 //! materialized fixtures with `--fixture --json`, and checks the printed
 //! `ResultEnvelope` and the process exit status.
@@ -85,7 +90,9 @@ fn blank_field(value: &mut serde_json::Value, key: &str) {
             }
         }
         serde_json::Value::Array(items) => {
-            items.iter_mut().for_each(|v| blank_field(v, key));
+            for v in items.iter_mut() {
+                blank_field(v, key);
+            }
         }
         _ => {}
     }

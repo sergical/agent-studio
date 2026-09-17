@@ -1,3 +1,8 @@
+// Integration test binaries aren't covered by the lib crate's
+// `cfg_attr(test, allow(...))`: this file compiles as its own crate, so
+// the same allow needs to be declared here too.
+#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+
 //! Real-disk integration tests for `ops::park` and `ops::unpark`.
 //!
 //! Like `repair_and_restore.rs`, these use `skill-studio-host`'s real
@@ -7,7 +12,7 @@
 use std::path::Path;
 use std::sync::Arc;
 
-use skill_studio_core::dto::{ListEventsRequest, ParkRequest, UnparkRequest};
+use skill_studio_core::dto::{ListEventsRequest, ParkRequest, ScanRequest, UnparkRequest};
 use skill_studio_core::harness::HarnessCatalog;
 use skill_studio_core::identity::{BackingRelationship, RootKind};
 use skill_studio_core::ops;
@@ -63,7 +68,7 @@ fn runtime_for(home: &Path) -> Runtime {
 }
 
 fn universal_deployment_id(rt: &Runtime) -> skill_studio_core::identity::DeploymentId {
-    let inventory = ops::scan(rt, &ctx(), &Default::default()).unwrap();
+    let inventory = ops::scan(rt, &ctx(), &ScanRequest::default()).unwrap();
     let skill = inventory
         .skills
         .iter()
@@ -120,7 +125,7 @@ fn park_then_unpark_restores_the_universal_skill_and_the_claude_link() {
 
     let park_outcome = ops::park(&rt, &ctx(), &ParkRequest { deployment_id }).unwrap();
 
-    let inventory = ops::scan(&rt, &ctx(), &Default::default()).unwrap();
+    let inventory = ops::scan(&rt, &ctx(), &ScanRequest::default()).unwrap();
     let parked = inventory
         .skills
         .iter()

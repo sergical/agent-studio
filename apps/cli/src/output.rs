@@ -15,7 +15,13 @@ use skill_studio_core::ops::ResultEnvelope;
 /// `println!` supplies the newline; the document itself is compact, so a
 /// golden diff or a scripted caller sees exactly one line.
 pub fn print_json<T: Serialize>(envelope: &ResultEnvelope<T>) {
-    println!("{}", serde_json::to_string(envelope).unwrap());
+    // Every field on a `ResultEnvelope` is one of our own DTOs; the only way
+    // `to_string` errs is a non-string map key or a NaN/infinite float,
+    // neither of which this envelope ever holds.
+    let line = serde_json::to_string(envelope).unwrap_or_else(|e| {
+        format!(r#"{{"error":"failed to serialize the result envelope: {e}"}}"#)
+    });
+    println!("{line}");
 }
 
 fn print_errors(envelope: &ResultEnvelope<impl Serialize>) {
@@ -236,7 +242,10 @@ pub fn write_schemas(out: Option<PathBuf>) -> ExitCode {
     for (name, build) in schemas {
         let schema = build();
         let path = out.join(format!("{name}.schema.json"));
-        let text = serde_json::to_string_pretty(&schema).unwrap();
+        // `schema` is a `schemars::Schema`, which is always representable as
+        // JSON; there is no error path this fallback would ever exercise.
+        let text = serde_json::to_string_pretty(&schema)
+            .unwrap_or_else(|e| format!("{{\"error\":\"failed to serialize the schema: {e}\"}}"));
         if let Err(err) = std::fs::write(&path, format!("{text}\n")) {
             eprintln!("could not write {}: {err}", path.display());
             return ExitCode::from(2);

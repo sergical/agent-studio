@@ -666,7 +666,10 @@ mod tests {
     }
 
     fn known(skills: &[&str]) -> BTreeSet<String> {
-        skills.iter().map(|s| s.to_string()).collect()
+        skills
+            .iter()
+            .map(std::string::ToString::to_string)
+            .collect()
     }
 
     #[test]
@@ -977,7 +980,7 @@ mod tests {
             trigger: SkillTrigger::Agent,
             at,
             project_path: None,
-            session: session.map(|s| s.to_string()),
+            session: session.map(std::string::ToString::to_string),
         }
     }
 
@@ -988,7 +991,7 @@ mod tests {
             trigger: SkillTrigger::FileRead,
             at,
             project_path: None,
-            session: session.map(|s| s.to_string()),
+            session: session.map(std::string::ToString::to_string),
         }
     }
 
@@ -1119,7 +1122,7 @@ mod tests {
         let known_skills = known(&["write-tests"]);
         let sources = DiscoverySources::default();
         let now = Utc::now();
-        let hour_start = now - chrono::Duration::minutes(now.minute() as i64);
+        let hour_start = now - chrono::Duration::minutes(i64::from(now.minute()));
 
         let mut same_hour_second = agent_use(
             "write-tests",

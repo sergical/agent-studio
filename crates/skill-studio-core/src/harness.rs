@@ -1001,7 +1001,7 @@ pub trait HarnessAdapter: Send + Sync {
         let executable = self
             .binary_name()
             .and_then(|bin| ports.tools.and_then(|lookup| lookup.find_binary(bin)));
-        let (version, install_method) = probe_version(self, &executable, ports);
+        let (version, install_method) = probe_version(self, executable.as_ref(), ports);
         let configured = self
             .config_relative_path()
             .is_some_and(|rel| ports.fs.symlink_metadata(&ports.home.join(rel)).is_ok());
@@ -1040,7 +1040,7 @@ pub trait HarnessAdapter: Send + Sync {
 /// this function: a probe that fails to spawn simply reports `Unknown`.
 fn probe_version(
     adapter: &(impl HarnessAdapter + ?Sized),
-    executable: &Option<PathBuf>,
+    executable: Option<&PathBuf>,
     ports: &DetectionPorts<'_>,
 ) -> (DetectedString, DetectedString) {
     let Some(path) = executable else {

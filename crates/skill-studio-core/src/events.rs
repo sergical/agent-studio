@@ -220,8 +220,7 @@ impl EventRecord {
             self.kind(),
         ) {
             (Some(by), _, _, _) => RestoreCapability::Reverted { by: by.clone() },
-            (None, false, _, _) => RestoreCapability::NoInverse,
-            (None, true, None, _) => RestoreCapability::NoInverse,
+            (None, false, _, _) | (None, true, None, _) => RestoreCapability::NoInverse,
             (None, true, Some(_), None) => RestoreCapability::UnknownKind,
             (None, true, Some(_), Some(_)) => RestoreCapability::Yes,
         }

@@ -259,6 +259,10 @@ mod tests {
     use super::*;
     use serde_json::json;
 
+    // Nearly every call site below builds `update` inline as a `json!(...)`
+    // literal with no reuse, so taking it by value reads cleaner than
+    // threading a reference through two dozen fixture calls.
+    #[allow(clippy::needless_pass_by_value)]
     fn envelope(timestamp: Option<i64>, update: Value) -> String {
         let mut record = json!({"method": "session/update", "params": {"update": update}});
         if let Some(t) = timestamp {
@@ -267,6 +271,7 @@ mod tests {
         record.to_string()
     }
 
+    #[allow(clippy::needless_pass_by_value)]
     fn legacy(update: Value) -> String {
         json!({"update": update}).to_string()
     }

@@ -1,6 +1,6 @@
-// unwrap/expect are fine in test code; production code must use ?
+// unwrap/expect/panic are fine in test code; production code must use ?
 // or an explicit error.
-#![cfg_attr(test, allow(clippy::unwrap_used, clippy::expect_used))]
+#![cfg_attr(test, allow(clippy::unwrap_used, clippy::expect_used, clippy::panic))]
 
 //! Skill Studio core.
 //!

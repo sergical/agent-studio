@@ -91,9 +91,8 @@ pub fn propose_colon_scalar_repair(content: &str) -> Result<(String, String), St
         proposed.push_str(separator);
     }
 
-    let parsed = match parse_frontmatter(&proposed) {
-        FrontmatterParseResult::Valid(parsed) => parsed,
-        _ => return Err("The proposed repair does not parse successfully".to_string()),
+    let FrontmatterParseResult::Valid(parsed) = parse_frontmatter(&proposed) else {
+        return Err("The proposed repair does not parse successfully".to_string());
     };
     let repaired_value = if *key == "description" {
         parsed.description.as_deref()

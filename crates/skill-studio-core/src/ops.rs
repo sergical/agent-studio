@@ -6,6 +6,7 @@
 
 use std::cell::Cell;
 use std::collections::{BTreeMap, HashMap, HashSet};
+use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
 use std::time::Duration;
@@ -367,16 +368,16 @@ pub(crate) fn scan_inner(
     // Global before project, in all four loops, is the read-budget invariant
     // the module doc promises.
     let step_start = clock.monotonic();
-    for target in global_targets {
+    for target in &global_targets {
         scan_one_target(&sc, target, &mut accum)?;
     }
-    for target in global_plugin_targets {
+    for target in &global_plugin_targets {
         scan_one_plugin_target(&sc, target, &mut accum)?;
     }
-    for target in project_targets {
+    for target in &project_targets {
         scan_one_target(&sc, target, &mut accum)?;
     }
-    for target in project_plugin_targets {
+    for target in &project_plugin_targets {
         scan_one_plugin_target(&sc, target, &mut accum)?;
     }
     op_steps.push(crate::timing::step(clock, "roots_walk", step_start));
@@ -521,7 +522,7 @@ struct ScanAccum {
 /// The body of `scan_inner`'s former `for target in scan_targets(rt)` loop.
 fn scan_one_target(
     sc: &ScanCtx,
-    target: ScanTarget,
+    target: &ScanTarget,
     accum: &mut ScanAccum,
 ) -> Result<(), CoreError> {
     sc.ctx.checkpoint()?;
@@ -553,7 +554,7 @@ fn scan_one_target(
                 disable_sources: sc.disable_sources,
                 scope_ledgers: sc.scope_ledgers,
                 home_registry: sc.home_registry,
-                target: &target,
+                target,
                 base_dir: &target.path,
                 whole_dir_link,
                 forced_disabled_by: None,
@@ -590,7 +591,7 @@ fn scan_one_target(
                 disable_sources: sc.disable_sources,
                 scope_ledgers: sc.scope_ledgers,
                 home_registry: sc.home_registry,
-                target: &target,
+                target,
                 base_dir: &move_aside_dir,
                 whole_dir_link,
                 forced_disabled_by: Some(DisabledBy::StudioMoved),
@@ -612,7 +613,7 @@ fn scan_one_target(
 /// `for target in plugin_scan_targets(rt)` loop.
 fn scan_one_plugin_target(
     sc: &ScanCtx,
-    target: PluginCacheTarget,
+    target: &PluginCacheTarget,
     accum: &mut ScanAccum,
 ) -> Result<(), CoreError> {
     sc.ctx.checkpoint()?;
@@ -629,7 +630,7 @@ fn scan_one_plugin_target(
         return Ok(());
     }
     let walk_start = sc.rt.ports.clock.monotonic();
-    let plugin_skills = enumerate_plugin_skills(sc.fs, &target);
+    let plugin_skills = enumerate_plugin_skills(sc.fs, target);
     ScanTimings::add(
         &sc.timings.plugin_cache_walk,
         sc.rt.ports.clock.monotonic().saturating_sub(walk_start),
@@ -1339,29 +1340,17 @@ struct PluginSkillDir {
     source: PluginSourceDto,
 }
 
-/// Parses a `plugin.json`-shaped manifest leniently: only `name` is
-/// required; a missing, unreadable, or malformed manifest yields `None`
-/// rather than failing the walk. Reports "no plugin here" instead of
-/// guessing a name from the directory.
-fn read_plugin_manifest(fs: &dyn ScopeFs, plugin_dir: &Path) -> Option<Option<String>> {
-    for candidate in PLUGIN_MANIFEST_CANDIDATES {
-        let manifest_path = plugin_dir.join(candidate);
-        let Ok(bytes) = fs.read_capped(&manifest_path, SKILL_MD_MAX_BYTES) else {
-            continue;
-        };
-        let Ok(value) = serde_json::from_slice::<serde_json::Value>(&bytes) else {
-            return Some(None);
-        };
-        if value.get("name").and_then(|v| v.as_str()).is_some() {
-            let version = value
-                .get("version")
-                .and_then(|v| v.as_str())
-                .map(str::to_string);
-            return Some(version);
-        }
-        return Some(None);
-    }
-    None
+/// Reports whether `plugin_dir` holds one of [`PLUGIN_MANIFEST_CANDIDATES`],
+/// leniently: a manifest that exists but fails to parse as JSON, or parses
+/// without a `name`, still counts as "a plugin is here" rather than failing
+/// the walk. Only presence matters to the caller; the manifest's own fields
+/// (`name`, `version`) come from the path components in
+/// [`enumerate_plugin_skills`] instead.
+fn plugin_manifest_present(fs: &dyn ScopeFs, plugin_dir: &Path) -> bool {
+    PLUGIN_MANIFEST_CANDIDATES.iter().any(|candidate| {
+        fs.read_capped(&plugin_dir.join(candidate), SKILL_MD_MAX_BYTES)
+            .is_ok()
+    })
 }
 
 /// Walks a plugin cache tree up to [`PLUGIN_CACHE_MAX_DEPTH`] levels for
@@ -1431,7 +1420,7 @@ fn walk_for_plugin_roots(
             continue;
         }
         let path = dir.join(&entry.name);
-        if read_plugin_manifest(fs, &path).is_some() {
+        if plugin_manifest_present(fs, &path) {
             found.push(path);
             continue;
         }
@@ -1709,11 +1698,16 @@ fn classify_owner(cx: &OwnerClassifyContext) -> (LifecycleOwnerKind, Option<Owne
     // `scope_ledgers` always has an entry for both the home scope and every
     // tracked project (`scan_inner`), even when neither ledger file exists,
     // so an empty ledger and a missing one behave the same: no dotagents or
-    // skills.sh entry, fall through to `InRepo`/`Manual` below.
-    let ledger = cx
-        .scope_ledgers
-        .get(cx.scope)
-        .expect("scan_inner populates a ledger for every scope it walks");
+    // skills.sh entry, fall through to `InRepo`/`Manual` below. A missing
+    // entry here would be that same "no ledger" case, so it takes the same
+    // fallback rather than panicking.
+    let Some(ledger) = cx.scope_ledgers.get(cx.scope) else {
+        return if cx.in_git_repo {
+            (LifecycleOwnerKind::InRepo, None)
+        } else {
+            (LifecycleOwnerKind::Manual, None)
+        };
+    };
 
     let dotagents_entry = ledger.dotagents.iter().find(|d| d.name == cx.skill_name);
     let skills_sh_entry = lock_file::is_skill_installed(&ledger.lock, cx.skill_name);
@@ -1837,7 +1831,7 @@ fn deployment_id(
         DeploymentId::PREFIX,
         encode_id_path(&lexical_entry.to_string_lossy())
     );
-    DeploymentId::parse(&raw).expect("well-formed deployment id")
+    DeploymentId::derived(raw)
 }
 
 /// Derives the owner id for a skills.sh-owned deployment. Matches the
@@ -1850,7 +1844,7 @@ fn owner_id(scope_label: &str, project_path: Option<&str>, skill_name: &str) -> 
         }
         _ => format!("owner:v1/project/-/{skill_name}"),
     };
-    OwnerId::parse(&raw).expect("well-formed owner id")
+    OwnerId::derived(raw)
 }
 
 /// Content fingerprint over a deployment's whole directory tree: sha256 over
@@ -2128,11 +2122,12 @@ fn content_hash_from_walk(
             Err(_) => remaining = 0,
         }
     }
-    Ok(hasher
-        .finalize()
-        .iter()
-        .map(|b| format!("{b:02x}"))
-        .collect())
+    let digest = hasher.finalize();
+    let mut hex = String::with_capacity(digest.len() * 2);
+    for byte in digest {
+        write!(hex, "{byte:02x}").ok();
+    }
+    Ok(hex)
 }
 
 /// Every content fact about a skill folder that [`DeploymentDto`] carries,
@@ -2974,8 +2969,13 @@ pub fn apply_frontmatter_repair(
     // check and `restore_event` compare a live path against, and it is not
     // the same hash as `Fingerprint::of_bytes` over the raw text used above
     // to compare `SKILL.md` bytes against `preview.proposed_fingerprint`.
-    let post_fingerprint =
-        crate::events::fingerprint_path(fs, &path)?.expect("just wrote this path; it exists");
+    let post_fingerprint = crate::events::fingerprint_path(fs, &path)?.ok_or_else(|| {
+        CoreError::new(
+            ErrorCode::ExecutionFailed,
+            "the file just written is missing on the immediate re-read",
+        )
+        .at(&path)
+    })?;
     session.store.finish(
         &session.guard,
         &id,
@@ -3134,10 +3134,12 @@ pub fn restore_event(
         }
         crate::dto::RestoreCapability::Yes => {}
     }
-    let inverse = target
-        .inverse
-        .as_ref()
-        .expect("restore_capability() == Yes implies an inverse");
+    let inverse = target.inverse.as_ref().ok_or_else(|| {
+        CoreError::new(
+            ErrorCode::Unsupported,
+            "restore_capability() reported Yes but the event has no inverse",
+        )
+    })?;
     let (path, pre, post) =
         crate::events::parse_restore_backup_inverse(inverse).ok_or_else(|| {
             CoreError::new(

@@ -28,6 +28,10 @@ similar_names = "allow"
 cast_possible_truncation = "allow"
 cast_sign_loss = "allow"
 cast_precision_loss = "allow"
+# A one-off struct declared next to the single test that deserializes into
+# it (matching another crate's on-disk shape, say) reads better right where
+# it's used than hoisted above the test's setup code.
+items_after_statements = "allow"
 
 # A debug-build scan of a real home spends most of its time inside
 # dependencies (hashing, tokenizing, regex, JSON), about 10x slower than

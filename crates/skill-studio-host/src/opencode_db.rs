@@ -26,7 +26,8 @@ fn is_regular_file(path: &Path) -> bool {
 /// True when `name` is one of `OpenCode`'s own database file names:
 /// `opencode.db`, or `opencode-<channel>.db` for a non-default channel.
 pub(crate) fn is_opencode_database_name(name: &str) -> bool {
-    name == "opencode.db" || (name.starts_with("opencode-") && name.ends_with(".db"))
+    name == "opencode.db"
+        || (name.starts_with("opencode-") && Path::new(name).extension() == Some("db".as_ref()))
 }
 
 /// Lists `<home>/.local/share/opencode/opencode.db` and

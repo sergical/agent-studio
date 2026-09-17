@@ -1433,9 +1433,8 @@ fn read_transcript_from_offset(
                 .take(chunk_cap)
                 .read_until(b'\n', &mut chunk);
             let n = match read {
-                Ok(0) => break, // true EOF
+                Ok(0) | Err(_) => break, // true EOF, or a read error treated the same way
                 Ok(n) => n as u64,
-                Err(_) => break,
             };
             remaining = remaining.saturating_sub(n);
             *run_budget = run_budget.saturating_sub(n);
@@ -2845,7 +2844,7 @@ mod tests {
             (Utc::now() - chrono::Duration::minutes(5)).timestamp() + offset_secs
         }
 
-        fn grok_line(timestamp: i64, update: serde_json::Value) -> String {
+        fn grok_line(timestamp: i64, update: &serde_json::Value) -> String {
             serde_json::json!({
                 "timestamp": timestamp,
                 "method": "session/update",
@@ -2913,9 +2912,12 @@ mod tests {
             write_grok_updates(
                 &session_dir,
                 &[
-                    grok_line(recent_secs(0), read_update("tc1", "/x/skills/foo/SKILL.md")),
-                    grok_line(recent_secs(1), skill_update("tc2", "bar")),
-                    grok_line(recent_secs(2), user_chunk_update("/baz go")),
+                    grok_line(
+                        recent_secs(0),
+                        &read_update("tc1", "/x/skills/foo/SKILL.md"),
+                    ),
+                    grok_line(recent_secs(1), &skill_update("tc2", "bar")),
+                    grok_line(recent_secs(2), &user_chunk_update("/baz go")),
                 ],
             );
             write_grok_summary(&session_dir, None);
@@ -2956,9 +2958,9 @@ mod tests {
             write_grok_updates(
                 &s1,
                 &[
-                    grok_line(before, read_update("tc1", "/x/skills/foo/SKILL.md")),
-                    grok_line(before, skill_update("tc2", "bar")),
-                    grok_line(before, user_chunk_update("/baz go")),
+                    grok_line(before, &read_update("tc1", "/x/skills/foo/SKILL.md")),
+                    grok_line(before, &skill_update("tc2", "bar")),
+                    grok_line(before, &user_chunk_update("/baz go")),
                 ],
             );
             write_grok_summary(&s1, None);
@@ -2967,10 +2969,10 @@ mod tests {
             write_grok_updates(
                 &s2,
                 &[
-                    grok_line(before, read_update("tc1", "/x/skills/foo/SKILL.md")),
-                    grok_line(before, skill_update("tc2", "bar")),
-                    grok_line(before, user_chunk_update("/baz go")),
-                    grok_line(after, skill_update("tc3", "bar")),
+                    grok_line(before, &read_update("tc1", "/x/skills/foo/SKILL.md")),
+                    grok_line(before, &skill_update("tc2", "bar")),
+                    grok_line(before, &user_chunk_update("/baz go")),
+                    grok_line(after, &skill_update("tc3", "bar")),
                 ],
             );
             write_grok_summary(&s2, Some(&forked_at));
@@ -2999,7 +3001,7 @@ mod tests {
             let session_dir = home.join(GROK_SESSIONS_ROOT).join(&encoded).join("s1");
             write_grok_updates(
                 &session_dir,
-                &[grok_line(recent_secs(0), skill_update("tc1", "bar"))],
+                &[grok_line(recent_secs(0), &skill_update("tc1", "bar"))],
             );
 
             let mut index = SkillInvocationIndex::default();
@@ -3023,7 +3025,7 @@ mod tests {
             let session_dir = home.join(GROK_SESSIONS_ROOT).join(&encoded).join("s1");
             write_grok_updates(
                 &session_dir,
-                &[grok_line(recent_secs(0), skill_update("tc1", "bar"))],
+                &[grok_line(recent_secs(0), &skill_update("tc1", "bar"))],
             );
             write_grok_summary(&session_dir, None);
 
@@ -3058,7 +3060,7 @@ mod tests {
             let session_dir = home.join(GROK_SESSIONS_ROOT).join(&encoded).join("s1");
             let path = write_grok_updates(
                 &session_dir,
-                &[grok_line(recent_secs(0), skill_update("tc1", "bar"))],
+                &[grok_line(recent_secs(0), &skill_update("tc1", "bar"))],
             );
             write_grok_summary(&session_dir, None);
 
@@ -3069,7 +3071,7 @@ mod tests {
             assert_eq!(stats(&index, &known_skills, &sources)[0].total, 1);
 
             let mut content = fs::read_to_string(&path).unwrap();
-            content.push_str(&grok_line(recent_secs(1), skill_update("tc1", "bar")));
+            content.push_str(&grok_line(recent_secs(1), &skill_update("tc1", "bar")));
             content.push('\n');
             fs::write(&path, &content).unwrap();
 
@@ -3086,7 +3088,7 @@ mod tests {
             let session_dir = home.join(GROK_SESSIONS_ROOT).join(&encoded).join("s1");
             write_grok_updates(
                 &session_dir,
-                &[grok_line(recent_secs(0), skill_update("tc1", "bar"))],
+                &[grok_line(recent_secs(0), &skill_update("tc1", "bar"))],
             );
             write_grok_summary(&session_dir, None);
 

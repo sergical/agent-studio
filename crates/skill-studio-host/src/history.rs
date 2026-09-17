@@ -248,12 +248,17 @@ impl HistoryStore for SqliteHistoryStore {
                     fingerprint: hex.clone(),
                 },
             );
+            let fingerprint = Fingerprint::parse(&hex).map_err(|_| {
+                CoreError::new(
+                    ErrorCode::ExecutionFailed,
+                    "hash_entry did not return 64 lowercase hex chars",
+                )
+                .at(path)
+            })?;
             entries.push(BackupEntry {
                 original: path.clone(),
                 relative: relative_path,
-                fingerprint: Some(
-                    Fingerprint::parse(&hex).expect("hash_entry returns 64 lowercase hex chars"),
-                ),
+                fingerprint: Some(fingerprint),
             });
         }
 
@@ -525,10 +530,15 @@ fn row_from(row: &rusqlite::Row) -> rusqlite::Result<EventRecord> {
     })
 }
 
+// Taken by value so both convert directly as `.map_err(sql_err)` /
+// `.map_err(json_err)` function pointers at every call site instead of a
+// closure that reborrows; that is the only reason the error isn't consumed.
+#[allow(clippy::needless_pass_by_value)]
 fn sql_err(e: rusqlite::Error) -> CoreError {
     CoreError::new(ErrorCode::Io, format!("sqlite error: {e}"))
 }
 
+#[allow(clippy::needless_pass_by_value)]
 fn json_err(e: serde_json::Error) -> CoreError {
     CoreError::new(ErrorCode::Io, format!("json error: {e}"))
 }

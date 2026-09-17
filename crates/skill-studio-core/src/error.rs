@@ -120,6 +120,7 @@ impl CoreError {
     }
 
     /// Attaches the path the error refers to.
+    #[must_use]
     pub fn at(mut self, path: impl Into<PathBuf>) -> Self {
         self.path = Some(path.into());
         self
