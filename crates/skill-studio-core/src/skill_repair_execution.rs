@@ -743,6 +743,7 @@ pub(crate) fn execute_copy_repair_using(
     let (returned, result) = events.record(
         lease,
         event_id,
+        chrono::Utc::now().to_rfc3339(),
         EventDraft {
             kind: "repair_copy_frontmatter".into(),
             skill: intent.document.name.clone(),
@@ -812,12 +813,21 @@ pub(crate) trait RepairEvents {
     fn ensure_running(&self) -> Result<(), String> {
         Ok(())
     }
+    fn preflight_record(
+        &self,
+        _event: &str,
+        _timestamp: &str,
+        _draft: &EventDraft,
+    ) -> Result<(), String> {
+        Ok(())
+    }
     fn prepare<'scope>(&self, lease: RepairLease<'scope>, event: &str)
         -> RepairEventResult<'scope>;
     fn record<'scope>(
         &self,
         lease: RepairLease<'scope>,
         event: &str,
+        timestamp: String,
         draft: EventDraft,
     ) -> RepairEventResult<'scope>;
     fn finish<'scope>(
@@ -856,6 +866,7 @@ impl RepairEvents for CompatibilityRepairEvents<'_> {
         &self,
         lease: RepairLease<'scope>,
         event: &str,
+        _timestamp: String,
         draft: EventDraft,
     ) -> RepairEventResult<'scope> {
         let result = GuardedEventStore::bind(self.0, &lease).and_then(|store| {
@@ -920,9 +931,6 @@ pub(crate) fn execute_direct_repair_using(
     }
     let intent = FrontmatterRepairIntent::from_preview(&preview, mode, None)
         .map_err(|message| error(RepairExecutionStage::Prepare, message))?;
-    let (returned, result) = events.prepare(lease, event_id);
-    lease = returned;
-    result.map_err(|message| error(RepairExecutionStage::Prepare, message))?;
     let parent = PathBuf::from(&preview.path);
     let document = parent.join("SKILL.md");
     let target = SkillDocumentTarget::bind(&parent)
@@ -932,29 +940,7 @@ pub(crate) fn execute_direct_repair_using(
         .map_err(|failure| error(RepairExecutionStage::Prepare, failure.to_string()))?;
     let state = BackupStateRoot::bind(events.state_root())
         .map_err(|failure| error(RepairExecutionStage::Prepare, failure.to_string()))?;
-    let manifest = lease
-        .backup_documents(
-            &state,
-            event_id,
-            vec![source],
-            BackupCopyLimits {
-                max_bytes: preview.original_content.len() as u64,
-                max_entries: 1,
-                max_depth: 0,
-            },
-        )
-        .map_err(|message| error(RepairExecutionStage::Backup, message))?;
     let pre_fingerprint = fingerprint_regular_bytes(preview.original_content.as_bytes());
-    if manifest
-        .entries
-        .get(&document.to_string_lossy().into_owned())
-        .is_none_or(|entry| entry.fingerprint != pre_fingerprint)
-    {
-        return Err(error(
-            RepairExecutionStage::Backup,
-            "Repair backup does not match the validated document".into(),
-        ));
-    }
     let inverse = |post| {
         serde_json::to_value(InverseOp::RestoreBackup {
             path: document.clone(),
@@ -978,7 +964,36 @@ pub(crate) fn execute_direct_repair_using(
         backup_dir: Some(format!("backups/{event_id}")),
         restorable: true,
     };
-    let (returned, result) = events.record(lease, event_id, draft);
+    let timestamp = chrono::Utc::now().to_rfc3339();
+    events
+        .preflight_record(event_id, &timestamp, &draft)
+        .map_err(|message| error(RepairExecutionStage::Prepare, message))?;
+    let (returned, result) = events.prepare(lease, event_id);
+    lease = returned;
+    result.map_err(|message| error(RepairExecutionStage::Prepare, message))?;
+    let manifest = lease
+        .backup_documents(
+            &state,
+            event_id,
+            vec![source],
+            BackupCopyLimits {
+                max_bytes: preview.original_content.len() as u64,
+                max_entries: 1,
+                max_depth: 0,
+            },
+        )
+        .map_err(|message| error(RepairExecutionStage::Backup, message))?;
+    if manifest
+        .entries
+        .get(&document.to_string_lossy().into_owned())
+        .is_none_or(|entry| entry.fingerprint != pre_fingerprint)
+    {
+        return Err(error(
+            RepairExecutionStage::Backup,
+            "Repair backup does not match the validated document".into(),
+        ));
+    }
+    let (returned, result) = events.record(lease, event_id, timestamp, draft);
     lease = returned;
     result.map_err(|message| error(RepairExecutionStage::Intent, message))?;
     checkpoint(RepairExecutionStage::Intent);

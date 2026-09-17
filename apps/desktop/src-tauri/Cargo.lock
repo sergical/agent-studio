@@ -3637,6 +3637,7 @@ version = "0.1.0"
 dependencies = [
  "cap-fs-ext",
  "cap-std",
+ "cc",
  "chrono",
  "libc",
  "rusqlite",

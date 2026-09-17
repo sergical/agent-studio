@@ -57,6 +57,8 @@ pub mod skill_event_statements;
 #[cfg(all(unix, feature = "event-store"))]
 pub mod skill_event_store;
 #[cfg(all(unix, feature = "event-store"))]
+pub mod skill_event_worker_protocol;
+#[cfg(all(unix, feature = "event-store"))]
 pub mod skill_fork_removal;
 #[cfg(all(unix, feature = "event-store"))]
 pub mod skill_history;
@@ -81,6 +83,12 @@ pub mod skill_repair_recovery_event;
 #[cfg(all(unix, feature = "event-store"))]
 pub mod skill_repair_execution;
 
+#[cfg(all(any(target_os = "macos", target_os = "linux"), feature = "event-store"))]
+pub mod skill_repair_worker;
+
+#[cfg(all(any(target_os = "macos", target_os = "linux"), feature = "event-store"))]
+pub mod skill_direct_restore;
+
 #[cfg(all(unix, feature = "event-store"))]
 pub mod skill_unfork_preparation;
 
@@ -100,3 +108,30 @@ pub mod skill_invocation_edit;
 
 #[cfg(all(unix, feature = "event-store"))]
 mod skill_skills_sh_copy;
+
+#[cfg(unix)]
+pub mod skill_history_state;
+#[cfg(any(target_os = "macos", target_os = "linux"))]
+pub mod skill_history_worker_bootstrap;
+pub mod skill_history_worker_frame;
+#[cfg(unix)]
+pub mod skill_history_worker_process;
+#[cfg(all(unix, feature = "event-store"))]
+mod skill_worker_socket;
+
+#[cfg(all(target_os = "macos", feature = "event-store"))]
+pub mod skill_event_native;
+#[cfg(all(unix, feature = "event-store"))]
+pub mod skill_event_worker_cleanup;
+#[cfg(all(unix, feature = "event-store"))]
+mod skill_event_worker_dispatch;
+#[cfg(all(target_os = "macos", feature = "event-store"))]
+pub mod skill_event_worker_entry;
+#[cfg(all(any(target_os = "macos", target_os = "linux"), feature = "event-store"))]
+pub mod skill_event_worker_exchange;
+
+#[cfg(all(unix, feature = "event-store"))]
+pub mod skill_event_files;
+
+#[cfg(all(test, unix, feature = "event-store"))]
+mod skill_event_file_authority;

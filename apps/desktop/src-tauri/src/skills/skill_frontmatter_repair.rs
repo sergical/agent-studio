@@ -30,6 +30,22 @@ pub use skill_studio_core::skill_frontmatter_repair::{
 };
 use skill_studio_core::skill_service::{CancellationToken, ScopedSkillService};
 
+#[cfg(all(target_os = "macos", feature = "worker-repair"))]
+fn prepare_scoped_fork_repair<'a>(
+    service: &'a mut ScopedSkillService,
+    request: &BoundFrontmatterRepairRequest,
+    cancellation: CancellationToken,
+) -> Result<skill_studio_core::skill_service::PreparedRepairSelection<'a>, String> {
+    service
+        .prepare_repair_selection(
+            request,
+            &[],
+            Some(std::time::Duration::from_secs(30)),
+            cancellation,
+        )
+        .map_err(|error| error.to_string())
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ApplyFrontmatterRepairRequest {
     pub target: LifecycleTarget,
@@ -285,7 +301,9 @@ fn preview_skill_frontmatter_repair_blocking(
 ) -> Result<FrontmatterRepairPreview, String> {
     let snapshot = super::skill_lifecycle::rebuild_fresh_lifecycle_snapshot(&app, &refresh_state)?;
     let deployment = exact_target(&snapshot, &target)?;
-    if deployment.owner_kind == LifecycleOwnerKind::Copy {
+    if deployment.owner_kind == LifecycleOwnerKind::Copy
+        || cfg!(all(target_os = "macos", feature = "worker-repair"))
+    {
         let home = dirs::home_dir().ok_or("Could not find home directory")?;
         let projects = snapshot
             .projects
@@ -461,6 +479,58 @@ fn apply_skill_frontmatter_repair_blocking(
     let _guard = fork_lock.try_acquire()?;
     let snapshot = super::skill_lifecycle::rebuild_fresh_lifecycle_snapshot(&app, &refresh_state)?;
     let deployment = exact_target(&snapshot, &target)?.clone();
+    #[cfg(all(target_os = "macos", feature = "worker-repair"))]
+    if mode != FrontmatterRepairApplyMode::ForkAndFix
+        && deployment.owner_kind != skill_studio_core::skill_ownership::LifecycleOwnerKind::Copy
+    {
+        let home = dirs::home_dir().ok_or("Could not find home directory")?;
+        let projects = snapshot
+            .projects
+            .iter()
+            .map(PathBuf::from)
+            .collect::<Vec<_>>();
+        let scope = super::skill_scope_config::desktop_skill_scope(&home, &projects)?;
+        let executable = std::env::current_exe().map_err(|error| error.to_string())?;
+        let name = skill_studio_core::skill_deployment::parse_deployment_id(&deployment.id)
+            .ok_or("Invalid deployment ID")?
+            .name;
+        let guard = event_store.0.lock().map_err(|error| error.to_string())?;
+        let store = guard.as_ref().ok_or("Event store is unavailable")?;
+        let transaction = begin_skill_md_write_transaction()?;
+        let request = BoundFrontmatterRepairRequest {
+            deployment_id: deployment.id.clone(),
+            proposal_id: proposal_id.clone(),
+            expected_content_fingerprint,
+            mode,
+        };
+        let event_id = allocate_id();
+        let command = || {
+            let mut command = std::process::Command::new(&executable);
+            command.arg("__event-worker");
+            command
+        };
+        let result = execute_scoped_desktop_repair(
+            scope.clone(),
+            &store.app_data,
+            &request,
+            &event_id,
+            cancellation,
+            command,
+        );
+        drop(transaction);
+        let result =
+            settle_desktop_document_operation(scope, store, &event_id, result, (), command);
+        drop(guard);
+        let projects = deployment
+            .project_path
+            .as_ref()
+            .map(PathBuf::from)
+            .into_iter()
+            .collect::<Vec<_>>();
+        skill_refresh::reconcile_skill_names_and_emit(&app, &refresh_state, [name], &projects)?;
+        skill_refresh::request_snapshot_rebuild(&app);
+        return result;
+    }
     if deployment.owner_kind == LifecycleOwnerKind::Copy {
         let home = dirs::home_dir().ok_or("Could not find home directory")?;
         let projects = snapshot
@@ -475,7 +545,7 @@ fn apply_skill_frontmatter_repair_blocking(
         let transaction = begin_skill_md_write_transaction()?;
         let request = BoundFrontmatterRepairRequest {
             deployment_id: deployment.id.clone(),
-            proposal_id,
+            proposal_id: proposal_id.clone(),
             expected_content_fingerprint,
             mode,
         };
@@ -493,6 +563,43 @@ fn apply_skill_frontmatter_repair_blocking(
     }
     check_document_cancellation(&cancellation)?;
 
+    #[cfg(all(target_os = "macos", feature = "worker-repair"))]
+    let mut fork_service = if mode == FrontmatterRepairApplyMode::ForkAndFix {
+        let home = dirs::home_dir().ok_or("Could not find home directory")?;
+        let projects = snapshot
+            .projects
+            .iter()
+            .map(PathBuf::from)
+            .collect::<Vec<_>>();
+        let scope = super::skill_scope_config::desktop_skill_scope(&home, &projects)?;
+        Some(ScopedSkillService::bind(scope).map_err(|error| error.to_string())?)
+    } else {
+        None
+    };
+    #[cfg(all(target_os = "macos", feature = "worker-repair"))]
+    let mut fork_selection = if let Some(service) = fork_service.as_mut() {
+        let request = BoundFrontmatterRepairRequest {
+            deployment_id: deployment.id.clone(),
+            proposal_id: proposal_id.clone(),
+            expected_content_fingerprint: expected_content_fingerprint.clone(),
+            mode,
+        };
+        Some(prepare_scoped_fork_repair(
+            service,
+            &request,
+            cancellation.clone(),
+        )?)
+    } else {
+        None
+    };
+    #[cfg(all(target_os = "macos", feature = "worker-repair"))]
+    let proposal_id = fork_selection.as_ref().map_or(proposal_id, |selection| {
+        self::proposal_id(
+            &deployment,
+            &expected_content_fingerprint,
+            &selection.preview().proposed_content,
+        )
+    });
     let skill_md = PathBuf::from(&deployment.path).join("SKILL.md");
     let name = super::skill_deployment::parse_deployment_id(&deployment.id)
         .map(|id| id.name)
@@ -529,6 +636,12 @@ fn apply_skill_frontmatter_repair_blocking(
             None
         },
     };
+    #[cfg(all(target_os = "macos", feature = "worker-repair"))]
+    if let Some(selection) = fork_selection.as_ref() {
+        selection.revalidate().map_err(|_| {
+            "YAML repair refused: the deployment, ownership, or content changed".to_string()
+        })?;
+    }
     store.backup_paths(&event_id, std::slice::from_ref(&skill_md))?;
     store.record(
         &event_id,
@@ -559,12 +672,24 @@ fn apply_skill_frontmatter_repair_blocking(
             .path()
             .app_data_dir()
             .map_err(|error| format!("Could not resolve app data dir: {error}"))?;
-        if let Err(error) = super::skill_fork::fork_resolved_deployment_with_real_services(
+        #[cfg(all(target_os = "macos", feature = "worker-repair"))]
+        let fork_result = super::skill_fork::fork_resolved_deployment_with_real_services(
             &home,
             &app_data,
             &name,
             Path::new(&deployment.path),
-        ) {
+            fork_selection
+                .take()
+                .ok_or("Fork repair lost its approved ownership selection")?,
+        );
+        #[cfg(not(all(target_os = "macos", feature = "worker-repair")))]
+        let fork_result = super::skill_fork::fork_resolved_deployment_with_real_services(
+            &home,
+            &app_data,
+            &name,
+            Path::new(&deployment.path),
+        );
+        if let Err(error) = fork_result {
             store.finish(&event_id, EventStatus::Failed)?;
             return Err(error);
         }
@@ -614,8 +739,709 @@ fn apply_skill_frontmatter_repair_blocking(
     result
 }
 
+#[cfg(all(target_os = "macos", feature = "worker-repair"))]
+fn execute_scoped_desktop_repair(
+    scope: skill_studio_core::skill_service::SkillScope,
+    state_root: &Path,
+    request: &BoundFrontmatterRepairRequest,
+    event_id: &str,
+    cancellation: CancellationToken,
+    command: impl Fn() -> std::process::Command,
+) -> Result<(), String> {
+    use skill_studio_core::skill_service::ScopedSkillService;
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+    let mut service = ScopedSkillService::bind(scope).map_err(|error| error.to_string())?;
+    let selection = service
+        .prepare_repair_selection(
+            request,
+            &[state_root.to_path_buf()],
+            Some(deadline.saturating_duration_since(std::time::Instant::now())),
+            cancellation.clone(),
+        )
+        .map_err(|error| error.to_string())?;
+    skill_studio_core::skill_repair_worker::RepairEventWorker {
+        state_root,
+        command: &command,
+        cancellation: &cancellation,
+        deadline,
+    }
+    .execute(selection, event_id)
+    .map(|_| ())
+    .map_err(|error| error.to_string())
+}
+
+#[cfg(all(target_os = "macos", feature = "worker-repair"))]
+pub(crate) fn restore_scoped_desktop_repair(
+    scope: skill_studio_core::skill_service::SkillScope,
+    state_root: &Path,
+    source: &EventRow,
+    force: bool,
+    event_id: &str,
+    cancellation: CancellationToken,
+    command: impl Fn() -> std::process::Command,
+) -> Result<bool, String> {
+    use skill_studio_core::skill_service::ScopedSkillService;
+    let payload = match source.kind.as_str() {
+        "repair_skill_frontmatter" => &source.payload,
+        "restore" => match source.payload.get("repair") {
+            Some(payload) => payload,
+            None => return Ok(false),
+        },
+        _ => return Ok(false),
+    };
+    let intent: skill_studio_core::skill_repair_intent::FrontmatterRepairIntent =
+        serde_json::from_value(payload.clone()).map_err(|error| error.to_string())?;
+    intent.validate_record()?;
+    if intent.mode == FrontmatterRepairApplyMode::ForkAndFix {
+        return Ok(false);
+    }
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+    let remaining = || Some(deadline.saturating_duration_since(std::time::Instant::now()));
+    let mut service = ScopedSkillService::bind(scope).map_err(|error| error.to_string())?;
+    let names = std::collections::BTreeSet::from([intent.name.clone()]);
+    let inventory = service
+        .scan_cancellable(Some(&names), remaining(), cancellation.clone())
+        .map_err(|error| error.to_string())?;
+    let deployment = inventory
+        .skills
+        .iter()
+        .flat_map(|skill| &skill.deployments)
+        .find(|deployment| deployment.id == intent.deployment_id)
+        .ok_or("Restore deployment is no longer available")?;
+    if deployment.owner_kind == skill_studio_core::skill_ownership::LifecycleOwnerKind::Copy {
+        return Ok(false);
+    }
+    let prepared = service
+        .prepare_direct_restore(source, state_root, force, remaining(), cancellation.clone())
+        .map_err(|error| error.to_string())?;
+    skill_studio_core::skill_repair_worker::RepairEventWorker {
+        state_root,
+        command: &command,
+        cancellation: &cancellation,
+        deadline,
+    }
+    .restore(prepared, event_id)
+    .map(|_| true)
+    .map_err(|error| error.to_string())
+}
+
+#[cfg(all(target_os = "macos", feature = "worker-repair"))]
+fn recover_scoped_desktop_event(
+    scope: skill_studio_core::skill_service::SkillScope,
+    store: &EventStore,
+    row: &EventRow,
+    command: &dyn Fn() -> std::process::Command,
+) -> Result<(), String> {
+    use skill_studio_core::skill_service::ScopedSkillService;
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+    let remaining = || Some(deadline.saturating_duration_since(std::time::Instant::now()));
+    let mut service = ScopedSkillService::bind(scope).map_err(|error| error.to_string())?;
+    let _transaction = begin_skill_md_write_transaction()?;
+    let cancellation = CancellationToken::default();
+    let worker = skill_studio_core::skill_repair_worker::RepairEventWorker {
+        state_root: &store.app_data,
+        command,
+        cancellation: &cancellation,
+        deadline,
+    };
+    if row.kind == "restore" {
+        let source_id = row
+            .payload
+            .get("target_event")
+            .and_then(serde_json::Value::as_str)
+            .ok_or("Restore recovery is missing its source ID")?;
+        let source = store
+            .get(source_id)?
+            .ok_or("Restore recovery source is unavailable")?;
+        let prepared = service
+            .prepare_direct_restore_recovery(
+                &source,
+                row,
+                &store.app_data,
+                remaining(),
+                cancellation.clone(),
+            )
+            .map_err(|error| error.to_string())?;
+        worker
+            .recover_restore(prepared)
+            .map_err(|error| error.to_string())?;
+    } else {
+        let prepared = service
+            .prepare_repair_event_recovery(
+                row,
+                std::slice::from_ref(&store.app_data),
+                remaining(),
+                cancellation.clone(),
+            )
+            .map_err(|error| error.to_string())?;
+        worker
+            .recover(prepared)
+            .map_err(|error| error.to_string())?;
+    }
+    Ok(())
+}
+
+#[cfg(all(target_os = "macos", feature = "worker-repair"))]
+pub(crate) fn settle_desktop_document_operation<T>(
+    scope: skill_studio_core::skill_service::SkillScope,
+    store: &EventStore,
+    event_id: &str,
+    result: Result<T, String>,
+    completed: T,
+    command: impl Fn() -> std::process::Command,
+) -> Result<T, String> {
+    let error = match result {
+        Ok(value) => return Ok(value),
+        Err(error) => error,
+    };
+    let Some(row) = store.get(event_id)? else {
+        return Err(error);
+    };
+    if matches!(row.status.as_str(), "pending" | "interrupted") {
+        recover_scoped_desktop_event(scope, store, &row, &command)
+            .map_err(|recovery| format!("{error}; recovery remains unresolved: {recovery}"))?;
+    }
+    if store.get(event_id)?.is_some_and(|row| row.status == "done") {
+        Ok(completed)
+    } else {
+        Err(error)
+    }
+}
+
+#[cfg(all(target_os = "macos", feature = "worker-repair"))]
+pub(crate) fn recover_desktop_repair(
+    scope: skill_studio_core::skill_service::SkillScope,
+    store: &EventStore,
+    row: &EventRow,
+    command: &dyn Fn() -> std::process::Command,
+) -> Result<(), String> {
+    use skill_studio_core::skill_service::ScopedSkillService;
+    let payload = if row.kind == "restore" {
+        row.payload
+            .get("repair")
+            .ok_or("Missing restore repair intent")?
+    } else {
+        &row.payload
+    };
+    let intent: skill_studio_core::skill_repair_intent::FrontmatterRepairIntent =
+        serde_json::from_value(payload.clone()).map_err(|error| error.to_string())?;
+    intent.validate_record()?;
+    if intent.mode == FrontmatterRepairApplyMode::ForkAndFix && row.kind != "restore" {
+        return reconcile_interrupted_frontmatter_repair(store, &scope.home, row);
+    }
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+    let remaining = || Some(deadline.saturating_duration_since(std::time::Instant::now()));
+    let mut service = ScopedSkillService::bind(scope.clone()).map_err(|error| error.to_string())?;
+    let inventory = service
+        .scan(None, remaining())
+        .map_err(|error| error.to_string())?;
+    let deployment = inventory
+        .skills
+        .iter()
+        .flat_map(|skill| &skill.deployments)
+        .find(|deployment| deployment.id == intent.deployment_id)
+        .ok_or("Recovery deployment is no longer available")?;
+    if deployment.owner_kind == skill_studio_core::skill_ownership::LifecycleOwnerKind::Copy
+        && row.kind != "restore"
+    {
+        return reconcile_interrupted_frontmatter_repair(store, &scope.home, row);
+    }
+    recover_scoped_desktop_event(scope.clone(), store, row, command)?;
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
+    #[cfg(all(target_os = "macos", feature = "worker-repair"))]
+    #[test]
+    #[ignore = "private desktop event worker fixture"]
+    fn desktop_event_worker_child() -> std::process::ExitCode {
+        unsafe { skill_studio_core::skill_event_worker_entry::run_event_worker_stdio() }
+    }
+
+    #[cfg(all(target_os = "macos", feature = "worker-repair"))]
+    #[test]
+    fn desktop_worker_bridge_preserves_preview_ownership_and_history() {
+        verify_desktop_worker_bridge(|| {
+            let mut command = std::process::Command::new(std::env::current_exe().unwrap());
+            command.args([
+                "--exact",
+                "skills::skill_frontmatter_repair::tests::desktop_event_worker_child",
+                "--ignored",
+                "--nocapture",
+            ]);
+            command
+        });
+    }
+
+    #[cfg(all(target_os = "macos", feature = "worker-repair"))]
+    #[test]
+    fn desktop_worker_bridge_preflights_repair_and_restore_sizes_before_backup() {
+        use skill_studio_core::skill_event_worker_protocol::PreparedEventExchange;
+        use skill_studio_core::skill_repair_intent::FrontmatterRepairIntent as CoreRepairIntent;
+        use skill_studio_core::skill_service::{ScopedSkillService, SkillScope};
+
+        let temp = tempfile::tempdir().unwrap();
+        let home = temp.path().join("home");
+        let skill = home.join(".agents/skills/boundary");
+        let path = skill.join("SKILL.md");
+        fs::create_dir_all(&skill).unwrap();
+        let scope = SkillScope {
+            home,
+            projects: vec![],
+            backing_roots: vec![],
+            plugin_ownership_roots: vec![],
+        };
+        let state = temp.path().join("state");
+        fs::create_dir(&state).unwrap();
+        let content = |body: usize| {
+            format!(
+                "---\nname: boundary\ndescription: Use when: testing\n---\n{}",
+                "x".repeat(body)
+            )
+        };
+        fs::write(&path, content(0)).unwrap();
+        let mut service = ScopedSkillService::bind(scope.clone()).unwrap();
+        let inventory = service
+            .scan(None, Some(std::time::Duration::from_secs(10)))
+            .unwrap();
+        let deployment = inventory.skills[0].deployments[0].clone();
+        let timestamp = "2026-09-16T12:34:56.123456789Z";
+        let drafts = |body: usize| {
+            let original = content(body);
+            let preview = skill_studio_core::skill_frontmatter_repair::preview_frontmatter_repair(
+                &deployment,
+                original.as_bytes(),
+            )
+            .unwrap();
+            let intent = CoreRepairIntent::from_preview(
+                &preview,
+                FrontmatterRepairApplyMode::ApplyFix,
+                None,
+            )
+            .unwrap();
+            let before = "b".repeat(64);
+            let after = "a".repeat(64);
+            let inverse = serde_json::json!({
+                "op": "restore_backup",
+                "path": path,
+                "pre_fingerprint": before,
+                "post_fingerprint": after,
+            });
+            let repair = skill_studio_core::skill_event::EventDraft {
+                kind: "repair_skill_frontmatter".into(),
+                skill: "boundary".into(),
+                harness: None,
+                scope: Some("global".into()),
+                project_path: None,
+                payload: serde_json::to_value(&intent).unwrap(),
+                inverse: Some(inverse.clone()),
+                backup_dir: Some("backups/boundary-repair".into()),
+                restorable: true,
+            };
+            let source = skill_studio_core::skill_event::EventRow {
+                id: "boundary-repair".into(),
+                ts: timestamp.into(),
+                kind: repair.kind.clone(),
+                skill: repair.skill.clone(),
+                harness: None,
+                scope: repair.scope.clone(),
+                project_path: None,
+                payload: repair.payload.clone(),
+                inverse: repair.inverse.clone(),
+                backup_dir: repair.backup_dir.clone(),
+                status: "done".into(),
+                reverted_by: None,
+                restorable: true,
+            };
+            let restore = skill_studio_core::skill_event::EventDraft {
+                kind: "restore".into(),
+                skill: "boundary".into(),
+                harness: None,
+                scope: Some("global".into()),
+                project_path: None,
+                payload: serde_json::json!({
+                    "target_event": "boundary-repair",
+                    "repair": intent,
+                    "before": after,
+                    "after": before,
+                }),
+                inverse: Some(inverse),
+                backup_dir: Some("backups/boundary-restore".into()),
+                restorable: true,
+            };
+            (repair, source, restore)
+        };
+        let fits = |body: usize| {
+            let (repair, source, restore) = drafts(body);
+            let repair_fits = PreparedEventExchange::record_pending(
+                "preflight".into(),
+                "repair".into(),
+                "boundary-repair".into(),
+                timestamp.into(),
+                repair,
+            )
+            .is_ok();
+            let restore_fits = PreparedEventExchange::record_restore(
+                "preflight".into(),
+                "restore".into(),
+                "boundary-restore".into(),
+                source,
+                timestamp.into(),
+                restore,
+            )
+            .is_ok();
+            (repair_fits, restore_fits)
+        };
+        let largest = |index: usize| {
+            let (mut low, mut high) = (
+                0,
+                skill_studio_core::skill_history::MAX_HISTORY_RECORD_BYTES,
+            );
+            while low < high {
+                let middle = low + (high - low).div_ceil(2);
+                let fit = fits(middle);
+                if [fit.0, fit.1][index] {
+                    low = middle;
+                } else {
+                    high = middle - 1;
+                }
+            }
+            low
+        };
+        let repair_max = largest(0);
+        let restore_max = largest(1);
+        assert!(restore_max < repair_max);
+        let boundary_body = restore_max + (repair_max - restore_max).div_ceil(2);
+        assert_eq!(fits(boundary_body), (true, false));
+
+        fs::write(&path, content(boundary_body)).unwrap();
+        let preview = service
+            .preview_frontmatter_repair(
+                &deployment.id,
+                Some(std::time::Duration::from_secs(10)),
+                CancellationToken::default(),
+            )
+            .unwrap();
+        let request = BoundFrontmatterRepairRequest {
+            deployment_id: deployment.id.clone(),
+            proposal_id: preview.proposal_id,
+            expected_content_fingerprint: preview.expected_content_fingerprint,
+            mode: FrontmatterRepairApplyMode::ApplyFix,
+        };
+        let command = || {
+            let mut command = std::process::Command::new(std::env::current_exe().unwrap());
+            command.args([
+                "--exact",
+                "skills::skill_frontmatter_repair::tests::desktop_event_worker_child",
+                "--ignored",
+                "--nocapture",
+            ]);
+            command
+        };
+        execute_scoped_desktop_repair(
+            scope.clone(),
+            &state,
+            &request,
+            "boundary-repair",
+            CancellationToken::default(),
+            command,
+        )
+        .unwrap();
+        let store = EventStore::open(&state).unwrap();
+        let source = store.get("boundary-repair").unwrap().unwrap();
+        assert!(restore_scoped_desktop_repair(
+            scope.clone(),
+            &state,
+            &source,
+            false,
+            "boundary-restore",
+            CancellationToken::default(),
+            || panic!("oversized restore must not launch a worker")
+        )
+        .is_err());
+        assert!(store.get("boundary-restore").unwrap().is_none());
+        assert!(!state.join("backups/boundary-restore").exists());
+
+        fs::write(
+            &path,
+            content(skill_studio_core::skill_history::MAX_HISTORY_RECORD_BYTES),
+        )
+        .unwrap();
+        let preview = service
+            .preview_frontmatter_repair(
+                &deployment.id,
+                Some(std::time::Duration::from_secs(10)),
+                CancellationToken::default(),
+            )
+            .unwrap();
+        let oversized = BoundFrontmatterRepairRequest {
+            deployment_id: deployment.id,
+            proposal_id: preview.proposal_id,
+            expected_content_fingerprint: preview.expected_content_fingerprint,
+            mode: FrontmatterRepairApplyMode::ApplyFix,
+        };
+        assert!(execute_scoped_desktop_repair(
+            scope,
+            &state,
+            &oversized,
+            "oversized-repair",
+            CancellationToken::default(),
+            || panic!("oversized repair must not launch a worker")
+        )
+        .is_err());
+        assert!(store.get("oversized-repair").unwrap().is_none());
+        assert!(!state.join("backups/oversized-repair").exists());
+    }
+
+    #[cfg(all(target_os = "macos", feature = "worker-repair"))]
+    #[test]
+    #[ignore = "requires SKILL_STUDIO_RELEASE_WORKER pointing to a built desktop executable"]
+    fn desktop_release_worker_bridge_preserves_preview_ownership_and_history() {
+        let executable = std::path::PathBuf::from(
+            std::env::var_os("SKILL_STUDIO_RELEASE_WORKER").expect("release worker path"),
+        );
+        assert!(executable.is_absolute() && executable.is_file());
+        let environment = tempfile::tempdir().unwrap();
+        verify_desktop_worker_bridge(|| {
+            let mut command = std::process::Command::new(&executable);
+            command
+                .arg("__event-worker")
+                .env_clear()
+                .env("HOME", environment.path())
+                .env("CFFIXED_USER_HOME", environment.path())
+                .env("TMPDIR", environment.path())
+                .env("PATH", "/usr/bin:/bin");
+            command
+        });
+    }
+
+    #[cfg(all(target_os = "macos", feature = "worker-repair"))]
+    fn verify_desktop_worker_bridge(command: impl Fn() -> std::process::Command + Copy) {
+        use skill_studio_core::skill_service::{CancellationToken, ScopedSkillService, SkillScope};
+        let temp = tempfile::tempdir().unwrap();
+        let home = temp.path().join("home");
+        let path = home.join(".agents/skills/sample/SKILL.md");
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
+        fs::write(
+            &path,
+            "---\nname: sample\ndescription: Use when: testing\n---\nbody\n",
+        )
+        .unwrap();
+        let lock = home.join(".agents/.skill-lock.json");
+        fs::write(&lock, r#"{"version":3,"skills":{"sample":{"source":"fixture/repo","sourceType":"github","sourceUrl":"https://example.invalid/repo","skillFolderHash":"hash","installedAt":"before","updatedAt":"before"}}}"#).unwrap();
+        let saved_lock = fs::read(&lock).unwrap();
+        let state = temp.path().join("state");
+        fs::create_dir(&state).unwrap();
+        let scope = SkillScope {
+            home,
+            projects: vec![],
+            backing_roots: vec![],
+            plugin_ownership_roots: vec![],
+        };
+        let mut service = ScopedSkillService::bind(scope.clone()).unwrap();
+        let inventory = service
+            .scan(None, Some(std::time::Duration::from_secs(10)))
+            .unwrap();
+        let id = inventory.skills[0].deployments[0].id.clone();
+        let preview = service
+            .preview_frontmatter_repair(
+                &id,
+                Some(std::time::Duration::from_secs(10)),
+                CancellationToken::default(),
+            )
+            .unwrap();
+        let fork_request = BoundFrontmatterRepairRequest {
+            deployment_id: id.clone(),
+            proposal_id: preview.proposal_id.clone(),
+            expected_content_fingerprint: preview.expected_content_fingerprint.clone(),
+            mode: FrontmatterRepairApplyMode::ForkAndFix,
+        };
+        let original = fs::read(&path).unwrap();
+        fs::write(&path, [original.as_slice(), b"external edit"].concat()).unwrap();
+        assert!(prepare_scoped_fork_repair(
+            &mut service,
+            &fork_request,
+            CancellationToken::default()
+        )
+        .is_err());
+        assert!(!state.join("events.sqlite3").exists());
+        fs::write(&path, &original).unwrap();
+        fs::write(&lock, r#"{"version":3,"skills":{"sample":{"source":"changed/repo","sourceType":"github","sourceUrl":"https://example.invalid/changed","skillFolderHash":"hash","installedAt":"before","updatedAt":"after"}}}"#).unwrap();
+        assert!(prepare_scoped_fork_repair(
+            &mut service,
+            &fork_request,
+            CancellationToken::default()
+        )
+        .is_err());
+        assert!(!state.join("events.sqlite3").exists());
+        fs::write(&lock, &saved_lock).unwrap();
+        drop(service);
+        let request = BoundFrontmatterRepairRequest {
+            deployment_id: id,
+            proposal_id: preview.proposal_id,
+            expected_content_fingerprint: preview.expected_content_fingerprint,
+            mode: FrontmatterRepairApplyMode::FixInstalledCopy,
+        };
+        let cancelled = CancellationToken::default();
+        cancelled.cancel();
+        assert!(execute_scoped_desktop_repair(
+            scope.clone(),
+            &state,
+            &request,
+            "cancelled-repair",
+            cancelled,
+            || panic!("cancelled repair must not launch a worker")
+        )
+        .is_err());
+        assert_eq!(fs::read(&path).unwrap(), original);
+        assert!(!state.join("events.sqlite3").exists());
+
+        execute_scoped_desktop_repair(
+            scope.clone(),
+            &state,
+            &request,
+            "desktop-repair",
+            CancellationToken::default(),
+            command,
+        )
+        .unwrap();
+        assert_eq!(fs::read_to_string(&path).unwrap(), preview.proposed_content);
+        let store = EventStore::open(&state).unwrap();
+        let repair = store.get("desktop-repair").unwrap().unwrap();
+        assert_eq!(repair.status, "done");
+        store.conn.execute("UPDATE events SET status = 'pending', inverse = json_set(inverse, '$.post_fingerprint', NULL) WHERE id = 'desktop-repair'", []).unwrap();
+        settle_desktop_document_operation(
+            scope.clone(),
+            &store,
+            "desktop-repair",
+            Err("cancelled".to_string()),
+            (),
+            command,
+        )
+        .unwrap();
+        assert!(settle_desktop_document_operation(
+            scope.clone(),
+            &store,
+            "absent",
+            Err("cancelled".to_string()),
+            (),
+            || panic!("absent intent must not launch recovery")
+        )
+        .is_err());
+        assert_eq!(store.get("desktop-repair").unwrap().unwrap().status, "done");
+        assert_eq!(fs::read_to_string(&path).unwrap(), preview.proposed_content);
+        assert!(restore_scoped_desktop_repair(
+            scope.clone(),
+            &state,
+            &repair,
+            false,
+            "desktop-restore",
+            CancellationToken::default(),
+            command
+        )
+        .unwrap());
+        assert_eq!(fs::read(&path).unwrap(), original);
+        assert_eq!(
+            store
+                .get("desktop-repair")
+                .unwrap()
+                .unwrap()
+                .reverted_by
+                .as_deref(),
+            Some("desktop-restore")
+        );
+        store.conn.execute("UPDATE events SET status = 'interrupted', inverse = json_set(inverse, '$.post_fingerprint', NULL) WHERE id = 'desktop-restore'", []).unwrap();
+        super::super::skill_startup_recovery::recover_all_with_worker(
+            scope.clone(),
+            &store,
+            &command,
+        )
+        .unwrap();
+        assert_eq!(fs::read(&path).unwrap(), original);
+        assert_eq!(
+            store.get("desktop-restore").unwrap().unwrap().status,
+            "done"
+        );
+        let restore = store.get("desktop-restore").unwrap().unwrap();
+        let edited = b"---\nname: sample\ndescription: user edit\n---\nlocal changes\n";
+        fs::write(&path, edited).unwrap();
+        assert!(restore_scoped_desktop_repair(
+            scope.clone(),
+            &state,
+            &restore,
+            false,
+            "refused",
+            CancellationToken::default(),
+            command
+        )
+        .is_err());
+        assert!(store.get("refused").unwrap().is_none());
+        assert_eq!(fs::read(&path).unwrap(), edited);
+        assert!(restore_scoped_desktop_repair(
+            scope.clone(),
+            &state,
+            &restore,
+            true,
+            "forced",
+            CancellationToken::default(),
+            command
+        )
+        .unwrap());
+        assert_eq!(fs::read_to_string(&path).unwrap(), preview.proposed_content);
+        let forced = store.get("forced").unwrap().unwrap();
+        assert!(restore_scoped_desktop_repair(
+            scope.clone(),
+            &state,
+            &forced,
+            false,
+            "preserved",
+            CancellationToken::default(),
+            command
+        )
+        .unwrap());
+        assert_eq!(fs::read(&path).unwrap(), edited);
+        store.conn.execute("UPDATE events SET status = 'interrupted', inverse = json_set(inverse, '$.post_fingerprint', NULL) WHERE id = 'preserved'", []).unwrap();
+        fs::write(&path, "unrelated edit during recovery").unwrap();
+        assert!(
+            super::super::skill_startup_recovery::recover_all_with_worker(
+                scope.clone(),
+                &store,
+                &command
+            )
+            .is_err()
+        );
+        assert_eq!(
+            fs::read_to_string(&path).unwrap(),
+            "unrelated edit during recovery"
+        );
+        assert_eq!(
+            store.get("preserved").unwrap().unwrap().status,
+            "interrupted"
+        );
+        fs::write(&path, &preview.proposed_content).unwrap();
+        store
+            .conn
+            .execute(
+                "UPDATE events SET status = 'pending' WHERE id = 'preserved'",
+                [],
+            )
+            .unwrap();
+        assert!(settle_desktop_document_operation(
+            scope,
+            &store,
+            "preserved",
+            Err("cancelled".to_string()),
+            (),
+            command
+        )
+        .is_err());
+        assert_eq!(store.get("preserved").unwrap().unwrap().status, "failed");
+        assert!(store.get("forced").unwrap().unwrap().reverted_by.is_none());
+        assert_eq!(fs::read_to_string(&path).unwrap(), preview.proposed_content);
+        assert_eq!(fs::read(lock).unwrap(), saved_lock);
+    }
+
     use super::super::skill_fork_registry::{
         write_fork_registry, ForkRecord, ForkRegistry, OriginTool,
     };

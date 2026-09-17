@@ -8,19 +8,70 @@ pub(crate) fn recover_all(scope: SkillScope, store: &EventStore) -> Result<usize
     recover_with_scope(&scope.home, store, || Ok(scope.clone()))
 }
 
+#[cfg(test)]
+pub(crate) fn recover_all_with_worker(
+    scope: SkillScope,
+    store: &EventStore,
+    command: &dyn Fn() -> std::process::Command,
+) -> Result<usize, String> {
+    recover_with_worker(&scope.home, store, || Ok(scope.clone()), command)
+}
+
 fn recover_with_scope(
     home: &std::path::Path,
     store: &EventStore,
+    load_scope: impl FnMut() -> Result<SkillScope, String>,
+) -> Result<usize, String> {
+    let executable = std::env::current_exe().map_err(|error| error.to_string())?;
+    recover_with_worker(home, store, load_scope, &|| {
+        let mut command = std::process::Command::new(&executable);
+        command.arg("__event-worker");
+        command
+    })
+}
+
+fn recover_with_worker(
+    home: &std::path::Path,
+    store: &EventStore,
     mut load_scope: impl FnMut() -> Result<SkillScope, String>,
+    _worker_command: &dyn Fn() -> std::process::Command,
 ) -> Result<usize, String> {
     recover_in_order(store, |row| {
+        if row.kind == "repair_skill_frontmatter"
+            && row
+                .payload
+                .get("proposal_id")
+                .is_none_or(serde_json::Value::is_null)
+        {
+            return super::skill_frontmatter_repair::reconcile_interrupted_frontmatter_repair(
+                store, home, row,
+            );
+        }
+        #[cfg(all(target_os = "macos", feature = "worker-repair"))]
+        if row.kind == "repair_skill_frontmatter"
+            || (row.kind == "restore" && row.payload.get("repair").is_some())
+        {
+            return super::skill_frontmatter_repair::recover_desktop_repair(
+                load_scope()?,
+                store,
+                row,
+                _worker_command,
+            );
+        }
+        #[cfg(not(all(target_os = "macos", feature = "worker-repair")))]
+        if row.kind == "repair_skill_frontmatter" {
+            return super::skill_frontmatter_repair::reconcile_interrupted_frontmatter_repair(
+                store, home, row,
+            );
+        }
+
         match row.kind.as_str() {
             "make_independent_copy" => {
                 return super::skill_independent_copy::reconcile_interrupted_independent_copy(
                     store, home, row,
                 );
             }
-            "restore" => {
+            "restore" if row.payload.get("repair").is_none() => {
                 return super::skill_independent_copy::reconcile_interrupted_independent_copy_restore(
                     store, home, row,
                 );
@@ -31,11 +82,6 @@ fn recover_with_scope(
                 );
             }
             _ => {}
-        }
-        if row.kind == "repair_skill_frontmatter" {
-            return super::skill_frontmatter_repair::reconcile_interrupted_frontmatter_repair(
-                store, home, row,
-            );
         }
         if row.kind == "move_copy_deployment" {
             let _transaction = super::skill_md_write::begin_skill_md_write_transaction()?;

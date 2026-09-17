@@ -1499,6 +1499,7 @@ impl std::error::Error for RepairPreviewError {}
 
 pub struct PreparedRepairSelection<'scope> {
     owner_kind: crate::skill_ownership::LifecycleOwnerKind,
+    owner_revision: Option<String>,
     preview: crate::skill_frontmatter_repair::FrontmatterRepairPreview,
     mode: crate::skill_frontmatter_repair::FrontmatterRepairApplyMode,
     lease: crate::skill_coordination::FinalizedWriteLease<'scope>,
@@ -1509,8 +1510,16 @@ impl<'scope> PreparedRepairSelection<'scope> {
         self.owner_kind
     }
 
+    pub fn owner_revision(&self) -> Option<&str> {
+        self.owner_revision.as_deref()
+    }
+
     pub fn preview(&self) -> &crate::skill_frontmatter_repair::FrontmatterRepairPreview {
         &self.preview
+    }
+
+    pub fn revalidate(&self) -> Result<(), crate::skill_coordination::CoordinationFailure> {
+        self.lease.revalidate()
     }
 
     pub fn into_parts(
@@ -1808,6 +1817,7 @@ impl ScopedSkillService {
         lease.revalidate()?;
         Ok(PreparedRepairSelection {
             owner_kind: deployment.owner_kind,
+            owner_revision: deployment.owner_revision.clone(),
             preview,
             mode: request.mode,
             lease,
@@ -2466,6 +2476,82 @@ impl<'scope> PreparedRepairEventRecovery<'scope> {
 
 #[cfg(all(unix, feature = "event-store"))]
 impl ScopedSkillService {
+    #[cfg(any(target_os = "macos", target_os = "linux"))]
+    pub fn prepare_direct_restore(
+        &mut self,
+        row: &crate::skill_event::EventRow,
+        state_root: &std::path::Path,
+        force: bool,
+        timeout: Option<Duration>,
+        cancellation: CancellationToken,
+    ) -> Result<crate::skill_direct_restore::PreparedDirectRestore<'_>, WritePreparationError> {
+        let invalid = WritePreparationError::InvalidRepairSelection;
+        let source = crate::skill_direct_restore::DirectRestoreSource::from_row(row, None)
+            .map_err(invalid)?;
+        let prepared =
+            self.prepare_direct_restore_target(source, state_root, timeout, cancellation)?;
+        if !force
+            && crate::skill_event_store::fingerprint_regular_bytes(&prepared.current)
+                != prepared.source.after
+        {
+            return Err(invalid("Document changed since the event; force must preserve current bytes before restore".into()));
+        }
+        Ok(prepared)
+    }
+
+    #[cfg(any(target_os = "macos", target_os = "linux"))]
+    pub(crate) fn prepare_direct_restore_target(
+        &mut self,
+        source: crate::skill_direct_restore::DirectRestoreSource,
+        state_root: &std::path::Path,
+        timeout: Option<Duration>,
+        cancellation: CancellationToken,
+    ) -> Result<crate::skill_direct_restore::PreparedDirectRestore<'_>, WritePreparationError> {
+        let invalid = WritePreparationError::InvalidRepairSelection;
+        let names = BTreeSet::from([source.repair.name.clone()]);
+        let (inventory, lease) = self.prepare_write_inventory(
+            Some(&names),
+            &[state_root.to_path_buf()],
+            timeout,
+            cancellation,
+        )?;
+        let deployment = exact_repair_deployment(&inventory, &source.repair.deployment_id)?;
+        source
+            .repair
+            .validate_direct_recovery_deployment(deployment)
+            .map_err(invalid)?;
+        if deployment.owner_kind == crate::skill_ownership::LifecycleOwnerKind::Copy {
+            return Err(invalid(
+                "Copy restore requires its registry transaction".into(),
+            ));
+        }
+        let document = source.repair.path.join("SKILL.md");
+        let current = lease
+            .read(&document, MAX_REPAIR_DOCUMENT_BYTES)
+            .map_err(|error| invalid(error.to_string()))?;
+        let backup = crate::skill_repair_backup::VerifiedRepairBackup::read_document(
+            state_root,
+            &source.row.id,
+            &document,
+            &source.before,
+            &lease,
+        )
+        .map_err(invalid)?;
+        if source.row.kind == "repair_skill_frontmatter" {
+            source
+                .repair
+                .validate_original(backup.original())
+                .map_err(invalid)?;
+        }
+        lease.revalidate()?;
+        Ok(crate::skill_direct_restore::PreparedDirectRestore {
+            source,
+            current,
+            backup,
+            lease,
+        })
+    }
+
     pub fn prepare_repair_event_recovery(
         &mut self,
         row: &crate::skill_event::EventRow,

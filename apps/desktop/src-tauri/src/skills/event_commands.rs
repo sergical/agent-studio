@@ -439,6 +439,45 @@ fn restore_skill_event_blocking(
         skill_refresh::request_snapshot_rebuild(&app);
         return result;
     }
+    #[cfg(all(target_os = "macos", feature = "worker-repair"))]
+    {
+        let projects = super::skill_project_authority::scoped_projects(&home, [])?;
+        let scope = super::skill_scope_config::desktop_skill_scope(&home, &projects)?;
+        let executable = std::env::current_exe().map_err(|error| error.to_string())?;
+        let transaction = super::skill_md_write::begin_skill_md_write_transaction()?;
+        let restore_id = super::event_store::allocate_id();
+        let command = || {
+            let mut command = std::process::Command::new(&executable);
+            command.arg("__event-worker");
+            command
+        };
+        let restored = super::skill_frontmatter_repair::restore_scoped_desktop_repair(
+            scope.clone(),
+            &store.app_data,
+            &target,
+            force,
+            &restore_id,
+            cancellation.clone(),
+            command,
+        );
+        drop(transaction);
+        let restored = super::skill_frontmatter_repair::settle_desktop_document_operation(
+            scope,
+            store,
+            &restore_id,
+            restored,
+            true,
+            command,
+        );
+        match restored {
+            Ok(false) => {}
+            result => {
+                drop(guard);
+                skill_refresh::request_snapshot_rebuild(&app);
+                return result.map(|_| ());
+            }
+        }
+    }
     restore_legacy_event(store, &home, &target, force)?;
     if target.kind == "explode_shared_dir" {
         if let Some(root) = target.payload.get("root").and_then(|v| v.as_str()) {

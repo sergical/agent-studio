@@ -27,7 +27,7 @@ use super::skill_fork_registry::{
     deployment_trial_key, fork_snapshot_dir, read_fork_registry, trial_key, write_fork_registry,
     ForkRecord, ForkRegistry, OriginTool, TrialScope,
 };
-use super::skill_fs::copy_dir_all;
+use super::skill_fs::{copy_dir_all, copy_dir_preserving_symlinks};
 use super::skill_install_plan::{skills_sh_universal_add_args, SkillInstallSpec};
 use super::skill_lifecycle::skills_sh_remove_args_for_scope;
 use super::skill_process::{
@@ -202,6 +202,54 @@ fn resolve_lookup() -> Box<dyn CommitLookup> {
 
 /// Runs the same fork transaction as `fork_skill` after another command has
 /// already resolved and locked the exact Global Universal deployment.
+#[cfg(all(target_os = "macos", feature = "worker-repair"))]
+pub(crate) fn fork_resolved_deployment_with_real_services(
+    home: &Path,
+    app_data: &Path,
+    name: &str,
+    path: &Path,
+    selection: skill_studio_core::skill_service::PreparedRepairSelection<'_>,
+) -> Result<ForkRecord, String> {
+    let lookup = resolve_lookup();
+    let gh_bin =
+        skill_update_check::resolve_gh_binary().ok_or_else(|| "Run Check now first".to_string())?;
+    let fetch = RealUpstreamFetch {
+        gh_bin,
+        cache_dir: app_data.join("skill-studio").join("cache"),
+    };
+    let expected_owner = selection.owner_kind();
+    fork_skill_with_storage_guarded(
+        home,
+        app_data,
+        name,
+        path,
+        &RealLedgerTool,
+        &fetch,
+        lookup.as_ref(),
+        &FileForkTransactionStorage,
+        move |origin| {
+            let owner_matches = matches!(
+                (expected_owner, origin.tool),
+                (
+                    super::skill_ownership::LifecycleOwnerKind::SkillsSh,
+                    OriginTool::SkillsSh
+                ) | (
+                    super::skill_ownership::LifecycleOwnerKind::Dotagents,
+                    OriginTool::Dotagents
+                )
+            );
+            if !owner_matches || selection.owner_revision().is_none() {
+                return Err("Fork owner changed after repair approval".into());
+            }
+            selection.revalidate().map_err(|_| {
+                "Fork owner, content, or deployment changed after repair approval".to_string()
+            })?;
+            Ok(selection)
+        },
+    )
+}
+
+#[cfg(not(all(target_os = "macos", feature = "worker-repair")))]
 pub(crate) fn fork_resolved_deployment_with_real_services(
     home: &Path,
     app_data: &Path,
@@ -810,7 +858,7 @@ impl ForkTransactionStorage for FileForkTransactionStorage {
     }
 
     fn snapshot_live_skill(&self, skill_dir: &Path, recovery_dir: &Path) -> Result<(), String> {
-        copy_dir_all(skill_dir, recovery_dir)
+        copy_dir_preserving_symlinks(skill_dir, recovery_dir)
     }
 
     fn read_registry(&self, home: &Path) -> Result<ForkRegistry, String> {
@@ -1027,6 +1075,31 @@ fn fork_skill_with_storage(
     lookup: &dyn CommitLookup,
     storage: &dyn ForkTransactionStorage,
 ) -> Result<ForkRecord, String> {
+    fork_skill_with_storage_guarded(
+        home,
+        app_data,
+        name,
+        path,
+        ledger,
+        fetch,
+        lookup,
+        storage,
+        |_| Ok(()),
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn fork_skill_with_storage_guarded<G>(
+    home: &Path,
+    app_data: &Path,
+    name: &str,
+    path: &Path,
+    ledger: &dyn LedgerTool,
+    fetch: &dyn UpstreamFetch,
+    lookup: &dyn CommitLookup,
+    storage: &dyn ForkTransactionStorage,
+    authorize: impl FnOnce(&ForkOrigin) -> Result<G, String>,
+) -> Result<ForkRecord, String> {
     validate_fork_path(home, name, path)?;
 
     let agents_dir = home.join(".agents");
@@ -1070,6 +1143,21 @@ fn fork_skill_with_storage(
             ForkRecoveryRollback::RestorePrevious,
         ));
     }
+
+    // Staging is read-only for ownership. Revalidate after it completes, then
+    // retain the approved lease across the existing ownership transaction.
+    let _authority = match authorize(&origin) {
+        Ok(authority) => authority,
+        Err(error) => {
+            return Err(rollback_fork_before_detach(
+                storage,
+                error,
+                &rollback_paths,
+                None,
+                ForkRecoveryRollback::RestorePrevious,
+            ));
+        }
+    };
 
     // 2. Write the record before touching the ledger - a failure here means
     //    the skill is still fully attached, never detached with no record.
@@ -1169,7 +1257,7 @@ fn fork_skill_with_storage(
     //    recovery copy - the record is already durable, so on a restore
     //    failure keep it (it holds provenance) and name the recovery path.
     if !skill_dir.exists() {
-        if let Err(e) = copy_dir_all(&recovery_dir, &skill_dir) {
+        if let Err(e) = copy_dir_preserving_symlinks(&recovery_dir, &skill_dir) {
             return Err(format!(
                 "Removed {name} from its ledger, but could not restore it from the recovery copy at {}: {e}. Restore it manually from that path.",
                 recovery_dir.display()
@@ -2263,6 +2351,110 @@ mod tests {
     }
 
     #[test]
+    fn guarded_fork_refuses_stale_authority_before_ownership_mutation() {
+        let tmp = tempfile::tempdir().unwrap();
+        let home = tmp.path().join("home");
+        let app_data = tmp.path().join("data");
+        seed_dotagents_ledger(
+            &home,
+            "find-bugs",
+            "getsentry/find-bugs",
+            "skills/find-bugs",
+            &"a".repeat(40),
+        );
+        let skill = home.join(".agents/skills/find-bugs");
+        write_file(&skill.join("SKILL.md"), "body");
+        let ledger_before = fs::read(home.join(".agents/agents.lock")).unwrap();
+        let registry_before = serde_json::to_value(read_fork_registry(&home).unwrap()).unwrap();
+        let ledger = FakeLedger::default();
+        let fetch = FakeFetch {
+            files: vec![("SKILL.md", "upstream")],
+        };
+
+        let error = fork_skill_with_storage_guarded(
+            &home,
+            &app_data,
+            "find-bugs",
+            &skill,
+            &ledger,
+            &fetch,
+            &NeverCalledLookup,
+            &FileForkTransactionStorage,
+            |_| Err::<(), _>("approved ownership changed".to_string()),
+        )
+        .unwrap_err();
+
+        assert!(error.contains("approved ownership changed"));
+        assert!(ledger.remove_calls.lock().unwrap().is_empty());
+        assert_eq!(
+            fs::read(home.join(".agents/agents.lock")).unwrap(),
+            ledger_before
+        );
+        assert_eq!(
+            serde_json::to_value(read_fork_registry(&home).unwrap()).unwrap(),
+            registry_before
+        );
+        assert!(!fork_snapshot_dir(&app_data, "find-bugs").exists());
+    }
+
+    #[test]
+    fn guarded_fork_retains_authority_through_provider_detach() {
+        use std::sync::{
+            atomic::{AtomicBool, Ordering},
+            Arc,
+        };
+
+        struct Authority(Arc<AtomicBool>);
+        impl Drop for Authority {
+            fn drop(&mut self) {
+                self.0.store(true, Ordering::SeqCst);
+            }
+        }
+        struct GuardedLedger(Arc<AtomicBool>);
+        impl LedgerTool for GuardedLedger {
+            fn remove(&self, _: OriginTool, _: &str) -> Result<(), String> {
+                assert!(!self.0.load(Ordering::SeqCst));
+                Ok(())
+            }
+            fn reinstall(&self, _: &ForkRecord, _: &str) -> Result<(), String> {
+                Ok(())
+            }
+        }
+
+        let tmp = tempfile::tempdir().unwrap();
+        let home = tmp.path().join("home");
+        let app_data = tmp.path().join("data");
+        seed_dotagents_ledger(
+            &home,
+            "find-bugs",
+            "getsentry/find-bugs",
+            "skills/find-bugs",
+            &"a".repeat(40),
+        );
+        let skill = home.join(".agents/skills/find-bugs");
+        write_file(&skill.join("SKILL.md"), "body");
+        let dropped = Arc::new(AtomicBool::new(false));
+        let fetch = FakeFetch {
+            files: vec![("SKILL.md", "upstream")],
+        };
+
+        fork_skill_with_storage_guarded(
+            &home,
+            &app_data,
+            "find-bugs",
+            &skill,
+            &GuardedLedger(dropped.clone()),
+            &fetch,
+            &NeverCalledLookup,
+            &FileForkTransactionStorage,
+            |_| Ok(Authority(dropped.clone())),
+        )
+        .unwrap();
+
+        assert!(dropped.load(Ordering::SeqCst));
+    }
+
+    #[test]
     fn fork_drops_a_stale_trial_record() {
         let tmp = tempfile::tempdir().unwrap();
         let home = tmp.path().join("home");
@@ -2455,6 +2647,11 @@ mod tests {
         );
         let skill_md = home.join(".agents/skills/find-bugs/SKILL.md");
         write_file(&skill_md, "original body");
+        #[cfg(unix)]
+        for target in ["SKILL.md", "missing"] {
+            std::os::unix::fs::symlink(target, skill_md.with_file_name(format!("{target}.link")))
+                .unwrap();
+        }
 
         // A ledger tool whose `remove` actually deletes the directory, like
         // a real `dotagents remove` / `npx skills remove` would.
@@ -2489,6 +2686,13 @@ mod tests {
         .unwrap();
         // Restored from the live-tree recovery copy, not the upstream base.
         assert_eq!(fs::read_to_string(&skill_md).unwrap(), "original body");
+        #[cfg(unix)]
+        for target in ["SKILL.md", "missing"] {
+            assert_eq!(
+                fs::read_link(skill_md.with_file_name(format!("{target}.link"))).unwrap(),
+                PathBuf::from(target)
+            );
+        }
     }
 
     #[test]
