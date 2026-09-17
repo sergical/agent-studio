@@ -304,6 +304,11 @@ pub struct ForkRegistry {
     /// the desktop app, the CLI, and the MCP server honour the same choice.
     #[serde(default, skip_serializing_if = "DiscoverySources::is_empty")]
     pub discovery: DiscoverySources,
+    /// Opt-in error reporting (Settings' "Error reporting" toggle) - see
+    /// `error_reporting`. Off by default: a panic or a command failure is
+    /// sanitized and sent to Sentry only once this is `true`.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub error_reporting_enabled: bool,
     /// Every top-level key this build doesn't know about. Keeps a write from
     /// erasing a field a newer or older build added - the file is shared
     /// with the CLI and with whichever app version last wrote it.
@@ -337,6 +342,7 @@ impl Default for ForkRegistry {
             trusted_dotagents_sources: BTreeSet::new(),
             projects: TrackedProjects::default(),
             discovery: DiscoverySources::default(),
+            error_reporting_enabled: false,
             unknown: serde_json::Map::new(),
         }
     }

@@ -34,6 +34,7 @@ pub mod lock_file;
 pub mod ops;
 mod ownership;
 pub mod ports;
+pub mod report_sanitizer;
 pub mod scope;
 pub mod skill_uses;
 pub mod snapshot;

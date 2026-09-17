@@ -138,6 +138,10 @@ fn apply_fixture_home_override() {
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     apply_fixture_home_override();
+    // Before Tauri's own setup, so a panic during setup itself is still
+    // caught once `set_global_state` below registers the state to report
+    // through.
+    skills::error_reporting::install_panic_hook();
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
         .setup(|app| {
@@ -155,6 +159,14 @@ pub fn run() {
             app.manage(skills::skill_agent_runner::SkillAgentRunnerState::default());
             app.manage(skills::skill_run_target::SkillRunTargetState::default());
             app.manage(skills::skill_fork::ForkMutationLock::default());
+            let error_reporting_enabled = dirs::home_dir()
+                .and_then(|home| skills::skill_fork_registry::read_fork_registry(&home).ok())
+                .is_some_and(|registry| registry.error_reporting_enabled);
+            let reporting_state = std::sync::Arc::new(
+                skills::error_reporting::ReportingState::new(error_reporting_enabled),
+            );
+            skills::error_reporting::set_global_state(reporting_state.clone());
+            app.manage(reporting_state);
             skills::skill_update_check::spawn_update_check_loop(app.handle().clone());
             skills::skill_trial::spawn_trial_expiry_loop(app.handle().clone());
 
@@ -168,33 +180,27 @@ pub fn run() {
             skills::app_version::app_version,
             skills::add_method_defaults::get_add_method_defaults,
             // Skills.sh integration
-            skills::commands::get_skills_sh_access,
-            skills::commands::set_skills_sh_api_key,
             skills::commands::search_skills,
             skills::commands::get_popular_skills,
             skills::commands::get_skill_details,
             skills::commands::get_installed_skills,
-            skills::commands::list_skill_projects,
-            skills::commands::is_skill_installed,
-            skills::commands::get_agent_targets,
             skills::commands::remove_skill,
             skills::commands::update_skill,
             skills::commands::read_installed_skill_md,
-            skills::commands::write_installed_skill_md,
             skills::commands::write_installed_skill_md_if_unchanged,
             skills::skill_frontmatter_repair::preview_skill_frontmatter_repair,
             skills::skill_frontmatter_repair::apply_skill_frontmatter_repair,
             skills::commands::open_skill_path,
             skills::commands::get_editor_choices,
             skills::commands::set_preferred_editor,
-            skills::skill_update_check::check_skill_updates_now,
+            skills::error_reporting::get_error_reporting_enabled,
+            skills::error_reporting::set_error_reporting_enabled,
             // Fork / Pull upstream / Un-fork
             skills::skill_fork::fork_skill,
             skills::skill_fork::pull_fork_upstream,
             skills::skill_fork::unfork_skill,
             // Add skill / trials
             skills::skill_add::add_skill,
-            skills::skill_add::add_skills,
             skills::skill_add_operation::start_add_skill_operation,
             skills::skill_add_operation::start_add_skills_operation,
             skills::skill_add_operation::get_add_skill_operation,
@@ -214,7 +220,6 @@ pub fn run() {
             // Event store: History and per-harness materialize disable
             skills::event_commands::list_skill_events,
             skills::event_commands::restore_skill_event,
-            skills::event_commands::set_shared_harness_skill_enabled,
             skills::event_commands::materialize_harness_root,
             skills::event_commands::materialize_harness_root_then_disable,
             skills::event_commands::make_skill_independent_copy,
