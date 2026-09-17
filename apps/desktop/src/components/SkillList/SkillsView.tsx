@@ -141,7 +141,13 @@ export function SkillsView({ snapshot, onSelectSkill }: SkillsViewProps) {
       )}
       <LedgerFindings findings={ledger} />
       {rows.length === 0 && ledger.length > 0 ? null : showCoverage ? (
-        <SkillCoverageMatrix skills={rows} onSelectSkill={onSelectSkill} />
+        <SkillCoverageMatrix
+          skills={rows}
+          onSelectSkill={(name) => {
+            const skill = rows.find((row) => row.name === name);
+            if (skill) onSelectSkill(name, deploymentPathForSkillFilter(skill, filter, issues));
+          }}
+        />
       ) : (
         <SkillListTable
           skills={rows}

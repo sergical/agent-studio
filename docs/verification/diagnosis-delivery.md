@@ -83,4 +83,15 @@ remained bounded. Build: 17.21 s, 1,083,162,624-byte maximum single-process RSS,
 swaps. App exited cleanly. Consumed native bundles, homes and temp directories were
 removed after retaining identities, results and fixture reproduction scripts.
 
-CI and final combined release acceptance remain separate requirements.
+CI at `34848cb` passed: core792 unit/11 integration/23 explicit skips and strict
+Clippy/format; frontend195 desktop/153 shared-library tests plus build/typecheck.
+Integration port review found the Coverage matrix callback still omitted deployment
+selection. The one-file correction now uses the same resolver as list rows. Source
+and integration typecheck/scoped lint pass; independent callback review is clear.
+Native integration verification covered mouse and keyboard (Tab/Enter) activation
+of an issue-filtered coverage row, both opening the affected project-b copy.
+Binary: `ca1b51c0e8c840eb08d9db2b9c48c0f031ce68a5263101976afbba22bfbe2d7e`.
+Build17.81s /1,084,129,280-byte maximum process RSS, zero swaps. App exited and
+fixture was removed. The callback is identical in the review source. Rust inputs
+are unchanged. Updated frontend CI remains pending; final combined release
+acceptance remains separate.
