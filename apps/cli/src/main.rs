@@ -19,12 +19,17 @@ use skill_studio_core::dto::{
     RepairApplyRequest, RepairPreviewRequest, RestoreRequest, ScanRequest,
 };
 use skill_studio_core::harness::HarnessCatalog;
+use skill_studio_core::health::{self, Outcome, TimingRow};
 use skill_studio_core::identity::{AgentId, CorrelationId, DeploymentId, EventId, SkillName};
 use skill_studio_core::ops::{self, Operation, ResultEnvelope};
 use skill_studio_core::ports::{OpContext, Runtime};
 use skill_studio_core::snapshot::SnapshotCell;
 
 use crate::scope::ScopeArgs;
+
+/// The rollup window `run_health` folds `timing.jsonl` over, matching the
+/// Settings "Command health" card and unit 6.5's ticket.
+const HEALTH_WINDOW: std::time::Duration = std::time::Duration::from_secs(7 * 24 * 3600);
 
 /// The version clap prints for `--version`: the crate version and the build
 /// commit, `SKILL_STUDIO_COMMIT` from `build.rs` ("dev" outside a release
@@ -156,6 +161,18 @@ enum Command {
         #[arg(long)]
         out: Option<PathBuf>,
     },
+    /// Print the command health rollup: count, failures, p50/p95 duration,
+    /// and last error, per command, over the last 7 days of `timing.jsonl`.
+    Health {
+        /// Path to the timing log to read. Defaults to the desktop app's
+        /// own `timing.jsonl` (its app data dir, resolved through `dirs` -
+        /// the same file the desktop's Settings "Command health" card
+        /// reads via its own Tauri command).
+        #[arg(long)]
+        timing_log: Option<PathBuf>,
+        #[arg(long)]
+        json: bool,
+    },
     /// Stream one JSON line per revision change: an initial line with the
     /// current revision and inventory, then one line per change, until
     /// interrupted.
@@ -220,6 +237,7 @@ fn main() -> ExitCode {
             json,
         } => run_restore(scope, event_id, force, json, time),
         Command::Schema { out } => output::write_schemas(out),
+        Command::Health { timing_log, json } => run_health(timing_log, json),
         Command::Watch { scope, since, json } => run_watch(scope, since, json, time),
     }
 }
@@ -615,6 +633,65 @@ fn run_restore(
     let result = ops::restore_event(&rt, &ctx, &req);
     let envelope = ResultEnvelope::from_result(Operation::RestoreEvent, &rt.scope, &ctx, result);
     finish(envelope, json, time, output::print_restore_outcome_table)
+}
+
+/// One `timing.jsonl` line, as written by the desktop's `timing_log`
+/// (`apps/desktop/src-tauri/src/timing_log.rs`). Deserialized field-by-field
+/// rather than sharing that struct: the desktop crate isn't a CLI
+/// dependency, and the CLI only ever needs these five fields.
+#[derive(serde::Deserialize)]
+struct TimingLine {
+    ts: String,
+    command: String,
+    elapsed_ms: u64,
+    #[serde(default)]
+    outcome: String,
+    #[serde(default)]
+    error: Option<String>,
+}
+
+/// Parses `path` into [`TimingRow`]s for `health::health_rollup`. A missing
+/// file (no command has run yet) or an unparsable line is treated the same
+/// way the desktop's own `timing_log::read_rows` treats it: skipped, not a
+/// hard error - `skill-studio health` on a fresh install just prints an
+/// empty rollup.
+fn read_timing_rows(path: &std::path::Path) -> Vec<TimingRow> {
+    let Ok(text) = std::fs::read_to_string(path) else {
+        return Vec::new();
+    };
+    text.lines()
+        .filter_map(|line| serde_json::from_str::<TimingLine>(line).ok())
+        .filter_map(|line| {
+            let ts = chrono::DateTime::parse_from_rfc3339(&line.ts)
+                .ok()?
+                .with_timezone(&chrono::Utc);
+            let outcome = if line.outcome == "error" {
+                Outcome::Error
+            } else {
+                Outcome::Ok
+            };
+            Some(TimingRow {
+                ts,
+                command: line.command,
+                elapsed_ms: line.elapsed_ms,
+                outcome,
+                error: line.error,
+            })
+        })
+        .collect()
+}
+
+fn run_health(timing_log: Option<PathBuf>, json: bool) -> ExitCode {
+    let path = timing_log.unwrap_or_else(scope::default_timing_log_path);
+    let rows = read_timing_rows(&path);
+    let now = chrono::Utc::now();
+    let report = health::health_rollup(&rows, now, HEALTH_WINDOW);
+    if json {
+        println!("{}", serde_json::to_string(&report).unwrap());
+    } else {
+        output::print_health_table(&report);
+    }
+    ExitCode::SUCCESS
 }
 
 /// Polling interval for `watch`: a fixed-interval re-scan of the scope

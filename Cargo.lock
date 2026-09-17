@@ -4032,6 +4032,7 @@ dependencies = [
 name = "skill-studio-cli"
 version = "0.1.0"
 dependencies = [
+ "chrono",
  "clap",
  "ctrlc",
  "dirs 5.0.1",

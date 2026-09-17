@@ -30,6 +30,7 @@ pub mod events;
 pub mod frontmatter;
 pub mod frontmatter_repair;
 pub mod harness;
+pub mod health;
 pub mod identity;
 pub mod lock_file;
 pub mod ops;
