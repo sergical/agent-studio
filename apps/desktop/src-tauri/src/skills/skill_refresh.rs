@@ -65,6 +65,10 @@ pub struct SkillSnapshot {
     /// from older serialized data that predates revisions.
     #[serde(default)]
     pub revision: u64,
+    #[serde(default)]
+    pub ledger_only: Vec<LedgerOnlySkill>,
+    #[serde(default)]
+    pub diagnosis: Option<skill_studio_core::skill_diagnosis::Diagnosis>,
     pub skills: Vec<InstalledSkill>,
     #[serde(default)]
     pub read_warnings: Vec<SkillSnapshotReadWarning>,
@@ -569,13 +573,20 @@ pub fn reconcile_skill_names_and_emit(
             .flat_map(|skill| &skill.deployments)
             .map(|deployment| PathBuf::from(&deployment.path)),
     );
-    let (mut replacements, _ledger_only, read_warnings, fork_registry) =
+    let diagnosis_update = skill_studio_core::skill_diagnosis::diagnose(&inventory);
+    let (mut replacements, ledger_only, read_warnings, fork_registry) =
         snapshot_inventory_projection(&home, inventory, Some(&names));
     let current_owner_ids: Vec<String> = current
         .skills
         .iter()
         .flat_map(|skill| skill.deployments.iter())
-        .filter(|deployment| !targeted_paths.contains(Path::new(&deployment.path)))
+        .filter(|deployment| {
+            !skill_studio_core::skill_reconciliation::deployment_is_selected(
+                Path::new(&deployment.path),
+                &names,
+                &targeted_paths,
+            )
+        })
         .chain(
             replacements
                 .iter()
@@ -591,49 +602,49 @@ pub fn reconcile_skill_names_and_emit(
         &update_store,
         &current_owner_ids,
     );
-    sort_snapshot_skills(&mut replacements);
-
     let mut built = current;
+    skill_studio_core::skill_reconciliation::replace_named_skills(
+        &mut built.skills,
+        &names,
+        &targeted_paths,
+        replacements,
+    )
+    .map_err(|error| {
+        state.mark_skills_dirty();
+        error.to_string()
+    })?;
+    let diagnosis = built.diagnosis.as_ref().ok_or_else(|| {
+        state.mark_skills_dirty();
+        "Snapshot has no diagnosis baseline; a full refresh is required".to_string()
+    })?;
+    built.diagnosis = Some(
+        skill_studio_core::skill_diagnosis::reconcile_named_diagnosis(
+            diagnosis,
+            &built.skills,
+            &names,
+            &diagnosis_update,
+        )
+        .map_err(|error| {
+            state.mark_skills_dirty();
+            error.to_string()
+        })?,
+    );
+    built
+        .ledger_only
+        .retain(|record| !names.contains(&record.name));
+    built.ledger_only.extend(ledger_only);
+    built
+        .ledger_only
+        .sort_by(|left, right| left.owner_id.cmp(&right.owner_id));
     for warning in read_warnings {
         if !built.read_warnings.contains(&warning) {
             built.read_warnings.push(warning);
         }
     }
-    replace_snapshot_deployments(&mut built.skills, &names, &targeted_paths, replacements);
     built.scanned_at = Utc::now().to_rfc3339();
     state.mark_skills_dirty();
     publish_skill_snapshot(app, state, built)?;
     Ok(())
-}
-
-fn replace_snapshot_deployments(
-    skills: &mut Vec<InstalledSkill>,
-    names: &BTreeSet<String>,
-    targeted_paths: &BTreeSet<PathBuf>,
-    replacements: Vec<InstalledSkill>,
-) {
-    skills.retain_mut(|skill| {
-        if skill.deployments.is_empty() {
-            return !names.contains(&skill.name);
-        }
-        skill
-            .deployments
-            .retain(|deployment| !targeted_paths.contains(Path::new(&deployment.path)));
-        !skill.deployments.is_empty()
-    });
-    skills.extend(replacements);
-    sort_snapshot_skills(skills);
-}
-
-fn sort_snapshot_skills(skills: &mut [InstalledSkill]) {
-    for skill in skills.iter_mut() {
-        skill.deployments.sort_by(|left, right| {
-            left.id
-                .cmp(&right.id)
-                .then_with(|| left.path.cmp(&right.path))
-        });
-    }
-    skills.sort_by(|left, right| left.name.cmp(&right.name));
 }
 
 /// Refresh only the invocation index and recompute stats/heatmap, reusing
@@ -744,6 +755,28 @@ fn invocation_cache_path(app: &AppHandle) -> PathBuf {
 /// or on an explicit rescan request. Every error is logged with `eprintln!`
 /// and never panics the thread; a failed rebuild simply keeps the previous
 /// snapshot in place.
+fn rebuild_background_snapshot<T>(
+    state: &SkillRefreshState,
+    retry_after: &mut Option<Instant>,
+    now: Instant,
+    rebuild: impl FnOnce() -> Result<T, String>,
+) -> Option<Result<T, String>> {
+    if retry_after.is_some_and(|deadline| now < deadline) {
+        return None;
+    }
+    // Clear before scanning so requests made during the scan remain pending.
+    state.skills_dirty.store(false, Ordering::SeqCst);
+    state.invocations_dirty.store(false, Ordering::SeqCst);
+    let result = rebuild();
+    if result.is_err() {
+        state.mark_skills_dirty();
+        *retry_after = Some(Instant::now() + Duration::from_secs(5));
+    } else {
+        *retry_after = None;
+    }
+    Some(result)
+}
+
 fn run_refresh_loop(app: AppHandle, state: SkillRefreshState) {
     let Some(home) = dirs::home_dir() else {
         eprintln!("skill refresh: could not find home directory, giving up");
@@ -770,7 +803,12 @@ fn run_refresh_loop(app: AppHandle, state: SkillRefreshState) {
         &desired_watch_paths(&home, &initial_projects),
     );
 
-    if let Err(e) = rebuild_snapshot_now(&app, &state) {
+    let mut retry_after = None;
+    if let Some(Err(e)) =
+        rebuild_background_snapshot(&state, &mut retry_after, Instant::now(), || {
+            rebuild_snapshot_now(&app, &state)
+        })
+    {
         eprintln!("skill refresh: initial rebuild failed: {e}");
     }
     reconcile_watchers_from_snapshot(&home, &state, &mut debouncer, &mut watched);
@@ -806,17 +844,16 @@ fn run_refresh_loop(app: AppHandle, state: SkillRefreshState) {
         let backlog_stale = invocations_dirty && last_full_rebuild.elapsed() > FULL_REBUILD_BACKLOG;
 
         if skills_dirty || backlog_stale {
-            // Clear the flags before rebuilding so an event that arrives
-            // mid-rebuild sets them again rather than being lost.
-            state.skills_dirty.store(false, Ordering::SeqCst);
-            state.invocations_dirty.store(false, Ordering::SeqCst);
-            match rebuild_snapshot_now(&app, &state) {
-                Ok(_) => {
+            match rebuild_background_snapshot(&state, &mut retry_after, Instant::now(), || {
+                rebuild_snapshot_now(&app, &state)
+            }) {
+                Some(Ok(_)) => {
                     last_full_rebuild = Instant::now();
                     last_invocations_rebuild = Instant::now();
                     reconcile_watchers_from_snapshot(&home, &state, &mut debouncer, &mut watched);
                 }
-                Err(e) => eprintln!("skill refresh: full rebuild failed: {e}"),
+                Some(Err(e)) => eprintln!("skill refresh: full rebuild failed: {e}"),
+                None => {}
             }
         } else if invocations_dirty
             && last_invocations_rebuild.elapsed() > INVOCATIONS_REBUILD_INTERVAL
@@ -1370,7 +1407,8 @@ fn build_snapshot(
     let (facts_hits, facts_total) = inventory_service
         .as_ref()
         .map_or((0, 0), ScopedSkillService::last_pass_stats);
-    let (mut skills, _ledger_only, read_warnings, fork_registry) =
+    let diagnosis = Some(skill_studio_core::skill_diagnosis::diagnose(&inventory));
+    let (mut skills, ledger_only, read_warnings, fork_registry) =
         snapshot_inventory_projection(home, inventory, None);
 
     let update_store = skill_update_check::read_update_check_store_at(update_check_path);
@@ -1400,6 +1438,8 @@ fn build_snapshot(
 
     let snapshot = SkillSnapshot {
         revision: 0,
+        ledger_only,
+        diagnosis,
         skills,
         read_warnings,
         projects: project_paths
@@ -1545,6 +1585,41 @@ fn add_scope_watch_paths(merged: &mut BTreeMap<PathBuf, bool>, scope: &SkillScop
 mod tests {
     use super::*;
     use std::fs;
+
+    #[test]
+    fn failed_background_fallback_retries_without_another_watch_event() {
+        let state = fixture_state();
+        state.mark_skills_dirty();
+        state.invocations_dirty.store(true, Ordering::SeqCst);
+        let mut retry_after = None;
+        let failed = rebuild_background_snapshot(&state, &mut retry_after, Instant::now(), || {
+            Err::<(), _>("temporary scan failure".to_string())
+        });
+        assert!(matches!(failed, Some(Err(_))));
+        assert!(state.is_skills_dirty());
+        let deadline = retry_after.unwrap();
+        assert!(rebuild_background_snapshot(
+            &state,
+            &mut retry_after,
+            deadline - Duration::from_millis(1),
+            || -> Result<(), String> { panic!("must not retry before the backoff ends") },
+        )
+        .is_none());
+        assert!(state.is_skills_dirty());
+        assert_eq!(
+            rebuild_background_snapshot(&state, &mut retry_after, deadline, || Ok(())),
+            Some(Ok(()))
+        );
+        assert!(!state.is_skills_dirty());
+        assert!(retry_after.is_none());
+
+        // A new request during a successful scan must survive publication.
+        rebuild_background_snapshot(&state, &mut retry_after, Instant::now(), || {
+            state.mark_skills_dirty();
+            Ok(())
+        });
+        assert!(state.is_skills_dirty());
+    }
 
     #[test]
     fn folder_settings_replace_existing_watch_modes() {
@@ -2383,6 +2458,8 @@ mod tests {
         use super::super::skill_dto::{Deployment, InstalledSkill};
 
         SkillSnapshot {
+            ledger_only: Vec::new(),
+            diagnosis: None,
             read_warnings: Vec::new(),
             revision: 0,
             skills: vec![InstalledSkill {
@@ -2435,6 +2512,93 @@ mod tests {
             update_check: Default::default(),
             opencode_config_kind: None,
         }
+    }
+
+    #[test]
+    fn shared_refresh_service_preserves_project_ledger_records_and_accepts_named_partial_facts() {
+        let temp = tempfile::tempdir().unwrap();
+        let home = temp.path().join("home");
+        let project = temp.path().join("project");
+        fs::create_dir_all(home.join(".agents")).unwrap();
+        let skill = project.join(".agents/skills/alpha");
+        fs::create_dir_all(&skill).unwrap();
+        fs::write(
+            skill.join("SKILL.md"),
+            "---\nname: alpha\ndescription: fixture\n---\nbody\n",
+        )
+        .unwrap();
+        fs::write(project.join("skills-lock.json"), r#"{"version":1,"skills":{"orphan":{"source":"../local","sourceType":"local","computedHash":"hash"}}}"#).unwrap();
+        let mut service = None;
+        let (snapshot, _) = build_snapshot(
+            &home,
+            std::slice::from_ref(&project),
+            &BTreeSet::new(),
+            &mut SkillInvocationIndex::default(),
+            &mut service,
+            BuildPaths {
+                cache_path: &home.join("discovery-cache.json"),
+                runs_root: temp.path(),
+                update_check_path: &home.join("updates.json"),
+            },
+            Utc::now(),
+        )
+        .unwrap();
+        assert_eq!(snapshot.skills.len(), 1);
+        assert_eq!(snapshot.ledger_only.len(), 1);
+        assert_eq!(snapshot.ledger_only[0].name, "orphan");
+        assert_eq!(
+            snapshot.ledger_only[0].project_path.as_ref(),
+            Some(&project)
+        );
+        let value = serde_json::to_value(&snapshot).unwrap();
+        assert_eq!(
+            value["ledger_only"][0]["sources"][0]["kind"],
+            "project-skills-sh"
+        );
+        assert_eq!(
+            value["ledger_only"][0]["sources"][0]["entry"]["computedHash"],
+            "hash"
+        );
+        assert_eq!(value["diagnosis"]["extent"], "full");
+        assert_eq!(value["diagnosis"]["issues"][0]["owner"]["name"], "orphan");
+        assert_eq!(
+            value["diagnosis"]["issues"][0]["absence"],
+            "confirmed-absent"
+        );
+        let mut legacy = value;
+        legacy.as_object_mut().unwrap().remove("ledger_only");
+        legacy.as_object_mut().unwrap().remove("diagnosis");
+        let legacy: SkillSnapshot = serde_json::from_value(legacy).unwrap();
+        assert!(legacy.ledger_only.is_empty());
+        assert!(legacy.diagnosis.is_none());
+        let names = BTreeSet::from(["alpha".to_string()]);
+        let inventory = read_snapshot_inventory(
+            &home,
+            std::slice::from_ref(&project),
+            &mut service,
+            Some(&names),
+        )
+        .unwrap();
+        assert_eq!(service.as_ref().unwrap().last_pass_stats(), (1, 1));
+        assert!(
+            matches!(&inventory.replacement_safety, ReplacementSafety::Safe { names: selected } if selected == &names)
+        );
+        assert!(!inventory.discovery_issues.is_empty());
+        let updated_diagnosis = skill_studio_core::skill_diagnosis::diagnose(&inventory);
+        let merged_diagnosis = skill_studio_core::skill_diagnosis::reconcile_named_diagnosis(
+            snapshot.diagnosis.as_ref().unwrap(),
+            &snapshot.skills,
+            &names,
+            &updated_diagnosis,
+        )
+        .unwrap();
+        assert!(merged_diagnosis.issues.iter().any(|issue| matches!(issue,
+            skill_studio_core::skill_diagnosis::SkillDiagnostic::LedgerOnly { owner, .. } if owner.name == "orphan")));
+        let (rows, ledger_only, warnings, _) =
+            snapshot_inventory_projection(&home, inventory, Some(&names));
+        assert_eq!(rows.len(), 1);
+        assert!(ledger_only.is_empty());
+        assert!(!warnings.is_empty());
     }
 
     #[test]
@@ -2545,14 +2709,22 @@ mod tests {
             ..Default::default()
         });
         updated.deployments[0].id = "z".to_string();
-        let targeted_paths = ["/old", "/remove"].into_iter().map(PathBuf::from).collect();
+        let targeted_paths = ["/old", "/remove", "/new", "/new/a", "/add"]
+            .into_iter()
+            .map(PathBuf::from)
+            .collect();
 
-        replace_snapshot_deployments(
+        skill_studio_core::skill_reconciliation::replace_named_skills(
             &mut skills,
-            &BTreeSet::new(),
+            &BTreeSet::from([
+                "zulu".to_string(),
+                "remove".to_string(),
+                "alpha".to_string(),
+            ]),
             &targeted_paths,
             vec![updated, added],
-        );
+        )
+        .unwrap();
 
         assert_eq!(
             skills
@@ -2588,7 +2760,13 @@ mod tests {
         let mut skills = vec![unrelated, updated, removed];
         let names = ["updated".into(), "removed".into()].into_iter().collect();
 
-        replace_snapshot_deployments(&mut skills, &names, &BTreeSet::new(), vec![replacement]);
+        skill_studio_core::skill_reconciliation::replace_named_skills(
+            &mut skills,
+            &names,
+            &BTreeSet::new(),
+            vec![replacement],
+        )
+        .unwrap();
 
         assert_eq!(skills.len(), 2);
         assert_eq!(skills[0].name, "unrelated");
@@ -2620,12 +2798,13 @@ mod tests {
         let targeted_paths = [PathBuf::from("/root/lexical-name")].into_iter().collect();
         let mut skills = vec![stale, unrelated];
 
-        replace_snapshot_deployments(
+        skill_studio_core::skill_reconciliation::replace_named_skills(
             &mut skills,
             &BTreeSet::new(),
             &targeted_paths,
             vec![replacement],
-        );
+        )
+        .unwrap();
 
         assert_eq!(skills.len(), 2);
         assert!(skills.iter().any(|skill| skill.name == "foo"));

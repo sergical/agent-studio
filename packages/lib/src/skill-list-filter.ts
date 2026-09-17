@@ -6,10 +6,15 @@
 // list they drive never drift apart.
 // ============================================================================
 
-import type { HealthIssueKind } from "./skill-health";
-import { agentsCoveredByDeployment, collectDashboardIssues } from "./skill-health";
+import type { HealthIssue, HealthIssueKind } from "./skill-health";
+import { agentsCoveredByDeployment } from "./skill-health";
 import { pluginDeployments } from "./skill-plugin-partition";
-import type { InstalledSkill, SkillInvocationStats, SkillSourceKind } from "./skill-types";
+import type {
+  Deployment,
+  InstalledSkill,
+  SkillInvocationStats,
+  SkillSourceKind,
+} from "./skill-types";
 
 /** Which own skills `applySkillListFilter` considers before the other fields narrow it further. */
 export type SkillListFilterScope = "all" | "global" | "parked" | { project: string };
@@ -37,6 +42,43 @@ export function defaultSkillListFilter(): SkillListFilter {
 /** True when `scope` is the `{ project: string }` variant, narrowing its type for callers. */
 export function isProjectScope(scope: SkillListFilterScope): scope is { project: string } {
   return scope !== "all" && scope !== "global" && scope !== "parked";
+}
+
+export function deploymentMatchesSkillFilter(
+  deployment: Deployment,
+  filter: SkillListFilter,
+  skillIsParked = false,
+): boolean {
+  if (isProjectScope(filter.scope) && deployment.project_path !== filter.scope.project)
+    return false;
+  if (filter.scope === "global" && !["global", "plugin"].includes(deployment.scope)) return false;
+  if (filter.scope === "parked") {
+    if (!skillIsParked && deployment.scope !== "parked") return false;
+  } else if (deployment.scope === "parked") return false;
+  return !filter.harness || agentsCoveredByDeployment(deployment.agent).includes(filter.harness);
+}
+
+export function deploymentPathForSkillFilter(
+  skill: InstalledSkill,
+  filter: SkillListFilter,
+  issues: HealthIssue[],
+): string | undefined {
+  if (filter.issue) {
+    const affected = issues.find(
+      (issue) =>
+        issue.skill.name === skill.name &&
+        (filter.issue === "any" || issue.kind === filter.issue) &&
+        skill.deployments.some(
+          (deployment) =>
+            deployment.path === issue.deploymentPath &&
+            deploymentMatchesSkillFilter(deployment, filter, issue.skill.parked),
+        ),
+    );
+    if (affected) return affected.deploymentPath;
+  }
+  if (filter.scope === "all" && !filter.harness) return undefined;
+  return skill.deployments.find((deployment) => deploymentMatchesSkillFilter(deployment, filter))
+    ?.path;
 }
 
 /** Whether `skill` belongs to `scope`. `all` and `global` never include parked skills. */
@@ -71,7 +113,7 @@ function matchesQuery(skill: InstalledSkill, query: string): boolean {
 /**
  * Filters `skills` by every field of `filter` in turn: scope, then harness,
  * source kind, and issue kind (each only when set), then the free-text
- * query. `issues` should be `collectDashboardIssues(skills)` (or equivalent)
+ * query. `issues` should be the presented shared diagnosis
  * from the caller, computed once and shared - passed in rather than
  * recomputed here so a caller filtering a large list repeatedly doesn't pay
  * for it more than once per render. `invocations` is `SkillSnapshot.invocations`
@@ -80,13 +122,22 @@ function matchesQuery(skill: InstalledSkill, query: string): boolean {
 export function applySkillListFilter(
   skills: InstalledSkill[],
   filter: SkillListFilter,
-  issues = collectDashboardIssues(skills),
+  issues: HealthIssue[] = [],
   invocations?: SkillInvocationStats[],
 ): InstalledSkill[] {
   const skillsWithIssue = filter.issue
     ? new Set(
         issues
           .filter((i) => filter.issue === "any" || i.kind === filter.issue)
+          .filter(
+            (issue) =>
+              !issue.deploymentPath ||
+              issue.skill.deployments.some(
+                (deployment) =>
+                  deployment.path === issue.deploymentPath &&
+                  deploymentMatchesSkillFilter(deployment, filter, issue.skill.parked),
+              ),
+          )
           .map((i) => i.skill.name),
       )
     : null;

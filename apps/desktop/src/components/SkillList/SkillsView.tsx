@@ -13,27 +13,16 @@ import { SkillListTable } from "./SkillListTable";
 import type { SortMode } from "../../lib/skill-list-sort";
 import { SkillListFilterBar } from "./SkillListFilterBar";
 import { registerSkillProjects, unregisterSkillProject } from "../../lib/skill-api";
-import { collectDashboardIssues } from "@skill-studio/lib";
-import { applySkillListFilter, isProjectScope } from "@skill-studio/lib";
-import type { SkillListFilter } from "@skill-studio/lib";
+import { filterLedgerFindings, presentDiagnosis } from "@skill-studio/lib";
+import { LedgerFindings } from "../SkillHealth/LedgerFindings";
+import {
+  applySkillListFilter,
+  deploymentPathForSkillFilter,
+  isProjectScope,
+} from "@skill-studio/lib";
 import { ownSkillsView } from "@skill-studio/lib";
-import type { InstalledSkill, SkillSnapshot } from "@skill-studio/lib";
+import type { SkillSnapshot } from "@skill-studio/lib";
 import { useAppStore } from "../../store/appStore";
-
-/** The deployment the current scope shows for `skill`, so the detail drawer opens on that copy. */
-function deploymentForScope(
-  skill: InstalledSkill,
-  scope: SkillListFilter["scope"],
-): string | undefined {
-  if (scope === "global") {
-    return skill.deployments.find((d) => d.scope === "global" || d.scope === "plugin")?.path;
-  }
-  if (scope === "parked") return skill.deployments.find((d) => d.scope === "parked")?.path;
-  if (isProjectScope(scope)) {
-    return skill.deployments.find((d) => d.project_path === scope.project)?.path;
-  }
-  return undefined;
-}
 
 interface SkillsViewProps {
   snapshot: SkillSnapshot | undefined;
@@ -72,7 +61,9 @@ export function SkillsView({ snapshot, onSelectSkill }: SkillsViewProps) {
   // Plugin-shipped skills live in their own place (PluginSkillsView); this
   // list is always the user's own skills.
   const baseSkills = ownSkillsView(allSkills);
-  const issues = collectDashboardIssues(baseSkills);
+  const diagnosis = presentDiagnosis(snapshot, baseSkills, filter);
+  const issues = diagnosis.issues;
+  const ledger = filterLedgerFindings(diagnosis.ledger, filter);
   const rows = applySkillListFilter(baseSkills, filter, issues, snapshot?.invocations);
 
   const handleAddProject = async () => {
@@ -136,12 +127,20 @@ export function SkillsView({ snapshot, onSelectSkill }: SkillsViewProps) {
         onRemoveProject={handleRemoveProject}
         showCoverage={showCoverage}
         onToggleCoverage={setShowCoverage}
-        resultCount={rows.length}
+        resultCount={rows.length + ledger.length}
         sort={sort}
         onSortChange={setSort}
         snapshot={snapshot}
       />
-      {showCoverage ? (
+      {!diagnosis.complete && (
+        <p role="status" className="px-3 py-2 text-small text-text-secondary">
+          {diagnosis.available
+            ? "Some sources could not be checked. Findings may be incomplete."
+            : "Health checks are pending a full refresh."}
+        </p>
+      )}
+      <LedgerFindings findings={ledger} />
+      {rows.length === 0 && ledger.length > 0 ? null : showCoverage ? (
         <SkillCoverageMatrix skills={rows} onSelectSkill={onSelectSkill} />
       ) : (
         <SkillListTable
@@ -150,7 +149,7 @@ export function SkillsView({ snapshot, onSelectSkill }: SkillsViewProps) {
           sort={sort}
           onSelectSkill={onSelectSkill}
           selectedSkillName={selectedSkillName}
-          deploymentPathForSkill={(skill) => deploymentForScope(skill, filter.scope)}
+          deploymentPathForSkill={(skill) => deploymentPathForSkillFilter(skill, filter, issues)}
           hasAnySkills={baseSkills.length > 0}
           onClearFilters={resetSkillListFilter}
           onAddSkill={() => openAddSkillSheet()}

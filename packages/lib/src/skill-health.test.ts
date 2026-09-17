@@ -3,15 +3,7 @@
 // ============================================================================
 
 import { describe, expect, it } from "vitest";
-import {
-  coverageGaps,
-  findDuplicateSkills,
-  findLinkedRootIssues,
-  findParkedButReinstalled,
-  findSpecViolations,
-  HEALTH_ISSUE_KIND_ORDER,
-  isBlockingSpecViolation,
-} from "./skill-health";
+import { coverageGaps, HEALTH_ISSUE_KIND_ORDER, isBlockingSpecViolation } from "./skill-health";
 import type { Deployment, InstalledSkill } from "./skill-types";
 
 /** Minimal `Deployment` fixture, overridable per test. */
@@ -61,6 +53,14 @@ function fixtureSkill(overrides: Partial<InstalledSkill> = {}): InstalledSkill {
 }
 
 describe("isBlockingSpecViolation", () => {
+  it("treats malformed YAML as blocking so the detail page can offer repair", () => {
+    expect(
+      isBlockingSpecViolation(
+        "invalid YAML frontmatter at line 3, column 22: mapping values are not allowed in this context",
+      ),
+    ).toBe(true);
+  });
+
   it("treats a missing required field as blocking", () => {
     expect(isBlockingSpecViolation("missing required frontmatter field: name")).toBe(true);
     expect(isBlockingSpecViolation("missing required frontmatter field: description")).toBe(true);
@@ -90,36 +90,6 @@ describe("isBlockingSpecViolation", () => {
   });
 });
 
-describe("findSpecViolations", () => {
-  it("flags a skill with a blocking violation", () => {
-    const skill = fixtureSkill({
-      spec_violations: ["missing required frontmatter field: description"],
-    });
-    const issues = findSpecViolations([skill]);
-    expect(issues).toHaveLength(1);
-    expect(issues[0].kind).toBe("spec-violation");
-    expect(issues[0].detail).toBe("missing required frontmatter field: description");
-  });
-
-  it("does not flag a skill with only non-blocking violations", () => {
-    const skill = fixtureSkill({
-      spec_violations: ["description exceeds 1024 characters", "conflicting invocation keys"],
-    });
-    expect(findSpecViolations([skill])).toEqual([]);
-  });
-
-  it("includes only the blocking violations in detail when both kinds are present", () => {
-    const skill = fixtureSkill({
-      spec_violations: [
-        "missing required frontmatter field: name",
-        "description exceeds 1024 characters",
-      ],
-    });
-    const issues = findSpecViolations([skill]);
-    expect(issues[0].detail).toBe("missing required frontmatter field: name");
-  });
-});
-
 describe("coverageGaps", () => {
   it("flags a skill deployed to some, but not all, first-class agents at the same scope", () => {
     const skill = fixtureSkill({
@@ -140,102 +110,6 @@ describe("coverageGaps", () => {
   });
 });
 
-describe("findDuplicateSkills", () => {
-  it("names the differing copies against the strict majority", () => {
-    const skill = fixtureSkill({
-      deployments: [
-        fixtureDeployment({ agent: "shared", scope: "global", content_hash: "aaa" }),
-        fixtureDeployment({ agent: "Claude Code", scope: "global", content_hash: "aaa" }),
-        fixtureDeployment({ agent: "Cursor", scope: "global", content_hash: "bbb" }),
-      ],
-    });
-    const issues = findDuplicateSkills([skill]);
-    expect(issues).toHaveLength(1);
-    expect(issues[0].detail).toBe("Global · Cursor differs from Global · Universal folder");
-  });
-
-  it("uses a plural verb when more than one copy differs", () => {
-    const skill = fixtureSkill({
-      deployments: [
-        fixtureDeployment({ agent: "shared", scope: "global", content_hash: "aaa" }),
-        fixtureDeployment({ agent: "Claude Code", scope: "global", content_hash: "aaa" }),
-        fixtureDeployment({ agent: "OpenCode", scope: "global", content_hash: "aaa" }),
-        fixtureDeployment({ agent: "Cursor", scope: "global", content_hash: "bbb" }),
-        fixtureDeployment({ agent: "Codex", scope: "global", content_hash: "ccc" }),
-      ],
-    });
-    const issues = findDuplicateSkills([skill]);
-    expect(issues[0].detail).toBe(
-      "Global \u00b7 Cursor; Global \u00b7 Codex differ from Global \u00b7 Universal folder",
-    );
-  });
-
-  it("lists every copy when there is no strict majority", () => {
-    const skill = fixtureSkill({
-      deployments: [
-        fixtureDeployment({ agent: "shared", scope: "global", content_hash: "aaa" }),
-        fixtureDeployment({ agent: "Cursor", scope: "global", content_hash: "bbb" }),
-      ],
-    });
-    const issues = findDuplicateSkills([skill]);
-    expect(issues[0].detail).toBe("2 copies differ: Global · Universal folder; Global · Cursor");
-  });
-});
-
-describe("findLinkedRootIssues", () => {
-  it("dedupes across several skills sharing one whole-dir-linked root and ignores project scope", () => {
-    const linkedGlobal = (name: string) =>
-      fixtureSkill({
-        name,
-        deployments: [
-          fixtureDeployment({
-            agent: "Claude Code",
-            scope: "global",
-            path: `/home/.claude/skills/${name}`,
-            shared_via_whole_dir_link: true,
-          }),
-          // A project copy under the same agent must never contribute its own
-          // issue - only a global root can be the shared whole-dir link.
-          fixtureDeployment({
-            agent: "Claude Code",
-            scope: "project",
-            path: `/repo/.claude/skills/${name}`,
-            shared_via_whole_dir_link: true,
-          }),
-        ],
-      });
-    const skills = [
-      linkedGlobal("agent-browser"),
-      linkedGlobal("find-bugs"),
-      linkedGlobal("motion"),
-    ];
-
-    const issues = findLinkedRootIssues(skills);
-    expect(issues).toHaveLength(1);
-    expect(issues[0].kind).toBe("linked-root");
-    // `harness` is the agent id the backend commands key on; the display
-    // label rides along separately for the Convert dialog's copy.
-    expect(issues[0].harness).toBe("claude-code");
-    expect(issues[0].harnessLabel).toBe("Claude Code");
-    expect(issues[0].root).toBe("/home/.claude/skills");
-  });
-
-  it("does not flag a per-skill symlink into the Universal root", () => {
-    const skill = fixtureSkill({
-      deployments: [
-        fixtureDeployment({
-          agent: "Claude Code",
-          scope: "global",
-          is_symlink: true,
-          symlink_target: "/home/.agents/skills/agent-browser",
-          shared_via_whole_dir_link: false,
-        }),
-      ],
-    });
-    expect(findLinkedRootIssues([skill])).toEqual([]);
-  });
-});
-
 describe("HEALTH_ISSUE_KIND_ORDER", () => {
   it("includes parked-but-reinstalled", () => {
     expect(HEALTH_ISSUE_KIND_ORDER).toContain("parked-but-reinstalled");
@@ -244,33 +118,5 @@ describe("HEALTH_ISSUE_KIND_ORDER", () => {
   it("does not include update-available or missing-from-agents", () => {
     expect(HEALTH_ISSUE_KIND_ORDER).not.toContain("update-available");
     expect(HEALTH_ISSUE_KIND_ORDER).not.toContain("missing-from-agents");
-  });
-});
-
-describe("findParkedButReinstalled", () => {
-  it("flags a parked skill whose Universal deployment came back", () => {
-    const skill = fixtureSkill({
-      parked: true,
-      deployments: [fixtureDeployment({ scope: "global" })],
-    });
-    const issues = findParkedButReinstalled([skill]);
-    expect(issues).toHaveLength(1);
-    expect(issues[0].kind).toBe("parked-but-reinstalled");
-  });
-
-  it("does not flag a parked skill with only its parked-copy deployment", () => {
-    const skill = fixtureSkill({
-      parked: true,
-      deployments: [fixtureDeployment({ scope: "parked" })],
-    });
-    expect(findParkedButReinstalled([skill])).toEqual([]);
-  });
-
-  it("does not flag a skill that isn't parked", () => {
-    const skill = fixtureSkill({
-      parked: false,
-      deployments: [fixtureDeployment({ scope: "global" })],
-    });
-    expect(findParkedButReinstalled([skill])).toEqual([]);
   });
 });

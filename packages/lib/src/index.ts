@@ -9,6 +9,8 @@ export * from "./skill-add-operation-policy";
 export * from "./skill-install-destination";
 export * from "./skill-coverage";
 export * from "./skill-health";
+export * from "./skill-diagnosis-types";
+export * from "./skill-diagnosis-presentation";
 export * from "./home-summary";
 export * from "./skill-list-filter";
 export * from "./skill-agent-prompts";

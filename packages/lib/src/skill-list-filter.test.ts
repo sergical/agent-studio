@@ -135,11 +135,15 @@ describe("applySkillListFilter", () => {
       }),
       fixtureSkill({ name: "healthy" }),
     ];
-    const result = applySkillListFilter(skills, {
-      scope: "all",
-      issue: "broken-symlink",
-      query: "",
-    });
+    const result = applySkillListFilter(
+      skills,
+      {
+        scope: "all",
+        issue: "broken-symlink",
+        query: "",
+      },
+      [{ kind: "broken-symlink", skill: skills[0], detail: "Missing target" }],
+    );
     expect(result.map((s) => s.name)).toEqual(["broken"]);
   });
 
@@ -175,7 +179,9 @@ describe("applySkillListFilter", () => {
       }),
       fixtureSkill({ name: "healthy" }),
     ];
-    const result = applySkillListFilter(skills, { scope: "all", issue: "any", query: "" });
+    const result = applySkillListFilter(skills, { scope: "all", issue: "any", query: "" }, [
+      { kind: "broken-symlink", skill: skills[0], detail: "Missing target" },
+    ]);
     expect(result.map((s) => s.name)).toEqual(["broken"]);
   });
 

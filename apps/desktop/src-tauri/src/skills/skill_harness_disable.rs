@@ -967,6 +967,8 @@ mod tests {
             })
             .collect();
         SkillSnapshot {
+            ledger_only: Vec::new(),
+            diagnosis: None,
             read_warnings: Vec::new(),
             revision: 0,
             skills: vec![InstalledSkill {

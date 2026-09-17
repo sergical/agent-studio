@@ -5,9 +5,6 @@
 // isolation (Vitest, once a runner is wired up).
 // ============================================================================
 
-import { agentIdFromDeploymentLabel } from "./skill-coverage";
-import { ownDeployments } from "./skill-plugin-partition";
-import { homeRelativePath, parentDirectory } from "./skill-path-format";
 import type { Deployment, InstalledSkill } from "./skill-types";
 
 /**
@@ -29,6 +26,7 @@ export interface HealthIssue {
   kind: HealthIssueKind;
   skill: InstalledSkill;
   detail: string;
+  deploymentPath?: string;
   /**
    * For `"linked-root"` only: the harness's agent id (e.g. `"claude-code"`,
    * what the backend commands key on, never the display label) and the
@@ -131,81 +129,15 @@ export function deploymentLabel(deployment: Deployment): string {
 }
 
 /**
- * Skills whose non-plugin deployments disagree on content: the same skill
- * name has more than one distinct `content_hash` across its own copies (e.g.
- * a stale copy left behind by a manual edit). Built from `ownDeployments` so
- * a plugin-managed copy - which the user doesn't edit directly - never
- * creates a false duplicate. `detail` names the copy with a strict majority
- * as the reference and lists the copies that differ from it, e.g. "sentry ·
- * Cursor differs from Global · shared" - the verb agrees with the number of
- * differing copies; with no strict majority, every copy
- * is listed instead, e.g. "2 copies differ: Global · Claude Code;
- * webvitals.com · shared".
- */
-export function findDuplicateSkills(skills: InstalledSkill[]): HealthIssue[] {
-  const issues: HealthIssue[] = [];
-
-  for (const skill of skills) {
-    const withHash = ownDeployments(skill).filter((d) => d.content_hash);
-    const distinctHashes = new Set(withHash.map((d) => d.content_hash));
-    if (distinctHashes.size <= 1) continue;
-
-    const counts = new Map<string, number>();
-    for (const d of withHash) {
-      counts.set(d.content_hash, (counts.get(d.content_hash) ?? 0) + 1);
-    }
-    const majorityHash = [...counts.entries()].find(
-      ([, count]) => count * 2 > withHash.length,
-    )?.[0];
-
-    let detail: string;
-    if (majorityHash !== undefined) {
-      const majorityDeployment = withHash.find((d) => d.content_hash === majorityHash);
-      const majorityLabel = majorityDeployment ? deploymentLabel(majorityDeployment) : "Global";
-      const differingLabels = withHash
-        .filter((d) => d.content_hash !== majorityHash)
-        .map(deploymentLabel);
-      const verb = differingLabels.length === 1 ? "differs" : "differ";
-      detail = `${differingLabels.join("; ")} ${verb} from ${majorityLabel}`;
-    } else {
-      detail = `${withHash.length} copies differ: ${withHash.map(deploymentLabel).join("; ")}`;
-    }
-
-    issues.push({ kind: "duplicate", skill, detail });
-  }
-
-  return issues;
-}
-
-/**
- * Skills with at least one deployment whose symlink target doesn't resolve.
- */
-export function findBrokenSymlinks(skills: InstalledSkill[]): HealthIssue[] {
-  const issues: HealthIssue[] = [];
-  for (const skill of skills) {
-    const broken = skill.deployments.filter((d) => d.symlink_is_broken);
-    for (const deployment of broken) {
-      issues.push({
-        kind: "broken-symlink",
-        skill,
-        detail: deployment.symlink_target
-          ? `${deployment.agent} links to ${deployment.symlink_target}, which is missing`
-          : `${deployment.agent} · broken link at ${deployment.path}`,
-      });
-    }
-  }
-  return issues;
-}
-
-/**
  * Prefixes (from `frontmatter::validate_skill`, Rust side) of a
  * `spec_violations` entry that stops the skill from loading at all: a
- * missing or invalid `name`, a missing `description`, or a name/directory
+ * malformed YAML, a missing or invalid `name`, a missing `description`, or a name/directory
  * mismatch. Every other violation (description/compatibility length, the
  * 500-line recommendation, conflicting invocation keys) is a spec note the
  * skill still loads with, shown on the skill page rather than as an issue.
  */
 const BLOCKING_SPEC_VIOLATION_PREFIXES = [
+  "invalid YAML frontmatter at line ",
   "missing required frontmatter field: name",
   "missing required frontmatter field: description",
   'name "', // covers both the invalid-name-format and name/dir-mismatch messages
@@ -214,68 +146,6 @@ const BLOCKING_SPEC_VIOLATION_PREFIXES = [
 /** True when `violation` is one of `BLOCKING_SPEC_VIOLATION_PREFIXES` - see there for why. */
 export function isBlockingSpecViolation(violation: string): boolean {
   return BLOCKING_SPEC_VIOLATION_PREFIXES.some((prefix) => violation.startsWith(prefix));
-}
-
-/**
- * Skills whose SKILL.md violates an agentskills.io spec rule that stops it
- * from loading - see `isBlockingSpecViolation`. A skill with only
- * non-blocking violations (e.g. "description exceeds 1024 characters")
- * isn't flagged here; those stay as spec notes on the skill page.
- */
-export function findSpecViolations(skills: InstalledSkill[]): HealthIssue[] {
-  return skills
-    .map((skill) => ({ skill, blocking: skill.spec_violations.filter(isBlockingSpecViolation) }))
-    .filter(({ blocking }) => blocking.length > 0)
-    .map(({ skill, blocking }) => ({
-      kind: "spec-violation" as const,
-      skill,
-      detail: blocking.join("; "),
-    }));
-}
-
-/**
- * Skills known only from the lock file, with no deployment found on disk.
- */
-export function findLockOnlySkills(skills: InstalledSkill[]): HealthIssue[] {
-  return skills
-    .filter((skill) => skill.deployments.length === 0)
-    .map((skill) => ({
-      kind: "lock-only" as const,
-      skill,
-      detail: "In the lock file but not deployed anywhere",
-    }));
-}
-
-/**
- * One issue per (harness, root) whose global deployment reads the shared
- * folder through a whole-dir link (`shared_via_whole_dir_link`) rather than
- * per-skill links - see `skill_materialize::explode_shared_dir`. Every skill
- * under that root shares the same issue, so this dedupes across them and
- * ignores project scope (a project's own skills root can't be the shared
- * whole-dir link).
- */
-export function findLinkedRootIssues(skills: InstalledSkill[]): HealthIssue[] {
-  const seen = new Map<string, HealthIssue>();
-  for (const skill of skills) {
-    for (const deployment of skill.deployments) {
-      if (deployment.scope !== "global" || !deployment.shared_via_whole_dir_link) continue;
-      const harnessId = agentIdFromDeploymentLabel(deployment.agent);
-      if (!harnessId || harnessId === "shared") continue;
-      const root = parentDirectory(deployment.path);
-      const key = `${harnessId}::${root}`;
-      if (seen.has(key)) continue;
-      const rootLabel = homeRelativePath(root);
-      seen.set(key, {
-        kind: "linked-root",
-        skill,
-        harness: harnessId,
-        harnessLabel: deployment.agent,
-        root,
-        detail: `${deployment.agent} reads the Universal folder through a root link at ${rootLabel}. Skills cannot be switched off for ${deployment.agent} one at a time until it is converted to per-skill links.`,
-      });
-    }
-  }
-  return [...seen.values()];
 }
 
 /**
@@ -326,48 +196,6 @@ export function coverageGaps(skills: InstalledSkill[]): CoverageGap[] {
   }
 
   return gaps;
-}
-
-/**
- * Parked skills whose shared-folder deployment came back - see
- * `skill_park.rs`'s "parked-but-reinstalled" note: an install or sync run
- * while the skill was parked can recreate `~/.agents/skills/<name>` even
- * though the parked copy is still sitting in `~/.agents/skills-parked`.
- * Unparking reconciles the two; this issue just flags that it's needed.
- */
-export function findParkedButReinstalled(skills: InstalledSkill[]): HealthIssue[] {
-  return skills
-    .filter((skill) => skill.parked && skill.deployments.some((d) => d.scope !== "parked"))
-    .map((skill) => ({
-      kind: "parked-but-reinstalled" as const,
-      skill,
-      detail: "Parked, but an install or sync recreated the Universal copy",
-    }));
-}
-
-/**
- * Every dashboard-worthy issue across `skills`: parked-but-reinstalled,
- * duplicate, broken-symlink, spec-violation, and lock-only. Excludes
- * update-available (see `skill-updates.ts`) and coverage gaps (see
- * `coverageGaps` above) - neither is a problem, just something to act on or
- * a coverage-view column. Sorted by `HEALTH_ISSUE_KIND_ORDER` then skill
- * name, so both the dashboard and the Skills view show a stable order.
- */
-export function collectDashboardIssues(skills: InstalledSkill[]): HealthIssue[] {
-  const issues = [
-    ...findParkedButReinstalled(skills),
-    ...findDuplicateSkills(skills),
-    ...findBrokenSymlinks(skills),
-    ...findLinkedRootIssues(skills),
-    ...findSpecViolations(skills),
-    ...findLockOnlySkills(skills),
-  ];
-
-  return issues.sort((a, b) => {
-    const orderDiff =
-      HEALTH_ISSUE_KIND_ORDER.indexOf(a.kind) - HEALTH_ISSUE_KIND_ORDER.indexOf(b.kind);
-    return orderDiff !== 0 ? orderDiff : a.skill.name.localeCompare(b.skill.name);
-  });
 }
 
 /** `issues` bucketed by kind, in `HEALTH_ISSUE_KIND_ORDER`, omitting zero counts. */

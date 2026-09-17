@@ -1484,6 +1484,8 @@ mod tests {
             })
             .collect();
         super::super::skill_refresh::SkillSnapshot {
+            ledger_only: Vec::new(),
+            diagnosis: None,
             read_warnings: Vec::new(),
             revision: 0,
             skills,

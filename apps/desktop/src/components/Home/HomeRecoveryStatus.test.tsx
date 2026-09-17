@@ -1,3 +1,4 @@
+import type { SkillSnapshot } from "@skill-studio/lib";
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it } from "vitest";
 import { HomeRecoveryStatus, canShowAllClear } from "./HomeRecoveryStatus";
@@ -40,5 +41,52 @@ describe("Home without an inventory snapshot", () => {
     expect(markup).toContain("View Activity");
     expect(markup).not.toContain("All clear");
     expect(markup).toContain(isLoading ? "Scanning installed skills" : "No skill snapshot yet");
+  });
+});
+
+describe("Home warning preview", () => {
+  it("bounds missing-record rows and includes the full count in Show all", () => {
+    const snapshot: SkillSnapshot = {
+      revision: 1,
+      skills: [],
+      projects: [],
+      invocations: [],
+      heatmap: { days: {} },
+      scanned_at: "before",
+      last_test_by_skill: {},
+      update_check: { checked_at: null, gh_status: "ok", message: null, updates_available: 0 },
+      diagnosis: {
+        scope: { home: "/fixture", projects: [], backing_roots: [], plugin_ownership_roots: [] },
+        completeness: "complete",
+        extent: "full",
+        issues: Array.from({ length: 100 }, (_, index) => ({
+          kind: "ledger-only",
+          absence: "confirmed-absent",
+          owner: {
+            owner_id: `owner:${index}`,
+            name: `missing-record-${index}`,
+            scope: "global",
+            project_path: null,
+            owner_kind: "skills-sh",
+            sources: [],
+          },
+        })),
+      },
+    };
+    const markup = renderToStaticMarkup(
+      <HomeView
+        snapshot={snapshot}
+        isLoading={false}
+        onSelectSkill={() => undefined}
+        recoveryStatus={{ kind: "ready", hasInterrupted: false }}
+        retryRecoveryStatus={() => undefined}
+      />,
+    );
+    expect(markup.match(/<details/g)).toHaveLength(6);
+    expect(markup).toContain("missing-record-5");
+    expect(markup).not.toContain("missing-record-6");
+    expect(markup).toContain("Show all");
+    expect(markup).toContain("100");
+    expect(markup).not.toContain("All clear");
   });
 });

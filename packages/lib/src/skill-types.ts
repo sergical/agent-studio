@@ -702,6 +702,9 @@ export interface InvocationHeatmap {
  * skills/skill_refresh.rs.
  */
 export interface SkillSnapshot {
+  /** Absent in legacy snapshots; requires a full refresh before named diagnosis updates. */
+  diagnosis?: import("./skill-diagnosis-types").SkillDiagnosis | null;
+  ledger_only?: import("./skill-diagnosis-types").LedgerOnlySkill[];
   read_warnings?: SkillSnapshotReadWarning[];
   /** Process-local publication order. Revision 0 is a legacy bootstrap snapshot. */
   revision: number;

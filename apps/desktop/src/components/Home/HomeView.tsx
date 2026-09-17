@@ -23,7 +23,8 @@ import {
   lifecycleTargetForPark,
   updateSkillOwners,
 } from "../../lib/skill-lifecycle-target";
-import { collectDashboardIssues } from "@skill-studio/lib";
+import { presentDiagnosis } from "@skill-studio/lib";
+import { LedgerFindings } from "../SkillHealth/LedgerFindings";
 import type { HealthIssue, HealthIssueKind } from "@skill-studio/lib";
 import { defaultSkillListFilter } from "@skill-studio/lib";
 import { ownSkillsView } from "@skill-studio/lib";
@@ -358,14 +359,14 @@ function HomeSkeleton() {
 /** The Broken/Warnings/Updates stat-tile row - each a toggle for `HomeFilter`, the first two with an `InfoPopover`. */
 function HomeStatTiles({
   broken,
-  warnings,
+  warningCount,
   updates,
   filter,
   toggleFilter,
   onLearnMore,
 }: {
   broken: HealthIssue[];
-  warnings: HealthIssue[];
+  warningCount: number;
   updates: InstalledSkill[];
   filter: HomeFilter | null;
   toggleFilter: (id: HomeFilter) => void;
@@ -401,7 +402,7 @@ function HomeStatTiles({
       <div className="group/stat relative flex">
         <button
           className={`flex flex-1 flex-col gap-1 rounded-md border border-border-subtle bg-bg-elevated px-4 py-3.5 text-left transition-[border-color,background-color,transform] duration-150 hover:border-border hover:bg-bg-hover active:scale-98 aria-pressed:border-accent aria-pressed:bg-accent-softer aria-pressed:shadow-[inset_0_0_0_1px_var(--color-accent)] ${
-            warnings.length > 0 ? "[&_.home-stat-value]:text-warning" : ""
+            warningCount > 0 ? "[&_.home-stat-value]:text-warning" : ""
           }`}
           aria-pressed={filter === "warn"}
           onClick={() => toggleFilter("warn")}
@@ -412,7 +413,7 @@ function HomeStatTiles({
             Warnings
           </span>
           <span className="home-stat-value text-display leading-[1.1] font-semibold tracking-[-0.02em] tabular-nums">
-            {warnings.length}
+            {warningCount}
           </span>
         </button>
         <span className="absolute top-3.5 right-3.5 opacity-0 group-hover/stat:opacity-100 group-focus-within/stat:opacity-100 has-[[aria-expanded=true]]:opacity-100">
@@ -621,7 +622,9 @@ export function HomeView({
   }
 
   const own = ownSkillsView(snapshot.skills);
-  const issues = collectDashboardIssues(own);
+  const diagnosis = presentDiagnosis(snapshot, own);
+  const issues = diagnosis.issues;
+  const ledger = diagnosis.ledger;
   const { broken, warnings } = attentionGroups(issues);
   const updates = skillsWithUpdates(snapshot);
   const inv = homeInvocationCounts(own);
@@ -630,8 +633,10 @@ export function HomeView({
   const recent = recentlyUsedSkills(snapshot.skills, snapshot.invocations, RECENTLY_USED_COUNT);
 
   const allClear = canShowAllClear(
-    broken.length > 0 ||
+    !diagnosis.complete ||
+      broken.length > 0 ||
       warnings.length > 0 ||
+      ledger.length > 0 ||
       updates.length > 0 ||
       !!snapshot.read_warnings?.length,
     recoveryStatus,
@@ -660,7 +665,7 @@ export function HomeView({
 
       <HomeStatTiles
         broken={broken}
-        warnings={warnings}
+        warningCount={warnings.length + ledger.length}
         updates={updates}
         filter={filter}
         toggleFilter={toggleFilter}
@@ -688,6 +693,13 @@ export function HomeView({
           </div>
         )}
 
+        {!diagnosis.complete && (
+          <p role="status" className="px-3 py-2 text-small text-text-secondary">
+            {diagnosis.available
+              ? "Some sources could not be checked. Findings may be incomplete."
+              : "Health checks are pending a full refresh."}
+          </p>
+        )}
         {allClear && !filter && (
           <p className="flex h-full items-center justify-center text-wrap-pretty text-text-tertiary">
             All clear. Nothing needs attention.
@@ -708,12 +720,12 @@ export function HomeView({
                     key={`${issue.kind}-${issue.skill.name}-${issue.detail}`}
                     severity="error"
                     skill={issue.skill}
-                    onOpen={() => onSelectSkill(issue.skill.name)}
+                    onOpen={() => openSkill(issue.skill.name, issue.deploymentPath)}
                     detail={<span title={issue.detail}>{issue.detail}</span>}
                     action={
                       <button
                         className={ROW_ACTION_CLASS}
-                        onClick={() => onSelectSkill(issue.skill.name)}
+                        onClick={() => openSkill(issue.skill.name, issue.deploymentPath)}
                       >
                         {issueActionLabel(issue.kind)}
                       </button>
@@ -732,13 +744,13 @@ export function HomeView({
           </Collapsible>
         )}
 
-        {warnings.length > 0 && isGroupVisible("warn") && (
+        {(warnings.length > 0 || ledger.length > 0) && isGroupVisible("warn") && (
           <Collapsible
             data-group="warn"
             open={isGroupExpanded("warn")}
             onOpenChange={() => toggleGroup("warn")}
           >
-            <GroupHead label="Warnings" count={warnings.length} />
+            <GroupHead label="Warnings" count={warnings.length + ledger.length} />
             <CollapsiblePanel>
               <div className="flex flex-col">
                 {warnings.slice(0, MAX_ROWS_PER_GROUP).map((issue: HealthIssue) => (
@@ -746,7 +758,7 @@ export function HomeView({
                     key={`${issue.kind}-${issue.skill.name}-${issue.detail}`}
                     severity="warning"
                     skill={issue.skill}
-                    onOpen={() => onSelectSkill(issue.skill.name)}
+                    onOpen={() => openSkill(issue.skill.name, issue.deploymentPath)}
                     detail={<span title={issue.detail}>{issue.detail}</span>}
                     action={
                       <WarningRowAction
@@ -760,14 +772,17 @@ export function HomeView({
                             root,
                           })
                         }
-                        onOpen={() => onSelectSkill(issue.skill.name)}
+                        onOpen={() => openSkill(issue.skill.name, issue.deploymentPath)}
                       />
                     }
                   />
                 ))}
-                {warnings.length > MAX_ROWS_PER_GROUP && (
+                <LedgerFindings
+                  findings={ledger.slice(0, Math.max(0, MAX_ROWS_PER_GROUP - warnings.length))}
+                />
+                {warnings.length + ledger.length > MAX_ROWS_PER_GROUP && (
                   <ShowAllLink
-                    count={warnings.length}
+                    count={warnings.length + ledger.length}
                     label="Show all"
                     onClick={() => goToSkills({ issue: "any" })}
                   />

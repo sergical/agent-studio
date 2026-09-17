@@ -286,6 +286,8 @@ mod tests {
         use super::super::skill_invocations::InvocationHeatmap;
 
         SkillSnapshot {
+            ledger_only: Vec::new(),
+            diagnosis: None,
             read_warnings: Vec::new(),
             revision: 1,
             skills: vec![InstalledSkill {
