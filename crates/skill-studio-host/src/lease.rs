@@ -147,6 +147,7 @@ impl LeaseProvider for FileLease {
                 .open(&path)
                 .map_err(|e| CoreError::io(&path, e))?;
             let stale_deadline = Instant::now() + STALE_TAKEOVER_TIMEOUT;
+            let mut attempted = false;
             loop {
                 match try_lock(&file, mode) {
                     Ok(true) => {
@@ -167,7 +168,14 @@ impl LeaseProvider for FileLease {
                             std::thread::sleep(STALE_RETRY_INTERVAL);
                             continue;
                         }
-                        if Instant::now() >= deadline {
+                        // A zero (or already-elapsed) `wait` collapses
+                        // `deadline` to "now", which would otherwise turn a
+                        // single spurious `WouldBlock` - the OS can report
+                        // one for a moment right after another fd on this
+                        // process closes and releases the same lock under
+                        // heavy concurrent load - into a false "busy". Always
+                        // re-check once before trusting the first read.
+                        if Instant::now() >= deadline && attempted {
                             let mut err = CoreError::new(
                                 ErrorCode::ScopeBusy,
                                 format!(
@@ -181,6 +189,7 @@ impl LeaseProvider for FileLease {
                             }
                             return Err(err);
                         }
+                        attempted = true;
                         std::thread::sleep(RETRY_INTERVAL);
                     }
                     Err(e) => return Err(CoreError::io(&path, e)),
