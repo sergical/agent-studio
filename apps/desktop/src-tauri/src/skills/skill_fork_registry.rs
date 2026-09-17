@@ -407,15 +407,11 @@ pub fn read_fork_registry_or_default(home: &Path) -> ForkRegistry {
     })
 }
 
-/// Where `FileLease` keeps its advisory lock files for this registry - the
-/// same directory Tauri's `app.path().app_data_dir()` would resolve for the
-/// `com.skillstudio.app` identifier in `tauri.conf.json`, computed by hand
-/// because `write_fork_registry` has no `AppHandle` (it's called from ~100
-/// sites with only a `home: &Path`, and threading one through would be out
-/// of scope for this PR - see `docs/action-map/harnesses/shared-root.md`).
-fn registry_lease_root() -> Result<PathBuf, String> {
-    let data_dir = dirs::data_dir().ok_or("Could not find app data directory")?;
-    Ok(data_dir.join("com.skillstudio.app"))
+/// Where `FileLease` keeps its advisory lock files for this registry -
+/// `core_runtime::data_root()`'s `leases` subdirectory, the same lease root
+/// the CLI, MCP, and desktop's park/unpark commands already share.
+fn registry_lease_root() -> PathBuf {
+    super::core_runtime::data_root().join("leases")
 }
 
 /// Write `registry` atomically under the exclusive lease over `home`,
@@ -431,7 +427,7 @@ pub fn write_fork_registry(home: &Path, registry: &ForkRegistry) -> Result<(), S
         .map_err(|e| format!("Failed to create {}: {e}", home.display()))?;
     let path = fork_registry_path(home);
     let fs = skill_studio_host::RealFs::new();
-    let leases = skill_studio_host::FileLease::new(registry_lease_root()?);
+    let leases = skill_studio_host::FileLease::new(registry_lease_root());
     let mut document = registry.clone();
     skill_studio_core::registry::write_registry_document(&leases, &fs, home, &path, &mut document)
         .map_err(|e| e.to_string())
