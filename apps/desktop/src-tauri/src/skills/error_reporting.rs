@@ -23,7 +23,7 @@ use tauri::Manager;
 /// `set_error_reporting_enabled` can flip it live.
 pub struct ReportingState {
     enabled: AtomicBool,
-    sink: Arc<dyn ReportSink>,
+    sink: Arc<QueuedReportSink>,
 }
 
 impl ReportingState {
@@ -40,6 +40,17 @@ impl ReportingState {
                 Some(transport) => Box::new(transport),
                 None => Box::new(NoEndpointTransport),
             };
+        Self::with_transport(enabled, transport)
+    }
+
+    /// Builds the state with an injected transport - the production `new`'s
+    /// own path once it has picked one, and a test's path straight to a
+    /// recording transport, so a test exercises the same gate `new` does
+    /// rather than a parallel copy of it.
+    pub fn with_transport(
+        enabled: bool,
+        transport: Box<dyn skill_studio_host::ReportTransport>,
+    ) -> Self {
         Self {
             enabled: AtomicBool::new(enabled),
             sink: Arc::new(QueuedReportSink::new(transport)),
@@ -61,6 +72,12 @@ impl ReportingState {
             return;
         }
         self.sink.report(sanitize(raw, sensitive));
+    }
+
+    /// Sends every queued report now. Forwards to the sink; see
+    /// `QueuedReportSink::flush`.
+    pub fn flush(&self) -> Result<(), String> {
+        self.sink.flush()
     }
 }
 
@@ -117,7 +134,12 @@ pub fn install_panic_hook() {
                     frames: frame_from_panic(info),
                 }],
             };
-            state.maybe_report(&raw, &SensitiveContext::default());
+            let sensitive = SensitiveContext {
+                home_dir: dirs::home_dir().map(|home| home.display().to_string()),
+                skill_name: None,
+                project_path: None,
+            };
+            state.maybe_report(&raw, &sensitive);
         }
         default_hook(info);
     }));
@@ -179,6 +201,16 @@ mod tests {
         }
     }
 
+    struct Forwarding(Arc<RecordingTransport>);
+    impl skill_studio_host::ReportTransport for Forwarding {
+        fn send(&self, bytes: Vec<u8>) -> Result<(), String> {
+            self.0.send(bytes)
+        }
+    }
+
+    /// A panic-shaped report quoting a home path, same shape
+    /// `install_panic_hook` builds - so a test exercising `maybe_report`
+    /// also exercises the sanitizer's redaction of it.
     fn sample_report() -> RawReport {
         RawReport {
             operation: Some("skill.scan".to_string()),
@@ -190,42 +222,14 @@ mod tests {
         }
     }
 
-    /// The test's own copy of `ReportingState`'s gate - `ReportingState`
-    /// itself builds its sink from `HttpReportTransport::from_env`, which a
-    /// test must never call (it would read `SKILL_STUDIO_SENTRY_DSN`), so
-    /// this mirrors `maybe_report`'s `enabled` check against an injected
-    /// `QueuedReportSink` instead, keeping the concrete type so the test can
-    /// call `flush` on it directly.
-    struct ReportingStateForTest {
-        enabled: AtomicBool,
-        sink: QueuedReportSink,
-    }
-
-    impl ReportingStateForTest {
-        fn maybe_report(&self, raw: &RawReport, sensitive: &SensitiveContext) {
-            if !self.enabled.load(Ordering::Relaxed) {
-                return;
-            }
-            self.sink.report(sanitize(raw, sensitive));
-        }
-    }
-
     /// guards: the switch being off failing to stop `maybe_report` from
     /// queuing (and, on the next flush, sending) a report - the whole point
-    /// of "off by default" is that nothing leaves the machine.
+    /// of "off by default" is that nothing leaves the machine. Exercises
+    /// the production `ReportingState` gate directly, not a copy of it.
     #[test]
     fn reporting_off_makes_no_network_call() {
         let recorder = Arc::new(RecordingTransport::default());
-        struct Forwarding(Arc<RecordingTransport>);
-        impl skill_studio_host::ReportTransport for Forwarding {
-            fn send(&self, bytes: Vec<u8>) -> Result<(), String> {
-                self.0.send(bytes)
-            }
-        }
-        let state = ReportingStateForTest {
-            enabled: AtomicBool::new(false),
-            sink: QueuedReportSink::new(Box::new(Forwarding(recorder.clone()))),
-        };
+        let state = ReportingState::with_transport(false, Box::new(Forwarding(recorder.clone())));
 
         // A panic-shaped report, same as `install_panic_hook` would build.
         state.maybe_report(&sample_report(), &SensitiveContext::default());
@@ -240,13 +244,38 @@ mod tests {
             },
             &SensitiveContext::default(),
         );
-        state.sink.flush().expect("flush");
+        state.flush().expect("flush");
 
         let sent = recorder.sent.lock().expect("recorder");
         assert_eq!(
             sent.len(),
             0,
             "reporting made a network call while off: {sent:?}"
+        );
+    }
+
+    /// guards: the switch being on failing to actually queue and send a
+    /// report once flushed, or the report reaching the transport
+    /// unsanitized - a home path in the panic message must not survive to
+    /// what `send` receives.
+    #[test]
+    fn reporting_on_queues_a_sanitized_report_and_flush_sends_it_or_names_the_missing_send() {
+        let recorder = Arc::new(RecordingTransport::default());
+        let state = ReportingState::with_transport(true, Box::new(Forwarding(recorder.clone())));
+
+        state.maybe_report(&sample_report(), &SensitiveContext::default());
+        state.flush().expect("flush");
+
+        let sent = recorder.sent.lock().expect("recorder");
+        assert_eq!(
+            sent.len(),
+            1,
+            "reporting was on but flush sent no report: {sent:?}"
+        );
+        let body = String::from_utf8(sent[0].clone()).expect("utf8 body");
+        assert!(
+            !body.contains("/Users/"),
+            "a home path leaked into the bytes handed to the transport: {body}"
         );
     }
 }
