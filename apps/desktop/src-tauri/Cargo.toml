@@ -10,8 +10,9 @@ name = "skill_studio_lib"
 crate-type = ["staticlib", "cdylib", "rlib"]
 
 [features]
-default = ["worker-repair"]
+default = ["worker-repair", "native-fork-repair"]
 worker-repair = []
+native-fork-repair = []
 
 [build-dependencies]
 tauri-build = { version = "2", features = [] }

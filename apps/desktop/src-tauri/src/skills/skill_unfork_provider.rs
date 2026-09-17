@@ -310,6 +310,36 @@ impl StagedUnforkProvider {
             .env("GIT_TERMINAL_PROMPT", "0");
         Ok(command)
     }
+
+    #[cfg(test)]
+    pub(crate) fn assert_stage_denies_outside_write(
+        &self,
+        reservation: &ReservedManagedSource<'_>,
+        outside: &Path,
+        control: &AddOperationControl,
+    ) -> Result<(), String> {
+        let stage = reservation
+            .stage_path()
+            .map_err(|error| error.to_string())?;
+        let cache = reservation
+            .cache_path()
+            .map_err(|error| error.to_string())?;
+        ensure_runtime_outside_writes(&self.node, &self.modules, &stage, &cache)?;
+        let home = stage.join("home");
+        let agents = home.join(".agents");
+        let profile = confinement_profile(&stage, &cache)?;
+        let mut command = self.confined_command(&stage, &cache, &home, &agents, &profile)?;
+        command
+            .args(["-e", "try { require('node:fs').writeFileSync(process.argv[1], 'changed'); process.exitCode = 1; } catch (e) { if (!['EPERM', 'EACCES'].includes(e.code)) throw e; console.log('WRITE_DENIED'); }"])
+            .arg(outside);
+        if run_controlled_prepared_command_output(command, control, 64 * 1024)
+            .map_err(|error| error.into_message())?
+            != b"WRITE_DENIED\n"
+        {
+            return Err("Unfork provider sandbox did not deny an outside write".into());
+        }
+        Ok(())
+    }
 }
 
 #[cfg(test)]

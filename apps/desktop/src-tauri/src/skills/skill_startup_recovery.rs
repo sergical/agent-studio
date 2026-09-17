@@ -1,6 +1,6 @@
 use super::event_store::{EventRow, EventStore};
 use rusqlite::OptionalExtension;
-use skill_studio_core::skill_service::{ScopedSkillService, SkillScope};
+use skill_studio_core::skill_service::{CancellationToken, ScopedSkillService, SkillScope};
 use std::time::Duration;
 
 #[cfg(test)]
@@ -171,6 +171,17 @@ fn recover_with_worker(
                 Some(std::time::Duration::from_secs(30)),
             )
             .map(|_| ());
+        }
+        #[cfg(target_os = "macos")]
+        if super::skill_fork_document_history::is_fork_event(&row.kind) {
+            return skill_studio_core::skill_repair_execution::recover_next_repair(
+                &mut service,
+                store,
+                Some(Duration::from_secs(30)),
+                CancellationToken::default(),
+            )
+            .map(|_| ())
+            .map_err(|error| error.to_string());
         }
         if super::skill_copy_repair::is_copy_event(&row.kind) {
             return super::skill_copy_repair::recover(&mut service, store, row);

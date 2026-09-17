@@ -1889,7 +1889,7 @@ fn pull_fork_upstream_blocking(
         .map(PathBuf::from)
         .collect::<Vec<_>>();
     let scope = super::skill_scope_config::desktop_skill_scope(&home, &projects)?;
-    let mut service = skill_studio_core::skill_service::ScopedSkillService::bind(scope)
+    let mut service = skill_studio_core::skill_service::ScopedSkillService::bind(scope.clone())
         .map_err(|error| error.to_string())?;
     let request = skill_studio_core::skill_fork_pull::ForkPullRequest {
         deployment_id: resolved.deployment.id,
@@ -1904,6 +1904,8 @@ fn pull_fork_upstream_blocking(
             .lock()
             .map_err(|_| "Event store lock is unavailable")?;
         let store = events.as_ref().ok_or("Event store is unavailable")?;
+        #[cfg(target_os = "macos")]
+        super::skill_fork_document_history::ensure_merge_base(scope.clone(), store, &name)?;
         match skill_studio_core::skill_fork_pull::prepare_fork_pull_inputs(
             &mut service,
             store,

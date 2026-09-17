@@ -441,6 +441,50 @@ impl ScopedSkillService {
         Ok(prepared)
     }
 }
+
+#[cfg(test)]
+pub(crate) fn verify_preparation_fixture(
+    service: &mut ScopedSkillService,
+    store: &EventStore,
+    completed: &crate::skill_event::EventRow,
+    limits: BackupCopyLimits,
+) {
+    let completed =
+        crate::skill_fork_repair_intent::CompletedDotagentsForkEvent::from_row(completed).unwrap();
+    let intent = completed.intent();
+    let record = intent.registry().record();
+    let document_path = record.skill_dir.join("SKILL.md");
+    let document = std::fs::read(&document_path).unwrap();
+    assert_eq!(document, intent.repair().proposed_content.as_bytes());
+    let request = DotagentsUnforkRequest {
+        deployment_id: record.deployment_id.clone(),
+        expected_owner_revision: RegistryOwnerRecord::Fork(record).revision().unwrap(),
+        expected_document_fingerprint: content_fingerprint(&document),
+    };
+    let prepared = service
+        .prepare_current_dotagents_unfork(
+            &request,
+            store,
+            limits,
+            Some(Duration::from_secs(10)),
+            CancellationToken::default(),
+        )
+        .unwrap();
+    assert!(prepared.selection().is_bound_current());
+    assert_eq!(prepared.selection().record(), record);
+    assert_eq!(prepared.reinstall_request().name(), intent.repair().name);
+    assert_eq!(prepared.reinstall_request().source(), record.origin_source);
+    assert_eq!(prepared.reinstall_request().repo(), record.repo);
+    assert_eq!(prepared.reinstall_request().path(), record.path);
+    assert_eq!(
+        prepared.reinstall_request().declared_ref(),
+        record.declared_ref.as_deref()
+    );
+    prepared
+        .revalidate(store, limits, &CancellationToken::default())
+        .unwrap();
+}
+
 #[cfg(test)]
 mod current_record_lifecycle_tests {
     use super::*;

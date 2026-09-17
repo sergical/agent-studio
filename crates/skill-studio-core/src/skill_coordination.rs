@@ -2226,7 +2226,28 @@ impl FinalizedWriteLease<'_> {
         sources: Vec<crate::skill_backup_source::BackupSource>,
         limits: crate::skill_backup_reservation::BackupCopyLimits,
     ) -> Result<crate::skill_event::BackupManifest, PreparedContentError> {
-        self.backup_documents_with_absent_sidecar_prepared(root, id, sources, limits, None)
+        self.backup_documents_with_absent_sidecar_prepared_retained(
+            root, id, sources, limits, None, false,
+        )
+        .map(|(manifest, _reservation)| manifest)
+    }
+
+    pub(crate) fn backup_documents_retained_prepared<'root>(
+        &self,
+        root: &'root crate::skill_backup_reservation::BackupStateRoot,
+        id: &str,
+        sources: Vec<crate::skill_backup_source::BackupSource>,
+        limits: crate::skill_backup_reservation::BackupCopyLimits,
+    ) -> Result<
+        (
+            crate::skill_event::BackupManifest,
+            crate::skill_backup_reservation::ReservedBackup<'root>,
+        ),
+        PreparedContentError,
+    > {
+        self.backup_documents_with_absent_sidecar_prepared_retained(
+            root, id, sources, limits, None, true,
+        )
     }
 
     pub(crate) fn backup_documents_with_absent_sidecar_prepared(
@@ -2237,6 +2258,32 @@ impl FinalizedWriteLease<'_> {
         limits: crate::skill_backup_reservation::BackupCopyLimits,
         absent_sidecar: Option<&Path>,
     ) -> Result<crate::skill_event::BackupManifest, PreparedContentError> {
+        self.backup_documents_with_absent_sidecar_prepared_retained(
+            root,
+            id,
+            sources,
+            limits,
+            absent_sidecar,
+            false,
+        )
+        .map(|(manifest, _reservation)| manifest)
+    }
+
+    fn backup_documents_with_absent_sidecar_prepared_retained<'root>(
+        &self,
+        root: &'root crate::skill_backup_reservation::BackupStateRoot,
+        id: &str,
+        sources: Vec<crate::skill_backup_source::BackupSource>,
+        limits: crate::skill_backup_reservation::BackupCopyLimits,
+        absent_sidecar: Option<&Path>,
+        discard_unrecorded: bool,
+    ) -> Result<
+        (
+            crate::skill_event::BackupManifest,
+            crate::skill_backup_reservation::ReservedBackup<'root>,
+        ),
+        PreparedContentError,
+    > {
         if let Some(path) = absent_sidecar {
             self.validate_invocation_creation(path)
                 .map_err(PreparedContentError::from)?;
@@ -2276,6 +2323,9 @@ impl FinalizedWriteLease<'_> {
             cancellation,
         )
         .map_err(PreparedContentError::from)?;
+        if discard_unrecorded {
+            builder = builder.discard_unrecorded_on_failure();
+        }
         for source in sources {
             builder = builder
                 .add_source(source)
@@ -2286,10 +2336,26 @@ impl FinalizedWriteLease<'_> {
                 .add_absent_invocation_sidecar(self, path)
                 .map_err(PreparedContentError::from)?;
         }
-        self.revalidate().map_err(PreparedContentError::from)?;
-        let manifest = builder.finish().map_err(PreparedContentError::from)?;
-        self.revalidate().map_err(PreparedContentError::from)?;
-        Ok(manifest)
+        if let Err(error) = self.revalidate() {
+            return Err(PreparedContentError::from(
+                builder.discard_after_failure(std::io::Error::other(error)),
+            ));
+        }
+        let (manifest, reservation) = builder
+            .finish_retained()
+            .map_err(PreparedContentError::from)?;
+        if let Err(error) = self.revalidate() {
+            if !discard_unrecorded {
+                return Err(PreparedContentError::from(error));
+            }
+            return match reservation.discard() {
+                Ok(()) => Err(PreparedContentError::from(error)),
+                Err(cleanup) => Err(PreparedContentError::from(format!(
+                    "{error}; backup cleanup refused: {cleanup}"
+                ))),
+            };
+        }
+        Ok((manifest, reservation))
     }
 }
 

@@ -30,6 +30,8 @@ pub mod skill_discovery;
 pub mod skill_dto;
 pub mod skill_editor;
 pub mod skill_fork;
+#[cfg(target_os = "macos")]
+mod skill_fork_document_history;
 pub mod skill_fork_registry;
 pub mod skill_frontmatter_repair;
 pub mod skill_fs;
@@ -41,6 +43,8 @@ pub mod skill_invocations;
 pub mod skill_lifecycle;
 pub mod skill_materialize;
 pub mod skill_md_write;
+#[cfg(all(target_os = "macos", any(test, feature = "native-fork-repair")))]
+mod skill_native_fork;
 #[cfg(target_os = "macos")]
 mod skill_native_unfork;
 pub mod skill_ownership;

@@ -628,6 +628,17 @@ pub struct DotagentsDetachProposal {
 }
 
 impl DotagentsDetachProposal {
+    pub(crate) fn validate(&self, name: &str) -> Result<(), String> {
+        let (lock, manifest) = parse_detach_documents(&self.lock, &self.manifest)?;
+        if lock.get("version").and_then(toml::Value::as_integer) != Some(1)
+            || manifest.get("version").and_then(toml::Value::as_integer) != Some(1)
+            || detach_rows_in(name, &lock, &manifest)? != (None, None)
+        {
+            return Err("Invalid native detach document proposal".into());
+        }
+        Ok(())
+    }
+
     pub fn lock(&self) -> &str {
         &self.lock
     }

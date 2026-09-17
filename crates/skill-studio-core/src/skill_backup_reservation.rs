@@ -81,6 +81,10 @@ impl ExistingBackup<'_> {
         self.binding.read_record(name, limit)
     }
 
+    pub(crate) fn verify_absent(&self, name: &str) -> io::Result<()> {
+        self.binding.verify_absent(name)
+    }
+
     #[cfg(feature = "event-store")]
     pub(crate) fn read_tree_record(
         &self,
@@ -864,7 +868,7 @@ impl BackupStateRoot {
         Ok(path.join("base"))
     }
 
-    #[cfg(any())]
+    #[cfg(feature = "event-store")]
     pub(crate) fn publish_fork_base(
         &self,
         lease: &crate::skill_coordination::FinalizedWriteLease<'_>,
@@ -1140,11 +1144,27 @@ impl ReservedBackup<'_> {
         self.root.scope.revalidate_roots().map_err(|_| changed())
     }
 
+    pub(crate) fn operation_id(&self) -> &str {
+        &self.id
+    }
+
     pub(crate) fn read_record(&self, name: &str, limit: usize) -> io::Result<Vec<u8>> {
         self.revalidate()?;
         let bytes = read_record_file(&self.directory, name, limit)?;
         self.revalidate()?;
         Ok(bytes)
+    }
+
+    pub(crate) fn verify_absent(&self, name: &str) -> io::Result<()> {
+        if !crate::skill_backup_copy::valid_component(std::ffi::OsStr::new(name)) {
+            return Err(io::Error::other("Invalid absent backup entry"));
+        }
+        self.revalidate()?;
+        match self.directory.symlink_metadata(name) {
+            Err(error) if error.kind() == io::ErrorKind::NotFound => self.revalidate(),
+            Err(error) => Err(error),
+            Ok(_) => Err(io::Error::other("Backup entry must be absent")),
+        }
     }
 
     pub fn revalidate(&self) -> io::Result<()> {

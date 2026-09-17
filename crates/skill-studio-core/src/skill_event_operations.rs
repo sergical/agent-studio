@@ -425,6 +425,382 @@ impl GuardedEventStore<'_> {
     /// Records a non-Undo restore and claims its completed source in the same
     /// transaction. The source remains claimed through uncertain publication;
     /// callers may release it only after a proven pre-publication failure.
+    pub(crate) fn record_dotagents_fork(
+        &self,
+        lease: &FinalizedWriteLease<'_>,
+        id: &str,
+        intent: &crate::skill_fork_repair_intent::DotagentsForkRepairIntent,
+    ) -> Result<crate::skill_fork_repair_intent::DotagentsForkRecoveryEvent, EventWriteFailure>
+    {
+        use crate::skill_fork_repair_intent::DotagentsForkRecoveryEvent;
+        intent
+            .validate_for_operation(id)
+            .map_err(EventWriteFailure::BeforeWrite)?;
+        let payload = serde_json::to_value(intent)
+            .map_err(|error| EventWriteFailure::BeforeWrite(error.to_string()))?;
+        let mut recorded = None;
+        self.write(lease, || {
+            let transaction = self.transaction(lease)?;
+            self.check_unresolved()?;
+            self.store.record(
+                id,
+                EventDraft {
+                    kind: "repair_dotagents_fork".into(),
+                    skill: intent.repair().name.clone(),
+                    harness: None,
+                    scope: Some("global".into()),
+                    project_path: None,
+                    payload,
+                    inverse: None,
+                    backup_dir: Some(format!("backups/{id}")),
+                    restorable: false,
+                },
+            )?;
+            recorded = Some(DotagentsForkRecoveryEvent::from_row(
+                &self
+                    .store
+                    .get(id)?
+                    .ok_or("Recorded fork intent is missing")?,
+            )?);
+            transaction.commit().map_err(|error| error.to_string())
+        })?;
+        recorded.ok_or_else(|| {
+            EventWriteFailure::MayHaveWritten("Recorded fork receipt is missing".into())
+        })
+    }
+
+    pub fn validate_dotagents_fork_recovery(
+        &self,
+        lease: &FinalizedWriteLease<'_>,
+        event: &crate::skill_fork_repair_intent::DotagentsForkRecoveryEvent,
+    ) -> Result<(), String> {
+        self.validate(lease)?;
+        let current = self
+            .store
+            .get(event.id())?
+            .ok_or("Fork recovery event is missing")?;
+        if serde_json::to_value(&current).map_err(|error| error.to_string())?
+            != serde_json::to_value(event.snapshot()).map_err(|error| error.to_string())?
+        {
+            return Err("Fork recovery event changed since preparation".into());
+        }
+        self.validate(lease)
+    }
+
+    pub fn read_dotagents_fork_snapshots(
+        &self,
+        lease: &FinalizedWriteLease<'_>,
+        event: &crate::skill_fork_repair_intent::DotagentsForkRecoveryEvent,
+        limits: crate::skill_backup_reservation::BackupCopyLimits,
+        cancellation: &crate::skill_coordination::CancellationToken,
+    ) -> Result<crate::skill_fork_snapshot::ForkSnapshotReceipt, String> {
+        self.read_dotagents_fork_snapshots_with(lease, event, limits, cancellation, || {})
+    }
+
+    fn read_dotagents_fork_snapshots_with(
+        &self,
+        lease: &FinalizedWriteLease<'_>,
+        event: &crate::skill_fork_repair_intent::DotagentsForkRecoveryEvent,
+        limits: crate::skill_backup_reservation::BackupCopyLimits,
+        cancellation: &crate::skill_coordination::CancellationToken,
+        after_read: impl FnOnce(),
+    ) -> Result<crate::skill_fork_snapshot::ForkSnapshotReceipt, String> {
+        self.validate_dotagents_fork_recovery(lease, event)?;
+        let receipt = self.verify_dotagents_fork_inputs_with(
+            lease,
+            event.intent(),
+            limits,
+            cancellation,
+            after_read,
+        )?;
+        self.validate_dotagents_fork_recovery(lease, event)?;
+        if cancellation.is_cancelled() {
+            return Err("Fork recovery snapshot read cancelled".into());
+        }
+        Ok(receipt)
+    }
+
+    pub(crate) fn read_native_fork_progress(
+        &self,
+        lease: &FinalizedWriteLease<'_>,
+        event: &crate::skill_fork_repair_intent::DotagentsForkRecoveryEvent,
+        current: &crate::skill_native_fork_progress::NativeForkDocuments<'_>,
+        limits: crate::skill_backup_reservation::BackupCopyLimits,
+        cancellation: &crate::skill_coordination::CancellationToken,
+    ) -> Result<crate::skill_native_fork_progress::NativeForkProgress, String> {
+        self.read_dotagents_fork_snapshots(lease, event, limits, cancellation)?;
+        let root = crate::skill_backup_reservation::BackupStateRoot::bind(&self.store.app_data)
+            .map_err(|error| error.to_string())?;
+        let backup = root
+            .open_existing(event.id())
+            .map_err(|error| error.to_string())?;
+        let manifest = backup
+            .read_record("provider-manifest", 8 * 1024 * 1024)
+            .map_err(|error| error.to_string())?;
+        let lock = backup
+            .read_record("provider-lock", 8 * 1024 * 1024)
+            .map_err(|error| error.to_string())?;
+        let registry = match backup.read_record("registry-before", 8 * 1024 * 1024) {
+            Ok(bytes) => Some(bytes),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                backup
+                    .verify_absent("registry-before")
+                    .map_err(|error| error.to_string())?;
+                None
+            }
+            Err(error) => return Err(error.to_string()),
+        };
+        let skill = backup
+            .read_tree_record(
+                "live-tree",
+                "SKILL.md",
+                crate::skill_service::MAX_REPAIR_DOCUMENT_BYTES,
+            )
+            .map_err(|error| error.to_string())?;
+        let original = crate::skill_native_fork_progress::NativeForkDocuments {
+            manifest: &manifest,
+            lock: &lock,
+            registry: registry.as_deref(),
+            skill: &skill,
+        };
+        let state = crate::skill_native_fork_progress::classify_native_fork(
+            event.intent(),
+            &original,
+            current,
+        )?;
+        backup.revalidate().map_err(|error| error.to_string())?;
+        self.read_dotagents_fork_snapshots(lease, event, limits, cancellation)?;
+        Ok(state)
+    }
+
+    pub(crate) fn verify_dotagents_fork_inputs(
+        &self,
+        lease: &FinalizedWriteLease<'_>,
+        intent: &crate::skill_fork_repair_intent::DotagentsForkRepairIntent,
+        limits: crate::skill_backup_reservation::BackupCopyLimits,
+        cancellation: &crate::skill_coordination::CancellationToken,
+    ) -> Result<crate::skill_fork_snapshot::ForkSnapshotReceipt, String> {
+        self.verify_dotagents_fork_inputs_with(lease, intent, limits, cancellation, || {})
+    }
+
+    fn verify_dotagents_fork_inputs_with(
+        &self,
+        lease: &FinalizedWriteLease<'_>,
+        intent: &crate::skill_fork_repair_intent::DotagentsForkRepairIntent,
+        limits: crate::skill_backup_reservation::BackupCopyLimits,
+        cancellation: &crate::skill_coordination::CancellationToken,
+        after_read: impl FnOnce(),
+    ) -> Result<crate::skill_fork_snapshot::ForkSnapshotReceipt, String> {
+        self.validate(lease)?;
+        intent.validate_for_operation(intent.snapshots().operation_id())?;
+        let root = crate::skill_backup_reservation::BackupStateRoot::bind(&self.store.app_data)
+            .map_err(|error| error.to_string())?;
+        let backup = root
+            .open_existing(intent.snapshots().operation_id())
+            .map_err(|error| error.to_string())?;
+        let receipt = crate::skill_fork_snapshot::ForkSnapshotReceipt::read(
+            &backup,
+            intent.snapshots(),
+            limits,
+            cancellation,
+        )?;
+        intent.validate_snapshot_source(&receipt)?;
+        if intent.provider_documents().is_some() {
+            let lock = backup
+                .read_record("provider-lock", 8 * 1024 * 1024)
+                .map_err(|error| error.to_string())?;
+            let manifest = backup
+                .read_record("provider-manifest", 8 * 1024 * 1024)
+                .map_err(|error| error.to_string())?;
+            intent.validate_saved_provider_documents(
+                std::str::from_utf8(&lock).map_err(|error| error.to_string())?,
+                std::str::from_utf8(&manifest).map_err(|error| error.to_string())?,
+            )?;
+        }
+        let original = backup
+            .read_tree_record(
+                "live-tree",
+                "SKILL.md",
+                crate::skill_service::MAX_REPAIR_DOCUMENT_BYTES,
+            )
+            .map_err(|error| error.to_string())?;
+        intent.repair().validate_original(&original)?;
+
+        let registry_bytes = if receipt.registry_before_present() {
+            backup
+                .read_record("registry-before", 8 * 1024 * 1024)
+                .map_err(|error| error.to_string())?
+        } else {
+            backup
+                .verify_absent("registry-before")
+                .map_err(|error| error.to_string())?;
+            b"{}".to_vec()
+        };
+        let registry: crate::skill_fork_registry::ForkRegistry =
+            serde_json::from_slice(&registry_bytes).map_err(|error| error.to_string())?;
+        if serde_json::to_value(&registry).map_err(|error| error.to_string())?
+            != serde_json::to_value(
+                intent
+                    .repair()
+                    .fork_registry_before
+                    .as_ref()
+                    .ok_or("Missing fork registry before-state")?,
+            )
+            .map_err(|error| error.to_string())?
+        {
+            return Err("Saved registry does not match fork intent before-state".into());
+        }
+        intent.registry().apply_document(&registry_bytes)?;
+        after_read();
+        backup.revalidate().map_err(|error| error.to_string())?;
+        self.validate(lease)?;
+        if cancellation.is_cancelled() {
+            return Err("Fork snapshot verification cancelled".into());
+        }
+        Ok(receipt)
+    }
+
+    pub(crate) fn record_fork_document_restore(
+        &self,
+        lease: &FinalizedWriteLease<'_>,
+        source: &crate::skill_event::EventRow,
+        origin: &crate::skill_fork_repair_intent::CompletedDotagentsForkEvent,
+        intent: &crate::skill_fork_document_restore::ForkDocumentRestoreIntent,
+        operation_id: &str,
+    ) -> Result<(crate::skill_event::EventRow, crate::skill_event::EventRow), EventWriteFailure>
+    {
+        intent
+            .validate_record(operation_id)
+            .map_err(EventWriteFailure::BeforeWrite)?;
+        if intent.target_event != source.id
+            || serde_json::to_value(&intent.fork)
+                .map_err(|error| EventWriteFailure::BeforeWrite(error.to_string()))?
+                != serde_json::to_value(origin.intent())
+                    .map_err(|error| EventWriteFailure::BeforeWrite(error.to_string()))?
+        {
+            return Err(EventWriteFailure::BeforeWrite(
+                "Fork restore intent differs from its source".into(),
+            ));
+        }
+        let expected = serde_json::to_value(source)
+            .map_err(|error| EventWriteFailure::BeforeWrite(error.to_string()))?;
+        let mut recorded = None;
+        self.write(lease, || {
+            let transaction = self.transaction(lease)?;
+            self.check_unresolved()?;
+            let current = self.store.get(&intent.target_event)?.ok_or("Fork restore source is missing")?;
+            if serde_json::to_value(&current).map_err(|error| error.to_string())? != expected {
+                return Err("Fork restore source changed before recording".into());
+            }
+            self.store.record(operation_id, EventDraft {
+                kind: "restore_fork_document".into(),
+                skill: current.skill.clone(), harness: None,
+                scope: current.scope.clone(), project_path: None,
+                payload: serde_json::to_value(intent).map_err(|error| error.to_string())?,
+                inverse: None, backup_dir: Some(format!("backups/{operation_id}")), restorable: false,
+            })?;
+            let changed = transaction.execute(
+                "UPDATE events SET reverted_by = ?1 WHERE id = ?2 AND status = 'done' AND reverted_by IS NULL",
+                params![operation_id, intent.target_event],
+            ).map_err(|error| error.to_string())?;
+            if changed != 1 { return Err("Fork restore source cannot be claimed".into()); }
+            let mut claimed = current;
+            claimed.reverted_by = Some(operation_id.into());
+            recorded = Some((claimed, self.store.get(operation_id)?.ok_or("Fork restore event is missing")?));
+            transaction.commit().map_err(|error| error.to_string())
+        })?;
+        recorded.ok_or_else(|| {
+            EventWriteFailure::MayHaveWritten("Fork restore receipt is missing".into())
+        })
+    }
+
+    pub(crate) fn cancel_fork_document_restore(
+        &self,
+        lease: &FinalizedWriteLease<'_>,
+        source: &crate::skill_event::EventRow,
+        event: &crate::skill_event::EventRow,
+    ) -> Result<(), EventWriteFailure> {
+        let expected = serde_json::to_value(source)
+            .map_err(|error| EventWriteFailure::BeforeWrite(error.to_string()))?;
+        self.write(lease, || {
+            let transaction = self.transaction(lease)?;
+            let current = self
+                .store
+                .get(&source.id)?
+                .ok_or("Fork restore source is missing")?;
+            if serde_json::to_value(current).map_err(|error| error.to_string())? != expected
+                || source.reverted_by.as_deref() != Some(event.id.as_str())
+            {
+                return Err("Fork restore claim changed before cancellation".into());
+            }
+            crate::skill_event_statements::finish_recovery_snapshot(
+                &transaction,
+                event,
+                EventStatus::Failed,
+                None,
+            )?;
+            let changed = transaction
+                .execute(
+                    "UPDATE events SET reverted_by = NULL WHERE id = ?1 AND reverted_by = ?2",
+                    params![source.id, event.id],
+                )
+                .map_err(|error| error.to_string())?;
+            if changed != 1 {
+                return Err("Fork restore source claim could not be released".into());
+            }
+            transaction.commit().map_err(|error| error.to_string())
+        })
+    }
+
+    pub(crate) fn finish_fork_document_restore(
+        &self,
+        lease: &FinalizedWriteLease<'_>,
+        source: &crate::skill_event::EventRow,
+        event: &crate::skill_event::EventRow,
+        inverse: Value,
+    ) -> Result<(), EventWriteFailure> {
+        let expected = serde_json::to_value(source)
+            .map_err(|error| EventWriteFailure::BeforeWrite(error.to_string()))?;
+        let inverse = serde_json::to_string(&inverse)
+            .map_err(|error| EventWriteFailure::BeforeWrite(error.to_string()))?;
+        self.write(lease, || {
+            let transaction = self.transaction(lease)?;
+            let current = self
+                .store
+                .get(&source.id)?
+                .ok_or("Fork restore source is missing")?;
+            if serde_json::to_value(current).map_err(|error| error.to_string())? != expected
+                || source.reverted_by.as_deref() != Some(event.id.as_str())
+            {
+                return Err("Fork restore source claim changed before completion".into());
+            }
+            crate::skill_event_statements::finish_recovery_snapshot(
+                &transaction,
+                event,
+                EventStatus::Done,
+                Some(&inverse),
+            )?;
+            transaction
+                .execute(
+                    "UPDATE events SET restorable = 1 WHERE id = ?1",
+                    [&event.id],
+                )
+                .map_err(|error| error.to_string())?;
+            transaction.commit().map_err(|error| error.to_string())
+        })
+    }
+
+    pub(crate) fn finish_dotagents_fork(
+        &self,
+        lease: &FinalizedWriteLease<'_>,
+        event: &crate::skill_fork_repair_intent::DotagentsForkRecoveryEvent,
+    ) -> Result<(), EventWriteFailure> {
+        self.finish_recovery_snapshot(lease, event.snapshot(), EventStatus::Done, None)
+    }
+
+    /// Records a non-Undo restore and claims its completed source in the same
+    /// transaction. The source remains claimed through uncertain publication;
+    /// callers may release it only after a proven pre-publication failure.
     pub(crate) fn record_trial_backup_restore(
         &self,
         lease: &FinalizedWriteLease<'_>,

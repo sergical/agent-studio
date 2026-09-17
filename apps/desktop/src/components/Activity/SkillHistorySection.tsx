@@ -37,6 +37,7 @@ const HISTORY_PAGE_SIZE = 20;
 function iconForKind(kind: string, className: string) {
   const props = { size: 14, className: `shrink-0 ${className}` };
   switch (kind) {
+    case "restore_fork_document":
     case "undo_copy_frontmatter":
     case "undo_copy_document":
     case "restore":
@@ -64,6 +65,10 @@ function iconForKind(kind: string, className: string) {
 /** "unlink harness" from "unlink_harness", for kinds with no friendlier label. */
 function kindLabel(kind: string): string {
   switch (kind) {
+    case "repair_dotagents_fork":
+      return "Forked and repaired";
+    case "restore_fork_document":
+      return "Restored Fork document";
     case "edit_copy_document":
       return "Edited copy";
     case "undo_copy_document":
@@ -95,6 +100,9 @@ function kindLabel(kind: string): string {
 function restoreDescription(event: SkillEvent): string {
   const skillPart = event.skill ? `${event.skill}` : (event.harness ?? "this item");
   switch (event.kind) {
+    case "repair_dotagents_fork":
+    case "restore_fork_document":
+      return `Restore the previous document for ${skillPart}. This keeps Fork ownership`;
     case "expire_copy_trial":
       return `Restore retained content for ${skillPart} as an untracked Global skill`;
     case "edit_copy_document":

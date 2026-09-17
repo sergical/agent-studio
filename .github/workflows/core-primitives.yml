@@ -33,6 +33,8 @@ jobs:
         with:
           persist-credentials: false
       - run: cargo fmt --check
+      - name: Check core without the event store
+        run: cargo check --locked --no-default-features
       - run: cargo clippy --locked --features event-store --all-targets -- -D warnings
       - name: Test shared core
         run: cargo test --locked --features event-store 2>&1 | tee "$RUNNER_TEMP/core-tests.log"

@@ -479,6 +479,42 @@ fn apply_skill_frontmatter_repair_blocking(
     let _guard = fork_lock.try_acquire()?;
     let snapshot = super::skill_lifecycle::rebuild_fresh_lifecycle_snapshot(&app, &refresh_state)?;
     let deployment = exact_target(&snapshot, &target)?.clone();
+    #[cfg(all(target_os = "macos", feature = "native-fork-repair"))]
+    if mode == FrontmatterRepairApplyMode::ForkAndFix {
+        let home = dirs::home_dir().ok_or("Could not find home directory")?;
+        if super::skill_native_fork::supports(&deployment, &home) {
+            let projects = snapshot
+                .projects
+                .iter()
+                .map(PathBuf::from)
+                .collect::<Vec<_>>();
+            let scope = super::skill_scope_config::desktop_skill_scope(&home, &projects)?;
+            let mut service = skill_studio_core::skill_service::ScopedSkillService::bind(scope)
+                .map_err(|error| error.to_string())?;
+            let gh = super::skill_update_check::resolve_gh_binary().ok_or("Run Check now first")?;
+            let guard = event_store.0.lock().map_err(|error| error.to_string())?;
+            let store = guard.as_ref().ok_or("Event store is unavailable")?;
+            let transaction = begin_skill_md_write_transaction()?;
+            let request = BoundFrontmatterRepairRequest {
+                deployment_id: deployment.id.clone(),
+                proposal_id,
+                expected_content_fingerprint,
+                mode,
+            };
+            let result = super::skill_native_fork::apply(
+                &mut service,
+                store,
+                &request,
+                &gh,
+                &allocate_id(),
+                cancellation,
+            );
+            drop(transaction);
+            drop(guard);
+            skill_refresh::request_snapshot_rebuild(&app);
+            return result;
+        }
+    }
     #[cfg(all(target_os = "macos", feature = "worker-repair"))]
     if mode != FrontmatterRepairApplyMode::ForkAndFix
         && deployment.owner_kind != skill_studio_core::skill_ownership::LifecycleOwnerKind::Copy

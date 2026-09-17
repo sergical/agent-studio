@@ -77,7 +77,7 @@ pub fn recover_next_repair(
         stage: RepairExecutionStage::Prepare,
         message,
     };
-    let (row, undo_recovery, redo_recovery) = {
+    let (row, undo_recovery, redo_recovery, fork_restore_source) = {
         let scope = crate::skill_scope::SkillReadScope::bind(std::slice::from_ref(&store.app_data))
             .map_err(|error| failure(error.to_string()))?;
         let lease = CoordinationPlan::new_cancellable(
@@ -105,7 +105,21 @@ pub fn recover_next_repair(
             .map(|row| events.read_copy_redo_recovery(&lease, row))
             .transpose()
             .map_err(failure)?;
-        (row, undo, redo)
+        let fork_source = row
+            .as_ref()
+            .filter(|row| row.kind == "restore_fork_document")
+            .map(|row| {
+                let intent: crate::skill_fork_document_restore::ForkDocumentRestoreIntent =
+                    serde_json::from_value(row.payload.clone())
+                        .map_err(|error| error.to_string())?;
+                intent.validate_record(&row.id)?;
+                store
+                    .get(&intent.target_event)?
+                    .ok_or("Fork restore source is missing".into())
+            })
+            .transpose()
+            .map_err(failure)?;
+        (row, undo, redo, fork_source)
     };
     let Some(row) = row else {
         return Ok(RepairRecoveryStep::Idle);
@@ -117,6 +131,44 @@ pub fn recover_next_repair(
             message: error.to_string(),
         };
     let outcome = match row.kind.as_str() {
+        "restore_fork_document" => {
+            let source = fork_restore_source
+                .ok_or_else(|| failure("Fork restore recovery source is missing".into()))?;
+            let limits = BackupCopyLimits {
+                max_bytes: 256 * 1024 * 1024,
+                max_entries: 20_000,
+                max_depth: 64,
+            };
+            service
+                .prepare_fork_document_restore_recovery(
+                    &source,
+                    &row,
+                    store,
+                    limits,
+                    timeout,
+                    cancellation.clone(),
+                )
+                .map_err(preparation_error)?
+                .recover(store, &cancellation)?
+        }
+        "repair_dotagents_fork" => {
+            let limits = BackupCopyLimits {
+                max_bytes: 256 * 1024 * 1024,
+                max_entries: 20_000,
+                max_depth: 64,
+            };
+            let prepared = service
+                .prepare_native_fork_recovery(&row, store, limits, timeout, cancellation.clone())
+                .map_err(preparation_error)?;
+            prepared
+                .resume(store, limits, &cancellation)
+                .map_err(|error| RepairExecutionError {
+                    event_id: row.id.clone(),
+                    stage: RepairExecutionStage::Recover,
+                    message: format!("{error:?}"),
+                })?;
+            RepairRecoveryOutcome::Applied
+        }
         "repair_skill_frontmatter" => {
             let prepared = service
                 .prepare_repair_event_recovery(

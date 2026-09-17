@@ -362,7 +362,7 @@ enum TreeNode {
     Symlink(PathBuf),
 }
 
-fn valid_commit(value: &str) -> bool {
+pub(crate) fn valid_commit(value: &str) -> bool {
     matches!(value.len(), 40 | 64)
         && value
             .bytes()

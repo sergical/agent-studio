@@ -164,7 +164,14 @@ fn dto_from_summary(store: &EventStore, home: &Path, row: HistorySummary) -> Ski
             }))
         || (super::skill_copy_repair::is_copy_event(&row.kind)
             && row.status == "done"
-            && row.reverted_by.is_none());
+            && row.reverted_by.is_none())
+        || cfg!(target_os = "macos")
+            && matches!(
+                row.kind.as_str(),
+                "repair_dotagents_fork" | "restore_fork_document"
+            )
+            && row.status == "done"
+            && row.reverted_by.is_none();
     let restorable = restorable
         && (!needs_detail || detail.is_some())
         && detail
@@ -417,6 +424,25 @@ fn restore_skill_event_blocking(
         )
         .map(|_| ())
         .map_err(super::skill_harness_disable::copy_visibility_error);
+        drop(guard);
+        skill_refresh::request_snapshot_rebuild(&app);
+        return result;
+    }
+    #[cfg(target_os = "macos")]
+    if super::skill_fork_document_history::is_fork_event(&target.kind) {
+        let projects = super::skill_project_authority::scoped_projects(&home, [])?;
+        let scope = super::skill_scope_config::desktop_skill_scope(&home, &projects)?;
+        let mut service = ScopedSkillService::bind(scope).map_err(|error| error.to_string())?;
+        let transaction = super::skill_md_write::begin_skill_md_write_transaction()?;
+        let result = super::skill_fork_document_history::restore(
+            &mut service,
+            store,
+            &target,
+            force,
+            &super::event_store::allocate_id(),
+            cancellation,
+        );
+        drop(transaction);
         drop(guard);
         skill_refresh::request_snapshot_rebuild(&app);
         return result;
@@ -1064,6 +1090,54 @@ mod tests {
         let dto = dto_from_summary(&store, temp.path(), row);
         assert!(!dto.restorable);
         assert!(!dto.force_restorable);
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn native_fork_history_requires_completed_unclaimed_events() {
+        let temp = tempfile::tempdir().unwrap();
+        let store = EventStore::open(&temp.path().join("app-data")).unwrap();
+        for kind in ["repair_dotagents_fork", "restore_fork_document"] {
+            let id = allocate_id();
+            store
+                .record(
+                    &id,
+                    EventDraft {
+                        kind: kind.into(),
+                        skill: "sample".into(),
+                        harness: None,
+                        scope: Some("global".into()),
+                        project_path: None,
+                        payload: serde_json::json!({}),
+                        inverse: None,
+                        backup_dir: None,
+                        restorable: false,
+                    },
+                )
+                .unwrap();
+            for (status, claim, eligible) in [
+                ("pending", None, false),
+                ("interrupted", None, false),
+                ("failed", None, false),
+                ("done", None, true),
+                ("done", Some("later"), false),
+            ] {
+                store
+                    .conn
+                    .execute(
+                        "UPDATE events SET status = ?1, reverted_by = ?2 WHERE id = ?3",
+                        rusqlite::params![status, claim, id],
+                    )
+                    .unwrap();
+                let summary = read_history_summaries(&store.conn, 1, None)
+                    .unwrap()
+                    .pop()
+                    .unwrap();
+                let dto = dto_from_summary(&store, temp.path(), summary);
+                assert_eq!(dto.restorable, eligible, "{kind}/{status}/{claim:?}");
+                assert_eq!(dto.force_restorable, eligible);
+            }
+        }
     }
 
     #[test]

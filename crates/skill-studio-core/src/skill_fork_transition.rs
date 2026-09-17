@@ -15,6 +15,30 @@ pub struct ForkRegistryTransition {
 }
 
 impl ForkRegistryTransition {
+    pub(crate) fn validate_before_projection(
+        &self,
+        before: &crate::skill_fork_registry::ForkRegistry,
+    ) -> Result<(), String> {
+        self.validate()?;
+        if before.forks.contains_key(&self.name) {
+            return Err("Fork record already exists in before-state".into());
+        }
+        for key in self.trial_keys() {
+            let saved = self
+                .trials_before
+                .get(&key)
+                .map(|value| {
+                    serde_json::from_value::<crate::skill_fork_registry::TrialRecord>(value.clone())
+                })
+                .transpose()
+                .map_err(|error| error.to_string())?;
+            if saved.as_ref() != before.trials.get(&key) {
+                return Err("Selected trial projection differs from fork before-state".into());
+            }
+        }
+        Ok(())
+    }
+
     pub fn new(name: String, record: ForkRecord, registry: &[u8]) -> Result<Self, String> {
         let document = parse_registry(registry)?;
         if entry(&document, "forks", &name)?.is_some() {

@@ -1770,6 +1770,490 @@ impl PreparedCopyRepairRedo<'_> {
 }
 
 #[cfg(all(unix, feature = "event-store"))]
+pub struct PreparedDotagentsForkSelection<'scope> {
+    selection: PreparedRepairSelection<'scope>,
+    detach: crate::skill_dotagents_ledger::DotagentsDetachIntent,
+    provider_lock: Vec<u8>,
+    provider_manifest: Vec<u8>,
+    registry_before: Option<Vec<u8>>,
+}
+
+#[cfg(all(unix, feature = "event-store"))]
+impl<'scope> PreparedDotagentsForkSelection<'scope> {
+    pub fn preview(&self) -> &crate::skill_frontmatter_repair::FrontmatterRepairPreview {
+        self.selection.preview()
+    }
+
+    pub fn detach(&self) -> &crate::skill_dotagents_ledger::DotagentsDetachIntent {
+        &self.detach
+    }
+
+    pub fn fork_source(
+        &self,
+    ) -> Result<crate::skill_dotagents_ledger::DotagentsForkSource, String> {
+        self.detach.fork_source()
+    }
+
+    pub fn provider_observation(
+        &self,
+    ) -> Result<crate::skill_provider_observation::DotagentsProviderObservation<'_, 'scope>, String>
+    {
+        crate::skill_provider_observation::DotagentsProviderObservation::bind(self)
+    }
+
+    pub fn provider_lock(&self) -> &[u8] {
+        &self.provider_lock
+    }
+    pub fn provider_manifest(&self) -> &[u8] {
+        &self.provider_manifest
+    }
+    pub fn registry_before(&self) -> Option<&[u8]> {
+        self.registry_before.as_deref()
+    }
+
+    /// Builds consistent intent data. The caller must verify the referenced saved
+    /// inputs before recording or executing it; this method does not write an event.
+    pub fn fork_intent(
+        &self,
+        snapshots: crate::skill_fork_snapshot::ForkSnapshotReference,
+        forked_at: chrono::DateTime<chrono::Utc>,
+    ) -> Result<crate::skill_fork_repair_intent::DotagentsForkRepairIntent, String> {
+        crate::skill_fork_repair_intent::DotagentsForkRepairIntent::from_prepared(
+            self, snapshots, forked_at,
+        )
+    }
+
+    /// Consumes the prepared lease and retains it on both success and failure.
+    #[cfg(feature = "event-store")]
+    pub fn begin_fork(
+        self,
+        store: &crate::skill_event_store::EventStore,
+        snapshots: crate::skill_fork_snapshot::ForkSnapshotReference,
+        forked_at: chrono::DateTime<chrono::Utc>,
+        limits: crate::skill_backup_reservation::BackupCopyLimits,
+        cancellation: &CancellationToken,
+    ) -> Result<
+        crate::skill_pending_fork::PendingDotagentsFork<'scope>,
+        Box<crate::skill_pending_fork::ForkPreparationFailure<'scope>>,
+    > {
+        crate::skill_pending_fork::PendingDotagentsFork::begin(
+            self,
+            store,
+            snapshots,
+            forked_at,
+            limits,
+            cancellation,
+        )
+    }
+
+    /// Records pending intent only. Provider execution and recovery are separate.
+    #[cfg(feature = "event-store")]
+    pub(crate) fn record_fork(
+        &self,
+        store: &crate::skill_event_store::EventStore,
+        snapshots: crate::skill_fork_snapshot::ForkSnapshotReference,
+        forked_at: chrono::DateTime<chrono::Utc>,
+        limits: crate::skill_backup_reservation::BackupCopyLimits,
+        cancellation: &CancellationToken,
+    ) -> Result<
+        crate::skill_fork_repair_intent::DotagentsForkRecoveryEvent,
+        crate::skill_event_operations::EventWriteFailure,
+    > {
+        use crate::skill_event_operations::{EventWriteFailure, GuardedEventStore};
+        let intent = self
+            .fork_intent(snapshots, forked_at)
+            .map_err(EventWriteFailure::BeforeWrite)?;
+        let guarded = GuardedEventStore::bind(store, &self.selection.lease)
+            .map_err(EventWriteFailure::BeforeWrite)?;
+        guarded
+            .verify_dotagents_fork_inputs(&self.selection.lease, &intent, limits, cancellation)
+            .map_err(EventWriteFailure::BeforeWrite)?;
+        self.revalidate()
+            .map_err(|error| EventWriteFailure::BeforeWrite(error.to_string()))?;
+        if cancellation.is_cancelled() {
+            return Err(EventWriteFailure::BeforeWrite(
+                "Fork event publication cancelled".into(),
+            ));
+        }
+        let event = guarded.record_dotagents_fork(
+            &self.selection.lease,
+            intent.snapshots().operation_id(),
+            &intent,
+        )?;
+        self.revalidate()
+            .map_err(|error| EventWriteFailure::MayHaveWritten(error.to_string()))?;
+        Ok(event)
+    }
+
+    #[cfg(feature = "event-store")]
+    pub(crate) fn validate_pending_fork(
+        &self,
+        store: &crate::skill_event_store::EventStore,
+        event: &crate::skill_fork_repair_intent::DotagentsForkRecoveryEvent,
+        limits: crate::skill_backup_reservation::BackupCopyLimits,
+        cancellation: &CancellationToken,
+    ) -> Result<(), String> {
+        self.revalidate().map_err(|error| error.to_string())?;
+        let guarded =
+            crate::skill_event_operations::GuardedEventStore::bind(store, &self.selection.lease)?;
+        guarded.read_dotagents_fork_snapshots(
+            &self.selection.lease,
+            event,
+            limits,
+            cancellation,
+        )?;
+        self.revalidate().map_err(|error| error.to_string())
+    }
+
+    #[cfg(feature = "event-store")]
+    pub(crate) fn publish_provider_documents(
+        &mut self,
+        event: &crate::skill_fork_repair_intent::DotagentsForkRecoveryEvent,
+        cancellation: &CancellationToken,
+        after_manifest: impl FnOnce(),
+    ) -> Result<(), crate::skill_document_write::DocumentWriteFailure> {
+        use crate::skill_document_target::{ProviderDocument, ProviderDocumentTarget};
+        use crate::skill_document_write::DocumentWriteFailure;
+        let proposal = event.intent().provider_documents().ok_or_else(|| {
+            DocumentWriteFailure::BeforeReplace(
+                "Legacy fork has no native provider proposal".into(),
+            )
+        })?;
+        let parent = std::path::Path::new(&self.preview().path)
+            .parent()
+            .and_then(std::path::Path::parent)
+            .ok_or_else(|| DocumentWriteFailure::BeforeReplace("Missing provider root".into()))?;
+        let manifest = ProviderDocumentTarget::bind(parent, ProviderDocument::Manifest)
+            .map_err(DocumentWriteFailure::BeforeReplace)?;
+        let lock = ProviderDocumentTarget::bind(parent, ProviderDocument::Lock)
+            .map_err(DocumentWriteFailure::BeforeReplace)?;
+        if cancellation.is_cancelled() {
+            return Err(DocumentWriteFailure::BeforeReplace(
+                "Provider publication cancelled".into(),
+            ));
+        }
+        manifest.replace(
+            &mut self.selection.lease,
+            &self.provider_manifest,
+            proposal.manifest().as_bytes(),
+        )?;
+        after_manifest();
+        let mut publish_lock = || -> Result<(), DocumentWriteFailure> {
+            if cancellation.is_cancelled() {
+                return Err(DocumentWriteFailure::AfterReplace(
+                    "Provider publication cancelled after manifest".into(),
+                ));
+            }
+            lock.replace(
+                &mut self.selection.lease,
+                &self.provider_lock,
+                proposal.lock().as_bytes(),
+            )?;
+            self.revalidate()
+                .map_err(|error| DocumentWriteFailure::AfterReplace(error.to_string()))
+        };
+        publish_lock().map_err(|error| DocumentWriteFailure::AfterReplace(error.to_string()))
+    }
+
+    #[cfg(feature = "event-store")]
+    pub(crate) fn publish_fork_registry(
+        &mut self,
+        event: &crate::skill_fork_repair_intent::DotagentsForkRecoveryEvent,
+    ) -> Result<(), crate::skill_document_write::DocumentWriteFailure> {
+        use crate::skill_document_write::DocumentWriteFailure;
+        let proposed = event
+            .intent()
+            .registry()
+            .apply_document(self.registry_before.as_deref().unwrap_or(b"{}"))
+            .map_err(DocumentWriteFailure::BeforeReplace)?;
+        let parent = std::path::Path::new(&self.preview().path)
+            .parent()
+            .and_then(std::path::Path::parent)
+            .ok_or_else(|| DocumentWriteFailure::BeforeReplace("Missing registry parent".into()))?;
+        let target = crate::skill_document_target::SkillRegistryTarget::bind(parent)
+            .map_err(DocumentWriteFailure::BeforeReplace)?;
+        match &self.registry_before {
+            Some(original) => target.replace(&mut self.selection.lease, original, &proposed)?,
+            None => target.create(&mut self.selection.lease, &proposed)?,
+        }
+        self.revalidate()
+            .map_err(|error| DocumentWriteFailure::AfterReplace(error.to_string()))
+    }
+
+    #[cfg(feature = "event-store")]
+    fn validate_fork_ownership_publication(
+        &self,
+        event: &crate::skill_fork_repair_intent::DotagentsForkRecoveryEvent,
+    ) -> Result<(), String> {
+        let proposal = event
+            .intent()
+            .provider_documents()
+            .ok_or("Missing native provider proposal")?;
+        let parent = std::path::Path::new(&self.preview().path)
+            .parent()
+            .and_then(std::path::Path::parent)
+            .ok_or("Missing provider parent")?;
+        let registry = event
+            .intent()
+            .registry()
+            .apply_document(self.registry_before.as_deref().unwrap_or(b"{}"))?;
+        for (name, expected) in [
+            ("agents.lock", proposal.lock().as_bytes()),
+            ("agents.toml", proposal.manifest().as_bytes()),
+            ("skill-studio.json", registry.as_slice()),
+        ] {
+            self.selection
+                .lease
+                .validate_published_document(&parent.join(name), expected)?;
+        }
+        Ok(())
+    }
+
+    #[cfg(feature = "event-store")]
+    pub(crate) fn publish_fork_repair(
+        &mut self,
+        event: &crate::skill_fork_repair_intent::DotagentsForkRecoveryEvent,
+    ) -> Result<(), crate::skill_document_write::DocumentWriteFailure> {
+        use crate::skill_document_write::DocumentWriteFailure;
+        self.validate_fork_ownership_publication(event)
+            .map_err(DocumentWriteFailure::BeforeReplace)?;
+        let original = self.preview().original_content.clone();
+        event
+            .intent()
+            .repair()
+            .validate_original(original.as_bytes())
+            .map_err(DocumentWriteFailure::BeforeReplace)?;
+        let parent = std::path::Path::new(&self.preview().path);
+        let target = crate::skill_document_target::SkillDocumentTarget::bind(parent)
+            .map_err(DocumentWriteFailure::BeforeReplace)?;
+        target.replace(
+            &mut self.selection.lease,
+            original.as_bytes(),
+            event.intent().repair().proposed_content.as_bytes(),
+        )?;
+        self.revalidate()
+            .map_err(|error| DocumentWriteFailure::AfterReplace(error.to_string()))
+    }
+
+    #[cfg(feature = "event-store")]
+    pub(crate) fn complete_fork(
+        &self,
+        store: &crate::skill_event_store::EventStore,
+        event: &crate::skill_fork_repair_intent::DotagentsForkRecoveryEvent,
+    ) -> Result<(), crate::skill_event_operations::EventWriteFailure> {
+        use crate::skill_event_operations::{EventWriteFailure, GuardedEventStore};
+        self.validate_fork_ownership_publication(event)
+            .map_err(EventWriteFailure::BeforeWrite)?;
+        self.selection
+            .lease
+            .validate_published_document(
+                &std::path::Path::new(&self.preview().path).join("SKILL.md"),
+                event.intent().repair().proposed_content.as_bytes(),
+            )
+            .map_err(EventWriteFailure::BeforeWrite)?;
+        GuardedEventStore::bind(store, &self.selection.lease)
+            .map_err(EventWriteFailure::BeforeWrite)?
+            .finish_dotagents_fork(&self.selection.lease, event)
+    }
+
+    /// Publishes request-correlated backups; executable trust and commit authentication remain separate.
+    pub fn publish_snapshots<'root>(
+        &self,
+        state: &'root crate::skill_backup_reservation::BackupStateRoot,
+        id: &str,
+        upstream: crate::skill_upstream_fetch::FetchedForkSource,
+        limits: crate::skill_backup_reservation::BackupCopyLimits,
+        cancellation: &CancellationToken,
+    ) -> Result<PublishedForkSnapshots<'root>, String> {
+        crate::skill_fork_preparation::publish(
+            self,
+            &self.selection.lease,
+            state,
+            id,
+            upstream,
+            limits,
+            cancellation,
+        )
+    }
+
+    pub(crate) fn verify_operation_absent(
+        &self,
+        store: &crate::skill_event_store::EventStore,
+        id: &str,
+    ) -> Result<(), String> {
+        crate::skill_event_operations::GuardedEventStore::bind(store, &self.selection.lease)?;
+        if store.get(id)?.is_some() {
+            return Err(
+                "Fork event may have been recorded; retaining snapshots for recovery".into(),
+            );
+        }
+        Ok(())
+    }
+
+    pub fn revalidate(&self) -> Result<(), CoordinationFailure> {
+        self.selection.lease.revalidate()
+    }
+}
+
+#[cfg(all(unix, feature = "event-store"))]
+pub struct PublishedForkSnapshots<'root> {
+    pub(crate) reference: crate::skill_fork_snapshot::ForkSnapshotReference,
+    pub(crate) backup: crate::skill_backup_reservation::ReservedBackup<'root>,
+}
+
+#[cfg(all(unix, feature = "event-store"))]
+impl PublishedForkSnapshots<'_> {
+    pub fn reference(&self) -> crate::skill_fork_snapshot::ForkSnapshotReference {
+        self.reference.clone()
+    }
+
+    pub fn discard(self) -> Result<(), String> {
+        self.backup.discard().map_err(|error| error.to_string())
+    }
+}
+
+#[cfg(all(unix, feature = "event-store"))]
+pub struct PreparedNativeForkRecovery<'scope> {
+    event: crate::skill_fork_repair_intent::DotagentsForkRecoveryEvent,
+    progress: crate::skill_native_fork_progress::NativeForkProgress,
+    manifest: Vec<u8>,
+    lock: Vec<u8>,
+    registry: Option<Vec<u8>>,
+    skill: Vec<u8>,
+    event_store_path: PathBuf,
+    lease: crate::skill_coordination::FinalizedWriteLease<'scope>,
+}
+
+#[cfg(all(unix, feature = "event-store"))]
+impl PreparedNativeForkRecovery<'_> {
+    pub fn event_id(&self) -> &str {
+        self.event.id()
+    }
+    pub fn progress(&self) -> crate::skill_native_fork_progress::NativeForkProgress {
+        self.progress
+    }
+    pub fn revalidate(&self) -> Result<(), CoordinationFailure> {
+        self.lease.revalidate()
+    }
+
+    /// Consumes the prepared attempt. After failure, acquire fresh evidence before retrying.
+    pub fn resume(
+        self,
+        store: &crate::skill_event_store::EventStore,
+        limits: crate::skill_backup_reservation::BackupCopyLimits,
+        cancellation: &CancellationToken,
+    ) -> Result<(), crate::skill_event_operations::EventWriteFailure> {
+        self.resume_with(store, limits, cancellation, |_| {})
+    }
+
+    pub(crate) fn resume_with(
+        mut self,
+        store: &crate::skill_event_store::EventStore,
+        limits: crate::skill_backup_reservation::BackupCopyLimits,
+        cancellation: &CancellationToken,
+        mut after_publication: impl FnMut(crate::skill_native_fork_progress::NativeForkProgress),
+    ) -> Result<(), crate::skill_event_operations::EventWriteFailure> {
+        use crate::skill_document_target::{
+            ProviderDocument, ProviderDocumentTarget, SkillDocumentTarget, SkillRegistryTarget,
+        };
+        use crate::skill_document_write::DocumentWriteFailure;
+        use crate::skill_event_operations::{EventWriteFailure, GuardedEventStore};
+        use crate::skill_native_fork_progress::NativeForkProgress;
+        if store.app_data != self.event_store_path {
+            return Err(EventWriteFailure::BeforeWrite(
+                "Recovery belongs to a different event store".into(),
+            ));
+        }
+        let parent = self
+            .event
+            .intent()
+            .repair()
+            .path
+            .parent()
+            .and_then(std::path::Path::parent)
+            .ok_or_else(|| EventWriteFailure::BeforeWrite("Missing recovery provider root".into()))?
+            .to_owned();
+        let mut changed = false;
+        let result = (|| loop {
+            GuardedEventStore::bind(store, &self.lease)
+                .map_err(EventWriteFailure::BeforeWrite)?
+                .read_dotagents_fork_snapshots(&self.lease, &self.event, limits, cancellation)
+                .map_err(EventWriteFailure::BeforeWrite)?;
+            let intent = self.event.intent();
+            let proposal = intent.provider_documents().ok_or_else(|| {
+                EventWriteFailure::BeforeWrite("Missing native recovery proposal".into())
+            })?;
+            let (publication, next) = match self.progress {
+                NativeForkProgress::Prepared => (
+                    ProviderDocumentTarget::bind(&parent, ProviderDocument::Manifest)
+                        .map_err(EventWriteFailure::BeforeWrite)?
+                        .replace(
+                            &mut self.lease,
+                            &self.manifest,
+                            proposal.manifest().as_bytes(),
+                        ),
+                    NativeForkProgress::ManifestPublished,
+                ),
+                NativeForkProgress::ManifestPublished => (
+                    ProviderDocumentTarget::bind(&parent, ProviderDocument::Lock)
+                        .map_err(EventWriteFailure::BeforeWrite)?
+                        .replace(&mut self.lease, &self.lock, proposal.lock().as_bytes()),
+                    NativeForkProgress::ProviderDetached,
+                ),
+                NativeForkProgress::ProviderDetached => {
+                    let bytes = intent
+                        .registry()
+                        .apply_document(self.registry.as_deref().unwrap_or(b"{}"))
+                        .map_err(EventWriteFailure::BeforeWrite)?;
+                    let target = SkillRegistryTarget::bind(&parent)
+                        .map_err(EventWriteFailure::BeforeWrite)?;
+                    let publication = match &self.registry {
+                        Some(original) => target.replace(&mut self.lease, original, &bytes),
+                        None => target.create(&mut self.lease, &bytes),
+                    };
+                    (publication, NativeForkProgress::RegistryPublished)
+                }
+                NativeForkProgress::RegistryPublished => (
+                    SkillDocumentTarget::bind(&intent.repair().path)
+                        .map_err(EventWriteFailure::BeforeWrite)?
+                        .replace(
+                            &mut self.lease,
+                            &self.skill,
+                            intent.repair().proposed_content.as_bytes(),
+                        ),
+                    NativeForkProgress::RepairPublished,
+                ),
+                NativeForkProgress::RepairPublished => {
+                    return GuardedEventStore::bind(store, &self.lease)
+                        .map_err(EventWriteFailure::BeforeWrite)?
+                        .finish_dotagents_fork(&self.lease, &self.event);
+                }
+            };
+            match publication {
+                Ok(()) => changed = true,
+                Err(DocumentWriteFailure::BeforeReplace(message)) => {
+                    return Err(EventWriteFailure::BeforeWrite(message))
+                }
+                Err(DocumentWriteFailure::AfterReplace(message)) => {
+                    return Err(EventWriteFailure::MayHaveWritten(message))
+                }
+            }
+            self.progress = next;
+            after_publication(next);
+            self.lease
+                .revalidate()
+                .map_err(|error| EventWriteFailure::MayHaveWritten(error.to_string()))?;
+        })();
+        result.map_err(|error| {
+            if changed {
+                EventWriteFailure::MayHaveWritten(error.to_string())
+            } else {
+                error
+            }
+        })
+    }
+}
+
 pub(crate) fn exact_repair_deployment<'a>(
     inventory: &'a InventoryRead,
     id: &str,
@@ -1821,6 +2305,60 @@ impl ScopedSkillService {
             preview,
             mode: request.mode,
             lease,
+        })
+    }
+
+    pub fn prepare_dotagents_fork_selection(
+        &mut self,
+        request: &crate::skill_frontmatter_repair::BoundFrontmatterRepairRequest,
+        additional_trees: &[PathBuf],
+        timeout: Option<Duration>,
+        cancellation: CancellationToken,
+    ) -> Result<PreparedDotagentsForkSelection<'_>, WritePreparationError> {
+        let agents = self.context.home().join(".agents");
+        let selection =
+            self.prepare_repair_selection(request, additional_trees, timeout, cancellation)?;
+        let invalid = WritePreparationError::InvalidRepairSelection;
+        let identity = crate::skill_deployment::parse_deployment_id(&request.deployment_id)
+            .ok_or_else(|| invalid("Fork requires a valid deployment identity".into()))?;
+        if selection.owner_kind() != crate::skill_ownership::LifecycleOwnerKind::Dotagents
+            || selection.mode
+                != crate::skill_frontmatter_repair::FrontmatterRepairApplyMode::ForkAndFix
+            || selection.preview().scope != "global"
+            || std::path::Path::new(&selection.preview().path)
+                != agents.join("skills").join(&identity.name)
+        {
+            return Err(invalid(
+                "Dotagents fork requires a named global canonical deployment".into(),
+            ));
+        }
+        let lock = selection
+            .lease
+            .read(&agents.join("agents.lock"), 8 * 1024 * 1024)
+            .map_err(|error| invalid(error.to_string()))?;
+        let manifest = selection
+            .lease
+            .read(&agents.join("agents.toml"), 8 * 1024 * 1024)
+            .map_err(|error| invalid(error.to_string()))?;
+        let detach = crate::skill_dotagents_ledger::DotagentsDetachIntent::from_documents(
+            &identity.name,
+            std::str::from_utf8(&lock).map_err(|error| invalid(error.to_string()))?,
+            std::str::from_utf8(&manifest).map_err(|error| invalid(error.to_string()))?,
+        )
+        .map_err(invalid)?;
+        detach.fork_source().map_err(invalid)?;
+        detach.to_record_json().map_err(invalid)?;
+        let registry_before = selection
+            .lease
+            .read_ownership_registry(&agents.join("skill-studio.json"), 8 * 1024 * 1024)
+            .map_err(invalid)?;
+        selection.lease.revalidate()?;
+        Ok(PreparedDotagentsForkSelection {
+            selection,
+            detach,
+            provider_lock: lock,
+            provider_manifest: manifest,
+            registry_before,
         })
     }
 
@@ -2477,6 +3015,126 @@ impl<'scope> PreparedRepairEventRecovery<'scope> {
 #[cfg(all(unix, feature = "event-store"))]
 impl ScopedSkillService {
     #[cfg(any(target_os = "macos", target_os = "linux"))]
+    pub fn prepare_native_fork_recovery(
+        &mut self,
+        row: &crate::skill_event::EventRow,
+        store: &crate::skill_event_store::EventStore,
+        limits: crate::skill_backup_reservation::BackupCopyLimits,
+        timeout: Option<Duration>,
+        cancellation: CancellationToken,
+    ) -> Result<PreparedNativeForkRecovery<'_>, WritePreparationError> {
+        use crate::skill_ownership::LifecycleOwnerKind;
+        let invalid = WritePreparationError::InvalidRepairSelection;
+        let event = crate::skill_fork_repair_intent::DotagentsForkRecoveryEvent::from_row(row)
+            .map_err(invalid)?;
+        let intent = event.intent();
+        let agents = self.context.home().join(".agents");
+        if intent.provider_documents().is_none()
+            || intent.repair().path != agents.join("skills").join(&intent.repair().name)
+        {
+            return Err(invalid(
+                "Native recovery requires a canonical deployment under the selected home".into(),
+            ));
+        }
+        let names = BTreeSet::from([intent.repair().name.clone()]);
+        let (inventory, lease) = self.prepare_write_inventory(
+            Some(&names),
+            std::slice::from_ref(&store.app_data),
+            timeout,
+            cancellation.clone(),
+        )?;
+        let mut scopes = inventory
+            .ownership
+            .scopes
+            .iter()
+            .filter(|scope| scope.agents_dir == agents);
+        let scope = scopes
+            .next()
+            .ok_or_else(|| invalid("Missing native recovery ownership scope".into()))?;
+        if scopes.next().is_some()
+            || scope.scope != crate::skill_deployment::InstallScope::Global
+            || scope.project_skills_sh.is_some()
+            || match &scope.skills_sh {
+                OwnershipInput::Absent => false,
+                OwnershipInput::Loaded(lock) => lock.skills.contains_key(&intent.repair().name),
+                OwnershipInput::Failed(_) => true,
+            }
+        {
+            return Err(invalid(
+                "Native recovery has competing or unresolved ownership".into(),
+            ));
+        }
+        let deployment = exact_repair_deployment(&inventory, &intent.repair().deployment_id)?;
+        if std::path::Path::new(&deployment.path) != intent.repair().path
+            || deployment.is_symlink
+            || deployment.plugin.is_some()
+            || deployment.disabled
+            || !matches!(
+                deployment.owner_kind,
+                LifecycleOwnerKind::Dotagents
+                    | LifecycleOwnerKind::Manual
+                    | LifecycleOwnerKind::Fork
+                    | LifecycleOwnerKind::WildcardDotagents
+                    | LifecycleOwnerKind::Ambiguous
+            )
+        {
+            return Err(invalid(
+                "Native recovery deployment ownership or location changed".into(),
+            ));
+        }
+        let read = |path: &std::path::Path, limit| {
+            lease
+                .read(path, limit)
+                .map_err(|error| invalid(error.to_string()))
+        };
+        let manifest = read(&agents.join("agents.toml"), 8 * 1024 * 1024)?;
+        let lock = read(&agents.join("agents.lock"), 8 * 1024 * 1024)?;
+        let registry = lease
+            .read_ownership_registry(&agents.join("skill-studio.json"), 8 * 1024 * 1024)
+            .map_err(invalid)?;
+        let skill = read(
+            &intent.repair().path.join("SKILL.md"),
+            MAX_REPAIR_DOCUMENT_BYTES,
+        )?;
+        let current = crate::skill_native_fork_progress::NativeForkDocuments {
+            manifest: &manifest,
+            lock: &lock,
+            registry: registry.as_deref(),
+            skill: &skill,
+        };
+        let guarded = crate::skill_event_operations::GuardedEventStore::bind(store, &lease)
+            .map_err(invalid)?;
+        let progress = guarded
+            .read_native_fork_progress(&lease, &event, &current, limits, &cancellation)
+            .map_err(invalid)?;
+        if deployment.owner_kind == LifecycleOwnerKind::WildcardDotagents
+            && progress != crate::skill_native_fork_progress::NativeForkProgress::ManifestPublished
+        {
+            return Err(invalid(
+                "Wildcard ownership is only valid after the saved manifest publication".into(),
+            ));
+        }
+        if deployment.owner_kind == LifecycleOwnerKind::Ambiguous
+            && progress != crate::skill_native_fork_progress::NativeForkProgress::ProviderDetached
+        {
+            return Err(invalid(
+                "Ambiguous ownership is only valid after the saved provider detach".into(),
+            ));
+        }
+        lease.revalidate()?;
+        Ok(PreparedNativeForkRecovery {
+            event,
+            progress,
+            manifest,
+            lock,
+            registry,
+            skill,
+            event_store_path: store.app_data.clone(),
+            lease,
+        })
+    }
+
+    #[cfg(all(unix, feature = "event-store"))]
     pub fn prepare_direct_restore(
         &mut self,
         row: &crate::skill_event::EventRow,

@@ -109,6 +109,28 @@ pub mod skill_copy_visibility;
 pub mod skill_invocation_edit;
 
 #[cfg(all(unix, feature = "event-store"))]
+pub mod skill_fork_document_restore;
+#[cfg(all(unix, feature = "event-store"))]
+mod skill_fork_preparation;
+#[cfg(all(unix, feature = "event-store"))]
+pub mod skill_fork_repair_intent;
+#[cfg(all(unix, feature = "event-store"))]
+pub mod skill_fork_snapshot;
+#[cfg(all(unix, feature = "event-store"))]
+pub mod skill_native_fork_progress;
+#[cfg(all(unix, feature = "event-store"))]
+pub mod skill_pending_fork;
+#[cfg(unix)]
+pub mod skill_process_stream;
+#[cfg(all(unix, feature = "event-store"))]
+pub mod skill_provider_observation;
+#[cfg(unix)]
+pub mod skill_upstream_archive;
+#[cfg(all(unix, feature = "event-store"))]
+pub mod skill_upstream_fetch;
+pub mod skill_upstream_layout;
+
+#[cfg(all(unix, feature = "event-store"))]
 mod skill_skills_sh_copy;
 
 #[cfg(unix)]

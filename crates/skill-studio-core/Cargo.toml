@@ -20,6 +20,8 @@ toml = "=1.1.4"
 toml_edit = "=0.23.10"
 
 [target.'cfg(unix)'.dependencies]
+tar = { version = "=0.4.46", default-features = false }
+flate2 = "=1.1.10"
 tracing = { version = "=0.1.44", default-features = false, features = ["std"] }
 cap-std = "=4.0.2"
 cap-fs-ext = "=4.0.2"
