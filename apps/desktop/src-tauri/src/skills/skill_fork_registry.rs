@@ -579,7 +579,7 @@ mod tests {
         write_fork_registry(tmp.path(), &ForkRegistry::default()).unwrap();
         let leftover = std::fs::read_dir(tmp.path().join(".agents"))
             .unwrap()
-            .filter_map(|e| e.ok())
+            .filter_map(std::result::Result::ok)
             .filter(|e| e.file_name().to_string_lossy().contains(".tmp."))
             .count();
         assert_eq!(leftover, 0);

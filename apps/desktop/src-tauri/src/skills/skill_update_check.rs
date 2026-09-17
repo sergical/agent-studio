@@ -10,6 +10,7 @@
 // ============================================================================
 
 use std::collections::{BTreeMap, VecDeque};
+use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Mutex;
@@ -308,7 +309,8 @@ impl CommitLookup for GhCommitLookup {
             urlencoding::encode(path)
         );
         if let Some(until) = until {
-            api_path.push_str(&format!("&until={}", urlencoding::encode(until)));
+            // Writing to a `String` never fails.
+            let _ = write!(api_path, "&until={}", urlencoding::encode(until));
         }
 
         let stdout_bytes = super::gh_cli::run_gh(
@@ -349,7 +351,8 @@ impl CommitLookup for GhCommitLookup {
             urlencoding::encode(path)
         );
         if let Some(until) = until {
-            api_path.push_str(&format!("&until={}", urlencoding::encode(until)));
+            // Writing to a `String` never fails.
+            let _ = write!(api_path, "&until={}", urlencoding::encode(until));
         }
         let stdout = super::gh_cli::run_gh_controlled(
             &self.gh_bin,
@@ -460,7 +463,7 @@ fn build_candidates(home: &Path, project_paths: &[PathBuf]) -> Vec<Candidate> {
             skill.github_repo.clone().map(|repo| Candidate {
                 owner_id: id,
                 name: skill.name.clone(),
-                scope: ledger.scope.clone(),
+                scope: ledger.scope,
                 repo,
                 path: skill.path.clone(),
                 kind: CandidateKind::Dotagents {
@@ -491,7 +494,7 @@ fn build_candidates(home: &Path, project_paths: &[PathBuf]) -> Vec<Candidate> {
             candidates.push(Candidate {
                 owner_id: owner_id(name),
                 name: name.clone(),
-                scope: ledger.scope.clone(),
+                scope: ledger.scope,
                 repo,
                 path,
                 kind: CandidateKind::SkillsSh { updated_at },
@@ -933,7 +936,7 @@ mod tests {
             self.calls.lock().unwrap().push((
                 repo.to_string(),
                 path.to_string(),
-                until.map(|s| s.to_string()),
+                until.map(std::string::ToString::to_string),
             ));
             self.answers.lock().unwrap().pop_front().unwrap_or(Ok(None))
         }
@@ -1587,7 +1590,7 @@ resolved_commit = "{commit}"
         // No leftover temp files: every writer's rename succeeded.
         let leftover_temp_files = std::fs::read_dir(app_data.join("skill-studio"))
             .unwrap()
-            .filter_map(|e| e.ok())
+            .filter_map(std::result::Result::ok)
             .filter(|e| e.file_name().to_string_lossy().contains(".tmp."))
             .count();
         assert_eq!(leftover_temp_files, 0);

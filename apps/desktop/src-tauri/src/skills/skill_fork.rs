@@ -675,6 +675,7 @@ struct ForkPreDetachPaths<'a> {
     quarantine_dir: Option<&'a Path>,
 }
 
+#[derive(Clone, Copy)]
 enum ForkRecoveryRollback {
     RestorePrevious,
     KeepComplete,
@@ -1553,7 +1554,7 @@ mod tests {
     use std::sync::Mutex;
 
     /// Records every `remove`/`reinstall` call so tests can assert "called
-    /// once with the right OriginTool" without shelling out to `npx`.
+    /// once with the right `OriginTool`" without shelling out to `npx`.
     #[derive(Default)]
     struct FakeLedger {
         remove_calls: Mutex<Vec<(OriginTool, String)>>,
@@ -2789,7 +2790,7 @@ mod tests {
         // rename (mine -> live-backup) fails with a permission error.
         let skills_root = home.join(".agents").join("skills");
         let original_perms = std::fs::metadata(&skills_root).unwrap().permissions();
-        let _restore = RestorePerms(skills_root.clone(), original_perms.clone());
+        let restore = RestorePerms(skills_root.clone(), original_perms.clone());
         let mut locked = original_perms;
         locked.set_mode(0o555);
         std::fs::set_permissions(&skills_root, locked).unwrap();
@@ -2802,7 +2803,7 @@ mod tests {
                 .unwrap_err();
         assert!(err.contains("Failed to back up the live tree"));
 
-        drop(_restore); // restore write access before reading back through it
+        drop(restore); // restore write access before reading back through it
 
         assert_eq!(
             fs::read_to_string(skills_root.join("find-bugs/SKILL.md")).unwrap(),

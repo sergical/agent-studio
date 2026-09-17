@@ -874,13 +874,12 @@ async fn read_capped_lines<R, FLine, FSkip>(
                 loop {
                     let mut drain: Vec<u8> = Vec::new();
                     match reader.read_until(b'\n', &mut drain).await {
-                        Ok(0) => break,
+                        Ok(0) | Err(_) => break,
                         Ok(_) => {
                             if drain.last() == Some(&b'\n') {
                                 break;
                             }
                         }
-                        Err(_) => break,
                     }
                 }
             }
@@ -922,9 +921,8 @@ where
     let mut chunk = [0u8; 4096];
     loop {
         match reader.read(&mut chunk).await {
-            Ok(0) => break,
+            Ok(0) | Err(_) => break,
             Ok(n) => push_stderr_tail(&mut tail, &chunk[..n]),
-            Err(_) => break,
         }
     }
     tail
@@ -1091,9 +1089,7 @@ async fn run_process(
         command.process_group(0);
     }
 
-    let mut child = if let Ok(child) = command.spawn() {
-        child
-    } else {
+    let Ok(mut child) = command.spawn() else {
         emit_event(
             sink,
             run_id,
@@ -1255,8 +1251,9 @@ async fn terminate_process_group(
         // SAFETY: `kill` with a negative pid signals the process group; no
         // pointers are involved, and a signal to an already-exited group is
         // a harmless no-op (ESRCH).
+        #[allow(unsafe_code)]
         unsafe {
-            libc::kill(-(pid as i32), libc::SIGTERM);
+            libc::kill(-(pid.cast_signed()), libc::SIGTERM);
         }
     }
     #[cfg(not(unix))]
@@ -1267,8 +1264,10 @@ async fn terminate_process_group(
     } else {
         #[cfg(unix)]
         if let Some(pid) = pid {
+            // SAFETY: same as the SIGTERM above.
+            #[allow(unsafe_code)]
             unsafe {
-                libc::kill(-(pid as i32), libc::SIGKILL);
+                libc::kill(-(pid.cast_signed()), libc::SIGKILL);
             }
         }
         child.wait().await
@@ -1279,6 +1278,9 @@ async fn terminate_process_group(
 /// `Finished` event. Idempotent: a second cancel of the same run, or a
 /// cancel after the run already finished, is a no-op.
 #[tauri::command]
+// Tauri commands deserialize their arguments fresh per invocation, so
+// `run_id` can't be borrowed from the caller - it must be owned.
+#[allow(clippy::needless_pass_by_value)]
 pub fn cancel_skill_agent_run(
     run_id: String,
     state: tauri::State<SkillAgentRunnerState>,
@@ -1347,9 +1349,8 @@ fn copy_dir_contained(root: &Path, src: &Path, dest: &Path, depth: u32) -> std::
 
         // Anything that doesn't canonicalize inside `root` - a symlink
         // escaping it, or an entry removed mid-walk - is skipped.
-        let canonical_path = match fs::canonicalize(&path) {
-            Ok(p) => p,
-            Err(_) => continue,
+        let Ok(canonical_path) = fs::canonicalize(&path) else {
+            continue;
         };
         if !canonical_path.starts_with(root) {
             continue;
@@ -1876,7 +1877,9 @@ mod tests {
 
     /// `cancel_skill_agent_run` takes a `tauri::State`, which needs a running
     /// app to construct; this exercises the same logic directly against a
-    /// bare `SkillAgentRunnerState`.
+    /// bare `SkillAgentRunnerState`. Mirrors that command's `Result` return
+    /// shape (always `Ok`, kept for Tauri command symmetry) on purpose.
+    #[allow(clippy::unnecessary_wraps)]
     fn cancel_skill_agent_run_for_test(
         state: &SkillAgentRunnerState,
         run_id: &str,
@@ -1884,7 +1887,7 @@ mod tests {
         let handle = state
             .runs
             .lock()
-            .unwrap_or_else(|e| e.into_inner())
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
             .get(run_id)
             .cloned();
         let Some(handle) = handle else {
@@ -1910,7 +1913,7 @@ mod tests {
         let sink: EventSink = Box::new(move |event| {
             events_clone
                 .lock()
-                .unwrap_or_else(|e| e.into_inner())
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
                 .push(event);
         });
 

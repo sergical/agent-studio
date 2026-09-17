@@ -23,6 +23,9 @@ pub(crate) struct SkillMdWriteTransaction {
     _guard: MutexGuard<'static, ()>,
 }
 
+// Every method here takes `&self` as a capability token proving the caller
+// holds the write-transaction guard, not because the body reads it.
+#[allow(clippy::unused_self)]
 impl SkillMdWriteTransaction {
     /// Reads text that will be checked or rewritten before this transaction
     /// replaces the same SKILL.md.

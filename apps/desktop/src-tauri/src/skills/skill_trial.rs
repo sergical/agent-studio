@@ -9,6 +9,7 @@
 // (untracked) skill.
 // ============================================================================
 
+use std::fmt::Write as _;
 use std::fs;
 use std::path::{Path, PathBuf};
 
@@ -269,10 +270,15 @@ fn expire_one(
     })?;
     let stamp = now.format("%Y%m%d-%H%M%S");
     let deployment_digest = Sha256::digest(trial.deployment_id.as_bytes());
-    let deployment_key: String = deployment_digest[..8]
-        .iter()
-        .map(|byte| format!("{byte:02x}"))
-        .collect();
+    // One `write!` per byte into a pre-sized `String`, rather than collecting
+    // a `Vec<String>` of two-char fragments.
+    let deployment_key =
+        deployment_digest[..8]
+            .iter()
+            .fold(String::with_capacity(16), |mut acc, byte| {
+                let _ = write!(acc, "{byte:02x}");
+                acc
+            });
     let invocation_root = loop {
         let candidate = trash_root.join(format!(
             "{name}-{stamp}--v2-{deployment_key}-{}",
@@ -280,7 +286,7 @@ fn expire_one(
         ));
         match fs::create_dir(&candidate) {
             Ok(()) => break candidate,
-            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => continue,
+            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {}
             Err(error) => {
                 return Err(ExpireOneError::before_backup(format!(
                     "Failed to create {}: {error}",
@@ -661,11 +667,14 @@ fn run_trial_expiry_pass_with_controls(
                     continue;
                 }
                 ExpiringRecovery::RecoveryRequired(error) => {
-                    registry
-                        .trials
-                        .get_mut(&key)
-                        .expect("expiring trial exists")
-                        .status = TrialStatus::RecoveryRequired;
+                    // `key` came from `registry.trials` above and nothing in this
+                    // iteration removes it; if that ever changes, skip rather than
+                    // panic on this cleanup pass - the next pass will retry it.
+                    let Some(entry) = registry.trials.get_mut(&key) else {
+                        eprintln!("[skill_trial] {name} vanished from the registry mid-reconcile");
+                        continue;
+                    };
+                    entry.status = TrialStatus::RecoveryRequired;
                     if let Err(write_error) = write_registry(home, &registry) {
                         registry = original_registry;
                         eprintln!(
@@ -683,11 +692,13 @@ fn run_trial_expiry_pass_with_controls(
         }
 
         if trial.method != AddMethod::Copy {
-            registry
-                .trials
-                .get_mut(&key)
-                .expect("due trial exists")
-                .status = TrialStatus::Expiring;
+            // Same invariant as above: `key` was just read from `registry.trials`
+            // and nothing above removes it.
+            let Some(entry) = registry.trials.get_mut(&key) else {
+                eprintln!("[skill_trial] {name} vanished from the registry mid-reconcile");
+                continue;
+            };
+            entry.status = TrialStatus::Expiring;
             if let Err(error) = write_registry(home, &registry) {
                 registry = original_registry;
                 eprintln!("[skill_trial] failed to persist expiry tombstone for {name}: {error}");
@@ -714,11 +725,14 @@ fn run_trial_expiry_pass_with_controls(
                                     ),
                                 },
                                 Err(cleanup_error) => {
-                                    registry
-                                        .trials
-                                        .get_mut(&key)
-                                        .expect("expiring trial exists")
-                                        .status = TrialStatus::RecoveryRequired;
+                                    // Same invariant as above.
+                                    let Some(entry) = registry.trials.get_mut(&key) else {
+                                        eprintln!(
+                                            "[skill_trial] {name} vanished from the registry mid-reconcile"
+                                        );
+                                        continue;
+                                    };
+                                    entry.status = TrialStatus::RecoveryRequired;
                                     if let Err(write_error) = write_registry(home, &registry) {
                                         registry = original_registry;
                                         eprintln!(
@@ -735,11 +749,14 @@ fn run_trial_expiry_pass_with_controls(
                             "[skill_trial] {name} removal failed after changing the deployment; its durable tombstone remains"
                         ),
                         Err(verify_error) => {
-                            registry
-                                .trials
-                                .get_mut(&key)
-                                .expect("expiring trial exists")
-                                .status = TrialStatus::RecoveryRequired;
+                            // Same invariant as above.
+                            let Some(entry) = registry.trials.get_mut(&key) else {
+                                eprintln!(
+                                    "[skill_trial] {name} vanished from the registry mid-reconcile"
+                                );
+                                continue;
+                            };
+                            entry.status = TrialStatus::RecoveryRequired;
                             if let Err(write_error) = write_registry(home, &registry) {
                                 registry = original_registry;
                                 eprintln!(
@@ -1395,7 +1412,7 @@ mod tests {
         assert_eq!(expired.len(), 1);
         assert_eq!(read_fork_registry(&home).unwrap().trials.len(), 1);
         assert_eq!(
-            global_skill.exists() as usize + project_skill.exists() as usize,
+            usize::from(global_skill.exists()) + usize::from(project_skill.exists()),
             1
         );
 

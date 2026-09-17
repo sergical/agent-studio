@@ -118,16 +118,24 @@ fn command_label(command: &str) -> String {
     )
 }
 
+/// Whether `value` names a `.app` bundle, case-insensitively - macOS's
+/// default filesystem doesn't distinguish `.app`/`.App`/`.APP`.
+fn has_app_extension(value: &str) -> bool {
+    Path::new(value)
+        .extension()
+        .is_some_and(|ext| ext.eq_ignore_ascii_case("app"))
+}
+
 /// Whether `value` is a `.app` bundle path that currently exists.
 fn is_existing_app_path(value: &str) -> bool {
-    value.ends_with(".app") && Path::new(value).is_dir()
+    has_app_extension(value) && Path::new(value).is_dir()
 }
 
 /// Whether a saved value is still something "Open in editor" can act on.
 fn is_selected_usable(value: &str, installed: &[EditorOption], terminal: Option<&str>) -> bool {
     if value == "$EDITOR" {
         terminal.is_some()
-    } else if value.ends_with(".app") {
+    } else if has_app_extension(value) {
         is_existing_app_path(value)
     } else {
         installed.iter().any(|e| e.app_name == value)
@@ -150,7 +158,7 @@ fn set_preferred_editor_in(
             }
             Some(v)
         }
-        Some(v) if v.ends_with(".app") => {
+        Some(v) if has_app_extension(&v) => {
             let path = Path::new(&v);
             if !path.is_absolute() {
                 return Err(format!("{v} must be an absolute path."));
@@ -277,7 +285,7 @@ fn run_with_timeout(mut command: Command, end_marker: &str, timeout: Duration) -
         loop {
             line.clear();
             match reader.read_line(&mut line) {
-                Ok(0) => break,
+                Ok(0) | Err(_) => break,
                 Ok(_) => {
                     let is_end_line = line.contains(&end_marker);
                     collected.push_str(&line);
@@ -285,7 +293,6 @@ fn run_with_timeout(mut command: Command, end_marker: &str, timeout: Duration) -
                         break;
                     }
                 }
-                Err(_) => break,
             }
         }
         let _ = tx.send(collected);

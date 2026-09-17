@@ -409,7 +409,7 @@ mod tests {
 
         let leftover_temp_files = std::fs::read_dir(tmp.path())
             .unwrap()
-            .filter_map(|e| e.ok())
+            .filter_map(std::result::Result::ok)
             .filter(|e| {
                 e.file_name()
                     .to_string_lossy()
@@ -608,7 +608,7 @@ mod tests {
             skills: Default::default(),
         };
         let skills =
-            super::super::skill_assembly::assemble_installed_skills(core_skills.skills, &lock);
+            super::super::skill_assembly::assemble_installed_skills(&core_skills.skills, &lock);
         let mut snapshot = fixture_snapshot(home, None);
         snapshot.skills = skills;
         snapshot
@@ -1580,6 +1580,7 @@ fn restore_staged_dotagents_links(staged: &[(PathBuf, PathBuf)]) -> Result<(), S
     Ok(())
 }
 
+#[derive(Clone, Copy)]
 struct DotagentsRemovalContext<'a> {
     home: &'a Path,
     snapshot: &'a skill_refresh::SkillSnapshot,
@@ -1768,10 +1769,10 @@ pub async fn remove_skill(
     if is_fork {
         return remove_forked_skill(
             skill_name,
-            deployment.id,
-            deployment.path,
-            deployment.content_hash,
-            app.clone(),
+            &deployment.id,
+            &deployment.path,
+            &deployment.content_hash,
+            &app,
         );
     }
 
@@ -1818,7 +1819,7 @@ pub async fn remove_skill(
     }
     let args = match deployment.owner_kind {
         super::skill_ownership::LifecycleOwnerKind::SkillsSh => {
-            skills_sh_remove_args_for_scope(&skill_name, scope.clone())
+            skills_sh_remove_args_for_scope(&skill_name, scope)
         }
         super::skill_ownership::LifecycleOwnerKind::Dotagents => unreachable!(),
         super::skill_ownership::LifecycleOwnerKind::Copy => {
@@ -1922,10 +1923,10 @@ pub async fn remove_skill(
 /// drop the fork-registry record and snapshot.
 fn remove_forked_skill(
     skill_name: String,
-    deployment_id: String,
-    deployment_path: String,
-    deployment_content_hash: String,
-    app: tauri::AppHandle,
+    deployment_id: &str,
+    deployment_path: &str,
+    deployment_content_hash: &str,
+    app: &tauri::AppHandle,
 ) -> Result<InstallResult, String> {
     // Callers hold `ForkMutationLock` for the whole `remove_skill` call - the
     // mutex isn't reentrant, so this function must not acquire it again.
@@ -1939,13 +1940,13 @@ fn remove_forked_skill(
         &home,
         &app_data,
         &skill_name,
-        &deployment_id,
-        Path::new(&deployment_path),
-        &deployment_content_hash,
+        deployment_id,
+        Path::new(deployment_path),
+        deployment_content_hash,
         skill_fork_registry::write_fork_registry,
     )?;
 
-    skill_refresh::request_snapshot_rebuild(&app);
+    skill_refresh::request_snapshot_rebuild(app);
     Ok(InstallResult {
         success: true,
         skill_name,
@@ -1998,7 +1999,10 @@ fn remove_forked_skill_with(
         .join(".agents")
         .join("skills-trash")
         .join(format!(".fork-remove-{}-{stage_id}", std::process::id()));
-    std::fs::create_dir_all(backup.parent().expect("backup has a parent"))
+    let backup_parent = backup
+        .parent()
+        .ok_or_else(|| "Fork removal trash path has no parent".to_string())?;
+    std::fs::create_dir_all(backup_parent)
         .map_err(|error| format!("Failed to create fork removal trash: {error}"))?;
     std::fs::rename(skill_dir, &backup).map_err(|error| {
         format!(
@@ -2205,6 +2209,9 @@ pub async fn write_installed_skill_md_if_unchanged(
 /// can start the login shell to read `$EDITOR` - never runs on the main
 /// thread.
 #[tauri::command(async)]
+// Tauri commands deserialize their arguments fresh per invocation, so `path`
+// and `mode` can't be borrowed from the caller - they must be owned.
+#[allow(clippy::needless_pass_by_value)]
 pub fn open_skill_path(
     path: String,
     mode: String,
@@ -2340,12 +2347,8 @@ pub async fn update_skill(
                 } else {
                     None
                 };
-                let args = dotagents_update_args(
-                    &skill_name,
-                    entry,
-                    latest_commit.as_deref(),
-                    scope.clone(),
-                )?;
+                let args =
+                    dotagents_update_args(&skill_name, entry, latest_commit.as_deref(), scope)?;
                 ("dotagents", args)
             }
             super::skill_ownership::LifecycleOwnerKind::SkillsSh => {

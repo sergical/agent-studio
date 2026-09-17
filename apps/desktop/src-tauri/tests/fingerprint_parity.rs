@@ -1,3 +1,8 @@
+// Integration test binaries aren't covered by the lib crate's
+// `cfg_attr(test, allow(...))`: this file compiles as its own crate, so
+// the same allow needs to be declared here too.
+#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+
 //! Pins the host crate's content hash to the desktop's `fingerprint_path`.
 //!
 //! Backup manifests written by the shipped desktop app carry desktop

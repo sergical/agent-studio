@@ -212,6 +212,9 @@ pub fn init(app: &AppHandle) -> SkillRefreshState {
 
 /// Instant read of the current snapshot from managed state.
 #[tauri::command]
+// Tauri commands deserialize their arguments fresh per invocation, so `app`
+// can't be borrowed from the caller - it must be owned.
+#[allow(clippy::needless_pass_by_value)]
 pub fn get_skill_snapshot(
     state: tauri::State<SkillRefreshState>,
     app: tauri::AppHandle,
@@ -224,6 +227,9 @@ pub fn get_skill_snapshot(
 /// Ask the background thread to rebuild the snapshot. Returns immediately;
 /// the rebuild happens asynchronously and a fresh `SNAPSHOT_EVENT` follows.
 #[tauri::command]
+// Tauri commands deserialize their arguments fresh per invocation, so `app`
+// can't be borrowed from the caller - it must be owned.
+#[allow(clippy::needless_pass_by_value)]
 pub fn request_skill_rescan(state: tauri::State<SkillRefreshState>, app: tauri::AppHandle) {
     crate::timing_log::time_command(&app, "request_skill_rescan", move || {
         state.skills_dirty.store(true, Ordering::SeqCst);
@@ -713,7 +719,7 @@ pub fn reconcile_skill_names_and_emit(
         state.mark_skills_dirty();
         format!("Targeted skill reconciliation could not read lifecycle registry: {error}")
     })?;
-    let mut replacements = skill_assembly::assemble_installed_skills(core_skills, &lock);
+    let mut replacements = skill_assembly::assemble_installed_skills(&core_skills, &lock);
     let current_owner_ids: Vec<String> = current
         .skills
         .iter()
@@ -903,6 +909,9 @@ fn invocation_cache_path(app: &AppHandle) -> PathBuf {
 /// or on an explicit rescan request. Every error is logged with `eprintln!`
 /// and never panics the thread; a failed rebuild simply keeps the previous
 /// snapshot in place.
+// `app` and `state` must be owned: the sole caller moves both into a
+// `thread::spawn` closure, which needs a `'static` capture.
+#[allow(clippy::needless_pass_by_value)]
 fn run_refresh_loop(app: AppHandle, state: SkillRefreshState) {
     let Some(home) = dirs::home_dir() else {
         eprintln!("skill refresh: could not find home directory, giving up");
@@ -1068,6 +1077,7 @@ fn reconcile_watchers(
 /// `pub` (rather than the crate-private visibility every other type here
 /// needs) so `apps/desktop/src-tauri/tests/core_scan_parity.rs` can build one
 /// for a fixture home; see that file's header for why.
+#[derive(Clone, Copy)]
 pub struct BuildPaths<'a> {
     cache_path: &'a Path,
     runs_root: &'a Path,
@@ -1567,7 +1577,7 @@ pub fn build_snapshot(
     });
     let fork_registry = super::skill_fork_registry::read_fork_registry_or_default(home);
     let assembly_start = Instant::now();
-    let mut skills = skill_assembly::assemble_installed_skills(core_skills, &lock);
+    let mut skills = skill_assembly::assemble_installed_skills(&core_skills, &lock);
     let assembly_ms = assembly_start.elapsed().as_millis();
 
     let update_store = skill_update_check::read_update_check_store_at(update_check_path);
@@ -2669,8 +2679,10 @@ mod tests {
             .filter_map(|deployment| deployment.owner_id.clone())
             .collect();
         assert_eq!(owner_ids.len(), 2);
-        let owners = serde_json::Map::from_iter(owner_ids.iter().enumerate().map(
-            |(index, owner_id)| {
+        let owners: serde_json::Map<_, _> = owner_ids
+            .iter()
+            .enumerate()
+            .map(|(index, owner_id)| {
                 (
                     owner_id.clone(),
                     serde_json::json!({
@@ -2682,8 +2694,8 @@ mod tests {
                         "lock_updated_at": null
                     }),
                 )
-            },
-        ));
+            })
+            .collect();
         fs::write(
             &update_check_path,
             serde_json::json!({
@@ -2917,7 +2929,7 @@ mod tests {
         .unwrap();
 
         update_tracked_projects(&home, |tracked| {
-            tracked.track([PathBuf::from("/tmp/a-project")])
+            tracked.track([PathBuf::from("/tmp/a-project")]);
         })
         .unwrap();
 

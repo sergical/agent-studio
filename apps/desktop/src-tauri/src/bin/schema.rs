@@ -64,6 +64,10 @@ struct WireTypes {
     project_folder_source: ProjectFolderSource,
 }
 
+// This bin's entire job is writing the generated schema JSON to stdout for
+// `npm run types:generate` to pipe onward, so `print_stdout` doesn't apply,
+// and a malformed schema is a build-time bug worth panicking on immediately.
+#[allow(clippy::print_stdout, clippy::unwrap_used)]
 fn main() {
     // `for_serialize()` makes `required` reflect what the Rust side actually
     // writes to the wire (every field lacking `skip_serializing_if` is always

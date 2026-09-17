@@ -148,6 +148,9 @@ fn rehome_table_decor(doc: &mut DocumentMut, removed_position: Option<isize>, te
     if let Some(next_position) =
         removed_position.and_then(|position| next_table_position(doc.as_table(), position))
     {
+        // `next_position` came from `next_table_position` walking this same
+        // `doc`, so the table it names is still there.
+        #[allow(clippy::expect_used)]
         let next = table_at_position_mut(doc.as_table_mut(), next_position)
             .expect("next_table_position returned an existing table");
         prepend_table_decor(next, text);
@@ -189,6 +192,9 @@ pub fn set_skill_disabled(home: &Path, skill_md_path: &Path, disabled: bool) -> 
     if !disabled {
         if let Some(idx) = existing {
             let (removed_decor, array_is_empty) = {
+                // `find_row_index` (which produced `existing`, above) only
+                // returns `Some` when `skills.config` is an array of tables.
+                #[allow(clippy::expect_used)]
                 let array = doc["skills"]["config"]
                     .as_array_of_tables_mut()
                     .expect("find_row_index only returns Some when this is an array of tables");
@@ -207,6 +213,9 @@ pub fn set_skill_disabled(home: &Path, skill_md_path: &Path, disabled: bool) -> 
 
             let mut orphaned_decor = removed_decor.into_iter().collect::<Vec<_>>();
             let remove_skills = {
+                // `skills.config` (above) is only reachable when `skills`
+                // itself is a table.
+                #[allow(clippy::expect_used)]
                 let skills_table = doc["skills"]
                     .as_table_mut()
                     .expect("skills is a table when config was");

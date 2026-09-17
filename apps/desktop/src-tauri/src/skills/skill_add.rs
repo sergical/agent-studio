@@ -465,7 +465,7 @@ fn add_via_skills_sh(
         .ok_or("The skills.sh method needs a GitHub source")?;
     let skill_name = request.source.skill_name.clone();
     let spec = SkillInstallSpec {
-        scope: request.scope.clone(),
+        scope: request.scope,
         destination: request.destination,
         project_path: request.project_path.clone(),
         harnesses: request.agents.clone(),
@@ -478,7 +478,7 @@ fn add_via_skills_sh(
         skill_name.unwrap_or_else(|| repo.split('/').next_back().unwrap_or(&repo).to_string());
 
     let project = request.project_path.as_deref().map(Path::new);
-    let mut deployment_dirs = vec![universal_skills_dir(home, request.scope.clone(), project)];
+    let mut deployment_dirs = vec![universal_skills_dir(home, request.scope, project)];
     if request.agents.contains(&AgentId::ClaudeCode) {
         deployment_dirs.push(claude_skills_dir(home, request));
     }
@@ -788,7 +788,7 @@ fn add_via_copy(
     let project = request.project_path.as_deref().map(Path::new);
     let per_harness_agents = if request.destination == SkillDestination::PerHarness {
         per_harness_copy_targets(&SkillInstallSpec {
-            scope: request.scope.clone(),
+            scope: request.scope,
             destination: request.destination,
             project_path: request.project_path.clone(),
             harnesses: request.agents.clone(),
@@ -798,7 +798,7 @@ fn add_via_copy(
     };
     let target_roots = match request.destination {
         SkillDestination::Universal => {
-            vec![universal_skills_dir(home, request.scope.clone(), project)]
+            vec![universal_skills_dir(home, request.scope, project)]
         }
         SkillDestination::PerHarness => per_harness_agents
             .iter()
@@ -1005,7 +1005,7 @@ fn copy_deployment_record(
         deployment_id: installed_deployment_id(request, name, path, slot),
         name: name.to_string(),
         path: path.to_path_buf(),
-        scope: request.scope.clone(),
+        scope: request.scope,
         destination: request.destination,
         slot: slot.to_string(),
         project_path: request.project_path.clone(),
@@ -1079,11 +1079,8 @@ fn apply_disabled_harnesses(home: &Path, request: &AddSkillRequest, result: &mut
     let codex_paths = codex_visible_skill_mds(home, request, &result.deployments_created);
     let universal_root = shared_skills_dir(home, request);
     let project_path = request.project_path.as_deref().map(Path::new);
-    let claude_root = super::skill_lifecycle::claude_skills_dir_for_scope(
-        home,
-        request.scope.clone(),
-        project_path,
-    );
+    let claude_root =
+        super::skill_lifecycle::claude_skills_dir_for_scope(home, request.scope, project_path);
     let mut failures = Vec::new();
     // One `dotagents add` can create several folders, joined into `name`.
     for name in result.name.split(", ") {
@@ -1171,7 +1168,7 @@ fn request_for_entry(batch: &AddSkillsRequest, entry: &GithubSkillEntry) -> AddS
         destination: batch.destination,
         agents: batch.agents.clone(),
         disabled_harnesses: batch.disabled_harnesses.clone(),
-        scope: batch.scope.clone(),
+        scope: batch.scope,
         project_path: batch.project_path.clone(),
         trial: batch.trial,
     }

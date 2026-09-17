@@ -1,3 +1,8 @@
+// Integration test binaries aren't covered by the lib crate's
+// `cfg_attr(test, allow(...))`: this file compiles as its own crate, so
+// the same allow needs to be declared here too.
+#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+
 //! Pins `skill-studio-core`'s `ops::scan` content facts (whole-folder digest,
 //! token counts, byte/file counters, link facts) to concrete expected values
 //! derived from the fixture bytes themselves and from the same primitives
@@ -59,7 +64,7 @@ fn fixture_files() -> Vec<(&'static str, &'static [u8])> {
 }
 
 /// Reimplements `ops::content_hash_from_walk`'s length-framed sha256 digest
-/// over the fixture's own known bytes, sorted by rel_path exactly as core
+/// over the fixture's own known bytes, sorted by `rel_path` exactly as core
 /// sorts them, so the expected digest is derived rather than copied from a
 /// prior run.
 fn expected_content_hash(files: &[(&'static str, &'static [u8])]) -> String {
@@ -73,14 +78,14 @@ fn expected_content_hash(files: &[(&'static str, &'static [u8])]) -> String {
         hasher.update((bytes.len() as u64).to_le_bytes());
         hasher.update(bytes);
     }
-    hasher
-        .finalize()
-        .iter()
-        .map(|b| format!("{b:02x}"))
-        .collect()
+    use std::fmt::Write as _;
+    hasher.finalize().iter().fold(String::new(), |mut out, b| {
+        let _ = write!(out, "{b:02x}");
+        out
+    })
 }
 
-/// cl100k_base token count, matching core's `count_tokens`
+/// `cl100k_base` token count, matching core's `count_tokens`
 /// (`ops.rs::tokenizer`).
 fn expected_token_count(text: &str) -> u32 {
     let bpe = tiktoken_rs::cl100k_base().expect("embedded cl100k_base vocab");

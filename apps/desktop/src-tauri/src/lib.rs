@@ -1,10 +1,9 @@
-#![forbid(unsafe_code)]
 // Tauri logging and setup diagnostics go through println/eprintln today;
 // the desktop app has no other console.
 #![allow(clippy::print_stdout, clippy::print_stderr)]
-// unwrap/expect are fine in test code; production code must use ?
+// unwrap/expect/panic are fine in test code; production code must use ?
 // or an explicit error.
-#![cfg_attr(test, allow(clippy::unwrap_used, clippy::expect_used))]
+#![cfg_attr(test, allow(clippy::unwrap_used, clippy::expect_used, clippy::panic))]
 
 // ============================================================================
 // Skill Studio - Rust Backend
@@ -137,6 +136,10 @@ fn apply_fixture_home_override() {
             "skill-studio: SKILL_STUDIO_FIXTURE set, running against fixture home {}",
             fixture.to_string_lossy()
         );
+        // Safety: this runs before `run()` spawns the refresh thread or
+        // hands control to Tauri, so nothing else reads or writes `HOME`
+        // concurrently with this write.
+        #[allow(unsafe_code)]
         unsafe {
             std::env::set_var("HOME", &fixture);
         }
@@ -144,6 +147,11 @@ fn apply_fixture_home_override() {
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
+// `run()` is the process entry point (called only from `main()`); a failure
+// building or running the Tauri event loop is fatal and unrecoverable, so
+// the standard Tauri quickstart pattern of `.expect()` here - rather than
+// threading a `Result` back through `main()` - is the idiom.
+#[allow(clippy::expect_used)]
 pub fn run() {
     apply_fixture_home_override();
     // Before Tauri's own setup, so a panic during setup itself is still

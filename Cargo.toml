@@ -28,6 +28,10 @@ similar_names = "allow"
 cast_possible_truncation = "allow"
 cast_sign_loss = "allow"
 cast_precision_loss = "allow"
+# `Default::default()` inside a struct literal already names the field and
+# its type on the left of the `:`; spelling the type out again on the right
+# is pure churn repeated ~75 times across the workspace.
+default_trait_access = "allow"
 # A one-off struct declared next to the single test that deserializes into
 # it (matching another crate's on-disk shape, say) reads better right where
 # it's used than hoisted above the test's setup code.

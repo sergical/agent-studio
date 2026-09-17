@@ -348,7 +348,10 @@ fn prepare_worktree(
         std::process::id()
     );
     let worktree_path = worktree_root(app)?.join(stamp);
-    fs::create_dir_all(worktree_path.parent().unwrap())
+    let worktree_parent = worktree_path
+        .parent()
+        .ok_or("Worktree path has no parent")?;
+    fs::create_dir_all(worktree_parent)
         .map_err(|e| format!("Could not create worktree root: {e}"))?;
 
     run_git(
@@ -543,7 +546,8 @@ fn apply_worktree_diff(target: &PreparedRunTarget) -> Result<(), String> {
 
     let diff = diff_for(&target.cwd)?;
     if diff.trim().is_empty() {
-        return remove_worktree(target);
+        remove_worktree(target);
+        return Ok(());
     }
 
     let status = run_git(project, &["status", "--porcelain", "-z"])?;
@@ -585,14 +589,15 @@ fn apply_worktree_diff(target: &PreparedRunTarget) -> Result<(), String> {
     let _ = fs::remove_file(&tmp);
     result?;
 
-    remove_worktree(target)
+    remove_worktree(target);
+    Ok(())
 }
 
 /// Removes a Worktree target's checkout and directory - shared by a
 /// successful/no-op `apply` and by `discard`.
-fn remove_worktree(target: &PreparedRunTarget) -> Result<(), String> {
+fn remove_worktree(target: &PreparedRunTarget) {
     let Some(path) = &target.cleanup_path else {
-        return Ok(());
+        return;
     };
     let path_str = path.to_string_lossy().to_string();
     // The project path is needed as the cwd `git worktree remove` runs in;
@@ -605,7 +610,6 @@ fn remove_worktree(target: &PreparedRunTarget) -> Result<(), String> {
         let _ = run_git(path, &["worktree", "prune"]);
     }
     let _ = fs::remove_dir_all(path);
-    Ok(())
 }
 
 /// Applies a prepared Worktree target's diff back onto its project.
@@ -732,7 +736,10 @@ fn discard_in_place(cwd: &Path) -> Result<(), String> {
 /// produced.
 fn discard_target(target: &PreparedRunTarget) -> Result<(), String> {
     match target.kind {
-        SkillRunTargetKind::Worktree => remove_worktree(target),
+        SkillRunTargetKind::Worktree => {
+            remove_worktree(target);
+            Ok(())
+        }
         SkillRunTargetKind::InPlace => discard_in_place(&target.cwd),
         SkillRunTargetKind::Scratch => {
             let Some(path) = &target.cleanup_path else {

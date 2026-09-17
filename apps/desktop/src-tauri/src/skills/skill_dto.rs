@@ -508,7 +508,7 @@ pub struct AddSkillResult {
 // ============================================================================
 
 /// Scope for skill installation
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, JsonSchema)]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, JsonSchema)]
 #[serde(rename_all = "lowercase")]
 pub enum InstallScope {
     Global,

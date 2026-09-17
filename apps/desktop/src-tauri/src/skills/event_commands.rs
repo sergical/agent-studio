@@ -172,9 +172,11 @@ fn validate_materialize_request(
             "{root} is not the harness root of deployment {deployment_id}"
         ));
     }
-    let universal_id = match &deployment.backing {
-        super::skill_deployment::BackingRelationship::LinkedTo { deployment_id } => deployment_id,
-        _ => return Err("Materialization requires a deployment linked to Universal".to_string()),
+    let super::skill_deployment::BackingRelationship::LinkedTo {
+        deployment_id: universal_id,
+    } = &deployment.backing
+    else {
+        return Err("Materialization requires a deployment linked to Universal".to_string());
     };
     let (_, universal) = super::skill_lifecycle::find_deployment(snapshot, universal_id)?;
     if universal.scope != deployment.scope
@@ -370,13 +372,11 @@ pub async fn make_skill_independent_copy(
             {
                 return Err("Make independent copy requires a healthy enabled link".to_string());
             }
-            let universal_id = match &deployment.backing {
-                super::skill_deployment::BackingRelationship::LinkedTo { deployment_id } => {
-                    deployment_id
-                }
-                _ => {
-                    return Err("Make independent copy requires a Universal-backed link".to_string())
-                }
+            let super::skill_deployment::BackingRelationship::LinkedTo {
+                deployment_id: universal_id,
+            } = &deployment.backing
+            else {
+                return Err("Make independent copy requires a Universal-backed link".to_string());
             };
             if !deployment.is_symlink && !deployment.shared_via_whole_dir_link {
                 return Err(
@@ -632,7 +632,7 @@ mod tests {
         store
             .record(
                 &id,
-                EventDraft {
+                &EventDraft {
                     kind: "restore".to_string(),
                     skill: "find-bugs".to_string(),
                     harness: Some("claude-code".to_string()),

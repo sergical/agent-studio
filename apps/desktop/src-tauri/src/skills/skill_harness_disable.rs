@@ -370,7 +370,7 @@ fn record_move_aside_event(
     };
     store.record(
         &id,
-        EventDraft {
+        &EventDraft {
             kind: if enabled {
                 "move_aside_restore".to_string()
             } else {

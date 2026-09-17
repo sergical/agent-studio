@@ -330,8 +330,8 @@ mod tests {
 
         let remaining: Vec<_> = fs::read_dir(dir.path())
             .unwrap()
-            .filter_map(|e| e.ok())
-            .filter(|e| e.path().extension().map(|x| x == "json").unwrap_or(false))
+            .filter_map(std::result::Result::ok)
+            .filter(|e| e.path().extension().is_some_and(|x| x == "json"))
             .collect();
         assert_eq!(remaining.len(), 2);
     }
@@ -376,7 +376,7 @@ mod tests {
         assert!(dir.path().join("eligible-newest.json").is_file());
         let remaining_records = fs::read_dir(dir.path())
             .unwrap()
-            .filter_map(|entry| entry.ok())
+            .filter_map(std::result::Result::ok)
             .filter(|entry| entry.path().extension().is_some_and(|ext| ext == "json"))
             .count();
         assert_eq!(remaining_records, 2);
