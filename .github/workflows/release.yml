@@ -57,12 +57,17 @@ jobs:
         run: |
           set -euo pipefail
           bundle_dir="apps/desktop/src-tauri/target/${{ matrix.target }}/release/bundle/macos"
+          # Cargo's default release profile strips debug info before dsymutil
+          # ever runs, so this find turns up nothing until the first real tag
+          # run sets split-debuginfo = "packed" (or debug = "line-tables-only")
+          # in [profile.release]; that profile change is the follow-up if this
+          # step fails.
           dsym_path="$(find "$bundle_dir" -maxdepth 1 -name '*.dSYM' -print -quit)"
           if [[ -z "$dsym_path" ]]; then
             echo "no .dSYM found under $bundle_dir" >&2
             exit 1
           fi
-          zip_path="apps/desktop/src-tauri/target/${{ matrix.target }}/release/bundle/macos/$(basename "$dsym_path").zip"
+          zip_path="apps/desktop/src-tauri/target/${{ matrix.target }}/release/bundle/macos/$(basename "$dsym_path" .dSYM)-${{ matrix.target }}.dSYM.zip"
           ditto -c -k --sequesterRsrc "$dsym_path" "$zip_path"
           echo "dsym_zip=$zip_path" >> "$GITHUB_ENV"
 
