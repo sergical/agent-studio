@@ -14,8 +14,6 @@ export function backLabel(from: ActiveView): string {
       return "Skills";
     case "activity":
       return "Activity";
-    case "packs":
-      return "Packs";
     default:
       // `ActiveView`'s "skill" kind never nests as its own `from` (see `openSkill`).
       return "Back";

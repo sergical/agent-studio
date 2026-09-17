@@ -1,5 +1,5 @@
 // ============================================================================
-// Sidebar - Left-hand navigation: places only (Home, Skills, Activity, Packs,
+// Sidebar - Left-hand navigation: places only (Home, Skills, Activity,
 // Parked). Filters (scope, harness, source, issue) live in the Skills view's
 // filter bar instead - see the design rule in spec-ux-1.md section B.
 // ============================================================================
@@ -11,7 +11,6 @@ import {
   Layers,
   LayoutDashboard,
   Moon,
-  Package,
   PackageOpen,
   Plus,
   Puzzle,
@@ -24,7 +23,6 @@ import { Button } from "@skill-studio/ui";
 import { ownSkillsView, pluginSkillsView } from "@skill-studio/lib";
 import { defaultSkillListFilter } from "@skill-studio/lib";
 import { SHORTCUTS } from "../../lib/app-shortcuts";
-import { isFeatureEnabled } from "../../lib/feature-flags";
 import {
   hasNewerSkillSnapshotEmission,
   rescanTooltip,
@@ -83,19 +81,17 @@ interface SidebarNavItemsProps {
   skillsActive: boolean;
   skillsCount: number;
   pluginCount: number;
-  packsEnabled: boolean;
   inParked: boolean;
   setActiveView: (view: ActiveView) => void;
   setSkillListFilter: (patch: Partial<SkillListFilter>) => void;
 }
 
-/** The four places: Home, Skills (with an optional Plugins place beside it), Activity, Packs. */
+/** The three places: Home, Skills (with an optional Plugins place beside it), Activity. */
 function SidebarNavItems({
   anchorView,
   skillsActive,
   skillsCount,
   pluginCount,
-  packsEnabled,
   inParked,
   setActiveView,
   setSkillListFilter,
@@ -151,17 +147,6 @@ function SidebarNavItems({
         <ActivityIcon size={14} />
         <span className="min-w-0 truncate">Activity</span>
       </Button>
-      {packsEnabled && (
-        <Button
-          variant="ghost"
-          className={itemClass(anchorView.kind === "packs")}
-          aria-current={anchorView.kind === "packs" ? "page" : undefined}
-          onClick={() => setActiveView({ kind: "packs" })}
-        >
-          <Package size={14} />
-          <span className="min-w-0 truncate">Packs</span>
-        </Button>
-      )}
     </div>
   );
 }
@@ -285,7 +270,7 @@ function SidebarFooter({
 
 /**
  * Left-hand navigation: a search box that jumps into Skills with a query,
- * Add skill, the four places (Home, Skills, Activity, Packs), Parked (when
+ * Add skill, the three places (Home, Skills, Activity), Parked (when
  * non-empty), and a footer with the snapshot's age and a manual rescan
  * button.
  */
@@ -317,7 +302,6 @@ export function Sidebar({ snapshot, emittedSnapshotRevision, requestRescan }: Si
   // own place (see PluginSkillsView), not a filter on Skills.
   const inParked = skillListFilter.scope === "parked";
   const skillsActive = anchorView.kind === "skills" && !inParked;
-  const packsEnabled = isFeatureEnabled("skill-packs");
 
   function goToSearch() {
     if (anchorView.kind !== "skills") setActiveView({ kind: "skills" });
@@ -374,7 +358,6 @@ export function Sidebar({ snapshot, emittedSnapshotRevision, requestRescan }: Si
           skillsActive={skillsActive}
           skillsCount={skillsCount}
           pluginCount={pluginCount}
-          packsEnabled={packsEnabled}
           inParked={inParked}
           setActiveView={setActiveView}
           setSkillListFilter={setSkillListFilter}

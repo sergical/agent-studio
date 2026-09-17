@@ -3,11 +3,26 @@
 // ============================================================================
 
 import { describe, expect, it } from "vitest";
+import appSource from "../../App.tsx?raw";
 import {
   hasNewerSkillSnapshotEmission,
   relativeScanTime,
   rescanTooltip,
 } from "../../lib/sidebar-nav";
+import sidebarSource from "./Sidebar.tsx?raw";
+
+// No React Testing Library/jsdom harness exists in this workspace yet, so
+// this reads the shell's own source instead of rendering it - packs are
+// deferred with no nav entry and no route (unit 4.3).
+describe("packs is out of the shell's navigation", () => {
+  it("Sidebar has no Packs nav item or names the leftover", () => {
+    expect(sidebarSource).not.toMatch(/Packs|packsEnabled|skill-packs/);
+  });
+
+  it("App has no packs view case or names the leftover", () => {
+    expect(appSource).not.toMatch(/PacksView|"packs"|Packs/);
+  });
+});
 
 describe("relativeScanTime", () => {
   it("reads 'Never' when there is no timestamp", () => {

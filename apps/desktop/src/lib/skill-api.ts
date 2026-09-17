@@ -25,10 +25,8 @@ import type {
   HarnessVisibilityTarget,
   LifecycleTarget,
   InvocationPolicy,
-  PackInfo,
   PackImportPreflightResult,
   PackImportRequest,
-  PackMember,
   PaginatedSkillsResponse,
   ProjectFolder,
   PullResult,
@@ -36,7 +34,6 @@ import type {
   SkillEvent,
   SkillSnapshot,
   TrackedProjects,
-  UpdatePackResult,
 } from "@skill-studio/lib";
 
 let ipcCallSeq = 0;
@@ -328,38 +325,6 @@ export async function unforkSkill(target: LifecycleTarget): Promise<void> {
 // ============================================================================
 // Share Packs API
 // ============================================================================
-
-/** List every pack recorded in `~/.agents/skill-studio.json`. */
-export async function listSkillPacks(): Promise<PackInfo[]> {
-  return callCommand("list_skill_packs");
-}
-
-/**
- * Build `~/.agents/packs/<name>` from `members` and commit it with git.
- * Refused if a pack of that name (or its directory) already exists.
- */
-export async function createSkillPack(name: string, members: PackMember[]): Promise<PackInfo> {
-  return callCommand("create_skill_pack", { name, members });
-}
-
-/** Rebuild a pack's tree from its recorded skill list, committing only if it changed. */
-export async function updateSkillPack(name: string): Promise<UpdatePackResult> {
-  return callCommand("update_skill_pack", { name });
-}
-
-/**
- * Push a pack to GitHub. Creates the repo (`gh repo create ... --push`) the
- * first time; pushes to the recorded `repo` on every call after that.
- * Callers must confirm with the user first - this runs immediately.
- */
-export async function publishSkillPack(name: string, visibility: string): Promise<PackInfo> {
-  return callCommand("publish_skill_pack", { name, visibility });
-}
-
-/** Delete a pack locally: its registry entry and its directory. Never touches GitHub. */
-export async function deleteSkillPack(name: string): Promise<void> {
-  return callCommand("delete_skill_pack", { name });
-}
 
 /**
  * Preflight and import a pack from a GitHub repo or local folder. Remote
