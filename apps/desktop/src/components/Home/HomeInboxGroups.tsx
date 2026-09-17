@@ -244,7 +244,7 @@ function WarningRowAction({
 }
 
 /** Home's "Broken" group: one row per broken-symlink/parked-but-reinstalled/spec-violation issue. */
-export function BrokenGroup({
+function BrokenGroup({
   broken,
   start,
   isExpanded,
@@ -303,7 +303,7 @@ export function BrokenGroup({
 }
 
 /** Home's "Warnings" group: one row per duplicate/linked-root/lock-only issue. */
-export function WarningsGroup({
+function WarningsGroup({
   warnings,
   start,
   isExpanded,
@@ -372,7 +372,7 @@ export function WarningsGroup({
 }
 
 /** Home's "Not used in the last 30 days" group: one row per idle skill, with a one-click Park. */
-export function UnusedGroup({
+function UnusedGroup({
   unused,
   start,
   isExpanded,
@@ -449,7 +449,7 @@ export function UnusedGroup({
 }
 
 /** Home's "Recently used" group: one row per skill used in the last 30 days, newest first. */
-export function RecentGroup({
+function RecentGroup({
   recent,
   start,
   isExpanded,
@@ -504,7 +504,7 @@ export function RecentGroup({
 }
 
 /** Home's "Updates" group: one row per skill with a newer commit, "Update all" in the header. */
-export function UpdatesGroup({
+function UpdatesGroup({
   updates,
   isExpanded,
   onToggle,
