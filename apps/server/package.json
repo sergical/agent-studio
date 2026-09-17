@@ -4,16 +4,23 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "dev": "node --env-file=../../.env --import tsx src/server.ts",
+    "dev": "node --env-file=../../.env --import tsx --import ./src/instrument.ts src/server.ts",
+    "build": "tsc --noEmit && node build.mjs",
+    "start": "node --import ./dist/instrument.js ./dist/server.js",
     "typecheck": "tsc --noEmit",
-    "test": "vitest run"
+    "test": "vitest run",
+    "test:production-build": "node tests/production-build.mjs"
   },
   "dependencies": {
     "@hono/node-server": "^2.1.1",
-    "hono": "^4.13.5"
+    "@sentry/hono": "10.73.0",
+    "@sentry/node": "10.73.0",
+    "hono": "^4.13.5",
+    "zod": "4.4.3"
   },
   "devDependencies": {
     "@types/node": "^26.4.0",
+    "esbuild": "0.28.2",
     "tsx": "^4.23.13",
     "typescript": "^7.0.2",
     "vitest": "^4.1.11"

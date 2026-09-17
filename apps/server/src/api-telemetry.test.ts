@@ -1,0 +1,367 @@
+// ============================================================================
+// Skill Studio - Sentry transport acceptance
+// ============================================================================
+
+import { afterEach, expect, it, vi } from "vitest";
+import * as Sentry from "@sentry/hono/node";
+import { initializeApiTelemetry } from "./api-telemetry";
+import { z } from "zod";
+type Envelope = Parameters<ReturnType<NonNullable<Sentry.NodeOptions["transport"]>>["send"]>[0];
+
+afterEach(async () => {
+  await Sentry.close(2000);
+  Sentry.getCurrentScope().setClient(undefined);
+  vi.restoreAllMocks();
+  vi.unstubAllGlobals();
+});
+
+it("stays uninitialized without a DSN and rejects invalid sampling", () => {
+  expect(initializeApiTelemetry({})).toBeUndefined();
+  expect(Sentry.getClient()).toBeUndefined();
+  expect(() =>
+    initializeApiTelemetry({
+      SENTRY_DSN: "https://public@example.invalid/1",
+      SENTRY_TRACES_SAMPLE_RATE: "private-invalid",
+    }),
+  ).toThrow("SENTRY_TRACES_SAMPLE_RATE must be between 0 and 1");
+});
+
+it.each([
+  ["", 0.1],
+  ["   ", 0.1],
+  ["0", 0],
+])("resolves trace sampling %j to %s", (configured, expected) => {
+  const client = initializeApiTelemetry(
+    {
+      SENTRY_DSN: "https://public@example.invalid/1",
+      SENTRY_TRACES_SAMPLE_RATE: String(configured),
+    },
+    () => ({ send: async () => ({}), flush: async () => true }),
+  );
+  expect(client?.getOptions().tracesSampleRate).toBe(expected);
+});
+
+it("exports correlated sanitized requests, upstream errors, logs and metrics without network", async () => {
+  const envelopes: Envelope[] = [];
+  const client = initializeApiTelemetry(
+    {
+      SENTRY_DSN: "https://public@example.invalid/1",
+      SENTRY_RELEASE: "api-fixture-1",
+      SENTRY_ENVIRONMENT: "test",
+      SENTRY_TRACES_SAMPLE_RATE: "1",
+    },
+    () => ({
+      send: async (envelope) => {
+        envelopes.push(envelope);
+        return {};
+      },
+      flush: async () => true,
+    }),
+  );
+  expect(client).toBeDefined();
+  const { createNodeRequestHandler, createApp } = await import("./server");
+  vi.spyOn(process.stdout, "write").mockReturnValue(true);
+  vi.spyOn(process.stdout, "writableNeedDrain", "get").mockReturnValue(true);
+  vi.stubGlobal(
+    "fetch",
+    vi.fn().mockRejectedValue(new Error("private-token /Users/private-person private-skill-body")),
+  );
+  const handler = createNodeRequestHandler("private-api-key");
+  const target = "/api/v1/skills/private-owner/private-repo/private-skill?q=private-prompt";
+  const response = await handler(
+    new Request(`http://localhost${target}`, {
+      headers: { authorization: "Bearer private-credential", baggage: "private-baggage" },
+    }),
+    { incoming: { url: target } },
+  );
+  expect(response.status).toBe(502);
+  expect(await response.json()).toEqual({
+    error: "private-token /Users/private-person private-skill-body",
+  });
+  await Sentry.flush(2000);
+  const wire = JSON.stringify(envelopes);
+  expect(wire).not.toContain("private-");
+  expect(wire).not.toContain("/Users/");
+  const items = envelopes.flatMap<Envelope[1][number]>((envelope) => envelope[1]);
+  const types = items.map((item) => item[0].type);
+  expect(types).toContain("event");
+  expect(types).toContain("transaction");
+  expect(types).toContain("log");
+  expect(types).toContain("trace_metric");
+  const traceContext = z.object({ trace_id: z.string(), span_id: z.string() });
+  const eventSchema = z.object({ contexts: z.object({ trace: traceContext }) });
+  const error = eventSchema
+    .extend({ transaction: z.string() })
+    .parse(items.find((item) => item[0].type === "event")?.[1]);
+  expect(error.transaction).toBe("GET /api/v1/skills/:owner/:repo/:slug");
+  const transaction = eventSchema
+    .extend({ spans: z.array(z.object({ op: z.string(), span_id: z.string() })) })
+    .parse(items.find((item) => item[0].type === "transaction")?.[1]);
+  expect(error.contexts.trace.trace_id).toBe(transaction.contexts.trace.trace_id);
+  expect(transaction.spans.find((span) => span.op === "http.client")?.span_id).toBe(
+    error.contexts.trace.span_id,
+  );
+  const logSchema = z.object({ items: z.array(z.object({ trace_id: z.string() })) });
+  for (const item of items.filter((item) => ["log", "trace_metric"].includes(item[0].type))) {
+    for (const record of logSchema.parse(item[1]).items) {
+      expect(record.trace_id).toBe(transaction.contexts.trace.trace_id);
+    }
+  }
+  expect(wire).toContain("skills.upstream");
+  expect(wire).not.toContain("OTHER unmatched");
+  expect(wire).toContain("api.request.count");
+  expect(wire).toContain("api.request.duration");
+  const metricSchema = z.object({
+    items: z.array(
+      z.object({ name: z.string(), type: z.string(), unit: z.string(), value: z.number() }),
+    ),
+  });
+  const dropped = items
+    .filter((item) => item[0].type === "trace_metric")
+    .flatMap((item) => metricSchema.parse(item[1]).items)
+    .filter((metric) => metric.name === "api.request.stdout_dropped");
+  expect(dropped).toEqual([
+    { name: "api.request.stdout_dropped", type: "counter", unit: "none", value: 1 },
+  ]);
+  expect(wire).toContain("/api/v1/skills/:owner/:repo/:slug");
+
+  envelopes.length = 0;
+  Sentry.captureEvent({
+    message: "private-message",
+    server_name: "private-host",
+    user: { email: "private-email" },
+    request: {
+      url: "https://private-repo/?q=private-prompt",
+      headers: { authorization: "private-token" },
+    },
+    extra: { content: "private-skill-body" },
+    tags: { path: "/Users/private-person" },
+    exception: {
+      values: [
+        {
+          type: "private-error-type",
+          value: "private-error",
+          stacktrace: {
+            frames: [
+              {
+                filename: new URL("./server.ts", import.meta.url).href,
+                lineno: 1,
+                colno: 1,
+                context_line: "private-source",
+                vars: { credential: "private-token" },
+              },
+              { filename: new URL("./server.js", import.meta.url).href, lineno: 2, colno: 3 },
+              { filename: new URL("./instrument.js", import.meta.url).href, lineno: 4, colno: 5 },
+              { filename: new URL("../private/server.js", import.meta.url).href },
+              { filename: "file://private-host/invalid", abs_path: "/Users/private-person" },
+            ],
+          },
+        },
+      ],
+    },
+  });
+  Sentry.logger.info("private-message", { content: "private-body" });
+  Sentry.metrics.count("private-metric", 1, { attributes: { content: "private-body" } });
+  await Sentry.flush(2000);
+  expect(JSON.stringify(envelopes)).not.toContain("private-");
+  expect(JSON.stringify(envelopes)).toContain("app:///src/server.ts");
+  expect(JSON.stringify(envelopes)).toContain("app:///dist/server.js");
+  expect(JSON.stringify(envelopes)).toContain("app:///dist/instrument.js");
+  expect(JSON.stringify(envelopes)).not.toContain("private/server.js");
+  expect(
+    envelopes.flatMap<Envelope[1][number]>((envelope) => envelope[1]).map((item) => item[0].type),
+  ).toEqual(["event"]);
+
+  envelopes.length = 0;
+  const releaseRequests: Array<() => void> = [];
+  vi.stubGlobal(
+    "fetch",
+    vi.fn(
+      () =>
+        new Promise<Response>((resolve) => {
+          const status = releaseRequests.length === 0 ? 200 : 503;
+          releaseRequests.push(() =>
+            resolve(Response.json({ secret: "private-content" }, { status })),
+          );
+        }),
+    ),
+  );
+  const pending = ["/api/v1/skills", "/api/v1/skills/search?q=private-search"].map((path) =>
+    handler(new Request(`http://localhost${path}`), { incoming: { url: path } }),
+  );
+  await vi.waitFor(() => expect(releaseRequests).toHaveLength(2));
+  for (const release of [...releaseRequests].reverse()) release();
+  expect((await Promise.all(pending)).map((result) => result.status)).toEqual([200, 503]);
+  await Sentry.flush(2000);
+  const concurrentItems = envelopes.flatMap<Envelope[1][number]>((envelope) => envelope[1]);
+  const transactions = concurrentItems
+    .filter((item) => item[0].type === "transaction")
+    .map((item) => eventSchema.extend({ transaction: z.string() }).parse(item[1]));
+  expect(transactions).toHaveLength(2);
+  expect(new Set(transactions.map((item) => item.contexts.trace.trace_id)).size).toBe(2);
+  const correlatedRecord = z.object({
+    items: z.array(
+      z.object({
+        trace_id: z.string(),
+        attributes: z.object({ route: z.object({ value: z.string() }) }),
+      }),
+    ),
+  });
+  expect(
+    concurrentItems
+      .filter((item) => item[0].type === "log")
+      .flatMap((item) => correlatedRecord.parse(item[1]).items),
+  ).toHaveLength(2);
+  expect(
+    concurrentItems
+      .filter((item) => item[0].type === "trace_metric")
+      .flatMap((item) => correlatedRecord.parse(item[1]).items),
+  ).toHaveLength(6);
+  for (const item of concurrentItems.filter((item) =>
+    ["log", "trace_metric"].includes(item[0].type),
+  )) {
+    for (const record of correlatedRecord.parse(item[1]).items) {
+      expect(
+        transactions.find((transaction) => transaction.contexts.trace.trace_id === record.trace_id)
+          ?.transaction,
+      ).toBe(`GET ${record.attributes.route.value}`);
+    }
+  }
+  expect(JSON.stringify(envelopes)).not.toContain("private-");
+
+  envelopes.length = 0;
+  const stderr = vi.spyOn(console, "error").mockImplementation(() => {});
+  const app = createApp("private-api-key");
+  app.get("/failure", () => {
+    throw new Error("private-unhandled-error");
+  });
+  const failure = await Sentry.withIsolationScope(() =>
+    Sentry.startSpan({ name: "api.request", op: "http.server" }, () => app.request("/failure")),
+  );
+  expect(failure.status).toBe(500);
+  expect(await failure.text()).toBe("Internal Server Error");
+  expect(stderr).not.toHaveBeenCalled();
+  await Sentry.flush(2000);
+  expect(
+    envelopes
+      .flatMap<Envelope[1][number]>((envelope) => envelope[1])
+      .filter((item) => item[0].type === "event"),
+  ).toHaveLength(1);
+  expect(JSON.stringify(envelopes)).not.toContain("private-");
+});
+
+it("keeps route attribution isolated when concurrent requests fail in reverse order", async () => {
+  const envelopes: Envelope[] = [];
+  initializeApiTelemetry(
+    { SENTRY_DSN: "https://public@example.invalid/1", SENTRY_TRACES_SAMPLE_RATE: "0" },
+    () => ({
+      send: async (envelope) => {
+        envelopes.push(envelope);
+        return {};
+      },
+      flush: async () => true,
+    }),
+  );
+  vi.spyOn(process.stdout, "write").mockReturnValue(true);
+  const failures: Array<() => void> = [];
+  vi.stubGlobal(
+    "fetch",
+    vi.fn(
+      () =>
+        new Promise<Response>((_resolve, reject) => {
+          failures.push(() => reject(new Error("private-request-data")));
+        }),
+    ),
+  );
+  const { createNodeRequestHandler } = await import("./server");
+  const handler = createNodeRequestHandler("private-api-key");
+  const routes = ["/api/v1/skills", "/api/v1/skills/search"];
+  const pending = routes.map((route) =>
+    handler(new Request(`http://fixture${route}?q=private-query`), {
+      incoming: { url: `${route}?q=private-query` },
+    }),
+  );
+  await vi.waitFor(() => expect(failures).toHaveLength(2));
+  for (const fail of [...failures].reverse()) fail();
+  expect((await Promise.all(pending)).map((response) => response.status)).toEqual([502, 502]);
+  await Sentry.flush(2000);
+  const schema = z.object({ transaction: z.string() });
+  const errors = envelopes
+    .flatMap<Envelope[1][number]>((envelope) => envelope[1])
+    .filter((item) => item[0].type === "event")
+    .map((item) => schema.parse(item[1]).transaction);
+  expect(errors.sort()).toEqual(routes.map((route) => `GET ${route}`).sort());
+  expect(JSON.stringify(envelopes)).not.toContain("private-");
+});
+
+it.each([
+  { environment: undefined, release: undefined, expectedEnvironment: "development" },
+  { environment: "", release: undefined, expectedEnvironment: "development" },
+  { environment: "   ", release: undefined, expectedEnvironment: "development" },
+  {
+    environment: "verification",
+    release: "skill-studio-api@verification",
+    expectedEnvironment: "verification",
+  },
+])(
+  "retains configured telemetry identity and excludes scope data: %j",
+  async ({ environment, release, expectedEnvironment }) => {
+    const envelopes: Envelope[] = [];
+    initializeApiTelemetry(
+      {
+        SENTRY_DSN: "https://public@example.invalid/1",
+        SENTRY_TRACES_SAMPLE_RATE: "0",
+        SENTRY_ENVIRONMENT: environment,
+        SENTRY_RELEASE: release,
+      },
+      () => ({
+        send: async (envelope) => {
+          envelopes.push(envelope);
+          return {};
+        },
+        flush: async () => true,
+      }),
+    );
+    await Sentry.withIsolationScope(async (isolation) => {
+      isolation.setAttribute("private-isolation", "private-value");
+      isolation.setAttribute("sentry.environment", "private-environment");
+      isolation.setAttribute("sentry.release", "private-release");
+      isolation.setAttribute("status", "private-status");
+      Sentry.withScope((scope) => {
+        scope.setAttribute("private-current", "private-value");
+        const attributes = { method: "GET", route: "/health" };
+        Sentry.captureException(new Error("private-failure"));
+        Sentry.logger.info("api.request.completed", attributes);
+        Sentry.metrics.count("api.request.count", 1, { attributes });
+      });
+      await Sentry.flush(2000);
+    });
+    expect(JSON.stringify(envelopes)).not.toContain("private-");
+    const items = envelopes.flatMap<Envelope[1][number]>((envelope) => envelope[1]);
+    expect(items.map((item) => item[0].type).sort()).toEqual(["event", "log", "trace_metric"]);
+    const schema = z.object({
+      items: z.array(z.object({ attributes: z.record(z.string(), z.unknown()) })),
+    });
+    for (const item of items) {
+      if (item[0].type === "event") {
+        expect(item[1]).toMatchObject({ environment: expectedEnvironment });
+        continue;
+      }
+      const records = schema.parse(item[1]).items;
+      expect(records).toHaveLength(1);
+      const expected = {
+        method: { type: "string", value: "GET" },
+        route: { type: "string", value: "/health" },
+        "sentry.environment": { type: "string", value: expectedEnvironment },
+      };
+      if (release) {
+        expect(records[0].attributes).toEqual({
+          ...expected,
+          "sentry.release": { type: "string", value: release },
+        });
+      } else {
+        expect(records[0].attributes).toEqual(expected);
+      }
+    }
+  },
+);
