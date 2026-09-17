@@ -1260,10 +1260,23 @@ fn apply_skill_snapshot_overlays(
     }
 
     // Parked skills have no deployment left for `classify_source_kind` to
-    // look at, so both the "parked" flag and the badge come straight from
-    // the registry's `parked` record instead.
+    // look at, so the "parked" flag itself follows the disk fact core scan
+    // already reports for a parked deployment (scope "parked" - see
+    // `skill_assembly::scope_from_core`/`RootKind::Parked`), not the
+    // registry. `ops::park` (unit 3.1) no longer writes the registry's
+    // `parked` bucket, so a skill parked through it has no record here; the
+    // record, when one exists (a skill parked before that unit shipped),
+    // still supplies `parked_at`/`source_kind`. Without a record,
+    // `parked_at` stays `None` rather than opening the SQLite history store
+    // on every refresh cycle to look up the park event - refresh runs on a
+    // timer and must not pay a per-skill I/O cost just for a badge
+    // timestamp.
     for skill in skills.iter_mut() {
-        if let Some(record) = fork_registry.parked.get(&skill.name).filter(|record| {
+        if !skill.deployments.iter().any(|d| d.scope == "parked") {
+            continue;
+        }
+        skill.parked = true;
+        let record = fork_registry.parked.get(&skill.name).filter(|record| {
             let expected = if record.skill_dir.as_os_str().is_empty() {
                 home.join(".agents/skills-parked").join(&skill.name)
             } else {
@@ -1274,8 +1287,8 @@ fn apply_skill_snapshot_overlays(
                     && Path::new(&deployment.path) == expected
                     && (record.deployment_id.is_empty() || deployment.id == record.deployment_id)
             })
-        }) {
-            skill.parked = true;
+        });
+        if let Some(record) = record {
             skill.parked_at = Some(record.parked_at.clone());
             skill.source_kind = record.source_kind;
         }
@@ -2265,6 +2278,58 @@ mod tests {
         assert!(skill.parked);
         assert!(skill.deployments.iter().any(|d| d.scope == "parked"));
         assert!(skill.deployments.iter().any(|d| d.scope == "global"));
+    }
+
+    /// A skill parked through `ops::park` (unit 3.1) never gets a
+    /// `fork_registry.parked` record - that write path no longer touches
+    /// the registry. The badge still has to come on: it now follows the
+    /// on-disk `scope == "parked"` deployment core scan reports, not the
+    /// registry lookup.
+    #[test]
+    fn refresh_marks_a_skill_parked_from_its_parked_deployment_without_a_registry_record() {
+        let tmp = tempfile::tempdir().unwrap();
+        let home = tmp.path().join("home");
+        fs::create_dir_all(home.join(".agents/skills-parked/find-bugs")).unwrap();
+        fs::write(
+            home.join(".agents/skills-parked/find-bugs/SKILL.md"),
+            "---\nname: find-bugs\ndescription: test\n---\nbody",
+        )
+        .unwrap();
+        // No `.agents/skill-studio.json` is written at all, so
+        // `fork_registry.parked` is empty for this skill.
+
+        let mut invocation_index = SkillInvocationIndex::default();
+        let cache_path = tmp.path().join("cache.json");
+        let (snapshot, _report) = build_snapshot(
+            &home,
+            &mut invocation_index,
+            BuildPaths {
+                cache_path: &cache_path,
+                runs_root: tmp.path(),
+                update_check_path: &tmp.path().join("update-check.json"),
+            },
+            Utc::now(),
+        );
+
+        let skill = snapshot
+            .skills
+            .iter()
+            .find(|s| s.name == "find-bugs")
+            .unwrap();
+        assert!(
+            skill.parked,
+            "expected find-bugs to be parked from its deployment scopes {:?}, got parked={}",
+            skill
+                .deployments
+                .iter()
+                .map(|d| d.scope.as_str())
+                .collect::<Vec<_>>(),
+            skill.parked
+        );
+        assert_eq!(
+            skill.parked_at, None,
+            "no registry record exists for this skill, so parked_at must stay None"
+        );
     }
 
     #[test]

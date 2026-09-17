@@ -484,6 +484,7 @@ impl ScopeFs for FixtureFs {
 pub struct FailingFs {
     inner: Arc<dyn ScopeFs>,
     fail_next_write_atomic: AtomicBool,
+    fail_next_rename: AtomicBool,
 }
 
 impl FailingFs {
@@ -492,6 +493,7 @@ impl FailingFs {
         FailingFs {
             inner,
             fail_next_write_atomic: AtomicBool::new(false),
+            fail_next_rename: AtomicBool::new(false),
         }
     }
 
@@ -499,6 +501,14 @@ impl FailingFs {
     /// `inner`; later calls delegate normally again.
     pub fn fail_next_write_atomic(&self) {
         self.fail_next_write_atomic.store(true, Ordering::SeqCst);
+    }
+
+    /// The next `rename` call returns an error instead of reaching `inner`;
+    /// later calls delegate normally again. Simulates a crash between two
+    /// steps of a plan whose earlier steps used other `ScopeFs` calls, for
+    /// example park's link removal landing before the directory rename.
+    pub fn fail_next_rename(&self) {
+        self.fail_next_rename.store(true, Ordering::SeqCst);
     }
 }
 
@@ -543,6 +553,9 @@ impl ScopeFs for FailingFs {
         from: &ScopedPath,
         to: &ScopedPath,
     ) -> std::io::Result<()> {
+        if self.fail_next_rename.swap(false, Ordering::SeqCst) {
+            return Err(std::io::Error::other("FailingFs: injected rename failure"));
+        }
         self.inner.rename(guard, from, to)
     }
     fn remove_file(&self, guard: &ExclusiveGuard, path: &ScopedPath) -> std::io::Result<()> {
