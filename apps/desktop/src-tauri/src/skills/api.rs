@@ -167,7 +167,7 @@ fn status_error(status: reqwest::StatusCode) -> String {
     if status == reqwest::StatusCode::UNAUTHORIZED {
         "skills.sh API key is invalid or expired".to_string()
     } else {
-        format!("Skills API returned status: {}", status)
+        format!("Skills API returned status: {status}")
     }
 }
 
@@ -235,7 +235,7 @@ pub async fn search_skills(
     let data: SkillsSearchResponse = response
         .json()
         .await
-        .map_err(|e| format!("Failed to parse skills response: {}", e))?;
+        .map_err(|e| format!("Failed to parse skills response: {e}"))?;
 
     Ok(PaginatedSkillsResponse {
         skills: data.data.into_iter().map(SkillSearchResult::from).collect(),
@@ -274,7 +274,7 @@ pub async fn get_popular_skills(
     let data: SkillsListResponse = response
         .json()
         .await
-        .map_err(|e| format!("Failed to parse skills response: {}", e))?;
+        .map_err(|e| format!("Failed to parse skills response: {e}"))?;
 
     Ok(PaginatedSkillsResponse {
         skills: data.data.into_iter().map(SkillSearchResult::from).collect(),
@@ -317,7 +317,7 @@ pub async fn get_skill_details(
     let data: SkillDetailsResponse = response
         .json()
         .await
-        .map_err(|e| format!("Failed to parse skill details: {}", e))?;
+        .map_err(|e| format!("Failed to parse skill details: {e}"))?;
 
     Ok(SkillDetails {
         id: data.id,

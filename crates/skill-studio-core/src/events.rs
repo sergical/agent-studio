@@ -1,6 +1,6 @@
 //! History events: kinds, rows, drafts, backups, and startup recovery.
 //!
-//! The SQLite schema does not change. `kind` stays a string column so rows
+//! The `SQLite` schema does not change. `kind` stays a string column so rows
 //! written by older versions still load; [`EventKind`] is the typed view.
 
 use std::path::{Path, PathBuf};
@@ -165,7 +165,7 @@ impl EventStatus {
 
 /// One row of the `events` table.
 ///
-/// Invariant: field names match the SQLite columns. `payload` and `inverse`
+/// Invariant: field names match the `SQLite` columns. `payload` and `inverse`
 /// stay opaque JSON so old rows load without a migration.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct EventRecord {
@@ -411,8 +411,7 @@ pub(crate) fn restore_backup_inverse(
     post: Option<&Fingerprint>,
 ) -> serde_json::Value {
     fn as_str(f: Option<&Fingerprint>) -> String {
-        f.map(|f| f.bare_hex().to_string())
-            .unwrap_or_else(|| "absent".to_string())
+        f.map_or_else(|| "absent".to_string(), |f| f.bare_hex().to_string())
     }
     serde_json::json!({
         "op": "restore_backup",

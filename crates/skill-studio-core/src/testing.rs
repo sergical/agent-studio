@@ -381,7 +381,7 @@ impl ScopeFs for FixtureFs {
         };
         Ok(FileFacts {
             kind,
-            len: self.files.get(path).map(|b| b.len() as u64).unwrap_or(0),
+            len: self.files.get(path).map_or(0, |b| b.len() as u64),
             modified: None,
             mode: None,
         })
@@ -631,7 +631,7 @@ impl FakeLease {
     pub fn hold_exclusive(&self, keys: &[LeaseKey]) {
         self.held_exclusive
             .lock()
-            .unwrap_or_else(|e| e.into_inner())
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
             .extend_from_slice(keys);
     }
 
@@ -639,7 +639,7 @@ impl FakeLease {
     pub fn release_all(&self) {
         self.held_exclusive
             .lock()
-            .unwrap_or_else(|e| e.into_inner())
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
             .clear();
     }
 }
@@ -669,7 +669,7 @@ impl LeaseProvider for FakeLease {
         let held = self
             .held_exclusive
             .lock()
-            .unwrap_or_else(|e| e.into_inner());
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         if let Some(busy) = keys.iter().find(|k| held.contains(k)) {
             return Err(
                 CoreError::new(ErrorCode::ScopeBusy, "another process holds the lease")
@@ -729,7 +729,7 @@ impl RecordingSink {
     pub fn notices(&self) -> Vec<CoreNotice> {
         self.notices
             .lock()
-            .unwrap_or_else(|e| e.into_inner())
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
             .clone()
     }
 }
@@ -738,7 +738,7 @@ impl EventSink for RecordingSink {
     fn notify(&self, notice: CoreNotice) {
         self.notices
             .lock()
-            .unwrap_or_else(|e| e.into_inner())
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
             .push(notice);
     }
 }
@@ -872,7 +872,7 @@ pub mod fixtures {
         )
     }
 
-    /// `legacy_opencode`: OpenCode's older singular `skill/` root
+    /// `legacy_opencode`: `OpenCode`'s older singular `skill/` root
     /// alongside its current `skills/` root.
     fn legacy_opencode() -> FixtureBuilder {
         let mut b = FixtureBuilder::new();
@@ -911,7 +911,7 @@ pub mod fixtures {
 
     /// `project`: a registered project with a `.git` marker and three
     /// roots: Claude Code, the project's shared `.agents/skills`, and
-    /// OpenCode's legacy `skill/` root.
+    /// `OpenCode`'s legacy `skill/` root.
     fn project() -> FixtureBuilder {
         let mut b = FixtureBuilder::new().dir("proj/.git");
         b = skill(b, "proj/.claude/skills/eta", "eta");
@@ -921,7 +921,7 @@ pub mod fixtures {
 
     /// `disabled`: every disable mechanism the core knows about: Codex's
     /// own `config.toml` row (keyed by `beta`'s canonical `SKILL.md` path,
-    /// filled in at materialize time), OpenCode's `permission.skill` deny,
+    /// filled in at materialize time), `OpenCode`'s `permission.skill` deny,
     /// and Skill Studio's own move-aside directory.
     fn disabled() -> FixtureBuilder {
         let mut b = FixtureBuilder::new();

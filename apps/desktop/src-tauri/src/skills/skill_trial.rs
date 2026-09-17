@@ -131,7 +131,7 @@ fn count_entries(dir: &Path) -> usize {
         return 0;
     };
     let mut count = 0;
-    for entry in entries.filter_map(|e| e.ok()) {
+    for entry in entries.filter_map(std::result::Result::ok) {
         count += 1;
         let is_real_dir = entry
             .file_type()
@@ -638,9 +638,10 @@ fn run_trial_expiry_pass_with_controls(
     for key in due {
         let original_registry = registry.clone();
         let trial = registry.trials[&key].clone();
-        let name = super::skill_deployment::parse_deployment_id(&trial.deployment_id)
-            .map(|parsed| parsed.name)
-            .unwrap_or_else(|| name_from_trial_key(&key).to_string());
+        let name = super::skill_deployment::parse_deployment_id(&trial.deployment_id).map_or_else(
+            || name_from_trial_key(&key).to_string(),
+            |parsed| parsed.name,
+        );
         if trial.status == TrialStatus::Expiring {
             match reconcile_expiring_trial(snapshot, &trial) {
                 ExpiringRecovery::Resume => {}
@@ -920,9 +921,9 @@ fn strip_trash_suffix(dir_name: &str) -> Option<String> {
     let bytes: Vec<char> = suffix.chars().collect();
     let looks_right = bytes.len() == 16
         && bytes[0] == '-'
-        && bytes[1..9].iter().all(|c| c.is_ascii_digit())
+        && bytes[1..9].iter().all(char::is_ascii_digit)
         && bytes[9] == '-'
-        && bytes[10..16].iter().all(|c| c.is_ascii_digit());
+        && bytes[10..16].iter().all(char::is_ascii_digit);
     if looks_right {
         Some(name.to_string())
     } else {

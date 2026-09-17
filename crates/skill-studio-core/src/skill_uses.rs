@@ -342,7 +342,7 @@ pub fn skill_heatmap<'a>(
     days: u32,
     now: DateTime<Utc>,
 ) -> InvocationHeatmap {
-    let cutoff = now - chrono::Duration::days(days as i64);
+    let cutoff = now - chrono::Duration::days(i64::from(days));
     let mut result = BTreeMap::new();
     for use_ in counted_uses(uses, filter) {
         if use_.at < cutoff {
@@ -510,16 +510,16 @@ fn push_shell_reads<S: AsRef<str>>(
 }
 
 /// Fast-path substrings a line must contain before it's worth a full JSON
-/// parse: a `Skill` tool_use, a typed command block, or a `SKILL.md` path
+/// parse: a `Skill` `tool_use`, a typed command block, or a `SKILL.md` path
 /// (a `Read` or `Bash` file read).
 const SKILL_TOOL_MARKER: &str = "\"name\":\"Skill\"";
 const COMMAND_MARKER: &str = "<command-name>";
 const SKILL_MD_MARKER: &str = "SKILL.md";
 
 /// Parses one Claude Code transcript's text (newline-delimited JSON) into
-/// skill uses: an `Agent` use per `Skill` tool_use block, a `User` use per
+/// skill uses: an `Agent` use per `Skill` `tool_use` block, a `User` use per
 /// typed slash command line, and a `FileRead` use per `Read` or `Bash`
-/// tool_use block that reads a skill's `SKILL.md` directly. Never panics: a
+/// `tool_use` block that reads a skill's `SKILL.md` directly. Never panics: a
 /// malformed line, a missing timestamp, or an unrecognized shape is skipped
 /// rather than failing the whole file.
 pub fn parse_claude_code_uses(text: &str) -> Vec<SkillInvocation> {
@@ -545,11 +545,11 @@ pub fn parse_claude_code_uses(text: &str) -> Vec<SkillInvocation> {
         let project_path = record
             .get("cwd")
             .and_then(|v| v.as_str())
-            .map(|s| s.to_string());
+            .map(std::string::ToString::to_string);
         let session = record
             .get("sessionId")
             .and_then(|v| v.as_str())
-            .map(|s| s.to_string());
+            .map(std::string::ToString::to_string);
 
         let record_type = record.get("type").and_then(|v| v.as_str());
         let mut push = |skill: &str, trigger: SkillTrigger| {
@@ -613,7 +613,7 @@ pub fn parse_claude_code_uses(text: &str) -> Vec<SkillInvocation> {
                 }
             }
         } else if record_type == Some("user") {
-            if record.get("isMeta").and_then(|v| v.as_bool()) == Some(true) {
+            if record.get("isMeta").and_then(serde_json::Value::as_bool) == Some(true) {
                 continue;
             }
             let Some(content) = record

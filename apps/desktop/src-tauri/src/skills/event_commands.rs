@@ -155,8 +155,10 @@ fn validate_materialize_request(
         .find(|agent| {
             agent.cli_name() == harness || (*agent == AgentId::OpenCode && harness == "open-code")
         })
-        .map(|agent| agent.display_name().to_string())
-        .unwrap_or_else(|| harness.to_string());
+        .map_or_else(
+            || harness.to_string(),
+            |agent| agent.display_name().to_string(),
+        );
     if deployment.agent != display || !deployment.shared_via_whole_dir_link {
         return Err(format!(
             "Deployment {deployment_id} is not a recorded whole-directory link for {harness}"
@@ -494,7 +496,7 @@ fn is_unresolved(deployment: &Deployment) -> bool {
     deployment.symlink_is_broken || deployment.symlink_error.is_some()
 }
 
-/// SkillPage's "Repair this location" entry point for a broken deployment
+/// `SkillPage`'s "Repair this location" entry point for a broken deployment
 /// symlink that `unlink_harness`/`relink_harness` don't cover (those only
 /// handle the shared-root materialize pattern). Validates `path` against the
 /// current snapshot as an unresolved deployment, and - for `"relink"` -

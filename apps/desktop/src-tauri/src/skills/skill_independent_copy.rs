@@ -336,7 +336,7 @@ fn run_independent_copy(
             let finalize = store.finish(id, EventStatus::Done);
             if let Err(error) = finalize {
                 let filesystem_rollback =
-                    rename(request.link, staging).and_then(|_| rename(saved_link, request.link));
+                    rename(request.link, staging).and_then(|()| rename(saved_link, request.link));
                 let registry_rollback = write_registry(request.home, &previous_registry);
                 let _ = store.finish(id, EventStatus::Failed);
                 return match (filesystem_rollback, registry_rollback) {

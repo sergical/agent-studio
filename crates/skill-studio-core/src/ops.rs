@@ -258,14 +258,10 @@ impl<T: Outcome> ResultEnvelope<T> {
     /// the first error's code. Partial wins over issues.
     pub fn exit_status(&self) -> i32 {
         match self.status {
-            OpStatus::Ok if self.data.as_ref().is_some_and(|d| d.found_issues()) => 1,
+            OpStatus::Ok if self.data.as_ref().is_some_and(Outcome::found_issues) => 1,
             OpStatus::Ok => 0,
             OpStatus::Partial => ErrorCode::Incomplete.exit_status(),
-            OpStatus::Error => self
-                .errors
-                .first()
-                .map(|e| e.code.exit_status())
-                .unwrap_or(1),
+            OpStatus::Error => self.errors.first().map_or(1, |e| e.code.exit_status()),
         }
     }
 }
@@ -1445,7 +1441,7 @@ fn walk_for_plugin_roots(
     }
 }
 
-/// Codex and OpenCode's own per-skill disable switches, read once per
+/// Codex and `OpenCode`'s own per-skill disable switches, read once per
 /// `scan` call (they are global config files, not per-root).
 struct DisableSources {
     /// Canonical `SKILL.md` paths Codex's `[[skills.config]] enabled =
@@ -1732,10 +1728,10 @@ fn classify_owner(cx: &OwnerClassifyContext) -> (LifecycleOwnerKind, Option<Owne
             project_label(cx.scope).as_deref(),
             cx.skill_name,
         );
-        return if !entry.has_manifest_row {
-            (LifecycleOwnerKind::WildcardDotagents, Some(owner))
-        } else {
+        return if entry.has_manifest_row {
             (LifecycleOwnerKind::Dotagents, Some(owner))
+        } else {
+            (LifecycleOwnerKind::WildcardDotagents, Some(owner))
         };
     }
 
@@ -1790,7 +1786,7 @@ fn project_label(scope: &RootScope) -> Option<String> {
 
 /// The `dep:v1` id's harness/universal path segment for a root, matching the
 /// desktop's `harness_slot` (`skill_deployment.rs`): every harness's own
-/// wire id, except OpenCode, whose slot is the un-hyphenated CLI name
+/// wire id, except `OpenCode`, whose slot is the un-hyphenated CLI name
 /// `opencode`; `universal` for the shared and parked roots.
 fn harness_slot(id: &AgentId) -> String {
     if id.as_str() == AgentId::OPEN_CODE {
@@ -1939,7 +1935,7 @@ fn walk_content_files(
     }
 }
 
-/// The embedded cl100k_base vocab is loaded once per process.
+/// The embedded `cl100k_base` vocab is loaded once per process.
 static TOKENIZER: OnceLock<Option<CoreBPE>> = OnceLock::new();
 
 fn tokenizer() -> Option<&'static CoreBPE> {
@@ -1948,12 +1944,10 @@ fn tokenizer() -> Option<&'static CoreBPE> {
         .as_ref()
 }
 
-/// Token count of `text`, cl100k_base. `None` tokenizer (the embedded vocab
+/// Token count of `text`, `cl100k_base`. `None` tokenizer (the embedded vocab
 /// failed to build, which should never happen) yields 0.
 fn count_tokens(text: &str, tokenizer: Option<&CoreBPE>) -> u32 {
-    tokenizer
-        .map(|bpe| bpe.encode_with_special_tokens(text).len() as u32)
-        .unwrap_or(0)
+    tokenizer.map_or(0, |bpe| bpe.encode_with_special_tokens(text).len() as u32)
 }
 
 /// True when `skill_dir` follows a symlink to an existing file or directory.
@@ -3042,7 +3036,10 @@ pub fn list_events(
         after: req.after.clone(),
     };
     let rows = store.list(&filter)?;
-    let mut dtos: Vec<EventDto> = rows.iter().map(|r| r.to_dto()).collect();
+    let mut dtos: Vec<EventDto> = rows
+        .iter()
+        .map(super::events::EventRecord::to_dto)
+        .collect();
     let list_step = crate::timing::step(clock, "open_and_list", step_start);
     let step_start = clock.monotonic();
     if req.check_drift {
@@ -3067,7 +3064,9 @@ pub fn list_events(
                 continue;
             };
             let live = crate::events::fingerprint_path(fs, Path::new(path))?;
-            let live = live.as_ref().map(|f| f.bare_hex()).unwrap_or("absent");
+            let live = live
+                .as_ref()
+                .map_or("absent", super::identity::Fingerprint::bare_hex);
             dto.drift = if live == post {
                 DriftState::Clean
             } else {
@@ -3154,8 +3153,7 @@ pub fn restore_event(
     let live_fingerprint = crate::events::fingerprint_path(fs, &path)?;
     let live = live_fingerprint
         .as_ref()
-        .map(|f| f.bare_hex())
-        .unwrap_or("absent");
+        .map_or("absent", super::identity::Fingerprint::bare_hex);
     if live != expected && !req.force {
         return Err(CoreError::new(
             ErrorCode::DriftConflict,

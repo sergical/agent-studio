@@ -160,8 +160,7 @@ impl EventStore {
             }
             let basename = path
                 .file_name()
-                .map(|n| n.to_string_lossy().into_owned())
-                .unwrap_or_else(|| format!("path-{i}"));
+                .map_or_else(|| format!("path-{i}"), |n| n.to_string_lossy().into_owned());
             let relative_path = format!("{i}-{basename}");
             copy_recursive(path, &dir.join(&relative_path))?;
             manifest.entries.insert(
@@ -544,7 +543,7 @@ impl EventStore {
     }
 
     /// Replaces an already-recorded inverse. Whole-root independent copies
-    /// record intent before the per-skill link exists, then fill RecreateSymlink.
+    /// record intent before the per-skill link exists, then fill `RecreateSymlink`.
     pub(crate) fn patch_event_inverse(&self, id: &str, inverse: &Value) -> Result<(), String> {
         let json = serde_json::to_string(inverse)
             .map_err(|e| format!("Failed to serialize inverse for {id}: {e}"))?;
@@ -958,7 +957,7 @@ fn hash_entry(path: &Path) -> std::io::Result<String> {
     } else if file_type.is_dir() {
         hasher.update(b"D");
         let mut entries: Vec<_> = fs::read_dir(path)?.collect::<Result<_, _>>()?;
-        entries.sort_by_key(|e| e.file_name());
+        entries.sort_by_key(std::fs::DirEntry::file_name);
         for entry in entries {
             let name_bytes = entry
                 .file_name()

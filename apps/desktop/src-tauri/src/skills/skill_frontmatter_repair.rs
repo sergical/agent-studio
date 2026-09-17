@@ -144,7 +144,7 @@ pub fn propose_colon_scalar_repair(content: &str) -> Result<(String, String), St
     }
 
     let replacement = if *key == "description" {
-        format!("description: |-{}  {}", separator, value)
+        format!("description: |-{separator}  {value}")
     } else {
         let quoted = serde_yaml::to_string(value)
             .map_err(|error| format!("Could not quote name: {error}"))?

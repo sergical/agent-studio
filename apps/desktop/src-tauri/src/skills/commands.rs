@@ -1873,14 +1873,14 @@ pub async fn remove_skill(
     }
     let output = command
         .output()
-        .map_err(|e| format!("Failed to execute npx skills: {}", e))?;
+        .map_err(|e| format!("Failed to execute npx skills: {e}"))?;
 
     let stdout = String::from_utf8_lossy(&output.stdout).to_string();
     let stderr = String::from_utf8_lossy(&output.stderr).to_string();
 
     eprintln!("[remove_skill] Exit code: {:?}", output.status.code());
-    eprintln!("[remove_skill] stdout: {}", stdout);
-    eprintln!("[remove_skill] stderr: {}", stderr);
+    eprintln!("[remove_skill] stdout: {stdout}");
+    eprintln!("[remove_skill] stderr: {stderr}");
 
     if output.status.success() {
         if let Some(home) = dirs::home_dir() {
@@ -2082,7 +2082,7 @@ pub(crate) fn canonicalize_skill_md(
         return Err(format!("Path is not an installed skill: {path}"));
     }
     let canonical =
-        std::fs::canonicalize(path_buf).map_err(|e| format!("Failed to open {}: {}", path, e))?;
+        std::fs::canonicalize(path_buf).map_err(|e| format!("Failed to open {path}: {e}"))?;
     let is_file = std::fs::symlink_metadata(&canonical)
         .map(|m| m.is_file())
         .unwrap_or(false);
@@ -2110,11 +2110,11 @@ pub async fn read_installed_skill_md(
         require_snapshot_owns_path(&refresh_state, &path_buf)?;
         canonicalize_skill_md(&path_buf, &path)?;
 
-        let mut file = File::open(&path).map_err(|e| format!("Failed to open {}: {}", path, e))?;
+        let mut file = File::open(&path).map_err(|e| format!("Failed to open {path}: {e}"))?;
         let mut buf = vec![0u8; MAX_SKILL_MD_BYTES];
         let n = file
             .read(&mut buf)
-            .map_err(|e| format!("Failed to read {}: {}", path, e))?;
+            .map_err(|e| format!("Failed to read {path}: {e}"))?;
         buf.truncate(n);
         Ok(String::from_utf8_lossy(&buf).into_owned())
     })
@@ -2239,14 +2239,14 @@ pub fn open_skill_path(
     let output = Command::new("open")
         .args(&args)
         .output()
-        .map_err(|e| format!("Failed to open {}: {}", path, e))?;
+        .map_err(|e| format!("Failed to open {path}: {e}"))?;
 
     if !output.status.success() {
         if let Some(script) = &script_to_clean_up {
             let _ = std::fs::remove_file(script);
         }
         let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
-        return Err(format!("Failed to open {}: {}", path, stderr));
+        return Err(format!("Failed to open {path}: {stderr}"));
     }
     Ok(())
 }
@@ -2365,7 +2365,7 @@ pub async fn update_skill(
         }
         let output = command
             .output()
-            .map_err(|e| format!("Failed to execute npx: {}", e))?;
+            .map_err(|e| format!("Failed to execute npx: {e}"))?;
 
         let stderr = String::from_utf8_lossy(&output.stderr).to_string();
 

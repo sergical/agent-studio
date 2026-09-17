@@ -63,7 +63,7 @@ pub fn read_lock_file_at(lock_path: &std::path::Path) -> Result<SkillLockFile, S
     }
 
     let content =
-        fs::read_to_string(lock_path).map_err(|e| format!("Failed to read lock file: {}", e))?;
+        fs::read_to_string(lock_path).map_err(|e| format!("Failed to read lock file: {e}"))?;
 
-    serde_json::from_str(&content).map_err(|e| format!("Failed to parse lock file: {}", e))
+    serde_json::from_str(&content).map_err(|e| format!("Failed to parse lock file: {e}"))
 }

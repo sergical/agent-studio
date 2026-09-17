@@ -214,8 +214,7 @@ fn redact_home_style_paths(text: &str) -> String {
             let after_prefix = start + prefix.len();
             let end = out[after_prefix..]
                 .find(|c: char| c == separator || c.is_whitespace())
-                .map(|offset| after_prefix + offset)
-                .unwrap_or(out.len());
+                .map_or(out.len(), |offset| after_prefix + offset);
             out.replace_range(start..end, "<home>");
         }
     }

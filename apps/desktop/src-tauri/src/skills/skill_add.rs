@@ -281,7 +281,7 @@ pub(crate) fn dir_entry_names(dir: &Path) -> std::collections::BTreeSet<String> 
     fs::read_dir(dir)
         .into_iter()
         .flatten()
-        .filter_map(|e| e.ok())
+        .filter_map(std::result::Result::ok)
         .filter_map(|e| e.file_name().into_string().ok())
         .collect()
 }
@@ -532,13 +532,13 @@ fn derive_copy_name(source: &ParsedSkillSource) -> Result<String, String> {
             .path
             .as_deref()
             .and_then(|p| p.rsplit('/').next())
-            .map(|s| s.to_string())
+            .map(std::string::ToString::to_string)
             .or_else(|| {
                 source
                     .repo
                     .as_deref()
                     .and_then(|r| r.rsplit('/').next())
-                    .map(|s| s.to_string())
+                    .map(std::string::ToString::to_string)
             })
             .ok_or_else(|| "Could not determine a skill name".to_string()),
         ParsedSkillSourceKind::Local => source
@@ -546,7 +546,7 @@ fn derive_copy_name(source: &ParsedSkillSource) -> Result<String, String> {
             .as_deref()
             .and_then(|p| Path::new(p).file_name())
             .and_then(|s| s.to_str())
-            .map(|s| s.to_string())
+            .map(std::string::ToString::to_string)
             .ok_or_else(|| "Could not determine a skill name".to_string()),
         ParsedSkillSourceKind::Git => Err("Copy is not supported for git sources".to_string()),
     }
@@ -837,28 +837,23 @@ fn add_via_copy(
                 let path = request.source.path.clone().unwrap_or_default();
                 // A batch install passes the snapshot it already downloaded, so
                 // the tarball is fetched once for the whole picker selection.
-                match snapshot {
-                    Some(snapshot) => {
-                        snapshot.copy_dir_controlled(&path, staging_target, control)?
-                    }
-                    None => {
-                        let commit = match &request.source.git_ref {
-                            Some(r) => r.clone(),
-                            None => lookup
-                                .latest_commit_controlled(&repo, &path, None, control)?
-                                .map(|(sha, _)| sha)
-                                .ok_or_else(|| {
-                                    format!("Could not determine {name}'s latest commit")
-                                })?,
-                        };
-                        fetch.fetch_skill_dir_controlled(
-                            &repo,
-                            &path,
-                            &commit,
-                            staging_target,
-                            control,
-                        )?;
-                    }
+                if let Some(snapshot) = snapshot {
+                    snapshot.copy_dir_controlled(&path, staging_target, control)?;
+                } else {
+                    let commit = match &request.source.git_ref {
+                        Some(r) => r.clone(),
+                        None => lookup
+                            .latest_commit_controlled(&repo, &path, None, control)?
+                            .map(|(sha, _)| sha)
+                            .ok_or_else(|| format!("Could not determine {name}'s latest commit"))?,
+                    };
+                    fetch.fetch_skill_dir_controlled(
+                        &repo,
+                        &path,
+                        &commit,
+                        staging_target,
+                        control,
+                    )?;
                 }
                 Ok(())
             }
@@ -1315,22 +1310,23 @@ pub(crate) fn resolve_fetch_and_lookup(app: &tauri::AppHandle) -> Result<GithubT
         .path()
         .app_data_dir()
         .map_err(|e| format!("Could not resolve app data dir: {e}"))?;
-    Ok(match skill_update_check::resolve_gh_binary() {
-        Some(gh_bin) => (
-            Box::new(RealUpstreamFetch {
-                gh_bin: gh_bin.clone(),
-                cache_dir: app_data.join("skill-studio").join("cache"),
-            }),
-            Box::new(GhCommitLookup { gh_bin }),
-        ),
-        None => {
+    Ok(
+        if let Some(gh_bin) = skill_update_check::resolve_gh_binary() {
+            (
+                Box::new(RealUpstreamFetch {
+                    gh_bin: gh_bin.clone(),
+                    cache_dir: app_data.join("skill-studio").join("cache"),
+                }),
+                Box::new(GhCommitLookup { gh_bin }),
+            )
+        } else {
             let message = "Run Check now first".to_string();
             (
                 Box::new(Unavailable(message.clone())),
                 Box::new(Unavailable(message)),
             )
-        }
-    })
+        },
+    )
 }
 
 #[tauri::command]

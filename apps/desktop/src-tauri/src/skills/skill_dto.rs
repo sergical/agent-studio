@@ -194,7 +194,7 @@ pub struct Deployment {
     pub disabled_by: Option<DisabledBy>,
     /// For a shared-root deployment (`agent == "shared"`) only: agent ids among
     /// the native shared-root readers whose own mechanism disables this skill
-    /// (Codex config / OpenCode permission deny) - `"codex"`, `"open-code"`.
+    /// (Codex config / `OpenCode` permission deny) - `"codex"`, `"open-code"`.
     /// Always empty for other deployments.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub disabled_readers: Vec<String>,
@@ -312,7 +312,7 @@ pub struct InstalledSkill {
     /// Empty means the skill is spec-compliant.
     #[serde(default)]
     pub spec_violations: Vec<String>,
-    /// Token count of SKILL.md's text (cl100k_base), from the first deployment.
+    /// Token count of SKILL.md's text (`cl100k_base`), from the first deployment.
     #[serde(default)]
     pub skill_md_tokens: u32,
     /// Token count of just `"{name}: {description}"`, from the first

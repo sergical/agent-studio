@@ -185,7 +185,7 @@ fn deployment_from_core(dto: &DeploymentDto) -> Deployment {
     }
 }
 
-/// Build a fresh InstalledSkill, seeding metadata from the lock file entry
+/// Build a fresh `InstalledSkill`, seeding metadata from the lock file entry
 /// when one exists for this skill name, or generic "local directory"
 /// metadata otherwise.
 fn new_installed_skill(
@@ -249,13 +249,13 @@ fn new_installed_skill(
     }
 }
 
-/// Merge core's scan Inventory by name into one InstalledSkill per skill,
+/// Merge core's scan Inventory by name into one `InstalledSkill` per skill,
 /// with one Deployment per `DeploymentDto`. Every deployment-level fact
 /// (identity, destination, owner, mutability, backing, content facts) comes
-/// straight from core's `scan`; this only aggregates by name (source_kind
+/// straight from core's `scan`; this only aggregates by name (`source_kind`
 /// precedence, deduped violations/hashes, first-readable-wins aggregate
 /// facts), seeds from the lock entry, keeps lock-only skills (in the lock
-/// file, not found by scan) with empty deployments and source_kind
+/// file, not found by scan) with empty deployments and `source_kind`
 /// skills-sh, and resolves the one identity core's DTO omits: the target id
 /// of a `LinkedTo` backing relationship (see `resolve_linked_backing_ids`).
 pub fn assemble_installed_skills(

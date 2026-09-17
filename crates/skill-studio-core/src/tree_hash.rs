@@ -1,4 +1,4 @@
-//! TreeHash: the git tree SHA-1 of a skill folder.
+//! `TreeHash`: the git tree SHA-1 of a skill folder.
 //!
 //! This is the SHA GitHub shows for a tree and the `skillFolderHash`
 //! `npx skills` writes into `~/.agents/.skill-lock.json`
@@ -8,7 +8,7 @@
 //!
 //! Distinct from [`crate::ops::skill_content_hash`]: that one is a sha256
 //! over path/byte pairs, invented for the app's own change detection and
-//! meaningless outside it. TreeHash reimplements git's own object model -
+//! meaningless outside it. `TreeHash` reimplements git's own object model -
 //! `blob <len>\0<bytes>` and `tree <len>\0<entries>`, both sha1'd - purely
 //! against [`ScopeFs`], with no `git` binary involved.
 

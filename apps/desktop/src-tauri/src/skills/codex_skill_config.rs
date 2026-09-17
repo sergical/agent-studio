@@ -106,7 +106,7 @@ fn next_table_position(table: &Table, removed_position: isize) -> Option<isize> 
     let mut next = table
         .position()
         .filter(|position| *position > removed_position);
-    for (_, item) in table.iter() {
+    for (_, item) in table {
         let child_next = match item {
             Item::Table(child) => next_table_position(child, removed_position),
             Item::ArrayOfTables(array) => array

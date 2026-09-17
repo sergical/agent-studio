@@ -792,21 +792,20 @@ fn run_operation_body(
 
 fn spawn_operation(app: AppHandle, state: AddSkillOperationState, operation_id: String) {
     tauri::async_runtime::spawn_blocking(move || {
-        let home = match dirs::home_dir() {
-            Some(home) => home,
-            None => {
-                let _ = publish(
-                    Some(&app),
-                    &state,
-                    &operation_id,
-                    AddSkillOperationPhase::Failed,
-                    "Could not find home directory",
-                    |event| {
-                        event.error = Some("Could not find home directory".to_string());
-                    },
-                );
-                return;
-            }
+        let home = if let Some(home) = dirs::home_dir() {
+            home
+        } else {
+            let _ = publish(
+                Some(&app),
+                &state,
+                &operation_id,
+                AddSkillOperationPhase::Failed,
+                "Could not find home directory",
+                |event| {
+                    event.error = Some("Could not find home directory".to_string());
+                },
+            );
+            return;
         };
         let control = match state.operation_control(&operation_id) {
             Ok(control) => control,

@@ -34,7 +34,7 @@ const STDERR_TAIL_LEN: usize = 4096;
 /// newline would otherwise grow this run's buffer without bound.
 const MAX_LINE_BYTES: usize = 4 * 1024 * 1024;
 
-/// How long a cancelled run gets to exit after SIGTERM before it's SIGKILLed.
+/// How long a cancelled run gets to exit after SIGTERM before it's `SIGKILLed`.
 const CANCEL_GRACE: Duration = Duration::from_secs(2);
 
 /// One of the four first-class agents a skill run can target.
@@ -147,19 +147,19 @@ pub struct ParseState {
     pub last_text: String,
     pub skill_loaded: SkillLoaded,
     pub last_agent_message: Option<String>,
-    /// Sum of every distinct OpenCode `step_finish.part.cost` seen, keyed by
+    /// Sum of every distinct `OpenCode` `step_finish.part.cost` seen, keyed by
     /// `part.id` in `seen_step_finish_ids` below - `run_process` folds this
-    /// into the `Finished` event it synthesizes for OpenCode, since OpenCode
+    /// into the `Finished` event it synthesizes for `OpenCode`, since `OpenCode`
     /// never emits its own terminal record the way Claude/Codex do.
     pub cost_usd: Option<f64>,
-    /// `part.id` of every OpenCode `step_finish` already folded into
+    /// `part.id` of every `OpenCode` `step_finish` already folded into
     /// `cost_usd`, so a reprint of the same step doesn't double-count it.
     pub seen_step_finish_ids: std::collections::HashSet<String>,
-    /// `callID`/`id` of every OpenCode tool part already turned into a
+    /// `callID`/`id` of every `OpenCode` tool part already turned into a
     /// `ToolCall`, so the pending/running/completed re-prints of the same
     /// part don't each emit their own `ToolCall`.
     pub announced_open_code_tool_ids: std::collections::HashSet<String>,
-    /// `callID`/`id` of every OpenCode tool part already turned into a
+    /// `callID`/`id` of every `OpenCode` tool part already turned into a
     /// `ToolResult` or `Error`, so a call is resolved at most once even
     /// though the CLI keeps reprinting it after it settles.
     pub resolved_open_code_tool_ids: std::collections::HashSet<String>,
@@ -338,8 +338,7 @@ fn parse_claude_line(
                             let summary = input
                                 .get("skill")
                                 .and_then(Value::as_str)
-                                .map(str::to_string)
-                                .unwrap_or_else(|| input.to_string());
+                                .map_or_else(|| input.to_string(), str::to_string);
                             events.push(SkillAgentEventKind::ToolCall {
                                 name,
                                 summary,
@@ -377,8 +376,7 @@ fn parse_claude_line(
             let final_text = value
                 .get("result")
                 .and_then(Value::as_str)
-                .map(str::to_string)
-                .unwrap_or_else(|| state.last_text.clone());
+                .map_or_else(|| state.last_text.clone(), str::to_string);
             let session_id = value
                 .get("session_id")
                 .and_then(Value::as_str)
@@ -567,7 +565,7 @@ fn parse_pi_line(
 /// into two states (announced/resolved, see `open_code_tool_events`) so the
 /// CLI's pending/running/completed/error re-prints of the same part yield at
 /// most one `ToolCall` and one `ToolResult`/`Error`. Tool parts were never
-/// observed in the field; this follows the OpenCode SDK's documented part
+/// observed in the field; this follows the `OpenCode` SDK's documented part
 /// shape as best effort.
 fn parse_open_code_line(
     value: &Value,
@@ -622,7 +620,7 @@ fn parse_open_code_line(
     events
 }
 
-/// Builds the events for one OpenCode tool part, deduped by `callID`/`id`
+/// Builds the events for one `OpenCode` tool part, deduped by `callID`/`id`
 /// into two independent states per call: "announced" (a `ToolCall` has been
 /// emitted) and "resolved" (a `ToolResult` or `Error` has been emitted). The
 /// CLI reprints the same call across its pending/running/completed/error
@@ -680,8 +678,10 @@ fn open_code_tool_events(
         let summary = tool_state
             .and_then(|s| s.get("title"))
             .and_then(Value::as_str)
-            .map(str::to_string)
-            .unwrap_or_else(|| input.to_string().chars().take(120).collect());
+            .map_or_else(
+                || input.to_string().chars().take(120).collect(),
+                str::to_string,
+            );
         events.push(SkillAgentEventKind::ToolCall {
             name: tool.clone(),
             summary,
@@ -717,8 +717,7 @@ fn open_code_tool_events(
             let message = tool_state
                 .and_then(|s| s.get("error"))
                 .and_then(Value::as_str)
-                .map(str::to_string)
-                .unwrap_or_else(|| "Unknown error".to_string());
+                .map_or_else(|| "Unknown error".to_string(), str::to_string);
             events.push(SkillAgentEventKind::Error { message });
         }
     }
@@ -751,7 +750,7 @@ pub struct SkillAgentRunnerState {
     binaries: Mutex<HashMap<HarnessId, PathBuf>>,
 }
 
-/// A run id must be safe to use as a HashMap key and to log: short, and
+/// A run id must be safe to use as a `HashMap` key and to log: short, and
 /// drawn from a small alphabet.
 pub(crate) fn validate_run_id(run_id: &str) -> Result<(), String> {
     if run_id.is_empty() || run_id.len() > 64 {
@@ -809,7 +808,7 @@ fn resolve_binary(harness: HarnessId, state: &SkillAgentRunnerState) -> Result<P
     if let Some(cached) = state
         .binaries
         .lock()
-        .unwrap_or_else(|e| e.into_inner())
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
         .get(&harness)
     {
         return Ok(cached.clone());
@@ -829,7 +828,7 @@ fn resolve_binary(harness: HarnessId, state: &SkillAgentRunnerState) -> Result<P
     state
         .binaries
         .lock()
-        .unwrap_or_else(|e| e.into_inner())
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
         .insert(harness, path.clone());
     Ok(path)
 }
@@ -965,7 +964,10 @@ pub async fn start_skill_agent_run(
         let state = app.state::<SkillAgentRunnerState>();
         let handle = Arc::new(RunHandle::default());
         {
-            let mut runs = state.runs.lock().unwrap_or_else(|e| e.into_inner());
+            let mut runs = state
+                .runs
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
             if runs.contains_key(&run_id) {
                 return Err(format!("A run with id {run_id} is already running"));
             }
@@ -986,7 +988,7 @@ pub async fn start_skill_agent_run(
                 state
                     .runs
                     .lock()
-                    .unwrap_or_else(|e| e.into_inner())
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
                     .remove(&run_id);
                 return Err(err);
             }
@@ -1027,7 +1029,7 @@ async fn run_and_deregister(
 ) {
     run_skill_agent(&sink, &run_id, request, binary, &handle).await;
     runs.lock()
-        .unwrap_or_else(|e| e.into_inner())
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
         .remove(&run_id);
 }
 
@@ -1089,32 +1091,31 @@ async fn run_process(
         command.process_group(0);
     }
 
-    let mut child = match command.spawn() {
-        Ok(child) => child,
-        Err(_) => {
-            emit_event(
-                sink,
-                run_id,
-                &seq,
-                SkillAgentEventKind::Error {
-                    message: format!("{} is not installed or not on PATH", harness.bin_name()),
-                },
-            );
-            emit_event(
-                sink,
-                run_id,
-                &seq,
-                SkillAgentEventKind::Finished {
-                    ok: false,
-                    final_text: String::new(),
-                    session_id: None,
-                    cost_usd: None,
-                    duration_ms: 0,
-                    skill_loaded: SkillLoaded::Unknown,
-                },
-            );
-            return;
-        }
+    let mut child = if let Ok(child) = command.spawn() {
+        child
+    } else {
+        emit_event(
+            sink,
+            run_id,
+            &seq,
+            SkillAgentEventKind::Error {
+                message: format!("{} is not installed or not on PATH", harness.bin_name()),
+            },
+        );
+        emit_event(
+            sink,
+            run_id,
+            &seq,
+            SkillAgentEventKind::Finished {
+                ok: false,
+                final_text: String::new(),
+                session_id: None,
+                cost_usd: None,
+                duration_ms: 0,
+                skill_loaded: SkillLoaded::Unknown,
+            },
+        );
+        return;
     };
     let pid = child.id();
 
@@ -1175,7 +1176,7 @@ async fn run_process(
             cancelled = false;
             status
         }
-        _ = handle.cancel.notified() => {
+        () = handle.cancel.notified() => {
             cancelled = true;
             terminate_process_group(pid, &mut child).await
         }
@@ -1216,13 +1217,13 @@ async fn run_process(
 
     if !exit_ok && final_text.is_empty() {
         let tail = String::from_utf8_lossy(&stderr_tail).trim().to_string();
-        let message = if !tail.is_empty() {
-            tail
-        } else {
+        let message = if tail.is_empty() {
             match &status {
                 Ok(s) => format!("exited with code {}", s.code().unwrap_or(-1)),
                 Err(e) => format!("failed to wait on process: {e}"),
             }
+        } else {
+            tail
         };
         emit_event(sink, run_id, &seq, SkillAgentEventKind::Error { message });
         had_error = true;
@@ -1261,17 +1262,16 @@ async fn terminate_process_group(
     #[cfg(not(unix))]
     let _ = pid;
 
-    match tokio::time::timeout(CANCEL_GRACE, child.wait()).await {
-        Ok(status) => status,
-        Err(_) => {
-            #[cfg(unix)]
-            if let Some(pid) = pid {
-                unsafe {
-                    libc::kill(-(pid as i32), libc::SIGKILL);
-                }
+    if let Ok(status) = tokio::time::timeout(CANCEL_GRACE, child.wait()).await {
+        status
+    } else {
+        #[cfg(unix)]
+        if let Some(pid) = pid {
+            unsafe {
+                libc::kill(-(pid as i32), libc::SIGKILL);
             }
-            child.wait().await
         }
+        child.wait().await
     }
 }
 
@@ -1288,7 +1288,7 @@ pub fn cancel_skill_agent_run(
         let handle = state
             .runs
             .lock()
-            .unwrap_or_else(|e| e.into_inner())
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
             .get(&run_id)
             .cloned();
         let Some(handle) = handle else {

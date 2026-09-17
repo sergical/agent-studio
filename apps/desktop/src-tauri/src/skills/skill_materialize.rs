@@ -736,7 +736,7 @@ pub fn reconcile_materialized_root(store: &EventStore, root: &Path) -> Result<()
 
     let shared_skills: Vec<String> = fs::read_dir(&shared_root)
         .map_err(|e| format!("Failed to read {}: {e}", shared_root.display()))?
-        .filter_map(|e| e.ok())
+        .filter_map(std::result::Result::ok)
         .filter(|e| e.metadata().map(|m| m.is_dir()).unwrap_or(false))
         .map(|e| e.file_name().to_string_lossy().into_owned())
         .collect();
@@ -896,7 +896,7 @@ fn finish_link_event(
     }
 }
 
-/// Removes a single broken deployment symlink, for the SkillPage "Repair
+/// Removes a single broken deployment symlink, for the `SkillPage` "Repair
 /// this location" flow (see `event_commands::repair_skill_link`). Unlike
 /// `unlink_harness`, `link` is the deployment's own path directly (not
 /// `root.join(skill)`), and its target is expected to already be broken -
@@ -947,7 +947,7 @@ pub fn repair_remove_link(
 }
 
 /// Repoints a broken deployment symlink at a healthy copy's path, for the
-/// SkillPage "Repair this location" flow. The link's *old* (broken) target is
+/// `SkillPage` "Repair this location" flow. The link's *old* (broken) target is
 /// recorded as the inverse, so undo restores the exact prior link rather than
 /// removing the new one and leaving nothing - the same shape `unlink_harness`
 /// undoes to.

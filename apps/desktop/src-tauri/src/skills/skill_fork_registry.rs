@@ -129,7 +129,7 @@ pub fn deployment_trial_key(deployment_id: &str) -> String {
 /// -> `"find-bugs"`. Falls back to the whole key for anything that doesn't
 /// look like one `trial_key` produced (there shouldn't be any).
 pub fn name_from_trial_key(key: &str) -> &str {
-    key.split_once('/').map(|(_, name)| name).unwrap_or(key)
+    key.split_once('/').map_or(key, |(_, name)| name)
 }
 
 /// One forked skill's provenance, enough to reinstall it from its origin
@@ -182,7 +182,7 @@ pub struct ParkedRecord {
 
 /// One first-class agent's per-skill disable that has no native config to
 /// read back, tracked here instead - currently only Claude Code (removing
-/// its per-skill symlink), since Codex and OpenCode read their own disable
+/// its per-skill symlink), since Codex and `OpenCode` read their own disable
 /// state straight from `~/.codex/config.toml` / `opencode.json`. See
 /// `skill_harness_disable`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

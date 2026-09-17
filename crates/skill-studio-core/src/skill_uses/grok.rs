@@ -234,7 +234,7 @@ pub fn parse_grok_uses(
 
         match update.get("sessionUpdate").and_then(Value::as_str) {
             Some("user_message_chunk") => push_user_uses(&mut out, context, update, at),
-            Some("tool_call") | Some("tool_call_update") => {
+            Some("tool_call" | "tool_call_update") => {
                 let Some(tool_call_id) = update.get("toolCallId").and_then(Value::as_str) else {
                     continue;
                 };

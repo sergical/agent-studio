@@ -30,7 +30,7 @@ fn data_root() -> PathBuf {
 }
 
 /// Builds a `Runtime` wired for a mutation: the real filesystem, a real
-/// file lease, and a writable SQLite history store, rooted at the host's
+/// file lease, and a writable `SQLite` history store, rooted at the host's
 /// home directory. Every desktop command that calls a core `ops` function
 /// that opens a `MutationSession` (park, unpark, and every write to come)
 /// takes its `Runtime` from here.
@@ -60,7 +60,6 @@ pub fn to_command_result<T: Outcome>(envelope: ResultEnvelope<T>) -> Result<T, S
         _ => Err(envelope
             .errors
             .first()
-            .map(|e| e.message.clone())
-            .unwrap_or_else(|| "operation failed".to_string())),
+            .map_or_else(|| "operation failed".to_string(), |e| e.message.clone())),
     }
 }

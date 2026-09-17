@@ -926,7 +926,7 @@ fn dir_entry_names(dir: &Path) -> BTreeSet<String> {
     fs::read_dir(dir)
         .into_iter()
         .flatten()
-        .filter_map(|e| e.ok())
+        .filter_map(std::result::Result::ok)
         .filter_map(|e| e.file_name().into_string().ok())
         .collect()
 }
@@ -1447,12 +1447,11 @@ fn preflight_pack_import_with(
             return Err(error);
         }
     }
-    let mut tokens = match state.0.lock() {
-        Ok(tokens) => tokens,
-        Err(_) => {
-            cleanup_prepared_pack_import(home, &prepared);
-            return Err("Pack trust token state is unavailable".to_string());
-        }
+    let mut tokens = if let Ok(tokens) = state.0.lock() {
+        tokens
+    } else {
+        cleanup_prepared_pack_import(home, &prepared);
+        return Err("Pack trust token state is unavailable".to_string());
     };
     prune_pack_trust_tokens(home, &mut tokens, Instant::now());
     tokens.insert(

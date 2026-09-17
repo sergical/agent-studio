@@ -246,7 +246,7 @@ pub fn validate_skill(
         {
             None => violations.push("missing required frontmatter field: description".to_string()),
             Some(d) if d.chars().count() > 1024 => {
-                violations.push("description exceeds 1024 characters".to_string())
+                violations.push("description exceeds 1024 characters".to_string());
             }
             Some(_) => {}
         }

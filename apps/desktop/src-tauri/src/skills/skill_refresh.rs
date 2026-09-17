@@ -72,8 +72,8 @@ pub struct SkillSnapshot {
     /// The latest background update-check result - see `skill_update_check`.
     #[serde(default)]
     pub update_check: UpdateCheckSummary,
-    /// Which OpenCode config format is present, if any - `None` when
-    /// OpenCode isn't configured, `Some(Jsonc)` when Skill Studio can only
+    /// Which `OpenCode` config format is present, if any - `None` when
+    /// `OpenCode` isn't configured, `Some(Jsonc)` when Skill Studio can only
     /// read (not write) its per-skill disables. See
     /// `opencode_skill_permission::detect_config_kind`.
     #[serde(default)]
@@ -117,7 +117,7 @@ pub struct SkillRefreshState {
     /// The (UTC date, hour) of the last snapshot rebuild - full or
     /// invocations-only. The refresh loop compares this against the current
     /// hour on every tick so the wall-clock-dependent invocation windows in
-    /// `SkillInvocationIndex::stats_at` (24h/7d/14d/30d, by_day) get rebuilt on
+    /// `SkillInvocationIndex::stats_at` (24h/7d/14d/30d, `by_day`) get rebuilt on
     /// an hour boundary even when nothing on disk changed.
     last_built_hour: Arc<Mutex<Option<(NaiveDate, u32)>>>,
     cache_path: PathBuf,
@@ -227,7 +227,7 @@ pub fn get_skill_snapshot(
 pub fn request_skill_rescan(state: tauri::State<SkillRefreshState>, app: tauri::AppHandle) {
     crate::timing_log::time_command(&app, "request_skill_rescan", move || {
         state.skills_dirty.store(true, Ordering::SeqCst);
-    })
+    });
 }
 
 /// Mark the next rebuild as full, from a caller (`skill_update_check`) that
@@ -952,7 +952,7 @@ fn run_refresh_loop(app: AppHandle, state: SkillRefreshState) {
                             }
                         }
                         WatchEventKind::Invocations => {
-                            state.invocations_dirty.store(true, Ordering::SeqCst)
+                            state.invocations_dirty.store(true, Ordering::SeqCst);
                         }
                         WatchEventKind::Ignored => {}
                     }
@@ -1409,8 +1409,7 @@ pub(crate) fn core_scan_installed_skills(
 ) -> CoreScanResult {
     let data_dir = update_check_path
         .parent()
-        .map(Path::to_path_buf)
-        .unwrap_or_else(|| home.to_path_buf());
+        .map_or_else(|| home.to_path_buf(), Path::to_path_buf);
     let lease_root = data_dir.join("core-leases");
     let history_root = data_dir.join("core-history");
 
@@ -1673,7 +1672,7 @@ const HARNESS_DIR_NAMES: [&str; 7] = [
 fn is_config_file_name(name: &std::ffi::OsStr, home: &Path) -> bool {
     let fork_registry_name = super::skill_fork_registry::fork_registry_path(home)
         .file_name()
-        .map(|n| n.to_owned());
+        .map(std::borrow::ToOwned::to_owned);
     name == ".skill-lock.json"
         || name == "config.toml"
         || name == "opencode.json"
@@ -1708,7 +1707,7 @@ fn is_under_plugin_cache(path: &Path, home: &Path) -> bool {
 /// budget and can return a slightly different set on each run, so comparing
 /// project sets is not a usable signal. A change under any other harness's
 /// session-history directory named by `skill_studio_host::is_skill_use_change`
-/// (OpenCode's database, so far) is likewise invocations-only. Outside
+/// (`OpenCode`'s database, so far) is likewise invocations-only. Outside
 /// `claude_projects_dir`, only paths that can actually change
 /// `snapshot.skills` - a skill directory, a native plugin cache, a known
 /// config/lock file, or a harness directory being created/removed - trigger
@@ -1760,10 +1759,10 @@ pub fn classify_watch_event(
 /// cache and its parent, the lock file's and Codex config's containing
 /// directories, every harness's session-history directory named by
 /// `skill_studio_host::skill_use_watch_paths` (Claude Code's transcripts
-/// recursively, OpenCode's database directory non-recursively) and each of
+/// recursively, `OpenCode`'s database directory non-recursively) and each of
 /// their parents, and for each project, only its skill roots:
 /// `<project>/<sub>/skills` (recursive, plus `<project>/.opencode/skill` for
-/// OpenCode's legacy singular dir), `<project>/<sub>` itself (non-recursive,
+/// `OpenCode`'s legacy singular dir), `<project>/<sub>` itself (non-recursive,
 /// so a `skills` dir created later is still seen), and the project root
 /// (non-recursive, so a `.claude` etc. created later is still seen).
 /// Watching only the skill roots - rather than each `<project>/<sub>`

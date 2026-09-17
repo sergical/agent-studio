@@ -547,7 +547,7 @@ fn check_candidate(
                         stop.store(true, Ordering::SeqCst);
                         *not_logged_in_message
                             .lock()
-                            .unwrap_or_else(|e| e.into_inner()) = Some(e);
+                            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(e);
                         stopped = true;
                         // Keep whatever baseline key (if any) the previous
                         // run recorded, so a retry happens once this stops
@@ -578,7 +578,7 @@ fn check_candidate(
                 stop.store(true, Ordering::SeqCst);
                 *not_logged_in_message
                     .lock()
-                    .unwrap_or_else(|e| e.into_inner()) = Some(e);
+                    .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(e);
                 (
                     previous.and_then(|p| p.latest_commit.clone()),
                     previous.and_then(|p| p.latest_commit_at.clone()),
@@ -633,7 +633,10 @@ fn run_update_check_impl(
     std::thread::scope(|scope| {
         for _ in 0..LOOKUP_POOL_SIZE {
             scope.spawn(|| loop {
-                let next = queue.lock().unwrap_or_else(|e| e.into_inner()).pop_front();
+                let next = queue
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .pop_front();
                 let Some(candidate) = next else { break };
 
                 let legacy_is_unambiguous = candidate.scope == InstallScope::Global
@@ -657,14 +660,14 @@ fn run_update_check_impl(
                 ) {
                     computed
                         .lock()
-                        .unwrap_or_else(|e| e.into_inner())
+                        .unwrap_or_else(std::sync::PoisonError::into_inner)
                         .insert(candidate.owner_id.clone(), state);
                 } else if let Some(state) = prev_state {
                     // Stop was already set before this one could be looked
                     // up; keep whatever we knew about it before.
                     computed
                         .lock()
-                        .unwrap_or_else(|e| e.into_inner())
+                        .unwrap_or_else(std::sync::PoisonError::into_inner)
                         .insert(candidate.owner_id.clone(), state.clone());
                 }
             });
@@ -677,7 +680,9 @@ fn run_update_check_impl(
         GhStatus::Ok
     };
 
-    let computed = computed.into_inner().unwrap_or_else(|e| e.into_inner());
+    let computed = computed
+        .into_inner()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
     let owners = if only_owner_ids.is_some() {
         let mut merged = previous.owners.clone();
         merged.extend(computed);
@@ -742,27 +747,21 @@ fn run_update_check_now(
     project_paths: &[PathBuf],
     app_data: &Path,
 ) -> UpdateCheckStore {
-    match resolve_gh_binary() {
-        Some(gh_bin) => run_update_check_with_projects(
-            home,
-            project_paths,
-            app_data,
-            &GhCommitLookup { gh_bin },
-        ),
-        None => {
-            let previous = read_update_check_store(app_data);
-            let store = UpdateCheckStore {
-                version: update_store_version(),
-                checked_at: Some(Utc::now().to_rfc3339()),
-                gh_status: GhStatus::Missing,
-                owners: previous.owners,
-                legacy_skills: previous.legacy_skills,
-            };
-            if let Err(e) = write_store(app_data, &store) {
-                eprintln!("skill update check: failed to write store: {e}");
-            }
-            store
+    if let Some(gh_bin) = resolve_gh_binary() {
+        run_update_check_with_projects(home, project_paths, app_data, &GhCommitLookup { gh_bin })
+    } else {
+        let previous = read_update_check_store(app_data);
+        let store = UpdateCheckStore {
+            version: update_store_version(),
+            checked_at: Some(Utc::now().to_rfc3339()),
+            gh_status: GhStatus::Missing,
+            owners: previous.owners,
+            legacy_skills: previous.legacy_skills,
+        };
+        if let Err(e) = write_store(app_data, &store) {
+            eprintln!("skill update check: failed to write store: {e}");
         }
+        store
     }
 }
 
@@ -777,7 +776,10 @@ impl UpdateCheckState {
     /// Attempts to claim the "in progress" flag; `false` when another check
     /// is already running.
     fn try_begin(&self) -> bool {
-        let mut guard = self.in_progress.lock().unwrap_or_else(|e| e.into_inner());
+        let mut guard = self
+            .in_progress
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         if *guard {
             false
         } else {
@@ -787,7 +789,10 @@ impl UpdateCheckState {
     }
 
     fn end(&self) {
-        *self.in_progress.lock().unwrap_or_else(|e| e.into_inner()) = false;
+        *self
+            .in_progress
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = false;
     }
 }
 

@@ -125,7 +125,7 @@ pub enum DisableMechanism {
     ClaudeSkillOverrides,
     /// Codex `config.toml` `[[skills.config]]`.
     CodexSkillsConfig,
-    /// OpenCode `opencode.json(c)` permission rule `{ action: "skill",
+    /// `OpenCode` `opencode.json(c)` permission rule `{ action: "skill",
     /// resource, effect }` (v2) or `permission.skill` map (v1).
     OpencodePermission,
     /// pi `settings.json` `skills` exclusions (`!pattern`, `-path`), also
@@ -146,7 +146,7 @@ pub enum DisableMechanism {
 pub enum DisabledBy {
     /// Codex `[[skills.config]] enabled = false`.
     CodexConfig,
-    /// OpenCode `permission.skill` deny.
+    /// `OpenCode` `permission.skill` deny.
     OpencodePermission,
     /// The Claude Code per-skill link was removed.
     ClaudeLinkRemoved,
@@ -370,8 +370,7 @@ impl CapabilityReport {
         let native = facts
             .native_disable
             .as_ref()
-            .map(|d| d.writable.clone())
-            .unwrap_or(Support::Unknown);
+            .map_or(Support::Unknown, |d| d.writable.clone());
         let operations = vec![
             OperationSupport {
                 operation: "set_harness_enabled".into(),
@@ -1095,7 +1094,7 @@ fn probe_version(
 /// marker is read here - Claude Code's own `~/.claude.json` `installMethod`
 /// field is a documented but unread signal, a follow-up - so every row uses
 /// the same "inferred from path" heuristic `harness-detection.md` describes
-/// for Codex, OpenCode, and pi.
+/// for Codex, `OpenCode`, and pi.
 fn infer_install_method(path: &Path) -> DetectedString {
     let text = path.to_string_lossy();
     let method = if text.contains("Cellar") || text.contains("homebrew") {
@@ -1160,7 +1159,7 @@ impl HarnessAdapter for CodexAdapter {
     }
 }
 
-/// OpenCode.
+/// `OpenCode`.
 pub struct OpenCodeAdapter;
 
 impl HarnessAdapter for OpenCodeAdapter {

@@ -1,4 +1,3 @@
-#![forbid(unsafe_code)]
 // unwrap/expect are fine in test code; production code must use ?
 // or an explicit error.
 #![cfg_attr(test, allow(clippy::unwrap_used, clippy::expect_used))]

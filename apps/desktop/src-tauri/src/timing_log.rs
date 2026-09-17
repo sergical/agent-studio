@@ -67,7 +67,7 @@ pub async fn time_command_async<T>(
 }
 
 /// As [`time_command`], for a sync command body that does file, process,
-/// network, or SQLite work: runs `f` on a blocking-pool thread via
+/// network, or `SQLite` work: runs `f` on a blocking-pool thread via
 /// `tauri::async_runtime::spawn_blocking` so it never stalls the main thread
 /// or a Tokio worker, and records `"worker"`. `f` returns `Result<T, String>`
 /// (the convention every command already follows) so a panic inside the

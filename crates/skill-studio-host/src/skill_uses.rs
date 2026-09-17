@@ -1,8 +1,8 @@
 //! Skill-use index: parses each enabled harness's own session history for
 //! skill uses and keeps a per-source cache so a refresh only re-reads what
 //! changed. Two kinds of source exist: append-only JSONL transcripts,
-//! resumed from a byte offset (Claude Code, Codex), and SQLite databases,
-//! re-queried from a `time_updated` watermark (OpenCode). Read discipline
+//! resumed from a byte offset (Claude Code, Codex), and `SQLite` databases,
+//! re-queried from a `time_updated` watermark (`OpenCode`). Read discipline
 //! mirrors `discovery.rs`: only regular files are opened, each transcript
 //! line is capped so a pathological line can't be buffered in full, and a
 //! file/run byte budget bounds worst-case I/O per refresh.
@@ -16,7 +16,7 @@
 //!
 //! `SOURCES` is the table of harnesses this index reads from: Claude Code,
 //! pi, and Cursor each watch one transcript root; Codex watches two
-//! (`sessions`, `archived_sessions`); OpenCode reads its SQLite databases
+//! (`sessions`, `archived_sessions`); `OpenCode` reads its `SQLite` databases
 //! instead of JSONL; Grok Build watches `.grok/sessions` and only lists a
 //! session's `updates.jsonl` once its `summary.json` also exists. Adding a
 //! harness later means adding a row, not reworking `refresh`.
@@ -201,7 +201,7 @@ struct TranscriptFile<'a> {
 }
 
 /// How one [`UseSource`] reads its uses: an append-only transcript, resumed
-/// from a byte offset, or a SQLite database, re-queried from a watermark.
+/// from a byte offset, or a `SQLite` database, re-queried from a watermark.
 enum UseReader {
     /// Append-only JSONL transcripts, parsed incrementally from a byte
     /// offset.
@@ -209,7 +209,7 @@ enum UseReader {
         list: fn(&Path) -> SourceListing,
         parse: fn(&TranscriptFile, &str, &mut TranscriptContext) -> Vec<SkillInvocation>,
     },
-    /// SQLite databases, re-queried from a `time_updated` watermark.
+    /// `SQLite` databases, re-queried from a `time_updated` watermark.
     Databases {
         list: fn(&Path) -> Vec<PathBuf>,
         read: fn(&Path, &mut IndexedDatabase) -> bool,
@@ -249,7 +249,7 @@ fn any_path(_: &Path) -> bool {
 }
 
 /// True when `rel` (a single file name: this watch is non-recursive) is an
-/// OpenCode database file, or that database's `-wal` sidecar. `-shm` is
+/// `OpenCode` database file, or that database's `-wal` sidecar. `-shm` is
 /// excluded on purpose: a read-only reader (ours included) can touch `-shm`
 /// just by opening the database, so treating it as a use-changing event
 /// would make our own reads queue another refresh.
@@ -403,7 +403,7 @@ fn opencode_root(home: &Path) -> PathBuf {
     home.join(OPENCODE_DATA_ROOT)
 }
 
-/// Codex keeps its own directory, not shared with OpenCode's.
+/// Codex keeps its own directory, not shared with `OpenCode`'s.
 const CODEX_ROOT: &str = ".codex";
 /// Codex's live rollouts.
 const CODEX_SESSIONS_DIR: &str = ".codex/sessions";
@@ -686,7 +686,7 @@ fn is_grok_session_file(rel: &Path) -> bool {
     rel.components().count() == 3
         && matches!(
             rel.file_name().and_then(|n| n.to_str()),
-            Some("updates.jsonl") | Some("summary.json")
+            Some("updates.jsonl" | "summary.json")
         )
 }
 
@@ -1010,17 +1010,16 @@ impl SkillInvocationIndex {
         let Ok(content) = fs::read_to_string(cache_path) else {
             return Self::default();
         };
-        match serde_json::from_str(&content) {
-            Ok(index) => index,
-            Err(_) => {
-                eprintln!("skill uses: cache corrupt");
-                let mut corrupt_path = cache_path.as_os_str().to_owned();
-                corrupt_path.push(".corrupt");
-                if let Err(e) = fs::rename(cache_path, &corrupt_path) {
-                    eprintln!("skill uses: failed to rename corrupt cache: {e}");
-                }
-                Self::default()
+        if let Ok(index) = serde_json::from_str(&content) {
+            index
+        } else {
+            eprintln!("skill uses: cache corrupt");
+            let mut corrupt_path = cache_path.as_os_str().to_owned();
+            corrupt_path.push(".corrupt");
+            if let Err(e) = fs::rename(cache_path, &corrupt_path) {
+                eprintln!("skill uses: failed to rename corrupt cache: {e}");
             }
+            Self::default()
         }
     }
 
@@ -1125,19 +1124,19 @@ impl SkillInvocationIndex {
                 }
                 Some(existing) => {
                     let current_tail = read_tail_sample(&path, existing.parsed_bytes);
-                    if current_tail != existing.tail_sample {
-                        // The bytes just before our resume point no
-                        // longer match what we parsed last time: this
-                        // wasn't a plain append, so the cached uses may
-                        // be stale.
-                        (0, Vec::new(), false, TranscriptContext::default())
-                    } else {
+                    if current_tail == existing.tail_sample {
                         (
                             existing.parsed_bytes,
                             existing.uses.clone(),
                             existing.skipping_line,
                             existing.context.clone(),
                         )
+                    } else {
+                        // The bytes just before our resume point no
+                        // longer match what we parsed last time: this
+                        // wasn't a plain append, so the cached uses may
+                        // be stale.
+                        (0, Vec::new(), false, TranscriptContext::default())
                     }
                 }
                 None => (0, Vec::new(), false, TranscriptContext::default()),
@@ -1161,8 +1160,7 @@ impl SkillInvocationIndex {
             let parsed_bytes = start_offset + consumed;
             let modified_utc = meta
                 .modified()
-                .map(DateTime::<Utc>::from)
-                .unwrap_or_else(|_| Utc::now());
+                .map_or_else(|_| Utc::now(), DateTime::<Utc>::from);
             let file = TranscriptFile {
                 home,
                 path: &path,
@@ -1511,7 +1509,10 @@ mod tests {
     }
 
     fn known(skills: &[&str]) -> StdBTreeSet<String> {
-        skills.iter().map(|s| s.to_string()).collect()
+        skills
+            .iter()
+            .map(std::string::ToString::to_string)
+            .collect()
     }
 
     fn filter<'a>(
@@ -2314,7 +2315,10 @@ mod tests {
         }
 
         fn known(skills: &[&str]) -> StdBTreeSet<String> {
-            skills.iter().map(|s| s.to_string()).collect()
+            skills
+                .iter()
+                .map(std::string::ToString::to_string)
+                .collect()
         }
 
         #[test]
@@ -2579,7 +2583,10 @@ mod tests {
         }
 
         fn known(skills: &[&str]) -> StdBTreeSet<String> {
-            skills.iter().map(|s| s.to_string()).collect()
+            skills
+                .iter()
+                .map(std::string::ToString::to_string)
+                .collect()
         }
 
         #[test]
@@ -2673,7 +2680,10 @@ mod tests {
         }
 
         fn known(skills: &[&str]) -> StdBTreeSet<String> {
-            skills.iter().map(|s| s.to_string()).collect()
+            skills
+                .iter()
+                .map(std::string::ToString::to_string)
+                .collect()
         }
 
         #[test]
@@ -2887,7 +2897,10 @@ mod tests {
         }
 
         fn known(skills: &[&str]) -> StdBTreeSet<String> {
-            skills.iter().map(|s| s.to_string()).collect()
+            skills
+                .iter()
+                .map(std::string::ToString::to_string)
+                .collect()
         }
 
         #[test]
@@ -3108,7 +3121,7 @@ mod tests {
             opencode_root(home).join(name)
         }
 
-        /// A temp `home` with the OpenCode data dir created and
+        /// A temp `home` with the `OpenCode` data dir created and
         /// `opencode.db`'s path (not yet an actual database file) under it.
         fn temp_opencode_db_home() -> (tempfile::TempDir, PathBuf) {
             let tmp = tempfile::tempdir().unwrap();

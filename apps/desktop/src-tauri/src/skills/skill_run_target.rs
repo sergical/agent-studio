@@ -42,7 +42,7 @@ pub struct SkillRunTargetRequest {
     pub extra_skills: Vec<(String, String)>,
     /// `=== path` fixture text (Scratch only) - see `write_fixture_files`.
     pub fixture: Option<String>,
-    /// Required for Worktree and InPlace.
+    /// Required for Worktree and `InPlace`.
     pub project_path: Option<String>,
 }
 
@@ -93,7 +93,7 @@ pub struct SkillRunTargetState {
 
 static RUN_TARGET_ID_COUNTER: AtomicU64 = AtomicU64::new(0);
 
-/// A run target id must be safe to use as a HashMap key and to log: short,
+/// A run target id must be safe to use as a `HashMap` key and to log: short,
 /// and drawn from a small alphabet - the same shape `validate_run_id` in
 /// `skill_agent_runner` requires of a run id.
 fn next_run_target_id() -> String {
@@ -442,7 +442,7 @@ fn prepare_in_place(
 }
 
 /// Reveals a Scratch target's folder in Finder. Restricted to `Scratch`
-/// targets - Worktree and InPlace cwds live under the project the caller
+/// targets - Worktree and `InPlace` cwds live under the project the caller
 /// already has `open_skill_path` access to, or under the app cache, neither
 /// of which this command needs to widen access to.
 #[tauri::command]
@@ -670,7 +670,7 @@ fn parse_discard_paths(porcelain_z: &str) -> DiscardPaths {
 
         let mut old_path: Option<String> = None;
         if code.starts_with('R') || code.starts_with('C') {
-            old_path = fields.get(i).map(|s| s.to_string());
+            old_path = fields.get(i).map(std::string::ToString::to_string);
             i += 1;
         }
 
@@ -728,7 +728,7 @@ fn discard_in_place(cwd: &Path) -> Result<(), String> {
     Ok(())
 }
 
-/// Reverts (InPlace) or removes (Worktree/Scratch) whatever `prepare_skill_run_target`
+/// Reverts (`InPlace`) or removes (Worktree/Scratch) whatever `prepare_skill_run_target`
 /// produced.
 fn discard_target(target: &PreparedRunTarget) -> Result<(), String> {
     match target.kind {

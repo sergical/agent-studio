@@ -19,8 +19,8 @@ use crate::skill_uses::{
 const SKILL_MD_MARKER: &str = "SKILL.md";
 
 /// Parses one Cursor transcript's text (newline-delimited JSON) into
-/// `FileRead` uses: an assistant `Read`/`ReadFile` tool_use that reads a
-/// skill's `SKILL.md` directly, or a `Shell` tool_use whose command prints
+/// `FileRead` uses: an assistant `Read`/`ReadFile` `tool_use` that reads a
+/// skill's `SKILL.md` directly, or a `Shell` `tool_use` whose command prints
 /// one. A line with no `message` (Cursor's own `{"status":..,"type":..}`
 /// lines) is skipped, as is any non-assistant line. `at` is used for every
 /// use, since Cursor transcript lines carry no time of their own. Never
@@ -58,7 +58,7 @@ pub fn parse_cursor_uses(
                 continue;
             };
             match name {
-                Some("Read") | Some("ReadFile") => {
+                Some("Read" | "ReadFile") => {
                     let Some(path) = input.get("path").and_then(|v| v.as_str()) else {
                         continue;
                     };

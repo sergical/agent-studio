@@ -99,8 +99,7 @@ pub fn print_capabilities_table(envelope: &ResultEnvelope<Capabilities>) {
         let path = tool
             .path
             .as_ref()
-            .map(|p| p.display().to_string())
-            .unwrap_or_else(|| "not found".into());
+            .map_or_else(|| "not found".into(), |p| p.display().to_string());
         println!("{}: {path}", tool.name);
     }
 }
@@ -118,8 +117,7 @@ pub fn print_harnesses_table(envelope: &ResultEnvelope<HarnessReport>) {
         let executable = row
             .executable
             .as_ref()
-            .map(|p| p.display().to_string())
-            .unwrap_or_else(|| "not found".into());
+            .map_or_else(|| "not found".into(), |p| p.display().to_string());
         let version = row.version.value.as_deref().unwrap_or("Unknown");
         let install_method = row.install_method.value.as_deref().unwrap_or("Unknown");
         println!(
@@ -161,7 +159,7 @@ pub fn print_repair_outcome_table(envelope: &ResultEnvelope<RepairOutcome>) {
             println!(
                 "{} already had the proposed content",
                 deployment_id.as_str()
-            )
+            );
         }
     }
 }

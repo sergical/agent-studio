@@ -23,7 +23,7 @@ const DOTAGENTS_BINARY: &str = "npx";
 /// The home-relative config directories that mark a first-class agent
 /// "installed" on this machine - not its skills directory (which Skill
 /// Studio itself may have just created), but the directory the agent's own
-/// CLI/app creates on first run. OpenCode checks both its current
+/// CLI/app creates on first run. `OpenCode` checks both its current
 /// (`.config/opencode`) and legacy (`.opencode`) locations.
 fn harness_config_dirs(id: AgentId, home: &Path) -> Vec<PathBuf> {
     match id {

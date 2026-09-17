@@ -181,7 +181,7 @@ pub fn parse_codex_uses(text: &str, context: &mut TranscriptContext) -> Vec<Skil
                             at,
                         );
                     }
-                } else if matches!(name, Some("exec_command") | Some("shell")) {
+                } else if matches!(name, Some("exec_command" | "shell")) {
                     if let Some(command) = command_from_function_call_args(&args) {
                         push_shell_reads(&mut out, context, AgentId::CODEX, [command], at);
                     }

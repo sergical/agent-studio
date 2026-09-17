@@ -384,7 +384,7 @@ impl Drop for TempCleanup {
 fn locate_extracted_skill_dir(extract_dir: &Path, path: &str) -> Result<PathBuf, String> {
     let top = fs::read_dir(extract_dir)
         .map_err(|e| format!("Failed to read {}: {e}", extract_dir.display()))?
-        .filter_map(|e| e.ok())
+        .filter_map(std::result::Result::ok)
         .find(|e| e.path().is_dir())
         .ok_or_else(|| "Tarball had no top-level directory".to_string())?
         .path();
@@ -407,7 +407,7 @@ fn collect_relative_files(dir: &Path, out: &mut BTreeSet<String>) {
         let Ok(entries) = fs::read_dir(dir) else {
             return;
         };
-        for entry in entries.filter_map(|e| e.ok()) {
+        for entry in entries.filter_map(std::result::Result::ok) {
             if entry.file_name() == ".git" {
                 continue;
             }
@@ -495,22 +495,21 @@ fn resolve_fork_origin(
 
         let store = skill_update_check::read_update_check_store(app_data);
         let owner_id = format!("owner:v1/global/{name}");
-        let base_commit = match store
+        let base_commit = if let Some(commit) = store
             .owners
             .get(&owner_id)
             .and_then(|s| s.installed_commit.clone())
         {
-            Some(commit) => commit,
-            None => {
-                let until = if entry.updated_at.is_empty() {
-                    None
-                } else {
-                    Some(entry.updated_at.as_str())
-                };
-                match lookup.latest_commit(&repo, &path, until)? {
-                    Some((sha, _)) => sha,
-                    None => return Err(format!("Could not determine {name}'s installed commit")),
-                }
+            commit
+        } else {
+            let until = if entry.updated_at.is_empty() {
+                None
+            } else {
+                Some(entry.updated_at.as_str())
+            };
+            match lookup.latest_commit(&repo, &path, until)? {
+                Some((sha, _)) => sha,
+                None => return Err(format!("Could not determine {name}'s installed commit")),
             }
         };
 
@@ -1384,7 +1383,7 @@ pub fn pull_fork_upstream_with(
             }
             // Deleted on both sides, or nothing anywhere: nothing to carry
             // into the merged tree.
-            (Some(_), None, None) | (None, None, None) => {}
+            (Some(_) | None, None, None) => {}
         }
     }
 
