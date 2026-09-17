@@ -43,6 +43,9 @@ pub mod tracked_projects;
 #[cfg(any(test, feature = "testing"))]
 pub mod testing;
 
+#[cfg(any(test, feature = "testing"))]
+pub mod bench_estate;
+
 /// Version of the wire contract (envelope, DTOs, MCP tool schemas).
 ///
 /// Invariant: this number increases only when a field is removed or its
