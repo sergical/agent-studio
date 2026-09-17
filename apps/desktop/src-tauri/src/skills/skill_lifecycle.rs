@@ -7,13 +7,13 @@
 
 use std::path::{Path, PathBuf};
 
-use super::dotagents_ledger::DotagentsSkill;
 use super::skill_deployment::{
     parse_deployment_id, BackingRelationship, DeploymentMutability, SkillDestination,
 };
 use super::skill_dto::{Deployment, InstallScope, InstalledSkill, LifecycleTarget};
 use super::skill_ownership::{parse_owner_id, LifecycleOwnerKind, OwnershipLedgers};
 use super::skill_refresh::{self, SkillRefreshState, SkillSnapshot};
+use skill_studio_core::dotagents_ledger::DotagentsSkill;
 
 /// A lifecycle target resolved from disk and ledgers while the caller holds
 /// the mutation lock. The snapshot is retained because owner adapters need

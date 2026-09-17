@@ -487,8 +487,8 @@ mod tests {
         name: &str,
         declared_ref: Option<&str>,
         has_manifest_row: bool,
-    ) -> super::super::dotagents_ledger::DotagentsSkill {
-        super::super::dotagents_ledger::DotagentsSkill {
+    ) -> skill_studio_core::dotagents_ledger::DotagentsSkill {
+        skill_studio_core::dotagents_ledger::DotagentsSkill {
             name: name.to_string(),
             source: format!("getsentry/{name}"),
             github_repo: Some(format!("getsentry/{name}")),
@@ -603,7 +603,7 @@ mod tests {
             &update_check_path,
             &[],
         );
-        let lock = super::super::lock_file::SkillLockFile {
+        let lock = skill_studio_core::lock_file::SkillLockFile {
             version: 3,
             skills: Default::default(),
         };
