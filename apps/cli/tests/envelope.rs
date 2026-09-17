@@ -116,6 +116,9 @@ fn normalize(home: &Path, mut json: serde_json::Value) -> serde_json::Value {
     // A deployment's `modified_at` is the fixture's real mtime at
     // materialization time, not reproducible run to run.
     blank_field(&mut json, "modified_at");
+    // `envelope.timings.elapsed_ms` (whole call and per step) is wall-clock
+    // time, not reproducible run to run; the step names and shape are.
+    blank_field(&mut json, "elapsed_ms");
     json
 }
 
@@ -158,6 +161,37 @@ fn scan_on_a_clean_fixture_exits_0() {
     assert_eq!(run.status, 0);
     assert_eq!(run.json["status"], "ok");
     assert_matches_golden("basic.scan.json", &normalize(&home, run.json));
+    std::fs::remove_dir_all(&home).ok();
+}
+
+#[test]
+fn scan_time_prints_step_lines_to_stderr() {
+    let home = materialized_fixture("basic");
+    let output = Command::new(bin())
+        .args([
+            "scan",
+            "--fixture",
+            home.to_str().unwrap(),
+            "--json",
+            "--time",
+        ])
+        .output()
+        .expect("run skill-studio");
+    let stderr = String::from_utf8(output.stderr).expect("utf8 stderr");
+    assert!(
+        stderr
+            .lines()
+            .any(|line| line.trim_start().starts_with("scan ")),
+        "expected an op line, got:\n{stderr}"
+    );
+    let step_lines: Vec<&str> = stderr
+        .lines()
+        .filter(|line| line.starts_with("  ") && line.contains("....") && line.ends_with("ms"))
+        .collect();
+    assert!(
+        !step_lines.is_empty(),
+        "expected at least one indented step line, got:\n{stderr}"
+    );
     std::fs::remove_dir_all(&home).ok();
 }
 

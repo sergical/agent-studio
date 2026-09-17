@@ -39,6 +39,7 @@ fn skill_content_hash_fails_cancelled_instead_of_hashing() {
     let ctx = OpContext {
         correlation_id: CorrelationId("cancelled".into()),
         cancel: Arc::new(AlwaysCancel),
+        timing: std::sync::Mutex::new(None),
     };
 
     let err = ops::skill_content_hash(

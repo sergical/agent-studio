@@ -83,5 +83,19 @@
     "kind": "fixture",
     "projects": []
   },
-  "status": "ok"
+  "status": "ok",
+  "timings": {
+    "elapsed_ms": "-",
+    "op": "diagnose",
+    "steps": [
+      {
+        "elapsed_ms": "-",
+        "name": "scan"
+      },
+      {
+        "elapsed_ms": "-",
+        "name": "derive_issues"
+      }
+    ]
+  }
 }

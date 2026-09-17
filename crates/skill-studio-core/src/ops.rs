@@ -4,6 +4,7 @@
 //! [`OpContext`]. Adapters wrap the result in a [`ResultEnvelope`] with
 //! [`ResultEnvelope::from_result`]; the exit status is derived, never chosen.
 
+use std::cell::Cell;
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
@@ -37,7 +38,7 @@ use crate::identity::{
 use crate::lock_file;
 use crate::ownership;
 use crate::ports::{
-    acquire_shared, DirEntryFacts, FileKind, HistoryAccess, OpContext, Runtime, ScopeFs,
+    acquire_shared, Clock, DirEntryFacts, FileKind, HistoryAccess, OpContext, Runtime, ScopeFs,
     ScopedReads,
 };
 use crate::scope::{EffectiveScope, NormalizedScope};
@@ -187,14 +188,19 @@ pub struct ResultEnvelope<T> {
     pub correlation_id: CorrelationId,
     /// History event created by the call, when one was.
     pub event_id: Option<EventId>,
+    /// This call's timing, taken from `ctx` at envelope-building time.
+    /// `None` only when the call failed before an op function ran at all (a
+    /// scope that failed to normalize), since every op that runs records its
+    /// own timing before returning.
+    pub timings: Option<crate::timing::OpTiming>,
 }
 
 impl<T: Outcome> ResultEnvelope<T> {
-    /// Wraps an operation result.
+    /// Wraps an operation result, taking `ctx`'s filed timing along with it.
     pub fn from_result(
         operation: Operation,
         scope: &NormalizedScope,
-        correlation_id: CorrelationId,
+        ctx: &OpContext,
         result: Result<T, CoreError>,
     ) -> Self {
         let (status, data, errors) = match result {
@@ -221,8 +227,9 @@ impl<T: Outcome> ResultEnvelope<T> {
             status,
             data,
             errors,
-            correlation_id,
+            correlation_id: ctx.correlation_id.clone(),
             event_id,
+            timings: ctx.take_timing(),
         }
     }
 }
@@ -277,10 +284,13 @@ pub(crate) fn scan_inner(
     req: &ScanRequest,
 ) -> Result<Inventory, CoreError> {
     let start = rt.ports.clock.monotonic();
+    let clock = rt.ports.clock.as_ref();
+    let mut op_steps = Vec::new();
     let budget = rt.scope.raw.read_timeout();
     let fs = rt.ports.fs.as_ref();
     let home = &rt.scope.home.lexical;
 
+    let step_start = clock.monotonic();
     let disable_sources = DisableSources::read(fs, home);
 
     // Full ownership classification needs the dotagents and skills.sh
@@ -301,7 +311,9 @@ pub(crate) fn scan_inner(
         );
     }
     let home_registry = ownership::read_home_registry(fs, home);
+    op_steps.push(crate::timing::step(clock, "ledgers_read", step_start));
 
+    let timings = ScanTimings::default();
     let sc = ScanCtx {
         rt,
         ctx,
@@ -313,6 +325,7 @@ pub(crate) fn scan_inner(
         home_registry: &home_registry,
         start,
         budget,
+        timings: &timings,
     };
     let mut accum = ScanAccum {
         skills: BTreeMap::new(),
@@ -336,6 +349,9 @@ pub(crate) fn scan_inner(
         .into_iter()
         .partition(|target| matches!(target.scope, RootScope::Global));
 
+    // Global before project, in all four loops, is the read-budget invariant
+    // the module doc promises.
+    let step_start = clock.monotonic();
     for target in global_targets {
         scan_one_target(&sc, target, &mut accum)?;
     }
@@ -348,6 +364,23 @@ pub(crate) fn scan_inner(
     for target in project_plugin_targets {
         scan_one_plugin_target(&sc, target, &mut accum)?;
     }
+    op_steps.push(crate::timing::step(clock, "roots_walk", step_start));
+    op_steps.push(crate::timing::StepTiming {
+        name: "dir_walk".to_string(),
+        elapsed_ms: timings.dir_walk.get().as_millis() as u64,
+    });
+    op_steps.push(crate::timing::StepTiming {
+        name: "skill_md_read".to_string(),
+        elapsed_ms: timings.skill_md_read.get().as_millis() as u64,
+    });
+    op_steps.push(crate::timing::StepTiming {
+        name: "frontmatter_parse".to_string(),
+        elapsed_ms: timings.frontmatter_parse.get().as_millis() as u64,
+    });
+    op_steps.push(crate::timing::StepTiming {
+        name: "plugin_cache_walk".to_string(),
+        elapsed_ms: timings.plugin_cache_walk.get().as_millis() as u64,
+    });
 
     let ScanAccum {
         mut skills,
@@ -359,14 +392,21 @@ pub(crate) fn scan_inner(
     // Every root has been walked, so every canonical universal deployment
     // any link could point to now has a `resolved_paths` entry: assign
     // verified links their canonical owner.
+    let step_start = clock.monotonic();
     for skill in skills.values_mut() {
         propagate_verified_linked_owners(skill, &resolved_paths);
     }
+    op_steps.push(crate::timing::step(
+        clock,
+        "link_owner_propagation",
+        step_start,
+    ));
 
     // A universal skill Claude Code has no per-skill link for is one that
     // reader has disabled: Claude Code only ever reads a universal skill
     // through an explicit `~/.claude/skills/<name>` link, never the shared
     // root directly (`reads_universal_root: Support::No` in `harness.rs`).
+    let step_start = clock.monotonic();
     let claude_skills_dir = home.join(".claude").join("skills");
     for skill in skills.values_mut() {
         for deployment in &mut skill.deployments {
@@ -383,8 +423,15 @@ pub(crate) fn scan_inner(
             }
         }
     }
+    op_steps.push(crate::timing::step(
+        clock,
+        "claude_universal_reader_check",
+        step_start,
+    ));
 
     let skills: Vec<InstalledSkillDto> = skills.into_values().collect();
+
+    ctx.record_timing(crate::timing::op_timing(clock, "scan", start, op_steps));
 
     let mut timings = Vec::new();
     if req.timings {
@@ -422,6 +469,25 @@ struct ScanCtx<'a> {
     home_registry: &'a ownership::HomeRegistry,
     start: Duration,
     budget: Duration,
+    timings: &'a ScanTimings,
+}
+
+/// Per-section durations accumulated across every [`scan_one_target`] and
+/// [`scan_one_plugin_target`] call in one [`scan_inner`] run, filed as
+/// `scan`'s steps alongside `roots_walk` (the one step spanning all four
+/// loops these are measured inside of).
+#[derive(Default)]
+struct ScanTimings {
+    dir_walk: Cell<Duration>,
+    skill_md_read: Cell<Duration>,
+    frontmatter_parse: Cell<Duration>,
+    plugin_cache_walk: Cell<Duration>,
+}
+
+impl ScanTimings {
+    fn add(cell: &Cell<Duration>, elapsed: Duration) {
+        cell.set(cell.get() + elapsed);
+    }
 }
 
 /// The `scan_inner` accumulators every target folds into, in target order.
@@ -461,11 +527,12 @@ fn scan_one_target(
         Ok(FileKind::Symlink)
     );
 
-    match read_root_entries(sc.fs, &target.path) {
+    match timed_read_root_entries(sc, &target.path) {
         Ok(names) => process_entries(
             &EntryContext {
                 fs: sc.fs,
                 ctx: sc.ctx,
+                clock: sc.rt.ports.clock.as_ref(),
                 scope: &sc.rt.scope,
                 home: sc.home,
                 disable_sources: sc.disable_sources,
@@ -475,6 +542,7 @@ fn scan_one_target(
                 base_dir: &target.path,
                 whole_dir_link,
                 forced_disabled_by: None,
+                timings: sc.timings,
             },
             &names,
             sc.req,
@@ -496,11 +564,12 @@ fn scan_one_target(
     // Skills Skill Studio moved aside stay deployments (so the UI can
     // still show and un-park them), just disabled.
     let move_aside_dir = target.path.join(MOVE_ASIDE_DIR_NAME);
-    if let Ok(names) = read_root_entries(sc.fs, &move_aside_dir) {
+    if let Ok(names) = timed_read_root_entries(sc, &move_aside_dir) {
         process_entries(
             &EntryContext {
                 fs: sc.fs,
                 ctx: sc.ctx,
+                clock: sc.rt.ports.clock.as_ref(),
                 scope: &sc.rt.scope,
                 home: sc.home,
                 disable_sources: sc.disable_sources,
@@ -510,6 +579,7 @@ fn scan_one_target(
                 base_dir: &move_aside_dir,
                 whole_dir_link,
                 forced_disabled_by: Some(DisabledBy::StudioMoved),
+                timings: sc.timings,
             },
             &names,
             sc.req,
@@ -543,11 +613,24 @@ fn scan_one_plugin_target(
         });
         return Ok(());
     }
-    for plugin_skill in enumerate_plugin_skills(sc.fs, &target) {
+    let walk_start = sc.rt.ports.clock.monotonic();
+    let plugin_skills = enumerate_plugin_skills(sc.fs, &target);
+    ScanTimings::add(
+        &sc.timings.plugin_cache_walk,
+        sc.rt.ports.clock.monotonic().saturating_sub(walk_start),
+    );
+    for plugin_skill in plugin_skills {
         if !sc.req.skills.is_empty() && !sc.req.skills.iter().any(|s| s.0 == plugin_skill.name) {
             continue;
         }
-        match read_skill_md(sc.fs, sc.ctx, &plugin_skill.skill_dir, &plugin_skill.name)? {
+        match read_skill_md(
+            sc.fs,
+            sc.ctx,
+            sc.rt.ports.clock.as_ref(),
+            &plugin_skill.skill_dir,
+            &plugin_skill.name,
+            sc.timings,
+        )? {
             SkillMdRead::Found {
                 description,
                 violations,
@@ -663,6 +746,18 @@ fn scan_one_plugin_target(
 /// symlinks), sorted for a deterministic scan order. Dot-prefixed entries
 /// (including [`MOVE_ASIDE_DIR_NAME`] itself) are never a skill; the caller
 /// walks that holding directory separately.
+/// As [`read_root_entries`], accumulating the read's duration onto
+/// `sc.timings.dir_walk` (the scan step this call is part of).
+fn timed_read_root_entries(sc: &ScanCtx, dir: &Path) -> std::io::Result<Vec<DirEntryFacts>> {
+    let start = sc.rt.ports.clock.monotonic();
+    let result = read_root_entries(sc.fs, dir);
+    ScanTimings::add(
+        &sc.timings.dir_walk,
+        sc.rt.ports.clock.monotonic().saturating_sub(start),
+    );
+    result
+}
+
 fn read_root_entries(fs: &dyn ScopeFs, dir: &Path) -> std::io::Result<Vec<DirEntryFacts>> {
     let entries = fs.read_dir(dir)?;
     let mut names: Vec<_> = entries
@@ -679,6 +774,7 @@ fn read_root_entries(fs: &dyn ScopeFs, dir: &Path) -> std::io::Result<Vec<DirEnt
 struct EntryContext<'a> {
     fs: &'a dyn ScopeFs,
     ctx: &'a OpContext,
+    clock: &'a dyn Clock,
     scope: &'a NormalizedScope,
     home: &'a Path,
     disable_sources: &'a DisableSources,
@@ -697,6 +793,10 @@ struct EntryContext<'a> {
     /// `Some(StudioMoved)` while walking a move-aside directory; every
     /// deployment found there is disabled regardless of any other switch.
     forced_disabled_by: Option<DisabledBy>,
+    /// The same accumulator [`ScanCtx::timings`] points at, so
+    /// [`read_skill_md`] can file `skill_md_read`/`frontmatter_parse` time
+    /// here too.
+    timings: &'a ScanTimings,
 }
 
 /// Builds one deployment per entry and files it under its skill name, or
@@ -767,7 +867,7 @@ fn process_entries(
         let (description, violations, content_fingerprint, facts) = if unresolved_link {
             (None, Vec::new(), None, Box::new(ContentFacts::default()))
         } else {
-            match read_skill_md(cx.fs, cx.ctx, &skill_dir, &entry.name)? {
+            match read_skill_md(cx.fs, cx.ctx, cx.clock, &skill_dir, &entry.name, cx.timings)? {
                 SkillMdRead::Found {
                     description,
                     violations,
@@ -1057,11 +1157,19 @@ enum SkillMdRead {
 fn read_skill_md(
     fs: &dyn ScopeFs,
     ctx: &OpContext,
+    clock: &dyn Clock,
     skill_dir: &Path,
     name: &str,
+    timings: &ScanTimings,
 ) -> Result<SkillMdRead, CoreError> {
     let skill_md = skill_dir.join("SKILL.md");
-    let (bytes, truncated) = match fs.read_prefix(&skill_md, SKILL_MD_MAX_BYTES) {
+    let read_start = clock.monotonic();
+    let read_result = fs.read_prefix(&skill_md, SKILL_MD_MAX_BYTES);
+    ScanTimings::add(
+        &timings.skill_md_read,
+        clock.monotonic().saturating_sub(read_start),
+    );
+    let (bytes, truncated) = match read_result {
         Ok(result) => result,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(SkillMdRead::NotASkill),
         Err(e) => {
@@ -1072,7 +1180,12 @@ fn read_skill_md(
         }
     };
     let content = String::from_utf8_lossy(&bytes);
+    let parse_start = clock.monotonic();
     let parsed = frontmatter::parse_frontmatter(&content);
+    ScanTimings::add(
+        &timings.frontmatter_parse,
+        clock.monotonic().saturating_sub(parse_start),
+    );
     let violations = frontmatter::validate_skill(name, &parsed, content.lines().count());
     let description = parsed.as_frontmatter().and_then(|f| f.description.clone());
     let facts = compute_content_facts(fs, ctx, skill_dir, &bytes, truncated, &parsed)?;
@@ -2172,9 +2285,25 @@ pub fn skill_content_hash(
 /// repairable"/"not readable" rather than surfaced as an error: `diagnose`
 /// never fails just because one deployment's extra read did.
 pub fn diagnose(rt: &Runtime, ctx: &OpContext, req: &ScanRequest) -> Result<Diagnosis, CoreError> {
-    let inventory = scan(rt, ctx, req)?;
+    let clock = rt.ports.clock.as_ref();
+    let op_start = clock.monotonic();
+    let step_start = clock.monotonic();
+    let inventory = scan(rt, ctx, req);
+    // Discard `scan`'s own timing immediately: an error below must leave
+    // `ctx` with `diagnose`'s own timing or none, never `scan`'s.
+    ctx.take_timing();
+    let inventory = inventory?;
+    let scan_step = crate::timing::step(clock, "scan", step_start);
     ctx.checkpoint()?;
+    let step_start = clock.monotonic();
     let issues = derive_issues(rt.ports.fs.as_ref(), &inventory);
+    let derive_step = crate::timing::step(clock, "derive_issues", step_start);
+    ctx.record_timing(crate::timing::op_timing(
+        clock,
+        "diagnose",
+        op_start,
+        vec![scan_step, derive_step],
+    ));
     Ok(Diagnosis { inventory, issues })
 }
 
@@ -2424,6 +2553,8 @@ pub fn capabilities(
     req: &CapabilitiesRequest,
 ) -> Result<Capabilities, CoreError> {
     ctx.checkpoint()?;
+    let clock = rt.ports.clock.as_ref();
+    let op_start = clock.monotonic();
     let catalog = &rt.ports.catalog;
     if let Some(unknown) = req.harnesses.iter().find(|id| catalog.get(id).is_none()) {
         return Err(CoreError::new(
@@ -2431,6 +2562,7 @@ pub fn capabilities(
             format!("no catalog row for harness `{}`", unknown.as_str()),
         ));
     }
+    let step_start = clock.monotonic();
     let tools = match (&rt.ports.tools, req.tools.is_empty()) {
         (_, true) => Vec::new(),
         (None, false) => {
@@ -2448,6 +2580,8 @@ pub fn capabilities(
             })
             .collect(),
     };
+    let tools_step = crate::timing::step(clock, "tools_lookup", step_start);
+    let step_start = clock.monotonic();
     let harnesses = catalog
         .facts
         .iter()
@@ -2457,6 +2591,13 @@ pub fn capabilities(
             CapabilityReport::from_facts(f, observed)
         })
         .collect();
+    let harnesses_step = crate::timing::step(clock, "harness_reports", step_start);
+    ctx.record_timing(crate::timing::op_timing(
+        clock,
+        "capabilities",
+        op_start,
+        vec![tools_step, harnesses_step],
+    ));
     Ok(Capabilities { harnesses, tools })
 }
 
@@ -2569,7 +2710,10 @@ pub fn preview_frontmatter_repair(
     req: &RepairPreviewRequest,
 ) -> Result<FrontmatterRepairPreview, CoreError> {
     ctx.checkpoint()?;
+    let clock = rt.ports.clock.as_ref();
+    let op_start = clock.monotonic();
     let _guard = acquire_shared(rt.ports.leases.as_ref(), &rt.scope)?;
+    let step_start = clock.monotonic();
     let inventory = scan_inner(
         rt,
         ctx,
@@ -2577,7 +2721,14 @@ pub fn preview_frontmatter_repair(
             skills: Vec::new(),
             timings: false,
         },
-    )?;
+    );
+    // Discard `scan_inner`'s own timing immediately: an error below must
+    // leave `ctx` with this op's own timing or none, never the nested
+    // scan's.
+    ctx.take_timing();
+    let inventory = inventory?;
+    let scan_step = crate::timing::step(clock, "scan", step_start);
+    let step_start = clock.monotonic();
     let (_skill, deployment) = resolve_deployment(&inventory, &req.deployment_id)?;
     // `desktop_repair_apply_modes` is the desktop's real gate (plugin,
     // symlink, whole-dir-link, and the `ReadOnly && owner != Manual`
@@ -2605,6 +2756,13 @@ pub fn preview_frontmatter_repair(
         .unified_diff()
         .header("original", "proposed")
         .to_string();
+    let propose_step = crate::timing::step(clock, "propose_repair", step_start);
+    ctx.record_timing(crate::timing::op_timing(
+        clock,
+        "preview_frontmatter_repair",
+        op_start,
+        vec![scan_step, propose_step],
+    ));
     Ok(FrontmatterRepairPreview {
         proposal_id,
         deployment_id: deployment.id.clone(),
@@ -2639,6 +2797,8 @@ pub fn apply_frontmatter_repair(
     req: &RepairApplyRequest,
 ) -> Result<RepairOutcome, CoreError> {
     ctx.checkpoint()?;
+    let clock = rt.ports.clock.as_ref();
+    let op_start = clock.monotonic();
     let preview = &req.preview;
     if !preview.allowed_apply_modes.contains(&req.mode) {
         return Err(CoreError::new(
@@ -2656,7 +2816,13 @@ pub fn apply_frontmatter_repair(
         ));
     }
 
-    let mut session = crate::ports::MutationSession::begin(rt, ctx)?;
+    let step_start = clock.monotonic();
+    let session = crate::ports::MutationSession::begin(rt, ctx);
+    // Discard the nested scan's timing immediately: an error below must
+    // leave `ctx` with this op's own timing or none, never the nested
+    // scan's.
+    ctx.take_timing();
+    let mut session = session?;
     let (skill, deployment) = resolve_deployment(&session.fresh, &preview.deployment_id)?;
     if deployment.owner_id != preview.owner_id || deployment.owner_kind != preview.owner_kind {
         return Err(CoreError::new(
@@ -2676,11 +2842,20 @@ pub fn apply_frontmatter_repair(
         )
         .at(&deployment.path));
     }
+    let begin_step = crate::timing::step(clock, "begin_session", step_start);
 
+    let step_start = clock.monotonic();
     let fs = rt.ports.fs.as_ref();
     let (path, bytes, content) = read_skill_md_text(fs, &deployment.path)?;
     let live_fingerprint = Fingerprint::of_bytes(&bytes);
     if live_fingerprint == preview.proposed_fingerprint {
+        let verify_step = crate::timing::step(clock, "read_and_verify", step_start);
+        ctx.record_timing(crate::timing::op_timing(
+            clock,
+            "apply_frontmatter_repair",
+            op_start,
+            vec![begin_step, verify_step],
+        ));
         return Ok(RepairOutcome::AlreadyApplied {
             deployment_id: deployment.id.clone(),
         });
@@ -2705,7 +2880,9 @@ pub fn apply_frontmatter_repair(
         )
         .at(&path));
     }
+    let verify_step = crate::timing::step(clock, "read_and_verify", step_start);
 
+    let step_start = clock.monotonic();
     let deployment_id = deployment.id.clone();
     let skill = skill.clone();
     let harness = deployment.harness.clone();
@@ -2756,6 +2933,13 @@ pub fn apply_frontmatter_repair(
     )?;
 
     session.finish(rt, ctx);
+    let write_step = crate::timing::step(clock, "write_and_record", step_start);
+    ctx.record_timing(crate::timing::op_timing(
+        clock,
+        "apply_frontmatter_repair",
+        op_start,
+        vec![begin_step, verify_step, write_step],
+    ));
     Ok(RepairOutcome::Applied {
         event_id: id,
         deployment_id,
@@ -2775,11 +2959,20 @@ pub fn list_events(
     req: &ListEventsRequest,
 ) -> Result<Vec<EventDto>, CoreError> {
     ctx.checkpoint()?;
+    let clock = rt.ports.clock.as_ref();
+    let op_start = clock.monotonic();
+    let step_start = clock.monotonic();
     let Some(store) = rt
         .ports
         .history
         .open(&rt.scope, HistoryAccess::ReadIfExists)?
     else {
+        ctx.record_timing(crate::timing::op_timing(
+            clock,
+            "list_events",
+            op_start,
+            vec![crate::timing::step(clock, "open_store", step_start)],
+        ));
         return Ok(Vec::new());
     };
     let filter = EventFilter {
@@ -2793,6 +2986,8 @@ pub fn list_events(
     };
     let rows = store.list(&filter)?;
     let mut dtos: Vec<EventDto> = rows.iter().map(|r| r.to_dto()).collect();
+    let list_step = crate::timing::step(clock, "open_and_list", step_start);
+    let step_start = clock.monotonic();
     if req.check_drift {
         let fs = rt.ports.fs.as_ref();
         for (row, dto) in rows.iter().zip(dtos.iter_mut()) {
@@ -2823,6 +3018,13 @@ pub fn list_events(
             };
         }
     }
+    let drift_step = crate::timing::step(clock, "check_drift", step_start);
+    ctx.record_timing(crate::timing::op_timing(
+        clock,
+        "list_events",
+        op_start,
+        vec![list_step, drift_step],
+    ));
     Ok(dtos)
 }
 
@@ -2847,7 +3049,15 @@ pub fn restore_event(
     req: &RestoreRequest,
 ) -> Result<RestoreOutcome, CoreError> {
     ctx.checkpoint()?;
-    let mut session = crate::ports::MutationSession::begin(rt, ctx)?;
+    let clock = rt.ports.clock.as_ref();
+    let op_start = clock.monotonic();
+    let step_start = clock.monotonic();
+    let session = crate::ports::MutationSession::begin(rt, ctx);
+    // Discard the nested scan's timing immediately: an error below must
+    // leave `ctx` with this op's own timing or none, never the nested
+    // scan's.
+    ctx.take_timing();
+    let mut session = session?;
 
     let target = session
         .store
@@ -2879,6 +3089,8 @@ pub fn restore_event(
                 "restore of this event kind is not implemented",
             )
         })?;
+    let begin_step = crate::timing::step(clock, "begin_session", step_start);
+    let step_start = clock.monotonic();
 
     let fs = rt.ports.fs.as_ref();
     let expected = post.as_deref().unwrap_or("absent");
@@ -3010,6 +3222,13 @@ pub fn restore_event(
     )?;
 
     session.finish(rt, ctx);
+    let restore_step = crate::timing::step(clock, "restore_write", step_start);
+    ctx.record_timing(crate::timing::op_timing(
+        clock,
+        "restore_event",
+        op_start,
+        vec![begin_step, restore_step],
+    ));
     Ok(RestoreOutcome {
         restore_event_id: restore_id,
         reverted_event_id: target.id,
@@ -3040,7 +3259,7 @@ mod tests {
         let env = ResultEnvelope::from_result(
             Operation::Scan,
             &scope(),
-            CorrelationId("c1".into()),
+            &OpContext::uncancellable(CorrelationId("c1".into())),
             Ok(inv),
         );
         assert_eq!(env.status, OpStatus::Partial);
@@ -3071,10 +3290,10 @@ mod tests {
         };
         let mut partial = complete.clone();
         partial.inventory.completeness = Completeness::Partial;
-        let id = || CorrelationId("c3".into());
-        let ok = ResultEnvelope::from_result(Operation::Diagnose, &scope(), id(), Ok(complete));
+        let ctx = || OpContext::uncancellable(CorrelationId("c3".into()));
+        let ok = ResultEnvelope::from_result(Operation::Diagnose, &scope(), &ctx(), Ok(complete));
         assert_eq!(ok.exit_status(), 1);
-        let part = ResultEnvelope::from_result(Operation::Diagnose, &scope(), id(), Ok(partial));
+        let part = ResultEnvelope::from_result(Operation::Diagnose, &scope(), &ctx(), Ok(partial));
         assert_eq!(part.exit_status(), 4);
     }
 
@@ -3196,7 +3415,7 @@ mod tests {
         let env: ResultEnvelope<Inventory> = ResultEnvelope::from_result(
             Operation::Scan,
             &scope(),
-            CorrelationId("c2".into()),
+            &OpContext::uncancellable(CorrelationId("c2".into())),
             Err(CoreError::new(ErrorCode::ScopeBusy, "held by pid 42")),
         );
         assert_eq!(env.exit_status(), 3);
@@ -3435,15 +3654,42 @@ mod tests {
             }
 
             fn monotonic(&self) -> Duration {
-                // Call 0 is `scan_inner`'s `start` read; calls
-                // 1..=within_budget_calls are the global groups' budget
-                // checks.
+                // Call 0 is `scan_inner`'s `start` read. Calls 1-3 are its
+                // own timing instrumentation, read before the roots walk
+                // begins: the `ledgers_read` step's start and its
+                // `timing::step` reading, then the `roots_walk` step's
+                // start. Calls (1 + PRELUDE_CALLS)..=(within_budget_calls +
+                // PRELUDE_CALLS) are every call the global groups make
+                // walking their roots and timing `dir_walk`/`skill_md_read`/
+                // `frontmatter_parse`/`plugin_cache_walk`.
+                const PRELUDE_CALLS: u64 = 3;
                 let call = self.calls.fetch_add(1, Ordering::SeqCst);
-                if call <= self.within_budget_calls {
+                if call <= self.within_budget_calls + PRELUDE_CALLS {
                     Duration::from_millis(0)
                 } else {
                     Duration::from_millis(3_000)
                 }
+            }
+        }
+
+        /// Never trips a budget, just counts `monotonic()` calls - used to
+        /// measure exactly how many clock reads one `scan` makes walking a
+        /// fixture's global roots, so [`BudgetAfterNClock`] can be
+        /// calibrated to trip right at the project-scope boundary without a
+        /// hand-counted constant that would silently go stale the next time
+        /// `scan_inner`'s instrumentation changes.
+        struct CountingClock {
+            calls: AtomicU64,
+        }
+
+        impl Clock for CountingClock {
+            fn now(&self) -> chrono::DateTime<Utc> {
+                Utc::now()
+            }
+
+            fn monotonic(&self) -> Duration {
+                self.calls.fetch_add(1, Ordering::SeqCst);
+                Duration::from_millis(0)
             }
         }
 
@@ -3489,23 +3735,34 @@ mod tests {
                 catalog: Arc::new(HarnessCatalog::builtin()),
             };
 
-            // `scan_targets`/`plugin_scan_targets` depend only on the
-            // catalog and `rt.scope`, not on the clock, so a throwaway
-            // clock is enough to count how many budget-check calls the
-            // global groups make: the exact call count the calibrated
-            // clock below needs to trip the budget right at the
-            // project-scope boundary, rather than a guessed constant tied
-            // to the builtin catalog's current harness count.
-            let probe_rt = Runtime::new(&scope, ports_for(Arc::new(FakeClock::at(0)))).unwrap();
-            let global_target_calls = scan_targets(&probe_rt)
-                .iter()
-                .filter(|t| matches!(t.scope, RootScope::Global))
-                .count();
-            let global_plugin_calls = plugin_scan_targets(&probe_rt)
-                .iter()
-                .filter(|t| matches!(t.scope, RootScope::Global))
-                .count();
-            let within_budget_calls = (global_target_calls + global_plugin_calls) as u64;
+            // Run the same fixture with no project roots at all through a
+            // clock that never trips, so every clock read comes from
+            // `scan_inner`'s own timing (`ledgers_read`, `roots_walk`, and
+            // the per-section reads inside it) plus the global groups' own
+            // walk - never from a project group, since there are none to
+            // walk. Subtracting the fixed pre/post-loop reads (4 before the
+            // loop, 6 after it: `roots_walk`'s own elapsed read, the two
+            // post-loop steps' start+elapsed reads, and the whole-call
+            // `op_timing` read) leaves exactly the call count the global
+            // groups' walk consumed, which is what the calibrated clock
+            // below needs to trip the budget right at the project-scope
+            // boundary without a guessed constant that would go stale the
+            // next time `scan_inner`'s instrumentation changes.
+            let mut probe_scope = scope.clone();
+            probe_scope.projects = ProjectSelection::Explicit { paths: Vec::new() };
+            let counting_clock = Arc::new(CountingClock {
+                calls: AtomicU64::new(0),
+            });
+            let probe_rt = Runtime::new(
+                &probe_scope,
+                ports_for(counting_clock.clone() as Arc<dyn Clock>),
+            )
+            .unwrap();
+            scan(&probe_rt, &ctx(), &ScanRequest::default()).unwrap();
+            const PRELUDE_CALLS: u64 = 4;
+            const POSTLUDE_CALLS: u64 = 6;
+            let within_budget_calls =
+                counting_clock.calls.load(Ordering::SeqCst) - PRELUDE_CALLS - POSTLUDE_CALLS;
 
             let rt = Runtime::new(
                 &scope,
