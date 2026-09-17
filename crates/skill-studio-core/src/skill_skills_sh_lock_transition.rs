@@ -1,7 +1,75 @@
 //! Strict selected-row transitions for the global skills.sh v3 lock.
-use crate::skill_skills_sh_fork_creation::json_document;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+
+pub(crate) const MAX_DOCUMENT_BYTES: usize = 8 * 1024 * 1024;
+
+pub(crate) struct UniqueJson(pub(crate) Value);
+
+impl<'de> Deserialize<'de> for UniqueJson {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        struct Visitor;
+        impl<'de> serde::de::Visitor<'de> for Visitor {
+            type Value = UniqueJson;
+
+            fn expecting(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                formatter.write_str("JSON with unique object keys")
+            }
+            fn visit_bool<E: serde::de::Error>(self, value: bool) -> Result<UniqueJson, E> {
+                Ok(UniqueJson(Value::Bool(value)))
+            }
+            fn visit_i64<E: serde::de::Error>(self, value: i64) -> Result<UniqueJson, E> {
+                Ok(UniqueJson(value.into()))
+            }
+            fn visit_u64<E: serde::de::Error>(self, value: u64) -> Result<UniqueJson, E> {
+                Ok(UniqueJson(value.into()))
+            }
+            fn visit_f64<E: serde::de::Error>(self, value: f64) -> Result<UniqueJson, E> {
+                serde_json::Number::from_f64(value)
+                    .map(|number| UniqueJson(Value::Number(number)))
+                    .ok_or_else(|| E::custom("Non-finite JSON number"))
+            }
+            fn visit_str<E: serde::de::Error>(self, value: &str) -> Result<UniqueJson, E> {
+                Ok(UniqueJson(Value::String(value.into())))
+            }
+            fn visit_unit<E: serde::de::Error>(self) -> Result<UniqueJson, E> {
+                Ok(UniqueJson(Value::Null))
+            }
+            fn visit_seq<A: serde::de::SeqAccess<'de>>(
+                self,
+                mut sequence: A,
+            ) -> Result<UniqueJson, A::Error> {
+                let mut values = Vec::new();
+                while let Some(UniqueJson(value)) = sequence.next_element()? {
+                    values.push(value);
+                }
+                Ok(UniqueJson(Value::Array(values)))
+            }
+            fn visit_map<A: serde::de::MapAccess<'de>>(
+                self,
+                mut map: A,
+            ) -> Result<UniqueJson, A::Error> {
+                let mut values = serde_json::Map::new();
+                while let Some((key, UniqueJson(value))) = map.next_entry::<String, UniqueJson>()? {
+                    if values.insert(key, value).is_some() {
+                        return Err(serde::de::Error::custom("Duplicate JSON object key"));
+                    }
+                }
+                Ok(UniqueJson(Value::Object(values)))
+            }
+        }
+        deserializer.deserialize_any(Visitor)
+    }
+}
+
+pub(crate) fn json_document(bytes: &[u8]) -> Result<Value, String> {
+    if bytes.len() > MAX_DOCUMENT_BYTES {
+        return Err("skills.sh lock exceeds its size limit".into());
+    }
+    serde_json::from_slice::<UniqueJson>(bytes)
+        .map(|document| document.0)
+        .map_err(|error| format!("Invalid skills.sh lock: {error}"))
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SkillsShLockState {

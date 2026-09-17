@@ -1,4 +1,4 @@
-use crate::{skill_backup_copy::BackupCopyLimits, skill_coordination::CancellationToken};
+use crate::{skill_copy_limits::BackupCopyLimits, skill_coordination::CancellationToken};
 use cap_fs_ext::{DirExt, FollowSymlinks, OpenOptionsFollowExt};
 use cap_std::fs::{Dir, MetadataExt, OpenOptions};
 use sha2::{Digest, Sha256};

@@ -31,7 +31,7 @@ pub mod skill_scope;
 pub mod skill_service;
 #[cfg(all(unix, feature = "event-store"))]
 pub mod skill_skills_sh_fork_creation;
-#[cfg(all(unix, feature = "event-store"))]
+#[cfg(unix)]
 pub mod skill_skills_sh_lock_transition;
 
 #[cfg(all(unix, feature = "event-store"))]
@@ -130,7 +130,7 @@ pub mod skill_upstream_archive;
 pub mod skill_upstream_fetch;
 pub mod skill_upstream_layout;
 
-#[cfg(all(unix, feature = "event-store"))]
+#[cfg(unix)]
 mod skill_skills_sh_copy;
 
 #[cfg(unix)]
@@ -159,3 +159,6 @@ pub mod skill_event_files;
 
 #[cfg(all(test, unix, feature = "event-store"))]
 mod skill_event_file_authority;
+
+#[cfg(unix)]
+mod skill_copy_limits;

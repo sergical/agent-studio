@@ -10,12 +10,7 @@ use std::{
     path::{Component, Path, PathBuf},
 };
 
-#[derive(Debug, Clone, Copy)]
-pub struct BackupCopyLimits {
-    pub max_bytes: u64,
-    pub max_entries: u64,
-    pub max_depth: usize,
-}
+pub use crate::skill_copy_limits::BackupCopyLimits;
 #[derive(Debug, Default, PartialEq, Eq)]
 pub struct BackupCopyReport {
     pub fingerprint: String,
