@@ -1,3 +1,11 @@
+#![forbid(unsafe_code)]
+// Tauri logging and setup diagnostics go through println/eprintln today;
+// the desktop app has no other console.
+#![allow(clippy::print_stdout, clippy::print_stderr)]
+// unwrap/expect are fine in test code; production code must use ?
+// or an explicit error.
+#![cfg_attr(test, allow(clippy::unwrap_used, clippy::expect_used))]
+
 // ============================================================================
 // Skill Studio - Rust Backend
 // Skills.sh integration for skill discovery, installation, and management

@@ -1,3 +1,8 @@
+#![forbid(unsafe_code)]
+// unwrap/expect are fine in test code; production code must use ?
+// or an explicit error.
+#![cfg_attr(test, allow(clippy::unwrap_used, clippy::expect_used))]
+
 //! Skill Studio core.
 //!
 //! This crate holds the rules that every Skill Studio surface shares: the

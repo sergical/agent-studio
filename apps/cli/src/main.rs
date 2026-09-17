@@ -1,3 +1,11 @@
+#![forbid(unsafe_code)]
+// The CLI's job is printing the result envelope and human tables to stdout
+// and errors to stderr; that is its whole output surface.
+#![allow(clippy::print_stdout, clippy::print_stderr)]
+// unwrap/expect are fine in test code; production code must use ?
+// or an explicit error.
+#![cfg_attr(test, allow(clippy::unwrap_used, clippy::expect_used))]
+
 //! `skill-studio`: the Skill Studio command line.
 //!
 //! A thin adapter over `skill-studio-core`: it builds a `RuntimeScope` and a

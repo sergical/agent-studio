@@ -10,6 +10,9 @@ publish = false
 name = "skill-studio"
 path = "src/main.rs"
 
+[lints]
+workspace = true
+
 [dependencies]
 skill-studio-core = { path = "../../crates/skill-studio-core" }
 skill-studio-host = { path = "../../crates/skill-studio-host" }

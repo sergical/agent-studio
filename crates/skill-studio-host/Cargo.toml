@@ -10,6 +10,9 @@ publish = false
 name = "skill_studio_host"
 path = "src/lib.rs"
 
+[lints]
+workspace = true
+
 [dependencies]
 skill-studio-core = { path = "../skill-studio-core" }
 ulid = { version = "1", features = ["serde"] }
