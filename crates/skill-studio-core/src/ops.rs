@@ -922,6 +922,13 @@ fn process_entries(
             None
         };
 
+        // A non-link entry's own canonicalized path, computed once and
+        // reused below for `canonical_key`, `resolved_path`, and
+        // `dto_resolved_path` instead of canonicalizing `skill_dir` again
+        // for each.
+        let own_canonical = (!is_link)
+            .then(|| cx.fs.canonicalize(&skill_dir).ok())
+            .flatten();
         // A per-skill symlink into the universal root and its canonical
         // universal entry are two directory listings of the one real
         // folder: keyed by canonical path so the second listing reuses the
@@ -930,7 +937,7 @@ fn process_entries(
         let canonical_key = if is_link {
             canonical.clone()
         } else {
-            cx.fs.canonicalize(&skill_dir).ok()
+            own_canonical.clone()
         };
 
         let (description, violations, content_fingerprint, facts) = if unresolved_link {
@@ -1041,11 +1048,7 @@ fn process_entries(
         let resolved_path = if is_link {
             canonical.clone()
         } else {
-            Some(
-                cx.fs
-                    .canonicalize(&skill_dir)
-                    .unwrap_or_else(|_| skill_dir.clone()),
-            )
+            Some(own_canonical.clone().unwrap_or_else(|| skill_dir.clone()))
         };
         if let Some(resolved_path) = resolved_path {
             accum.resolved_paths.insert(id.clone(), resolved_path);
@@ -1059,10 +1062,7 @@ fn process_entries(
         let dto_resolved_path = if is_link {
             canonical.clone()
         } else {
-            cx.fs
-                .canonicalize(&skill_dir)
-                .ok()
-                .filter(|c| c != &skill_dir)
+            own_canonical.clone().filter(|c| c != &skill_dir)
         };
         let in_git_repo = in_git_repo(cx.fs, cx.scope, &skill_dir);
         // Matches the variant, not merely "forced": the field means the
