@@ -29,6 +29,7 @@ pub mod events;
 pub mod frontmatter;
 pub mod frontmatter_repair;
 pub mod harness;
+mod harness_switch;
 pub mod identity;
 pub mod lock_file;
 pub mod ops;

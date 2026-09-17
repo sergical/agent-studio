@@ -520,3 +520,30 @@ pub struct UnparkOutcome {
     /// Where the directory now lives, under the universal root.
     pub restored_path: PathBuf,
 }
+
+/// Request to turn a skill's per-harness native switch on or off.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct SetHarnessEnabledRequest {
+    /// The skill to toggle.
+    pub skill: SkillName,
+    /// The harness whose native switch to flip.
+    pub harness: AgentId,
+    /// `true` enables the skill for this harness; `false` disables it.
+    pub enabled: bool,
+}
+
+/// Result of `set_harness_enabled`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct SetHarnessEnabledOutcome {
+    /// The `set_harness_enabled` event.
+    pub event_id: EventId,
+    /// The skill that was toggled.
+    pub skill: SkillName,
+    /// The harness whose switch was flipped.
+    pub harness: AgentId,
+    /// How many of the harness's paths for this skill were toggled before
+    /// either finishing or hitting a failure.
+    pub toggled: u32,
+    /// How many paths the harness's switch needed to touch in total.
+    pub total: u32,
+}

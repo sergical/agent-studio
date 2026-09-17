@@ -21,7 +21,8 @@ use crate::dto::{
     FrontmatterRepairPreview, HarnessesRequest, InstalledSkillDto, Inventory, Issue, IssueKind,
     ListEventsRequest, NextAction, Observation, ParkOutcome, ParkRequest, PluginSourceDto,
     RepairApplyMode, RepairApplyRequest, RepairOutcome, RepairPreviewRequest, RestoreOutcome,
-    RestoreRequest, ScanRequest, Severity, Timing, UnparkOutcome, UnparkRequest,
+    RestoreRequest, ScanRequest, SetHarnessEnabledOutcome, SetHarnessEnabledRequest, Severity,
+    Timing, UnparkOutcome, UnparkRequest,
 };
 use crate::error::{CoreError, ErrorCode, ErrorEntry};
 use crate::events::EventFilter;
@@ -93,6 +94,8 @@ pub enum Operation {
     Park,
     /// Phase 3: move a parked deployment back to the universal root.
     Unpark,
+    /// Phase 3: flip a skill's native per-harness switch.
+    SetHarnessEnabled,
 }
 
 /// Outcome status of one call.
@@ -181,6 +184,11 @@ impl Outcome for ParkOutcome {
     }
 }
 impl Outcome for UnparkOutcome {
+    fn event_id(&self) -> Option<EventId> {
+        Some(self.event_id.clone())
+    }
+}
+impl Outcome for SetHarnessEnabledOutcome {
     fn event_id(&self) -> Option<EventId> {
         Some(self.event_id.clone())
     }
@@ -3100,6 +3108,135 @@ enum RestorePlan {
 /// ([`ErrorCode::AlreadyReverted`] otherwise); the live fingerprint matches
 /// the recorded one unless `force` ([`ErrorCode::DriftConflict`] otherwise).
 /// The restore is itself an event with its own backup.
+/// Restores a Claude Code per-skill link toggle recorded as a
+/// [`crate::events::SymlinkInverse`]. Kept apart from the `restore_backup`
+/// path below: a symlink toggle has no bytes to diff, only "present at this
+/// target" vs "absent", so the restore's own undo comes from
+/// [`ScopeFs::read_link`]/[`ScopeFs::symlink_metadata`] rather than a
+/// fingerprinted byte backup. No drift check: this build does not compare
+/// the live link target against what the original event recorded before
+/// restoring, unlike the `restore_backup` path's fingerprint guard - a
+/// narrower undo than that path's, in scope for a follow-up.
+fn restore_symlink_event(
+    rt: &Runtime,
+    ctx: &OpContext,
+    mut session: crate::ports::MutationSession,
+    target: &crate::events::EventRecord,
+    inverse: crate::events::SymlinkInverse,
+    op_start: Duration,
+    begin_step: crate::timing::StepTiming,
+) -> Result<RestoreOutcome, CoreError> {
+    let clock = rt.ports.clock.as_ref();
+    let step_start = clock.monotonic();
+    let fs = rt.ports.fs.as_ref();
+
+    let path = match &inverse {
+        crate::events::SymlinkInverse::Recreate { path, .. } => path.clone(),
+        crate::events::SymlinkInverse::Remove { path } => path.clone(),
+    };
+
+    let restore_id = rt.ports.ids.next_event_id();
+    let restore_inverse = match &inverse {
+        crate::events::SymlinkInverse::Recreate { path, target } => {
+            crate::events::recreate_symlink_inverse(path, target)
+        }
+        crate::events::SymlinkInverse::Remove { path } => match fs.read_link(path).ok() {
+            Some(current_target) => crate::events::recreate_symlink_inverse(path, &current_target),
+            None => crate::events::remove_symlink_inverse(path),
+        },
+    };
+    let draft = crate::events::EventDraft {
+        kind: crate::events::EventKind::Restore,
+        skill: target.skill.clone(),
+        harness: target.harness.clone(),
+        scope: target.scope.clone(),
+        project_path: target.project_path.clone(),
+        payload: serde_json::json!({ "target_event": target.id.0 }),
+        inverse: Some(restore_inverse),
+        backup_dir: None,
+    };
+    session.store.record(&session.guard, &restore_id, &draft)?;
+
+    let claimed = session
+        .store
+        .claim_revert(&session.guard, &target.id, &restore_id)?;
+    if !claimed {
+        session.store.finish(
+            &session.guard,
+            &restore_id,
+            crate::events::EventStatus::Failed,
+            None,
+        )?;
+        return Err(CoreError::new(
+            ErrorCode::AlreadyReverted,
+            "this event was already reverted",
+        ));
+    }
+
+    let mutation_result = match &inverse {
+        crate::events::SymlinkInverse::Recreate { path, target } => {
+            let scoped_target = crate::ports::confine(&rt.scope, fs, target)?;
+            let scoped_link = crate::ports::confine(&rt.scope, fs, path)?;
+            fs.symlink(&session.guard, &scoped_target, &scoped_link)
+                .map_err(|e| CoreError::io(path, e))
+        }
+        crate::events::SymlinkInverse::Remove { path } => {
+            if fs.symlink_metadata(path).is_ok() {
+                let scoped_link = crate::ports::confine(&rt.scope, fs, path)?;
+                fs.remove_file(&session.guard, &scoped_link)
+                    .map_err(|e| CoreError::io(path, e))
+            } else {
+                Ok(())
+            }
+        }
+    };
+    if let Err(err) = mutation_result {
+        // The claim was already made durable, but nothing actually moved:
+        // release it so the target event stays revertible on retry, and
+        // report the original I/O error, not any failure of the release.
+        let _ = session
+            .store
+            .release_revert(&session.guard, &target.id, &restore_id);
+        let _ = session.store.finish(
+            &session.guard,
+            &restore_id,
+            crate::events::EventStatus::Failed,
+            None,
+        );
+        return Err(err);
+    }
+
+    session.store.finish(
+        &session.guard,
+        &restore_id,
+        crate::events::EventStatus::Done,
+        None,
+    )?;
+
+    session.finish(rt, ctx);
+    let restore_step = crate::timing::step(clock, "restore_write", step_start);
+    ctx.record_timing(crate::timing::op_timing(
+        clock,
+        "restore_event",
+        op_start,
+        vec![begin_step, restore_step],
+    ));
+    Ok(RestoreOutcome {
+        restore_event_id: restore_id,
+        reverted_event_id: target.id.clone(),
+        restored_paths: vec![path],
+    })
+}
+
+/// Reverts one event using its recorded inverse.
+///
+/// Preconditions: exclusive lease; the event must exist, must not already be
+/// reverted, and must carry an inverse this build understands
+/// ([`crate::dto::RestoreCapability::Yes`]). A [`crate::events::SymlinkInverse`]
+/// dispatches to [`restore_symlink_event`]; every other kind uses the
+/// `restore_backup` shape below. Backs up the live state under the new
+/// restore event's own id before applying the inverse, so the restore is
+/// itself restorable and `force` never destroys the only copy of anything.
 pub fn restore_event(
     rt: &Runtime,
     ctx: &OpContext,
@@ -3139,6 +3276,18 @@ pub fn restore_event(
         .inverse
         .as_ref()
         .expect("restore_capability() == Yes implies an inverse");
+    let begin_step = crate::timing::step(clock, "begin_session", step_start);
+    if let Some(symlink_inverse) = crate::events::parse_symlink_inverse(inverse) {
+        return restore_symlink_event(
+            rt,
+            ctx,
+            session,
+            &target,
+            symlink_inverse,
+            op_start,
+            begin_step,
+        );
+    }
     let (path, pre, post) =
         crate::events::parse_restore_backup_inverse(inverse).ok_or_else(|| {
             CoreError::new(
@@ -3146,7 +3295,6 @@ pub fn restore_event(
                 "restore of this event kind is not implemented",
             )
         })?;
-    let begin_step = crate::timing::step(clock, "begin_session", step_start);
     let step_start = clock.monotonic();
 
     let fs = rt.ports.fs.as_ref();
@@ -3576,6 +3724,446 @@ pub fn unpark(
         deployment_id: deployment.id,
         restored_path: restored_dir,
     })
+}
+
+/// Turns a skill's native per-harness switch on or off.
+///
+/// Preconditions: exclusive lease; the skill must resolve to exactly one
+/// entry in a fresh inventory (an ambiguous name - two entries sharing
+/// `req.skill` - is refused before any write, since OpenCode's switch is
+/// keyed by name alone and a Codex/Claude Code write under an ambiguous name
+/// would silently pick one).
+///
+/// Journals before the first write, matching `apply_frontmatter_repair`'s
+/// shape (`docs/action-map/enable-and-links.md`'s desired state for this
+/// command). Codex is the one harness whose switch can touch more than one
+/// path - one `[[skills.config]]` row per canonical `SKILL.md` this skill
+/// owns - so it is the one case where `toggled` can be less than `total`: a
+/// write failure partway through the loop is reported as "N of M", not
+/// swallowed, and the paths already toggled are left toggled rather than
+/// rolled back (this build's compensating step is the accurate error
+/// message, not a cross-path transaction; see the module doc on
+/// `harness_switch.rs` for the scope this narrows).
+pub fn set_harness_enabled(
+    rt: &Runtime,
+    ctx: &OpContext,
+    req: &SetHarnessEnabledRequest,
+) -> Result<SetHarnessEnabledOutcome, CoreError> {
+    ctx.checkpoint()?;
+    let clock = rt.ports.clock.as_ref();
+    let op_start = clock.monotonic();
+    let step_start = clock.monotonic();
+    let session = crate::ports::MutationSession::begin(rt, ctx);
+    ctx.take_timing();
+    let mut session = session?;
+
+    let matches: Vec<&InstalledSkillDto> = session
+        .fresh
+        .skills
+        .iter()
+        .filter(|s| s.name == req.skill)
+        .collect();
+    let skill = match matches.as_slice() {
+        [one] => (*one).clone(),
+        [] => {
+            return Err(CoreError::new(ErrorCode::InvalidRequest, "skill not found")
+                .at(Path::new(&req.skill.0)))
+        }
+        _ => {
+            return Err(CoreError::new(
+                ErrorCode::AmbiguousTarget,
+                format!("{} names more than one installed skill", req.skill),
+            ))
+        }
+    };
+    let begin_step = crate::timing::step(clock, "begin_session", step_start);
+
+    let step_start = clock.monotonic();
+    let fs = rt.ports.fs.as_ref();
+    let home = rt.scope.home.lexical.clone();
+    let id = rt.ports.ids.next_event_id();
+    let kind = if req.enabled {
+        crate::events::EventKind::HarnessEnable
+    } else {
+        crate::events::EventKind::HarnessDisable
+    };
+
+    let (toggled, total) = match req.harness.as_str() {
+        AgentId::CLAUDE_CODE => {
+            set_claude_code_switch(rt, &mut session, fs, &home, &skill, &id, kind, req.enabled)?
+        }
+        AgentId::CODEX => {
+            set_codex_switch(rt, &mut session, fs, &home, &skill, &id, kind, req.enabled)?
+        }
+        AgentId::OPEN_CODE => {
+            set_opencode_switch(rt, &mut session, fs, &home, &skill, &id, kind, req.enabled)?
+        }
+        AgentId::PI => set_pi_switch(rt, &mut session, fs, &home, &skill, &id, kind, req.enabled)?,
+        other => {
+            return Err(CoreError::new(
+                ErrorCode::Unsupported,
+                format!("{other} has no native per-skill switch"),
+            ))
+        }
+    };
+
+    session.finish(rt, ctx);
+    let write_step = crate::timing::step(clock, "toggle_switch", step_start);
+    ctx.record_timing(crate::timing::op_timing(
+        clock,
+        "set_harness_enabled",
+        op_start,
+        vec![begin_step, write_step],
+    ));
+    Ok(SetHarnessEnabledOutcome {
+        event_id: id,
+        skill: skill.name,
+        harness: req.harness.clone(),
+        toggled,
+        total,
+    })
+}
+
+/// Creates `dir` and every missing ancestor, one level at a time.
+/// [`crate::ports::confine`] canonicalizes a path's parent to prove it lies
+/// inside the scope, so it needs that parent to already exist; a home with
+/// no `.config` at all makes a single `confine(".config/opencode")` fail
+/// before `create_dir_all` ever runs. Walking up to the first existing
+/// ancestor and confining one level at a time avoids that.
+fn ensure_dir_all(
+    rt: &Runtime,
+    session: &crate::ports::MutationSession,
+    fs: &dyn ScopeFs,
+    dir: &Path,
+) -> Result<(), CoreError> {
+    let mut missing = Vec::new();
+    let mut current = dir.to_path_buf();
+    while fs.symlink_metadata(&current).is_err() {
+        missing.push(current.clone());
+        match current.parent() {
+            Some(parent) if parent != current => current = parent.to_path_buf(),
+            _ => break,
+        }
+    }
+    for path in missing.into_iter().rev() {
+        let scoped = crate::ports::confine(&rt.scope, fs, &path)?;
+        fs.create_dir_all(&session.guard, &scoped)
+            .map_err(|e| CoreError::io(&path, e))?;
+    }
+    Ok(())
+}
+
+/// Removes or recreates Claude Code's per-skill link under
+/// `<home>/.claude/skills/<name>`. One step, so `toggled`/`total` are always
+/// `1`/`1` on success. Idempotent: if the link is already in the requested
+/// state, the journal row still records a usable inverse but no filesystem
+/// call runs.
+#[allow(clippy::too_many_arguments)]
+fn set_claude_code_switch(
+    rt: &Runtime,
+    session: &mut crate::ports::MutationSession,
+    fs: &dyn ScopeFs,
+    home: &Path,
+    skill: &InstalledSkillDto,
+    id: &EventId,
+    kind: crate::events::EventKind,
+    enabled: bool,
+) -> Result<(u32, u32), CoreError> {
+    let canonical_dir = skill
+        .deployments
+        .iter()
+        .find(|d| d.root.kind == RootKind::Universal && d.backing == BackingRelationship::Canonical)
+        .map(|d| d.path.clone())
+        .ok_or_else(|| {
+            CoreError::new(
+                ErrorCode::Unsupported,
+                "no universal deployment to link Claude Code to",
+            )
+        })?;
+    let link_path = home.join(".claude/skills").join(&skill.name.0);
+
+    let inverse = if enabled {
+        crate::events::remove_symlink_inverse(&link_path)
+    } else {
+        crate::events::recreate_symlink_inverse(&link_path, &canonical_dir)
+    };
+    let draft = crate::events::EventDraft {
+        kind,
+        skill: skill.name.clone(),
+        harness: Some(AgentId::from(AgentId::CLAUDE_CODE)),
+        scope: Some("global".to_string()),
+        project_path: None,
+        payload: serde_json::json!({ "skill": skill.name.0, "harness": AgentId::CLAUDE_CODE }),
+        inverse: Some(inverse),
+        backup_dir: None,
+    };
+    session.store.record(&session.guard, id, &draft)?;
+
+    let already_linked = fs.symlink_metadata(&link_path).is_ok();
+    if enabled && !already_linked {
+        let scoped_target = crate::ports::confine(&rt.scope, fs, &canonical_dir)?;
+        let scoped_link = crate::ports::confine(&rt.scope, fs, &link_path)?;
+        fs.symlink(&session.guard, &scoped_target, &scoped_link)
+            .map_err(|e| CoreError::io(&link_path, e))?;
+    } else if !enabled && already_linked {
+        let scoped_link = crate::ports::confine(&rt.scope, fs, &link_path)?;
+        fs.remove_file(&session.guard, &scoped_link)
+            .map_err(|e| CoreError::io(&link_path, e))?;
+    }
+    session
+        .store
+        .finish(&session.guard, id, crate::events::EventStatus::Done, None)?;
+    Ok((1, 1))
+}
+
+/// Every canonical `SKILL.md` path Codex sees for `skill`, sorted for a
+/// deterministic write order.
+fn codex_skill_md_paths(skill: &InstalledSkillDto) -> Vec<PathBuf> {
+    // `LinkedTo` deployments point at another deployment's bytes and have no
+    // `SKILL.md` of their own to toggle; `Canonical` and `Independent` both
+    // hold real bytes on disk, so both need their own row.
+    let mut paths: Vec<PathBuf> = skill
+        .deployments
+        .iter()
+        .filter(|d| d.backing != BackingRelationship::LinkedTo)
+        .map(|d| d.path.join("SKILL.md"))
+        .collect();
+    paths.sort();
+    paths.dedup();
+    paths
+}
+
+/// Adds or removes one `[[skills.config]]` row per Codex-visible `SKILL.md`
+/// path in `~/.codex/config.toml`. A crash partway through leaves the rows
+/// already written toggled and reports "N of M" rather than failing silent
+/// (`docs/action-map/enable-and-links.md`'s desired state).
+#[allow(clippy::too_many_arguments)]
+fn set_codex_switch(
+    rt: &Runtime,
+    session: &mut crate::ports::MutationSession,
+    fs: &dyn ScopeFs,
+    home: &Path,
+    skill: &InstalledSkillDto,
+    id: &EventId,
+    kind: crate::events::EventKind,
+    enabled: bool,
+) -> Result<(u32, u32), CoreError> {
+    let paths = codex_skill_md_paths(skill);
+    let total = u32::try_from(paths.len()).unwrap_or(u32::MAX);
+    if paths.is_empty() {
+        return Err(CoreError::new(
+            ErrorCode::Unsupported,
+            "no Codex-visible SKILL.md paths for this skill",
+        ));
+    }
+    let config_path = home.join(".codex/config.toml");
+
+    let manifest =
+        session
+            .store
+            .backup_paths(&session.guard, id, std::slice::from_ref(&config_path))?;
+    let pre_fingerprint = manifest.entries.first().and_then(|e| e.fingerprint.clone());
+    let inverse =
+        crate::events::restore_backup_inverse(&config_path, pre_fingerprint.as_ref(), None);
+    let draft = crate::events::EventDraft {
+        kind,
+        skill: skill.name.clone(),
+        harness: Some(AgentId::from(AgentId::CODEX)),
+        scope: Some("global".to_string()),
+        project_path: None,
+        payload: serde_json::json!({
+            "skill": skill.name.0,
+            "harness": AgentId::CODEX,
+            "total": total,
+        }),
+        inverse: Some(inverse),
+        backup_dir: Some(manifest.backup_dir.clone()),
+    };
+    session.store.record(&session.guard, id, &draft)?;
+
+    let config_parent = config_path.parent().unwrap_or(&config_path).to_path_buf();
+    ensure_dir_all(rt, session, fs, &config_parent)?;
+    let scoped_config = crate::ports::confine(&rt.scope, fs, &config_path)?;
+    let mut toggled: u32 = 0;
+    for path in &paths {
+        let existing = match fs.read_capped(
+            &config_path,
+            crate::harness_switch::HARNESS_CONFIG_MAX_BYTES,
+        ) {
+            Ok(bytes) => Some(
+                String::from_utf8(bytes)
+                    .map_err(|e| CoreError::new(ErrorCode::Io, e.to_string()).at(&config_path))?,
+            ),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => None,
+            Err(e) => return Err(CoreError::io(&config_path, e)),
+        };
+        let new_text =
+            crate::harness_switch::codex_toggle_row(existing.as_deref(), path, !enabled)?;
+        if let Err(e) = fs.write_atomic(&session.guard, &scoped_config, new_text.as_bytes()) {
+            let _ =
+                session
+                    .store
+                    .finish(&session.guard, id, crate::events::EventStatus::Failed, None);
+            return Err(CoreError::new(
+                ErrorCode::Incomplete,
+                format!(
+                    "{toggled} of {total} Codex paths toggled for {}: {e}",
+                    skill.name
+                ),
+            )
+            .at(&config_path));
+        }
+        toggled += 1;
+    }
+
+    let post_fingerprint = crate::events::fingerprint_path(fs, &config_path)?;
+    session.store.finish(
+        &session.guard,
+        id,
+        crate::events::EventStatus::Done,
+        post_fingerprint,
+    )?;
+    Ok((toggled, total))
+}
+
+/// Sets or clears `permission.skill.<name>` in `~/.config/opencode/
+/// opencode.json`. Refuses when only `opencode.jsonc` exists.
+#[allow(clippy::too_many_arguments)]
+fn set_opencode_switch(
+    rt: &Runtime,
+    session: &mut crate::ports::MutationSession,
+    fs: &dyn ScopeFs,
+    home: &Path,
+    skill: &InstalledSkillDto,
+    id: &EventId,
+    kind: crate::events::EventKind,
+    enabled: bool,
+) -> Result<(u32, u32), CoreError> {
+    let config_path = home.join(".config/opencode/opencode.json");
+    let jsonc_path = home.join(".config/opencode/opencode.jsonc");
+    crate::harness_switch::opencode_refuses_jsonc(
+        fs.symlink_metadata(&config_path).is_ok(),
+        fs.symlink_metadata(&jsonc_path).is_ok(),
+    )?;
+
+    let manifest =
+        session
+            .store
+            .backup_paths(&session.guard, id, std::slice::from_ref(&config_path))?;
+    let pre_fingerprint = manifest.entries.first().and_then(|e| e.fingerprint.clone());
+    let inverse =
+        crate::events::restore_backup_inverse(&config_path, pre_fingerprint.as_ref(), None);
+    let draft = crate::events::EventDraft {
+        kind,
+        skill: skill.name.clone(),
+        harness: Some(AgentId::from(AgentId::OPEN_CODE)),
+        scope: Some("global".to_string()),
+        project_path: None,
+        payload: serde_json::json!({ "skill": skill.name.0, "harness": AgentId::OPEN_CODE }),
+        inverse: Some(inverse),
+        backup_dir: Some(manifest.backup_dir.clone()),
+    };
+    session.store.record(&session.guard, id, &draft)?;
+
+    let existing = match fs.read_capped(
+        &config_path,
+        crate::harness_switch::HARNESS_CONFIG_MAX_BYTES,
+    ) {
+        Ok(bytes) => Some(
+            String::from_utf8(bytes)
+                .map_err(|e| CoreError::new(ErrorCode::Io, e.to_string()).at(&config_path))?,
+        ),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => None,
+        Err(e) => return Err(CoreError::io(&config_path, e)),
+    };
+    let new_text =
+        crate::harness_switch::opencode_toggle(existing.as_deref(), &skill.name.0, !enabled)?;
+    let config_parent = config_path.parent().unwrap_or(&config_path).to_path_buf();
+    ensure_dir_all(rt, session, fs, &config_parent)?;
+    let scoped_config = crate::ports::confine(&rt.scope, fs, &config_path)?;
+    if let Err(e) = fs.write_atomic(&session.guard, &scoped_config, new_text.as_bytes()) {
+        let _ = session
+            .store
+            .finish(&session.guard, id, crate::events::EventStatus::Failed, None);
+        return Err(CoreError::io(&config_path, e));
+    }
+
+    let post_fingerprint = crate::events::fingerprint_path(fs, &config_path)?;
+    session.store.finish(
+        &session.guard,
+        id,
+        crate::events::EventStatus::Done,
+        post_fingerprint,
+    )?;
+    Ok((1, 1))
+}
+
+/// pi has no native per-skill switch; this build stands one up as a
+/// `disabledSkills` exclusion list under a `skill-studio` key in pi's own
+/// `~/.pi/agent/settings.json` (`PiAdapter::config_relative_path`), left
+/// alone by pi itself.
+#[allow(clippy::too_many_arguments)]
+fn set_pi_switch(
+    rt: &Runtime,
+    session: &mut crate::ports::MutationSession,
+    fs: &dyn ScopeFs,
+    home: &Path,
+    skill: &InstalledSkillDto,
+    id: &EventId,
+    kind: crate::events::EventKind,
+    enabled: bool,
+) -> Result<(u32, u32), CoreError> {
+    let config_path = home.join(".pi/agent/settings.json");
+
+    let manifest =
+        session
+            .store
+            .backup_paths(&session.guard, id, std::slice::from_ref(&config_path))?;
+    let pre_fingerprint = manifest.entries.first().and_then(|e| e.fingerprint.clone());
+    let inverse =
+        crate::events::restore_backup_inverse(&config_path, pre_fingerprint.as_ref(), None);
+    let draft = crate::events::EventDraft {
+        kind,
+        skill: skill.name.clone(),
+        harness: Some(AgentId::from(AgentId::PI)),
+        scope: Some("global".to_string()),
+        project_path: None,
+        payload: serde_json::json!({ "skill": skill.name.0, "harness": AgentId::PI }),
+        inverse: Some(inverse),
+        backup_dir: Some(manifest.backup_dir.clone()),
+    };
+    session.store.record(&session.guard, id, &draft)?;
+
+    let existing = match fs.read_capped(
+        &config_path,
+        crate::harness_switch::HARNESS_CONFIG_MAX_BYTES,
+    ) {
+        Ok(bytes) => Some(
+            String::from_utf8(bytes)
+                .map_err(|e| CoreError::new(ErrorCode::Io, e.to_string()).at(&config_path))?,
+        ),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => None,
+        Err(e) => return Err(CoreError::io(&config_path, e)),
+    };
+    let new_text = crate::harness_switch::pi_toggle(existing.as_deref(), &skill.name.0, !enabled)?;
+    let config_parent = config_path.parent().unwrap_or(&config_path).to_path_buf();
+    ensure_dir_all(rt, session, fs, &config_parent)?;
+    let scoped_config = crate::ports::confine(&rt.scope, fs, &config_path)?;
+    if let Err(e) = fs.write_atomic(&session.guard, &scoped_config, new_text.as_bytes()) {
+        let _ = session
+            .store
+            .finish(&session.guard, id, crate::events::EventStatus::Failed, None);
+        return Err(CoreError::io(&config_path, e));
+    }
+
+    let post_fingerprint = crate::events::fingerprint_path(fs, &config_path)?;
+    session.store.finish(
+        &session.guard,
+        id,
+        crate::events::EventStatus::Done,
+        post_fingerprint,
+    )?;
+    Ok((1, 1))
 }
 
 #[cfg(test)]

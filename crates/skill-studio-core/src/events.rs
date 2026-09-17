@@ -443,6 +443,51 @@ pub(crate) fn parse_restore_backup_inverse(
     ))
 }
 
+/// Undo shape for a symlink toggle: `recreate_symlink` (put a link with
+/// `target` back at `path`) or `remove_symlink` (take the link at `path`
+/// back out). Kept apart from `restore_backup`: that shape's restore writes
+/// raw bytes with `write_atomic`, which would turn a symlink into a regular
+/// file carrying its target's content instead of recreating the link.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum SymlinkInverse {
+    /// Recreate the link.
+    Recreate {
+        /// Where the link goes.
+        path: PathBuf,
+        /// What it points to.
+        target: PathBuf,
+    },
+    /// Remove the link.
+    Remove {
+        /// The link to remove.
+        path: PathBuf,
+    },
+}
+
+pub(crate) fn recreate_symlink_inverse(path: &Path, target: &Path) -> serde_json::Value {
+    serde_json::json!({ "op": "recreate_symlink", "path": path, "target": target })
+}
+
+pub(crate) fn remove_symlink_inverse(path: &Path) -> serde_json::Value {
+    serde_json::json!({ "op": "remove_symlink", "path": path })
+}
+
+/// Reads a `recreate_symlink`/`remove_symlink` inverse payload back. Returns
+/// `None` for any other shape.
+pub(crate) fn parse_symlink_inverse(inverse: &serde_json::Value) -> Option<SymlinkInverse> {
+    let obj = inverse.as_object()?;
+    match obj.get("op").and_then(|v| v.as_str()) {
+        Some("recreate_symlink") => Some(SymlinkInverse::Recreate {
+            path: PathBuf::from(obj.get("path")?.as_str()?),
+            target: PathBuf::from(obj.get("target")?.as_str()?),
+        }),
+        Some("remove_symlink") => Some(SymlinkInverse::Remove {
+            path: PathBuf::from(obj.get("path")?.as_str()?),
+        }),
+        _ => None,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

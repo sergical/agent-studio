@@ -5,7 +5,7 @@
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicI64, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -485,6 +485,10 @@ pub struct FailingFs {
     inner: Arc<dyn ScopeFs>,
     fail_next_write_atomic: AtomicBool,
     fail_next_rename: AtomicBool,
+    /// `-1` means unlimited. Otherwise the number of `write_atomic` calls
+    /// still allowed to succeed before every later call fails; see
+    /// [`Self::fail_write_atomic_after`].
+    write_atomic_budget: AtomicI64,
 }
 
 impl FailingFs {
@@ -494,6 +498,7 @@ impl FailingFs {
             inner,
             fail_next_write_atomic: AtomicBool::new(false),
             fail_next_rename: AtomicBool::new(false),
+            write_atomic_budget: AtomicI64::new(-1),
         }
     }
 
@@ -501,6 +506,15 @@ impl FailingFs {
     /// `inner`; later calls delegate normally again.
     pub fn fail_next_write_atomic(&self) {
         self.fail_next_write_atomic.store(true, Ordering::SeqCst);
+    }
+
+    /// The next `successes` calls to `write_atomic` reach `inner` normally;
+    /// every call after that fails, permanently. Models a multi-step write
+    /// loop (one `write_atomic` per step) that crashes partway through, so a
+    /// test can assert exactly how many steps landed before the failure.
+    pub fn fail_write_atomic_after(&self, successes: u32) {
+        self.write_atomic_budget
+            .store(i64::from(successes), Ordering::SeqCst);
     }
 
     /// The next `rename` call returns an error instead of reaching `inner`;
@@ -544,6 +558,15 @@ impl ScopeFs for FailingFs {
             return Err(std::io::Error::other(
                 "FailingFs: injected write_atomic failure",
             ));
+        }
+        let budget = self.write_atomic_budget.load(Ordering::SeqCst);
+        if budget >= 0 {
+            if budget == 0 {
+                return Err(std::io::Error::other(
+                    "FailingFs: injected write_atomic failure (budget exhausted)",
+                ));
+            }
+            self.write_atomic_budget.fetch_sub(1, Ordering::SeqCst);
         }
         self.inner.write_atomic(guard, path, bytes)
     }
