@@ -36,12 +36,18 @@ struct TimingRecord<'a> {
     steps: Vec<StepTiming>,
     #[serde(borrow)]
     thread: std::borrow::Cow<'a, str>,
-    /// `"ok"` or `"error"` - see [`CommandOutcome`].
-    #[serde(borrow)]
+    /// `"ok"` or `"error"` - see [`CommandOutcome`]. Missing on lines written
+    /// before this unit added the field, so it defaults to `"ok"` - the same
+    /// default the CLI's `TimingLine` uses, so the two agree on old logs.
+    #[serde(borrow, default = "default_outcome")]
     outcome: std::borrow::Cow<'a, str>,
     /// The error's first line, capped at 120 chars, when `outcome` is `"error"`.
     #[serde(default)]
     error: Option<String>,
+}
+
+fn default_outcome<'a>() -> std::borrow::Cow<'a, str> {
+    std::borrow::Cow::Borrowed("ok")
 }
 
 /// How a `#[tauri::command]` body finished, for the `outcome`/`error`
@@ -270,10 +276,11 @@ const RETAIN: std::time::Duration = std::time::Duration::from_secs(30 * 24 * 360
 
 /// Reads every parsable line of `<app_data_dir>/timing.jsonl` into a
 /// [`TimingRow`], for [`skill_studio_core::health::health_rollup`]. A line
-/// that fails to parse (a partial write, an older log schema before this
-/// unit added `outcome`/`error`) is skipped rather than aborting the whole
-/// read - `command_health` should never fail just because one old line is
-/// unreadable.
+/// that fails to parse (a partial write, corrupt JSON) is skipped rather
+/// than aborting the whole read - `command_health` should never fail just
+/// because one old line is unreadable. A line from before this unit added
+/// `outcome`/`error` still parses; the missing fields default to `"ok"`/
+/// `None`.
 pub fn read_rows(app: &AppHandle) -> Vec<TimingRow> {
     let Ok(app_data) = app.path().app_data_dir() else {
         return Vec::new();
@@ -631,6 +638,24 @@ mod tests {
         assert_eq!(rows[1].command, "add_skill");
         assert_eq!(rows[1].outcome, Outcome::Error);
         assert_eq!(rows[1].error, Some("disk full".to_string()));
+    }
+
+    #[test]
+    fn a_pre_upgrade_timing_row_without_an_outcome_parses_as_ok_or_names_the_dropped_row() {
+        let temp = tempfile::tempdir().unwrap();
+        let log_path = temp.path().join("timing.jsonl");
+        // A line written before this unit added `outcome`/`error` - the
+        // schema `append_record` wrote when the log had only these fields.
+        std::fs::write(
+            &log_path,
+            "{\"ts\":\"2024-01-01T00:00:00Z\",\"command\":\"scan\",\"elapsed_ms\":12,\"steps\":[],\"thread\":\"main\"}\n",
+        )
+        .unwrap();
+
+        let rows = read_rows_from(&log_path);
+        assert_eq!(rows.len(), 1, "the pre-upgrade row was dropped, not defaulted to ok");
+        assert_eq!(rows[0].outcome, Outcome::Ok);
+        assert_eq!(rows[0].error, None);
     }
 
     #[test]
