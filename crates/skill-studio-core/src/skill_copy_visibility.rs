@@ -442,9 +442,8 @@ impl PreparedCopyVisibility<'_> {
             .map_err(|e| e.to_string())?;
         self.holding
             .directory
-            .try_clone()
+            .open(".")
             .map_err(|e| e.to_string())?
-            .into_std_file()
             .sync_all()
             .map_err(|e| e.to_string())
     }

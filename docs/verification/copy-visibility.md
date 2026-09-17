@@ -113,3 +113,13 @@ Fresh simplification made no changes; source hashes remain identical to the test
 candidate. Independent review and its compatibility correction review are complete with no
 remaining findings. No production signing,
 notarization, merge, deployment or final combined release is claimed.
+
+## Linux CI correction
+
+Initial PR135 CI passed formatting and Clippy, then failed five visibility tests
+with a bad file descriptor while syncing the newly created holding directory.
+The code now opens `.` relative to the authorized directory before syncing it,
+matching the existing invocation fix. It does not clone the Linux path-only
+handle for fsync. The failed run had 676 passing tests, 5 failures and 21 skips.
+Linux CI on the correction remains required; prior macOS acceptance does not
+prove this platform-specific correction.
