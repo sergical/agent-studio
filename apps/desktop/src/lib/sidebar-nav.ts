@@ -30,14 +30,3 @@ export function relativeScanTime(scannedAt: string | undefined): string {
 export function rescanTooltip(scannedAt: string | undefined): string {
   return `Refresh skills from disk\nLast sync: ${relativeScanTime(scannedAt)}`;
 }
-
-/** A manual sync completes only on a later listener-delivered backend revision. */
-export function hasNewerSkillSnapshotEmission(
-  requestedSnapshotRevision: number | undefined,
-  emittedSnapshotRevision: number | undefined,
-): boolean {
-  return (
-    emittedSnapshotRevision !== undefined &&
-    (requestedSnapshotRevision === undefined || emittedSnapshotRevision > requestedSnapshotRevision)
-  );
-}

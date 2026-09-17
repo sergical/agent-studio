@@ -379,6 +379,7 @@ function updateCommit(transform: (item: InstalledSkill) => InstalledSkill): Prom
 }
 
 const addOperations = new Map<string, AddSkillOperationEvent>();
+let refreshGeneration = 0n;
 
 mockWindows("main");
 mockIPC(
@@ -394,9 +395,14 @@ mockIPC(
       case "register_skill_projects":
       case "unregister_skill_project":
         return undefined;
-      case "request_skill_rescan":
-        await publishSnapshot(currentSnapshot);
-        return undefined;
+      case "request_skill_rescan": {
+        const receipt = {
+          instance_id: "capture-refresh",
+          generation: (++refreshGeneration).toString(),
+        };
+        await publishSnapshot({ ...currentSnapshot, full_refresh: receipt });
+        return receipt;
+      }
       case "read_installed_skill_md": {
         const content = skillContent.get(String(payload.path));
         if (content === undefined)

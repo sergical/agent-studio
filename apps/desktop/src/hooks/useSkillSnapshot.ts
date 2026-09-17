@@ -5,6 +5,7 @@
 
 import { useEffect, useRef, useState } from "react";
 import { getSkillSnapshot, onSkillSnapshot, requestSkillRescan } from "../lib/skill-api";
+import { SkillRefreshWaiter } from "../lib/skill-refresh-waiter";
 import type { SkillSnapshot } from "@skill-studio/lib";
 
 /** Select a snapshot only when its publication revision advances. */
@@ -68,7 +69,7 @@ interface UseSkillSnapshotResult {
   emittedSnapshotRevision: number | undefined;
   isLoading: boolean;
   error: string | null;
-  /** Ask the background refresh thread to rebuild; resolves once the request lands, not once the new snapshot arrives. */
+  /** Request a full refresh and wait for a snapshot that covers its receipt. */
   requestRescan: () => Promise<void>;
 }
 
@@ -85,19 +86,28 @@ export function useSkillSnapshot(): UseSkillSnapshotResult {
   const [isLoading, setIsLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const isMountedRef = useRef(true);
+  const refreshWaiterRef = useRef<SkillRefreshWaiter | null>(null);
 
   useEffect(() => {
     let cancelled = false;
     let unlisten: (() => void) | undefined;
     isMountedRef.current = true;
 
-    const applySnapshot = (candidate: SkillSnapshot, source: "initial" | "event") => {
+    const applySnapshot = (candidate: SkillSnapshot, source: "initial" | "event" = "event") => {
       if (!cancelled) {
         setSnapshot((current) => selectNewerSkillSnapshot(current, candidate));
+        refreshWaiterRef.current?.accept(candidate);
         if (source === "event") setEmittedSnapshotRevision(candidate.revision);
         setIsLoading(false);
       }
     };
+
+    const waiter = new SkillRefreshWaiter({
+      request: requestSkillRescan,
+      read: getSkillSnapshot,
+      publish: applySnapshot,
+    });
+    refreshWaiterRef.current = waiter;
 
     void startSkillSnapshotSubscription({
       isCancelled: () => cancelled,
@@ -117,13 +127,16 @@ export function useSkillSnapshot(): UseSkillSnapshotResult {
     return () => {
       cancelled = true;
       isMountedRef.current = false;
+      waiter.dispose();
+      refreshWaiterRef.current = null;
       unlisten?.();
     };
   }, []);
 
   const requestRescan = async () => {
     try {
-      await requestSkillRescan();
+      if (!refreshWaiterRef.current) throw new Error("Snapshot subscription is not ready");
+      await refreshWaiterRef.current.request();
     } catch (err) {
       if (isMountedRef.current) {
         setError(err instanceof Error ? err.message : "Failed to request rescan");

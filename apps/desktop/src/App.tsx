@@ -167,11 +167,7 @@ function App() {
   return (
     <TooltipProvider delay={400}>
       <div className="flex h-screen overflow-hidden bg-[var(--color-bg-primary)]">
-        <Sidebar
-          snapshot={snapshot}
-          emittedSnapshotRevision={emittedSnapshotRevision}
-          requestRescan={requestRescan}
-        />
+        <Sidebar snapshot={snapshot} requestRescan={requestRescan} />
         <main className="flex-1 overflow-y-auto">
           {snapshot?.read_warnings?.length ? (
             <div

@@ -53,6 +53,7 @@ pub mod skill_park;
 pub mod skill_process;
 pub(crate) mod skill_project_authority;
 pub mod skill_refresh;
+mod skill_refresh_demand;
 pub mod skill_run_history;
 pub mod skill_run_target;
 pub(crate) mod skill_scope_config;

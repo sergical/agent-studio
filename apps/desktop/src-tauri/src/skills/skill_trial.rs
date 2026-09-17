@@ -1488,6 +1488,7 @@ mod tests {
             diagnosis: None,
             read_warnings: Vec::new(),
             revision: 0,
+            full_refresh: None,
             skills,
             projects: Vec::new(),
             invocations: Vec::new(),

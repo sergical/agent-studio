@@ -708,6 +708,8 @@ export interface SkillSnapshot {
   read_warnings?: SkillSnapshotReadWarning[];
   /** Process-local publication order. Revision 0 is a legacy bootstrap snapshot. */
   revision: number;
+  /** Receipt covered by the full scan that built this snapshot. */
+  full_refresh?: SkillRefreshPosition | null;
   skills: InstalledSkill[];
   projects: string[];
   invocations: SkillInvocationStats[];
@@ -719,6 +721,12 @@ export interface SkillSnapshot {
   update_check: UpdateCheckSummary;
   /** Which OpenCode config format is present, `undefined` when neither exists. */
   opencode_config_kind?: "json" | "jsonc";
+}
+
+export interface SkillRefreshPosition {
+  instance_id: string;
+  /** A decimal u64 string, kept exact beyond JavaScript's safe integer range. */
+  generation: string;
 }
 
 /** A snapshot input failure that leaves a specific ownership scope incomplete. */

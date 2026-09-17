@@ -1422,6 +1422,7 @@ mod tests {
             diagnosis: None,
             read_warnings: Vec::new(),
             revision: 0,
+            full_refresh: None,
             skills: vec![InstalledSkill {
                 update_sources: Vec::new(),
                 name: "find-bugs".to_string(),

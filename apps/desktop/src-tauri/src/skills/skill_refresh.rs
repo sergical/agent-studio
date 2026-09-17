@@ -29,6 +29,7 @@ use super::skill_fork_registry::TrialScope;
 use super::skill_invocations::{
     InvocationHeatmap, RefreshReport, SkillInvocationIndex, SkillInvocationStats,
 };
+use super::skill_refresh_demand::RefreshDemand;
 use super::skill_run_history::{self, SkillRunSummary};
 use super::skill_update_check::{self, UpdateCheckSummary};
 use skill_studio_core::skill_ledger_inventory::LedgerOnlySkill;
@@ -65,6 +66,8 @@ pub struct SkillSnapshot {
     /// from older serialized data that predates revisions.
     #[serde(default)]
     pub revision: u64,
+    #[serde(default)]
+    pub full_refresh: Option<super::skill_refresh_demand::SkillRefreshPosition>,
     #[serde(default)]
     pub ledger_only: Vec<LedgerOnlySkill>,
     #[serde(default)]
@@ -114,6 +117,29 @@ pub struct WatchPath {
     pub recursive: bool,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct WatchRegistration {
+    recursive: bool,
+    physical_path: PathBuf,
+    #[cfg(unix)]
+    identity: (u64, u64),
+}
+
+impl WatchRegistration {
+    fn read(path: &Path, recursive: bool) -> std::io::Result<Self> {
+        let physical_path = path.canonicalize()?;
+        let metadata = std::fs::metadata(&physical_path)?;
+        #[cfg(unix)]
+        use std::os::unix::fs::MetadataExt;
+        Ok(Self {
+            recursive,
+            physical_path,
+            #[cfg(unix)]
+            identity: (metadata.dev(), metadata.ino()),
+        })
+    }
+}
+
 /// Managed Tauri state, shared between the background refresh thread and
 /// every command that can trigger or read a rebuild. Cheap to clone: every
 /// field is an `Arc` (or a small owned `PathBuf`), so the background thread
@@ -134,7 +160,7 @@ pub struct SkillRefreshState {
     excluded_projects: Arc<Mutex<BTreeSet<String>>>,
     /// Something that can affect the skills list, project list, or plugin
     /// caches changed; the next rebuild should be a full one.
-    skills_dirty: Arc<AtomicBool>,
+    refresh_demand: Arc<RefreshDemand>,
     /// A Claude Code transcript changed; the next rebuild only needs to
     /// refresh the invocation index, not rescan skill directories.
     invocations_dirty: Arc<AtomicBool>,
@@ -163,7 +189,7 @@ impl SkillRefreshState {
     /// hasn't picked it up yet - see `get_installed_skills`, which uses this
     /// to decide whether the published snapshot is safe to read as-is.
     pub(crate) fn is_skills_dirty(&self) -> bool {
-        self.skills_dirty.load(Ordering::SeqCst)
+        self.refresh_demand.is_pending()
     }
 
     /// Mark the next rebuild as full, without touching the extra/excluded
@@ -171,7 +197,7 @@ impl SkillRefreshState {
     /// an inline `rebuild_snapshot_now`. Equivalent to `request_skill_rescan`,
     /// just callable on the state directly rather than through Tauri IPC.
     pub(crate) fn mark_skills_dirty(&self) {
-        self.skills_dirty.store(true, Ordering::SeqCst);
+        self.refresh_demand.request();
     }
 
     /// Add project paths to the always-included set and mark skills dirty,
@@ -179,9 +205,13 @@ impl SkillRefreshState {
     /// through the same bookkeeping.
     pub(crate) fn add_extra_projects(&self, paths: impl IntoIterator<Item = String>) {
         if let Ok(mut extra) = self.extra_projects.lock() {
+            let before = extra.len();
             extra.extend(paths);
+            if extra.len() == before {
+                return;
+            }
         }
-        self.skills_dirty.store(true, Ordering::SeqCst);
+        self.refresh_demand.request();
     }
 
     /// Remove a caller-registered project path so future rebuilds stop
@@ -195,7 +225,7 @@ impl SkillRefreshState {
         if let Ok(mut excluded) = self.excluded_projects.lock() {
             excluded.insert(path.to_string());
         }
-        self.skills_dirty.store(true, Ordering::SeqCst);
+        self.refresh_demand.request();
     }
 
     /// Remove project paths from the excluded set, so a caller that
@@ -203,8 +233,12 @@ impl SkillRefreshState {
     /// overrides a previous "stop tracking".
     pub(crate) fn unexclude_projects(&self, paths: impl IntoIterator<Item = String>) {
         if let Ok(mut excluded) = self.excluded_projects.lock() {
+            let before = excluded.len();
             for path in paths {
                 excluded.remove(&path);
+            }
+            if excluded.len() != before {
+                self.refresh_demand.request();
             }
         }
     }
@@ -261,7 +295,7 @@ pub fn init(app: &AppHandle) -> SkillRefreshState {
         rebuild_lock: Arc::new(Mutex::new(())),
         extra_projects: Arc::new(Mutex::new(BTreeSet::new())),
         excluded_projects: Arc::new(Mutex::new(BTreeSet::new())),
-        skills_dirty: Arc::new(AtomicBool::new(false)),
+        refresh_demand: Arc::new(RefreshDemand::default()),
         invocations_dirty: Arc::new(AtomicBool::new(false)),
         invocation_index: Arc::new(Mutex::new(invocation_index)),
         last_built_hour: Arc::new(Mutex::new(None)),
@@ -293,11 +327,16 @@ pub fn get_skill_snapshot(state: tauri::State<SkillRefreshState>) -> Option<Skil
     state.snapshot.read().ok().and_then(|guard| guard.clone())
 }
 
-/// Ask the background thread to rebuild the snapshot. Returns immediately;
-/// the rebuild happens asynchronously and a fresh `SNAPSHOT_EVENT` follows.
+/// Ask the background thread to rebuild the snapshot and return its receipt.
 #[tauri::command]
-pub fn request_skill_rescan(state: tauri::State<SkillRefreshState>) {
-    state.skills_dirty.store(true, Ordering::SeqCst);
+pub fn request_skill_rescan(
+    state: tauri::State<SkillRefreshState>,
+) -> Result<super::skill_refresh_demand::SkillRefreshPosition, String> {
+    let generation = state.refresh_demand.request();
+    if generation == u64::MAX {
+        return Err("Refresh generation exhausted; restart the application".into());
+    }
+    Ok(state.refresh_demand.position(generation))
 }
 
 /// Mark the next rebuild as full, from a caller (`skill_update_check`) that
@@ -385,6 +424,7 @@ pub fn rebuild_snapshot_now(
         .lock()
         .map_err(|e| format!("rebuild lock poisoned: {e}"))?;
 
+    let batch = state.refresh_demand.begin();
     let home = dirs::home_dir().ok_or("Could not find home directory")?;
     let extra_projects = state.extra_project_paths();
     let excluded_projects = state.excluded_project_set();
@@ -401,7 +441,7 @@ pub fn rebuild_snapshot_now(
         .inventory_service
         .lock()
         .map_err(|e| format!("facts cache lock poisoned: {e}"))?;
-    let (built, report) = build_snapshot(
+    let (mut built, report) = build_snapshot(
         &home,
         &extra_projects,
         &excluded_projects,
@@ -413,7 +453,10 @@ pub fn rebuild_snapshot_now(
             update_check_path: &state.update_check_path,
         },
         now,
-    )?;
+    )
+    .inspect_err(|_| {
+        state.refresh_demand.request();
+    })?;
     drop(inventory_service);
     drop(invocation_index);
 
@@ -421,7 +464,9 @@ pub fn rebuild_snapshot_now(
         state.invocations_dirty.store(true, Ordering::SeqCst);
     }
 
+    built.full_refresh = Some(batch.position());
     let built = publish_skill_snapshot(app, state, built)?;
+    batch.complete();
     state.mark_built_at(now);
     Ok(built)
 }
@@ -480,14 +525,14 @@ pub fn patch_snapshot_and_emit(
             .map_err(|e| format!("snapshot lock poisoned: {e}"))?;
         let Some(snapshot) = guard.as_ref() else {
             // No snapshot yet - the pending full build will pick up the change.
-            state.skills_dirty.store(true, Ordering::SeqCst);
+            state.mark_skills_dirty();
             return Ok(());
         };
         let mut built = snapshot.clone();
         patch(&mut built);
         built
     };
-    state.skills_dirty.store(true, Ordering::SeqCst);
+    state.mark_skills_dirty();
     publish_skill_snapshot(app, state, built).map(|_| ())
 }
 
@@ -764,8 +809,6 @@ fn rebuild_background_snapshot<T>(
     if retry_after.is_some_and(|deadline| now < deadline) {
         return None;
     }
-    // Clear before scanning so requests made during the scan remain pending.
-    state.skills_dirty.store(false, Ordering::SeqCst);
     state.invocations_dirty.store(false, Ordering::SeqCst);
     let result = rebuild();
     if result.is_err() {
@@ -792,7 +835,7 @@ fn run_refresh_loop(app: AppHandle, state: SkillRefreshState) {
             return;
         }
     };
-    let mut watched: BTreeMap<PathBuf, bool> = BTreeMap::new();
+    let mut watched: BTreeMap<PathBuf, WatchRegistration> = BTreeMap::new();
 
     // Start watching before the initial scan so a change made while the
     // first scan is running is never missed.
@@ -827,7 +870,7 @@ fn run_refresh_loop(app: AppHandle, state: SkillRefreshState) {
                         .unwrap_or(false);
                     match classify_watch_event(&event.path, &claude_projects_dir, known_transcript)
                     {
-                        WatchEventKind::Skills => state.skills_dirty.store(true, Ordering::SeqCst),
+                        WatchEventKind::Skills => state.mark_skills_dirty(),
                         WatchEventKind::Invocations => {
                             state.invocations_dirty.store(true, Ordering::SeqCst)
                         }
@@ -839,7 +882,7 @@ fn run_refresh_loop(app: AppHandle, state: SkillRefreshState) {
             Err(mpsc::RecvTimeoutError::Disconnected) => break,
         }
 
-        let skills_dirty = state.skills_dirty.load(Ordering::SeqCst);
+        let skills_dirty = state.is_skills_dirty();
         let invocations_dirty = state.invocations_dirty.load(Ordering::SeqCst);
         let backlog_stale = invocations_dirty && last_full_rebuild.elapsed() > FULL_REBUILD_BACKLOG;
 
@@ -882,7 +925,7 @@ fn reconcile_watchers_from_snapshot(
     home: &Path,
     state: &SkillRefreshState,
     debouncer: &mut Debouncer<RecommendedWatcher>,
-    watched: &mut BTreeMap<PathBuf, bool>,
+    watched: &mut BTreeMap<PathBuf, WatchRegistration>,
 ) {
     let projects: Vec<PathBuf> = state
         .snapshot
@@ -910,18 +953,28 @@ fn reconcile_watchers_from_snapshot(
 /// shouldn't stop the others from being (un)watched.
 fn reconcile_watchers(
     watcher: &mut dyn Watcher,
-    watched: &mut BTreeMap<PathBuf, bool>,
+    watched: &mut BTreeMap<PathBuf, WatchRegistration>,
     desired: &[WatchPath],
 ) {
-    let desired_modes: BTreeMap<&PathBuf, bool> =
-        desired.iter().map(|w| (&w.path, w.recursive)).collect();
+    let desired: BTreeMap<PathBuf, WatchRegistration> = desired
+        .iter()
+        .filter_map(
+            |watch| match WatchRegistration::read(&watch.path, watch.recursive) {
+                Ok(registration) => Some((watch.path.clone(), registration)),
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
+                Err(error) => {
+                    eprintln!(
+                        "skill refresh: failed to inspect {}: {error}",
+                        watch.path.display()
+                    );
+                    None
+                }
+            },
+        )
+        .collect();
     let stale: Vec<PathBuf> = watched
         .iter()
-        .filter(|(path, recursive)| {
-            desired_modes
-                .get(path)
-                .is_none_or(|mode| mode != *recursive)
-        })
+        .filter(|(path, registration)| desired.get(*path) != Some(*registration))
         .map(|(path, _)| path.clone())
         .collect();
     for path in stale {
@@ -944,23 +997,20 @@ fn reconcile_watchers(
         }
     }
 
-    for wp in desired {
-        if watched.contains_key(&wp.path) || !wp.path.exists() {
+    for (path, registration) in desired {
+        if watched.get(&path) == Some(&registration) {
             continue;
         }
-        let mode = if wp.recursive {
+        let mode = if registration.recursive {
             RecursiveMode::Recursive
         } else {
             RecursiveMode::NonRecursive
         };
-        match watcher.watch(&wp.path, mode) {
+        match watcher.watch(&path, mode) {
             Ok(()) => {
-                watched.insert(wp.path.clone(), wp.recursive);
+                watched.insert(path, registration);
             }
-            Err(error) => eprintln!(
-                "skill refresh: failed to watch {}: {error}",
-                wp.path.display()
-            ),
+            Err(error) => eprintln!("skill refresh: failed to watch {}: {error}", path.display()),
         }
     }
 }
@@ -1438,6 +1488,7 @@ fn build_snapshot(
 
     let snapshot = SkillSnapshot {
         revision: 0,
+        full_refresh: None,
         ledger_only,
         diagnosis,
         skills,
@@ -1607,7 +1658,10 @@ mod tests {
         .is_none());
         assert!(state.is_skills_dirty());
         assert_eq!(
-            rebuild_background_snapshot(&state, &mut retry_after, deadline, || Ok(())),
+            rebuild_background_snapshot(&state, &mut retry_after, deadline, || {
+                state.refresh_demand.begin().complete();
+                Ok(())
+            }),
             Some(Ok(()))
         );
         assert!(!state.is_skills_dirty());
@@ -1619,6 +1673,46 @@ mod tests {
             Ok(())
         });
         assert!(state.is_skills_dirty());
+    }
+
+    #[test]
+    fn repeated_project_registration_preserves_refresh_coverage() {
+        let state = fixture_state();
+        state.add_extra_projects(Vec::<String>::new());
+        assert!(
+            !state.is_skills_dirty(),
+            "empty registration requested a scan"
+        );
+
+        state.add_extra_projects(["/fixture/project".to_string()]);
+        let batch = state.refresh_demand.begin();
+        state.unexclude_projects(["/fixture/project".to_string()]);
+        state.add_extra_projects(["/fixture/project".to_string()]);
+        batch.complete();
+        assert!(
+            !state.is_skills_dirty(),
+            "duplicate registration invalidated the active scan"
+        );
+
+        state
+            .excluded_projects
+            .lock()
+            .unwrap()
+            .insert("/fixture/project".into());
+        state.unexclude_projects(["/fixture/project".to_string()]);
+        assert!(state.is_skills_dirty(), "re-enabled scope needs a scan");
+    }
+
+    #[test]
+    fn watch_registration_changes_when_a_directory_is_replaced() {
+        let root = tempfile::tempdir().unwrap();
+        let watched = root.path().join("skills");
+        fs::create_dir(&watched).unwrap();
+        let first = WatchRegistration::read(&watched, true).unwrap();
+        fs::rename(&watched, root.path().join("previous-skills")).unwrap();
+        fs::create_dir(&watched).unwrap();
+        let second = WatchRegistration::read(&watched, true).unwrap();
+        assert_ne!(first, second);
     }
 
     #[test]
@@ -1659,7 +1753,12 @@ mod tests {
                     recursive,
                 }],
             );
-            assert_eq!(watched.get(&path), Some(&recursive));
+            assert_eq!(
+                watched
+                    .get(&path)
+                    .map(|registration| registration.recursive),
+                Some(recursive)
+            );
         }
         assert_eq!(
             watcher.calls,
@@ -2462,6 +2561,7 @@ mod tests {
             diagnosis: None,
             read_warnings: Vec::new(),
             revision: 0,
+            full_refresh: None,
             skills: vec![InstalledSkill {
                 update_sources: Vec::new(),
                 name: "foo".to_string(),
@@ -2622,7 +2722,7 @@ mod tests {
             rebuild_lock: Arc::new(Mutex::new(())),
             extra_projects: Arc::new(Mutex::new(BTreeSet::new())),
             excluded_projects: Arc::new(Mutex::new(BTreeSet::new())),
-            skills_dirty: Arc::new(AtomicBool::new(false)),
+            refresh_demand: Arc::new(RefreshDemand::default()),
             invocations_dirty: Arc::new(AtomicBool::new(false)),
             invocation_index: Arc::new(Mutex::new(SkillInvocationIndex::default())),
             last_built_hour: Arc::new(Mutex::new(None)),

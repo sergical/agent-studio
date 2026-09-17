@@ -36,6 +36,7 @@ import type {
   SkillEvent,
   SkillsShAccessInfo,
   SkillSnapshot,
+  SkillRefreshPosition,
   UpdatePackResult,
 } from "@skill-studio/lib";
 
@@ -698,7 +699,7 @@ export async function getSkillSnapshot(): Promise<SkillSnapshot | undefined> {
  * Ask the background refresh thread to rebuild the snapshot. Returns
  * immediately; listen for `onSkillSnapshot` to see the result.
  */
-export async function requestSkillRescan(): Promise<void> {
+export async function requestSkillRescan(): Promise<SkillRefreshPosition> {
   return invoke("request_skill_rescan");
 }
 

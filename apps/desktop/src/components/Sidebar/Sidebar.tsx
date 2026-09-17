@@ -23,18 +23,13 @@ import {
 import { ownSkillsView, pluginSkillsView } from "@skill-studio/lib";
 import { defaultSkillListFilter } from "@skill-studio/lib";
 import { isFeatureEnabled } from "../../lib/feature-flags";
-import {
-  hasNewerSkillSnapshotEmission,
-  rescanTooltip,
-  sidebarAnchorView,
-} from "../../lib/sidebar-nav";
+import { rescanTooltip, sidebarAnchorView } from "../../lib/sidebar-nav";
 import { useAppStore } from "../../store/appStore";
 import { TooltipControl } from "../ui/TooltipControl";
 import type { SkillSnapshot } from "@skill-studio/lib";
 
 interface SidebarProps {
   snapshot: SkillSnapshot | undefined;
-  emittedSnapshotRevision: number | undefined;
   requestRescan: () => Promise<void>;
 }
 
@@ -44,10 +39,8 @@ interface SidebarProps {
  * non-empty), and a footer with the snapshot's age and a manual rescan
  * button.
  */
-export function Sidebar({ snapshot, emittedSnapshotRevision, requestRescan }: SidebarProps) {
-  const [pendingRescanSnapshotRevision, setPendingRescanSnapshotRevision] = useState<number | null>(
-    null,
-  );
+export function Sidebar({ snapshot, requestRescan }: SidebarProps) {
+  const [spinning, setSpinning] = useState(false);
   const activeRescanIdRef = useRef<symbol | null>(null);
   // Forces the footer to re-render so "just now" ages into "1m ago" and
   // beyond without waiting for the next snapshot - relativeScanTime() itself
@@ -57,6 +50,7 @@ export function Sidebar({ snapshot, emittedSnapshotRevision, requestRescan }: Si
     const id = setInterval(() => forceTick((n) => n + 1), 30_000);
     return () => clearInterval(id);
   }, []);
+  const addToast = useAppStore((state) => state.addToast);
   useEffect(() => {
     return () => {
       activeRescanIdRef.current = null;
@@ -98,36 +92,30 @@ export function Sidebar({ snapshot, emittedSnapshotRevision, requestRescan }: Si
     }
   }
 
-  useEffect(() => {
-    if (
-      activeRescanIdRef.current !== null &&
-      hasNewerSkillSnapshotEmission(
-        pendingRescanSnapshotRevision ?? undefined,
-        emittedSnapshotRevision,
-      )
-    ) {
-      activeRescanIdRef.current = null;
-      setPendingRescanSnapshotRevision(null);
-    }
-  }, [emittedSnapshotRevision, pendingRescanSnapshotRevision]);
-
   const handleRefresh = async () => {
     if (activeRescanIdRef.current !== null) return;
 
     const requestId = Symbol("sidebar-rescan");
     activeRescanIdRef.current = requestId;
-    setPendingRescanSnapshotRevision(snapshot?.revision ?? 0);
+    setSpinning(true);
 
     try {
       await requestRescan();
-    } catch {
-      if (activeRescanIdRef.current !== requestId) return;
-      activeRescanIdRef.current = null;
-      setPendingRescanSnapshotRevision(null);
+    } catch (error) {
+      if (activeRescanIdRef.current === requestId) {
+        addToast({
+          type: "error",
+          title: "Refresh not completed",
+          message: error instanceof Error ? error.message : "Failed to refresh skills",
+        });
+      }
+    } finally {
+      if (activeRescanIdRef.current === requestId) {
+        activeRescanIdRef.current = null;
+        setSpinning(false);
+      }
     }
   };
-
-  const spinning = pendingRescanSnapshotRevision !== null;
 
   const itemClass = (active: boolean) =>
     `grid h-[30px] w-full cursor-pointer grid-cols-[15px_minmax(0,1fr)_auto] items-center gap-2 rounded-sm border-0 px-2.5 text-left text-body transition-colors ${
