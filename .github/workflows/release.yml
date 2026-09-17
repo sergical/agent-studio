@@ -1,0 +1,72 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+jobs:
+  check-version:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: ./scripts/release/check-version-matches-tag.sh "${{ github.ref_name }}"
+
+  build:
+    needs: check-version
+    runs-on: macos-14
+    strategy:
+      matrix:
+        target: [aarch64-apple-darwin, x86_64-apple-darwin]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+      - uses: Swatinem/rust-cache@v2
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - uses: tauri-apps/tauri-action@v0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # Developer ID Application certificate, exported as a .p12 and
+          # base64-encoded, plus the credentials tauri-action needs to
+          # unlock it and to submit the build to Apple for notarization.
+          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE_P12_BASE64 }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          APPLE_SIGNING_IDENTITY: "Developer ID Application"
+          KEYCHAIN_PASSWORD: ${{ secrets.APPLE_KEYCHAIN_PASSWORD }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+        with:
+          projectPath: apps/desktop
+          args: --target ${{ matrix.target }}
+          tagName: ${{ github.ref_name }}
+          releaseName: "Skill Studio ${{ github.ref_name }}"
+          releaseDraft: false
+          includeUpdaterJson: false
+
+      # tauri-action's build step runs dsymutil for a release profile, so the
+      # .dSYM lands next to the bundled .app; zip it so it survives upload as
+      # a plain file and stays paired with its DMG by name.
+      - name: Package debug symbols
+        run: |
+          set -euo pipefail
+          bundle_dir="apps/desktop/src-tauri/target/${{ matrix.target }}/release/bundle/macos"
+          dsym_path="$(find "$bundle_dir" -maxdepth 1 -name '*.dSYM' -print -quit)"
+          if [[ -z "$dsym_path" ]]; then
+            echo "no .dSYM found under $bundle_dir" >&2
+            exit 1
+          fi
+          zip_path="apps/desktop/src-tauri/target/${{ matrix.target }}/release/bundle/macos/$(basename "$dsym_path").zip"
+          ditto -c -k --sequesterRsrc "$dsym_path" "$zip_path"
+          echo "dsym_zip=$zip_path" >> "$GITHUB_ENV"
+
+      - name: Attach debug symbols to the release
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: gh release upload "${{ github.ref_name }}" "$dsym_zip" --clobber

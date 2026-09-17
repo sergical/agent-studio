@@ -41,6 +41,10 @@
     ],
     "category": "DeveloperTool",
     "shortDescription": "Manage coding assistant configurations",
-    "longDescription": "A desktop app to manage configuration files for Claude Code, OpenCode, and other AI coding assistants."
+    "longDescription": "A desktop app to manage configuration files for Claude Code, OpenCode, and other AI coding assistants.",
+    "macOS": {
+      "signingIdentity": "Developer ID Application",
+      "hardenedRuntime": true
+    }
   }
 }
