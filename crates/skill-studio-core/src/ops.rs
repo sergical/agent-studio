@@ -2102,10 +2102,25 @@ struct FactsWalk {
     fingerprint_file_count: usize,
 }
 
+impl FactsWalk {
+    /// Whether the fingerprint side has spent its own, unreduced
+    /// `MAX_FOLDER_FILES`/`MAX_FOLDER_BYTES` budget - the walk may stop only
+    /// once this and `truncated` (the hash side's budget) are both true,
+    /// since the two run independently and the hash side commonly hits its
+    /// smaller/reduced budget first.
+    fn fingerprint_done(&self) -> bool {
+        self.fingerprint_file_count >= MAX_FOLDER_FILES
+            || self.fingerprint_total_bytes >= MAX_FOLDER_BYTES
+    }
+}
+
 /// Walks `dir` once into `walk`, gathering both [`content_hash`] facts
 /// (byte/file counts, the newest mtime) and the file list
 /// [`content_fingerprint`] hashes, stopping each independently once its own
-/// [`MAX_FOLDER_FILES`]/byte budget is reached. One `read_dir` and one
+/// [`MAX_FOLDER_FILES`]/byte budget is reached - the walk itself only ends
+/// once both budgets are spent, so an entry past the hash side's (often
+/// smaller, reduced) budget still reaches the fingerprint side's own gate.
+/// One `read_dir` and one
 /// `symlink_metadata` per entry serves both; before this merge each ran its
 /// own recursive walk over the same tree. Never follows a symlinked
 /// directory; a symlinked file counts toward `hashable`'s `file_count` but
@@ -2124,7 +2139,7 @@ fn walk_folder_for_facts(
     max_bytes: u64,
     walk: &mut FactsWalk,
 ) -> Result<(), CoreError> {
-    if walk.truncated {
+    if walk.truncated && walk.fingerprint_done() {
         return Ok(());
     }
     let Ok(mut entries) = fs.read_dir(dir) else {
@@ -2133,7 +2148,7 @@ fn walk_folder_for_facts(
     entries.sort_by(|a, b| a.name.cmp(&b.name));
     for entry in entries {
         ctx.checkpoint()?;
-        if walk.truncated {
+        if walk.truncated && walk.fingerprint_done() {
             return Ok(());
         }
         let path = dir.join(&entry.name);
@@ -2144,7 +2159,7 @@ fn walk_folder_for_facts(
                     .ok()
                     .and_then(|target| fs.symlink_metadata(&target).ok())
                     .is_some_and(|m| m.kind == FileKind::File);
-                if is_file {
+                if is_file && !walk.truncated {
                     walk.file_count += 1;
                     if walk.file_count as usize >= MAX_FOLDER_FILES {
                         walk.truncated = true;
@@ -2158,31 +2173,36 @@ fn walk_folder_for_facts(
                 let Ok(meta) = fs.symlink_metadata(&path) else {
                     continue;
                 };
-                // Enforce the remaining byte budget before queuing the file,
-                // not after: a single oversized file must never be added to
-                // the hash queue, only counted as the reason the walk
-                // stopped.
-                let remaining = max_bytes.saturating_sub(walk.total_bytes);
-                if meta.len > remaining {
-                    walk.truncated = true;
-                    continue;
-                }
-                walk.total_bytes += meta.len;
-                walk.file_count += 1;
-                if let Some(modified) = meta.modified {
-                    if walk.newest.is_none_or(|n| modified > n) {
-                        walk.newest = Some(modified);
+                if !walk.truncated {
+                    // Enforce the remaining byte budget before queuing the
+                    // file, not after: a single oversized file must never be
+                    // added to the hash queue, only counted as the reason
+                    // the hash side stopped. It still falls through to the
+                    // fingerprint gate below, which runs on its own budget.
+                    let remaining = max_bytes.saturating_sub(walk.total_bytes);
+                    if meta.len > remaining {
+                        walk.truncated = true;
+                    } else {
+                        walk.total_bytes += meta.len;
+                        walk.file_count += 1;
+                        if let Some(modified) = meta.modified {
+                            if walk.newest.is_none_or(|n| modified > n) {
+                                walk.newest = Some(modified);
+                            }
+                        }
+                        if let Ok(rel) = path.strip_prefix(root) {
+                            walk.hashable.push(HashableFile {
+                                rel_path: rel.to_path_buf(),
+                                abs_path: path.clone(),
+                                len: meta.len,
+                            });
+                        }
+                        if walk.file_count as usize >= MAX_FOLDER_FILES
+                            || walk.total_bytes >= max_bytes
+                        {
+                            walk.truncated = true;
+                        }
                     }
-                }
-                if let Ok(rel) = path.strip_prefix(root) {
-                    walk.hashable.push(HashableFile {
-                        rel_path: rel.to_path_buf(),
-                        abs_path: path.clone(),
-                        len: meta.len,
-                    });
-                }
-                if walk.file_count as usize >= MAX_FOLDER_FILES || walk.total_bytes >= max_bytes {
-                    walk.truncated = true;
                 }
 
                 // `content_fingerprint`'s own, unreduced budget: mirrors
@@ -4002,6 +4022,48 @@ mod tests {
         );
         assert_eq!(env.exit_status(), 3);
         assert!(env.data.is_none());
+    }
+
+    #[test]
+    fn a_hash_budget_stop_does_not_shorten_the_fingerprint_file_list_or_names_the_missing_file() {
+        // b.md is bigger than what's left of `max_bytes` after `a.md`, so
+        // the hash side truncates there; `c.md` is small again, but must
+        // never be reached by the hash side once truncated. The fingerprint
+        // side runs on its own MAX_FOLDER_BYTES budget (unaffected by this
+        // small `max_bytes`) and so must see all three files regardless.
+        let fs = FixtureBuilder::new()
+            .dir("/h/skill")
+            .file("/h/skill/a.md", &[b'a'; 10])
+            .file("/h/skill/b.md", &[b'b'; 20])
+            .file("/h/skill/c.md", &[b'c'; 10])
+            .build_fs();
+        let root = Path::new("/h/skill");
+        let mut walk = FactsWalk::default();
+        walk_folder_for_facts(
+            &fs,
+            &OpContext::uncancellable(CorrelationId("facts-walk-test".into())),
+            root,
+            root,
+            25,
+            &mut walk,
+        )
+        .unwrap();
+
+        let hashable: Vec<_> = walk.hashable.iter().map(|f| f.rel_path.clone()).collect();
+        assert_eq!(hashable, vec![Path::new("a.md")]);
+        assert!(walk.truncated, "hash side must stop once b.md overflows");
+
+        let fingerprint_names: Vec<_> = walk
+            .fingerprint_files
+            .iter()
+            .map(|(rel, _, _)| rel.clone())
+            .collect();
+        for name in ["a.md", "b.md", "c.md"] {
+            assert!(
+                fingerprint_names.contains(&PathBuf::from(name)),
+                "fingerprint_files is missing {name}, only has {fingerprint_names:?}"
+            );
+        }
     }
 
     mod scan_tests {
