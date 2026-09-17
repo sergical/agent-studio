@@ -10,13 +10,15 @@
 // CLI's `park`/`unpark` subcommands and the MCP server's `park`/`unpark`
 // tools call, so all three surfaces leave the same disk state.
 //
-// Known gap in this build: the legacy fork registry's `parked` bucket
-// (`skill_fork_registry::ParkedRecord`), which `skill_refresh.rs` still
-// reads to set the dashboard's "parked" badge, is not written by
-// `ops::park`/`ops::unpark`. A skill parked through this command moves on
-// disk correctly but the badge will not update until the read side migrates
-// onto the same core scan this write path already uses; tracked as a
-// follow-up, not fixed here (see the unit's ticket).
+// Remaining gap in this build: `ops::park`/`ops::unpark` never write the
+// legacy fork registry's `parked` bucket (`skill_fork_registry::
+// ParkedRecord`). `skill_refresh.rs`'s "parked" badge now follows the
+// on-disk `scope == "parked"` deployment core scan reports, so a skill
+// parked through this command shows the badge correctly; only its
+// `parked_at` timestamp is missing (`None`), since without a registry
+// record the timestamp would require opening the SQLite history store on
+// every refresh cycle - out of scope for this unit's badge fix (see
+// `skill_refresh.rs`'s `apply_skill_snapshot_overlays`).
 // ============================================================================
 
 use skill_studio_core::dto::{ParkOutcome, ParkRequest, UnparkOutcome, UnparkRequest};
