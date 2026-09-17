@@ -20,11 +20,11 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Manager};
 
-use super::dotagents_ledger;
 use super::skill_agent_runner::{is_executable_file, pick_executable_line};
 use super::skill_dto::InstallScope;
 use super::skill_ownership::{load_ownership_ledgers, owner_id_for};
 use super::skill_refresh;
+use skill_studio_core::dotagents_ledger;
 
 /// How often the background loop re-checks for updates.
 pub const UPDATE_CHECK_INTERVAL: Duration = Duration::from_secs(6 * 60 * 60);

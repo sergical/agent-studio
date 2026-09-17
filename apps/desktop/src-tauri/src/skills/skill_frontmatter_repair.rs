@@ -325,10 +325,16 @@ fn fork_record_matches(home: &Path, intent: &FrontmatterRepairIntent) -> Result<
 
 fn managed_ledger_still_owns(home: &Path, name: &str) -> Result<bool, String> {
     let agents_dir = home.join(".agents");
-    let skills_sh = super::lock_file::read_lock_file_at(&agents_dir.join(".skill-lock.json"))?
-        .skills
-        .contains_key(name);
-    let dotagents = super::dotagents_ledger::read_dotagents_ledger(&agents_dir)?
+    let fs = skill_studio_host::RealFs::new();
+    let skills_sh = skill_studio_core::lock_file::read_lock_file(
+        &fs,
+        &skill_studio_core::lock_file::lock_file_path_in(&agents_dir),
+    )
+    .map_err(|e| e.to_string())?
+    .skills
+    .contains_key(name);
+    let dotagents = skill_studio_core::dotagents_ledger::read_dotagents_ledger(&fs, &agents_dir)
+        .map_err(|e| e.to_string())?
         .iter()
         .any(|skill| skill.name == name);
     Ok(skills_sh || dotagents)

@@ -11,7 +11,6 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 use super::agents::{AgentId, AgentTarget};
 use super::api;
-use super::lock_file;
 use super::skill_add::{CommandRunner, RealCommandRunner};
 use super::skill_agent_runner::validate_skill_dir_name;
 use super::skill_dto::{
@@ -540,8 +539,8 @@ mod tests {
         name: &str,
         declared_ref: Option<&str>,
         has_manifest_row: bool,
-    ) -> super::super::dotagents_ledger::DotagentsSkill {
-        super::super::dotagents_ledger::DotagentsSkill {
+    ) -> skill_studio_core::dotagents_ledger::DotagentsSkill {
+        skill_studio_core::dotagents_ledger::DotagentsSkill {
             name: name.to_string(),
             source: format!("getsentry/{name}"),
             github_repo: Some(format!("getsentry/{name}")),
@@ -656,7 +655,7 @@ mod tests {
             &update_check_path,
             &[],
         );
-        let lock = super::super::lock_file::SkillLockFile {
+        let lock = skill_studio_core::lock_file::SkillLockFile {
             version: 3,
             skills: Default::default(),
         };
@@ -1480,7 +1479,15 @@ pub async fn list_skill_projects(app: tauri::AppHandle) -> Result<Vec<String>, S
 pub async fn is_skill_installed(skill_name: String, app: tauri::AppHandle) -> Result<bool, String> {
     let timing_app = app.clone();
     crate::timing_log::time_command_blocking(&timing_app, "is_skill_installed", move || {
-        lock_file::is_skill_installed(&skill_name)
+        let home = dirs::home_dir().ok_or("Could not find home directory")?;
+        let fs = skill_studio_host::RealFs::new();
+        let path = skill_studio_core::lock_file::lock_file_path(&home);
+        let lock =
+            skill_studio_core::lock_file::read_lock_file(&fs, &path).map_err(|e| e.to_string())?;
+        Ok(skill_studio_core::lock_file::is_skill_installed(
+            &lock,
+            &skill_name,
+        ))
     })
     .await
 }
