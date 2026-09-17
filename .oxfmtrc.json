@@ -9,6 +9,7 @@
     "tools/oxlint/anti-slop",
     "crates/skill-studio-core/schema",
     "crates/skill-studio-core/tests/golden",
-    "apps/cli/tests/golden"
+    "apps/cli/tests/golden",
+    "fixtures"
   ]
 }
