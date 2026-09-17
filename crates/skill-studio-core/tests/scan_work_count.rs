@@ -3,13 +3,15 @@
 //! once and lists each directory once; fails if either count grows with
 //! links or harnesses.
 
+use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
 use skill_studio_core::bench_estate::estate;
 use skill_studio_core::dto::ScanRequest;
-use skill_studio_core::harness::{HarnessCatalog, RootRole};
+use skill_studio_core::harness::{HarnessCatalog, RootRole, ScopeLevel};
+use skill_studio_core::identity::{MOVE_ASIDE_DIR_NAME, PARKED_ROOT_RELATIVE};
 use skill_studio_core::ops::scan;
 use skill_studio_core::ports::{
     DirEntryFacts, ExclusiveGuard, FileFacts, Ports, Runtime, ScopeFs, ScopedPath,
@@ -22,14 +24,15 @@ use skill_studio_host::{FileLease, RealFs};
 /// Wraps another [`ScopeFs`], counting every call per method so a test can
 /// assert on the number of filesystem operations a scan performed, not just
 /// its result. `skill_md_reads` counts only `read_capped`/`read_prefix`
-/// calls whose path ends in `SKILL.md`.
+/// calls whose path ends in `SKILL.md`. `read_dir` calls are recorded in
+/// full, not just counted, so a test can assert no path was listed twice.
 #[derive(Default)]
 struct CountingFs {
     inner: Option<Arc<dyn ScopeFs>>,
     canonicalize: AtomicU64,
     symlink_metadata: AtomicU64,
     read_link: AtomicU64,
-    read_dir: AtomicU64,
+    read_dir_calls: Mutex<Vec<PathBuf>>,
     ancestor_holds: AtomicU64,
     read_capped: AtomicU64,
     read_prefix: AtomicU64,
@@ -73,7 +76,10 @@ impl ScopeFs for CountingFs {
         self.inner().read_link(path)
     }
     fn read_dir(&self, path: &Path) -> std::io::Result<Vec<DirEntryFacts>> {
-        Self::count(&self.read_dir);
+        self.read_dir_calls
+            .lock()
+            .expect("read_dir_calls lock")
+            .push(path.to_path_buf());
         self.inner().read_dir(path)
     }
     fn ancestor_holds(&self, start: &Path, name: &str) -> std::io::Result<bool> {
@@ -141,18 +147,89 @@ fn scope_for(home: &Path, project_dirs: &[PathBuf]) -> RuntimeScope {
     scope
 }
 
+/// Every directory a correct scan must call `read_dir` on for this estate, by
+/// canonical identity, derived from the catalog's own root declarations and
+/// a plain (uncounted) walk of the materialized fixture: each harness root,
+/// tracked-project root, and parked/move-aside root that actually exists on
+/// disk, plus each directory entry those roots hold, resolved to its
+/// canonical path so a symlinked skill's one real directory appears once,
+/// however many roots link it. A scan's actual `read_dir` calls must be
+/// canonicalized the same way before comparing against this set, since a
+/// deduplicated symlinked skill is read through whichever root's literal
+/// entry path the scan reaches it by first, not through its canonical path.
+fn expected_dirs(home: &Path, project_dirs: &[PathBuf]) -> BTreeSet<PathBuf> {
+    let catalog = HarnessCatalog::builtin();
+    let mut candidate_roots: BTreeSet<PathBuf> = BTreeSet::new();
+    candidate_roots.insert(home.join(PARKED_ROOT_RELATIVE));
+    for facts in &catalog.facts {
+        for root in &facts.roots {
+            let tracked = matches!(
+                root.role,
+                RootRole::Own | RootRole::Universal | RootRole::Legacy | RootRole::PluginCache
+            );
+            if !tracked {
+                continue;
+            }
+            match root.level {
+                ScopeLevel::Global => {
+                    candidate_roots.insert(home.join(&root.relative_path));
+                }
+                ScopeLevel::Project => {
+                    for project in project_dirs {
+                        candidate_roots.insert(home.join(project).join(&root.relative_path));
+                    }
+                }
+            }
+        }
+    }
+
+    // A root only gets `read_dir`'d when it (or its move-aside sibling)
+    // really exists; `Path::exists` follows a symlinked root the same way
+    // `read_dir` would, and reports false for a broken one the way a
+    // resolved-not-found root would never be listed either.
+    let mut existing_roots: Vec<PathBuf> = Vec::new();
+    for root in &candidate_roots {
+        if root.exists() {
+            existing_roots.push(root.clone());
+        }
+        let move_aside = root.join(MOVE_ASIDE_DIR_NAME);
+        if move_aside.exists() {
+            existing_roots.push(move_aside);
+        }
+    }
+
+    let mut expected = BTreeSet::new();
+    for root in &existing_roots {
+        expected.insert(root.canonicalize().unwrap_or_else(|_| root.clone()));
+        let Ok(entries) = root.read_dir() else {
+            continue;
+        };
+        for entry in entries.flatten() {
+            let is_dir = entry
+                .file_type()
+                .map(|t| t.is_dir() || t.is_symlink())
+                .unwrap_or(false);
+            if !is_dir {
+                continue;
+            }
+            // A broken link resolves to neither a file nor a directory;
+            // the scan never lists it, so it is not added here either.
+            if let Ok(canonical) = entry.path().canonicalize() {
+                if canonical.is_dir() {
+                    expected.insert(canonical);
+                }
+            }
+        }
+    }
+    expected
+}
+
 /// Given a 400-skill estate (63% global, 20% universal/linked, four
 /// harnesses), when `ops::scan` runs once, it reads each skill's `SKILL.md`
 /// exactly once (a linked skill included, since it has exactly one real
-/// directory) and lists no more directories than the estate's known roots,
-/// tracked projects, skill folders, and plugin caches account for.
+/// directory) and calls `read_dir` on exactly the set of directories the
+/// fixture itself holds, each exactly once.
 #[test]
-#[ignore = "fails against the current scan: measured skill_md_reads=1440 vs \
-            expected 400 (compute_content_facts re-reads SKILL.md for \
-            content_fingerprint and content_hash_from_walk on top of \
-            read_skill_md's own read_prefix); measured read_dir=1284 vs a \
-            bound of 428 (7 estate roots + 19 tracked projects + 400 skill \
-            folders + 2 plugin cache roots)"]
 fn scan_reads_each_skill_md_once_and_lists_each_directory_once() {
     let generated = estate(400, 1);
     let dir = unique_temp_dir("scan-work-count");
@@ -181,27 +258,40 @@ fn scan_reads_each_skill_md_once_and_lists_each_directory_once() {
         generated.stats.skill_count
     );
 
-    let catalog = HarnessCatalog::builtin();
-    let plugin_cache_roots = catalog
-        .facts
+    let read_dir_calls = counting_fs
+        .read_dir_calls
+        .lock()
+        .expect("read_dir_calls lock")
+        .clone();
+
+    let mut seen: BTreeSet<&PathBuf> = BTreeSet::new();
+    for path in &read_dir_calls {
+        assert!(
+            seen.insert(path),
+            "expected every directory to be listed once; {} was listed twice",
+            path.display()
+        );
+    }
+
+    // Compare by canonical identity: a deduplicated symlinked skill is
+    // listed through whichever root's literal entry path the scan reaches
+    // it by first, which `expected_dirs` cannot predict, but both sides
+    // must still resolve to the same real directories.
+    let read_dir_paths: BTreeSet<PathBuf> = read_dir_calls
         .iter()
-        .flat_map(|facts| facts.roots.iter())
-        .filter(|root| root.role == RootRole::PluginCache)
-        .count() as u64;
-    let read_dir_bound = generated.root_count() as u64
-        + generated.project_dirs.len() as u64
-        + generated.stats.skill_count as u64
-        + plugin_cache_roots;
-    let read_dir_calls = CountingFs::get(&counting_fs.read_dir);
-    assert!(
-        read_dir_calls <= read_dir_bound,
-        "expected at most {read_dir_bound} read_dir calls (harness roots \
-         {} + tracked projects {} + skill folders {} + plugin cache roots \
-         {plugin_cache_roots}), got {read_dir_calls}",
-        generated.root_count(),
-        generated.project_dirs.len(),
-        generated.stats.skill_count,
-    );
+        .map(|path| path.canonicalize().unwrap_or_else(|_| path.clone()))
+        .collect();
+
+    let expected = expected_dirs(&home, &generated.project_dirs);
+    if read_dir_paths != expected {
+        let missing: Vec<&PathBuf> = expected.difference(&read_dir_paths).collect();
+        let extra: Vec<&PathBuf> = read_dir_paths.difference(&expected).collect();
+        panic!(
+            "scan's read_dir calls don't match the fixture's directories: \
+             missing (expected but not listed) = {missing:#?}, \
+             extra (listed but not expected) = {extra:#?}"
+        );
+    }
 
     std::fs::remove_dir_all(&dir).ok();
 }
