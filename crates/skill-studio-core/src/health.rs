@@ -121,7 +121,6 @@ mod tests {
     use super::*;
     use crate::ports::Clock;
     use crate::testing::FakeClock;
-    use crate::timing;
 
     fn row(
         command: &str,
@@ -233,28 +232,21 @@ mod tests {
         );
     }
 
-    /// Wraps a real `std::time::Instant` behind [`Clock`] so this test can
-    /// drive [`timing::op_timing`] (the same instrumentation an op call
-    /// uses) with a real measurement of the fold - a [`FakeClock`] only
-    /// advances when a test tells it to, which would make "how long did the
-    /// fold actually take" a fiction.
-    struct WallClock {
-        start: std::time::Instant,
-    }
-
-    impl Clock for WallClock {
-        fn now(&self) -> DateTime<Utc> {
-            Utc::now()
-        }
-        fn monotonic(&self) -> Duration {
-            self.start.elapsed()
-        }
-    }
-
+    /// 10 000 rows built from a formula (command = index % 20, elapsed = index
+    /// % 500, every 13th row a failure), so the expected count/failures/p50/p95
+    /// per command are derived from that same formula rather than hand-listed -
+    /// the row count is too large to hand-compute, but a formula lets the test
+    /// check every command's numbers, not just the total. The fold time is
+    /// printed for a human to read under `--nocapture`; the ticket's 50ms
+    /// budget is not asserted here since a loaded CI box would make that
+    /// assert flaky for no code reason.
     #[test]
-    fn health_rollup_of_ten_thousand_rows_stays_under_the_fold_budget() {
+    fn health_rollup_of_ten_thousand_rows_matches_the_formula_derived_counts_and_percentiles_or_names_the_command_that_differs(
+    ) {
         let now = Utc::now();
-        let rows: Vec<TimingRow> = (0..10_000)
+        const ROW_COUNT: i64 = 10_000;
+        const COMMAND_COUNT: i64 = 20;
+        let rows: Vec<TimingRow> = (0..ROW_COUNT)
             .map(|i| {
                 let outcome = if i % 13 == 0 {
                     Outcome::Error
@@ -262,8 +254,8 @@ mod tests {
                     Outcome::Ok
                 };
                 row(
-                    &format!("command_{}", i % 20),
-                    (i % (60 * 24 * 6)) as i64,
+                    &format!("command_{}", i % COMMAND_COUNT),
+                    i % (60 * 24 * 6),
                     (i % 500) as u64,
                     outcome,
                     if outcome == Outcome::Error {
@@ -275,22 +267,52 @@ mod tests {
             })
             .collect();
 
-        let clock = WallClock {
-            start: std::time::Instant::now(),
-        };
-        let since = clock.monotonic();
+        let start = std::time::Instant::now();
         let got = health_rollup(&rows, now, Duration::from_secs(7 * 24 * 3600));
-        let timing = timing::op_timing(&clock, "health_rollup_10000", since, vec![]);
-
-        // No wall-clock assertion - the ticket's 50ms budget is measured
-        // here for a human to read in test output, not enforced by the test
-        // itself (a loaded CI box would make that assert flaky).
-        println!("health_rollup of 10000 rows: {} ms", timing.elapsed_ms);
-
-        let total: u64 = got.iter().map(|h| h.count).sum();
-        assert_eq!(
-            total, 10_000,
-            "every row folds into exactly one command's count"
+        eprintln!(
+            "health_rollup of {} rows: {} ms",
+            ROW_COUNT,
+            start.elapsed().as_millis()
         );
+
+        // Derive each command's expected (elapsed_ms, is_error) list from the
+        // same formula the fixture above was built from.
+        let mut expected_by_command: BTreeMap<String, Vec<(u64, bool)>> = BTreeMap::new();
+        for i in 0..ROW_COUNT {
+            let command = format!("command_{}", i % COMMAND_COUNT);
+            let elapsed_ms = (i % 500) as u64;
+            let is_error = i % 13 == 0;
+            expected_by_command
+                .entry(command)
+                .or_default()
+                .push((elapsed_ms, is_error));
+        }
+
+        assert_eq!(
+            got.len(),
+            expected_by_command.len(),
+            "one rollup row per distinct command_N the formula produced"
+        );
+
+        for health in &got {
+            let entries = expected_by_command.get(&health.command).unwrap_or_else(|| {
+                panic!("rollup produced an unexpected command {}", health.command)
+            });
+            let expected_count = entries.len() as u64;
+            let expected_failures = entries.iter().filter(|(_, is_error)| *is_error).count() as u64;
+            let mut durations: Vec<u64> = entries.iter().map(|(ms, _)| *ms).collect();
+            durations.sort_unstable();
+            let expected_p50 = nearest_rank(&durations, 0.50);
+            let expected_p95 = nearest_rank(&durations, 0.95);
+
+            assert_eq!(health.count, expected_count, "{}: count", health.command);
+            assert_eq!(
+                health.failures, expected_failures,
+                "{}: failures",
+                health.command
+            );
+            assert_eq!(health.p50_ms, expected_p50, "{}: p50_ms", health.command);
+            assert_eq!(health.p95_ms, expected_p95, "{}: p95_ms", health.command);
+        }
     }
 }
