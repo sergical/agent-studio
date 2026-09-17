@@ -77,8 +77,10 @@ the same event `01M2PG85JTZKAYVF5462PQ5940` settled as done. No duplicate Restor
 was created; content and backup remained exact. This tests a durable finalization
 failure, not a process kill at every instruction. Changed-evidence conflict and
 cancellation are covered by focused core tests, not additional native fault cases.
-All managed native sessions exited. Fixture results remain temporarily available
-for independent review; the copied app and fixture will be removed after review.
+All managed native sessions exited. After independent review, the copied app
+(204,128,211 bytes), consumed fixtures and logs (412,789 bytes) were removed.
+Concise results and reproduction scripts are retained; raw log links are no longer
+applicable. No task-owned native process remains.
 Native fixtures/procedure are in /tmp/skill-studio-delivery/copy-trial.
 The build uses empty desktop telemetry DSNs. No production release, remote telemetry
 receipt, signing or combined final release acceptance is claimed. Fresh simplification extracted one identical Global/Project label helper in
@@ -91,3 +93,11 @@ export (integration work preserved). Activity action rendering and expiry DTO st
 selection lack dedicated automated tests; native checks cover the current routing.
 Linux CI and final combined acceptance remain required. Final review confirmed the scope finding resolved. After removing the unused export,
 core check and formatting passed (3.51s wall, RSS607,469,568bytes, zero swaps).
+
+## Published candidate and CI
+
+Implementation b712480 is published in draft PR136. Core run35172121020 passed
+formatting, strict all-target Clippy and 732 tests (21 explicit skips,183.00s test
+time). Frontend run35172121010 passed in1m47s; GitGuardian passed. CI artifacts
+retain three days. These checks establish this batch, not final combined release
+acceptance or production monitoring.
