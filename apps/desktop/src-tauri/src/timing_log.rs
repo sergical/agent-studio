@@ -281,6 +281,7 @@ mod tests {
     /// Names allowed to stay a sync `pub fn` command, with the reason each
     /// one never blocks the main thread for long.
     const SYNC_ALLOWLIST: &[(&str, &str)] = &[
+        ("app_version", "in-memory state only"),
         ("get_skill_snapshot", "in-memory state only"),
         ("request_skill_rescan", "in-memory state only"),
         ("get_agent_targets", "in-memory state only"),
