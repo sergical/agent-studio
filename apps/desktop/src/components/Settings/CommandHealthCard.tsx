@@ -8,7 +8,7 @@
 import { useEffect, useState } from "react";
 import { Activity } from "lucide-react";
 import type { CommandHealth } from "@skill-studio/lib";
-import { commandHealth } from "../../lib/skill-api";
+import { commandHealth, invokeErrorMessage } from "../../lib/skill-api";
 import { useAppStore } from "../../store/appStore";
 import { SettingsCard } from "./SettingsCard";
 
@@ -30,6 +30,7 @@ function HealthRow({ row }: { row: CommandHealth }) {
 export function CommandHealthCard() {
   const addToast = useAppStore((state) => state.addToast);
   const [rows, setRows] = useState<CommandHealth[] | null>(null);
+  const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
     let cancelled = false;
@@ -38,10 +39,13 @@ export function CommandHealthCard() {
         if (!cancelled) setRows(result);
       })
       .catch((err) => {
+        if (cancelled) return;
+        const message = invokeErrorMessage(err);
+        setError(message);
         addToast({
           type: "error",
           title: "Couldn't read command health",
-          message: err instanceof Error ? err.message : "Unknown error",
+          message,
         });
       });
     return () => {
@@ -55,7 +59,9 @@ export function CommandHealthCard() {
       title="Command health"
       description="How often each command ran, failed, and how long it took, over the last 7 days."
     >
-      {rows === null ? (
+      {error !== null ? (
+        <p className="m-0 text-small text-text-tertiary">Couldn't load command health: {error}</p>
+      ) : rows === null ? (
         <p className="m-0 text-small text-text-tertiary">Loading…</p>
       ) : rows.length === 0 ? (
         <p className="m-0 text-small text-text-tertiary">
