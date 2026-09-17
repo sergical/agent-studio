@@ -229,30 +229,9 @@ pub fn run() {
             skills::skill_refresh::get_discovery_sources,
             skills::skill_refresh::set_discovery_source,
             skills::skill_project_folders::list_project_folders,
-            // Local harness runner
-            skills::skill_agent_runner::start_skill_agent_run,
-            skills::skill_agent_runner::cancel_skill_agent_run,
-            skills::skill_agent_runner::create_skill_scratch_dir,
-            skills::skill_agent_runner::remove_skill_scratch_dir,
-            // Test run targets (scratch / worktree / in place)
-            skills::skill_run_target::prepare_skill_run_target,
-            skills::skill_run_target::skill_run_target_diff,
-            skills::skill_run_target::apply_skill_run_target_diff,
-            skills::skill_run_target::discard_skill_run_target,
-            skills::skill_run_target::reveal_skill_run_target,
-            // Run history
-            skills::skill_run_history::record_skill_run,
-            skills::skill_run_history::list_skill_runs,
-            skills::skill_run_history::read_skill_run_events,
-            // Packs
-            skills::skill_pack::list_skill_packs,
-            skills::skill_pack::create_skill_pack,
-            skills::skill_pack::update_skill_pack,
-            skills::skill_pack::publish_skill_pack,
-            skills::skill_pack::delete_skill_pack,
-            skills::skill_pack::import_skill_pack,
-            skills::skill_pack::confirm_skill_pack_trust,
-            skills::skill_pack::abandon_pack_import_trust,
+            // Agent runs and packs are deferred (unit 4.3): skill_agent_runner,
+            // skill_run_target, skill_run_history, skill_pack, and skill_process still
+            // compile and test, but none of their commands are registered here.
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
