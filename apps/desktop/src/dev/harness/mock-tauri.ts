@@ -460,25 +460,6 @@ export function installMockTauri(initial: SkillSnapshot): HarnessControl {
           return undefined;
         }
 
-        case "set_shared_harness_skill_enabled": {
-          const { target, harness, enabled } = z
-            .object({
-              target: z.object({ deployment_id: z.string() }),
-              harness: z.string(),
-              enabled: z.boolean(),
-            })
-            .parse(payload);
-          const name = skillNameForTarget(target);
-          await updateSkill(name, (item) =>
-            updateDeployment(item, target.deployment_id, (d) => ({
-              ...d,
-              disabled_readers: enabled
-                ? (d.disabled_readers ?? []).filter((id) => id !== harness)
-                : [...new Set([...(d.disabled_readers ?? []), harness])],
-            })),
-          );
-          return undefined;
-        }
         case "set_harness_enabled": {
           const { deployment_id, reader_agent: agent } = z
             .object({ deployment_id: z.string(), reader_agent: z.string() })
