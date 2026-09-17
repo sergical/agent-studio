@@ -28,6 +28,7 @@ pub mod error;
 pub mod events;
 pub mod frontmatter;
 pub mod frontmatter_repair;
+pub mod fsops;
 pub mod harness;
 pub mod identity;
 pub mod lock_file;
