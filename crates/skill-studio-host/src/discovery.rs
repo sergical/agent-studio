@@ -268,6 +268,26 @@ fn cursor_workspace_folder(path: &Path) -> Option<PathBuf> {
     url::Url::parse(folder).ok()?.to_file_path().ok()
 }
 
+/// OpenCode's config directory (holds `opencode.json`/`opencode.jsonc`):
+/// `OPENCODE_CONFIG_DIR` overrides it outright; otherwise
+/// `$XDG_CONFIG_HOME/opencode`, or `<home>/.config/opencode` when
+/// `XDG_CONFIG_HOME` is unset. Matches `packages/core/src/global.ts`
+/// (`anomalyco/opencode`, commit `83452558f70207ddaeaffce68b36ebac77019fae`
+/// on `dev`): `Flag.OPENCODE_CONFIG_DIR ?? Path.config`, where `Path.config`
+/// joins the `xdg-basedir` package's `xdgConfig` (falls back to `~/.config`)
+/// with `"opencode"`.
+pub fn opencode_config_dir(home: &Path) -> PathBuf {
+    if let Some(dir) = std::env::var_os("OPENCODE_CONFIG_DIR") {
+        if !dir.is_empty() {
+            return PathBuf::from(dir);
+        }
+    }
+    match std::env::var_os("XDG_CONFIG_HOME") {
+        Some(dir) if !dir.is_empty() => PathBuf::from(dir).join("opencode"),
+        _ => home.join(".config").join("opencode"),
+    }
+}
+
 /// Project rows read per database, and legacy project files read in total.
 const MAX_OPENCODE_PROJECTS: usize = 10_000;
 
@@ -1102,6 +1122,7 @@ mod tests {
 
     #[test]
     fn opencode_rows_from_every_channel_database_are_discovered() {
+        let _guard = xdg_env_lock().lock().unwrap_or_else(|p| p.into_inner());
         let tmp = tempfile::tempdir().unwrap();
         let home = tmp.path();
         let root = opencode_root(home);
@@ -1120,6 +1141,7 @@ mod tests {
 
     #[test]
     fn legacy_opencode_project_json_is_discovered_without_a_database() {
+        let _guard = xdg_env_lock().lock().unwrap_or_else(|p| p.into_inner());
         let tmp = tempfile::tempdir().unwrap();
         let home = tmp.path();
         let root = opencode_root(home);
@@ -1132,6 +1154,7 @@ mod tests {
 
     #[test]
     fn opencode_project_in_database_and_legacy_json_is_reported_once() {
+        let _guard = xdg_env_lock().lock().unwrap_or_else(|p| p.into_inner());
         let tmp = tempfile::tempdir().unwrap();
         let home = tmp.path();
         let root = opencode_root(home);
@@ -1145,6 +1168,7 @@ mod tests {
 
     #[test]
     fn unreadable_and_foreign_databases_are_skipped() {
+        let _guard = xdg_env_lock().lock().unwrap_or_else(|p| p.into_inner());
         let tmp = tempfile::tempdir().unwrap();
         let home = tmp.path();
         let root = opencode_root(home);
@@ -1165,6 +1189,7 @@ mod tests {
 
     #[test]
     fn closed_opencode_database_is_read_without_creating_or_changing_files() {
+        let _guard = xdg_env_lock().lock().unwrap_or_else(|p| p.into_inner());
         let tmp = tempfile::tempdir().unwrap();
         let home = tmp.path();
         let root = opencode_root(home);
@@ -1181,8 +1206,74 @@ mod tests {
         assert_eq!(size_and_mtime(&database), database_before);
     }
 
+    /// Serializes every test in this module that calls `opencode_databases`
+    /// or `opencode_config_dir` - not just the one that mutates
+    /// `XDG_DATA_HOME`/`XDG_CONFIG_HOME`, since both are process-global and
+    /// cargo runs tests on multiple threads: without this, an unrelated
+    /// test's `opencode_databases(home)` call can read the override set by
+    /// the mutating test and look at the wrong directory. Mirrors
+    /// `core_scan_parity.rs`'s `home_env_lock` for `HOME`.
+    fn xdg_env_lock() -> &'static std::sync::Mutex<()> {
+        static LOCK: std::sync::OnceLock<std::sync::Mutex<()>> = std::sync::OnceLock::new();
+        LOCK.get_or_init(|| std::sync::Mutex::new(()))
+    }
+
+    /// Flow: `XDG_DATA_HOME` and `XDG_CONFIG_HOME` point at a temp directory
+    /// that is not `home`.
+    /// Expectation: the database open (`opencode_databases`) and the config
+    /// dir resolution (`opencode_config_dir`) both read from under the XDG
+    /// override, and the default `home`-relative locations are never
+    /// touched.
+    /// Failure here would mean a user who sets either var (or runs a
+    /// `--user` systemd session, which sets both) gets an empty inventory
+    /// and no way to disable a skill for OpenCode.
+    #[test]
+    fn opencode_reader_honours_xdg_data_home_and_config_home_or_names_the_default_path_read_instead(
+    ) {
+        let _guard = xdg_env_lock().lock().unwrap_or_else(|p| p.into_inner());
+        let tmp = tempfile::tempdir().unwrap();
+        let home = tmp.path();
+        let xdg_data = tmp.path().join("xdg-data");
+        let xdg_config = tmp.path().join("xdg-config");
+        let data_root = xdg_data.join("opencode");
+        let config_root = xdg_config.join("opencode");
+        fs::create_dir_all(&data_root).unwrap();
+        fs::create_dir_all(&config_root).unwrap();
+        let project = opencode_project(home, "xdg");
+        drop(opencode_db(&data_root.join("opencode.db"), &[&project]));
+        fs::write(config_root.join("opencode.json"), r#"{"theme":"dark"}"#).unwrap();
+
+        let previous_data = std::env::var_os("XDG_DATA_HOME");
+        let previous_config = std::env::var_os("XDG_CONFIG_HOME");
+        unsafe {
+            std::env::set_var("XDG_DATA_HOME", &xdg_data);
+            std::env::set_var("XDG_CONFIG_HOME", &xdg_config);
+        }
+        let result = std::panic::catch_unwind(|| {
+            assert_eq!(
+                opencode_databases(home),
+                vec![data_root.join("opencode.db")]
+            );
+            assert_eq!(opencode_config_dir(home), config_root);
+            assert!(!home.join(OPENCODE_DATA_ROOT).exists());
+            assert!(!home.join(".config").join("opencode").exists());
+        });
+        unsafe {
+            match previous_data {
+                Some(v) => std::env::set_var("XDG_DATA_HOME", v),
+                None => std::env::remove_var("XDG_DATA_HOME"),
+            }
+            match previous_config {
+                Some(v) => std::env::set_var("XDG_CONFIG_HOME", v),
+                None => std::env::remove_var("XDG_CONFIG_HOME"),
+            }
+        }
+        result.unwrap();
+    }
+
     #[test]
     fn live_opencode_database_rows_in_the_wal_are_read_without_changing_files() {
+        let _guard = xdg_env_lock().lock().unwrap_or_else(|p| p.into_inner());
         let tmp = tempfile::tempdir().unwrap();
         let home = tmp.path();
         let root = opencode_root(home);
@@ -1212,6 +1303,7 @@ mod tests {
     /// connection open, so the discovery connection is the last one to close.
     #[test]
     fn leftover_opencode_wal_is_read_without_changing_the_database_or_wal() {
+        let _guard = xdg_env_lock().lock().unwrap_or_else(|p| p.into_inner());
         let tmp = tempfile::tempdir().unwrap();
         let home = tmp.path();
         let root = opencode_root(home);

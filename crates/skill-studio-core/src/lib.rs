@@ -32,6 +32,7 @@ pub mod frontmatter_repair;
 pub mod harness;
 pub mod identity;
 pub mod lock_file;
+pub mod opencode_config;
 pub mod ops;
 mod ownership;
 pub mod ports;

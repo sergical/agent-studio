@@ -29,13 +29,47 @@ pub(crate) fn is_opencode_database_name(name: &str) -> bool {
     name == "opencode.db" || (name.starts_with("opencode-") && name.ends_with(".db"))
 }
 
-/// Lists `<home>/.local/share/opencode/opencode.db` and
-/// `opencode-*.db`, regular files only, sorted, capped at
-/// `MAX_OPENCODE_DATABASES`. An empty `Vec` when the directory can't be
-/// listed (missing, or not readable).
+/// OpenCode's data directory: `$XDG_DATA_HOME/opencode` when
+/// `XDG_DATA_HOME` is set and non-empty, else `<home>/.local/share/opencode`.
+/// Matches `packages/core/src/global.ts` (`anomalyco/opencode`, commit
+/// `83452558f70207ddaeaffce68b36ebac77019fae` on `dev`): `Global.Path.data`
+/// joins the `xdg-basedir` package's `xdgData` (which itself falls back to
+/// `~/.local/share`) with `"opencode"`.
+fn opencode_data_dir(home: &Path, xdg_data_home: Option<&std::ffi::OsStr>) -> PathBuf {
+    match xdg_data_home {
+        Some(dir) if !dir.is_empty() => PathBuf::from(dir).join("opencode"),
+        _ => home.join(OPENCODE_DATA_ROOT),
+    }
+}
+
+/// Lists the database(s) to read: `OPENCODE_DB` (an absolute path, or a
+/// filename joined onto the data dir) names exactly one file outright and
+/// skips the directory listing entirely; `:memory:` never exists on disk, so
+/// it yields nothing to read. Otherwise every `opencode.db` and
+/// `opencode-*.db` under the data dir (honouring `XDG_DATA_HOME`), regular
+/// files only, sorted, capped at `MAX_OPENCODE_DATABASES`. Source:
+/// `packages/core/src/database/database.ts` `path()`, same commit as
+/// [`opencode_data_dir`].
 pub(crate) fn opencode_databases(home: &Path) -> Vec<PathBuf> {
-    let root = home.join(OPENCODE_DATA_ROOT);
-    let Ok(entries) = fs::read_dir(&root) else {
+    let data_dir = opencode_data_dir(home, std::env::var_os("XDG_DATA_HOME").as_deref());
+    if let Some(over) = std::env::var_os("OPENCODE_DB") {
+        if over.is_empty() || over == ":memory:" {
+            return Vec::new();
+        }
+        let path = Path::new(&over);
+        let path = if path.is_absolute() {
+            path.to_path_buf()
+        } else {
+            data_dir.join(path)
+        };
+        return if is_regular_file(&path) {
+            vec![path]
+        } else {
+            Vec::new()
+        };
+    }
+
+    let Ok(entries) = fs::read_dir(&data_dir) else {
         return Vec::new();
     };
     let mut databases: Vec<PathBuf> = entries
@@ -100,8 +134,15 @@ pub(crate) fn table_exists(conn: &Connection, table: &str) -> rusqlite::Result<b
 mod tests {
     use super::*;
 
+    /// Flow: a database closed after a WAL write (no live `-wal`/`-shm`
+    /// sidecars) is opened read-only by the adapter.
+    /// Expectation: the immutable open reads it correctly and creates no
+    /// `-wal` or `-shm` sidecar.
+    /// Failure here would mean Skill Studio writes next to a database
+    /// OpenCode itself might still open, corrupting or confusing it.
     #[test]
-    fn open_read_only_creates_no_sidecar_files() {
+    fn opencode_sqlite_reader_creates_no_wal_or_shm_sidecar_on_a_closed_database_or_names_the_created_file(
+    ) {
         let tmp = tempfile::tempdir().unwrap();
         let database = tmp.path().join("opencode.db");
         {

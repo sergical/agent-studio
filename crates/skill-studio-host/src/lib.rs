@@ -14,7 +14,12 @@
 //! `PATH` lookup sets those fields on the returned `Ports` itself.
 
 #![deny(missing_docs)]
-#![forbid(unsafe_code)]
+// `forbid` only outside `cfg(test)`: the XDG/env-override tests for OpenCode
+// discovery mutate process-global env vars in place (`std::env::set_var`
+// needs `unsafe` on this toolchain) to cover the real `std::env::var_os`
+// call sites - there is no other seam to test them through without
+// threading an env-lookup port through every adapter for one test.
+#![cfg_attr(not(test), forbid(unsafe_code))]
 
 mod builder;
 mod clock;
@@ -31,7 +36,9 @@ mod tools;
 
 pub use builder::{default_ports, default_ports_with_discovery, default_ports_with_history};
 pub use clock::SystemClock;
-pub use discovery::{discover_skill_projects, discovery_harnesses, HostProjectDiscovery};
+pub use discovery::{
+    discover_skill_projects, discovery_harnesses, opencode_config_dir, HostProjectDiscovery,
+};
 pub use fs::RealFs;
 pub use harness_detect::RealProcessSpawner;
 pub use history::{hash_entry, NoHistoryOpener, SqliteHistoryOpener};
