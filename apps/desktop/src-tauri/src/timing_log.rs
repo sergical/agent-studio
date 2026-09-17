@@ -653,7 +653,11 @@ mod tests {
         .unwrap();
 
         let rows = read_rows_from(&log_path);
-        assert_eq!(rows.len(), 1, "the pre-upgrade row was dropped, not defaulted to ok");
+        assert_eq!(
+            rows.len(),
+            1,
+            "the pre-upgrade row was dropped, not defaulted to ok"
+        );
         assert_eq!(rows[0].outcome, Outcome::Ok);
         assert_eq!(rows[0].error, None);
     }
