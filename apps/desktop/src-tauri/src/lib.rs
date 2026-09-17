@@ -63,6 +63,7 @@ pub fn run() {
             app.manage(skills::skill_agent_runner::SkillAgentRunnerState::default());
             app.manage(skills::skill_run_target::SkillRunTargetState::default());
             app.manage(skills::skill_fork::ForkMutationLock::default());
+            app.manage(skills::skill_trial::TrialExpiryLoopState::default());
 
             let event_store = open_event_store(app);
             app.manage(skills::event_commands::EventStoreState(
@@ -124,6 +125,7 @@ pub fn run() {
             skills::event_commands::list_skill_events,
             skills::event_commands::has_interrupted_skill_events,
             skills::event_commands::restore_skill_event,
+            skills::event_commands::restore_expired_trial_backup,
             skills::skill_document_operation::cancel_document_operation,
             skills::event_commands::set_shared_harness_skill_enabled,
             skills::event_commands::materialize_harness_root,

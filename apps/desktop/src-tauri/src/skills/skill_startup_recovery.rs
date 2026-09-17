@@ -106,6 +106,26 @@ fn recover_with_scope(
         if matches!(row.kind.as_str(), "unfork_dotagents" | "unfork_skills_sh") {
             return super::skill_native_unfork::recover_pending(load_scope()?, store, row);
         }
+        if row.kind == skill_studio_core::skill_copy_trial_expiry::EVENT_KIND {
+            return skill_studio_core::skill_copy_trial_expiry::recover_copy_trial_expiry(
+                &mut service,
+                store,
+                row,
+                super::skill_harness_disable::copy_visibility_limits(),
+                Some(std::time::Duration::from_secs(30)),
+            )
+            .map(|_| ());
+        }
+        if row.kind == skill_studio_core::skill_trial_restore_event::EVENT_KIND {
+            return skill_studio_core::skill_trial_restore_event::recover_copy_trial_backup_restore(
+                home,
+                store,
+                row,
+                super::skill_harness_disable::copy_visibility_limits(),
+                Some(std::time::Duration::from_secs(30)),
+            )
+            .map(|_| ());
+        }
         if super::skill_copy_repair::is_copy_event(&row.kind) {
             return super::skill_copy_repair::recover(&mut service, store, row);
         }

@@ -28,6 +28,7 @@ export type DocumentOperationRequest =
       };
     }
   | { command: "restore_skill_event"; args: { eventId: string; force: boolean } }
+  | { command: "restore_expired_trial_backup"; args: { eventId: string } }
   | {
       command: "write_installed_skill_md_if_unchanged";
       args: { path: string; expectedContent: string; content: string };

@@ -793,6 +793,8 @@ export interface SkillEvent {
   force_restorable: boolean;
   history_label?: string;
   reversal_label?: string;
+  /** Restores retained content without reversing the original action. */
+  recovery_action?: "restore_trial_backup";
   reverted_by?: string;
   /** Absolute path to this event's backup directory, for a "Reveal in Finder" action. */
   backup_path?: string;

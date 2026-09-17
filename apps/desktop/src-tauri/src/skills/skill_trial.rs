@@ -11,6 +11,7 @@
 
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use chrono::{DateTime, Utc};
 use sha2::{Digest, Sha256};
@@ -35,6 +36,15 @@ use super::skill_refresh::{self, SkillRefreshState};
 pub struct ExpiredTrial {
     pub name: String,
     pub trash_path: String,
+    pub event_id: Option<String>,
+}
+
+pub(crate) struct TrialExpiryLoopState(AtomicBool);
+
+impl Default for TrialExpiryLoopState {
+    fn default() -> Self {
+        Self(AtomicBool::new(false))
+    }
 }
 
 /// Records a 24 h trial for `name`, started at `now`, keyed by `scope` so
@@ -165,10 +175,7 @@ fn validate_trial_deployment<'a>(
     if Path::new(&deployment.path) != trial.skill_dir {
         return Err("Trial deployment path changed; no files were removed".to_string());
     }
-    let expected_scope = match trial.scope {
-        TrialScope::Global => "global",
-        TrialScope::Project => "project",
-    };
+    let expected_scope = trial_scope_name(trial.scope);
     if deployment.scope != expected_scope || deployment.project_path != trial.project_path {
         return Err(
             "Trial deployment scope or project owner changed; no files were removed".to_string(),
@@ -234,6 +241,23 @@ fn validate_trial_deployment<'a>(
         }
     }
     Ok((skill, deployment))
+}
+
+fn trial_scope_name(scope: TrialScope) -> &'static str {
+    match scope {
+        TrialScope::Global => "global",
+        TrialScope::Project => "project",
+    }
+}
+
+fn trial_needs_expiry(trial: &TrialRecord, now: DateTime<Utc>) -> bool {
+    match trial.status {
+        TrialStatus::Expiring => true,
+        TrialStatus::Active => DateTime::parse_from_rfc3339(&trial.expires_at)
+            .map(|expires_at| expires_at.with_timezone(&Utc) <= now)
+            .unwrap_or(false),
+        TrialStatus::RecoveryRequired => false,
+    }
 }
 
 /// Expires one trial: trash-copies the folder, then removes it via the
@@ -600,6 +624,25 @@ fn run_trial_expiry_pass_with_writer(
         write_registry,
         &mut trial_deployment_still_matches,
         &mut remove_unreferenced_attempt_backup,
+        false,
+    )
+}
+
+fn run_provider_trial_expiry_pass(
+    home: &Path,
+    now: DateTime<Utc>,
+    runner: &dyn CommandRunner,
+    snapshot: &super::skill_refresh::SkillSnapshot,
+) -> Vec<ExpiredTrial> {
+    run_trial_expiry_pass_with_controls(
+        home,
+        now,
+        runner,
+        snapshot,
+        &mut write_fork_registry,
+        &mut trial_deployment_still_matches,
+        &mut remove_unreferenced_attempt_backup,
+        true,
     )
 }
 
@@ -612,6 +655,7 @@ fn run_trial_expiry_pass_with_controls(
     write_registry: &mut dyn FnMut(&Path, &ForkRegistry) -> Result<(), String>,
     verify_unchanged: &mut dyn FnMut(&TrialRecord) -> Result<bool, String>,
     cleanup_backup: &mut dyn FnMut(&Path, &AttemptBackup) -> Result<(), String>,
+    skip_copy: bool,
 ) -> Vec<ExpiredTrial> {
     let mut registry = match read_fork_registry(home) {
         Ok(registry) => registry,
@@ -638,6 +682,9 @@ fn run_trial_expiry_pass_with_controls(
     for key in due {
         let original_registry = registry.clone();
         let trial = registry.trials[&key].clone();
+        if skip_copy && trial.method == AddMethod::Copy {
+            continue;
+        }
         let name = super::skill_deployment::parse_deployment_id(&trial.deployment_id)
             .map(|parsed| parsed.name)
             .unwrap_or_else(|| name_from_trial_key(&key).to_string());
@@ -776,7 +823,11 @@ fn run_trial_expiry_pass_with_controls(
         }
 
         registry = completed_registry;
-        expired.push(ExpiredTrial { name, trash_path });
+        expired.push(ExpiredTrial {
+            name,
+            trash_path,
+            event_id: None,
+        });
     }
     expired
 }
@@ -793,44 +844,225 @@ pub fn run_trial_expiry_pass(
     run_trial_expiry_pass_with_writer(home, now, runner, snapshot, &mut write_fork_registry)
 }
 
+#[derive(Default)]
+struct CopyExpiryPass {
+    expired: Vec<ExpiredTrial>,
+    failures: Vec<CopyExpiryFailure>,
+    unresolved: bool,
+}
+
+#[derive(Clone, serde::Serialize)]
+struct CopyExpiryFailure {
+    name: String,
+    scope: String,
+    project_path: Option<String>,
+    recovery_required: bool,
+    message: String,
+}
+
+fn expire_due_copy_trials(
+    home: &Path,
+    projects: &[PathBuf],
+    store: &super::event_store::EventStore,
+    now: DateTime<Utc>,
+    snapshot: &super::skill_refresh::SkillSnapshot,
+) -> CopyExpiryPass {
+    let scope = match super::skill_scope_config::desktop_skill_scope(home, projects) {
+        Ok(scope) => scope,
+        Err(error) => {
+            eprintln!("[skill_trial] Copy expiry scope is unavailable: {error}");
+            return CopyExpiryPass::default();
+        }
+    };
+    let registry = match read_fork_registry(home) {
+        Ok(registry) => registry,
+        Err(error) => {
+            eprintln!("[skill_trial] {error}");
+            return CopyExpiryPass::default();
+        }
+    };
+    let due = registry
+        .trials
+        .values()
+        .filter(|trial| trial.method == AddMethod::Copy && trial_needs_expiry(trial, now))
+        .cloned()
+        .collect::<Vec<_>>();
+    let mut expired = Vec::new();
+    let mut failures = Vec::new();
+    for trial in due {
+        let name = skill_studio_core::skill_deployment::parse_deployment_id(&trial.deployment_id)
+            .map(|parsed| parsed.name)
+            .unwrap_or_else(|| "Copy trial".to_string());
+        let expected_owner_revision =
+            match validate_trial_deployment(snapshot, &trial).and_then(|_| {
+                let registry = read_fork_registry(home)?;
+                let record = registry
+                    .copies
+                    .get(&trial.deployment_id)
+                    .ok_or("Copy trial ownership is missing")?;
+                skill_studio_core::skill_fork_registry::copy_owner_revision(record)
+                    .ok_or("Copy trial ownership revision is missing".to_string())
+            }) {
+                Ok(revision) => revision,
+                Err(error) => {
+                    eprintln!("[skill_trial] failed to expire {name}: {error}");
+                    failures.push(CopyExpiryFailure {
+                        name,
+                        scope: trial_scope_name(trial.scope).into(),
+                        project_path: trial.project_path.clone(),
+                        recovery_required: false,
+                        message: error,
+                    });
+                    continue;
+                }
+            };
+        let mut service =
+            match skill_studio_core::skill_service::ScopedSkillService::bind(scope.clone()) {
+                Ok(service) => service,
+                Err(error) => {
+                    eprintln!("[skill_trial] failed to bind Copy expiry scope: {error}");
+                    return CopyExpiryPass {
+                        expired,
+                        failures,
+                        unresolved: true,
+                    };
+                }
+            };
+        match skill_studio_core::skill_copy_trial_expiry::expire_copy_trial(
+            &mut service,
+            store,
+            &skill_studio_core::skill_copy_trial_expiry::CopyTrialExpiryRequest {
+                deployment_id: trial.deployment_id.clone(),
+                expected_owner_revision,
+            },
+            now,
+            super::skill_harness_disable::copy_visibility_limits(),
+            Some(std::time::Duration::from_secs(30)),
+            skill_studio_core::skill_service::CancellationToken::default(),
+        ) {
+            Ok(receipt) => expired.push(ExpiredTrial {
+                name: receipt.skill_name,
+                trash_path: receipt.visible_trash.to_string_lossy().into_owned(),
+                event_id: Some(receipt.event_id),
+            }),
+            Err(error) => {
+                eprintln!("[skill_trial] failed to expire {name}: {}", error.message);
+                failures.push(CopyExpiryFailure {
+                    name,
+                    scope: trial_scope_name(trial.scope).into(),
+                    project_path: trial.project_path.clone(),
+                    recovery_required: error.recovery_required,
+                    message: error.message,
+                });
+                if error.recovery_required {
+                    return CopyExpiryPass {
+                        expired,
+                        failures,
+                        unresolved: true,
+                    };
+                }
+            }
+        }
+    }
+    CopyExpiryPass {
+        expired,
+        failures,
+        unresolved: false,
+    }
+}
+
 /// Runs one expiry pass against the real filesystem/CLIs and emits
 /// `skills://trial-expired` for anything that expired.
-fn run_and_emit(app: &AppHandle) {
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum TrialExpiryRun {
+    Completed,
+    LockBusy,
+}
+
+fn run_and_emit(app: &AppHandle) -> TrialExpiryRun {
     let Some(home) = dirs::home_dir() else {
-        return;
+        return TrialExpiryRun::Completed;
     };
     let runner = RealCommandRunner::new();
-    let expired = {
+    let (expired, failures) = {
         let lock = app.state::<ForkMutationLock>();
         let Ok(_guard) = lock.try_acquire() else {
-            return;
+            return TrialExpiryRun::LockBusy;
         };
         let refresh_state = app.state::<SkillRefreshState>();
-        let Ok(snapshot) = skill_refresh::rebuild_snapshot_now(app, &refresh_state) else {
-            return;
+        let event_store = app.state::<super::event_commands::EventStoreState>();
+        let Ok(store) = event_store.0.lock() else {
+            return TrialExpiryRun::Completed;
         };
-        run_trial_expiry_pass(&home, Utc::now(), &runner, &snapshot)
+        let Some(store) = store.as_ref() else {
+            return TrialExpiryRun::Completed;
+        };
+        if super::skill_startup_recovery::recover_at_startup(store, &home).is_err() {
+            skill_refresh::request_snapshot_rebuild(app);
+            return TrialExpiryRun::Completed;
+        }
+        let Ok(snapshot) = skill_refresh::rebuild_snapshot_now(app, &refresh_state) else {
+            return TrialExpiryRun::Completed;
+        };
+        let projects = snapshot
+            .projects
+            .iter()
+            .map(PathBuf::from)
+            .collect::<Vec<_>>();
+        let copy = expire_due_copy_trials(&home, &projects, store, Utc::now(), &snapshot);
+        let mut expired = copy.expired;
+        let failures = copy.failures;
+        if !copy.unresolved {
+            expired.extend(run_provider_trial_expiry_pass(
+                &home,
+                Utc::now(),
+                &runner,
+                &snapshot,
+            ));
+        }
+        (expired, failures)
     };
-    if expired.is_empty() {
-        return;
+    if !expired.is_empty() || !failures.is_empty() {
+        skill_refresh::request_snapshot_rebuild(app);
     }
-    skill_refresh::request_snapshot_rebuild(app);
     for trial in expired {
         let _ = app.emit(
             "skills://trial-expired",
-            serde_json::json!({ "name": trial.name, "trash_path": trial.trash_path }),
+            serde_json::json!({ "name": trial.name, "trash_path": trial.trash_path, "event_id": trial.event_id }),
         );
+    }
+    for failure in failures {
+        let _ = app.emit("skills://trial-expiry-failed", failure);
+    }
+    TrialExpiryRun::Completed
+}
+
+fn next_trial_expiry_delay(
+    run: TrialExpiryRun,
+    short_retry_used: bool,
+) -> (std::time::Duration, bool) {
+    if run == TrialExpiryRun::LockBusy && !short_retry_used {
+        (std::time::Duration::from_secs(1), true)
+    } else {
+        (std::time::Duration::from_secs(5 * 60), false)
     }
 }
 
 /// Checks for expired trials 15 s after startup, then every 5 minutes -
 /// mirrors `skill_update_check::spawn_update_check_loop`'s shape.
 pub fn spawn_trial_expiry_loop(app: AppHandle) {
+    let state = app.state::<TrialExpiryLoopState>();
+    if state.0.swap(true, Ordering::AcqRel) {
+        return;
+    }
     std::thread::spawn(move || {
         std::thread::sleep(std::time::Duration::from_secs(15));
+        let mut short_retry_used = false;
         loop {
-            run_and_emit(&app);
-            std::thread::sleep(std::time::Duration::from_secs(5 * 60));
+            let (delay, next_short_retry_used) =
+                next_trial_expiry_delay(run_and_emit(&app), short_retry_used);
+            short_retry_used = next_short_retry_used;
+            std::thread::sleep(delay);
         }
     });
 }
@@ -1581,6 +1813,7 @@ mod tests {
             &mut write_fork_registry,
             &mut |_| Err("injected verification failure".to_string()),
             &mut |_, _| panic!("verification errors must not clean backups"),
+            false,
         );
 
         assert!(expired.is_empty());
@@ -1626,6 +1859,7 @@ mod tests {
             &mut write_fork_registry,
             &mut |_| Ok(true),
             &mut |_, _| Err("injected cleanup failure".to_string()),
+            false,
         );
 
         assert!(expired.is_empty());
@@ -2292,6 +2526,18 @@ mod tests {
         assert_eq!(
             strip_trash_suffix("find-bugs-20260101-120000"),
             Some("find-bugs".to_string())
+        );
+    }
+
+    #[test]
+    fn expiry_lock_retries_once_before_returning_to_the_normal_interval() {
+        assert_eq!(
+            next_trial_expiry_delay(TrialExpiryRun::LockBusy, false),
+            (std::time::Duration::from_secs(1), true)
+        );
+        assert_eq!(
+            next_trial_expiry_delay(TrialExpiryRun::LockBusy, true),
+            (std::time::Duration::from_secs(5 * 60), false)
         );
     }
 }

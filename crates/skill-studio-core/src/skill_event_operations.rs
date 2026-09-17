@@ -422,6 +422,196 @@ impl GuardedEventStore<'_> {
         self.finish_recovery_snapshot(lease, event.snapshot(), status, inverse)
     }
 
+    /// Records a non-Undo restore and claims its completed source in the same
+    /// transaction. The source remains claimed through uncertain publication;
+    /// callers may release it only after a proven pre-publication failure.
+    pub(crate) fn record_trial_backup_restore(
+        &self,
+        lease: &FinalizedWriteLease<'_>,
+        source: &crate::skill_event::EventRow,
+        operation_id: &str,
+        draft: EventDraft,
+    ) -> Result<(crate::skill_event::EventRow, crate::skill_event::EventRow), EventWriteFailure>
+    {
+        if operation_id.len() != 26 || ulid::Ulid::from_string(operation_id).is_err() {
+            return Err(EventWriteFailure::BeforeWrite(
+                "Invalid trial backup restore operation ID".into(),
+            ));
+        }
+        let expected = serde_json::to_value(source)
+            .map_err(|error| EventWriteFailure::BeforeWrite(error.to_string()))?;
+        let mut recorded = None;
+        let transaction = self.start_transaction(lease)?;
+        (|| {
+            self.check_unresolved()?;
+            let current = self.store.get(&source.id)?.ok_or("Trial backup source is missing")?;
+            if serde_json::to_value(&current).map_err(|error| error.to_string())? != expected {
+                return Err("Trial backup source changed before recording".into());
+            }
+            self.store.record(operation_id, draft)?;
+            let changed = transaction.execute(
+                "UPDATE events SET reverted_by = ?1 WHERE id = ?2 AND status = 'done' AND reverted_by IS NULL",
+                params![operation_id, source.id],
+            ).map_err(|error| error.to_string())?;
+            if changed != 1 { return Err("Trial backup source cannot be claimed".into()); }
+            let mut claimed = current;
+            claimed.reverted_by = Some(operation_id.into());
+            recorded = Some((claimed, self.store.get(operation_id)?.ok_or("Trial backup restore event is missing")?));
+            transaction.commit().map_err(|error| error.to_string())
+        })()
+        .map_err(EventWriteFailure::MayHaveWritten)?;
+        self.validate(lease)
+            .map_err(EventWriteFailure::MayHaveWritten)?;
+        recorded.ok_or_else(|| {
+            EventWriteFailure::MayHaveWritten("Trial backup restore receipt is missing".into())
+        })
+    }
+
+    pub(crate) fn cancel_trial_backup_restore(
+        &self,
+        lease: &FinalizedWriteLease<'_>,
+        source: &crate::skill_event::EventRow,
+        event: &crate::skill_event::EventRow,
+    ) -> Result<(), EventWriteFailure> {
+        let expected = serde_json::to_value(source)
+            .map_err(|error| EventWriteFailure::BeforeWrite(error.to_string()))?;
+        self.write(lease, || {
+            let transaction = self.transaction(lease)?;
+            let current = self
+                .store
+                .get(&source.id)?
+                .ok_or("Trial backup source is missing")?;
+            if serde_json::to_value(current).map_err(|error| error.to_string())? != expected
+                || source.reverted_by.as_deref() != Some(event.id.as_str())
+            {
+                return Err("Trial backup restore claim changed before cancellation".into());
+            }
+            crate::skill_event_statements::finish_recovery_snapshot(
+                &transaction,
+                event,
+                EventStatus::Failed,
+                None,
+            )?;
+            let changed = transaction
+                .execute(
+                    "UPDATE events SET reverted_by = NULL WHERE id = ?1 AND reverted_by = ?2",
+                    params![source.id, event.id],
+                )
+                .map_err(|error| error.to_string())?;
+            if changed != 1 {
+                return Err("Trial backup source claim could not be released".into());
+            }
+            transaction.commit().map_err(|error| error.to_string())
+        })
+    }
+
+    pub(crate) fn finish_trial_backup_restore(
+        &self,
+        lease: &FinalizedWriteLease<'_>,
+        source: &crate::skill_event::EventRow,
+        event: &crate::skill_event::EventRow,
+    ) -> Result<(), EventWriteFailure> {
+        let expected = serde_json::to_value(source)
+            .map_err(|error| EventWriteFailure::BeforeWrite(error.to_string()))?;
+        self.write(lease, || {
+            let transaction = self.transaction(lease)?;
+            let current = self
+                .store
+                .get(&source.id)?
+                .ok_or("Trial backup source is missing")?;
+            if serde_json::to_value(&current).map_err(|error| error.to_string())? != expected
+                || source.reverted_by.as_deref() != Some(event.id.as_str())
+            {
+                return Err("Trial backup restore claim changed before completion".into());
+            }
+            crate::skill_event_statements::finish_recovery_snapshot(
+                &transaction,
+                event,
+                EventStatus::Done,
+                None,
+            )?;
+            transaction.commit().map_err(|error| error.to_string())
+        })
+    }
+
+    pub(crate) fn require_trial_backup_restore(
+        &self,
+        lease: &FinalizedWriteLease<'_>,
+        source: &crate::skill_event::EventRow,
+        event: &crate::skill_event::EventRow,
+    ) -> Result<(), EventWriteFailure> {
+        self.validate(lease)
+            .map_err(EventWriteFailure::BeforeWrite)?;
+        let current_source = self
+            .store
+            .get(&source.id)
+            .map_err(EventWriteFailure::BeforeWrite)?
+            .ok_or_else(|| {
+                EventWriteFailure::BeforeWrite("Trial backup source is missing".into())
+            })?;
+        let current_event = self
+            .store
+            .get(&event.id)
+            .map_err(EventWriteFailure::BeforeWrite)?
+            .ok_or_else(|| {
+                EventWriteFailure::BeforeWrite("Trial backup restore event is missing".into())
+            })?;
+        if serde_json::to_value(current_source)
+            .map_err(|error| EventWriteFailure::BeforeWrite(error.to_string()))?
+            != serde_json::to_value(source)
+                .map_err(|error| EventWriteFailure::BeforeWrite(error.to_string()))?
+            || serde_json::to_value(current_event)
+                .map_err(|error| EventWriteFailure::BeforeWrite(error.to_string()))?
+                != serde_json::to_value(event)
+                    .map_err(|error| EventWriteFailure::BeforeWrite(error.to_string()))?
+            || source.reverted_by.as_deref() != Some(event.id.as_str())
+        {
+            return Err(EventWriteFailure::BeforeWrite(
+                "Trial backup restore history changed before its next effect".into(),
+            ));
+        }
+        self.validate(lease).map_err(EventWriteFailure::BeforeWrite)
+    }
+
+    pub(crate) fn advance_trial_backup_restore(
+        &self,
+        lease: &FinalizedWriteLease<'_>,
+        source: &crate::skill_event::EventRow,
+        event: &crate::skill_event::EventRow,
+        payload: Value,
+    ) -> Result<crate::skill_event::EventRow, EventWriteFailure> {
+        let expected = serde_json::to_value(event)
+            .map_err(|error| EventWriteFailure::BeforeWrite(error.to_string()))?;
+        let payload = serde_json::to_string(&payload)
+            .map_err(|error| EventWriteFailure::BeforeWrite(error.to_string()))?;
+        let mut updated = None;
+        self.write(lease, || {
+            let transaction = self.transaction(lease)?;
+            let current_source = self
+                .store
+                .get(&source.id)?
+                .ok_or("Trial backup restore source is missing")?;
+            let current = self.store.get(&event.id)?.ok_or("Trial backup restore event is missing")?;
+            if serde_json::to_value(&current_source).map_err(|error| error.to_string())?
+                != serde_json::to_value(source).map_err(|error| error.to_string())?
+                || source.reverted_by.as_deref() != Some(event.id.as_str())
+                || serde_json::to_value(&current).map_err(|error| error.to_string())? != expected
+            {
+                return Err("Trial backup restore changed before phase update".into());
+            }
+            let changed = transaction.execute(
+                "UPDATE events SET payload = ?1 WHERE id = ?2 AND status IN ('pending', 'interrupted')",
+                params![payload, event.id],
+            ).map_err(|error| error.to_string())?;
+            if changed != 1 { return Err("Trial backup restore is no longer eligible for phase update".into()); }
+            updated = Some(self.store.get(&event.id)?.ok_or("Updated trial backup restore is missing")?);
+            transaction.commit().map_err(|error| error.to_string())
+        })?;
+        updated.ok_or_else(|| {
+            EventWriteFailure::MayHaveWritten("Trial backup restore phase result is missing".into())
+        })
+    }
+
     pub fn record_copy_undo(
         &self,
         lease: &FinalizedWriteLease<'_>,

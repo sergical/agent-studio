@@ -133,6 +133,10 @@ fn dto_from_row(store: &EventStore, home: &Path, row: EventRow) -> SkillEventDto
             && row.status == "done"
             && row.reverted_by.is_none());
     let restorable = restorable && legacy_copy_move_guard(store, home, &row).is_ok();
+    let recovery_action = (row.kind == skill_studio_core::skill_copy_trial_expiry::EVENT_KIND
+        && row.status == "done"
+        && row.reverted_by.is_none())
+    .then_some("restore_trial_backup".to_string());
     let backup_path = row
         .backup_dir
         .as_ref()
@@ -170,6 +174,7 @@ fn dto_from_row(store: &EventStore, home: &Path, row: EventRow) -> SkillEventDto
             }
             .to_string()
         }),
+        recovery_action,
         reverted_by: row.reverted_by,
         backup_path,
     }
@@ -226,6 +231,50 @@ pub async fn restore_skill_event(
             app.state::<EventStoreState>(),
             _operation.cancellation.clone(),
         )
+    })
+    .await
+    .map_err(|error| format!("Restore task failed: {error}"))?
+}
+
+#[tauri::command]
+pub async fn restore_expired_trial_backup(
+    event_id: String,
+    app: tauri::AppHandle,
+    operation_id: Option<String>,
+) -> Result<(), String> {
+    let operation = DocumentOperation::start(&app, operation_id)?;
+    tauri::async_runtime::spawn_blocking(move || {
+        let _operation = operation;
+        check_document_cancellation(&_operation.cancellation)?;
+        let fork_lock = app.state::<ForkMutationLock>();
+        let _guard = fork_lock.try_acquire()?;
+        let home = dirs::home_dir().ok_or("Could not find home directory")?;
+        let event_store = app.state::<EventStoreState>();
+        let guard = locked_store(&event_store)?;
+        let store = guard.as_ref().ok_or("Event store is unavailable")?;
+        let transaction = super::skill_md_write::begin_skill_md_write_transaction()?;
+        let result =
+            skill_studio_core::skill_trial_restore_event::restore_expired_copy_trial_backup(
+                &home,
+                store,
+                &event_id,
+                super::skill_harness_disable::copy_visibility_limits(),
+                Some(std::time::Duration::from_secs(30)),
+                _operation.cancellation.clone(),
+            );
+        drop(transaction);
+        drop(guard);
+        skill_refresh::request_snapshot_rebuild(&app);
+        result.map(|_| ()).map_err(|error| {
+            if error.recovery_required {
+                format!(
+                    "Restore is incomplete and requires recovery. {}",
+                    error.message
+                )
+            } else {
+                error.message
+            }
+        })
     })
     .await
     .map_err(|error| format!("Restore task failed: {error}"))?

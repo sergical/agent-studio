@@ -19,7 +19,12 @@ import {
 } from "lucide-react";
 import { formatRelativeTime } from "@skill-studio/lib";
 import type { SkillEvent } from "@skill-studio/lib";
-import { listSkillEvents, openSkillPath, restoreSkillEvent } from "../../lib/skill-api";
+import {
+  listSkillEvents,
+  openSkillPath,
+  restoreExpiredTrialBackup,
+  restoreSkillEvent,
+} from "../../lib/skill-api";
 import { useAppStore } from "../../store/appStore";
 import { HARNESS_LABELS } from "../../lib/harness-labels";
 import { canRestoreSkillEvent, shouldOfferForceRestore } from "./skill-history-restore-policy";
@@ -46,6 +51,7 @@ function iconForKind(kind: string, className: string) {
       return <FolderSymlink {...props} />;
     case "move_aside_disable":
       return <Archive {...props} />;
+    case "restore_expired_copy_trial_backup":
     case "move_aside_restore":
       return <ArchiveRestore {...props} />;
     default:
@@ -74,6 +80,10 @@ function kindLabel(kind: string): string {
       return "Restored Dotagents management";
     case "unfork_skills_sh":
       return "Restored skills.sh management";
+    case "expire_copy_trial":
+      return "Copy trial expired";
+    case "restore_expired_copy_trial_backup":
+      return "Restored trial backup";
     default:
       return kind.replace(/_/g, " ");
   }
@@ -83,6 +93,8 @@ function kindLabel(kind: string): string {
 function restoreDescription(event: SkillEvent): string {
   const skillPart = event.skill ? `${event.skill}` : (event.harness ?? "this item");
   switch (event.kind) {
+    case "expire_copy_trial":
+      return `Restore retained content for ${skillPart} as an untracked Global skill`;
     case "edit_copy_document":
     case "redo_copy_document":
       return `Undo the edit to ${skillPart}`;
@@ -123,17 +135,19 @@ function EventRow({ event, onRestored }: { event: SkillEvent; onRestored: () => 
     event.kind,
   );
   const isCopyChange = isCopyRepair || isCopyEdit;
-  const restoreLabel =
-    event.reversal_label ??
-    (isCopyEdit
-      ? event.kind === "undo_copy_document"
-        ? "Redo edit"
-        : "Undo edit"
-      : event.kind === "undo_copy_frontmatter"
-        ? "Redo repair"
-        : isCopyRepair
-          ? "Undo repair"
-          : "Restore");
+  const restoresTrialBackup = event.recovery_action === "restore_trial_backup";
+  const restoreLabel = restoresTrialBackup
+    ? "Restore to Global"
+    : (event.reversal_label ??
+      (isCopyEdit
+        ? event.kind === "undo_copy_document"
+          ? "Redo edit"
+          : "Undo edit"
+        : event.kind === "undo_copy_frontmatter"
+          ? "Redo repair"
+          : isCopyRepair
+            ? "Undo repair"
+            : "Restore"));
   const isFailed = event.status === "failed";
   const isInterrupted = event.status === "interrupted";
   const icon = iconForKind(
@@ -159,7 +173,11 @@ function EventRow({ event, onRestored }: { event: SkillEvent; onRestored: () => 
     cancellation.reset();
     setIsRestoring(true);
     try {
-      await restoreSkillEvent(event.id, force, isCopyChange ? cancellation.onStarted : undefined);
+      if (restoresTrialBackup) {
+        await restoreExpiredTrialBackup(event.id, cancellation.onStarted);
+      } else {
+        await restoreSkillEvent(event.id, force, isCopyChange ? cancellation.onStarted : undefined);
+      }
       addToast({
         type: "success",
         title: event.kind === "undo_copy_frontmatter" ? "Repair reapplied" : "Restored",
@@ -167,7 +185,7 @@ function EventRow({ event, onRestored }: { event: SkillEvent; onRestored: () => 
       });
     } catch (err) {
       const message = errorMessage(err);
-      if (!force && shouldOfferForceRestore(event, message)) {
+      if (!restoresTrialBackup && !force && shouldOfferForceRestore(event, message)) {
         const proceed = await ask(
           `${message}\n\nRestoring anyway will back up the current content first, so it stays restorable.`,
           { title: "Content has changed", kind: "warning" },
@@ -187,7 +205,10 @@ function EventRow({ event, onRestored }: { event: SkillEvent; onRestored: () => 
   };
 
   const handleRestoreClick = async () => {
-    const confirmed = await ask(`${restoreDescription(event)}?`, {
+    const detail = restoresTrialBackup
+      ? "The trial, Copy ownership, and original reader links remain removed. The backup is kept."
+      : undefined;
+    const confirmed = await ask(`${restoreDescription(event)}?${detail ? `\n\n${detail}` : ""}`, {
       title: restoreLabel,
       kind: "info",
     });
@@ -230,7 +251,7 @@ function EventRow({ event, onRestored }: { event: SkillEvent; onRestored: () => 
           Reveal in Finder
         </button>
       )}
-      {isRestoring && isCopyChange && (
+      {isRestoring && (isCopyChange || restoresTrialBackup) && (
         <button
           type="button"
           onClick={cancellation.cancel}
@@ -240,7 +261,7 @@ function EventRow({ event, onRestored }: { event: SkillEvent; onRestored: () => 
           {cancellation.isCancelling ? "Stopping…" : "Stop restore"}
         </button>
       )}
-      {canRestoreSkillEvent(event) && (
+      {(canRestoreSkillEvent(event) || restoresTrialBackup) && (
         <button
           type="button"
           className="shrink-0 cursor-pointer rounded-sm border border-border-subtle bg-transparent px-2 py-1 text-small text-text-secondary transition-colors hover:bg-bg-hover disabled:opacity-50"

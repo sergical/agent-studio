@@ -7,6 +7,7 @@ import { errorMessage } from "./error-message";
 
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
+import { z } from "zod";
 import type {
   AddMethodDefaults,
   AddSkillOperationEvent,
@@ -426,20 +427,33 @@ export async function restoreTrashedSkill(trashPath: string): Promise<void> {
   return invoke("restore_trashed_skill", { trashPath });
 }
 
+export async function restoreExpiredTrialBackup(
+  eventId: string,
+  onStarted?: (operationId: string) => void,
+): Promise<void> {
+  return runDocumentOperation(
+    { command: "restore_expired_trial_backup", args: { eventId } },
+    onStarted,
+  );
+}
+
 /**
  * Subscribe to `skills://trial-expired`, emitted once per skill the trial
  * expiry loop just moved to `~/.agents/skills-trash`. Returns an unlisten
  * function.
  */
 export function onTrialExpired(
-  cb: (payload: { name: string; trash_path: string }) => void,
+  cb: (payload: { name: string; trash_path: string; event_id?: string | null }) => void,
 ): () => void {
   let unlisten: (() => void) | undefined;
   let cancelled = false;
 
-  listen<{ name: string; trash_path: string }>("skills://trial-expired", (event) => {
-    cb(event.payload);
-  }).then((fn) => {
+  listen<{ name: string; trash_path: string; event_id?: string | null }>(
+    "skills://trial-expired",
+    (event) => {
+      cb(event.payload);
+    },
+  ).then((fn) => {
     if (cancelled) {
       fn();
     } else {
@@ -451,6 +465,58 @@ export function onTrialExpired(
     cancelled = true;
     unlisten?.();
   };
+}
+
+const TrialExpiryFailureSchema = z.object({
+  name: z.string(),
+  scope: z.enum(["global", "project"]),
+  project_path: z.string().nullable(),
+  recovery_required: z.boolean(),
+  message: z.string(),
+});
+
+export type TrialExpiryFailure = z.infer<typeof TrialExpiryFailureSchema>;
+
+type TrialExpiryFailureListener = (
+  eventName: string,
+  callback: (event: { payload: unknown }) => void,
+) => Promise<() => void>;
+
+export function subscribeToTrialExpiryFailures(
+  listenForFailure: TrialExpiryFailureListener,
+  cb: (payload: TrialExpiryFailure) => void,
+): () => void {
+  let unlisten: (() => void) | undefined;
+  let cancelled = false;
+
+  listenForFailure("skills://trial-expiry-failed", (event) => {
+    if (cancelled) return;
+    const failure = TrialExpiryFailureSchema.safeParse(event.payload);
+    if (failure.success) cb(failure.data);
+  })
+    .then((fn) => {
+      if (cancelled) {
+        fn();
+      } else {
+        unlisten = fn;
+      }
+    })
+    .catch(() => {});
+
+  return () => {
+    cancelled = true;
+    unlisten?.();
+  };
+}
+
+/**
+ * Subscribe to a Copy trial expiry attempt that could not complete.
+ */
+export function onTrialExpiryFailed(cb: (payload: TrialExpiryFailure) => void): () => void {
+  return subscribeToTrialExpiryFailures(
+    (eventName, callback) => listen<unknown>(eventName, callback),
+    cb,
+  );
 }
 
 // ============================================================================

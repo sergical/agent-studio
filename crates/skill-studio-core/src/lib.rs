@@ -43,6 +43,8 @@ pub mod skill_copy_registry_removal;
 #[cfg(all(unix, feature = "event-store"))]
 pub mod skill_copy_removal;
 #[cfg(all(unix, feature = "event-store"))]
+pub mod skill_copy_trial_expiry;
+#[cfg(all(unix, feature = "event-store"))]
 pub mod skill_event;
 #[cfg(all(unix, feature = "event-store"))]
 pub mod skill_event_binding;
@@ -60,6 +62,10 @@ pub mod skill_fork_removal;
 pub mod skill_tree_exchange;
 #[cfg(all(unix, feature = "event-store"))]
 pub mod skill_tree_move;
+#[cfg(all(unix, feature = "event-store"))]
+pub mod skill_trial_restore;
+#[cfg(all(unix, feature = "event-store"))]
+pub mod skill_trial_restore_event;
 
 #[cfg(all(unix, feature = "event-store"))]
 pub mod skill_copy_repair;

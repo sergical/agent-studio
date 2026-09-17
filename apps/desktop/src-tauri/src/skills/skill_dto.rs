@@ -78,6 +78,8 @@ pub struct SkillEventDto {
     pub history_label: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub reversal_label: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub recovery_action: Option<String>,
     pub reverted_by: Option<String>,
     /// Absolute path to this event's backup directory, for a "Reveal in
     /// Finder" action - `None` when the event backed up nothing.

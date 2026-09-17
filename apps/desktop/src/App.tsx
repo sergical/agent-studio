@@ -7,7 +7,7 @@
 import { useEffect, useRef } from "react";
 import { homeDir } from "@tauri-apps/api/path";
 import { TooltipProvider } from "@skill-studio/ui";
-import { Toaster } from "sonner";
+import { Toaster, toast } from "sonner";
 import { AddSkillSheet } from "./components/AddSkill/AddSkillSheet";
 import { Sidebar } from "./components/Sidebar/Sidebar";
 import { SkillActivityView } from "./components/Activity/SkillActivityView";
@@ -22,11 +22,15 @@ import { useSkillSnapshot } from "./hooks/useSkillSnapshot";
 import { useInterruptedSkillEvents } from "./hooks/useInterruptedSkillEvents";
 import {
   onTrialExpired,
+  onTrialExpiryFailed,
   registerSkillProjects,
+  restoreExpiredTrialBackup,
   restoreTrashedSkill,
   unregisterSkillProject,
 } from "./lib/skill-api";
 import { useAppStore } from "./store/appStore";
+import { errorMessage } from "./lib/error-message";
+import { trialExpiryFailureToast } from "./lib/trial-expiry-notification";
 import "./App.css";
 
 function App() {
@@ -93,7 +97,7 @@ function App() {
   // action here - surface it as a toast with a Restore action rather than
   // silently updating the snapshot.
   useEffect(() => {
-    return onTrialExpired(({ name, trash_path }) => {
+    return onTrialExpired(({ name, trash_path, event_id }) => {
       addToast({
         type: "warning",
         title: `Trial ended: ${name} moved to skills-trash`,
@@ -101,18 +105,28 @@ function App() {
         action: {
           label: "Restore",
           onClick: () => {
-            restoreTrashedSkill(trash_path).catch((err) => {
-              addToast({
-                type: "error",
-                title: "Couldn't restore skill",
-                message: err instanceof Error ? err.message : "Unknown error",
-              });
-            });
+            toast.promise(
+              event_id ? restoreExpiredTrialBackup(event_id) : restoreTrashedSkill(trash_path),
+              {
+                loading: `Restoring ${name}…`,
+                success: `Restored ${name}`,
+                error: (cause: unknown) => `Couldn't restore skill: ${errorMessage(cause)}`,
+              },
+            );
           },
         },
       });
     });
   }, [addToast]);
+
+  useEffect(
+    () =>
+      onTrialExpiryFailed((failure) => {
+        const notice = trialExpiryFailureToast(failure);
+        toast.error(notice.title, notice);
+      }),
+    [],
+  );
 
   let main: React.ReactNode;
   if (activeView.kind === "home") {
