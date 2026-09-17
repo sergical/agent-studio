@@ -25,6 +25,8 @@
 use std::fs;
 use std::path::{Path, PathBuf};
 
+use tauri::Manager;
+
 use super::codex_skill_config;
 use super::event_commands::EventStoreState;
 use super::event_store::{fingerprint_path, EventDraft, EventStatus, InverseOp};
@@ -743,64 +745,71 @@ fn move_copy_deployment_and_update_registry(
 }
 
 #[tauri::command]
-pub fn set_harness_enabled(
+pub async fn set_harness_enabled(
     target: HarnessVisibilityTarget,
     enabled: bool,
     app: tauri::AppHandle,
-    refresh_state: tauri::State<SkillRefreshState>,
-    fork_lock: tauri::State<ForkMutationLock>,
 ) -> Result<(), String> {
-    let _guard = fork_lock.try_acquire()?;
-    let home = dirs::home_dir().ok_or("Could not find home directory")?;
-    let snapshot = super::skill_lifecycle::rebuild_fresh_lifecycle_snapshot(&app, &refresh_state)?;
-    let agent = target.reader_agent.cli_name();
-    let (skill, deployment, adapter_path) = resolve_native_harness_target(&snapshot, &target)?;
-    let deployment_id = deployment.id.as_str();
-    let expected_agent = match agent {
-        "codex" => "Codex",
-        "opencode" | "open-code" => "OpenCode",
-        "claude-code" => "Claude Code",
-        other => return Err(format!("{other} has no native per-skill disable")),
-    };
-    let codex_skill_md_paths = if expected_agent == "Codex" {
-        vec![adapter_path.join("SKILL.md")]
-    } else {
-        Vec::new()
-    };
-    let result = if expected_agent == "Claude Code" {
-        set_claude_code_enabled(
-            &home,
-            &skill.name,
-            deployment_id,
-            &adapter_path,
-            Path::new(&deployment.path),
-            enabled,
-        )
-    } else {
-        set_harness_enabled_with(&home, &skill.name, agent, enabled, &codex_skill_md_paths)
-    };
-    if result.is_ok() {
-        // Surgical: mark the harness's deployments right away; the background
-        // loop's full rebuild (skills_dirty) re-derives the true state - which
-        // mechanism disabled it, and the symlink Claude Code's removal took.
-        if let Err(e) = skill_refresh::patch_snapshot_and_emit(&app, &refresh_state, |snapshot| {
-            let Some(deployment) = snapshot
-                .skills
-                .iter_mut()
-                .flat_map(|skill| skill.deployments.iter_mut())
-                .find(|deployment| deployment.id == deployment_id)
-            else {
-                return;
-            };
-            deployment.disabled = !enabled;
-            if enabled {
-                deployment.disabled_by = None;
+    let timing_app = app.clone();
+    crate::timing_log::time_command_blocking(&timing_app, "set_harness_enabled", move || {
+        let refresh_state = app.state::<SkillRefreshState>();
+        let fork_lock = app.state::<ForkMutationLock>();
+        let _guard = fork_lock.try_acquire()?;
+        let home = dirs::home_dir().ok_or("Could not find home directory")?;
+        let snapshot =
+            super::skill_lifecycle::rebuild_fresh_lifecycle_snapshot(&app, &refresh_state)?;
+        let agent = target.reader_agent.cli_name();
+        let (skill, deployment, adapter_path) = resolve_native_harness_target(&snapshot, &target)?;
+        let deployment_id = deployment.id.as_str();
+        let expected_agent = match agent {
+            "codex" => "Codex",
+            "opencode" | "open-code" => "OpenCode",
+            "claude-code" => "Claude Code",
+            other => return Err(format!("{other} has no native per-skill disable")),
+        };
+        let codex_skill_md_paths = if expected_agent == "Codex" {
+            vec![adapter_path.join("SKILL.md")]
+        } else {
+            Vec::new()
+        };
+        let result = if expected_agent == "Claude Code" {
+            set_claude_code_enabled(
+                &home,
+                &skill.name,
+                deployment_id,
+                &adapter_path,
+                Path::new(&deployment.path),
+                enabled,
+            )
+        } else {
+            set_harness_enabled_with(&home, &skill.name, agent, enabled, &codex_skill_md_paths)
+        };
+        if result.is_ok() {
+            // Surgical: mark the harness's deployments right away; the background
+            // loop's full rebuild (skills_dirty) re-derives the true state - which
+            // mechanism disabled it, and the symlink Claude Code's removal took.
+            if let Err(e) =
+                skill_refresh::patch_snapshot_and_emit(&app, &refresh_state, |snapshot| {
+                    let Some(deployment) = snapshot
+                        .skills
+                        .iter_mut()
+                        .flat_map(|skill| skill.deployments.iter_mut())
+                        .find(|deployment| deployment.id == deployment_id)
+                    else {
+                        return;
+                    };
+                    deployment.disabled = !enabled;
+                    if enabled {
+                        deployment.disabled_by = None;
+                    }
+                })
+            {
+                eprintln!("[set_harness_enabled] snapshot patch failed: {e}");
             }
-        }) {
-            eprintln!("[set_harness_enabled] snapshot patch failed: {e}");
         }
-    }
-    result
+        result
+    })
+    .await
 }
 
 /// Disable (or re-enable) a deployment by moving it into (or out of) its
@@ -812,114 +821,122 @@ pub fn set_harness_enabled(
 /// dir is owned by the plugin cache, not something Skill Studio should
 /// rename.
 #[tauri::command]
-#[allow(clippy::too_many_arguments)]
-pub fn set_deployment_enabled(
+pub async fn set_deployment_enabled(
     target: LifecycleTarget,
     enabled: bool,
     app: tauri::AppHandle,
-    refresh_state: tauri::State<SkillRefreshState>,
-    fork_lock: tauri::State<ForkMutationLock>,
-    event_store: tauri::State<EventStoreState>,
 ) -> Result<(), String> {
-    let _guard = fork_lock.try_acquire()?;
-    let deployment_id = target
-        .deployment_id
-        .as_deref()
-        .ok_or("Deployment disable needs one deployment_id")?;
-    if target.owner_id.is_some() {
-        return Err("Deployment disable targets one deployment, not an owner group".to_string());
-    }
-    let resolved = super::skill_lifecycle::resolve_fresh_lifecycle_target(
-        &app,
-        &refresh_state,
-        &target,
-        "Deployment disable",
-    )?;
-    let skill = resolved.skill;
-    let deployment = resolved.deployment;
-    let name = skill.name;
-    let path = deployment.path.clone();
-    let path_buf = PathBuf::from(&path);
-    if !enabled {
-        if deployment.agent == "shared" {
+    let timing_app = app.clone();
+    crate::timing_log::time_command_blocking(&timing_app, "set_deployment_enabled", move || {
+        let refresh_state = app.state::<SkillRefreshState>();
+        let fork_lock = app.state::<ForkMutationLock>();
+        let event_store = app.state::<EventStoreState>();
+        let _guard = fork_lock.try_acquire()?;
+        let deployment_id = target
+            .deployment_id
+            .as_deref()
+            .ok_or("Deployment disable needs one deployment_id")?;
+        if target.owner_id.is_some() {
             return Err(
+                "Deployment disable targets one deployment, not an owner group".to_string(),
+            );
+        }
+        let resolved = super::skill_lifecycle::resolve_fresh_lifecycle_target(
+            &app,
+            &refresh_state,
+            &target,
+            "Deployment disable",
+        )?;
+        let skill = resolved.skill;
+        let deployment = resolved.deployment;
+        let name = skill.name;
+        let path = deployment.path.clone();
+        let path_buf = PathBuf::from(&path);
+        if !enabled {
+            if deployment.agent == "shared" {
+                return Err(
                 "Cannot disable a Universal root for one harness. Park the skill to disable it for every harness."
                     .to_string(),
             );
+            }
+            if deployment.plugin.is_some() {
+                return Err("Plugin-provided deployments can't be disabled".to_string());
+            }
         }
-        if deployment.plugin.is_some() {
-            return Err("Plugin-provided deployments can't be disabled".to_string());
-        }
-    }
 
-    // The event id is allocated (and the pending row recorded) before the
-    // move, from the same deterministic dest `disable_deployment_at`/
-    // `restore_deployment_at` compute internally - see the module doc's
-    // move-aside mechanism. `store_guard` may hold `None` if the event store
-    // failed to open at startup; the move still happens (the mutation isn't
-    // gated on event logging), it just isn't recorded/restorable.
-    let store_guard = event_store
-        .0
-        .lock()
-        .map_err(|e| format!("event store lock poisoned: {e}"))?;
-    let store = store_guard.as_ref();
-    let event = store
-        .map(|store| record_move_aside_event(store, &name, &path_buf, enabled))
-        .transpose()?;
+        // The event id is allocated (and the pending row recorded) before the
+        // move, from the same deterministic dest `disable_deployment_at`/
+        // `restore_deployment_at` compute internally - see the module doc's
+        // move-aside mechanism. `store_guard` may hold `None` if the event store
+        // failed to open at startup; the move still happens (the mutation isn't
+        // gated on event logging), it just isn't recorded/restorable.
+        let store_guard = event_store
+            .0
+            .lock()
+            .map_err(|e| format!("event store lock poisoned: {e}"))?;
+        let store = store_guard.as_ref();
+        let event = store
+            .map(|store| record_move_aside_event(store, &name, &path_buf, enabled))
+            .transpose()?;
 
-    let result = if deployment.owner_kind == super::skill_ownership::LifecycleOwnerKind::Copy {
-        let home = dirs::home_dir().ok_or("Could not find home directory")?;
-        let mut registry = read_fork_registry(&home)?;
-        move_copy_deployment_and_update_registry(&mut registry, &deployment, enabled, |registry| {
-            write_fork_registry(&home, registry)
-        })
-    } else if enabled {
-        restore_deployment_at(&path_buf)
-    } else {
-        disable_deployment_at(&path_buf)
-    };
-
-    if let (Some(store), Some((id, original))) = (store, &event) {
-        finish_move_aside_event(store, id, original, &result);
-    }
-    drop(store_guard);
-
-    let new_path = result?;
-    let parsed = super::skill_deployment::parse_deployment_id(deployment_id)
-        .ok_or_else(|| format!("Not a deployment id: {deployment_id}"))?;
-    let new_id = super::skill_deployment::deployment_id(
-        &parsed.name,
-        &parsed.scope,
-        parsed.destination,
-        &parsed.slot,
-        parsed.project_path.as_deref(),
-        &new_path,
-    );
-
-    // Surgical: patch the moved deployment's path and disabled state right
-    // away; the background loop's full rebuild (skills_dirty) reconciles the
-    // rest (frontmatter fields, hashes) moments later.
-    if let Err(e) = skill_refresh::patch_snapshot_and_emit(&app, &refresh_state, |snapshot| {
-        let Some(deployment) = snapshot
-            .skills
-            .iter_mut()
-            .flat_map(|skill| skill.deployments.iter_mut())
-            .find(|deployment| deployment.id == deployment_id)
-        else {
-            return;
-        };
-        deployment.path = new_path.to_string_lossy().to_string();
-        deployment.id = new_id;
-        deployment.disabled = !enabled;
-        deployment.disabled_by = if enabled {
-            None
+        let result = if deployment.owner_kind == super::skill_ownership::LifecycleOwnerKind::Copy {
+            let home = dirs::home_dir().ok_or("Could not find home directory")?;
+            let mut registry = read_fork_registry(&home)?;
+            move_copy_deployment_and_update_registry(
+                &mut registry,
+                &deployment,
+                enabled,
+                |registry| write_fork_registry(&home, registry),
+            )
+        } else if enabled {
+            restore_deployment_at(&path_buf)
         } else {
-            Some(DisabledBy::StudioMoved)
+            disable_deployment_at(&path_buf)
         };
-    }) {
-        eprintln!("[set_deployment_enabled] snapshot patch failed: {e}");
-    }
-    Ok(())
+
+        if let (Some(store), Some((id, original))) = (store, &event) {
+            finish_move_aside_event(store, id, original, &result);
+        }
+        drop(store_guard);
+
+        let new_path = result?;
+        let parsed = super::skill_deployment::parse_deployment_id(deployment_id)
+            .ok_or_else(|| format!("Not a deployment id: {deployment_id}"))?;
+        let new_id = super::skill_deployment::deployment_id(
+            &parsed.name,
+            &parsed.scope,
+            parsed.destination,
+            &parsed.slot,
+            parsed.project_path.as_deref(),
+            &new_path,
+        );
+
+        // Surgical: patch the moved deployment's path and disabled state right
+        // away; the background loop's full rebuild (skills_dirty) reconciles the
+        // rest (frontmatter fields, hashes) moments later.
+        if let Err(e) = skill_refresh::patch_snapshot_and_emit(&app, &refresh_state, |snapshot| {
+            let Some(deployment) = snapshot
+                .skills
+                .iter_mut()
+                .flat_map(|skill| skill.deployments.iter_mut())
+                .find(|deployment| deployment.id == deployment_id)
+            else {
+                return;
+            };
+            deployment.path = new_path.to_string_lossy().to_string();
+            deployment.id = new_id;
+            deployment.disabled = !enabled;
+            deployment.disabled_by = if enabled {
+                None
+            } else {
+                Some(DisabledBy::StudioMoved)
+            };
+        }) {
+            eprintln!("[set_deployment_enabled] snapshot patch failed: {e}");
+        }
+        Ok(())
+    })
+    .await
 }
 
 #[cfg(test)]

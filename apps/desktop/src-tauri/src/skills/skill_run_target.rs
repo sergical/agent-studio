@@ -18,7 +18,7 @@ use std::sync::Mutex;
 
 use chrono::Utc;
 use serde::{Deserialize, Serialize};
-use tauri::{AppHandle, Manager, State};
+use tauri::{AppHandle, Manager};
 
 use super::skill_agent_runner::copy_skill_dir_for_run_target;
 
@@ -170,24 +170,28 @@ fn check_containment(target: &PreparedRunTarget, roots: &RunTargetRoots) -> Resu
 /// Prepares the working directory for a "Test" run, per `request.kind`, and
 /// stores it under a fresh id.
 #[tauri::command]
-pub fn prepare_skill_run_target(
+pub async fn prepare_skill_run_target(
     app: AppHandle,
-    state: State<SkillRunTargetState>,
     request: SkillRunTargetRequest,
 ) -> Result<SkillRunTargetInfo, String> {
-    let id = next_run_target_id();
-    let prepared = match request.kind {
-        SkillRunTargetKind::Scratch => prepare_scratch(&app, &request, id)?,
-        SkillRunTargetKind::Worktree => prepare_worktree(&app, &request, id)?,
-        SkillRunTargetKind::InPlace => prepare_in_place(&request, id)?,
-    };
-    let info = SkillRunTargetInfo::from(&prepared);
-    state
-        .targets
-        .lock()
-        .map_err(|_| "Could not store run target".to_string())?
-        .insert(prepared.id.clone(), prepared);
-    Ok(info)
+    let timing_app = app.clone();
+    crate::timing_log::time_command_blocking(&timing_app, "prepare_skill_run_target", move || {
+        let state = app.state::<SkillRunTargetState>();
+        let id = next_run_target_id();
+        let prepared = match request.kind {
+            SkillRunTargetKind::Scratch => prepare_scratch(&app, &request, id)?,
+            SkillRunTargetKind::Worktree => prepare_worktree(&app, &request, id)?,
+            SkillRunTargetKind::InPlace => prepare_in_place(&request, id)?,
+        };
+        let info = SkillRunTargetInfo::from(&prepared);
+        state
+            .targets
+            .lock()
+            .map_err(|_| "Could not store run target".to_string())?
+            .insert(prepared.id.clone(), prepared);
+        Ok(info)
+    })
+    .await
 }
 
 // ============================================================================
@@ -267,7 +271,7 @@ fn prepare_scratch(
 ) -> Result<PreparedRunTarget, String> {
     let mut skills = vec![(request.skill_name.clone(), request.skill_folder.clone())];
     skills.extend(request.extra_skills.iter().cloned());
-    let scratch_dir = super::skill_agent_runner::create_skill_scratch_dir(app.clone(), skills)?;
+    let scratch_dir = super::skill_agent_runner::create_skill_scratch_dir_at(app, &skills)?;
 
     if let Some(fixture) = &request.fixture {
         write_fixture_files(Path::new(&scratch_dir), fixture)?;
@@ -442,21 +446,22 @@ fn prepare_in_place(
 /// already has `open_skill_path` access to, or under the app cache, neither
 /// of which this command needs to widen access to.
 #[tauri::command]
-pub fn reveal_skill_run_target(
-    app: AppHandle,
-    state: State<SkillRunTargetState>,
-    target_id: String,
-) -> Result<(), String> {
-    let roots = RunTargetRoots::from_app(&app)?;
-    let target = resolve_target(&state.targets, &roots, &target_id)?;
-    if target.kind != SkillRunTargetKind::Scratch {
-        return Err("Only a scratch target's folder can be revealed this way".to_string());
-    }
-    Command::new("open")
-        .args(["-R", &target.cwd.to_string_lossy()])
-        .output()
-        .map_err(|e| format!("Failed to reveal {}: {e}", target.cwd.display()))?;
-    Ok(())
+pub async fn reveal_skill_run_target(app: AppHandle, target_id: String) -> Result<(), String> {
+    let timing_app = app.clone();
+    crate::timing_log::time_command_blocking(&timing_app, "reveal_skill_run_target", move || {
+        let state = app.state::<SkillRunTargetState>();
+        let roots = RunTargetRoots::from_app(&app)?;
+        let target = resolve_target(&state.targets, &roots, &target_id)?;
+        if target.kind != SkillRunTargetKind::Scratch {
+            return Err("Only a scratch target's folder can be revealed this way".to_string());
+        }
+        Command::new("open")
+            .args(["-R", &target.cwd.to_string_lossy()])
+            .output()
+            .map_err(|e| format!("Failed to reveal {}: {e}", target.cwd.display()))?;
+        Ok(())
+    })
+    .await
 }
 
 // ============================================================================
@@ -476,14 +481,15 @@ fn diff_for(cwd: &Path) -> Result<String, String> {
 
 /// The unified diff for a prepared run target, looked up by id.
 #[tauri::command]
-pub fn skill_run_target_diff(
-    app: AppHandle,
-    state: State<SkillRunTargetState>,
-    target_id: String,
-) -> Result<String, String> {
-    let roots = RunTargetRoots::from_app(&app)?;
-    let target = resolve_target(&state.targets, &roots, &target_id)?;
-    diff_for(&target.cwd)
+pub async fn skill_run_target_diff(app: AppHandle, target_id: String) -> Result<String, String> {
+    let timing_app = app.clone();
+    crate::timing_log::time_command_blocking(&timing_app, "skill_run_target_diff", move || {
+        let state = app.state::<SkillRunTargetState>();
+        let roots = RunTargetRoots::from_app(&app)?;
+        let target = resolve_target(&state.targets, &roots, &target_id)?;
+        diff_for(&target.cwd)
+    })
+    .await
 }
 
 /// Every path `git apply --numstat <patch>` reports the patch touching.
@@ -604,20 +610,25 @@ fn remove_worktree(target: &PreparedRunTarget) -> Result<(), String> {
 
 /// Applies a prepared Worktree target's diff back onto its project.
 #[tauri::command]
-pub fn apply_skill_run_target_diff(
-    app: AppHandle,
-    state: State<SkillRunTargetState>,
-    target_id: String,
-) -> Result<(), String> {
-    let roots = RunTargetRoots::from_app(&app)?;
-    let target = resolve_target(&state.targets, &roots, &target_id)?;
-    apply_worktree_diff(&target)?;
-    state
-        .targets
-        .lock()
-        .map_err(|_| "Could not update run target state".to_string())?
-        .remove(&target_id);
-    Ok(())
+pub async fn apply_skill_run_target_diff(app: AppHandle, target_id: String) -> Result<(), String> {
+    let timing_app = app.clone();
+    crate::timing_log::time_command_blocking(
+        &timing_app,
+        "apply_skill_run_target_diff",
+        move || {
+            let state = app.state::<SkillRunTargetState>();
+            let roots = RunTargetRoots::from_app(&app)?;
+            let target = resolve_target(&state.targets, &roots, &target_id)?;
+            apply_worktree_diff(&target)?;
+            state
+                .targets
+                .lock()
+                .map_err(|_| "Could not update run target state".to_string())?
+                .remove(&target_id);
+            Ok(())
+        },
+    )
+    .await
 }
 
 /// Splits a `git status --porcelain=v1 -z` entry's status code and path into
@@ -734,20 +745,21 @@ fn discard_target(target: &PreparedRunTarget) -> Result<(), String> {
 
 /// Discards a prepared run target, looked up by id.
 #[tauri::command]
-pub fn discard_skill_run_target(
-    app: AppHandle,
-    state: State<SkillRunTargetState>,
-    target_id: String,
-) -> Result<(), String> {
-    let roots = RunTargetRoots::from_app(&app)?;
-    let target = resolve_target(&state.targets, &roots, &target_id)?;
-    discard_target(&target)?;
-    state
-        .targets
-        .lock()
-        .map_err(|_| "Could not update run target state".to_string())?
-        .remove(&target_id);
-    Ok(())
+pub async fn discard_skill_run_target(app: AppHandle, target_id: String) -> Result<(), String> {
+    let timing_app = app.clone();
+    crate::timing_log::time_command_blocking(&timing_app, "discard_skill_run_target", move || {
+        let state = app.state::<SkillRunTargetState>();
+        let roots = RunTargetRoots::from_app(&app)?;
+        let target = resolve_target(&state.targets, &roots, &target_id)?;
+        discard_target(&target)?;
+        state
+            .targets
+            .lock()
+            .map_err(|_| "Could not update run target state".to_string())?
+            .remove(&target_id);
+        Ok(())
+    })
+    .await
 }
 
 #[cfg(test)]

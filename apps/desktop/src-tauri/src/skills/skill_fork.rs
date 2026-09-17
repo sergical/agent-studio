@@ -36,7 +36,7 @@ use super::skill_process::{
     MAX_PROCESS_OUTPUT_BYTES,
 };
 use super::skill_refresh::{self, SkillRefreshState};
-use super::skill_update_check::{self, CommitLookup, GhCommitLookup, UpdateCheckState};
+use super::skill_update_check::{self, CommitLookup, GhCommitLookup};
 
 // ============================================================================
 // Traits - real implementations shell out / hit the network; tests use fakes.
@@ -958,60 +958,63 @@ impl ForkMutationLock {
 }
 
 #[tauri::command]
-pub fn fork_skill(
+pub async fn fork_skill(
     target: super::skill_dto::LifecycleTarget,
     app: tauri::AppHandle,
-    refresh_state: tauri::State<SkillRefreshState>,
-    update_check_state: tauri::State<UpdateCheckState>,
-    fork_lock: tauri::State<ForkMutationLock>,
 ) -> Result<ForkRecord, String> {
-    let _guard = fork_lock.try_acquire()?;
-    let _ = &update_check_state; // shares the same guard-free lookup path as pull/unfork
-    let home = dirs::home_dir().ok_or("Could not find home directory")?;
-    let app_data = app
-        .path()
-        .app_data_dir()
-        .map_err(|e| format!("Could not resolve app data dir: {e}"))?;
-    let lookup = resolve_lookup();
-    let gh_bin =
-        skill_update_check::resolve_gh_binary().ok_or_else(|| "Run Check now first".to_string())?;
-    let fetch = RealUpstreamFetch {
-        gh_bin,
-        cache_dir: app_data.join("skill-studio").join("cache"),
-    };
+    let timing_app = app.clone();
+    crate::timing_log::time_command_blocking(&timing_app, "fork_skill", move || {
+        let refresh_state = app.state::<SkillRefreshState>();
+        let fork_lock = app.state::<ForkMutationLock>();
+        let _guard = fork_lock.try_acquire()?;
+        let home = dirs::home_dir().ok_or("Could not find home directory")?;
+        let app_data = app
+            .path()
+            .app_data_dir()
+            .map_err(|e| format!("Could not resolve app data dir: {e}"))?;
+        let lookup = resolve_lookup();
+        let gh_bin = skill_update_check::resolve_gh_binary()
+            .ok_or_else(|| "Run Check now first".to_string())?;
+        let fetch = RealUpstreamFetch {
+            gh_bin,
+            cache_dir: app_data.join("skill-studio").join("cache"),
+        };
 
-    let resolved = super::skill_lifecycle::resolve_fresh_lifecycle_target(
-        &app,
-        &refresh_state,
-        &target,
-        "Fork",
-    )?;
-    let snapshot = resolved.snapshot;
-    let id = target
-        .deployment_id
-        .as_deref()
-        .ok_or("Fork needs one Global Universal deployment_id")?;
-    if target.owner_id.is_some() {
-        return Err("Fork targets one Global Universal deployment, not an owner group".to_string());
-    }
-    let (skill, deployment) = super::skill_lifecycle::find_deployment(&snapshot, id)?;
-    super::skill_lifecycle::revalidate_deployment(deployment, id)?;
-    super::skill_lifecycle::require_direct_deployment_mutable(deployment, "Fork")?;
-    super::skill_lifecycle::require_global_universal_park_target(deployment)
-        .map_err(|_| "Fork is only available for the Global Universal folder.".to_string())?;
+        let resolved = super::skill_lifecycle::resolve_fresh_lifecycle_target(
+            &app,
+            &refresh_state,
+            &target,
+            "Fork",
+        )?;
+        let snapshot = resolved.snapshot;
+        let id = target
+            .deployment_id
+            .as_deref()
+            .ok_or("Fork needs one Global Universal deployment_id")?;
+        if target.owner_id.is_some() {
+            return Err(
+                "Fork targets one Global Universal deployment, not an owner group".to_string(),
+            );
+        }
+        let (skill, deployment) = super::skill_lifecycle::find_deployment(&snapshot, id)?;
+        super::skill_lifecycle::revalidate_deployment(deployment, id)?;
+        super::skill_lifecycle::require_direct_deployment_mutable(deployment, "Fork")?;
+        super::skill_lifecycle::require_global_universal_park_target(deployment)
+            .map_err(|_| "Fork is only available for the Global Universal folder.".to_string())?;
 
-    let result = fork_skill_with(
-        &home,
-        &app_data,
-        &skill.name,
-        Path::new(&deployment.path),
-        &RealLedgerTool,
-        &fetch,
-        lookup.as_ref(),
-    );
-    skill_refresh::request_snapshot_rebuild(&app);
-    let _ = &refresh_state;
-    result
+        let result = fork_skill_with(
+            &home,
+            &app_data,
+            &skill.name,
+            Path::new(&deployment.path),
+            &RealLedgerTool,
+            &fetch,
+            lookup.as_ref(),
+        );
+        skill_refresh::request_snapshot_rebuild(&app);
+        result
+    })
+    .await
 }
 
 // ============================================================================
@@ -1402,38 +1405,39 @@ pub fn pull_fork_upstream_with(
 }
 
 #[tauri::command]
-pub fn pull_fork_upstream(
+pub async fn pull_fork_upstream(
     target: super::skill_dto::LifecycleTarget,
     app: tauri::AppHandle,
-    refresh_state: tauri::State<SkillRefreshState>,
-    update_check_state: tauri::State<UpdateCheckState>,
-    fork_lock: tauri::State<ForkMutationLock>,
 ) -> Result<PullResult, String> {
-    let _guard = fork_lock.try_acquire()?;
-    let _ = &update_check_state;
-    let home = dirs::home_dir().ok_or("Could not find home directory")?;
-    let app_data = app
-        .path()
-        .app_data_dir()
-        .map_err(|e| format!("Could not resolve app data dir: {e}"))?;
-    let lookup = resolve_lookup();
-    let fetch = RealUpstreamFetch {
-        gh_bin: skill_update_check::resolve_gh_binary()
-            .ok_or_else(|| "Run Check now first".to_string())?,
-        cache_dir: app_data.join("skill-studio").join("cache"),
-    };
+    let timing_app = app.clone();
+    crate::timing_log::time_command_blocking(&timing_app, "pull_fork_upstream", move || {
+        let refresh_state = app.state::<SkillRefreshState>();
+        let fork_lock = app.state::<ForkMutationLock>();
+        let _guard = fork_lock.try_acquire()?;
+        let home = dirs::home_dir().ok_or("Could not find home directory")?;
+        let app_data = app
+            .path()
+            .app_data_dir()
+            .map_err(|e| format!("Could not resolve app data dir: {e}"))?;
+        let lookup = resolve_lookup();
+        let fetch = RealUpstreamFetch {
+            gh_bin: skill_update_check::resolve_gh_binary()
+                .ok_or_else(|| "Run Check now first".to_string())?,
+            cache_dir: app_data.join("skill-studio").join("cache"),
+        };
 
-    let resolved = super::skill_lifecycle::resolve_fresh_lifecycle_target(
-        &app,
-        &refresh_state,
-        &target,
-        "Pull upstream",
-    )?;
-    let (name, _) = resolve_recorded_fork_target(&resolved.snapshot, &target, &home)?;
-    let result = pull_fork_upstream_with(&home, &app_data, &name, &fetch, lookup.as_ref());
-    skill_refresh::request_snapshot_rebuild(&app);
-    let _ = &refresh_state;
-    result
+        let resolved = super::skill_lifecycle::resolve_fresh_lifecycle_target(
+            &app,
+            &refresh_state,
+            &target,
+            "Pull upstream",
+        )?;
+        let (name, _) = resolve_recorded_fork_target(&resolved.snapshot, &target, &home)?;
+        let result = pull_fork_upstream_with(&home, &app_data, &name, &fetch, lookup.as_ref());
+        skill_refresh::request_snapshot_rebuild(&app);
+        result
+    })
+    .await
 }
 
 // ============================================================================
@@ -1469,32 +1473,33 @@ pub fn unfork_skill_with(
 }
 
 #[tauri::command]
-pub fn unfork_skill(
+pub async fn unfork_skill(
     target: super::skill_dto::LifecycleTarget,
     app: tauri::AppHandle,
-    refresh_state: tauri::State<SkillRefreshState>,
-    update_check_state: tauri::State<UpdateCheckState>,
-    fork_lock: tauri::State<ForkMutationLock>,
 ) -> Result<(), String> {
-    let _guard = fork_lock.try_acquire()?;
-    let _ = &update_check_state;
-    let home = dirs::home_dir().ok_or("Could not find home directory")?;
-    let app_data = app
-        .path()
-        .app_data_dir()
-        .map_err(|e| format!("Could not resolve app data dir: {e}"))?;
+    let timing_app = app.clone();
+    crate::timing_log::time_command_blocking(&timing_app, "unfork_skill", move || {
+        let refresh_state = app.state::<SkillRefreshState>();
+        let fork_lock = app.state::<ForkMutationLock>();
+        let _guard = fork_lock.try_acquire()?;
+        let home = dirs::home_dir().ok_or("Could not find home directory")?;
+        let app_data = app
+            .path()
+            .app_data_dir()
+            .map_err(|e| format!("Could not resolve app data dir: {e}"))?;
 
-    let resolved = super::skill_lifecycle::resolve_fresh_lifecycle_target(
-        &app,
-        &refresh_state,
-        &target,
-        "Unfork",
-    )?;
-    let (name, _) = resolve_recorded_fork_target(&resolved.snapshot, &target, &home)?;
-    let result = unfork_skill_with(&home, &app_data, &name, &RealLedgerTool);
-    skill_refresh::request_snapshot_rebuild(&app);
-    let _ = &refresh_state;
-    result
+        let resolved = super::skill_lifecycle::resolve_fresh_lifecycle_target(
+            &app,
+            &refresh_state,
+            &target,
+            "Unfork",
+        )?;
+        let (name, _) = resolve_recorded_fork_target(&resolved.snapshot, &target, &home)?;
+        let result = unfork_skill_with(&home, &app_data, &name, &RealLedgerTool);
+        skill_refresh::request_snapshot_rebuild(&app);
+        result
+    })
+    .await
 }
 
 fn resolve_recorded_fork_target(

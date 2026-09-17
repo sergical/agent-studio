@@ -133,20 +133,23 @@ pub fn project_folders(
 /// The Settings "Project folders" card's rows, freshly discovered - runs a
 /// full harness-history scan, so it's spawned off the main thread.
 #[tauri::command]
-pub async fn list_project_folders() -> Result<Vec<ProjectFolder>, String> {
-    tauri::async_runtime::spawn_blocking(move || {
-        let home = dirs::home_dir().ok_or("Could not find home directory")?;
-        let discovered = skill_studio_host::discover_skill_projects(&home);
-        let tracked = TrackedProjects::read(&skill_studio_host::RealFs, &home);
-        Ok(project_folders(
-            &skill_studio_host::RealFs,
-            &home,
-            discovered,
-            &tracked,
-        ))
+pub async fn list_project_folders(app: tauri::AppHandle) -> Result<Vec<ProjectFolder>, String> {
+    crate::timing_log::time_command_async(&app, "list_project_folders", async move {
+        tauri::async_runtime::spawn_blocking(move || {
+            let home = dirs::home_dir().ok_or("Could not find home directory")?;
+            let discovered = skill_studio_host::discover_skill_projects(&home);
+            let tracked = TrackedProjects::read(&skill_studio_host::RealFs, &home);
+            Ok(project_folders(
+                &skill_studio_host::RealFs,
+                &home,
+                discovered,
+                &tracked,
+            ))
+        })
+        .await
+        .map_err(|e| format!("Listing project folders failed: {e}"))?
     })
     .await
-    .map_err(|e| format!("Listing project folders failed: {e}"))?
 }
 
 #[cfg(test)]

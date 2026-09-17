@@ -328,15 +328,19 @@ pub async fn list_github_skills(
     path: Option<String>,
     git_ref: Option<String>,
     refresh: Option<bool>,
+    app: tauri::AppHandle,
 ) -> Result<GithubSkillListing, String> {
-    let api = HttpGithubApi::new();
-    list_github_skills_cached(
-        &api,
-        &repo,
-        path.as_deref(),
-        git_ref.as_deref(),
-        refresh.unwrap_or(false),
-    )
+    crate::timing_log::time_command_async(&app, "list_github_skills", async move {
+        let api = HttpGithubApi::new();
+        list_github_skills_cached(
+            &api,
+            &repo,
+            path.as_deref(),
+            git_ref.as_deref(),
+            refresh.unwrap_or(false),
+        )
+        .await
+    })
     .await
 }
 

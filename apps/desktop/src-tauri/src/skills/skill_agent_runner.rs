@@ -957,48 +957,60 @@ pub async fn start_skill_agent_run(
     request: SkillAgentRunRequest,
     run_id: String,
     app: AppHandle,
-    state: tauri::State<'_, SkillAgentRunnerState>,
 ) -> Result<String, String> {
-    validate_run_id(&run_id)?;
+    let timing_app = app.clone();
+    crate::timing_log::time_command_async(&timing_app, "start_skill_agent_run", async move {
+        validate_run_id(&run_id)?;
 
-    let handle = Arc::new(RunHandle::default());
-    {
-        let mut runs = state.runs.lock().unwrap_or_else(|e| e.into_inner());
-        if runs.contains_key(&run_id) {
-            return Err(format!("A run with id {run_id} is already running"));
+        let state = app.state::<SkillAgentRunnerState>();
+        let handle = Arc::new(RunHandle::default());
+        {
+            let mut runs = state.runs.lock().unwrap_or_else(|e| e.into_inner());
+            if runs.contains_key(&run_id) {
+                return Err(format!("A run with id {run_id} is already running"));
+            }
+            runs.insert(run_id.clone(), handle.clone());
         }
-        runs.insert(run_id.clone(), handle.clone());
-    }
 
-    let binary = match resolve_binary(request.harness, &state) {
-        Ok(binary) => binary,
-        Err(err) => {
-            state
-                .runs
-                .lock()
-                .unwrap_or_else(|e| e.into_inner())
-                .remove(&run_id);
-            return Err(err);
-        }
-    };
+        let resolve_app = app.clone();
+        let harness = request.harness;
+        let resolved = tauri::async_runtime::spawn_blocking(move || {
+            let state = resolve_app.state::<SkillAgentRunnerState>();
+            resolve_binary(harness, &state)
+        })
+        .await
+        .unwrap_or_else(|e| Err(format!("resolve_binary task failed: {e}")));
+        let binary = match resolved {
+            Ok(binary) => binary,
+            Err(err) => {
+                state
+                    .runs
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .remove(&run_id);
+                return Err(err);
+            }
+        };
 
-    let runs = state.runs.clone();
-    let task_app = app.clone();
-    let sink: EventSink = Box::new(move |event| {
-        let _ = task_app.emit(SKILL_AGENT_EVENT, &event);
-    });
+        let runs = state.runs.clone();
+        let task_app = app.clone();
+        let sink: EventSink = Box::new(move |event| {
+            let _ = task_app.emit(SKILL_AGENT_EVENT, &event);
+        });
 
-    let spawned_run_id = run_id.clone();
-    tokio::spawn(run_and_deregister(
-        runs,
-        sink,
-        spawned_run_id,
-        request,
-        binary,
-        handle,
-    ));
+        let spawned_run_id = run_id.clone();
+        tokio::spawn(run_and_deregister(
+            runs,
+            sink,
+            spawned_run_id,
+            request,
+            binary,
+            handle,
+        ));
 
-    Ok(run_id)
+        Ok(run_id)
+    })
+    .await
 }
 
 /// Runs one harness invocation to completion and then removes its own entry
@@ -1270,21 +1282,24 @@ async fn terminate_process_group(
 pub fn cancel_skill_agent_run(
     run_id: String,
     state: tauri::State<SkillAgentRunnerState>,
+    app: tauri::AppHandle,
 ) -> Result<(), String> {
-    let handle = state
-        .runs
-        .lock()
-        .unwrap_or_else(|e| e.into_inner())
-        .get(&run_id)
-        .cloned();
-    let Some(handle) = handle else {
-        return Ok(());
-    };
-    if handle.cancelled.swap(true, Ordering::SeqCst) {
-        return Ok(());
-    }
-    handle.cancel.notify_one();
-    Ok(())
+    crate::timing_log::time_command(&app, "cancel_skill_agent_run", move || {
+        let handle = state
+            .runs
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .get(&run_id)
+            .cloned();
+        let Some(handle) = handle else {
+            return Ok(());
+        };
+        if handle.cancelled.swap(true, Ordering::SeqCst) {
+            return Ok(());
+        }
+        handle.cancel.notify_one();
+        Ok(())
+    })
 }
 
 /// A skill (or scratch-dir agent folder) name, validated before it's used to
@@ -1373,21 +1388,23 @@ fn scratch_root(app: &AppHandle) -> Result<PathBuf, String> {
 /// path pairs): each copied to `.agents/skills/<name>`, with
 /// `.claude/skills/<name>` and `.pi/skills/<name>` symlinked to it, so a run
 /// only ever sees the skill(s) under test. Returns the scratch dir's path.
-#[tauri::command]
-pub fn create_skill_scratch_dir(
-    app: AppHandle,
-    skills: Vec<(String, String)>,
+/// Takes `app` by reference so `skill_run_target::prepare_scratch` can call
+/// this synchronously from inside its own `time_command_blocking` closure,
+/// without awaiting the `#[tauri::command]` wrapper below.
+pub(crate) fn create_skill_scratch_dir_at(
+    app: &AppHandle,
+    skills: &[(String, String)],
 ) -> Result<String, String> {
     let stamp = format!(
         "{}-{}",
         Utc::now().format("%Y%m%dT%H%M%S%.f"),
         std::process::id()
     );
-    let root = scratch_root(&app)?.join(stamp);
+    let root = scratch_root(app)?.join(stamp);
     let shared_skills = root.join(".agents").join("skills");
     fs::create_dir_all(&shared_skills).map_err(|e| format!("Could not create scratch dir: {e}"))?;
 
-    for (name, folder_path) in &skills {
+    for (name, folder_path) in skills {
         let name = validate_skill_dir_name(name)?;
         copy_skill_dir(Path::new(folder_path), &shared_skills.join(name))
             .map_err(|e| format!("Could not copy skill '{name}': {e}"))?;
@@ -1415,6 +1432,18 @@ pub fn create_skill_scratch_dir(
     Ok(root.to_string_lossy().to_string())
 }
 
+#[tauri::command]
+pub async fn create_skill_scratch_dir(
+    app: AppHandle,
+    skills: Vec<(String, String)>,
+) -> Result<String, String> {
+    let timing_app = app.clone();
+    crate::timing_log::time_command_blocking(&timing_app, "create_skill_scratch_dir", move || {
+        create_skill_scratch_dir_at(&app, &skills)
+    })
+    .await
+}
+
 /// Removes `path`, requiring it to be an immediate child of `root` (not
 /// `root` itself, and not a deeper descendant) once both are canonicalized.
 fn remove_scratch_child(root: &Path, path: &Path) -> Result<(), String> {
@@ -1435,10 +1464,14 @@ fn remove_scratch_child(root: &Path, path: &Path) -> Result<(), String> {
 /// any path that isn't an immediate child of the scratch root, so a bad
 /// `path` can't delete unrelated files.
 #[tauri::command]
-pub fn remove_skill_scratch_dir(app: AppHandle, path: String) -> Result<(), String> {
-    let root = scratch_root(&app)?;
-    fs::create_dir_all(&root).map_err(|e| format!("Could not resolve scratch root: {e}"))?;
-    remove_scratch_child(&root, Path::new(&path))
+pub async fn remove_skill_scratch_dir(app: AppHandle, path: String) -> Result<(), String> {
+    let timing_app = app.clone();
+    crate::timing_log::time_command_blocking(&timing_app, "remove_skill_scratch_dir", move || {
+        let root = scratch_root(&app)?;
+        fs::create_dir_all(&root).map_err(|e| format!("Could not resolve scratch root: {e}"))?;
+        remove_scratch_child(&root, Path::new(&path))
+    })
+    .await
 }
 
 #[cfg(test)]
