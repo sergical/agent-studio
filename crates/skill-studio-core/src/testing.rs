@@ -652,22 +652,25 @@ impl ScopeFs for FixtureFs {
     }
 
     fn fsops_fsync_file(&self, path: &Path) -> std::io::Result<()> {
-        if self.lock().files.contains_key(path) {
+        let path = self.resolve_leaf(path);
+        if self.lock().files.contains_key(&path) {
             Ok(())
         } else {
-            Err(Self::not_found(path))
+            Err(Self::not_found(&path))
         }
     }
 
     fn fsops_fsync_dir(&self, path: &Path) -> std::io::Result<()> {
-        if self.lock().dirs.iter().any(|d| d == path) {
+        let path = self.resolve_leaf(path);
+        if self.lock().dirs.iter().any(|d| d == &path) {
             Ok(())
         } else {
-            Err(Self::not_found(path))
+            Err(Self::not_found(&path))
         }
     }
 
     fn fsops_create_dir(&self, path: &Path) -> std::io::Result<()> {
+        let path = &self.resolve_leaf(path);
         let mut state = self.lock();
         let parent_ok = match path.parent() {
             Some(parent) if !parent.as_os_str().is_empty() => {
@@ -693,6 +696,7 @@ impl ScopeFs for FixtureFs {
     }
 
     fn fsops_write_new_file(&self, path: &Path, bytes: &[u8]) -> std::io::Result<()> {
+        let path = &self.resolve_leaf(path);
         let mut state = self.lock();
         if state.exact_exists(path) {
             return Err(std::io::Error::new(
@@ -706,6 +710,8 @@ impl ScopeFs for FixtureFs {
     }
 
     fn fsops_rename(&self, from: &Path, to: &Path) -> std::io::Result<()> {
+        let from = &self.resolve_leaf(from);
+        let to = &self.resolve_leaf(to);
         let mut state = self.lock();
         if !state.exact_exists(from) {
             return Err(Self::not_found(from));
@@ -1596,5 +1602,50 @@ mod tests {
         );
 
         std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    /// Given a directory alias inside the fixture, when an `fsops_*` write
+    /// method is called through it (rather than through its resolved
+    /// target), then the write lands where reads (`symlink_metadata`,
+    /// `read_capped`, `fsops_device_inode`) already resolve the alias to,
+    /// not under a lexical key those reads never see - matching `RealFs`,
+    /// where the kernel resolves an intermediate symlink for every syscall.
+    #[test]
+    fn fixture_writes_through_a_directory_alias_are_visible_to_reads_or_names_the_lexical_key() {
+        let fs = FixtureBuilder::new()
+            .dir("/root")
+            .dir("/root/real")
+            .alias("/root/link", "/root/real")
+            .build_fs();
+
+        fs.fsops_create_dir(Path::new("/root/link/sub"))
+            .expect("create a dir written through the alias");
+        fs.fsops_write_new_file(Path::new("/root/link/sub/file.txt"), b"hello")
+            .expect("write a file written through the alias");
+
+        assert_eq!(
+            fs.read_capped(Path::new("/root/real/sub/file.txt"), u64::MAX)
+                .expect("the write must be visible under the alias's resolved path"),
+            b"hello",
+            "a write through the alias must not be stuck at a lexical key reads never see"
+        );
+        assert!(
+            fs.symlink_metadata(Path::new("/root/link/sub/file.txt"))
+                .is_ok(),
+            "the write must also be visible through the alias itself"
+        );
+
+        fs.fsops_rename(Path::new("/root/link/sub"), Path::new("/root/link/renamed"))
+            .expect("rename a dir written through the alias");
+        assert!(
+            fs.symlink_metadata(Path::new("/root/real/renamed/file.txt"))
+                .is_ok(),
+            "a rename through the alias must land under the resolved path too"
+        );
+
+        fs.fsops_fsync_dir(Path::new("/root/link/renamed"))
+            .expect("fsync a dir reached through the alias");
+        fs.fsops_fsync_file(Path::new("/root/link/renamed/file.txt"))
+            .expect("fsync a file reached through the alias");
     }
 }
