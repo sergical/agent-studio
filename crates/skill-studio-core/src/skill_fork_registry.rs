@@ -22,6 +22,7 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use serde::{Deserialize, Serialize};
+use serde_json::Value;
 
 use crate::skill_deployment::InstallScope;
 use crate::skill_deployment::SkillDestination;
@@ -171,10 +172,21 @@ pub struct ParkedRecord {
     pub skill_dir: PathBuf,
     pub parked_at: String,
     pub source_kind: SourceKind,
-    /// The per-skill Claude Code symlink that was removed when parking, if
-    /// any - `unpark_skill` recreates it at this exact path.
+    /// Raw target of the per-skill Claude Code symlink removed by Park, if
+    /// any. Unpark recreates the standard per-skill link with this target.
     #[serde(default)]
     pub claude_link: Option<PathBuf>,
+    /// Exact active owner record suspended while the canonical tree is parked.
+    /// Keeping it raw preserves fields introduced by newer registry versions.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub suspended_owner: Option<ParkedOwnerRecord>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "kebab-case")]
+pub enum ParkedOwnerRecord {
+    Copy { key: String, value: Value },
+    Fork { key: String, value: Value },
 }
 
 /// One first-class agent's per-skill disable that has no native config to

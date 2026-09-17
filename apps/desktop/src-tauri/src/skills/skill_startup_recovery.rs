@@ -99,6 +99,18 @@ fn recover_with_worker(
         let _transaction = super::skill_md_write::begin_skill_md_write_transaction()?;
         let mut service =
             ScopedSkillService::bind(load_scope()?).map_err(|error| error.to_string())?;
+        if matches!(
+            row.kind.as_str(),
+            "park_global_universal" | "unpark_global_universal"
+        ) {
+            return skill_studio_core::skill_park_operation::recover_park_operation(
+                &mut service,
+                store,
+                row,
+                super::skill_harness_disable::copy_visibility_limits(),
+                Some(Duration::from_secs(30)),
+            );
+        }
         if row.kind == skill_studio_core::skill_copy_removal::EVENT_KIND {
             return skill_studio_core::skill_copy_removal::recover_copy_removal(
                 &mut service,
@@ -471,5 +483,90 @@ mod tests {
         assert!(error.contains("fork-pull:"), "{error}");
         assert!(!error.contains("unsupported startup recovery"), "{error}");
         assert_eq!(store.get("fork-pull").unwrap().unwrap().status, "pending");
+    }
+    #[test]
+    fn dispatches_pending_park_and_unpark_to_completion() {
+        use skill_studio_core::skill_park_operation::{
+            park_skill, unpark_skill, ParkSkillRequest, UnparkSkillRequest,
+        };
+        use skill_studio_core::skill_provenance::SourceKind;
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path().canonicalize().unwrap();
+        let home = root.join("home");
+        let active = home.join(".agents/skills/sample");
+        std::fs::create_dir_all(&active).unwrap();
+        let content =
+            "---\nname: sample\ndescription: Startup recovery fixture\n---\nPreserve me.\n";
+        std::fs::write(active.join("SKILL.md"), content).unwrap();
+        let scope = SkillScope {
+            home: home.clone(),
+            projects: vec![],
+            backing_roots: vec![],
+            plugin_ownership_roots: vec![],
+        };
+        let store_root = root.join("events");
+        let store = EventStore::open(&store_root).unwrap();
+        let connection = rusqlite::Connection::open(store_root.join("events.sqlite3")).unwrap();
+        let mut service = ScopedSkillService::bind(scope.clone()).unwrap();
+        let selected = service
+            .scan(None, Some(Duration::from_secs(5)))
+            .unwrap()
+            .skills
+            .into_iter()
+            .flat_map(|skill| skill.deployments)
+            .find(|deployment| std::path::Path::new(&deployment.path) == active)
+            .unwrap();
+        let limits = super::super::skill_harness_disable::copy_visibility_limits();
+        for unpark in [false, true] {
+            connection.execute_batch("CREATE TRIGGER fixture_completion_failure BEFORE UPDATE OF status ON events WHEN NEW.status = 'done' BEGIN SELECT RAISE(ABORT, 'fixture completion failure'); END;").unwrap();
+            let result = if unpark {
+                let registry =
+                    super::super::skill_fork_registry::read_fork_registry(&home).unwrap();
+                let parked = registry.parked.get("sample").unwrap();
+                unpark_skill(
+                    &mut service,
+                    &store,
+                    &UnparkSkillRequest {
+                        deployment_id: parked.deployment_id.clone(),
+                    },
+                    limits,
+                    Some(Duration::from_secs(5)),
+                    CancellationToken::default(),
+                )
+                .map(|_| ())
+            } else {
+                park_skill(
+                    &mut service,
+                    &store,
+                    &ParkSkillRequest {
+                        deployment_id: selected.id.clone(),
+                        source_kind: SourceKind::Manual,
+                        parked_at: "2026-09-17T00:00:00Z".into(),
+                    },
+                    limits,
+                    Some(Duration::from_secs(5)),
+                    CancellationToken::default(),
+                )
+                .map(|_| ())
+            };
+            assert!(result.is_err());
+            let event = oldest(&store).unwrap().unwrap();
+            assert_eq!(event.status, "pending");
+            connection
+                .execute_batch("DROP TRIGGER fixture_completion_failure")
+                .unwrap();
+            store.reconcile_at_startup().unwrap();
+            assert_eq!(recover_all(scope.clone(), &store).unwrap(), 1);
+            assert_eq!(store.get(&event.id).unwrap().unwrap().status, "done");
+            let expected = if unpark {
+                active.clone()
+            } else {
+                home.join(".agents/skills-parked/sample")
+            };
+            assert_eq!(
+                std::fs::read_to_string(expected.join("SKILL.md")).unwrap(),
+                content
+            );
+        }
     }
 }

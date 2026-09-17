@@ -53,9 +53,11 @@ function iconForKind(kind: string, className: string) {
     case "make_independent_copy":
       return <FolderSymlink {...props} />;
     case "move_aside_disable":
+    case "park_global_universal":
       return <Archive {...props} />;
     case "restore_expired_copy_trial_backup":
     case "move_aside_restore":
+    case "unpark_global_universal":
       return <ArchiveRestore {...props} />;
     default:
       return <HistoryIcon {...props} />;
@@ -91,6 +93,10 @@ function kindLabel(kind: string): string {
       return "Copy trial expired";
     case "restore_expired_copy_trial_backup":
       return "Restored trial backup";
+    case "park_global_universal":
+      return "Parked skill";
+    case "unpark_global_universal":
+      return "Unparked skill";
     default:
       return kind.replace(/_/g, " ");
   }

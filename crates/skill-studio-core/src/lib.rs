@@ -21,6 +21,10 @@ pub mod skill_inventory;
 pub mod skill_ledger_inventory;
 pub mod skill_lock_file;
 pub mod skill_ownership;
+#[cfg(all(unix, feature = "event-store"))]
+pub mod skill_park_operation;
+#[cfg(all(unix, feature = "event-store"))]
+pub mod skill_park_transition;
 pub mod skill_plugins;
 pub mod skill_project_lock;
 pub mod skill_provenance;
