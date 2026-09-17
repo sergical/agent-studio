@@ -5,6 +5,7 @@ Full-page view of an installed skill: header (name, actions, metadata), location
 ## Sub-features
 
 **Header** (InstalledSkillHeader component):
+
 - **Back button** - ArrowLeft icon + text from `from` view ("Home", "Skills", etc.), triggers `onBack()`
 - **Skill name** - H1, bold, text-primary
 - **Primary action button** - Dynamic based on skill state:
@@ -24,6 +25,7 @@ Full-page view of an installed skill: header (name, actions, metadata), location
 - **Metadata line** - Last used (relative time) • Invocations (30d count) • Token count (description tokens)
 
 **Locations Card** (SkillLocationsCard component):
+
 - **Purpose** - Shows every deployment of this skill (global, project(s), parked)
 - **Row per deployment**:
   - Harness icon + label (e.g. "Claude Code", "Codex")
@@ -40,6 +42,7 @@ Full-page view of an installed skill: header (name, actions, metadata), location
 - **Action buttons** - Ghost style, icon + text, each button triggers async operation
 
 **Markdown Card** (SkillMarkdownCard component):
+
 - **Display mode** (default):
   - Rendered markdown with syntax highlighting (code blocks), headings, lists, links
   - "Edit" button (top right) → enters edit mode
@@ -57,29 +60,34 @@ Full-page view of an installed skill: header (name, actions, metadata), location
 - **Escape key** - Exits edit mode if clean, shows discard confirmation if dirty
 
 **Discard Changes Dialog** (DiscardChangesDialog component):
+
 - **Trigger** - Clicking "Discard" button or pressing Escape with unsaved changes
 - **Content** - "Discard unsaved changes to <skill-name>?" + explanation
 - **Actions** - "Cancel" (stay in edit mode) / "Discard" (confirm, exits edit mode, reverts content)
 - **Async flow** - `pendingDiscard` state holds callback to run on confirm (e.g. `onBack()` when Escape pressed)
 
 **Repair Card** (SkillRepairCard component):
+
 - **Trigger** - Shown when skill has issues (spec violations, missing dependencies, etc.)
 - **Content** - List of issues with fix suggestions
 - **Actions** - Per-issue actions (e.g. "Fix spec violation", "Install dependency")
 - (Not deeply documented in prior coverage - may need fuller research)
 
 **Test Form** (future/planned, not currently implemented):
+
 - Would show input fields for test parameters defined in SKILL.md
 - "Run test" button → executes skill in test harness
 - Test results display area
 
 **Compare Dialog** (SkillCompareDialog component):
+
 - **Trigger** - "Compare copies" from overflow menu, or navigating with `intent: "compare"`
 - **Content** - Side-by-side diff of SKILL.md from multiple deployments
 - **Purpose** - Shows which copy differs when "Copies differ" warning exists
 - **Close** - Click outside, Escape key, or dialog close button
 
 **Assistant Drawer** (SkillAssistantDrawer + SkillAssistantPanel):
+
 - **Trigger** - "Ask assistant" button in header
 - **Position** - Right-side overlay drawer, slides in from right
 - **Content** - `SkillAssistantPanel` with AI chat interface
@@ -91,6 +99,7 @@ Full-page view of an installed skill: header (name, actions, metadata), location
 - **Close** - Click outside drawer, Escape key, or close icon in drawer header
 
 **Back Navigation**:
+
 - **Back button** in header → `onBack()` → returns to `from` view (Home, Skills, etc.)
 - **Escape key** → Back if no unsaved changes, otherwise shows discard dialog
 - **Dirty guard** - Blocks navigation if editor dirty, requires confirmation
@@ -98,42 +107,45 @@ Full-page view of an installed skill: header (name, actions, metadata), location
 ## How to get to it (user POV)
 
 **From Home or Skills**:
+
 1. Click any skill row in inbox or table
 2. Skill detail page opens
 
 **From URL** (deep link):
+
 - `/skill/<name>` (if app supports routing)
 - Optional `deploymentPath` query param to show specific deployment
 
 **From Compare Intent**:
+
 - Home Warnings row "Compare" button → navigates with `intent: "compare"` → auto-opens compare dialog
 
 ## Driving it with Playwright
 
 ```typescript
 // Open skill detail from Skills list
-await page.goto('http://localhost:1420');
+await page.goto("http://localhost:1420");
 await page.click('button:has-text("Skills")');
-await page.waitForSelector('table tbody tr');
-const firstRow = page.locator('table tbody tr').first();
-const skillName = await firstRow.locator('span').first().textContent();
+await page.waitForSelector("table tbody tr");
+const firstRow = page.locator("table tbody tr").first();
+const skillName = await firstRow.locator("span").first().textContent();
 await firstRow.click();
 
 // Verify detail page loaded
-await page.waitForSelector('text=Locations');
+await page.waitForSelector("text=Locations");
 await expect(page.locator(`h1:has-text("${skillName}")`)).toBeVisible();
 
 // Check locations card
-const locationsCard = page.locator('text=Locations').locator('..');
-const deploymentCount = await locationsCard.locator('[data-deployment]').count();
+const locationsCard = page.locator("text=Locations").locator("..");
+const deploymentCount = await locationsCard.locator("[data-deployment]").count();
 console.log(`Deployments: ${deploymentCount}`);
 
 // Toggle deployment enable/disable
 const firstToggle = locationsCard.locator('button[role="switch"]').first();
-const wasEnabled = await firstToggle.getAttribute('aria-checked') === 'true';
+const wasEnabled = (await firstToggle.getAttribute("aria-checked")) === "true";
 await firstToggle.click();
 await page.waitForTimeout(500); // Backend operation
-const nowEnabled = await firstToggle.getAttribute('aria-checked') === 'true';
+const nowEnabled = (await firstToggle.getAttribute("aria-checked")) === "true";
 expect(nowEnabled).toBe(!wasEnabled);
 
 // Open in editor
@@ -143,19 +155,19 @@ await openButton.click();
 
 // Enter edit mode
 await page.click('button:has-text("Edit")');
-await page.waitForSelector('.monaco-editor'); // Monaco editor renders
+await page.waitForSelector(".monaco-editor"); // Monaco editor renders
 
 // Edit content
-await page.keyboard.type('\n\n## New Section\n\nTest content');
+await page.keyboard.type("\n\n## New Section\n\nTest content");
 // Monaco content change tracked via isEditorDirty
 
 // Try to escape with unsaved changes
-await page.keyboard.press('Escape');
-await page.waitForSelector('text=Discard unsaved changes'); // Discard dialog
+await page.keyboard.press("Escape");
+await page.waitForSelector("text=Discard unsaved changes"); // Discard dialog
 
 // Cancel discard
 await page.click('button:has-text("Cancel")');
-await expect(page.locator('.monaco-editor')).toBeVisible(); // Still in edit mode
+await expect(page.locator(".monaco-editor")).toBeVisible(); // Still in edit mode
 
 // Save changes
 await page.click('button:has-text("Save")');
@@ -164,32 +176,33 @@ await expect(page.locator('button:has-text("Edit")')).toBeVisible(); // Back to 
 
 // Open assistant
 await page.click('button:has-text("Ask assistant")');
-await page.waitForSelector('.assistant-drawer, [data-assistant-panel]'); // Drawer slides in
+await page.waitForSelector(".assistant-drawer, [data-assistant-panel]"); // Drawer slides in
 
 // Ask question (assistant chat)
 const assistantInput = page.locator('.assistant-drawer textarea, input[placeholder*="Ask"]');
-await assistantInput.fill('What does this skill do?');
-await page.keyboard.press('Enter');
+await assistantInput.fill("What does this skill do?");
+await page.keyboard.press("Enter");
 await page.waitForTimeout(2000); // AI response (mocked or real)
 
 // Close assistant
-await page.keyboard.press('Escape'); // Or click close button
-await expect(page.locator('.assistant-drawer')).toBeHidden();
+await page.keyboard.press("Escape"); // Or click close button
+await expect(page.locator(".assistant-drawer")).toBeHidden();
 
 // Open compare dialog (overflow menu)
 await page.click('button[aria-label="More actions"]'); // Three-dot menu
-await page.click('text=Compare copies');
-await page.waitForSelector('.compare-dialog, text=Compare deployments');
+await page.click("text=Compare copies");
+await page.waitForSelector(".compare-dialog, text=Compare deployments");
 
 // Close compare
-await page.keyboard.press('Escape');
+await page.keyboard.press("Escape");
 
 // Back to previous view
 await page.click('button:has-text("Back")'); // Or "Skills", "Home", etc.
-await page.waitForSelector('table tbody tr, text=Home'); // Previous view
+await page.waitForSelector("table tbody tr, text=Home"); // Previous view
 ```
 
 Selectors:
+
 - Back button: `button:has-text("Back")` or `button[aria-label="Back to <view>"]`
 - Skill name: `h1` (first heading)
 - Primary action: `button:has-text("Pull latest")`, `button:has-text("Remove")`
@@ -221,6 +234,7 @@ Selectors:
 ## Branches
 
 ### Happy path: View, edit, save, toggle deployment
+
 1. User clicks skill in list → detail page loads
 2. Header shows name, chips, metadata; locations card shows deployments; markdown card shows content
 3. User clicks "Edit" → Monaco editor renders
@@ -230,16 +244,19 @@ Selectors:
 7. User clicks "Back" → returns to previous view
 
 ### Empty / first-run states
+
 - **Skill has one deployment** - Locations card shows one row, no "Compare copies" in overflow menu
 - **No issues** - No repair card shown
 - **No invocations yet** - Metadata line shows "never" for last used, 0 invocations
 
 ### Duplicate / conflict states
+
 - **Multiple deployments with different content** - "Copies differ" chip in header, "Compare copies" menu item enabled
 - **Editing dotagents skill** - Fork runs before save, new deployment created in manual scope
 - **Skill removed between views** - `skill` prop becomes `null`, shows error state or redirects
 
 ### Failure / error states
+
 - **SKILL.md load failure** - Error message in markdown card + "Retry" button
 - **Save failure** - Toast "Couldn't save SKILL.md: <error>", stays in edit mode, content preserved
 - **Fork failure** - Toast "Couldn't fork before saving: <error>", save aborted, stays in edit mode
@@ -249,12 +266,14 @@ Selectors:
 - **Compare load failure** - Dialog shows error message
 
 ### Cancellation / close mid-flow
+
 - **Discard unsaved changes** - Clicking "Discard" in dialog or confirming Escape → reverts content, exits edit mode
 - **Cancel discard** - Clicking "Cancel" in dialog → stays in edit mode, changes preserved
 - **Close assistant drawer mid-chat** - Drawer closes, chat state may persist (depending on implementation)
 - **Navigate away during save** - Save continues in background (async, no cancellation), toast may show after nav
 
 ### Loading / progress states
+
 - **Initial page load** - Skeleton for markdown card (if not copy-switch), locations card renders immediately
 - **SKILL.md loading** - Skeleton shows animated bars
 - **Saving** - "Save" button shows spinner icon, disabled, text "Saving…"
@@ -265,6 +284,7 @@ Selectors:
 ## Benchmarks & improvement
 
 ### Observable metrics
+
 - **Detail page render time**: Click skill → page visible
   - Measure: Nav click → header + cards rendered
   - Target: < 400ms (includes SKILL.md read)
@@ -282,12 +302,14 @@ Selectors:
   - Target: < 500ms (filesystem operation)
 
 ### Current instrumentation
+
 - Loading states shown in UI (skeleton, spinners)
 - Error toasts with messages
 - `isLoading`, `isSaving`, `isEditorDirty` flags tracked
 - No timing logs, save success rate, or fork duration metrics
 
 ### Suggested measurements for verification
+
 - **Edit mode responsiveness**: Verify Monaco editor keybindings work (Cmd+Z, Cmd+F, etc.)
 - **Fork correctness**: Verify forked skill appears in manual scope with all metadata preserved
 - **Toggle idempotency**: Enable → disable → enable, verify final state matches initial
@@ -295,6 +317,7 @@ Selectors:
 - **Compare dialog accuracy**: Verify diff shows exact character-level differences between deployments
 
 ### Improvement levers
+
 - **Prefetch SKILL.md** (currently loads on mount; could prefetch while animating from list)
 - **Memoize markdown rendering** (currently re-renders on every content change; memo keyed by content would skip redundant work)
 - **Virtualize long markdown** (files > 50KB lag; syntax highlighter could chunk)
@@ -319,6 +342,7 @@ After each interaction:
 - **Back navigation**: Returns to previous view (Home, Skills, etc.), dirty guard blocks if unsaved changes
 
 Invariants:
+
 - Markdown card content always matches selected `deploymentPath` (or first deployment if none specified)
 - Fork-before-save only for dotagents/skills-sh sources (manual/in-repo skip fork)
 - Edit mode and dirty state reset on skill switch (new skill = fresh state)

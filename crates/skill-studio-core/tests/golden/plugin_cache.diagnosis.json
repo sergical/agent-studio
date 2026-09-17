@@ -1,0 +1,143 @@
+{
+  "inventory": {
+    "completeness": "complete",
+    "observations": [],
+    "projects": [],
+    "skills": [
+      {
+        "deployments": [
+          {
+            "backing": "independent",
+            "content_fingerprint": "sha256:5efecc754a9527f3c92cdc4a6773a2d179603397a82efeffe1f0b1a381245427",
+            "content_hash": "5efecc754a9527f3c92cdc4a6773a2d179603397a82efeffe1f0b1a381245427",
+            "description_tokens": 12,
+            "destination": "per_harness",
+            "disabled_by": null,
+            "disabled_readers": [],
+            "file_count": 1,
+            "folder_bytes": 112,
+            "folder_truncated": false,
+            "frontmatter": {
+              "allowed-tools": null,
+              "compatibility": null,
+              "description": "Helps with audit-code for fixture-driven tests.",
+              "disable-model-invocation": null,
+              "license": null,
+              "metadata": null,
+              "name": "audit-code",
+              "user-invocable": null
+            },
+            "frontmatter_fields": {
+              "description": "Helps with audit-code for fixture-driven tests.",
+              "name": "audit-code"
+            },
+            "harness": "codex",
+            "has_spec": false,
+            "id": "dep:v1/global/codex/per-harness/audit-code/-/%24HOME%2F.codex%2Fplugins%2Fcache%2Fsome-marketplace%2Fcodex-toolkit%2F2.0.0%2Fskills%2Faudit-code",
+            "in_git_repo": false,
+            "is_symlink": false,
+            "link_target": null,
+            "modified_at": "-",
+            "mutability": "read_only",
+            "owner_id": null,
+            "owner_kind": "plugin",
+            "path": "$HOME/.codex/plugins/cache/some-marketplace/codex-toolkit/2.0.0/skills/audit-code",
+            "plugin": {
+              "enabled": null,
+              "marketplace": "some-marketplace",
+              "plugin": "codex-toolkit",
+              "version": "2.0.0"
+            },
+            "resolved_path": null,
+            "root": {
+              "kind": {
+                "harness": "codex",
+                "kind": "plugin_cache"
+              },
+              "scope": {
+                "scope": "global"
+              }
+            },
+            "shared_via_whole_dir_link": false,
+            "skill_md_tokens": 24,
+            "source_kind": "plugin",
+            "spec_violations": [],
+            "studio_disabled": false,
+            "symlink_error": null,
+            "symlink_is_broken": false
+          }
+        ],
+        "description": "Helps with audit-code for fixture-driven tests.",
+        "name": "audit-code"
+      },
+      {
+        "deployments": [
+          {
+            "backing": "independent",
+            "content_fingerprint": "sha256:764c41870a5f53374451937f0a0d43516caa7dc0f9efa931e5a063e332c5da73",
+            "content_hash": "764c41870a5f53374451937f0a0d43516caa7dc0f9efa931e5a063e332c5da73",
+            "description_tokens": 12,
+            "destination": "per_harness",
+            "disabled_by": null,
+            "disabled_readers": [],
+            "file_count": 1,
+            "folder_bytes": 109,
+            "folder_truncated": false,
+            "frontmatter": {
+              "allowed-tools": null,
+              "compatibility": null,
+              "description": "Helps with lint-code for fixture-driven tests.",
+              "disable-model-invocation": null,
+              "license": null,
+              "metadata": null,
+              "name": "lint-code",
+              "user-invocable": null
+            },
+            "frontmatter_fields": {
+              "description": "Helps with lint-code for fixture-driven tests.",
+              "name": "lint-code"
+            },
+            "harness": "claude-code",
+            "has_spec": false,
+            "id": "dep:v1/global/claude-code/per-harness/lint-code/-/%24HOME%2F.claude%2Fplugins%2Fcache%2Fsome-marketplace%2Fsentry-toolkit%2F1.0.0%2Fskills%2Flint-code",
+            "in_git_repo": false,
+            "is_symlink": false,
+            "link_target": null,
+            "modified_at": "-",
+            "mutability": "read_only",
+            "owner_id": null,
+            "owner_kind": "plugin",
+            "path": "$HOME/.claude/plugins/cache/some-marketplace/sentry-toolkit/1.0.0/skills/lint-code",
+            "plugin": {
+              "enabled": null,
+              "marketplace": "some-marketplace",
+              "plugin": "sentry-toolkit",
+              "version": "1.0.0"
+            },
+            "resolved_path": null,
+            "root": {
+              "kind": {
+                "harness": "claude-code",
+                "kind": "plugin_cache"
+              },
+              "scope": {
+                "scope": "global"
+              }
+            },
+            "shared_via_whole_dir_link": false,
+            "skill_md_tokens": 24,
+            "source_kind": "plugin",
+            "spec_violations": [],
+            "studio_disabled": false,
+            "symlink_error": null,
+            "symlink_is_broken": false
+          }
+        ],
+        "description": "Helps with lint-code for fixture-driven tests.",
+        "name": "lint-code"
+      }
+    ],
+    "timings": []
+  },
+  "issues": []
+}

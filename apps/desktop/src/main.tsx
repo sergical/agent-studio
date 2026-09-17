@@ -41,11 +41,17 @@ class ErrorBoundary extends React.Component<
           }}
         >
           <h1>Something went wrong</h1>
-          <pre style={{ whiteSpace: "pre-wrap", wordBreak: "break-word" }}>
+          <pre style={{ whiteSpace: "pre-wrap", wordBreak: "break-word", userSelect: "text" }}>
             {this.state.error?.message}
           </pre>
           <pre
-            style={{ whiteSpace: "pre-wrap", wordBreak: "break-word", fontSize: 12, opacity: 0.7 }}
+            style={{
+              whiteSpace: "pre-wrap",
+              wordBreak: "break-word",
+              fontSize: 12,
+              opacity: 0.7,
+              userSelect: "text",
+            }}
           >
             {this.state.error?.stack}
           </pre>
@@ -57,17 +63,36 @@ class ErrorBoundary extends React.Component<
   }
 }
 
-const rootElement = document.getElementById("root");
-if (!rootElement) {
-  throw new Error("Skill Studio root element #root is missing from index.html");
-}
-
 // Dev-only proof that @skill-studio/ui renders themed with the app's tokens.
 // Not a real route: visit with `#kit` while running `npm run dev`.
 const showKitPreview = import.meta.env.DEV && location.hash === "#kit";
 
-ReactDOM.createRoot(rootElement).render(
-  <React.StrictMode>
-    <ErrorBoundary>{showKitPreview ? <KitPreview /> : <App />}</ErrorBoundary>
-  </React.StrictMode>,
-);
+async function boot(): Promise<void> {
+  const rootElement = document.getElementById("root");
+  if (!rootElement) {
+    throw new Error("Skill Studio root element #root is missing from index.html");
+  }
+
+  // No Tauri runtime behind this tab (a plain browser dev session): install
+  // the mock IPC layer so an agent-browser session can drive the app from a
+  // realistic in-memory skill estate. See `dev/harness/mock-tauri.ts`.
+  if (import.meta.env.DEV && !("__TAURI_INTERNALS__" in window)) {
+    const [{ buildHarnessSnapshot }, { installMockTauri }] = await Promise.all([
+      import("./dev/harness/skill-fixture"),
+      import("./dev/harness/mock-tauri"),
+    ]);
+    // `?n=378` pads the estate to a realistic size for performance runs.
+    const skillCount = Number(new URLSearchParams(window.location.search).get("n") ?? 0);
+    window.__harness = installMockTauri(buildHarnessSnapshot(skillCount));
+    // eslint-disable-next-line no-console
+    console.info("[harness] mock Tauri IPC installed");
+  }
+
+  ReactDOM.createRoot(rootElement).render(
+    <React.StrictMode>
+      <ErrorBoundary>{showKitPreview ? <KitPreview /> : <App />}</ErrorBoundary>
+    </React.StrictMode>,
+  );
+}
+
+void boot();

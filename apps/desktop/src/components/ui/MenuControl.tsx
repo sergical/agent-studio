@@ -21,7 +21,12 @@ import {
 } from "@skill-studio/ui";
 
 const DEFAULT_ITEM_CLASS =
-  "flex h-(--control-height) cursor-pointer items-center gap-2 rounded-sm px-2.5 text-body text-text-secondary transition-colors data-highlighted:bg-bg-hover data-highlighted:text-text-primary data-disabled:cursor-not-allowed data-disabled:text-text-quaternary data-[variant=destructive]:text-error data-[variant=destructive]:data-highlighted:bg-error-soft data-[variant=destructive]:data-highlighted:text-error";
+  "flex h-(--control-height) cursor-pointer items-center gap-2 rounded-sm px-2.5 text-body text-text-secondary data-highlighted:bg-bg-hover data-highlighted:text-text-primary data-disabled:cursor-not-allowed data-disabled:text-text-quaternary data-[variant=destructive]:text-error data-[variant=destructive]:data-highlighted:bg-error-soft data-[variant=destructive]:data-highlighted:text-error";
+
+/** The popup shell's default look, exported for callers (e.g. `SkillRowMenuScope`) that build a
+ * `DropdownMenuContent` directly instead of going through `MenuControl`. */
+export const DEFAULT_POPUP_CLASS =
+  "z-(--z-dropdown) w-auto min-w-(--anchor-width) rounded-md border border-border bg-bg-secondary p-1 shadow-md ring-0";
 
 export function MenuItem({ className, ...props }: ComponentProps<typeof DropdownMenuItem>) {
   return <DropdownMenuItem className={cn(DEFAULT_ITEM_CLASS, className)} {...props} />;
@@ -57,6 +62,8 @@ interface MenuControlProps {
   align?: "start" | "end";
   /** Extra classes on the popup. The popup sizes to its content (`w-auto` undoes the kit's anchor-width default), so this is for a floor like `min-w-[200px]`. */
   popupClassName?: string;
+  /** Notified on open/close - e.g. the row's `.`/Shift+F10 shortcut refocuses the row once its menu closes. */
+  onOpenChange?: (open: boolean) => void;
 }
 
 /** The root + trigger + popup shell of a menu; `children` is the item list. */
@@ -65,21 +72,20 @@ export function MenuControl({
   triggerClassName,
   triggerAriaLabel,
   children,
-  align = "start",
+  align: alignProp,
   popupClassName,
+  onOpenChange,
 }: MenuControlProps) {
+  const align = alignProp ?? "start";
   return (
-    <DropdownMenu>
+    <DropdownMenu onOpenChange={onOpenChange}>
       <DropdownMenuTrigger className={triggerClassName} aria-label={triggerAriaLabel}>
         {trigger}
       </DropdownMenuTrigger>
       <DropdownMenuContent
         align={align}
         sideOffset={4}
-        className={cn(
-          "z-(--z-dropdown) w-auto min-w-(--anchor-width) rounded-md border border-border bg-bg-secondary p-1 shadow-md ring-0",
-          popupClassName,
-        )}
+        className={cn(DEFAULT_POPUP_CLASS, popupClassName)}
       >
         {children}
       </DropdownMenuContent>

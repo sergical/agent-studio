@@ -9,13 +9,16 @@
     "preview": "vite preview",
     "tauri": "tauri",
     "typecheck": "tsc --noEmit",
-    "test": "vitest run"
+    "test": "vitest run",
+    "types:generate": "node scripts/generate-types.mjs",
+    "types:check": "node scripts/generate-types.mjs --check"
   },
   "dependencies": {
     "@base-ui/react": "^1.7.0",
     "@pierre/diffs": "^1.3.6",
     "@skill-studio/lib": "*",
     "@skill-studio/ui": "*",
+    "@tanstack/react-virtual": "^3.14.9",
     "@tauri-apps/api": "^2.11.1",
     "@tauri-apps/plugin-dialog": "^2.7.2",
     "lucide-react": "^1.37.0",
@@ -37,6 +40,7 @@
     "@types/react-dom": "^19.2.5",
     "@vitejs/plugin-react": "^6.1.1",
     "babel-plugin-react-compiler": "^1.0.0",
+    "json-schema-to-typescript": "^16.0.0",
     "oxfmt": "^0.65.0",
     "oxlint": "^1.80.0",
     "tailwindcss": "^4.3.3",

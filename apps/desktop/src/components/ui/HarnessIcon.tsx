@@ -16,7 +16,9 @@ interface HarnessIconProps {
 
 export { agentIdFromDeploymentLabel as harnessIdFromLabel } from "@skill-studio/lib";
 
-export function HarnessIcon({ harness, size = 16, muted = false }: HarnessIconProps) {
+export function HarnessIcon({ harness, size: sizeProp, muted: mutedProp }: HarnessIconProps) {
+  const size = sizeProp ?? 16;
+  const muted = mutedProp ?? false;
   // `data-harness-icon` lets a container animate just the harness marks inside
   // it (see the shared-folder rows in `SkillSharedFolderGroup`) without
   // catching the lucide icons and chips that sit in the same rows.

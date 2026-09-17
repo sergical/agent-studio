@@ -3,7 +3,7 @@
 // Skills.sh integration for skill discovery, installation, and management
 // ============================================================================
 
-mod skills;
+pub mod skills;
 
 use tauri::Manager;
 
@@ -110,8 +110,33 @@ fn open_event_store(app: &tauri::App) -> Option<skills::event_store::EventStore>
     Some(store)
 }
 
+/// When `SKILL_STUDIO_FIXTURE` names a directory, points every `HOME`
+/// resolution in the app - `dirs::home_dir()` throughout the desktop crate,
+/// and `RuntimeScope::live` vs. `RuntimeScope::fixture` in
+/// `skill_refresh::build_snapshot` - at that directory instead of the real
+/// one, for the manual fixture-mode checklist in
+/// `docs/spec-core-primitives.md` section 11.5. Must run before anything
+/// else reads `HOME` (the refresh thread, the event store, `skill_pack`
+/// startup reconcile), so it's the very first thing `run()` does.
+///
+/// SAFETY: single-threaded at this point - `run()` hasn't spawned the
+/// refresh thread or handed control to Tauri yet, so nothing else reads
+/// `HOME` concurrently with this write.
+fn apply_fixture_home_override() {
+    if let Some(fixture) = std::env::var_os("SKILL_STUDIO_FIXTURE") {
+        eprintln!(
+            "skill-studio: SKILL_STUDIO_FIXTURE set, running against fixture home {}",
+            fixture.to_string_lossy()
+        );
+        unsafe {
+            std::env::set_var("HOME", &fixture);
+        }
+    }
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    apply_fixture_home_override();
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
         .setup(|app| {
@@ -158,8 +183,7 @@ pub fn run() {
             skills::skill_frontmatter_repair::preview_skill_frontmatter_repair,
             skills::skill_frontmatter_repair::apply_skill_frontmatter_repair,
             skills::commands::open_skill_path,
-            skills::commands::list_installed_editors,
-            skills::commands::get_preferred_editor,
+            skills::commands::get_editor_choices,
             skills::commands::set_preferred_editor,
             skills::skill_update_check::check_skill_updates_now,
             // Fork / Pull upstream / Un-fork
@@ -183,6 +207,8 @@ pub fn run() {
             skills::skill_harness_disable::set_harness_enabled,
             skills::skill_harness_disable::set_deployment_enabled,
             skills::skill_invocation::set_skill_invocation,
+            skills::commands::set_plugin_enabled,
+            skills::commands::uninstall_plugin,
             // Event store: History and per-harness materialize disable
             skills::event_commands::list_skill_events,
             skills::event_commands::restore_skill_event,
@@ -194,8 +220,14 @@ pub fn run() {
             // Background refresh / invocation snapshot
             skills::skill_refresh::get_skill_snapshot,
             skills::skill_refresh::request_skill_rescan,
+            skills::skill_refresh::get_tracked_projects,
             skills::skill_refresh::register_skill_projects,
             skills::skill_refresh::unregister_skill_project,
+            skills::skill_refresh::remove_skill_project,
+            skills::skill_refresh::import_tracked_projects,
+            skills::skill_refresh::get_discovery_sources,
+            skills::skill_refresh::set_discovery_source,
+            skills::skill_project_folders::list_project_folders,
             // Local harness runner
             skills::skill_agent_runner::start_skill_agent_run,
             skills::skill_agent_runner::cancel_skill_agent_run,

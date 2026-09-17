@@ -32,11 +32,11 @@ await page.click('button:has-text("Add skill")');
 await page.waitForSelector('[aria-label="Add skill"]');
 
 // Type source (GitHub owner/repo)
-await page.fill('#add-skill-source', 'getsentry/skills');
+await page.fill("#add-skill-source", "getsentry/skills");
 await page.waitForTimeout(500); // Let parsing + listing complete
 
 // Wait for skill listing to load
-await page.waitForSelector('text=Skills', { timeout: 5000 });
+await page.waitForSelector("text=Skills", { timeout: 5000 });
 
 // Select method (if multiple available)
 await page.click('[aria-label="Install method"] [value="dotagents"]');
@@ -50,7 +50,7 @@ await page.click('[value="project"]');
 
 // Choose directory (requires folder picker dialog, hard to automate)
 // OR select from remembered projects if any exist
-const projectSelect = page.locator('select'); // ProjectDirectorySelect
+const projectSelect = page.locator("select"); // ProjectDirectorySelect
 if (await projectSelect.isVisible()) {
   await projectSelect.selectOption({ index: 0 });
 }
@@ -64,6 +64,7 @@ await page.waitForSelector('[role="status"]:has-text("Added")');
 ```
 
 Selectors:
+
 - Sheet: `[aria-label="Add skill"]`
 - Source input: `#add-skill-source`
 - Method buttons: `[aria-label="Install method"] [value="dotagents"]`, etc.
@@ -90,6 +91,7 @@ Selectors:
 ## Branches
 
 ### Happy path: GitHub single skill
+
 1. User types "owner/repo" → parses as GitHub
 2. Listing fetches → finds 1 SKILL.md → shows as single row
 3. User picks method (dotagents default if installed)
@@ -97,28 +99,33 @@ Selectors:
 5. User clicks "Add skill" → `addSkill` command runs → toast success → sheet closes
 
 ### Happy path: GitHub multiple skills
+
 1. User types GitHub URL → parses → listing finds 5 skills
 2. All 5 checked by default → user unchecks 2
 3. User clicks "Install 3 skills" → `addSkills` command runs → 3 succeed → toast success
 4. Sheet closes → sidebar count increments
 
 ### Happy path: Git URL
+
 1. User types `https://github.com/owner/repo.git` → parses as git
 2. Method selector shows only dotagents (grayed if not installed)
 3. User submits → `addSkill` with method: "dotagents" → success
 
 ### Happy path: Local path
+
 1. User types `/Users/me/my-skill` → parses as local
 2. Method selector shows only Copy
 3. User submits → `addSkill` with method: "copy" → success
 
 ### Happy path: Pack import
+
 1. User types pack repo → parses as GitHub
 2. User selects method="pack"
 3. Harness selector shows (agents to import to)
 4. User submits → `importSkillPack` runs → imports bundled + referenced skills → toast with count
 
 ### Trial mode
+
 1. User checks "Try for 24 hours"
 2. Install proceeds with `trial: true`
 3. 24h later, backend emits `skills://trial-expired` event
@@ -126,17 +133,20 @@ Selectors:
 5. User clicks Restore → skill copied back to `~/.agents/skills/<name>`
 
 ### Empty / first-run states
+
 - No user-added projects → "Choose directory" button (no dropdown)
 - No dotagents installed → dotagents method grayed out
 - No skills.sh key → skills.sh method still works (server mode)
 - Empty source field → placeholder "Paste a repo, URL, or path to get started."
 
 ### Duplicate / already installed
+
 - Backend handles duplicates (returns warning message in `AddSkillResult.warning`)
 - Toast shows warning: "Added <name>" with warning message as secondary text
 - Sheet closes as normal (not an error)
 
 ### Failure / error states
+
 - **Parse error** → Shows below source field in red once field loses focus (e.g. "Invalid GitHub URL")
 - **Listing error** → "Could not reach GitHub" message with Retry button
 - **Listing truncated** → Large repos show "showing the first N skills GitHub returned"
@@ -146,6 +156,7 @@ Selectors:
 - **Pack import failure** → Error toast with list of failed skills
 
 ### Cancellation / close mid-flow
+
 - Click Cancel → sheet closes, form state discarded
 - Click outside sheet → sheet stays open (requires explicit Cancel or Escape)
 - Escape key → closes sheet if not mid-install
@@ -153,6 +164,7 @@ Selectors:
 - Close during install → install continues in background (Tauri command runs to completion)
 
 ### Loading / progress states
+
 - **Listing loading** → Skeleton placeholder ("Skills" label + animated bar)
 - **Submitting** → Button shows "Adding…", disabled, spinner
 - **Fresh open** → `getAddMethodDefaults` fetch runs (harness switches stay null until resolved)
@@ -160,6 +172,7 @@ Selectors:
 ## Benchmarks & improvement
 
 ### Observable metrics
+
 - **Parse latency**: Keystroke → feedback text updates (< 10ms, synchronous)
 - **Listing latency**: Source field stable → GitHub skills fetched (400ms debounce + API call)
   - Measure: Last keystroke → "Skills" section populated
@@ -172,12 +185,14 @@ Selectors:
   - Target: ~3s per skill average
 
 ### Current instrumentation
+
 - `isSubmitting` flag tracks install state (no timing)
 - Toast shows success/failure (no duration logged)
 - GitHub listing shows count + truncated flag
 - No per-method install timing captured
 
 ### Suggested measurements for verification
+
 - **Source parse rate**: Measure keystrokes that result in valid vs invalid parses (quality metric)
 - **Listing cache hit rate**: How often same repo is requested (could reduce API calls)
 - **Install success rate by method**: dotagents vs skills.sh vs copy (identify flakiest path)
@@ -185,6 +200,7 @@ Selectors:
 - **Error rate by source type**: GitHub vs git vs local (identify fragile paths)
 
 ### Improvement levers
+
 - **Parallel multi-skill installs** (currently sequential; backend `addSkills` spawns parallel `npx` calls but waits for all)
 - **Prefetch GitHub listing** on source field focus (saves ~400ms if user will type GitHub URL)
 - **Cache GitHub listings** per repo/ref (currently no cache; same repo typed twice refetches)
@@ -206,6 +222,7 @@ After each interaction:
 - **Cancel**: Sheet closes immediately, form state discarded
 
 Invariants:
+
 - Source field always reflects user input (no auto-correction or normalization)
 - Method selection constrained by source type (git → dotagents only, local → copy only)
 - Submit button disabled when validation fails (no source, no project path, no skills selected)

@@ -1,0 +1,315 @@
+{
+  "correlation_id": "-",
+  "data": {
+    "completeness": "complete",
+    "observations": [],
+    "projects": [],
+    "skills": [
+      {
+        "deployments": [
+          {
+            "backing": "independent",
+            "content_fingerprint": "sha256:abd98f788199b525644cd110b4670d1791bf368db76906a24169931026920f55",
+            "content_hash": "abd98f788199b525644cd110b4670d1791bf368db76906a24169931026920f55",
+            "description_tokens": 10,
+            "destination": "per_harness",
+            "disabled_by": null,
+            "disabled_readers": [],
+            "file_count": 1,
+            "folder_bytes": 97,
+            "folder_truncated": false,
+            "frontmatter": {
+              "allowed-tools": null,
+              "compatibility": null,
+              "description": "Helps with alpha for fixture-driven tests.",
+              "disable-model-invocation": null,
+              "license": null,
+              "metadata": null,
+              "name": "alpha",
+              "user-invocable": null
+            },
+            "frontmatter_fields": {
+              "description": "Helps with alpha for fixture-driven tests.",
+              "name": "alpha"
+            },
+            "harness": "claude-code",
+            "has_spec": false,
+            "id": "dep:v1/global/claude-code/per-harness/alpha/-/%24HOME%2F.claude%2Fskills%2Falpha",
+            "in_git_repo": false,
+            "is_symlink": false,
+            "link_target": null,
+            "modified_at": "-",
+            "mutability": "read_only",
+            "owner_id": null,
+            "owner_kind": "manual",
+            "path": "$HOME/.claude/skills/alpha",
+            "plugin": null,
+            "resolved_path": null,
+            "root": {
+              "kind": {
+                "harness": "claude-code",
+                "kind": "harness"
+              },
+              "scope": {
+                "scope": "global"
+              }
+            },
+            "shared_via_whole_dir_link": false,
+            "skill_md_tokens": 21,
+            "source_kind": "manual",
+            "spec_violations": [],
+            "studio_disabled": false,
+            "symlink_error": null,
+            "symlink_is_broken": false
+          }
+        ],
+        "description": "Helps with alpha for fixture-driven tests.",
+        "name": "alpha"
+      },
+      {
+        "deployments": [
+          {
+            "backing": "independent",
+            "content_fingerprint": "sha256:215394f9121204444bc8fd350b3c601b19a81d755503aa55a129da11bca9069a",
+            "content_hash": "215394f9121204444bc8fd350b3c601b19a81d755503aa55a129da11bca9069a",
+            "description_tokens": 10,
+            "destination": "per_harness",
+            "disabled_by": null,
+            "disabled_readers": [],
+            "file_count": 1,
+            "folder_bytes": 94,
+            "folder_truncated": false,
+            "frontmatter": {
+              "allowed-tools": null,
+              "compatibility": null,
+              "description": "Helps with beta for fixture-driven tests.",
+              "disable-model-invocation": null,
+              "license": null,
+              "metadata": null,
+              "name": "beta",
+              "user-invocable": null
+            },
+            "frontmatter_fields": {
+              "description": "Helps with beta for fixture-driven tests.",
+              "name": "beta"
+            },
+            "harness": "codex",
+            "has_spec": false,
+            "id": "dep:v1/global/codex/per-harness/beta/-/%24HOME%2F.codex%2Fskills%2Fbeta",
+            "in_git_repo": false,
+            "is_symlink": false,
+            "link_target": null,
+            "modified_at": "-",
+            "mutability": "read_only",
+            "owner_id": null,
+            "owner_kind": "manual",
+            "path": "$HOME/.codex/skills/beta",
+            "plugin": null,
+            "resolved_path": null,
+            "root": {
+              "kind": {
+                "harness": "codex",
+                "kind": "harness"
+              },
+              "scope": {
+                "scope": "global"
+              }
+            },
+            "shared_via_whole_dir_link": false,
+            "skill_md_tokens": 21,
+            "source_kind": "manual",
+            "spec_violations": [],
+            "studio_disabled": false,
+            "symlink_error": null,
+            "symlink_is_broken": false
+          }
+        ],
+        "description": "Helps with beta for fixture-driven tests.",
+        "name": "beta"
+      },
+      {
+        "deployments": [
+          {
+            "backing": "linked_to",
+            "content_fingerprint": "sha256:829e6a9838b546ed270bea702e89acf63cf105501ab90923808f02b276f70615",
+            "content_hash": "829e6a9838b546ed270bea702e89acf63cf105501ab90923808f02b276f70615",
+            "description_tokens": 10,
+            "destination": "universal",
+            "disabled_by": null,
+            "disabled_readers": [],
+            "file_count": 1,
+            "folder_bytes": 97,
+            "folder_truncated": false,
+            "frontmatter": {
+              "allowed-tools": null,
+              "compatibility": null,
+              "description": "Helps with gamma for fixture-driven tests.",
+              "disable-model-invocation": null,
+              "license": null,
+              "metadata": null,
+              "name": "gamma",
+              "user-invocable": null
+            },
+            "frontmatter_fields": {
+              "description": "Helps with gamma for fixture-driven tests.",
+              "name": "gamma"
+            },
+            "harness": "claude-code",
+            "has_spec": false,
+            "id": "dep:v1/global/claude-code/universal/gamma/-/%24HOME%2F.claude%2Fskills%2Fgamma",
+            "in_git_repo": false,
+            "is_symlink": true,
+            "link_target": "$HOME/.agents/skills/gamma",
+            "modified_at": "-",
+            "mutability": "read_only",
+            "owner_id": "owner:v1/global/gamma",
+            "owner_kind": "skills_sh",
+            "path": "$HOME/.claude/skills/gamma",
+            "plugin": null,
+            "resolved_path": "$HOME/.agents/skills/gamma",
+            "root": {
+              "kind": {
+                "harness": "claude-code",
+                "kind": "harness"
+              },
+              "scope": {
+                "scope": "global"
+              }
+            },
+            "shared_via_whole_dir_link": false,
+            "skill_md_tokens": 21,
+            "source_kind": "manual",
+            "spec_violations": [],
+            "studio_disabled": false,
+            "symlink_error": null,
+            "symlink_is_broken": false
+          },
+          {
+            "backing": "canonical",
+            "content_fingerprint": "sha256:829e6a9838b546ed270bea702e89acf63cf105501ab90923808f02b276f70615",
+            "content_hash": "829e6a9838b546ed270bea702e89acf63cf105501ab90923808f02b276f70615",
+            "description_tokens": 10,
+            "destination": "universal",
+            "disabled_by": null,
+            "disabled_readers": [],
+            "file_count": 1,
+            "folder_bytes": 97,
+            "folder_truncated": false,
+            "frontmatter": {
+              "allowed-tools": null,
+              "compatibility": null,
+              "description": "Helps with gamma for fixture-driven tests.",
+              "disable-model-invocation": null,
+              "license": null,
+              "metadata": null,
+              "name": "gamma",
+              "user-invocable": null
+            },
+            "frontmatter_fields": {
+              "description": "Helps with gamma for fixture-driven tests.",
+              "name": "gamma"
+            },
+            "harness": null,
+            "has_spec": false,
+            "id": "dep:v1/global/universal/universal/gamma/-/%24HOME%2F.agents%2Fskills%2Fgamma",
+            "in_git_repo": false,
+            "is_symlink": false,
+            "link_target": null,
+            "modified_at": "-",
+            "mutability": "mutable",
+            "owner_id": "owner:v1/global/gamma",
+            "owner_kind": "skills_sh",
+            "path": "$HOME/.agents/skills/gamma",
+            "plugin": null,
+            "resolved_path": null,
+            "root": {
+              "kind": {
+                "kind": "universal"
+              },
+              "scope": {
+                "scope": "global"
+              }
+            },
+            "shared_via_whole_dir_link": false,
+            "skill_md_tokens": 21,
+            "source_kind": "skills-sh",
+            "spec_violations": [],
+            "studio_disabled": false,
+            "symlink_error": null,
+            "symlink_is_broken": false
+          },
+          {
+            "backing": "linked_to",
+            "content_fingerprint": "sha256:829e6a9838b546ed270bea702e89acf63cf105501ab90923808f02b276f70615",
+            "content_hash": "829e6a9838b546ed270bea702e89acf63cf105501ab90923808f02b276f70615",
+            "description_tokens": 10,
+            "destination": "universal",
+            "disabled_by": null,
+            "disabled_readers": [],
+            "file_count": 1,
+            "folder_bytes": 97,
+            "folder_truncated": false,
+            "frontmatter": {
+              "allowed-tools": null,
+              "compatibility": null,
+              "description": "Helps with gamma for fixture-driven tests.",
+              "disable-model-invocation": null,
+              "license": null,
+              "metadata": null,
+              "name": "gamma",
+              "user-invocable": null
+            },
+            "frontmatter_fields": {
+              "description": "Helps with gamma for fixture-driven tests.",
+              "name": "gamma"
+            },
+            "harness": "codex",
+            "has_spec": false,
+            "id": "dep:v1/global/codex/universal/gamma/-/%24HOME%2F.codex%2Fskills%2Fgamma",
+            "in_git_repo": false,
+            "is_symlink": true,
+            "link_target": "$HOME/.agents/skills/gamma",
+            "modified_at": "-",
+            "mutability": "read_only",
+            "owner_id": "owner:v1/global/gamma",
+            "owner_kind": "skills_sh",
+            "path": "$HOME/.codex/skills/gamma",
+            "plugin": null,
+            "resolved_path": "$HOME/.agents/skills/gamma",
+            "root": {
+              "kind": {
+                "harness": "codex",
+                "kind": "harness"
+              },
+              "scope": {
+                "scope": "global"
+              }
+            },
+            "shared_via_whole_dir_link": false,
+            "skill_md_tokens": 21,
+            "source_kind": "manual",
+            "spec_violations": [],
+            "studio_disabled": false,
+            "symlink_error": null,
+            "symlink_is_broken": false
+          }
+        ],
+        "description": "Helps with gamma for fixture-driven tests.",
+        "name": "gamma"
+      }
+    ],
+    "timings": []
+  },
+  "errors": [],
+  "event_id": null,
+  "operation": "scan",
+  "schema_version": 1,
+  "scope": {
+    "history_root": "$HOME/.history",
+    "home": "$HOME",
+    "id": "-",
+    "kind": "fixture",
+    "projects": []
+  },
+  "status": "ok"
+}

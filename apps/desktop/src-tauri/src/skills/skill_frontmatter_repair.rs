@@ -7,6 +7,7 @@
 use std::fs;
 use std::path::{Path, PathBuf};
 
+use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use tauri::Manager;
@@ -23,7 +24,7 @@ use super::skill_md_write::{begin_skill_md_write_transaction, SkillMdWriteTransa
 use super::skill_ownership::LifecycleOwnerKind;
 use super::skill_refresh::{self, SkillRefreshState};
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "kebab-case")]
 pub enum FrontmatterRepairApplyMode {
     ApplyFix,
@@ -31,7 +32,7 @@ pub enum FrontmatterRepairApplyMode {
     ForkAndFix,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct FrontmatterRepairPreview {
     pub deployment_id: String,
     pub path: String,

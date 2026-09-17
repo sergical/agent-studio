@@ -12,7 +12,6 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use super::agents::{AgentId, AgentTarget};
 use super::api;
 use super::lock_file;
-use super::project_discovery;
 use super::skill_add::{CommandRunner, RealCommandRunner};
 use super::skill_agent_runner::validate_skill_dir_name;
 use super::skill_dto::{
@@ -151,42 +150,27 @@ pub async fn get_skill_details(skill_id: String) -> Result<SkillDetails, String>
 }
 
 /// Get all installed skills. Returns the background-refreshed snapshot's
-/// skills (see `skill_refresh`) when it already accounts for every path in
-/// `project_paths` and no mutation is pending (`skills_dirty`); otherwise
-/// registers the missing paths and rebuilds the snapshot synchronously (so
-/// this read-after-write sees fresh data), which also covers the case where
-/// the background snapshot hasn't landed yet or a mutation just landed and
-/// the background rebuild hasn't caught up.
+/// skills (see `skill_refresh`) when one exists and no mutation is pending
+/// (`skills_dirty`); otherwise rebuilds the snapshot synchronously (so a
+/// read right after a write, or the very first read before the background
+/// thread's initial build has landed, still sees fresh data). The project
+/// list comes from `~/.agents/skill-studio.json` (see
+/// `skill_refresh::effective_project_paths`), not from the caller.
 #[tauri::command]
 pub fn get_installed_skills(
-    project_paths: Option<Vec<String>>,
     refresh_state: tauri::State<SkillRefreshState>,
     app: tauri::AppHandle,
 ) -> Result<Vec<InstalledSkill>, String> {
-    let requested = project_paths.unwrap_or_default();
     let snapshot = refresh_state.snapshot.read().ok().and_then(|g| g.clone());
 
     if let Some(snapshot) = &snapshot {
-        if !refresh_state.is_skills_dirty()
-            && snapshot_covers_projects(&requested, &snapshot.projects)
-        {
+        if !refresh_state.is_skills_dirty() {
             return Ok(snapshot.skills.clone());
         }
     }
 
-    refresh_state.add_extra_projects(requested);
     let rebuilt = skill_refresh::rebuild_snapshot_now(&app, &refresh_state)?;
     Ok(rebuilt.skills)
-}
-
-/// Whether the *published* snapshot already accounts for every path in
-/// `requested`. Pulled out into a pure function so it can be unit tested:
-/// this must only compare against `snapshot.projects`, never against
-/// caller-registered `extra_projects`, since a path registered but not yet
-/// rebuilt into the snapshot would otherwise look "covered" while the
-/// snapshot's `skills` still doesn't include it.
-fn snapshot_covers_projects(requested: &[String], snapshot_projects: &[String]) -> bool {
-    requested.iter().all(|p| snapshot_projects.contains(p))
 }
 
 #[cfg(test)]
@@ -196,27 +180,10 @@ mod tests {
     struct CountingLifecycleRunner(std::sync::atomic::AtomicUsize);
 
     impl CommandRunner for CountingLifecycleRunner {
-        fn run_npx(&self, _args: &[String], _cwd: Option<&Path>) -> Result<(), String> {
+        fn run(&self, _program: &str, _args: &[String], _cwd: Option<&Path>) -> Result<(), String> {
             self.0.fetch_add(1, Ordering::SeqCst);
             Ok(())
         }
-    }
-
-    #[test]
-    fn snapshot_covers_projects_requires_published_membership() {
-        let snapshot_projects = vec!["/work/known".to_string()];
-
-        assert!(snapshot_covers_projects(
-            &["/work/known".to_string()],
-            &snapshot_projects
-        ));
-        // A caller-registered path that hasn't landed in the snapshot yet
-        // must NOT be treated as covered, even though it would be in
-        // `extra_projects`.
-        assert!(!snapshot_covers_projects(
-            &["/work/not-yet-rebuilt".to_string()],
-            &snapshot_projects
-        ));
     }
 
     /// A minimal `SkillSnapshot` with one skill deployed at `dep_dir`, with
@@ -225,10 +192,10 @@ mod tests {
         dep_dir: &std::path::Path,
         plugin: Option<super::super::skill_dto::PluginInfo>,
     ) -> skill_refresh::SkillSnapshot {
-        use super::super::provenance::SourceKind;
         use super::super::skill_dto::{Deployment, InstalledSkill};
-        use super::super::skill_invocations::InvocationHeatmap;
+        use super::super::SourceKind;
         use chrono::Utc;
+        use skill_studio_core::skill_uses::InvocationHeatmap;
         use std::collections::BTreeMap;
 
         skill_refresh::SkillSnapshot {
@@ -285,6 +252,8 @@ mod tests {
             last_test_by_skill: Default::default(),
             update_check: Default::default(),
             opencode_config_kind: None,
+            scan_partial: false,
+            scan_observations: Vec::new(),
         }
     }
 
@@ -403,6 +372,8 @@ mod tests {
             name: "openai-templates".to_string(),
             version: Some("1.0.0".to_string()),
             harness: "Codex".to_string(),
+            marketplace: "some-marketplace".to_string(),
+            id: "openai-templates@some-marketplace".to_string(),
         };
         let snapshot = fixture_snapshot(&dep_dir, Some(plugin));
 
@@ -622,7 +593,7 @@ mod tests {
     }
 
     impl CommandRunner for DotagentsRemovalRunner {
-        fn run_npx(&self, _args: &[String], _cwd: Option<&Path>) -> Result<(), String> {
+        fn run(&self, _program: &str, _args: &[String], _cwd: Option<&Path>) -> Result<(), String> {
             if self.fail {
                 Err("injected dotagents failure".to_string())
             } else {
@@ -656,18 +627,19 @@ mod tests {
         home: &Path,
         projects: &[PathBuf],
     ) -> skill_refresh::SkillSnapshot {
-        let candidates = super::super::skill_discovery::discover_skill_candidates(home, projects);
-        let ledgers = super::super::skill_ownership::load_ownership_ledgers(home, projects);
+        let update_check_path = home.join("core-data/update-check.json");
+        let core_skills = super::super::skill_refresh::core_scan_installed_skills(
+            home,
+            projects,
+            &update_check_path,
+            &[],
+        );
         let lock = super::super::lock_file::SkillLockFile {
             version: 3,
             skills: Default::default(),
         };
-        let skills = super::super::skill_assembly::assemble_installed_skills(
-            candidates,
-            &lock,
-            &ledgers,
-            &Default::default(),
-        );
+        let skills =
+            super::super::skill_assembly::assemble_installed_skills(core_skills.skills, &lock);
         let mut snapshot = fixture_snapshot(home, None);
         snapshot.skills = skills;
         snapshot
@@ -843,6 +815,9 @@ mod tests {
             let tmp = tempfile::tempdir().unwrap();
             let home = tmp.path().join("home");
             let project = tmp.path().join("project");
+            // core_scan_installed_skills canonicalizes the home root even
+            // when the project-scoped deployment lives under `project`.
+            std::fs::create_dir_all(&home).unwrap();
             let scope_root = if project_scoped { &project } else { &home };
             let agents_dir = scope_root.join(".agents");
             let canonical = agents_dir.join("skills/foo");
@@ -1007,7 +982,7 @@ mod tests {
         canonical.destination = SkillDestination::Universal;
         canonical.backing = BackingRelationship::Canonical;
         canonical.content_hash =
-            super::super::skill_discovery::live_skill_content_hash(&selected).unwrap();
+            super::super::core_content_hash::live_skill_content_hash(&selected).unwrap();
         let mut project_link_deployment = canonical.clone();
         project_link_deployment.id = deployment_id(
             "foo",
@@ -1128,7 +1103,7 @@ mod tests {
         canonical.backing = BackingRelationship::Canonical;
         canonical.scope = "global".to_string();
         canonical.content_hash =
-            super::super::skill_discovery::live_skill_content_hash(&canonical_path).unwrap();
+            super::super::core_content_hash::live_skill_content_hash(&canonical_path).unwrap();
         let mut link = canonical.clone();
         link.id = link_id.clone();
         link.agent = "Claude Code".to_string();
@@ -1198,7 +1173,7 @@ mod tests {
         assert!(persisted_registry.copies.contains_key(&canonical_id));
         assert!(persisted_registry.copies.contains_key(&link_id));
         assert_eq!(
-            super::super::skill_discovery::live_skill_content_hash(&canonical_path).unwrap(),
+            super::super::core_content_hash::live_skill_content_hash(&canonical_path).unwrap(),
             ownership.content_hash
         );
     }
@@ -1222,7 +1197,7 @@ mod tests {
             &skill_dir,
         );
         let content_hash =
-            super::super::skill_discovery::live_skill_content_hash(&skill_dir).unwrap();
+            super::super::core_content_hash::live_skill_content_hash(&skill_dir).unwrap();
         let mut registry = skill_fork_registry::read_fork_registry(&home).unwrap();
         registry.forks.insert(
             "find-bugs".to_string(),
@@ -1290,7 +1265,7 @@ mod tests {
         deployment.scope = "global".to_string();
         deployment.project_path = None;
         deployment.content_hash =
-            super::super::skill_discovery::live_skill_content_hash(path).unwrap();
+            super::super::core_content_hash::live_skill_content_hash(path).unwrap();
         let ownership = skill_fork_registry::CopyDeploymentRecord {
             deployment_id: deployment.id.clone(),
             name: "foo".to_string(),
@@ -1469,7 +1444,7 @@ pub fn list_skill_projects(
     }
 
     let home = dirs::home_dir().ok_or("Could not find home directory")?;
-    Ok(project_discovery::discover_skill_projects(&home)
+    Ok(skill_refresh::effective_project_paths(&home)
         .into_iter()
         .map(|p| p.to_string_lossy().to_string())
         .collect())
@@ -1543,7 +1518,7 @@ fn remove_copy_deployment(
             deployment.path
         ));
     }
-    let live_hash = super::skill_discovery::live_skill_content_hash(deployment_path)?;
+    let live_hash = super::core_content_hash::live_skill_content_hash(deployment_path)?;
     if deployment.content_hash.is_empty()
         || ownership.content_hash.is_empty()
         || live_hash != deployment.content_hash
@@ -2123,7 +2098,7 @@ fn remove_forked_skill_with(
             skill_dir.display()
         ));
     }
-    let live_hash = super::skill_discovery::live_skill_content_hash(skill_dir)?;
+    let live_hash = super::core_content_hash::live_skill_content_hash(skill_dir)?;
     if deployment_content_hash.is_empty() || live_hash != deployment_content_hash {
         return Err(format!(
             "Fork removal refused: {} content changed after discovery",
@@ -2341,8 +2316,10 @@ pub fn write_installed_skill_md_if_unchanged(
 
 /// Reveal a skill's folder in Finder, or open it in the user's default
 /// editor, via macOS's `open` CLI. Restricted to paths belonging to a
-/// deployment in the current snapshot.
-#[tauri::command]
+/// deployment in the current snapshot. `async` so a cold `editor` mode - which
+/// can start the login shell to read `$EDITOR` - never runs on the main
+/// thread.
+#[tauri::command(async)]
 pub fn open_skill_path(
     path: String,
     mode: String,
@@ -2350,44 +2327,62 @@ pub fn open_skill_path(
 ) -> Result<(), String> {
     require_snapshot_owns_path(&refresh_state, std::path::Path::new(&path))?;
 
-    let args = match mode.as_str() {
-        "reveal" => vec!["-R".to_string()],
+    let mut script_to_clean_up: Option<PathBuf> = None;
+    let args: Vec<String> = match mode.as_str() {
+        "reveal" => vec!["-R".to_string(), path.clone()],
         // `-t` would mean the system default *text* editor, which is TextEdit
         // on a stock machine - see `skill_editor` for the setting behind this.
         "editor" => {
             let home = dirs::home_dir().ok_or("Could not find home directory")?;
-            skill_editor::open_editor_args(
-                skill_editor::preferred_editor(&home).as_deref(),
-                &skill_editor::installed_editors(&home),
-            )
+            match skill_editor::editor_launch(&home) {
+                skill_editor::EditorLaunch::Open(mut args) => {
+                    args.push(path.clone());
+                    args
+                }
+                skill_editor::EditorLaunch::Terminal { command } => {
+                    let script =
+                        skill_editor::write_terminal_launch_script(Path::new(&path), &command)?;
+                    let script_arg = script.to_string_lossy().to_string();
+                    script_to_clean_up = Some(script);
+                    vec![script_arg]
+                }
+            }
         }
         other => return Err(format!("Unknown open mode: {other}")),
     };
 
-    Command::new("open")
+    let output = Command::new("open")
         .args(&args)
-        .arg(&path)
         .output()
         .map_err(|e| format!("Failed to open {}: {}", path, e))?;
+
+    if !output.status.success() {
+        if let Some(script) = &script_to_clean_up {
+            let _ = std::fs::remove_file(script);
+        }
+        let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+        return Err(format!("Failed to open {}: {}", path, stderr));
+    }
     Ok(())
 }
 
-/// The editors installed on this machine, for the Settings picker.
+/// Everything the Settings "Open in editor" card shows: the automatic-row
+/// label, the installed/saved apps, the `$EDITOR` row (if any), and the
+/// still-usable saved choice. Reads the login shell for `$VISUAL`/`$EDITOR`,
+/// so it runs off the main thread.
 #[tauri::command]
-pub fn list_installed_editors() -> Result<Vec<skill_editor::EditorOption>, String> {
-    let home = dirs::home_dir().ok_or("Could not find home directory")?;
-    Ok(skill_editor::installed_editors(&home))
+pub async fn get_editor_choices() -> Result<skill_editor::EditorChoices, String> {
+    tauri::async_runtime::spawn_blocking(|| {
+        let home = dirs::home_dir().ok_or("Could not find home directory")?;
+        Ok(skill_editor::editor_choices(&home))
+    })
+    .await
+    .map_err(|e| format!("Failed to read editor choices: {e}"))?
 }
 
-/// The application "Open in editor" currently uses, or `None` for the system
-/// default.
-#[tauri::command]
-pub fn get_preferred_editor() -> Result<Option<String>, String> {
-    let home = dirs::home_dir().ok_or("Could not find home directory")?;
-    Ok(skill_editor::preferred_editor(&home))
-}
-
-#[tauri::command]
+/// `async` because saving `"$EDITOR"` can start the login shell to check that
+/// a terminal editor is actually set - see `skill_editor::set_preferred_editor`.
+#[tauri::command(async)]
 pub fn set_preferred_editor(app_name: Option<String>) -> Result<(), String> {
     let home = dirs::home_dir().ok_or("Could not find home directory")?;
     skill_editor::set_preferred_editor(&home, app_name)
@@ -2507,4 +2502,58 @@ pub async fn update_skill(
             command: Some(npx_command),
         })
     }
+}
+
+/// Runs one Claude-Code-only plugin lifecycle action: checks `harness`,
+/// holds `fork_lock` for the CLI call, then requests a snapshot rebuild.
+/// Shared by [`set_plugin_enabled`] and [`uninstall_plugin`], which differ
+/// only in which `claude plugin` subcommand `action` runs.
+fn run_plugin_lifecycle_action(
+    harness: &str,
+    app: &tauri::AppHandle,
+    fork_lock: &skill_fork::ForkMutationLock,
+    action: impl FnOnce() -> Result<(), String>,
+) -> Result<(), String> {
+    super::skill_plugin_lifecycle::require_claude_code_harness(harness)?;
+    let _guard = fork_lock.try_acquire()?;
+    action()?;
+    skill_refresh::request_snapshot_rebuild(app);
+    Ok(())
+}
+
+/// Disable or re-enable one Claude Code plugin (`claude plugin
+/// disable|enable <plugin_id> -s user`). Applies to every skill the plugin
+/// ships - Claude Code tracks `enabledPlugins` per plugin, not per skill.
+#[tauri::command]
+pub fn set_plugin_enabled(
+    plugin_id: String,
+    harness: String,
+    enabled: bool,
+    app: tauri::AppHandle,
+    _refresh_state: tauri::State<SkillRefreshState>,
+    fork_lock: tauri::State<skill_fork::ForkMutationLock>,
+) -> Result<(), String> {
+    run_plugin_lifecycle_action(&harness, &app, &fork_lock, || {
+        super::skill_plugin_lifecycle::set_plugin_enabled_with(
+            &RealCommandRunner::new(),
+            &plugin_id,
+            enabled,
+        )
+    })
+}
+
+/// Uninstall one Claude Code plugin (`claude plugin uninstall <plugin_id>
+/// -s user -y`). Removes the `enabledPlugins` entry; Claude Code sweeps the
+/// cache directory later.
+#[tauri::command]
+pub fn uninstall_plugin(
+    plugin_id: String,
+    harness: String,
+    app: tauri::AppHandle,
+    _refresh_state: tauri::State<SkillRefreshState>,
+    fork_lock: tauri::State<skill_fork::ForkMutationLock>,
+) -> Result<(), String> {
+    run_plugin_lifecycle_action(&harness, &app, &fork_lock, || {
+        super::skill_plugin_lifecycle::uninstall_plugin_with(&RealCommandRunner::new(), &plugin_id)
+    })
 }

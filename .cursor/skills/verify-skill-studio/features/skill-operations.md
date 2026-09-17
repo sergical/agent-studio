@@ -38,14 +38,17 @@ await page.click('button:has-text("Add skill")');
 
 // Update from Home
 await page.click('button:has-text("Home")');
-const updateRow = page.locator('text=skill-name').locator('..').locator('button:has-text("Pull latest")');
+const updateRow = page
+  .locator("text=skill-name")
+  .locator("..")
+  .locator('button:has-text("Pull latest")');
 await updateRow.click();
 await page.waitForSelector('[role="status"]:has-text("Skill updated")');
 
 // Remove from detail
 await page.click('table tbody tr:has-text("skill-name")'); // Open detail
 await page.click('[aria-label="More actions"]'); // Overflow menu
-await page.click('text=Remove');
+await page.click("text=Remove");
 await page.click('[role="alertdialog"] button:has-text("Remove")'); // Confirm
 
 // Fork
@@ -55,24 +58,25 @@ await page.waitForSelector('[role="status"]:has-text("Forked")');
 
 // Park from Home
 await page.click('button:has-text("Home")');
-const parkRow = page.locator('text=unused-skill').locator('..').locator('button:has-text("Park")');
+const parkRow = page.locator("text=unused-skill").locator("..").locator('button:has-text("Park")');
 await parkRow.click();
 await page.waitForSelector('[role="status"]:has-text("Parked")');
 
 // Enable/disable harness
 await page.click('table tbody tr:has-text("skill-name")');
 // Locations card has per-harness switches
-const claudeSwitch = page.locator('text=Claude Code').locator('..').locator('[role="switch"]');
+const claudeSwitch = page.locator("text=Claude Code").locator("..").locator('[role="switch"]');
 await claudeSwitch.click();
 
 // Change invocation policy
 await page.click('table tbody tr:has-text("skill-name")');
 await page.click('button:has-text("Who can invoke")'); // Header dropdown
-await page.click('text=You only');
+await page.click("text=You only");
 await page.waitForSelector('[role="status"]:has-text("Policy updated")');
 ```
 
 Selectors:
+
 - Update button: `button:has-text("Pull latest")` or `button:has-text("Update")`
 - Remove: Overflow menu `[aria-label="More actions"]` → `text=Remove`
 - Fork: `button:has-text("Fork")` (in markdown card)
@@ -94,41 +98,49 @@ Selectors:
 ## Branches
 
 ### Happy path: Install from Add Skill
+
 1. User opens sheet → types source → picks method → submits
 2. Backend runs `npx skills add <source>` or `dotagents add <source>` or copies folder
 3. Toast success → sheet closes → sidebar count increments
 
 ### Happy path: Update from Home
+
 1. User sees skill in "Updates" group → clicks "Pull latest"
 2. Backend: dotagents skill runs `dotagents sync`, skills-sh skill runs `npx skills update <name>`
 3. Toast success → skill disappears from Updates group
 
 ### Happy path: Fork skill
+
 1. User opens dotagents-managed skill → clicks "Fork" in markdown card
 2. Backend: removes skill from `agents.toml`, writes fork snapshot to `~/.agents/forks/<name>.json`
 3. Toast success → skill detail shows "Forked" badge, "Fork" button → "Edit" button
 
 ### Happy path: Park skill
+
 1. User sees unused skill in Home → clicks "Park"
 2. Backend: moves `~/.agents/skills/<name>` → `~/.agents/skills-parked/<name>`, removes Claude Code symlink if exists
 3. Toast success → skill disappears from Home, shows in Skills view with `scope: "parked"` filter
 
 ### Happy path: Enable/disable harness
+
 1. User opens skill detail → Locations card shows harness rows
 2. User toggles Claude Code switch OFF
 3. Backend: removes `~/.claude/skills/<name>` symlink (Claude's per-skill disable)
 4. Toast success → switch shows OFF state, row shows "Disabled" badge
 
 ### Empty / first-run states
+
 - No updates available → "Updates" group hidden in Home
 - No parked skills → Parked row hidden in sidebar
 - No forked skills → no "Unfork" action in overflow menu
 
 ### Duplicate / already installed
+
 - Install duplicate → Backend returns warning, toast shows warning message
 - Unpark when reinstalled → Backend detects collision, discards duplicate or trashes drift
 
 ### Failure / error states
+
 - **Install failure** → Error toast, sheet stays open, error message below form
 - **Update failure** → Error toast, skill stays in Updates group
 - **Remove failure** → Error toast, skill detail stays open
@@ -137,11 +149,13 @@ Selectors:
 - **Enable/disable failure** → Error toast, switch reverts to previous state
 
 ### Cancellation / close mid-flow
+
 - Cancel remove confirmation → skill not removed, detail stays open
 - Cancel fork → no fork created
 - Close sheet during install → install continues in background (Tauri command)
 
 ### Loading / progress states
+
 - **Installing** → "Adding…" on submit button
 - **Updating** → Spinner inline in "Pull latest" button
 - **Removing** → Removal happens immediately after confirmation (no progress indicator)
@@ -152,6 +166,7 @@ Selectors:
 ## Benchmarks & improvement
 
 ### Observable metrics
+
 - **Install duration**: Add Skill submit → toast (measure per method: dotagents, skills-sh, copy)
   - Measure: "Adding…" starts → toast appears
   - Target: < 5s dotagents/copy, < 10s skills-sh (depends on `npx skills` network)
@@ -172,11 +187,13 @@ Selectors:
   - Target: < 200ms (fast file operations)
 
 ### Current instrumentation
+
 - Toast on success/failure (no duration logged)
 - `isSubmitting` / `isPulling` / `isParking` flags track state (no timing)
 - No per-operation success rate or error categorization
 
 ### Suggested measurements for verification
+
 - **Install success rate by method**: dotagents vs skills-sh vs copy (identify flakiest)
 - **Update failure causes**: Network vs git vs lock-file contention (categorize errors)
 - **Fork adoption rate**: Percentage of dotagents/skills-sh skills that get forked (product metric)
@@ -184,6 +201,7 @@ Selectors:
 - **Enable/disable usage**: How often per-harness toggles are used (feature adoption)
 
 ### Improvement levers
+
 - **Parallel updates** (currently sequential to avoid lock-file races; could lock per skill instead of globally)
 - **Optimistic park/unpark** (currently waits for backend; could update UI immediately and rollback on error)
 - **Batch install** (Add Skill already batches GitHub multi-skill installs; could extend to other sources)
@@ -204,6 +222,7 @@ After each interaction:
 - **Invocation policy**: Skill detail header shows new policy, SKILL.md frontmatter updated
 
 Invariants:
+
 - Install always increments skill count (no silent failures)
 - Remove always decrements skill count (no orphaned entries)
 - Fork converts `source_kind` from dotagents/skills-sh to "fork"

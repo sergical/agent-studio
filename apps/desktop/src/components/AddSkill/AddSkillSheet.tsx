@@ -9,7 +9,7 @@
 // ============================================================================
 
 import { useEffect, useReducer, useRef, useState } from "react";
-import type { Dispatch } from "react";
+import type { Dispatch, RefObject } from "react";
 import { open } from "@tauri-apps/plugin-dialog";
 import { Folder, FolderPlus } from "lucide-react";
 import {
@@ -44,8 +44,10 @@ import {
   getAddMethodDefaults,
   getAddSkillOperation,
   importSkillPack,
+  invokeErrorMessage,
   listGithubSkills,
   onAddSkillOperation,
+  registerSkillProjects,
   startAddSkillOperation,
   startAddSkillsOperation,
 } from "../../lib/skill-api";
@@ -63,6 +65,7 @@ import {
   normalizeInstallHarnesses,
   parseSkillSource,
   shouldConsumeAddSkillOperation,
+  toWireParsedSkillSource,
   trialSelectionForDestination,
 } from "@skill-studio/lib";
 import type {
@@ -306,6 +309,56 @@ function listingTarget(parsed: ParsedSkillSource | { error: string }) {
   return { repo: parsed.repo, path: parsed.path, ref: parsed.ref };
 }
 
+/** The listing ternary chain from `useGithubSkillListing`, pulled out so the
+ * hook body is one `useEffect` and a `useState` cluster instead of also
+ * carrying this branch. */
+function deriveListingState(
+  key: string | null,
+  repo: string | undefined,
+  cached: GithubSkillListing | undefined,
+  result: ListingResult | null,
+  requestKey: string | null,
+): ListingState {
+  if (!key || !repo) return IDLE_LISTING;
+  if (cached) return { status: "ready", listing: cached, error: null };
+  if (result?.requestKey === requestKey) return result.state;
+  return { status: "loading", listing: null, error: null };
+}
+
+/** The debounced fetch itself, pulled out of the `useEffect` below so the
+ * effect only decides whether to fetch, not how. */
+async function loadGithubListing(
+  repo: string,
+  path: string | undefined,
+  ref: string | undefined,
+  forceRefresh: boolean,
+  key: string,
+  requestKey: string,
+  requestId: number,
+  requestIdRef: RefObject<number>,
+  setListingCache: (
+    updater: (current: Map<string, GithubSkillListing>) => Map<string, GithubSkillListing>,
+  ) => void,
+  setResult: (value: ListingResult) => void,
+): Promise<void> {
+  try {
+    const listing = await listGithubSkills(repo, path, ref, forceRefresh);
+    if (requestIdRef.current !== requestId) return;
+    setListingCache((current) => new Map(current).set(key, listing));
+    setResult({ requestKey, state: { status: "ready", listing, error: null } });
+  } catch (err) {
+    if (requestIdRef.current !== requestId) return;
+    setResult({
+      requestKey,
+      state: {
+        status: "error",
+        listing: null,
+        error: err instanceof Error ? err.message : "Could not reach GitHub",
+      },
+    });
+  }
+}
+
 /**
  * Lists `parsed`'s skill folders once the source field settles, keeping the
  * result per repo/path/ref so retyping the same source costs nothing. A
@@ -329,38 +382,24 @@ function useGithubSkillListing(
   const forceRefresh = key !== null && retryKey === key;
   const requestKey = key ? `${key}|${forceRefresh ? "refresh" : "cached"}` : null;
   const cached = key && !forceRefresh ? listingCache.get(key) : undefined;
-  const state: ListingState =
-    !key || !repo
-      ? IDLE_LISTING
-      : cached
-        ? { status: "ready", listing: cached, error: null }
-        : result?.requestKey === requestKey
-          ? result.state
-          : { status: "loading", listing: null, error: null };
+  const state = deriveListingState(key, repo, cached, result, requestKey);
 
   useEffect(() => {
     if (!key || !repo || !requestKey || cached) return;
     const requestId = ++requestIdRef.current;
-    const timer = setTimeout(async () => {
-      try {
-        const listing = await listGithubSkills(repo, path, ref, forceRefresh);
-        if (requestIdRef.current !== requestId) return;
-        setListingCache((current) => new Map(current).set(key, listing));
-        setResult({
-          requestKey,
-          state: { status: "ready", listing, error: null },
-        });
-      } catch (err) {
-        if (requestIdRef.current !== requestId) return;
-        setResult({
-          requestKey,
-          state: {
-            status: "error",
-            listing: null,
-            error: err instanceof Error ? err.message : "Could not reach GitHub",
-          },
-        });
-      }
+    const timer = setTimeout(() => {
+      void loadGithubListing(
+        repo,
+        path,
+        ref,
+        forceRefresh,
+        key,
+        requestKey,
+        requestId,
+        requestIdRef,
+        setListingCache,
+        setResult,
+      );
     }, LISTING_DEBOUNCE_MS);
     return () => clearTimeout(timer);
   }, [key, repo, path, ref, forceRefresh, requestKey, cached]);
@@ -400,7 +439,7 @@ function GithubSkillPicker({
     return (
       <div className="flex flex-col gap-2">
         <span className={SECTION_LABEL_CLASS}>Skills</span>
-        <div className="h-9 animate-pulse rounded-sm bg-bg-tertiary" />
+        <div className="h-9 animate-pulse rounded-sm bg-bg-tertiary motion-reduce:animate-none" />
       </div>
     );
   }
@@ -411,13 +450,9 @@ function GithubSkillPicker({
         <span className={SECTION_LABEL_CLASS}>Skills</span>
         <p className="m-0 flex h-9 items-center gap-2 text-caption text-error">
           {state.error ?? "Could not list this repo's skills"}
-          <button
-            type="button"
-            className="text-caption font-medium text-accent underline"
-            onClick={state.retry}
-          >
+          <Button variant="link" className="h-auto p-0 text-caption" onClick={state.retry}>
             Retry
-          </button>
+          </Button>
         </p>
       </div>
     );
@@ -448,15 +483,15 @@ function GithubSkillPicker({
         <>
           <div className="flex h-9 items-center justify-between gap-2">
             <span className="text-caption text-text-tertiary">{skills.length} skills</span>
-            <button
-              type="button"
-              className="text-caption font-medium text-accent"
+            <Button
+              variant="link"
+              className="h-auto p-0 text-caption font-medium"
               onClick={() =>
                 onSelectedPathsChange(allSelected ? [] : skills.map((skill) => skill.path))
               }
             >
               {allSelected ? "Select none" : "Select all"}
-            </button>
+            </Button>
           </div>
           <ul className="m-0 flex list-none flex-col p-0">
             {skills.map((skill) => (
@@ -724,6 +759,24 @@ function useAddSkillSubmit(input: {
     operationIdRef.current = undefined;
   }, [addToast, closeSheet, dispatch, openSkill, operation]);
 
+  /** Shows the pack import's outcome toast - a warning with the joined
+   * errors when any skill failed, else a plain success. Pulled out of
+   * `handleSubmit`'s try block: a ternary building a template-literal title
+   * is a "value block" the compiler won't optimize a try/catch around. */
+  const showPackImportToast = (result: {
+    bundled: unknown[];
+    referenced: unknown[];
+    errors: string[];
+  }) => {
+    const total = result.bundled.length + result.referenced.length;
+    const title = `Imported ${total} skill${total !== 1 ? "s" : ""}`;
+    if (result.errors.length > 0) {
+      addToast({ type: "warning", title, message: result.errors.join("; ") });
+    } else {
+      addToast({ type: "success", title });
+    }
+  };
+
   const handleSubmit = async () => {
     if ("error" in parsed || !isValid || operationIdRef.current) return;
     if (method === "pack" && !packRequest) {
@@ -731,6 +784,7 @@ function useAddSkillSubmit(input: {
       return;
     }
     dispatch({ type: "submit_start" });
+    const projectArg = scope === "project" ? (projectPath ?? null) : null;
     try {
       if (method === "pack") {
         const preflight = await importSkillPack(packRequest!);
@@ -745,22 +799,11 @@ function useAddSkillSubmit(input: {
           dispatch({ type: "submit_end" });
           return;
         }
-        const result = preflight.result;
         closeSheet();
-        const total = result.bundled.length + result.referenced.length;
-        if (result.errors.length > 0) {
-          addToast({
-            type: "warning",
-            title: `Imported ${total} skill${total !== 1 ? "s" : ""}`,
-            message: result.errors.join("; "),
-          });
-        } else {
-          addToast({ type: "success", title: `Imported ${total} skill${total !== 1 ? "s" : ""}` });
-        }
+        showPackImportToast(preflight.result);
         dispatch({ type: "submit_end" });
         return;
       }
-      const projectArg = scope === "project" ? (projectPath ?? undefined) : undefined;
       const operationId = crypto.randomUUID();
       operationIdRef.current = operationId;
       consumedIdRef.current = undefined;
@@ -770,7 +813,7 @@ function useAddSkillSubmit(input: {
         phase: "queued",
         message: "Waiting to add skill",
       });
-      unlistenRef.current?.();
+      if (unlistenRef.current) unlistenRef.current();
       const unlisten = await listenForAddSkillOperation({
         isCancelled: () => false,
         listen: onAddSkillOperation,
@@ -780,39 +823,40 @@ function useAddSkillSubmit(input: {
         },
       });
       unlistenRef.current = unlisten;
-      const queued = githubEntries
-        ? await startAddSkillsOperation(operationId, {
-            source: parsed,
-            skills: githubEntries,
-            method,
-            destination,
-            agents,
-            disabled_harnesses: disabledHarnesses,
-            scope,
-            project_path: projectArg,
-            trial,
-          })
-        : await startAddSkillOperation(operationId, {
-            source: parsed,
-            method,
-            destination,
-            agents,
-            disabled_harnesses: disabledHarnesses,
-            scope,
-            project_path: projectArg,
-            trial,
-          });
+      let queued: AddSkillOperationEvent;
+      if (githubEntries) {
+        queued = await startAddSkillsOperation(operationId, {
+          source: toWireParsedSkillSource(parsed),
+          skills: githubEntries,
+          method,
+          destination,
+          agents,
+          disabled_harnesses: disabledHarnesses,
+          scope,
+          project_path: projectArg,
+          trial,
+        });
+      } else {
+        queued = await startAddSkillOperation(operationId, {
+          source: toWireParsedSkillSource(parsed),
+          method,
+          destination,
+          agents,
+          disabled_harnesses: disabledHarnesses,
+          scope,
+          project_path: projectArg,
+          trial,
+        });
+      }
       setOperation((current) => applyAddSkillOperationEvent(current, queued, operationId));
       const snapshot = await getAddSkillOperation(operationId);
       setOperation((current) => applyAddSkillOperationEvent(current, snapshot, operationId));
     } catch (err) {
-      unlistenRef.current?.();
+      if (unlistenRef.current) unlistenRef.current();
       unlistenRef.current = undefined;
       operationIdRef.current = undefined;
-      dispatch({
-        type: "submit_error",
-        error: err instanceof Error ? err.message : "Unknown error",
-      });
+      const message = err instanceof Error ? err.message : "Unknown error";
+      dispatch({ type: "submit_error", error: message });
     }
   };
 
@@ -867,19 +911,7 @@ function useAddSkillSubmit(input: {
         const result = await confirmSkillPackTrust(confirmationToken, packRequest);
         setPackTrust(undefined);
         closeSheet();
-        const total = result.bundled.length + result.referenced.length;
-        addToast(
-          result.errors.length > 0
-            ? {
-                type: "warning",
-                title: `Imported ${total} skill${total !== 1 ? "s" : ""}`,
-                message: result.errors.join("; "),
-              }
-            : {
-                type: "success",
-                title: `Imported ${total} skill${total !== 1 ? "s" : ""}`,
-              },
-        );
+        showPackImportToast(result);
       } catch (error) {
         void abandonPackImportTrust(confirmationToken).catch(() => undefined);
         setPackTrust(undefined);
@@ -1037,73 +1069,82 @@ function ManualTabFields({
   );
 }
 
-/** Cancel/submit footer, shown only on the "Add by source" tab. */
-function ManualTabFooter({
+type PackTrustState = { identities: string[]; confirmationToken: string; requestKey: string };
+
+/** The "trust this repository?" footer, shown in place of the normal
+ * Cancel/Submit footer while a pack import or add operation is waiting on
+ * repository trust. */
+function TrustConfirmFooter({
+  packTrust,
+  untrustedIdentity,
+  trustBusy,
+  onCancel,
+  onTrustAndRetry,
+}: {
+  packTrust: PackTrustState | undefined;
+  untrustedIdentity: string | undefined;
+  trustBusy: boolean;
+  onCancel: () => void;
+  onTrustAndRetry: () => void;
+}) {
+  const identities = packTrust ? packTrust.identities : [untrustedIdentity ?? "this repository"];
+  const isPackTrust = !!packTrust;
+  return (
+    <div className="flex flex-col gap-3 border-t border-border px-5 py-4">
+      <div>
+        <p className="m-0 text-body font-medium text-text-primary">
+          Trust {identities.length === 1 ? "this repository" : "these repositories"}?
+        </p>
+        <ul className="m-0 mt-1 list-inside list-disc text-small text-text-secondary">
+          {identities.map((identity) => (
+            <li key={identity}>{identity}</li>
+          ))}
+        </ul>
+        <p className="m-0 mt-2 text-caption text-text-tertiary">
+          Skills from this source can run on your machine. Confirm only if you trust it.
+        </p>
+      </div>
+      <div className="flex justify-end gap-2">
+        <Button
+          variant="outline"
+          className="h-(--control-height) rounded-md px-3.5 text-body font-medium"
+          onClick={onCancel}
+          disabled={trustBusy}
+        >
+          Close
+        </Button>
+        <Button
+          className="h-(--control-height) rounded-md bg-accent-solid px-3.5 text-body font-medium text-text-on-accent hover:bg-accent-solid-hover"
+          onClick={onTrustAndRetry}
+          disabled={trustBusy}
+        >
+          {isPackTrust
+            ? `Trust ${identities.length === 1 ? "repository" : "repositories"} and import`
+            : "Trust repository and retry"}
+        </Button>
+      </div>
+    </div>
+  );
+}
+
+/** The normal Cancel/Submit footer, with its in-progress and terminal-failure copy. */
+function SubmitFooter({
   method,
   submitLabel,
   isValid,
   isSubmitting,
   operation,
-  packTrust,
-  trustBusy,
   onCancel,
   onSubmit,
-  onTrustAndRetry,
 }: {
   method: SheetMethod;
   submitLabel: string;
   isValid: boolean;
   isSubmitting: boolean;
   operation: AddSkillOperationEvent | undefined;
-  packTrust: { identities: string[]; confirmationToken: string; requestKey: string } | undefined;
-  trustBusy: boolean;
   onCancel: () => void;
   onSubmit: () => void;
-  onTrustAndRetry: () => void;
 }) {
-  if (packTrust || operation?.phase === "needs-trust") {
-    const identities = packTrust
-      ? packTrust.identities
-      : [operation?.untrusted_source?.identity ?? "this repository"];
-    const isPackTrust = !!packTrust;
-    return (
-      <div className="flex flex-col gap-3 border-t border-border px-5 py-4">
-        <div>
-          <p className="m-0 text-body font-medium text-text-primary">
-            Trust {identities.length === 1 ? "this repository" : "these repositories"}?
-          </p>
-          <ul className="m-0 mt-1 list-inside list-disc text-small text-text-secondary">
-            {identities.map((identity) => (
-              <li key={identity}>{identity}</li>
-            ))}
-          </ul>
-          <p className="m-0 mt-2 text-caption text-text-tertiary">
-            Skills from this source can run on your machine. Confirm only if you trust it.
-          </p>
-        </div>
-        <div className="flex justify-end gap-2">
-          <Button
-            variant="outline"
-            className="h-(--control-height) rounded-md px-3.5 text-body font-medium"
-            onClick={onCancel}
-            disabled={trustBusy}
-          >
-            Close
-          </Button>
-          <Button
-            className="h-(--control-height) rounded-md bg-accent px-3.5 text-body font-medium text-text-on-accent hover:bg-accent-hover"
-            onClick={onTrustAndRetry}
-            disabled={trustBusy}
-          >
-            {isPackTrust
-              ? `Trust ${identities.length === 1 ? "repository" : "repositories"} and import`
-              : "Trust repository and retry"}
-          </Button>
-        </div>
-      </div>
-    );
-  }
-
   const inProgress = isSubmitting && operation && !isAddSkillOperationTerminal(operation.phase);
   const terminalFailure =
     operation &&
@@ -1131,7 +1172,7 @@ function ManualTabFooter({
           Cancel
         </Button>
         <Button
-          className="h-(--control-height) rounded-md bg-accent px-3.5 text-body font-medium text-text-on-accent hover:bg-accent-hover"
+          className="h-(--control-height) rounded-md bg-accent-solid px-3.5 text-body font-medium text-text-on-accent hover:bg-accent-solid-hover"
           onClick={onSubmit}
           disabled={!isValid || isSubmitting}
         >
@@ -1142,58 +1183,67 @@ function ManualTabFooter({
   );
 }
 
-export function AddSkillSheet() {
-  const { open: isOpen, prefill } = useAppStore((state) => state.addSkillSheet);
-  const closeAddSkillSheet = useAppStore((state) => state.closeAddSkillSheet);
-  const openSkill = useAppStore((state) => state.openSkill);
-  const addToast = useAppStore((state) => state.addToast);
-  const userAddedProjects = useAppStore((state) => state.userAddedProjects);
-  const addProject = useAppStore((state) => state.addProject);
+/** Cancel/submit footer, shown only on the "Add by source" tab. Picks
+ * between the trust-confirmation footer and the normal one. */
+function ManualTabFooter({
+  method,
+  submitLabel,
+  isValid,
+  isSubmitting,
+  operation,
+  packTrust,
+  trustBusy,
+  onCancel,
+  onSubmit,
+  onTrustAndRetry,
+}: {
+  method: SheetMethod;
+  submitLabel: string;
+  isValid: boolean;
+  isSubmitting: boolean;
+  operation: AddSkillOperationEvent | undefined;
+  packTrust: PackTrustState | undefined;
+  trustBusy: boolean;
+  onCancel: () => void;
+  onSubmit: () => void;
+  onTrustAndRetry: () => void;
+}) {
+  if (packTrust || operation?.phase === "needs-trust") {
+    return (
+      <TrustConfirmFooter
+        packTrust={packTrust}
+        untrustedIdentity={operation?.untrusted_source?.identity}
+        trustBusy={trustBusy}
+        onCancel={onCancel}
+        onTrustAndRetry={onTrustAndRetry}
+      />
+    );
+  }
+  return (
+    <SubmitFooter
+      method={method}
+      submitLabel={submitLabel}
+      isValid={isValid}
+      isSubmitting={isSubmitting}
+      operation={operation}
+      onCancel={onCancel}
+      onSubmit={onSubmit}
+    />
+  );
+}
 
-  const [form, dispatch] = useReducer(formReducer, undefined, initialFormState);
-  const {
-    sheetTab,
-    source,
-    methodChoice,
-    enabledReaders: pickedReaders,
-    claudeLink,
-    destination,
-    perHarnesses,
-    scope,
-    projectPath,
-    trial,
-    isSubmitting,
-    submitError,
-  } = form;
-
-  const sourceInputRef = useRef<HTMLInputElement>(null);
-
-  // What dotagents/skills.sh/the Universal folder look like on this machine -
-  // fetched once when the sheet opens, so the Method and Harnesses defaults
-  // below reflect this machine instead of a generic guess.
-  const [defaults, setDefaults] = useState<AddMethodDefaults | null>(null);
-
-  // Reset the form to its defaults, prefilled from the caller, each time the
-  // sheet opens - a stale field from a previous open would be confusing.
-  useEffect(() => {
-    if (!isOpen) return;
-    dispatch({ type: "reset", prefill: prefill ?? "", projectPath: userAddedProjects[0] ?? null });
-    getAddMethodDefaults()
-      .then((next) => {
-        setDefaults(next);
-        dispatch({
-          type: "set_readers",
-          readers: next.installed_harnesses.filter((id) => id !== "claude-code"),
-        });
-      })
-      .catch(() => setDefaults(null));
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [isOpen, prefill]);
-
-  const closeSheet = () => {
-    closeAddSkillSheet();
-  };
-
+/** Everything about the Method choice and Universal visibility that's purely
+ * derived from the form's own fields and the machine's `defaults` - pulled
+ * out of `AddSkillSheet` so its body doesn't also carry this branch chain. */
+function deriveMethodAndVisibility(
+  source: string,
+  destination: SkillDestination,
+  methodChoice: SheetMethod,
+  pickedReaders: AgentId[] | null,
+  claudeLink: boolean,
+  perHarnesses: PerHarnessDestinationId[],
+  defaults: AddMethodDefaults | null,
+) {
   const parsed = parseSkillSource(source);
   const sourceMethods = availableAddSkillMethods(parsed, defaults);
   const methods =
@@ -1238,6 +1288,29 @@ export function AddSkillSheet() {
       ? universalDisabledHarnesses(installedReaders, enabledReaders, claudeReadsShared, claudeLink)
       : [];
 
+  return {
+    parsed,
+    methods,
+    noMethodsAvailable,
+    method,
+    methodCaption,
+    installedReaders,
+    claudeReadsShared,
+    enabledReaders,
+    agents,
+    disabledHarnesses,
+  };
+}
+
+/**
+ * Resolves a GitHub source to the skill folders it actually holds, and owns
+ * which of them are checked. Pulled out of `AddSkillSheet` since it bundles
+ * its own `useState` (the checked paths) with the listing hook above it.
+ */
+function useAddSkillGithubSelection(
+  parsed: ParsedSkillSource | { error: string },
+  method: SheetMethod,
+) {
   // A GitHub source is resolved to its actual skill folders before install -
   // a pasted `/tree/.../skills` URL can hold many of them. Pack imports read
   // the repo's own agents.toml instead, so they skip the listing.
@@ -1259,6 +1332,104 @@ export function AddSkillSheet() {
   const githubEntries = listingEnabled
     ? listedSkills.filter((skill) => selectedPathSet.has(skill.path))
     : null;
+  const listingBlocks = listingEnabled && listingState.status !== "ready";
+
+  return {
+    listingState,
+    githubEntries,
+    selectedPaths,
+    setSelectedPaths: (paths: string[]) => setSelection({ listing: listingState.listing, paths }),
+    listingBlocks,
+  };
+}
+
+export function AddSkillSheet() {
+  const { open: isOpen, prefill } = useAppStore((state) => state.addSkillSheet);
+  const closeAddSkillSheet = useAppStore((state) => state.closeAddSkillSheet);
+  const openSkill = useAppStore((state) => state.openSkill);
+  const addToast = useAppStore((state) => state.addToast);
+  const userAddedProjects = useAppStore((state) => state.userAddedProjects);
+  const setTrackedProjects = useAppStore((state) => state.setTrackedProjects);
+
+  const [form, dispatch] = useReducer(formReducer, undefined, initialFormState);
+  const {
+    sheetTab,
+    source,
+    methodChoice,
+    enabledReaders: pickedReaders,
+    claudeLink,
+    destination,
+    perHarnesses,
+    scope,
+    projectPath,
+    trial,
+    isSubmitting,
+    submitError,
+  } = form;
+
+  const sourceInputRef = useRef<HTMLInputElement>(null);
+
+  // What dotagents/skills.sh/the Universal folder look like on this machine -
+  // fetched once when the sheet opens, so the Method and Harnesses defaults
+  // below reflect this machine instead of a generic guess.
+  const [defaults, setDefaults] = useState<AddMethodDefaults | null>(null);
+
+  // Only `isOpen`/`prefill` should re-run the reset below - a project added
+  // while the sheet is already open shouldn't reset the form out from under
+  // the user. Read through a ref instead of an exhaustive-deps suppression,
+  // which the compiler treats as a rule violation and refuses to optimize.
+  const userAddedProjectsRef = useRef(userAddedProjects);
+  useEffect(() => {
+    userAddedProjectsRef.current = userAddedProjects;
+  });
+
+  // Reset the form to its defaults, prefilled from the caller, each time the
+  // sheet opens - a stale field from a previous open would be confusing.
+  useEffect(() => {
+    if (!isOpen) return;
+    dispatch({
+      type: "reset",
+      prefill: prefill ?? "",
+      projectPath: userAddedProjectsRef.current[0] ?? null,
+    });
+    getAddMethodDefaults()
+      .then((next) => {
+        setDefaults(next);
+        dispatch({
+          type: "set_readers",
+          readers: next.installed_harnesses.filter((id) => id !== "claude-code"),
+        });
+      })
+      .catch(() => setDefaults(null));
+  }, [isOpen, prefill]);
+
+  const closeSheet = () => {
+    closeAddSkillSheet();
+  };
+
+  const {
+    parsed,
+    methods,
+    noMethodsAvailable,
+    method,
+    methodCaption,
+    installedReaders,
+    claudeReadsShared,
+    enabledReaders,
+    agents,
+    disabledHarnesses,
+  } = deriveMethodAndVisibility(
+    source,
+    destination,
+    methodChoice,
+    pickedReaders,
+    claudeLink,
+    perHarnesses,
+    defaults,
+  );
+
+  const { listingState, githubEntries, selectedPaths, setSelectedPaths, listingBlocks } =
+    useAddSkillGithubSelection(parsed, method);
 
   const {
     isValid,
@@ -1284,7 +1455,6 @@ export function AddSkillSheet() {
     openSkill,
     addToast,
   });
-  const listingBlocks = listingEnabled && listingState.status !== "ready";
   const submitLabel =
     githubEntries && githubEntries.length > 1
       ? `Install ${githubEntries.length} skills`
@@ -1292,9 +1462,18 @@ export function AddSkillSheet() {
 
   const handleBrowseProject = async () => {
     const selected = await open({ directory: true, multiple: false, title: "Select Project" });
-    if (selected) {
-      addProject(selected);
-      dispatch({ type: "set_project_path", path: selected });
+    if (!selected) return;
+    // Installing into the folder does not depend on tracking it, so the pick
+    // stands even when the saved list cannot be written.
+    dispatch({ type: "set_project_path", path: selected });
+    try {
+      setTrackedProjects(await registerSkillProjects([selected]));
+    } catch (err) {
+      addToast({
+        type: "error",
+        title: "Couldn't save project folder",
+        message: invokeErrorMessage(err),
+      });
     }
   };
 
@@ -1342,7 +1521,7 @@ export function AddSkillSheet() {
 
           <TabsContent
             value="manual"
-            className="flex flex-1 flex-col gap-5 overflow-y-auto px-5 py-4"
+            className="flex flex-1 flex-col gap-5 overflow-y-auto py-4 pl-5 gutter-pr-5"
           >
             <SourceField
               source={source}
@@ -1354,9 +1533,7 @@ export function AddSkillSheet() {
             <GithubSkillPicker
               state={listingState}
               selectedPaths={selectedPaths}
-              onSelectedPathsChange={(paths) =>
-                setSelection({ listing: listingState.listing, paths })
-              }
+              onSelectedPathsChange={setSelectedPaths}
             />
 
             <MethodPicker

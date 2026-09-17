@@ -21,18 +21,32 @@ function ledgerDeployment(overrides: Partial<Deployment> = {}): Deployment {
     symlink_is_broken: false,
     content_hash: "abc",
     disabled: false,
+    codex_implicit_invocation: null,
+    disabled_by: null,
+    invocation: "both",
+    spec_violations: [],
+    shared_via_whole_dir_link: false,
     ...overrides,
   };
 }
 
 function ledgerSkill(overrides: Partial<InstalledSkill> = {}): InstalledSkill {
+  const update_owner_ids = overrides.update_owner_ids ?? [];
   return {
     name: "example",
     source: "acme/example",
     source_type: "github",
     installed_at: "2026-01-02T00:00:00Z",
     has_update: false,
-    update_owner_ids: [],
+    update_owner_ids,
+    // Mirrors update_owner_ids so a test that only overrides the ids list
+    // (the pre-`update_owners` shape) still drives updateStateLabel, which
+    // prefers update_owners when it's present at all - see that function.
+    update_owners: update_owner_ids.map((owner_id) => ({
+      owner_id,
+      latest_commit: "unknown",
+      latest_commit_at: null,
+    })),
     source_kind: "skills-sh",
     deployments: [ledgerDeployment()],
     has_spec: true,
@@ -47,6 +61,16 @@ function ledgerSkill(overrides: Partial<InstalledSkill> = {}): InstalledSkill {
     folder_truncated: false,
     parked: false,
     invocation: "both",
+    description: null,
+    fork: null,
+    parked_at: null,
+    skill_path: null,
+    source_url: null,
+    trial: null,
+    trials: [],
+    update_commit: null,
+    update_commit_at: null,
+    updated_at: null,
     ...overrides,
   };
 }
@@ -200,14 +224,20 @@ describe("buildInstalledSkillSourceLedgerModel", () => {
     const pluginDeployment = ledgerDeployment({
       owner_kind: "plugin",
       mutability: "read-only",
-      plugin: { name: "openai-templates", harness: "Codex" },
+      plugin: {
+        name: "openai-templates",
+        harness: "Codex",
+        version: null,
+        marketplace: "openai",
+        id: "openai-templates@openai",
+      },
     });
 
     expect(
       buildInstalledSkillSourceLedgerModel(
         ledgerSkill({ source: "plugin", source_kind: "plugin", deployments: [pluginDeployment] }),
       ).source,
-    ).toBe("Plugin · openai-templates");
+    ).toBe("Codex plugin · openai-templates");
   });
 
   it("prefers a tracked repository over an independent copy", () => {

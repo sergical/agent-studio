@@ -13,6 +13,7 @@
 use std::collections::HashMap;
 use std::sync::{LazyLock, Mutex};
 
+use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
 use super::gh_cli::run_gh;
@@ -27,7 +28,7 @@ const USER_AGENT: &str = "AgentStudio/0.1.0";
 
 /// One skill folder inside a repo: `path` is repo-relative and `""` for a
 /// `SKILL.md` at the repo root.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct GithubSkillEntry {
     pub name: String,
     pub path: String,
@@ -36,7 +37,7 @@ pub struct GithubSkillEntry {
 /// `list_github_skills`'s result. `commit` is the tree's own sha, which the
 /// copy install pins to; `truncated` is GitHub's own flag for a tree too
 /// large to return in one response.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct GithubSkillListing {
     pub repo: String,
     pub git_ref: String,

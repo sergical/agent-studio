@@ -25,7 +25,7 @@
     "fmt:rust": "cd apps/desktop/src-tauri && cargo fmt",
     "test": "npm run test:anti-slop && npm run test -w skill-studio && npm run test -w @skill-studio/lib && npm run test -w @skill-studio/server && npm run test -w @skill-studio/marketing",
     "test:anti-slop": "vitest run tools/oxlint/anti-slop/shared/dictionary-types.integration.test.ts",
-    "check": "npm run typecheck && npm run lint && npm run format:check && npm run doctor && npm run test && cd apps/desktop/src-tauri && cargo fmt --check && cargo clippy -- -D warnings && cargo test",
+    "check": "npm run typecheck && npm run lint && npm run format:check && npm run doctor && npm run test && npm run types:check -w skill-studio && cd apps/desktop/src-tauri && cargo fmt --check && cargo clippy -- -D warnings && cargo test",
     "doctor": "react-doctor apps/desktop -y --no-score --no-supply-chain --blocking warning"
   },
   "devDependencies": {

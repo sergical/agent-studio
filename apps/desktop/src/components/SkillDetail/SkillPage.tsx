@@ -5,27 +5,22 @@
 // assistant panel in a right-hand overlay drawer.
 // ============================================================================
 
-import { useCallback, useEffect, useEffectEvent, useRef, useState } from "react";
-import { ArrowLeft } from "lucide-react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import {
   forkSkill,
-  previewSkillFrontmatterRepair,
   readInstalledSkillMd,
   writeInstalledSkillMdIfUnchanged,
 } from "../../lib/skill-api";
 import { lifecycleTargetForDeployment } from "../../lib/skill-lifecycle-target";
 import { isFeatureEnabled } from "../../lib/feature-flags";
-import {
-  editableDeployments,
-  isUnresolvedDeployment,
-  ownDeployments,
-  skillMdPathForDeployment,
-} from "@skill-studio/lib";
-import type { Deployment, FrontmatterRepairPreview, InstalledSkill } from "@skill-studio/lib";
+import { editableDeployments } from "@skill-studio/lib";
+import type { Deployment, InstalledSkill } from "@skill-studio/lib";
 import type { ActiveView } from "../../store/appStore";
 import { useAppStore } from "../../store/appStore";
+import { PageShell } from "../Shell/PageShell";
 import { DiscardChangesDialog } from "./DiscardChangesDialog";
 import { InstalledSkillHeader } from "./InstalledSkillHeader";
+import { backLabel } from "./skill-page-nav";
 import { SkillAssistantDrawer } from "./SkillAssistantDrawer";
 import { SkillAssistantPanel } from "./SkillAssistantPanel";
 import { useSkillAssistantNavigation } from "./skill-assistant-view-policy";
@@ -33,9 +28,16 @@ import { SkillCompareDialog } from "./SkillCompareDialog";
 import { SkillFrontmatterRepairDialog } from "./SkillFrontmatterRepairDialog";
 import { SkillLocationsCard } from "./SkillLocationsCard";
 import { SkillMarkdownCard } from "./SkillMarkdownCard";
+import { SkillPageHeaderActions } from "./SkillPageHeaderActions";
+import { SkillPropertiesRail } from "./SkillPropertiesRail";
 import { SkillRepairCard } from "./SkillRepairCard";
 import { saveSkillEditorDraft } from "./skill-editor-save";
-import { hasMalformedYamlWarning } from "./skill-frontmatter-repair-policy";
+import { useSkillPageActions } from "./skill-page-actions";
+import { resolveSkillPageDeployment } from "./skill-page-deployment";
+import { useSkillCompareDialog } from "./useSkillCompareDialog";
+import { useSkillEscapeGuard } from "./useSkillEscapeGuard";
+import { useSkillFrontmatterRepair } from "./useSkillFrontmatterRepair";
+import { useSkillMdEditorState } from "./useSkillMdEditorState";
 
 interface SkillPageProps {
   /** `null` when the skill named by the route was removed since the page opened. */
@@ -208,31 +210,11 @@ export function SkillPage({
   const setIsAssistantOpen = useAppStore((state) => state.setIsAssistantOpen);
   const { isRunsOpen, openAssistant, closeAssistant, openRuns, closeRuns } =
     useSkillAssistantNavigation(skill?.name, setIsAssistantOpen);
-  const [editorOpenedContent, setEditorOpenedContent] = useState<string | null>(null);
-  const isEditing = editorOpenedContent !== null;
-  const [isEditorDirty, setIsEditorDirty] = useState(false);
-  const [isCompareOpen, setIsCompareOpen] = useState(false);
-  const [frontmatterRepair, setFrontmatterRepair] = useState<FrontmatterRepairPreview | null>(null);
+  const pageActions = useSkillPageActions(skill, onRemoveComplete);
   const [isFrontmatterRepairOpen, setIsFrontmatterRepairOpen] = useState(false);
   const assistantTriggerRef = useRef<HTMLButtonElement>(null);
 
-  // Set while the discard-changes guard is waiting on the user - runs on
-  // confirm, cleared on cancel. The old native confirm() prompt made this a
-  // synchronous check; the dialog makes it async instead.
-  const [pendingDiscard, setPendingDiscard] = useState<(() => void) | null>(null);
-
-  /** The skill the compare dialog was last shown for, so a plain skill switch (no fresh compare request) closes it instead of carrying it over. */
-  const compareSkillNameRef = useRef<string | undefined>(skill?.name);
-
-  // A plain skill switch (no fresh compare request) closes a dialog carried
-  // over from the previous skill - adjusted during render, per React's
-  // "storing information from previous renders" pattern, since it's a reset
-  // keyed off an identity change rather than something to synchronize.
-  if (compareSkillNameRef.current !== skill?.name) {
-    // react-doctor-disable-next-line react-doctor/no-ref-current-in-render -- adjust-during-render, per React docs "storing information from previous renders"
-    compareSkillNameRef.current = skill?.name;
-    if (isCompareOpen) setIsCompareOpen(false);
-  }
+  const { isCompareOpen, setIsCompareOpen } = useSkillCompareDialog(skill?.name);
 
   // Opening with `intent: "compare"` shows the dialog exactly once - the
   // intent is cleared as soon as it opens, so navigating away and back to
@@ -243,78 +225,12 @@ export function SkillPage({
       setIsCompareOpen(true);
       clearSkillIntent();
     }
-  }, [activeView, clearSkillIntent]);
+  }, [activeView, clearSkillIntent, setIsCompareOpen]);
 
-  // Reads the latest isEditing/isEditorDirty/onBack without making the
-  // listener effect below re-subscribe every time one of them changes.
-  const onEscapeBack = useEffectEvent(() => {
-    if (isEditing && isEditorDirty) {
-      setPendingDiscard(() => onBack);
-      return;
-    }
-    onBack();
-  });
+  const { deployment, deploymentUnresolved, isDeploymentBroken, skillMdPath, isPluginManaged } =
+    resolveSkillPageDeployment(skill, deploymentPath);
 
-  useEffect(() => {
-    function onKeyDown(event: KeyboardEvent) {
-      if (event.key !== "Escape") return;
-      const target = event.target;
-      // Escape typed into an input, textarea, contenteditable region, or an
-      // open dialog belongs to that widget - the local handler (if any) deals
-      // with it, not page navigation.
-      if (
-        target instanceof HTMLElement &&
-        (target.tagName === "INPUT" ||
-          target.tagName === "TEXTAREA" ||
-          target.isContentEditable ||
-          target.closest("dialog") !== null ||
-          target.closest('[role="dialog"]') !== null)
-      ) {
-        return;
-      }
-      onEscapeBack();
-    }
-    window.addEventListener("keydown", onKeyDown);
-    return () => window.removeEventListener("keydown", onKeyDown);
-  }, []);
-
-  // The deployment this page edits: only the one the caller clicked, when
-  // given - a stale `deploymentPath` (the copy was removed by a rescan) must
-  // not silently fall back to a different copy of the skill. With no
-  // `deploymentPath` at all, fall back to the skill's first physical file
-  // (a symlink only points at another copy), then its first own deployment,
-  // then its first deployment (a plugin-only skill has no own deployment).
-  const requestedDeployment =
-    skill && deploymentPath ? skill.deployments.find((d) => d.path === deploymentPath) : undefined;
-  const deploymentUnresolved = Boolean(skill && deploymentPath && !requestedDeployment);
-  const deployment =
-    skill &&
-    (deploymentPath
-      ? requestedDeployment
-      : editableDeployments(skill)[0] || ownDeployments(skill)[0] || skill.deployments[0]);
-  // A broken deployment symlink can't be read at all - SkillRepairCard takes
-  // over the SKILL.md card's spot instead of firing the doomed
-  // `readInstalledSkillMd` for it (see SkillMarkdownCard's old "Unknown
-  // error" + Retry state for a broken link).
-  const isDeploymentBroken = Boolean(deployment && isUnresolvedDeployment(deployment));
-  const skillMdPath =
-    deployment && !isDeploymentBroken ? skillMdPathForDeployment(deployment) : undefined;
-  const isPluginManaged = Boolean(deployment?.plugin);
-
-  useEffect(() => {
-    if (!deployment || !hasMalformedYamlWarning(deployment)) return;
-    let ignore = false;
-    previewSkillFrontmatterRepair(lifecycleTargetForDeployment(deployment))
-      .then((preview) => {
-        if (!ignore && preview.deployment_id === deployment.id) setFrontmatterRepair(preview);
-      })
-      .catch(() => undefined);
-    return () => {
-      ignore = true;
-    };
-  }, [deployment]);
-  const selectedFrontmatterRepair =
-    frontmatterRepair?.deployment_id === deployment?.id ? frontmatterRepair : null;
+  const { selectedFrontmatterRepair, setFrontmatterRepair } = useSkillFrontmatterRepair(deployment);
 
   const {
     rawContent,
@@ -326,30 +242,21 @@ export function SkillPage({
     handleSave: saveContent,
     handleRetryLoad,
     handleApplied,
-  } = useSkillMdContent({ skill, skillMdPath, deployment: deployment || undefined, addToast });
+  } = useSkillMdContent({ skill, skillMdPath, deployment, addToast });
 
-  // A skill switch can't carry over a draft or edit mode from a different
-  // skill - adjusted during render (same single-ref pattern as
-  // `compareSkillNameRef` above), keyed off the same
-  // identity `useSkillMdContent`'s own reset uses.
-  const editSkillNameRef = useRef<string | undefined>(skill?.name);
-  if (editSkillNameRef.current !== skill?.name) {
-    // react-doctor-disable-next-line react-doctor/no-ref-current-in-render -- adjust-during-render, per React docs "storing information from previous renders"
-    editSkillNameRef.current = skill?.name;
-    if (isEditing) setEditorOpenedContent(null);
-    if (isEditorDirty) setIsEditorDirty(false);
-  }
+  const {
+    editorOpenedContent,
+    setEditorOpenedContent,
+    isEditing,
+    isEditorDirty,
+    setIsEditorDirty,
+  } = useSkillMdEditorState(skill?.name, skillMdPath);
 
-  // A deployment/path change (same skill, different copy) can't carry over a
-  // draft or edit mode either - same adjust-during-render idiom, keyed off
-  // the path instead of the skill name.
-  const editSkillMdPathRef = useRef<string | undefined>(skillMdPath);
-  if (editSkillMdPathRef.current !== skillMdPath) {
-    // react-doctor-disable-next-line react-doctor/no-ref-current-in-render -- adjust-during-render, per React docs "storing information from previous renders"
-    editSkillMdPathRef.current = skillMdPath;
-    if (isEditing) setEditorOpenedContent(null);
-    if (isEditorDirty) setIsEditorDirty(false);
-  }
+  const { pendingDiscard, setPendingDiscard } = useSkillEscapeGuard(
+    isEditing,
+    isEditorDirty,
+    onBack,
+  );
 
   const handleSave = (content: string) => {
     if (editorOpenedContent === null) return;
@@ -366,76 +273,78 @@ export function SkillPage({
   };
 
   if (!skill) {
+    const name = activeView.kind === "skill" ? activeView.name : "";
     return (
-      <div className="mx-auto flex max-w-[1200px] flex-col gap-6 pt-7 pb-7 px-8">
-        <div className="flex items-center gap-4">
-          <button
-            className="flex shrink-0 items-center gap-1.5 border-0 bg-transparent p-1 text-small text-text-tertiary transition-colors hover:text-text-primary"
-            onClick={onBack}
-            aria-label="Back"
-          >
-            <ArrowLeft size={16} />
-            <span>{from.kind === "home" ? "Home" : "Back"}</span>
-          </button>
-        </div>
+      <PageShell title={name} parent={{ label: backLabel(from), onClick: onBack }}>
         <p className="text-body text-text-tertiary">This skill is no longer installed.</p>
-      </div>
+      </PageShell>
     );
   }
 
   return (
-    <div className="mx-auto flex max-w-[1200px] flex-col gap-6 pt-7 pb-7 px-8">
-      <InstalledSkillHeader
-        skill={skill}
-        deployment={deployment ?? undefined}
-        from={from}
-        onBack={onBack}
-        onRemoveComplete={onRemoveComplete}
-        isAssistantOpen={isAssistantOpen}
-        onOpenAssistant={openAssistant}
-        assistantTriggerRef={assistantTriggerRef}
-        frontmatterRepair={selectedFrontmatterRepair}
-        onFixYaml={() => setIsFrontmatterRepairOpen(true)}
-        onEditManually={startEditing}
-      />
-
-      <div className="flex min-w-0 flex-col gap-6">
-        <SkillLocationsCard skill={skill} onCompareCopies={() => setIsCompareOpen(true)} />
-
-        {deployment && isDeploymentBroken ? (
-          <SkillRepairCard skill={skill} deployment={deployment} />
-        ) : (
-          <SkillMarkdownCard
+    <PageShell
+      title={skill.name}
+      parent={{ label: backLabel(from), onClick: onBack }}
+      actions={
+        <SkillPageHeaderActions
+          actions={pageActions}
+          assistantEnabled={isFeatureEnabled("skill-assistant")}
+          isAssistantOpen={isAssistantOpen}
+          onOpenAssistant={openAssistant}
+          assistantTriggerRef={assistantTriggerRef}
+        />
+      }
+    >
+      <div className="grid grid-cols-1 gap-8 min-[900px]:grid-cols-[minmax(0,1fr)_260px]">
+        <div className="flex min-w-0 flex-col gap-6">
+          <InstalledSkillHeader
             skill={skill}
-            isPluginManaged={isPluginManaged}
-            deploymentUnresolved={deploymentUnresolved}
-            ownDeploymentOptions={editableDeployments(skill)}
             deployment={deployment ?? undefined}
-            onSelectDeployment={(path) => openSkill(skill.name, path)}
-            rawContent={rawContent}
-            isLoadingContent={isLoadingContent}
-            loadError={loadError}
-            onRetry={handleRetryLoad}
-            editState={
-              isEditing
-                ? {
-                    kind: "editing",
-                    openedContent: editorOpenedContent,
-                    isDirty: isEditorDirty,
-                    isSaving,
-                  }
-                : { kind: "viewing" }
-            }
-            onStartEdit={startEditing}
-            saveLabel={needsForkToSave ? "Fork and save" : "Save"}
-            onSave={handleSave}
-            onCancelEdit={() => {
-              setEditorOpenedContent(null);
-              setIsEditorDirty(false);
-            }}
-            onDirtyChange={setIsEditorDirty}
+            actions={pageActions}
+            frontmatterRepair={selectedFrontmatterRepair}
+            onFixYaml={() => setIsFrontmatterRepairOpen(true)}
+            onEditManually={startEditing}
           />
-        )}
+
+          <SkillLocationsCard skill={skill} onCompareCopies={() => setIsCompareOpen(true)} />
+
+          {deployment && isDeploymentBroken ? (
+            <SkillRepairCard skill={skill} deployment={deployment} />
+          ) : (
+            <SkillMarkdownCard
+              skill={skill}
+              isPluginManaged={isPluginManaged}
+              deploymentUnresolved={deploymentUnresolved}
+              ownDeploymentOptions={editableDeployments(skill)}
+              deployment={deployment ?? undefined}
+              onSelectDeployment={(path) => openSkill(skill.name, path)}
+              rawContent={rawContent}
+              isLoadingContent={isLoadingContent}
+              loadError={loadError}
+              onRetry={handleRetryLoad}
+              editState={
+                editorOpenedContent !== null
+                  ? {
+                      kind: "editing",
+                      openedContent: editorOpenedContent,
+                      isDirty: isEditorDirty,
+                      isSaving,
+                    }
+                  : { kind: "viewing" }
+              }
+              onStartEdit={startEditing}
+              saveLabel={needsForkToSave ? "Fork and save" : "Save"}
+              onSave={handleSave}
+              onCancelEdit={() => {
+                setEditorOpenedContent(null);
+                setIsEditorDirty(false);
+              }}
+              onDirtyChange={setIsEditorDirty}
+            />
+          )}
+        </div>
+
+        <SkillPropertiesRail skill={skill} updateAction={pageActions.primaryAction} />
       </div>
 
       <SkillAssistantDrawer
@@ -485,6 +394,6 @@ export function SkillPage({
           setPendingDiscard(null);
         }}
       />
-    </div>
+    </PageShell>
   );
 }

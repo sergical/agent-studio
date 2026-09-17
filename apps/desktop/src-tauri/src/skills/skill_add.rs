@@ -39,7 +39,7 @@ use super::skill_install_plan::{
     allowed_method, per_harness_copy_targets, skills_sh_universal_add_args, SkillInstallSpec,
 };
 use super::skill_process::{
-    run_controlled_npx_with_control, AddOperationControl, ControlledProcessError,
+    run_controlled_program_with_control, AddOperationControl, ControlledProcessError,
 };
 use super::skill_refresh::{self, SkillRefreshState};
 use super::skill_trial;
@@ -55,7 +55,13 @@ use super::skill_update_check::{self, CommitLookup, GhCommitLookup};
 /// are invoked through it. Implementations may honour `is_cancelled` so a
 /// background Add Skill operation can stop between batch items.
 pub trait CommandRunner {
-    fn run_npx(&self, args: &[String], cwd: Option<&Path>) -> Result<(), String>;
+    /// Runs `program args`, optionally in `cwd`.
+    fn run(&self, program: &str, args: &[String], cwd: Option<&Path>) -> Result<(), String>;
+
+    /// `run("npx", ...)` - the CLI both `dotagents` and `skills.sh` use.
+    fn run_npx(&self, args: &[String], cwd: Option<&Path>) -> Result<(), String> {
+        self.run("npx", args, cwd)
+    }
 
     /// True when the owning Add Skill operation has been cancelled.
     fn is_cancelled(&self) -> bool {
@@ -107,8 +113,8 @@ impl Default for RealCommandRunner {
 }
 
 impl CommandRunner for RealCommandRunner {
-    fn run_npx(&self, args: &[String], cwd: Option<&Path>) -> Result<(), String> {
-        run_controlled_npx_with_control(args, cwd, &self.control)
+    fn run(&self, program: &str, args: &[String], cwd: Option<&Path>) -> Result<(), String> {
+        run_controlled_program_with_control(program, args, cwd, &self.control)
             .map_err(ControlledProcessError::into_message)
     }
 
@@ -1008,7 +1014,7 @@ fn copy_deployment_record(
         destination: request.destination,
         slot: slot.to_string(),
         project_path: request.project_path.clone(),
-        content_hash: super::skill_discovery::live_skill_content_hash_controlled(path, control)?,
+        content_hash: super::core_content_hash::live_skill_content_hash_controlled(path, control)?,
         disabled: false,
     })
 }
@@ -1376,9 +1382,12 @@ mod tests {
     use super::*;
     use std::sync::Mutex;
 
+    /// `(program, args, cwd)` for one recorded `FakeRunner::run` call.
+    type RunCall = (String, Vec<String>, Option<PathBuf>);
+
     #[derive(Default)]
     struct FakeRunner {
-        calls: Mutex<Vec<(Vec<String>, Option<PathBuf>)>>,
+        calls: Mutex<Vec<RunCall>>,
         /// Directories to create under the run's cwd (or absolute), simulating
         /// the CLI actually writing skill folders.
         creates: Vec<PathBuf>,
@@ -1386,11 +1395,12 @@ mod tests {
     }
 
     impl CommandRunner for FakeRunner {
-        fn run_npx(&self, args: &[String], cwd: Option<&Path>) -> Result<(), String> {
-            self.calls
-                .lock()
-                .unwrap()
-                .push((args.to_vec(), cwd.map(PathBuf::from)));
+        fn run(&self, program: &str, args: &[String], cwd: Option<&Path>) -> Result<(), String> {
+            self.calls.lock().unwrap().push((
+                program.to_string(),
+                args.to_vec(),
+                cwd.map(PathBuf::from),
+            ));
             if let Some(err) = &self.fail {
                 return Err(err.clone());
             }
@@ -1595,7 +1605,8 @@ mod tests {
         assert_eq!(result.name, "find-bugs");
         let calls = runner.calls.lock().unwrap();
         assert_eq!(calls.len(), 1);
-        let (args, cwd) = &calls[0];
+        let (program, args, cwd) = &calls[0];
+        assert_eq!(program, "npx");
         assert_eq!(
             args,
             &vec![
@@ -1637,8 +1648,8 @@ mod tests {
         )
         .unwrap();
         let calls = runner.calls.lock().unwrap();
-        assert!(calls[0].0.contains(&"--project".to_string()));
-        assert_eq!(calls[0].1, Some(project.clone()));
+        assert!(calls[0].1.contains(&"--project".to_string()));
+        assert_eq!(calls[0].2, Some(project.clone()));
     }
 
     #[test]
@@ -1687,7 +1698,7 @@ mod tests {
         .unwrap();
         assert_eq!(result.tool, "skills-sh");
         let calls = runner.calls.lock().unwrap();
-        let args = &calls[0].0;
+        let args = &calls[0].1;
         assert!(args.contains(&"--skill".to_string()));
         assert!(args.contains(&"--agent".to_string()));
         assert!(args.contains(&"claude-code".to_string()));
@@ -2252,7 +2263,12 @@ mod tests {
         }
 
         impl CommandRunner for SkillsShLinkRunner {
-            fn run_npx(&self, _args: &[String], _cwd: Option<&Path>) -> Result<(), String> {
+            fn run(
+                &self,
+                _program: &str,
+                _args: &[String],
+                _cwd: Option<&Path>,
+            ) -> Result<(), String> {
                 let skill_dir = self.home.join(".agents/skills/find-bugs");
                 fs::create_dir_all(&skill_dir).unwrap();
                 fs::write(skill_dir.join("SKILL.md"), "body").unwrap();
@@ -2599,9 +2615,9 @@ mod tests {
         assert_eq!(outcomes.len(), 2);
         let calls = runner.calls.lock().unwrap();
         assert_eq!(calls.len(), 2);
-        assert!(calls[0].0.contains(&"--name".to_string()));
-        assert!(calls[0].0.contains(&"visual-recap".to_string()));
-        assert!(calls[1].0.contains(&"other".to_string()));
+        assert!(calls[0].1.contains(&"--name".to_string()));
+        assert!(calls[0].1.contains(&"visual-recap".to_string()));
+        assert!(calls[1].1.contains(&"other".to_string()));
     }
 
     #[test]
@@ -2628,9 +2644,9 @@ mod tests {
         .unwrap();
         let calls = runner.calls.lock().unwrap();
         assert_eq!(calls.len(), 2);
-        assert!(calls[0].0.contains(&"--skill".to_string()));
-        assert!(calls[0].0.contains(&"visual-recap".to_string()));
-        assert!(calls[1].0.contains(&"other".to_string()));
+        assert!(calls[0].1.contains(&"--skill".to_string()));
+        assert!(calls[0].1.contains(&"visual-recap".to_string()));
+        assert!(calls[1].1.contains(&"other".to_string()));
     }
 
     #[test]

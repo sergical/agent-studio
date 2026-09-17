@@ -24,20 +24,21 @@ List of skills discovered from native plugin caches - Claude Code (`~/.claude/pl
 const pluginsButton = page.locator('button:has-text("Plugins")');
 if (await pluginsButton.isVisible()) {
   await pluginsButton.click();
-  await page.waitForSelector('text=Plugin Skills');
+  await page.waitForSelector("text=Plugin Skills");
 }
 
 // Search plugins (via sidebar)
-await page.fill('input[aria-label="Search skills…"]', 'my-plugin-skill');
+await page.fill('input[aria-label="Search skills…"]', "my-plugin-skill");
 // Should filter plugin skills table
 
 // Click skill to open detail
-const firstRow = page.locator('table tbody tr').first();
+const firstRow = page.locator("table tbody tr").first();
 await firstRow.click();
 await page.waitForSelector('[data-testid="skill-detail"]');
 ```
 
 Selectors:
+
 - Plugins button: `button:has-text("Plugins")`
 - Page heading: `text=Plugin Skills` or similar
 - Table rows: `table tbody tr`
@@ -54,34 +55,41 @@ Selectors:
 ## Branches
 
 ### Happy path
+
 1. User has Claude Code or Codex with plugins that include skills
 2. Sidebar shows "Plugins (N)" row
 3. User clicks → PluginSkillsView renders table
 4. User clicks row → detail page opens in read-only mode
 
 ### Empty / first-run states
+
 - No plugins with skills → "Plugins" row not shown in sidebar
 - Plugins exist but no skills → row shows "Plugins (0)" (verify if shown at all)
 - Fresh install of Claude Code/Codex → plugin caches may not exist yet (row hidden)
 
 ### Duplicate / conflict
+
 - Plugin skill name conflicts with user-installed skill → both show in their respective views
 - Detail page shows provenance: plugin skills marked as `source_kind: "plugin"`
 
 ### Failure / error states
+
 - Plugin cache read failure → handled during snapshot build (backend), no inline error in Plugins view
 - Plugin cache inaccessible → skills simply don't appear (no error toast)
 
 ### Cancellation / close mid-flow
+
 - Back from detail → returns to Plugins view (via `onBack()` in `SkillPage`)
 
 ### Loading / progress states
+
 - Initial snapshot loading → entire view waits (handled by parent, not view-specific)
 - No per-view loading state (relies on snapshot `isLoading`)
 
 ## Benchmarks & improvement
 
 ### Observable metrics
+
 - **Plugin discovery time**: Part of snapshot scan (backend Rust `scan.rs` reads plugin caches)
 - **View render time**: Table render for N plugin skills
   - Measure: View switch → table visible
@@ -91,17 +99,20 @@ Selectors:
   - Target: < 50ms (synchronous filter)
 
 ### Current instrumentation
+
 - Plugin skills counted in snapshot (`pluginSkillsView()` helper)
 - No per-plugin-skill timing or cache read latency logged
 - No analytics on plugin skill usage vs user-installed skills
 
 ### Suggested measurements for verification
+
 - **Plugin cache scan duration**: Time spent reading `~/.claude/plugins/cache` and `~/.codex/plugins/cache` (backend span)
 - **Plugin skill count distribution**: How many users have 0, 1-5, 6-20, 21+ plugin skills (product metric)
 - **Plugin skill click rate**: Percentage of users who open plugin skills vs ignore them
 - **Read-only friction**: Count attempts to edit/fork plugin skills (blocked actions)
 
 ### Improvement levers
+
 - **Cache plugin enumeration** (currently scans on every snapshot rebuild; could cache per plugin version hash)
 - **Lazy-load plugin cache reads** (currently eager; could defer until Plugins view opened first time)
 - **Virtual table** for large plugin lists (unlikely needed, typical counts < 50, but scales if popular plugins ship 100+ skills)
@@ -117,6 +128,7 @@ After each interaction:
 - **Back**: Returns to Plugins view
 
 Invariants:
+
 - Plugins row only visible when at least one plugin skill exists
 - Plugin skills always have `source_kind: "plugin"` (never "dotagents", "skills-sh", "manual", "fork")
 - Plugin skills cannot be forked, edited, or removed via Skill Studio (read-only)

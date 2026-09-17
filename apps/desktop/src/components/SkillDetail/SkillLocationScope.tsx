@@ -58,12 +58,11 @@ export function SkillLocationScope({
   const label = showEyebrow ? (group.isGlobal ? "Global folder" : "Project folder") : group.label;
 
   const labelPath = homeRelativePath(shared.path);
-  const rowDelay = (i: number) => (isOpen ? { animationDelay: `${120 + i * 30}ms` } : undefined);
   const rowClass = isOpen
-    ? "animate-[locationRowIn_160ms_ease-out_both] motion-reduce:animate-none"
+    ? "animate-[locationRowIn_120ms_ease-out_both] motion-reduce:animate-none"
     : "";
-  const renderReaderRow = (row: LocationRow, i: number) => (
-    <div key={`${row.kind}-${row.harness}-${row.path}`} className={rowClass} style={rowDelay(i)}>
+  const renderReaderRow = (row: LocationRow) => (
+    <div key={`${row.kind}-${row.harness}-${row.path}`} className={rowClass}>
       <SkillLocationRow row={row} scopeLabel={group.label} onAction={onAction} />
     </div>
   );
@@ -93,7 +92,7 @@ export function SkillLocationScope({
           </span>
           <div className="group/stack relative shrink-0" style={{ width: readers.length * 20 }}>
             <div
-              className={`relative h-[18px] transition-[opacity,transform] duration-150 ease-in motion-reduce:transition-none ${
+              className={`relative h-[18px] transition-[opacity,transform] duration-150 ease-out motion-reduce:transition-none ${
                 isOpen
                   ? "pointer-events-none -translate-y-1 opacity-0"
                   : "translate-y-0 opacity-100"

@@ -255,6 +255,26 @@ function useAssistantRunSession({
     dispatchRunSession({ type: "set_target", target });
   };
 
+  // `cancel`/`judgeCancel`/`reset`/`judgeReset` are new functions every
+  // render, and `defaultHarness` is derived from `skill` on every render
+  // too - none of them should re-run the skill-change or unmount effects
+  // below on their own. Read through refs (updated every render, so an
+  // effect that does fire always sees that render's values) instead of an
+  // exhaustive-deps suppression, which the compiler treats as a rule
+  // violation and refuses to optimize.
+  const cancelRef = useRef(cancel);
+  const judgeCancelRef = useRef(judgeCancel);
+  const resetRef = useRef(reset);
+  const judgeResetRef = useRef(judgeReset);
+  const defaultHarnessRef = useRef(defaultHarness);
+  useEffect(() => {
+    cancelRef.current = cancel;
+    judgeCancelRef.current = judgeCancel;
+    resetRef.current = reset;
+    judgeResetRef.current = judgeReset;
+    defaultHarnessRef.current = defaultHarness;
+  });
+
   /** Ends whatever run target is still active when leaving a "Test" run
    * unfinished: a Scratch/Worktree target is discarded (best effort, toast on
    * failure); an InPlace target's changes are left on disk as-is, since
@@ -281,33 +301,44 @@ function useAssistantRunSession({
       });
     }
   };
-
+  const releaseActiveTargetRef = useRef(releaseActiveTarget);
   useEffect(() => {
+    releaseActiveTargetRef.current = releaseActiveTarget;
+  });
+
+  // Only a skill or deployment change should re-run the reset below - not
+  // every render (this effect has no dependency array so it runs after
+  // every commit, but skips out immediately unless the key it tracks
+  // changed) and not a `cancel`/`judgeCancel`/`reset`/`judgeReset`/
+  // `defaultHarness` identity change, since those are new every render too
+  // (read through the refs kept current above instead).
+  const skillResetKeyRef = useRef<string | null>(null);
+  useEffect(() => {
+    const key = `${skill.name} ${skillMdPath ?? ""}`;
+    if (skillResetKeyRef.current === key) return;
+    skillResetKeyRef.current = key;
     // A new skill, or a different deployment's copy of the same skill, can't
     // reuse a previous one's scratch dir or transcript. Cancel any run
     // against the old skill/path before the scratch dir cleanup effect below
     // (keyed on `scratchDir`) removes the folder it runs in.
-    let ignore = false;
+    // No cleanup flag: this effect re-runs after every commit, so a cleanup
+    // would drop the reset whenever the awaits below cause a re-render. The
+    // token is the staleness guard - the next skill change and unmount bump it.
     const token = ++opTokenRef.current;
     (async () => {
-      await cancel();
-      await judgeCancel();
-      await releaseActiveTarget();
-      if (ignore || opTokenRef.current !== token) return;
+      await cancelRef.current();
+      await judgeCancelRef.current();
+      await releaseActiveTargetRef.current();
+      if (opTokenRef.current !== token) return;
       setScratchDir(undefined);
-      setHarness(defaultHarness);
+      setHarness(defaultHarnessRef.current);
       activeTargetRef.current = null;
       dispatchRunSession({ type: "reset" });
       setShowTestForm(false);
-      reset();
-      judgeReset();
+      resetRef.current();
+      judgeResetRef.current();
     })();
-    return () => {
-      ignore = true;
-    };
-    // `defaultHarness`, `cancel`, and `reset` are recomputed every render;
-    // only a skill or deployment change should re-run this.
-  }, [skill.name, skillMdPath]); // eslint-disable-line react-hooks/exhaustive-deps
+  });
 
   useEffect(() => {
     return () => {
@@ -317,15 +348,16 @@ function useAssistantRunSession({
 
   // Unmount (including Escape/back navigation away from the skill page,
   // which unmounts this panel) - fire-and-forget, nothing left to await into.
+  // `opTokenRef` is a staleness counter, not a DOM ref, so bumping and
+  // reading it at unmount time is exactly the point.
   useEffect(() => {
-    return () => {
-      // eslint-disable-next-line react-hooks/exhaustive-deps -- staleness counter, not a DOM ref; reading it at unmount time is exactly the point.
+    const releaseOnUnmount = () => {
       opTokenRef.current++;
-      cancel().catch(() => {});
-      judgeCancel().catch(() => {});
-      releaseActiveTarget().catch(() => {});
+      cancelRef.current().catch(() => {});
+      judgeCancelRef.current().catch(() => {});
+      releaseActiveTargetRef.current().catch(() => {});
     };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
+    return releaseOnUnmount;
   }, []);
 
   const handleSelectHarness = async (agent: HarnessId) => {
@@ -864,13 +896,9 @@ function AskComposer({
         {sessionId ? (
           <span className="text-caption text-text-tertiary">
             Continues the current session ·{" "}
-            <button
-              type="button"
-              className="cursor-pointer border-0 bg-transparent p-0 text-caption text-accent transition-colors hover:text-accent-hover"
-              onClick={onNewSession}
-            >
+            <Button variant="link" className="h-auto p-0 text-caption" onClick={onNewSession}>
               New session
-            </button>
+            </Button>
           </span>
         ) : (
           <span />
@@ -886,6 +914,118 @@ function AskComposer({
         )}
       </div>
     </div>
+  );
+}
+
+interface AssistantRunArtifactsProps {
+  runKind: RunSessionState["runKind"];
+  judgeState: SkillAgentRunState;
+  runState: SkillAgentRunState;
+  judgeVerdict: ReturnType<typeof parseJudgeVerdict>;
+  harness: HarnessId;
+  proposal: Proposal | null;
+  rawContent: string | null;
+  skillMdPath: string | undefined;
+  dispatchRunSession: React.Dispatch<RunSessionAction>;
+  onApplied: (content: string) => void;
+  onDiskChanged: () => void;
+  runTarget: SkillRunTargetInfo | null;
+  runDiff: string | null;
+  isDiffBusy: boolean;
+  isStateRunning: boolean;
+  onApplyDiff: () => void;
+  onDiscardDiff: () => void;
+  onOpenScratchFolder: () => void;
+  onDeleteScratchFolder: () => void;
+}
+
+/**
+ * Everything a run can leave behind below the transcript: the Test judge
+ * panel, an Audit's proposed-edit review, a Test's worktree/in-place diff,
+ * and a Test's scratch-folder actions. Pulled out of `SkillAssistantPanel`
+ * since these four are independent branches over the same `runSession`.
+ */
+function AssistantRunArtifacts({
+  runKind,
+  judgeState,
+  runState,
+  judgeVerdict,
+  harness,
+  proposal,
+  rawContent,
+  skillMdPath,
+  dispatchRunSession,
+  onApplied,
+  onDiskChanged,
+  runTarget,
+  runDiff,
+  isDiffBusy,
+  isStateRunning,
+  onApplyDiff,
+  onDiscardDiff,
+  onOpenScratchFolder,
+  onDeleteScratchFolder,
+}: AssistantRunArtifactsProps) {
+  return (
+    <>
+      {runKind === "test" && (
+        <TestJudgePanel
+          judgeState={judgeState}
+          runState={runState}
+          verdict={judgeVerdict}
+          harness={harness}
+        />
+      )}
+
+      {proposal && rawContent !== null && skillMdPath && (
+        <Suspense
+          fallback={<p className="m-0 text-caption text-text-tertiary">Loading changes…</p>}
+        >
+          <SkillProposedEdits
+            fileAtAuditStart={proposal.fileAtAuditStart}
+            currentContent={rawContent}
+            skillMdPath={skillMdPath}
+            proposalSkillMdPath={proposal.skillMdPath}
+            hunks={proposal.hunks}
+            onHunksChange={(hunks) =>
+              dispatchRunSession({ type: "set_proposal", proposal: { ...proposal, hunks } })
+            }
+            onApplied={(content) => {
+              onApplied(content);
+              dispatchRunSession({ type: "set_proposal", proposal: null });
+            }}
+            onDiscard={() => dispatchRunSession({ type: "set_proposal", proposal: null })}
+            onDiskChanged={onDiskChanged}
+          />
+        </Suspense>
+      )}
+
+      {runTarget && runTarget.kind !== "scratch" && runDiff !== null && (
+        <Suspense
+          fallback={<p className="m-0 text-caption text-text-tertiary">Loading changes…</p>}
+        >
+          <SkillRunDiff
+            projectLabel={projectBasename(runTarget.cwd)}
+            targetKind={runTarget.kind}
+            diff={runDiff}
+            isBusy={isDiffBusy}
+            onPrimary={onApplyDiff}
+            onSecondary={onDiscardDiff}
+          />
+        </Suspense>
+      )}
+
+      {runTarget && runTarget.kind === "scratch" && !isStateRunning && (
+        <div className="flex gap-2">
+          <Button variant="outline" size="sm" className="flex-1" onClick={onOpenScratchFolder}>
+            Open folder
+          </Button>
+          <Button variant="outline" size="sm" className="flex-1" onClick={onDeleteScratchFolder}>
+            Delete scratch folder
+          </Button>
+        </div>
+      )}
+    </>
   );
 }
 
@@ -1088,68 +1228,27 @@ export function SkillAssistantPanel({
         </p>
       )}
 
-      {runKind === "test" && (
-        <TestJudgePanel
-          judgeState={judge.state}
-          runState={state}
-          verdict={judgeVerdict}
-          harness={harness}
-        />
-      )}
-
-      {proposal && rawContent !== null && skillMdPath && (
-        <Suspense
-          fallback={<p className="m-0 text-caption text-text-tertiary">Loading changes…</p>}
-        >
-          <SkillProposedEdits
-            fileAtAuditStart={proposal.fileAtAuditStart}
-            currentContent={rawContent}
-            skillMdPath={skillMdPath}
-            proposalSkillMdPath={proposal.skillMdPath}
-            hunks={proposal.hunks}
-            onHunksChange={(hunks) =>
-              dispatchRunSession({ type: "set_proposal", proposal: { ...proposal, hunks } })
-            }
-            onApplied={(content) => {
-              onApplied(content);
-              dispatchRunSession({ type: "set_proposal", proposal: null });
-            }}
-            onDiscard={() => dispatchRunSession({ type: "set_proposal", proposal: null })}
-            onDiskChanged={onDiskChanged}
-          />
-        </Suspense>
-      )}
-
-      {runTarget && runTarget.kind !== "scratch" && runDiff !== null && (
-        <Suspense
-          fallback={<p className="m-0 text-caption text-text-tertiary">Loading changes…</p>}
-        >
-          <SkillRunDiff
-            projectLabel={projectBasename(runTarget.cwd)}
-            targetKind={runTarget.kind}
-            diff={runDiff}
-            isBusy={isDiffBusy}
-            onPrimary={handleApplyDiff}
-            onSecondary={handleDiscardDiff}
-          />
-        </Suspense>
-      )}
-
-      {runTarget && runTarget.kind === "scratch" && state.status !== "running" && (
-        <div className="flex gap-2">
-          <Button variant="outline" size="sm" className="flex-1" onClick={handleOpenScratchFolder}>
-            Open folder
-          </Button>
-          <Button
-            variant="outline"
-            size="sm"
-            className="flex-1"
-            onClick={handleDeleteScratchFolder}
-          >
-            Delete scratch folder
-          </Button>
-        </div>
-      )}
+      <AssistantRunArtifacts
+        runKind={runKind}
+        judgeState={judge.state}
+        runState={state}
+        judgeVerdict={judgeVerdict}
+        harness={harness}
+        proposal={proposal}
+        rawContent={rawContent}
+        skillMdPath={skillMdPath}
+        dispatchRunSession={dispatchRunSession}
+        onApplied={onApplied}
+        onDiskChanged={onDiskChanged}
+        runTarget={runTarget}
+        runDiff={runDiff}
+        isDiffBusy={isDiffBusy}
+        isStateRunning={state.status === "running"}
+        onApplyDiff={handleApplyDiff}
+        onDiscardDiff={handleDiscardDiff}
+        onOpenScratchFolder={handleOpenScratchFolder}
+        onDeleteScratchFolder={handleDeleteScratchFolder}
+      />
 
       <div id="skill-assistant-test-toggle-region">
         {showTestForm ? (

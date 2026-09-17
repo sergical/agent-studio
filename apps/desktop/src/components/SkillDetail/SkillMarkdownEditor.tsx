@@ -81,7 +81,7 @@ export function SkillMarkdownEditor({
   }, []);
 
   return (
-    <div className="flex flex-col gap-2 p-4">
+    <div className="select-text flex flex-col gap-2 p-4">
       <div className="flex items-center justify-end gap-3">
         {isDirty && <span className="mr-auto text-caption text-warning">Unsaved changes</span>}
         <div className="flex gap-2">

@@ -15,10 +15,12 @@ Create, update, publish, import, and delete skill packs - bundled collections of
 ## How to get to it (user POV)
 
 **List view**:
+
 1. Click "Packs" in sidebar (hidden behind `skill-packs` feature flag)
 2. View shows all packs with names, skill counts, repo status
 
 **Create**:
+
 1. In Skills view, enter selection mode (click "Select" button)
 2. Check skills to bundle
 3. Click "Create pack" button
@@ -26,11 +28,13 @@ Create, update, publish, import, and delete skill packs - bundled collections of
 5. Pack created in `~/.agents/packs/<name>`
 
 **Detail**:
+
 1. From Packs list, click a pack row
 2. Detail page shows: name, dir path, repo URL (if published), skill chips
 3. Actions: Update, Publish/Push, Delete
 
 **Import**:
+
 1. Add Skill sheet, method="pack", source=GitHub repo with pack
 2. Submit → imports bundled + referenced skills
 
@@ -39,7 +43,7 @@ Create, update, publish, import, and delete skill packs - bundled collections of
 ```typescript
 // Navigate to Packs view
 await page.click('button:has-text("Packs")');
-await page.waitForSelector('text=Packs');
+await page.waitForSelector("text=Packs");
 
 // Create pack from Skills view
 await page.click('button:has-text("Skills")');
@@ -47,13 +51,13 @@ await page.click('button:has-text("Select")'); // Enter selection mode
 await page.check('table tbody tr:first-child input[type="checkbox"]'); // Select a skill
 await page.check('table tbody tr:nth-child(2) input[type="checkbox"]'); // Select another
 await page.click('button:has-text("Create pack")');
-await page.fill('input[placeholder*="pack name"]', 'my-pack');
+await page.fill('input[placeholder*="pack name"]', "my-pack");
 await page.click('button:has-text("Create")');
 
 // Open pack detail
 await page.click('button:has-text("Packs")');
 await page.click('button:has-text("my-pack")'); // Pack row
-await page.waitForSelector('text=my-pack'); // Detail page
+await page.waitForSelector("text=my-pack"); // Detail page
 
 // Update pack
 await page.click('button:has-text("Update pack")');
@@ -71,6 +75,7 @@ await page.click('[role="alertdialog"] button:has-text("Delete")');
 ```
 
 Selectors:
+
 - Packs button: `button:has-text("Packs")`
 - Pack rows: `button:has-text("<pack-name>")` (list items are buttons)
 - Create pack: `button:has-text("Create pack")` (in Skills view, selection mode)
@@ -93,38 +98,45 @@ Selectors:
 ## Branches
 
 ### Happy path: Create pack
+
 1. User enters Skills view → clicks Select → checks 3 skills
 2. Clicks "Create pack" → enters name "my-favorites" → submits
 3. Backend: creates `~/.agents/packs/my-favorites/`, copies 3 skill folders, writes `agents.toml`, `git init`, commits
 4. Toast success → Packs list shows new pack
 
 ### Happy path: Publish pack
+
 1. User opens pack detail → clicks "Publish to GitHub"
 2. Backend: runs `gh repo create`, prompts for visibility (public/private), pushes
 3. Toast success → pack detail shows repo URL ("getsentry/skill-studio-my-favorites")
 4. Next publish → button says "Push update" (updates existing repo)
 
 ### Happy path: Import pack
+
 1. User opens Add Skill sheet → types pack repo → selects method="pack"
 2. Selects harnesses to import to → clicks "Import pack"
 3. Backend: clones pack, runs `dotagents add <repo> --all`, installs bundled skills, installs referenced skills from other repos
 4. Toast: "Imported N skills" → sheet closes
 
 ### Happy path: Update pack
+
 1. User adds a new skill to their local skills
 2. Opens pack detail → clicks "Update pack"
 3. Backend: checks if pack's agents.toml references the new skill → no → "Already up to date" toast
 4. User manually edits pack's agents.toml (outside app) → clicks Update again → "Pack updated" toast
 
 ### Empty / first-run states
+
 - No packs created yet → Packs view shows "No packs yet. Select skills... to bundle them."
 - Pack with 0 skills → Not possible (creation requires at least 1 skill selected)
 
 ### Duplicate / conflict
+
 - Pack name already exists → Create fails with error toast "Pack name already exists"
 - Pack directory exists on disk → Backend refuses, error toast
 
 ### Failure / error states
+
 - **Create failure** → Error toast, stays in selection mode
 - **Publish failure** → Error toast (no `gh` CLI, auth failure, network error), pack detail stays open
 - **Update failure** → Error toast, pack detail stays open
@@ -132,11 +144,13 @@ Selectors:
 - **Import failure** → Error toast listing which skills failed to install
 
 ### Cancellation / close mid-flow
+
 - Cancel create pack dialog → selection mode persists, no pack created
 - Close pack detail during update → update continues in background (Tauri command)
 - Cancel publish confirmation (backend dialog) → error toast "Publish cancelled", no push
 
 ### Loading / progress states
+
 - **Creating pack** → "Creating…" on dialog button
 - **Updating pack** → "Updating…" on button
 - **Publishing pack** → "Publishing…" on button (blocks until `gh` completes)
@@ -145,6 +159,7 @@ Selectors:
 ## Benchmarks & improvement
 
 ### Observable metrics
+
 - **Create pack duration**: Selection → pack created in `~/.agents/packs/<name>` + committed
   - Measure: Dialog submit → toast shown
   - Target: < 2s for typical packs (< 10 skills)
@@ -159,11 +174,13 @@ Selectors:
   - Target: ~5s per skill (serial `dotagents add` calls)
 
 ### Current instrumentation
+
 - `busy` state tracks which operation is in progress (no timing)
 - Toast on success/failure (no duration logged)
 - No pack creation/publish/import analytics
 
 ### Suggested measurements for verification
+
 - **Pack creation rate**: How often users create packs (product metric)
 - **Pack publish rate**: Percentage of created packs that get published
 - **Pack size distribution**: Skill count per pack (typical 3-10, outliers 50+)
@@ -171,6 +188,7 @@ Selectors:
 - **Time per skill in create/update**: Measure copy + commit overhead per skill
 
 ### Improvement levers
+
 - **Parallel pack creation** (currently sequential skill copies; could parallelize)
 - **Skip git commit on update if unchanged** (currently diffs tree, already optimized)
 - **Batch-import pack skills** (currently serial `dotagents add` per skill; could batch via CLI)
@@ -189,6 +207,7 @@ After each interaction:
 - **Delete pack**: Pack row disappears from list, view returns to Packs list
 
 Invariants:
+
 - Pack name unique within `~/.agents/packs/` (backend enforces)
 - Pack directory always a git repo (initialized on creation)
 - Published packs always have `pack.repo` field set (persisted in `skill-studio.json`)

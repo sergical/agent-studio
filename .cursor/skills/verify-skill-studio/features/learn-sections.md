@@ -16,13 +16,16 @@ Four explainer sections accessed from Home's "Learn more" links and sidebar's Le
 ## How to get to it (user POV)
 
 **From Home**:
+
 1. Click "Learn more →" link below Broken/Warnings stat tiles → opens Learn at "broken" section
 2. Click "Learn more →" link in invocation/cost card → opens Learn at "invoke" or "cost" section
 
 **From sidebar**:
+
 1. Click Learn button (book icon) → opens Learn at first section
 
 **From Learn itself**:
+
 1. Click TOC links to jump between sections
 2. Back button (← Home) returns to Home view
 
@@ -31,21 +34,22 @@ Four explainer sections accessed from Home's "Learn more" links and sidebar's Le
 ```typescript
 // Open Learn from sidebar
 await page.click('button[aria-label="Learn"]');
-await page.waitForSelector('text=Learn'); // Page heading
+await page.waitForSelector("text=Learn"); // Page heading
 
 // Navigate via TOC
 await page.click('a[href="#learn-invoke"]');
-await page.waitForSelector('#learn-invoke');
+await page.waitForSelector("#learn-invoke");
 
 // Deep-link to specific section (programmatic)
 // (Requires setting activeView in store, not drivable from UI alone)
 
 // Back to Home
 await page.click('button:has-text("← Home")');
-await page.waitForSelector('text=Home');
+await page.waitForSelector("text=Home");
 ```
 
 Selectors:
+
 - Learn button: `button[aria-label="Learn"]`
 - Page heading: `text=Learn`
 - TOC links: `a[href="#learn-broken"]`, `a[href="#learn-invoke"]`, `a[href="#learn-cost"]`, `a[href="#learn-unused"]`
@@ -63,34 +67,42 @@ Selectors:
 ## Branches
 
 ### Happy path: From Home stat tile
+
 1. User clicks "Learn more" on Broken tile → `setActiveView({ kind: "learn", section: "broken" })`
 2. Learn view renders, scrolls to "Broken and warnings" heading, focuses it
 3. User reads content, clicks TOC link to "Prompt cost"
 4. View scrolls to that section (no route change, just scroll)
 
 ### Happy path: From sidebar
+
 1. User clicks Learn button → opens at first section (no specific section specified)
 2. View renders, TOC shows all 4 sections
 3. User clicks ← Home → returns to Home view
 
 ### Empty / first-run states
+
 - Learn always has content (static explanations, not data-driven)
 
 ### Duplicate / conflict
+
 - N/A - no user-modifiable state
 
 ### Failure / error states
+
 - N/A - static content, no API calls or data fetching
 
 ### Cancellation / close mid-flow
+
 - Back button → returns to Home (no confirmation needed)
 
 ### Loading / progress states
+
 - No loading states (content is static, pre-rendered)
 
 ## Benchmarks & improvement
 
 ### Observable metrics
+
 - **View render time**: Learn button click → content visible
   - Measure: Button click → page heading rendered
   - Target: < 100ms (static content, no data fetch)
@@ -102,17 +114,20 @@ Selectors:
   - Target: < 150ms (route change + scroll + focus)
 
 ### Current instrumentation
+
 - No timing metrics
 - Section focus via `headingRefs.current.get(section)?.focus()` (no logging)
 - No analytics on which sections are visited most
 
 ### Suggested measurements for verification
+
 - **Section visit distribution**: Track which sections users open (broken vs invoke vs cost vs unused)
 - **Entry point distribution**: How often users arrive via Home vs sidebar
 - **Time spent per section**: Track how long users stay on Learn view (proxy for engagement)
 - **TOC usage**: Count in-page TOC clicks vs scrolling manually
 
 ### Improvement levers
+
 - **Lazy-load table** in "Who can invoke" (currently renders on mount; could defer until scrolled into view)
 - **Code-split Learn view** (currently loaded eagerly; ~5KB of static content)
 - **Add search** within Learn sections (currently relies on browser Cmd+F; inline search could highlight matches)
@@ -128,6 +143,7 @@ After each interaction:
 - **Back button**: Returns to Home view
 
 Invariants:
+
 - Learn view always has all 4 sections (never partial or conditional)
 - Section headings always match TOC labels
 - Content is static (never changes based on user data or snapshot)

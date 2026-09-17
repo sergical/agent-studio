@@ -18,19 +18,20 @@ use chrono::{DateTime, NaiveDate, Timelike, Utc};
 use notify_debouncer_mini::new_debouncer;
 use notify_debouncer_mini::notify::{RecommendedWatcher, RecursiveMode};
 use notify_debouncer_mini::Debouncer;
+use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
+use skill_studio_core::discovery_sources::DiscoverySources;
+use skill_studio_core::skill_uses::{InvocationHeatmap, SkillInvocationStats, SkillUseFilter};
+use skill_studio_core::tracked_projects::{self, TrackedProjects};
+use skill_studio_host::{SkillInvocationIndex, SkillUseRefreshReport};
 use tauri::{AppHandle, Emitter, Manager};
 
 use super::agents;
 use super::lock_file;
-use super::project_discovery;
 use super::skill_assembly;
-use super::skill_discovery;
 use super::skill_dto::{Deployment, InstalledSkill};
-use super::skill_fork_registry::TrialScope;
-use super::skill_invocations::{
-    InvocationHeatmap, RefreshReport, SkillInvocationIndex, SkillInvocationStats,
-};
+use super::skill_fork_registry::{ForkRegistry, TrialScope};
+use super::skill_harness_disable;
 use super::skill_run_history::{self, SkillRunSummary};
 use super::skill_update_check::{self, UpdateCheckSummary};
 
@@ -46,18 +47,13 @@ const DEBOUNCE: Duration = Duration::from_millis(750);
 /// (which only sets a flag from another thread) is picked up promptly.
 const POLL_INTERVAL: Duration = Duration::from_millis(200);
 
-/// A lingering invocations-only backlog forces a full rebuild after this long
-/// even without a skills-affecting change, so `snapshot.projects` etc. never
-/// go too stale just because only transcripts are still being indexed.
-const FULL_REBUILD_BACKLOG: Duration = Duration::from_secs(60);
-
 /// Minimum spacing between invocations-only rebuilds, so a burst of
 /// transcript writes doesn't reparse and re-emit on every debounce tick.
 const INVOCATIONS_REBUILD_INTERVAL: Duration = Duration::from_secs(5);
 
 /// Everything the frontend needs about installed skills, discovered
 /// projects, and invocation history, built together in one background pass.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct SkillSnapshot {
     /// Process-local publication order. Zero is reserved for snapshots read
     /// from older serialized data that predates revisions.
@@ -82,6 +78,15 @@ pub struct SkillSnapshot {
     /// `opencode_skill_permission::detect_config_kind`.
     #[serde(default)]
     pub opencode_config_kind: Option<super::opencode_skill_permission::OpencodeConfigKind>,
+    /// True when the core scan's read budget was exceeded before every root
+    /// could be reached - `skills`/`projects` may be missing entries from
+    /// the roots named in `scan_observations`. See `core_scan_installed_skills`.
+    #[serde(default)]
+    pub scan_partial: bool,
+    /// Human-readable notes about roots the scan could not reach, each
+    /// prefixed by a display of the root it is about.
+    #[serde(default)]
+    pub scan_observations: Vec<String>,
 }
 
 /// One filesystem path the background watcher should track, and whether
@@ -102,14 +107,6 @@ pub struct SkillRefreshState {
     /// Held for the duration of a rebuild so the background loop and the
     /// synchronous command-triggered rebuilds never run concurrently.
     rebuild_lock: Arc<Mutex<()>>,
-    /// Project paths a caller (e.g. `get_installed_skills`) asked to be
-    /// included, on top of whatever `project_discovery` finds on its own.
-    extra_projects: Arc<Mutex<BTreeSet<String>>>,
-    /// Project paths the user explicitly stopped tracking (the sidebar's
-    /// "Stop tracking" action). Subtracted from the discovered ∪ extra set
-    /// on every rebuild, so a project the user removed doesn't reappear just
-    /// because `project_discovery` still finds it.
-    excluded_projects: Arc<Mutex<BTreeSet<String>>>,
     /// Something that can affect the skills list, project list, or plugin
     /// caches changed; the next rebuild should be a full one.
     skills_dirty: Arc<AtomicBool>,
@@ -120,7 +117,7 @@ pub struct SkillRefreshState {
     /// The (UTC date, hour) of the last snapshot rebuild - full or
     /// invocations-only. The refresh loop compares this against the current
     /// hour on every tick so the wall-clock-dependent invocation windows in
-    /// `SkillInvocationIndex::stats` (24h/7d/14d/30d, by_day) get rebuilt on
+    /// `SkillInvocationIndex::stats_at` (24h/7d/14d/30d, by_day) get rebuilt on
     /// an hour boundary even when nothing on disk changed.
     last_built_hour: Arc<Mutex<Option<(NaiveDate, u32)>>>,
     cache_path: PathBuf,
@@ -131,12 +128,6 @@ pub struct SkillRefreshState {
     /// `skill_update_check` persists its result - read on every full rebuild
     /// to fill `has_update`/`update_check`.
     update_check_path: PathBuf,
-    /// `SkillContentFacts` computed by past rebuilds, keyed by canonical
-    /// skill dir - see `skill_discovery::SkillFactsCache`. Lives for the
-    /// process's whole lifetime (unlike the cache `discover_skill_candidates`
-    /// builds and discards per call) so a rebuild triggered by one small
-    /// change doesn't re-hash and re-tokenize every other skill's SKILL.md.
-    facts_cache: Arc<Mutex<skill_discovery::SkillFactsCache>>,
 }
 
 impl SkillRefreshState {
@@ -148,63 +139,12 @@ impl SkillRefreshState {
         self.skills_dirty.load(Ordering::SeqCst)
     }
 
-    /// Mark the next rebuild as full, without touching the extra/excluded
-    /// project sets - the responsive path a mutation command takes instead of
-    /// an inline `rebuild_snapshot_now`. Equivalent to `request_skill_rescan`,
-    /// just callable on the state directly rather than through Tauri IPC.
+    /// Mark the next rebuild as full - the responsive path a mutation command
+    /// takes instead of an inline `rebuild_snapshot_now`. Equivalent to
+    /// `request_skill_rescan`, just callable on the state directly rather
+    /// than through Tauri IPC.
     pub(crate) fn mark_skills_dirty(&self) {
         self.skills_dirty.store(true, Ordering::SeqCst);
-    }
-
-    /// Add project paths to the always-included set and mark skills dirty,
-    /// so both `get_installed_skills` and `register_skill_projects` funnel
-    /// through the same bookkeeping.
-    pub(crate) fn add_extra_projects(&self, paths: impl IntoIterator<Item = String>) {
-        if let Ok(mut extra) = self.extra_projects.lock() {
-            extra.extend(paths);
-        }
-        self.skills_dirty.store(true, Ordering::SeqCst);
-    }
-
-    /// Remove a caller-registered project path so future rebuilds stop
-    /// including it, mark it excluded so `project_discovery` can't bring it
-    /// back on its own, and mark skills dirty so the next background pass
-    /// reflects the removal.
-    pub(crate) fn remove_extra_project(&self, path: &str) {
-        if let Ok(mut extra) = self.extra_projects.lock() {
-            extra.remove(path);
-        }
-        if let Ok(mut excluded) = self.excluded_projects.lock() {
-            excluded.insert(path.to_string());
-        }
-        self.skills_dirty.store(true, Ordering::SeqCst);
-    }
-
-    /// Remove project paths from the excluded set, so a caller that
-    /// explicitly registers a project (e.g. re-adding it in the sidebar)
-    /// overrides a previous "stop tracking".
-    pub(crate) fn unexclude_projects(&self, paths: impl IntoIterator<Item = String>) {
-        if let Ok(mut excluded) = self.excluded_projects.lock() {
-            for path in paths {
-                excluded.remove(&path);
-            }
-        }
-    }
-
-    /// The caller-registered project paths, as `PathBuf`s.
-    fn extra_project_paths(&self) -> Vec<PathBuf> {
-        self.extra_projects
-            .lock()
-            .map(|guard| guard.iter().map(PathBuf::from).collect())
-            .unwrap_or_default()
-    }
-
-    /// The excluded project paths.
-    fn excluded_project_set(&self) -> BTreeSet<String> {
-        self.excluded_projects
-            .lock()
-            .map(|guard| guard.clone())
-            .unwrap_or_default()
     }
 
     /// Record that a rebuild just completed at `now`, so `is_hour_stale`
@@ -236,13 +176,15 @@ fn hour_key(now: DateTime<Utc>) -> (NaiveDate, u32) {
 /// with `tauri::Builder::manage`.
 pub fn init(app: &AppHandle) -> SkillRefreshState {
     let cache_path = invocation_cache_path(app);
+    // Best-effort cleanup of the pre-rename cache file this replaced; a
+    // fresh index is rebuilt from the transcripts either way, so a failure
+    // here (e.g. it never existed) is not worth surfacing.
+    let _ = std::fs::remove_file(cache_path.with_file_name("skill-invocations.json"));
     let invocation_index = SkillInvocationIndex::load_or_empty(&cache_path);
 
     let state = SkillRefreshState {
         snapshot: Arc::new(RwLock::new(None)),
         rebuild_lock: Arc::new(Mutex::new(())),
-        extra_projects: Arc::new(Mutex::new(BTreeSet::new())),
-        excluded_projects: Arc::new(Mutex::new(BTreeSet::new())),
         skills_dirty: Arc::new(AtomicBool::new(false)),
         invocations_dirty: Arc::new(AtomicBool::new(false)),
         invocation_index: Arc::new(Mutex::new(invocation_index)),
@@ -259,7 +201,6 @@ pub fn init(app: &AppHandle) -> SkillRefreshState {
                 .app_data_dir()
                 .unwrap_or_else(|_| PathBuf::from(".")),
         ),
-        facts_cache: Arc::new(Mutex::new(skill_discovery::SkillFactsCache::default())),
     };
 
     let app_handle = app.clone();
@@ -320,29 +261,216 @@ fn drop_home_directory_from_batch(paths: Vec<String>, home: &Path) -> Vec<String
         .collect()
 }
 
+/// Read one field of `<home>/.agents/skill-studio.json`, apply `change` to
+/// it, and write the registry back only if `change` actually altered it - so
+/// a repeated add/remove/toggle doesn't touch the file's mtime or disturb a
+/// concurrent writer for no reason. Strict like `read_fork_registry`: a
+/// malformed file is an `Err` and is left byte-for-byte unchanged, never
+/// silently treated as empty.
+fn update_registry_section<T: Clone + PartialEq>(
+    home: &Path,
+    section: fn(&mut ForkRegistry) -> &mut T,
+    change: impl FnOnce(&mut T),
+) -> Result<(T, bool), String> {
+    let mut registry = super::skill_fork_registry::read_fork_registry(home)?;
+    let before = section(&mut registry).clone();
+    change(section(&mut registry));
+    let changed = *section(&mut registry) != before;
+    if changed {
+        super::skill_fork_registry::write_fork_registry(home, &registry)?;
+    }
+    Ok((section(&mut registry).clone(), changed))
+}
+
+/// The saved project lists, straight off disk - unlike the other three
+/// commands here, this doesn't change anything, so it uses the strict
+/// `read_fork_registry` directly rather than going through
+/// `update_registry_section`.
+#[tauri::command]
+pub fn get_tracked_projects() -> Result<TrackedProjects, String> {
+    let home = dirs::home_dir().ok_or("Could not find home directory")?;
+    Ok(super::skill_fork_registry::read_fork_registry(&home)?.projects)
+}
+
+/// Runs each incoming path through `tracked_projects::entry_to_save`,
+/// returning the values to store or the first error - so a picker path
+/// (already absolute and existing) keeps working unchanged while a typed
+/// path or `*` pattern is checked the same way the Settings form checks it.
+fn validate_projects_to_save(
+    fs: &dyn skill_studio_core::ports::ScopeFs,
+    home: &Path,
+    paths: Vec<String>,
+) -> Result<Vec<PathBuf>, String> {
+    paths
+        .into_iter()
+        .map(|path| tracked_projects::entry_to_save(fs, home, &path))
+        .collect()
+}
+
 /// Register project paths the caller cares about (e.g. one the user just
-/// opened) so future rebuilds always include them, even though
-/// `project_discovery` hasn't found them via a Codex/Claude Code config yet.
-/// Returns immediately on success; a full rebuild follows on the background
-/// thread.
+/// opened, or one typed by hand as a plain path or a `*` pattern) so every
+/// surface - not just this process - always includes them, even though
+/// `skill_studio_host::discover_skill_projects` hasn't found them via a
+/// Codex/Claude Code config yet. The first invalid entry
+/// (`validate_projects_to_save`) aborts the whole batch before anything is
+/// saved. Returns the saved lists; a full rebuild follows on the background
+/// thread when they changed.
 #[tauri::command]
 pub fn register_skill_projects(
     paths: Vec<String>,
     state: tauri::State<SkillRefreshState>,
-) -> Result<(), String> {
+) -> Result<TrackedProjects, String> {
     let home = dirs::home_dir().ok_or("Could not find home directory")?;
     let valid = drop_home_directory_from_batch(paths, &home);
-    state.unexclude_projects(valid.clone());
-    state.add_extra_projects(valid);
-    Ok(())
+    let to_save = validate_projects_to_save(&skill_studio_host::RealFs, &home, valid)?;
+    let (projects, changed) = update_registry_section(
+        &home,
+        |registry| &mut registry.projects,
+        |tracked| tracked.track(to_save),
+    )?;
+    if changed {
+        state.mark_skills_dirty();
+    }
+    Ok(projects)
 }
 
-/// Un-register a caller-registered project path (e.g. one the user closed)
-/// so future rebuilds stop including it. Returns immediately; a full rebuild
-/// follows on the background thread.
+/// Stop tracking a project folder ("Stop tracking" in the sidebar) and record
+/// the exclusion, so discovery cannot offer it again. Returns the saved lists;
+/// a full rebuild follows on the background thread when they changed.
 #[tauri::command]
-pub fn unregister_skill_project(path: String, state: tauri::State<SkillRefreshState>) {
-    state.remove_extra_project(&path);
+pub fn unregister_skill_project(
+    path: String,
+    state: tauri::State<SkillRefreshState>,
+) -> Result<TrackedProjects, String> {
+    let home = dirs::home_dir().ok_or("Could not find home directory")?;
+    let (projects, changed) = update_registry_section(
+        &home,
+        |registry| &mut registry.projects,
+        |tracked| tracked.untrack(Path::new(&path)),
+    )?;
+    if changed {
+        state.mark_skills_dirty();
+    }
+    Ok(projects)
+}
+
+/// "Remove" for a folder the user added by hand; unlike `unregister_skill_project`
+/// it records no exclusion, so discovery can offer the folder again if it
+/// later finds it in a harness's own history. Returns the saved lists; a full
+/// rebuild follows on the background thread when they changed.
+#[tauri::command]
+pub fn remove_skill_project(
+    path: String,
+    state: tauri::State<SkillRefreshState>,
+) -> Result<TrackedProjects, String> {
+    let home = dirs::home_dir().ok_or("Could not find home directory")?;
+    let (projects, changed) = update_registry_section(
+        &home,
+        |registry| &mut registry.projects,
+        |tracked| tracked.forget(Path::new(&path)),
+    )?;
+    if changed {
+        state.mark_skills_dirty();
+    }
+    Ok(projects)
+}
+
+/// One-time migration from the desktop's old `localStorage`-only lists: track
+/// `added` and untrack `excluded` in a single write, so a caller doesn't leave
+/// the file in a half-migrated state if it's interrupted partway. Returns the
+/// saved lists; a full rebuild follows on the background thread when they
+/// changed.
+#[tauri::command]
+pub fn import_tracked_projects(
+    added: Vec<String>,
+    excluded: Vec<String>,
+    state: tauri::State<SkillRefreshState>,
+) -> Result<TrackedProjects, String> {
+    let home = dirs::home_dir().ok_or("Could not find home directory")?;
+    let added = drop_home_directory_from_batch(added, &home);
+    let (projects, changed) = update_registry_section(
+        &home,
+        |registry| &mut registry.projects,
+        |tracked| {
+            tracked.track(added.into_iter().map(PathBuf::from));
+            for path in &excluded {
+                tracked.untrack(Path::new(path));
+            }
+        },
+    )?;
+    if changed {
+        state.mark_skills_dirty();
+    }
+    Ok(projects)
+}
+
+/// One discovery harness's on/off switch, as Settings shows it. `enabled:
+/// false` means project discovery no longer reads that harness's own project
+/// history (Codex's `config.toml`, Claude Code's transcripts, ...) when
+/// looking for folders to add.
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
+pub struct DiscoverySourceSetting {
+    pub harness: String,
+    pub enabled: bool,
+}
+
+/// `sources` mapped to one [`DiscoverySourceSetting`] per harness, in
+/// `discovery_harnesses`' display order.
+fn discovery_source_settings(sources: &DiscoverySources) -> Vec<DiscoverySourceSetting> {
+    skill_studio_host::discovery_harnesses()
+        .map(|harness| DiscoverySourceSetting {
+            harness: harness.to_string(),
+            enabled: sources.is_enabled(harness),
+        })
+        .collect()
+}
+
+/// The saved discovery switches, straight off disk - like `get_tracked_projects`,
+/// this doesn't change anything, so it uses the strict `read_fork_registry`
+/// directly rather than going through `update_registry_section`.
+#[tauri::command]
+pub fn get_discovery_sources() -> Result<Vec<DiscoverySourceSetting>, String> {
+    let home = dirs::home_dir().ok_or("Could not find home directory")?;
+    Ok(discovery_source_settings(
+        &super::skill_fork_registry::read_fork_registry(&home)?.discovery,
+    ))
+}
+
+/// Validate `harness`, flip its switch, and re-read the settings - the
+/// testable half of `set_discovery_source`, taking `home` directly so a test
+/// doesn't need Tauri state.
+fn set_discovery_source_at(
+    home: &Path,
+    harness: &str,
+    enabled: bool,
+) -> Result<(Vec<DiscoverySourceSetting>, bool), String> {
+    if !skill_studio_host::discovery_harnesses().any(|known| known == harness) {
+        return Err(format!("Unknown discovery source: {harness}"));
+    }
+    let (sources, changed) = update_registry_section(
+        home,
+        |registry| &mut registry.discovery,
+        |sources| sources.set(harness, enabled),
+    )?;
+    Ok((discovery_source_settings(&sources), changed))
+}
+
+/// Switch one discovery harness on or off (Settings' per-source toggle).
+/// Returns the saved switches; a full rebuild follows on the background
+/// thread when the switch actually changed, and its snapshot drops or regains
+/// the folders only that harness's history named.
+#[tauri::command]
+pub fn set_discovery_source(
+    harness: String,
+    enabled: bool,
+    state: tauri::State<SkillRefreshState>,
+) -> Result<Vec<DiscoverySourceSetting>, String> {
+    let home = dirs::home_dir().ok_or("Could not find home directory")?;
+    let (settings, changed) = set_discovery_source_at(&home, &harness, enabled)?;
+    if changed {
+        state.mark_skills_dirty();
+    }
+    Ok(settings)
 }
 
 /// Build a full snapshot right now on the calling thread, store it, and emit
@@ -361,8 +489,6 @@ pub fn rebuild_snapshot_now(
         .map_err(|e| format!("rebuild lock poisoned: {e}"))?;
 
     let home = dirs::home_dir().ok_or("Could not find home directory")?;
-    let extra_projects = state.extra_project_paths();
-    let excluded_projects = state.excluded_project_set();
 
     let mut invocation_index = state
         .invocation_index
@@ -372,16 +498,9 @@ pub fn rebuild_snapshot_now(
     // below, so a rebuild that straddles an hour boundary doesn't record the
     // new hour against cutoffs computed for the old one.
     let now = Utc::now();
-    let mut facts_cache = state
-        .facts_cache
-        .lock()
-        .map_err(|e| format!("facts cache lock poisoned: {e}"))?;
     let (built, report) = build_snapshot(
         &home,
-        &extra_projects,
-        &excluded_projects,
         &mut invocation_index,
-        &mut facts_cache,
         BuildPaths {
             cache_path: &state.cache_path,
             runs_root: &state.runs_root,
@@ -389,7 +508,6 @@ pub fn rebuild_snapshot_now(
         },
         now,
     );
-    drop(facts_cache);
     drop(invocation_index);
 
     if report.incomplete {
@@ -502,28 +620,30 @@ pub fn reconcile_skill_names_and_emit(
         state.mark_skills_dirty();
         "Could not find home directory".to_string()
     })?;
-    let excluded_projects = state.excluded_project_set();
-    let mut projects: BTreeSet<PathBuf> = current.projects.iter().map(PathBuf::from).collect();
-    projects.extend(state.extra_project_paths());
-    projects.extend(affected_projects.iter().cloned());
-    let projects: Vec<PathBuf> = projects
-        .into_iter()
-        .filter(|project| !is_home_directory(project, &home))
-        .filter(|project| !excluded_projects.contains(&project.to_string_lossy().to_string()))
-        .collect();
+    let mut candidates: BTreeSet<PathBuf> = current.projects.iter().map(PathBuf::from).collect();
+    candidates.extend(affected_projects.iter().cloned());
+    let projects = resolve_project_paths(&home, candidates);
 
-    let candidates = {
-        let mut facts_cache = state
-            .facts_cache
-            .lock()
-            .map_err(|error| format!("facts cache lock poisoned: {error}"))?;
-        skill_discovery::discover_named_skill_candidates_cached(
-            &home,
-            &projects,
-            &names,
-            &mut facts_cache,
-        )
-    };
+    // Uses the same core scan as a full rebuild (see
+    // `core_scan_installed_skills`), restricted to `names` so `ops::scan`
+    // only does real per-skill work for the handful being reconciled - a
+    // second, desktop-only classifier here would let a targeted and a full
+    // reconciliation disagree on the same skill's owner/backing/mutability
+    // depending on which one ran last (`core_scan_targeted_and_full_agree`
+    // pins this). `ops::process_entries` filters on `skills` before any
+    // per-skill work, so the cost scales with the target count, not the
+    // installed count: a release-mode scan over 300 fixture skills took
+    // ~76ms for all of them but ~1.2ms restricted to one name.
+    let names_vec: Vec<String> = names.iter().cloned().collect();
+    let core_skills =
+        core_scan_installed_skills(&home, &projects, &state.update_check_path, &names_vec).skills;
+
+    // `targeted_paths` still needs every root/holding-dir path the names
+    // could be at, even for a name the core scan found nothing at (a
+    // deletion), so the "no longer present" branch below still removes it -
+    // that's the lexical half. The scanned deployments' own paths fill in
+    // the rest (a symlink alias, a plugin skill dir, ...) that lexical
+    // guessing alone wouldn't reconstruct.
     let mut targeted_paths: BTreeSet<PathBuf> = agents::skill_roots(&home, &projects)
         .into_iter()
         .flat_map(|root| {
@@ -531,28 +651,27 @@ pub fn reconcile_skill_names_and_emit(
                 [
                     root.path.join(name),
                     root.path
-                        .join(skill_discovery::STUDIO_DISABLED_DIR_NAME)
+                        .join(skill_harness_disable::STUDIO_DISABLED_DIR_NAME)
                         .join(name),
                 ]
             })
         })
         .collect();
-    targeted_paths.extend(candidates.iter().map(|candidate| candidate.path.clone()));
+    targeted_paths.extend(
+        core_skills
+            .iter()
+            .flat_map(|skill| skill.deployments.iter())
+            .map(|deployment| deployment.path.clone()),
+    );
     let lock = lock_file::read_lock_file().map_err(|error| {
         state.mark_skills_dirty();
         format!("Targeted skill reconciliation could not read lock file: {error}")
     })?;
-    let ledgers = super::skill_ownership::load_ownership_ledgers(&home, &projects);
     let fork_registry = super::skill_fork_registry::read_fork_registry(&home).map_err(|error| {
         state.mark_skills_dirty();
         format!("Targeted skill reconciliation could not read lifecycle registry: {error}")
     })?;
-    let mut replacements = skill_assembly::assemble_installed_skills(
-        candidates,
-        &lock,
-        &ledgers,
-        &fork_registry.copies,
-    );
+    let mut replacements = skill_assembly::assemble_installed_skills(core_skills, &lock);
     let current_owner_ids: Vec<String> = current
         .skills
         .iter()
@@ -621,20 +740,45 @@ fn rebuild_invocations_only(app: &AppHandle, state: &SkillRefreshState) -> Resul
         .map_err(|e| format!("rebuild lock poisoned: {e}"))?;
 
     let home = dirs::home_dir().ok_or("Could not find home directory")?;
+
+    // Read once, before taking the index lock: `known_skills` only exists if
+    // a full snapshot has already been built, and reusing it here (rather
+    // than rescanning skill directories) is what makes this path cheaper
+    // than `rebuild_snapshot_now`.
+    let known_skills: Option<BTreeSet<String>> = {
+        let guard = state
+            .snapshot
+            .read()
+            .map_err(|e| format!("snapshot lock poisoned: {e}"))?;
+        guard
+            .as_ref()
+            .map(|snapshot| snapshot.skills.iter().map(|s| s.name.clone()).collect())
+    };
+
+    let sources = DiscoverySources::read(&skill_studio_host::RealFs, &home);
     let mut invocation_index = state
         .invocation_index
         .lock()
         .map_err(|e| format!("invocation index lock poisoned: {e}"))?;
-    let report = invocation_index.refresh(&home.join(".claude/projects"));
+    let report = invocation_index.refresh(&home, &sources);
     if let Err(e) = invocation_index.save(&state.cache_path) {
         eprintln!("skill refresh: failed to save invocation cache: {e}");
     }
+
+    let Some(known_skills) = known_skills else {
+        return Ok(()); // no full snapshot yet; the next full rebuild covers this
+    };
+
     // Captured once and threaded through stats/heatmap/scanned_at/mark_built_at
     // below, so a rebuild that straddles an hour boundary doesn't record the
     // new hour against cutoffs computed for the old one.
     let now = Utc::now();
-    let invocations = invocation_index.stats_at(now);
-    let heatmap = invocation_index.heatmap_at(365, now);
+    let filter = SkillUseFilter {
+        known_skills: &known_skills,
+        sources: &sources,
+    };
+    let invocations = invocation_index.stats_at(now, &filter);
+    let heatmap = invocation_index.heatmap_at(365, now, &filter);
     drop(invocation_index);
 
     if report.incomplete {
@@ -647,7 +791,7 @@ fn rebuild_invocations_only(app: &AppHandle, state: &SkillRefreshState) -> Resul
             .read()
             .map_err(|e| format!("snapshot lock poisoned: {e}"))?;
         let Some(snapshot) = guard.as_ref() else {
-            return Ok(()); // no full snapshot yet; the next full rebuild covers this
+            return Ok(()); // the snapshot was cleared between the two reads above
         };
         let mut built = snapshot.clone();
         built.invocations = invocations;
@@ -708,7 +852,7 @@ fn invocation_cache_path(app: &AppHandle) -> PathBuf {
     app.path()
         .app_data_dir()
         .unwrap_or_else(|_| PathBuf::from("."))
-        .join("skill-invocations.json")
+        .join("skill-uses.json")
 }
 
 /// Runs for the app's lifetime on its own std thread (never the async
@@ -736,7 +880,7 @@ fn run_refresh_loop(app: AppHandle, state: SkillRefreshState) {
 
     // Start watching before the initial scan so a change made while the
     // first scan is running is never missed.
-    let initial_projects = project_discovery::discover_skill_projects(&home);
+    let initial_projects = effective_project_paths(&home);
     reconcile_watchers(
         &mut debouncer,
         &mut watched,
@@ -748,24 +892,27 @@ fn run_refresh_loop(app: AppHandle, state: SkillRefreshState) {
     }
     reconcile_watchers_from_snapshot(&home, &state, &mut debouncer, &mut watched);
 
-    let mut last_full_rebuild = Instant::now();
     let mut last_invocations_rebuild = Instant::now();
 
     loop {
         match rx.recv_timeout(POLL_INTERVAL) {
             Ok(Ok(events)) => {
                 for event in events {
-                    let known_transcript = state
-                        .invocation_index
-                        .lock()
-                        .map(|idx| idx.knows_file(&event.path))
-                        .unwrap_or(false);
-                    match classify_watch_event(&event.path, &claude_projects_dir, known_transcript)
-                    {
-                        WatchEventKind::Skills => state.skills_dirty.store(true, Ordering::SeqCst),
+                    match classify_watch_event(&event.path, &home, &claude_projects_dir) {
+                        WatchEventKind::Skills => {
+                            // Logged once per rebuild cycle so an unexpected
+                            // rescan can be traced to the path that caused it.
+                            if !state.skills_dirty.swap(true, Ordering::SeqCst) {
+                                eprintln!(
+                                    "skill refresh: full rebuild queued by {}",
+                                    event.path.display()
+                                );
+                            }
+                        }
                         WatchEventKind::Invocations => {
                             state.invocations_dirty.store(true, Ordering::SeqCst)
                         }
+                        WatchEventKind::Ignored => {}
                     }
                 }
             }
@@ -776,16 +923,14 @@ fn run_refresh_loop(app: AppHandle, state: SkillRefreshState) {
 
         let skills_dirty = state.skills_dirty.load(Ordering::SeqCst);
         let invocations_dirty = state.invocations_dirty.load(Ordering::SeqCst);
-        let backlog_stale = invocations_dirty && last_full_rebuild.elapsed() > FULL_REBUILD_BACKLOG;
 
-        if skills_dirty || backlog_stale {
+        if skills_dirty {
             // Clear the flags before rebuilding so an event that arrives
             // mid-rebuild sets them again rather than being lost.
             state.skills_dirty.store(false, Ordering::SeqCst);
             state.invocations_dirty.store(false, Ordering::SeqCst);
             match rebuild_snapshot_now(&app, &state) {
                 Ok(_) => {
-                    last_full_rebuild = Instant::now();
                     last_invocations_rebuild = Instant::now();
                     reconcile_watchers_from_snapshot(&home, &state, &mut debouncer, &mut watched);
                 }
@@ -820,20 +965,15 @@ fn reconcile_watchers_from_snapshot(
     debouncer: &mut Debouncer<RecommendedWatcher>,
     watched: &mut BTreeSet<PathBuf>,
 ) {
-    let projects: Vec<PathBuf> = state
+    let projects: Vec<PathBuf> = match state
         .snapshot
         .read()
         .ok()
         .and_then(|guard| guard.as_ref().map(|s| s.projects.clone()))
-        .unwrap_or_else(|| {
-            project_discovery::discover_skill_projects(home)
-                .into_iter()
-                .map(|p| p.to_string_lossy().to_string())
-                .collect()
-        })
-        .into_iter()
-        .map(PathBuf::from)
-        .collect();
+    {
+        Some(projects) => projects.into_iter().map(PathBuf::from).collect(),
+        None => effective_project_paths(home),
+    };
     reconcile_watchers(debouncer, watched, &desired_watch_paths(home, &projects));
 }
 
@@ -882,16 +1022,28 @@ fn reconcile_watchers(
 /// The on-disk paths `build_snapshot` reads from, grouped so the function
 /// doesn't need one parameter per file - all three come straight from
 /// `SkillRefreshState`.
-struct BuildPaths<'a> {
+///
+/// `pub` (rather than the crate-private visibility every other type here
+/// needs) so `apps/desktop/src-tauri/tests/core_scan_parity.rs` can build one
+/// for a fixture home; see that file's header for why.
+pub struct BuildPaths<'a> {
     cache_path: &'a Path,
     runs_root: &'a Path,
     update_check_path: &'a Path,
 }
 
-/// Build a fresh snapshot from `home` plus `extra_projects`, refreshing the
-/// invocation index along the way. Pure aside from the filesystem reads, so
-/// it's the unit under test for "a caller-registered project's skills show
-/// up in the snapshot" without needing a running Tauri app.
+impl<'a> BuildPaths<'a> {
+    /// Builds a `BuildPaths` pointing at three paths under a caller-chosen
+    /// root, for a test that has no `SkillRefreshState` to draw them from.
+    pub fn new(cache_path: &'a Path, runs_root: &'a Path, update_check_path: &'a Path) -> Self {
+        BuildPaths {
+            cache_path,
+            runs_root,
+            update_check_path,
+        }
+    }
+}
+
 /// Codex's own `agents/openai.yaml` `policy.allow_implicit_invocation` value
 /// for the skill deployed at `skill_dir`, read straight off disk. `None`
 /// when the file is missing, isn't YAML, or doesn't set that key - this is a
@@ -973,7 +1125,7 @@ fn apply_skill_snapshot_overlays(
         deployment.owner_kind = super::skill_ownership::LifecycleOwnerKind::Fork;
         deployment.owner_id = Some(format!("owner:v1/global/{}", skill.name));
         deployment.mutability = super::skill_deployment::DeploymentMutability::Mutable;
-        skill.source_kind = super::provenance::SourceKind::Fork;
+        skill.source_kind = super::SourceKind::Fork;
         skill.fork = Some(super::skill_dto::ForkInfo {
             origin_tool: record.origin_tool,
             origin_source: record.origin_source.clone(),
@@ -1172,15 +1324,159 @@ fn apply_skill_snapshot_overlays(
     }
 }
 
-fn build_snapshot(
+/// Runs core `ops::scan` over `home`/`project_paths`, restricted to `names`
+/// when non-empty (see `ScanRequest::skills` - `ops::process_entries` skips
+/// every non-matching directory entry before it does any per-skill work, so
+/// a targeted scan costs a walk of the (small, fixed) root list plus real
+/// work for only the named skills, not a full rebuild), and returns its
+/// `Inventory`'s skills for `skill_assembly::assemble_installed_skills` to
+/// build `InstalledSkill`/`Deployment` records from - every scan fact comes
+/// from here now, not from the desktop's own scanner. `lease_root` and
+/// `history_root` sit next to `update_check_path` - `scan` never writes, so
+/// a fresh, otherwise-unused directory is fine; `NoHistoryOpener` (from
+/// `default_ports`) means the history store is never touched either.
+///
+/// A scan failure (a lease held by another instance, an unreadable root)
+/// falls back to an empty list, marked `Partial` with the error as the
+/// single observation - there is no local classifier to fall back to
+/// anymore, so an empty snapshot is the only option.
+pub(crate) struct CoreScanResult {
+    pub skills: Vec<skill_studio_core::dto::InstalledSkillDto>,
+    pub completeness: skill_studio_core::dto::Completeness,
+    pub observations: Vec<skill_studio_core::dto::Observation>,
+}
+
+pub(crate) fn core_scan_installed_skills(
     home: &Path,
-    extra_projects: &[PathBuf],
-    excluded_projects: &BTreeSet<String>,
+    project_paths: &[PathBuf],
+    update_check_path: &Path,
+    names: &[String],
+) -> CoreScanResult {
+    let data_dir = update_check_path
+        .parent()
+        .map(Path::to_path_buf)
+        .unwrap_or_else(|| home.to_path_buf());
+    let lease_root = data_dir.join("core-leases");
+    let history_root = data_dir.join("core-history");
+
+    let mut scope = if std::env::var_os("SKILL_STUDIO_FIXTURE").is_some() {
+        skill_studio_core::scope::RuntimeScope::fixture(home)
+    } else {
+        skill_studio_core::scope::RuntimeScope::live(home, history_root)
+    };
+    scope.projects = skill_studio_core::scope::ProjectSelection::Explicit {
+        paths: project_paths.to_vec(),
+    };
+    // The 2s default guards stateless CLI/MCP calls; the desktop refresh
+    // runs in the background and must reach every root even on a home with
+    // many projects and plugin caches.
+    scope.read_timeout_ms = 60_000;
+
+    let catalog = std::sync::Arc::new(skill_studio_core::harness::HarnessCatalog::builtin());
+    let ports = skill_studio_host::default_ports(lease_root, catalog);
+    let request = skill_studio_core::dto::ScanRequest {
+        skills: names
+            .iter()
+            .map(|name| skill_studio_core::identity::SkillName(name.clone()))
+            .collect(),
+        ..Default::default()
+    };
+    let result = (|| {
+        let rt = skill_studio_core::ports::Runtime::new(&scope, ports)?;
+        let ctx = skill_studio_core::ports::OpContext::uncancellable(
+            skill_studio_core::identity::CorrelationId("desktop-scan".into()),
+        );
+        skill_studio_core::ops::scan(&rt, &ctx, &request)
+    })();
+
+    match result {
+        Ok(inventory) => CoreScanResult {
+            skills: inventory.skills,
+            completeness: inventory.completeness,
+            observations: inventory.observations,
+        },
+        Err(e) => {
+            eprintln!("skill refresh: core scan failed: {e}");
+            CoreScanResult {
+                skills: Vec::new(),
+                completeness: skill_studio_core::dto::Completeness::Partial,
+                observations: vec![skill_studio_core::dto::Observation {
+                    root: None,
+                    message: e.to_string(),
+                }],
+            }
+        }
+    }
+}
+
+/// Formats one core `Observation` for `SkillSnapshot::scan_observations`:
+/// the message, prefixed by a display of its root when it has one.
+fn describe_observation(observation: &skill_studio_core::dto::Observation) -> String {
+    match &observation.root {
+        Some(root) => format!("{}: {}", describe_root(root), observation.message),
+        None => observation.message.clone(),
+    }
+}
+
+/// A short, human-readable name for a scan root, for `describe_observation`.
+fn describe_root(root: &skill_studio_core::identity::RootRef) -> String {
+    let scope = match &root.scope {
+        skill_studio_core::identity::RootScope::Global => "global".to_string(),
+        skill_studio_core::identity::RootScope::Project(project) => {
+            format!("project {}", project.0.display())
+        }
+    };
+    let kind = match &root.kind {
+        skill_studio_core::identity::RootKind::Harness(id) => format!("{} root", id.as_str()),
+        skill_studio_core::identity::RootKind::Universal => "universal root".to_string(),
+        skill_studio_core::identity::RootKind::Legacy(id) => {
+            format!("{} legacy root", id.as_str())
+        }
+        skill_studio_core::identity::RootKind::Parked => "parked root".to_string(),
+        skill_studio_core::identity::RootKind::PluginCache(id) => {
+            format!("{} plugin cache", id.as_str())
+        }
+    };
+    format!("{scope} {kind}")
+}
+
+/// `candidates` plus the folders the user added by hand, minus the ones they
+/// stopped tracking, folders that no longer exist, and the home directory -
+/// see `skill_studio_core::tracked_projects::TrackedProjects::resolve`, which
+/// does the actual set arithmetic against the saved
+/// `~/.agents/skill-studio.json` lists.
+pub(crate) fn resolve_project_paths(
+    home: &Path,
+    candidates: impl IntoIterator<Item = PathBuf>,
+) -> Vec<PathBuf> {
+    let tracked = TrackedProjects::read(&skill_studio_host::RealFs, home);
+    tracked
+        .resolve(&skill_studio_host::RealFs, home, candidates)
+        .into_iter()
+        .map(|root| root.lexical)
+        .collect()
+}
+
+/// The project set a snapshot is built from: discovered projects, resolved
+/// against the user's saved additions/exclusions.
+pub(crate) fn effective_project_paths(home: &Path) -> Vec<PathBuf> {
+    resolve_project_paths(home, skill_studio_host::discover_skill_projects(home))
+}
+
+/// Build a fresh snapshot from `home`, refreshing the invocation index along
+/// the way. Pure aside from the filesystem reads, so it's the unit under test
+/// for "a tracked project's skills show up in the snapshot" without needing a
+/// running Tauri app.
+///
+/// `pub` (rather than crate-private) so the core-vs-desktop parity test in
+/// `apps/desktop/src-tauri/tests/core_scan_parity.rs` can call it directly
+/// against a fixture home; see that file's header comment.
+pub fn build_snapshot(
+    home: &Path,
     invocation_index: &mut SkillInvocationIndex,
-    facts_cache: &mut skill_discovery::SkillFactsCache,
     paths: BuildPaths,
     now: DateTime<Utc>,
-) -> (SkillSnapshot, RefreshReport) {
+) -> (SkillSnapshot, SkillUseRefreshReport) {
     let total_start = Instant::now();
     let BuildPaths {
         cache_path,
@@ -1188,25 +1484,25 @@ fn build_snapshot(
         update_check_path,
     } = paths;
     let projects_start = Instant::now();
-    let mut project_paths: BTreeSet<PathBuf> = project_discovery::discover_skill_projects(home)
-        .into_iter()
-        .collect();
-    project_paths.extend(extra_projects.iter().cloned());
-    let project_paths: Vec<PathBuf> = project_paths
-        .into_iter()
-        .filter(|p| !excluded_projects.contains(&p.to_string_lossy().to_string()))
-        // The home directory is the global scope (it holds ~/.claude/skills,
-        // ~/.agents/skills, ...), never a project - even if a stray session
-        // transcript recorded it as a cwd.
-        .filter(|p| !is_home_directory(p, home))
-        .collect();
+    let project_paths = effective_project_paths(home);
     let projects_ms = projects_start.elapsed().as_millis();
 
-    let discovery_start = Instant::now();
-    let candidates =
-        skill_discovery::discover_skill_candidates_cached(home, &project_paths, facts_cache);
-    let discovery_ms = discovery_start.elapsed().as_millis();
-    let (facts_hits, facts_total) = facts_cache.last_pass_stats();
+    let scan_start = Instant::now();
+    let core_result = core_scan_installed_skills(home, &project_paths, update_check_path, &[]);
+    let scan_ms = scan_start.elapsed().as_millis();
+    let scan_partial = core_result.completeness == skill_studio_core::dto::Completeness::Partial;
+    let scan_observations: Vec<String> = core_result
+        .observations
+        .iter()
+        .map(describe_observation)
+        .collect();
+    if scan_partial {
+        eprintln!(
+            "skill refresh: core scan partial ({} roots not scanned)",
+            scan_observations.len()
+        );
+    }
+    let core_skills = core_result.skills;
 
     let lock = lock_file::read_lock_file().unwrap_or_else(|e| {
         eprintln!("skill refresh: failed to read lock file: {e}");
@@ -1215,19 +1511,16 @@ fn build_snapshot(
             skills: std::collections::HashMap::new(),
         }
     });
-    let ledgers = super::skill_ownership::load_ownership_ledgers(home, &project_paths);
     let fork_registry = super::skill_fork_registry::read_fork_registry_or_default(home);
-    let mut skills = skill_assembly::assemble_installed_skills(
-        candidates,
-        &lock,
-        &ledgers,
-        &fork_registry.copies,
-    );
+    let assembly_start = Instant::now();
+    let mut skills = skill_assembly::assemble_installed_skills(core_skills, &lock);
+    let assembly_ms = assembly_start.elapsed().as_millis();
 
     let update_store = skill_update_check::read_update_check_store_at(update_check_path);
     let update_check = skill_update_check::summarize(&update_store);
 
     let current_owner_ids = snapshot_owner_ids(&skills);
+    let overlays_start = Instant::now();
     apply_skill_snapshot_overlays(
         home,
         &mut skills,
@@ -1235,18 +1528,27 @@ fn build_snapshot(
         &update_store,
         &current_owner_ids,
     );
+    let overlays_ms = overlays_start.elapsed().as_millis();
 
     let invocations_start = Instant::now();
-    let report = invocation_index.refresh(&home.join(".claude/projects"));
+    let sources = DiscoverySources::read(&skill_studio_host::RealFs, home);
+    let report = invocation_index.refresh(home, &sources);
     if let Err(e) = invocation_index.save(cache_path) {
         eprintln!("skill refresh: failed to save invocation cache: {e}");
     }
     let invocations_ms = invocations_start.elapsed().as_millis();
 
     let skill_names: Vec<String> = skills.iter().map(|s| s.name.clone()).collect();
+    let known_skills: BTreeSet<String> = skill_names.iter().cloned().collect();
+    let use_filter = SkillUseFilter {
+        known_skills: &known_skills,
+        sources: &sources,
+    };
+    let last_test_start = Instant::now();
     let last_test_by_skill = skill_run_history::read_last_test_index(runs_root, &skill_names)
         .into_iter()
         .collect();
+    let last_test_ms = last_test_start.elapsed().as_millis();
     let skill_count = skills.len();
 
     let snapshot = SkillSnapshot {
@@ -1256,21 +1558,26 @@ fn build_snapshot(
             .into_iter()
             .map(|p| p.to_string_lossy().to_string())
             .collect(),
-        invocations: invocation_index.stats_at(now),
-        heatmap: invocation_index.heatmap_at(365, now),
+        invocations: invocation_index.stats_at(now, &use_filter),
+        heatmap: invocation_index.heatmap_at(365, now, &use_filter),
         scanned_at: now.to_rfc3339(),
         last_test_by_skill,
         update_check,
         opencode_config_kind: super::opencode_skill_permission::detect_config_kind(home),
+        scan_partial,
+        scan_observations,
     };
 
     let total_ms = total_start.elapsed().as_millis();
     let rest_ms = total_ms
         .saturating_sub(projects_ms)
-        .saturating_sub(discovery_ms)
-        .saturating_sub(invocations_ms);
+        .saturating_sub(scan_ms)
+        .saturating_sub(assembly_ms)
+        .saturating_sub(overlays_ms)
+        .saturating_sub(invocations_ms)
+        .saturating_sub(last_test_ms);
     eprintln!(
-        "skill refresh: full rebuild {total_ms} ms (projects {projects_ms} ms, discovery {discovery_ms} ms, invocations {invocations_ms} ms, assembly+rest {rest_ms} ms; {skill_count} skills, facts cache hits {facts_hits}/{facts_total})"
+        "skill refresh: full rebuild {total_ms} ms (projects {projects_ms} ms, scan {scan_ms} ms, assembly {assembly_ms} ms, overlays {overlays_ms} ms, invocations {invocations_ms} ms, last-test {last_test_ms} ms, rest {rest_ms} ms; {skill_count} skills)"
     );
 
     (snapshot, report)
@@ -1283,33 +1590,112 @@ pub enum WatchEventKind {
     Skills,
     /// Only the invocation index needs to be refreshed.
     Invocations,
+    /// The event cannot change `snapshot.skills`, `snapshot.projects`, or the
+    /// invocation index; do nothing.
+    Ignored,
 }
 
-/// Classify a single filesystem-watch event, given whether `path` is already
-/// a transcript the invocation index tracks. An event outside
-/// `claude_projects_dir` always needs a full rebuild - everything that lives
-/// there (skill roots, plugin caches, the lock file, project discovery
-/// sources) can change `snapshot.skills` or `snapshot.projects`. An event
-/// inside it needs a full rebuild too when it's for a path the invocation
-/// index doesn't already know about: a brand-new transcript file, or a file
-/// in a brand-new project directory, either of which can also change
-/// `snapshot.projects`. A change to an already-tracked transcript that still
-/// exists only needs the invocation index refreshed; a deleted one needs a
-/// full rebuild because project discovery may have depended on it.
+/// File and directory names that mark a path as a skill root, regardless of
+/// where it lives.
+const SKILL_DIR_NAMES: [&str; 3] = ["skills", "skill", "skills-parked"];
+
+/// Harness directory names: a project's per-agent config/skill root. Their
+/// creation or removal can change which skill roots exist, so it's a skills
+/// change even though the directory itself holds no skill files yet.
+const HARNESS_DIR_NAMES: [&str; 7] = [
+    ".claude",
+    ".codex",
+    ".opencode",
+    ".pi",
+    ".cursor",
+    ".grok",
+    ".agents",
+];
+
+/// File names outside `claude_projects_dir` that are known config/lock
+/// sources rather than skill directories, but still change `snapshot.skills`
+/// or `snapshot.projects` when they change.
+fn is_config_file_name(name: &std::ffi::OsStr, home: &Path) -> bool {
+    let fork_registry_name = super::skill_fork_registry::fork_registry_path(home)
+        .file_name()
+        .map(|n| n.to_owned());
+    name == ".skill-lock.json"
+        || name == "config.toml"
+        || name == "opencode.json"
+        || name == "opencode.jsonc"
+        || name == "skill-studio.json"
+        || name == "settings.json"
+        || fork_registry_name.is_some_and(|fork_name| name == fork_name)
+}
+
+/// Whether any component of `path` is a skill directory name.
+fn has_skill_dir_component(path: &Path) -> bool {
+    path.components()
+        .any(|c| SKILL_DIR_NAMES.iter().any(|name| c.as_os_str() == *name))
+}
+
+/// Whether `path` is, or is under, a native plugin cache directory.
+fn is_under_plugin_cache(path: &Path, home: &Path) -> bool {
+    path.starts_with(home.join(".claude/plugins/cache"))
+        || path.starts_with(home.join(".codex/plugins/cache"))
+}
+
+/// Classify a single filesystem-watch event. A path that is itself one of
+/// `skill_studio_host::skill_use_watch_paths`' directories (created or
+/// removed) triggers a full rebuild first, so the watch set gets reconciled
+/// even though the directory didn't exist at startup. Claude Code names each
+/// project directory under `claude_projects_dir` after the session's cwd, so
+/// a new cwd always shows up as a new directory there: only an entry
+/// directly under `claude_projects_dir` can change the project set. Every
+/// other path under it is a transcript (new, changed, or deleted) and only
+/// needs the invocation index refreshed; the index drops files that no
+/// longer exist. Transcript-based project discovery reads under a byte
+/// budget and can return a slightly different set on each run, so comparing
+/// project sets is not a usable signal. A change under any other harness's
+/// session-history directory named by `skill_studio_host::is_skill_use_change`
+/// (OpenCode's database, so far) is likewise invocations-only. Outside
+/// `claude_projects_dir`, only paths that can actually change
+/// `snapshot.skills` - a skill directory, a native plugin cache, a known
+/// config/lock file, or a harness directory being created/removed - trigger
+/// a rebuild; everything else (for example a git worktree's build output
+/// under a project's `.claude/worktrees/*/target`) is ignored.
 pub fn classify_watch_event(
     path: &Path,
+    home: &Path,
     claude_projects_dir: &Path,
-    known_transcript: bool,
 ) -> WatchEventKind {
-    if !path.starts_with(claude_projects_dir) {
+    if skill_studio_host::skill_use_watch_paths(home)
+        .iter()
+        .any(|watch| watch.path == path)
+    {
         return WatchEventKind::Skills;
     }
-    // A known transcript that no longer exists was deleted or renamed: that
-    // can remove a transcript-discovered project, so it needs a full rebuild.
-    if known_transcript && path.is_file() {
-        WatchEventKind::Invocations
-    } else {
+
+    if path.starts_with(claude_projects_dir) {
+        return if path.parent() == Some(claude_projects_dir) {
+            WatchEventKind::Skills
+        } else {
+            WatchEventKind::Invocations
+        };
+    }
+
+    if skill_studio_host::is_skill_use_change(home, path) {
+        return WatchEventKind::Invocations;
+    }
+
+    let is_skills_change = has_skill_dir_component(path)
+        || is_under_plugin_cache(path, home)
+        || path
+            .file_name()
+            .is_some_and(|name| is_config_file_name(name, home))
+        || path
+            .file_name()
+            .is_some_and(|name| HARNESS_DIR_NAMES.iter().any(|harness| name == *harness));
+
+    if is_skills_change {
         WatchEventKind::Skills
+    } else {
+        WatchEventKind::Ignored
     }
 }
 
@@ -1317,10 +1703,18 @@ pub fn classify_watch_event(
 /// the currently known project paths: each global skill root and its parent
 /// (so a directory created later is still picked up), each native plugin
 /// cache and its parent, the lock file's and Codex config's containing
-/// directories, the Claude Code transcripts directory (recursive, since
-/// invocations and project discovery both depend on it) and its parent, and
-/// each project's first-class-agent skill directories plus the project root
-/// itself (non-recursive, so a `.claude` etc. created later is still seen).
+/// directories, every harness's session-history directory named by
+/// `skill_studio_host::skill_use_watch_paths` (Claude Code's transcripts
+/// recursively, OpenCode's database directory non-recursively) and each of
+/// their parents, and for each project, only its skill roots:
+/// `<project>/<sub>/skills` (recursive, plus `<project>/.opencode/skill` for
+/// OpenCode's legacy singular dir), `<project>/<sub>` itself (non-recursive,
+/// so a `skills` dir created later is still seen), and the project root
+/// (non-recursive, so a `.claude` etc. created later is still seen).
+/// Watching only the skill roots - rather than each `<project>/<sub>`
+/// recursively - keeps unrelated churn under a harness dir (for example a
+/// git worktree's build output under `.claude/worktrees/*/target`) from
+/// triggering a rebuild.
 pub fn desired_watch_paths(home: &Path, projects: &[PathBuf]) -> Vec<WatchPath> {
     let mut merged: BTreeMap<PathBuf, bool> = BTreeMap::new();
     let add = |merged: &mut BTreeMap<PathBuf, bool>, path: PathBuf, recursive: bool| {
@@ -1350,21 +1744,25 @@ pub fn desired_watch_paths(home: &Path, projects: &[PathBuf]) -> Vec<WatchPath> 
 
     add(&mut merged, home.join(".agents"), false);
     add(&mut merged, home.join(".codex"), false);
-    add(&mut merged, home.join(".claude/projects"), true);
+    for watch in skill_studio_host::skill_use_watch_paths(home) {
+        // A dir that doesn't exist yet at startup is skipped by
+        // `reconcile_watchers`, so its parent is watched too (non-recursive)
+        // - the same pattern the global skill roots above use - and
+        // `classify_watch_event` reconciles the watch set once it appears.
+        if let Some(parent) = watch.path.parent() {
+            add(&mut merged, parent.to_path_buf(), false);
+        }
+        add(&mut merged, watch.path, watch.recursive);
+    }
     add(&mut merged, home.join(".claude"), false);
 
     for project in projects {
-        for sub in [
-            ".claude",
-            ".codex",
-            ".opencode",
-            ".pi",
-            ".cursor",
-            ".grok",
-            ".agents",
-        ] {
-            add(&mut merged, project.join(sub), true);
+        for sub in HARNESS_DIR_NAMES {
+            let sub_dir = project.join(sub);
+            add(&mut merged, sub_dir.join("skills"), true);
+            add(&mut merged, sub_dir.clone(), false);
         }
+        add(&mut merged, project.join(".opencode/skill"), true);
         add(&mut merged, project.clone(), false);
     }
 
@@ -1378,6 +1776,25 @@ pub fn desired_watch_paths(home: &Path, projects: &[PathBuf]) -> Vec<WatchPath> 
 mod tests {
     use super::*;
     use std::fs;
+
+    /// Writes `home`'s `skill-studio.json` with the given tracked-project
+    /// lists, for tests that need `build_snapshot`/`effective_project_paths`
+    /// to see an added or excluded folder without going through a Tauri
+    /// command.
+    fn write_tracked_projects(home: &Path, added: &[PathBuf], excluded: &[PathBuf]) {
+        let mut registry = super::super::skill_fork_registry::read_fork_registry(home).unwrap();
+        registry.projects.added = added.to_vec();
+        registry.projects.excluded = excluded.to_vec();
+        super::super::skill_fork_registry::write_fork_registry(home, &registry).unwrap();
+    }
+
+    /// `update_registry_section` on the `projects` field.
+    fn update_tracked_projects(
+        home: &Path,
+        change: impl FnOnce(&mut TrackedProjects),
+    ) -> Result<(TrackedProjects, bool), String> {
+        update_registry_section(home, |registry| &mut registry.projects, change)
+    }
 
     #[test]
     fn desired_watch_paths_includes_global_roots_and_parents() {
@@ -1405,13 +1822,25 @@ mod tests {
 
         assert!(paths
             .iter()
-            .any(|w| w.path == project.join(".claude") && w.recursive));
+            .any(|w| w.path == project.join(".claude/skills") && w.recursive));
         assert!(paths
             .iter()
-            .any(|w| w.path == project.join(".cursor") && w.recursive));
+            .any(|w| w.path == project.join(".claude") && !w.recursive));
         assert!(paths
             .iter()
-            .any(|w| w.path == project.join(".grok") && w.recursive));
+            .any(|w| w.path == project.join(".cursor/skills") && w.recursive));
+        assert!(paths
+            .iter()
+            .any(|w| w.path == project.join(".cursor") && !w.recursive));
+        assert!(paths
+            .iter()
+            .any(|w| w.path == project.join(".grok/skills") && w.recursive));
+        assert!(paths
+            .iter()
+            .any(|w| w.path == project.join(".grok") && !w.recursive));
+        assert!(paths
+            .iter()
+            .any(|w| w.path == project.join(".opencode/skill") && w.recursive));
         assert!(paths.iter().any(|w| w.path == project && !w.recursive));
     }
 
@@ -1438,54 +1867,284 @@ mod tests {
     }
 
     #[test]
+    fn desired_watch_paths_watches_opencode_data_dir_non_recursively() {
+        let home = PathBuf::from("/home/tester");
+        let paths = desired_watch_paths(&home, &[]);
+        assert!(paths
+            .iter()
+            .any(|w| w.path == home.join(".local/share/opencode") && !w.recursive));
+        assert!(paths
+            .iter()
+            .any(|w| w.path == home.join(".local/share") && !w.recursive));
+    }
+
+    #[test]
     fn classify_watch_event_outside_claude_projects_is_skills() {
-        let claude_projects = PathBuf::from("/home/tester/.claude/projects");
-        let path = PathBuf::from("/home/tester/.claude/skills/foo/SKILL.md");
+        let home = PathBuf::from("/home/tester");
+        let claude_projects = home.join(".claude/projects");
+        let path = home.join(".claude/skills/foo/SKILL.md");
         assert_eq!(
-            classify_watch_event(&path, &claude_projects, false),
+            classify_watch_event(&path, &home, &claude_projects),
             WatchEventKind::Skills
         );
     }
 
     #[test]
-    fn classify_watch_event_new_transcript_is_skills() {
-        let claude_projects = PathBuf::from("/home/tester/.claude/projects");
-        let path = claude_projects.join("-my-project/session.jsonl");
+    fn classify_watch_event_transcript_is_invocations() {
+        let home = PathBuf::from("/home/tester");
+        let claude_projects = home.join(".claude/projects");
+        let path = claude_projects.join("-my-project/agent-abc.jsonl");
         assert_eq!(
-            classify_watch_event(&path, &claude_projects, false),
-            WatchEventKind::Skills
-        );
-    }
-
-    #[test]
-    fn classify_watch_event_known_transcript_is_invocations() {
-        let tmp = tempfile::tempdir().unwrap();
-        let claude_projects = tmp.path().join("projects");
-        let path = claude_projects.join("-my-project/session.jsonl");
-        fs::create_dir_all(path.parent().unwrap()).unwrap();
-        fs::write(&path, "{}\n").unwrap();
-        assert_eq!(
-            classify_watch_event(&path, &claude_projects, true),
+            classify_watch_event(&path, &home, &claude_projects),
             WatchEventKind::Invocations
         );
     }
 
     #[test]
-    fn classify_watch_event_deleted_known_transcript_is_skills() {
-        let tmp = tempfile::tempdir().unwrap();
-        let claude_projects = tmp.path().join("projects");
-        let path = claude_projects.join("-my-project/session.jsonl");
+    fn classify_watch_event_claude_settings_is_skills() {
+        let home = PathBuf::from("/home/tester");
+        let claude_projects = home.join(".claude/projects");
+        let path = home.join(".claude/settings.json");
         assert_eq!(
-            classify_watch_event(&path, &claude_projects, true),
+            classify_watch_event(&path, &home, &claude_projects),
             WatchEventKind::Skills
         );
     }
 
     #[test]
-    fn build_snapshot_includes_caller_only_project() {
+    fn classify_watch_event_project_dir_is_skills() {
+        let home = PathBuf::from("/home/tester");
+        let claude_projects = home.join(".claude/projects");
+        let path = claude_projects.join("-my-new-project");
+        assert_eq!(
+            classify_watch_event(&path, &home, &claude_projects),
+            WatchEventKind::Skills
+        );
+    }
+
+    #[test]
+    fn classify_watch_event_worktree_build_output_is_ignored() {
+        let home = PathBuf::from("/home/tester");
+        let claude_projects = home.join(".claude/projects");
+        let path = PathBuf::from("/work/my-project/.claude/worktrees/x/target/debug/foo.o");
+        assert_eq!(
+            classify_watch_event(&path, &home, &claude_projects),
+            WatchEventKind::Ignored
+        );
+    }
+
+    #[test]
+    fn classify_watch_event_project_skill_file_is_skills() {
+        let home = PathBuf::from("/home/tester");
+        let claude_projects = home.join(".claude/projects");
+        let path = PathBuf::from("/work/my-project/.claude/skills/foo/SKILL.md");
+        assert_eq!(
+            classify_watch_event(&path, &home, &claude_projects),
+            WatchEventKind::Skills
+        );
+    }
+
+    #[test]
+    fn classify_watch_event_skill_lock_file_is_skills() {
+        let home = PathBuf::from("/home/tester");
+        let claude_projects = home.join(".claude/projects");
+        let path = home.join(".agents/.skill-lock.json");
+        assert_eq!(
+            classify_watch_event(&path, &home, &claude_projects),
+            WatchEventKind::Skills
+        );
+    }
+
+    #[test]
+    fn classify_watch_event_codex_config_is_skills() {
+        let home = PathBuf::from("/home/tester");
+        let claude_projects = home.join(".claude/projects");
+        let path = home.join(".codex/config.toml");
+        assert_eq!(
+            classify_watch_event(&path, &home, &claude_projects),
+            WatchEventKind::Skills
+        );
+    }
+
+    #[test]
+    fn classify_watch_event_plugin_cache_is_skills() {
+        let home = PathBuf::from("/home/tester");
+        let claude_projects = home.join(".claude/projects");
+        let path = home.join(".claude/plugins/cache/a/b/skills/c/SKILL.md");
+        assert_eq!(
+            classify_watch_event(&path, &home, &claude_projects),
+            WatchEventKind::Skills
+        );
+    }
+
+    #[test]
+    fn classify_watch_event_harness_dir_itself_is_skills() {
+        let home = PathBuf::from("/home/tester");
+        let claude_projects = home.join(".claude/projects");
+        let path = PathBuf::from("/work/my-project/.claude");
+        assert_eq!(
+            classify_watch_event(&path, &home, &claude_projects),
+            WatchEventKind::Skills
+        );
+    }
+
+    #[test]
+    fn classify_watch_event_parked_skill_is_skills() {
+        let home = PathBuf::from("/home/tester");
+        let claude_projects = home.join(".claude/projects");
+        let path = home.join(".agents/skills-parked/foo/SKILL.md");
+        assert_eq!(
+            classify_watch_event(&path, &home, &claude_projects),
+            WatchEventKind::Skills
+        );
+    }
+
+    #[test]
+    fn classify_watch_event_opencode_database_is_invocations() {
+        let home = PathBuf::from("/home/tester");
+        let claude_projects = home.join(".claude/projects");
+        let opencode_dir = home.join(".local/share/opencode");
+        assert_eq!(
+            classify_watch_event(&opencode_dir.join("opencode.db"), &home, &claude_projects),
+            WatchEventKind::Invocations
+        );
+        assert_eq!(
+            classify_watch_event(
+                &opencode_dir.join("opencode-next.db-wal"),
+                &home,
+                &claude_projects
+            ),
+            WatchEventKind::Invocations
+        );
+        assert_eq!(
+            classify_watch_event(
+                &opencode_dir.join("opencode.db-shm"),
+                &home,
+                &claude_projects
+            ),
+            WatchEventKind::Ignored
+        );
+        assert_eq!(
+            classify_watch_event(
+                &opencode_dir.join("storage/session/x.json"),
+                &home,
+                &claude_projects
+            ),
+            WatchEventKind::Ignored
+        );
+    }
+
+    #[test]
+    fn classify_watch_event_codex_rollout_is_invocations() {
+        let home = PathBuf::from("/home/tester");
+        let claude_projects = home.join(".claude/projects");
+        assert_eq!(
+            classify_watch_event(
+                &home.join(".codex/sessions/2026/09/16/rollout-x.jsonl"),
+                &home,
+                &claude_projects
+            ),
+            WatchEventKind::Invocations
+        );
+        assert_eq!(
+            classify_watch_event(&home.join(".codex/config.toml"), &home, &claude_projects),
+            WatchEventKind::Skills
+        );
+    }
+
+    #[test]
+    fn classify_watch_event_pi_session_is_invocations() {
+        let home = PathBuf::from("/home/tester");
+        let claude_projects = home.join(".claude/projects");
+        assert_eq!(
+            classify_watch_event(
+                &home.join(".pi/agent/sessions/d/f.jsonl"),
+                &home,
+                &claude_projects
+            ),
+            WatchEventKind::Invocations
+        );
+    }
+
+    #[test]
+    fn classify_watch_event_cursor_transcript_is_invocations_and_terminal_output_is_ignored() {
+        let home = PathBuf::from("/home/tester");
+        let claude_projects = home.join(".claude/projects");
+        assert_eq!(
+            classify_watch_event(
+                &home.join(".cursor/projects/p/agent-transcripts/s/s.jsonl"),
+                &home,
+                &claude_projects
+            ),
+            WatchEventKind::Invocations
+        );
+        assert_eq!(
+            classify_watch_event(
+                &home.join(".cursor/projects/p/terminals/1.txt"),
+                &home,
+                &claude_projects
+            ),
+            WatchEventKind::Ignored
+        );
+    }
+
+    #[test]
+    fn classify_watch_event_grok_session_is_invocations_and_image_is_ignored() {
+        let home = PathBuf::from("/home/tester");
+        let claude_projects = home.join(".claude/projects");
+        assert_eq!(
+            classify_watch_event(
+                &home.join(".grok/sessions/p/s/updates.jsonl"),
+                &home,
+                &claude_projects
+            ),
+            WatchEventKind::Invocations
+        );
+        assert_eq!(
+            classify_watch_event(
+                &home.join(".grok/sessions/p/s/summary.json"),
+                &home,
+                &claude_projects
+            ),
+            WatchEventKind::Invocations
+        );
+        assert_eq!(
+            classify_watch_event(
+                &home.join(".grok/sessions/p/s/images/a.png"),
+                &home,
+                &claude_projects
+            ),
+            WatchEventKind::Ignored
+        );
+    }
+
+    #[test]
+    fn classify_watch_event_watch_dir_itself_created_or_removed_is_skills() {
+        let home = PathBuf::from("/home/tester");
+        let claude_projects = home.join(".claude/projects");
+        assert_eq!(
+            classify_watch_event(&claude_projects, &home, &claude_projects),
+            WatchEventKind::Skills
+        );
+        assert_eq!(
+            classify_watch_event(&home.join(".local/share/opencode"), &home, &claude_projects),
+            WatchEventKind::Skills
+        );
+        assert_eq!(
+            classify_watch_event(
+                &home.join(".local/share/other-app/x.db"),
+                &home,
+                &claude_projects
+            ),
+            WatchEventKind::Ignored
+        );
+    }
+
+    #[test]
+    fn build_snapshot_includes_a_tracked_project() {
         let tmp = tempfile::tempdir().unwrap();
         let home = tmp.path().join("home");
-        let project = tmp.path().join("caller-project");
+        let project = tmp.path().join("tracked-project");
         fs::create_dir_all(project.join(".claude/skills/foo")).unwrap();
         fs::write(
             project.join(".claude/skills/foo/SKILL.md"),
@@ -1493,15 +2152,13 @@ mod tests {
         )
         .unwrap();
         fs::create_dir_all(&home).unwrap();
+        write_tracked_projects(&home, std::slice::from_ref(&project), &[]);
 
         let mut invocation_index = SkillInvocationIndex::default();
         let cache_path = tmp.path().join("cache.json");
         let (snapshot, _report) = build_snapshot(
             &home,
-            std::slice::from_ref(&project),
-            &BTreeSet::new(),
             &mut invocation_index,
-            &mut skill_discovery::SkillFactsCache::default(),
             BuildPaths {
                 cache_path: &cache_path,
                 runs_root: tmp.path(),
@@ -1549,10 +2206,7 @@ mod tests {
         let cache_path = tmp.path().join("cache.json");
         let (snapshot, _report) = build_snapshot(
             &home,
-            &[],
-            &BTreeSet::new(),
             &mut invocation_index,
-            &mut skill_discovery::SkillFactsCache::default(),
             BuildPaths {
                 cache_path: &cache_path,
                 runs_root: tmp.path(),
@@ -1608,16 +2262,14 @@ mod tests {
                 base_commit: "a".repeat(40),
             },
         );
+        registry.projects.added = vec![project.clone()];
         super::super::skill_fork_registry::write_fork_registry(&home, &registry).unwrap();
 
         let mut invocation_index = SkillInvocationIndex::default();
         let cache_path = tmp.path().join("cache.json");
         let (snapshot, _) = build_snapshot(
             &home,
-            std::slice::from_ref(&project),
-            &BTreeSet::new(),
             &mut invocation_index,
-            &mut skill_discovery::SkillFactsCache::default(),
             BuildPaths {
                 cache_path: &cache_path,
                 runs_root: tmp.path(),
@@ -1631,10 +2283,7 @@ mod tests {
             .iter()
             .find(|skill| skill.name == "find-bugs")
             .unwrap();
-        assert_eq!(
-            skill.source_kind,
-            super::super::provenance::SourceKind::Manual
-        );
+        assert_eq!(skill.source_kind, super::super::SourceKind::Manual);
         assert!(skill.fork.is_none());
         assert_eq!(skill.deployments.len(), 1);
         assert_eq!(skill.deployments[0].scope, "project");
@@ -1703,10 +2352,7 @@ mod tests {
         let cache_path = tmp.path().join("cache.json");
         let (snapshot, _report) = build_snapshot(
             &home,
-            &[],
-            &BTreeSet::new(),
             &mut invocation_index,
-            &mut skill_discovery::SkillFactsCache::default(),
             BuildPaths {
                 cache_path: &cache_path,
                 runs_root: tmp.path(),
@@ -1768,15 +2414,13 @@ mod tests {
                 },
             );
         }
+        registry.projects.added = vec![project.clone()];
         super::super::skill_fork_registry::write_fork_registry(&home, &registry).unwrap();
 
         let mut invocation_index = SkillInvocationIndex::default();
         let (snapshot, _) = build_snapshot(
             &home,
-            std::slice::from_ref(&project),
-            &BTreeSet::new(),
             &mut invocation_index,
-            &mut skill_discovery::SkillFactsCache::default(),
             BuildPaths {
                 cache_path: &tmp.path().join("cache.json"),
                 runs_root: tmp.path(),
@@ -1848,10 +2492,7 @@ mod tests {
         let mut invocation_index = SkillInvocationIndex::default();
         let (snapshot, _) = build_snapshot(
             &home,
-            &[],
-            &BTreeSet::new(),
             &mut invocation_index,
-            &mut skill_discovery::SkillFactsCache::default(),
             BuildPaths {
                 cache_path: &tmp.path().join("cache.json"),
                 runs_root: tmp.path(),
@@ -1897,15 +2538,13 @@ mod tests {
             .unwrap();
             fs::write(root.join(".skill-lock.json"), &lock).unwrap();
         }
+        write_tracked_projects(&home, std::slice::from_ref(&project), &[]);
         let update_check_path = tmp.path().join("update-check.json");
         let cache_path = tmp.path().join("cache.json");
         let mut invocation_index = SkillInvocationIndex::default();
         let (initial, _) = build_snapshot(
             &home,
-            std::slice::from_ref(&project),
-            &BTreeSet::new(),
             &mut invocation_index,
-            &mut skill_discovery::SkillFactsCache::default(),
             BuildPaths {
                 cache_path: &cache_path,
                 runs_root: tmp.path(),
@@ -1951,10 +2590,7 @@ mod tests {
 
         let (snapshot, _) = build_snapshot(
             &home,
-            std::slice::from_ref(&project),
-            &BTreeSet::new(),
             &mut invocation_index,
-            &mut skill_discovery::SkillFactsCache::default(),
             BuildPaths {
                 cache_path: &cache_path,
                 runs_root: tmp.path(),
@@ -1980,7 +2616,7 @@ mod tests {
     fn build_snapshot_excludes_stopped_tracking_project() {
         let tmp = tempfile::tempdir().unwrap();
         let home = tmp.path().join("home");
-        let project = tmp.path().join("caller-project");
+        let project = tmp.path().join("tracked-project");
         fs::create_dir_all(project.join(".claude/skills/foo")).unwrap();
         fs::write(
             project.join(".claude/skills/foo/SKILL.md"),
@@ -1988,18 +2624,17 @@ mod tests {
         )
         .unwrap();
         fs::create_dir_all(&home).unwrap();
-
-        let mut excluded = BTreeSet::new();
-        excluded.insert(project.to_string_lossy().to_string());
+        write_tracked_projects(
+            &home,
+            std::slice::from_ref(&project),
+            std::slice::from_ref(&project),
+        );
 
         let mut invocation_index = SkillInvocationIndex::default();
         let cache_path = tmp.path().join("cache.json");
         let (snapshot, _report) = build_snapshot(
             &home,
-            std::slice::from_ref(&project),
-            &excluded,
             &mut invocation_index,
-            &mut skill_discovery::SkillFactsCache::default(),
             BuildPaths {
                 cache_path: &cache_path,
                 runs_root: tmp.path(),
@@ -2023,17 +2658,15 @@ mod tests {
             "---\nname: foo\ndescription: test\n---\nbody",
         )
         .unwrap();
+        // The home dir sneaks in as an added project here the same way a
+        // stray session transcript with cwd == home would via discovery.
+        write_tracked_projects(&home, std::slice::from_ref(&home), &[]);
 
         let mut invocation_index = SkillInvocationIndex::default();
         let cache_path = tmp.path().join("cache.json");
-        // The home dir sneaks in as an "extra project" here the same way a
-        // stray session transcript with cwd == home would via discovery.
         let (snapshot, _report) = build_snapshot(
             &home,
-            std::slice::from_ref(&home),
-            &BTreeSet::new(),
             &mut invocation_index,
-            &mut skill_discovery::SkillFactsCache::default(),
             BuildPaths {
                 cache_path: &cache_path,
                 runs_root: tmp.path(),
@@ -2070,11 +2703,206 @@ mod tests {
         assert_eq!(result, vec![valid_project.to_string_lossy().to_string()]);
     }
 
+    #[test]
+    fn validate_projects_to_save_accepts_a_pattern() {
+        let tmp = tempfile::tempdir().unwrap();
+        let home = tmp.path().join("home");
+        fs::create_dir_all(home.join("src/a")).unwrap();
+
+        let saved = validate_projects_to_save(
+            &skill_studio_host::RealFs,
+            &home,
+            vec!["~/src/*".to_string()],
+        )
+        .unwrap();
+
+        assert_eq!(saved, vec![PathBuf::from("~/src/*")]);
+    }
+
+    #[test]
+    fn validate_projects_to_save_rejects_a_star_that_is_not_the_last_part() {
+        let tmp = tempfile::tempdir().unwrap();
+        let home = tmp.path().join("home");
+        fs::create_dir_all(&home).unwrap();
+
+        let err = validate_projects_to_save(
+            &skill_studio_host::RealFs,
+            &home,
+            vec!["~/src/app-*".to_string()],
+        )
+        .unwrap_err();
+
+        assert!(err.contains("Only the last part"));
+    }
+
+    #[test]
+    fn update_tracked_projects_add_writes_added() {
+        let tmp = tempfile::tempdir().unwrap();
+        let home = tmp.path().join("home");
+        fs::create_dir_all(&home).unwrap();
+        let project = PathBuf::from("/tmp/a-project");
+
+        let (projects, changed) =
+            update_tracked_projects(&home, |tracked| tracked.track([project.clone()])).unwrap();
+
+        assert!(changed);
+        assert_eq!(projects.added, vec![project.clone()]);
+        let on_disk = super::super::skill_fork_registry::read_fork_registry(&home).unwrap();
+        assert_eq!(on_disk.projects.added, vec![project]);
+    }
+
+    #[test]
+    fn update_tracked_projects_remove_moves_to_excluded() {
+        let tmp = tempfile::tempdir().unwrap();
+        let home = tmp.path().join("home");
+        fs::create_dir_all(&home).unwrap();
+        let project = PathBuf::from("/tmp/a-project");
+        update_tracked_projects(&home, |tracked| tracked.track([project.clone()])).unwrap();
+
+        let (projects, changed) =
+            update_tracked_projects(&home, |tracked| tracked.untrack(&project)).unwrap();
+
+        assert!(changed);
+        assert!(projects.added.is_empty());
+        assert_eq!(projects.excluded, vec![project]);
+    }
+
+    #[test]
+    fn update_tracked_projects_forget_removes_without_excluding() {
+        let tmp = tempfile::tempdir().unwrap();
+        let home = tmp.path().join("home");
+        fs::create_dir_all(&home).unwrap();
+        let project = PathBuf::from("/tmp/a-project");
+        update_tracked_projects(&home, |tracked| tracked.track([project.clone()])).unwrap();
+
+        let (projects, changed) =
+            update_tracked_projects(&home, |tracked| tracked.forget(&project)).unwrap();
+
+        assert!(changed);
+        assert!(projects.added.is_empty());
+        assert!(projects.excluded.is_empty());
+    }
+
+    #[test]
+    fn update_tracked_projects_re_add_unexcludes() {
+        let tmp = tempfile::tempdir().unwrap();
+        let home = tmp.path().join("home");
+        fs::create_dir_all(&home).unwrap();
+        let project = PathBuf::from("/tmp/a-project");
+        update_tracked_projects(&home, |tracked| tracked.untrack(&project)).unwrap();
+
+        let (projects, changed) =
+            update_tracked_projects(&home, |tracked| tracked.track([project.clone()])).unwrap();
+
+        assert!(changed);
+        assert_eq!(projects.added, vec![project]);
+        assert!(projects.excluded.is_empty());
+    }
+
+    #[test]
+    fn update_tracked_projects_preserves_forks_editor_and_unknown_keys() {
+        let tmp = tempfile::tempdir().unwrap();
+        let home = tmp.path().join("home");
+        fs::create_dir_all(home.join(".agents")).unwrap();
+        fs::write(
+            home.join(".agents/skill-studio.json"),
+            r#"{"forks":{"foo":{"deployment_id":"d","skill_dir":"/x","forked_at":"2026-01-01T00:00:00Z","origin_tool":"dotagents","origin_source":"o/r","repo":"o/r","path":"skills/foo","declared_ref":null,"base_commit":"a"}},"preferred_editor":"vscode","from_the_future":42}"#,
+        )
+        .unwrap();
+
+        update_tracked_projects(&home, |tracked| {
+            tracked.track([PathBuf::from("/tmp/a-project")])
+        })
+        .unwrap();
+
+        let on_disk = super::super::skill_fork_registry::read_fork_registry(&home).unwrap();
+        assert!(on_disk.forks.contains_key("foo"));
+        assert_eq!(on_disk.preferred_editor.as_deref(), Some("vscode"));
+        assert_eq!(
+            on_disk.unknown.get("from_the_future"),
+            Some(&serde_json::json!(42))
+        );
+    }
+
+    #[test]
+    fn update_tracked_projects_a_malformed_file_is_an_error_and_left_unchanged() {
+        let tmp = tempfile::tempdir().unwrap();
+        let home = tmp.path().join("home");
+        fs::create_dir_all(home.join(".agents")).unwrap();
+        let path = home.join(".agents/skill-studio.json");
+        fs::write(&path, b"not json").unwrap();
+        let before = fs::read(&path).unwrap();
+
+        let result =
+            update_tracked_projects(&home, |tracked| tracked.track([PathBuf::from("/tmp/p")]));
+
+        assert!(result.is_err());
+        assert_eq!(fs::read(&path).unwrap(), before);
+    }
+
+    #[test]
+    fn update_tracked_projects_repeating_an_add_reports_unchanged() {
+        let tmp = tempfile::tempdir().unwrap();
+        let home = tmp.path().join("home");
+        fs::create_dir_all(&home).unwrap();
+        let project = PathBuf::from("/tmp/a-project");
+        update_tracked_projects(&home, |tracked| tracked.track([project.clone()])).unwrap();
+
+        let (_, changed) =
+            update_tracked_projects(&home, |tracked| tracked.track([project])).unwrap();
+
+        assert!(!changed);
+    }
+
+    #[test]
+    fn build_snapshot_omits_a_deleted_folder_from_added() {
+        let tmp = tempfile::tempdir().unwrap();
+        let home = tmp.path().join("home");
+        fs::create_dir_all(&home).unwrap();
+        write_tracked_projects(&home, &[tmp.path().join("never-created")], &[]);
+
+        let mut invocation_index = SkillInvocationIndex::default();
+        let (snapshot, _) = build_snapshot(
+            &home,
+            &mut invocation_index,
+            BuildPaths {
+                cache_path: &tmp.path().join("cache.json"),
+                runs_root: tmp.path(),
+                update_check_path: &tmp.path().join("update-check.json"),
+            },
+            Utc::now(),
+        );
+
+        assert!(snapshot.projects.is_empty());
+    }
+
+    #[test]
+    fn build_snapshot_omits_the_home_directory_when_it_is_added() {
+        let tmp = tempfile::tempdir().unwrap();
+        let home = tmp.path().join("home");
+        fs::create_dir_all(&home).unwrap();
+        write_tracked_projects(&home, std::slice::from_ref(&home), &[]);
+
+        let mut invocation_index = SkillInvocationIndex::default();
+        let (snapshot, _) = build_snapshot(
+            &home,
+            &mut invocation_index,
+            BuildPaths {
+                cache_path: &tmp.path().join("cache.json"),
+                runs_root: tmp.path(),
+                update_check_path: &tmp.path().join("update-check.json"),
+            },
+            Utc::now(),
+        );
+
+        assert!(snapshot.projects.is_empty());
+    }
+
     /// Build a minimal `SkillSnapshot` with one skill deployed at `dep_dir`,
     /// for `snapshot_owns_path` tests.
     fn fixture_snapshot(dep_dir: &Path) -> SkillSnapshot {
-        use super::super::provenance::SourceKind;
         use super::super::skill_dto::{Deployment, InstalledSkill};
+        use super::super::SourceKind;
 
         SkillSnapshot {
             revision: 0,
@@ -2126,6 +2954,8 @@ mod tests {
             last_test_by_skill: Default::default(),
             update_check: Default::default(),
             opencode_config_kind: None,
+            scan_partial: false,
+            scan_observations: Vec::new(),
         }
     }
 
@@ -2148,8 +2978,6 @@ mod tests {
         SkillRefreshState {
             snapshot: Arc::new(RwLock::new(None)),
             rebuild_lock: Arc::new(Mutex::new(())),
-            extra_projects: Arc::new(Mutex::new(BTreeSet::new())),
-            excluded_projects: Arc::new(Mutex::new(BTreeSet::new())),
             skills_dirty: Arc::new(AtomicBool::new(false)),
             invocations_dirty: Arc::new(AtomicBool::new(false)),
             invocation_index: Arc::new(Mutex::new(SkillInvocationIndex::default())),
@@ -2157,16 +2985,7 @@ mod tests {
             cache_path: PathBuf::from("/dev/null"),
             runs_root: PathBuf::from("/dev/null"),
             update_check_path: PathBuf::from("/dev/null"),
-            facts_cache: Arc::new(Mutex::new(skill_discovery::SkillFactsCache::default())),
         }
-    }
-
-    #[test]
-    fn is_hour_stale_reports_fresh_for_the_same_captured_now() {
-        let state = fixture_state();
-        let now = Utc::now();
-        state.mark_built_at(now);
-        assert!(!state.is_hour_stale(now));
     }
 
     #[test]
@@ -2339,5 +3158,156 @@ mod tests {
 
         let snapshot = fixture_snapshot(&dep_dir);
         assert!(snapshot_owns_path(&snapshot, &skill_md));
+    }
+
+    /// Pins the assumption `reconcile_skill_names_and_emit`'s doc comment
+    /// makes: a targeted `core_scan_installed_skills` call (the `names`
+    /// filter used by targeted reconciliation) classifies the named skills
+    /// identically to a full one (the `&[]` call `build_snapshot` uses). If
+    /// `ops::scan`'s `skills` filter ever stopped narrowing the walk down to
+    /// the same classification as a full scan, this would catch the
+    /// divergence the two-classifier bug used to allow silently.
+    #[test]
+    fn core_scan_targeted_and_full_agree() {
+        let tmp = tempfile::tempdir().unwrap();
+        let home = tmp.path().join("home");
+        let names = ["alpha", "bravo", "charlie", "delta"];
+        for name in names {
+            let dir = home.join(".claude/skills").join(name);
+            fs::create_dir_all(&dir).unwrap();
+            fs::write(
+                dir.join("SKILL.md"),
+                format!("---\nname: {name}\ndescription: test\n---\nbody"),
+            )
+            .unwrap();
+        }
+        fs::create_dir_all(&home).unwrap();
+        let update_check_path = tmp.path().join("update-check.json");
+
+        let full = core_scan_installed_skills(&home, &[], &update_check_path, &[]).skills;
+        assert_eq!(full.len(), names.len(), "full scan should see every skill");
+
+        for name in names {
+            let targeted =
+                core_scan_installed_skills(&home, &[], &update_check_path, &[name.to_string()])
+                    .skills;
+            assert_eq!(
+                targeted.len(),
+                1,
+                "targeted scan for {name} should return only that skill"
+            );
+            let from_full = full.iter().find(|s| s.name.0 == name).unwrap();
+            assert_eq!(
+                &targeted[0], from_full,
+                "targeted classification for {name} diverged from the full scan"
+            );
+        }
+    }
+
+    fn harness_enabled(settings: &[DiscoverySourceSetting], harness: &str) -> bool {
+        settings
+            .iter()
+            .find(|setting| setting.harness == harness)
+            .unwrap()
+            .enabled
+    }
+
+    #[test]
+    fn set_discovery_source_at_with_no_file_enables_every_harness_in_order() {
+        let tmp = tempfile::tempdir().unwrap();
+        let home = tmp.path().join("home");
+        fs::create_dir_all(&home).unwrap();
+
+        let harnesses: Vec<&str> = skill_studio_host::discovery_harnesses().collect();
+        let (settings, _) = set_discovery_source_at(&home, harnesses[0], true).unwrap();
+
+        assert_eq!(
+            settings
+                .iter()
+                .map(|s| s.harness.as_str())
+                .collect::<Vec<_>>(),
+            harnesses
+        );
+        assert!(settings.iter().all(|setting| setting.enabled));
+    }
+
+    #[test]
+    fn set_discovery_source_at_switches_a_harness_off_and_is_idempotent() {
+        let tmp = tempfile::tempdir().unwrap();
+        let home = tmp.path().join("home");
+        fs::create_dir_all(&home).unwrap();
+        let path = home.join(".agents/skill-studio.json");
+
+        let (settings, changed) = set_discovery_source_at(&home, "codex", false).unwrap();
+        assert!(changed);
+        assert!(!harness_enabled(&settings, "codex"));
+        let content = fs::read_to_string(&path).unwrap();
+        assert!(content.contains(r#""discovery""#));
+        let mtime_after_first = fs::metadata(&path).unwrap().modified().unwrap();
+
+        std::thread::sleep(std::time::Duration::from_millis(10));
+        let (settings_again, changed_again) =
+            set_discovery_source_at(&home, "codex", false).unwrap();
+        assert!(!changed_again);
+        assert!(!harness_enabled(&settings_again, "codex"));
+        assert_eq!(
+            fs::read_to_string(&path).unwrap(),
+            content,
+            "a repeated identical switch must not rewrite the file"
+        );
+        assert_eq!(
+            fs::metadata(&path).unwrap().modified().unwrap(),
+            mtime_after_first,
+            "a repeated identical switch must not touch the file's mtime"
+        );
+    }
+
+    #[test]
+    fn set_discovery_source_at_switching_back_on_removes_the_discovery_key() {
+        let tmp = tempfile::tempdir().unwrap();
+        let home = tmp.path().join("home");
+        fs::create_dir_all(&home).unwrap();
+        set_discovery_source_at(&home, "codex", false).unwrap();
+
+        let (settings, changed) = set_discovery_source_at(&home, "codex", true).unwrap();
+
+        assert!(changed);
+        assert!(harness_enabled(&settings, "codex"));
+        let content = fs::read_to_string(home.join(".agents/skill-studio.json")).unwrap();
+        assert!(!content.contains("\"discovery\""));
+    }
+
+    #[test]
+    fn set_discovery_source_at_an_unknown_harness_is_an_error_and_creates_no_file() {
+        let tmp = tempfile::tempdir().unwrap();
+        let home = tmp.path().join("home");
+        fs::create_dir_all(&home).unwrap();
+
+        let err = set_discovery_source_at(&home, "not-a-real-harness", false).unwrap_err();
+
+        assert!(err.contains("not-a-real-harness"));
+        assert!(!home.join(".agents/skill-studio.json").exists());
+    }
+
+    #[test]
+    fn set_discovery_source_at_preserves_unknown_discovery_and_top_level_keys() {
+        let tmp = tempfile::tempdir().unwrap();
+        let home = tmp.path().join("home");
+        fs::create_dir_all(home.join(".agents")).unwrap();
+        fs::write(
+            home.join(".agents/skill-studio.json"),
+            r#"{"discovery":{"future-harness":false},"from_the_future":42}"#,
+        )
+        .unwrap();
+
+        set_discovery_source_at(&home, "codex", false).unwrap();
+
+        let on_disk = super::super::skill_fork_registry::read_fork_registry(&home).unwrap();
+        assert!(!on_disk.discovery.is_enabled("future-harness"));
+        assert!(!on_disk.discovery.is_enabled("codex"));
+        assert_eq!(
+            on_disk.unknown.get("from_the_future"),
+            Some(&serde_json::json!(42))
+        );
     }
 }

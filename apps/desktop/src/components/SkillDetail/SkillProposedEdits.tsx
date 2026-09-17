@@ -107,7 +107,7 @@ export function SkillProposedEdits({
               className="flex h-7 items-center justify-between gap-2 border-b border-border-subtle bg-bg-tertiary px-2"
               id={headerId}
             >
-              <span className="overflow-hidden text-ellipsis whitespace-nowrap font-mono text-caption text-text-secondary">
+              <span className="select-text overflow-hidden text-ellipsis whitespace-nowrap font-mono text-caption text-text-secondary">
                 {hunk.header}
               </span>
               <ToggleGroup

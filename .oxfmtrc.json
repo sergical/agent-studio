@@ -4,6 +4,11 @@
     "node_modules",
     "src-tauri/target",
     "src-tauri/gen",
-    "tools/oxlint/anti-slop"
+    "target",
+    "test-results",
+    "tools/oxlint/anti-slop",
+    "crates/skill-studio-core/schema",
+    "crates/skill-studio-core/tests/golden",
+    "apps/cli/tests/golden"
   ]
 }

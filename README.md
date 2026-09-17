@@ -49,6 +49,20 @@ npm run tauri dev
 npm run tauri build
 ```
 
+### Fixture launch mode
+
+Set `SKILL_STUDIO_FIXTURE` to a directory to run the app against that
+directory as `HOME` instead of your real one - every scan, deployment, and
+mutation stays inside the fixture, so you can develop and demo against a
+known skill layout without touching your actual `~/.claude`, `~/.codex`, etc.
+
+```bash
+SKILL_STUDIO_FIXTURE=/path/to/fixture-home npm run tauri dev
+```
+
+See `docs/spec-core-primitives.md` section 11.5 for the manual fixture-mode
+checklist this is built for.
+
 ### Tech Stack
 
 - **Frontend**: React, TypeScript, Tailwind CSS

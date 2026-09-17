@@ -22,8 +22,8 @@ Always visible - the sidebar is the app's primary chrome, pinned to the left edg
 
 ```typescript
 // Search
-await page.fill('input[aria-label="Search skills…"]', 'my-query');
-await page.keyboard.press('Enter');
+await page.fill('input[aria-label="Search skills…"]', "my-query");
+await page.keyboard.press("Enter");
 // Should navigate to Skills view with query applied
 
 // Add skill
@@ -45,11 +45,12 @@ await page.click('button[aria-label="Settings"]');
 await page.click('button[aria-label="Switch to dark theme"]'); // Theme toggle
 
 // Clear search with Escape
-await page.fill('input[aria-label="Search skills…"]', 'query');
-await page.keyboard.press('Escape');
+await page.fill('input[aria-label="Search skills…"]', "query");
+await page.keyboard.press("Escape");
 ```
 
 Selectors:
+
 - Search input: `input[aria-label="Search skills…"]`
 - Add button: `button:has-text("Add skill")`
 - View buttons: `button:has-text("Home")`, `button:has-text("Skills")`, etc.
@@ -73,53 +74,63 @@ Selectors:
 ## Branches
 
 ### Happy path
+
 1. User clicks a view → `setActiveView` updates store → `App.tsx` renders new main content
 2. User types search → store updates → switches to Skills view with filter
 3. User clicks Add skill → sheet opens
 4. User clicks theme toggle → theme switches, localStorage persists
 
 ### Empty / first-run states
+
 - No parked skills → Parked row not rendered
 - No plugins → Plugins row not rendered
 - Packs disabled by flag → Packs row not rendered
 - Fresh install → "Scanned just now" shows immediately after first scan completes
 
 ### Duplicate / conflict
+
 - N/A - sidebar has no duplicate-handling logic
 
 ### Failure / error states
+
 - Rescan fails → error toast shown by parent (no inline failure in sidebar)
 - Search with no results → handled by Skills view, not sidebar
 - Theme toggle failure → silent (localStorage write wrapped in try-catch)
 
 ### Cancellation / close mid-flow
+
 - Escape during search → clears query, blurs input, stays on current view
 - Search while on non-Skills view → switches to Skills (no cancel mechanism)
 
 ### Loading / progress states
+
 - Rescan in progress → "Scanning…" text, spinning `RefreshCw` icon, button disabled
 - Initial scan → handled by parent (`isLoading`), sidebar shows "Scanned X ago" once snapshot lands
 
 ## Benchmarks & improvement
 
 ### Observable metrics
+
 - **Navigation latency**: Time from click to new view rendering (measure via React DevTools or trace `setActiveView` → main render)
 - **Search responsiveness**: Keystroke to filter applied in Skills view (< 50ms expected, synchronous store update)
 - **Rescan duration**: "Scanning…" start to next snapshot event (backend Rust scan + IPC latency)
 - **Theme toggle latency**: Click to CSS variables applied (< 16ms expected, synchronous DOM mutation in `stampTheme`)
 
 ### Current instrumentation
+
 - Rescan timing visible in footer ("Scanned X ago" relative to `snapshot.scanned_at`)
 - No per-nav or per-interaction timing logged
 - Snapshot age updates every 30s (polling interval)
 
 ### Suggested measurements for verification
+
 - Capture time from navigation click to `activeView` store update
 - Measure search filter propagation time (input change → Skills view render with filtered results)
 - Track rescan wall time (start button click → snapshot event received)
 - Count navigation interactions per session (to validate most-used paths)
 
 ### Improvement levers
+
 - **Debounce search input** (currently applies on every keystroke; 150ms debounce would reduce filter thrashing on fast typing)
 - **Virtual scrolling** for Parked list if user has 100+ parked skills (not currently an issue, but unbounded)
 - **Memoize harness counts** in sidebar (currently recalculates `ownSkillsView` / `pluginSkillsView` on every render; snapshot change should be the only trigger)
@@ -139,6 +150,7 @@ After each interaction:
 - **Learn/Settings**: Respective view opens, footer button shows active state (`aria-current="page"`)
 
 Invariants:
+
 - Exactly one view highlighted in sidebar at a time
 - Search query persists across view switches (except when manually cleared)
 - Snapshot age never regresses (monotonically increasing, resets on rescan)

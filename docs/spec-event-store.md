@@ -75,8 +75,12 @@ CREATE TABLE materialized_disabled (
 `install`, `remove`, `update`, `park`, `unpark`, `harness_disable`,
 `harness_enable`, `move_aside_disable`, `move_aside_restore`,
 `invocation_change`, `fork`, `unlink_harness` (materialize-disable),
-`relink_harness`, `explode_shared_dir`, `restore` (the undo of another
-event, `payload.target_event`).
+`relink_harness`, `explode_shared_dir`, `materialize_then_disable`,
+`reconcile_remove_stale_link`, `repair_remove_link`, `repair_relink_link`,
+`make_independent_copy`, `repair_skill_frontmatter`, `restore` (the undo
+of another event, `payload.target_event`). The typed view is
+`skill_studio_core::events::EventKind`; an unknown literal loads as not
+restorable.
 
 ## Write path (Rust)
 

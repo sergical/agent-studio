@@ -208,7 +208,7 @@ export function skillUpdateAvailability(
 /** Run each owner update and return every failure for the UI. */
 export async function updateSkillOwners(
   skill: Pick<InstalledSkill, "update_owner_ids" | "update_owners">,
-  updateOwner: (target: LifecycleTarget) => Promise<{ success: boolean; error?: string }>,
+  updateOwner: (target: LifecycleTarget) => Promise<{ success: boolean; error?: string | null }>,
 ): Promise<SkillOwnerUpdateSummary> {
   const targets = skillUpdateOwnerTargets(skill);
   const failures: SkillOwnerUpdateFailure[] = [];

@@ -13,6 +13,7 @@
     "anti-slop/no-known-value-widening": "error",
     "anti-slop/no-module-mocking": "error",
     "anti-slop/no-object-parameters": "error",
+    "anti-slop/no-raw-form-elements": "error",
     "anti-slop/no-reflect-apply": "error",
     "anti-slop/no-reflect-get": "error",
     "anti-slop/no-runtime-typeof": "error",
@@ -48,5 +49,11 @@
   "env": {
     "builtin": true
   },
-  "ignorePatterns": ["**/dist", "**/node_modules", "**/src-tauri/target", "**/src-tauri/gen"]
+  "ignorePatterns": ["**/dist", "**/node_modules", "**/src-tauri/target", "**/src-tauri/gen"],
+  "overrides": [
+    {
+      "files": ["packages/ui/**", "apps/tui/**", "packages/marketing/**"],
+      "rules": { "anti-slop/no-raw-form-elements": "off" }
+    }
+  ]
 }

@@ -9,6 +9,7 @@
 
 use std::path::{Path, PathBuf};
 
+use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
 use super::skill_dto::InstallScope;
@@ -16,7 +17,7 @@ use super::skill_dto::InstallScope;
 /// Where a skill is installed relative to harness folders. Universal owns
 /// `.agents/skills`; Per harness owns an independent copy in one harness dir
 /// and never writes `.agents/skills`.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, Default, JsonSchema)]
 #[serde(rename_all = "kebab-case")]
 pub enum SkillDestination {
     Universal,
@@ -43,7 +44,7 @@ impl SkillDestination {
 }
 
 /// How this deployment relates to a Universal folder of the same skill.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default, JsonSchema)]
 #[serde(tag = "kind", rename_all = "kebab-case")]
 pub enum BackingRelationship {
     /// This directory is the Universal `.agents/skills/<name>` folder.
@@ -56,7 +57,7 @@ pub enum BackingRelationship {
 }
 
 /// Whether Skill Studio may mutate this deployment through an owner adapter.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default, JsonSchema)]
 #[serde(rename_all = "kebab-case")]
 pub enum DeploymentMutability {
     Mutable,

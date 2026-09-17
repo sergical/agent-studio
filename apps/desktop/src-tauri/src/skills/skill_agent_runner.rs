@@ -38,7 +38,7 @@ const MAX_LINE_BYTES: usize = 4 * 1024 * 1024;
 const CANCEL_GRACE: Duration = Duration::from_secs(2);
 
 /// One of the four first-class agents a skill run can target.
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Hash, schemars::JsonSchema)]
 #[serde(rename_all = "kebab-case")]
 pub enum HarnessId {
     ClaudeCode,

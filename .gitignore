@@ -24,3 +24,6 @@ lerna-debug.log*
 *.sw?
 
 .env
+
+# Cargo workspace build output
+/target/

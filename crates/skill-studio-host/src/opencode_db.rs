@@ -1,0 +1,131 @@
+//! Shared read-only opener for OpenCode's SQLite databases, used by project
+//! discovery (`discovery.rs`) and by the OpenCode skill-uses reader
+//! (`skill_uses/opencode.rs`) so both follow the same "never write next to
+//! the user's database" rule.
+
+use std::fs;
+use std::path::{Path, PathBuf};
+use std::time::Duration;
+
+use rusqlite::{Connection, OpenFlags, OptionalExtension};
+
+/// OpenCode's data dir at its default `$XDG_DATA_HOME` location.
+pub(crate) const OPENCODE_DATA_ROOT: &str = ".local/share/opencode";
+
+/// OpenCode's database is `opencode.db` on the latest, beta, and prod
+/// channels and `opencode-<channel>.db` on every other channel (`next` for
+/// the v2 beta, `local` for source builds), so one machine can hold several.
+const MAX_OPENCODE_DATABASES: usize = 16;
+
+/// Opening a FIFO blocks, and a symlink can point anywhere, so a database is
+/// only opened when it is a regular file.
+fn is_regular_file(path: &Path) -> bool {
+    fs::symlink_metadata(path).is_ok_and(|m| m.file_type().is_file())
+}
+
+/// True when `name` is one of OpenCode's own database file names:
+/// `opencode.db`, or `opencode-<channel>.db` for a non-default channel.
+pub(crate) fn is_opencode_database_name(name: &str) -> bool {
+    name == "opencode.db" || (name.starts_with("opencode-") && name.ends_with(".db"))
+}
+
+/// Lists `<home>/.local/share/opencode/opencode.db` and
+/// `opencode-*.db`, regular files only, sorted, capped at
+/// `MAX_OPENCODE_DATABASES`. An empty `Vec` when the directory can't be
+/// listed (missing, or not readable).
+pub(crate) fn opencode_databases(home: &Path) -> Vec<PathBuf> {
+    let root = home.join(OPENCODE_DATA_ROOT);
+    let Ok(entries) = fs::read_dir(&root) else {
+        return Vec::new();
+    };
+    let mut databases: Vec<PathBuf> = entries
+        .flatten()
+        .map(|entry| entry.path())
+        .filter(|path| {
+            path.file_name()
+                .and_then(|name| name.to_str())
+                .is_some_and(is_opencode_database_name)
+        })
+        .filter(|path| is_regular_file(path))
+        .collect();
+    databases.sort();
+    databases.truncate(MAX_OPENCODE_DATABASES);
+    databases
+}
+
+/// Opens `database` read-only without ever creating or changing a sidecar
+/// file next to it. OpenCode keeps its database in WAL mode, and a plain
+/// read-only open creates the `-wal` and `-shm` files when they are missing.
+/// So the database is opened as immutable unless both files already exist,
+/// which is the case while OpenCode runs and rows that are only in the WAL
+/// must still be seen. `None` when the path can't be turned into a file URI
+/// or the database can't be opened.
+pub(crate) fn open_opencode_database(database: &Path) -> Option<Connection> {
+    let live = ["-wal", "-shm"].iter().all(|suffix| {
+        let mut sidecar = database.as_os_str().to_owned();
+        sidecar.push(suffix);
+        Path::new(&sidecar).exists()
+    });
+    let mut uri = url::Url::from_file_path(database).ok()?;
+    uri.set_query(Some(if live {
+        "mode=ro"
+    } else {
+        "mode=ro&immutable=1"
+    }));
+    let conn = Connection::open_with_flags(
+        uri.as_str(),
+        OpenFlags::SQLITE_OPEN_READ_ONLY
+            | OpenFlags::SQLITE_OPEN_URI
+            | OpenFlags::SQLITE_OPEN_NO_MUTEX,
+    )
+    .ok()?;
+    let _ = conn.busy_timeout(Duration::from_millis(250));
+    Some(conn)
+}
+
+/// Whether `table` exists in `conn`, checked against `sqlite_master`. A busy
+/// or corrupt database is an `Err`, not "no such table": SQLite only checks
+/// the file header on the first query, so this is where a bad file shows up.
+pub(crate) fn table_exists(conn: &Connection, table: &str) -> rusqlite::Result<bool> {
+    conn.query_row(
+        "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?1",
+        [table],
+        |_| Ok(()),
+    )
+    .optional()
+    .map(|found| found.is_some())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn open_read_only_creates_no_sidecar_files() {
+        let tmp = tempfile::tempdir().unwrap();
+        let database = tmp.path().join("opencode.db");
+        {
+            let conn = Connection::open(&database).unwrap();
+            conn.execute_batch("PRAGMA journal_mode=WAL; CREATE TABLE t (id INTEGER);")
+                .unwrap();
+            conn.execute("INSERT INTO t (id) VALUES (1)", []).unwrap();
+        }
+        // Closing the writer removes the WAL-mode sidecars (checkpointed on
+        // close), so the fixture starts with none - the case a plain
+        // read-only open would otherwise regenerate.
+        let wal = tmp.path().join("opencode.db-wal");
+        let shm = tmp.path().join("opencode.db-shm");
+        assert!(!wal.exists());
+        assert!(!shm.exists());
+
+        let conn = open_opencode_database(&database).expect("open");
+        let value: i64 = conn
+            .query_row("SELECT id FROM t LIMIT 1", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(value, 1);
+        drop(conn);
+
+        assert!(!wal.exists());
+        assert!(!shm.exists());
+    }
+}

@@ -3,7 +3,7 @@
 // Derives source and lifecycle facts without exposing deployment locations.
 // ============================================================================
 
-import { formatBytes, formatTokens, pluginLabelForSkill } from "@skill-studio/lib";
+import { formatBytes, formatTokens, pluginSourceLabel } from "@skill-studio/lib";
 import type { Deployment, InstalledSkill, LifecycleOwnerKind } from "@skill-studio/lib";
 
 /** Text rendered by the installed skill source ledger. */
@@ -30,7 +30,7 @@ const LIFECYCLE_OWNER_LABELS = {
   ambiguous: "Ambiguous",
 } satisfies Record<LifecycleOwnerKind, string>;
 
-function displayLedgerDate(value: string | undefined): string | undefined {
+function displayLedgerDate(value: string | null | undefined): string | undefined {
   if (!value) return undefined;
   const date = new Date(value);
   if (Number.isNaN(date.getTime())) return undefined;
@@ -39,8 +39,7 @@ function displayLedgerDate(value: string | undefined): string | undefined {
 
 function sourceLedgerLabel(skill: InstalledSkill): string {
   if (skill.source_kind === "plugin") {
-    const pluginName = pluginLabelForSkill(skill);
-    return pluginName ? `Plugin · ${pluginName}` : "Agent plugin";
+    return pluginSourceLabel(skill) ?? "Agent plugin";
   }
   if (skill.source_kind === "in-repo") return "Local repository";
   if (skill.source_kind === "fork") return skill.fork?.origin_source ?? "Local fork";

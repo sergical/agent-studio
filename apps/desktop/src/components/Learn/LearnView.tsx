@@ -7,7 +7,6 @@
 import { useEffect, useRef } from "react";
 import { HarnessIcon } from "../ui/HarnessIcon";
 import { PageShell } from "../Shell/PageShell";
-import { useAppStore } from "../../store/appStore";
 import type { LearnSection } from "../../store/appStore";
 
 interface LearnViewProps {
@@ -28,7 +27,6 @@ const SECTIONS: { key: LearnSection; title: string }[] = [
  * page top.
  */
 export function LearnView({ section }: LearnViewProps) {
-  const setActiveView = useAppStore((state) => state.setActiveView);
   const headingRefs = useRef(new Map<LearnSection, HTMLHeadingElement>());
 
   useEffect(() => {
@@ -39,17 +37,7 @@ export function LearnView({ section }: LearnViewProps) {
   }, [section]);
 
   return (
-    <PageShell
-      title="Learn"
-      actions={
-        <button
-          className="flex shrink-0 items-center gap-1.5 p-1 text-small text-text-tertiary transition-colors hover:text-text-primary"
-          onClick={() => setActiveView({ kind: "home" })}
-        >
-          ← Home
-        </button>
-      }
-    >
+    <PageShell title="Learn">
       <div className="grid grid-cols-[180px_minmax(0,1fr)] items-start gap-8">
         <nav className="sticky top-6 flex flex-col gap-0.5">
           {SECTIONS.map(({ key, title }) => (
@@ -65,7 +53,7 @@ export function LearnView({ section }: LearnViewProps) {
             </a>
           ))}
         </nav>
-        <div className="flex max-w-[65ch] flex-col gap-9 text-body leading-[1.55] text-text-secondary">
+        <div className="flex max-w-[65ch] select-text flex-col gap-9 text-body leading-[1.55] text-text-secondary">
           <section id="learn-broken" className="flex scroll-mt-6 flex-col gap-2">
             <h3
               className="m-0 mb-1 text-heading font-semibold text-text-primary"
@@ -284,12 +272,10 @@ export function LearnView({ section }: LearnViewProps) {
               Not used in the last 30 days
             </h3>
             <p className="m-0">
-              Use is read from Claude Code transcripts (
-              <code className="rounded-[3px] bg-bg-tertiary px-1 py-px font-mono text-small text-text-primary">
-                ~/.claude/projects
-              </code>
-              ). Other harnesses do not record skill invocations yet, so a skill you run only from
-              Codex will show as unused.
+              Uses come from the history files of Claude Code, Codex, OpenCode, pi, Cursor, and Grok
+              Build. A harness you turn off under “Search history from” in Settings is left out of
+              every count. Each use also records how it started: you typed the skill’s name, the
+              model called the skill, or the model only opened its SKILL.md.
             </p>
           </section>
         </div>

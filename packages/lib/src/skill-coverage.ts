@@ -50,6 +50,28 @@ export function agentIdFromDeploymentLabel(label: string): AgentId | "shared" | 
   }
 }
 
+/** The inverse of `agentIdFromDeploymentLabel`: a wire harness id (e.g. from
+ * `DiscoverySourceSetting.harness`) to the label a deployment/agent chip
+ * shows. Falls back to the id itself for one this function doesn't know. */
+export function deploymentLabelFromAgentId(id: string): string {
+  switch (id) {
+    case "claude-code":
+      return "Claude Code";
+    case "codex":
+      return "Codex";
+    case "open-code":
+      return "OpenCode";
+    case "pi":
+      return "pi";
+    case "cursor":
+      return "Cursor";
+    case "grok-build":
+      return "Grok Build";
+    default:
+      return id;
+  }
+}
+
 /**
  * True when a deployment's symlink doesn't resolve: either the target is
  * confirmed missing (`symlink_is_broken`), or resolving it failed for some
@@ -78,8 +100,8 @@ function isOwnDirDeployment(skill: InstalledSkill, agent: AgentId): boolean {
 }
 
 /** True when the deployment is a symlink whose target lives in a `.agents/skills` root. */
-function isLinkedToSharedRoot(target: string | undefined): boolean {
-  return target !== undefined && /\/\.agents\/skills\//.test(target + "/");
+function isLinkedToSharedRoot(target: string | null | undefined): boolean {
+  return target != null && /\/\.agents\/skills\//.test(target + "/");
 }
 
 /**
@@ -106,7 +128,7 @@ export function deploymentLinkKind(
 }
 
 /** The path a link chip's tooltip/relation text should show: the symlink target, or the canonical path reached through a linked root. */
-export function deploymentLinkTarget(deployment: Deployment): string | undefined {
+export function deploymentLinkTarget(deployment: Deployment): string | null | undefined {
   return deployment.symlink_target ?? deployment.resolved_path;
 }
 

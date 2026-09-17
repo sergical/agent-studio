@@ -31,7 +31,7 @@ function DrawerBackdrop({ className, ...props }: DrawerPrimitive.Backdrop.Props)
     <DrawerPrimitive.Backdrop
       data-slot="drawer-backdrop"
       className={cn(
-        "fixed inset-0 z-[var(--z-modal,50)] bg-black/50 duration-200 data-open:animate-in data-open:fade-in-0 data-closed:animate-out data-closed:fade-out-0",
+        "fixed inset-0 z-[var(--z-modal,50)] bg-black/50 ease-(--ease-drawer) data-open:duration-[240ms] data-closed:duration-[180ms] data-open:animate-in data-open:fade-in-0 data-closed:animate-out data-closed:fade-out-0",
         className,
       )}
       {...props}
@@ -63,7 +63,7 @@ function DrawerContent({
       <DrawerPrimitive.Popup
         data-slot="drawer-content"
         className={cn(
-          "fixed z-[var(--z-modal,50)] flex flex-col bg-popover text-popover-foreground outline-none duration-200 data-open:animate-in data-closed:animate-out",
+          "fixed z-[var(--z-modal,50)] flex flex-col bg-popover text-popover-foreground outline-none ease-(--ease-drawer) data-open:duration-[240ms] data-closed:duration-[180ms] data-open:animate-in data-closed:animate-out",
           SIDE_CLASSES[side],
           className,
         )}

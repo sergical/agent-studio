@@ -4,9 +4,11 @@
 // the sidebar - see the design rule in spec-ux-1.md section C.
 // ============================================================================
 
+import { useEffect, useRef } from "react";
+import type { KeyboardEvent } from "react";
 import { ChevronDown, LayoutGrid, List, ListFilter, Search, X } from "lucide-react";
 import { ask } from "@tauri-apps/plugin-dialog";
-import { ToggleGroup, ToggleGroupItem } from "@skill-studio/ui";
+import { Button, Input, ToggleGroup, ToggleGroupItem } from "@skill-studio/ui";
 import { harnessesPresent } from "@skill-studio/lib";
 import { isProjectScope, type SkillListFilter } from "@skill-studio/lib";
 import { shortProjectPath } from "@skill-studio/lib";
@@ -25,6 +27,7 @@ import { TooltipControl } from "../ui/TooltipControl";
 import { SORT_ITEMS, isSortMode } from "../../lib/skill-list-sort";
 import type { SortMode } from "../../lib/skill-list-sort";
 import { singleSelectToggleValue } from "../../lib/single-select-toggle-group";
+import { useAppStore } from "../../store/appStore";
 
 // No "plugin" here: plugin-shipped skills have their own place (PluginSkillsView).
 const SOURCE_KINDS: SkillSourceKind[] = ["dotagents", "skills-sh", "in-repo", "manual", "fork"];
@@ -47,7 +50,7 @@ const USAGE_LABELS = {
 
 /** The project menu's two-line rows (name + full path) - `MenuItem`'s baked-in default is a single line. */
 const MENU_RADIO_ITEM_CLASS =
-  "flex h-auto flex-col items-start gap-0.5 rounded-sm px-2.5 py-1.5 text-body text-text-secondary transition-colors data-highlighted:bg-bg-hover data-highlighted:text-text-primary";
+  "flex h-auto flex-col items-start gap-0.5 rounded-sm px-2.5 py-1.5 text-body text-text-secondary data-highlighted:bg-bg-hover data-highlighted:text-text-primary";
 /** The Scope group's project trigger sits after the ToggleGroup, styled the same as its items. */
 const SEGMENTED_TRIGGER_CLASS =
   "inline-flex h-(--control-height) items-center gap-1 rounded-r-sm border-y border-r border-border bg-transparent px-3 text-body text-text-tertiary transition-colors duration-150 hover:bg-bg-hover hover:text-text-secondary aria-expanded:bg-bg-tertiary aria-expanded:text-text-primary";
@@ -55,8 +58,6 @@ const SEGMENTED_TRIGGER_CLASS =
 interface SkillListFilterBarProps {
   filter: SkillListFilter;
   onChange: (filter: SkillListFilter) => void;
-  /** "Clear all" on the active-chips row - must replace the whole filter, not merge a patch (a merge would keep the very fields being cleared). */
-  onReset: () => void;
   projects: string[];
   onAddProject: () => void;
   /** Stops tracking `path` - "Stop tracking" on the project menu's row for the selected project. */
@@ -85,13 +86,15 @@ function projectScopeLabel(filter: SkillListFilter): string {
 /** One removable chip in the active-filters row: a label and an "×" that clears that field. */
 function ActiveChip({ label, onClear }: { label: string; onClear: () => void }) {
   return (
-    <button
-      className="inline-flex h-6 cursor-pointer items-center gap-1.5 rounded-sm border-0 bg-accent-soft px-2 text-caption text-text-secondary transition-colors hover:bg-accent-softer"
+    <Button
+      variant="ghost"
+      size="xs"
+      className="gap-1.5 rounded-sm bg-accent-soft px-2 text-text-secondary hover:bg-accent-softer"
       onClick={onClear}
     >
       {label}
       <X size={11} />
-    </button>
+    </Button>
   );
 }
 
@@ -119,7 +122,6 @@ function filterMenuCount(filter: SkillListFilter): number {
 export function SkillListFilterBar({
   filter,
   onChange,
-  onReset,
   projects,
   onAddProject,
   onRemoveProject,
@@ -146,18 +148,31 @@ export function SkillListFilterBar({
     await onRemoveProject(path);
   }
 
-  const activeCount = activeFilterCount(filter);
   const selectedProject = isProjectScope(filter.scope) ? filter.scope.project : undefined;
+  const searchInputRef = useRef<HTMLInputElement>(null);
+  const searchFocusRequest = useAppStore((state) => state.skillSearchFocusRequest);
+  useEffect(() => {
+    if (searchFocusRequest > 0) searchInputRef.current?.focus();
+  }, [searchFocusRequest]);
+
+  function handleSearchKeyDown(e: KeyboardEvent<HTMLInputElement>) {
+    if (e.key === "Escape") {
+      onChange({ ...filter, query: "" });
+      searchInputRef.current?.blur();
+    }
+  }
 
   return (
-    <div className="flex flex-col gap-2.5">
-      <div className="flex flex-wrap items-center gap-2.5">
-        <div className="relative flex w-60 items-center text-text-tertiary">
-          <Search size={13} className="pointer-events-none absolute left-3" />
-          <input
-            className="h-(--control-height) w-full rounded-sm border border-border bg-bg-primary py-0 pr-3 pl-8 text-body text-text-primary transition-colors placeholder:text-text-quaternary focus-visible:border-border-focus"
+    <div className="flex w-full items-center gap-2">
+      <div className="flex items-center gap-2">
+        <div className="relative flex w-48 items-center text-text-tertiary">
+          <Search size={12} className="pointer-events-none absolute left-2.5" />
+          <Input
+            ref={searchInputRef}
+            className="h-(--control-height) w-full pr-2 pl-7"
             value={filter.query}
             onChange={(e) => onChange({ ...filter, query: e.target.value })}
+            onKeyDown={handleSearchKeyDown}
             placeholder="Filter skills…"
             aria-label="Filter skills"
           />
@@ -166,20 +181,20 @@ export function SkillListFilterBar({
         <div className="flex" role="group" aria-label="Scope">
           <ToggleGroup
             variant="segmented"
-            className="rounded-r-none"
+            className="h-(--control-height) rounded-r-none"
             value={filter.scope === "all" || filter.scope === "global" ? [filter.scope] : []}
             onValueChange={(next) => singleSelectToggleValue<"all" | "global">(next, setScope)}
           >
-            <ToggleGroupItem value="all" className="px-3">
+            <ToggleGroupItem value="all" className="h-full px-2.5 text-body">
               All
             </ToggleGroupItem>
-            <ToggleGroupItem value="global" className="px-3">
+            <ToggleGroupItem value="global" className="h-full px-2.5 text-body">
               Global
             </ToggleGroupItem>
           </ToggleGroup>
           <MenuControl
             triggerClassName={SEGMENTED_TRIGGER_CLASS}
-            triggerAriaLabel="Project"
+            triggerAriaLabel={`Project: ${projectScopeLabel(filter)}`}
             trigger={
               <>
                 {projectScopeLabel(filter)}
@@ -232,7 +247,7 @@ export function SkillListFilterBar({
 
         <MenuControl
           triggerClassName="inline-flex h-(--control-height) cursor-pointer items-center gap-1.5 rounded-sm border border-border bg-transparent px-2.5 text-body text-text-tertiary transition-colors hover:bg-bg-hover hover:text-text-secondary"
-          triggerAriaLabel="Filter"
+          triggerAriaLabel={`Filter, ${filterMenuCount(filter)} active`}
           trigger={
             <>
               <ListFilter size={13} />
@@ -293,10 +308,13 @@ export function SkillListFilterBar({
             ))}
           </MenuRadioGroup>
         </MenuControl>
+      </div>
 
-        <div className="flex-1" />
-
-        <span className="whitespace-nowrap text-small tabular-nums text-text-tertiary">
+      <div className="ml-auto flex items-center gap-2">
+        <span
+          role="status"
+          className="whitespace-nowrap text-small tabular-nums text-text-tertiary"
+        >
           {resultCount} skill{resultCount !== 1 ? "s" : ""}
         </span>
 
@@ -312,6 +330,7 @@ export function SkillListFilterBar({
 
         <ToggleGroup
           variant="segmented"
+          className="h-(--control-height)"
           aria-label="View"
           value={[showCoverage ? "coverage" : "list"]}
           onValueChange={(next) =>
@@ -321,70 +340,89 @@ export function SkillListFilterBar({
           }
         >
           <TooltipControl content="List">
-            <ToggleGroupItem value="list" className="px-2.5" aria-label="List view">
+            <ToggleGroupItem value="list" className="h-full px-2.5" aria-label="List view">
               <List size={14} />
             </ToggleGroupItem>
           </TooltipControl>
           <TooltipControl content="Coverage matrix">
-            <ToggleGroupItem value="coverage" className="px-2.5" aria-label="Coverage matrix view">
+            <ToggleGroupItem
+              value="coverage"
+              className="h-full px-2.5"
+              aria-label="Coverage matrix view"
+            >
               <LayoutGrid size={14} />
             </ToggleGroupItem>
           </TooltipControl>
         </ToggleGroup>
       </div>
+    </div>
+  );
+}
 
-      {activeCount > 0 && (
-        <div className="flex flex-wrap items-center gap-1.5">
-          {filter.scope !== "all" && (
-            <ActiveChip
-              label={
-                filter.scope === "global"
-                  ? "Global"
-                  : filter.scope === "parked"
-                    ? "Parked"
-                    : projectScopeLabel(filter)
-              }
-              onClear={() => setScope("all")}
-            />
-          )}
-          {filter.harness && (
-            <ActiveChip
-              label={filter.harness}
-              onClear={() => onChange({ ...filter, harness: undefined })}
-            />
-          )}
-          {filter.source && (
-            <ActiveChip
-              label={SOURCE_KIND_LABELS[filter.source]}
-              onClear={() => onChange({ ...filter, source: undefined })}
-            />
-          )}
-          {filter.issue && (
-            <ActiveChip
-              label={filter.issue === "any" ? "Has issues" : filter.issue}
-              onClear={() => onChange({ ...filter, issue: undefined })}
-            />
-          )}
-          {filter.invocation && (
-            <ActiveChip
-              label={INVOCATION_LABELS[filter.invocation]}
-              onClear={() => onChange({ ...filter, invocation: undefined })}
-            />
-          )}
-          {filter.usage && (
-            <ActiveChip
-              label={USAGE_LABELS[filter.usage]}
-              onClear={() => onChange({ ...filter, usage: undefined })}
-            />
-          )}
-          <button
-            className="h-6 cursor-pointer border-0 bg-transparent px-2 text-caption text-text-tertiary transition-colors hover:text-text-primary"
-            onClick={onReset}
-          >
-            Clear all
-          </button>
-        </div>
+interface SkillListActiveFiltersProps {
+  filter: SkillListFilter;
+  onChange: (filter: SkillListFilter) => void;
+  /** "Clear all" - must replace the whole filter, not merge a patch (a merge would keep the very fields being cleared). */
+  onReset: () => void;
+}
+
+/**
+ * The removable chip row for the Skills view's active filters. Rendered as
+ * its own content row above the list (not inside the fixed-height toolbar)
+ * so a wide set of active filters never clips against the toolbar's 40px
+ * height.
+ */
+export function SkillListActiveFilters({ filter, onChange, onReset }: SkillListActiveFiltersProps) {
+  const activeCount = activeFilterCount(filter);
+  if (activeCount === 0) return null;
+
+  return (
+    <div className="flex flex-wrap items-center gap-1.5">
+      {filter.scope !== "all" && (
+        <ActiveChip
+          label={
+            filter.scope === "global"
+              ? "Global"
+              : filter.scope === "parked"
+                ? "Parked"
+                : projectScopeLabel(filter)
+          }
+          onClear={() => onChange({ ...filter, scope: "all" })}
+        />
       )}
+      {filter.harness && (
+        <ActiveChip
+          label={filter.harness}
+          onClear={() => onChange({ ...filter, harness: undefined })}
+        />
+      )}
+      {filter.source && (
+        <ActiveChip
+          label={SOURCE_KIND_LABELS[filter.source]}
+          onClear={() => onChange({ ...filter, source: undefined })}
+        />
+      )}
+      {filter.issue && (
+        <ActiveChip
+          label={filter.issue === "any" ? "Has issues" : filter.issue}
+          onClear={() => onChange({ ...filter, issue: undefined })}
+        />
+      )}
+      {filter.invocation && (
+        <ActiveChip
+          label={INVOCATION_LABELS[filter.invocation]}
+          onClear={() => onChange({ ...filter, invocation: undefined })}
+        />
+      )}
+      {filter.usage && (
+        <ActiveChip
+          label={USAGE_LABELS[filter.usage]}
+          onClear={() => onChange({ ...filter, usage: undefined })}
+        />
+      )}
+      <Button variant="ghost" size="xs" className="px-2 text-text-tertiary" onClick={onReset}>
+        Clear all
+      </Button>
     </div>
   );
 }

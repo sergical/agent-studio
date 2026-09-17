@@ -4,11 +4,11 @@
 // ============================================================================
 
 import { create } from "zustand";
-import { defaultSkillListFilter, isProjectScope } from "@skill-studio/lib";
+import { defaultSkillListFilter, isProjectPattern, isProjectScope } from "@skill-studio/lib";
 import type { SkillListFilter } from "@skill-studio/lib";
-import { USAGE_WINDOWS } from "@skill-studio/lib";
-import type { UsageWindow } from "@skill-studio/lib";
-import type { Toast } from "@skill-studio/lib";
+import { ALL_ACTIVITY, USAGE_WINDOWS } from "@skill-studio/lib";
+import type { ActivityFilter, UsageWindow } from "@skill-studio/lib";
+import type { Toast, TrackedProjects } from "@skill-studio/lib";
 import { addToast } from "../lib/toast";
 import {
   loadStoredTheme,
@@ -77,6 +77,9 @@ interface AppState {
   openSkill: (name: string, deploymentPath?: string, intent?: "compare") => void;
   /** Returns to the view the current skill page was opened from. */
   closeSkill: () => void;
+  /** The skill whose page `closeSkill` just returned from - lets the list that reappears
+   * (Home or Skills) restore keyboard focus to that row instead of resetting to the first one. */
+  lastClosedSkillName: string | null;
   /** Clears the current skill view's `intent`, once its one-shot dialog has opened. */
   clearSkillIntent: () => void;
 
@@ -88,22 +91,28 @@ interface AppState {
   skillListFilter: SkillListFilter;
   setSkillListFilter: (patch: Partial<SkillListFilter>) => void;
   resetSkillListFilter: () => void;
+  /** Bumped by the sidebar's search icon so the filter bar's search input can focus itself. */
+  skillSearchFocusRequest: number;
+  requestSkillSearchFocus: () => void;
   /** Whether the Skills view shows the coverage matrix instead of the table. */
   showCoverage: boolean;
   setShowCoverage: (show: boolean) => void;
   // === Project Scope Selection ===
   // Directories the user has pointed at (via a folder picker), for
-  // project-scoped skill installs. Registered with the backend on startup
-  // and whenever the user adds one.
+  // project-scoped skill installs. Mirrors the `added` list backend commands
+  // (register/unregister/import) already persisted to
+  // `~/.agents/skill-studio.json` - set from their result, never written to
+  // directly. Excludes `*` patterns - not a folder itself, so not a valid
+  // install target; the folders it matches already come through
+  // `snapshot.projects`.
   userAddedProjects: string[];
   // Directories the user explicitly removed from the Sidebar ("Stop
   // tracking"), including ones the backend discovers on its own (Codex
-  // config, Claude Code transcripts). Un-registered with the backend on
-  // startup and whenever the user removes one, so they don't reappear just
-  // because `project_discovery` still finds them.
+  // config, Claude Code transcripts). Mirrors that same file's `excluded`
+  // list, so they don't reappear just because discovery still finds them.
   excludedProjects: string[];
-  addProject: (path: string) => void;
-  removeProject: (path: string) => void;
+  /** Replaces both lists at once with a backend command's result - the one way this state changes. */
+  setTrackedProjects: (projects: TrackedProjects) => void;
 
   // === Usage Window ===
   // The invocation window ("24h" .. "30d") shown in the dashboard's top
@@ -111,6 +120,16 @@ interface AppState {
   // switching it in one place is reflected in the other.
   usageWindow: UsageWindow;
   setUsageWindow: (window: UsageWindow) => void;
+
+  // === Activity Page ===
+  // Kept here so opening a skill from the Activity page and coming back
+  // keeps the filters and the open day. Session-only: a harness saved from
+  // an earlier run may have been turned off in Settings since.
+  activityFilter: ActivityFilter;
+  setActivityFilter: (filter: ActivityFilter) => void;
+  /** Local "YYYY-MM-DD" day whose details the Activity page shows, or null for the overview. */
+  activityDay: string | null;
+  setActivityDay: (dayKey: string | null) => void;
 
   // === Skill Page Assistant Drawer ===
   // Whether the skill page's assistant panel shows as a right-hand overlay
@@ -129,6 +148,10 @@ interface AppState {
   addSkillSheet: { open: boolean; prefill?: string };
   openAddSkillSheet: (prefill?: string) => void;
   closeAddSkillSheet: () => void;
+
+  // === Command Palette ===
+  commandPaletteOpen: boolean;
+  setCommandPaletteOpen: (open: boolean) => void;
 
   // === Multi-select (SkillListTable -> "Create pack") ===
   // Keyed by the row's deployment directory path (`Deployment.path`), not by
@@ -151,10 +174,6 @@ interface AppState {
 // Helper Functions
 // ============================================================================
 
-/** localStorage key holding the remembered user-added project paths, one absolute path per line. */
-const PROJECT_PATHS_STORAGE_KEY = "project-paths";
-/** localStorage key holding the remembered excluded project paths, one absolute path per line. */
-const EXCLUDED_PROJECT_PATHS_STORAGE_KEY = "excluded-project-paths";
 /** localStorage key holding the remembered usage window. */
 const USAGE_WINDOW_STORAGE_KEY = "usage-window";
 const USAGE_WINDOWS_SET: Set<string> = new Set(USAGE_WINDOWS.map((w) => w.id));
@@ -166,22 +185,6 @@ function loadUsageWindow(): UsageWindow {
     return stored && USAGE_WINDOWS_SET.has(stored) ? (stored as UsageWindow) : "30d";
   } catch {
     return "30d";
-  }
-}
-
-function loadPathList(key: string): string[] {
-  try {
-    return (localStorage.getItem(key) ?? "").split("\n").filter(Boolean);
-  } catch {
-    return [];
-  }
-}
-
-function savePathList(key: string, paths: string[]): void {
-  try {
-    localStorage.setItem(key, paths.join("\n"));
-  } catch {
-    // Storage can be unavailable (quota, private mode); the list is only a convenience.
   }
 }
 
@@ -210,7 +213,12 @@ export const useAppStore = create<AppState>((set, get) => ({
   // Leaving the list (a view change or opening a skill) ends selection mode,
   // so a later return to Skills never lands in a half-finished selection.
   setActiveView: (view) =>
-    set({ activeView: view, selectedSkillPaths: new Set(), selectionMode: false }),
+    set({
+      activeView: view,
+      selectedSkillPaths: new Set(),
+      selectionMode: false,
+      lastClosedSkillName: null,
+    }),
   openSkill: (name, deploymentPath, intent) => {
     const current = get().activeView;
     const from = current.kind === "skill" ? current.from : current;
@@ -222,8 +230,11 @@ export const useAppStore = create<AppState>((set, get) => ({
   },
   closeSkill: () => {
     const current = get().activeView;
-    if (current.kind === "skill") set({ activeView: current.from });
+    if (current.kind === "skill") {
+      set({ activeView: current.from, lastClosedSkillName: current.name });
+    }
   },
+  lastClosedSkillName: null,
   clearSkillIntent: () => {
     const current = get().activeView;
     if (current.kind === "skill" && current.intent !== undefined) {
@@ -247,33 +258,23 @@ export const useAppStore = create<AppState>((set, get) => ({
         : { skillListFilter, selectedSkillPaths: new Set(), selectionMode: false };
     }),
 
+  skillSearchFocusRequest: 0,
+  requestSkillSearchFocus: () =>
+    set((state) => ({ skillSearchFocusRequest: state.skillSearchFocusRequest + 1 })),
+
   showCoverage: false,
   setShowCoverage: (show) => set({ showCoverage: show }),
 
-  userAddedProjects: loadPathList(PROJECT_PATHS_STORAGE_KEY),
-  excludedProjects: loadPathList(EXCLUDED_PROJECT_PATHS_STORAGE_KEY),
+  userAddedProjects: [],
+  excludedProjects: [],
 
-  addProject: (path) => {
-    const { userAddedProjects, excludedProjects } = get();
-    const updatedAdded = userAddedProjects.includes(path)
-      ? userAddedProjects
-      : [...userAddedProjects, path];
-    const updatedExcluded = excludedProjects.filter((p) => p !== path);
-    savePathList(PROJECT_PATHS_STORAGE_KEY, updatedAdded);
-    savePathList(EXCLUDED_PROJECT_PATHS_STORAGE_KEY, updatedExcluded);
-    set({ userAddedProjects: updatedAdded, excludedProjects: updatedExcluded });
-  },
-
-  removeProject: (path) => {
-    const { userAddedProjects, excludedProjects } = get();
-    const updatedAdded = userAddedProjects.filter((p) => p !== path);
-    const updatedExcluded = excludedProjects.includes(path)
-      ? excludedProjects
-      : [...excludedProjects, path];
-    savePathList(PROJECT_PATHS_STORAGE_KEY, updatedAdded);
-    savePathList(EXCLUDED_PROJECT_PATHS_STORAGE_KEY, updatedExcluded);
-    set({ userAddedProjects: updatedAdded, excludedProjects: updatedExcluded });
-  },
+  setTrackedProjects: (projects) =>
+    set({
+      // A `*` pattern isn't a folder itself - the folders it matches already come through
+      // `snapshot.projects`, so it would only show up as a bogus install target here.
+      userAddedProjects: projects.added.filter((path) => !isProjectPattern(path)),
+      excludedProjects: projects.excluded,
+    }),
 
   usageWindow: loadUsageWindow(),
   setUsageWindow: (window) => {
@@ -284,6 +285,11 @@ export const useAppStore = create<AppState>((set, get) => ({
     }
     set({ usageWindow: window });
   },
+
+  activityFilter: ALL_ACTIVITY,
+  setActivityFilter: (filter) => set({ activityFilter: filter }),
+  activityDay: null,
+  setActivityDay: (dayKey) => set({ activityDay: dayKey }),
 
   isAssistantOpen: false,
   setIsAssistantOpen: (open) => set({ isAssistantOpen: open }),
@@ -313,6 +319,9 @@ export const useAppStore = create<AppState>((set, get) => ({
   addSkillSheet: { open: false },
   openAddSkillSheet: (prefill) => set({ addSkillSheet: { open: true, prefill } }),
   closeAddSkillSheet: () => set({ addSkillSheet: { open: false } }),
+
+  commandPaletteOpen: false,
+  setCommandPaletteOpen: (open) => set({ commandPaletteOpen: open }),
 
   selectedSkillPaths: new Set<string>(),
   toggleSkillSelection: (path) => {

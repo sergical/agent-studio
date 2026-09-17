@@ -3,6 +3,14 @@
    detection (which walks from this file's directory) won't find its class
    names on its own; point it there explicitly. */
 @source "../../../packages/ui/src";
+/* Forces the `hidden` attribute to win over a `display:*` utility class
+   (`flex`, `grid`, ...) on the same element - both are single-selector rules
+   of equal specificity, so without `!important` whichever Tailwind utility
+   loads later in the cascade would show the element anyway. App.tsx keeps a
+   kept-alive list's layout classes on its wrapper while hiding it this way. */
+[hidden] {
+  display: none !important;
+}
 @theme {
   /* Typography - system stack; forcing Display before kept macOS from
      serving the Text optical size at UI sizes. */
@@ -26,12 +34,16 @@
   --color-bg-elevated: oklch(0.197 0.006 285.84);
   --color-bg-hover: oklch(1 0 0 / 0.04);
   --color-bg-active: oklch(1 0 0 / 0.07);
+  /* Held down. Native controls darken while pressed, they do not move. */
+  --color-bg-pressed: oklch(1 0 0 / 0.12);
 
   /* Borders - solid in dark mode, alpha in light */
   --color-border: oklch(0.271 0.009 285.77);
   --color-border-subtle: oklch(0.237 0.008 285.806);
   --color-border-strong: oklch(0.352 0.014 285.67);
-  --color-border-focus: oklch(0.55 0.014 285.67);
+  /* Focus ring: the accent itself, so it clears 3:1 on both surfaces
+     (6.1:1 dark, 5.7:1 light) instead of the previous low-contrast grey. */
+  --color-border-focus: var(--color-accent);
 
   /* Text hierarchy */
   --color-text-primary: oklch(0.967 0.001 286.375);
@@ -44,6 +56,10 @@
   --color-accent-hover: oklch(0.725 0.145 294.824);
   --color-accent-soft: oklch(0.668 0.176 293.133 / 0.16);
   --color-accent-softer: oklch(0.668 0.176 293.133 / 0.08);
+  /* Solid accent fills behind white text - darker than --color-accent so the
+     label clears 4.5:1; --color-accent stays the text and ring colour. */
+  --color-accent-solid: oklch(0.58 0.19 293);
+  --color-accent-solid-hover: oklch(0.54 0.2 293);
 
   /* Semantic colors */
   --color-success: oklch(0.696 0.149 162.48);
@@ -61,17 +77,27 @@
   --shadow-lg: 0 8px 32px oklch(0 0 0 / 0.6);
   --shadow-glow: 0 0 24px oklch(0.606 0.219 292.717 / 0.2);
 
-  /* Radius */
+  /* Radius - grows with surface size: controls rounded-sm (4px), panels and
+     cards rounded-md (6px), menus, popovers, and dialogs rounded-lg (10px). */
   --radius-xs: 4px;
-  --radius-sm: 6px;
-  --radius-md: 10px;
-  --radius-lg: 14px;
-  --radius-xl: 20px;
+  --radius-sm: 4px;
+  --radius-md: 6px;
+  --radius-lg: 10px;
+  --radius-xl: 14px;
+  --radius-2xl: 20px;
+  --radius-3xl: 20px;
+  --radius-4xl: 20px;
 
   /* Shared control sizing - see spec-ux-3a.md's design rules */
   --control-height: 32px;
 
-  /* Text drawn on a solid --color-accent fill (checkbox tick, etc.) */
+  /* Motion tokens - shared easing and default transition speed. */
+  --ease-out-quint: cubic-bezier(0.23, 1, 0.32, 1);
+  --ease-drawer: cubic-bezier(0.32, 0.72, 0, 1);
+  --default-transition-duration: 120ms;
+  --default-transition-timing-function: var(--ease-out-quint);
+
+  /* Text drawn on a solid --color-accent-solid fill (checkbox tick, etc.) */
   --color-text-on-accent: oklch(1 0 0);
 
   /* Dimming layer behind a drawer/dialog */
@@ -103,17 +129,33 @@
     border-color: var(--color-border);
   }
 
-  button:not(:disabled),
-  [role="button"]:not([aria-disabled="true"]),
-  select:not(:disabled),
-  summary {
-    cursor: pointer;
+  /* The ::-webkit-scrollbar styling below turns every scrollbar into a classic
+     one that takes width, even where macOS would overlay it. A container that
+     starts to overflow would then narrow and reflow its content, so every
+     scroll container reserves the gutter up front. The substring match also
+     catches variant-prefixed classes (`md:overflow-y-auto`). Only vertical
+     scrollbars take inline space, so `overflow-x-auto` is left out. */
+  :where(
+    [class*="overflow-auto"],
+    [class*="overflow-scroll"],
+    [class*="overflow-y-auto"],
+    [class*="overflow-y-scroll"]
+  ) {
+    scrollbar-gutter: stable;
   }
+}
+
+/* Right padding for a scroll container whose content must line up with
+   something outside it (a header, a toolbar): the reserved gutter already
+   supplies `--scrollbar-size` of that space. `gutter-pr-5` ≈ `pr-5`. */
+@utility gutter-pr-* {
+  padding-right: max(0px, calc(var(--spacing) * --value(number) - var(--scrollbar-size)));
 }
 :root {
   /* Default (and data-theme="dark"): native scrollbars, form controls, and
      window chrome match the app's dark chrome. */
   color-scheme: dark;
+  --scrollbar-size: 6px;
   /* Harness icon color for a disabled/parked deployment - derived so both
      themes get a legible mid-gray without a second hardcoded palette. */
   --color-icon-muted: color-mix(in srgb, var(--color-text-primary) 48%, var(--color-bg-primary));
@@ -125,11 +167,12 @@
   --color-bg-elevated: oklch(1 0 0);
   --color-bg-hover: oklch(0 0 0 / 0.04);
   --color-bg-active: oklch(0 0 0 / 0.08);
+  --color-bg-pressed: oklch(0 0 0 / 0.13);
 
   --color-border: oklch(0 0 0 / 0.08);
   --color-border-subtle: oklch(0 0 0 / 0.04);
   --color-border-strong: oklch(0 0 0 / 0.22);
-  --color-border-focus: oklch(0 0 0 / 0.4);
+  --color-border-focus: var(--color-accent);
 
   --color-text-primary: oklch(0.141 0.004 285.823);
   --color-text-secondary: oklch(0.141 0.004 285.823 / 0.7);
@@ -140,6 +183,8 @@
   --color-accent-hover: oklch(0.491 0.241 292.581);
   --color-accent-soft: oklch(0.541 0.247 293.009 / 0.12);
   --color-accent-softer: oklch(0.541 0.247 293.009 / 0.06);
+  --color-accent-solid: oklch(0.541 0.247 293.009);
+  --color-accent-solid-hover: oklch(0.491 0.241 292.581);
 
   --color-success: oklch(0.514 0.109 163.225);
   --color-success-soft: oklch(0.514 0.109 163.225 / 0.12);
@@ -171,6 +216,11 @@ body,
   height: 100%;
   margin: 0;
   padding: 0;
+  overscroll-behavior: none;
+}
+html {
+  /* No pinch zoom; panning still works for scrollable content. */
+  touch-action: pan-x pan-y;
 }
 body {
   background: var(--color-bg-primary);
@@ -181,10 +231,13 @@ body {
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
   font-synthesis: none;
+  /* Chrome is not a document to select; content opts back in with select-text. */
+  user-select: none;
+  -webkit-user-select: none;
 } /* Scrollbar styling */
 ::-webkit-scrollbar {
-  width: 6px;
-  height: 6px;
+  width: var(--scrollbar-size);
+  height: var(--scrollbar-size);
 }
 ::-webkit-scrollbar-track {
   background: transparent;
@@ -216,7 +269,12 @@ body {
   outline: 2px solid var(--color-border-focus);
   outline-offset: 2px;
 }
-:where(input[data-slot="input"], textarea[data-slot="textarea"]):focus-visible {
+:where(
+  input[data-slot="input"],
+  textarea[data-slot="textarea"],
+  [data-slot="button"],
+  [role="listbox"][aria-activedescendant]
+):focus-visible {
   outline: none;
 } /* One frame of frozen transitions during a theme switch, so every
      component's own transition timing doesn't turn it into a ragged
@@ -231,21 +289,28 @@ body {
   *::after {
     transition-duration: 0.01ms !important;
     animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
   }
 } /* Monaco editor overrides */
 /* Keyframe only - the drawer rows themselves are Tailwind utilities in
-   SkillLocationScope.tsx; referenced via
-   animate-[locationRowIn_160ms_ease-out_both]. Tailwind can reference a named
-   keyframe from a utility class but can't declare one from a utility class
-   alone. */
+   SkillLocationScope.tsx; referenced via animate-[locationRowIn_120ms_ease-out_both].
+   Tailwind can reference a named keyframe from a utility class but can't
+   declare one from a utility class alone. */
 @keyframes locationRowIn {
   from {
-    transform: translateX(-6px);
     opacity: 0;
   }
   to {
-    transform: translateX(0);
     opacity: 1;
+  }
+}
+/* Keyframe only - referenced via animate-[activityHoverCardIn_150ms_cubic-bezier(0.23,1,0.32,1)]
+   in ActivityHeatmap.tsx's hover card. That card is a plain portal div, not a Base UI popup, so
+   it can't use TooltipContent's data-open-driven animate-in classes. */
+@keyframes activityHoverCardIn {
+  from {
+    opacity: 0;
+    transform: scale(0.97);
   }
 }
 /* Assistant transcript */
@@ -317,5 +382,14 @@ body {
 }
 .skill-compare-dialog-body::-webkit-scrollbar-thumb:hover {
   background: var(--color-text-tertiary);
+}
+/* Sonner's own stylesheet hardcodes 400ms; shorten to match the app's other
+   motion instead of forking the Toaster's toastOptions per-property. */
+[data-sonner-toast] {
+  transition:
+    transform 220ms,
+    opacity 220ms,
+    height 220ms,
+    box-shadow 200ms !important;
 }
 /* .add-skill-sheet-* rules moved to Tailwind utilities in AddSkillSheet.tsx. */

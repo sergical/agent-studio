@@ -1062,17 +1062,10 @@ mod tests {
     use super::*;
     use std::os::unix::fs::symlink;
 
+    use super::super::test_support::write_skill;
+
     fn store(dir: &Path) -> EventStore {
         EventStore::open(&dir.join("app_data")).expect("open store")
-    }
-
-    fn write_skill(dir: &Path, name: &str) {
-        fs::create_dir_all(dir).unwrap();
-        fs::write(
-            dir.join("SKILL.md"),
-            format!("---\nname: {name}\ndescription: test\n---\nBody."),
-        )
-        .unwrap();
     }
 
     #[test]

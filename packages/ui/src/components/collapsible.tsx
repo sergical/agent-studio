@@ -20,7 +20,9 @@ function CollapsiblePanel({ className, ...props }: CollapsiblePrimitive.Panel.Pr
     <CollapsiblePrimitive.Panel
       data-slot="collapsible-content"
       className={cn(
-        "h-(--collapsible-panel-height) overflow-hidden transition-[height] duration-200 ease-out data-starting-style:h-0 data-ending-style:h-0",
+        // Open/close is instant: Home's group panels are the only caller and
+        // none needs the animated height Base UI supports by default.
+        "h-(--collapsible-panel-height) overflow-hidden data-starting-style:h-0 data-ending-style:h-0",
         className,
       )}
       {...props}

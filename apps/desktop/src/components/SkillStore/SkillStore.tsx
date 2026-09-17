@@ -8,7 +8,12 @@ import { SkillSearchBar } from "./SkillSearchBar";
 import { SkillBrowser } from "./SkillBrowser";
 import { SkillDetailPanel } from "./SkillDetailPanel";
 import { InstallProgressModal } from "./InstallProgressModal";
-import { searchSkills, getInstalledSkills, getPopularSkills } from "../../lib/skill-api";
+import {
+  searchSkills,
+  getInstalledSkills,
+  getPopularSkills,
+  invokeErrorMessage,
+} from "../../lib/skill-api";
 import type {
   SkillSearchResult,
   InstalledSkill,
@@ -26,7 +31,7 @@ const LIMIT = 50;
  */
 function extractGitHubRepo(
   source: string | undefined,
-  sourceUrl: string | undefined,
+  sourceUrl: string | null | undefined,
 ): string | undefined {
   // Try source_url first (more reliable)
   if (sourceUrl) {
@@ -138,29 +143,33 @@ function useSkillStoreData(
     pageRef.current = 0;
     setBrowseError(null);
     // Load both in parallel
-    return Promise.all([getInstalledSkills(projects), getPopularSkills(0, LIMIT)])
+    return Promise.all([getInstalledSkills(), getPopularSkills(0, LIMIT)])
       .then(([installed, popularResponse]) => {
         setInstalledSkills(installed);
         setHasMore(popularResponse.has_more);
         setRawResults(popularResponse.skills);
       })
       .catch((err) => {
-        setBrowseError(err instanceof Error ? err.message : "Failed to load skills");
+        setBrowseError(invokeErrorMessage(err));
       })
       .finally(() => {
         setIsLoading(false);
       });
+    // `projects` is not read here - `getInstalledSkills` covers every tracked project on its
+    // own - but it stays a dependency purely to retrigger this callback (and the mount effect
+    // below, which depends on its identity) when the tracked project list changes.
+    // oxlint-disable-next-line react/memo-dependencies, react-hooks/exhaustive-deps -- retrigger-only dependency, not read in the body
   }, [projects]);
 
   const loadInstalledSkills = async () => {
     try {
-      const installed = await getInstalledSkills(projects);
+      const installed = await getInstalledSkills();
       setInstalledSkills(installed);
     } catch (err) {
       addToast({
         type: "error",
         title: "Failed to Load Installed Skills",
-        message: err instanceof Error ? err.message : "Unknown error",
+        message: invokeErrorMessage(err),
       });
     }
   };
@@ -359,9 +368,12 @@ export function SkillStore({ compact = false }: SkillStoreProps = {}) {
       id: skill.name,
       name: skill.name,
       installs: 0,
+      author: null,
+      description: null,
+      tags: null,
       is_installed: true,
       installed_info: skill,
-      top_source: topSource,
+      top_source: topSource ?? null,
     };
   });
 
