@@ -20,6 +20,7 @@ use super::skill_fork_registry::{
     CURRENT_REGISTRY_VERSION,
 };
 use super::skill_fs::copy_dir_preserving_symlinks;
+use skill_studio_core::skill_scope::SkillReadScope;
 
 const INJECTED_CRASH_PREFIX: &str = "injected independent-copy crash";
 const RESTORE_LINK_PREFIX: &str = ".skill-studio-restore-";
@@ -244,7 +245,9 @@ fn run_independent_copy(
             "Independent copy refused: the staged copy does not match its source".to_string(),
         );
     }
-    let content_hash = super::skill_discovery::live_skill_content_hash(staging)?;
+    let scope = SkillReadScope::bind(&[staging.to_path_buf()])
+        .map_err(|error| format!("Independent copy refused: cannot bind staging root: {error}"))?;
+    let content_hash = super::skill_discovery::live_skill_content_hash(&scope, staging)?;
     let record = CopyDeploymentRecord {
         deployment_id: copy_id.to_string(),
         name: request.skill.to_string(),
@@ -998,7 +1001,12 @@ fn claim_replaced_copy(
         );
     };
     let mut record = copy_record.clone();
-    record.content_hash = super::skill_discovery::live_skill_content_hash(&data.deployment_path)?;
+    let scope =
+        SkillReadScope::bind(std::slice::from_ref(&data.deployment_path)).map_err(|error| {
+            format!("Independent copy restore refused: cannot bind deployment root: {error}")
+        })?;
+    record.content_hash =
+        super::skill_discovery::live_skill_content_hash(&scope, &data.deployment_path)?;
     let mut registry = read_fork_registry(home)?;
     if registry
         .copies

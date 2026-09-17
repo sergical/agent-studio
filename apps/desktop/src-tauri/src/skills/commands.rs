@@ -801,16 +801,23 @@ mod tests {
         home: &Path,
         projects: &[PathBuf],
     ) -> skill_refresh::SkillSnapshot {
-        let candidates = super::super::skill_discovery::discover_skill_candidates(home, projects);
-        let ledgers = super::super::skill_ownership::load_ownership_ledgers(home, projects);
-        let lock = super::super::lock_file::SkillLockFile {
+        let read_context = skill_studio_core::skill_discovery::SkillDiscoveryReadContext::bind(
+            home.to_path_buf(),
+            projects.to_vec(),
+            Vec::new(),
+            Vec::new(),
+        );
+        let candidates =
+            skill_studio_core::skill_discovery::discover_skill_candidates(&read_context).candidates;
+        let ownership = skill_studio_core::skill_ownership::load_ownership_inputs(home, projects);
+        let lock = skill_studio_core::skill_lock_file::SkillLockFile {
             version: 3,
             skills: Default::default(),
         };
-        let skills = super::super::skill_assembly::assemble_installed_skills(
+        let skills = skill_studio_core::skill_assembly::assemble_installed_skills(
             candidates,
             &lock,
-            &ledgers,
+            &ownership,
             &Default::default(),
         );
         let mut snapshot = fixture_snapshot(home, None);

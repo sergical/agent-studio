@@ -24,7 +24,7 @@ use tauri::Manager;
 use super::agents::AgentId;
 use super::github_skill_listing::GithubSkillEntry;
 use super::skill_agent_runner::validate_skill_dir_name;
-use super::skill_deployment::{deployment_id, universal_skills_dir, SkillDestination};
+use super::skill_deployment::{deployment_id, SkillDestination};
 use super::skill_dto::{
     AddSkillOutcome, AddSkillRequest, AddSkillResult, AddSkillsRequest, InstallScope,
     ParsedSkillSource, ParsedSkillSourceKind,
@@ -36,7 +36,8 @@ use super::skill_fs::copy_dir_all;
 use super::skill_fs::copy_dir_all_controlled;
 use super::skill_harness_disable::set_new_universal_reader_enabled;
 use super::skill_install_plan::{
-    allowed_method, per_harness_copy_targets, skills_sh_universal_add_args, SkillInstallSpec,
+    allowed_method, per_harness_copy_targets, skills_sh_universal_add_args, universal_skills_dir,
+    SkillInstallSpec,
 };
 use super::skill_process::{
     run_controlled_npx_with_control, AddOperationControl, ControlledProcessError,
@@ -45,6 +46,7 @@ use super::skill_refresh::{self, SkillRefreshState};
 use super::skill_trial;
 use super::skill_trust_policy::require_trusted_dotagents_source;
 use super::skill_update_check::{self, CommitLookup, GhCommitLookup};
+use skill_studio_core::skill_scope::SkillReadScope;
 
 // ============================================================================
 // Traits - the real implementation shells out; tests use a fake.
@@ -474,7 +476,7 @@ fn add_via_skills_sh(
         skill_name.unwrap_or_else(|| repo.split('/').next_back().unwrap_or(&repo).to_string());
 
     let project = request.project_path.as_deref().map(Path::new);
-    let mut deployment_dirs = vec![universal_skills_dir(home, request.scope.clone(), project)];
+    let mut deployment_dirs = vec![universal_skills_dir(home, request.scope.clone(), project)?];
     if request.agents.contains(&AgentId::ClaudeCode) {
         deployment_dirs.push(claude_skills_dir(home, request));
     }
@@ -794,7 +796,7 @@ fn add_via_copy(
     };
     let target_roots = match request.destination {
         SkillDestination::Universal => {
-            vec![universal_skills_dir(home, request.scope.clone(), project)]
+            vec![universal_skills_dir(home, request.scope.clone(), project)?]
         }
         SkillDestination::PerHarness => per_harness_agents
             .iter()
@@ -1018,7 +1020,13 @@ fn copy_deployment_record(
         destination: request.destination,
         slot: slot.to_string(),
         project_path: request.project_path.clone(),
-        content_hash: super::skill_discovery::live_skill_content_hash_controlled(path, control)?,
+        content_hash: super::skill_discovery::live_skill_content_hash_with_check(
+            &SkillReadScope::bind(&[path.to_path_buf()]).map_err(|error| {
+                format!("Could not bind {path:?} for content verification: {error}")
+            })?,
+            path,
+            || control.check_message(),
+        )?,
         disabled: false,
     })
 }

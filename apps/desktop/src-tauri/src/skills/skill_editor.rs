@@ -9,7 +9,7 @@ use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 
-use crate::skills::skill_fork_registry::{read_fork_registry_or_default, write_fork_registry};
+use crate::skills::skill_fork_registry::{read_fork_registry, write_fork_registry};
 
 /// One editor the user can pick, as offered to the frontend.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -82,9 +82,16 @@ fn set_preferred_editor_in(
             return Err(format!("{name} is not installed in Applications."));
         }
     }
-    let mut registry = read_fork_registry_or_default(home);
+    let mut registry = read_fork_registry(home)?;
     registry.preferred_editor = app_name;
     write_fork_registry(home, &registry)
+}
+
+fn read_registry_or_default(home: &Path) -> skill_studio_core::skill_fork_registry::ForkRegistry {
+    read_fork_registry(home).unwrap_or_else(|error| {
+        eprintln!("skill fork registry: {error}");
+        Default::default()
+    })
 }
 
 pub fn installed_editors(home: &Path) -> Vec<EditorOption> {
@@ -92,7 +99,7 @@ pub fn installed_editors(home: &Path) -> Vec<EditorOption> {
 }
 
 pub fn preferred_editor(home: &Path) -> Option<String> {
-    read_fork_registry_or_default(home).preferred_editor
+    read_registry_or_default(home).preferred_editor
 }
 
 pub fn set_preferred_editor(home: &Path, app_name: Option<String>) -> Result<(), String> {
@@ -153,6 +160,25 @@ mod tests {
         assert_eq!(preferred_editor(home.path()), Some("Zed".to_string()));
         set_preferred_editor_in(home.path(), &dirs, None).expect("clear");
         assert_eq!(preferred_editor(home.path()), None);
+    }
+
+    #[test]
+    fn malformed_registry_refuses_editor_write_and_preserves_bytes() {
+        let home = tempfile::tempdir().expect("temp home");
+        let agents = home.path().join(".agents");
+        std::fs::create_dir_all(&agents).expect("agents directory");
+        let registry_path = agents.join("skill-studio.json");
+        let original = b"not valid json";
+        std::fs::write(&registry_path, original).expect("malformed registry");
+
+        let error = set_preferred_editor_in(home.path(), &[], None)
+            .expect_err("malformed registry must refuse an editor write");
+
+        assert!(error.contains("malformed"), "{error}");
+        assert_eq!(
+            std::fs::read(&registry_path).expect("registry bytes"),
+            original
+        );
     }
 
     #[test]

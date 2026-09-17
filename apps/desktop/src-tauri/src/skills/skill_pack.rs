@@ -361,7 +361,7 @@ fn classify_member(home: &Path, app_data: &Path, member: &PackMember) -> MemberK
 }
 
 fn classify_shared_member(home: &Path, app_data: &Path, name: &str) -> MemberKind {
-    let registry = skill_fork_registry::read_fork_registry_or_default(home);
+    let registry = read_registry_or_default(home);
     if let Some(fork) = registry.forks.get(name) {
         return MemberKind::Fork {
             repo: fork.repo.clone(),
@@ -410,6 +410,13 @@ fn classify_shared_member(home: &Path, app_data: &Path, name: &str) -> MemberKin
     }
 
     MemberKind::Manual
+}
+
+fn read_registry_or_default(home: &Path) -> skill_studio_core::skill_fork_registry::ForkRegistry {
+    skill_fork_registry::read_fork_registry(home).unwrap_or_else(|error| {
+        eprintln!("skill fork registry: {error}");
+        Default::default()
+    })
 }
 
 // ============================================================================
@@ -1737,7 +1744,7 @@ pub fn abandon_pack_import_trust(
 #[tauri::command]
 pub fn list_skill_packs() -> Result<Vec<PackInfo>, String> {
     let home = dirs::home_dir().ok_or("Could not find home directory")?;
-    let registry = skill_fork_registry::read_fork_registry_or_default(&home);
+    let registry = read_registry_or_default(&home);
     Ok(registry
         .packs
         .iter()

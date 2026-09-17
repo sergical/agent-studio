@@ -14,6 +14,7 @@ use super::skill_deployment::{
 use super::skill_dto::{Deployment, InstallScope, InstalledSkill, LifecycleTarget};
 use super::skill_ownership::{parse_owner_id, LifecycleOwnerKind, OwnershipLedgers};
 use super::skill_refresh::{self, SkillRefreshState, SkillSnapshot};
+use skill_studio_core::skill_scope::SkillReadScope;
 
 /// A lifecycle target resolved from disk and ledgers while the caller holds
 /// the mutation lock. The snapshot is retained because owner adapters need
@@ -91,7 +92,10 @@ fn revalidate_deployment_fingerprint(deployment: &Deployment, action: &str) -> R
             deployment.path
         ));
     }
-    let live_hash = super::skill_discovery::live_skill_content_hash(Path::new(&deployment.path))?;
+    let path = Path::new(&deployment.path);
+    let scope = SkillReadScope::bind(&[path.to_path_buf()])
+        .map_err(|error| format!("{action} refused: cannot bind deployment root: {error}"))?;
+    let live_hash = super::skill_discovery::live_skill_content_hash(&scope, path)?;
     if live_hash != deployment.content_hash {
         return Err(format!(
             "{action} refused: {} changed during lifecycle resolution",
@@ -650,8 +654,11 @@ mod tests {
             None,
             &linked_path,
         );
-        let content_hash =
-            crate::skills::skill_discovery::live_skill_content_hash(&canonical_path).unwrap();
+        let content_hash = crate::skills::skill_discovery::live_skill_content_hash(
+            &SkillReadScope::bind(std::slice::from_ref(&canonical_path)).unwrap(),
+            &canonical_path,
+        )
+        .unwrap();
         let owner_id = "owner:v1/global/find-bugs";
         let mut canonical = dep(
             &canonical_id,
@@ -716,8 +723,11 @@ mod tests {
             "global",
             SkillDestination::Universal,
         );
-        canonical.content_hash =
-            crate::skills::skill_discovery::live_skill_content_hash(&canonical_path).unwrap();
+        canonical.content_hash = crate::skills::skill_discovery::live_skill_content_hash(
+            &SkillReadScope::bind(std::slice::from_ref(&canonical_path)).unwrap(),
+            &canonical_path,
+        )
+        .unwrap();
         canonical.mutability = DeploymentMutability::ReadOnly;
         let snap = snapshot(vec![canonical]);
 

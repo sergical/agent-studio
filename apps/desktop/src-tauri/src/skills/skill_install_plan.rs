@@ -6,6 +6,8 @@
 // as Universal transport. Per harness is Copy-only.
 // ============================================================================
 
+use std::path::{Path, PathBuf};
+
 use serde::{Deserialize, Serialize};
 
 use super::agents::AgentId;
@@ -32,6 +34,20 @@ pub(crate) fn validate_project_target(
         return Err("Project scope needs a project path".to_string());
     }
     Ok(())
+}
+
+pub fn universal_skills_dir(
+    home: &Path,
+    scope: InstallScope,
+    project_path: Option<&Path>,
+) -> Result<PathBuf, String> {
+    match scope {
+        InstallScope::Global => Ok(home.join(".agents").join("skills")),
+        InstallScope::Project => project_path
+            .filter(|path| !path.as_os_str().is_empty())
+            .map(|path| path.join(".agents").join("skills"))
+            .ok_or_else(|| "Project scope needs a project path".to_string()),
+    }
 }
 
 /// Universal skills.sh argv. Never includes Codex as a proxy for Universal.

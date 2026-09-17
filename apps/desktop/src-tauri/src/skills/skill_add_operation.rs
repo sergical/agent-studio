@@ -20,12 +20,13 @@ use super::skill_add::{
     shared_skills_dir, CommandRunner, RealCommandRunner,
 };
 use super::skill_agent_runner::validate_run_id;
-use super::skill_deployment::{universal_skills_dir, SkillDestination};
+use super::skill_deployment::SkillDestination;
 use super::skill_dto::{
     AddSkillOutcome, AddSkillRequest, AddSkillResult, AddSkillsRequest, InstallScope,
 };
 use super::skill_fork::ForkMutationLock;
 use super::skill_fork_registry::AddMethod;
+use super::skill_install_plan::universal_skills_dir;
 use super::skill_process::{AddOperationControl, DEFAULT_ADD_PROCESS_TIMEOUT};
 use super::skill_process::{PROCESS_CANCELLED_MESSAGE, PROCESS_TIMED_OUT_MESSAGE};
 use super::skill_refresh::{self, SkillRefreshState};
@@ -361,13 +362,18 @@ fn install_roots_for_single(home: &Path, request: &AddSkillRequest) -> Vec<PathB
     }
 }
 
-fn install_roots_for_batch(home: &Path, request: &AddSkillsRequest) -> Vec<PathBuf> {
+fn install_roots_for_batch(
+    home: &Path,
+    request: &AddSkillsRequest,
+) -> Result<Vec<PathBuf>, String> {
     let project = request.project_path.as_deref().map(Path::new);
     match request.destination {
-        SkillDestination::Universal => {
-            vec![universal_skills_dir(home, request.scope.clone(), project)]
-        }
-        SkillDestination::PerHarness => request
+        SkillDestination::Universal => Ok(vec![universal_skills_dir(
+            home,
+            request.scope.clone(),
+            project,
+        )?]),
+        SkillDestination::PerHarness => Ok(request
             .agents
             .iter()
             .map(|agent| match request.scope {
@@ -376,7 +382,7 @@ fn install_roots_for_batch(home: &Path, request: &AddSkillsRequest) -> Vec<PathB
                     agent.project_skills_dir(project.unwrap_or_else(|| Path::new("")))
                 }
             })
-            .collect(),
+            .collect()),
     }
 }
 
@@ -467,10 +473,10 @@ fn roots_of(home: &Path, kind: &AddSkillOperationKind) -> Result<Vec<PathBuf>, S
         AddSkillOperationKind::Batch(request) => (&request.scope, request.project_path.as_deref()),
     };
     super::skill_install_plan::validate_project_target(scope, project_path)?;
-    Ok(match kind {
-        AddSkillOperationKind::Single(request) => install_roots_for_single(home, request),
+    match kind {
+        AddSkillOperationKind::Single(request) => Ok(install_roots_for_single(home, request)),
         AddSkillOperationKind::Batch(request) => install_roots_for_batch(home, request),
-    })
+    }
 }
 
 fn fetching_phase(kind: &AddSkillOperationKind) -> bool {
