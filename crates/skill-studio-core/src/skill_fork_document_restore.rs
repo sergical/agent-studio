@@ -61,8 +61,7 @@ fn validate_admitted_registry_row(
     let selected_record: crate::skill_fork_registry::ForkRecord =
         serde_json::from_value(selected.clone()).map_err(|error| error.to_string())?;
     let mut expected = serde_json::to_value(original).map_err(|error| error.to_string())?;
-    let current = serde_json::to_value(&selected_record).map_err(|error| error.to_string())?;
-    expected["base_commit"] = current["base_commit"].clone();
+    expected["base_commit"] = serde_json::Value::String(selected_record.base_commit.clone());
     if selected != &expected || !crate::skill_fork_pull::valid_commit(&selected_record.base_commit)
     {
         return Err("Fork ownership record changed since the repair".into());

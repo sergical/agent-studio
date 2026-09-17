@@ -93,3 +93,26 @@ All test, build and native app sessions exited. Concise results, source identiti
 and reproduction scripts are retained under `/tmp/skill-studio-delivery/fork-document`.
 Consumed fixture cleanup is recorded there after review acceptance. CI artifacts
 have finite retention. CLI, MCP and cloud-agent delivery are excluded.
+
+## Combined integration acceptance — September 17
+
+The selective port into `codex/shared-core-design` also passed native Fork-and-fix,
+Pull, document Restore and Redo. Restore returned exact original bytes; Redo
+returned exact post-Pull bytes. The advanced Fork registry, provider documents,
+resources, valid/dangling links and sibling skill were preserved. Four History
+rows completed, with Restore/Redo links. Native binary SHA256:
+`56652bb9fe822f4903d1531018c29115f6df1c7a6295c880af01e62ae78fb104`.
+The isolated offline app exited successfully and its consumed fixture was removed.
+
+Post-green simplification removes one redundant JSON serialization in registry
+admission. This core file is identical in the review and integration checkouts.
+After that edit, admission2, parameterized preparation1 and strict core Clippy
+passed (16.36s,38.47s,9.95s; largest single-process RSS1,533,657,088bytes).
+The preceding native binary is identified separately; no UI behavior changed.
+Application peak memory was not measured. Detailed source identities and concise
+results remain under `/tmp/skill-studio-delivery/fork-document`.
+
+The integration workspace has a separate optional no-event-store build failure in
+skills.sh staged-source dependencies. This does not establish failure of this
+review branch, whose optional configuration passed CI; final combined acceptance
+must resolve that gap. Production monitoring and release acceptance remain open.
