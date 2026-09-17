@@ -278,105 +278,100 @@ mod tests {
         assert_eq!(prev_rows[0]["command"], "two");
     }
 
-    /// Unit 0.3's "no command over 16 ms on the main thread" acceptance check
-    /// only holds if every `#[tauri::command]` that does file/process/
-    /// network/SQLite work stayed `async fn` (and so routes through
-    /// `time_command_blocking`/`time_command_async`, never `time_command`).
-    /// A true compile-time registry isn't practical here without duplicating
-    /// every command's argument list, so this checks that the source has
-    /// `#[tauri::command]` on the line immediately before `pub async fn
-    /// <name>(` for each name below, and fails if any of them regresses to
-    /// sync (or is renamed/removed without updating this list). This list
-    /// must cover every async command, not just the ones converted in one
-    /// pass, so a future regression on any of them is caught here too.
-    #[test]
-    fn every_async_command_still_has_tauri_command_and_async_fn() {
-        let must_be_async = [
-            ("add_method_defaults.rs", "get_add_method_defaults"),
-            ("commands.rs", "get_skills_sh_access"),
-            ("commands.rs", "set_skills_sh_api_key"),
-            ("commands.rs", "search_skills"),
-            ("commands.rs", "get_popular_skills"),
-            ("commands.rs", "get_skill_details"),
-            ("commands.rs", "get_installed_skills"),
-            ("commands.rs", "list_skill_projects"),
-            ("commands.rs", "is_skill_installed"),
-            ("commands.rs", "remove_skill"),
-            ("commands.rs", "read_installed_skill_md"),
-            ("commands.rs", "write_installed_skill_md"),
-            ("commands.rs", "write_installed_skill_md_if_unchanged"),
-            ("commands.rs", "get_editor_choices"),
-            ("commands.rs", "update_skill"),
-            ("commands.rs", "set_plugin_enabled"),
-            ("commands.rs", "uninstall_plugin"),
-            ("github_skill_listing.rs", "list_github_skills"),
-            ("skill_agent_runner.rs", "start_skill_agent_run"),
-            ("skill_agent_runner.rs", "create_skill_scratch_dir"),
-            ("skill_agent_runner.rs", "remove_skill_scratch_dir"),
-            ("skill_add_operation.rs", "confirm_add_skill_trust"),
-            ("skill_add.rs", "add_skill"),
-            ("skill_add.rs", "add_skills"),
-            ("skill_harness_disable.rs", "set_harness_enabled"),
-            ("skill_harness_disable.rs", "set_deployment_enabled"),
-            ("skill_invocation.rs", "set_skill_invocation"),
-            ("skill_fork.rs", "fork_skill"),
-            ("skill_fork.rs", "pull_fork_upstream"),
-            ("skill_fork.rs", "unfork_skill"),
-            (
-                "skill_frontmatter_repair.rs",
-                "preview_skill_frontmatter_repair",
-            ),
-            (
-                "skill_frontmatter_repair.rs",
-                "apply_skill_frontmatter_repair",
-            ),
-            ("skill_pack.rs", "create_skill_pack"),
-            ("skill_pack.rs", "update_skill_pack"),
-            ("skill_pack.rs", "publish_skill_pack"),
-            ("skill_pack.rs", "delete_skill_pack"),
-            ("skill_pack.rs", "import_skill_pack"),
-            ("skill_pack.rs", "confirm_skill_pack_trust"),
-            ("skill_pack.rs", "abandon_pack_import_trust"),
-            ("skill_pack.rs", "list_skill_packs"),
-            ("skill_run_target.rs", "prepare_skill_run_target"),
-            ("skill_run_target.rs", "reveal_skill_run_target"),
-            ("skill_run_target.rs", "skill_run_target_diff"),
-            ("skill_run_target.rs", "apply_skill_run_target_diff"),
-            ("skill_run_target.rs", "discard_skill_run_target"),
-            ("skill_project_folders.rs", "list_project_folders"),
-            ("skill_park.rs", "park_skill"),
-            ("skill_park.rs", "unpark_skill"),
-            ("skill_trial.rs", "keep_skill_trial"),
-            ("skill_trial.rs", "restore_trashed_skill"),
-            ("skill_run_history.rs", "record_skill_run"),
-            ("skill_run_history.rs", "list_skill_runs"),
-            ("skill_run_history.rs", "read_skill_run_events"),
-            ("skill_refresh.rs", "get_tracked_projects"),
-            ("skill_refresh.rs", "register_skill_projects"),
-            ("skill_refresh.rs", "unregister_skill_project"),
-            ("skill_refresh.rs", "remove_skill_project"),
-            ("skill_refresh.rs", "import_tracked_projects"),
-            ("skill_refresh.rs", "get_discovery_sources"),
-            ("skill_refresh.rs", "set_discovery_source"),
-            ("skill_update_check.rs", "check_skill_updates_now"),
-            ("event_commands.rs", "list_skill_events"),
-            ("event_commands.rs", "restore_skill_event"),
-            ("event_commands.rs", "make_skill_independent_copy"),
-            ("event_commands.rs", "set_shared_harness_skill_enabled"),
-            ("event_commands.rs", "materialize_harness_root"),
-            ("event_commands.rs", "materialize_harness_root_then_disable"),
-            ("event_commands.rs", "repair_skill_link"),
-        ];
+    /// Names allowed to stay a sync `pub fn` command, with the reason each
+    /// one never blocks the main thread for long.
+    const SYNC_ALLOWLIST: &[(&str, &str)] = &[
+        ("get_skill_snapshot", "in-memory state only"),
+        ("request_skill_rescan", "in-memory state only"),
+        ("get_agent_targets", "in-memory state only"),
+        ("cancel_skill_agent_run", "in-memory state only"),
+        ("start_add_skill_operation", "in-memory state only"),
+        ("start_add_skills_operation", "in-memory state only"),
+        ("get_add_skill_operation", "in-memory state only"),
+        ("cancel_add_skill_operation", "in-memory state only"),
+        (
+            "open_skill_path",
+            "#[tauri::command(async)], Tauri dispatches it off the main thread",
+        ),
+        (
+            "set_preferred_editor",
+            "#[tauri::command(async)], Tauri dispatches it off the main thread",
+        ),
+    ];
 
-        let skills_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("src/skills");
-        for (file, name) in must_be_async {
-            let source = std::fs::read_to_string(skills_dir.join(file))
-                .unwrap_or_else(|e| panic!("could not read {file}: {e}"));
-            let attributed_async_marker = format!("#[tauri::command]\npub async fn {name}(");
-            assert!(
-                source.contains(&attributed_async_marker),
-                "{file}::{name} must be a `#[tauri::command]` immediately followed by `pub async fn {name}(` (does file/process/network/SQLite work)"
-            );
+    /// Every `.rs` file under `dir`, recursively.
+    fn rs_files(dir: &Path, out: &mut Vec<std::path::PathBuf>) {
+        for entry in
+            std::fs::read_dir(dir).unwrap_or_else(|e| panic!("read_dir {}: {e}", dir.display()))
+        {
+            let entry = entry.unwrap();
+            let path = entry.path();
+            if path.is_dir() {
+                rs_files(&path, out);
+            } else if path.extension().is_some_and(|ext| ext == "rs") {
+                out.push(path);
+            }
         }
+    }
+
+    /// The function name out of a `pub [async] fn <name>(` line, or `None`
+    /// when the line isn't a function signature at all (e.g. a doc comment
+    /// sitting between the attribute and the fn).
+    fn fn_name(line: &str) -> Option<&str> {
+        let after_fn = line
+            .strip_prefix("pub async fn ")
+            .or_else(|| line.strip_prefix("pub fn "))?;
+        after_fn.split(['(', '<', ' ']).next()
+    }
+
+    /// A new command that does file, process, or database work on the main
+    /// thread fails this test.
+    #[test]
+    fn every_tauri_command_is_async_unless_allowlisted() {
+        let src_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+        let mut files = Vec::new();
+        rs_files(&src_dir, &mut files);
+
+        let mut failures = Vec::new();
+        for file in &files {
+            let source = std::fs::read_to_string(file)
+                .unwrap_or_else(|e| panic!("could not read {}: {e}", file.display()));
+            let lines: Vec<&str> = source.lines().collect();
+            for (i, line) in lines.iter().enumerate() {
+                let trimmed = line.trim();
+                let is_async_attr = trimmed == "#[tauri::command(async)]";
+                if trimmed != "#[tauri::command]" && !is_async_attr {
+                    continue;
+                }
+                let Some(fn_line) = lines[i + 1..]
+                    .iter()
+                    .map(|l| l.trim())
+                    .find(|l| !l.is_empty())
+                else {
+                    continue;
+                };
+                let Some(name) = fn_name(fn_line) else {
+                    continue;
+                };
+                if fn_line.starts_with("pub async fn ") {
+                    continue;
+                }
+                match SYNC_ALLOWLIST.iter().find(|(n, _)| *n == name) {
+                    Some((_, reason)) if *reason != "in-memory state only" && !is_async_attr => {
+                        failures.push(format!(
+                            "{}: {name} is allowlisted as {reason} but is not `#[tauri::command(async)]`",
+                            file.display()
+                        ));
+                    }
+                    Some(_) => {}
+                    None => failures.push(format!(
+                        "{}: {name} is a sync `#[tauri::command]` and not in SYNC_ALLOWLIST; \
+                         file/process/database work must be `pub async fn`",
+                        file.display()
+                    )),
+                }
+            }
+        }
+        assert!(failures.is_empty(), "{}", failures.join("\n"));
     }
 }

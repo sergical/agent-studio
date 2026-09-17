@@ -1,8 +1,8 @@
 //! Bench: `ops::scan` over the generated 400-skill estate
 //! ([`skill_studio_core::bench_estate::estate`]), once on real disk and once
 //! entirely in memory, so the disk cost and the pure scan cost are separate
-//! numbers. `bench/baseline.json` holds the committed medians;
-//! `tests/bench_gate.rs` compares a fresh run against it.
+//! numbers. Run on demand with `cargo bench -p skill-studio-core --features
+//! testing --bench scan`; nothing in CI reads the result.
 //!
 //! Park and install-plan benches belong in this same file, alongside scan,
 //! once units 3.1 and 3.5 add those ops to the core.

@@ -90,17 +90,13 @@ Unit 0.1 (issue #144) added per-op and per-command timing end to end:
 - **MCP**: every tool response's `ResultEnvelope` carries the same `timings` field; no separate tool.
 - **Desktop**: `apps/desktop/src-tauri/src/timing_log.rs` appends one JSON line per Tauri command call to `<app_data_dir>/timing.jsonl` (fields `ts`, `command`, `elapsed_ms`, `steps`, `thread`), rotating to `timing.prev.jsonl` at 5 MB (`ROTATE_AT_BYTES`, one previous file kept). Every `#[tauri::command]` routes through the module's `time_command`/`time_command_async` helper rather than timing itself by hand.
 
-## Baseline plan
+## How performance is checked
 
-Ordered by cost. Numbers go into `bench/baseline.json` with the command that produced them.
+Measurement tools - the CLI's `--time` flag, `timing.jsonl`, the frontend perf marks, and `cargo bench -p skill-studio-core --features testing --bench scan` - exist for someone working on speed to run by hand and read the numbers. CI never reads wall-clock output from any of them. The one thing CI enforces is a deterministic invariant: `crates/skill-studio-core/tests/scan_work_count.rs` counts filesystem calls (not milliseconds) on a generated 400-skill estate and asserts the scan reads each `SKILL.md` once and lists each directory once, regardless of how many harnesses or links the estate has.
 
-1. Thread the existing `build_snapshot` phase times into the snapshot as an optional `timings_ms` map and into the `skills://snapshot` event, instead of only stderr.
-2. Extend `--timings` in the CLI to the same phases, so `skill-studio scan --timings` on the bench estate is the CI number.
-3. Wrap every command in one `elapsed_ms` span at entry and exit (one helper, not per-command edits); write to a rolling log under the app data folder.
-4. Dev-only overlay from `performance.mark` around `applySnapshot` (useSkillSnapshot.ts:94), keyed by the existing `initial` and `event` source.
-5. criterion benches for scan, park, and install plan on a generated 400-skill estate that matches the measured shape in skill-estate-content-facts (63% global, names p90 33 chars, descriptions p50 249 chars). Full scan, 400-skill estate: **166.98 ms** median on disk, **1.9347 s** median in memory (`FixtureFs`, no real I/O but paying `BTreeMap`-scan `read_dir`/`canonicalize` costs `RealFs` doesn't), measured 2026-09-17 on an Apple M3 Max with `cargo bench -p skill-studio-core --features testing --bench scan`; committed in `bench/baseline.json`.
+Full scan, 400-skill estate: **166.98 ms** median on disk, **1.9347 s** median in memory (`FixtureFs`, no real I/O but paying `BTreeMap`-scan `read_dir`/`canonicalize` costs `RealFs` doesn't), measured 2026-09-17 on an Apple M3 Max with `cargo bench -p skill-studio-core --features testing --bench scan`. A number like this is worth re-measuring by hand when working on scan speed; it is not a gate.
 
-Targets after the baseline exists: zero commands in the blocking table; scan on the bench estate under 100 ms; snapshot apply for 400 skills under 5 ms; no IPC call on the main thread over one frame.
+Targets to work toward: zero commands in the blocking table; scan on the bench estate under 100 ms; snapshot apply for 400 skills under 5 ms; no IPC call on the main thread over one frame.
 
 ## Frontend timing
 
@@ -108,4 +104,4 @@ Unit 0.4 (issue #147) added the frontend half of the picture:
 
 - `apps/desktop/src/lib/skill-api.ts`'s `callCommand` wrapper is the one place every exported function calls `invoke` through - a pure re-route, same names and return types. It marks each call's start and measures an `"ipc:<command>"` `performance` entry at resolve or reject, then hands the duration to `apps/desktop/src/lib/perf-marks.ts`, which schedules one `requestAnimationFrame` after resolve and measures `"paint:<command>"` from resolve to that frame - the commit-to-paint number. `perf-marks.ts` keeps the last 50 calls in memory and exposes `subscribe(listener)`; no Zustand store involvement.
 - `apps/desktop/src/components/dev/PerfOverlay.tsx` reads that log and renders the last 20 calls (command, IPC ms, paint ms, over-16ms rows flagged) fixed bottom-right. `main.tsx` mounts it only when `import.meta.env.DEV` and the URL has `?perf=1`, e.g. `npm run dev` then visit with `?perf=1`.
-- `apps/desktop/src/lib/skill-list-model.ts` holds `groupSkillRows`, the pure computation from a `SkillSnapshot`'s skills to the Skills list's three state buckets (moved out of `components/SkillList` so it can be timed without mounting the table). `skill-list-model.test.ts` builds a 400-skill snapshot with the dev harness's `buildHarnessSnapshot` padding, runs `selectNewerSkillSnapshot` plus `groupSkillRows`, and asserts the median of 5 timed runs (after one warm-up) is under 5 ms - the same 400-skill/5 ms target from the baseline plan above, now enforced in CI rather than only measured by hand.
+- `apps/desktop/src/lib/skill-list-model.ts` holds `groupSkillRows`, the pure computation from a `SkillSnapshot`'s skills to the Skills list's three state buckets (moved out of `components/SkillList` so it can be timed without mounting the table). `skill-list-model.test.ts` builds a 400-skill snapshot with the dev harness's `buildHarnessSnapshot` padding, runs `selectNewerSkillSnapshot` plus `groupSkillRows`, and asserts every skill lands in exactly one bucket; its speed is measured by hand with the `PerfOverlay`, not asserted in CI.

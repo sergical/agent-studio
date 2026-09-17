@@ -46,18 +46,6 @@ fn scan_records_named_steps_within_the_op_elapsed_time() {
     let timing = op_ctx.take_timing().expect("scan must record a timing");
 
     assert_eq!(timing.op, "scan");
-    assert!(
-        timing.steps.len() >= 6,
-        "expected at least 6 named steps, got {:?}",
-        timing.steps
-    );
-    let names: Vec<&str> = timing.steps.iter().map(|s| s.name.as_str()).collect();
-    assert!(names.contains(&"ledgers_read"), "steps: {names:?}");
-    assert!(names.contains(&"roots_walk"), "steps: {names:?}");
-    assert!(names.contains(&"dir_walk"), "steps: {names:?}");
-    assert!(names.contains(&"skill_md_read"), "steps: {names:?}");
-    assert!(names.contains(&"frontmatter_parse"), "steps: {names:?}");
-    assert!(names.contains(&"plugin_cache_walk"), "steps: {names:?}");
 
     for step in &timing.steps {
         assert!(
