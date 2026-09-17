@@ -2614,6 +2614,48 @@ mod tests {
         }
 
         #[test]
+        fn pi_session_reader_resumes_by_offset_and_reads_the_header_once_or_names_the_reparsed_header(
+        ) {
+            let tmp = tempfile::tempdir().unwrap();
+            let home = tmp.path();
+            let path = write_session(
+                &home.join(PI_SESSIONS_ROOT).join("d"),
+                "a.jsonl",
+                &[header_line("sess-a", "/proj-a")],
+            );
+
+            let mut index = SkillInvocationIndex::default();
+            let known_skills = known(&["foo"]);
+            let sources = DiscoverySources::default();
+            index.refresh(home, &sources);
+
+            let mut content = fs::read_to_string(&path).unwrap();
+            content.push_str(&user_skill_line(
+                "2026-09-16T12:05:00Z",
+                "foo",
+                "/x/skills/foo/SKILL.md",
+            ));
+            content.push('\n');
+            let appended_len = content.len() as u64 - fs::metadata(&path).unwrap().len();
+            fs::write(&path, &content).unwrap();
+
+            let report = index.refresh(home, &sources);
+            assert_eq!(
+                report.bytes_read, appended_len,
+                "the second refresh must resume from the first refresh's offset, not reparse \
+                 the header line from 0"
+            );
+            let stats = stats(&index, &known_skills, &sources);
+            assert_eq!(stats.len(), 1);
+            assert_eq!(
+                stats[0].by_project_30_days.get("/proj-a"),
+                Some(&1),
+                "the project must come from the header the first refresh already read, since \
+                 the second refresh never sees that line again"
+            );
+        }
+
+        #[test]
         fn switching_pi_off_stops_reads_and_on_resumes_counting() {
             let tmp = tempfile::tempdir().unwrap();
             let home = tmp.path();

@@ -70,6 +70,51 @@ const CLAUDE_TRANSCRIPT_ROOT: &str = ".claude/projects";
 /// `cwd` in each session's header record is read instead.
 const PI_TRANSCRIPT_ROOT: &str = ".pi/agent/sessions";
 
+/// Depth [`nested_pi_project_roots`] descends below a discovered project
+/// root while collecting nested `.pi/skills` folders. pi's own skills doc
+/// says project roots are walked recursively to the git root (unlike the
+/// one-level project root every other first-class agent uses); this caps
+/// how deep a monorepo is walked in the opposite direction (down from an
+/// already-discovered root, not up from a `cwd`) while still reaching a
+/// realistic nesting depth.
+const PI_NESTED_ROOT_WALK_DEPTH: u32 = 6;
+
+/// Every directory under `root` (not `root` itself) that holds a `.pi/skills`
+/// folder, found by walking down up to [`PI_NESTED_ROOT_WALK_DEPTH`] levels.
+/// Hidden directories (`.git`, `.pi`, ...) are never descended into, so a
+/// project's own `.pi/skills` is found by the marker check but never
+/// mistaken for a nested project root.
+fn nested_pi_project_roots(root: &Path) -> Vec<PathBuf> {
+    let mut found = Vec::new();
+    walk_for_pi_roots(root, PI_NESTED_ROOT_WALK_DEPTH, &mut found);
+    found
+}
+
+fn walk_for_pi_roots(dir: &Path, depth_remaining: u32, found: &mut Vec<PathBuf>) {
+    if depth_remaining == 0 {
+        return;
+    }
+    let Ok(entries) = fs::read_dir(dir) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let Ok(file_type) = entry.file_type() else {
+            continue;
+        };
+        if !file_type.is_dir() {
+            continue;
+        }
+        if entry.file_name().to_string_lossy().starts_with('.') {
+            continue;
+        }
+        let path = entry.path();
+        if path.join(".pi/skills").exists() {
+            found.push(path.clone());
+        }
+        walk_for_pi_roots(&path, depth_remaining - 1, found);
+    }
+}
+
 struct TranscriptScanLimits {
     remaining_bytes: u64,
     remaining_attempts: usize,
@@ -448,6 +493,15 @@ fn discover_skill_projects_from(home: &Path, sources: &DiscoverySources) -> Vec<
         if sources.is_enabled(harness) {
             paths.extend(read_history(home));
         }
+    }
+
+    // pi walks project roots recursively to the git root
+    // (docs/action-map/harnesses/pi.md), so a nested `.pi/skills` several
+    // levels below a history-discovered root is still a project root, not
+    // just the root itself.
+    if sources.is_enabled(AgentId::PI) {
+        let nested: Vec<PathBuf> = paths.iter().flat_map(|p| nested_pi_project_roots(p)).collect();
+        paths.extend(nested);
     }
 
     paths
@@ -968,6 +1022,45 @@ mod tests {
         .unwrap();
 
         assert_eq!(discover_skill_projects(home), vec![project]);
+    }
+
+    /// Only the repo root ever appears in pi's session history; the nested
+    /// `.pi/skills` two levels below it is found by walking down from that
+    /// root, matching pi's own doc (recursive to the git root) rather than
+    /// the one-level Claude-shaped reader the facts table used to carry.
+    #[test]
+    fn pi_project_roots_are_discovered_recursively_to_the_git_root_or_names_the_skipped_nested_folder(
+    ) {
+        let tmp = tempfile::tempdir().unwrap();
+        let home = tmp.path();
+        let project = home.join("my-pi-repo");
+        fs::create_dir_all(project.join(".git")).unwrap();
+        let nested = project.join("packages/foo");
+        fs::create_dir_all(nested.join(".pi/skills")).unwrap();
+
+        let session_dir = home.join(PI_TRANSCRIPT_ROOT).join("--proj--");
+        fs::create_dir_all(&session_dir).unwrap();
+        fs::write(
+            session_dir.join("a.jsonl"),
+            format!(
+                "{}\n",
+                serde_json::json!({
+                    "type": "session",
+                    "version": 3,
+                    "id": "0192",
+                    "timestamp": "2026-09-16T10:00:00.000Z",
+                    "cwd": project,
+                }),
+            ),
+        )
+        .unwrap();
+
+        let found = discover_skill_projects(home);
+        assert!(
+            found.contains(&nested),
+            "expected the nested .pi/skills root {nested:?} among {found:?}: a one-level \
+             reader would skip it since only the repo root appears in pi's session history"
+        );
     }
 
     fn write_cursor_workspace(home: &Path, hash: &str, workspace_json: &str) {
