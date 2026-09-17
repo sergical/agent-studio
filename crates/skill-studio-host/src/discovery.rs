@@ -500,7 +500,10 @@ fn discover_skill_projects_from(home: &Path, sources: &DiscoverySources) -> Vec<
     // levels below a history-discovered root is still a project root, not
     // just the root itself.
     if sources.is_enabled(AgentId::PI) {
-        let nested: Vec<PathBuf> = paths.iter().flat_map(|p| nested_pi_project_roots(p)).collect();
+        let nested: Vec<PathBuf> = paths
+            .iter()
+            .flat_map(|p| nested_pi_project_roots(p))
+            .collect();
         paths.extend(nested);
     }
 
