@@ -14,6 +14,7 @@ import type {
   AddSkillResult,
   AddSkillsRequest,
   AgentId,
+  CommandHealth,
   DiscoverySourceSetting,
   ImportResult,
   InstallResult,
@@ -289,6 +290,11 @@ export async function getEditorChoices(): Promise<EditorChoices> {
 /** `null` restores the system default. A value that isn't usable is refused. */
 export async function setPreferredEditor(value: string | null): Promise<void> {
   return callCommand("set_preferred_editor", { appName: value });
+}
+
+/** The Settings "Command health" card's rollup: one row per command, folded from `timing.jsonl`. */
+export async function commandHealth(): Promise<CommandHealth[]> {
+  return callCommand("command_health");
 }
 
 // ============================================================================

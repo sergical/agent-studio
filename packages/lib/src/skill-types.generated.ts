@@ -246,6 +246,36 @@ export interface AgentTarget {
   project_path: string;
 }
 /**
+ * One command's health over the rollup window (see [`crate::health::health_rollup`]):
+ * how often it ran, how often it failed, and how long it took.
+ */
+export interface CommandHealth {
+  /**
+   * The command name, as recorded in `timing.jsonl`.
+   */
+  command: string;
+  /**
+   * Calls within the window.
+   */
+  count: number;
+  /**
+   * Calls within the window whose outcome was `"error"`.
+   */
+  failures: number;
+  /**
+   * The most recent failing call's error text, if any failed.
+   */
+  last_error: string | null;
+  /**
+   * Median elapsed milliseconds, nearest-rank.
+   */
+  p50_ms: number;
+  /**
+   * 95th-percentile elapsed milliseconds, nearest-rank.
+   */
+  p95_ms: number;
+}
+/**
  * One discovery harness's on/off switch, as Settings shows it. `enabled:
  * false` means project discovery no longer reads that harness's own project
  * history (Codex's `config.toml`, Claude Code's transcripts, ...) when

@@ -482,3 +482,21 @@ pub struct RestoreOutcome {
     /// Paths put back.
     pub restored_paths: Vec<PathBuf>,
 }
+
+/// One command's health over the rollup window (see [`crate::health::health_rollup`]):
+/// how often it ran, how often it failed, and how long it took.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+pub struct CommandHealth {
+    /// The command name, as recorded in `timing.jsonl`.
+    pub command: String,
+    /// Calls within the window.
+    pub count: u64,
+    /// Calls within the window whose outcome was `"error"`.
+    pub failures: u64,
+    /// Median elapsed milliseconds, nearest-rank.
+    pub p50_ms: u64,
+    /// 95th-percentile elapsed milliseconds, nearest-rank.
+    pub p95_ms: u64,
+    /// The most recent failing call's error text, if any failed.
+    pub last_error: Option<String>,
+}
