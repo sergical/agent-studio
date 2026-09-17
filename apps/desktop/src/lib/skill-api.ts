@@ -14,6 +14,7 @@ import type {
   AddSkillResult,
   AddSkillsRequest,
   AgentId,
+  AppVersion,
   CommandHealth,
   DiscoverySourceSetting,
   ImportResult,
@@ -683,4 +684,16 @@ export function onSkillSnapshot(cb: (snapshot: SkillSnapshot) => void): Promise<
   return listen<SkillSnapshot>("skills://snapshot", (event) => {
     cb(event.payload);
   });
+}
+
+// ============================================================================
+// App Version API
+// ============================================================================
+
+/**
+ * The running app's version, build commit, and the current version's
+ * changelog notes, for Settings' "Version" row and "What's new" panel.
+ */
+export async function appVersion(): Promise<AppVersion> {
+  return callCommand("app_version");
 }

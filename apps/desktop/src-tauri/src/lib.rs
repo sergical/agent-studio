@@ -184,6 +184,7 @@ pub fn run() {
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
+            skills::app_version::app_version,
             skills::add_method_defaults::get_add_method_defaults,
             // Skills.sh integration
             skills::commands::search_skills,

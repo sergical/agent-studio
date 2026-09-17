@@ -178,3 +178,14 @@ export interface InstallProgressState {
   percent?: number;
   error?: string;
 }
+
+/**
+ * The running app's own version, build commit, and release notes for
+ * Settings' "Version" row and "What's new" panel - see the Rust
+ * `app_version` command.
+ */
+export interface AppVersion {
+  version: string;
+  commit: string;
+  notes: string | null;
+}

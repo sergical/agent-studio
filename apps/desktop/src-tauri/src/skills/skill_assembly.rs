@@ -21,12 +21,12 @@ use skill_studio_core::identity::{
 };
 
 use super::frontmatter::invocation_policy_from;
-use super::lock_file::SkillLockFile;
 use super::skill_deployment::{
     BackingRelationship, DeploymentMutability, SkillDestination, UNIVERSAL_ROOT_LABEL,
 };
 use super::skill_dto::{Deployment, DisabledBy, InstalledSkill, PluginInfo};
 use super::skill_ownership::LifecycleOwnerKind;
+use skill_studio_core::lock_file::SkillLockFile;
 
 fn destination_from_core(destination: CoreSkillDestination) -> SkillDestination {
     match destination {
@@ -400,7 +400,7 @@ mod tests {
     use skill_studio_core::identity::{DeploymentId, ProjectRef, SkillName};
 
     use super::*;
-    use crate::skills::lock_file::InstalledSkillEntry;
+    use skill_studio_core::lock_file::InstalledSkillEntry;
 
     /// Global root for a desktop-style root label ("shared", "Claude Code",
     /// "Codex", "pi", "Cursor", "Grok Build", "OpenCode"), plus the harness

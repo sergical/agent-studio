@@ -31,8 +31,18 @@ use crate::scope::ScopeArgs;
 /// Settings "Command health" card and unit 6.5's ticket.
 const HEALTH_WINDOW: std::time::Duration = std::time::Duration::from_secs(7 * 24 * 3600);
 
+/// The version clap prints for `--version`: the crate version and the build
+/// commit, `SKILL_STUDIO_COMMIT` from `build.rs` ("dev" outside a release
+/// build), on one line.
+const VERSION: &str = concat!(
+    env!("CARGO_PKG_VERSION"),
+    " (",
+    env!("SKILL_STUDIO_COMMIT"),
+    ")"
+);
+
 #[derive(Parser)]
-#[command(name = "skill-studio", about = "Manage agent skills across harnesses")]
+#[command(name = "skill-studio", about = "Manage agent skills across harnesses", version = VERSION)]
 struct Cli {
     /// Print each op's and each of its steps' elapsed time to stderr.
     #[arg(long, global = true)]
