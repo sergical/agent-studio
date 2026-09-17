@@ -15,6 +15,10 @@ jobs:
   build:
     needs: check-version
     runs-on: macos-14
+    # tauri-action creates the GitHub release and `gh release upload` attaches
+    # the .dSYM archive; the default GITHUB_TOKEN is read-only.
+    permissions:
+      contents: write
     strategy:
       matrix:
         target: [aarch64-apple-darwin, x86_64-apple-darwin]
@@ -50,24 +54,21 @@ jobs:
           releaseDraft: false
           includeUpdaterJson: false
 
-      # tauri-action's build step runs dsymutil for a release profile, so the
-      # .dSYM lands next to the bundled .app; zip it so it survives upload as
-      # a plain file and stays paired with its DMG by name.
+      # The workspace's [profile.release] sets split-debuginfo = "packed", so
+      # cargo writes the app binary's .dSYM beside the binary in
+      # target/<triple>/release/ (not under bundle/macos, which only holds the
+      # .app and DMG). Zip it so it survives upload as a plain file and stays
+      # paired with its DMG by name.
       - name: Package debug symbols
         run: |
           set -euo pipefail
-          bundle_dir="apps/desktop/src-tauri/target/${{ matrix.target }}/release/bundle/macos"
-          # Cargo's default release profile strips debug info before dsymutil
-          # ever runs, so this find turns up nothing until the first real tag
-          # run sets split-debuginfo = "packed" (or debug = "line-tables-only")
-          # in [profile.release]; that profile change is the follow-up if this
-          # step fails.
-          dsym_path="$(find "$bundle_dir" -maxdepth 1 -name '*.dSYM' -print -quit)"
+          release_dir="apps/desktop/src-tauri/target/${{ matrix.target }}/release"
+          dsym_path="$(find "$release_dir" -maxdepth 1 -name '*.dSYM' -print -quit)"
           if [[ -z "$dsym_path" ]]; then
-            echo "no .dSYM found under $bundle_dir" >&2
+            echo "no .dSYM found under $release_dir; check [profile.release] in Cargo.toml" >&2
             exit 1
           fi
-          zip_path="apps/desktop/src-tauri/target/${{ matrix.target }}/release/bundle/macos/$(basename "$dsym_path" .dSYM)-${{ matrix.target }}.dSYM.zip"
+          zip_path="$release_dir/$(basename "$dsym_path" .dSYM)-${{ matrix.target }}.dSYM.zip"
           ditto -c -k --sequesterRsrc "$dsym_path" "$zip_path"
           echo "dsym_zip=$zip_path" >> "$GITHUB_ENV"
 
