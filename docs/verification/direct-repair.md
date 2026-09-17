@@ -130,5 +130,47 @@ After this correction, local core `cargo test --locked --offline -j2 --features
 event-store --lib skill_event_ -- --test-threads=1` passed 74 tests with four
 explicit child-fixture skips in 3.26 seconds. Strict all-target core Clippy passed
 in 9.08 seconds; formatting and diff checks passed. These checks ran on macOS;
-Linux CI confirmation remains required. Peak memory was not collected for these
-focused checks. No new native application was launched.
+Linux CI35180649997 passed at `791c1b0`: 783 unit tests and 11 integration
+tests, with 23 explicit fixture skips. Formatting and strict Clippy passed.
+CI artifacts retain three days. Peak memory was not collected for the local
+Linux-correction checks. No new native app was needed for that directory fix.
+
+## Retained registry correction after integration
+
+Combining the desktop repair selection with the newer registry writer exposed a
+nested lock acquisition: Fork-and-fix refused before provider detach. Registry
+publication now uses the existing selection lease. A visible publication failure
+returns its rollback state instead of appearing to be a pre-publication failure.
+The desktop either restores the selected raw registry records or retains the
+upstream snapshot and reports recovery required. Unknown JSON fields survive.
+An originally absent registry is removed only with a verified publication receipt.
+A real failed creation without that receipt refuses rollback and retains evidence.
+
+Integration validation: one core publication fault-injection test, one desktop
+parameterized retained-selection test, 14 existing document-target tests, strict
+desktop all-target Clippy, formatting, fresh simplification (no changes), and
+independent review (no actionable findings). The desktop absent-registry injected
+error occurs after successful creation; the actual creation error is covered by
+the lower-level target test, not by that desktop parameter.
+
+Final native integration binary:
+`935153f388aa21ed9745c3575025d2938628dcb99c5eb366b0e752e81d17e80e`.
+CUA Fork-and-fix and Activity Restore passed with file and read-only SQLite checks:
+original document bytes and links restored, resources and sibling preserved,
+only selected provider detached, Fork ownership retained, two linked done events.
+This is integration-candidate evidence; the selectively ported PR candidate has
+its own focused checks recorded below.
+
+Integration check wall times: 22.77 s core fault test, 22.78 s desktop scenario,
+16.05 s document targets, 16.03 s Clippy. Largest measured single-process RSS:
+1,528,217,600 bytes. Native build: 38.95 s and 1,097,187,328-byte single-process RSS.
+All measured commands reported zero swaps; application peak memory not measured.
+All native sessions exited. Three consumed native app bundles, homes and temporary
+directories were deleted after preserving concise results and reproduction inputs.
+
+PR candidate verification after the selective port: desktop `--lib
+skills::skill_fork::tests` with `--features worker-repair` passed 31 tests
+(11.07 s wall, 1,024,737,280-byte maximum single-process RSS). Strict desktop
+all-target Clippy passed (15.22 s, 781,598,720 bytes). Both reported zero swaps.
+The initial test compilation found a missing test-local BTreeSet import; adding
+that import resolved it. No production behavior changed during this port.

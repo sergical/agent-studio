@@ -107,7 +107,18 @@ impl SkillRegistryTarget {
         self.replace_retained_with(lease, expected, proposed, || Ok(()))
     }
 
-    fn replace_retained_with(
+    pub(crate) fn remove_retained(
+        &self,
+        lease: &mut crate::skill_coordination::FinalizedWriteLease<'_>,
+        expected: &[u8],
+    ) -> Result<(), DocumentWriteFailure> {
+        lease
+            .validate_registry_replacement(&self.document.path, expected)
+            .map_err(DocumentWriteFailure::BeforeReplace)?;
+        lease.record_document(self.document.remove_with(expected, || {}, || Ok(())))
+    }
+
+    pub(crate) fn replace_retained_with(
         &self,
         lease: &mut crate::skill_coordination::FinalizedWriteLease<'_>,
         expected: &[u8],

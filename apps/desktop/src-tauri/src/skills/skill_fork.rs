@@ -10,6 +10,8 @@
 // testable with fakes.
 // ============================================================================
 
+#[cfg(all(target_os = "macos", feature = "worker-repair"))]
+use std::cell::RefCell;
 use std::fs;
 use std::io::{Read, Write};
 use std::path::{Component, Path, PathBuf};
@@ -37,6 +39,11 @@ use super::skill_process::{
 };
 use super::skill_refresh::{self, SkillRefreshState};
 use super::skill_update_check::{self, CommitLookup, GhCommitLookup};
+#[cfg(all(target_os = "macos", feature = "worker-repair"))]
+use skill_studio_core::skill_fork_registry::{
+    publish_fork_transition_with_lease, rollback_fork_transition_with_lease,
+    ForkTransitionPublication, ForkTransitionRollback,
+};
 
 // ============================================================================
 // Traits - real implementations shell out / hit the network; tests use fakes.
@@ -217,8 +224,7 @@ pub(crate) fn fork_resolved_deployment_with_real_services(
         gh_bin,
         cache_dir: app_data.join("skill-studio").join("cache"),
     };
-    let expected_owner = selection.owner_kind();
-    fork_skill_with_storage_guarded(
+    fork_resolved_deployment_with_services(
         home,
         app_data,
         name,
@@ -226,8 +232,36 @@ pub(crate) fn fork_resolved_deployment_with_real_services(
         &RealLedgerTool,
         &fetch,
         lookup.as_ref(),
-        &FileForkTransactionStorage,
-        move |origin| {
+        selection,
+    )
+}
+
+#[cfg(all(target_os = "macos", feature = "worker-repair"))]
+#[allow(clippy::too_many_arguments)]
+fn fork_resolved_deployment_with_services(
+    home: &Path,
+    app_data: &Path,
+    name: &str,
+    path: &Path,
+    ledger: &dyn LedgerTool,
+    fetch: &dyn UpstreamFetch,
+    lookup: &dyn CommitLookup,
+    selection: skill_studio_core::skill_service::PreparedRepairSelection<'_>,
+) -> Result<ForkRecord, String> {
+    let expected_owner = selection.owner_kind();
+    let owner_revision_present = selection.owner_revision().is_some();
+    let (_, _, mut lease) = selection.into_parts();
+    let storage = RetainedRegistryForkTransactionStorage::new(name, &mut lease);
+    fork_skill_with_storage_guarded(
+        home,
+        app_data,
+        name,
+        path,
+        ledger,
+        fetch,
+        lookup,
+        &storage,
+        |origin| {
             let owner_matches = matches!(
                 (expected_owner, origin.tool),
                 (
@@ -238,13 +272,13 @@ pub(crate) fn fork_resolved_deployment_with_real_services(
                     OriginTool::Dotagents
                 )
             );
-            if !owner_matches || selection.owner_revision().is_none() {
+            if !owner_matches || !owner_revision_present {
                 return Err("Fork owner changed after repair approval".into());
             }
-            selection.revalidate().map_err(|_| {
+            storage.revalidate().map_err(|_| {
                 "Fork owner, content, or deployment changed after repair approval".to_string()
             })?;
-            Ok(selection)
+            Ok(())
         },
     )
 }
@@ -838,12 +872,32 @@ fn fork_live_recovery_quarantine_dir(app_data: &Path, name: &str) -> PathBuf {
         .join("live-recovery-quarantine")
 }
 
+#[derive(Debug)]
+enum ForkRegistryWriteError {
+    BeforePublication(String),
+    RecoveryRequired(String),
+}
+
+impl std::fmt::Display for ForkRegistryWriteError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::BeforePublication(message) | Self::RecoveryRequired(message) => {
+                formatter.write_str(message)
+            }
+        }
+    }
+}
+
 trait ForkTransactionStorage {
     fn rename_dir(&self, from: &Path, to: &Path) -> std::io::Result<()>;
     fn remove_dir_all(&self, path: &Path) -> std::io::Result<()>;
     fn snapshot_live_skill(&self, skill_dir: &Path, recovery_dir: &Path) -> Result<(), String>;
     fn read_registry(&self, home: &Path) -> Result<ForkRegistry, String>;
-    fn write_registry(&self, home: &Path, registry: &ForkRegistry) -> Result<(), String>;
+    fn write_registry(
+        &self,
+        home: &Path,
+        registry: &ForkRegistry,
+    ) -> Result<(), ForkRegistryWriteError>;
 }
 
 struct FileForkTransactionStorage;
@@ -865,8 +919,170 @@ impl ForkTransactionStorage for FileForkTransactionStorage {
         read_fork_registry(home)
     }
 
-    fn write_registry(&self, home: &Path, registry: &ForkRegistry) -> Result<(), String> {
-        write_fork_registry(home, registry)
+    fn write_registry(
+        &self,
+        home: &Path,
+        registry: &ForkRegistry,
+    ) -> Result<(), ForkRegistryWriteError> {
+        write_fork_registry(home, registry).map_err(ForkRegistryWriteError::BeforePublication)
+    }
+}
+
+#[cfg(all(target_os = "macos", feature = "worker-repair"))]
+struct RetainedRegistryForkTransactionStorage<'lease, 'scope> {
+    name: &'lease str,
+    lease: RefCell<&'lease mut skill_studio_core::skill_coordination::FinalizedWriteLease<'scope>>,
+    current: RefCell<Option<ForkRegistry>>,
+    rollback: RefCell<Option<ForkTransitionRollback>>,
+    #[cfg(test)]
+    fault: RefCell<Option<RetainedRegistryFault>>,
+}
+
+#[cfg(all(test, target_os = "macos", feature = "worker-repair"))]
+enum RetainedRegistryFault {
+    AfterReplace,
+    Revalidate(PathBuf),
+}
+
+#[cfg(all(target_os = "macos", feature = "worker-repair"))]
+impl<'lease, 'scope> RetainedRegistryForkTransactionStorage<'lease, 'scope> {
+    fn new(
+        name: &'lease str,
+        lease: &'lease mut skill_studio_core::skill_coordination::FinalizedWriteLease<'scope>,
+    ) -> Self {
+        Self {
+            name,
+            lease: RefCell::new(lease),
+            current: RefCell::new(None),
+            rollback: RefCell::new(None),
+            #[cfg(test)]
+            fault: RefCell::new(None),
+        }
+    }
+
+    #[cfg(test)]
+    fn inject(&self, fault: RetainedRegistryFault) {
+        self.fault.replace(Some(fault));
+    }
+
+    #[cfg(test)]
+    fn apply_fault(&self, publication: ForkTransitionPublication) -> ForkTransitionPublication {
+        let Some(fault) = self.fault.borrow_mut().take() else {
+            return publication;
+        };
+        match (fault, publication) {
+            (
+                RetainedRegistryFault::AfterReplace,
+                ForkTransitionPublication::Published { rollback },
+            ) => ForkTransitionPublication::PublishedWithDurabilityError {
+                error: "injected after-replace durability failure".into(),
+                rollback,
+            },
+            (
+                RetainedRegistryFault::Revalidate(path),
+                ForkTransitionPublication::Published { rollback },
+            ) => {
+                fs::write(path, "injected provider drift").unwrap();
+                let error = self.revalidate().unwrap_err().to_string();
+                ForkTransitionPublication::PublishedWithDurabilityError { error, rollback }
+            }
+            (_, publication) => publication,
+        }
+    }
+
+    fn revalidate(&self) -> Result<(), skill_studio_core::skill_coordination::CoordinationFailure> {
+        self.lease.borrow().revalidate()
+    }
+}
+
+#[cfg(all(target_os = "macos", feature = "worker-repair"))]
+impl ForkTransactionStorage for RetainedRegistryForkTransactionStorage<'_, '_> {
+    fn rename_dir(&self, from: &Path, to: &Path) -> std::io::Result<()> {
+        fs::rename(from, to)
+    }
+
+    fn remove_dir_all(&self, path: &Path) -> std::io::Result<()> {
+        fs::remove_dir_all(path)
+    }
+
+    fn snapshot_live_skill(&self, skill_dir: &Path, recovery_dir: &Path) -> Result<(), String> {
+        copy_dir_preserving_symlinks(skill_dir, recovery_dir)
+    }
+
+    fn read_registry(&self, home: &Path) -> Result<ForkRegistry, String> {
+        let registry = read_fork_registry(home)?;
+        self.current.replace(Some(registry.clone()));
+        Ok(registry)
+    }
+
+    fn write_registry(
+        &self,
+        home: &Path,
+        registry: &ForkRegistry,
+    ) -> Result<(), ForkRegistryWriteError> {
+        let expected = self.current.borrow().clone().ok_or_else(|| {
+            ForkRegistryWriteError::BeforePublication(
+                "Fork registry was not read under the retained repair lease".into(),
+            )
+        })?;
+        if self.rollback.borrow().is_some() {
+            let result = {
+                let rollback = self.rollback.borrow();
+                rollback_fork_transition_with_lease(
+                    home,
+                    self.name,
+                    &expected,
+                    registry,
+                    rollback.as_ref().unwrap(),
+                    &mut self.lease.borrow_mut(),
+                )
+            };
+            if let Err(error) = result {
+                return Err(ForkRegistryWriteError::RecoveryRequired(format!(
+                    "Failed to restore the fork registry: {error}"
+                )));
+            }
+            self.rollback.replace(None);
+        } else {
+            let publication = publish_fork_transition_with_lease(
+                home,
+                self.name,
+                &expected,
+                registry,
+                &mut self.lease.borrow_mut(),
+            )
+            .map_err(ForkRegistryWriteError::BeforePublication)?;
+            #[cfg(test)]
+            let publication = self.apply_fault(publication);
+            match publication {
+                ForkTransitionPublication::Published { rollback } => {
+                    self.rollback.replace(Some(rollback));
+                }
+                ForkTransitionPublication::PublishedWithDurabilityError { error, rollback } => {
+                    let rollback_error = rollback_fork_transition_with_lease(
+                        home,
+                        self.name,
+                        registry,
+                        &expected,
+                        &rollback,
+                        &mut self.lease.borrow_mut(),
+                    );
+                    return match rollback_error {
+                        Ok(()) => Err(ForkRegistryWriteError::BeforePublication(format!(
+                            "{error}; the fork registry publication was rolled back"
+                        ))),
+                        Err(rollback_error) => {
+                            self.rollback.replace(Some(rollback));
+                            Err(ForkRegistryWriteError::RecoveryRequired(format!(
+                                "{error}. Fork registry rollback requires recovery: {rollback_error}"
+                            )))
+                        }
+                    };
+                }
+            }
+        }
+        self.current.replace(Some(registry.clone()));
+        Ok(())
     }
 }
 
@@ -976,18 +1192,20 @@ fn rollback_fork_before_detach(
     recovery: ForkRecoveryRollback,
 ) -> String {
     let mut rollback_errors = Vec::new();
+    let mut preserve_evidence = false;
     if let Some(registry_before) = registry_before {
         if let Err(error) = storage.write_registry(paths.home, registry_before) {
+            preserve_evidence = matches!(&error, ForkRegistryWriteError::RecoveryRequired(_));
             rollback_errors.push(format!("Failed to restore the fork registry: {error}"));
         }
     }
-    if let Err(error) = clear_fork_transaction_dir(storage, paths.base_dir) {
-        rollback_errors.push(error);
-    }
-
-    if matches!(recovery, ForkRecoveryRollback::KeepComplete) {
+    if preserve_evidence {
         rollback_errors.push(format!(
-            "A complete live recovery copy remains at {}.",
+            "The upstream snapshot remains at {}.",
+            paths.base_dir.display()
+        ));
+        rollback_errors.push(format!(
+            "The live recovery evidence remains at {}.",
             paths.recovery_dir.display()
         ));
         if let Some(quarantine_dir) = paths.quarantine_dir {
@@ -996,10 +1214,26 @@ fn rollback_fork_before_detach(
                 quarantine_dir.display()
             ));
         }
-    } else if let Err(error) =
-        restore_quarantined_live_recovery(storage, paths.recovery_dir, paths.quarantine_dir)
-    {
-        rollback_errors.push(error);
+    } else {
+        if let Err(error) = clear_fork_transaction_dir(storage, paths.base_dir) {
+            rollback_errors.push(error);
+        }
+        if matches!(recovery, ForkRecoveryRollback::KeepComplete) {
+            rollback_errors.push(format!(
+                "A complete live recovery copy remains at {}.",
+                paths.recovery_dir.display()
+            ));
+            if let Some(quarantine_dir) = paths.quarantine_dir {
+                rollback_errors.push(format!(
+                    "The previous recovery copy remains at {}.",
+                    quarantine_dir.display()
+                ));
+            }
+        } else if let Err(error) =
+            restore_quarantined_live_recovery(storage, paths.recovery_dir, paths.quarantine_dir)
+        {
+            rollback_errors.push(error);
+        }
     }
 
     if rollback_errors.is_empty() {
@@ -1202,13 +1436,19 @@ fn fork_skill_with_storage_guarded<G>(
         .trials
         .remove(&deployment_trial_key(&record.deployment_id));
     if let Err(error) = storage.write_registry(home, &registry) {
-        return Err(rollback_fork_before_detach(
-            storage,
-            error,
-            &rollback_paths,
-            None,
-            ForkRecoveryRollback::RestorePrevious,
-        ));
+        return match error {
+            ForkRegistryWriteError::BeforePublication(error) => Err(rollback_fork_before_detach(
+                storage,
+                error,
+                &rollback_paths,
+                None,
+                ForkRecoveryRollback::RestorePrevious,
+            )),
+            ForkRegistryWriteError::RecoveryRequired(error) => Err(format!(
+                "{error} The provider is still attached. Recovery evidence remains at {}.",
+                base_dir.display()
+            )),
+        };
     }
 
     // 3. Snapshot the live tree as a recovery copy before removing it from
@@ -2254,13 +2494,19 @@ mod tests {
             read_fork_registry(home)
         }
 
-        fn write_registry(&self, home: &Path, registry: &ForkRegistry) -> Result<(), String> {
+        fn write_registry(
+            &self,
+            home: &Path,
+            registry: &ForkRegistry,
+        ) -> Result<(), ForkRegistryWriteError> {
             let mut calls = self.registry_write_calls.lock().unwrap();
             *calls += 1;
             if self.fail_registry_write_call == Some(*calls) {
-                return Err("injected registry write failure".to_string());
+                return Err(ForkRegistryWriteError::BeforePublication(
+                    "injected registry write failure".to_string(),
+                ));
             }
-            write_fork_registry(home, registry)
+            write_fork_registry(home, registry).map_err(ForkRegistryWriteError::BeforePublication)
         }
     }
 
@@ -2348,6 +2594,225 @@ mod tests {
 
         let registry = read_fork_registry(&home).unwrap();
         assert!(registry.forks.contains_key("find-bugs"));
+    }
+
+    #[cfg(all(target_os = "macos", feature = "worker-repair"))]
+    #[test]
+    fn prepared_repair_fork_uses_retained_registry_lease() {
+        use skill_studio_core::skill_frontmatter_repair::{
+            BoundFrontmatterRepairRequest, FrontmatterRepairApplyMode,
+        };
+        use skill_studio_core::skill_service::{CancellationToken, ScopedSkillService, SkillScope};
+        use std::collections::BTreeSet;
+
+        for (case, registry_exists) in [
+            ("success", true),
+            ("success", false),
+            ("stale", true),
+            ("rollback", true),
+            ("after-replace", true),
+            ("after-replace", false),
+            ("revalidate", true),
+        ] {
+            let tmp = tempfile::tempdir().unwrap();
+            let home = tmp.path().join("home");
+            let app_data = tmp.path().join("data");
+            fs::create_dir(&app_data).unwrap();
+            seed_dotagents_ledger(
+                &home,
+                "find-bugs",
+                "getsentry/find-bugs",
+                "skills/find-bugs",
+                &"a".repeat(40),
+            );
+            let skill = home.join(".agents/skills/find-bugs");
+            write_file(
+                &skill.join("SKILL.md"),
+                "---\nname: find-bugs\ndescription: this: fixture\n---\nbody\n",
+            );
+            if registry_exists {
+                let mut registry_document = serde_json::json!({
+                    "version": 4,
+                    "forks": {},
+                    "trials": {},
+                    "future": {"kept": true},
+                });
+                if case == "rollback" {
+                    registry_document["trials"][trial_key(TrialScope::Global, "find-bugs")] = serde_json::json!({
+                        "deployment_id": "",
+                        "started_at": "2026-01-01T00:00:00Z",
+                        "expires_at": "2026-01-02T00:00:00Z",
+                        "status": "active",
+                        "method": "dotagents",
+                        "scope": "global",
+                        "project_path": null,
+                        "skill_dir": skill.clone(),
+                        "deployment_fingerprint": "",
+                        "claude_link": null,
+                        "claude_link_target": null,
+                        "future": {"trial-kept": true},
+                    });
+                }
+                fs::write(
+                    home.join(".agents/skill-studio.json"),
+                    serde_json::to_vec(&registry_document).unwrap(),
+                )
+                .unwrap();
+            }
+
+            let scope = SkillScope {
+                home: home.clone(),
+                projects: vec![],
+                backing_roots: vec![],
+                plugin_ownership_roots: vec![],
+            };
+            let mut service = ScopedSkillService::bind(scope).unwrap();
+            let names = BTreeSet::from(["find-bugs".to_string()]);
+            let inventory = service
+                .scan(Some(&names), Some(std::time::Duration::from_secs(5)))
+                .unwrap();
+            let deployment = inventory
+                .skills
+                .iter()
+                .flat_map(|installed| &installed.deployments)
+                .find(|deployment| deployment.path == skill.to_string_lossy())
+                .unwrap();
+            let preview = skill_studio_core::skill_frontmatter_repair::preview_frontmatter_repair(
+                deployment,
+                &fs::read(skill.join("SKILL.md")).unwrap(),
+            )
+            .unwrap();
+            let request = BoundFrontmatterRepairRequest {
+                deployment_id: deployment.id.clone(),
+                proposal_id: preview.proposal_id,
+                expected_content_fingerprint: preview.expected_content_fingerprint,
+                mode: FrontmatterRepairApplyMode::ForkAndFix,
+            };
+            let selection = service
+                .prepare_repair_selection(
+                    &request,
+                    std::slice::from_ref(&app_data),
+                    Some(std::time::Duration::from_secs(5)),
+                    CancellationToken::default(),
+                )
+                .unwrap();
+            if case == "rollback" {
+                let (_, _, mut lease) = selection.into_parts();
+                let storage = RetainedRegistryForkTransactionStorage::new("find-bugs", &mut lease);
+                let before = storage.read_registry(&home).unwrap();
+                let mut published = before.clone();
+                published.forks.insert(
+                    "find-bugs".into(),
+                    ForkRecord {
+                        deployment_id: request.deployment_id.clone(),
+                        skill_dir: skill.clone(),
+                        forked_at: "2026-01-01T00:00:00Z".into(),
+                        origin_tool: OriginTool::Dotagents,
+                        origin_source: "getsentry/find-bugs".into(),
+                        repo: "getsentry/find-bugs".into(),
+                        path: "skills/find-bugs".into(),
+                        declared_ref: None,
+                        base_commit: "a".repeat(40),
+                    },
+                );
+                published
+                    .trials
+                    .remove(&trial_key(TrialScope::Global, "find-bugs"));
+                storage.write_registry(&home, &published).unwrap();
+                storage.write_registry(&home, &before).unwrap();
+                let restored: serde_json::Value = serde_json::from_slice(
+                    &fs::read(home.join(".agents/skill-studio.json")).unwrap(),
+                )
+                .unwrap();
+                assert_eq!(
+                    restored["trials"][trial_key(TrialScope::Global, "find-bugs")]["future"]
+                        ["trial-kept"],
+                    true
+                );
+                assert!(restored["forks"]["find-bugs"].is_null());
+                continue;
+            }
+            if matches!(case, "after-replace" | "revalidate") {
+                let (_, _, mut lease) = selection.into_parts();
+                let storage = RetainedRegistryForkTransactionStorage::new("find-bugs", &mut lease);
+                storage.inject(if case == "after-replace" {
+                    RetainedRegistryFault::AfterReplace
+                } else {
+                    RetainedRegistryFault::Revalidate(home.join(".agents/agents.lock"))
+                });
+                let ledger = FakeLedger::default();
+                let fetch = FakeFetch {
+                    files: vec![("SKILL.md", "upstream")],
+                };
+                let error = fork_skill_with_storage_guarded(
+                    &home,
+                    &app_data,
+                    "find-bugs",
+                    &skill,
+                    &ledger,
+                    &fetch,
+                    &NeverCalledLookup,
+                    &storage,
+                    |_| {
+                        storage.revalidate().map_err(|error| error.to_string())?;
+                        Ok(())
+                    },
+                )
+                .unwrap_err();
+                assert!(ledger.remove_calls.lock().unwrap().is_empty());
+                let registry = read_fork_registry(&home).unwrap();
+                let base = fork_snapshot_dir(&app_data, "find-bugs");
+                if case == "after-replace" {
+                    assert!(error.contains("publication was rolled back"), "{error}");
+                    assert!(!registry.forks.contains_key("find-bugs"));
+                    assert_eq!(
+                        home.join(".agents/skill-studio.json").exists(),
+                        registry_exists
+                    );
+                    assert!(!base.exists());
+                } else {
+                    assert!(error.contains("rollback requires recovery"), "{error}");
+                    assert!(registry.forks.contains_key("find-bugs"));
+                    assert!(base.exists());
+                }
+                continue;
+            }
+            if case == "stale" {
+                fs::write(skill.join("SKILL.md"), "external edit").unwrap();
+            }
+            let ledger = FakeLedger::default();
+            let fetch = FakeFetch {
+                files: vec![("SKILL.md", "upstream")],
+            };
+
+            let result = fork_resolved_deployment_with_services(
+                &home,
+                &app_data,
+                "find-bugs",
+                &skill,
+                &ledger,
+                &fetch,
+                &NeverCalledLookup,
+                selection,
+            );
+            let registry_document: serde_json::Value =
+                serde_json::from_slice(&fs::read(home.join(".agents/skill-studio.json")).unwrap())
+                    .unwrap();
+            if registry_exists {
+                assert_eq!(registry_document["future"]["kept"], true, "{case}");
+            }
+            if case == "success" {
+                result.unwrap();
+                assert_eq!(ledger.remove_calls.lock().unwrap().len(), 1);
+                assert!(registry_document["forks"]["find-bugs"].is_object());
+            } else {
+                assert!(result
+                    .unwrap_err()
+                    .contains("changed after repair approval"));
+                assert!(ledger.remove_calls.lock().unwrap().is_empty());
+                assert!(registry_document["forks"]["find-bugs"].is_null());
+            }
+        }
     }
 
     #[test]

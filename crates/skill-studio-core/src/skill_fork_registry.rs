@@ -511,6 +511,213 @@ pub struct TrialExpiryRollback {
     after_copies: BTreeMap<String, CopyDeploymentRecord>,
 }
 
+/// Raw selected-record preimage retained for a pre-detach rollback.
+#[cfg(unix)]
+pub struct ForkTransitionRollback {
+    original: Option<Vec<u8>>,
+    before_forks: BTreeMap<String, ForkRecord>,
+    after_forks: BTreeMap<String, ForkRecord>,
+    before_trials: BTreeMap<String, TrialRecord>,
+    after_trials: BTreeMap<String, TrialRecord>,
+}
+
+/// A selected fork transition is visible after either outcome. The durability
+/// error variant retains the same raw rollback preimage.
+#[cfg(unix)]
+pub enum ForkTransitionPublication {
+    Published {
+        rollback: ForkTransitionRollback,
+    },
+    PublishedWithDurabilityError {
+        error: String,
+        rollback: ForkTransitionRollback,
+    },
+}
+
+#[cfg(unix)]
+fn fork_transition_keys(
+    name: &str,
+    expected: &ForkRegistry,
+    proposed: &ForkRegistry,
+) -> Result<(Vec<String>, Vec<String>), String> {
+    let mut unchanged = proposed.clone();
+    unchanged.forks = expected.forks.clone();
+    unchanged.trials = expected.trials.clone();
+    if serde_json::to_value(&unchanged).map_err(|error| error.to_string())?
+        != serde_json::to_value(expected).map_err(|error| error.to_string())?
+    {
+        return Err("Fork publication may only change fork or trial records".into());
+    }
+
+    let changed_forks = changed_registry_keys(&expected.forks, &proposed.forks);
+    if changed_forks.iter().any(|key| key != name) {
+        return Err("Fork publication changed an unrelated fork record".into());
+    }
+    let changed_trials = changed_registry_keys(&expected.trials, &proposed.trials);
+    let mut allowed_trials = BTreeSet::from([trial_key(TrialScope::Global, name)]);
+    for record in [expected.forks.get(name), proposed.forks.get(name)]
+        .into_iter()
+        .flatten()
+    {
+        if !record.deployment_id.is_empty() {
+            allowed_trials.insert(deployment_trial_key(&record.deployment_id));
+        }
+    }
+    if changed_trials
+        .iter()
+        .any(|key| !allowed_trials.contains(key))
+    {
+        return Err("Fork publication changed an unrelated trial record".into());
+    }
+    Ok((changed_forks, changed_trials))
+}
+
+/// Publishes the selected fork record and its trial cleanup while the caller
+/// retains the ownership lease. Unrelated records and unrecognized JSON fields
+/// come from the current registry document.
+#[cfg(unix)]
+pub fn publish_fork_transition_with_lease(
+    home: &Path,
+    name: &str,
+    expected: &ForkRegistry,
+    proposed: &ForkRegistry,
+    lease: &mut crate::skill_coordination::FinalizedWriteLease<'_>,
+) -> Result<ForkTransitionPublication, String> {
+    publish_fork_transition_with_lease_and_hooks(
+        home,
+        name,
+        expected,
+        proposed,
+        lease,
+        || Ok(()),
+        || {},
+    )
+}
+
+#[cfg(unix)]
+fn publish_fork_transition_with_lease_and_hooks(
+    home: &Path,
+    name: &str,
+    expected: &ForkRegistry,
+    proposed: &ForkRegistry,
+    lease: &mut crate::skill_coordination::FinalizedWriteLease<'_>,
+    after_commit: impl FnOnce() -> Result<(), String>,
+    after_publication: impl FnOnce(),
+) -> Result<ForkTransitionPublication, String> {
+    use crate::skill_document_target::SkillRegistryTarget;
+
+    let (changed_forks, changed_trials) = fork_transition_keys(name, expected, proposed)?;
+
+    let path = fork_registry_path(home);
+    let parent = path.parent().ok_or("Registry has no parent")?;
+    let current_bytes = lease.read_current_ownership_registry(&path, 8 * 1024 * 1024)?;
+    let current = match current_bytes.as_deref() {
+        Some(bytes) => parse_fork_registry(
+            std::str::from_utf8(bytes).map_err(|_| "Fork registry is not UTF-8")?,
+            &path,
+        )?,
+        None => ForkRegistry::default(),
+    };
+    ensure_selected_records_match(&current.forks, &expected.forks, &changed_forks, "fork")?;
+    ensure_selected_records_match(&current.trials, &expected.trials, &changed_trials, "trial")?;
+
+    let mut document = match current_bytes.as_deref() {
+        Some(bytes) => serde_json::from_slice(bytes).map_err(|error| error.to_string())?,
+        None => serde_json::to_value(&current).map_err(|error| error.to_string())?,
+    };
+    apply_selected_records(&mut document, "forks", &proposed.forks, &changed_forks)?;
+    apply_selected_records(&mut document, "trials", &proposed.trials, &changed_trials)?;
+    let bytes = serde_json::to_vec_pretty(&document).map_err(|error| error.to_string())?;
+    let rollback = ForkTransitionRollback {
+        original: current_bytes.clone(),
+        before_forks: expected.forks.clone(),
+        after_forks: proposed.forks.clone(),
+        before_trials: expected.trials.clone(),
+        after_trials: proposed.trials.clone(),
+    };
+    let target = SkillRegistryTarget::bind(parent)?;
+    let result = match current_bytes {
+        Some(ref original) => target.replace_retained_with(lease, original, &bytes, after_commit),
+        None => target.create(lease, &bytes),
+    };
+    match result {
+        Ok(()) => {}
+        Err(DocumentWriteFailure::AfterReplace(error)) => {
+            return Ok(ForkTransitionPublication::PublishedWithDurabilityError { error, rollback });
+        }
+        Err(DocumentWriteFailure::BeforeReplace(error)) => return Err(error),
+    }
+    after_publication();
+    if let Err(error) = lease.revalidate() {
+        return Ok(ForkTransitionPublication::PublishedWithDurabilityError {
+            error: error.to_string(),
+            rollback,
+        });
+    }
+    Ok(ForkTransitionPublication::Published { rollback })
+}
+
+/// Reverses one selected fork publication from its raw preimage while the
+/// caller retains the same lease.
+#[cfg(unix)]
+pub fn rollback_fork_transition_with_lease(
+    home: &Path,
+    name: &str,
+    expected: &ForkRegistry,
+    proposed: &ForkRegistry,
+    rollback: &ForkTransitionRollback,
+    lease: &mut crate::skill_coordination::FinalizedWriteLease<'_>,
+) -> Result<(), String> {
+    use crate::skill_document_target::SkillRegistryTarget;
+
+    if expected.forks != rollback.after_forks
+        || expected.trials != rollback.after_trials
+        || proposed.forks != rollback.before_forks
+        || proposed.trials != rollback.before_trials
+    {
+        return Err("Fork rollback does not match its publication receipt".into());
+    }
+    let (changed_forks, changed_trials) = fork_transition_keys(name, expected, proposed)?;
+    let path = fork_registry_path(home);
+    let parent = path.parent().ok_or("Registry has no parent")?;
+    let current_bytes = lease.read_current_ownership_registry(&path, 8 * 1024 * 1024)?;
+    let current_bytes = current_bytes.ok_or("Published fork registry is absent")?;
+    let current = parse_fork_registry(
+        std::str::from_utf8(&current_bytes).map_err(|_| "Fork registry is not UTF-8")?,
+        &path,
+    )?;
+    ensure_selected_records_match(&current.forks, &expected.forks, &changed_forks, "fork")?;
+    ensure_selected_records_match(&current.trials, &expected.trials, &changed_trials, "trial")?;
+    let preimage = match rollback.original.as_deref() {
+        Some(bytes) => serde_json::from_slice(bytes).map_err(|error| error.to_string())?,
+        None => serde_json::to_value(proposed).map_err(|error| error.to_string())?,
+    };
+    let mut document: serde_json::Value =
+        serde_json::from_slice(&current_bytes).map_err(|error| error.to_string())?;
+    apply_selected_preimages(
+        &mut document,
+        &preimage,
+        "forks",
+        &proposed.forks,
+        &changed_forks,
+    )?;
+    apply_selected_preimages(
+        &mut document,
+        &preimage,
+        "trials",
+        &proposed.trials,
+        &changed_trials,
+    )?;
+    let bytes = serde_json::to_vec_pretty(&document).map_err(|error| error.to_string())?;
+    let target = SkillRegistryTarget::bind(parent)?;
+    match rollback.original.as_ref() {
+        Some(_) => target.replace_retained(lease, &current_bytes, &bytes),
+        None => target.remove_retained(lease, &current_bytes),
+    }
+    .map_err(|error| error.to_string())?;
+    lease.revalidate().map_err(|error| error.to_string())
+}
+
 #[cfg(unix)]
 fn trial_expiry_rollback(
     original: Vec<u8>,
@@ -1091,6 +1298,139 @@ mod tests {
             read_fork_registry(temp.path()).unwrap().trials,
             expected.trials
         );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn fork_publication_reports_visible_durability_failures_with_rollback() {
+        use crate::skill_frontmatter_repair::{
+            preview_frontmatter_repair, BoundFrontmatterRepairRequest, FrontmatterRepairApplyMode,
+        };
+        use crate::skill_service::{CancellationToken, ScopedSkillService, SkillScope};
+        use std::collections::BTreeSet;
+
+        for fault in ["after-replace", "revalidate"] {
+            let temp = tempfile::tempdir().unwrap();
+            let home = temp.path().join("home");
+            let app_data = temp.path().join("data");
+            let agents = home.join(".agents");
+            let skill = agents.join("skills/find-bugs");
+            std::fs::create_dir_all(&skill).unwrap();
+            std::fs::create_dir(&app_data).unwrap();
+            std::fs::write(
+                skill.join("SKILL.md"),
+                "---\nname: find-bugs\ndescription: this: fixture\n---\nbody\n",
+            )
+            .unwrap();
+            let lock_path = agents.join("agents.lock");
+            std::fs::write(
+                &lock_path,
+                format!(
+                    "[skills.find-bugs]\nsource = \"getsentry/find-bugs\"\nresolved_path = \"skills/find-bugs\"\nresolved_commit = \"{}\"\n",
+                    "a".repeat(40)
+                ),
+            )
+            .unwrap();
+            std::fs::write(
+                agents.join("agents.toml"),
+                "[[skills]]\nname = \"find-bugs\"\nsource = \"getsentry/find-bugs\"\npath = \"skills/find-bugs\"\n",
+            )
+            .unwrap();
+            write_fork_registry(&home, &ForkRegistry::default()).unwrap();
+
+            let mut service = ScopedSkillService::bind(SkillScope {
+                home: home.clone(),
+                projects: vec![],
+                backing_roots: vec![],
+                plugin_ownership_roots: vec![],
+            })
+            .unwrap();
+            let names = BTreeSet::from(["find-bugs".to_string()]);
+            let inventory = service
+                .scan(Some(&names), Some(std::time::Duration::from_secs(5)))
+                .unwrap();
+            let deployment = inventory
+                .skills
+                .iter()
+                .flat_map(|installed| &installed.deployments)
+                .find(|deployment| deployment.path == skill.to_string_lossy())
+                .unwrap();
+            let preview = preview_frontmatter_repair(
+                deployment,
+                &std::fs::read(skill.join("SKILL.md")).unwrap(),
+            )
+            .unwrap();
+            let selection = service
+                .prepare_repair_selection(
+                    &BoundFrontmatterRepairRequest {
+                        deployment_id: deployment.id.clone(),
+                        proposal_id: preview.proposal_id,
+                        expected_content_fingerprint: preview.expected_content_fingerprint,
+                        mode: FrontmatterRepairApplyMode::ForkAndFix,
+                    },
+                    std::slice::from_ref(&app_data),
+                    Some(std::time::Duration::from_secs(5)),
+                    CancellationToken::default(),
+                )
+                .unwrap();
+            let (_, _, mut lease) = selection.into_parts();
+            let expected = read_fork_registry(&home).unwrap();
+            let mut proposed = expected.clone();
+            proposed.forks.insert(
+                "find-bugs".into(),
+                ForkRecord {
+                    deployment_id: deployment.id.clone(),
+                    skill_dir: skill.clone(),
+                    forked_at: "2026-01-01T00:00:00Z".into(),
+                    origin_tool: OriginTool::Dotagents,
+                    origin_source: "getsentry/find-bugs".into(),
+                    repo: "getsentry/find-bugs".into(),
+                    path: "skills/find-bugs".into(),
+                    declared_ref: None,
+                    base_commit: "a".repeat(40),
+                },
+            );
+
+            let publication = publish_fork_transition_with_lease_and_hooks(
+                &home,
+                "find-bugs",
+                &expected,
+                &proposed,
+                &mut lease,
+                || {
+                    if fault == "after-replace" {
+                        Err("injected directory sync failure".into())
+                    } else {
+                        Ok(())
+                    }
+                },
+                || {
+                    if fault == "revalidate" {
+                        std::fs::write(&lock_path, "injected provider drift").unwrap();
+                    }
+                },
+            )
+            .unwrap();
+            match publication {
+                ForkTransitionPublication::PublishedWithDurabilityError { error, rollback: _ } => {
+                    assert!(
+                        error.contains(if fault == "after-replace" {
+                            "directory sync failure"
+                        } else {
+                            "changed"
+                        }),
+                        "{fault}: {error}"
+                    )
+                }
+                ForkTransitionPublication::Published { .. } => {
+                    panic!("{fault} must report a visible durability failure")
+                }
+            }
+            assert!(read_fork_registry(&home)
+                .unwrap()
+                .forks
+                .contains_key("find-bugs"));
+        }
     }
 
     #[cfg(unix)]

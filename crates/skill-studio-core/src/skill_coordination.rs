@@ -620,12 +620,12 @@ impl FinalizedWriteLease<'_> {
         expected: &[u8],
     ) -> Result<(), String> {
         self.revalidate().map_err(|error| error.to_string())?;
+        if let Some(receipt) = self.published.get(path) {
+            return receipt.verify_content(expected);
+        }
         self.guard
             .planned_file(path)
             .map_err(|error| error.to_string())?;
-        if let Some(receipt) = self.published.get(path) {
-            receipt.verify_content(expected)?;
-        }
         Ok(())
     }
 
