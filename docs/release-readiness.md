@@ -1,6 +1,6 @@
 # Release preparation and rollback
 
-Status on September 15, 2026: preparation only. No final combined candidate,
+Status on September 17, 2026: preparation only. No final combined candidate,
 signed installer, deployed API/site, production telemetry receipt, or exercised
 rollback is established by this document. Merge and deployment need explicit
 authorization after the candidate and evidence are ready to review.
@@ -17,9 +17,38 @@ authorization after the candidate and evidence are ready to review.
 | Repository automation | Release and remote tag queries returned no entries; the repository Actions-secret query returned no entries.                                                                                    | Establish release automation and credential sources. These queries do not establish whether organization/environment secrets or local signing credentials exist. |
 
 The observations come from main `c489f78`, the unmerged integration worktree,
-API PR #89 (`36f8e29`), and marketing PR #90 (`6eacbf6`). They are not a claim
-that those changes form an integrated release. The separate core migrations in
-PR #73 and PRs #79–80 must be reconciled before assembling that candidate.
+API PR #89 (`1989004`), and marketing PR #90 (`88f369a`). Both surface CI
+checks and their security checks pass at these revisions. The desktop review
+chain now reaches PR #180 (`bcdb864`), whose core, frontend and security checks
+pass. These separate checks do not establish an integrated release. Assemble the candidate only from exact reviewed commit heads. The dirty
+integration worktree is not a release source. Any required remaining change must
+first receive its own reviewed commit. Preserve excluded CLI/MCP source separately
+with a path/hash manifest; do not include it by copying the integration tree.
+
+Rust telemetry PR #92 (`dda0eac`) has passing telemetry CI but a failed
+GitGuardian check. A synthetic authenticated DSN uses `example.invalid` in its
+transport rejection test. The finding still needs explicit resolution; a fixture
+explanation alone does not turn the security check green.
+
+### Hosting and monitoring dependencies
+
+A September 17 read-only inventory of the connected personal Cloudflare account
+SERG.TECH returned 16 Workers and two Pages projects. No names or IDs matched
+`skill|agent.studio`. This does not rule out a deployment under another name or
+on another host. The available Vercel connection is a work account; no personal
+Vercel connection was available. No deployment or routing was changed.
+
+Personal Sentry access confirms the four `sergtech` projects in the mapping.
+The sampled receipt queries found API verification telemetry, but did not
+establish production receipt for any surface or desktop/marketing receipt.
+Release acceptance still requires exact build identities, received signals,
+redaction and matching source maps or debug symbols. Do not label verification
+events as production evidence.
+
+The unresolved release inputs are a confirmed API origin/host, marketing
+host/domain, desktop distribution targets and signing credentials, plus an
+approved deployment candidate. Record these inputs before requesting deployment
+approval; do not substitute the development localhost endpoint.
 
 ## Candidate and artifacts
 
@@ -28,8 +57,9 @@ PR #73 and PRs #79–80 must be reconciled before assembling that candidate.
    unverified retained-directory performance experiment.
 2. Record the source commit, clean-tree status, lockfile hashes, toolchain versions,
    enabled features, target architecture and non-secret build configuration.
-   Resolve the desktop `native-fork-repair` feature and runtime-resource wiring;
-   its presence in source does not prove packaged Unfork support.
+   Retain the desktop `native-fork-repair` default feature and packaged runtime
+   wiring already present in PR #180. Verify that wiring in the exact combined
+   artifact; previous packaged acceptance does not cover new signing or architectures.
 3. Run the final integration checks and agreed native lifecycle cases on this
    candidate. Use the isolated test application and fixture for native tests.
    The current dirty worktree and separate PR checks are insufficient evidence.
@@ -98,8 +128,10 @@ during this read-only release audit.
 ## Audit evidence
 
 Read-only commands: `gh release list --limit 5`, repository tags API, repository
-`gh secret list` (names only), and source/config inspection. No secret values,
-signing keys, build jobs, servers, deployments, or test captures were accessed
-or created. Resource peaks were not measured because this was a metadata and
-documentation task. Hosting-specific commands must be added after the targets
+`gh secret list` (names only), and source/config inspection. The September 17
+refresh also inspected PR head/check metadata and the personal
+Cloudflare Workers/Pages inventory through Executor. No secret values or signing
+keys were read, and no build jobs, servers, deployments, or test captures were
+started by this documentation audit. Resource peaks were not measured because
+this was a metadata and documentation task. Hosting-specific commands must be added after the targets
 are selected; this packet is not an executable deployment script.
