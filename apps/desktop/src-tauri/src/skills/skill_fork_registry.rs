@@ -19,7 +19,6 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicU64, Ordering};
 
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
@@ -253,6 +252,13 @@ pub struct CopyDeploymentRecord {
 pub struct ForkRegistry {
     #[serde(default = "default_version")]
     pub version: u32,
+    /// Write counter bumped by [`write_fork_registry`] on every write, via
+    /// the core's [`skill_studio_core::registry::write_registry_document`].
+    /// Distinct from `version`, which marks a schema migration and is set
+    /// by hand - see `crates/skill-studio-core/src/registry.rs`. Defaults to
+    /// 0 for a file written before this field existed.
+    #[serde(default)]
+    pub write_version: u64,
     #[serde(default)]
     pub forks: BTreeMap<String, ForkRecord>,
     /// "Try for 24 hours" installs, keyed by skill name - see `skill_trial`.
@@ -316,6 +322,16 @@ pub struct ForkRegistry {
     pub unknown: serde_json::Map<String, serde_json::Value>,
 }
 
+impl skill_studio_core::registry::RegistryDocument for ForkRegistry {
+    fn write_version(&self) -> u64 {
+        self.write_version
+    }
+
+    fn set_write_version(&mut self, version: u64) {
+        self.write_version = version;
+    }
+}
+
 pub const CURRENT_REGISTRY_VERSION: u32 = 4;
 
 fn default_version() -> u32 {
@@ -330,6 +346,7 @@ impl Default for ForkRegistry {
     fn default() -> Self {
         ForkRegistry {
             version: default_version(),
+            write_version: 0,
             forks: BTreeMap::new(),
             trials: BTreeMap::new(),
             parked: BTreeMap::new(),
@@ -390,28 +407,30 @@ pub fn read_fork_registry_or_default(home: &Path) -> ForkRegistry {
     })
 }
 
-/// Counter appended to the write's temp file name, so concurrent writers
-/// never pick the same temp path.
-static WRITE_COUNTER: AtomicU64 = AtomicU64::new(0);
+/// Where `FileLease` keeps its advisory lock files for this registry -
+/// `core_runtime::data_root()`'s `leases` subdirectory, the same lease root
+/// the CLI, MCP, and desktop's park/unpark commands already share.
+fn registry_lease_root() -> PathBuf {
+    super::core_runtime::data_root().join("leases")
+}
 
-/// Write `registry` atomically (temp file + rename), creating `~/.agents` if
-/// it doesn't already exist.
+/// Write `registry` atomically under the exclusive lease over `home`,
+/// bumping `write_version` by one - see
+/// `skill_studio_core::registry::write_registry_document`. Creates
+/// `~/.agents` if it doesn't already exist.
 pub fn write_fork_registry(home: &Path, registry: &ForkRegistry) -> Result<(), String> {
+    // The core's scope normalization canonicalizes `home`, which requires
+    // it to exist already - callers historically relied on this function
+    // creating a never-before-seen home (e.g. a fresh project scope) via
+    // `create_dir_all` on the registry's parent, so do that first here too.
+    std::fs::create_dir_all(home)
+        .map_err(|e| format!("Failed to create {}: {e}", home.display()))?;
     let path = fork_registry_path(home);
-    if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent)
-            .map_err(|e| format!("Failed to create {}: {e}", parent.display()))?;
-    }
-    let json = serde_json::to_string_pretty(registry)
-        .map_err(|e| format!("Failed to serialize fork registry: {e}"))?;
-    let unique = WRITE_COUNTER.fetch_add(1, Ordering::SeqCst);
-    let tmp_path = path.with_extension(format!("json.tmp.{}.{unique}", std::process::id()));
-    std::fs::write(&tmp_path, json)
-        .map_err(|e| format!("Failed to write {}: {e}", tmp_path.display()))?;
-    std::fs::rename(&tmp_path, &path).map_err(|e| {
-        let _ = std::fs::remove_file(&tmp_path);
-        format!("Failed to rename {}: {e}", tmp_path.display())
-    })
+    let fs = skill_studio_host::RealFs::new();
+    let leases = skill_studio_host::FileLease::new(registry_lease_root());
+    let mut document = registry.clone();
+    skill_studio_core::registry::write_registry_document(&leases, &fs, home, &path, &mut document)
+        .map_err(|e| e.to_string())
 }
 
 #[cfg(test)]
@@ -520,6 +539,30 @@ mod tests {
         assert_eq!(
             reloaded.unknown.get("a_future_field"),
             Some(&serde_json::json!({"nested": true}))
+        );
+    }
+
+    #[test]
+    fn write_fork_registry_bumps_write_version_by_one_or_names_the_stuck_value() {
+        let tmp = tempfile::tempdir().unwrap();
+        let reg = ForkRegistry::default();
+        assert_eq!(
+            reg.write_version, 0,
+            "a fresh registry starts at write_version 0"
+        );
+
+        write_fork_registry(tmp.path(), &reg).unwrap();
+        let after_first = read_fork_registry(tmp.path()).unwrap();
+        assert_eq!(
+            after_first.write_version, 1,
+            "write_fork_registry did not bump write_version on its first write"
+        );
+
+        write_fork_registry(tmp.path(), &after_first).unwrap();
+        let after_second = read_fork_registry(tmp.path()).unwrap();
+        assert_eq!(
+            after_second.write_version, 2,
+            "write_fork_registry did not bump write_version on a second write"
         );
     }
 

@@ -60,10 +60,21 @@ fn empty_lock_file() -> SkillLockFile {
     }
 }
 
+/// The lock file's name inside an `.agents` directory - the one string
+/// every reader of the shared lock file joins onto its own root, so it
+/// isn't duplicated at each call site.
+pub const LOCK_FILE_NAME: &str = ".skill-lock.json";
+
 /// `<home>/.agents/.skill-lock.json` - the path every reader of the shared
 /// lock file, real or fixture home, resolves against.
 pub fn lock_file_path(home: &Path) -> PathBuf {
-    home.join(".agents").join(".skill-lock.json")
+    lock_file_path_in(&home.join(".agents"))
+}
+
+/// `<agents_dir>/.skill-lock.json` - for callers that already have an
+/// `.agents` directory in hand (a project's, not just the home's).
+pub fn lock_file_path_in(agents_dir: &Path) -> PathBuf {
+    agents_dir.join(LOCK_FILE_NAME)
 }
 
 /// Reads and parses the lock file at `path` through `fs`.
