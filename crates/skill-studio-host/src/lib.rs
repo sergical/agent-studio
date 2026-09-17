@@ -35,7 +35,10 @@ pub use fs::RealFs;
 pub use history::{hash_entry, NoHistoryOpener, SqliteHistoryOpener};
 pub use ids::UlidIds;
 pub use lease::FileLease;
-pub use sink::{NoopSink, StderrSink};
+pub use sink::{
+    HttpReportTransport, NoopSink, QueuedReportSink, ReportTransport, StderrSink,
+    REPORT_ENDPOINT_ENV,
+};
 pub use skill_uses::{
     is_skill_use_change, skill_use_watch_paths, SkillInvocationIndex, SkillUseRefreshReport,
     SkillUseWatchPath,

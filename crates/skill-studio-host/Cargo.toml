@@ -20,6 +20,10 @@ rusqlite = { version = "0.40", features = ["bundled"] }
 percent-encoding = "2"
 toml = "1.1.4"
 url = "2"
+# The error-reporting transport's real network call only; nothing else in
+# this crate talks HTTP. Blocking, since `ReportTransport::send` is sync -
+# `QueuedReportSink` already runs off the caller's own thread.
+reqwest = { version = "0.12", features = ["blocking", "json"] }
 
 [dev-dependencies]
 tempfile = "3"
