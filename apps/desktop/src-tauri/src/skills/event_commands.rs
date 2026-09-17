@@ -232,6 +232,7 @@ pub async fn list_skill_events(
     limit: Option<usize>,
     skill: Option<String>,
     event_store: tauri::State<'_, EventStoreState>,
+    telemetry_trace: Option<String>,
 ) -> Result<Vec<SkillEventDto>, String> {
     let home = dirs::home_dir().ok_or("Could not find home directory")?;
     load_history_on_worker(
@@ -239,6 +240,7 @@ pub async fn list_skill_events(
         home,
         limit.unwrap_or(200),
         skill,
+        telemetry_trace,
     )
     .await
 }
@@ -248,24 +250,50 @@ async fn load_history_on_worker(
     home: PathBuf,
     limit: usize,
     skill: Option<String>,
+    telemetry_trace: Option<String>,
 ) -> Result<Vec<SkillEventDto>, String> {
-    let permit = HISTORY_READ_SLOTS
-        .try_acquire()
-        .map_err(|_| "history_busy".to_string())?;
+    let started = std::time::Instant::now();
+    let context = skill_studio_telemetry::ReadContext::capture_ipc(
+        skill_studio_telemetry::ReadOperation::History,
+        telemetry_trace.as_deref(),
+    );
+    let permit = match HISTORY_READ_SLOTS.try_acquire() {
+        Ok(permit) => permit,
+        Err(_) => {
+            return trace_history_result(context, started, || Err("history_busy".to_string()))
+        }
+    };
     tauri::async_runtime::spawn_blocking(move || {
         let _permit = permit;
-        let state = EventStoreState(state);
-        let guard = locked_store(&state)?;
-        let store = guard.as_ref().ok_or("Event store is unavailable")?;
-        let rows = read_history_summaries(&store.conn, limit, skill.as_deref())
-            .map_err(|error| error.to_string())?;
-        Ok(rows
-            .into_iter()
-            .map(|row| dto_from_summary(store, &home, row))
-            .collect())
+        trace_history_result(context, started, || {
+            let state = EventStoreState(state);
+            let guard = locked_store(&state)?;
+            let store = guard.as_ref().ok_or("Event store is unavailable")?;
+            let rows = read_history_summaries(&store.conn, limit, skill.as_deref())
+                .map_err(|error| error.to_string())?;
+            Ok(rows
+                .into_iter()
+                .map(|row| dto_from_summary(store, &home, row))
+                .collect())
+        })
     })
     .await
     .map_err(|_| "history_worker_failed".to_string())?
+}
+
+fn trace_history_result(
+    context: skill_studio_telemetry::ReadContext,
+    started: std::time::Instant,
+    work: impl FnOnce() -> Result<Vec<SkillEventDto>, String>,
+) -> Result<Vec<SkillEventDto>, String> {
+    context.run(|| {
+        let span = tracing::info_span!(target: "skill_studio_desktop::history", "skill.history");
+        let _entered = span.enter();
+        let result = work();
+        let outcome = if result.is_ok() { "complete" } else { "failed" };
+        tracing::info!(target: "skill_studio_desktop::history", outcome, duration_ms = started.elapsed().as_secs_f64() * 1000.0, "skill.history.finished");
+        result
+    })
 }
 
 #[cfg(test)]
@@ -1156,11 +1184,13 @@ mod tests {
             temp.path().to_owned(),
             200,
             None,
+            None,
         ));
         let mut second = Box::pin(load_history_on_worker(
             Arc::clone(&state),
             temp.path().to_owned(),
             200,
+            None,
             None,
         ));
         assert!(first.as_mut().poll(&mut context).is_pending());
@@ -1169,6 +1199,7 @@ mod tests {
             Arc::clone(&state),
             temp.path().to_owned(),
             200,
+            None,
             None,
         ));
         assert!(matches!(
@@ -1188,7 +1219,7 @@ mod tests {
             .await
             .unwrap();
             assert!(
-                load_history_on_worker(state, temp.path().to_owned(), 200, None)
+                load_history_on_worker(state, temp.path().to_owned(), 200, None, None)
                     .await
                     .unwrap()
                     .is_empty()

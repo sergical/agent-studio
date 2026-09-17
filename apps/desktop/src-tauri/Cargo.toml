@@ -18,6 +18,9 @@ native-fork-repair = []
 tauri-build = { version = "2", features = [] }
 
 [dependencies]
+tracing = { version = "=0.1.44", default-features = false, features = ["std"] }
+skill-studio-telemetry = { path = "../../../crates/skill-studio-telemetry" }
+tracing-subscriber = { version = "=0.3.23", default-features = false, features = ["registry"] }
 skill-studio-core = { path = "../../../crates/skill-studio-core", features = ["event-store"] }
 tauri = { version = "2", features = [] }
 tauri-plugin-dialog = "2"
@@ -49,4 +52,6 @@ tar = { version = "0.4", default-features = false }
 tempfile = "3"
 
 [dev-dependencies]
+tauri = { version = "2", features = ["test"] }
+sentry = { version = "=0.49.2", default-features = false, features = ["test", "tracing", "logs", "metrics"] }
 skill-studio-core = { path = "../../../crates/skill-studio-core", features = ["test-support"] }

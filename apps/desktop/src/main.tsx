@@ -2,6 +2,7 @@ import React from "react";
 import ReactDOM from "react-dom/client";
 import { KitPreview } from "@skill-studio/ui";
 import App from "./App";
+import { desktopTelemetry } from "./lib/desktop-instrument";
 import { stampInitialTheme } from "./lib/theme";
 
 // Stamped before React renders, so the app never flashes the wrong palette
@@ -66,7 +67,7 @@ if (!rootElement) {
 // Not a real route: visit with `#kit` while running `npm run dev`.
 const showKitPreview = import.meta.env.DEV && location.hash === "#kit";
 
-ReactDOM.createRoot(rootElement).render(
+ReactDOM.createRoot(rootElement, desktopTelemetry?.desktopReactErrors).render(
   <React.StrictMode>
     <ErrorBoundary>{showKitPreview ? <KitPreview /> : <App />}</ErrorBoundary>
   </React.StrictMode>,

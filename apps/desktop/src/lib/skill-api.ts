@@ -7,6 +7,7 @@ import { SkillHistoryReader } from "./skill-history-reader";
 // ============================================================================
 
 import { invoke } from "@tauri-apps/api/core";
+import { desktopTelemetry } from "./desktop-instrument";
 import { listen } from "@tauri-apps/api/event";
 import { z } from "zod";
 import type {
@@ -128,7 +129,9 @@ export async function getSkillDetails(skillId: string): Promise<SkillDetails> {
  * Pass known project directories so project-scoped skills are found too.
  */
 export async function getInstalledSkills(projectPaths?: string[]): Promise<InstalledSkill[]> {
-  return invoke("get_installed_skills", { projectPaths });
+  const read = (telemetryTrace?: string) =>
+    invoke<InstalledSkill[]>("get_installed_skills", { projectPaths, telemetryTrace });
+  return desktopTelemetry ? desktopTelemetry.traceInventoryRead("inventory.read", read) : read();
 }
 
 /**
@@ -604,9 +607,11 @@ export async function setSkillInvocation(
  * Lists events newest-first, for the Activity view's History section.
  * Defaults to the last 200 events across every skill.
  */
-const historyReader = new SkillHistoryReader((limit, skill) =>
-  invoke<SkillEvent[]>("list_skill_events", { limit, skill }),
-);
+const historyReader = new SkillHistoryReader((limit, skill) => {
+  const read = (telemetryTrace?: string) =>
+    invoke<SkillEvent[]>("list_skill_events", { limit, skill, telemetryTrace });
+  return desktopTelemetry ? desktopTelemetry.traceInventoryRead("history.read", read) : read();
+});
 
 export function listSkillEvents(limit?: number, skill?: string): Promise<SkillEvent[]> {
   return historyReader.read(limit, skill);
@@ -692,7 +697,9 @@ export async function repairSkillLink(
  * `undefined` before the first snapshot has landed.
  */
 export async function getSkillSnapshot(): Promise<SkillSnapshot | undefined> {
-  return invoke("get_skill_snapshot");
+  const read = (telemetryTrace?: string) =>
+    invoke<SkillSnapshot | undefined>("get_skill_snapshot", { telemetryTrace });
+  return desktopTelemetry ? desktopTelemetry.traceInventoryRead("snapshot.read", read) : read();
 }
 
 /**

@@ -3,6 +3,7 @@
 // Skills.sh integration for skill discovery, installation, and management
 // ============================================================================
 
+mod desktop_telemetry;
 mod skills;
 
 use tauri::Manager;
@@ -45,9 +46,13 @@ fn open_event_store(app: &tauri::App) -> Option<skills::event_store::EventStore>
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    let telemetry = desktop_telemetry::DesktopTelemetry::initialize();
+    let configuration = telemetry.configuration();
+    let mut telemetry = Some(telemetry);
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
-        .setup(|app| {
+        .setup(move |app| {
+            app.manage(configuration);
             let refresh_state = skills::skill_refresh::init(app.handle());
             app.manage(refresh_state);
             app.manage(skills::skill_add_operation::AddSkillOperationState::default());
@@ -75,6 +80,7 @@ pub fn run() {
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
+            desktop_telemetry::get_telemetry_configuration,
             skills::add_method_defaults::get_add_method_defaults,
             // Skills.sh integration
             skills::commands::get_skills_sh_access,
@@ -164,8 +170,8 @@ pub fn run() {
         ])
         .build(tauri::generate_context!())
         .expect("error while building tauri application")
-        .run(|app, event| {
-            if let tauri::RunEvent::ExitRequested { code, api, .. } = event {
+        .run(move |app, event| {
+            if let tauri::RunEvent::ExitRequested { code, api, .. } = &event {
                 match app
                     .state::<skills::skill_document_operation::DocumentOperationState>()
                     .request_exit(code.unwrap_or(0))
@@ -176,6 +182,11 @@ pub fn run() {
                         eprintln!("[document_operation] exit coordination failed: {error}");
                         api.prevent_exit();
                     }
+                }
+            }
+            if matches!(event, tauri::RunEvent::Exit) {
+                if let Some(telemetry) = telemetry.take() {
+                    telemetry.shutdown();
                 }
             }
         });

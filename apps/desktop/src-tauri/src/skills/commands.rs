@@ -160,27 +160,34 @@ pub async fn get_skill_details(skill_id: String) -> Result<SkillDetails, String>
 #[tauri::command]
 pub fn get_installed_skills(
     project_paths: Option<Vec<String>>,
+    telemetry_trace: Option<String>,
     refresh_state: tauri::State<SkillRefreshState>,
     app: tauri::AppHandle,
 ) -> Result<Vec<InstalledSkill>, String> {
-    let requested = project_paths.unwrap_or_default();
-    let home = dirs::home_dir().ok_or("Could not find home directory")?;
-    let requested = skill_refresh::drop_home_directory_from_batch(requested, &home);
-    let requested = super::skill_project_authority::track(&home, requested)?;
-    let snapshot = refresh_state.snapshot.read().ok().and_then(|g| g.clone());
+    skill_studio_telemetry::ReadContext::capture_ipc(
+        skill_studio_telemetry::ReadOperation::Inventory,
+        telemetry_trace.as_deref(),
+    )
+    .run(|| {
+        let requested = project_paths.unwrap_or_default();
+        let home = dirs::home_dir().ok_or("Could not find home directory")?;
+        let requested = skill_refresh::drop_home_directory_from_batch(requested, &home);
+        let requested = super::skill_project_authority::track(&home, requested)?;
+        let snapshot = refresh_state.snapshot.read().ok().and_then(|g| g.clone());
 
-    if let Some(snapshot) = &snapshot {
-        if !refresh_state.is_skills_dirty()
-            && snapshot_covers_projects(&requested, &snapshot.projects)
-        {
-            return Ok(snapshot.skills.clone());
+        if let Some(snapshot) = &snapshot {
+            if !refresh_state.is_skills_dirty()
+                && snapshot_covers_projects(&requested, &snapshot.projects)
+            {
+                return Ok(snapshot.skills.clone());
+            }
         }
-    }
 
-    refresh_state.unexclude_projects(requested.clone());
-    refresh_state.add_extra_projects(requested);
-    let rebuilt = skill_refresh::rebuild_snapshot_now(&app, &refresh_state)?;
-    Ok(rebuilt.skills)
+        refresh_state.unexclude_projects(requested.clone());
+        refresh_state.add_extra_projects(requested);
+        let rebuilt = skill_refresh::rebuild_snapshot_now(&app, &refresh_state)?;
+        Ok(rebuilt.skills)
+    })
 }
 
 /// Whether the *published* snapshot already accounts for every path in
@@ -1034,11 +1041,14 @@ mod tests {
             );
             assert_eq!(linked.owner_kind, canonical_deployment.owner_kind);
             assert_eq!(linked.mutability, DeploymentMutability::ReadOnly);
-            assert!(matches!(
-                &linked.backing,
-                BackingRelationship::LinkedTo { deployment_id }
-                    if deployment_id == &canonical_deployment.id
-            ));
+            assert!(
+                matches!(
+                    &linked.backing,
+                    BackingRelationship::LinkedTo { deployment_id }
+                        if deployment_id == &canonical_deployment.id
+                ),
+                "linked: {linked:#?}; canonical: {canonical_deployment:#?}"
+            );
 
             remove_dotagents_deployment_with(
                 DotagentsRemovalContext {

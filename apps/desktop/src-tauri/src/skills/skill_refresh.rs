@@ -323,8 +323,15 @@ pub fn init(app: &AppHandle) -> SkillRefreshState {
 
 /// Instant read of the current snapshot from managed state.
 #[tauri::command]
-pub fn get_skill_snapshot(state: tauri::State<SkillRefreshState>) -> Option<SkillSnapshot> {
-    state.snapshot.read().ok().and_then(|guard| guard.clone())
+pub fn get_skill_snapshot(
+    state: tauri::State<SkillRefreshState>,
+    telemetry_trace: Option<String>,
+) -> Option<SkillSnapshot> {
+    skill_studio_telemetry::ReadContext::capture_ipc(
+        skill_studio_telemetry::ReadOperation::Snapshot,
+        telemetry_trace.as_deref(),
+    )
+    .run(|| state.snapshot.read().ok().and_then(|guard| guard.clone()))
 }
 
 /// Ask the background thread to rebuild the snapshot and return its receipt.
@@ -1343,18 +1350,24 @@ fn read_snapshot_inventory(
     service: &mut Option<ScopedSkillService>,
     names: Option<&BTreeSet<String>>,
 ) -> Result<InventoryRead, String> {
-    let result = bind_inventory_service(home, project_paths, service)?
-        .scan(names, Some(Duration::from_secs(30)));
-    if matches!(
-        &result,
-        Err(ScanError::Coordination(
-            skill_studio_core::skill_service::CoordinationFailure::Changed
-                | skill_studio_core::skill_service::CoordinationFailure::Unavailable { .. }
-        ))
-    ) {
-        *service = None;
-    }
-    result.map_err(|error| error.to_string())
+    skill_studio_telemetry::ReadContext::capture(
+        skill_studio_telemetry::TelemetrySurface::Desktop,
+        skill_studio_telemetry::ReadOperation::Scan,
+    )
+    .run(|| {
+        let result = bind_inventory_service(home, project_paths, service)?
+            .scan(names, Some(Duration::from_secs(30)));
+        if matches!(
+            &result,
+            Err(ScanError::Coordination(
+                skill_studio_core::skill_service::CoordinationFailure::Changed
+                    | skill_studio_core::skill_service::CoordinationFailure::Unavailable { .. }
+            ))
+        ) {
+            *service = None;
+        }
+        result.map_err(|error| error.to_string())
+    })
 }
 
 fn snapshot_inventory_projection(
@@ -2963,5 +2976,227 @@ mod tests {
 
         let snapshot = fixture_snapshot(&dep_dir);
         assert!(snapshot_owns_path(&snapshot, &skill_md));
+    }
+    fn run_isolated_telemetry_test(name: &str) -> bool {
+        const ISOLATED: &str = "SKILL_STUDIO_TEST_ISOLATED_TELEMETRY";
+        if std::env::var(ISOLATED).ok().as_deref() == Some(name) {
+            return false;
+        }
+        let output = std::process::Command::new(std::env::current_exe().unwrap())
+            .env(ISOLATED, name)
+            .args(["--exact", name, "--nocapture"])
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "isolated telemetry fixture failed: {} {}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+        true
+    }
+
+    #[test]
+    fn tauri_refresh_receipts_and_trace_headers_round_trip_through_commands() {
+        if run_isolated_telemetry_test("skills::skill_refresh::tests::tauri_refresh_receipts_and_trace_headers_round_trip_through_commands") {
+            return;
+        }
+        use tracing_subscriber::prelude::*;
+        let state = fixture_state();
+        let app = tauri::test::mock_builder()
+            .manage(state.clone())
+            .invoke_handler(tauri::generate_handler![
+                get_skill_snapshot,
+                request_skill_rescan
+            ])
+            .build(tauri::test::mock_context(tauri::test::noop_assets()))
+            .unwrap();
+        let window = tauri::WebviewWindowBuilder::new(&app, "main", Default::default())
+            .build()
+            .unwrap();
+        let invoke = |command: &str, body: serde_json::Value| {
+            let (sender, receiver) = std::sync::mpsc::sync_channel(1);
+            window.as_ref().clone().on_message(
+                tauri::webview::InvokeRequest {
+                    cmd: command.into(),
+                    callback: tauri::ipc::CallbackFn(0),
+                    error: tauri::ipc::CallbackFn(1),
+                    url: if cfg!(any(windows, target_os = "android")) {
+                        "http://tauri.localhost"
+                    } else {
+                        "tauri://localhost"
+                    }
+                    .parse()
+                    .unwrap(),
+                    body: body.into(),
+                    headers: Default::default(),
+                    invoke_key: tauri::test::INVOKE_KEY.into(),
+                },
+                Box::new(move |_, _, response, _, _| {
+                    sender.send(response).unwrap();
+                }),
+            );
+            match receiver
+                .recv_timeout(Duration::from_secs(2))
+                .expect("IPC response deadline")
+            {
+                tauri::ipc::InvokeResponse::Ok(body) => {
+                    body.deserialize::<serde_json::Value>().unwrap()
+                }
+                tauri::ipc::InvokeResponse::Err(error) => panic!("IPC failed: {error:?}"),
+            }
+        };
+        let first = invoke("request_skill_rescan", serde_json::json!({}));
+        let second = invoke("request_skill_rescan", serde_json::json!({}));
+        assert_eq!(first["instance_id"], second["instance_id"]);
+        assert_eq!(first["generation"], "1");
+        assert_eq!(second["generation"], "2");
+        let batch = state.refresh_demand.begin();
+        let third = invoke("request_skill_rescan", serde_json::json!({}));
+        assert_eq!(third["generation"], "3");
+        let mut full = fixture_snapshot(Path::new("/fixture-only"));
+        full.full_refresh = Some(batch.position());
+        let stored = store_skill_snapshot(&state, full).unwrap();
+        batch.complete();
+        assert!(state.is_skills_dirty());
+        let mut invocation = stored.clone();
+        invocation.scanned_at = "invocation-only".into();
+        store_skill_snapshot(&state, invocation).unwrap();
+        let envelopes = sentry::test::with_captured_envelopes_options(
+            || {
+                tracing::subscriber::with_default(
+                    tracing_subscriber::registry()
+                        .with(skill_studio_telemetry::read_sentry_layer()),
+                    || {
+                        let cached = invoke(
+                            "get_skill_snapshot",
+                            serde_json::json!({
+                                "telemetryTrace": "0123456789abcdef0123456789abcdef-0123456789abcdef-1",
+                            }),
+                        );
+                        assert_eq!(cached["full_refresh"], second);
+                        assert_eq!(cached["revision"], 2);
+                        assert_eq!(cached["scanned_at"], "invocation-only");
+                        assert_eq!(
+                            invoke(
+                                "get_skill_snapshot",
+                                serde_json::json!({"telemetryTrace": "PRIVATE_SENTINEL"})
+                            )["full_refresh"],
+                            second
+                        );
+                        assert_eq!(
+                            invoke("get_skill_snapshot", serde_json::json!({}))["full_refresh"],
+                            second
+                        );
+                    },
+                );
+            },
+            sentry::ClientOptions::new()
+                .default_integrations(false)
+                .traces_sample_rate(1.0),
+        );
+        let transactions: Vec<_> = envelopes
+            .into_iter()
+            .flat_map(sentry::Envelope::into_items)
+            .filter_map(|item| {
+                if let sentry::protocol::EnvelopeItem::Transaction(tx) = item {
+                    Some(serde_json::to_value(tx).unwrap())
+                } else {
+                    None
+                }
+            })
+            .collect();
+        assert_eq!(transactions.len(), 3);
+        let remote = transactions
+            .iter()
+            .find(|tx| tx["contexts"]["trace"]["trace_id"] == "0123456789abcdef0123456789abcdef")
+            .unwrap();
+        assert_eq!(
+            remote["contexts"]["trace"]["parent_span_id"],
+            "0123456789abcdef"
+        );
+        assert!(remote["spans"].as_array().unwrap().is_empty());
+        assert!(!serde_json::to_string(&transactions)
+            .unwrap()
+            .contains("PRIVATE_SENTINEL"));
+        let final_batch = state.refresh_demand.begin();
+        let mut next = stored;
+        next.full_refresh = Some(final_batch.position());
+        store_skill_snapshot(&state, next).unwrap();
+        final_batch.complete();
+        assert!(!state.is_skills_dirty());
+        assert_eq!(
+            invoke("get_skill_snapshot", serde_json::json!({}))["full_refresh"],
+            third
+        );
+    }
+
+    #[test]
+    fn inventory_reads_emit_desktop_read_contexts_for_full_and_named_scans() {
+        if run_isolated_telemetry_test("skills::skill_refresh::tests::inventory_reads_emit_desktop_read_contexts_for_full_and_named_scans") {
+            return;
+        }
+        use tracing_subscriber::prelude::*;
+        let home = tempfile::tempdir().unwrap();
+        std::fs::create_dir(home.path().join(".git")).unwrap();
+        let mut service = None;
+        let names = BTreeSet::from(["absent".to_string()]);
+        let envelopes = sentry::test::with_captured_envelopes_options(
+            || {
+                let subscriber = tracing_subscriber::registry()
+                    .with(skill_studio_telemetry::read_sentry_layer());
+                tracing::subscriber::with_default(subscriber, || {
+                    assert!(
+                        read_snapshot_inventory(home.path(), &[], &mut service, None)
+                            .unwrap()
+                            .skills
+                            .is_empty()
+                    );
+                    assert!(
+                        read_snapshot_inventory(home.path(), &[], &mut service, Some(&names))
+                            .unwrap()
+                            .skills
+                            .is_empty()
+                    );
+                });
+            },
+            sentry::ClientOptions::new()
+                .default_integrations(false)
+                .traces_sample_rate(1.0),
+        );
+        let transactions: Vec<_> = envelopes
+            .into_iter()
+            .flat_map(sentry::Envelope::into_items)
+            .filter_map(|item| {
+                if let sentry::protocol::EnvelopeItem::Transaction(transaction) = item {
+                    Some(serde_json::to_value(transaction).unwrap())
+                } else {
+                    None
+                }
+            })
+            .collect();
+        assert_eq!(transactions.len(), 2);
+        for transaction in &transactions {
+            assert_eq!(transaction["transaction"], "skill.read");
+            assert_eq!(
+                transaction["contexts"]["trace"]["data"]["adapter"],
+                "desktop"
+            );
+            let scans: Vec<_> = transaction["spans"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .filter(|span| span["description"] == "skill.scan")
+                .collect();
+            assert_eq!(scans.len(), 1);
+            assert_eq!(
+                scans[0]["parent_span_id"],
+                transaction["contexts"]["trace"]["span_id"]
+            );
+        }
+        assert_ne!(
+            transactions[0]["contexts"]["trace"]["trace_id"],
+            transactions[1]["contexts"]["trace"]["trace_id"]
+        );
     }
 }
