@@ -135,7 +135,7 @@ pub fn install_panic_hook() {
                 }],
             };
             let sensitive = SensitiveContext {
-                home_dir: dirs::home_dir().map(|home| home.display().to_string()),
+                home_path: dirs::home_dir().map(|home| home.display().to_string()),
                 skill_name: None,
                 project_path: None,
             };

@@ -124,7 +124,7 @@ pub struct RawReport {
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct SensitiveContext {
     /// The user's home directory, for example `/Users/alice`.
-    pub home_dir: Option<String>,
+    pub home_path: Option<String>,
     /// The skill name involved in the failure, if any.
     pub skill_name: Option<String>,
     /// The project path involved in the failure, if any.
@@ -175,7 +175,7 @@ fn is_allowed_dimension(key: &str, value: &str) -> bool {
 fn redact_sensitive(text: &str, sensitive: &SensitiveContext) -> String {
     let mut out = text.to_string();
     for value in [
-        &sensitive.home_dir,
+        &sensitive.home_path,
         &sensitive.skill_name,
         &sensitive.project_path,
     ]
@@ -204,7 +204,7 @@ fn strip_body(text: &str) -> String {
 /// values - a panic message can quote a path under someone else's home
 /// directory (a symlinked skill, a different account) that
 /// [`redact_sensitive`] would never catch because it isn't this machine's
-/// recorded `home_dir`. Only the username segment is replaced; the rest of
+/// recorded `home_path`. Only the username segment is replaced; the rest of
 /// the path is kept so the message still says where inside home it failed.
 fn redact_home_style_paths(text: &str) -> String {
     const PREFIXES: [(&str, char); 3] = [("/Users/", '/'), ("/home/", '/'), ("C:\\Users\\", '\\')];
@@ -353,7 +353,7 @@ mod tests {
     #[test]
     fn sanitizer_strips_home_path_skill_name_and_file_body_or_names_the_leaked_field() {
         let sensitive = SensitiveContext {
-            home_dir: Some("/Users/alice".to_string()),
+            home_path: Some("/Users/alice".to_string()),
             skill_name: Some("my-private-skill".to_string()),
             project_path: Some("/Users/alice/work/secret-project".to_string()),
         };
@@ -408,14 +408,14 @@ mod tests {
     }
 
     /// guards: a home path that isn't this machine's recorded
-    /// `SensitiveContext.home_dir` - a panic quoting another account's home
+    /// `SensitiveContext.home_path` - a panic quoting another account's home
     /// directory, or the exact panic-shaped report `install_panic_hook`
     /// builds - surviving `redact_sensitive`'s exact-match check.
     #[test]
     fn sanitizer_strips_home_path_by_pattern_when_not_the_sensitive_context_value_or_names_the_leaked_field(
     ) {
         let sensitive = SensitiveContext {
-            home_dir: Some("/Users/alice".to_string()),
+            home_path: Some("/Users/alice".to_string()),
             skill_name: None,
             project_path: None,
         };
@@ -433,7 +433,7 @@ mod tests {
 
         assert!(
             !message.contains("/Users/"),
-            "a home path outside SensitiveContext.home_dir leaked: {message}"
+            "a home path outside SensitiveContext.home_path leaked: {message}"
         );
 
         // Same shape `install_panic_hook` builds: an empty `SensitiveContext`
@@ -450,7 +450,7 @@ mod tests {
         let sanitized = sanitize(&hook_shaped, &SensitiveContext::default());
         assert!(
             !sanitized.exceptions[0].message.contains("/Users/"),
-            "a panic-shaped report with no SensitiveContext.home_dir set still leaked a home path: {}",
+            "a panic-shaped report with no SensitiveContext.home_path set still leaked a home path: {}",
             sanitized.exceptions[0].message
         );
     }
