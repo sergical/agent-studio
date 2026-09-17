@@ -85,6 +85,12 @@ const PI_NESTED_ROOT_WALK_DEPTH: u32 = 6;
 /// project's own `.pi/skills` is found by the marker check but never
 /// mistaken for a nested project root.
 fn nested_pi_project_roots(root: &Path) -> Vec<PathBuf> {
+    // A `cwd` this shallow (e.g. `/`, pi's own sentinel for a session
+    // outside any project) is never a real project root; walking it would
+    // mean reading the whole filesystem.
+    if root.components().count() < 2 {
+        return Vec::new();
+    }
     let mut found = Vec::new();
     walk_for_pi_roots(root, PI_NESTED_ROOT_WALK_DEPTH, &mut found);
     found
@@ -490,21 +496,23 @@ pub fn discover_skill_projects(home: &Path) -> Vec<PathBuf> {
 fn discover_skill_projects_from(home: &Path, sources: &DiscoverySources) -> Vec<PathBuf> {
     let mut paths: BTreeSet<PathBuf> = BTreeSet::new();
     for (harness, read_history) in HISTORY_SOURCES {
-        if sources.is_enabled(harness) {
-            paths.extend(read_history(home));
+        if !sources.is_enabled(harness) {
+            continue;
         }
-    }
-
-    // pi walks project roots recursively to the git root
-    // (docs/action-map/harnesses/pi.md), so a nested `.pi/skills` several
-    // levels below a history-discovered root is still a project root, not
-    // just the root itself.
-    if sources.is_enabled(AgentId::PI) {
-        let nested: Vec<PathBuf> = paths
-            .iter()
-            .flat_map(|p| nested_pi_project_roots(p))
-            .collect();
-        paths.extend(nested);
+        let discovered = read_history(home);
+        // pi walks project roots recursively to the git root
+        // (docs/action-map/harnesses/pi.md), so a nested `.pi/skills`
+        // several levels below a pi transcript's own `cwd` is still a
+        // project root, not just the `cwd` itself. Scoped to pi's own
+        // history only: another harness's sentinel value (e.g. OpenCode's
+        // "/" for sessions outside any project) is never a real project
+        // root to walk.
+        if *harness == AgentId::PI {
+            for p in &discovered {
+                paths.extend(nested_pi_project_roots(p));
+            }
+        }
+        paths.extend(discovered);
     }
 
     paths
