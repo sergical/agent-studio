@@ -34,7 +34,6 @@ use super::opencode_skill_permission;
 use super::skill_agent_runner::validate_skill_dir_name;
 use super::skill_deployment::{BackingRelationship, SkillDestination};
 use super::skill_dto::{DisabledBy, HarnessVisibilityTarget, LifecycleTarget};
-use super::skill_fork::ForkMutationLock;
 use super::skill_fork_registry::{
     read_fork_registry, write_fork_registry, ClaudeLinkRemoved, CopyDeploymentRecord, ForkRegistry,
 };
@@ -753,9 +752,9 @@ pub async fn set_harness_enabled(
     let timing_app = app.clone();
     crate::timing_log::time_command_blocking(&timing_app, "set_harness_enabled", move || {
         let refresh_state = app.state::<SkillRefreshState>();
-        let fork_lock = app.state::<ForkMutationLock>();
-        let _guard = fork_lock.try_acquire()?;
         let home = dirs::home_dir().ok_or("Could not find home directory")?;
+        let write_lease = super::write_lease::WriteLease::default();
+        let _guard = write_lease.try_acquire(&home)?;
         let snapshot =
             super::skill_lifecycle::rebuild_fresh_lifecycle_snapshot(&app, &refresh_state)?;
         let agent = target.reader_agent.cli_name();
@@ -829,9 +828,10 @@ pub async fn set_deployment_enabled(
     let timing_app = app.clone();
     crate::timing_log::time_command_blocking(&timing_app, "set_deployment_enabled", move || {
         let refresh_state = app.state::<SkillRefreshState>();
-        let fork_lock = app.state::<ForkMutationLock>();
         let event_store = app.state::<EventStoreState>();
-        let _guard = fork_lock.try_acquire()?;
+        let home = dirs::home_dir().ok_or("Could not find home directory")?;
+        let write_lease = super::write_lease::WriteLease::default();
+        let _guard = write_lease.try_acquire(&home)?;
         let deployment_id = target
             .deployment_id
             .as_deref()
@@ -880,7 +880,6 @@ pub async fn set_deployment_enabled(
             .transpose()?;
 
         let result = if deployment.owner_kind == super::skill_ownership::LifecycleOwnerKind::Copy {
-            let home = dirs::home_dir().ok_or("Could not find home directory")?;
             let mut registry = read_fork_registry(&home)?;
             move_copy_deployment_and_update_registry(
                 &mut registry,

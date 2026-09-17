@@ -1,8 +1,8 @@
 // ============================================================================
 // Skills Module - skill_lifecycle
 // Resolves a deployment or owner id from a current snapshot, revalidates
-// path/owner, and previews owner-wide mutations. Commands acquire
-// ForkMutationLock before calling into this module.
+// path/owner, and previews owner-wide mutations. Commands acquire the
+// per-root write lease (write_lease.rs) before calling into this module.
 // ============================================================================
 
 use std::path::{Path, PathBuf};
@@ -102,7 +102,7 @@ fn revalidate_deployment_fingerprint(deployment: &Deployment, action: &str) -> R
 }
 
 /// Resolve one deployment or owner group against a newly rebuilt snapshot.
-/// Callers must acquire `ForkMutationLock` first. The rebuild lock is only
+/// Callers must acquire the per-root write lease first. The rebuild lock is only
 /// held while reading filesystem state, so watcher refreshes cannot overlap
 /// assembly and no refresh lock remains held during the mutation.
 pub fn resolve_fresh_lifecycle_target(

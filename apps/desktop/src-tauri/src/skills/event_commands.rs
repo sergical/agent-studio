@@ -16,7 +16,6 @@ use super::agents::AgentId;
 use super::event_store::{EventRow, EventStore};
 use super::skill_agent_runner::validate_skill_dir_name;
 use super::skill_dto::{Deployment, LifecycleTarget, SkillEventDto};
-use super::skill_fork::ForkMutationLock;
 use super::skill_materialize;
 use super::skill_refresh::{self, SkillRefreshState, SkillSnapshot};
 use tauri::Manager;
@@ -94,16 +93,16 @@ pub async fn restore_skill_event(
 ) -> Result<(), String> {
     let timing_app = app.clone();
     crate::timing_log::time_command_blocking(&timing_app, "restore_skill_event", move || {
-        let fork_lock = app.state::<ForkMutationLock>();
         let event_store = app.state::<EventStoreState>();
-        let _guard = fork_lock.try_acquire()?;
+        let home = dirs::home_dir().ok_or("Could not find home directory")?;
+        let write_lease = super::write_lease::WriteLease::default();
+        let _guard = write_lease.try_acquire(&home)?;
         let guard = locked_store(&event_store)?;
         let store = guard.as_ref().ok_or("Event store is unavailable")?;
 
         let target = store
             .get(&event_id)?
             .ok_or_else(|| format!("Event {event_id} not found"))?;
-        let home = dirs::home_dir().ok_or("Could not find home directory")?;
         skill_materialize::restore_guard_for_explode(store, &target, &home)?;
         if target.kind == "make_independent_copy" {
             if force {
@@ -209,9 +208,10 @@ pub async fn materialize_harness_root(
     let timing_app = app.clone();
     crate::timing_log::time_command_blocking(&timing_app, "materialize_harness_root", move || {
         let refresh_state = app.state::<SkillRefreshState>();
-        let fork_lock = app.state::<ForkMutationLock>();
         let event_store = app.state::<EventStoreState>();
-        let _guard = fork_lock.try_acquire()?;
+        let home = dirs::home_dir().ok_or("Could not find home directory")?;
+        let write_lease = super::write_lease::WriteLease::default();
+        let _guard = write_lease.try_acquire(&home)?;
         let root_path = PathBuf::from(&root);
         skill_materialize::validate_materialize_root(&root_path)?;
 
@@ -258,9 +258,10 @@ pub async fn materialize_harness_root_then_disable(
         "materialize_harness_root_then_disable",
         move || {
             let refresh_state = app.state::<SkillRefreshState>();
-            let fork_lock = app.state::<ForkMutationLock>();
             let event_store = app.state::<EventStoreState>();
-            let _guard = fork_lock.try_acquire()?;
+            let home = dirs::home_dir().ok_or("Could not find home directory")?;
+            let write_lease = super::write_lease::WriteLease::default();
+            let _guard = write_lease.try_acquire(&home)?;
             let deployment_id = target
                 .deployment_id
                 .as_deref()
@@ -344,9 +345,10 @@ pub async fn make_skill_independent_copy(
         "make_skill_independent_copy",
         move || {
             let refresh_state = app.state::<SkillRefreshState>();
-            let fork_lock = app.state::<ForkMutationLock>();
             let event_store = app.state::<EventStoreState>();
-            let _guard = fork_lock.try_acquire()?;
+            let home = dirs::home_dir().ok_or("Could not find home directory")?;
+            let write_lease = super::write_lease::WriteLease::default();
+            let _guard = write_lease.try_acquire(&home)?;
             let deployment_id = target
                 .deployment_id
                 .as_deref()
@@ -510,9 +512,10 @@ pub async fn repair_skill_link(
     let timing_app = app.clone();
     crate::timing_log::time_command_blocking(&timing_app, "repair_skill_link", move || {
         let refresh_state = app.state::<SkillRefreshState>();
-        let fork_lock = app.state::<ForkMutationLock>();
         let event_store = app.state::<EventStoreState>();
-        let _guard = fork_lock.try_acquire()?;
+        let home = dirs::home_dir().ok_or("Could not find home directory")?;
+        let write_lease = super::write_lease::WriteLease::default();
+        let _guard = write_lease.try_acquire(&home)?;
         let link = PathBuf::from(&path);
 
         let snapshot =

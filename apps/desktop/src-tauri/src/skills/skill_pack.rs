@@ -6,7 +6,7 @@
 // `[[skills]]` row for provenance on the ones dotagents, skills.sh, or a
 // fork manages (fork = both a row for the origin and a bundled copy of the
 // edits), plus a generated `README.md`. `create`/`update`/`publish`/`delete`
-// all take `ForkMutationLock` and write the registry
+// all take a per-root write lease and write the registry
 // (`~/.agents/skill-studio.json`) last, temp+rename via
 // `skill_fork_registry::write_fork_registry`. `import_skill_pack` is the
 // read side: given "owner/repo", it resolves one commit, reads that commit's
@@ -44,7 +44,6 @@ use super::skill_add::{maybe_claude_code_symlink, CommandRunner, RealCommandRunn
 use super::skill_agent_runner::validate_skill_dir_name;
 use super::skill_deployment::SkillDestination;
 use super::skill_dto::InstallScope;
-use super::skill_fork::ForkMutationLock;
 use super::skill_fork_registry::{self, PackMember, PackRecord};
 use super::skill_fs::{copy_dir_all, copy_dir_preserving_symlinks};
 use super::skill_refresh;
@@ -1401,7 +1400,7 @@ fn preflight_pack_import_with(
     gh: &dyn GhContentsFetch,
     runner: &dyn CommandRunner,
     state: &PackImportTrustState,
-    fork_lock: &ForkMutationLock,
+    write_lease: &super::write_lease::WriteLease,
 ) -> Result<PackImportPreflightResult, String> {
     validate_pack_import_request(&request)?;
     let mut prepared = prepare_pack_import(home, &request.source, gh, None)?;
@@ -1413,7 +1412,7 @@ fn preflight_pack_import_with(
         }
     };
     if all_trusted {
-        let _guard = match fork_lock.try_acquire() {
+        let _guard = match write_lease.try_acquire(home) {
             Ok(guard) => guard,
             Err(error) => {
                 cleanup_prepared_pack_import(home, &prepared);
@@ -1554,7 +1553,7 @@ fn confirm_pack_import_trust_with(
     gh: &dyn GhContentsFetch,
     runner: &dyn CommandRunner,
     state: &PackImportTrustState,
-    fork_lock: &ForkMutationLock,
+    write_lease: &super::write_lease::WriteLease,
 ) -> Result<ImportResult, String> {
     validate_pack_import_request(&request)?;
     let pending = {
@@ -1575,7 +1574,7 @@ fn confirm_pack_import_trust_with(
             .expect("matching pack trust token remains while token state is locked")
     };
 
-    let _guard = match fork_lock.try_acquire() {
+    let _guard = match write_lease.try_acquire(home) {
         Ok(guard) => guard,
         Err(error) => {
             cleanup_prepared_pack_import(home, &pending.prepared);
@@ -1613,9 +1612,9 @@ pub async fn create_skill_pack(
 ) -> Result<PackInfo, String> {
     let timing_app = app.clone();
     crate::timing_log::time_command_blocking(&timing_app, "create_skill_pack", move || {
-        let fork_lock = app.state::<ForkMutationLock>();
-        let _guard = fork_lock.try_acquire()?;
         let home = dirs::home_dir().ok_or("Could not find home directory")?;
+        let write_lease = super::write_lease::WriteLease::default();
+        let _guard = write_lease.try_acquire(&home)?;
         let app_data = app
             .path()
             .app_data_dir()
@@ -1632,9 +1631,9 @@ pub async fn update_skill_pack(
 ) -> Result<UpdatePackResult, String> {
     let timing_app = app.clone();
     crate::timing_log::time_command_blocking(&timing_app, "update_skill_pack", move || {
-        let fork_lock = app.state::<ForkMutationLock>();
-        let _guard = fork_lock.try_acquire()?;
         let home = dirs::home_dir().ok_or("Could not find home directory")?;
+        let write_lease = super::write_lease::WriteLease::default();
+        let _guard = write_lease.try_acquire(&home)?;
         let app_data = app
             .path()
             .app_data_dir()
@@ -1652,9 +1651,9 @@ pub async fn publish_skill_pack(
 ) -> Result<PackInfo, String> {
     let timing_app = app.clone();
     crate::timing_log::time_command_blocking(&timing_app, "publish_skill_pack", move || {
-        let fork_lock = app.state::<ForkMutationLock>();
-        let _guard = fork_lock.try_acquire()?;
         let home = dirs::home_dir().ok_or("Could not find home directory")?;
+        let write_lease = super::write_lease::WriteLease::default();
+        let _guard = write_lease.try_acquire(&home)?;
         let gh_bin = skill_update_check::resolve_gh_binary()
             .ok_or_else(|| "gh is not installed".to_string())?;
         publish_skill_pack_with(
@@ -1673,9 +1672,9 @@ pub async fn publish_skill_pack(
 pub async fn delete_skill_pack(name: String, app: tauri::AppHandle) -> Result<(), String> {
     let timing_app = app.clone();
     crate::timing_log::time_command_blocking(&timing_app, "delete_skill_pack", move || {
-        let fork_lock = app.state::<ForkMutationLock>();
-        let _guard = fork_lock.try_acquire()?;
         let home = dirs::home_dir().ok_or("Could not find home directory")?;
+        let write_lease = super::write_lease::WriteLease::default();
+        let _guard = write_lease.try_acquire(&home)?;
         delete_skill_pack_with(&home, &name)
     })
     .await
@@ -1689,8 +1688,8 @@ pub async fn import_skill_pack(
     let timing_app = app.clone();
     crate::timing_log::time_command_blocking(&timing_app, "import_skill_pack", move || {
         let trust_state = app.state::<PackImportTrustState>();
-        let fork_lock = app.state::<ForkMutationLock>();
         let home = dirs::home_dir().ok_or("Could not find home directory")?;
+        let write_lease = super::write_lease::WriteLease::default();
         let gh_bin = if validate_pack_manifest_source(&request.source).is_ok() {
             skill_update_check::resolve_gh_binary()
                 .ok_or_else(|| "gh is not installed".to_string())?
@@ -1703,7 +1702,7 @@ pub async fn import_skill_pack(
             &RealGhContentsFetch { gh_bin },
             &RealCommandRunner::new(),
             &trust_state,
-            &fork_lock,
+            &write_lease,
         )?;
         if matches!(result, PackImportPreflightResult::Imported { .. }) {
             skill_refresh::request_snapshot_rebuild(&app);
@@ -1724,8 +1723,8 @@ pub async fn confirm_skill_pack_trust(
     let timing_app = app.clone();
     crate::timing_log::time_command_blocking(&timing_app, "confirm_skill_pack_trust", move || {
         let trust_state = app.state::<PackImportTrustState>();
-        let fork_lock = app.state::<ForkMutationLock>();
         let home = dirs::home_dir().ok_or("Could not find home directory")?;
+        let write_lease = super::write_lease::WriteLease::default();
         let gh_bin = if validate_pack_manifest_source(&request.source).is_ok() {
             skill_update_check::resolve_gh_binary()
                 .ok_or_else(|| "gh is not installed".to_string())?
@@ -1739,7 +1738,7 @@ pub async fn confirm_skill_pack_trust(
             &RealGhContentsFetch { gh_bin },
             &RealCommandRunner::new(),
             &trust_state,
-            &fork_lock,
+            &write_lease,
         )?;
         skill_refresh::request_snapshot_rebuild(&app);
         Ok(result)
@@ -2550,7 +2549,7 @@ source = "someone/repo"
                 &gh,
                 &runner,
                 &state,
-                &ForkMutationLock::default(),
+                &super::super::write_lease::WriteLease::with_lease_root(tmp.path().join("leases")),
             )
             .unwrap(),
         );
@@ -2572,7 +2571,8 @@ source = "someone/repo"
             toml: Some("[[skills]]\nname = \"child\"\nsource = \"someone/child\"\n".to_string()),
         };
         let state = PackImportTrustState::default();
-        let lock = ForkMutationLock::default();
+        let lock =
+            super::super::write_lease::WriteLease::with_lease_root(tmp.path().join("leases"));
         let request = pack_import_request("someone/repo");
         let (_, token) = trust_token(
             preflight_pack_import_with(tmp.path(), request.clone(), &gh, &runner, &state, &lock)
@@ -2607,7 +2607,8 @@ source = "someone/repo"
             fail_sources: vec![],
         };
         let state = PackImportTrustState::default();
-        let lock = ForkMutationLock::default();
+        let lock =
+            super::super::write_lease::WriteLease::with_lease_root(tmp.path().join("leases"));
         let request = pack_import_request("someone/repo");
         let (_, token) = trust_token(
             preflight_pack_import_with(tmp.path(), request.clone(), &gh, &runner, &state, &lock)
@@ -2644,7 +2645,8 @@ source = "someone/repo"
             fail_sources: vec![],
         };
         let state = PackImportTrustState::default();
-        let lock = ForkMutationLock::default();
+        let lock =
+            super::super::write_lease::WriteLease::with_lease_root(tmp.path().join("leases"));
         let request = pack_import_request("someone/repo");
         let (_, token) = trust_token(
             preflight_pack_import_with(tmp.path(), request.clone(), &gh, &runner, &state, &lock)
@@ -2681,7 +2683,8 @@ source = "someone/repo"
             installed_skill: Mutex::new(None),
         };
         let state = PackImportTrustState::default();
-        let lock = ForkMutationLock::default();
+        let lock =
+            super::super::write_lease::WriteLease::with_lease_root(tmp.path().join("leases"));
         let request = pack_import_request(&local_pack.to_string_lossy());
         let (_, token) = trust_token(
             preflight_pack_import_with(
@@ -2797,7 +2800,8 @@ source = "someone/repo"
         )
         .unwrap();
         let state = PackImportTrustState::default();
-        let lock = ForkMutationLock::default();
+        let lock =
+            super::super::write_lease::WriteLease::with_lease_root(tmp.path().join("leases"));
         let request = pack_import_request(&local_pack.to_string_lossy());
         let runner = FakeRunner {
             calls: Mutex::new(Vec::new()),
@@ -2885,7 +2889,7 @@ source = "someone/repo"
                 &FakeGhContents { toml: None },
                 &runner,
                 &state,
-                &ForkMutationLock::default(),
+                &super::super::write_lease::WriteLease::with_lease_root(tmp.path().join("leases")),
             )
             .unwrap(),
         );
@@ -2926,7 +2930,8 @@ source = "someone/repo"
         )
         .unwrap();
         let state = PackImportTrustState::default();
-        let lock = ForkMutationLock::default();
+        let lock =
+            super::super::write_lease::WriteLease::with_lease_root(tmp.path().join("leases"));
         let runner = FakeRunner {
             calls: Mutex::new(Vec::new()),
             home: tmp.path().to_path_buf(),
@@ -2996,7 +3001,7 @@ source = "someone/repo"
                 &FakeGhContents { toml: None },
                 &runner,
                 &state,
-                &ForkMutationLock::default(),
+                &super::super::write_lease::WriteLease::with_lease_root(tmp.path().join("leases")),
             )
             .unwrap(),
         );
@@ -3068,7 +3073,7 @@ source = "someone/repo"
                 &FakeGhContents { toml: None },
                 &runner,
                 &state,
-                &ForkMutationLock::default(),
+                &super::super::write_lease::WriteLease::with_lease_root(tmp.path().join("leases")),
             )
             .unwrap(),
         );
@@ -3123,7 +3128,8 @@ source = "someone/repo"
             toml: Mutex::new(vec![Some(original.to_string()), Some(changed.to_string())]),
         };
         let state = PackImportTrustState::default();
-        let lock = ForkMutationLock::default();
+        let lock =
+            super::super::write_lease::WriteLease::with_lease_root(tmp.path().join("leases"));
         let request = pack_import_request("someone/repo");
         let (_, token) = trust_token(
             preflight_pack_import_with(tmp.path(), request.clone(), &gh, &runner, &state, &lock)
@@ -3178,7 +3184,8 @@ source = "someone/repo"
         };
         let gh = FakeGhContents { toml: None };
         let state = PackImportTrustState::default();
-        let lock = ForkMutationLock::default();
+        let lock =
+            super::super::write_lease::WriteLease::with_lease_root(tmp.path().join("leases"));
         let request = pack_import_request("someone/repo");
         let (_, token) = trust_token(
             preflight_pack_import_with(tmp.path(), request.clone(), &gh, &runner, &state, &lock)
@@ -3208,7 +3215,8 @@ source = "someone/repo"
         };
         let gh = FakeGhContents { toml: None };
         let state = PackImportTrustState::default();
-        let lock = ForkMutationLock::default();
+        let lock =
+            super::super::write_lease::WriteLease::with_lease_root(tmp.path().join("leases"));
         let request = pack_import_request("someone/repo");
         let (_, token) = trust_token(
             preflight_pack_import_with(tmp.path(), request.clone(), &gh, &runner, &state, &lock)
@@ -3256,7 +3264,9 @@ source = "someone/repo"
                     &gh,
                     &runner,
                     &PackImportTrustState::default(),
-                    &ForkMutationLock::default(),
+                    &super::super::write_lease::WriteLease::with_lease_root(
+                        tmp.path().join("leases")
+                    ),
                 )
                 .unwrap(),
                 PackImportPreflightResult::Imported { .. }

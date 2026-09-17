@@ -29,7 +29,7 @@ use super::skill_dto::{
     AddSkillOutcome, AddSkillRequest, AddSkillResult, AddSkillsRequest, InstallScope,
     ParsedSkillSource, ParsedSkillSourceKind,
 };
-use super::skill_fork::{ForkMutationLock, RealUpstreamFetch, RepoSnapshot, UpstreamFetch};
+use super::skill_fork::{RealUpstreamFetch, RepoSnapshot, UpstreamFetch};
 use super::skill_fork_registry::{AddMethod, CopyDeploymentRecord, TrialScope};
 #[cfg(test)]
 use super::skill_fs::copy_dir_all;
@@ -1340,9 +1340,9 @@ pub async fn add_skill(
 ) -> Result<AddSkillResult, String> {
     let timing_app = app.clone();
     crate::timing_log::time_command_blocking(&timing_app, "add_skill", move || {
-        let fork_lock = app.state::<ForkMutationLock>();
-        let _guard = fork_lock.try_acquire()?;
         let home = dirs::home_dir().ok_or("Could not find home directory")?;
+        let write_lease = super::write_lease::WriteLease::default();
+        let _guard = write_lease.try_acquire(&home)?;
         let runner = RealCommandRunner::new();
         let (fetch, lookup) = resolve_fetch_and_lookup(&app)?;
 

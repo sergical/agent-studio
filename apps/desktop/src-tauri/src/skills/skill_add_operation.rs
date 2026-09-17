@@ -24,7 +24,6 @@ use super::skill_deployment::{universal_skills_dir, SkillDestination};
 use super::skill_dto::{
     AddSkillOutcome, AddSkillRequest, AddSkillResult, AddSkillsRequest, InstallScope,
 };
-use super::skill_fork::ForkMutationLock;
 use super::skill_fork_registry::AddMethod;
 use super::skill_process::{AddOperationControl, DEFAULT_ADD_PROCESS_TIMEOUT};
 use super::skill_process::{PROCESS_CANCELLED_MESSAGE, PROCESS_TIMED_OUT_MESSAGE};
@@ -850,26 +849,23 @@ fn spawn_operation(app: AppHandle, state: AddSkillOperationState, operation_id: 
                 }
             }
         };
-        if let Some(lock) = app.try_state::<ForkMutationLock>() {
-            let _guard = match lock.try_acquire() {
-                Ok(guard) => guard,
-                Err(error) => {
-                    let _ = publish(
-                        Some(&app),
-                        &state,
-                        &operation_id,
-                        AddSkillOperationPhase::Failed,
-                        error.clone(),
-                        |event| {
-                            event.error = Some(error);
-                        },
-                    );
-                    return;
-                }
-            };
-            run();
-            return;
-        }
+        let write_lease = super::write_lease::WriteLease::default();
+        let _guard = match write_lease.try_acquire(&home) {
+            Ok(guard) => guard,
+            Err(error) => {
+                let _ = publish(
+                    Some(&app),
+                    &state,
+                    &operation_id,
+                    AddSkillOperationPhase::Failed,
+                    error.clone(),
+                    |event| {
+                        event.error = Some(error);
+                    },
+                );
+                return;
+            }
+        };
         run();
     });
 }
@@ -954,7 +950,7 @@ fn confirm_add_skill_trust_with(
     retry_operation_id: String,
     identity: String,
     state: &AddSkillOperationState,
-    fork_lock: &ForkMutationLock,
+    write_lease: &super::write_lease::WriteLease,
 ) -> Result<(AddSkillOperationEvent, AddSkillOperationEvent), String> {
     validate_run_id(&retry_operation_id)
         .map_err(|error| error.replace("Run id", "Operation id"))?;
@@ -988,7 +984,7 @@ fn confirm_add_skill_trust_with(
 
     // Background add work acquires these locks in this order. Do not hold the
     // operation-state lock while trying to acquire the filesystem lock.
-    let _guard = fork_lock.try_acquire()?;
+    let _guard = write_lease.try_acquire(home)?;
     let (parent_event, queued) = {
         let mut inner = state.lock()?;
         if inner.records.contains_key(&retry_operation_id) {
@@ -1072,7 +1068,7 @@ pub async fn confirm_add_skill_trust(
     let timing_app = app.clone();
     crate::timing_log::time_command_blocking(&timing_app, "confirm_add_skill_trust", move || {
         let state = app.state::<AddSkillOperationState>();
-        let fork_lock = app.state::<ForkMutationLock>();
+        let write_lease = super::write_lease::WriteLease::default();
         let home = dirs::home_dir().ok_or("Could not find home directory")?;
         let (parent_event, queued) = confirm_add_skill_trust_with(
             &home,
@@ -1080,7 +1076,7 @@ pub async fn confirm_add_skill_trust(
             retry_operation_id.clone(),
             identity,
             state.inner(),
-            fork_lock.inner(),
+            &write_lease,
         )?;
         emit_status(Some(&app), &parent_event);
         emit_status(Some(&app), &queued);
@@ -1332,7 +1328,8 @@ mod tests {
             &NeverLookup,
         );
 
-        let lock = ForkMutationLock::default();
+        let lock =
+            super::super::write_lease::WriteLease::with_lease_root(tmp.path().join("leases"));
         let mismatch = confirm_add_skill_trust_with(
             tmp.path(),
             "op-replay".to_string(),
@@ -1405,7 +1402,9 @@ mod tests {
             &NeverLookup,
         );
 
-        let lock = Arc::new(ForkMutationLock::default());
+        let lock = Arc::new(super::super::write_lease::WriteLease::with_lease_root(
+            tmp.path().join("leases"),
+        ));
         let ready = Arc::new(Barrier::new(2));
         let release = Arc::new(Barrier::new(2));
         let writer_home = home.clone();
@@ -1413,7 +1412,7 @@ mod tests {
         let writer_ready = Arc::clone(&ready);
         let writer_release = Arc::clone(&release);
         let writer = thread::spawn(move || {
-            let _guard = writer_lock.try_acquire().unwrap();
+            let _guard = writer_lock.try_acquire(&writer_home).unwrap();
             let mut registry =
                 super::super::skill_fork_registry::read_fork_registry(&writer_home).unwrap();
             registry.preferred_editor = Some("Cursor".to_string());
@@ -1433,7 +1432,10 @@ mod tests {
             &lock,
         )
         .unwrap_err();
-        assert_eq!(busy, "Another fork operation is in progress");
+        assert!(
+            busy.starts_with("Another write is in progress"),
+            "unexpected message: {busy}"
+        );
         release.wait();
         writer.join().unwrap();
 
@@ -2057,7 +2059,7 @@ mod tests {
             "trust-retry".to_string(),
             "kentcdodds/kcd-skills".to_string(),
             &state,
-            &ForkMutationLock::default(),
+            &super::super::write_lease::WriteLease::with_lease_root(tmp.path().join("leases")),
         )
         .unwrap();
         assert_eq!(retry.phase, AddSkillOperationPhase::Queued);

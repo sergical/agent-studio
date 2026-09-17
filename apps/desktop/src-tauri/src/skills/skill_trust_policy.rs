@@ -118,7 +118,7 @@ pub fn record_trusted_dotagents_source(home: &Path, identity: &str) -> Result<St
 }
 
 /// Record one explicit pack confirmation as one registry read and write.
-/// Callers must hold `ForkMutationLock` so unrelated concurrent registry
+/// Callers must hold the per-root write lease so unrelated concurrent registry
 /// changes cannot be overwritten.
 pub fn record_trusted_dotagents_sources(
     home: &Path,

@@ -158,7 +158,6 @@ pub fn run() {
             }
             app.manage(skills::skill_agent_runner::SkillAgentRunnerState::default());
             app.manage(skills::skill_run_target::SkillRunTargetState::default());
-            app.manage(skills::skill_fork::ForkMutationLock::default());
             let error_reporting_enabled = dirs::home_dir()
                 .and_then(|home| skills::skill_fork_registry::read_fork_registry(&home).ok())
                 .is_some_and(|registry| registry.error_reporting_enabled);

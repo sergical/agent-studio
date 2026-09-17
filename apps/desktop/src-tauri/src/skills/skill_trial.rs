@@ -20,7 +20,6 @@ use super::agents::AgentId;
 use super::event_store::{fingerprint_path, fingerprint_path_checked};
 use super::skill_add::{maybe_claude_code_symlink, CommandRunner, RealCommandRunner};
 use super::skill_dto::LifecycleTarget;
-use super::skill_fork::ForkMutationLock;
 use super::skill_fork_registry::{
     deployment_trial_key, name_from_trial_key, read_fork_registry, trial_key, write_fork_registry,
     AddMethod, ForkRegistry, TrialRecord, TrialScope, TrialStatus,
@@ -801,8 +800,8 @@ fn run_and_emit(app: &AppHandle) {
     };
     let runner = RealCommandRunner::new();
     let expired = {
-        let lock = app.state::<ForkMutationLock>();
-        let Ok(_guard) = lock.try_acquire() else {
+        let write_lease = super::write_lease::WriteLease::default();
+        let Ok(_guard) = write_lease.try_acquire(&home) else {
             return;
         };
         let refresh_state = app.state::<SkillRefreshState>();
@@ -844,8 +843,9 @@ pub async fn keep_skill_trial(target: LifecycleTarget, app: AppHandle) -> Result
     let timing_app = app.clone();
     crate::timing_log::time_command_blocking(&timing_app, "keep_skill_trial", move || {
         let refresh_state = app.state::<SkillRefreshState>();
-        let fork_lock = app.state::<ForkMutationLock>();
-        let _guard = fork_lock.try_acquire()?;
+        let home = dirs::home_dir().ok_or("Could not find home directory")?;
+        let write_lease = super::write_lease::WriteLease::default();
+        let _guard = write_lease.try_acquire(&home)?;
         let deployment_id = target
             .deployment_id
             .as_deref()
@@ -855,7 +855,6 @@ pub async fn keep_skill_trial(target: LifecycleTarget, app: AppHandle) -> Result
         }
         let snapshot =
             super::skill_lifecycle::rebuild_fresh_lifecycle_snapshot(&app, &refresh_state)?;
-        let home = dirs::home_dir().ok_or("Could not find home directory")?;
         let (skill, deployment) = match find_deployment(&snapshot, deployment_id) {
             Ok(found) => found,
             Err(error) => {
@@ -987,9 +986,9 @@ pub fn restore_trashed_skill_with(home: &Path, trash_path: &str) -> Result<Strin
 pub async fn restore_trashed_skill(trash_path: String, app: AppHandle) -> Result<(), String> {
     let timing_app = app.clone();
     crate::timing_log::time_command_blocking(&timing_app, "restore_trashed_skill", move || {
-        let fork_lock = app.state::<ForkMutationLock>();
-        let _guard = fork_lock.try_acquire()?;
         let home = dirs::home_dir().ok_or("Could not find home directory")?;
+        let write_lease = super::write_lease::WriteLease::default();
+        let _guard = write_lease.try_acquire(&home)?;
         restore_trashed_skill_with(&home, &trash_path)?;
         skill_refresh::request_snapshot_rebuild(&app);
         Ok(())

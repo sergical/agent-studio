@@ -942,21 +942,6 @@ fn fork_skill_with_storage(
     Ok(record)
 }
 
-/// Serializes fork/pull/unfork/remove-forked so two concurrent calls can't
-/// race on the registry, the snapshot, or the CLI. A single global lock (as
-/// opposed to per-skill) is fine: forking is a rare, user-initiated action.
-#[derive(Default)]
-pub struct ForkMutationLock(std::sync::Mutex<()>);
-
-impl ForkMutationLock {
-    /// `Err` when another fork operation already holds the lock.
-    pub fn try_acquire(&self) -> Result<std::sync::MutexGuard<'_, ()>, String> {
-        self.0
-            .try_lock()
-            .map_err(|_| "Another fork operation is in progress".to_string())
-    }
-}
-
 #[tauri::command]
 pub async fn fork_skill(
     target: super::skill_dto::LifecycleTarget,
@@ -965,9 +950,9 @@ pub async fn fork_skill(
     let timing_app = app.clone();
     crate::timing_log::time_command_blocking(&timing_app, "fork_skill", move || {
         let refresh_state = app.state::<SkillRefreshState>();
-        let fork_lock = app.state::<ForkMutationLock>();
-        let _guard = fork_lock.try_acquire()?;
         let home = dirs::home_dir().ok_or("Could not find home directory")?;
+        let write_lease = super::write_lease::WriteLease::default();
+        let _guard = write_lease.try_acquire(&home)?;
         let app_data = app
             .path()
             .app_data_dir()
@@ -1412,9 +1397,9 @@ pub async fn pull_fork_upstream(
     let timing_app = app.clone();
     crate::timing_log::time_command_blocking(&timing_app, "pull_fork_upstream", move || {
         let refresh_state = app.state::<SkillRefreshState>();
-        let fork_lock = app.state::<ForkMutationLock>();
-        let _guard = fork_lock.try_acquire()?;
         let home = dirs::home_dir().ok_or("Could not find home directory")?;
+        let write_lease = super::write_lease::WriteLease::default();
+        let _guard = write_lease.try_acquire(&home)?;
         let app_data = app
             .path()
             .app_data_dir()
@@ -1480,9 +1465,9 @@ pub async fn unfork_skill(
     let timing_app = app.clone();
     crate::timing_log::time_command_blocking(&timing_app, "unfork_skill", move || {
         let refresh_state = app.state::<SkillRefreshState>();
-        let fork_lock = app.state::<ForkMutationLock>();
-        let _guard = fork_lock.try_acquire()?;
         let home = dirs::home_dir().ok_or("Could not find home directory")?;
+        let write_lease = super::write_lease::WriteLease::default();
+        let _guard = write_lease.try_acquire(&home)?;
         let app_data = app
             .path()
             .app_data_dir()
@@ -2687,17 +2672,6 @@ mod tests {
             read_fork_registry(&home).unwrap().forks["find-bugs"].base_commit,
             "b".repeat(40)
         );
-    }
-
-    #[test]
-    fn fork_mutation_lock_refuses_a_concurrent_second_acquire() {
-        let lock = ForkMutationLock::default();
-        let first = lock.try_acquire().unwrap();
-        let second = lock.try_acquire();
-        assert_eq!(second.unwrap_err(), "Another fork operation is in progress");
-        drop(first);
-        // Released - a later call succeeds.
-        assert!(lock.try_acquire().is_ok());
     }
 
     #[test]

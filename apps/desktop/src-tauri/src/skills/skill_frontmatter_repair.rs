@@ -19,7 +19,6 @@ use super::event_store::{
 use super::frontmatter::{parse_frontmatter, FrontmatterParseResult};
 use super::skill_deployment::{BackingRelationship, DeploymentMutability, SkillDestination};
 use super::skill_dto::{Deployment, LifecycleTarget};
-use super::skill_fork::ForkMutationLock;
 use super::skill_md_write::{begin_skill_md_write_transaction, SkillMdWriteTransaction};
 use super::skill_ownership::LifecycleOwnerKind;
 use super::skill_refresh::{self, SkillRefreshState};
@@ -423,7 +422,6 @@ pub async fn apply_skill_frontmatter_repair(
         "apply_skill_frontmatter_repair",
         move || {
             let refresh_state = app.state::<SkillRefreshState>();
-            let fork_lock = app.state::<ForkMutationLock>();
             let event_store = app.state::<EventStoreState>();
             let ApplyFrontmatterRepairRequest {
                 target,
@@ -431,7 +429,9 @@ pub async fn apply_skill_frontmatter_repair(
                 expected_content_fingerprint,
                 mode,
             } = request;
-            let _guard = fork_lock.try_acquire()?;
+            let home = dirs::home_dir().ok_or("Could not find home directory")?;
+            let write_lease = super::write_lease::WriteLease::default();
+            let _guard = write_lease.try_acquire(&home)?;
             let snapshot =
                 super::skill_lifecycle::rebuild_fresh_lifecycle_snapshot(&app, &refresh_state)?;
             let deployment = exact_target(&snapshot, &target)?.clone();
