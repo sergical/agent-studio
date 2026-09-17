@@ -33,9 +33,20 @@ jobs:
           node-version: 22
           cache: npm
       - run: npm ci
+      - name: Check CHANGELOG.md has a section for this tag
+        run: |
+          set -euo pipefail
+          version="${GITHUB_REF_NAME#v}"
+          grep -q "^## v${version}\b" CHANGELOG.md || {
+            echo "CHANGELOG.md has no section for v${version}"
+            exit 1
+          }
       - uses: tauri-apps/tauri-action@v0
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # Injected into build.rs via SKILL_STUDIO_COMMIT so the built app
+          # and CLI report the commit they were built from (unit 6.6).
+          SKILL_STUDIO_COMMIT: ${{ github.sha }}
           # Developer ID Application certificate, exported as a .p12 and
           # base64-encoded, plus the credentials tauri-action needs to
           # unlock it and to submit the build to Apple for notarization.
