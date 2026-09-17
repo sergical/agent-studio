@@ -8,6 +8,7 @@ import type { SkillSnapshot } from "@skill-studio/lib";
 import { PageShell } from "../Shell/PageShell";
 import { CommandHealthCard } from "./CommandHealthCard";
 import { EditorCard } from "./EditorCard";
+import { ErrorReportingCard } from "./ErrorReportingCard";
 import { ProjectFoldersCard } from "./ProjectFoldersCard";
 
 interface SettingsViewProps {
@@ -19,6 +20,7 @@ export function SettingsView({ snapshot }: SettingsViewProps) {
     <PageShell title="Settings" width="narrow">
       <EditorCard />
       <ProjectFoldersCard snapshot={snapshot} />
+      <ErrorReportingCard />
       <CommandHealthCard />
     </PageShell>
   );

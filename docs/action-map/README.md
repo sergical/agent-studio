@@ -9,7 +9,7 @@ Source: a read of `apps/desktop/src-tauri/src/skills/` and `apps/desktop/src` on
 | File                                                 | Area                                                                               | Commands                                                                                                              |
 | ---------------------------------------------------- | ---------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------- |
 | [install.md](install.md)                             | Add a skill from GitHub, skills.sh, a folder, or a pack member                     | add_skill, start_add_skill_operation, confirm_add_skill_trust, list_github_skills, get_add_method_defaults            |
-| [remove-and-update.md](remove-and-update.md)         | Remove or update an installed skill                                                | remove_skill, update_skill, check_skill_updates_now, restore_trashed_skill                                            |
+| [remove-and-update.md](remove-and-update.md)         | Remove or update an installed skill                                                | remove_skill, update_skill, restore_trashed_skill                                                                     |
 | [park-fork-trial.md](park-fork-trial.md)             | Park, unpark, fork, un-fork, pull upstream, 24-hour trials                         | park_skill, unpark_skill, fork_skill, unfork_skill, pull_fork_upstream, keep_skill_trial                              |
 | [enable-and-links.md](enable-and-links.md)           | Turn a deployment on or off, repair links, make independent copies, set visibility | set_deployment_enabled, set_harness_enabled, materialize_harness_root, repair_skill_link, make_skill_independent_copy |
 | [skill-md-editing.md](skill-md-editing.md)           | Read, write, and repair SKILL.md and its frontmatter                               | read_installed_skill_md, write_installed_skill_md_if_unchanged, apply_skill_frontmatter_repair, set_skill_invocation  |
@@ -84,12 +84,12 @@ Each file has the same five sections.
 
 | Measure                                  | Count |
 | ---------------------------------------- | ----- |
-| Tauri commands                           | 71    |
+| Tauri commands                           | 62    |
 | Commands that write                      | 46    |
 | Writes that record a journal event       | 8     |
 | Commands with no direct test             | 23    |
 | Commands with a named partial-state risk | 35    |
-| Commands with no frontend caller         | 11    |
+| Commands with no frontend caller         | 2     |
 | UI controls mapped                       | 110   |
 
 ## Keeping this map true
