@@ -403,26 +403,31 @@ fn opencode_root(home: &Path) -> PathBuf {
     home.join(OPENCODE_DATA_ROOT)
 }
 
-/// Codex keeps its own directory, not shared with OpenCode's.
-const CODEX_ROOT: &str = ".codex";
-/// Codex's live rollouts.
+/// Codex's live rollouts under the default `<home>/.codex`; also used
+/// (stripped of its `.codex/` prefix) as the sub-path under an overridden
+/// [`codex_root`].
 const CODEX_SESSIONS_DIR: &str = ".codex/sessions";
-/// Rollouts Codex has moved aside (still readable, never appended to again).
+/// Rollouts Codex has moved aside (still readable, never appended to again),
+/// under the default `<home>/.codex`; see [`CODEX_SESSIONS_DIR`].
 const CODEX_ARCHIVED_SESSIONS_DIR: &str = ".codex/archived_sessions";
 
+/// Codex's own directory: `$CODEX_HOME`, or `<home>/.codex` when unset (see
+/// [`crate::discovery::codex_home`]). [`SourceWatch`] entries still watch
+/// the default `.codex/sessions` and `.codex/archived_sessions` under
+/// `home` - watching a `CODEX_HOME` override too is a follow-up.
 fn codex_root(home: &Path) -> PathBuf {
-    home.join(CODEX_ROOT)
+    crate::discovery::codex_home(home)
 }
 
 /// How many directory levels [`list_codex_rollouts`] descends below each of
-/// `.codex/sessions` and `.codex/archived_sessions`: enough for the dated
-/// `YYYY/MM/DD` layout with room to spare, without walking the rest of
-/// `.codex` (plugin caches, logs, state databases - all churn constantly and
-/// hold no skill-use signal) should a rollout ever nest deeper than expected.
+/// `sessions` and `archived_sessions`: enough for the dated `YYYY/MM/DD`
+/// layout with room to spare, without walking the rest of [`codex_root`]
+/// (plugin caches, logs, state databases - all churn constantly and hold no
+/// skill-use signal) should a rollout ever nest deeper than expected.
 const CODEX_WALK_DEPTH: u32 = 4;
 
-/// Lists Codex's rollout transcripts: `<home>/.codex/sessions/**/*.jsonl`
-/// and `<home>/.codex/archived_sessions/**/*.jsonl`, walked to
+/// Lists Codex's rollout transcripts: `<codex_root>/sessions/**/*.jsonl` and
+/// `<codex_root>/archived_sessions/**/*.jsonl`, walked to
 /// [`CODEX_WALK_DEPTH`] levels below each. A missing top dir is normal
 /// (Codex was never installed, or has archived nothing yet); any other
 /// failure to list a directory marks the listing incomplete.
@@ -431,9 +436,10 @@ fn list_codex_rollouts(home: &Path) -> SourceListing {
     let mut listed_dirs = BTreeSet::new();
     let mut incomplete = false;
 
-    for top in [CODEX_SESSIONS_DIR, CODEX_ARCHIVED_SESSIONS_DIR] {
+    let root = codex_root(home);
+    for top in ["sessions", "archived_sessions"] {
         walk_jsonl_files(
-            &home.join(top),
+            &root.join(top),
             CODEX_WALK_DEPTH,
             &mut files,
             &mut listed_dirs,
@@ -2499,6 +2505,53 @@ mod tests {
             let enabled = DiscoverySources::default();
             index.refresh(home, &enabled);
             assert_eq!(stats(&index, &known_skills, &enabled).len(), 1);
+        }
+
+        /// codex_rollout_reader_resumes_from_a_byte_offset_across_archived_sessions_or_names_the_missed_use:
+        /// an archived rollout gets the same resume treatment as a live one -
+        /// a second refresh after new lines are appended reads only the new
+        /// bytes and counts only the new use, not the whole file again.
+        #[test]
+        fn codex_rollout_reader_resumes_from_a_byte_offset_across_archived_sessions_or_names_the_missed_use(
+        ) {
+            let tmp = tempfile::tempdir().unwrap();
+            let home = tmp.path();
+            let path = write_rollout(
+                &home.join(CODEX_ARCHIVED_SESSIONS_DIR),
+                "old.jsonl",
+                &[
+                    session_meta_line("sess-a", "/proj-a"),
+                    skill_block_line("2026-09-16T12:00:00Z", "foo"),
+                ],
+            );
+
+            let mut index = SkillInvocationIndex::default();
+            let known_skills = known(&["foo"]);
+            let sources = DiscoverySources::default();
+            let first = index.refresh(home, &sources);
+            assert_eq!(stats(&index, &known_skills, &sources)[0].total, 1);
+
+            let mut content = fs::read_to_string(&path).unwrap();
+            content.push_str(&skill_block_line("2026-09-16T12:05:00Z", "foo"));
+            content.push('\n');
+            let appended_len = content.len() as u64 - fs::metadata(&path).unwrap().len();
+            fs::write(&path, &content).unwrap();
+
+            let second = index.refresh(home, &sources);
+            assert_eq!(
+                second.bytes_read, appended_len,
+                "the missed use: a full reparse (or no read at all) instead of a byte-offset resume"
+            );
+            assert_ne!(
+                first.bytes_read, 0,
+                "sanity: the first pass must have read something"
+            );
+            let stats = stats(&index, &known_skills, &sources);
+            assert_eq!(stats.len(), 1);
+            assert_eq!(
+                stats[0].total, 2,
+                "the missed use: the appended skill use was not counted"
+            );
         }
 
         #[test]

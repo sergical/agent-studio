@@ -80,6 +80,12 @@ pub struct RuntimeScope {
     /// cache. `None` means the operations that need it fail with
     /// [`ErrorCode::InvalidScope`]. Phase 1 and 2 operations never read it.
     pub data_root: Option<PathBuf>,
+    /// Codex's own directory, in place of `home_root/.codex`. `None` keeps
+    /// the default. The adapter is the one place allowed to read
+    /// `CODEX_HOME`; the core only ever sees the resolved path here (see
+    /// `docs/action-map/harnesses/codex.md`, "`CODEX_HOME` overrides
+    /// `~/.codex`").
+    pub codex_home: Option<PathBuf>,
     /// Shared-lease wait budget for read operations, in milliseconds.
     pub read_timeout_ms: u64,
     /// Exclusive-lease wait budget for write operations, in milliseconds.
@@ -99,6 +105,7 @@ impl RuntimeScope {
             history_binding: HistoryBinding::Default,
             cache_root: None,
             data_root: None,
+            codex_home: None,
             read_timeout_ms: DEFAULT_READ_TIMEOUT_MS,
             write_timeout_ms: DEFAULT_WRITE_TIMEOUT_MS,
         }
@@ -118,9 +125,25 @@ impl RuntimeScope {
             history_binding: HistoryBinding::Override,
             cache_root: None,
             data_root: Some(data_root),
+            codex_home: None,
             read_timeout_ms: DEFAULT_READ_TIMEOUT_MS,
             write_timeout_ms: DEFAULT_WRITE_TIMEOUT_MS,
         }
+    }
+
+    /// Overrides Codex's own directory, in place of `home_root/.codex`. The
+    /// adapter calls this after reading `CODEX_HOME` itself - the core never
+    /// reads it.
+    pub fn with_codex_home(mut self, codex_home: impl Into<PathBuf>) -> Self {
+        self.codex_home = Some(codex_home.into());
+        self
+    }
+
+    /// Codex's own directory: the override, or `home_root/.codex`.
+    pub fn codex_home_or_default(&self) -> PathBuf {
+        self.codex_home
+            .clone()
+            .unwrap_or_else(|| self.home_root.join(".codex"))
     }
 
     /// Read wait budget as a duration.
@@ -193,6 +216,11 @@ pub struct NormalizedScope {
     pub cache_root: Option<PathBuf>,
     /// Durable app data directory, when the adapter supplies one.
     pub data_root: Option<PathBuf>,
+    /// Codex's own directory (the resolved `CODEX_HOME`, or
+    /// `home_root/.codex`). Lexical only: unlike `home` and `projects` it is
+    /// not required to exist yet, since a config write is often what first
+    /// creates it.
+    pub codex_home: PathBuf,
     /// The scope as the adapter gave it.
     pub raw: RuntimeScope,
 }
@@ -276,6 +304,7 @@ impl NormalizedScope {
             history_root: raw.history_root.clone(),
             cache_root: raw.cache_root.clone(),
             data_root: raw.data_root.clone(),
+            codex_home: raw.codex_home_or_default(),
             raw: raw.clone(),
         })
     }
@@ -295,12 +324,15 @@ impl NormalizedScope {
         keys
     }
 
-    /// True when `path` lies under the home or a project, by canonical or
-    /// lexical prefix.
+    /// True when `path` lies under the home, a project, or Codex's own
+    /// directory ([`Self::codex_home`]), by canonical or lexical prefix.
+    /// `codex_home` has no canonical form of its own (see its doc comment),
+    /// so it is checked lexically only.
     pub fn contains(&self, path: &Path) -> bool {
         std::iter::once(&self.home)
             .chain(self.projects.iter())
             .any(|root| path.starts_with(&root.canonical) || path.starts_with(&root.lexical))
+            || path.starts_with(&self.codex_home)
     }
 
     /// Rewrites a path for display: `~/...` under the home, absolute

@@ -3,8 +3,8 @@
 // Per-harness disable, distinct from `skill_park` (which disables a skill
 // everywhere by moving its shared folder aside). Three native mechanisms,
 // one per harness that has one, plus a universal fallback for the rest:
-//   - Codex: `~/.codex/config.toml` `[[skills.config]] enabled = false`
-//     (codex_skill_config.rs).
+//   - Codex: `~/.codex/config.toml` `[[skills.config]] enabled = false`,
+//     written through `skill_studio_core::ops::set_codex_skill_disabled`.
 //   - OpenCode: `~/.config/opencode/opencode.json` `permission.skill.<name>
 //     = "deny"` (opencode_skill_permission.rs).
 //   - Claude Code: no native per-skill switch, so this removes/recreates the
@@ -27,7 +27,6 @@ use std::path::{Path, PathBuf};
 
 use tauri::Manager;
 
-use super::codex_skill_config;
 use super::event_commands::EventStoreState;
 use super::event_store::{fingerprint_path, EventDraft, EventStatus, InverseOp};
 use super::opencode_skill_permission;
@@ -618,8 +617,16 @@ pub fn set_harness_enabled_with(
             if codex_skill_md_paths.is_empty() {
                 return Err(format!("No Codex-visible deployment found for \"{name}\""));
             }
+            let rt = super::core_runtime::build_runtime_write_at(
+                home.to_path_buf(),
+                home.join(".skill-studio"),
+            )?;
+            let ctx = skill_studio_core::ports::OpContext::uncancellable(
+                skill_studio_core::identity::CorrelationId(ulid::Ulid::new().to_string()),
+            );
             for path in codex_skill_md_paths {
-                codex_skill_config::set_skill_disabled(home, path, !enabled)?;
+                skill_studio_core::ops::set_codex_skill_disabled(&rt, &ctx, path, !enabled)
+                    .map_err(|e| e.message)?;
             }
             Ok(())
         }
@@ -956,6 +963,31 @@ mod tests {
 
     use super::super::test_support::write_skill;
 
+    /// Reads every `path` a Codex `[[skills.config]] enabled = false` row
+    /// names, uncanonicalized - matches what `ops::set_codex_skill_disabled`
+    /// writes (the raw `skill_md_path` it was given), so a round-trip test
+    /// can compare against the path it passed in without going through the
+    /// filesystem again.
+    fn read_codex_disabled_skill_md_paths_for_test(home: &Path) -> Vec<PathBuf> {
+        let path = home.join(".codex").join("config.toml");
+        let Ok(content) = fs::read_to_string(&path) else {
+            return Vec::new();
+        };
+        let Ok(table) = content.parse::<toml::Table>() else {
+            return Vec::new();
+        };
+        toml::Value::Table(table)
+            .get("skills")
+            .and_then(|s| s.get("config"))
+            .and_then(|c| c.as_array())
+            .into_iter()
+            .flatten()
+            .filter(|row| row.get("enabled").and_then(toml::Value::as_bool) == Some(false))
+            .filter_map(|row| row.get("path").and_then(toml::Value::as_str))
+            .map(PathBuf::from)
+            .collect()
+    }
+
     fn native_snapshot(agent: &str, entries: &[(&str, &str, Option<&str>)]) -> SkillSnapshot {
         let deployments = entries
             .iter()
@@ -1191,8 +1223,8 @@ mod tests {
         )
         .unwrap();
         assert_eq!(
-            codex_skill_config::read_disabled_skill_md_paths(home),
-            vec![fs::canonicalize(&skill_md).unwrap()]
+            read_codex_disabled_skill_md_paths_for_test(home),
+            vec![skill_md.clone()]
         );
 
         set_harness_enabled_with(
@@ -1203,7 +1235,7 @@ mod tests {
             std::slice::from_ref(&skill_md),
         )
         .unwrap();
-        assert!(codex_skill_config::read_disabled_skill_md_paths(home).is_empty());
+        assert!(read_codex_disabled_skill_md_paths_for_test(home).is_empty());
     }
 
     #[test]

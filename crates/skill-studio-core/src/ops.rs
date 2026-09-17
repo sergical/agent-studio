@@ -40,8 +40,8 @@ use crate::identity::{
 use crate::lock_file;
 use crate::ownership;
 use crate::ports::{
-    acquire_shared, Clock, DirEntryFacts, FileKind, HistoryAccess, OpContext, Runtime, ScopeFs,
-    ScopedReads,
+    acquire_exclusive, acquire_shared, Clock, DirEntryFacts, ExclusiveGuard, FileKind,
+    HistoryAccess, OpContext, Runtime, ScopeFs, ScopedReads,
 };
 use crate::scope::{EffectiveScope, NormalizedScope};
 use crate::SCHEMA_VERSION;
@@ -310,7 +310,7 @@ pub(crate) fn scan_inner(
     let home = &rt.scope.home.lexical;
 
     let step_start = clock.monotonic();
-    let disable_sources = DisableSources::read(fs, home);
+    let disable_sources = DisableSources::read(fs, home, &rt.scope.codex_home);
 
     // Full ownership classification needs the dotagents and skills.sh
     // ledgers for every scope this scan covers (the home's `.agents` plus
@@ -1463,17 +1463,17 @@ struct DisableSources {
 }
 
 impl DisableSources {
-    fn read(fs: &dyn ScopeFs, home: &Path) -> Self {
+    fn read(fs: &dyn ScopeFs, home: &Path, codex_home: &Path) -> Self {
         DisableSources {
-            codex_disabled_skill_md: read_codex_disabled_skill_md_paths(fs, home),
+            codex_disabled_skill_md: read_codex_disabled_skill_md_paths(fs, codex_home),
             opencode_denied_skills: read_opencode_denied_skills(fs, home),
             claude_enabled_plugins: read_claude_enabled_plugins(fs, home),
         }
     }
 }
 
-fn read_codex_disabled_skill_md_paths(fs: &dyn ScopeFs, home: &Path) -> Vec<PathBuf> {
-    let path = home.join(".codex").join("config.toml");
+fn read_codex_disabled_skill_md_paths(fs: &dyn ScopeFs, codex_home: &Path) -> Vec<PathBuf> {
+    let path = codex_home.join("config.toml");
     let Ok(bytes) = fs.read_capped(&path, SKILL_MD_MAX_BYTES) else {
         return Vec::new();
     };
@@ -1496,6 +1496,422 @@ fn read_codex_disabled_skill_md_paths(fs: &dyn ScopeFs, home: &Path) -> Vec<Path
         .filter_map(|row| row.get("path").and_then(toml::Value::as_str))
         .map(PathBuf::from)
         .collect()
+}
+
+/// `<codex_home>/config.toml`.
+fn codex_config_path(codex_home: &Path) -> PathBuf {
+    codex_home.join("config.toml")
+}
+
+/// Reads `<codex_home>/config.toml` as a format-preserving `toml_edit`
+/// document. A missing file parses as an empty document (there is nothing to
+/// preserve); a file that fails to parse is an error, since a write from
+/// here would otherwise silently discard whatever the user had in it.
+fn read_codex_config_document(
+    fs: &dyn ScopeFs,
+    codex_home: &Path,
+) -> Result<toml_edit::DocumentMut, CoreError> {
+    let path = codex_config_path(codex_home);
+    let text = match fs.read_capped(&path, SKILL_MD_MAX_BYTES) {
+        Ok(bytes) => String::from_utf8(bytes).map_err(|e| {
+            CoreError::new(
+                ErrorCode::InvalidRequest,
+                format!("{} is not valid UTF-8: {e}", path.display()),
+            )
+            .at(&path)
+        })?,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => String::new(),
+        Err(e) => return Err(CoreError::io(&path, e)),
+    };
+    text.parse::<toml_edit::DocumentMut>().map_err(|e| {
+        CoreError::new(
+            ErrorCode::InvalidRequest,
+            format!("{} is not valid TOML: {e}", path.display()),
+        )
+        .at(&path)
+    })
+}
+
+/// Iterates `[[skills.config]]` rows in a `toml_edit` document, tolerating a
+/// document with no `skills` table, no `config` array, or a `config` that
+/// isn't an array of tables.
+fn codex_skills_config_rows(
+    doc: &toml_edit::DocumentMut,
+) -> impl Iterator<Item = &toml_edit::Table> {
+    doc.get("skills")
+        .and_then(toml_edit::Item::as_table)
+        .and_then(|t| t.get("config"))
+        .and_then(toml_edit::Item::as_array_of_tables)
+        .into_iter()
+        .flatten()
+}
+
+/// Index of the `[[skills.config]]` row whose `path` matches `skill_md_path`,
+/// if any.
+fn codex_find_row_index(doc: &toml_edit::DocumentMut, skill_md_path: &Path) -> Option<usize> {
+    let target = skill_md_path.to_string_lossy();
+    codex_skills_config_rows(doc)
+        .position(|row| row.get("path").and_then(toml_edit::Item::as_str) == Some(target.as_ref()))
+}
+
+/// Converts a removed table header's surrounding text into text that can sit
+/// before the next table header. `toml_edit` writes the header's suffix
+/// before adding its own newline, so the newline must move with a non-empty
+/// suffix.
+fn codex_table_decor_as_prefix(table: &toml_edit::Table) -> String {
+    let prefix = table
+        .decor()
+        .prefix()
+        .and_then(|prefix| prefix.as_str())
+        .unwrap_or_default();
+    let suffix = table
+        .decor()
+        .suffix()
+        .and_then(|suffix| suffix.as_str())
+        .unwrap_or_default();
+    if !prefix.contains('#') && !suffix.contains('#') {
+        return String::new();
+    }
+    let mut text = prefix.to_string();
+    if !suffix.is_empty() {
+        text.push_str(suffix);
+        if !suffix.ends_with('\n') {
+            text.push('\n');
+        }
+    }
+    text
+}
+
+fn codex_prepend_table_decor(table: &mut toml_edit::Table, text: &str) {
+    if text.is_empty() {
+        return;
+    }
+    let existing = table
+        .decor()
+        .prefix()
+        .and_then(|prefix| prefix.as_str())
+        .unwrap_or_default()
+        .to_string();
+    table.decor_mut().set_prefix(format!("{text}{existing}"));
+}
+
+struct CodexOrphanedTableDecor {
+    position: Option<isize>,
+    text: String,
+}
+
+fn codex_next_table_position(table: &toml_edit::Table, removed_position: isize) -> Option<isize> {
+    let mut next = table
+        .position()
+        .filter(|position| *position > removed_position);
+    for (_, item) in table.iter() {
+        let child_next = match item {
+            toml_edit::Item::Table(child) => codex_next_table_position(child, removed_position),
+            toml_edit::Item::ArrayOfTables(array) => array
+                .iter()
+                .filter_map(|child| codex_next_table_position(child, removed_position))
+                .min(),
+            _ => None,
+        };
+        next = next.into_iter().chain(child_next).min();
+    }
+    next
+}
+
+fn codex_table_at_position_mut(
+    table: &mut toml_edit::Table,
+    position: isize,
+) -> Option<&mut toml_edit::Table> {
+    if table.position() == Some(position) {
+        return Some(table);
+    }
+    for (_, item) in table.iter_mut() {
+        let found = match item {
+            toml_edit::Item::Table(child) => codex_table_at_position_mut(child, position),
+            toml_edit::Item::ArrayOfTables(array) => array
+                .iter_mut()
+                .find_map(|child| codex_table_at_position_mut(child, position)),
+            _ => None,
+        };
+        if found.is_some() {
+            return found;
+        }
+    }
+    None
+}
+
+/// Moves decor orphaned by a removed table to the next table in document
+/// order, or to the document trailing text when no table follows it.
+fn codex_rehome_table_decor(
+    doc: &mut toml_edit::DocumentMut,
+    removed_position: Option<isize>,
+    text: &str,
+) {
+    if text.is_empty() {
+        return;
+    }
+    if let Some(next_position) =
+        removed_position.and_then(|position| codex_next_table_position(doc.as_table(), position))
+    {
+        let next = codex_table_at_position_mut(doc.as_table_mut(), next_position)
+            .expect("codex_next_table_position returned an existing table");
+        codex_prepend_table_decor(next, text);
+        return;
+    }
+    let trailing = doc.trailing().as_str().unwrap_or_default();
+    doc.set_trailing(format!("{text}{trailing}"));
+}
+
+fn codex_rehome_table_decor_blocks(
+    doc: &mut toml_edit::DocumentMut,
+    mut blocks: Vec<CodexOrphanedTableDecor>,
+) {
+    blocks.retain(|block| !block.text.is_empty());
+    blocks.sort_by_key(|block| std::cmp::Reverse(block.position));
+    for block in blocks {
+        codex_rehome_table_decor(doc, block.position, &block.text);
+    }
+}
+
+/// Adds (or removes) a `[[skills.config]] path = "<skill_md_path>" enabled =
+/// false` row so Codex disables (or stops disabling) that skill, preserving
+/// every other byte of `<codex_home>/config.toml` - other tables, comments,
+/// and formatting survive because this edits the parsed `DocumentMut` in
+/// place rather than re-serializing a plain value. Ported from the desktop's
+/// former `codex_skill_config.rs::set_skill_disabled`, onto `ScopeFs` and an
+/// `ExclusiveGuard` instead of raw `std::fs`. Idempotent: disabling an
+/// already-disabled row, or enabling one that isn't disabled, is a no-op
+/// write.
+pub fn set_codex_skill_disabled(
+    rt: &Runtime,
+    ctx: &OpContext,
+    skill_md_path: &Path,
+    disabled: bool,
+) -> Result<(), CoreError> {
+    ctx.checkpoint()?;
+    let fs = rt.ports.fs.as_ref();
+    let guard = acquire_exclusive(rt.ports.leases.as_ref(), &rt.scope)?;
+    let codex_home = rt.scope.codex_home.clone();
+    let mut doc = read_codex_config_document(fs, &codex_home)?;
+    codex_write_disabled_row(&mut doc, skill_md_path, disabled);
+    codex_write_config_document(rt, fs, &guard, &codex_home, &doc)
+}
+
+/// The in-memory half of [`set_codex_skill_disabled`], split out so
+/// [`codex_rewrite_skill_path`] can reuse the row lookup and decor-rehoming
+/// without re-deriving them.
+fn codex_write_disabled_row(
+    doc: &mut toml_edit::DocumentMut,
+    skill_md_path: &Path,
+    disabled: bool,
+) {
+    let existing = codex_find_row_index(doc, skill_md_path);
+
+    if !disabled {
+        if let Some(idx) = existing {
+            let (removed_decor, array_is_empty) = {
+                let array = doc["skills"]["config"].as_array_of_tables_mut().expect(
+                    "codex_find_row_index only returns Some when this is an array of tables",
+                );
+                let removed = array.remove(idx);
+                let removed_decor = CodexOrphanedTableDecor {
+                    position: removed.position(),
+                    text: codex_table_decor_as_prefix(&removed),
+                };
+                if let Some(next_row) = array.get_mut(idx) {
+                    codex_prepend_table_decor(next_row, &removed_decor.text);
+                    (None, false)
+                } else {
+                    (Some(removed_decor), array.is_empty())
+                }
+            };
+
+            let mut orphaned_decor = removed_decor.into_iter().collect::<Vec<_>>();
+            let remove_skills = {
+                let skills_table = doc["skills"]
+                    .as_table_mut()
+                    .expect("skills is a table when config was");
+                if array_is_empty {
+                    skills_table.remove("config");
+                }
+                if skills_table.is_empty() {
+                    orphaned_decor.push(CodexOrphanedTableDecor {
+                        position: skills_table.position(),
+                        text: codex_table_decor_as_prefix(skills_table),
+                    });
+                    true
+                } else {
+                    false
+                }
+            };
+            if remove_skills {
+                doc.as_table_mut().remove("skills");
+            }
+            codex_rehome_table_decor_blocks(doc, orphaned_decor);
+        }
+    } else if existing.is_none() {
+        let skills_table = doc
+            .entry("skills")
+            .or_insert_with(|| toml_edit::Item::Table(toml_edit::Table::new()))
+            .as_table_mut()
+            .expect("skills was just inserted as a table");
+        let config_array = skills_table
+            .entry("config")
+            .or_insert_with(|| toml_edit::Item::ArrayOfTables(Default::default()))
+            .as_array_of_tables_mut()
+            .expect("config was just inserted as an array of tables");
+        let mut row = toml_edit::Table::new();
+        row["path"] = toml_edit::value(skill_md_path.to_string_lossy().to_string());
+        row["enabled"] = toml_edit::value(false);
+        config_array.push(row);
+    }
+    // `existing.is_some() && disabled`: already disabled, nothing to do -
+    // idempotent by construction.
+}
+
+/// Rewrites an existing `[[skills.config]]` row's `path` from
+/// `old_skill_md` to `new_skill_md`, leaving `enabled` and every other byte
+/// untouched. A no-op when no row names `old_skill_md` - not every skill
+/// Codex knows about has been explicitly disabled.
+///
+/// `ops::park` calls this after moving a deployment's folder, so a skill
+/// that was disabled through Codex's own config stays disabled at its new
+/// path instead of leaving a stale row that no longer matches anything on
+/// disk (the bug `docs/action-map/harnesses/codex.md` names).
+pub fn park_codex_skill_path(
+    rt: &Runtime,
+    ctx: &OpContext,
+    guard: &ExclusiveGuard,
+    old_skill_md: &Path,
+    new_skill_md: &Path,
+) -> Result<(), CoreError> {
+    ctx.checkpoint()?;
+    let fs = rt.ports.fs.as_ref();
+    let codex_home = rt.scope.codex_home.clone();
+    let mut doc = read_codex_config_document(fs, &codex_home)?;
+    let Some(idx) = codex_find_row_index(&doc, old_skill_md) else {
+        return Ok(());
+    };
+    let rows = doc["skills"]["config"]
+        .as_array_of_tables_mut()
+        .expect("codex_find_row_index only returns Some when this is an array of tables");
+    rows.get_mut(idx)
+        .expect("codex_find_row_index returned a valid index")["path"] =
+        toml_edit::value(new_skill_md.to_string_lossy().to_string());
+    codex_write_config_document(rt, fs, guard, &codex_home, &doc)
+}
+
+fn codex_write_config_document(
+    rt: &Runtime,
+    fs: &dyn ScopeFs,
+    guard: &ExclusiveGuard,
+    codex_home: &Path,
+    doc: &toml_edit::DocumentMut,
+) -> Result<(), CoreError> {
+    let path = codex_config_path(codex_home);
+    let parent = path
+        .parent()
+        .expect("config.toml always has a parent")
+        .to_path_buf();
+    let scoped_parent = crate::ports::confine(&rt.scope, fs, &parent)?;
+    fs.create_dir_all(guard, &scoped_parent)
+        .map_err(|e| CoreError::io(&parent, e))?;
+    let scoped_path = crate::ports::confine(&rt.scope, fs, &path)?;
+    fs.write_atomic(guard, &scoped_path, doc.to_string().as_bytes())
+        .map_err(|e| CoreError::io(&path, e))
+}
+
+/// `<skill_dir>/agents/openai.yaml` - Codex's own invocation-policy sidecar,
+/// next to `SKILL.md`.
+fn codex_openai_yaml_path(skill_dir: &Path) -> PathBuf {
+    skill_dir.join("agents").join("openai.yaml")
+}
+
+/// Sets or clears `policy.allow_implicit_invocation: false` in a Codex
+/// deployment's `agents/openai.yaml`, preserving any other top-level keys.
+/// Creates the file (and its `agents/` directory) when setting the key on a
+/// skill that didn't have one; deletes the file entirely when clearing the
+/// key leaves it empty, rather than leaving a stray `{}`. Ported from the
+/// desktop's former `skill_invocation.rs::patch_codex_openai_yaml`, onto
+/// `ScopeFs` and an `ExclusiveGuard`.
+pub fn set_codex_sidecar_implicit_invocation(
+    rt: &Runtime,
+    ctx: &OpContext,
+    skill_dir: &Path,
+    user_only: bool,
+) -> Result<(), CoreError> {
+    ctx.checkpoint()?;
+    let fs = rt.ports.fs.as_ref();
+    let guard = acquire_exclusive(rt.ports.leases.as_ref(), &rt.scope)?;
+    let path = codex_openai_yaml_path(skill_dir);
+    let mut root: serde_yaml::Mapping = match fs.read_capped(&path, SKILL_MD_MAX_BYTES) {
+        Ok(bytes) => {
+            let text = String::from_utf8(bytes).map_err(|e| {
+                CoreError::new(
+                    ErrorCode::InvalidRequest,
+                    format!("{} is not valid UTF-8: {e}", path.display()),
+                )
+                .at(&path)
+            })?;
+            match serde_yaml::from_str(&text) {
+                Ok(serde_yaml::Value::Mapping(m)) => m,
+                Ok(_) | Err(_) => {
+                    return Err(CoreError::new(
+                        ErrorCode::InvalidRequest,
+                        format!("{} is not a YAML mapping", path.display()),
+                    )
+                    .at(&path));
+                }
+            }
+        }
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => serde_yaml::Mapping::new(),
+        Err(e) => return Err(CoreError::io(&path, e)),
+    };
+
+    let policy_key = serde_yaml::Value::String("policy".to_string());
+    let allow_key = serde_yaml::Value::String("allow_implicit_invocation".to_string());
+    let mut policy = match root.get(&policy_key) {
+        Some(serde_yaml::Value::Mapping(m)) => m.clone(),
+        _ => serde_yaml::Mapping::new(),
+    };
+
+    if user_only {
+        policy.insert(allow_key, serde_yaml::Value::Bool(false));
+        root.insert(policy_key, serde_yaml::Value::Mapping(policy));
+    } else {
+        policy.remove(&allow_key);
+        if policy.is_empty() {
+            root.remove(&policy_key);
+        } else {
+            root.insert(policy_key, serde_yaml::Value::Mapping(policy));
+        }
+        if root.is_empty() {
+            if fs.symlink_metadata(&path).is_ok() {
+                let scoped_path = crate::ports::confine(&rt.scope, fs, &path)?;
+                fs.remove_file(&guard, &scoped_path)
+                    .map_err(|e| CoreError::io(&path, e))?;
+            }
+            return Ok(());
+        }
+    }
+
+    let parent = path
+        .parent()
+        .expect("openai.yaml always has a parent")
+        .to_path_buf();
+    let scoped_parent = crate::ports::confine(&rt.scope, fs, &parent)?;
+    fs.create_dir_all(&guard, &scoped_parent)
+        .map_err(|e| CoreError::io(&parent, e))?;
+    let yaml = serde_yaml::to_string(&serde_yaml::Value::Mapping(root)).map_err(|e| {
+        CoreError::new(
+            ErrorCode::InvalidRequest,
+            format!("Failed to serialize {}: {e}", path.display()),
+        )
+        .at(&path)
+    })?;
+    let scoped_path = crate::ports::confine(&rt.scope, fs, &path)?;
+    fs.write_atomic(&guard, &scoped_path, yaml.as_bytes())
+        .map_err(|e| CoreError::io(&path, e))
 }
 
 fn read_opencode_denied_skills(fs: &dyn ScopeFs, home: &Path) -> Vec<String> {
@@ -3426,6 +3842,17 @@ pub fn park(rt: &Runtime, ctx: &OpContext, req: &ParkRequest) -> Result<ParkOutc
     let scoped_to = crate::ports::confine(&rt.scope, fs, &parked_dir)?;
     fs.rename(&session.guard, &scoped_from, &scoped_to)
         .map_err(|e| CoreError::io(&deployment.path, e))?;
+    // Codex reads the universal root directly rather than through a link,
+    // so a `[[skills.config]]` row disabling this skill names the moved
+    // path itself; without this, park would leave that row pointing at a
+    // directory that no longer exists (docs/action-map/harnesses/codex.md).
+    park_codex_skill_path(
+        rt,
+        ctx,
+        &session.guard,
+        &deployment.path.join("SKILL.md"),
+        &parked_dir.join("SKILL.md"),
+    )?;
 
     session
         .store

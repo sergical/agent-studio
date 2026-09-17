@@ -2737,10 +2737,14 @@ mod tests {
         let result = add_with_disabled(home, vec![AgentId::Codex]);
 
         assert!(result.warning.is_none());
-        assert_eq!(
-            super::super::codex_skill_config::read_disabled_skill_md_paths(home),
-            vec![home.join(".agents/skills/find-bugs/SKILL.md")]
-        );
+        let content = fs::read_to_string(home.join(".codex").join("config.toml")).unwrap();
+        assert!(content.contains(
+            &home
+                .join(".agents/skills/find-bugs/SKILL.md")
+                .to_string_lossy()
+                .to_string()
+        ));
+        assert!(content.contains("enabled = false"));
     }
 
     #[test]
