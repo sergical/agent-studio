@@ -7,8 +7,8 @@ UI entry points: header Park/Unpark/Fork/Un-fork/Pull latest, Locations card Unp
 
 ## Current state
 
-| Command            | Journal | Concurrency                                | Partial-state risk                                         |
-| ------------------ | ------- | ------------------------------------------ | ---------------------------------------------------------- |
+| Command            | Journal | Concurrency                              | Partial-state risk                                         |
+| ------------------ | ------- | ---------------------------------------- | ---------------------------------------------------------- |
 | park_skill         | no      | per-root lease                           | crash between the rename and the registry write            |
 | unpark_skill       | no      | per-root lease                           | unparked skill with a missing Claude link                  |
 | fork_skill         | no      | per-root lease                           | detached but empty skill dir if manual recovery is skipped |
