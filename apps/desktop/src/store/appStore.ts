@@ -31,9 +31,8 @@ import type { ResolvedTheme, Theme } from "../lib/theme";
  * store's `skillListFilter`, not on this view, so places (the sidebar) stay
  * distinct from filters (the list) and opening a skill and coming back
  * never loses them; `activity` is the full invocation history (year
- * heatmap, per-skill and per-project breakdowns); `packs` is the pack list
- * and detail; `skill` is the full-page view of one installed skill, opened
- * from any other view.
+ * heatmap, per-skill and per-project breakdowns); `skill` is the full-page
+ * view of one installed skill, opened from any other view.
  */
 /** One of Learn's explainer sections, deep-linkable from Home and elsewhere. */
 export type LearnSection = "broken" | "invoke" | "cost" | "unused";
@@ -43,7 +42,6 @@ export type ActiveView =
   | { kind: "skills" }
   | { kind: "plugins" }
   | { kind: "activity" }
-  | { kind: "packs" }
   | { kind: "learn"; section?: LearnSection }
   | { kind: "settings" }
   | {

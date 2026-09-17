@@ -20,8 +20,8 @@ use rmcp::service::RequestContext;
 use rmcp::transport::stdio;
 use rmcp::{tool, tool_handler, tool_router, RoleServer, ServerHandler, ServiceExt};
 use skill_studio_core::dto::{
-    CapabilitiesRequest, ListEventsRequest, RepairApplyRequest, RepairPreviewRequest,
-    RestoreRequest, ScanRequest,
+    CapabilitiesRequest, HarnessesRequest, ListEventsRequest, RepairApplyRequest,
+    RepairPreviewRequest, RestoreRequest, ScanRequest,
 };
 use skill_studio_core::harness::HarnessCatalog;
 use skill_studio_core::identity::CorrelationId;
@@ -55,7 +55,9 @@ fn build_runtime(with_history: bool) -> Result<Runtime, CoreError> {
             ports.discovery = Some(Arc::new(skill_studio_host::HostProjectDiscovery::new()));
         }
         ports.tools = Some(Arc::new(skill_studio_host::PathToolLookup::new()));
-    } else if runtime_scope.kind == skill_studio_core::scope::ScopeKind::Fixture {
+    }
+    ports.spawner = Some(Arc::new(skill_studio_host::RealProcessSpawner::new()));
+    if !with_history && runtime_scope.kind == skill_studio_core::scope::ScopeKind::Fixture {
         // Fixture scopes name their own projects explicitly; discovery would
         // otherwise walk the real machine's transcripts for a fake home.
         ports.discovery = None;
@@ -178,6 +180,20 @@ impl SkillStudioServer {
     ) -> CallToolResult {
         run_op(Operation::Capabilities, false, &context, |rt, ctx| {
             ops::capabilities(rt, ctx, &req)
+        })
+        .await
+    }
+
+    #[tool(
+        description = "Detect first-class harnesses installed on this machine: PATH, version, install method, configured, and used evidence."
+    )]
+    async fn harnesses(
+        &self,
+        Parameters(req): Parameters<HarnessesRequest>,
+        context: RequestContext<RoleServer>,
+    ) -> CallToolResult {
+        run_op(Operation::Harnesses, false, &context, |rt, ctx| {
+            ops::harnesses(rt, ctx, &req)
         })
         .await
     }

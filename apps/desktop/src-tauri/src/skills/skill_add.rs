@@ -1333,28 +1333,6 @@ pub(crate) fn resolve_fetch_and_lookup(app: &tauri::AppHandle) -> Result<GithubT
     })
 }
 
-/// Installs every skill picked out of one source - see `add_skills_with`.
-/// The whole batch fails only when nothing could be attempted; a single
-/// skill's failure comes back in its own `AddSkillOutcome`.
-#[tauri::command]
-pub async fn add_skills(
-    request: AddSkillsRequest,
-    app: tauri::AppHandle,
-) -> Result<Vec<AddSkillOutcome>, String> {
-    let timing_app = app.clone();
-    crate::timing_log::time_command_blocking(&timing_app, "add_skills", move || {
-        let fork_lock = app.state::<ForkMutationLock>();
-        let _guard = fork_lock.try_acquire()?;
-        let home = dirs::home_dir().ok_or("Could not find home directory")?;
-        let runner = RealCommandRunner::new();
-        let (fetch, lookup) = resolve_fetch_and_lookup(&app)?;
-        let result = add_skills_with(&home, &request, &runner, fetch.as_ref(), lookup.as_ref());
-        skill_refresh::request_snapshot_rebuild(&app);
-        result
-    })
-    .await
-}
-
 #[tauri::command]
 pub async fn add_skill(
     request: AddSkillRequest,

@@ -15,8 +15,8 @@ use std::sync::Arc;
 
 use clap::{Parser, Subcommand};
 use skill_studio_core::dto::{
-    CapabilitiesRequest, Inventory, ListEventsRequest, RepairApplyMode, RepairApplyRequest,
-    RepairPreviewRequest, RestoreRequest, ScanRequest,
+    CapabilitiesRequest, HarnessesRequest, Inventory, ListEventsRequest, RepairApplyMode,
+    RepairApplyRequest, RepairPreviewRequest, RestoreRequest, ScanRequest,
 };
 use skill_studio_core::harness::HarnessCatalog;
 use skill_studio_core::identity::{AgentId, CorrelationId, DeploymentId, EventId, SkillName};
@@ -76,6 +76,14 @@ enum Command {
         /// Executables to look up on `PATH`.
         #[arg(long = "tool")]
         tools: Vec<String>,
+        #[arg(long)]
+        json: bool,
+    },
+    /// Detect first-class harnesses installed on this machine: `PATH`,
+    /// version, install method, configured, and used evidence.
+    Harnesses {
+        #[command(flatten)]
+        scope: ScopeArgs,
         #[arg(long)]
         json: bool,
     },
@@ -176,6 +184,7 @@ fn main() -> ExitCode {
             tools,
             json,
         } => run_capabilities(scope, harnesses, observe, tools, json, time),
+        Command::Harnesses { scope, json } => run_harnesses(scope, json, time),
         Command::PreviewRepair {
             scope,
             deployment_id,
@@ -245,6 +254,7 @@ fn build_runtime_write<T: ops::Outcome + serde::Serialize>(
         ports.discovery = Some(Arc::new(skill_studio_host::HostProjectDiscovery::new()));
     }
     ports.tools = Some(Arc::new(skill_studio_host::PathToolLookup::new()));
+    ports.spawner = Some(Arc::new(skill_studio_host::RealProcessSpawner::new()));
     Runtime::new(&runtime_scope, ports).map_err(|err| {
         let envelope: ResultEnvelope<T> = error_envelope(operation, err, &runtime_scope);
         let code = exit_code(envelope.exit_status());
@@ -267,6 +277,7 @@ fn build_runtime<T: ops::Outcome + serde::Serialize>(
     let (runtime_scope, lease_root) = scope.resolve();
     let catalog = Arc::new(HarnessCatalog::builtin());
     let mut ports = skill_studio_host::default_ports_with_discovery(lease_root, catalog);
+    ports.spawner = Some(Arc::new(skill_studio_host::RealProcessSpawner::new()));
     if runtime_scope.kind == skill_studio_core::scope::ScopeKind::Fixture {
         // Fixture scopes name their own projects explicitly; discovery would
         // otherwise walk the real machine's transcripts for a fake home.
@@ -439,6 +450,28 @@ fn run_capabilities(
         output::print_json(&envelope);
     } else {
         output::print_capabilities_table(&envelope);
+    }
+    print_timing(time, &envelope.timings);
+    code
+}
+
+fn run_harnesses(scope: ScopeArgs, json: bool, time: bool) -> ExitCode {
+    let rt = match build_runtime::<skill_studio_core::harness::HarnessReport>(
+        &scope,
+        Operation::Harnesses,
+        json,
+    ) {
+        Ok(rt) => rt,
+        Err(code) => return code,
+    };
+    let ctx = OpContext::uncancellable(CorrelationId(ulid::Ulid::new().to_string()));
+    let result = ops::harnesses(&rt, &ctx, &HarnessesRequest {});
+    let envelope = ResultEnvelope::from_result(Operation::Harnesses, &rt.scope, &ctx, result);
+    let code = exit_code(envelope.exit_status());
+    if json {
+        output::print_json(&envelope);
+    } else {
+        output::print_harnesses_table(&envelope);
     }
     print_timing(time, &envelope.timings);
     code

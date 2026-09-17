@@ -10,13 +10,11 @@ import {
   observeElementRect as observeDefaultElementRect,
   useVirtualizer,
 } from "@tanstack/react-virtual";
-import type { InstalledSkill, PackMember, SkillInvocationStats } from "@skill-studio/lib";
-import { isFeatureEnabled } from "../../lib/feature-flags";
+import type { InstalledSkill, SkillInvocationStats } from "@skill-studio/lib";
 import { groupSkillRows } from "../../lib/skill-list-model";
 import type { SortMode } from "../../lib/skill-list-sort";
 import { useRowCursor, useRowCursorWindowEntry } from "../../hooks/useRowCursor";
 import { RichTooltipScope } from "../ui/RichTooltip";
-import { PackNamePrompt } from "../Packs/PackNamePrompt";
 import { SkillRowMenuScope } from "./SkillRowMenu";
 import { SkillListEmptyState } from "./SkillListEmptyState";
 import { SkillListGroup } from "./SkillListGroup";
@@ -144,7 +142,8 @@ interface SkillListTableProps {
  * attention, Healthy, Parked): the state glyph, name, disk location, harness
  * stack, and token pair. Checking a row's checkbox selects it - no separate
  * selection mode - and the action bar (Create pack, Cancel) shows once
- * anything is checked. Packs sit behind the "skill-packs" feature flag.
+ * anything is checked. Pack creation is deferred (unit 4.3), so the bar's
+ * Create pack button never renders.
  */
 export function SkillListTable({
   skills,
@@ -162,9 +161,7 @@ export function SkillListTable({
   const selectedSkillName = selectedSkillNameProp ?? null;
   const initialCursorSkillName = initialCursorSkillNameProp ?? null;
   const hasAnySkills = hasAnySkillsProp ?? true;
-  const [showPackPrompt, setShowPackPrompt] = useState(false);
   const [collapsedGroups, setCollapsedGroups] = useState<Set<RowGroup>>(() => new Set());
-  const packsEnabled = isFeatureEnabled("skill-packs");
   /** The roving cursor's key, mirrored here so the virtualizer's `rangeExtractor` (a plain
    * callback, not part of render) can always keep that row's item in range without depending on
    * `useRowCursor`'s return value before it exists. */
@@ -182,7 +179,6 @@ export function SkillListTable({
 
   const {
     selectedPaths,
-    clearSkillSelection,
     selectSkills,
     exitSelectionMode,
     syncSelectionMode,
@@ -402,28 +398,7 @@ export function SkillListTable({
           </div>
 
           {selectedPaths.size > 0 && (
-            <SkillListSelectionBar
-              count={selectedPaths.size}
-              packsEnabled={packsEnabled}
-              onCreatePack={() => setShowPackPrompt(true)}
-              onCancel={exitSelectionMode}
-            />
-          )}
-
-          {showPackPrompt && (
-            <PackNamePrompt
-              members={skills.reduce<PackMember[]>((members, s) => {
-                const path = rowPath(s);
-                if (path !== undefined && selectedPaths.has(path))
-                  members.push({ name: s.name, path });
-                return members;
-              }, [])}
-              onClose={() => setShowPackPrompt(false)}
-              onCreated={() => {
-                setShowPackPrompt(false);
-                clearSkillSelection();
-              }}
-            />
+            <SkillListSelectionBar count={selectedPaths.size} onCancel={exitSelectionMode} />
           )}
         </div>
       </SkillRowMenuScope>

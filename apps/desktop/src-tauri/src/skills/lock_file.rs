@@ -67,9 +67,3 @@ pub fn read_lock_file_at(lock_path: &std::path::Path) -> Result<SkillLockFile, S
 
     serde_json::from_str(&content).map_err(|e| format!("Failed to parse lock file: {}", e))
 }
-
-/// Check whether a skill name is recorded in the lock file
-pub fn is_skill_installed(skill_name: &str) -> Result<bool, String> {
-    let lock_file = read_lock_file()?;
-    Ok(lock_file.skills.contains_key(skill_name))
-}

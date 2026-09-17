@@ -1,6 +1,6 @@
 // ============================================================================
 // Skill Studio - Main Application
-// Shell: Sidebar + main view (Home, Skills, Activity, Packs, or a full-page
+// Shell: Sidebar + main view (Home, Skills, Activity, or a full-page
 // installed-skill view)
 // ============================================================================
 
@@ -16,7 +16,6 @@ import { SettingsView } from "./components/Settings/SettingsView";
 import { LearnView } from "./components/Learn/LearnView";
 import { SkillsView } from "./components/SkillList/SkillsView";
 import { PluginSkillsView } from "./components/SkillList/PluginSkillsView";
-import { PacksView } from "./components/Packs/PacksView";
 import { SkillPage } from "./components/SkillDetail/SkillPage";
 import { useAppShortcuts } from "./hooks/useAppShortcuts";
 import { useNativeShell } from "./hooks/useNativeShell";
@@ -173,9 +172,6 @@ function App() {
     case "activity":
       main = renderListLayer(activeView.kind, null);
       break;
-    case "packs":
-      main = <PacksView />;
-      break;
     case "learn":
       main = <LearnView section={activeView.section} />;
       break;
@@ -183,7 +179,7 @@ function App() {
       main = <SettingsView snapshot={snapshot} />;
       break;
     case "skill": {
-      // Opened from Packs, Learn, or Settings: none of those keep a list worth reviving, so the
+      // Opened from Learn or Settings: neither keeps a list worth reviving, so the
       // skill page fully replaces `main`, same as before.
       const originKind = isListViewKind(activeView.from.kind) ? activeView.from.kind : null;
       main = originKind ? renderListLayer(originKind, activeView) : renderSkillPage(activeView);

@@ -8,7 +8,7 @@ use skill_studio_core::dto::{
     Diagnosis, EventDto, FrontmatterRepairPreview, Inventory, RepairOutcome, RestoreOutcome,
     ScanRequest,
 };
-use skill_studio_core::harness::Capabilities;
+use skill_studio_core::harness::{Capabilities, HarnessReport};
 use skill_studio_core::ops::ResultEnvelope;
 
 /// Prints one envelope as a single JSON document with a trailing newline.
@@ -102,6 +102,33 @@ pub fn print_capabilities_table(envelope: &ResultEnvelope<Capabilities>) {
             .map(|p| p.display().to_string())
             .unwrap_or_else(|| "not found".into());
         println!("{}: {path}", tool.name);
+    }
+}
+
+/// Prints `harnesses`'s table: one line per first-class harness, naming
+/// detected state, version, install method, and the evidence behind each.
+/// A fact the probe could not prove prints the literal word `Unknown`
+/// rather than an empty field.
+pub fn print_harnesses_table(envelope: &ResultEnvelope<HarnessReport>) {
+    print_errors(envelope);
+    let Some(report) = &envelope.data else {
+        return;
+    };
+    for row in &report.harnesses {
+        let executable = row
+            .executable
+            .as_ref()
+            .map(|p| p.display().to_string())
+            .unwrap_or_else(|| "not found".into());
+        let version = row.version.value.as_deref().unwrap_or("Unknown");
+        let install_method = row.install_method.value.as_deref().unwrap_or("Unknown");
+        println!(
+            "{}  [{:?}]  executable={executable}  version={version} ({})  install_method={install_method} ({})",
+            row.display_name,
+            row.state,
+            row.version.evidence.source,
+            row.install_method.evidence.source,
+        );
     }
 }
 
