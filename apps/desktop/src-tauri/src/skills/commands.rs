@@ -805,7 +805,7 @@ mod tests {
             home.to_path_buf(),
             projects.to_vec(),
             Vec::new(),
-            Vec::new(),
+            projects.to_vec(),
         );
         let candidates =
             skill_studio_core::skill_discovery::discover_skill_candidates(&read_context).candidates;
@@ -1027,6 +1027,10 @@ mod tests {
                 linked.owner_id, canonical_deployment.owner_id,
                 "deployments: {:#?}",
                 skill.deployments
+            );
+            assert_eq!(
+                canonical_deployment.owner_kind,
+                super::super::skill_ownership::LifecycleOwnerKind::Dotagents
             );
             assert_eq!(linked.owner_kind, canonical_deployment.owner_kind);
             assert_eq!(linked.mutability, DeploymentMutability::ReadOnly);
