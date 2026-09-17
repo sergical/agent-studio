@@ -199,10 +199,34 @@ fn strip_body(text: &str) -> String {
     }
 }
 
-/// Sanitizes one exception message: strips any file body, then redacts the
-/// sensitive context.
+/// Redacts every `/Users/<name>`, `/home/<name>`, or `C:\Users\<name>`
+/// segment in `text` by pattern, not just the exact [`SensitiveContext`]
+/// values - a panic message can quote a path under someone else's home
+/// directory (a symlinked skill, a different account) that
+/// [`redact_sensitive`] would never catch because it isn't this machine's
+/// recorded `home_dir`. Only the username segment is replaced; the rest of
+/// the path is kept so the message still says where inside home it failed.
+fn redact_home_style_paths(text: &str) -> String {
+    const PREFIXES: [(&str, char); 3] = [("/Users/", '/'), ("/home/", '/'), ("C:\\Users\\", '\\')];
+    let mut out = text.to_string();
+    for (prefix, separator) in PREFIXES {
+        while let Some(start) = out.find(prefix) {
+            let after_prefix = start + prefix.len();
+            let end = out[after_prefix..]
+                .find(|c: char| c == separator || c.is_whitespace())
+                .map(|offset| after_prefix + offset)
+                .unwrap_or(out.len());
+            out.replace_range(start..end, "<home>");
+        }
+    }
+    out
+}
+
+/// Sanitizes one exception message: strips any file body, redacts the
+/// sensitive context, then redacts any home-style path pattern that isn't
+/// one of the sensitive context's exact values.
 fn sanitize_message(message: &str, sensitive: &SensitiveContext) -> String {
-    redact_sensitive(&strip_body(message), sensitive)
+    redact_home_style_paths(&redact_sensitive(&strip_body(message), sensitive))
 }
 
 /// Sanitizes one frame: keeps the instruction address as-is and reduces the
@@ -380,6 +404,54 @@ mod tests {
             frame.app_relative_path.as_deref(),
             Some("scan.rs"),
             "frame.app_relative_path kept a directory component: {frame:?}"
+        );
+    }
+
+    /// guards: a home path that isn't this machine's recorded
+    /// `SensitiveContext.home_dir` - a panic quoting another account's home
+    /// directory, or the exact panic-shaped report `install_panic_hook`
+    /// builds - surviving `redact_sensitive`'s exact-match check.
+    #[test]
+    fn sanitizer_strips_home_path_by_pattern_when_not_the_sensitive_context_value_or_names_the_leaked_field(
+    ) {
+        let sensitive = SensitiveContext {
+            home_dir: Some("/Users/alice".to_string()),
+            skill_name: None,
+            project_path: None,
+        };
+        let raw = RawReport {
+            operation: Some("skill.scan".to_string()),
+            dimensions: vec![],
+            exceptions: vec![RawException {
+                message: "No such file: /Users/bob/.claude/skills/x/SKILL.md".to_string(),
+                frames: vec![],
+            }],
+        };
+
+        let sanitized = sanitize(&raw, &sensitive);
+        let message = &sanitized.exceptions[0].message;
+
+        assert!(
+            !message.contains("/Users/"),
+            "a home path outside SensitiveContext.home_dir leaked: {message}"
+        );
+
+        // Same shape `install_panic_hook` builds: an empty `SensitiveContext`
+        // (a panic hook has no operation-scoped skill name or project path to
+        // pass) and a message quoting this process's own home directory.
+        let hook_shaped = RawReport {
+            operation: None,
+            dimensions: vec![],
+            exceptions: vec![RawException {
+                message: "panicked at /Users/alice/src/x.rs:12:5: index out of bounds".to_string(),
+                frames: vec![],
+            }],
+        };
+        let sanitized = sanitize(&hook_shaped, &SensitiveContext::default());
+        assert!(
+            !sanitized.exceptions[0].message.contains("/Users/"),
+            "a panic-shaped report with no SensitiveContext.home_dir set still leaked a home path: {}",
+            sanitized.exceptions[0].message
         );
     }
 
