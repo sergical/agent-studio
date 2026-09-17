@@ -294,6 +294,16 @@ export async function setPreferredEditor(value: string | null): Promise<void> {
   return callCommand("set_preferred_editor", { appName: value });
 }
 
+/** The saved "Error reporting" switch (Settings), off unless the user turned it on. */
+export async function getErrorReportingEnabled(): Promise<boolean> {
+  return callCommand("get_error_reporting_enabled");
+}
+
+/** Saves the switch and takes effect immediately - see the Rust `error_reporting`. */
+export async function setErrorReportingEnabled(enabled: boolean): Promise<boolean> {
+  return callCommand("set_error_reporting_enabled", { enabled });
+}
+
 // ============================================================================
 // Fork / Pull upstream / Un-fork API
 // ============================================================================
