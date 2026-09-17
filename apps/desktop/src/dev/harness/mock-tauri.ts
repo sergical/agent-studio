@@ -381,6 +381,12 @@ export function installMockTauri(initial: SkillSnapshot): HarnessControl {
         case "restore_trashed_skill":
         case "unfork_skill":
           return undefined;
+        case "app_version":
+          return {
+            version: "0.1.0",
+            commit: "dev",
+            notes: "### Added\n\n- The dev harness mock for `app_version`.",
+          };
         case "get_editor_choices":
           return editorChoices();
         case "set_preferred_editor":

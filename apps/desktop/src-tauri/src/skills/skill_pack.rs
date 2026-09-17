@@ -35,11 +35,12 @@ use tauri::Manager;
 use tauri_plugin_dialog::{DialogExt, MessageDialogButtons};
 use ulid::Ulid;
 
+use skill_studio_core::dotagents_ledger;
+use skill_studio_core::lock_file;
+
 use super::agents::AgentId;
 use super::commands::dotagents_add_args;
-use super::dotagents_ledger;
 use super::gh_cli::{run_gh, GhError};
-use super::lock_file;
 use super::skill_add::{maybe_claude_code_symlink, CommandRunner, RealCommandRunner};
 use super::skill_agent_runner::validate_skill_dir_name;
 use super::skill_deployment::SkillDestination;
@@ -371,7 +372,9 @@ fn classify_shared_member(home: &Path, app_data: &Path, name: &str) -> MemberKin
     }
 
     let agents_dir = home.join(".agents");
-    let dotagents_skills = dotagents_ledger::read_dotagents_ledger(&agents_dir).unwrap_or_default();
+    let fs = skill_studio_host::RealFs::new();
+    let dotagents_skills =
+        dotagents_ledger::read_dotagents_ledger(&fs, &agents_dir).unwrap_or_default();
     if let Some(skill) = dotagents_skills.into_iter().find(|s| s.name == name) {
         // A resolved commit pins the pack to exactly what's installed;
         // `declared_ref` (a branch, or nothing at all) is only a fallback.
@@ -383,9 +386,9 @@ fn classify_shared_member(home: &Path, app_data: &Path, name: &str) -> MemberKin
         };
     }
 
-    let lock_path = agents_dir.join(".skill-lock.json");
+    let lock_path = lock_file::lock_file_path_in(&agents_dir);
     let lock =
-        lock_file::read_lock_file_at(&lock_path).unwrap_or_else(|_| lock_file::SkillLockFile {
+        lock_file::read_lock_file(&fs, &lock_path).unwrap_or_else(|_| lock_file::SkillLockFile {
             version: 3,
             skills: std::collections::HashMap::new(),
         });

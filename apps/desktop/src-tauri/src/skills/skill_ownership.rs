@@ -11,8 +11,9 @@ use std::path::{Path, PathBuf};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
-use super::dotagents_ledger::{self, DotagentsSkill};
-use super::lock_file::{self, SkillLockFile};
+use skill_studio_core::dotagents_ledger::{self, DotagentsSkill};
+use skill_studio_core::lock_file::{self, SkillLockFile};
+
 use super::skill_deployment::encode_id_path;
 use super::skill_dto::InstallScope;
 
@@ -79,7 +80,7 @@ pub fn load_ownership_ledgers(home: &Path, project_paths: &[PathBuf]) -> Vec<Own
         let agents_dir = project.join(".agents");
         if agents_dir.join("agents.toml").exists()
             || agents_dir.join("agents.lock").exists()
-            || agents_dir.join(".skill-lock.json").exists()
+            || lock_file::lock_file_path_in(&agents_dir).exists()
         {
             out.push(read_ledgers(
                 agents_dir,
@@ -96,13 +97,13 @@ fn read_ledgers(
     scope: InstallScope,
     project_path: Option<PathBuf>,
 ) -> OwnershipLedgers {
-    let lock = lock_file::read_lock_file_at(&agents_dir.join(".skill-lock.json")).unwrap_or(
-        SkillLockFile {
+    let fs = skill_studio_host::RealFs::new();
+    let lock = lock_file::read_lock_file(&fs, &lock_file::lock_file_path_in(&agents_dir))
+        .unwrap_or(SkillLockFile {
             version: 3,
             skills: HashMap::new(),
-        },
-    );
-    let dotagents = dotagents_ledger::read_dotagents_ledger(&agents_dir).unwrap_or_default();
+        });
+    let dotagents = dotagents_ledger::read_dotagents_ledger(&fs, &agents_dir).unwrap_or_default();
     OwnershipLedgers {
         agents_dir,
         scope,
