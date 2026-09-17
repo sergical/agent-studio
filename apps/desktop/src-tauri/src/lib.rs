@@ -138,6 +138,10 @@ fn apply_fixture_home_override() {
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     apply_fixture_home_override();
+    // Before Tauri's own setup, so a panic during setup itself is still
+    // caught once `set_global_state` below registers the state to report
+    // through.
+    skills::error_reporting::install_panic_hook();
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
         .setup(|app| {
@@ -155,6 +159,14 @@ pub fn run() {
             app.manage(skills::skill_agent_runner::SkillAgentRunnerState::default());
             app.manage(skills::skill_run_target::SkillRunTargetState::default());
             app.manage(skills::skill_fork::ForkMutationLock::default());
+            let error_reporting_enabled = dirs::home_dir()
+                .and_then(|home| skills::skill_fork_registry::read_fork_registry(&home).ok())
+                .is_some_and(|registry| registry.error_reporting_enabled);
+            let reporting_state = std::sync::Arc::new(
+                skills::error_reporting::ReportingState::new(error_reporting_enabled),
+            );
+            skills::error_reporting::set_global_state(reporting_state.clone());
+            app.manage(reporting_state);
             skills::skill_update_check::spawn_update_check_loop(app.handle().clone());
             skills::skill_trial::spawn_trial_expiry_loop(app.handle().clone());
 
@@ -180,6 +192,8 @@ pub fn run() {
             skills::commands::open_skill_path,
             skills::commands::get_editor_choices,
             skills::commands::set_preferred_editor,
+            skills::error_reporting::get_error_reporting_enabled,
+            skills::error_reporting::set_error_reporting_enabled,
             // Fork / Pull upstream / Un-fork
             skills::skill_fork::fork_skill,
             skills::skill_fork::pull_fork_upstream,
