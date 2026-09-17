@@ -13,7 +13,6 @@ import {
   Layers,
   LayoutDashboard,
   Moon,
-  Package,
   Plus,
   Puzzle,
   RefreshCw,
@@ -25,7 +24,6 @@ import {
 import { Dialog, DialogContent, Input, Kbd } from "@skill-studio/ui";
 import type { SkillSnapshot } from "@skill-studio/lib";
 import { keyShortcutsFor, SHORTCUTS } from "../../lib/app-shortcuts";
-import { isFeatureEnabled } from "../../lib/feature-flags";
 import { useAppStore } from "../../store/appStore";
 import { RowGlyph } from "../SkillList/SkillRowCells";
 import { rowGroup, rowState } from "../SkillList/skill-row-state";
@@ -68,7 +66,6 @@ export function CommandPalette({ snapshot, requestRescan }: CommandPaletteProps)
   const inputRef = useRef<HTMLInputElement>(null);
   const listRef = useRef<HTMLDivElement>(null);
   const restoreFocusRef = useRef<HTMLElement | null>(null);
-  const packsEnabled = isFeatureEnabled("skill-packs");
 
   function close() {
     setOpen(false);
@@ -125,9 +122,6 @@ export function CommandPalette({ snapshot, requestRescan }: CommandPaletteProps)
         { label: "Skills", icon: <Layers size={14} />, view: { kind: "skills" } },
         { label: "Plugins", icon: <Puzzle size={14} />, view: { kind: "plugins" } },
         { label: "Activity", icon: <ActivityIcon size={14} />, view: { kind: "activity" } },
-        ...(packsEnabled
-          ? [{ label: "Packs", icon: <Package size={14} />, view: { kind: "packs" as const } }]
-          : []),
         { label: "Learn", icon: <BookOpen size={14} />, view: { kind: "learn" } },
         { label: "Settings", icon: <SettingsIcon size={14} />, view: { kind: "settings" } },
       ],
