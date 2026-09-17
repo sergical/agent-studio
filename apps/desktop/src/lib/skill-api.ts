@@ -4,7 +4,9 @@
 // ============================================================================
 
 import { invoke } from "@tauri-apps/api/core";
+import type { InvokeArgs } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
+import { recordIpcCall } from "./perf-marks";
 import type {
   AddMethodDefaults,
   AddSkillOperationEvent,
@@ -37,6 +39,33 @@ import type {
   UpdatePackResult,
 } from "@skill-studio/lib";
 
+let ipcCallSeq = 0;
+
+/** Every wrapper below routes through this instead of calling `invoke` directly, so every IPC
+ * round trip gets one "ipc:<command>" `performance` measure - the overlay's source, and visible in
+ * devtools' Performance panel too. The mark name carries a counter so concurrent calls to the same
+ * command don't clobber each other's mark. */
+function callCommand<T>(command: string, args?: InvokeArgs): Promise<T> {
+  const startMark = `ipc:${command}:${ipcCallSeq++}`;
+  performance.mark(startMark);
+  const finish = (resolved: boolean) => {
+    const measure = performance.measure(`ipc:${command}`, startMark);
+    recordIpcCall(command, measure.duration, resolved);
+    performance.clearMarks(startMark);
+    performance.clearMeasures(`ipc:${command}`);
+  };
+  return invoke<T>(command, args).then(
+    (result) => {
+      finish(true);
+      return result;
+    },
+    (cause: unknown) => {
+      finish(false);
+      throw cause;
+    },
+  );
+}
+
 /** Tauri rejects a failed command with the Rust `Result::Err` string directly, not an `Error` -
  * `err instanceof Error ? err.message : "Unknown error"` would discard it, so every catch block
  * that surfaces an invoke failure as a toast goes through this instead. */
@@ -49,7 +78,7 @@ export function invokeErrorMessage(cause: unknown): string {
 export async function previewSkillFrontmatterRepair(
   target: LifecycleTarget,
 ): Promise<FrontmatterRepairPreview> {
-  return invoke("preview_skill_frontmatter_repair", { target });
+  return callCommand("preview_skill_frontmatter_repair", { target });
 }
 
 export async function applySkillFrontmatterRepair(
@@ -57,7 +86,7 @@ export async function applySkillFrontmatterRepair(
   preview: FrontmatterRepairPreview,
   mode: FrontmatterRepairApplyMode,
 ): Promise<void> {
-  return invoke("apply_skill_frontmatter_repair", {
+  return callCommand("apply_skill_frontmatter_repair", {
     request: {
       target,
       proposal_id: preview.proposal_id,
@@ -79,7 +108,7 @@ export async function searchSkills(
   query: string,
   limit?: number,
 ): Promise<PaginatedSkillsResponse> {
-  return invoke("search_skills", { query, limit });
+  return callCommand("search_skills", { query, limit });
 }
 
 /**
@@ -89,7 +118,7 @@ export async function getPopularSkills(
   page?: number,
   perPage?: number,
 ): Promise<PaginatedSkillsResponse> {
-  return invoke("get_popular_skills", { page, perPage });
+  return callCommand("get_popular_skills", { page, perPage });
 }
 
 /**
@@ -97,7 +126,7 @@ export async function getPopularSkills(
  * skills.sh. `skillId` is the full `owner/repo/slug` id.
  */
 export async function getSkillDetails(skillId: string): Promise<SkillDetails> {
-  return invoke("get_skill_details", { skillId });
+  return callCommand("get_skill_details", { skillId });
 }
 
 // ============================================================================
@@ -111,7 +140,7 @@ export async function getSkillDetails(skillId: string): Promise<SkillDetails> {
  * `~/.agents/skill-studio.json` - the same list `getTrackedProjects` reads.
  */
 export async function getInstalledSkills(): Promise<InstalledSkill[]> {
-  return invoke("get_installed_skills");
+  return callCommand("get_installed_skills");
 }
 
 /**
@@ -119,7 +148,7 @@ export async function getInstalledSkills(): Promise<InstalledSkill[]> {
  * key - the same list the CLI and the MCP server scan against.
  */
 export async function getTrackedProjects(): Promise<TrackedProjects> {
-  return invoke("get_tracked_projects");
+  return callCommand("get_tracked_projects");
 }
 
 /**
@@ -129,7 +158,7 @@ export async function getTrackedProjects(): Promise<TrackedProjects> {
  * to see the rebuilt skill scan that follows.
  */
 export async function registerSkillProjects(paths: string[]): Promise<TrackedProjects> {
-  return invoke("register_skill_projects", { paths });
+  return callCommand("register_skill_projects", { paths });
 }
 
 /**
@@ -140,7 +169,7 @@ export async function registerSkillProjects(paths: string[]): Promise<TrackedPro
  * that follows.
  */
 export async function unregisterSkillProject(path: string): Promise<TrackedProjects> {
-  return invoke("unregister_skill_project", { path });
+  return callCommand("unregister_skill_project", { path });
 }
 
 /**
@@ -150,7 +179,7 @@ export async function unregisterSkillProject(path: string): Promise<TrackedProje
  * for `onSkillSnapshot` to see the rebuilt skill scan that follows.
  */
 export async function removeSkillProject(path: string): Promise<TrackedProjects> {
-  return invoke("remove_skill_project", { path });
+  return callCommand("remove_skill_project", { path });
 }
 
 /**
@@ -158,7 +187,7 @@ export async function removeSkillProject(path: string): Promise<TrackedProjects>
  * Settings "Project folders" card.
  */
 export async function getDiscoverySources(): Promise<DiscoverySourceSetting[]> {
-  return invoke("get_discovery_sources");
+  return callCommand("get_discovery_sources");
 }
 
 /**
@@ -170,7 +199,7 @@ export async function setDiscoverySource(
   harness: string,
   enabled: boolean,
 ): Promise<DiscoverySourceSetting[]> {
-  return invoke("set_discovery_source", { harness, enabled });
+  return callCommand("set_discovery_source", { harness, enabled });
 }
 
 /**
@@ -180,7 +209,7 @@ export async function setDiscoverySource(
  * a meaningful change, not on every render.
  */
 export async function listProjectFolders(): Promise<ProjectFolder[]> {
-  return invoke("list_project_folders");
+  return callCommand("list_project_folders");
 }
 
 /**
@@ -193,7 +222,7 @@ export async function importTrackedProjects(
   added: string[],
   excluded: string[],
 ): Promise<TrackedProjects> {
-  return invoke("import_tracked_projects", { added, excluded });
+  return callCommand("import_tracked_projects", { added, excluded });
 }
 
 /**
@@ -202,7 +231,7 @@ export async function importTrackedProjects(
  * side against the current snapshot and used as the CLI's working directory.
  */
 export async function removeSkill(target: LifecycleTarget): Promise<InstallResult> {
-  return invoke("remove_skill", { target });
+  return callCommand("remove_skill", { target });
 }
 
 /**
@@ -210,14 +239,14 @@ export async function removeSkill(target: LifecycleTarget): Promise<InstallResul
  * `result.tool`/`result.command` say what actually ran.
  */
 export async function updateSkill(target: LifecycleTarget): Promise<InstallResult> {
-  return invoke("update_skill", { target });
+  return callCommand("update_skill", { target });
 }
 
 /**
  * Read up to 2 MiB of an installed skill's SKILL.md straight off disk.
  */
 export async function readInstalledSkillMd(path: string): Promise<string> {
-  return invoke("read_installed_skill_md", { path });
+  return callCommand("read_installed_skill_md", { path });
 }
 
 /**
@@ -230,14 +259,14 @@ export async function writeInstalledSkillMdIfUnchanged(
   expectedContent: string,
   content: string,
 ): Promise<void> {
-  return invoke("write_installed_skill_md_if_unchanged", { path, expectedContent, content });
+  return callCommand("write_installed_skill_md_if_unchanged", { path, expectedContent, content });
 }
 
 /**
  * Reveal a skill's folder in Finder, or open it in the user's default editor.
  */
 export async function openSkillPath(path: string, mode: "reveal" | "editor"): Promise<void> {
-  return invoke("open_skill_path", { path, mode });
+  return callCommand("open_skill_path", { path, mode });
 }
 
 /** One editor offered by the Settings card - see the Rust `skill_editor`. */
@@ -257,12 +286,12 @@ export interface EditorChoices {
 
 /** The editor card's state: installed/saved apps, the `$EDITOR` row, and the current choice. */
 export async function getEditorChoices(): Promise<EditorChoices> {
-  return invoke("get_editor_choices");
+  return callCommand("get_editor_choices");
 }
 
 /** `null` restores the system default. A value that isn't usable is refused. */
 export async function setPreferredEditor(value: string | null): Promise<void> {
-  return invoke("set_preferred_editor", { appName: value });
+  return callCommand("set_preferred_editor", { appName: value });
 }
 
 // ============================================================================
@@ -276,7 +305,7 @@ export async function setPreferredEditor(value: string | null): Promise<void> {
  * dotagents wildcard entry.
  */
 export async function forkSkill(target: LifecycleTarget): Promise<ForkRecord> {
-  return invoke("fork_skill", { target });
+  return callCommand("fork_skill", { target });
 }
 
 /**
@@ -285,7 +314,7 @@ export async function forkSkill(target: LifecycleTarget): Promise<ForkRecord> {
  * the new upstream commit.
  */
 export async function pullForkUpstream(target: LifecycleTarget): Promise<PullResult> {
-  return invoke("pull_fork_upstream", { target });
+  return callCommand("pull_fork_upstream", { target });
 }
 
 /**
@@ -293,7 +322,7 @@ export async function pullForkUpstream(target: LifecycleTarget): Promise<PullRes
  * origin. Callers should confirm with the user first - this runs immediately.
  */
 export async function unforkSkill(target: LifecycleTarget): Promise<void> {
-  return invoke("unfork_skill", { target });
+  return callCommand("unfork_skill", { target });
 }
 
 // ============================================================================
@@ -302,7 +331,7 @@ export async function unforkSkill(target: LifecycleTarget): Promise<void> {
 
 /** List every pack recorded in `~/.agents/skill-studio.json`. */
 export async function listSkillPacks(): Promise<PackInfo[]> {
-  return invoke("list_skill_packs");
+  return callCommand("list_skill_packs");
 }
 
 /**
@@ -310,12 +339,12 @@ export async function listSkillPacks(): Promise<PackInfo[]> {
  * Refused if a pack of that name (or its directory) already exists.
  */
 export async function createSkillPack(name: string, members: PackMember[]): Promise<PackInfo> {
-  return invoke("create_skill_pack", { name, members });
+  return callCommand("create_skill_pack", { name, members });
 }
 
 /** Rebuild a pack's tree from its recorded skill list, committing only if it changed. */
 export async function updateSkillPack(name: string): Promise<UpdatePackResult> {
-  return invoke("update_skill_pack", { name });
+  return callCommand("update_skill_pack", { name });
 }
 
 /**
@@ -324,12 +353,12 @@ export async function updateSkillPack(name: string): Promise<UpdatePackResult> {
  * Callers must confirm with the user first - this runs immediately.
  */
 export async function publishSkillPack(name: string, visibility: string): Promise<PackInfo> {
-  return invoke("publish_skill_pack", { name, visibility });
+  return callCommand("publish_skill_pack", { name, visibility });
 }
 
 /** Delete a pack locally: its registry entry and its directory. Never touches GitHub. */
 export async function deleteSkillPack(name: string): Promise<void> {
-  return invoke("delete_skill_pack", { name });
+  return callCommand("delete_skill_pack", { name });
 }
 
 /**
@@ -339,7 +368,7 @@ export async function deleteSkillPack(name: string): Promise<void> {
 export async function importSkillPack(
   request: PackImportRequest,
 ): Promise<PackImportPreflightResult> {
-  return invoke("import_skill_pack", { request });
+  return callCommand("import_skill_pack", { request });
 }
 
 /** Confirm the exact repository list returned by pack import preflight. */
@@ -347,12 +376,12 @@ export async function confirmSkillPackTrust(
   confirmationToken: string,
   request: PackImportRequest,
 ): Promise<ImportResult> {
-  return invoke("confirm_skill_pack_trust", { confirmationToken, request });
+  return callCommand("confirm_skill_pack_trust", { confirmationToken, request });
 }
 
 /** Consume a pending pack trust prompt and remove its unchanged local snapshot. */
 export async function abandonPackImportTrust(confirmationToken: string): Promise<boolean> {
-  return invoke("abandon_pack_import_trust", { confirmationToken });
+  return callCommand("abandon_pack_import_trust", { confirmationToken });
 }
 
 // ============================================================================
@@ -365,7 +394,7 @@ export async function abandonPackImportTrust(confirmationToken: string): Promise
  * Kept for Skill Store / repair callers; the Add-skill sheet uses operations.
  */
 export async function addSkill(request: AddSkillRequest): Promise<AddSkillResult> {
-  return invoke("add_skill", { request });
+  return callCommand("add_skill", { request });
 }
 
 /** Event name every background Add Skill status is emitted on. */
@@ -379,7 +408,7 @@ export async function startAddSkillOperation(
   operationId: string,
   request: AddSkillRequest,
 ): Promise<AddSkillOperationEvent> {
-  return invoke("start_add_skill_operation", { operationId, request });
+  return callCommand("start_add_skill_operation", { operationId, request });
 }
 
 /**
@@ -389,19 +418,19 @@ export async function startAddSkillsOperation(
   operationId: string,
   request: AddSkillsRequest,
 ): Promise<AddSkillOperationEvent> {
-  return invoke("start_add_skills_operation", { operationId, request });
+  return callCommand("start_add_skills_operation", { operationId, request });
 }
 
 /** Catch-up read after subscribe or remount. */
 export async function getAddSkillOperation(operationId: string): Promise<AddSkillOperationEvent> {
-  return invoke("get_add_skill_operation", { operationId });
+  return callCommand("get_add_skill_operation", { operationId });
 }
 
 /** Request cancel. The worker still reports completed if mutation finished. */
 export async function cancelAddSkillOperation(
   operationId: string,
 ): Promise<AddSkillOperationEvent> {
-  return invoke("cancel_add_skill_operation", { operationId });
+  return callCommand("cancel_add_skill_operation", { operationId });
 }
 
 /**
@@ -413,7 +442,7 @@ export async function confirmAddSkillTrust(
   retryOperationId: string,
   identity: string,
 ): Promise<AddSkillOperationEvent> {
-  return invoke("confirm_add_skill_trust", { operationId, retryOperationId, identity });
+  return callCommand("confirm_add_skill_trust", { operationId, retryOperationId, identity });
 }
 
 /** Subscribe to background Add Skill status events. */
@@ -436,7 +465,7 @@ export async function listGithubSkills(
   gitRef?: string,
   refresh?: boolean,
 ): Promise<GithubSkillListing> {
-  return invoke("list_github_skills", { repo, path, gitRef, refresh });
+  return callCommand("list_github_skills", { repo, path, gitRef, refresh });
 }
 
 /**
@@ -445,14 +474,14 @@ export async function listGithubSkills(
  * sheet opens to pick its Method and Harnesses defaults.
  */
 export async function getAddMethodDefaults(): Promise<AddMethodDefaults> {
-  return invoke("get_add_method_defaults");
+  return callCommand("get_add_method_defaults");
 }
 
 /**
  * Drop the selected deployment's trial record so the expiry loop leaves it alone.
  */
 export async function keepSkillTrial(target: LifecycleTarget): Promise<void> {
-  return invoke("keep_skill_trial", { target });
+  return callCommand("keep_skill_trial", { target });
 }
 
 /**
@@ -460,7 +489,7 @@ export async function keepSkillTrial(target: LifecycleTarget): Promise<void> {
  * `trash_path`) back into `~/.agents/skills/<name>` as an untracked skill.
  */
 export async function restoreTrashedSkill(trashPath: string): Promise<void> {
-  return invoke("restore_trashed_skill", { trashPath });
+  return callCommand("restore_trashed_skill", { trashPath });
 }
 
 /**
@@ -500,7 +529,7 @@ export function onTrialExpired(
  * independent. Refused when the target is not a Global Universal folder.
  */
 export async function parkSkill(target: LifecycleTarget): Promise<void> {
-  return invoke("park_skill", { target });
+  return callCommand("park_skill", { target });
 }
 
 /**
@@ -508,7 +537,7 @@ export async function parkSkill(target: LifecycleTarget): Promise<void> {
  * Project copies are not unparked as a side effect.
  */
 export async function unparkSkill(target: LifecycleTarget): Promise<void> {
-  return invoke("unpark_skill", { target });
+  return callCommand("unpark_skill", { target });
 }
 
 /**
@@ -530,7 +559,7 @@ export async function setHarnessEnabled(
     deployment_id: target.deployment_id,
     reader_agent: agent,
   };
-  return invoke("set_harness_enabled", { target: visibilityTarget, enabled });
+  return callCommand("set_harness_enabled", { target: visibilityTarget, enabled });
 }
 
 /**
@@ -544,7 +573,7 @@ export async function setDeploymentEnabled(
   target: LifecycleTarget,
   enabled: boolean,
 ): Promise<void> {
-  return invoke("set_deployment_enabled", { target, enabled });
+  return callCommand("set_deployment_enabled", { target, enabled });
 }
 
 /**
@@ -558,7 +587,7 @@ export async function setSkillInvocation(
   path: string,
   policy: InvocationPolicy,
 ): Promise<void> {
-  return invoke("set_skill_invocation", { name, path, policy });
+  return callCommand("set_skill_invocation", { name, path, policy });
 }
 
 /**
@@ -571,7 +600,7 @@ export async function setPluginEnabled(
   harness: string,
   enabled: boolean,
 ): Promise<void> {
-  return invoke("set_plugin_enabled", { pluginId, harness, enabled });
+  return callCommand("set_plugin_enabled", { pluginId, harness, enabled });
 }
 
 /**
@@ -579,7 +608,7 @@ export async function setPluginEnabled(
  * removing every skill it ships. Refused for any other harness.
  */
 export async function uninstallPlugin(pluginId: string, harness: string): Promise<void> {
-  return invoke("uninstall_plugin", { pluginId, harness });
+  return callCommand("uninstall_plugin", { pluginId, harness });
 }
 
 // ============================================================================
@@ -591,7 +620,7 @@ export async function uninstallPlugin(pluginId: string, harness: string): Promis
  * Defaults to the last 200 events across every skill.
  */
 export async function listSkillEvents(limit?: number, skill?: string): Promise<SkillEvent[]> {
-  return invoke("list_skill_events", { limit, skill });
+  return callCommand("list_skill_events", { limit, skill });
 }
 
 /**
@@ -600,7 +629,7 @@ export async function listSkillEvents(limit?: number, skill?: string): Promise<S
  * itself backed up and restorable before the inverse is applied.
  */
 export async function restoreSkillEvent(eventId: string, force: boolean): Promise<void> {
-  return invoke("restore_skill_event", { eventId, force });
+  return callCommand("restore_skill_event", { eventId, force });
 }
 
 /**
@@ -614,7 +643,7 @@ export async function materializeHarnessRoot(
   harness: string,
   root: string,
 ): Promise<void> {
-  return invoke("materialize_harness_root", { target, harness, root });
+  return callCommand("materialize_harness_root", { target, harness, root });
 }
 
 /** Converts a whole harness root and disables the selected deployment under one durable intent. */
@@ -623,12 +652,12 @@ export async function materializeHarnessRootThenDisable(
   harness: string,
   root: string,
 ): Promise<void> {
-  return invoke("materialize_harness_root_then_disable", { target, harness, root });
+  return callCommand("materialize_harness_root_then_disable", { target, harness, root });
 }
 
 /** Replaces one healthy Universal-backed deployment link with a local Copy directory. */
 export async function makeSkillIndependentCopy(target: LifecycleTarget): Promise<void> {
-  return invoke("make_skill_independent_copy", { target });
+  return callCommand("make_skill_independent_copy", { target });
 }
 
 /**
@@ -642,7 +671,7 @@ export async function repairSkillLink(
   action: "remove" | "relink",
   target?: string,
 ): Promise<void> {
-  return invoke("repair_skill_link", { path, action, target });
+  return callCommand("repair_skill_link", { path, action, target });
 }
 
 // ============================================================================
@@ -654,7 +683,7 @@ export async function repairSkillLink(
  * `undefined` before the first snapshot has landed.
  */
 export async function getSkillSnapshot(): Promise<SkillSnapshot | undefined> {
-  return invoke("get_skill_snapshot");
+  return callCommand("get_skill_snapshot");
 }
 
 /**
@@ -662,7 +691,7 @@ export async function getSkillSnapshot(): Promise<SkillSnapshot | undefined> {
  * immediately; listen for `onSkillSnapshot` to see the result.
  */
 export async function requestSkillRescan(): Promise<void> {
-  return invoke("request_skill_rescan");
+  return callCommand("request_skill_rescan");
 }
 
 /**
