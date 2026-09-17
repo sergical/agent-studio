@@ -212,6 +212,7 @@ fn native_writer_child() {
             ffi::SQLITE_OK
         );
         assert!(valid_directory_descriptor(directory));
+        assert_eq!(unsafe { libc::fsync(directory) }, 0);
         assert!(unsafe { skill_studio_event_fcntl(directory, libc::F_GETFD) } >= 0);
         assert_eq!(
             unsafe {

@@ -115,3 +115,20 @@ results. Eight superseded failure logs were removed after recording their causes
 Consumed test app bundles and fixture cleanup are recorded in the delivery ledger.
 Final combined application acceptance, remaining Fork core migration and production
 monitoring are not established by this packet.
+
+## Linux CI correction
+
+The first Linux CI run (35179969368) reported 615 passed, 168 failed and
+23 ignored. The first failure was a child exiting before its completion receipt;
+subsequent coordination tests failed against the poisoned process gate. The child
+tried to sync a cloned capability directory descriptor, which is O_PATH on Linux.
+The production SQLite directory callback had the same issue. Both now open "."
+relative to the retained capability to obtain a syncable descriptor. The native
+descriptor probe asserts that directory fsync succeeds.
+
+After this correction, local core `cargo test --locked --offline -j2 --features
+event-store --lib skill_event_ -- --test-threads=1` passed 74 tests with four
+explicit child-fixture skips in 3.26 seconds. Strict all-target core Clippy passed
+in 9.08 seconds; formatting and diff checks passed. These checks ran on macOS;
+Linux CI confirmation remains required. Peak memory was not collected for these
+focused checks. No new native application was launched.

@@ -263,12 +263,7 @@ fn event_directory_receiver_child() {
             file.sync_all().unwrap();
             validate_event_file(&directory, EventFile::Wal, &file).unwrap();
             drop(file);
-            directory
-                .try_clone()
-                .unwrap()
-                .into_std_file()
-                .sync_all()
-                .unwrap();
+            directory.open(".").unwrap().sync_all().unwrap();
             socket.write_all(b"D").unwrap();
         }
         _ => panic!("invalid private fixture action"),

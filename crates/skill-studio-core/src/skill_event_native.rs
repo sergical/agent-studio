@@ -603,9 +603,9 @@ unsafe extern "C" fn open_directory(path: *const libc::c_char, output: *mut i32)
     if state.descriptors.len() >= 16 {
         return ffi::SQLITE_CANTOPEN;
     }
-    match state.directory.try_clone() {
+    match state.directory.open(".") {
         Ok(directory) => {
-            let descriptor = directory.into_std_file().into_raw_fd();
+            let descriptor = directory.into_std().into_raw_fd();
             state.descriptors.insert(descriptor, None);
             // SQLite supplies one writable descriptor slot.
             unsafe {
