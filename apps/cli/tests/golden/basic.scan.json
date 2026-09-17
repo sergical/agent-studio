@@ -311,5 +311,43 @@
     "kind": "fixture",
     "projects": []
   },
-  "status": "ok"
+  "status": "ok",
+  "timings": {
+    "elapsed_ms": "-",
+    "op": "scan",
+    "steps": [
+      {
+        "elapsed_ms": "-",
+        "name": "ledgers_read"
+      },
+      {
+        "elapsed_ms": "-",
+        "name": "roots_walk"
+      },
+      {
+        "elapsed_ms": "-",
+        "name": "dir_walk"
+      },
+      {
+        "elapsed_ms": "-",
+        "name": "skill_md_read"
+      },
+      {
+        "elapsed_ms": "-",
+        "name": "frontmatter_parse"
+      },
+      {
+        "elapsed_ms": "-",
+        "name": "plugin_cache_walk"
+      },
+      {
+        "elapsed_ms": "-",
+        "name": "link_owner_propagation"
+      },
+      {
+        "elapsed_ms": "-",
+        "name": "claude_universal_reader_check"
+      }
+    ]
+  }
 }

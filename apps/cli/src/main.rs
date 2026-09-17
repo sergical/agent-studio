@@ -29,6 +29,9 @@ use crate::scope::ScopeArgs;
 #[derive(Parser)]
 #[command(name = "skill-studio", about = "Manage agent skills across harnesses")]
 struct Cli {
+    /// Print each op's and each of its steps' elapsed time to stderr.
+    #[arg(long, global = true)]
+    time: bool,
     #[command(subcommand)]
     command: Command,
 }
@@ -152,36 +155,37 @@ enum Command {
 
 fn main() -> ExitCode {
     let cli = Cli::parse();
+    let time = cli.time;
     match cli.command {
         Command::Scan {
             scope,
             skills,
             timings,
             json,
-        } => run_scan(scope, skills, timings, json),
+        } => run_scan(scope, skills, timings, json, time),
         Command::Diagnose {
             scope,
             skills,
             timings,
             json,
-        } => run_diagnose(scope, skills, timings, json),
+        } => run_diagnose(scope, skills, timings, json, time),
         Command::Capabilities {
             scope,
             harnesses,
             observe,
             tools,
             json,
-        } => run_capabilities(scope, harnesses, observe, tools, json),
+        } => run_capabilities(scope, harnesses, observe, tools, json, time),
         Command::PreviewRepair {
             scope,
             deployment_id,
             json,
-        } => run_preview_repair(scope, deployment_id, json),
+        } => run_preview_repair(scope, deployment_id, json, time),
         Command::ApplyRepair {
             scope,
             preview_json,
             json,
-        } => run_apply_repair(scope, preview_json, json),
+        } => run_apply_repair(scope, preview_json, json, time),
         Command::Events {
             scope,
             skill,
@@ -189,15 +193,32 @@ fn main() -> ExitCode {
             after,
             check_drift,
             json,
-        } => run_events(scope, skill, limit, after, check_drift, json),
+        } => run_events(scope, skill, limit, after, check_drift, json, time),
         Command::Restore {
             scope,
             event_id,
             force,
             json,
-        } => run_restore(scope, event_id, force, json),
+        } => run_restore(scope, event_id, force, json, time),
         Command::Schema { out } => output::write_schemas(out),
-        Command::Watch { scope, since, json } => run_watch(scope, since, json),
+        Command::Watch { scope, since, json } => run_watch(scope, since, json, time),
+    }
+}
+
+/// Prints an op's timing to stderr when `--time` was passed: the op line,
+/// then one indented line per step, in the order they were recorded.
+/// Silent when `--time` was not passed or the call recorded no timing (a
+/// scope-construction failure, which never reaches an op function).
+fn print_timing(time: bool, timing: &Option<skill_studio_core::timing::OpTiming>) {
+    if !time {
+        return;
+    }
+    let Some(timing) = timing else {
+        return;
+    };
+    eprintln!("{} .... {} ms", timing.op, timing.elapsed_ms);
+    for step in &timing.steps {
+        eprintln!("  {} .... {} ms", step.name, step.elapsed_ms);
     }
 }
 
@@ -295,6 +316,10 @@ fn error_envelope<T: ops::Outcome>(
         }],
         correlation_id: CorrelationId(ulid::Ulid::new().to_string()),
         event_id: None,
+        // No `OpContext` exists yet at this point: the scope failed to
+        // normalize before any op function ran, so there's nothing to
+        // build `ResultEnvelope::from_result` from.
+        timings: None,
     }
 }
 
@@ -302,7 +327,13 @@ fn exit_code(status: i32) -> ExitCode {
     ExitCode::from(status.clamp(0, 255) as u8)
 }
 
-fn run_scan(scope: ScopeArgs, skills: Vec<String>, timings: bool, json: bool) -> ExitCode {
+fn run_scan(
+    scope: ScopeArgs,
+    skills: Vec<String>,
+    timings: bool,
+    json: bool,
+    time: bool,
+) -> ExitCode {
     let rt = match build_runtime::<skill_studio_core::dto::Inventory>(&scope, Operation::Scan, json)
     {
         Ok(rt) => rt,
@@ -314,18 +345,24 @@ fn run_scan(scope: ScopeArgs, skills: Vec<String>, timings: bool, json: bool) ->
         timings,
     };
     let result = ops::scan(&rt, &ctx, &req);
-    let envelope =
-        ResultEnvelope::from_result(Operation::Scan, &rt.scope, ctx.correlation_id, result);
+    let envelope = ResultEnvelope::from_result(Operation::Scan, &rt.scope, &ctx, result);
     let code = exit_code(envelope.exit_status());
     if json {
         output::print_json(&envelope);
     } else {
         output::print_scan_table(&envelope);
     }
+    print_timing(time, &envelope.timings);
     code
 }
 
-fn run_diagnose(scope: ScopeArgs, skills: Vec<String>, timings: bool, json: bool) -> ExitCode {
+fn run_diagnose(
+    scope: ScopeArgs,
+    skills: Vec<String>,
+    timings: bool,
+    json: bool,
+    time: bool,
+) -> ExitCode {
     let rt =
         match build_runtime::<skill_studio_core::dto::Diagnosis>(&scope, Operation::Diagnose, json)
         {
@@ -338,14 +375,14 @@ fn run_diagnose(scope: ScopeArgs, skills: Vec<String>, timings: bool, json: bool
         timings,
     };
     let result = ops::diagnose(&rt, &ctx, &req);
-    let envelope =
-        ResultEnvelope::from_result(Operation::Diagnose, &rt.scope, ctx.correlation_id, result);
+    let envelope = ResultEnvelope::from_result(Operation::Diagnose, &rt.scope, &ctx, result);
     let code = exit_code(envelope.exit_status());
     if json {
         output::print_json(&envelope);
     } else {
         output::print_diagnose_table(&envelope);
     }
+    print_timing(time, &envelope.timings);
     code
 }
 
@@ -355,6 +392,7 @@ fn run_capabilities(
     observe: bool,
     tools: Vec<String>,
     json: bool,
+    time: bool,
 ) -> ExitCode {
     let rt = match build_runtime::<skill_studio_core::harness::Capabilities>(
         &scope,
@@ -375,7 +413,7 @@ fn run_capabilities(
             let envelope = ResultEnvelope::<skill_studio_core::harness::Capabilities>::from_result(
                 Operation::Capabilities,
                 &rt.scope,
-                ctx.correlation_id,
+                &ctx,
                 Err(err),
             );
             let code = exit_code(envelope.exit_status());
@@ -395,22 +433,18 @@ fn run_capabilities(
         tools,
     };
     let result = ops::capabilities(&rt, &ctx, &req);
-    let envelope = ResultEnvelope::from_result(
-        Operation::Capabilities,
-        &rt.scope,
-        ctx.correlation_id,
-        result,
-    );
+    let envelope = ResultEnvelope::from_result(Operation::Capabilities, &rt.scope, &ctx, result);
     let code = exit_code(envelope.exit_status());
     if json {
         output::print_json(&envelope);
     } else {
         output::print_capabilities_table(&envelope);
     }
+    print_timing(time, &envelope.timings);
     code
 }
 
-fn run_preview_repair(scope: ScopeArgs, deployment_id: String, json: bool) -> ExitCode {
+fn run_preview_repair(scope: ScopeArgs, deployment_id: String, json: bool, time: bool) -> ExitCode {
     let rt = match build_runtime::<skill_studio_core::dto::FrontmatterRepairPreview>(
         &scope,
         Operation::PreviewFrontmatterRepair,
@@ -427,24 +461,20 @@ fn run_preview_repair(scope: ScopeArgs, deployment_id: String, json: bool) -> Ex
                 ResultEnvelope::<skill_studio_core::dto::FrontmatterRepairPreview>::from_result(
                     Operation::PreviewFrontmatterRepair,
                     &rt.scope,
-                    ctx.correlation_id,
+                    &ctx,
                     Err(err),
                 );
-            return finish(envelope, json, output::print_repair_preview_table);
+            return finish(envelope, json, time, output::print_repair_preview_table);
         }
     };
     let req = RepairPreviewRequest { deployment_id };
     let result = ops::preview_frontmatter_repair(&rt, &ctx, &req);
-    let envelope = ResultEnvelope::from_result(
-        Operation::PreviewFrontmatterRepair,
-        &rt.scope,
-        ctx.correlation_id,
-        result,
-    );
-    finish(envelope, json, output::print_repair_preview_table)
+    let envelope =
+        ResultEnvelope::from_result(Operation::PreviewFrontmatterRepair, &rt.scope, &ctx, result);
+    finish(envelope, json, time, output::print_repair_preview_table)
 }
 
-fn run_apply_repair(scope: ScopeArgs, preview_json: PathBuf, json: bool) -> ExitCode {
+fn run_apply_repair(scope: ScopeArgs, preview_json: PathBuf, json: bool, time: bool) -> ExitCode {
     let rt = match build_runtime_write::<skill_studio_core::dto::RepairOutcome>(
         &scope,
         Operation::ApplyFrontmatterRepair,
@@ -471,10 +501,10 @@ fn run_apply_repair(scope: ScopeArgs, preview_json: PathBuf, json: bool) -> Exit
             let envelope = ResultEnvelope::<skill_studio_core::dto::RepairOutcome>::from_result(
                 Operation::ApplyFrontmatterRepair,
                 &rt.scope,
-                ctx.correlation_id,
+                &ctx,
                 Err(err),
             );
-            return finish(envelope, json, output::print_repair_outcome_table);
+            return finish(envelope, json, time, output::print_repair_outcome_table);
         }
     };
     let req = RepairApplyRequest {
@@ -482,13 +512,9 @@ fn run_apply_repair(scope: ScopeArgs, preview_json: PathBuf, json: bool) -> Exit
         mode: RepairApplyMode::ApplyFix,
     };
     let result = ops::apply_frontmatter_repair(&rt, &ctx, &req);
-    let envelope = ResultEnvelope::from_result(
-        Operation::ApplyFrontmatterRepair,
-        &rt.scope,
-        ctx.correlation_id,
-        result,
-    );
-    finish(envelope, json, output::print_repair_outcome_table)
+    let envelope =
+        ResultEnvelope::from_result(Operation::ApplyFrontmatterRepair, &rt.scope, &ctx, result);
+    finish(envelope, json, time, output::print_repair_outcome_table)
 }
 
 fn run_events(
@@ -498,6 +524,7 @@ fn run_events(
     after: Option<String>,
     check_drift: bool,
     json: bool,
+    time: bool,
 ) -> ExitCode {
     // `list_events` only ever opens `HistoryAccess::ReadIfExists`, but it
     // still needs the real `SqliteHistoryOpener` (not `build_runtime`'s
@@ -518,12 +545,17 @@ fn run_events(
         check_drift,
     };
     let result = ops::list_events(&rt, &ctx, &req);
-    let envelope =
-        ResultEnvelope::from_result(Operation::ListEvents, &rt.scope, ctx.correlation_id, result);
-    finish(envelope, json, output::print_events_table)
+    let envelope = ResultEnvelope::from_result(Operation::ListEvents, &rt.scope, &ctx, result);
+    finish(envelope, json, time, output::print_events_table)
 }
 
-fn run_restore(scope: ScopeArgs, event_id: String, force: bool, json: bool) -> ExitCode {
+fn run_restore(
+    scope: ScopeArgs,
+    event_id: String,
+    force: bool,
+    json: bool,
+    time: bool,
+) -> ExitCode {
     let rt = match build_runtime_write::<skill_studio_core::dto::RestoreOutcome>(
         &scope,
         Operation::RestoreEvent,
@@ -538,13 +570,8 @@ fn run_restore(scope: ScopeArgs, event_id: String, force: bool, json: bool) -> E
         force,
     };
     let result = ops::restore_event(&rt, &ctx, &req);
-    let envelope = ResultEnvelope::from_result(
-        Operation::RestoreEvent,
-        &rt.scope,
-        ctx.correlation_id,
-        result,
-    );
-    finish(envelope, json, output::print_restore_outcome_table)
+    let envelope = ResultEnvelope::from_result(Operation::RestoreEvent, &rt.scope, &ctx, result);
+    finish(envelope, json, time, output::print_restore_outcome_table)
 }
 
 /// Polling interval for `watch`: a fixed-interval re-scan of the scope
@@ -567,7 +594,7 @@ struct WatchLine<'a> {
     inventory: &'a Inventory,
 }
 
-fn run_watch(scope: ScopeArgs, since: Option<u64>, json: bool) -> ExitCode {
+fn run_watch(scope: ScopeArgs, since: Option<u64>, json: bool, time: bool) -> ExitCode {
     let interrupted = Arc::new(std::sync::atomic::AtomicBool::new(false));
     {
         let interrupted = interrupted.clone();
@@ -592,7 +619,9 @@ fn run_watch(scope: ScopeArgs, since: Option<u64>, json: bool) -> ExitCode {
         };
         let ctx = OpContext::uncancellable(CorrelationId(ulid::Ulid::new().to_string()));
         let req = ScanRequest::default();
-        match ops::scan(&rt, &ctx, &req) {
+        let scan_result = ops::scan(&rt, &ctx, &req);
+        print_timing(time, &ctx.take_timing());
+        match scan_result {
             Ok(inventory) => {
                 let previous = snapshots.current();
                 let changed = previous.as_ref().is_none_or(|prev| prev.value != inventory);
@@ -644,6 +673,7 @@ fn print_watch_line(stdout: &mut std::io::Stdout, line: &WatchLine, json: bool) 
 fn finish<T: serde::Serialize + ops::Outcome>(
     envelope: ResultEnvelope<T>,
     json: bool,
+    time: bool,
     print_table: impl FnOnce(&ResultEnvelope<T>),
 ) -> ExitCode {
     let code = exit_code(envelope.exit_status());
@@ -652,5 +682,6 @@ fn finish<T: serde::Serialize + ops::Outcome>(
     } else {
         print_table(&envelope);
     }
+    print_timing(time, &envelope.timings);
     code
 }

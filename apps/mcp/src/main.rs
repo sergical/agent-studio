@@ -86,9 +86,9 @@ async fn run_op<T: Outcome + serde::Serialize>(
 
     let envelope = match build_runtime(with_history) {
         Ok(rt) => {
-            let ctx = OpContext::uncancellable(correlation_id.clone());
+            let ctx = OpContext::uncancellable(correlation_id);
             let result = call(&rt, &ctx);
-            ResultEnvelope::from_result(operation, &rt.scope, correlation_id, result)
+            ResultEnvelope::from_result(operation, &rt.scope, &ctx, result)
         }
         Err(err) => scope_error_envelope(operation, err, correlation_id),
     };
@@ -138,6 +138,9 @@ fn scope_error_envelope<T: Outcome>(
         }],
         correlation_id,
         event_id: None,
+        // No `OpContext` exists yet at this point: the scope failed to
+        // normalize before any op function ran.
+        timings: None,
     }
 }
 
