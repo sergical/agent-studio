@@ -2,7 +2,7 @@
 
 This area takes a skill off disk, or refreshes it in place, and checks whether a newer version exists.
 
-Commands: remove_skill (Copy, dotagents, Fork, skills-sh variants), update_skill (dotagents, skills-sh), check_skill_updates_now, the update-check loop, restore_trashed_skill.
+Commands: remove_skill (Copy, dotagents, Fork, skills-sh variants), update_skill (dotagents, skills-sh), the update-check loop, restore_trashed_skill.
 UI entry points: header Remove and Update, RemoveDeploymentsDialog, InstalledSkillLifecycleActions, Home inbox Update.
 
 ## Current state
@@ -15,7 +15,6 @@ UI entry points: header Remove and Update, RemoveDeploymentsDialog, InstalledSki
 | remove_skill (Fork)      | no      | ForkMutationLock, not re-acquired inside | skill left under skills-trash when the restore fails                      |
 | update_skill (skills-sh) | no      | ForkMutationLock                         | CLI partial writes stay on disk                                           |
 | update_skill (dotagents) | no      | ForkMutationLock                         | CLI partial writes stay on disk                                           |
-| check_skill_updates_now  | n/a     | in-progress guard shared with the loop   | none noted; failures are only logged                                      |
 | restore_trashed_skill    | no      | ForkMutationLock                         | incomplete target folder after an entry-count mismatch                    |
 
 `remove_skill` dispatches on the owner kind.
@@ -33,9 +32,9 @@ None of the four variants writes a journal event.
 `update_skill` (dotagents) requires a ledger entry for the deployment and, for a pinned entry, a cached latest commit — otherwise it refuses with "run Check now first" (commands.rs:2428 → skill_lifecycle.rs:281, :307).
 Both variants have no rollback if the CLI leaves a partial rewrite on disk.
 
-`check_skill_updates_now` and the six-hour update-check loop share one in-progress guard (skill_update_check.rs:872/891).
+The six-hour update-check loop holds an in-progress guard (`UpdateCheckState`, skill_update_check.rs:872) for its own run; unit 4.1 removed `check_skill_updates_now`, the command that shared it with no frontend caller, so the loop is now the only path that ever acquires it.
 The loop asks `gh api` or a git remote for the latest commit per source, writes `UpdateCheckState` and `update-check.json`, then requests a rebuild.
-A network or `gh` failure is only logged with `eprintln`, and `check_skill_updates_now` has no frontend caller at all (skill_update_check.rs:891, lib.rs:164).
+A network or `gh` failure is only logged with `eprintln`.
 
 `restore_trashed_skill` copies a trashed skill back into `~/.agents/skills/<name>` and re-applies the Claude link rule.
 It checks the copied entry count against the source but does not delete the trash copy or clean up a half-written target on mismatch (skill_trial.rs:985 → 937, :969, :970).
@@ -72,7 +71,6 @@ The registry read-modify-write in each remove and update variant runs under that
 Update's CLI call plus its background check-now plus its snapshot rebuild is one transaction, or the check-now step is a real compensating step rather than a best-effort follow-on that can silently fail.
 Success feedback fires only once the last step (snapshot rebuild, in most cases) completes, and the header Remove button's "Updated N deployments" text is replaced with a message that matches the action.
 Every remove and update variant gets a crash-window test, matching the recovery tests Copy and Fork removal already have for dotagents and skills-sh.
-`check_skill_updates_now` either gets a caller in the UI (a "Check now" button, which the map notes does not exist) or is folded into the loop and dropped as a public command.
 
 ## Gaps
 
@@ -84,7 +82,6 @@ Every remove and update variant gets a crash-window test, matching the recovery 
 - dotagents remove and Copy remove can leave links or paths staged in `skills-trash` when their own rollback also fails, with no automatic second attempt.
 - Fork remove's registry-write rollback can itself fail, leaving the skill at the backup path with only an error string to explain it.
 - update_skill's CLI-then-check-now-then-rebuild sequence has no transaction boundary; a check-now failure after a successful CLI update leaves stale update evidence with no compensating step.
-- `check_skill_updates_now` has no frontend caller.
-  The six-hour loop is the only way the check ever runs.
+- The six-hour loop is the only way the update check ever runs; unit 4.1 removed the uncalled `check_skill_updates_now` command that used to share its guard.
 - The header Remove button's success toast reads "Updated N deployments," which does not match the Remove action.
 - `restore_trashed_skill` does not clean up a half-written target or the trash copy when the entry-count check fails.

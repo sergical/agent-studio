@@ -2,7 +2,7 @@
 
 This area reads and writes the SKILL.md file itself: its body, its frontmatter, and the Codex invocation sidecar that mirrors one frontmatter key.
 
-Commands: `read_installed_skill_md`, `write_installed_skill_md`, `write_installed_skill_md_if_unchanged`, `preview_skill_frontmatter_repair`, `apply_skill_frontmatter_repair`, `set_skill_invocation`, `get_skill_details`.
+Commands: `read_installed_skill_md`, `write_installed_skill_md_if_unchanged`, `preview_skill_frontmatter_repair`, `apply_skill_frontmatter_repair`, `set_skill_invocation`, `get_skill_details`.
 
 UI entry points: `SkillMarkdownCard.tsx` editor Save, `SkillProposedEdits.tsx` Apply, `SkillFrontmatterRepairDialog.tsx`, the invocation segmented control in `SkillLocationsCard.tsx`, `SkillCompareDialog.tsx`.
 
@@ -16,11 +16,7 @@ It has no direct test and no write.
 That path must belong to a deployment in the current snapshot and resolve to a file literally named SKILL.md.
 Both reads use no lock and no journal.
 
-`write_installed_skill_md` (`commands.rs:2311`) has **no frontend caller**.
-Every UI path uses its compare-and-swap sibling instead.
-It checks the path is owned by the snapshot, is named SKILL.md, is at most 2 MiB, and the deployment is not plugin-owned.
-Then it does one atomic replace: write a tmp file in the same directory, fsync, rename, fsync the directory (`skill_md_write.rs:133`).
-It holds a process-wide `SKILL_MD_WRITE_LOCK` and does not journal.
+Unit 4.1 removed `write_installed_skill_md`, which had no frontend caller; every UI path already used its compare-and-swap sibling below.
 
 `write_installed_skill_md_if_unchanged` (`commands.rs:2329`) is what `SkillMarkdownCard.tsx` Save and `SkillProposedEdits.tsx` Apply actually call.
 It adds one precondition: the current disk content, read under the same lock, must equal an `expected_content` the caller supplies (`skill_md_write.rs:93`).
@@ -93,9 +89,6 @@ The invocation command's sidecar write should acquire the same lease as its fron
 
 The "Save SKILL.md" UI path — fork, then write, no rollback of the fork on write failure — needs either one transaction across both steps, or a compensating step that reverts the fork when the write fails, per the map's own finding.
 
-`write_installed_skill_md` has no caller.
-Per the "no IPC command without a caller" principle, remove it, or document why it must stay registered, for example as a future CLI or MCP direct-write path.
-
 Every command here needs a direct test.
 `write_installed_skill_md_if_unchanged`, `read_installed_skill_md`, `get_skill_details`, and `preview_skill_frontmatter_repair` currently have none.
 `set_skill_invocation` has extensive unit coverage of each file in isolation, but no test of the two-file crash window.
@@ -106,7 +99,6 @@ Every command here needs a direct test.
 - `set_skill_invocation` does not journal, and its frontmatter write and Codex sidecar write use different locks; a crash between them leaves the two files out of step with no repair.
 - No test targets `write_installed_skill_md_if_unchanged` directly.
 - No test covers the crash window between `set_skill_invocation`'s frontmatter write and its sidecar write.
-- `write_installed_skill_md` has no frontend caller.
 - The Save flow in `SkillMarkdownCard.tsx` chains a fork and a write, with no rollback of the fork if the write fails.
 - `SKILL_MD_WRITE_LOCK` is one process-wide lock, not a per-scope lease.
 - `write_installed_skill_md_if_unchanged` and `set_skill_invocation` still live directly behind the Tauri command, rather than in `skill-studio-core`, unlike `apply_skill_frontmatter_repair`.
