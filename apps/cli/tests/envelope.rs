@@ -560,6 +560,129 @@ fn harnesses_with_no_binaries_on_path_prints_unknown_for_every_row() {
     std::fs::remove_dir_all(&home).ok();
 }
 
+/// A universal, canonical `alpha` skill with no Claude Code link yet, built
+/// directly (not via `--fixture`) so `set-harness-enabled`'s live-scope
+/// write - creating `<home>/.claude/skills/alpha` - has somewhere real to
+/// land, and a second, unrelated `zeta-bad` skill with the same malformed
+/// frontmatter `repairable_live_home` uses, so one `--home` scope carries
+/// two independent write kinds to undo in turn.
+fn undoable_live_home() -> PathBuf {
+    let home = tempfile::tempdir().unwrap().keep();
+    let alpha_dir = home.join(".agents/skills/alpha");
+    std::fs::create_dir_all(&alpha_dir).unwrap();
+    std::fs::write(
+        alpha_dir.join("SKILL.md"),
+        b"---\nname: alpha\ndescription: A universal skill.\n---\nBody.\n",
+    )
+    .unwrap();
+    let zeta_dir = home.join(".claude/skills/zeta-bad");
+    std::fs::create_dir_all(&zeta_dir).unwrap();
+    std::fs::write(
+        zeta_dir.join("SKILL.md"),
+        b"---\nname: zeta-bad\ndescription: Use this: when needed\n---\nBody.\n",
+    )
+    .unwrap();
+    home.canonicalize().unwrap()
+}
+
+/// `undo` reverts the newest journal entry this CLI slice writes, whichever
+/// write kind it came from: a `set-harness-enabled` link toggle, then an
+/// `apply-repair` frontmatter fix, each undone in turn without touching the
+/// other's already-reverted change.
+#[test]
+fn skill_studio_undo_reverses_the_last_journal_entry_for_every_write_kind_in_this_slices_scope() {
+    let home = undoable_live_home();
+    let link_path = home.join(".claude/skills/alpha");
+    let zeta_skill_md = home.join(".claude/skills/zeta-bad/SKILL.md");
+    let original_zeta_content = std::fs::read(&zeta_skill_md).unwrap();
+
+    // Write kind 1: `set-harness-enabled` links Claude Code to `alpha`.
+    assert!(
+        !link_path.exists(),
+        "alpha should start with no Claude Code link"
+    );
+    let enable = run(&[
+        "set-harness-enabled",
+        "--home",
+        home.to_str().unwrap(),
+        "--skill",
+        "alpha",
+        "--harness",
+        "claude-code",
+        "--enabled",
+        "--json",
+    ]);
+    assert_eq!(enable.json["status"], "ok", "{:?}", enable.json);
+    assert!(
+        link_path.symlink_metadata().is_ok(),
+        "set-harness-enabled should have created the Claude Code link"
+    );
+
+    // `undo` reverts that link toggle - the only unreverted event so far.
+    let undo_link = run(&["undo", "--home", home.to_str().unwrap(), "--json"]);
+    assert_eq!(undo_link.json["status"], "ok", "{:?}", undo_link.json);
+    assert!(
+        link_path.symlink_metadata().is_err(),
+        "undo should have removed the Claude Code link set-harness-enabled created"
+    );
+
+    // Write kind 2: `apply-repair` fixes `zeta-bad`'s frontmatter.
+    let scan = run(&["scan", "--home", home.to_str().unwrap(), "--json"]);
+    let zeta = scan.json["data"]["skills"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|s| s["name"] == "zeta-bad")
+        .unwrap_or_else(|| panic!("zeta-bad missing from scan: {:?}", scan.json));
+    let deployment_id = zeta["deployments"][0]["id"].as_str().unwrap().to_string();
+    let preview = run(&[
+        "preview-repair",
+        "--home",
+        home.to_str().unwrap(),
+        "--deployment-id",
+        &deployment_id,
+        "--json",
+    ]);
+    assert_eq!(preview.json["status"], "ok", "{:?}", preview.json);
+    let preview_path = home.join("preview.json");
+    std::fs::write(
+        &preview_path,
+        serde_json::to_string(&preview.json["data"]).unwrap(),
+    )
+    .unwrap();
+    let apply = run(&[
+        "apply-repair",
+        "--home",
+        home.to_str().unwrap(),
+        "--preview-json",
+        preview_path.to_str().unwrap(),
+        "--json",
+    ]);
+    assert_eq!(apply.json["status"], "ok", "{:?}", apply.json);
+    let repaired_content = std::fs::read(&zeta_skill_md).unwrap();
+    assert_ne!(
+        repaired_content, original_zeta_content,
+        "apply-repair should have changed zeta-bad's SKILL.md"
+    );
+
+    // `undo` now reverts the repair - the link toggle it already reverted
+    // above stays reverted, proving each `undo` call only touches the
+    // newest still-unreverted entry.
+    let undo_repair = run(&["undo", "--home", home.to_str().unwrap(), "--json"]);
+    assert_eq!(undo_repair.json["status"], "ok", "{:?}", undo_repair.json);
+    assert_eq!(
+        std::fs::read(&zeta_skill_md).unwrap(),
+        original_zeta_content,
+        "undo should have put zeta-bad's original malformed frontmatter back"
+    );
+    assert!(
+        link_path.symlink_metadata().is_err(),
+        "undoing the repair must not resurrect the already-undone Claude Code link"
+    );
+
+    std::fs::remove_dir_all(&home).ok();
+}
+
 #[test]
 fn schema_regenerates_the_checked_in_snapshot() {
     let out = tempfile::tempdir().unwrap();

@@ -6,7 +6,7 @@ use std::process::ExitCode;
 use serde::Serialize;
 use skill_studio_core::dto::{
     Diagnosis, EventDto, FrontmatterRepairPreview, Inventory, RepairOutcome, RestoreOutcome,
-    ScanRequest,
+    ScanRequest, SetHarnessEnabledOutcome,
 };
 use skill_studio_core::harness::{Capabilities, HarnessReport};
 use skill_studio_core::ops::ResultEnvelope;
@@ -196,6 +196,24 @@ pub fn print_restore_outcome_table(envelope: &ResultEnvelope<RestoreOutcome>) {
     for path in &outcome.restored_paths {
         println!("  - {}", path.display());
     }
+}
+
+/// Prints `set-harness-enabled`'s table: how many of the harness's paths
+/// for this skill were toggled, out of how many it needed to touch.
+pub fn print_set_harness_enabled_outcome_table(
+    envelope: &ResultEnvelope<SetHarnessEnabledOutcome>,
+) {
+    print_errors(envelope);
+    let Some(outcome) = &envelope.data else {
+        return;
+    };
+    println!(
+        "{} on {}: {} of {} path(s) toggled",
+        outcome.skill.0,
+        outcome.harness.as_str(),
+        outcome.toggled,
+        outcome.total,
+    );
 }
 
 /// Writes one JSON Schema file per request/result DTO the CLI's implemented

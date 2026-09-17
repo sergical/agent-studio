@@ -30,6 +30,12 @@ The map marks it partial-state risk: the Codex loop touches several `SKILL.md` p
 A Claude Code registry failure recreates the removed link, or, when the slot is taken, reports "recreate manually" — a failure the user must fix by hand.
 Sixteen tests cover it at `skill_harness_disable.rs:1023-1487`.
 
+**Update (unit 3.8, issue #166, 2026-09-17):** the Tauri `set_harness_enabled` command is now a thin adapter over `skill-studio-core`'s `ops::set_harness_enabled` (`skill_harness_disable.rs:695`), the same shape `set_deployment_enabled`'s core-backed siblings use.
+It parses the skill name out of `HarnessVisibilityTarget.deployment_id` and calls the core op directly; the wire contract (`HarnessVisibilityTarget` in, `Result<(), String>` out) is unchanged, so no frontend file needed to move.
+The core op journals before the first write - a `HarnessEnable`/`HarnessDisable` event with a `SymlinkInverse` (Claude Code) or `RestoreBackupInverse` (Codex, OpenCode) - so it is now restorable, closing the "does not journal" gap below for this command specifically.
+Codex's multi-path loop still reports a partial toggle as "N of M" rather than rolling back (see Gaps), which the core's own module doc treats as an intentional narrowing versus a full cross-path transaction.
+The CLI gained `skill-studio set-harness-enabled` and a general `skill-studio undo` (reverts the newest restorable event, across skills and write kinds) over the same core op; `set_deployment_enabled` and `set_plugin_enabled` were left as they were - see Gaps.
+
 `set_reader_enabled` is not a Tauri command.
 It is the frontend action name (`skill-location-actions.ts:209`) for the reader-toggle branch of one reducer.
 Both branches of that reducer call `setHarnessEnabled`, which invokes the backend `set_harness_enabled` (`skill-location-actions.ts:194-211`).
@@ -118,10 +124,10 @@ Several commands, like `set_harness_enabled`, note "no direct test" or rely on p
 
 ## Gaps
 
-- `set_harness_enabled` does not journal; a crash mid-Codex-loop or mid-Claude-link-swap is not recorded or restorable.
+- `set_harness_enabled` does not journal; a crash mid-Codex-loop or mid-Claude-link-swap is not recorded or restorable. **Resolved by unit 3.8** — it now runs through `ops::set_harness_enabled` and journals with an inverse.
 - `set_plugin_enabled` does not journal; Claude Code's own config is the only record, so a mid-CLI-call crash leaves no Skill Studio trace.
 - `ForkMutationLock` is one global lock for all nine commands; no per-scope lease exists yet.
-- `set_harness_enabled`'s Codex multi-path write has no transaction or compensating step; a partial toggle is possible and unreported.
+- `set_harness_enabled`'s Codex multi-path write still has no transaction or compensating step; a partial toggle is possible and reported as "N of M", not rolled back (unchanged by unit 3.8; see the core's `harness_switch.rs` module doc for the scope this narrows).
 - `materialize_harness_root`'s remove-then-rename window can strand the root in neither state if the best-effort rollback itself fails.
 - Backups and staging directories from `make_skill_independent_copy` and `materialize_harness_root` have no stated retention limit.
 - `set_harness_enabled` and several read commands in this area have "no direct test" per the map; only policy or primitive tests exist.
