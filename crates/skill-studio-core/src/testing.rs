@@ -797,6 +797,7 @@ pub struct FailingFs {
     inner: Arc<dyn ScopeFs>,
     fail_next_write_atomic: AtomicBool,
     fail_next_rename: AtomicBool,
+    fail_next_create_dir: AtomicBool,
 }
 
 impl FailingFs {
@@ -806,6 +807,7 @@ impl FailingFs {
             inner,
             fail_next_write_atomic: AtomicBool::new(false),
             fail_next_rename: AtomicBool::new(false),
+            fail_next_create_dir: AtomicBool::new(false),
         }
     }
 
@@ -821,6 +823,14 @@ impl FailingFs {
     /// example park's link removal landing before the directory rename.
     pub fn fail_next_rename(&self) {
         self.fail_next_rename.store(true, Ordering::SeqCst);
+    }
+
+    /// The next `fsops_create_dir` call returns an error instead of
+    /// reaching `inner`; later calls delegate normally again. Lets a test
+    /// simulate a quarantine directory that fails to create, before an
+    /// `fsops::swap` reaches its crash-critical exchange.
+    pub fn fail_next_create_dir(&self) {
+        self.fail_next_create_dir.store(true, Ordering::SeqCst);
     }
 }
 
@@ -894,6 +904,11 @@ impl ScopeFs for FailingFs {
         self.inner.fsops_fsync_dir(path)
     }
     fn fsops_create_dir(&self, path: &Path) -> std::io::Result<()> {
+        if self.fail_next_create_dir.swap(false, Ordering::SeqCst) {
+            return Err(std::io::Error::other(
+                "FailingFs: injected fsops_create_dir failure",
+            ));
+        }
         self.inner.fsops_create_dir(path)
     }
     fn fsops_write_new_file(&self, path: &Path, bytes: &[u8]) -> std::io::Result<()> {

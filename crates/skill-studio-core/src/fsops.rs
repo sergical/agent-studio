@@ -327,6 +327,15 @@ pub fn stage(root: &Root, contents: &[(PathBuf, Vec<u8>)]) -> Result<Staged, FsO
 /// exchanged-out old folder into `quarantine_dir` afterward is cleanup, not
 /// part of that guarantee.
 ///
+/// When an old folder exists, the quarantine directory is confined and
+/// created *before* the exchange: a bad quarantine path or a failed create
+/// is refused with nothing committed, `final_name` still showing the old
+/// folder. A failure *after* the exchange (the final
+/// [`fsops_rename`](ScopeFs::fsops_rename) into quarantine) means the
+/// opposite: the exchange is committed, `final_name` already shows the new
+/// folder, and the old one is left sitting at `staged`'s temp path rather
+/// than under `quarantine_dir`.
+///
 /// Refuses with [`FsOpsError::ReplacedBySymlink`], touching nothing, when
 /// `final_name` exists but is not a directory - the shape a directory
 /// replaced by a symlink between an earlier [`stage`] and this call would
@@ -348,14 +357,10 @@ pub fn swap(
                 .fs_err(&final_path)?;
         }
         Some(facts) if facts.kind == FileKind::Dir => {
-            root.fs
-                .fsops_exchange(&staged.path, &final_path)
-                .fs_err(&final_path)?;
-            // `final_path` already shows the new content: the exchange
-            // above is the commit point. The old content now sits at
-            // `staged.path`, under its temp name; moving it into
-            // quarantine is durability for the *old* copy, not for this
-            // operation's own correctness.
+            // Prepare the quarantine target *before* the exchange, so a
+            // bad path or a failed create is refused with nothing
+            // committed yet, rather than after the old folder has already
+            // been swapped out.
             let quarantine_root = root.confine(quarantine_dir)?;
             if root.fs.symlink_metadata(&quarantine_root).is_err() {
                 root.fs
@@ -367,6 +372,15 @@ pub fn swap(
                 .and_then(|s| s.to_str())
                 .unwrap_or("quarantined");
             let quarantine_target = quarantine_root.join(format!("{leaf}-{}", unique_suffix()));
+
+            root.fs
+                .fsops_exchange(&staged.path, &final_path)
+                .fs_err(&final_path)?;
+            // `final_path` already shows the new content: the exchange
+            // above is the commit point. The old content now sits at
+            // `staged.path`, under its temp name; moving it into
+            // quarantine is durability for the *old* copy, not for this
+            // operation's own correctness.
             root.fs
                 .fsops_rename(&staged.path, &quarantine_target)
                 .fs_err(&quarantine_target)?;

@@ -7,11 +7,12 @@
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
 use proptest::prelude::*;
 use skill_studio_core::fsops::{self, read_stamp, Root};
 use skill_studio_core::ports::ScopeFs;
-use skill_studio_core::testing::FixtureBuilder;
+use skill_studio_core::testing::{FailingFs, FixtureBuilder};
 
 const SKILL_NAMES: [&str; 2] = ["alpha", "beta"];
 const CONTENTS: [&[u8]; 3] = [b"one", b"two", b"three"];
@@ -251,6 +252,52 @@ fn confine_rejects_a_two_hop_symlink_chain_that_leaves_the_root_or_names_the_acc
         .confine(Path::new("inner_ok/file.txt"))
         .expect("a chain whose every hop stays inside the root must be accepted");
     assert_eq!(resolved, PathBuf::from("/root/mid_ok/file.txt"));
+}
+
+/// Given a root with an existing directory at `final_name`, when creating
+/// the quarantine directory fails, then `swap` refuses before its
+/// crash-critical exchange runs: `final_name` still shows the old folder
+/// and the staged folder still sits at its own (unexchanged) path, not
+/// half-committed with the exchange done but the old tree unquarantined.
+#[test]
+fn swap_prepares_the_quarantine_before_the_exchange_or_names_the_half_committed_swap() {
+    let fixture = FixtureBuilder::new()
+        .dir("/root")
+        .dir("/root/gamma")
+        .file("/root/gamma/SKILL.md", b"old content")
+        .build_fs();
+    let failing = FailingFs::wrap(Arc::new(fixture.clone()));
+    let root = Root::open(&failing, PathBuf::from("/root")).expect("open root");
+
+    let staged = fsops::stage(
+        &root,
+        &[(PathBuf::from("SKILL.md"), b"new content".to_vec())],
+    )
+    .expect("stage");
+    let staged_path = staged.path().to_path_buf();
+
+    failing.fail_next_create_dir();
+    let err = fsops::swap(&root, Path::new("gamma"), staged, Path::new(".trash"))
+        .expect_err("swap must refuse when the quarantine directory fails to create");
+    assert!(
+        matches!(err, fsops::FsOpsError::Io { .. }),
+        "expected Io, got {err}"
+    );
+
+    assert_eq!(
+        fixture
+            .read_capped(Path::new("/root/gamma/SKILL.md"), u64::MAX)
+            .expect("gamma must still hold its original content"),
+        b"old content",
+        "the exchange must not have run before the quarantine directory was ready"
+    );
+    assert_eq!(
+        fixture
+            .read_capped(&staged_path.join("SKILL.md"), u64::MAX)
+            .expect("the staged folder must still sit at its own path"),
+        b"new content",
+        "the new content must not have been exchanged into gamma yet"
+    );
 }
 
 /// Given a caller that read a file's stamp, then the file changes
