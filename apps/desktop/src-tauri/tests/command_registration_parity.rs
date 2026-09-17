@@ -80,3 +80,24 @@ fn command_registration_matches_frontend_caller_count_or_names_the_orphan() {
          callCommand(\"...\") caller in skill-api.ts: {orphans:?}"
     );
 }
+
+/// Unit 3.8 confirmed `set_shared_harness_skill_enabled` has no frontend
+/// caller and was removed under unit 4.1. Locks that: the name may only
+/// reappear in `lib.rs`'s handler list alongside a matching
+/// `callCommand("set_shared_harness_skill_enabled")` in `skill-api.ts`.
+#[test]
+fn set_shared_harness_skill_enabled_has_a_frontend_caller_or_is_removed() {
+    let manifest_dir = Path::new(env!("CARGO_MANIFEST_DIR"));
+    let lib_rs = fs::read_to_string(manifest_dir.join("src/lib.rs")).expect("read lib.rs");
+    let skill_api_ts = fs::read_to_string(manifest_dir.join("../src/lib/skill-api.ts"))
+        .expect("read skill-api.ts");
+
+    let name = "set_shared_harness_skill_enabled";
+    let registered = registered_commands(&lib_rs).contains(name);
+    let called = frontend_callers(&skill_api_ts).contains(name);
+    assert_eq!(
+        registered, called,
+        "{name} must be either registered with a frontend caller or fully removed; \
+         registered={registered}, called={called}"
+    );
+}
