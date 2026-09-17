@@ -114,10 +114,11 @@ fn walk_for_pi_roots(dir: &Path, depth_remaining: u32, found: &mut Vec<PathBuf>)
             continue;
         }
         let path = entry.path();
-        if path.join(".pi/skills").exists() {
-            found.push(path.clone());
-        }
+        let has_pi_skills = path.join(".pi/skills").exists();
         walk_for_pi_roots(&path, depth_remaining - 1, found);
+        if has_pi_skills {
+            found.push(path);
+        }
     }
 }
 
