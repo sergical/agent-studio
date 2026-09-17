@@ -295,6 +295,13 @@ pub struct CapabilitiesRequest {
     pub tools: Vec<String>,
 }
 
+/// Request for `harnesses`. Empty today; kept as a struct rather than `()`
+/// so a future per-harness filter matches `CapabilitiesRequest`'s shape
+/// without a wire break.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(default)]
+pub struct HarnessesRequest {}
+
 /// Ways a frontmatter repair may be applied.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "kebab-case")]
