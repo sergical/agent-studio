@@ -212,15 +212,22 @@ pub fn init(app: &AppHandle) -> SkillRefreshState {
 
 /// Instant read of the current snapshot from managed state.
 #[tauri::command]
-pub fn get_skill_snapshot(state: tauri::State<SkillRefreshState>) -> Option<SkillSnapshot> {
-    state.snapshot.read().ok().and_then(|guard| guard.clone())
+pub fn get_skill_snapshot(
+    state: tauri::State<SkillRefreshState>,
+    app: tauri::AppHandle,
+) -> Option<SkillSnapshot> {
+    crate::timing_log::time_command(&app, "get_skill_snapshot", move || {
+        state.snapshot.read().ok().and_then(|guard| guard.clone())
+    })
 }
 
 /// Ask the background thread to rebuild the snapshot. Returns immediately;
 /// the rebuild happens asynchronously and a fresh `SNAPSHOT_EVENT` follows.
 #[tauri::command]
-pub fn request_skill_rescan(state: tauri::State<SkillRefreshState>) {
-    state.skills_dirty.store(true, Ordering::SeqCst);
+pub fn request_skill_rescan(state: tauri::State<SkillRefreshState>, app: tauri::AppHandle) {
+    crate::timing_log::time_command(&app, "request_skill_rescan", move || {
+        state.skills_dirty.store(true, Ordering::SeqCst);
+    })
 }
 
 /// Mark the next rebuild as full, from a caller (`skill_update_check`) that
@@ -287,9 +294,13 @@ fn update_registry_section<T: Clone + PartialEq>(
 /// `read_fork_registry` directly rather than going through
 /// `update_registry_section`.
 #[tauri::command]
-pub fn get_tracked_projects() -> Result<TrackedProjects, String> {
-    let home = dirs::home_dir().ok_or("Could not find home directory")?;
-    Ok(super::skill_fork_registry::read_fork_registry(&home)?.projects)
+pub async fn get_tracked_projects(app: tauri::AppHandle) -> Result<TrackedProjects, String> {
+    let timing_app = app.clone();
+    crate::timing_log::time_command_blocking(&timing_app, "get_tracked_projects", move || {
+        let home = dirs::home_dir().ok_or("Could not find home directory")?;
+        Ok(super::skill_fork_registry::read_fork_registry(&home)?.projects)
+    })
+    .await
 }
 
 /// Runs each incoming path through `tracked_projects::entry_to_save`,
@@ -316,42 +327,52 @@ fn validate_projects_to_save(
 /// saved. Returns the saved lists; a full rebuild follows on the background
 /// thread when they changed.
 #[tauri::command]
-pub fn register_skill_projects(
+pub async fn register_skill_projects(
     paths: Vec<String>,
-    state: tauri::State<SkillRefreshState>,
+    app: tauri::AppHandle,
 ) -> Result<TrackedProjects, String> {
-    let home = dirs::home_dir().ok_or("Could not find home directory")?;
-    let valid = drop_home_directory_from_batch(paths, &home);
-    let to_save = validate_projects_to_save(&skill_studio_host::RealFs, &home, valid)?;
-    let (projects, changed) = update_registry_section(
-        &home,
-        |registry| &mut registry.projects,
-        |tracked| tracked.track(to_save),
-    )?;
-    if changed {
-        state.mark_skills_dirty();
-    }
-    Ok(projects)
+    let timing_app = app.clone();
+    crate::timing_log::time_command_blocking(&timing_app, "register_skill_projects", move || {
+        let state = app.state::<SkillRefreshState>();
+        let home = dirs::home_dir().ok_or("Could not find home directory")?;
+        let valid = drop_home_directory_from_batch(paths, &home);
+        let to_save = validate_projects_to_save(&skill_studio_host::RealFs, &home, valid)?;
+        let (projects, changed) = update_registry_section(
+            &home,
+            |registry| &mut registry.projects,
+            |tracked| tracked.track(to_save),
+        )?;
+        if changed {
+            state.mark_skills_dirty();
+        }
+        Ok(projects)
+    })
+    .await
 }
 
 /// Stop tracking a project folder ("Stop tracking" in the sidebar) and record
 /// the exclusion, so discovery cannot offer it again. Returns the saved lists;
 /// a full rebuild follows on the background thread when they changed.
 #[tauri::command]
-pub fn unregister_skill_project(
+pub async fn unregister_skill_project(
     path: String,
-    state: tauri::State<SkillRefreshState>,
+    app: tauri::AppHandle,
 ) -> Result<TrackedProjects, String> {
-    let home = dirs::home_dir().ok_or("Could not find home directory")?;
-    let (projects, changed) = update_registry_section(
-        &home,
-        |registry| &mut registry.projects,
-        |tracked| tracked.untrack(Path::new(&path)),
-    )?;
-    if changed {
-        state.mark_skills_dirty();
-    }
-    Ok(projects)
+    let timing_app = app.clone();
+    crate::timing_log::time_command_blocking(&timing_app, "unregister_skill_project", move || {
+        let state = app.state::<SkillRefreshState>();
+        let home = dirs::home_dir().ok_or("Could not find home directory")?;
+        let (projects, changed) = update_registry_section(
+            &home,
+            |registry| &mut registry.projects,
+            |tracked| tracked.untrack(Path::new(&path)),
+        )?;
+        if changed {
+            state.mark_skills_dirty();
+        }
+        Ok(projects)
+    })
+    .await
 }
 
 /// "Remove" for a folder the user added by hand; unlike `unregister_skill_project`
@@ -359,20 +380,25 @@ pub fn unregister_skill_project(
 /// later finds it in a harness's own history. Returns the saved lists; a full
 /// rebuild follows on the background thread when they changed.
 #[tauri::command]
-pub fn remove_skill_project(
+pub async fn remove_skill_project(
     path: String,
-    state: tauri::State<SkillRefreshState>,
+    app: tauri::AppHandle,
 ) -> Result<TrackedProjects, String> {
-    let home = dirs::home_dir().ok_or("Could not find home directory")?;
-    let (projects, changed) = update_registry_section(
-        &home,
-        |registry| &mut registry.projects,
-        |tracked| tracked.forget(Path::new(&path)),
-    )?;
-    if changed {
-        state.mark_skills_dirty();
-    }
-    Ok(projects)
+    let timing_app = app.clone();
+    crate::timing_log::time_command_blocking(&timing_app, "remove_skill_project", move || {
+        let state = app.state::<SkillRefreshState>();
+        let home = dirs::home_dir().ok_or("Could not find home directory")?;
+        let (projects, changed) = update_registry_section(
+            &home,
+            |registry| &mut registry.projects,
+            |tracked| tracked.forget(Path::new(&path)),
+        )?;
+        if changed {
+            state.mark_skills_dirty();
+        }
+        Ok(projects)
+    })
+    .await
 }
 
 /// One-time migration from the desktop's old `localStorage`-only lists: track
@@ -381,27 +407,32 @@ pub fn remove_skill_project(
 /// saved lists; a full rebuild follows on the background thread when they
 /// changed.
 #[tauri::command]
-pub fn import_tracked_projects(
+pub async fn import_tracked_projects(
     added: Vec<String>,
     excluded: Vec<String>,
-    state: tauri::State<SkillRefreshState>,
+    app: tauri::AppHandle,
 ) -> Result<TrackedProjects, String> {
-    let home = dirs::home_dir().ok_or("Could not find home directory")?;
-    let added = drop_home_directory_from_batch(added, &home);
-    let (projects, changed) = update_registry_section(
-        &home,
-        |registry| &mut registry.projects,
-        |tracked| {
-            tracked.track(added.into_iter().map(PathBuf::from));
-            for path in &excluded {
-                tracked.untrack(Path::new(path));
-            }
-        },
-    )?;
-    if changed {
-        state.mark_skills_dirty();
-    }
-    Ok(projects)
+    let timing_app = app.clone();
+    crate::timing_log::time_command_blocking(&timing_app, "import_tracked_projects", move || {
+        let state = app.state::<SkillRefreshState>();
+        let home = dirs::home_dir().ok_or("Could not find home directory")?;
+        let added = drop_home_directory_from_batch(added, &home);
+        let (projects, changed) = update_registry_section(
+            &home,
+            |registry| &mut registry.projects,
+            |tracked| {
+                tracked.track(added.into_iter().map(PathBuf::from));
+                for path in &excluded {
+                    tracked.untrack(Path::new(path));
+                }
+            },
+        )?;
+        if changed {
+            state.mark_skills_dirty();
+        }
+        Ok(projects)
+    })
+    .await
 }
 
 /// One discovery harness's on/off switch, as Settings shows it. `enabled:
@@ -429,11 +460,17 @@ fn discovery_source_settings(sources: &DiscoverySources) -> Vec<DiscoverySourceS
 /// this doesn't change anything, so it uses the strict `read_fork_registry`
 /// directly rather than going through `update_registry_section`.
 #[tauri::command]
-pub fn get_discovery_sources() -> Result<Vec<DiscoverySourceSetting>, String> {
-    let home = dirs::home_dir().ok_or("Could not find home directory")?;
-    Ok(discovery_source_settings(
-        &super::skill_fork_registry::read_fork_registry(&home)?.discovery,
-    ))
+pub async fn get_discovery_sources(
+    app: tauri::AppHandle,
+) -> Result<Vec<DiscoverySourceSetting>, String> {
+    let timing_app = app.clone();
+    crate::timing_log::time_command_blocking(&timing_app, "get_discovery_sources", move || {
+        let home = dirs::home_dir().ok_or("Could not find home directory")?;
+        Ok(discovery_source_settings(
+            &super::skill_fork_registry::read_fork_registry(&home)?.discovery,
+        ))
+    })
+    .await
 }
 
 /// Validate `harness`, flip its switch, and re-read the settings - the
@@ -460,17 +497,22 @@ fn set_discovery_source_at(
 /// thread when the switch actually changed, and its snapshot drops or regains
 /// the folders only that harness's history named.
 #[tauri::command]
-pub fn set_discovery_source(
+pub async fn set_discovery_source(
     harness: String,
     enabled: bool,
-    state: tauri::State<SkillRefreshState>,
+    app: tauri::AppHandle,
 ) -> Result<Vec<DiscoverySourceSetting>, String> {
-    let home = dirs::home_dir().ok_or("Could not find home directory")?;
-    let (settings, changed) = set_discovery_source_at(&home, &harness, enabled)?;
-    if changed {
-        state.mark_skills_dirty();
-    }
-    Ok(settings)
+    let timing_app = app.clone();
+    crate::timing_log::time_command_blocking(&timing_app, "set_discovery_source", move || {
+        let state = app.state::<SkillRefreshState>();
+        let home = dirs::home_dir().ok_or("Could not find home directory")?;
+        let (settings, changed) = set_discovery_source_at(&home, &harness, enabled)?;
+        if changed {
+            state.mark_skills_dirty();
+        }
+        Ok(settings)
+    })
+    .await
 }
 
 /// Build a full snapshot right now on the calling thread, store it, and emit

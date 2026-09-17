@@ -18,6 +18,8 @@
 use std::fs;
 use std::path::{Path, PathBuf};
 
+use tauri::Manager;
+
 use super::commands::canonicalize_skill_md;
 use super::frontmatter::{invocation_policy, parse_frontmatter, InvocationPolicy};
 use super::skill_deployment::parse_deployment_id;
@@ -351,37 +353,45 @@ fn exact_snapshot_invocation_deployment<'a>(
 }
 
 #[tauri::command]
-pub fn set_skill_invocation(
+pub async fn set_skill_invocation(
     name: String,
     path: String,
     policy: InvocationPolicy,
     app: tauri::AppHandle,
-    refresh_state: tauri::State<SkillRefreshState>,
 ) -> Result<(), String> {
-    let path_buf = PathBuf::from(&path);
-    let snapshot = refresh_state
-        .snapshot
-        .read()
-        .map_err(|error| format!("Snapshot lock poisoned: {error}"))?
-        .clone()
-        .ok_or_else(|| format!("Invocation target is stale: {path} is not an installed skill"))?;
-    let deployment = exact_snapshot_invocation_deployment(&snapshot, &name, &path_buf)?;
-    if deployment.plugin.is_some() {
-        return Err("Skill is managed by a plugin and cannot be edited here".to_string());
-    }
-    let is_codex_deployment = deployment.agent == "Codex";
-    let canonical = canonicalize_skill_md(&path_buf, &path)?;
-
-    let result = set_skill_invocation_with(&canonical, policy, is_codex_deployment);
-    if result.is_ok() {
-        if let Err(error) =
-            skill_refresh::reconcile_skill_names_and_emit(&app, &refresh_state, [name], &[])
-        {
-            eprintln!("[set_skill_invocation] targeted snapshot reconciliation failed: {error}");
-            refresh_state.mark_skills_dirty();
+    let timing_app = app.clone();
+    crate::timing_log::time_command_blocking(&timing_app, "set_skill_invocation", move || {
+        let refresh_state = app.state::<SkillRefreshState>();
+        let path_buf = PathBuf::from(&path);
+        let snapshot = refresh_state
+            .snapshot
+            .read()
+            .map_err(|error| format!("Snapshot lock poisoned: {error}"))?
+            .clone()
+            .ok_or_else(|| {
+                format!("Invocation target is stale: {path} is not an installed skill")
+            })?;
+        let deployment = exact_snapshot_invocation_deployment(&snapshot, &name, &path_buf)?;
+        if deployment.plugin.is_some() {
+            return Err("Skill is managed by a plugin and cannot be edited here".to_string());
         }
-    }
-    result
+        let is_codex_deployment = deployment.agent == "Codex";
+        let canonical = canonicalize_skill_md(&path_buf, &path)?;
+
+        let result = set_skill_invocation_with(&canonical, policy, is_codex_deployment);
+        if result.is_ok() {
+            if let Err(error) =
+                skill_refresh::reconcile_skill_names_and_emit(&app, &refresh_state, [name], &[])
+            {
+                eprintln!(
+                    "[set_skill_invocation] targeted snapshot reconciliation failed: {error}"
+                );
+                refresh_state.mark_skills_dirty();
+            }
+        }
+        result
+    })
+    .await
 }
 
 #[cfg(test)]

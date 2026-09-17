@@ -105,18 +105,24 @@ fn skills_sh_access_info(home: &std::path::Path) -> Result<SkillsShAccessInfo, S
 /// its URL) - the Settings page's status line and the Browse tab's error
 /// messaging both read this instead of the old key-only status.
 #[tauri::command]
-pub fn get_skills_sh_access() -> Result<SkillsShAccessInfo, String> {
-    let home = dirs::home_dir().ok_or("Could not find home directory")?;
-    skills_sh_access_info(&home)
+pub async fn get_skills_sh_access(app: tauri::AppHandle) -> Result<SkillsShAccessInfo, String> {
+    crate::timing_log::time_command_blocking(&app, "get_skills_sh_access", move || {
+        let home = dirs::home_dir().ok_or("Could not find home directory")?;
+        skills_sh_access_info(&home)
+    })
+    .await
 }
 
 /// Saves `key` as `skills_sh_api_key` in `~/.agents/skill-studio.json`,
 /// preserving every other field. Refuses an empty (or all-whitespace) key -
 /// the Settings page's Save button.
 #[tauri::command]
-pub fn set_skills_sh_api_key(key: String) -> Result<(), String> {
-    let home = dirs::home_dir().ok_or("Could not find home directory")?;
-    save_skills_sh_api_key(&home, &key)
+pub async fn set_skills_sh_api_key(key: String, app: tauri::AppHandle) -> Result<(), String> {
+    crate::timing_log::time_command_blocking(&app, "set_skills_sh_api_key", move || {
+        let home = dirs::home_dir().ok_or("Could not find home directory")?;
+        save_skills_sh_api_key(&home, &key)
+    })
+    .await
 }
 
 /// Search for skills on skills.sh
@@ -124,10 +130,14 @@ pub fn set_skills_sh_api_key(key: String) -> Result<(), String> {
 pub async fn search_skills(
     query: String,
     limit: Option<u32>,
+    app: tauri::AppHandle,
 ) -> Result<PaginatedSkillsResponse, String> {
-    let home = dirs::home_dir().ok_or("Could not find home directory")?;
-    let access = api::resolve_skills_sh_access(&home)?;
-    api::search_skills(&access, &query, limit).await
+    crate::timing_log::time_command_async(&app, "search_skills", async move {
+        let home = dirs::home_dir().ok_or("Could not find home directory")?;
+        let access = api::resolve_skills_sh_access(&home)?;
+        api::search_skills(&access, &query, limit).await
+    })
+    .await
 }
 
 /// Get popular skills (sorted by install count)
@@ -135,18 +145,28 @@ pub async fn search_skills(
 pub async fn get_popular_skills(
     page: Option<u32>,
     per_page: Option<u32>,
+    app: tauri::AppHandle,
 ) -> Result<PaginatedSkillsResponse, String> {
-    let home = dirs::home_dir().ok_or("Could not find home directory")?;
-    let access = api::resolve_skills_sh_access(&home)?;
-    api::get_popular_skills(&access, page, per_page).await
+    crate::timing_log::time_command_async(&app, "get_popular_skills", async move {
+        let home = dirs::home_dir().ok_or("Could not find home directory")?;
+        let access = api::resolve_skills_sh_access(&home)?;
+        api::get_popular_skills(&access, page, per_page).await
+    })
+    .await
 }
 
 /// Get skill details from skills.sh
 #[tauri::command]
-pub async fn get_skill_details(skill_id: String) -> Result<SkillDetails, String> {
-    let home = dirs::home_dir().ok_or("Could not find home directory")?;
-    let access = api::resolve_skills_sh_access(&home)?;
-    api::get_skill_details(&access, &skill_id).await
+pub async fn get_skill_details(
+    skill_id: String,
+    app: tauri::AppHandle,
+) -> Result<SkillDetails, String> {
+    crate::timing_log::time_command_async(&app, "get_skill_details", async move {
+        let home = dirs::home_dir().ok_or("Could not find home directory")?;
+        let access = api::resolve_skills_sh_access(&home)?;
+        api::get_skill_details(&access, &skill_id).await
+    })
+    .await
 }
 
 /// Get all installed skills. Returns the background-refreshed snapshot's
@@ -157,20 +177,22 @@ pub async fn get_skill_details(skill_id: String) -> Result<SkillDetails, String>
 /// list comes from `~/.agents/skill-studio.json` (see
 /// `skill_refresh::effective_project_paths`), not from the caller.
 #[tauri::command]
-pub fn get_installed_skills(
-    refresh_state: tauri::State<SkillRefreshState>,
-    app: tauri::AppHandle,
-) -> Result<Vec<InstalledSkill>, String> {
-    let snapshot = refresh_state.snapshot.read().ok().and_then(|g| g.clone());
+pub async fn get_installed_skills(app: tauri::AppHandle) -> Result<Vec<InstalledSkill>, String> {
+    let timing_app = app.clone();
+    crate::timing_log::time_command_blocking(&timing_app, "get_installed_skills", move || {
+        let refresh_state = app.state::<SkillRefreshState>();
+        let snapshot = refresh_state.snapshot.read().ok().and_then(|g| g.clone());
 
-    if let Some(snapshot) = &snapshot {
-        if !refresh_state.is_skills_dirty() {
-            return Ok(snapshot.skills.clone());
+        if let Some(snapshot) = &snapshot {
+            if !refresh_state.is_skills_dirty() {
+                return Ok(snapshot.skills.clone());
+            }
         }
-    }
 
-    let rebuilt = skill_refresh::rebuild_snapshot_now(&app, &refresh_state)?;
-    Ok(rebuilt.skills)
+        let rebuilt = skill_refresh::rebuild_snapshot_now(&app, &refresh_state)?;
+        Ok(rebuilt.skills)
+    })
+    .await
 }
 
 #[cfg(test)]
@@ -1434,43 +1456,52 @@ mod tests {
 /// transcripts that have a first-class agent's skill directory. Returns the
 /// background snapshot's project list when one exists.
 #[tauri::command]
-pub fn list_skill_projects(
-    refresh_state: tauri::State<SkillRefreshState>,
-) -> Result<Vec<String>, String> {
-    if let Ok(guard) = refresh_state.snapshot.read() {
-        if let Some(snapshot) = guard.as_ref() {
-            return Ok(snapshot.projects.clone());
+pub async fn list_skill_projects(app: tauri::AppHandle) -> Result<Vec<String>, String> {
+    let timing_app = app.clone();
+    crate::timing_log::time_command_blocking(&timing_app, "list_skill_projects", move || {
+        let refresh_state = app.state::<SkillRefreshState>();
+        if let Ok(guard) = refresh_state.snapshot.read() {
+            if let Some(snapshot) = guard.as_ref() {
+                return Ok(snapshot.projects.clone());
+            }
         }
-    }
 
-    let home = dirs::home_dir().ok_or("Could not find home directory")?;
-    Ok(skill_refresh::effective_project_paths(&home)
-        .into_iter()
-        .map(|p| p.to_string_lossy().to_string())
-        .collect())
+        let home = dirs::home_dir().ok_or("Could not find home directory")?;
+        Ok(skill_refresh::effective_project_paths(&home)
+            .into_iter()
+            .map(|p| p.to_string_lossy().to_string())
+            .collect())
+    })
+    .await
 }
 
 /// Check if a skill is installed
 #[tauri::command]
-pub fn is_skill_installed(skill_name: String) -> Result<bool, String> {
-    lock_file::is_skill_installed(&skill_name)
+pub async fn is_skill_installed(skill_name: String, app: tauri::AppHandle) -> Result<bool, String> {
+    let timing_app = app.clone();
+    crate::timing_log::time_command_blocking(&timing_app, "is_skill_installed", move || {
+        lock_file::is_skill_installed(&skill_name)
+    })
+    .await
 }
 
 /// Get all supported agent targets
 #[tauri::command]
-pub fn get_agent_targets() -> Vec<AgentTarget> {
-    let home = dirs::home_dir().unwrap_or_default();
-    let home_str = home.to_string_lossy();
+pub fn get_agent_targets(app: tauri::AppHandle) -> Vec<AgentTarget> {
+    crate::timing_log::time_command(&app, "get_agent_targets", move || {
+        let home = dirs::home_dir().unwrap_or_default();
+        let home_str = home.to_string_lossy();
 
-    AgentId::all()
-        .into_iter()
-        .map(|id| AgentTarget {
-            name: id.display_name().to_string(),
-            project_path: id.project_path().to_string(),
-            global_path: format!("{}/{}", home_str, id.global_path()),
-            id,
-        })
-        .collect()
+        AgentId::all()
+            .into_iter()
+            .map(|id| AgentTarget {
+                name: id.display_name().to_string(),
+                project_path: id.project_path().to_string(),
+                global_path: format!("{}/{}", home_str, id.global_path()),
+                id,
+            })
+            .collect()
+    })
 }
 
 fn remove_copy_deployment(
@@ -1850,9 +1881,11 @@ fn remove_dotagents_deployment_with(
 pub async fn remove_skill(
     target: LifecycleTarget,
     app: tauri::AppHandle,
-    refresh_state: tauri::State<'_, SkillRefreshState>,
-    fork_lock: tauri::State<'_, skill_fork::ForkMutationLock>,
 ) -> Result<InstallResult, String> {
+    let timing_app = app.clone();
+    crate::timing_log::time_command_blocking(&timing_app, "remove_skill", move || {
+    let refresh_state = app.state::<SkillRefreshState>();
+    let fork_lock = app.state::<skill_fork::ForkMutationLock>();
     // Held for the whole removal (ownership check, CLI removal or direct
     // delete, registry update, rebuild) so a concurrent fork/pull/unfork
     // can't race a removal - `ForkMutationLock` isn't reentrant, so
@@ -1887,7 +1920,7 @@ pub async fn remove_skill(
             deployment.id,
             deployment.path,
             deployment.content_hash,
-            app,
+            app.clone(),
         );
     }
 
@@ -2029,6 +2062,8 @@ pub async fn remove_skill(
             command: None,
         })
     }
+    })
+    .await
 }
 
 /// `remove_skill`'s path for a forked skill: it's not in any ledger, so
@@ -2213,21 +2248,26 @@ pub(crate) fn canonicalize_skill_md(
 /// belonging to a deployment in the current snapshot, to keep this from
 /// becoming an arbitrary-file read.
 #[tauri::command]
-pub fn read_installed_skill_md(
+pub async fn read_installed_skill_md(
     path: String,
-    refresh_state: tauri::State<SkillRefreshState>,
+    app: tauri::AppHandle,
 ) -> Result<String, String> {
-    let path_buf = std::path::PathBuf::from(&path);
-    require_snapshot_owns_path(&refresh_state, &path_buf)?;
-    canonicalize_skill_md(&path_buf, &path)?;
+    let timing_app = app.clone();
+    crate::timing_log::time_command_blocking(&timing_app, "read_installed_skill_md", move || {
+        let refresh_state = app.state::<SkillRefreshState>();
+        let path_buf = std::path::PathBuf::from(&path);
+        require_snapshot_owns_path(&refresh_state, &path_buf)?;
+        canonicalize_skill_md(&path_buf, &path)?;
 
-    let mut file = File::open(&path).map_err(|e| format!("Failed to open {}: {}", path, e))?;
-    let mut buf = vec![0u8; MAX_SKILL_MD_BYTES];
-    let n = file
-        .read(&mut buf)
-        .map_err(|e| format!("Failed to read {}: {}", path, e))?;
-    buf.truncate(n);
-    Ok(String::from_utf8_lossy(&buf).into_owned())
+        let mut file = File::open(&path).map_err(|e| format!("Failed to open {}: {}", path, e))?;
+        let mut buf = vec![0u8; MAX_SKILL_MD_BYTES];
+        let n = file
+            .read(&mut buf)
+            .map_err(|e| format!("Failed to read {}: {}", path, e))?;
+        buf.truncate(n);
+        Ok(String::from_utf8_lossy(&buf).into_owned())
+    })
+    .await
 }
 
 /// Refuses a `write_installed_skill_md` request that targets a path outside
@@ -2283,16 +2323,20 @@ fn validate_skill_md_write(
 /// snapshot dirty afterward so the background loop picks up the new content
 /// and token/byte counts, rather than rescanning every skill on this thread.
 #[tauri::command]
-pub fn write_installed_skill_md(
+pub async fn write_installed_skill_md(
     path: String,
     content: String,
     app: tauri::AppHandle,
-    refresh_state: tauri::State<SkillRefreshState>,
 ) -> Result<(), String> {
-    let canonical = validate_skill_md_write(&path, &content, &refresh_state)?;
-    write_skill_md(&canonical, &content)?;
-    skill_refresh::request_snapshot_rebuild(&app);
-    Ok(())
+    let timing_app = app.clone();
+    crate::timing_log::time_command_blocking(&timing_app, "write_installed_skill_md", move || {
+        let refresh_state = app.state::<SkillRefreshState>();
+        let canonical = validate_skill_md_write(&path, &content, &refresh_state)?;
+        write_skill_md(&canonical, &content)?;
+        skill_refresh::request_snapshot_rebuild(&app);
+        Ok(())
+    })
+    .await
 }
 
 /// Like `write_installed_skill_md`, but refuses the write (rather than
@@ -2301,17 +2345,25 @@ pub fn write_installed_skill_md(
 /// proposal Apply and the inline editor to detect an ordinary stale baseline
 /// before writing.
 #[tauri::command]
-pub fn write_installed_skill_md_if_unchanged(
+pub async fn write_installed_skill_md_if_unchanged(
     path: String,
     expected_content: String,
     content: String,
     app: tauri::AppHandle,
-    refresh_state: tauri::State<SkillRefreshState>,
 ) -> Result<(), String> {
-    let canonical = validate_skill_md_write(&path, &content, &refresh_state)?;
-    write_skill_md_compare_and_swap(&canonical, &expected_content, &content)?;
-    skill_refresh::request_snapshot_rebuild(&app);
-    Ok(())
+    let timing_app = app.clone();
+    crate::timing_log::time_command_blocking(
+        &timing_app,
+        "write_installed_skill_md_if_unchanged",
+        move || {
+            let refresh_state = app.state::<SkillRefreshState>();
+            let canonical = validate_skill_md_write(&path, &content, &refresh_state)?;
+            write_skill_md_compare_and_swap(&canonical, &expected_content, &content)?;
+            skill_refresh::request_snapshot_rebuild(&app);
+            Ok(())
+        },
+    )
+    .await
 }
 
 /// Reveal a skill's folder in Finder, or open it in the user's default
@@ -2371,13 +2423,18 @@ pub fn open_skill_path(
 /// still-usable saved choice. Reads the login shell for `$VISUAL`/`$EDITOR`,
 /// so it runs off the main thread.
 #[tauri::command]
-pub async fn get_editor_choices() -> Result<skill_editor::EditorChoices, String> {
-    tauri::async_runtime::spawn_blocking(|| {
-        let home = dirs::home_dir().ok_or("Could not find home directory")?;
-        Ok(skill_editor::editor_choices(&home))
+pub async fn get_editor_choices(
+    app: tauri::AppHandle,
+) -> Result<skill_editor::EditorChoices, String> {
+    crate::timing_log::time_command_async(&app, "get_editor_choices", async move {
+        tauri::async_runtime::spawn_blocking(|| {
+            let home = dirs::home_dir().ok_or("Could not find home directory")?;
+            Ok(skill_editor::editor_choices(&home))
+        })
+        .await
+        .map_err(|e| format!("Failed to read editor choices: {e}"))?
     })
     .await
-    .map_err(|e| format!("Failed to read editor choices: {e}"))?
 }
 
 /// `async` because saving `"$EDITOR"` can start the login shell to check that
@@ -2397,111 +2454,120 @@ pub fn set_preferred_editor(app_name: Option<String>) -> Result<(), String> {
 pub async fn update_skill(
     target: LifecycleTarget,
     app: tauri::AppHandle,
-    refresh_state: tauri::State<'_, SkillRefreshState>,
-    update_check_state: tauri::State<'_, skill_update_check::UpdateCheckState>,
-    fork_lock: tauri::State<'_, skill_fork::ForkMutationLock>,
 ) -> Result<InstallResult, String> {
-    let _guard = fork_lock.try_acquire()?;
-    let home = dirs::home_dir().ok_or("Could not find home directory")?;
-    let snapshot = rebuild_fresh_lifecycle_snapshot(&app, &refresh_state)?;
-    let (skill, deployment) = resolve_lifecycle_target(&snapshot, &target, "Update")?;
-    let skill_name = skill.name;
-    let scope = if deployment.scope == "global" {
-        super::skill_dto::InstallScope::Global
-    } else if deployment.scope == "project" {
-        super::skill_dto::InstallScope::Project
-    } else {
-        return Err(format!(
-            "Update is not available for {} scope",
-            deployment.scope
-        ));
-    };
-    let project_paths: Vec<std::path::PathBuf> = snapshot.projects.iter().map(Into::into).collect();
-    let ledgers = super::skill_ownership::load_ownership_ledgers(&home, &project_paths);
+    let timing_app = app.clone();
+    crate::timing_log::time_command_blocking(&timing_app, "update_skill", move || {
+        let refresh_state = app.state::<SkillRefreshState>();
+        let update_check_state = app.state::<skill_update_check::UpdateCheckState>();
+        let fork_lock = app.state::<skill_fork::ForkMutationLock>();
+        let _guard = fork_lock.try_acquire()?;
+        let home = dirs::home_dir().ok_or("Could not find home directory")?;
+        let snapshot = rebuild_fresh_lifecycle_snapshot(&app, &refresh_state)?;
+        let (skill, deployment) = resolve_lifecycle_target(&snapshot, &target, "Update")?;
+        let skill_name = skill.name;
+        let scope = if deployment.scope == "global" {
+            super::skill_dto::InstallScope::Global
+        } else if deployment.scope == "project" {
+            super::skill_dto::InstallScope::Project
+        } else {
+            return Err(format!(
+                "Update is not available for {} scope",
+                deployment.scope
+            ));
+        };
+        let project_paths: Vec<std::path::PathBuf> =
+            snapshot.projects.iter().map(Into::into).collect();
+        let ledgers = super::skill_ownership::load_ownership_ledgers(&home, &project_paths);
 
-    let (tool, args): (&str, Vec<String>) = match deployment.owner_kind {
-        super::skill_ownership::LifecycleOwnerKind::Dotagents => {
-            let ledger = ledger_matching_deployment(&ledgers, &deployment)
-                .ok_or("Update is not available: the matching ownership ledger is missing")?;
-            let entry = ledger
-                .dotagents
-                .iter()
-                .find(|entry| entry.name == skill_name);
-            let latest_commit = if entry.is_some_and(|e| e.declared_ref.is_some()) {
-                let app_data = app
-                    .path()
-                    .app_data_dir()
-                    .unwrap_or_else(|_| std::path::PathBuf::from("."));
-                let store = skill_update_check::read_update_check_store(&app_data);
-                let owner_id = deployment.owner_id.as_deref().ok_or(
-                    "Update is not available: the selected deployment has no owner identity",
-                )?;
-                let current_owner_ids: Vec<String> = snapshot
-                    .skills
+        let (tool, args): (&str, Vec<String>) = match deployment.owner_kind {
+            super::skill_ownership::LifecycleOwnerKind::Dotagents => {
+                let ledger = ledger_matching_deployment(&ledgers, &deployment)
+                    .ok_or("Update is not available: the matching ownership ledger is missing")?;
+                let entry = ledger
+                    .dotagents
                     .iter()
-                    .flat_map(|skill| skill.deployments.iter())
-                    .filter_map(|deployment| deployment.owner_id.clone())
-                    .collect();
-                skill_update_check::state_for_owner(&store, owner_id, &current_owner_ids)
-                    .and_then(|state| state.latest_commit.clone())
-            } else {
-                None
-            };
-            let args =
-                dotagents_update_args(&skill_name, entry, latest_commit.as_deref(), scope.clone())?;
-            ("dotagents", args)
-        }
-        super::skill_ownership::LifecycleOwnerKind::SkillsSh => {
-            ("skills-sh", skills_sh_update_args(&skill_name, scope))
-        }
-        super::skill_ownership::LifecycleOwnerKind::Fork => {
-            return Err("Forked skills update with Pull upstream".to_string())
-        }
-        _ => return Err("Update is not available for this deployment owner".to_string()),
-    };
+                    .find(|entry| entry.name == skill_name);
+                let latest_commit = if entry.is_some_and(|e| e.declared_ref.is_some()) {
+                    let app_data = app
+                        .path()
+                        .app_data_dir()
+                        .unwrap_or_else(|_| std::path::PathBuf::from("."));
+                    let store = skill_update_check::read_update_check_store(&app_data);
+                    let owner_id = deployment.owner_id.as_deref().ok_or(
+                        "Update is not available: the selected deployment has no owner identity",
+                    )?;
+                    let current_owner_ids: Vec<String> = snapshot
+                        .skills
+                        .iter()
+                        .flat_map(|skill| skill.deployments.iter())
+                        .filter_map(|deployment| deployment.owner_id.clone())
+                        .collect();
+                    skill_update_check::state_for_owner(&store, owner_id, &current_owner_ids)
+                        .and_then(|state| state.latest_commit.clone())
+                } else {
+                    None
+                };
+                let args = dotagents_update_args(
+                    &skill_name,
+                    entry,
+                    latest_commit.as_deref(),
+                    scope.clone(),
+                )?;
+                ("dotagents", args)
+            }
+            super::skill_ownership::LifecycleOwnerKind::SkillsSh => {
+                ("skills-sh", skills_sh_update_args(&skill_name, scope))
+            }
+            super::skill_ownership::LifecycleOwnerKind::Fork => {
+                return Err("Forked skills update with Pull upstream".to_string())
+            }
+            _ => return Err("Update is not available for this deployment owner".to_string()),
+        };
 
-    let npx_command = format!("npx {}", args.join(" "));
-    let mut command = Command::new("npx");
-    command.args(&args);
-    if let Some(project_path) = &deployment.project_path {
-        command.current_dir(project_path);
-    }
-    let output = command
-        .output()
-        .map_err(|e| format!("Failed to execute npx: {}", e))?;
+        let npx_command = format!("npx {}", args.join(" "));
+        let mut command = Command::new("npx");
+        command.args(&args);
+        if let Some(project_path) = &deployment.project_path {
+            command.current_dir(project_path);
+        }
+        let output = command
+            .output()
+            .map_err(|e| format!("Failed to execute npx: {}", e))?;
 
-    let stderr = String::from_utf8_lossy(&output.stderr).to_string();
+        let stderr = String::from_utf8_lossy(&output.stderr).to_string();
 
-    if output.status.success() {
-        let owner_id = deployment
-            .owner_id
-            .as_deref()
-            .ok_or("Update is not available: the selected deployment has no owner identity")?;
-        skill_update_check::check_now_for_owner(
-            &app,
-            &update_check_state,
-            owner_id,
-            &project_paths,
-        );
-        skill_refresh::request_snapshot_rebuild(&app);
-        Ok(InstallResult {
-            success: true,
-            skill_name,
-            installed_path: None,
-            error: None,
-            tool: Some(tool.to_string()),
-            command: Some(npx_command),
-        })
-    } else {
-        Ok(InstallResult {
-            success: false,
-            skill_name,
-            installed_path: None,
-            error: Some(stderr),
-            tool: Some(tool.to_string()),
-            command: Some(npx_command),
-        })
-    }
+        if output.status.success() {
+            let owner_id = deployment
+                .owner_id
+                .as_deref()
+                .ok_or("Update is not available: the selected deployment has no owner identity")?;
+            skill_update_check::check_now_for_owner(
+                &app,
+                &update_check_state,
+                owner_id,
+                &project_paths,
+            );
+            skill_refresh::request_snapshot_rebuild(&app);
+            Ok(InstallResult {
+                success: true,
+                skill_name,
+                installed_path: None,
+                error: None,
+                tool: Some(tool.to_string()),
+                command: Some(npx_command),
+            })
+        } else {
+            Ok(InstallResult {
+                success: false,
+                skill_name,
+                installed_path: None,
+                error: Some(stderr),
+                tool: Some(tool.to_string()),
+                command: Some(npx_command),
+            })
+        }
+    })
+    .await
 }
 
 /// Runs one Claude-Code-only plugin lifecycle action: checks `harness`,
@@ -2525,35 +2591,44 @@ fn run_plugin_lifecycle_action(
 /// disable|enable <plugin_id> -s user`). Applies to every skill the plugin
 /// ships - Claude Code tracks `enabledPlugins` per plugin, not per skill.
 #[tauri::command]
-pub fn set_plugin_enabled(
+pub async fn set_plugin_enabled(
     plugin_id: String,
     harness: String,
     enabled: bool,
     app: tauri::AppHandle,
-    _refresh_state: tauri::State<SkillRefreshState>,
-    fork_lock: tauri::State<skill_fork::ForkMutationLock>,
 ) -> Result<(), String> {
-    run_plugin_lifecycle_action(&harness, &app, &fork_lock, || {
-        super::skill_plugin_lifecycle::set_plugin_enabled_with(
-            &RealCommandRunner::new(),
-            &plugin_id,
-            enabled,
-        )
+    let timing_app = app.clone();
+    crate::timing_log::time_command_blocking(&timing_app, "set_plugin_enabled", move || {
+        let fork_lock = app.state::<skill_fork::ForkMutationLock>();
+        run_plugin_lifecycle_action(&harness, &app, &fork_lock, || {
+            super::skill_plugin_lifecycle::set_plugin_enabled_with(
+                &RealCommandRunner::new(),
+                &plugin_id,
+                enabled,
+            )
+        })
     })
+    .await
 }
 
 /// Uninstall one Claude Code plugin (`claude plugin uninstall <plugin_id>
 /// -s user -y`). Removes the `enabledPlugins` entry; Claude Code sweeps the
 /// cache directory later.
 #[tauri::command]
-pub fn uninstall_plugin(
+pub async fn uninstall_plugin(
     plugin_id: String,
     harness: String,
     app: tauri::AppHandle,
-    _refresh_state: tauri::State<SkillRefreshState>,
-    fork_lock: tauri::State<skill_fork::ForkMutationLock>,
 ) -> Result<(), String> {
-    run_plugin_lifecycle_action(&harness, &app, &fork_lock, || {
-        super::skill_plugin_lifecycle::uninstall_plugin_with(&RealCommandRunner::new(), &plugin_id)
+    let timing_app = app.clone();
+    crate::timing_log::time_command_blocking(&timing_app, "uninstall_plugin", move || {
+        let fork_lock = app.state::<skill_fork::ForkMutationLock>();
+        run_plugin_lifecycle_action(&harness, &app, &fork_lock, || {
+            super::skill_plugin_lifecycle::uninstall_plugin_with(
+                &RealCommandRunner::new(),
+                &plugin_id,
+            )
+        })
     })
+    .await
 }

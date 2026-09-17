@@ -883,14 +883,17 @@ pub fn start_add_skill_operation(
     app: AppHandle,
     state: tauri::State<AddSkillOperationState>,
 ) -> Result<AddSkillOperationEvent, String> {
-    let queued = state.begin(
-        operation_id.clone(),
-        AddSkillOperationKind::Single(request),
-        None,
-    )?;
-    emit_status(Some(&app), &queued);
-    spawn_operation(app.clone(), state.inner().clone(), operation_id);
-    Ok(queued)
+    let timing_app = app.clone();
+    crate::timing_log::time_command(&timing_app, "start_add_skill_operation", move || {
+        let queued = state.begin(
+            operation_id.clone(),
+            AddSkillOperationKind::Single(request),
+            None,
+        )?;
+        emit_status(Some(&app), &queued);
+        spawn_operation(app.clone(), state.inner().clone(), operation_id);
+        Ok(queued)
+    })
 }
 
 /// Start a batch Add Skill operation. Returns the queued event immediately.
@@ -901,14 +904,17 @@ pub fn start_add_skills_operation(
     app: AppHandle,
     state: tauri::State<AddSkillOperationState>,
 ) -> Result<AddSkillOperationEvent, String> {
-    let queued = state.begin(
-        operation_id.clone(),
-        AddSkillOperationKind::Batch(request),
-        None,
-    )?;
-    emit_status(Some(&app), &queued);
-    spawn_operation(app.clone(), state.inner().clone(), operation_id);
-    Ok(queued)
+    let timing_app = app.clone();
+    crate::timing_log::time_command(&timing_app, "start_add_skills_operation", move || {
+        let queued = state.begin(
+            operation_id.clone(),
+            AddSkillOperationKind::Batch(request),
+            None,
+        )?;
+        emit_status(Some(&app), &queued);
+        spawn_operation(app.clone(), state.inner().clone(), operation_id);
+        Ok(queued)
+    })
 }
 
 /// Catch-up read for a listener that subscribed after start, or remounted.
@@ -916,8 +922,11 @@ pub fn start_add_skills_operation(
 pub fn get_add_skill_operation(
     operation_id: String,
     state: tauri::State<AddSkillOperationState>,
+    app: tauri::AppHandle,
 ) -> Result<AddSkillOperationEvent, String> {
-    state.snapshot(&operation_id)
+    crate::timing_log::time_command(&app, "get_add_skill_operation", move || {
+        state.snapshot(&operation_id)
+    })
 }
 
 /// Request cancel. If mutation already finished, the worker still reports
@@ -928,9 +937,12 @@ pub fn cancel_add_skill_operation(
     app: AppHandle,
     state: tauri::State<AddSkillOperationState>,
 ) -> Result<AddSkillOperationEvent, String> {
-    let event = state.request_cancel(&operation_id)?;
-    emit_status(Some(&app), &event);
-    Ok(event)
+    let timing_app = app.clone();
+    crate::timing_log::time_command(&timing_app, "cancel_add_skill_operation", move || {
+        let event = state.request_cancel(&operation_id)?;
+        emit_status(Some(&app), &event);
+        Ok(event)
+    })
 }
 
 /// Record trust for this operation's repository identity, then retry the
@@ -1051,27 +1063,31 @@ fn confirm_add_skill_trust_with(
 }
 
 #[tauri::command]
-pub fn confirm_add_skill_trust(
+pub async fn confirm_add_skill_trust(
     operation_id: String,
     retry_operation_id: String,
     identity: String,
     app: AppHandle,
-    state: tauri::State<AddSkillOperationState>,
-    fork_lock: tauri::State<ForkMutationLock>,
 ) -> Result<AddSkillOperationEvent, String> {
-    let home = dirs::home_dir().ok_or("Could not find home directory")?;
-    let (parent_event, queued) = confirm_add_skill_trust_with(
-        &home,
-        operation_id,
-        retry_operation_id.clone(),
-        identity,
-        state.inner(),
-        fork_lock.inner(),
-    )?;
-    emit_status(Some(&app), &parent_event);
-    emit_status(Some(&app), &queued);
-    spawn_operation(app.clone(), state.inner().clone(), retry_operation_id);
-    Ok(queued)
+    let timing_app = app.clone();
+    crate::timing_log::time_command_blocking(&timing_app, "confirm_add_skill_trust", move || {
+        let state = app.state::<AddSkillOperationState>();
+        let fork_lock = app.state::<ForkMutationLock>();
+        let home = dirs::home_dir().ok_or("Could not find home directory")?;
+        let (parent_event, queued) = confirm_add_skill_trust_with(
+            &home,
+            operation_id,
+            retry_operation_id.clone(),
+            identity,
+            state.inner(),
+            fork_lock.inner(),
+        )?;
+        emit_status(Some(&app), &parent_event);
+        emit_status(Some(&app), &queued);
+        spawn_operation(app.clone(), state.inner().clone(), retry_operation_id);
+        Ok(queued)
+    })
+    .await
 }
 
 #[cfg(test)]

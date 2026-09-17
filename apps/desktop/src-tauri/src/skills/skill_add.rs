@@ -41,7 +41,7 @@ use super::skill_install_plan::{
 use super::skill_process::{
     run_controlled_program_with_control, AddOperationControl, ControlledProcessError,
 };
-use super::skill_refresh::{self, SkillRefreshState};
+use super::skill_refresh;
 use super::skill_trial;
 use super::skill_trust_policy::require_trusted_dotagents_source;
 use super::skill_update_check::{self, CommitLookup, GhCommitLookup};
@@ -1337,40 +1337,46 @@ pub(crate) fn resolve_fetch_and_lookup(app: &tauri::AppHandle) -> Result<GithubT
 /// The whole batch fails only when nothing could be attempted; a single
 /// skill's failure comes back in its own `AddSkillOutcome`.
 #[tauri::command]
-pub fn add_skills(
+pub async fn add_skills(
     request: AddSkillsRequest,
     app: tauri::AppHandle,
-    fork_lock: tauri::State<ForkMutationLock>,
 ) -> Result<Vec<AddSkillOutcome>, String> {
-    let _guard = fork_lock.try_acquire()?;
-    let home = dirs::home_dir().ok_or("Could not find home directory")?;
-    let runner = RealCommandRunner::new();
-    let (fetch, lookup) = resolve_fetch_and_lookup(&app)?;
-    let result = add_skills_with(&home, &request, &runner, fetch.as_ref(), lookup.as_ref());
-    skill_refresh::request_snapshot_rebuild(&app);
-    result
+    let timing_app = app.clone();
+    crate::timing_log::time_command_blocking(&timing_app, "add_skills", move || {
+        let fork_lock = app.state::<ForkMutationLock>();
+        let _guard = fork_lock.try_acquire()?;
+        let home = dirs::home_dir().ok_or("Could not find home directory")?;
+        let runner = RealCommandRunner::new();
+        let (fetch, lookup) = resolve_fetch_and_lookup(&app)?;
+        let result = add_skills_with(&home, &request, &runner, fetch.as_ref(), lookup.as_ref());
+        skill_refresh::request_snapshot_rebuild(&app);
+        result
+    })
+    .await
 }
 
 #[tauri::command]
-pub fn add_skill(
+pub async fn add_skill(
     request: AddSkillRequest,
     app: tauri::AppHandle,
-    refresh_state: tauri::State<SkillRefreshState>,
-    fork_lock: tauri::State<ForkMutationLock>,
 ) -> Result<AddSkillResult, String> {
-    let _guard = fork_lock.try_acquire()?;
-    let _ = &refresh_state;
-    let home = dirs::home_dir().ok_or("Could not find home directory")?;
-    let runner = RealCommandRunner::new();
-    let (fetch, lookup) = resolve_fetch_and_lookup(&app)?;
+    let timing_app = app.clone();
+    crate::timing_log::time_command_blocking(&timing_app, "add_skill", move || {
+        let fork_lock = app.state::<ForkMutationLock>();
+        let _guard = fork_lock.try_acquire()?;
+        let home = dirs::home_dir().ok_or("Could not find home directory")?;
+        let runner = RealCommandRunner::new();
+        let (fetch, lookup) = resolve_fetch_and_lookup(&app)?;
 
-    // Trial recording happens inside each `add_via_*` method (it needs the
-    // exact per-skill directories only they know), and surfaces as
-    // `AddSkillResult.warning` rather than an error - the install already
-    // succeeded by the time it runs.
-    let result = add_skill_with(&home, &request, &runner, fetch.as_ref(), lookup.as_ref());
-    skill_refresh::request_snapshot_rebuild(&app);
-    result
+        // Trial recording happens inside each `add_via_*` method (it needs the
+        // exact per-skill directories only they know), and surfaces as
+        // `AddSkillResult.warning` rather than an error - the install already
+        // succeeded by the time it runs.
+        let result = add_skill_with(&home, &request, &runner, fetch.as_ref(), lookup.as_ref());
+        skill_refresh::request_snapshot_rebuild(&app);
+        result
+    })
+    .await
 }
 
 // ============================================================================

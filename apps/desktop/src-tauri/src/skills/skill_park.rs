@@ -30,6 +30,7 @@ use super::skill_lifecycle::{
 };
 use super::skill_refresh::{self, SkillRefreshState};
 use super::SourceKind;
+use tauri::Manager;
 
 /// `~/.agents/skills-parked`.
 fn skills_parked_root(home: &Path) -> PathBuf {
@@ -460,85 +461,98 @@ fn park_target_skill(
 }
 
 #[tauri::command]
-pub fn park_skill(
+pub async fn park_skill(
     target: LifecycleTarget,
     app: tauri::AppHandle,
-    refresh_state: tauri::State<SkillRefreshState>,
-    fork_lock: tauri::State<ForkMutationLock>,
 ) -> Result<ParkedRecord, String> {
-    let _guard = fork_lock.try_acquire()?;
-    let home = dirs::home_dir().ok_or("Could not find home directory")?;
+    let timing_app = app.clone();
+    crate::timing_log::time_command_blocking(&timing_app, "park_skill", move || {
+        let refresh_state = app.state::<SkillRefreshState>();
+        let fork_lock = app.state::<ForkMutationLock>();
+        let _guard = fork_lock.try_acquire()?;
+        let home = dirs::home_dir().ok_or("Could not find home directory")?;
 
-    let snapshot = super::skill_lifecycle::resolve_fresh_lifecycle_target(
-        &app,
-        &refresh_state,
-        &target,
-        "Park",
-    )?
-    .snapshot;
-    let (name, source_kind) = park_target_skill(&snapshot, &target, "Park")?;
+        let snapshot = super::skill_lifecycle::resolve_fresh_lifecycle_target(
+            &app,
+            &refresh_state,
+            &target,
+            "Park",
+        )?
+        .snapshot;
+        let (name, source_kind) = park_target_skill(&snapshot, &target, "Park")?;
 
-    let result = park_skill_with(&home, &name, source_kind, Utc::now());
-    if let Ok(record) = &result {
-        let parked_at = record.parked_at.clone();
-        if let Err(e) = skill_refresh::patch_snapshot_and_emit(&app, &refresh_state, |snapshot| {
-            let Some(skill) = snapshot.skills.iter_mut().find(|s| s.name == name) else {
-                return;
-            };
-            skill.parked = true;
-            skill.parked_at = Some(parked_at);
-        }) {
-            eprintln!("[park_skill] snapshot patch failed: {e}");
+        let result = park_skill_with(&home, &name, source_kind, Utc::now());
+        if let Ok(record) = &result {
+            let parked_at = record.parked_at.clone();
+            if let Err(e) =
+                skill_refresh::patch_snapshot_and_emit(&app, &refresh_state, |snapshot| {
+                    let Some(skill) = snapshot.skills.iter_mut().find(|s| s.name == name) else {
+                        return;
+                    };
+                    skill.parked = true;
+                    skill.parked_at = Some(parked_at);
+                })
+            {
+                eprintln!("[park_skill] snapshot patch failed: {e}");
+            }
         }
-    }
-    result
+        result
+    })
+    .await
 }
 
 #[tauri::command]
-pub fn unpark_skill(
+pub async fn unpark_skill(
     target: LifecycleTarget,
     app: tauri::AppHandle,
-    refresh_state: tauri::State<SkillRefreshState>,
-    fork_lock: tauri::State<ForkMutationLock>,
 ) -> Result<UnparkOutcome, String> {
-    let _guard = fork_lock.try_acquire()?;
-    let home = dirs::home_dir().ok_or("Could not find home directory")?;
-    let snapshot = super::skill_lifecycle::rebuild_fresh_lifecycle_snapshot(&app, &refresh_state)?;
-    let (name, _) = park_target_skill(&snapshot, &target, "Unpark")?;
-    let deployment_id = target.deployment_id.as_deref().expect("validated above");
-    let deployment = find_deployment(&snapshot, deployment_id)?.1;
-    let registry = read_fork_registry(&home)?;
-    let record = registry
-        .parked
-        .get(&name)
-        .ok_or_else(|| format!("\"{name}\" is not parked"))?;
-    let expected = if record.skill_dir.as_os_str().is_empty() {
-        skills_parked_root(&home).join(&name)
-    } else {
-        record.skill_dir.clone()
-    };
-    if (!record.deployment_id.is_empty() && record.deployment_id != deployment_id)
-        || Path::new(&deployment.path) != expected
-    {
-        return Err(
-            "The parked record does not belong to the selected Global Universal deployment"
-                .to_string(),
-        );
-    }
-
-    let result = unpark_skill_with(&home, &name, Utc::now());
-    if result.is_ok() {
-        if let Err(e) = skill_refresh::patch_snapshot_and_emit(&app, &refresh_state, |snapshot| {
-            let Some(skill) = snapshot.skills.iter_mut().find(|s| s.name == name) else {
-                return;
-            };
-            skill.parked = false;
-            skill.parked_at = None;
-        }) {
-            eprintln!("[unpark_skill] snapshot patch failed: {e}");
+    let timing_app = app.clone();
+    crate::timing_log::time_command_blocking(&timing_app, "unpark_skill", move || {
+        let refresh_state = app.state::<SkillRefreshState>();
+        let fork_lock = app.state::<ForkMutationLock>();
+        let _guard = fork_lock.try_acquire()?;
+        let home = dirs::home_dir().ok_or("Could not find home directory")?;
+        let snapshot =
+            super::skill_lifecycle::rebuild_fresh_lifecycle_snapshot(&app, &refresh_state)?;
+        let (name, _) = park_target_skill(&snapshot, &target, "Unpark")?;
+        let deployment_id = target.deployment_id.as_deref().expect("validated above");
+        let deployment = find_deployment(&snapshot, deployment_id)?.1;
+        let registry = read_fork_registry(&home)?;
+        let record = registry
+            .parked
+            .get(&name)
+            .ok_or_else(|| format!("\"{name}\" is not parked"))?;
+        let expected = if record.skill_dir.as_os_str().is_empty() {
+            skills_parked_root(&home).join(&name)
+        } else {
+            record.skill_dir.clone()
+        };
+        if (!record.deployment_id.is_empty() && record.deployment_id != deployment_id)
+            || Path::new(&deployment.path) != expected
+        {
+            return Err(
+                "The parked record does not belong to the selected Global Universal deployment"
+                    .to_string(),
+            );
         }
-    }
-    result
+
+        let result = unpark_skill_with(&home, &name, Utc::now());
+        if result.is_ok() {
+            if let Err(e) =
+                skill_refresh::patch_snapshot_and_emit(&app, &refresh_state, |snapshot| {
+                    let Some(skill) = snapshot.skills.iter_mut().find(|s| s.name == name) else {
+                        return;
+                    };
+                    skill.parked = false;
+                    skill.parked_at = None;
+                })
+            {
+                eprintln!("[unpark_skill] snapshot patch failed: {e}");
+            }
+        }
+        result
+    })
+    .await
 }
 
 #[cfg(test)]
