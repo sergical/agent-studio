@@ -12,7 +12,7 @@
 use super::skill_document_operation::{check_document_cancellation, DocumentOperation};
 use skill_studio_core::skill_service::{CancellationToken, ScopedSkillService};
 use std::path::{Path, PathBuf};
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 use tauri::Manager;
 
 use super::agents::AgentId;
@@ -22,8 +22,13 @@ use super::skill_dto::{Deployment, LifecycleTarget, SkillEventDto};
 use super::skill_fork::ForkMutationLock;
 use super::skill_materialize;
 use super::skill_refresh::{self, SkillRefreshState, SkillSnapshot};
+use skill_studio_core::skill_history::{
+    read_history_page, read_history_summaries, HistoryQuery, HistoryScope, HistorySummary,
+};
 
-pub struct EventStoreState(pub Mutex<Option<EventStore>>);
+pub struct EventStoreState(pub Arc<Mutex<Option<EventStore>>>);
+
+static HISTORY_READ_SLOTS: tokio::sync::Semaphore = tokio::sync::Semaphore::const_new(2);
 
 fn locked_store(
     state: &EventStoreState,
@@ -113,26 +118,58 @@ fn restore_legacy_event(
     store.restore(&row.id, force).map(|_| ())
 }
 
-fn dto_from_row(store: &EventStore, home: &Path, row: EventRow) -> SkillEventDto {
-    let copy_visibility = (row.kind == "move_copy_deployment")
-        .then(|| {
-            row.payload
-                .pointer("/transition/after/disabled")
-                .and_then(serde_json::Value::as_bool)
-        })
-        .flatten();
+fn history_detail(store: &EventStore, event_id: &str) -> Option<EventRow> {
+    read_history_page(
+        &store.conn,
+        &HistoryQuery {
+            event_id: Some(event_id.to_string()),
+            limit: 1,
+            before_rowid: None,
+            skill: None,
+            scope: HistoryScope::All,
+        },
+    )
+    .ok()
+    .and_then(|mut page| page.events.pop())
+}
+
+fn dto_from_summary(store: &EventStore, home: &Path, row: HistorySummary) -> SkillEventDto {
+    let needs_detail = matches!(
+        row.kind.as_str(),
+        "move_copy_deployment"
+            | "move_aside_disable"
+            | "move_aside_restore"
+            | "restore"
+            | "explode_shared_dir"
+    );
+    let detail = if needs_detail {
+        history_detail(store, &row.id)
+    } else {
+        None
+    };
+    let copy_visibility = if row.kind == "move_copy_deployment" {
+        row.copy_visibility_disabled
+    } else {
+        None
+    };
     let restorable = (row.restorable
-        && row.inverse.is_some()
+        && row.has_inverse
         && row.reverted_by.is_none()
         && matches!(row.status.as_str(), "done" | "failed" | "interrupted"))
         || (row.kind == "move_copy_deployment"
             && row.status == "done"
             && row.reverted_by.is_none()
-            && skill_studio_core::skill_copy_move_intent::CopyMoveIntent::from_event(&row).is_ok())
+            && detail.as_ref().is_some_and(|event| {
+                skill_studio_core::skill_copy_move_intent::CopyMoveIntent::from_event(event).is_ok()
+            }))
         || (super::skill_copy_repair::is_copy_event(&row.kind)
             && row.status == "done"
             && row.reverted_by.is_none());
-    let restorable = restorable && legacy_copy_move_guard(store, home, &row).is_ok();
+    let restorable = restorable
+        && (!needs_detail || detail.is_some())
+        && detail
+            .as_ref()
+            .is_none_or(|event| legacy_copy_move_guard(store, home, event).is_ok());
     let recovery_action = (row.kind == skill_studio_core::skill_copy_trial_expiry::EVENT_KIND
         && row.status == "done"
         && row.reverted_by.is_none())
@@ -146,7 +183,9 @@ fn dto_from_row(store: &EventStore, home: &Path, row: EventRow) -> SkillEventDto
         && row.kind != "move_copy_deployment"
         && row.kind != "make_independent_copy"
         && (row.kind != "explode_shared_dir"
-            || skill_materialize::restore_guard_for_explode(store, &row, home).is_ok());
+            || detail.as_ref().is_some_and(|event| {
+                skill_materialize::restore_guard_for_explode(store, event, home).is_ok()
+            }));
     SkillEventDto {
         id: row.id,
         ts: row.ts,
@@ -182,19 +221,67 @@ fn dto_from_row(store: &EventStore, home: &Path, row: EventRow) -> SkillEventDto
 
 /// Lists events newest-first, for the Activity view's History section.
 #[tauri::command]
-pub fn list_skill_events(
+pub async fn list_skill_events(
     limit: Option<usize>,
     skill: Option<String>,
-    event_store: tauri::State<EventStoreState>,
+    event_store: tauri::State<'_, EventStoreState>,
 ) -> Result<Vec<SkillEventDto>, String> {
-    let guard = locked_store(&event_store)?;
-    let store = guard.as_ref().ok_or("Event store is unavailable")?;
     let home = dirs::home_dir().ok_or("Could not find home directory")?;
-    let rows = store.list(limit.unwrap_or(200), skill.as_deref())?;
-    Ok(rows
-        .into_iter()
-        .map(|row| dto_from_row(store, &home, row))
-        .collect())
+    load_history_on_worker(
+        Arc::clone(&event_store.0),
+        home,
+        limit.unwrap_or(200),
+        skill,
+    )
+    .await
+}
+
+async fn load_history_on_worker(
+    state: Arc<Mutex<Option<EventStore>>>,
+    home: PathBuf,
+    limit: usize,
+    skill: Option<String>,
+) -> Result<Vec<SkillEventDto>, String> {
+    let permit = HISTORY_READ_SLOTS
+        .try_acquire()
+        .map_err(|_| "history_busy".to_string())?;
+    tauri::async_runtime::spawn_blocking(move || {
+        let _permit = permit;
+        let state = EventStoreState(state);
+        let guard = locked_store(&state)?;
+        let store = guard.as_ref().ok_or("Event store is unavailable")?;
+        let rows = read_history_summaries(&store.conn, limit, skill.as_deref())
+            .map_err(|error| error.to_string())?;
+        Ok(rows
+            .into_iter()
+            .map(|row| dto_from_summary(store, &home, row))
+            .collect())
+    })
+    .await
+    .map_err(|_| "history_worker_failed".to_string())?
+}
+
+#[cfg(test)]
+fn dto_from_row(store: &EventStore, home: &Path, row: EventRow) -> SkillEventDto {
+    let summary = HistorySummary {
+        has_inverse: row.inverse.is_some(),
+        copy_visibility_disabled: row
+            .payload
+            .pointer("/transition/after/disabled")
+            .and_then(serde_json::Value::as_bool),
+        id: row.id,
+        ts: row.ts,
+        kind: row.kind,
+        skill: row.skill,
+        harness: row.harness,
+        scope: row.scope,
+        project_path: row.project_path,
+        status: row.status,
+        reverted_by: row.reverted_by,
+        backup_dir: row.backup_dir,
+        restorable: row.restorable,
+    };
+    dto_from_summary(store, home, summary)
 }
 
 /// Checks for unfinished recovery events without loading the Activity history.
@@ -924,6 +1011,79 @@ mod tests {
     use std::os::unix::fs::symlink;
 
     #[test]
+    fn history_refuses_reversal_when_required_legacy_detail_exceeds_its_bound() {
+        let temp = tempfile::tempdir().unwrap();
+        let store = EventStore::open(&temp.path().join("app-data")).unwrap();
+        store.conn.execute(
+            "INSERT INTO events(id,ts,kind,skill,payload,inverse,status,restorable) VALUES('oversized','now','restore','sample',?1,'{}','done',1)",
+            [serde_json::json!({"body": "x".repeat(skill_studio_core::skill_history::MAX_HISTORY_RECORD_BYTES)}).to_string()],
+        ).unwrap();
+        let row = read_history_summaries(&store.conn, 1, None)
+            .unwrap()
+            .pop()
+            .unwrap();
+        let dto = dto_from_summary(&store, temp.path(), row);
+        assert!(!dto.restorable);
+        assert!(!dto.force_restorable);
+    }
+
+    #[test]
+    fn history_workers_refuse_excess_reads_until_database_work_finishes() {
+        use std::future::Future;
+        use std::task::{Context, Poll, Waker};
+        use std::time::Duration;
+
+        let temp = tempfile::tempdir().unwrap();
+        let store = EventStore::open(&temp.path().join("app-data")).unwrap();
+        let state = Arc::new(Mutex::new(Some(store)));
+        let guard = state.lock().unwrap();
+        let mut context = Context::from_waker(Waker::noop());
+        let mut first = Box::pin(load_history_on_worker(
+            Arc::clone(&state),
+            temp.path().to_owned(),
+            200,
+            None,
+        ));
+        let mut second = Box::pin(load_history_on_worker(
+            Arc::clone(&state),
+            temp.path().to_owned(),
+            200,
+            None,
+        ));
+        assert!(first.as_mut().poll(&mut context).is_pending());
+        assert!(second.as_mut().poll(&mut context).is_pending());
+        let mut excess = Box::pin(load_history_on_worker(
+            Arc::clone(&state),
+            temp.path().to_owned(),
+            200,
+            None,
+        ));
+        assert!(matches!(
+            excess.as_mut().poll(&mut context),
+            Poll::Ready(Err(code)) if code == "history_busy"
+        ));
+        drop(first);
+        drop(second);
+        drop(guard);
+
+        tauri::async_runtime::block_on(async {
+            tokio::time::timeout(Duration::from_secs(5), async {
+                while HISTORY_READ_SLOTS.available_permits() != 2 {
+                    tokio::task::yield_now().await;
+                }
+            })
+            .await
+            .unwrap();
+            assert!(
+                load_history_on_worker(state, temp.path().to_owned(), 200, None)
+                    .await
+                    .unwrap()
+                    .is_empty()
+            );
+        });
+    }
+
+    #[test]
     fn legacy_copy_move_history_refuses_both_endpoints_and_force_without_effects() {
         for kind in ["move_aside_disable", "move_aside_restore", "restore"] {
             for owns_source in [true, false] {
@@ -1077,6 +1237,13 @@ mod tests {
         assert!(claimed.reversal_label.is_none());
         let mut invalid = row;
         invalid.payload["transition"]["after"]["path"] = serde_json::json!("/unrelated");
+        store
+            .conn
+            .execute(
+                "UPDATE events SET payload = ?1 WHERE id = ?2",
+                rusqlite::params![invalid.payload.to_string(), invalid.id],
+            )
+            .unwrap();
         let invalid = dto_from_row(&store, temp.path(), invalid);
         assert!(!invalid.restorable);
         assert!(!invalid.force_restorable);

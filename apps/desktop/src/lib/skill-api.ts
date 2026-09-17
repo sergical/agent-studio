@@ -1,5 +1,6 @@
 import { runDocumentOperation } from "./skill-document-operation";
 import { errorMessage } from "./error-message";
+import { SkillHistoryReader } from "./skill-history-reader";
 // ============================================================================
 // Skill Studio - skill-api
 // Tauri IPC communication for skills.sh integration
@@ -431,10 +432,14 @@ export async function restoreExpiredTrialBackup(
   eventId: string,
   onStarted?: (operationId: string) => void,
 ): Promise<void> {
-  return runDocumentOperation(
-    { command: "restore_expired_trial_backup", args: { eventId } },
-    onStarted,
-  );
+  try {
+    await runDocumentOperation(
+      { command: "restore_expired_trial_backup", args: { eventId } },
+      onStarted,
+    );
+  } finally {
+    historyReader.invalidate();
+  }
 }
 
 /**
@@ -598,8 +603,16 @@ export async function setSkillInvocation(
  * Lists events newest-first, for the Activity view's History section.
  * Defaults to the last 200 events across every skill.
  */
-export async function listSkillEvents(limit?: number, skill?: string): Promise<SkillEvent[]> {
-  return invoke("list_skill_events", { limit, skill });
+const historyReader = new SkillHistoryReader((limit, skill) =>
+  invoke<SkillEvent[]>("list_skill_events", { limit, skill }),
+);
+
+export function listSkillEvents(limit?: number, skill?: string): Promise<SkillEvent[]> {
+  return historyReader.read(limit, skill);
+}
+
+export function invalidateSkillEventReads(): void {
+  historyReader.invalidate();
 }
 
 /** Whether an unfinished event requires review in Activity. */
@@ -617,10 +630,14 @@ export async function restoreSkillEvent(
   force: boolean,
   onStarted?: (operationId: string) => void,
 ): Promise<void> {
-  return runDocumentOperation(
-    { command: "restore_skill_event", args: { eventId, force } },
-    onStarted,
-  );
+  try {
+    await runDocumentOperation(
+      { command: "restore_skill_event", args: { eventId, force } },
+      onStarted,
+    );
+  } finally {
+    historyReader.invalidate();
+  }
 }
 
 /**

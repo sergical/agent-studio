@@ -165,7 +165,7 @@ export function SkillActivityView({ snapshot, onSelectSkill }: SkillActivityView
         </>
       )}
 
-      <SkillHistorySection scannedAt={snapshot?.scanned_at} />
+      <SkillHistorySection snapshotRevision={snapshot?.revision} />
     </PageShell>
   );
 }

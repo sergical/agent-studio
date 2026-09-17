@@ -4,7 +4,7 @@
 // force-restore, and "Reveal in Finder" for backed-up events.
 // ============================================================================
 
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { useDocumentCancellation } from "../../hooks/useDocumentCancellation";
 import { errorMessage } from "../../lib/error-message";
 import { ask } from "@tauri-apps/plugin-dialog";
@@ -20,6 +20,7 @@ import {
 import { formatRelativeTime } from "@skill-studio/lib";
 import type { SkillEvent } from "@skill-studio/lib";
 import {
+  invalidateSkillEventReads,
   listSkillEvents,
   openSkillPath,
   restoreExpiredTrialBackup,
@@ -30,6 +31,7 @@ import { HARNESS_LABELS } from "../../lib/harness-labels";
 import { canRestoreSkillEvent, shouldOfferForceRestore } from "./skill-history-restore-policy";
 
 const HARNESS_LABEL_BY_ID = new Map<string, string>(HARNESS_LABELS);
+const HISTORY_PAGE_SIZE = 20;
 
 /** Icon per event kind - see the Materialize section of spec-event-store.md for what each kind does. */
 function iconForKind(kind: string, className: string) {
@@ -122,6 +124,14 @@ function restoreDescription(event: SkillEvent): string {
   }
 }
 
+function scopeLabel(event: SkillEvent): string {
+  if (event.scope === "global") return "Global";
+  if (event.scope === "project") {
+    return event.project_path ? `Project · ${event.project_path}` : "Project · path not recorded";
+  }
+  return "Scope not recorded";
+}
+
 function EventRow({ event, onRestored }: { event: SkillEvent; onRestored: () => void }) {
   const addToast = useAppStore((state) => state.addToast);
   const [isRestoring, setIsRestoring] = useState(false);
@@ -207,7 +217,7 @@ function EventRow({ event, onRestored }: { event: SkillEvent; onRestored: () => 
   const handleRestoreClick = async () => {
     const detail = restoresTrialBackup
       ? "The trial, Copy ownership, and original reader links remain removed. The backup is kept."
-      : undefined;
+      : scopeLabel(event);
     const confirmed = await ask(`${restoreDescription(event)}?${detail ? `\n\n${detail}` : ""}`, {
       title: restoreLabel,
       kind: "info",
@@ -223,9 +233,14 @@ function EventRow({ event, onRestored }: { event: SkillEvent; onRestored: () => 
       }`}
     >
       {icon}
-      <span className="min-w-0 flex-1 truncate text-body text-text-primary" title={event.skill}>
-        {event.skill || (event.harness ?? kindLabel(event.kind))}
-      </span>
+      <div className="min-w-0 flex-1">
+        <div className="truncate text-body text-text-primary" title={event.skill}>
+          {event.skill || (event.harness ?? kindLabel(event.kind))}
+        </div>
+        <div className="truncate text-small text-text-tertiary" title={scopeLabel(event)}>
+          {scopeLabel(event)}
+        </div>
+      </div>
       <span className="text-small text-text-tertiary">
         {event.history_label ?? kindLabel(event.kind)}
       </span>
@@ -279,55 +294,99 @@ function EventRow({ event, onRestored }: { event: SkillEvent; onRestored: () => 
  * The Activity view's History section: every event store row, newest first.
  * Backend mutations emit a fresh snapshot after their event reaches its final state.
  */
-export function SkillHistorySection({ scannedAt }: { scannedAt: string | undefined }) {
-  const [events, setEvents] = useState<SkillEvent[] | null>(null);
-  const addToast = useAppStore((state) => state.addToast);
+type HistoryState =
+  | { kind: "loading" }
+  | { kind: "failed" }
+  | { kind: "ready"; events: SkillEvent[]; refreshFailed: boolean };
+
+export function SkillHistorySection({ snapshotRevision }: { snapshotRevision?: number }) {
+  const [history, setHistory] = useState<HistoryState>({ kind: "loading" });
+  const [requestedPage, setRequestedPage] = useState(0);
+  const request = useRef(0);
+  const mounted = useRef(false);
+  const refresh = useCallback(() => {
+    if (!mounted.current) return;
+    const current = ++request.current;
+    setHistory((previous) => (previous.kind === "failed" ? { kind: "loading" } : previous));
+    listSkillEvents()
+      .then((events) => {
+        if (mounted.current && current === request.current) {
+          setHistory({ kind: "ready", events, refreshFailed: false });
+        }
+      })
+      .catch(() => {
+        if (!mounted.current || current !== request.current) return;
+        setHistory((previous) =>
+          previous.kind === "ready" ? { ...previous, refreshFailed: true } : { kind: "failed" },
+        );
+      });
+  }, []);
 
   useEffect(() => {
-    let cancelled = false;
-    listSkillEvents()
-      .then((rows) => {
-        if (!cancelled) setEvents(rows);
-      })
-      .catch((err) => {
-        if (cancelled) return;
-        setEvents([]);
-        addToast({
-          type: "error",
-          title: "Couldn't load history",
-          message: err instanceof Error ? err.message : "Unknown error",
-        });
-      });
+    mounted.current = true;
+    invalidateSkillEventReads();
+    refresh();
     return () => {
-      cancelled = true;
+      mounted.current = false;
     };
     // oxlint-disable-next-line react/exhaustive-effect-dependencies -- Completion snapshots invalidate independently stored event rows.
-  }, [scannedAt, addToast]);
+  }, [refresh, snapshotRevision]);
 
-  const refresh = () => {
-    listSkillEvents()
-      .then(setEvents)
-      .catch(() => {
-        // A refetch failure after a successful restore isn't worth a second
-        // toast - the row stays as it was until the next successful load.
-      });
-  };
+  const events = history.kind === "ready" ? history.events : [];
+  const pageCount = Math.ceil(events.length / HISTORY_PAGE_SIZE);
+  const page = Math.min(requestedPage, Math.max(0, pageCount - 1));
+  const pageStart = page * HISTORY_PAGE_SIZE;
 
   return (
     <div className="flex flex-col gap-3">
       <span className="text-caption font-medium tracking-[0.08em] text-text-tertiary uppercase">
         History
       </span>
-      {events === null ? (
+      {history.kind === "loading" ? (
         <p className="text-wrap-pretty text-body text-text-tertiary">Loading…</p>
+      ) : history.kind === "failed" ? (
+        <button
+          type="button"
+          onClick={refresh}
+          className="text-left text-body text-text-tertiary underline"
+        >
+          History could not load. Retry
+        </button>
       ) : events.length === 0 ? (
         <p className="text-wrap-pretty text-body text-text-tertiary">No events recorded yet.</p>
       ) : (
         <div className="flex flex-col">
-          {events.map((event) => (
+          {events.slice(pageStart, pageStart + HISTORY_PAGE_SIZE).map((event) => (
             <EventRow key={event.id} event={event} onRestored={refresh} />
           ))}
         </div>
+      )}
+      {history.kind === "ready" && history.refreshFailed && (
+        <button
+          type="button"
+          onClick={refresh}
+          className="text-left text-small text-text-tertiary underline"
+        >
+          History could not refresh. Retry
+        </button>
+      )}
+      {pageCount > 1 && (
+        <nav aria-label="History pages" className="flex items-center justify-between gap-3">
+          <button type="button" disabled={page === 0} onClick={() => setRequestedPage(page - 1)}>
+            Newer events
+          </button>
+          <span className="text-small text-text-tertiary">
+            {pageStart + 1}–{Math.min(pageStart + HISTORY_PAGE_SIZE, events.length)} of{" "}
+            {events.length} events
+          </span>
+          <button
+            type="button"
+            disabled={page === pageCount - 1}
+            onClick={() => setRequestedPage(page + 1)}
+          >
+            Older events
+          </button>
+        </nav>
       )}
     </div>
   );

@@ -67,7 +67,7 @@ pub fn run() {
 
             let event_store = open_event_store(app);
             app.manage(skills::event_commands::EventStoreState(
-                std::sync::Mutex::new(event_store),
+                std::sync::Arc::new(std::sync::Mutex::new(event_store)),
             ));
             skills::skill_update_check::spawn_update_check_loop(app.handle().clone());
             skills::skill_trial::spawn_trial_expiry_loop(app.handle().clone());
