@@ -1691,10 +1691,10 @@ pub fn set_codex_skill_disabled(
     ctx.checkpoint()?;
     let fs = rt.ports.fs.as_ref();
     let guard = acquire_exclusive(rt.ports.leases.as_ref(), &rt.scope)?;
-    let codex_home = rt.scope.codex_home.clone();
-    let mut doc = read_codex_config_document(fs, &codex_home)?;
+    let codex_home = &rt.scope.codex_home;
+    let mut doc = read_codex_config_document(fs, codex_home)?;
     codex_write_disabled_row(&mut doc, skill_md_path, disabled);
-    codex_write_config_document(rt, fs, &guard, &codex_home, &doc)
+    codex_write_config_document(rt, fs, &guard, codex_home, &doc)
 }
 
 /// The in-memory half of [`set_codex_skill_disabled`], split out so
@@ -1787,8 +1787,8 @@ pub fn park_codex_skill_path(
 ) -> Result<(), CoreError> {
     ctx.checkpoint()?;
     let fs = rt.ports.fs.as_ref();
-    let codex_home = rt.scope.codex_home.clone();
-    let mut doc = read_codex_config_document(fs, &codex_home)?;
+    let codex_home = &rt.scope.codex_home;
+    let mut doc = read_codex_config_document(fs, codex_home)?;
     let Some(idx) = codex_find_row_index(&doc, old_skill_md) else {
         return Ok(());
     };
@@ -1798,7 +1798,7 @@ pub fn park_codex_skill_path(
     rows.get_mut(idx)
         .expect("codex_find_row_index returned a valid index")["path"] =
         toml_edit::value(new_skill_md.to_string_lossy().to_string());
-    codex_write_config_document(rt, fs, guard, &codex_home, &doc)
+    codex_write_config_document(rt, fs, guard, codex_home, &doc)
 }
 
 fn codex_write_config_document(
