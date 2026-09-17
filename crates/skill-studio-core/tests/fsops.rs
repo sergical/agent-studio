@@ -300,6 +300,50 @@ fn swap_prepares_the_quarantine_before_the_exchange_or_names_the_half_committed_
     );
 }
 
+/// Given a root with an existing directory at `final_name` and a
+/// `quarantine_dir` that is a symlink pointing outside the root, when
+/// `swap` runs, then it refuses before moving the exchanged-out old tree
+/// anywhere, rather than following the symlink and moving the old tree
+/// outside the root.
+#[test]
+fn swap_refuses_a_quarantine_dir_that_is_a_symlink_out_of_the_root_or_names_the_moved_tree() {
+    let fs = FixtureBuilder::new()
+        .dir("/root")
+        .dir("/root/gamma")
+        .file("/root/gamma/SKILL.md", b"old content")
+        .dir("/outside")
+        .alias("/root/.trash", "/outside")
+        .build_fs();
+    let root = Root::open(&fs, PathBuf::from("/root")).expect("open root");
+
+    let staged = fsops::stage(
+        &root,
+        &[(PathBuf::from("SKILL.md"), b"new content".to_vec())],
+    )
+    .expect("stage");
+    let staged_path = staged.path().to_path_buf();
+
+    let err = fsops::swap(&root, Path::new("gamma"), staged, Path::new(".trash"))
+        .expect_err("swap must refuse a quarantine dir that is a symlink out of the root");
+    assert!(
+        matches!(err, fsops::FsOpsError::ReplacedBySymlink { .. }),
+        "expected ReplacedBySymlink, got {err}"
+    );
+
+    assert!(
+        fs.read_dir(Path::new("/outside"))
+            .expect("read /outside")
+            .is_empty(),
+        "the exchanged-out old tree must not have been moved outside the root"
+    );
+    assert_eq!(
+        fs.read_capped(&staged_path.join("SKILL.md"), u64::MAX)
+            .expect("the staged folder must still sit at its own path"),
+        b"new content",
+        "swap must not have exchanged before refusing the quarantine dir"
+    );
+}
+
 /// Given a caller that read a file's stamp, then the file changes
 /// underneath it before the caller's `write_file` call, when `write_file`
 /// runs with the stale stamp, then it refuses with `StaleRead` naming the

@@ -339,7 +339,10 @@ pub fn stage(root: &Root, contents: &[(PathBuf, Vec<u8>)]) -> Result<Staged, FsO
 /// Refuses with [`FsOpsError::ReplacedBySymlink`], touching nothing, when
 /// `final_name` exists but is not a directory - the shape a directory
 /// replaced by a symlink between an earlier [`stage`] and this call would
-/// take.
+/// take - and the same error, naming `quarantine_dir`'s resolved path, when
+/// that already exists but is not a directory either (for example a
+/// symlink pointing outside the root, which [`Root::confine`] would not
+/// otherwise catch: it does not follow a name's own leaf).
 pub fn swap(
     root: &Root,
     final_name: &Path,
@@ -362,10 +365,18 @@ pub fn swap(
             // committed yet, rather than after the old folder has already
             // been swapped out.
             let quarantine_root = root.confine(quarantine_dir)?;
-            if root.fs.symlink_metadata(&quarantine_root).is_err() {
-                root.fs
-                    .fsops_create_dir(&quarantine_root)
-                    .fs_err(&quarantine_root)?;
+            match root.fs.symlink_metadata(&quarantine_root) {
+                Ok(existing) if existing.kind != FileKind::Dir => {
+                    return Err(FsOpsError::ReplacedBySymlink {
+                        path: quarantine_root,
+                    });
+                }
+                Ok(_) => {}
+                Err(_) => {
+                    root.fs
+                        .fsops_create_dir(&quarantine_root)
+                        .fs_err(&quarantine_root)?;
+                }
             }
             let leaf = final_path
                 .file_name()
