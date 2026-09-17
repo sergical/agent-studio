@@ -159,9 +159,18 @@ impl<'a> Root<'a> {
     }
 
     /// Proves `name` (a path relative to the root) stays inside it and
-    /// returns the joined path. Refuses an absolute `name`, a `..`
-    /// segment, and a symlink among `name`'s existing ancestors that
-    /// resolves outside the root - all before any byte is written.
+    /// returns the resolved path. Refuses an absolute `name`, a `..`
+    /// segment, and a symlink anywhere along `name`'s existing ancestor
+    /// chain that resolves outside the root - all before any byte is
+    /// written.
+    ///
+    /// Each ancestor component is followed hop by hop (a symlink may point
+    /// at another symlink) until it is not a symlink, re-checking after
+    /// every hop that the path stays inside the root; a chain longer than
+    /// [`MAX_SYMLINK_HOPS`] is refused rather than looped forever. The
+    /// returned path is built from those resolved ancestors, not `name`
+    /// joined lexically, so every primitive built on `confine` actually
+    /// touches the directories it just validated.
     ///
     /// The leaf itself is not required to exist: [`stage`], [`link`], and
     /// [`write_file`] all confine a name that is about to be created. When
@@ -188,26 +197,42 @@ impl<'a> Root<'a> {
             if i + 1 == components.len() {
                 break;
             }
-            if let Ok(facts) = self.fs.symlink_metadata(&resolved) {
-                if facts.kind == FileKind::Symlink {
-                    let target = self.fs.read_link(&resolved).fs_err(&resolved)?;
-                    let parent = resolved
-                        .parent()
-                        .unwrap_or(resolved.as_path())
-                        .to_path_buf();
-                    resolved = join_lexical(&parent, &target);
-                    if resolved != self.path && !resolved.starts_with(&self.path) {
-                        return Err(FsOpsError::escapes(
-                            name,
-                            "a symlink resolves outside the root",
-                        ));
-                    }
+            let mut hops = 0;
+            loop {
+                let Ok(facts) = self.fs.symlink_metadata(&resolved) else {
+                    break;
+                };
+                if facts.kind != FileKind::Symlink {
+                    break;
+                }
+                hops += 1;
+                if hops > MAX_SYMLINK_HOPS {
+                    return Err(FsOpsError::escapes(
+                        name,
+                        "too many symlink hops resolving an ancestor",
+                    ));
+                }
+                let target = self.fs.read_link(&resolved).fs_err(&resolved)?;
+                let parent = resolved
+                    .parent()
+                    .unwrap_or(resolved.as_path())
+                    .to_path_buf();
+                resolved = join_lexical(&parent, &target);
+                if resolved != self.path && !resolved.starts_with(&self.path) {
+                    return Err(FsOpsError::escapes(
+                        name,
+                        "a symlink resolves outside the root",
+                    ));
                 }
             }
         }
-        Ok(self.path.join(name))
+        Ok(resolved)
     }
 }
+
+/// Cap on the symlink hops [`Root::confine`] follows while resolving one
+/// ancestor component, so a symlink cycle fails fast instead of looping.
+const MAX_SYMLINK_HOPS: usize = 40;
 
 /// Fsyncs `dir`, then its parent, then on up through the root (inclusive) -
 /// the durability order a structural change (a create, a rename, or a

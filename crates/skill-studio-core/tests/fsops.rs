@@ -222,6 +222,37 @@ fn root_confinement_refuses_a_name_that_escapes_the_root_and_writes_no_bytes_or_
     );
 }
 
+/// Given a root with a two-hop ancestor symlink chain - `inner` (inside the
+/// root) points at `mid`, and `mid` points outside the root - when a name
+/// under `inner` is confined, then the escape is refused by the second hop,
+/// not silently accepted after only the first is checked; a chain whose
+/// every hop stays inside the root is accepted instead.
+#[test]
+fn confine_rejects_a_two_hop_symlink_chain_that_leaves_the_root_or_names_the_accepted_escape() {
+    let fs = FixtureBuilder::new()
+        .dir("/root")
+        .dir("/outside")
+        .dir("/root/mid_ok")
+        .alias("/root/inner", "/root/mid")
+        .alias("/root/mid", "/outside")
+        .alias("/root/inner_ok", "/root/mid_ok")
+        .build_fs();
+    let root = Root::open(&fs, PathBuf::from("/root")).expect("open root");
+
+    let err = root
+        .confine(Path::new("inner/file.txt"))
+        .expect_err("a chain that leaves the root on its second hop must be refused");
+    assert!(
+        matches!(err, fsops::FsOpsError::Escapes { .. }),
+        "expected Escapes, got {err}"
+    );
+
+    let resolved = root
+        .confine(Path::new("inner_ok/file.txt"))
+        .expect("a chain whose every hop stays inside the root must be accepted");
+    assert_eq!(resolved, PathBuf::from("/root/mid_ok/file.txt"));
+}
+
 /// Given a caller that read a file's stamp, then the file changes
 /// underneath it before the caller's `write_file` call, when `write_file`
 /// runs with the stale stamp, then it refuses with `StaleRead` naming the
