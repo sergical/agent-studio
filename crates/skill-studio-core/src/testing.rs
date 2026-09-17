@@ -345,41 +345,11 @@ impl FixtureState {
                 true
             }
         });
-        let mut files = BTreeMap::new();
-        for path in self
-            .files
-            .keys()
-            .filter(|p| in_subtree(p, root))
-            .cloned()
-            .collect::<Vec<_>>()
-        {
-            files.insert(path.clone(), self.files.remove(&path).unwrap());
-        }
-        let mut aliases = BTreeMap::new();
-        for path in self
-            .aliases
-            .keys()
-            .filter(|p| in_subtree(p, root))
-            .cloned()
-            .collect::<Vec<_>>()
-        {
-            aliases.insert(path.clone(), self.aliases.remove(&path).unwrap());
-        }
-        let mut identities = BTreeMap::new();
-        for path in self
-            .identities
-            .keys()
-            .filter(|p| in_subtree(p, root))
-            .cloned()
-            .collect::<Vec<_>>()
-        {
-            identities.insert(path.clone(), self.identities.remove(&path).unwrap());
-        }
         Subtree {
             dirs,
-            files,
-            aliases,
-            identities,
+            files: extract_map(&mut self.files, root),
+            aliases: extract_map(&mut self.aliases, root),
+            identities: extract_map(&mut self.identities, root),
         }
     }
 
@@ -389,17 +359,41 @@ impl FixtureState {
         for d in subtree.dirs {
             self.dirs.push(rebase(&d, old_root, new_root));
         }
-        for (path, bytes) in subtree.files {
-            self.files.insert(rebase(&path, old_root, new_root), bytes);
-        }
-        for (path, target) in subtree.aliases {
-            self.aliases
-                .insert(rebase(&path, old_root, new_root), target);
-        }
-        for (path, id) in subtree.identities {
-            self.identities
-                .insert(rebase(&path, old_root, new_root), id);
-        }
+        insert_map(&mut self.files, subtree.files, old_root, new_root);
+        insert_map(&mut self.aliases, subtree.aliases, old_root, new_root);
+        insert_map(&mut self.identities, subtree.identities, old_root, new_root);
+    }
+}
+
+/// Removes every `(path, value)` at or under `root` from `map` and returns
+/// them, shared by [`FixtureState::extract_subtree`] across its three maps
+/// (`files`, `aliases`, `identities`) which otherwise repeat the same
+/// collect-then-remove loop.
+fn extract_map<V>(map: &mut BTreeMap<PathBuf, V>, root: &Path) -> BTreeMap<PathBuf, V> {
+    let keys: Vec<PathBuf> = map
+        .keys()
+        .filter(|p| in_subtree(p, root))
+        .cloned()
+        .collect();
+    keys.into_iter()
+        .map(|path| {
+            let value = map.remove(&path).unwrap();
+            (path, value)
+        })
+        .collect()
+}
+
+/// Inserts every `(path, value)` from `source` into `map`, rebased from
+/// `old_root` onto `new_root`; the map counterpart of the plain `Vec` loop
+/// [`FixtureState::insert_subtree`] uses for `dirs`.
+fn insert_map<V>(
+    map: &mut BTreeMap<PathBuf, V>,
+    source: BTreeMap<PathBuf, V>,
+    old_root: &Path,
+    new_root: &Path,
+) {
+    for (path, value) in source {
+        map.insert(rebase(&path, old_root, new_root), value);
     }
 }
 
