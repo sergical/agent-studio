@@ -5,8 +5,9 @@
 // one per harness that has one, plus a universal fallback for the rest:
 //   - Codex: `~/.codex/config.toml` `[[skills.config]] enabled = false`
 //     (codex_skill_config.rs).
-//   - OpenCode: `~/.config/opencode/opencode.json` `permission.skill.<name>
-//     = "deny"` (opencode_skill_permission.rs).
+//   - OpenCode: `~/.config/opencode/opencode.json` (or its `XDG_CONFIG_HOME`/
+//     `OPENCODE_CONFIG_DIR` override) `permission.skill.<name> = "deny"`,
+//     via `skill_studio_core::opencode_config`.
 //   - Claude Code: no native per-skill switch, so this removes/recreates the
 //     per-skill symlink under `~/.claude/skills/<name>` and records the fact
 //     in the registry's `harness_disabled` bucket (skill_park.rs's
@@ -30,7 +31,6 @@ use tauri::Manager;
 use super::codex_skill_config;
 use super::event_commands::EventStoreState;
 use super::event_store::{fingerprint_path, EventDraft, EventStatus, InverseOp};
-use super::opencode_skill_permission;
 use super::skill_agent_runner::validate_skill_dir_name;
 use super::skill_deployment::{BackingRelationship, SkillDestination};
 use super::skill_dto::{DisabledBy, HarnessVisibilityTarget, LifecycleTarget};
@@ -625,7 +625,27 @@ pub fn set_harness_enabled_with(
         }
         // The frontend's AgentId spells it "open-code"; the CLI name is "opencode".
         "opencode" | "open-code" => {
-            opencode_skill_permission::set_skill_denied(home, name, !enabled)
+            let config_dir = skill_studio_host::opencode_config_dir(home);
+            // Core's scope normalization canonicalizes the write's home
+            // (`config_dir`'s parent), which requires it to already exist -
+            // same bootstrapping gap `write_fork_registry` has for a
+            // never-before-seen `~/.agents`. `$XDG_CONFIG_HOME/opencode`'s
+            // default, `~/.config/opencode`, is commonly two levels deeper
+            // than `home` on a fresh install, so create the whole chain
+            // here rather than just one level.
+            fs::create_dir_all(&config_dir)
+                .map_err(|e| format!("Failed to create {}: {e}", config_dir.display()))?;
+            let real_fs = skill_studio_host::RealFs::new();
+            let leases =
+                skill_studio_host::FileLease::new(super::core_runtime::data_root().join("leases"));
+            skill_studio_core::opencode_config::set_skill_denied(
+                &leases,
+                &real_fs,
+                &config_dir,
+                name,
+                !enabled,
+            )
+            .map_err(|e| e.to_string())
         }
         "claude-code" => Err("Claude Code visibility needs an exact deployment target".to_string()),
         "pi" | "cursor" | "grok-build" => Err(format!(
@@ -956,6 +976,16 @@ mod tests {
 
     use super::super::test_support::write_skill;
 
+    /// Test-only stand-in for the old `opencode_skill_permission::read_denied_patterns(home)`:
+    /// resolves the config directory the same way `set_harness_enabled_with`
+    /// now does, so a test still reads back the file the "opencode" branch
+    /// just wrote.
+    fn read_opencode_denied_patterns(home: &Path) -> Vec<String> {
+        let fs = skill_studio_host::RealFs::new();
+        let config_dir = skill_studio_host::opencode_config_dir(home);
+        skill_studio_core::opencode_config::read_denied_patterns(&fs, &config_dir)
+    }
+
     fn native_snapshot(agent: &str, entries: &[(&str, &str, Option<&str>)]) -> SkillSnapshot {
         let deployments = entries
             .iter()
@@ -1221,12 +1251,12 @@ mod tests {
 
         set_harness_enabled_with(home, "find-bugs", "opencode", false, &[]).unwrap();
         assert_eq!(
-            opencode_skill_permission::read_denied_patterns(home),
+            read_opencode_denied_patterns(home),
             vec!["find-bugs".to_string()]
         );
 
         set_harness_enabled_with(home, "find-bugs", "opencode", true, &[]).unwrap();
-        assert!(opencode_skill_permission::read_denied_patterns(home).is_empty());
+        assert!(read_opencode_denied_patterns(home).is_empty());
     }
 
     #[test]
@@ -1265,7 +1295,7 @@ mod tests {
             error.contains("more than one OpenCode deployment"),
             "{error}"
         );
-        assert!(opencode_skill_permission::read_denied_patterns(&home).is_empty());
+        assert!(read_opencode_denied_patterns(&home).is_empty());
         assert!(home.join(".agents/skills/find-bugs/SKILL.md").is_file());
     }
 

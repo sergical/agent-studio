@@ -17,7 +17,6 @@ pub mod event_store;
 pub mod frontmatter;
 pub mod gh_cli;
 pub mod github_skill_listing;
-pub mod opencode_skill_permission;
 pub mod skill_add;
 pub mod skill_add_operation;
 pub mod skill_agent_runner;

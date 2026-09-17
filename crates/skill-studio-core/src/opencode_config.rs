@@ -65,7 +65,10 @@ pub fn opencode_jsonc_path(config_dir: &Path) -> PathBuf {
 
 /// Which OpenCode config format is present, so a caller can tell the user
 /// to hand-edit a `.jsonc` file rather than silently showing no disables.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize, schemars::JsonSchema,
+)]
+#[serde(rename_all = "kebab-case")]
 pub enum OpencodeConfigKind {
     /// `opencode.json` exists (parsed and written).
     Json,
@@ -78,7 +81,10 @@ pub enum OpencodeConfigKind {
 pub fn detect_config_kind(fs: &dyn ScopeFs, config_dir: &Path) -> Option<OpencodeConfigKind> {
     if fs.symlink_metadata(&opencode_json_path(config_dir)).is_ok() {
         Some(OpencodeConfigKind::Json)
-    } else if fs.symlink_metadata(&opencode_jsonc_path(config_dir)).is_ok() {
+    } else if fs
+        .symlink_metadata(&opencode_jsonc_path(config_dir))
+        .is_ok()
+    {
         Some(OpencodeConfigKind::Jsonc)
     } else {
         None
@@ -211,19 +217,15 @@ pub fn set_skill_denied(
         .entry("permission")
         .or_insert_with(|| Value::Object(Map::new()));
     let Value::Object(permission) = permission else {
-        return Err(
-            CoreError::new(ErrorCode::Io, "has a non-object `permission` key").at(&path)
-        );
+        return Err(CoreError::new(ErrorCode::Io, "has a non-object `permission` key").at(&path));
     };
     let skill = permission
         .entry("skill")
         .or_insert_with(|| Value::Object(Map::new()));
     let Value::Object(skill) = skill else {
-        return Err(CoreError::new(
-            ErrorCode::Io,
-            "has a non-object `permission.skill` key",
-        )
-        .at(&path));
+        return Err(
+            CoreError::new(ErrorCode::Io, "has a non-object `permission.skill` key").at(&path),
+        );
     };
 
     if denied {
@@ -243,8 +245,9 @@ pub fn set_skill_denied(
         fs.create_dir_all(&guard, &scoped_parent)
             .map_err(|e| CoreError::io(parent, e))?;
     }
-    let bytes = serde_json::to_vec_pretty(&Value::Object(root))
-        .map_err(|e| CoreError::new(ErrorCode::Io, format!("failed to serialize: {e}")).at(&path))?;
+    let bytes = serde_json::to_vec_pretty(&Value::Object(root)).map_err(|e| {
+        CoreError::new(ErrorCode::Io, format!("failed to serialize: {e}")).at(&path)
+    })?;
     let scoped = confine(&scope, fs, &path)?;
     fs.write_atomic(&guard, &scoped, &bytes)
         .map_err(|e| CoreError::io(&path, e))
@@ -344,8 +347,7 @@ const InputObject = Schema.StructWithRest(
     /// `Rule`, or `Action` no longer listing `"deny"`) would mean OpenCode
     /// v2 silently ignores the key the app writes today.
     #[test]
-    fn opencode_deny_rule_shape_matches_the_v2_source_or_names_the_shape_the_code_writes_instead()
-    {
+    fn opencode_deny_rule_shape_matches_the_v2_source_or_names_the_shape_the_code_writes_instead() {
         let source = OPENCODE_V1_CONFIG_PERMISSION_SOURCE;
         assert!(
             source.contains("skill: Schema.optional(Rule)"),
@@ -377,6 +379,8 @@ const InputObject = Schema.StructWithRest(
 
         assert_eq!(written["permission"]["skill"]["find-bugs"], "deny");
         assert!(written["permission"]["skill"]["find-bugs"].is_string());
-        assert!(written["permission"]["skill"]["find-bugs"].get("effect").is_none());
+        assert!(written["permission"]["skill"]["find-bugs"]
+            .get("effect")
+            .is_none());
     }
 }

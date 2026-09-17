@@ -45,7 +45,10 @@ fn opencode_config_write_round_trips_unrelated_keys_and_keeps_schema_or_names_th
     assert_eq!(value["$schema"], "https://opencode.ai/config.json");
     let mut denied = read_denied_patterns(&fs, config_dir);
     denied.sort();
-    assert_eq!(denied, vec!["find-bugs".to_string(), "write-tests".to_string()]);
+    assert_eq!(
+        denied,
+        vec!["find-bugs".to_string(), "write-tests".to_string()]
+    );
 }
 
 /// Flow: no `opencode.json` exists yet.

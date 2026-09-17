@@ -75,9 +75,9 @@ pub struct SkillSnapshot {
     /// Which OpenCode config format is present, if any - `None` when
     /// OpenCode isn't configured, `Some(Jsonc)` when Skill Studio can only
     /// read (not write) its per-skill disables. See
-    /// `opencode_skill_permission::detect_config_kind`.
+    /// `skill_studio_core::opencode_config::detect_config_kind`.
     #[serde(default)]
-    pub opencode_config_kind: Option<super::opencode_skill_permission::OpencodeConfigKind>,
+    pub opencode_config_kind: Option<skill_studio_core::opencode_config::OpencodeConfigKind>,
     /// True when the core scan's read budget was exceeded before every root
     /// could be reached - `skills`/`projects` may be missing entries from
     /// the roots named in `scan_observations`. See `core_scan_installed_skills`.
@@ -1304,10 +1304,15 @@ fn apply_skill_snapshot_overlays(
         super::codex_skill_config::read_disabled_skill_md_paths(home)
             .into_iter()
             .collect();
+    let opencode_fs = skill_studio_host::RealFs::new();
+    let opencode_config_dir = skill_studio_host::opencode_config_dir(home);
     let opencode_denied: BTreeSet<String> =
-        super::opencode_skill_permission::read_denied_patterns(home)
-            .into_iter()
-            .collect();
+        skill_studio_core::opencode_config::read_denied_patterns(
+            &opencode_fs,
+            &opencode_config_dir,
+        )
+        .into_iter()
+        .collect();
     for skill in skills.iter_mut() {
         let open_code_deployment_count = skill
             .deployments
@@ -1332,7 +1337,7 @@ fn apply_skill_snapshot_overlays(
             } else if deployment.agent == "OpenCode" {
                 if open_code_deployment_count == 1
                     && opencode_denied.iter().any(|pattern| {
-                        super::opencode_skill_permission::pattern_matches(pattern, &skill.name)
+                        skill_studio_core::opencode_config::pattern_matches(pattern, &skill.name)
                     })
                 {
                     deployment.disabled = true;
@@ -1357,7 +1362,7 @@ fn apply_skill_snapshot_overlays(
                     deployment.disabled_readers.push("codex".to_string());
                 }
                 if opencode_denied.iter().any(|pattern| {
-                    super::opencode_skill_permission::pattern_matches(pattern, &skill.name)
+                    skill_studio_core::opencode_config::pattern_matches(pattern, &skill.name)
                 }) {
                     deployment.disabled_readers.push("open-code".to_string());
                 }
@@ -1623,7 +1628,10 @@ pub fn build_snapshot(
         scanned_at: now.to_rfc3339(),
         last_test_by_skill,
         update_check,
-        opencode_config_kind: super::opencode_skill_permission::detect_config_kind(home),
+        opencode_config_kind: skill_studio_core::opencode_config::detect_config_kind(
+            &skill_studio_host::RealFs::new(),
+            &skill_studio_host::opencode_config_dir(home),
+        ),
         scan_partial,
         scan_observations,
     };
