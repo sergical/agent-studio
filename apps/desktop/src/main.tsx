@@ -67,6 +67,11 @@ class ErrorBoundary extends React.Component<
 // Not a real route: visit with `#kit` while running `npm run dev`.
 const showKitPreview = import.meta.env.DEV && location.hash === "#kit";
 
+// Dev-only perf HUD: visit with `?perf=1` while running `npm run dev`. See
+// components/dev/PerfOverlay.tsx and lib/perf-marks.ts.
+const showPerfOverlay =
+  import.meta.env.DEV && new URLSearchParams(location.search).get("perf") === "1";
+
 async function boot(): Promise<void> {
   const rootElement = document.getElementById("root");
   if (!rootElement) {
@@ -88,9 +93,16 @@ async function boot(): Promise<void> {
     console.info("[harness] mock Tauri IPC installed");
   }
 
+  const PerfOverlay = showPerfOverlay
+    ? (await import("./components/dev/PerfOverlay")).PerfOverlay
+    : null;
+
   ReactDOM.createRoot(rootElement).render(
     <React.StrictMode>
-      <ErrorBoundary>{showKitPreview ? <KitPreview /> : <App />}</ErrorBoundary>
+      <ErrorBoundary>
+        {showKitPreview ? <KitPreview /> : <App />}
+        {PerfOverlay && <PerfOverlay />}
+      </ErrorBoundary>
     </React.StrictMode>,
   );
 }
