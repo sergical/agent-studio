@@ -6,10 +6,10 @@
 //! the record shapes).
 
 use chrono::{DateTime, Utc};
-use serde_json;
 
-use crate::skill_uses::{skill_name_from_skill_md_path, skill_names_read_by_shell};
-use crate::skill_uses::{SkillInvocation, SkillTrigger};
+use crate::skill_uses::{
+    skill_name_from_skill_md_path, skill_names_read_by_shell, SkillInvocation, SkillTrigger,
+};
 
 /// Fast-path substrings a line must contain before it's worth a full JSON
 /// parse: a `Skill` tool_use, a typed command block, or a `SKILL.md` path
