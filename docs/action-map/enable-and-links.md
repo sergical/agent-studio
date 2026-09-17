@@ -3,7 +3,7 @@
 This area turns a skill deployment on or off, per harness or per reader.
 It also repairs or converts the symlinks that carry a skill to disk.
 
-Commands: `set_deployment_enabled`, `set_harness_enabled`, `set_reader_enabled`, `set_plugin_enabled`, `set_shared_harness_skill_enabled`, `materialize_harness_root`, `materialize_harness_root_then_disable`, `repair_skill_link`, `make_skill_independent_copy`.
+Commands: `set_deployment_enabled`, `set_harness_enabled`, `set_reader_enabled`, `set_plugin_enabled`, `materialize_harness_root`, `materialize_harness_root_then_disable`, `repair_skill_link`, `make_skill_independent_copy`.
 There is no `set_skill_visibility` command.
 The closest control, `UniversalVisibilitySelector` in the Add Skill sheet, only holds local state until `add_skill` or `set_harness_enabled` runs.
 See Gaps for what this gap means.
@@ -41,10 +41,8 @@ It applies to every skill the plugin ships, because Claude Code tracks `enabledP
 It does not journal: the source of truth is Claude Code's own config file, not the Skill Studio event log.
 Tests exist at `skill_plugin_lifecycle.rs:140-183`.
 
-`set_shared_harness_skill_enabled` (`event_commands.rs:130`) has no frontend caller.
-The UI reaches its effect indirectly, through the materialize dialog.
-It toggles one per-skill link under an already-materialized root: enable relinks, disable unlinks.
-It journals (`unlink_harness`, `relink_harness`) and is covered by a test at `skill_materialize.rs:1079`.
+Unit 4.1 removed `set_shared_harness_skill_enabled`, which had no frontend caller; the UI reached its effect only indirectly, through the materialize dialog.
+Toggling one per-skill link under an already-materialized root (enable relinks, disable unlinks) still goes through `skill_materialize::relink_harness`/`unlink_harness` - it just no longer has a standalone command.
 
 `materialize_harness_root` (`event_commands.rs:273`) converts a whole-directory symlink into a real directory of per-skill links.
 It is triggered from `MaterializeRootDialog.tsx:54`.
@@ -91,12 +89,12 @@ This replaces the ad hoc rollback closures the Claude-stack `set_deployment_enab
 
 ## Desired state
 
-`set_deployment_enabled`, `set_shared_harness_skill_enabled`, `materialize_harness_root`, `materialize_harness_root_then_disable`, `repair_skill_link`, and `make_skill_independent_copy` already journal.
+`set_deployment_enabled`, `materialize_harness_root`, `materialize_harness_root_then_disable`, `repair_skill_link`, and `make_skill_independent_copy` already journal.
 Keep their shape as the model.
 `set_harness_enabled` and `set_plugin_enabled` should move to the same shape: a journal event with a backup and an inverse recorded before any file or config write.
 That lets a Codex multi-path loop or a Claude Code link swap be replayed or rolled back the same way `move_aside_disable` is today.
 
-All nine commands should share one write path in `skill-studio-core`, with the Tauri command in `commands.rs` or `event_commands.rs` reduced to argument parsing and DTO mapping.
+All eight commands should share one write path in `skill-studio-core`, with the Tauri command in `commands.rs` or `event_commands.rs` reduced to argument parsing and DTO mapping.
 Right now the logic lives directly in `skill_harness_disable.rs`, `skill_plugin_lifecycle.rs`, `skill_materialize.rs`, and `skill_independent_copy.rs`, behind the Tauri layer.
 A CLI or MCP caller of the same operation should not have to re-implement the precondition checks.
 
@@ -117,9 +115,6 @@ They need an explicit retention limit, since `make_skill_independent_copy` and `
 
 Every command needs a direct test and a crash-window test.
 Several commands, like `set_harness_enabled`, note "no direct test" or rely on policy tests today; `make_skill_independent_copy` already has five crash-window tests and should be the model.
-
-`set_shared_harness_skill_enabled` has no UI caller.
-Either wire it in, or remove it, per the "no IPC command without a caller" principle.
 
 ## Gaps
 

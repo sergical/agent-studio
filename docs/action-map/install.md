@@ -2,7 +2,7 @@
 
 This area adds a skill to disk, through the skills.sh CLI, the dotagents CLI, or a plain copy.
 
-Commands: add_skill (Copy, Dotagents, SkillsSh variants), start_add_skill_operation / start_add_skills_operation, get_add_skill_operation, confirm_add_skill_trust, cancel_add_skill_operation, list_github_skills, get_add_method_defaults, is_skill_installed, add_skills.
+Commands: add_skill (Copy, Dotagents, SkillsSh variants), start_add_skill_operation / start_add_skills_operation, get_add_skill_operation, confirm_add_skill_trust, cancel_add_skill_operation, list_github_skills, get_add_method_defaults.
 UI entry points: AddSkillSheet, SkillStoreInstallFlow, Promote to global, Install again, SkillRepairCard reinstall.
 
 ## Current state
@@ -12,13 +12,11 @@ UI entry points: AddSkillSheet, SkillStoreInstallFlow, Promote to global, Instal
 | add_skill (SkillsSh)       | no                 | ForkMutationLock                            | CLI partial writes stay on disk                                           |
 | add_skill (Dotagents)      | no                 | ForkMutationLock                            | CLI partial writes stay on disk                                           |
 | add_skill (Copy)           | no                 | ForkMutationLock                            | crash between the renames and the registry write leaves an unowned folder |
-| add_skills                 | no                 | ForkMutationLock                            | batch half applied on failure, by design                                  |
 | start_add_skill_operation  | no, in-memory only | operation state mutex plus ForkMutationLock | partial install reported, not repaired                                    |
 | cancel_add_skill_operation | no                 | operation state mutex; shared AtomicBool    | worker may already be past a commit                                       |
 | confirm_add_skill_trust    | no                 | state mutex released before the fs lock     | none noted beyond the retry chain                                         |
 | list_github_skills         | n/a, read only     | TREE_CACHE mutex                            | none                                                                      |
 | get_add_method_defaults    | n/a, read only     | none                                        | none                                                                      |
-| is_skill_installed         | n/a, read only     | none                                        | none                                                                      |
 
 Three code paths install a skill, and the app picks one by method.
 `add_skill` (SkillsSh) shells out to `npx skills add` and writes the shared folder and a Claude link (skill_add.rs:1349 → 450).
@@ -34,18 +32,17 @@ An untrusted dotagents source stops the operation at `NeedsTrust` instead of fai
 The operation is then reported "cancelled after committing" (skill_add_operation.rs:926, :211).
 
 On failure, each method's own cleanup runs — `remove_install_paths` for Copy, none for SkillsSh or Dotagents — but CLI writes already on disk are never rolled back.
-`add_skills` (the batch entry point with no UI caller) applies each entry independently and reports a partial `Vec<AddSkillOutcome>` by design (skill_add.rs:1334).
+`start_add_skills_operation`'s batch worker (the UI's only entry to the same batch logic) applies each entry independently and reports a partial `Vec<AddSkillOutcome>` by design (skill_add.rs:1334 → `add_skills_with_progress`).
 
 `list_github_skills` and `get_add_method_defaults` are reads with no writes.
 `list_github_skills` fills an in-process tree cache keyed by repo and ref (github_skill_listing.rs:325).
-`is_skill_installed` has no frontend caller (commands.rs:1480, lib.rs:151).
 
 On the frontend, the Add Skill sheet drives the operation state machine and shows a trust prompt when the operation reaches `needs-trust` (AddSkillSheet.tsx:1174–1180, 1116–1124).
 The skills.sh store panel (SkillStoreInstallFlow.tsx:230–246) calls `add_skill` once, with no operation and no trust prompt — a different code path for what looks like the same action.
 "Promote to global" (SkillLocationsCard.tsx:109) and "Install again" (skill-location-actions.ts:279) both call `add_skill` directly, also with no trust prompt and no progress state.
 
 Tests cover each method's argv construction, cancellation timing, and partial-batch reconciliation (skill_add.rs, skill_add_operation.rs — see the full map for line numbers).
-`add_skills` and the pack-import trio have thinner or no direct test coverage.
+The pack-import trio has thinner or no direct test coverage.
 
 ## Changes in the Claude stack (#73 to #134)
 
@@ -75,8 +72,7 @@ The trust prompt appears on every install path: `SkillStoreInstallFlow` and "Pro
 Success feedback for `start_add_skill_operation` only fires after Reconciling completes, and a partial batch names which entries failed in the toast, not just in the operation record.
 Backups written for the journal follow a retention limit, so they do not grow without bound.
 `add_skill` (each method), `start_add_skill_operation`, and `confirm_add_skill_trust` each get a crash-window test — kill the process mid-rename, mid-CLI-call, or mid-registry-write and assert the reconcile step repairs it, the way `make_independent_copy`'s crash suite already does.
-`add_skills` and `is_skill_installed` either get a caller or get removed.
-An IPC command with no caller is a maintenance cost with no user behind it.
+An IPC command with no caller is a maintenance cost with no user behind it; `add_skills` and `is_skill_installed`, the two this area had, were removed in unit 4.1.
 
 ## Gaps
 
@@ -88,5 +84,4 @@ An IPC command with no caller is a maintenance cost with no user behind it.
 - "Promote to global" and "Install again" call `add_skill` directly, bypassing the operation state machine, so they get no cancel, no progress, and no trust prompt either.
 - `cancel_add_skill_operation` can race a commit and report "cancelled" for work that already landed; there is no compensating undo for that case.
 - Backups and event rows have no retention limit (see `<app_data>/backups/<event-id>/` and `events.sqlite3` in the shared-state table), so a busy install history grows without bound.
-- `add_skills` and `is_skill_installed` are registered commands with no frontend caller.
 - `add_skill` (Copy) has direct crash-window tests; `add_skill` (Dotagents) and `add_skill` (SkillsSh) do not, since neither stages before it calls the CLI.

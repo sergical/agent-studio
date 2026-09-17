@@ -3,7 +3,7 @@
 This area answers one question: what skills exist, and how are they used.
 It covers the path from a disk scan to the published snapshot, and every screen that only reads.
 
-Commands: `get_skill_snapshot`, `get_installed_skills`, `request_skill_rescan`, `get_popular_skills`, `search_skills`, `get_skill_details`, `get_agent_targets`, `list_skill_projects`, skill-use reads (core `skill_uses` parsers, host `SkillInvocationIndex`).
+Commands: `get_skill_snapshot`, `get_installed_skills`, `request_skill_rescan`, `get_popular_skills`, `search_skills`, `get_skill_details`, skill-use reads (core `skill_uses` parsers, host `SkillInvocationIndex`).
 
 UI entry points: `useSkillSnapshot` (App.tsx), Sidebar Sync button (Sidebar.tsx:235), SkillStore search and list (SkillStore.tsx), Activity view (SkillActivityView.tsx), Home tiles (HomeView.tsx).
 
@@ -21,8 +21,6 @@ The lock is `None` until the first rebuild finishes.
 | `get_popular_skills`   | `commands.rs:136`      | Fetches one page of skills.sh listings over HTTP.                                                                     |
 | `search_skills`        | `commands.rs:125`      | Fetches a search result over HTTP.                                                                                    |
 | `get_skill_details`    | `commands.rs:147`      | Fetches one skill's files and body over HTTP.                                                                         |
-| `get_agent_targets`    | `commands.rs:1486`     | Returns the static agent path table. No UI caller.                                                                    |
-| `list_skill_projects`  | `commands.rs:1462`     | Returns tracked project paths, or a live fallback scan. No UI caller.                                                 |
 
 `rebuild_snapshot_now` (`skill_refresh.rs:482`) is the only function that writes the snapshot.
 A `rebuild_lock` mutex serializes every rebuild, so two rebuilds never race.
@@ -43,8 +41,7 @@ Store reads (`get_popular_skills`, `search_skills`, `get_skill_details`) go over
 None of the three writes to disk.
 SkillStore.tsx toasts on an HTTP failure (`SkillStore.tsx:194,209,238`).
 
-`get_agent_targets` and `list_skill_projects` are registered (`lib.rs:150,152`) but have no caller anywhere in `apps/desktop/src`.
-They are dead reads today, exercised only by their own backend tests.
+Unit 4.1 removed `get_agent_targets` and `list_skill_projects`, which were registered but had no caller anywhere in `apps/desktop/src`.
 
 Skill-use reads live mostly in the core and host, not behind a Tauri command.
 `skill_studio_core::skill_uses` holds one parser per harness: `skill_uses/codex.rs`, `skill_uses/opencode.rs`, `skill_uses/pi.rs`, `skill_uses/cursor.rs`, `skill_uses/grok.rs`.
@@ -94,7 +91,6 @@ That is the direct fix for the standing Bugbot finding above.
 
 One read path should stay one read path.
 `ops::scan` in the core is already the only scanner; the desktop command should stay a thin adapter that assembles DTOs and applies desktop-only overlays, nothing more.
-`get_agent_targets` and `list_skill_projects`, which have no UI caller, should get one or be removed, so a dead read is not mistaken for a live one.
 
 Every background loop that feeds the snapshot, the refresh loop, the invocation reconcile, and the update-check loop, should expose its last run time and its last error.
 Then a stuck or failing loop is visible somewhere other than stderr.
@@ -106,8 +102,6 @@ Today `get_skill_snapshot`, `get_popular_skills`, `search_skills`, `get_skill_de
 ## Gaps
 
 - `skill_refresh.rs:1398-1404` and `:517-551`: a scan failure replaces the published snapshot with an empty one, instead of keeping the last good snapshot. Only a banner (`SkillsView.tsx:109`) tells the user.
-- `get_agent_targets` (`commands.rs:1486`) and `list_skill_projects` (`commands.rs:1462`): registered commands with no UI caller.
-- `is_skill_installed` (`commands.rs:1480`): a third registered-but-uncalled read.
 - `request_skill_rescan`: errors from the triggered rebuild are swallowed; the Sync button spinner just stops on the next snapshot push, success or failure.
 - No direct tests for `get_skill_snapshot`, `get_popular_skills`, `search_skills`, `get_skill_details`, `list_github_skills`, `read_installed_skill_md`, or the skill-use parsers' Tauri-facing read.
 - The refresh loop, the update-check loop, and the invocation reconcile have no exposed last-run or last-error state, for a settings or diagnostics view to read.

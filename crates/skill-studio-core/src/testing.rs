@@ -16,7 +16,8 @@ use crate::identity::EventId;
 use crate::ports::{
     CancelToken, Clock, CoreNotice, DirEntryFacts, EventSink, ExclusiveGuard, FileFacts, FileKind,
     HistoryAccess, HistoryOpener, HistoryStore, IdSource, LeaseHandle, LeaseKey, LeaseMode,
-    LeaseProvider, ProjectDiscovery, ScopeFs, ScopedPath, ToolLookup,
+    LeaseProvider, ProcessOutput, ProcessSpawner, ProcessSpec, ProjectDiscovery, ScopeFs,
+    ScopedPath, ToolLookup,
 };
 use crate::scope::NormalizedScope;
 
@@ -43,6 +44,52 @@ pub struct FakeToolLookup {
 impl ToolLookup for FakeToolLookup {
     fn find_binary(&self, name: &str) -> Option<PathBuf> {
         self.binaries.get(name).cloned()
+    }
+}
+
+/// A process spawner that panics if ever called. Wired in where a test must
+/// prove a path never touches `Ports::spawner` (`scan` never probes a
+/// harness's `--version`).
+#[derive(Debug, Default, Clone)]
+pub struct PanicOnSpawn;
+
+impl ProcessSpawner for PanicOnSpawn {
+    fn run(
+        &self,
+        _spec: &ProcessSpec,
+        _cancel: &dyn CancelToken,
+    ) -> Result<ProcessOutput, CoreError> {
+        panic!("ProcessSpawner::run must not be called on this path");
+    }
+}
+
+/// A process spawner over a fixed table of canned outputs, keyed by
+/// `program`. A program with no entry reports a spawn error, matching a
+/// binary that resolved on `PATH` but vanished before the probe ran.
+#[derive(Debug, Default, Clone)]
+pub struct FakeProcessSpawner {
+    /// Canned `(stdout, exit code)` per program path.
+    pub outputs: BTreeMap<String, (String, i32)>,
+}
+
+impl ProcessSpawner for FakeProcessSpawner {
+    fn run(
+        &self,
+        spec: &ProcessSpec,
+        _cancel: &dyn CancelToken,
+    ) -> Result<ProcessOutput, CoreError> {
+        match self.outputs.get(&spec.program) {
+            Some((stdout, status)) => Ok(ProcessOutput {
+                status: Some(*status),
+                stdout: stdout.clone(),
+                stderr: String::new(),
+                timed_out: false,
+            }),
+            None => Err(CoreError::new(
+                ErrorCode::Io,
+                format!("no such program: {}", spec.program),
+            )),
+        }
     }
 }
 

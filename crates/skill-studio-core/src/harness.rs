@@ -4,12 +4,13 @@
 //! roots a harness reads) is separate from runner, disable, and link support.
 //! Adapters read the catalog; they never hard-code a harness list.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
 use crate::identity::AgentId;
+use crate::ports::{NeverCancel, ProcessSpawner, ProcessSpec, ScopeFs, ToolLookup};
 
 /// How sure the catalog is about a fact.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, JsonSchema)]
@@ -860,6 +861,404 @@ fn grok_build() -> HarnessFacts {
             support: Support::No(ev()),
         },
     }
+}
+
+// ============================================================================
+// Runtime detection: the missing half of the catalog above. `HarnessFacts`
+// says what a harness reads and supports, as documented facts; the types and
+// trait below say how to prove, on this machine, that the harness exists at
+// all. Per `docs/action-map/harnesses/harness-detection.md`.
+// ============================================================================
+
+/// A version string or install-method name proven by a probe or a path
+/// heuristic, paired with the evidence that produced it.
+///
+/// Invariant: `value: None` means the fact could not be proven; `evidence`
+/// still names why (no binary, a spawn error, an unparseable
+/// `--version`), so a caller never has to guess from an empty string.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct DetectedString {
+    /// The value, when proven.
+    pub value: Option<String>,
+    /// Where the value came from, or why it is `Unknown`.
+    pub evidence: Evidence,
+}
+
+impl DetectedString {
+    fn known(value: impl Into<String>, evidence: Evidence) -> Self {
+        DetectedString {
+            value: Some(value.into()),
+            evidence,
+        }
+    }
+
+    /// No primary source found; `reason` explains why to a person.
+    fn unknown(reason: impl Into<String>) -> Self {
+        DetectedString {
+            value: None,
+            evidence: Evidence {
+                source: reason.into(),
+                confidence: Confidence::Unknown,
+            },
+        }
+    }
+}
+
+/// Runtime detection state for one harness, derived from the signals in
+/// `docs/action-map/harnesses/harness-detection.md`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum HarnessState {
+    /// No executable, no config, no session data.
+    NotFound,
+    /// Config or sessions exist but no executable on `PATH`.
+    DataOnly,
+    /// Executable found; version stays `Unknown` until the probe runs.
+    Installed,
+    /// Installed and the config file exists.
+    Configured,
+    /// Configured or Installed, and session evidence exists.
+    Used,
+}
+
+/// Runtime detection facts for one harness: proven, not guessed.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct HarnessDetection {
+    /// Catalog id.
+    pub id: AgentId,
+    /// Display name shown to a person.
+    pub display_name: String,
+    /// Derived state.
+    pub state: HarnessState,
+    /// Resolved executable path, when found on `PATH`.
+    pub executable: Option<PathBuf>,
+    /// Version, proven by `<bin> --version`.
+    pub version: DetectedString,
+    /// Install method, inferred from the resolved executable path.
+    pub install_method: DetectedString,
+    /// The vendor config file exists under the home root.
+    pub configured: bool,
+    /// A session or transcript record exists under the home root.
+    pub used: bool,
+}
+
+/// Result of the `harnesses` operation: one detection row per first-class
+/// harness.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct HarnessReport {
+    /// Rows, one per [`builtin_adapters`] harness, in that order.
+    pub harnesses: Vec<HarnessDetection>,
+}
+
+/// Ports one [`HarnessAdapter`] needs to detect its harness on this machine.
+pub struct DetectionPorts<'a> {
+    /// Filesystem, for config and session presence checks.
+    pub fs: &'a dyn ScopeFs,
+    /// The scope's home root; every relative path here is under it.
+    pub home: &'a Path,
+    /// `PATH` lookup; `None` means every executable reads as absent.
+    pub tools: Option<&'a dyn ToolLookup>,
+    /// Process runner for the `--version` probe; `None` means version and
+    /// install method stay `Unknown` even when the binary is found.
+    pub spawner: Option<&'a dyn ProcessSpawner>,
+}
+
+/// One first-class harness's detection recipe.
+///
+/// The static [`HarnessCatalog`] says what a harness reads and supports;
+/// this trait says how to prove, at runtime, that it exists at all. One
+/// implementation per harness (see [`builtin_adapters`]); every impl shares
+/// the same four-signal recipe through [`HarnessAdapter::detect`]'s default
+/// body, built from the small set of facts each impl supplies.
+pub trait HarnessAdapter: Send + Sync {
+    /// Catalog id.
+    fn id(&self) -> AgentId;
+    /// Display name shown to a person.
+    fn display_name(&self) -> &'static str;
+    /// Binary name to resolve on `PATH` and to probe with `--version`, when
+    /// the harness has one.
+    fn binary_name(&self) -> Option<&'static str>;
+    /// Config file path relative to the home root, checked at global scope
+    /// only, per `docs/action-map/harnesses/harness-detection.md`.
+    fn config_relative_path(&self) -> Option<&'static str>;
+    /// Session or transcript root relative to the home root; a non-empty
+    /// listing is evidence the harness has run at least once.
+    fn used_relative_path(&self) -> Option<&'static str>;
+
+    /// Turns `<bin> --version` stdout into a display string. The default
+    /// takes the first non-empty line: none of the six vendors' `--version`
+    /// formats are pinned yet (`docs/action-map/harnesses/harness-detection.md`,
+    /// "Open items").
+    fn parse_version(&self, stdout: &str) -> Option<String> {
+        stdout
+            .lines()
+            .map(str::trim)
+            .find(|line| !line.is_empty())
+            .map(str::to_string)
+    }
+
+    /// Runs the shared detection recipe against one set of ports.
+    fn detect(&self, ports: &DetectionPorts<'_>) -> HarnessDetection {
+        let executable = self
+            .binary_name()
+            .and_then(|bin| ports.tools.and_then(|lookup| lookup.find_binary(bin)));
+        let (version, install_method) = probe_version(self, &executable, ports);
+        let configured = self
+            .config_relative_path()
+            .is_some_and(|rel| ports.fs.symlink_metadata(&ports.home.join(rel)).is_ok());
+        let used = self.used_relative_path().is_some_and(|rel| {
+            ports
+                .fs
+                .read_dir(&ports.home.join(rel))
+                .is_ok_and(|entries| !entries.is_empty())
+        });
+        let state = match (executable.is_some(), configured, used) {
+            (true, _, true) => HarnessState::Used,
+            (true, true, false) => HarnessState::Configured,
+            (true, false, false) => HarnessState::Installed,
+            (false, _, _) if configured || used => HarnessState::DataOnly,
+            (false, _, _) => HarnessState::NotFound,
+        };
+        HarnessDetection {
+            id: self.id(),
+            display_name: self.display_name().to_string(),
+            state,
+            executable,
+            version,
+            install_method,
+            configured,
+            used,
+        }
+    }
+}
+
+/// Runs `<bin> --version` when both a binary and a spawner exist, and
+/// infers the install method from the resolved path. Any missing
+/// precondition (no binary, no spawner, a non-zero exit, a spawn error)
+/// reports `Unknown` with the reason as evidence rather than guessing. The
+/// probe timeout and the by-path/size/mtime cache described in
+/// `docs/action-map/harnesses/harness-detection.md` are follow-up work, not
+/// this function: a probe that fails to spawn simply reports `Unknown`.
+fn probe_version(
+    adapter: &(impl HarnessAdapter + ?Sized),
+    executable: &Option<PathBuf>,
+    ports: &DetectionPorts<'_>,
+) -> (DetectedString, DetectedString) {
+    let Some(path) = executable else {
+        return (
+            DetectedString::unknown("no executable on PATH"),
+            DetectedString::unknown("no executable on PATH"),
+        );
+    };
+    let Some(spawner) = ports.spawner else {
+        return (
+            DetectedString::unknown("no ProcessSpawner port"),
+            DetectedString::unknown("no ProcessSpawner port"),
+        );
+    };
+    let spec = ProcessSpec {
+        program: path.display().to_string(),
+        args: vec!["--version".into()],
+        cwd: None,
+        env: Vec::new(),
+        timeout_ms: 2_000,
+    };
+    let output = match spawner.run(&spec, &NeverCancel) {
+        Ok(output) => output,
+        Err(err) => {
+            let reason = format!(
+                "{} --version failed to spawn: {}",
+                path.display(),
+                err.message
+            );
+            return (
+                DetectedString::unknown(reason.clone()),
+                DetectedString::unknown(reason),
+            );
+        }
+    };
+    if output.status != Some(0) {
+        let reason = format!("{} --version exited {:?}", path.display(), output.status);
+        return (
+            DetectedString::unknown(reason.clone()),
+            DetectedString::unknown(reason),
+        );
+    }
+    let version = match adapter.parse_version(&output.stdout) {
+        Some(value) => DetectedString::known(value, Evidence::verified("--version stdout")),
+        None => DetectedString::unknown("--version printed nothing usable"),
+    };
+    (version, infer_install_method(path))
+}
+
+/// Infers an install method from the resolved executable's path. No vendor
+/// marker is read here - Claude Code's own `~/.claude.json` `installMethod`
+/// field is a documented but unread signal, a follow-up - so every row uses
+/// the same "inferred from path" heuristic `harness-detection.md` describes
+/// for Codex, OpenCode, and pi.
+fn infer_install_method(path: &Path) -> DetectedString {
+    let text = path.to_string_lossy();
+    let method = if text.contains("Cellar") || text.contains("homebrew") {
+        "homebrew"
+    } else if text.contains("node_modules") || text.contains(".npm") {
+        "npm"
+    } else if text.contains(".cargo") {
+        "cargo"
+    } else if text.contains(".volta") {
+        "volta"
+    } else if text.contains(".bun") {
+        "bun"
+    } else if text.contains(".nvm") {
+        "nvm"
+    } else if text.contains("/Applications/") {
+        "bundled app"
+    } else {
+        return DetectedString::unknown("resolved path matches no known install layout");
+    };
+    DetectedString::known(method, Evidence::inferred("resolved executable path"))
+}
+
+/// Claude Code.
+pub struct ClaudeCodeAdapter;
+
+impl HarnessAdapter for ClaudeCodeAdapter {
+    fn id(&self) -> AgentId {
+        AgentId::from(AgentId::CLAUDE_CODE)
+    }
+    fn display_name(&self) -> &'static str {
+        "Claude Code"
+    }
+    fn binary_name(&self) -> Option<&'static str> {
+        Some("claude")
+    }
+    fn config_relative_path(&self) -> Option<&'static str> {
+        Some(".claude/settings.json")
+    }
+    fn used_relative_path(&self) -> Option<&'static str> {
+        Some(".claude/projects")
+    }
+}
+
+/// Codex.
+pub struct CodexAdapter;
+
+impl HarnessAdapter for CodexAdapter {
+    fn id(&self) -> AgentId {
+        AgentId::from(AgentId::CODEX)
+    }
+    fn display_name(&self) -> &'static str {
+        "Codex"
+    }
+    fn binary_name(&self) -> Option<&'static str> {
+        Some("codex")
+    }
+    fn config_relative_path(&self) -> Option<&'static str> {
+        Some(".codex/config.toml")
+    }
+    fn used_relative_path(&self) -> Option<&'static str> {
+        Some(".codex/sessions")
+    }
+}
+
+/// OpenCode.
+pub struct OpenCodeAdapter;
+
+impl HarnessAdapter for OpenCodeAdapter {
+    fn id(&self) -> AgentId {
+        AgentId::from(AgentId::OPEN_CODE)
+    }
+    fn display_name(&self) -> &'static str {
+        "OpenCode"
+    }
+    fn binary_name(&self) -> Option<&'static str> {
+        Some("opencode")
+    }
+    fn config_relative_path(&self) -> Option<&'static str> {
+        Some(".config/opencode/opencode.json")
+    }
+    fn used_relative_path(&self) -> Option<&'static str> {
+        Some(".local/share/opencode")
+    }
+}
+
+/// pi.
+pub struct PiAdapter;
+
+impl HarnessAdapter for PiAdapter {
+    fn id(&self) -> AgentId {
+        AgentId::from(AgentId::PI)
+    }
+    fn display_name(&self) -> &'static str {
+        "pi"
+    }
+    fn binary_name(&self) -> Option<&'static str> {
+        Some("pi")
+    }
+    fn config_relative_path(&self) -> Option<&'static str> {
+        Some(".pi/agent/settings.json")
+    }
+    fn used_relative_path(&self) -> Option<&'static str> {
+        Some(".pi/agent/sessions")
+    }
+}
+
+/// Cursor. Detected as the `agent` CLI, not the editor bundle; the two are
+/// two separate detections per `docs/action-map/harnesses/harness-detection.md`,
+/// and this row is the CLI one.
+pub struct CursorAdapter;
+
+impl HarnessAdapter for CursorAdapter {
+    fn id(&self) -> AgentId {
+        AgentId::from(AgentId::CURSOR)
+    }
+    fn display_name(&self) -> &'static str {
+        "Cursor"
+    }
+    fn binary_name(&self) -> Option<&'static str> {
+        Some("agent")
+    }
+    fn config_relative_path(&self) -> Option<&'static str> {
+        Some(".cursor/argv.json")
+    }
+    fn used_relative_path(&self) -> Option<&'static str> {
+        Some(".cursor/extensions")
+    }
+}
+
+/// Grok Build. Binary name and config folder are undocumented
+/// (`docs/action-map/harnesses/harness-detection.md`, "Open items"); `grok`
+/// is a placeholder until one is confirmed.
+pub struct GrokBuildAdapter;
+
+impl HarnessAdapter for GrokBuildAdapter {
+    fn id(&self) -> AgentId {
+        AgentId::from(AgentId::GROK_BUILD)
+    }
+    fn display_name(&self) -> &'static str {
+        "Grok Build"
+    }
+    fn binary_name(&self) -> Option<&'static str> {
+        Some("grok")
+    }
+    fn config_relative_path(&self) -> Option<&'static str> {
+        None
+    }
+    fn used_relative_path(&self) -> Option<&'static str> {
+        Some(".grok/sessions")
+    }
+}
+
+/// One [`HarnessAdapter`] per first-class harness, in the same order as
+/// [`HarnessCatalog::builtin`].
+pub fn builtin_adapters() -> Vec<Box<dyn HarnessAdapter>> {
+    vec![
+        Box::new(ClaudeCodeAdapter),
+        Box::new(CodexAdapter),
+        Box::new(OpenCodeAdapter),
+        Box::new(PiAdapter),
+        Box::new(CursorAdapter),
+        Box::new(GrokBuildAdapter),
+    ]
 }
 
 #[cfg(test)]

@@ -12,7 +12,6 @@ import type {
   ParsedSkillSource,
   SkillDestination,
 } from "@skill-studio/lib";
-import { isFeatureEnabled } from "../../lib/feature-flags";
 
 /** An Add Skill method, including the separate pack import flow. */
 export type AddSkillSheetMethod = AddMethod | "pack";
@@ -34,7 +33,7 @@ export function availableAddSkillMethods(
       : ["skills-sh", "copy", "pack"];
   }
   if (parsed.kind === "git") return dotagentsInstalled ? ["dotagents"] : [];
-  return isFeatureEnabled("skill-packs") ? ["copy", "pack"] : ["copy"];
+  return ["copy"];
 }
 
 /** Validate every persistent gate used by Add Skill submission and its footer button. */

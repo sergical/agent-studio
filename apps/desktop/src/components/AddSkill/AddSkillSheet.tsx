@@ -73,7 +73,6 @@ import type {
   PackImportRequest,
   ParsedSkillSource,
 } from "@skill-studio/lib";
-import { isFeatureEnabled } from "../../lib/feature-flags";
 import { useAppStore } from "../../store/appStore";
 import type {
   AddMethod,
@@ -103,11 +102,10 @@ const ALL_METHODS = ["dotagents", "skills-sh", "copy"] as const satisfies AddMet
  * tracking and every other `AddMethod` switch never has to account for it.
  */
 type SheetMethod = AddSkillSheetMethod;
-const ALL_SHEET_METHODS = [...ALL_METHODS, "pack"] as const satisfies SheetMethod[];
 
-/** Pack import stays hidden until the `skill-packs` flag ships. */
+/** Pack import is deferred - see unit 4.3. Local-source Add Skill never offers it. */
 function sheetMethods(): readonly SheetMethod[] {
-  return isFeatureEnabled("skill-packs") ? ALL_SHEET_METHODS : ALL_METHODS;
+  return ALL_METHODS;
 }
 
 const METHOD_LABELS = {

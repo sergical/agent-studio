@@ -34,11 +34,13 @@ pub mod lock_file;
 pub mod ops;
 mod ownership;
 pub mod ports;
+pub mod report_sanitizer;
 pub mod scope;
 pub mod skill_uses;
 pub mod snapshot;
 pub mod timing;
 pub mod tracked_projects;
+pub mod tree_hash;
 
 #[cfg(any(test, feature = "testing"))]
 pub mod testing;
