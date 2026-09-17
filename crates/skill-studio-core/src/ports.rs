@@ -12,6 +12,7 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
 use crate::dto::{DeploymentDto, Inventory};
+pub use crate::error::LeaseBusy;
 use crate::error::{CoreError, ErrorCode};
 use crate::events::{EventDraft, EventFilter, EventRecord, EventStatus};
 use crate::harness::HarnessCatalog;
@@ -354,7 +355,9 @@ impl ExclusiveGuard {
 /// Acquires and releases leases.
 pub trait LeaseProvider: Send + Sync {
     /// Acquires `keys` in the given order, waiting at most `wait`.
-    /// Fails with [`ErrorCode::ScopeBusy`] when the budget runs out.
+    /// Fails with [`ErrorCode::ScopeBusy`] when the budget runs out, with
+    /// [`LeaseBusy`] attached through [`CoreError::with_busy`] naming the
+    /// current holder's pid and how long it has held the lease.
     fn acquire(
         &self,
         keys: &[LeaseKey],
