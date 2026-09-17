@@ -424,6 +424,12 @@ impl CapabilityReport {
 }
 
 const CLAUDE_SKILLS_DOC: &str = "https://code.claude.com/docs/en/skills";
+/// A symlinked skill folder loads once, deduplicated by its target (so a
+/// per-skill link and the whole-dir `~/.claude/skills -> ~/.agents/skills`
+/// link both work), and nested `<subdir>/.claude/skills` folders are
+/// discovered up to the repo root. Resolved by the docs on 2026-09-16
+/// (`docs/action-map/harnesses/claude-code.md`, "Resolved by the docs").
+const CLAUDE_SKILLS_DOC_2026_09_16: &str = "https://code.claude.com/docs/en/skills (read 2026-09-16: symlink dedup, nested project discovery)";
 const CLAUDE_PLUGINS_REF: &str = "https://code.claude.com/docs/en/plugins-reference";
 const CODEX_SKILLS_DOC: &str = "https://learn.chatgpt.com/docs/build-skills";
 const CODEX_PLUGINS_DOC: &str = "https://developers.openai.com/plugins/build/plugins";
@@ -459,6 +465,10 @@ fn claude_code() -> HarnessFacts {
     HarnessFacts {
         id: AgentId::from(AgentId::CLAUDE_CODE),
         display_name: "Claude Code".into(),
+        // `CLAUDE_CONFIG_DIR` overrides `~/.claude` for every path below when
+        // set; host root resolution honours it (crates/skill-studio-host/src/
+        // discovery.rs). `.claude/skills/synced/` is reserved by the vendor
+        // and is skipped, not walked as a skill.
         roots: vec![
             root(
                 ScopeLevel::Global,
@@ -467,12 +477,15 @@ fn claude_code() -> HarnessFacts {
                 false,
                 ev(),
             ),
+            // Nested `<subdir>/.claude/skills` folders are discovered up to
+            // the repo root (see `CLAUDE_SKILLS_DOC_2026_09_16`), so the
+            // project root is recursive, unlike the global one.
             root(
                 ScopeLevel::Project,
                 ".claude/skills",
                 RootRole::Own,
-                false,
-                ev(),
+                true,
+                Evidence::verified(CLAUDE_SKILLS_DOC_2026_09_16),
             ),
             root(
                 ScopeLevel::Global,
@@ -483,8 +496,8 @@ fn claude_code() -> HarnessFacts {
             ),
         ],
         reads_universal_root: Support::No(ev()),
-        follows_per_skill_link: Support::Unknown,
-        follows_whole_dir_link: Support::Unknown,
+        follows_per_skill_link: Support::Yes(Evidence::verified(CLAUDE_SKILLS_DOC_2026_09_16)),
+        follows_whole_dir_link: Support::Yes(Evidence::verified(CLAUDE_SKILLS_DOC_2026_09_16)),
         skips_hidden_entries: Support::Yes(Evidence::inferred(ONE_LEVEL_READER)),
         all_skills_disable: Support::Unknown,
         native_disable: Some(NativeDisableSpec {
@@ -1276,11 +1289,13 @@ mod tests {
             .map(|f| f.id.as_str().to_string())
             .collect();
         assert_eq!(readers, ["codex", "open-code", "pi"]);
-        let report = CapabilityReport::from_facts(claude, None);
-        assert!(report
+        let cursor = catalog.get(&AgentId::from(AgentId::CURSOR)).unwrap();
+        let cursor_report = CapabilityReport::from_facts(cursor, None);
+        assert!(cursor_report
             .runtime_notes
             .iter()
             .any(|n| n.contains("per-skill link")));
+        let report = CapabilityReport::from_facts(claude, None);
         let op = |name: &str| {
             report
                 .operations
@@ -1292,5 +1307,39 @@ mod tests {
         assert!(op("set_invocation_policy").is_some_and(|s| s.is_yes()));
         let pi = catalog.get(&AgentId::from(AgentId::PI)).unwrap();
         assert_eq!(pi.skips_hidden_entries, Support::Unknown);
+    }
+
+    #[test]
+    fn claude_code_symlink_facts_are_verified_or_names_the_unknown_row() {
+        let catalog = HarnessCatalog::builtin();
+        let claude = catalog.get(&AgentId::from(AgentId::CLAUDE_CODE)).unwrap();
+        assert!(
+            claude.follows_per_skill_link.is_yes(),
+            "per-skill link support is {:?}, not Yes",
+            claude.follows_per_skill_link
+        );
+        assert!(
+            claude.follows_whole_dir_link.is_yes(),
+            "whole-dir link support is {:?}, not Yes",
+            claude.follows_whole_dir_link
+        );
+        let project_root = claude
+            .roots
+            .iter()
+            .find(|r| r.level == ScopeLevel::Project && r.role == RootRole::Own)
+            .expect("Claude Code has a project-level Own root");
+        assert!(
+            project_root.recursive,
+            "nested `.claude/skills` discovery is documented; the project root must be recursive"
+        );
+        let report = CapabilityReport::from_facts(claude, None);
+        assert!(
+            !report
+                .runtime_notes
+                .iter()
+                .any(|n| n.contains("per-skill link") || n.contains("whole-dir link")),
+            "resolved facts must not still be reported as Unknown: {:?}",
+            report.runtime_notes
+        );
     }
 }
