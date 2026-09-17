@@ -61,7 +61,7 @@ export function SkillBrowser({
   }
 
   return (
-    <div className="flex-1 overflow-y-auto px-7 py-5">
+    <div className="flex-1 overflow-y-auto py-5 pl-7 gutter-pr-7">
       <div className="grid grid-cols-[repeat(auto-fill,minmax(280px,1fr))] gap-4">
         {skills.map((skill) => (
           <SkillCard
@@ -100,17 +100,89 @@ interface SkillCardProps {
   skill: SkillWithStatus;
   isSelected: boolean;
   onClick: () => void;
-  hideInstalledIndicator?: boolean;
+  hideInstalledIndicator: boolean | undefined;
 }
 
-function SkillCard({ skill, isSelected, onClick, hideInstalledIndicator = false }: SkillCardProps) {
-  const formatInstalls = (count: number): string => {
-    if (count >= 1000) {
-      return `${(count / 1000).toFixed(1)}k`;
-    }
-    return count.toString();
-  };
+/** 1,000+ installs show as e.g. "1.2k". */
+function formatInstalls(count: number): string {
+  if (count >= 1000) {
+    return `${(count / 1000).toFixed(1)}k`;
+  }
+  return count.toString();
+}
 
+/** The installed indicator badge - an update arrow when an owning source has
+ * an update pending, else a plain checkmark. `null` when the card doesn't
+ * mark installs at all (the Browse tab's own indicator). */
+function InstalledBadge({ skill }: { skill: SkillWithStatus }) {
+  if (!skill.is_installed) return null;
+  const hasUpdate = (skill.installed_info?.update_owner_ids.length ?? 0) > 0;
+  return hasUpdate ? (
+    <span
+      className="flex size-[18px] items-center justify-center rounded-full bg-warning-soft text-warning"
+      title="Update available"
+    >
+      <ArrowUp size={12} />
+    </span>
+  ) : (
+    <span
+      className="flex size-[18px] items-center justify-center rounded-full bg-success-soft text-success"
+      title="Installed"
+    >
+      <Check size={12} />
+    </span>
+  );
+}
+
+/** The Installed tab's row of provenance/spec/deployment tags - hidden on
+ * the Browse tab, where a card's own `installed_info` (if any) isn't the
+ * point of the card. */
+function InstalledSkillTags({
+  installedInfo,
+}: {
+  installedInfo: NonNullable<SkillWithStatus["installed_info"]>;
+}) {
+  return (
+    <div className="flex flex-wrap items-center gap-1">
+      <span
+        className={`inline-flex w-fit items-center rounded-sm px-1.5 py-0.5 text-caption tracking-[0.04em] uppercase ${sourceKindClass(installedInfo.source_kind)}`}
+      >
+        {SOURCE_KIND_LABELS[installedInfo.source_kind]}
+      </span>
+      {installedInfo.has_spec && (
+        <span
+          className="inline-flex items-center gap-[3px] rounded-sm bg-success-soft px-1.5 py-0.5 text-caption text-success"
+          title="Ships behavior specs/evals"
+        >
+          <FileCheck2 size={11} />
+          spec
+        </span>
+      )}
+      {installedInfo.spec_violations.length > 0 && (
+        <span
+          className="inline-flex items-center gap-[3px] rounded-sm bg-warning-soft px-1.5 py-0.5 text-caption text-warning"
+          title={installedInfo.spec_violations.join("\n")}
+        >
+          <AlertTriangle size={11} />
+          spec issues
+        </span>
+      )}
+      {installedInfo.deployments.map((deployment) => (
+        <span
+          key={deployment.path}
+          className="inline-flex items-center gap-[3px] rounded-sm bg-bg-tertiary px-1.5 py-0.5 text-caption text-text-tertiary"
+        >
+          {deployment.is_symlink && <Link2 size={10} />}
+          {deployment.plugin
+            ? `${deployment.agent} · via ${deployment.plugin.name}`
+            : `${deployment.agent} · ${deployment.scope}`}
+        </span>
+      ))}
+    </div>
+  );
+}
+
+function SkillCard({ skill, isSelected, onClick, hideInstalledIndicator }: SkillCardProps) {
   const isInstalledMarked = skill.is_installed && !hideInstalledIndicator;
   // Mirrors the old cascade: an installed border always wins over selected,
   // but a selected background always wins over the plain hover background.
@@ -120,32 +192,18 @@ function SkillCard({ skill, isSelected, onClick, hideInstalledIndicator = false 
       ? "border-accent"
       : "border-border hover:border-border-focus";
   const bgClass = isSelected ? "bg-accent-softer" : "bg-bg-secondary hover:bg-bg-tertiary";
+  const description = skill.description || skill.installed_info?.description;
 
   return (
-    <button
-      className={`flex flex-col gap-2 rounded-md border p-4 text-left transition-colors ${borderClass} ${bgClass}`}
+    <Button
+      variant="ghost"
+      className={`h-auto flex-col items-stretch gap-2 rounded-md border p-4 justify-start text-left ${borderClass} ${bgClass}`}
       onClick={onClick}
     >
       <div className="flex items-center justify-between gap-2">
         <h3 className="m-0 truncate text-emphasis font-semibold text-text-primary">{skill.name}</h3>
         <div className="flex items-center gap-1">
-          {isInstalledMarked ? (
-            (skill.installed_info?.update_owner_ids.length ?? 0) > 0 ? (
-              <span
-                className="flex size-[18px] items-center justify-center rounded-full bg-warning-soft text-warning"
-                title="Update available"
-              >
-                <ArrowUp size={12} />
-              </span>
-            ) : (
-              <span
-                className="flex size-[18px] items-center justify-center rounded-full bg-success-soft text-success"
-                title="Installed"
-              >
-                <Check size={12} />
-              </span>
-            )
-          ) : null}
+          {isInstalledMarked && <InstalledBadge skill={skill} />}
         </div>
       </div>
 
@@ -154,50 +212,15 @@ function SkillCard({ skill, isSelected, onClick, hideInstalledIndicator = false 
       )}
 
       {hideInstalledIndicator && skill.installed_info && (
-        <div className="flex flex-wrap items-center gap-1">
-          <span
-            className={`inline-flex w-fit items-center rounded-sm px-1.5 py-0.5 text-caption tracking-[0.04em] uppercase ${sourceKindClass(skill.installed_info.source_kind)}`}
-          >
-            {SOURCE_KIND_LABELS[skill.installed_info.source_kind]}
-          </span>
-          {skill.installed_info.has_spec && (
-            <span
-              className="inline-flex items-center gap-[3px] rounded-sm bg-success-soft px-1.5 py-0.5 text-caption text-success"
-              title="Ships behavior specs/evals"
-            >
-              <FileCheck2 size={11} />
-              spec
-            </span>
-          )}
-          {skill.installed_info.spec_violations.length > 0 && (
-            <span
-              className="inline-flex items-center gap-[3px] rounded-sm bg-warning-soft px-1.5 py-0.5 text-caption text-warning"
-              title={skill.installed_info.spec_violations.join("\n")}
-            >
-              <AlertTriangle size={11} />
-              spec issues
-            </span>
-          )}
-          {skill.installed_info.deployments.map((deployment) => (
-            <span
-              key={deployment.path}
-              className="inline-flex items-center gap-[3px] rounded-sm bg-bg-tertiary px-1.5 py-0.5 text-caption text-text-tertiary"
-            >
-              {deployment.is_symlink && <Link2 size={10} />}
-              {deployment.plugin
-                ? `${deployment.agent} · via ${deployment.plugin.name}`
-                : `${deployment.agent} · ${deployment.scope}`}
-            </span>
-          ))}
-        </div>
+        <InstalledSkillTags installedInfo={skill.installed_info} />
       )}
 
-      {(skill.description || skill.installed_info?.description) && (
+      {description && (
         <p
-          className="m-0 line-clamp-2 text-pretty text-small text-text-secondary"
-          title={skill.description || skill.installed_info?.description}
+          className="m-0 line-clamp-2 select-text text-pretty text-small text-text-secondary"
+          title={description}
         >
-          {skill.description || skill.installed_info?.description}
+          {description}
         </p>
       )}
 
@@ -222,7 +245,7 @@ function SkillCard({ skill, isSelected, onClick, hideInstalledIndicator = false 
           </div>
         )}
       </div>
-    </button>
+    </Button>
   );
 }
 

@@ -90,16 +90,19 @@ function ToolCallBlock({ block }: { block: Extract<TranscriptBlock, { kind: "too
           size={14}
           className={`shrink-0 text-text-tertiary transition-transform ${isOpen ? "rotate-90" : ""}`}
         />
-        <span className="shrink-0 font-mono text-caption text-text-primary" title={block.name}>
+        <span
+          className="shrink-0 select-text font-mono text-caption text-text-primary"
+          title={block.name}
+        >
           {block.name}
         </span>
-        <span className="overflow-hidden text-ellipsis whitespace-nowrap text-caption text-text-secondary">
+        <span className="select-text overflow-hidden text-ellipsis whitespace-nowrap text-caption text-text-secondary">
           {block.summary}
         </span>
       </CollapsibleTrigger>
       {block.detail && (
         <CollapsiblePanel>
-          <pre className="m-0 max-h-60 overflow-y-auto border-t border-border-subtle p-2 text-caption break-words whitespace-pre-wrap text-text-secondary">
+          <pre className="m-0 max-h-60 select-text overflow-y-auto border-t border-border-subtle p-2 text-caption break-words whitespace-pre-wrap text-text-secondary">
             {block.detail}
           </pre>
         </CollapsiblePanel>
@@ -145,7 +148,7 @@ export function SkillAgentTranscript({ state }: SkillAgentTranscriptProps) {
       onScroll={handleScroll}
     >
       {unreportedError && (
-        <div className="rounded-sm bg-error-soft px-2.5 py-2 text-small break-words whitespace-pre-wrap text-error">
+        <div className="select-text rounded-sm bg-error-soft px-2.5 py-2 text-small break-words whitespace-pre-wrap text-error">
           {unreportedError}
         </div>
       )}
@@ -164,12 +167,12 @@ export function SkillAgentTranscript({ state }: SkillAgentTranscriptProps) {
               className="flex h-7 items-center gap-1.5 rounded-sm border border-border-subtle bg-bg-tertiary px-2"
             >
               <span
-                className="shrink-0 font-mono text-caption text-text-primary"
+                className="shrink-0 select-text font-mono text-caption text-text-primary"
                 title={block.name}
               >
                 {block.name}
               </span>
-              <span className="overflow-hidden text-ellipsis whitespace-nowrap text-caption text-text-secondary">
+              <span className="select-text overflow-hidden text-ellipsis whitespace-nowrap text-caption text-text-secondary">
                 {block.summary}
               </span>
             </div>
@@ -178,7 +181,7 @@ export function SkillAgentTranscript({ state }: SkillAgentTranscriptProps) {
         return (
           <div
             key={block.id}
-            className="rounded-sm bg-error-soft px-2.5 py-2 text-small break-words whitespace-pre-wrap text-error"
+            className="select-text rounded-sm bg-error-soft px-2.5 py-2 text-small break-words whitespace-pre-wrap text-error"
           >
             {block.message}
           </div>

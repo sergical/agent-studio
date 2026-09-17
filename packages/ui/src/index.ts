@@ -37,7 +37,14 @@ export {
   SelectValue,
 } from "./components/select";
 export { Tabs, TabsList, TabsTrigger, TabsContent, tabsListVariants } from "./components/tabs";
-export { Tooltip, TooltipTrigger, TooltipContent, TooltipProvider } from "./components/tooltip";
+export {
+  Tooltip,
+  TooltipTrigger,
+  TooltipContent,
+  TooltipProvider,
+  createTooltipHandle,
+} from "./components/tooltip";
+export type { TooltipHandle } from "./components/tooltip";
 export {
   Popover,
   PopoverContent,
@@ -97,7 +104,9 @@ export {
   DropdownMenuSub,
   DropdownMenuSubTrigger,
   DropdownMenuSubContent,
+  createDropdownMenuHandle,
 } from "./components/dropdown-menu";
+export type { DropdownMenuHandle } from "./components/dropdown-menu";
 export { Separator } from "./components/separator";
 export { ScrollArea, ScrollBar } from "./components/scroll-area";
 export {
@@ -107,5 +116,6 @@ export {
   CollapsibleContent,
 } from "./components/collapsible";
 export { Progress } from "./components/progress";
+export { Kbd } from "./components/kbd";
 
 export { KitPreview } from "./kit-preview";

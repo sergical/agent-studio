@@ -12,6 +12,7 @@ import type {
   AddSkillResult,
   AddSkillsRequest,
   AgentId,
+  DiscoverySourceSetting,
   ImportResult,
   InstallResult,
   ForkRecord,
@@ -27,13 +28,23 @@ import type {
   PackImportRequest,
   PackMember,
   PaginatedSkillsResponse,
+  ProjectFolder,
   PullResult,
   SkillDetails,
   SkillEvent,
-  SkillsShAccessInfo,
   SkillSnapshot,
+  TrackedProjects,
   UpdatePackResult,
 } from "@skill-studio/lib";
+
+/** Tauri rejects a failed command with the Rust `Result::Err` string directly, not an `Error` -
+ * `err instanceof Error ? err.message : "Unknown error"` would discard it, so every catch block
+ * that surfaces an invoke failure as a toast goes through this instead. */
+export function invokeErrorMessage(cause: unknown): string {
+  if (cause instanceof Error) return cause.message;
+  if (cause == null) return "Unknown error";
+  return `${cause}`;
+}
 
 export async function previewSkillFrontmatterRepair(
   target: LifecycleTarget,
@@ -59,23 +70,6 @@ export async function applySkillFrontmatterRepair(
 // ============================================================================
 // Search API
 // ============================================================================
-
-/**
- * Whether discovery goes straight to skills.sh with a developer-override key
- * (`mode: "direct"`) or through the local Skill Studio server (`mode:
- * "server"`, with its URL). Never returns the key itself.
- */
-export async function getSkillsShAccess(): Promise<SkillsShAccessInfo> {
-  return invoke("get_skills_sh_access");
-}
-
-/**
- * Save `key` as the skills.sh API key. Trimmed and rejected server-side if
- * empty.
- */
-export async function setSkillsShApiKey(key: string): Promise<void> {
-  return invoke("set_skills_sh_api_key", { key });
-}
 
 /**
  * Search for skills on skills.sh. The v1 search endpoint has no pagination -
@@ -112,29 +106,94 @@ export async function getSkillDetails(skillId: string): Promise<SkillDetails> {
 
 /**
  * Get all installed skills, merged from a directory scan of the four
- * first-class agents (Claude Code, Codex, OpenCode, pi) and the lock file.
- * Pass known project directories so project-scoped skills are found too.
+ * first-class agents (Claude Code, Codex, OpenCode, pi) and the lock file,
+ * over the tracked project list already saved in
+ * `~/.agents/skill-studio.json` - the same list `getTrackedProjects` reads.
  */
-export async function getInstalledSkills(projectPaths?: string[]): Promise<InstalledSkill[]> {
-  return invoke("get_installed_skills", { projectPaths });
+export async function getInstalledSkills(): Promise<InstalledSkill[]> {
+  return invoke("get_installed_skills");
 }
 
 /**
- * Register project paths the caller cares about (e.g. one the user just
- * opened) so future background rebuilds always include them. Returns
- * immediately; listen for `onSkillSnapshot` to see the result.
+ * The saved project list from `~/.agents/skill-studio.json`'s `projects`
+ * key - the same list the CLI and the MCP server scan against.
  */
-export async function registerSkillProjects(paths: string[]): Promise<void> {
+export async function getTrackedProjects(): Promise<TrackedProjects> {
+  return invoke("get_tracked_projects");
+}
+
+/**
+ * Add project paths the caller cares about (e.g. one the user just opened)
+ * to the saved list, un-excluding any of them that were previously stopped.
+ * Returns the updated list, already persisted; listen for `onSkillSnapshot`
+ * to see the rebuilt skill scan that follows.
+ */
+export async function registerSkillProjects(paths: string[]): Promise<TrackedProjects> {
   return invoke("register_skill_projects", { paths });
 }
 
 /**
- * Un-register a project path (e.g. one the user closed) so future
- * background rebuilds stop including it. Returns immediately; listen for
- * `onSkillSnapshot` to see the result.
+ * Move a project path (e.g. one the user "Stop tracking"-ed) from added to
+ * excluded in the saved list, so future scans skip it even if discovery
+ * would otherwise find it again. Returns the updated list, already
+ * persisted; listen for `onSkillSnapshot` to see the rebuilt skill scan
+ * that follows.
  */
-export async function unregisterSkillProject(path: string): Promise<void> {
+export async function unregisterSkillProject(path: string): Promise<TrackedProjects> {
   return invoke("unregister_skill_project", { path });
+}
+
+/**
+ * Remove a folder the user added by hand from the saved list, recording no
+ * exclusion - unlike `unregisterSkillProject`, discovery can offer the
+ * folder again later. Returns the updated list, already persisted; listen
+ * for `onSkillSnapshot` to see the rebuilt skill scan that follows.
+ */
+export async function removeSkillProject(path: string): Promise<TrackedProjects> {
+  return invoke("remove_skill_project", { path });
+}
+
+/**
+ * The saved per-harness discovery switches, in display order - see the
+ * Settings "Project folders" card.
+ */
+export async function getDiscoverySources(): Promise<DiscoverySourceSetting[]> {
+  return invoke("get_discovery_sources");
+}
+
+/**
+ * Switch one discovery harness's history search on or off. Returns the
+ * updated switches, already persisted; listen for `onSkillSnapshot` to see
+ * the rebuilt skill scan that follows.
+ */
+export async function setDiscoverySource(
+  harness: string,
+  enabled: boolean,
+): Promise<DiscoverySourceSetting[]> {
+  return invoke("set_discovery_source", { harness, enabled });
+}
+
+/**
+ * Every project folder discovery found or the user added by hand, labelled
+ * by source, for the Settings "Project folders" card. A harness-history
+ * scan runs on every call, so this is not cheap - callers should refetch on
+ * a meaningful change, not on every render.
+ */
+export async function listProjectFolders(): Promise<ProjectFolder[]> {
+  return invoke("list_project_folders");
+}
+
+/**
+ * One-shot migration of the desktop's old localStorage project lists into
+ * the saved `~/.agents/skill-studio.json` list: `added` is registered,
+ * `excluded` is un-registered. Callers should clear the localStorage
+ * entries only after this resolves.
+ */
+export async function importTrackedProjects(
+  added: string[],
+  excluded: string[],
+): Promise<TrackedProjects> {
+  return invoke("import_tracked_projects", { added, excluded });
 }
 
 /**
@@ -181,26 +240,29 @@ export async function openSkillPath(path: string, mode: "reveal" | "editor"): Pr
   return invoke("open_skill_path", { path, mode });
 }
 
-/** One editor offered by the Settings picker - see the Rust `skill_editor`. */
+/** One editor offered by the Settings card - see the Rust `skill_editor`. */
 export interface EditorOption {
-  /** The macOS application name `open -a` takes, without `.app`. */
+  /** The value to save: a macOS application name, an absolute `.app` path, or `"$EDITOR"`. */
   app_name: string;
   label: string;
 }
 
-/** The known code editors actually installed on this machine. */
-export async function listInstalledEditors(): Promise<EditorOption[]> {
-  return invoke("list_installed_editors");
+/** Everything the Settings "Open in editor" card shows - see the Rust `skill_editor::EditorChoices`. */
+export interface EditorChoices {
+  automatic_label: string;
+  apps: EditorOption[];
+  terminal: EditorOption | null;
+  selected: string | null;
 }
 
-/** The app "Open in editor" uses, or `null` for the system default. */
-export async function getPreferredEditor(): Promise<string | null> {
-  return invoke("get_preferred_editor");
+/** The editor card's state: installed/saved apps, the `$EDITOR` row, and the current choice. */
+export async function getEditorChoices(): Promise<EditorChoices> {
+  return invoke("get_editor_choices");
 }
 
-/** `null` restores the system default. An editor that is not installed is refused. */
-export async function setPreferredEditor(appName: string | null): Promise<void> {
-  return invoke("set_preferred_editor", { appName });
+/** `null` restores the system default. A value that isn't usable is refused. */
+export async function setPreferredEditor(value: string | null): Promise<void> {
+  return invoke("set_preferred_editor", { appName: value });
 }
 
 // ============================================================================
@@ -497,6 +559,27 @@ export async function setSkillInvocation(
   policy: InvocationPolicy,
 ): Promise<void> {
   return invoke("set_skill_invocation", { name, path, policy });
+}
+
+/**
+ * Enable or disable a Claude Code plugin (`claude plugin enable|disable
+ * <id> -s user`), which moves every skill the plugin ships together.
+ * Refused for any other harness.
+ */
+export async function setPluginEnabled(
+  pluginId: string,
+  harness: string,
+  enabled: boolean,
+): Promise<void> {
+  return invoke("set_plugin_enabled", { pluginId, harness, enabled });
+}
+
+/**
+ * Uninstall a Claude Code plugin (`claude plugin uninstall <id> -s user -y`),
+ * removing every skill it ships. Refused for any other harness.
+ */
+export async function uninstallPlugin(pluginId: string, harness: string): Promise<void> {
+  return invoke("uninstall_plugin", { pluginId, harness });
 }
 
 // ============================================================================

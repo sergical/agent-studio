@@ -57,7 +57,13 @@ export function stampTheme(resolved: ResolvedTheme): void {
   if (!root || root.getAttribute("data-theme") === resolved) return;
   root.classList.add("theme-switching");
   root.setAttribute("data-theme", resolved);
-  requestAnimationFrame(() => root.classList.remove("theme-switching"));
+  requestAnimationFrame(() => {
+    // Force a style flush before lifting the freeze, so every component's
+    // transition starts from the new theme's resolved values instead of
+    // animating from whatever it last computed under the old one.
+    void getComputedStyle(root).color;
+    root.classList.remove("theme-switching");
+  });
 }
 
 /** Listens for OS theme changes; returns a cleanup that removes the listener. */

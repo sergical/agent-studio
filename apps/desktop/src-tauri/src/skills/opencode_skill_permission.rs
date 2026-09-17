@@ -26,7 +26,9 @@ pub fn opencode_jsonc_path(home: &Path) -> PathBuf {
 
 /// Which OpenCode config format is present, so the frontend can tell the user
 /// to hand-edit a `.jsonc` file rather than silently showing no disables.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize, schemars::JsonSchema,
+)]
 #[serde(rename_all = "kebab-case")]
 pub enum OpencodeConfigKind {
     Json,

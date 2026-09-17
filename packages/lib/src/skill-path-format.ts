@@ -24,10 +24,23 @@ export function homeRelativePath(path: string, home?: string): string {
   return `~${path.slice(base.length)}`;
 }
 
+/** True for a `*`-suffixed `TrackedProjects.added` entry, e.g. `~/src/*` - mirrors
+ * `tracked_projects::is_pattern`. A trailing slash is allowed. Used to keep a pattern out of
+ * install-target pickers, which only make sense for a single concrete folder. */
+export function isProjectPattern(path: string): boolean {
+  const trimmed = path.endsWith("/") ? path.slice(0, -1) : path;
+  return (trimmed.split("/").pop() ?? trimmed) === "*";
+}
+
 /** A shortened "~/…/last-two-segments" form of `path`, e.g. for a project menu's secondary line. */
 export function shortProjectPath(path: string): string {
   const segments = path.split("/").filter(Boolean);
   return `~/${segments.slice(-2).join("/")}`;
+}
+
+/** A path's last segment, e.g. for showing a project without its full path. */
+export function basename(path: string): string {
+  return path.split("/").pop() ?? path;
 }
 
 /**

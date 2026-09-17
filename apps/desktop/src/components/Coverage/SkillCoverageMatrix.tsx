@@ -73,6 +73,7 @@ export function SkillCoverageMatrix({ skills, onSelectSkill }: SkillCoverageMatr
             <th className={HEADER_CELL_CLASS}>
               <TooltipControl content="Universal folder (.agents/skills)">
                 <span
+                  role="img"
                   aria-label="Universal folder"
                   className="inline-flex items-center justify-center"
                 >
@@ -85,7 +86,11 @@ export function SkillCoverageMatrix({ skills, onSelectSkill }: SkillCoverageMatr
               return (
                 <th key={label} className={HEADER_CELL_CLASS}>
                   <TooltipControl content={label}>
-                    <span aria-label={label} className="inline-flex items-center justify-center">
+                    <span
+                      role="img"
+                      aria-label={label}
+                      className="inline-flex items-center justify-center"
+                    >
                       {harnessId ? <HarnessIcon harness={harnessId} size={15} /> : label}
                     </span>
                   </TooltipControl>

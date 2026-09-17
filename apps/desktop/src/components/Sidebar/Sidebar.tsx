@@ -4,11 +4,11 @@
 // filter bar instead - see the design rule in spec-ux-1.md section B.
 // ============================================================================
 
-import { useEffect, useRef, useState } from "react";
-import type { KeyboardEvent } from "react";
+import { useEffect, useState } from "react";
 import {
   Activity as ActivityIcon,
   BookOpen,
+  Layers,
   LayoutDashboard,
   Moon,
   Package,
@@ -20,8 +20,10 @@ import {
   Settings as SettingsIcon,
   Sun,
 } from "lucide-react";
+import { Button } from "@skill-studio/ui";
 import { ownSkillsView, pluginSkillsView } from "@skill-studio/lib";
 import { defaultSkillListFilter } from "@skill-studio/lib";
+import { SHORTCUTS } from "../../lib/app-shortcuts";
 import { isFeatureEnabled } from "../../lib/feature-flags";
 import {
   hasNewerSkillSnapshotEmission,
@@ -29,13 +31,256 @@ import {
   sidebarAnchorView,
 } from "../../lib/sidebar-nav";
 import { useAppStore } from "../../store/appStore";
+import type { ActiveView } from "../../store/appStore";
 import { TooltipControl } from "../ui/TooltipControl";
-import type { SkillSnapshot } from "@skill-studio/lib";
+import type { ResolvedTheme, Theme } from "../../lib/theme";
+import type { SkillListFilter, SkillSnapshot } from "@skill-studio/lib";
 
 interface SidebarProps {
   snapshot: SkillSnapshot | undefined;
   emittedSnapshotRevision: number | undefined;
   requestRescan: () => Promise<void>;
+}
+
+const itemClass = (active: boolean) =>
+  `grid h-6.5 w-full grid-cols-[14px_minmax(0,1fr)_auto] items-center gap-2 rounded-sm px-2 text-left text-body ${active ? "bg-bg-active text-text-primary" : "text-text-secondary hover:bg-bg-hover hover:text-text-primary"} active:bg-bg-pressed`;
+const iconButtonClass =
+  "rounded-sm text-text-tertiary hover:text-text-primary active:bg-bg-pressed";
+
+/**
+ * Tracks one rescan at a time: `spinning` is fully derived from the pending
+ * revision and the store's latest emission, so once a newer snapshot lands
+ * this reads `false` on its own, with no effect needed to clear it back to
+ * null.
+ */
+function useSidebarRescan(
+  snapshotRevision: number | undefined,
+  emittedSnapshotRevision: number | undefined,
+  requestRescan: () => Promise<void>,
+) {
+  const [pendingRescanSnapshotRevision, setPendingRescanSnapshotRevision] = useState<number | null>(
+    null,
+  );
+  const spinning =
+    pendingRescanSnapshotRevision !== null &&
+    !hasNewerSkillSnapshotEmission(pendingRescanSnapshotRevision, emittedSnapshotRevision);
+
+  const handleRefresh = async () => {
+    if (spinning) return;
+    setPendingRescanSnapshotRevision(snapshotRevision ?? 0);
+    try {
+      await requestRescan();
+    } catch {
+      setPendingRescanSnapshotRevision(null);
+    }
+  };
+
+  return { spinning, handleRefresh };
+}
+
+interface SidebarNavItemsProps {
+  anchorView: ActiveView;
+  skillsActive: boolean;
+  skillsCount: number;
+  pluginCount: number;
+  packsEnabled: boolean;
+  inParked: boolean;
+  setActiveView: (view: ActiveView) => void;
+  setSkillListFilter: (patch: Partial<SkillListFilter>) => void;
+}
+
+/** The four places: Home, Skills (with an optional Plugins place beside it), Activity, Packs. */
+function SidebarNavItems({
+  anchorView,
+  skillsActive,
+  skillsCount,
+  pluginCount,
+  packsEnabled,
+  inParked,
+  setActiveView,
+  setSkillListFilter,
+}: SidebarNavItemsProps) {
+  return (
+    <div className="flex flex-col gap-px pt-2.5">
+      <Button
+        variant="ghost"
+        className={itemClass(anchorView.kind === "home")}
+        aria-current={anchorView.kind === "home" ? "page" : undefined}
+        onClick={() => setActiveView({ kind: "home" })}
+      >
+        <LayoutDashboard size={14} />
+        <span className="min-w-0 truncate">Home</span>
+      </Button>
+      <Button
+        variant="ghost"
+        className={itemClass(skillsActive)}
+        aria-current={skillsActive ? "page" : undefined}
+        onClick={() => {
+          if (inParked) setSkillListFilter(defaultSkillListFilter());
+          setActiveView({ kind: "skills" });
+        }}
+      >
+        <Layers size={14} />
+        <span className="min-w-0 truncate">Skills</span>
+        {skillsCount > 0 && (
+          <span className="text-right text-caption tabular-nums text-text-tertiary">
+            {skillsCount}
+          </span>
+        )}
+      </Button>
+      {pluginCount > 0 && (
+        <Button
+          variant="ghost"
+          className={itemClass(anchorView.kind === "plugins")}
+          aria-current={anchorView.kind === "plugins" ? "page" : undefined}
+          onClick={() => setActiveView({ kind: "plugins" })}
+        >
+          <Puzzle size={14} />
+          <span className="min-w-0 truncate">Plugins</span>
+          <span className="text-right text-caption tabular-nums text-text-tertiary">
+            {pluginCount}
+          </span>
+        </Button>
+      )}
+      <Button
+        variant="ghost"
+        className={itemClass(anchorView.kind === "activity")}
+        aria-current={anchorView.kind === "activity" ? "page" : undefined}
+        onClick={() => setActiveView({ kind: "activity" })}
+      >
+        <ActivityIcon size={14} />
+        <span className="min-w-0 truncate">Activity</span>
+      </Button>
+      {packsEnabled && (
+        <Button
+          variant="ghost"
+          className={itemClass(anchorView.kind === "packs")}
+          aria-current={anchorView.kind === "packs" ? "page" : undefined}
+          onClick={() => setActiveView({ kind: "packs" })}
+        >
+          <Package size={14} />
+          <span className="min-w-0 truncate">Packs</span>
+        </Button>
+      )}
+    </div>
+  );
+}
+
+interface SidebarParkedSectionProps {
+  anchorView: ActiveView;
+  inParked: boolean;
+  parkedCount: number;
+  setActiveView: (view: ActiveView) => void;
+  setSkillListFilter: (patch: Partial<SkillListFilter>) => void;
+}
+
+/** Parked is a sub-section of the skills list, shown only when non-empty. */
+function SidebarParkedSection({
+  anchorView,
+  inParked,
+  parkedCount,
+  setActiveView,
+  setSkillListFilter,
+}: SidebarParkedSectionProps) {
+  if (parkedCount === 0) return null;
+  const active = anchorView.kind === "skills" && inParked;
+  return (
+    <div className="flex flex-col gap-px pt-3">
+      <Button
+        variant="ghost"
+        className={itemClass(active)}
+        aria-current={active ? "page" : undefined}
+        onClick={() => {
+          setSkillListFilter({ ...defaultSkillListFilter(), scope: "parked" });
+          setActiveView({ kind: "skills" });
+        }}
+      >
+        <PackageOpen size={14} />
+        <span className="min-w-0 truncate">Parked</span>
+        <span className="text-right text-caption tabular-nums text-text-tertiary">
+          {parkedCount}
+        </span>
+      </Button>
+    </div>
+  );
+}
+
+interface SidebarFooterProps {
+  anchorView: ActiveView;
+  scannedAt: string | undefined;
+  spinning: boolean;
+  onRefresh: () => void;
+  setActiveView: (view: ActiveView) => void;
+  resolvedTheme: ResolvedTheme;
+  setTheme: (theme: Theme) => void;
+}
+
+/** The snapshot's age and a manual rescan button, plus Learn, Settings, and the theme toggle. */
+function SidebarFooter({
+  anchorView,
+  scannedAt,
+  spinning,
+  onRefresh,
+  setActiveView,
+  resolvedTheme,
+  setTheme,
+}: SidebarFooterProps) {
+  return (
+    <div className="mt-auto flex select-none items-center justify-between gap-2 px-2 py-1.5">
+      <TooltipControl content={rescanTooltip(scannedAt)}>
+        <Button
+          variant="ghost"
+          size="xs"
+          className="shrink-0 gap-1.5 rounded-sm px-1.5 text-text-tertiary"
+          onClick={onRefresh}
+          aria-disabled={spinning}
+          aria-label={spinning ? "Syncing installed skills" : "Sync installed skills"}
+        >
+          <RefreshCw size={13} className={spinning ? "animate-spin" : ""} />
+          <span className="whitespace-nowrap">{spinning ? "Syncing…" : "Sync"}</span>
+        </Button>
+      </TooltipControl>
+      <div className="flex items-center gap-0.5">
+        <TooltipControl content="Learn">
+          <Button
+            variant="ghost"
+            size="icon-xs"
+            className={`${iconButtonClass} aria-[current=page]:bg-accent-softer aria-[current=page]:text-accent`}
+            onClick={() => setActiveView({ kind: "learn" })}
+            aria-current={anchorView.kind === "learn" ? "page" : undefined}
+            aria-label="Learn"
+          >
+            <BookOpen size={13} />
+          </Button>
+        </TooltipControl>
+        <TooltipControl content="Settings" shortcut={SHORTCUTS.settings.keys}>
+          <Button
+            variant="ghost"
+            size="icon-xs"
+            className={`${iconButtonClass} aria-[current=page]:bg-accent-softer aria-[current=page]:text-accent`}
+            onClick={() => setActiveView({ kind: "settings" })}
+            aria-current={anchorView.kind === "settings" ? "page" : undefined}
+            aria-label="Settings"
+          >
+            <SettingsIcon size={13} />
+          </Button>
+        </TooltipControl>
+        <TooltipControl
+          content={resolvedTheme === "dark" ? "Switch to light theme" : "Switch to dark theme"}
+        >
+          <Button
+            variant="ghost"
+            size="icon-xs"
+            className={iconButtonClass}
+            onClick={() => setTheme(resolvedTheme === "dark" ? "light" : "dark")}
+            aria-label={resolvedTheme === "dark" ? "Switch to light theme" : "Switch to dark theme"}
+          >
+            {resolvedTheme === "dark" ? <Moon size={13} /> : <Sun size={13} />}
+          </Button>
+        </TooltipControl>
+      </div>
+    </div>
+  );
 }
 
 /**
@@ -45,10 +290,6 @@ interface SidebarProps {
  * button.
  */
 export function Sidebar({ snapshot, emittedSnapshotRevision, requestRescan }: SidebarProps) {
-  const [pendingRescanSnapshotRevision, setPendingRescanSnapshotRevision] = useState<number | null>(
-    null,
-  );
-  const activeRescanIdRef = useRef<symbol | null>(null);
   // Forces the footer to re-render so "just now" ages into "1m ago" and
   // beyond without waiting for the next snapshot - relativeScanTime() itself
   // stays a pure function of scannedAt and the current clock.
@@ -56,11 +297,6 @@ export function Sidebar({ snapshot, emittedSnapshotRevision, requestRescan }: Si
   useEffect(() => {
     const id = setInterval(() => forceTick((n) => n + 1), 30_000);
     return () => clearInterval(id);
-  }, []);
-  useEffect(() => {
-    return () => {
-      activeRescanIdRef.current = null;
-    };
   }, []);
   const activeView = useAppStore((state) => state.activeView);
   const anchorView = sidebarAnchorView(activeView);
@@ -70,7 +306,7 @@ export function Sidebar({ snapshot, emittedSnapshotRevision, requestRescan }: Si
   const openAddSkillSheet = useAppStore((state) => state.openAddSkillSheet);
   const resolvedTheme = useAppStore((state) => state.resolvedTheme);
   const setTheme = useAppStore((state) => state.setTheme);
-  const searchInputRef = useRef<HTMLInputElement>(null);
+  const requestSkillSearchFocus = useAppStore((state) => state.requestSkillSearchFocus);
 
   const own = ownSkillsView(snapshot?.skills ?? []);
   const skillsCount = own.length;
@@ -83,206 +319,84 @@ export function Sidebar({ snapshot, emittedSnapshotRevision, requestRescan }: Si
   const skillsActive = anchorView.kind === "skills" && !inParked;
   const packsEnabled = isFeatureEnabled("skill-packs");
 
-  // Typing while on another view switches to Skills directly in the change
-  // handler, so the query always has somewhere to act - no effect-based
-  // redirect, which would otherwise fire on every store update.
-  function handleSearchChange(value: string) {
-    setSkillListFilter({ query: value });
+  function goToSearch() {
     if (anchorView.kind !== "skills") setActiveView({ kind: "skills" });
+    requestSkillSearchFocus();
   }
 
-  function handleSearchKeyDown(e: KeyboardEvent<HTMLInputElement>) {
-    if (e.key === "Escape") {
-      setSkillListFilter({ query: "" });
-      searchInputRef.current?.blur();
-    }
-  }
-
-  useEffect(() => {
-    if (
-      activeRescanIdRef.current !== null &&
-      hasNewerSkillSnapshotEmission(
-        pendingRescanSnapshotRevision ?? undefined,
-        emittedSnapshotRevision,
-      )
-    ) {
-      activeRescanIdRef.current = null;
-      setPendingRescanSnapshotRevision(null);
-    }
-  }, [emittedSnapshotRevision, pendingRescanSnapshotRevision]);
-
-  const handleRefresh = async () => {
-    if (activeRescanIdRef.current !== null) return;
-
-    const requestId = Symbol("sidebar-rescan");
-    activeRescanIdRef.current = requestId;
-    setPendingRescanSnapshotRevision(snapshot?.revision ?? 0);
-
-    try {
-      await requestRescan();
-    } catch {
-      if (activeRescanIdRef.current !== requestId) return;
-      activeRescanIdRef.current = null;
-      setPendingRescanSnapshotRevision(null);
-    }
-  };
-
-  const spinning = pendingRescanSnapshotRevision !== null;
-
-  const itemClass = (active: boolean) =>
-    `grid h-[30px] w-full cursor-pointer grid-cols-[15px_minmax(0,1fr)_auto] items-center gap-2 rounded-sm border-0 px-2.5 text-left text-body transition-colors ${
-      active
-        ? "bg-accent-soft text-text-primary"
-        : "bg-transparent text-text-secondary hover:bg-bg-hover hover:text-text-primary"
-    }`;
-  const iconButtonClass =
-    "flex size-6 cursor-pointer items-center justify-center rounded-sm border-0 bg-transparent text-text-tertiary transition-colors hover:bg-bg-hover hover:text-text-primary";
+  const { spinning, handleRefresh } = useSidebarRescan(
+    snapshot?.revision,
+    emittedSnapshotRevision,
+    requestRescan,
+  );
 
   return (
-    <nav className="flex w-60 shrink-0 flex-col overflow-y-auto border-r border-border bg-bg-secondary">
-      <div className="flex flex-col gap-px px-2.5 pb-2.5 first:pt-3">
-        <input
-          ref={searchInputRef}
-          type="search"
-          aria-label="Search skills"
-          className="h-8 rounded-sm border border-border bg-bg-primary px-3 text-body text-text-primary transition-colors duration-150 placeholder:text-text-quaternary focus-visible:border-border-focus"
-          placeholder="Search skills…"
-          value={skillListFilter.query}
-          onChange={(e) => handleSearchChange(e.target.value)}
-          onKeyDown={handleSearchKeyDown}
-        />
-        <button
-          className="mt-1.5 flex h-[30px] cursor-pointer items-center justify-center gap-1.5 rounded-sm border-0 bg-accent-soft text-body text-text-primary transition-colors hover:text-accent-hover"
-          onClick={() => openAddSkillSheet()}
-        >
-          <Plus size={15} />
-          <span>Add skill</span>
-        </button>
-      </div>
-
-      <div className="flex flex-col gap-px px-2.5 pb-2.5 first:pt-3">
-        <button
-          className={itemClass(anchorView.kind === "home")}
-          onClick={() => setActiveView({ kind: "home" })}
-        >
-          <LayoutDashboard size={15} />
-          <span className="min-w-0 truncate">Home</span>
-        </button>
-        <button
-          className={itemClass(skillsActive)}
-          onClick={() => {
-            if (inParked) setSkillListFilter(defaultSkillListFilter());
-            setActiveView({ kind: "skills" });
-          }}
-        >
-          <Search size={15} />
-          <span className="min-w-0 truncate">Skills</span>
-          {skillsCount > 0 && (
-            <span className="text-right text-caption tabular-nums text-text-tertiary">
-              {skillsCount}
-            </span>
-          )}
-        </button>
-        {pluginCount > 0 && (
-          <button
-            className={itemClass(anchorView.kind === "plugins")}
-            onClick={() => setActiveView({ kind: "plugins" })}
-          >
-            <Puzzle size={15} />
-            <span className="min-w-0 truncate">Plugins</span>
-            <span className="text-right text-caption tabular-nums text-text-tertiary">
-              {pluginCount}
-            </span>
-          </button>
-        )}
-        <button
-          className={itemClass(anchorView.kind === "activity")}
-          onClick={() => setActiveView({ kind: "activity" })}
-        >
-          <ActivityIcon size={15} />
-          <span className="min-w-0 truncate">Activity</span>
-        </button>
-        {packsEnabled && (
-          <button
-            className={itemClass(anchorView.kind === "packs")}
-            onClick={() => setActiveView({ kind: "packs" })}
-          >
-            <Package size={15} />
-            <span className="min-w-0 truncate">Packs</span>
-          </button>
-        )}
-      </div>
-
-      {parkedCount > 0 && (
-        <div className="flex flex-col gap-px px-2.5 pb-2.5 first:pt-3">
-          <button
-            className={itemClass(anchorView.kind === "skills" && inParked)}
-            onClick={() => {
-              setSkillListFilter({ ...defaultSkillListFilter(), scope: "parked" });
-              setActiveView({ kind: "skills" });
-            }}
-          >
-            <PackageOpen size={15} />
-            <span className="min-w-0 truncate">Parked</span>
-            <span className="text-right text-caption tabular-nums text-text-tertiary">
-              {parkedCount}
-            </span>
-          </button>
-        </div>
-      )}
-
-      <div className="mt-auto flex select-none items-center justify-between gap-2 border-t border-border-subtle px-2.5 py-2">
-        <TooltipControl content={rescanTooltip(snapshot?.scanned_at)}>
-          <button
-            type="button"
-            className="flex h-6 shrink-0 cursor-pointer items-center gap-1.5 rounded-sm border-0 bg-transparent px-1.5 text-caption text-text-tertiary transition-colors hover:enabled:bg-bg-hover hover:enabled:text-text-primary disabled:cursor-default"
-            onClick={handleRefresh}
-            disabled={spinning}
-            aria-label={spinning ? "Syncing installed skills" : "Sync installed skills"}
-          >
-            <RefreshCw size={13} className={spinning ? "animate-spin" : ""} />
-            <span className="whitespace-nowrap">{spinning ? "Syncing…" : "Sync"}</span>
-          </button>
-        </TooltipControl>
+    <nav className="flex w-60 shrink-0 flex-col overflow-hidden">
+      <div data-tauri-drag-region className="h-9 shrink-0" />
+      {/* 41px = the page panel's 1px top border plus PageShell's 40px header, so this title sits on
+          the same line as the page title. */}
+      <div className="flex h-[41px] shrink-0 items-center justify-between pr-1.5 pl-3.5">
+        <span className="text-small font-semibold text-text-primary">Skill Studio</span>
         <div className="flex items-center gap-0.5">
-          <TooltipControl content="Learn">
-            <button
-              type="button"
-              className={`${iconButtonClass} aria-[current=page]:bg-accent-softer aria-[current=page]:text-accent`}
-              onClick={() => setActiveView({ kind: "learn" })}
-              aria-current={anchorView.kind === "learn" ? "page" : undefined}
-              aria-label="Learn"
-            >
-              <BookOpen size={13} />
-            </button>
-          </TooltipControl>
-          <TooltipControl content="Settings">
-            <button
-              type="button"
-              className={`${iconButtonClass} aria-[current=page]:bg-accent-softer aria-[current=page]:text-accent`}
-              onClick={() => setActiveView({ kind: "settings" })}
-              aria-current={anchorView.kind === "settings" ? "page" : undefined}
-              aria-label="Settings"
-            >
-              <SettingsIcon size={13} />
-            </button>
-          </TooltipControl>
+          {/* The sidebar switcher row only fits two icons without crowding, so the command
+              palette's ⌘K hint rides along on this tooltip instead of a third icon button. */}
           <TooltipControl
-            content={resolvedTheme === "dark" ? "Switch to light theme" : "Switch to dark theme"}
+            content={["Search skills", "Command palette ⌘K"]}
+            shortcut={SHORTCUTS.filterSkills.keys}
           >
-            <button
-              type="button"
+            <Button
+              variant="ghost"
+              size="icon-xs"
               className={iconButtonClass}
-              onClick={() => setTheme(resolvedTheme === "dark" ? "light" : "dark")}
-              aria-label={
-                resolvedTheme === "dark" ? "Switch to light theme" : "Switch to dark theme"
-              }
+              aria-label="Search skills"
+              onClick={goToSearch}
             >
-              {resolvedTheme === "dark" ? <Moon size={13} /> : <Sun size={13} />}
-            </button>
+              <Search size={14} />
+            </Button>
+          </TooltipControl>
+          <TooltipControl content="Add skill" shortcut={SHORTCUTS.addSkill.keys}>
+            <Button
+              variant="ghost"
+              size="icon-xs"
+              className={iconButtonClass}
+              aria-label="Add skill"
+              onClick={() => openAddSkillSheet()}
+            >
+              <Plus size={14} />
+            </Button>
           </TooltipControl>
         </div>
       </div>
+
+      <div className="flex min-h-0 flex-1 flex-col overflow-y-auto pl-2 gutter-pr-2">
+        <SidebarNavItems
+          anchorView={anchorView}
+          skillsActive={skillsActive}
+          skillsCount={skillsCount}
+          pluginCount={pluginCount}
+          packsEnabled={packsEnabled}
+          inParked={inParked}
+          setActiveView={setActiveView}
+          setSkillListFilter={setSkillListFilter}
+        />
+        <SidebarParkedSection
+          anchorView={anchorView}
+          inParked={inParked}
+          parkedCount={parkedCount}
+          setActiveView={setActiveView}
+          setSkillListFilter={setSkillListFilter}
+        />
+      </div>
+
+      <SidebarFooter
+        anchorView={anchorView}
+        scannedAt={snapshot?.scanned_at}
+        spinning={spinning}
+        onRefresh={handleRefresh}
+        setActiveView={setActiveView}
+        resolvedTheme={resolvedTheme}
+        setTheme={setTheme}
+      />
     </nav>
   );
 }

@@ -100,41 +100,27 @@ npm run check
 
 ## Project Structure
 
+Top-level workspaces only. Update this tree when a workspace is added or
+removed; do not list individual source files here.
+
 ```
 /
 ├── apps/
-│   └── desktop/                  # The Tauri app (npm package "skill-studio")
-│       ├── src/                  # React frontend
-│       │   ├── components/
-│       │   │   ├── SkillStore/   # SkillStore, SkillBrowser, SkillDetailPanel,
-│       │   │   │                 # SkillDetailHeader, SkillContent, InstallControls,
-│       │   │   │                 # AgentTargetSelector, SkillSearchBar, InstallProgressModal
-│       │   │   └── ui/           # Toast, ToastContainer
-│       │   ├── lib/
-│       │   │   ├── skill-types.ts        # Type definitions
-│       │   │   └── skill-api.ts          # Tauri IPC wrappers
-│       │   ├── store/
-│       │   │   └── appStore.ts   # Zustand store
-│       │   ├── App.tsx           # Main app component
-│       │   └── main.tsx          # Entry point
-│       └── src-tauri/            # Rust backend
-│           ├── src/
-│           │   ├── skills/
-│           │   │   ├── mod.rs
-│           │   │   ├── agents.rs         # AgentId, agent paths
-│           │   │   ├── api.rs            # skills.sh HTTP client
-│           │   │   ├── commands.rs       # Tauri IPC commands
-│           │   │   ├── frontmatter.rs    # SKILL.md frontmatter parsing/validation
-│           │   │   ├── lock_file.rs      # ~/.agents/.skill-lock.json
-│           │   │   ├── plugins.rs        # Native plugin cache enumeration
-│           │   │   ├── provenance.rs     # Source-kind classification
-│           │   │   ├── scan.rs           # Installed-skill directory scanner
-│           │   │   └── skill_dto.rs      # Serde DTOs sent to the frontend
-│           │   ├── lib.rs                # Library entry
-│           │   └── main.rs               # Rust entry point
-│           └── Cargo.toml                # Rust dependencies
+│   ├── cli/                      # Rust CLI, thin adapter over skill-studio-core
+│   ├── desktop/                  # Tauri app (npm package "skill-studio")
+│   │   ├── src/                  # React frontend: components/, hooks/, lib/, store/
+│   │   └── src-tauri/src/skills/ # Rust backend: scan, lifecycle, Tauri commands
+│   ├── mcp/                      # Rust MCP server over skill-studio-core, stdio
+│   ├── server/                   # Node proxy for the skills.sh API (port 8787)
+│   └── tui/                      # Terminal UI (Node)
+├── crates/
+│   ├── skill-studio-core/        # Scope-confined core: scan, ops, events, DTOs, schema/
+│   └── skill-studio-host/        # Real-world port adapters for the core crate
 ├── packages/
-│   └── ui/                       # Shared UI package placeholder (@skill-studio/ui)
+│   ├── lib/                      # Shared TypeScript library
+│   ├── marketing/                # Marketing site (Vite + StyleX) and Remotion walkthroughs
+│   └── ui/                       # Shared UI primitives (@skill-studio/ui)
+├── docs/                         # Specs and reference docs
 ├── tools/
 │   └── oxlint/anti-slop/         # Local oxlint JS plugin
 └── package.json                  # npm workspaces root
@@ -143,6 +129,12 @@ npm run check
 ## Code Style Guidelines
 
 ### TypeScript/React
+
+**UI primitives:** Form controls and buttons come from `@skill-studio/ui`
+(`Input`, `Textarea`, `Select`, `Button`, and the other exports in
+`packages/ui/src/index.ts`). Raw `<input>`, `<textarea>`, `<select>`, and
+`<button>` are allowed only inside `packages/ui`; the
+`anti-slop/no-raw-form-elements` lint rule enforces this.
 
 **Imports:** Group in order - React, external libs, internal modules, types
 
@@ -286,20 +278,20 @@ let home = get_home_dir().ok_or("Could not find home directory")?;
 
 ### Key Files
 
-| Purpose               | File                                              |
-| --------------------- | ------------------------------------------------- |
-| Main App              | `apps/desktop/src/App.tsx`                        |
-| State Store           | `apps/desktop/src/store/appStore.ts`              |
-| Skill types           | `apps/desktop/src/lib/skill-types.ts`             |
-| Tauri IPC wrappers    | `apps/desktop/src/lib/skill-api.ts`               |
-| Tauri commands        | `apps/desktop/src-tauri/src/skills/commands.rs`   |
-| Scanner               | `apps/desktop/src-tauri/src/skills/scan.rs`       |
-| Provenance            | `apps/desktop/src-tauri/src/skills/provenance.rs` |
-| Agent paths           | `apps/desktop/src-tauri/src/skills/agents.rs`     |
-| Lint config           | `.oxlintrc.json`                                  |
-| Format config         | `.oxfmtrc.json`                                   |
-| Tauri Config          | `apps/desktop/src-tauri/tauri.conf.json`          |
-| TS Config             | `apps/desktop/tsconfig.json`                      |
+| Purpose            | File                                              |
+| ------------------ | ------------------------------------------------- |
+| Main App           | `apps/desktop/src/App.tsx`                        |
+| State Store        | `apps/desktop/src/store/appStore.ts`              |
+| Skill types        | `apps/desktop/src/lib/skill-types.ts`             |
+| Tauri IPC wrappers | `apps/desktop/src/lib/skill-api.ts`               |
+| Tauri commands     | `apps/desktop/src-tauri/src/skills/commands.rs`   |
+| Scanner            | `apps/desktop/src-tauri/src/skills/scan.rs`       |
+| Provenance         | `apps/desktop/src-tauri/src/skills/provenance.rs` |
+| Agent paths        | `apps/desktop/src-tauri/src/skills/agents.rs`     |
+| Lint config        | `.oxlintrc.json`                                  |
+| Format config      | `.oxfmtrc.json`                                   |
+| Tauri Config       | `apps/desktop/src-tauri/tauri.conf.json`          |
+| TS Config          | `apps/desktop/tsconfig.json`                      |
 
 ### TypeScript Strictness
 

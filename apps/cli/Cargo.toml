@@ -1,0 +1,27 @@
+[package]
+name = "skill-studio-cli"
+version = "0.1.0"
+edition = "2021"
+description = "skill-studio: the Skill Studio command line"
+license = "MIT"
+publish = false
+
+[[bin]]
+name = "skill-studio"
+path = "src/main.rs"
+
+[dependencies]
+skill-studio-core = { path = "../../crates/skill-studio-core" }
+skill-studio-host = { path = "../../crates/skill-studio-host" }
+clap = { version = "4", features = ["derive"] }
+serde = "1"
+serde_json = "1"
+schemars = { version = "1", features = ["chrono04"] }
+ulid = { version = "1", features = ["serde"] }
+dirs = "5"
+ctrlc = "3"
+
+[dev-dependencies]
+skill-studio-core = { path = "../../crates/skill-studio-core", features = ["testing"] }
+tempfile = "3"
+similar = "2"

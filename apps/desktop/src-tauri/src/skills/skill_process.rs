@@ -435,9 +435,22 @@ pub fn run_controlled_npx_with_control(
     cwd: Option<&Path>,
     control: &AddOperationControl,
 ) -> Result<(), ControlledProcessError> {
+    run_controlled_program_with_control("npx", args, cwd, control)
+}
+
+/// Same as [`run_controlled_npx_with_control`], for any program - used by
+/// [`super::skill_add::CommandRunner::run`] so lifecycle actions other than
+/// Add Skill (e.g. the `claude` plugin CLI) share the same timeout/cancel
+/// and bounded-output handling.
+pub fn run_controlled_program_with_control(
+    program: &str,
+    args: &[String],
+    cwd: Option<&Path>,
+    control: &AddOperationControl,
+) -> Result<(), ControlledProcessError> {
     let timeout = control.remaining()?;
     run_controlled_command(
-        "npx",
+        program,
         args,
         cwd,
         control.cancel_flag(),

@@ -23,6 +23,11 @@ function fixtureDeployment(overrides: Partial<Deployment> = {}): Deployment {
     symlink_is_broken: false,
     content_hash: "abc",
     disabled: false,
+    codex_implicit_invocation: null,
+    disabled_by: null,
+    invocation: "both",
+    spec_violations: [],
+    shared_via_whole_dir_link: false,
     ...overrides,
   };
 }
@@ -49,6 +54,17 @@ function fixtureSkill(deployments: Deployment[]): InstalledSkill {
     parked: false,
     invocation: "both",
     update_owner_ids: [],
+    update_owners: [],
+    description: null,
+    fork: null,
+    parked_at: null,
+    skill_path: null,
+    source_url: null,
+    trial: null,
+    trials: [],
+    update_commit: null,
+    update_commit_at: null,
+    updated_at: null,
   };
 }
 

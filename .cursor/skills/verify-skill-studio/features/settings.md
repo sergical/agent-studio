@@ -5,6 +5,7 @@ App-level preferences: preferred code editor for opening skill folders, skills.s
 ## Sub-features
 
 **Open in Editor** (EditorPicker component):
+
 - **Purpose** - Controls which application the "Open in editor" button in skill Locations card launches
 - **Automatic option** - First radio item: "Automatic (<first-found-editor>)", uses first editor in `listInstalledEditors()` result
 - **Editor list** - Radio buttons for each installed code editor found in `/Applications/` and `~/Applications/`:
@@ -19,6 +20,7 @@ App-level preferences: preferred code editor for opening skill folders, skills.s
 - **Empty state** - "No known code editor was found in your Applications folders." (rare, but possible on fresh macOS)
 
 **skills.sh API Key** (SkillsShKeySetting component):
+
 - **Purpose** - Developer override to browse skills.sh directly instead of through Skill Studio server
 - **Input** - Password field, placeholder "Developer override: skills.sh API key"
 - **Save button** - Disabled when input empty or while saving
@@ -30,12 +32,14 @@ App-level preferences: preferred code editor for opening skill folders, skills.s
 - **Installation note** - "Installing by source never needs a key" (clarifies key is only for browsing)
 
 **Theme Selector** (managed in Zustand store, UI not in SettingsView):
+
 - **Options** - System / Light / Dark
 - **Location** - Controlled from sidebar footer theme toggle (sun/moon icon), not SettingsView component
 - **Storage** - `theme` field in appStore, persisted to localStorage, applied as `data-theme` attr on `<html>`
 - **System mode** - Follows OS preference via `window.matchMedia('(prefers-color-scheme: dark)')`
 
 **Projects Management** (in Skills filter bar, not SettingsView):
+
 - **Add project** - "Add project…" in scope dropdown → native folder picker (Tauri `open()`)
 - **Remove project** - "Stop tracking <name>…" in scope dropdown → confirmation dialog → removes from `userAddedProjects` array
 - **Storage** - `userAddedProjects` array in appStore, persisted to localStorage
@@ -52,12 +56,12 @@ App-level preferences: preferred code editor for opening skill folders, skills.s
 
 ```typescript
 // Navigate to Settings
-await page.goto('http://localhost:1420');
+await page.goto("http://localhost:1420");
 await page.click('button:has-text("Settings")');
-await page.waitForSelector('text=Open in editor');
+await page.waitForSelector("text=Open in editor");
 
 // Verify editor options render
-const editorSection = page.locator('text=Open in editor').locator('..');
+const editorSection = page.locator("text=Open in editor").locator("..");
 await expect(editorSection).toBeVisible();
 const radioCount = await editorSection.locator('input[type="radio"]').count();
 console.log(`Found ${radioCount} editor options`);
@@ -68,18 +72,18 @@ if (await cursorOption.isVisible()) {
   await cursorOption.click();
   await page.waitForTimeout(200); // Saves immediately
   // Verify checkmark appears
-  const checkmark = cursorOption.locator('svg');
+  const checkmark = cursorOption.locator("svg");
   await expect(checkmark).toBeVisible();
 }
 
 // Enter skills.sh API key
 const keyInput = page.locator('input[type="password"][placeholder*="skills.sh"]');
-await keyInput.fill('sk_test_1234567890abcdef');
+await keyInput.fill("sk_test_1234567890abcdef");
 await page.click('button:has-text("Save")');
 await page.waitForTimeout(500); // Backend save
 
 // Verify status line updates
-const statusLine = page.locator('text=Using a local skills.sh key');
+const statusLine = page.locator("text=Using a local skills.sh key");
 await expect(statusLine).toBeVisible();
 
 // Clear key (input is now empty after save, need to remove from backend)
@@ -88,11 +92,12 @@ await expect(statusLine).toBeVisible();
 // Change theme (via sidebar, not Settings page)
 await page.click('button[aria-label="Toggle theme"]'); // Or by icon selector
 // Verify theme changed (check html data-theme attr)
-const theme = await page.locator('html').getAttribute('data-theme');
+const theme = await page.locator("html").getAttribute("data-theme");
 console.log(`Current theme: ${theme}`);
 ```
 
 Selectors:
+
 - Editor section: `text=Open in editor`
 - Editor radio items: `label` within editor section, by text (e.g. `label:has-text("VS Code")`)
 - Selected checkmark: `svg` within selected label
@@ -117,6 +122,7 @@ Selectors:
 ## Branches
 
 ### Happy path: Change editor, save key
+
 1. User clicks Settings → page loads, editor section shows list (or loading message)
 2. User clicks "Cursor" radio → checkmark moves, backend call `setPreferredEditor("Cursor")` runs
 3. Success → selection stays, next "Open in editor" uses Cursor
@@ -124,25 +130,30 @@ Selectors:
 5. User clicks "Save" → backend writes key, input clears, status line updates "Using a local skills.sh key"
 
 ### Empty / first-run states
+
 - **No editors detected** → "No known code editor was found in your Applications folders." message, no radio buttons
 - **No key saved** → Status line shows "Browsing through the Skill Studio server at <url>"
 - **Automatic option when empty list** → "Automatic" (no editor name in label)
 
 ### Duplicate / conflict states
+
 - **Multiple VS Code installs** → Backend dedupes by app name, shows once
 - **Key already saved** → Input starts empty (security: never refetched), status line shows "Using a local key"
 
 ### Failure / error states
+
 - **Editor save failure** → Toast "Couldn't save your editor: <error>", selection reverts to previous
 - **Key save failure** → Toast "Couldn't save your skills.sh key: <error>", input stays filled, status line unchanged
 - **Editor list load failure** → Toast "Couldn't read your editor setting: <error>", section shows error or empty
 
 ### Cancellation / close mid-flow
+
 - **Navigate away after editor change** → Change already saved (no cancel needed)
 - **Close after typing key but before Save** → Key not saved (input state lost)
 - **Browser refresh** → Editor selection persists (saved immediately), unsaved key lost
 
 ### Loading / progress states
+
 - **Initial editor load** → "Looking for installed editors…" message, no radio buttons yet
 - **Editor selection saving** → No spinner (instant radio check move), backend call async in background
 - **Key save in progress** → "Save" button shows "Saving…" or spinner, disabled
@@ -150,6 +161,7 @@ Selectors:
 ## Benchmarks & improvement
 
 ### Observable metrics
+
 - **Settings page render time**: Nav click → sections visible
   - Measure: Route change → editor section + key section rendered
   - Target: < 200ms (two backend reads on mount)
@@ -164,11 +176,13 @@ Selectors:
   - Target: < 200ms (JSON write + re-read)
 
 ### Current instrumentation
+
 - Loading states shown in UI ("Looking for installed editors…")
 - Error toasts on failure (with error messages)
 - No save duration logging, backend timing, or success rate tracking
 
 ### Suggested measurements for verification
+
 - **Editor detection coverage**: Verify all common editors detected (VS Code, Cursor, Sublime, etc.)
 - **Automatic fallback correctness**: Verify first editor in list matches "Automatic" label
 - **Key save idempotency**: Save same key twice, verify no errors or duplicate writes
@@ -176,6 +190,7 @@ Selectors:
 - **Theme persistence**: Verify theme survives app restart (localStorage roundtrip)
 
 ### Improvement levers
+
 - **Cache editor list** (currently re-scans on every Settings mount; cache for 1h would speed)
 - **Add "Clear key" button** (currently requires manual file edit; one-click clear would improve UX)
 - **Prefetch editor list** (load on app start, not on Settings mount; Settings would show instantly)
@@ -195,6 +210,7 @@ After each interaction:
 - **Automatic option**: Always present (top of list), label shows first editor or just "Automatic"
 
 Invariants:
+
 - Editor radio group always has one selected (Automatic or specific editor)
 - skills.sh input never shows saved key (password field, never refetched)
 - Status line reflects actual backend state (queries `getSkillsShAccess()` on mount)

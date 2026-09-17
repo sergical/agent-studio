@@ -34,6 +34,11 @@ function fixtureDeployment(overrides: Partial<Deployment> = {}): Deployment {
     symlink_is_broken: false,
     content_hash: "abc",
     disabled: false,
+    codex_implicit_invocation: null,
+    disabled_by: null,
+    invocation: "both",
+    spec_violations: [],
+    shared_via_whole_dir_link: false,
     ...overrides,
   };
 }
@@ -59,6 +64,17 @@ function fixtureSkill(overrides: Partial<InstalledSkill> = {}): InstalledSkill {
     folder_truncated: false,
     parked: false,
     invocation: "both",
+    update_owners: [],
+    description: null,
+    fork: null,
+    parked_at: null,
+    skill_path: null,
+    source_url: null,
+    trial: null,
+    trials: [],
+    update_commit: null,
+    update_commit_at: null,
+    updated_at: null,
     ...overrides,
     update_owner_ids:
       overrides.update_owner_ids ?? (overrides.has_update ? ["owner:v1/global/find-bugs"] : []),
@@ -487,6 +503,76 @@ describe("rowMenu", () => {
     const menu = rowMenu(row, global.label);
     expect(menu.hint).toBe("Turns it back on in Codex's config.toml.");
   });
+
+  it("offers disable and uninstall for a Claude Code plugin row", () => {
+    const plugin = fixtureDeployment({
+      agent: "Claude Code",
+      scope: "plugin",
+      mutability: "read-only",
+      path: "/home/.claude/plugins/cache/anthropics/codex/1.0.6/skills/find-bugs",
+      plugin: {
+        name: "codex",
+        harness: "Claude Code",
+        version: "1.0.6",
+        marketplace: "anthropics",
+        id: "codex@anthropics",
+      },
+    });
+    const [global] = buildScopeGroups(fixtureSkill({ deployments: [plugin] }));
+    const row = global.rows.find((r) => r.kind === "plugin")!;
+    const menu = rowMenu(row, global.label);
+
+    expect(menu.entries.map((e) => e.label)).toContain("Disable the codex plugin for Claude Code");
+    expect(menu.danger.map((e) => e.label)).toContain("Uninstall the codex plugin…");
+    expect(menu.hint).toBe("Applies to every skill the codex plugin ships.");
+  });
+
+  it("offers enable for a Claude Code plugin row disabled by claude-plugin-disabled", () => {
+    const plugin = fixtureDeployment({
+      agent: "Claude Code",
+      scope: "plugin",
+      mutability: "read-only",
+      disabled: true,
+      disabled_by: "claude-plugin-disabled",
+      path: "/home/.claude/plugins/cache/anthropics/codex/1.0.6/skills/find-bugs",
+      plugin: {
+        name: "codex",
+        harness: "Claude Code",
+        version: "1.0.6",
+        marketplace: "anthropics",
+        id: "codex@anthropics",
+      },
+    });
+    const [global] = buildScopeGroups(fixtureSkill({ deployments: [plugin] }));
+    const row = global.rows.find((r) => r.kind === "plugin")!;
+    const menu = rowMenu(row, global.label);
+
+    expect(menu.entries.map((e) => e.label)).toContain("Enable the codex plugin for Claude Code");
+  });
+
+  it("offers no plugin actions and a /plugins hint for a Codex plugin row", () => {
+    const plugin = fixtureDeployment({
+      agent: "Codex",
+      scope: "plugin",
+      mutability: "read-only",
+      path: "/home/.codex/plugins/cache/openai/openai-templates/1.0.0/skills/find-bugs",
+      plugin: {
+        name: "openai-templates",
+        harness: "Codex",
+        version: "1.0.0",
+        marketplace: "openai",
+        id: "openai-templates@openai",
+      },
+    });
+    const [global] = buildScopeGroups(fixtureSkill({ deployments: [plugin] }));
+    const row = global.rows.find((r) => r.kind === "plugin")!;
+    const menu = rowMenu(row, global.label);
+
+    const labels = menu.entries.map((e) => e.label);
+    expect(labels.some((label) => label.includes("plugin for Codex"))).toBe(false);
+    expect(menu.danger).toEqual([]);
+    expect(menu.hint).toBe("Manage this plugin with /plugins inside Codex.");
+  });
 });
 
 describe("buildInvocationFiles / invocationFooterNote", () => {
@@ -583,7 +669,13 @@ describe("buildInvocationFiles editability", () => {
       scope: "plugin",
       is_symlink: false,
       path: "/home/.codex/plugins/cache/foo/skills/find-bugs",
-      plugin: { name: "openai-templates", harness: "Codex" },
+      plugin: {
+        name: "openai-templates",
+        harness: "Codex",
+        version: null,
+        marketplace: "openai",
+        id: "openai-templates@openai",
+      },
     });
     const skill = fixtureSkill({ deployments: [plugin], source_kind: "manual" });
     const files = buildInvocationFiles(buildScopeGroups(skill), skill);

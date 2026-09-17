@@ -80,9 +80,9 @@ export function SkillRunHistory({ skillName, onClose }: SkillRunHistoryProps) {
   if (selected) {
     return (
       <div className="flex flex-col gap-2.5 rounded-md border border-border bg-bg-secondary p-4">
-        <button
-          type="button"
-          className="inline-flex cursor-pointer items-center gap-1.5 self-start border-0 bg-transparent p-0 text-small text-text-secondary hover:text-text-primary"
+        <Button
+          variant="ghost"
+          className="h-auto gap-1.5 self-start p-0 text-small text-text-secondary"
           onClick={() => {
             setSelected(null);
             setSelectedState(null);
@@ -90,7 +90,7 @@ export function SkillRunHistory({ skillName, onClose }: SkillRunHistoryProps) {
         >
           <ArrowLeft size={14} />
           Runs
-        </button>
+        </Button>
         {selectedState ? (
           <SkillAgentTranscript state={selectedState} />
         ) : (
@@ -117,10 +117,10 @@ export function SkillRunHistory({ skillName, onClose }: SkillRunHistoryProps) {
       ) : (
         <div className="flex flex-col gap-1.5">
           {runs.map((run) => (
-            <button
+            <Button
               key={run.id}
-              type="button"
-              className="flex h-8 cursor-pointer items-center gap-2.5 rounded-sm border border-border-subtle bg-bg-tertiary px-2.5 text-left hover:bg-bg-hover"
+              variant="ghost"
+              className="gap-2.5 rounded-sm border border-border-subtle bg-bg-tertiary px-2.5 justify-start text-left"
               onClick={() => handleSelect(run)}
             >
               <span className="min-w-14 text-caption text-text-tertiary">
@@ -137,7 +137,7 @@ export function SkillRunHistory({ skillName, onClose }: SkillRunHistoryProps) {
               >
                 {run.judge ? (run.judge.passed ? "Passed" : "Failed") : run.ok ? "OK" : "Failed"}
               </span>
-            </button>
+            </Button>
           ))}
         </div>
       )}

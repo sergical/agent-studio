@@ -15,6 +15,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
+use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use tauri::Manager;
 
@@ -1018,7 +1019,7 @@ pub fn fork_skill(
 // ============================================================================
 
 /// What one `pull_fork_upstream` call did.
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default, JsonSchema)]
 pub struct PullResult {
     pub from_commit: String,
     pub to_commit: String,

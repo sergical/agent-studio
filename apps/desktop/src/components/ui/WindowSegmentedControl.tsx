@@ -18,6 +18,7 @@ export function WindowSegmentedControl({ value, onChange }: WindowSegmentedContr
   return (
     <ToggleGroup
       variant="segmented"
+      aria-label="Usage window"
       value={[value]}
       onValueChange={(next) => singleSelectToggleValue<UsageWindow>(next, onChange)}
     >

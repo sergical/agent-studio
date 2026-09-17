@@ -483,7 +483,7 @@ struct OperationCommandRunner<'a> {
 }
 
 impl CommandRunner for OperationCommandRunner<'_> {
-    fn run_npx(&self, args: &[String], cwd: Option<&Path>) -> Result<(), String> {
+    fn run(&self, _program: &str, args: &[String], cwd: Option<&Path>) -> Result<(), String> {
         self.control.check_message()?;
         self.inner.run_npx(args, cwd)
     }
@@ -1093,7 +1093,7 @@ mod tests {
     }
 
     impl CommandRunner for BlockingRunner {
-        fn run_npx(&self, _args: &[String], _cwd: Option<&Path>) -> Result<(), String> {
+        fn run(&self, _program: &str, _args: &[String], _cwd: Option<&Path>) -> Result<(), String> {
             *self.calls.lock().unwrap() += 1;
             let (lock, cond) = &*self.gate;
             let mut ready = lock.lock().unwrap();
@@ -1256,7 +1256,7 @@ mod tests {
             .unwrap();
         struct PanicRunner;
         impl CommandRunner for PanicRunner {
-            fn run_npx(&self, _: &[String], _: Option<&Path>) -> Result<(), String> {
+            fn run(&self, _program: &str, _: &[String], _: Option<&Path>) -> Result<(), String> {
                 panic!("untrusted source must not run npx");
             }
         }
@@ -1302,7 +1302,7 @@ mod tests {
             .unwrap();
         struct PanicRunner;
         impl CommandRunner for PanicRunner {
-            fn run_npx(&self, _: &[String], _: Option<&Path>) -> Result<(), String> {
+            fn run(&self, _program: &str, _: &[String], _: Option<&Path>) -> Result<(), String> {
                 panic!("untrusted source must not run npx");
             }
         }
@@ -1375,7 +1375,7 @@ mod tests {
             .unwrap();
         struct PanicRunner;
         impl CommandRunner for PanicRunner {
-            fn run_npx(&self, _: &[String], _: Option<&Path>) -> Result<(), String> {
+            fn run(&self, _program: &str, _: &[String], _: Option<&Path>) -> Result<(), String> {
                 panic!("untrusted source must not run npx");
             }
         }
@@ -1460,7 +1460,7 @@ mod tests {
             home: PathBuf,
         }
         impl CommandRunner for CreateRunner {
-            fn run_npx(&self, _: &[String], _: Option<&Path>) -> Result<(), String> {
+            fn run(&self, _program: &str, _: &[String], _: Option<&Path>) -> Result<(), String> {
                 fs::create_dir_all(self.home.join(".agents/skills/visual-recap")).unwrap();
                 Ok(())
             }
@@ -1512,7 +1512,7 @@ mod tests {
         state.request_cancel("op-cancel").unwrap();
         struct CancelRunner;
         impl CommandRunner for CancelRunner {
-            fn run_npx(&self, _: &[String], _: Option<&Path>) -> Result<(), String> {
+            fn run(&self, _program: &str, _: &[String], _: Option<&Path>) -> Result<(), String> {
                 Err(PROCESS_CANCELLED_MESSAGE.to_string())
             }
             fn is_cancelled(&self) -> bool {
@@ -1551,7 +1551,7 @@ mod tests {
             .unwrap();
         struct TimeoutRunner;
         impl CommandRunner for TimeoutRunner {
-            fn run_npx(&self, _: &[String], _: Option<&Path>) -> Result<(), String> {
+            fn run(&self, _program: &str, _: &[String], _: Option<&Path>) -> Result<(), String> {
                 Err(PROCESS_TIMED_OUT_MESSAGE.to_string())
             }
         }
@@ -1634,7 +1634,7 @@ mod tests {
             cancel: Arc<AtomicBool>,
         }
         impl CommandRunner for InstallThenCancel {
-            fn run_npx(&self, _: &[String], _: Option<&Path>) -> Result<(), String> {
+            fn run(&self, _program: &str, _: &[String], _: Option<&Path>) -> Result<(), String> {
                 fs::create_dir_all(self.home.join(".agents/skills/find-bugs")).unwrap();
                 self.cancel.store(true, Ordering::SeqCst);
                 Ok(())
@@ -1680,7 +1680,7 @@ mod tests {
             .unwrap();
         struct ChangeThenTimeout(PathBuf);
         impl CommandRunner for ChangeThenTimeout {
-            fn run_npx(&self, _: &[String], _: Option<&Path>) -> Result<(), String> {
+            fn run(&self, _program: &str, _: &[String], _: Option<&Path>) -> Result<(), String> {
                 fs::write(&self.0, "after").unwrap();
                 Err(PROCESS_TIMED_OUT_MESSAGE.to_string())
             }
@@ -1766,7 +1766,7 @@ mod tests {
             .unwrap();
         struct NoNpx;
         impl CommandRunner for NoNpx {
-            fn run_npx(&self, _: &[String], _: Option<&Path>) -> Result<(), String> {
+            fn run(&self, _program: &str, _: &[String], _: Option<&Path>) -> Result<(), String> {
                 panic!("copy must not run npx");
             }
         }
@@ -1822,7 +1822,7 @@ mod tests {
         }
         struct NoNpx;
         impl CommandRunner for NoNpx {
-            fn run_npx(&self, _: &[String], _: Option<&Path>) -> Result<(), String> {
+            fn run(&self, _program: &str, _: &[String], _: Option<&Path>) -> Result<(), String> {
                 panic!("Copy must not run npx")
             }
         }

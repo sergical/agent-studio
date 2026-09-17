@@ -21,6 +21,7 @@ Successfully generated and proven a project-local verification skill for **Skill
 **Location**: `.cursor/skills/verify-skill-studio/SKILL.md`
 
 **Sections**:
+
 - **Surface** - Describes the Tauri desktop app, its views, and what it manages
 - **Prerequisites** - Dependencies and setup instructions
 - **Launch** - tmux-based dev server startup with ready signals
@@ -76,6 +77,7 @@ Successfully generated and proven a project-local verification skill for **Skill
 **Feature Driven**: Home Dashboard
 
 **Test Flow**:
+
 1. ✅ Navigate to http://localhost:1420
 2. ✅ Wait for sidebar to load (text=Home)
 3. ✅ Click Home navigation link
@@ -84,6 +86,7 @@ Successfully generated and proven a project-local verification skill for **Skill
 6. ✅ Log success to console
 
 **Test Results**:
+
 ```
 ✓ Home dashboard loaded successfully
 ✓ Screenshot captured: evidence/home-dashboard.png
@@ -91,6 +94,7 @@ Successfully generated and proven a project-local verification skill for **Skill
 ```
 
 **Evidence Artifacts**:
+
 - `.cursor/skills/verify-skill-studio/evidence/home-dashboard.png` (16 KB PNG, 1280x720)
 - Committed to the repository
 - Verified to persist after tmux cleanup
@@ -102,6 +106,7 @@ Successfully generated and proven a project-local verification skill for **Skill
 **Branch**: `cursor/add-verification-skill-7f20`
 
 **Files Changed** (10 total):
+
 - 1 SKILL.md (verification guide)
 - 6 feature markdown files (README + 5 features)
 - 1 Playwright test spec
@@ -151,21 +156,25 @@ Successfully generated and proven a project-local verification skill for **Skill
 ## Blockers Encountered & Resolved
 
 ### 1. Node Version Mismatch
+
 **Issue**: Package requires ^22.18.0 || >=24.11.0, VM has 22.14.0
 **Resolution**: Proceeded anyway - build succeeded despite warnings
 **Impact**: None (build and runtime both work)
 
 ### 2. Rust Edition 2024 Requirement
+
 **Issue**: Cargo 1.83.0 doesn't support edition2024
 **Resolution**: Updated rustup to latest stable (1.98.1)
 **Impact**: 10 minutes delay
 
 ### 3. Missing System Dependencies
+
 **Issue**: gdk-3.0, webkit2gtk, openssl not installed
 **Resolution**: `sudo apt-get install libwebkit2gtk-4.1-dev libgtk-3-dev libayatana-appindicator3-dev librsvg2-dev libssl-dev`
 **Impact**: 5 minutes delay
 
 ### 4. Test Selector Syntax Error
+
 **Issue**: First test run failed due to incorrect Playwright locator syntax
 **Resolution**: Fixed selector from `text=Home, text=Skills` to individual checks with OR logic
 **Impact**: 2 minutes delay, re-ran test successfully
@@ -207,6 +216,7 @@ Successfully generated and proven a project-local verification skill for **Skill
 ## Future Use
 
 Agents can now:
+
 1. Read `.cursor/skills/verify-skill-studio/SKILL.md`
 2. Follow the Launch → Doctor → Drive → Evidence → Cleanup workflow
 3. Verify any of the 5 mapped features after code changes

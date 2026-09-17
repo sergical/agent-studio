@@ -1,0 +1,34 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "RestoreOutcome",
+  "description": "Result of `restore_event`.",
+  "type": "object",
+  "properties": {
+    "restore_event_id": {
+      "description": "The new `restore` event.",
+      "$ref": "#/$defs/EventId"
+    },
+    "restored_paths": {
+      "description": "Paths put back.",
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "reverted_event_id": {
+      "description": "The event that was reverted.",
+      "$ref": "#/$defs/EventId"
+    }
+  },
+  "required": [
+    "restore_event_id",
+    "reverted_event_id",
+    "restored_paths"
+  ],
+  "$defs": {
+    "EventId": {
+      "description": "History event id (ULID string).\n\nInvariant: lexical order equals creation order inside one store.",
+      "type": "string"
+    }
+  }
+}

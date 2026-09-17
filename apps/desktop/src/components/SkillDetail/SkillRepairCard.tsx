@@ -16,6 +16,7 @@ import {
   homeRelativePath,
   isUnresolvedDeployment,
   parseSkillSource,
+  toWireParsedSkillSource,
 } from "@skill-studio/lib";
 import type { AgentId, Deployment, InstalledSkill, InstallScope } from "@skill-studio/lib";
 import { addSkill, repairSkillLink } from "../../lib/skill-api";
@@ -96,17 +97,17 @@ export function SkillRepairCard({ skill, deployment }: SkillRepairCardProps) {
           return;
         }
         const result = await addSkill({
-          source: {
+          source: toWireParsedSkillSource({
             ...parsedSource,
             path: parsedSource.path ?? skill.name,
             skillName: skill.name,
-          },
+          }),
           method: "skills-sh",
           scope,
           destination: "universal",
           agents: reinstallAgent === "claude-code" ? ["claude-code"] : [],
           disabled_harnesses: [],
-          project_path: scope === "project" ? deployment.project_path : undefined,
+          project_path: (scope === "project" ? deployment.project_path : undefined) ?? null,
           trial: false,
         });
         if (result.warning) {
@@ -155,7 +156,7 @@ export function SkillRepairCard({ skill, deployment }: SkillRepairCardProps) {
         </span>
       </div>
 
-      <p className="m-0 max-w-[62ch] p-3 pb-1 text-body leading-[1.5] text-text-secondary">
+      <p className="m-0 max-w-[62ch] select-text p-3 pb-1 text-body leading-[1.5] text-text-secondary">
         <span className="font-mono text-small">{homeRelativePath(deployment.path)}</span> points to{" "}
         <span className="font-mono text-small">{homeRelativePath(rawTarget)}</span> — missing.
       </p>
@@ -172,7 +173,7 @@ export function SkillRepairCard({ skill, deployment }: SkillRepairCardProps) {
 
       <div className="flex items-center gap-3 px-3 pt-2 pb-1">
         <Button
-          className="gap-2 bg-accent text-text-on-accent hover:bg-accent-hover"
+          className="gap-2 bg-accent-solid text-text-on-accent hover:bg-accent-solid-hover"
           onClick={handleFix}
           disabled={isFixing || !selected}
         >
@@ -204,10 +205,10 @@ interface RepairOptionRowProps {
 function RepairOptionRow({ option, skill, source }: RepairOptionRowProps) {
   const { title, description } = describeOption(option, skill, source);
   return (
-    <label className="flex cursor-pointer gap-3 rounded-sm border border-border-subtle bg-bg-elevated px-3.5 py-3 transition-colors hover:bg-bg-hover has-data-checked:border-accent has-data-checked:bg-accent-softer has-data-checked:shadow-[inset_0_0_0_1px_var(--color-accent)]">
+    <label className="flex cursor-pointer gap-3 rounded-sm border border-border-subtle bg-bg-elevated px-3.5 py-3 transition-colors hover:bg-bg-hover has-data-checked:border-accent-solid has-data-checked:bg-accent-softer has-data-checked:shadow-[inset_0_0_0_1px_var(--color-accent)]">
       <RadioGroupItem
         value={optionKey(option)}
-        className="mt-0.5 size-[15px] flex-none border-[1.5px] border-border-strong data-checked:border-accent data-checked:bg-accent data-checked:text-text-on-accent"
+        className="mt-0.5 size-[15px] flex-none border-[1.5px] border-border-strong data-checked:border-accent-solid data-checked:bg-accent-solid data-checked:text-text-on-accent"
       />
       <span className="flex flex-col gap-0.5">
         <span className="font-medium text-text-primary">{title}</span>

@@ -29,11 +29,13 @@ export function SkillContent({ skill, skillMd, isLoading }: SkillContentProps) {
             Loading content…
           </div>
         ) : skillMd ? (
-          <pre className="m-0 p-3 font-mono text-small leading-[1.5] break-words whitespace-pre-wrap text-text-secondary">
+          <pre className="m-0 select-text p-3 font-mono text-small leading-[1.5] break-words whitespace-pre-wrap text-text-secondary">
             {skillMd}
           </pre>
         ) : skill.description ? (
-          <p className="m-0 p-3 text-body leading-[1.5] text-text-secondary">{skill.description}</p>
+          <p className="m-0 select-text p-3 text-body leading-[1.5] text-text-secondary">
+            {skill.description}
+          </p>
         ) : (
           <p className="text-pretty m-0 p-3 py-6 text-center text-small italic text-text-tertiary">
             No content available

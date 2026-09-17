@@ -16,6 +16,7 @@ use std::sync::Mutex;
 use std::time::Duration;
 
 use chrono::Utc;
+use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Manager};
 
@@ -98,7 +99,7 @@ fn update_store_version() -> u32 {
 
 /// The `SkillSnapshot.update_check` shape sent to the frontend: a flattened,
 /// string-tagged view of `UpdateCheckStore` plus a ready-to-display count.
-#[derive(Debug, Serialize, Deserialize, Clone)]
+#[derive(Debug, Serialize, Deserialize, Clone, JsonSchema)]
 pub struct UpdateCheckSummary {
     pub checked_at: Option<String>,
     pub gh_status: String, // "ok" | "missing" | "not-logged-in" | "failed"
@@ -415,7 +416,7 @@ enum CandidateKind {
 
 /// Build the candidate list from the dotagents ledger and the skills.sh lock
 /// file under `home/.agents`, dotagents winning over skills.sh for a name
-/// present in both (matches `provenance::SourceKind`'s precedence). Manual
+/// present in both (matches `skill_studio_core::identity::SourceKind`'s precedence). Manual
 /// and plugin skills have no ledger entry, so they're never candidates.
 fn build_candidates(home: &Path, project_paths: &[PathBuf]) -> Vec<Candidate> {
     // A fork's `base_commit` is the pinned "installed" side of the compare -

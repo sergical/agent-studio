@@ -1,0 +1,26 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "RestoreRequest",
+  "description": "Request for `restore_event`.",
+  "type": "object",
+  "properties": {
+    "event_id": {
+      "description": "Event to revert.",
+      "$ref": "#/$defs/EventId"
+    },
+    "force": {
+      "description": "Proceed on drift; the drifted bytes are backed up first.",
+      "type": "boolean",
+      "default": false
+    }
+  },
+  "required": [
+    "event_id"
+  ],
+  "$defs": {
+    "EventId": {
+      "description": "History event id (ULID string).\n\nInvariant: lexical order equals creation order inside one store.",
+      "type": "string"
+    }
+  }
+}

@@ -13,6 +13,7 @@ export * from "./home-summary";
 export * from "./skill-list-filter";
 export * from "./skill-agent-prompts";
 export * from "./skill-stats";
+export * from "./skill-activity";
 export * from "./skill-source-parse";
 export * from "./skill-agent-types";
 export * from "./skill-md-diff";

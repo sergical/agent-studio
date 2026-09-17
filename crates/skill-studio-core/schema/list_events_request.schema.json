@@ -1,0 +1,54 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "ListEventsRequest",
+  "description": "Request for `list_events`.",
+  "type": "object",
+  "properties": {
+    "after": {
+      "description": "Pagination cursor: return only rows older than this event. Pass the\nlast id of the previous page. Ids are ULIDs, so \"older\" is \"sorts\nbefore\".",
+      "anyOf": [
+        {
+          "$ref": "#/$defs/EventId"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
+    },
+    "check_drift": {
+      "description": "Compare live fingerprints with the recorded ones and fill `drift`.\nCosts one read per touched path; `false` leaves `Unchecked`.",
+      "type": "boolean",
+      "default": false
+    },
+    "limit": {
+      "description": "Maximum rows; `0` means the core default.",
+      "type": "integer",
+      "format": "uint32",
+      "default": 0,
+      "minimum": 0
+    },
+    "skill": {
+      "description": "Restrict to one skill.",
+      "anyOf": [
+        {
+          "$ref": "#/$defs/SkillName"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
+    }
+  },
+  "$defs": {
+    "EventId": {
+      "description": "History event id (ULID string).\n\nInvariant: lexical order equals creation order inside one store.",
+      "type": "string"
+    },
+    "SkillName": {
+      "description": "Lexical skill name: the directory name that holds `SKILL.md`.\n\nInvariant: two deployments with the same `SkillName` are the same skill,\neven when their bytes differ. A symlink alias with another name is another\nskill.",
+      "type": "string"
+    }
+  }
+}

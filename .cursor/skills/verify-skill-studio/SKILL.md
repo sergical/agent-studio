@@ -10,6 +10,7 @@ Verify Skill Studio's desktop UI and core functionality by launching the Tauri d
 ## Surface
 
 Skill Studio is a **Tauri 2.x desktop application** with:
+
 - **Frontend**: React 19 + TypeScript + Tailwind CSS 4.x, running on `http://localhost:1420`
 - **Backend**: Rust (Tauri 2.x)
 - **Primary views**:
@@ -52,6 +53,7 @@ tmux -f /exec-daemon/tmux.portal.conf send-keys -t "$SESSION_NAME:0.0" \
 ```
 
 **Ready signal**: Wait for both:
+
 1. Vite dev server logs `Local:   http://localhost:1420/`
 2. Tauri window opens (look for `WebView loaded` or similar in logs)
 
@@ -84,6 +86,7 @@ lsof -ti:1420 | xargs ps -p | grep node
 ```
 
 If any check fails:
+
 - **Port check fails (not 200)**: Server might still be starting or crashed. Check tmux logs.
 - **Session missing**: Server was stopped or never started. Re-run Launch.
 - **Port owned by different process**: Another process is blocking port 1420. Kill it or use a different port (update `tauri.conf.json`).
@@ -105,29 +108,29 @@ npx playwright install chromium
 Create test scripts in `/workspace/.cursor/skills/verify-skill-studio/tests/`:
 
 ```typescript
-import { test, expect } from '@playwright/test';
+import { test, expect } from "@playwright/test";
 
-test.describe('Skill Studio', () => {
+test.describe("Skill Studio", () => {
   test.beforeEach(async ({ page }) => {
     // Navigate to the Tauri dev server
-    await page.goto('http://localhost:1420');
-    
+    await page.goto("http://localhost:1420");
+
     // Wait for app to be ready (check for sidebar presence)
     await page.waitForSelector('[data-testid="sidebar"]', { timeout: 10000 });
   });
 
-  test('home view shows dashboard stats', async ({ page }) => {
+  test("home view shows dashboard stats", async ({ page }) => {
     // Verify we're on the home view
-    await expect(page.locator('text=Home')).toBeVisible();
-    
+    await expect(page.locator("text=Home")).toBeVisible();
+
     // Check for stat tiles (broken, warnings, updates)
     const statTiles = page.locator('[data-testid="stat-tile"]');
     await expect(statTiles).toHaveCount(3);
-    
+
     // Take a screenshot for evidence
-    await page.screenshot({ 
-      path: '/workspace/.cursor/skills/verify-skill-studio/evidence/home-dashboard.png',
-      fullPage: true 
+    await page.screenshot({
+      path: "/workspace/.cursor/skills/verify-skill-studio/evidence/home-dashboard.png",
+      fullPage: true,
     });
   });
 });
@@ -148,29 +151,29 @@ Since the app doesn't have extensive `data-testid` attributes yet, use these sel
 #### Navigate to Skills View
 
 ```typescript
-await page.click('text=Skills');
-await page.waitForSelector('text=Installed Skills', { timeout: 5000 });
-await page.screenshot({ path: './evidence/skills-view.png' });
+await page.click("text=Skills");
+await page.waitForSelector("text=Installed Skills", { timeout: 5000 });
+await page.screenshot({ path: "./evidence/skills-view.png" });
 ```
 
 #### Open Skill Detail
 
 ```typescript
 // Click on a skill row (assuming at least one skill exists)
-const firstSkillRow = page.locator('table tbody tr').first();
+const firstSkillRow = page.locator("table tbody tr").first();
 await firstSkillRow.click();
 
 // Wait for skill detail page to load
 await page.waitForSelector('[data-testid="skill-detail"]', { timeout: 5000 });
-await page.screenshot({ path: './evidence/skill-detail.png' });
+await page.screenshot({ path: "./evidence/skill-detail.png" });
 ```
 
 #### Navigate to Activity View
 
 ```typescript
-await page.click('text=Activity');
-await page.waitForSelector('text=Skill Activity', { timeout: 5000 });
-await page.screenshot({ path: './evidence/activity-view.png' });
+await page.click("text=Activity");
+await page.waitForSelector("text=Skill Activity", { timeout: 5000 });
+await page.screenshot({ path: "./evidence/activity-view.png" });
 ```
 
 ## Evidence
@@ -186,6 +189,7 @@ mkdir -p /workspace/.cursor/skills/verify-skill-studio/evidence
 ```
 
 Required evidence for a complete verification run:
+
 1. **Home view**: `home-dashboard.png` — shows stat tiles and skill inbox
 2. **Skills list**: `skills-view.png` — shows the filterable skill table
 3. **Skill detail**: `skill-detail.png` — opens a skill's full page view
@@ -196,9 +200,9 @@ Required evidence for a complete verification run:
 Capture browser console output to detect JavaScript errors:
 
 ```typescript
-page.on('console', msg => {
-  if (msg.type() === 'error') {
-    console.error('Browser console error:', msg.text());
+page.on("console", (msg) => {
+  if (msg.type() === "error") {
+    console.error("Browser console error:", msg.text());
   }
 });
 ```
@@ -225,6 +229,7 @@ cp -r playwright-report /workspace/.cursor/skills/verify-skill-studio/evidence/
 ### Proof Standards
 
 Evidence must demonstrate:
+
 - **Real user path**: Navigate through the UI as a user would (no internal API calls)
 - **Action + resulting state**: Show both the action (button click) and the outcome (new view loaded)
 - **Side effects**: Verify DOM updates, route changes, and UI state changes
@@ -271,12 +276,14 @@ tmux -f /exec-daemon/tmux.portal.conf attach-session -t "=skill-studio-dev"
 ```
 
 Common causes:
+
 - **Missing GTK libraries**: Re-run system dependency install (see repo's README or AGENTS.md)
 - **Rust build failed**: Run `cd apps/desktop/src-tauri && cargo build` to see errors
 
 ### Playwright Can't Connect
 
 If Playwright times out connecting to `http://localhost:1420`:
+
 1. Verify Vite server is running: `curl http://localhost:1420`
 2. Check if Tauri window is visible: Look for the Skill Studio window
 3. Increase timeout in test: `await page.goto('http://localhost:1420', { timeout: 30000 })`
@@ -284,6 +291,7 @@ If Playwright times out connecting to `http://localhost:1420`:
 ### No Skills Found
 
 The app shows an empty state if no skills are installed. To test with skills:
+
 1. Install a skill manually via the UI (Skills tab → Install button)
 2. OR: Seed test skills in `~/.claude/skills/` or `~/.agents/skills/`
 

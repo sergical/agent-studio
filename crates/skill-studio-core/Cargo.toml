@@ -1,0 +1,33 @@
+[package]
+name = "skill-studio-core"
+version = "0.1.0"
+edition = "2021"
+description = "Adapter-free core for Skill Studio: scope, identity, harness facts, ports, operations, and DTOs"
+license = "MIT"
+publish = false
+
+[lib]
+name = "skill_studio_core"
+path = "src/lib.rs"
+
+[features]
+default = []
+# Exposes the fixture builder and fakes to adapter test suites.
+testing = []
+
+[dependencies]
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+schemars = { version = "1", features = ["chrono04"] }
+thiserror = "2"
+chrono = { version = "0.4", default-features = false, features = ["clock", "serde"] }
+ulid = { version = "1", features = ["serde"] }
+serde_yaml = "0.9"
+toml = "1"
+similar = "2"
+tiktoken-rs = "0.12"
+sha2 = "0.11.0"
+
+[dev-dependencies]
+skill-studio-host = { path = "../skill-studio-host" }
+tempfile = "3"

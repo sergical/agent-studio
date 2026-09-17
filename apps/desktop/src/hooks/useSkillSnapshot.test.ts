@@ -17,6 +17,9 @@ function snapshot(revision: number, scannedAt: string): SkillSnapshot {
       message: null,
       updates_available: 0,
     },
+    opencode_config_kind: null,
+    scan_partial: false,
+    scan_observations: [],
   };
 }
 

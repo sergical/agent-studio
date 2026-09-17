@@ -5,7 +5,7 @@
 // ============================================================================
 
 import { useState } from "react";
-import { Button, Textarea, ToggleGroup, ToggleGroupItem } from "@skill-studio/ui";
+import { Button, Input, Textarea, ToggleGroup, ToggleGroupItem } from "@skill-studio/ui";
 import type { SkillRunTargetKind } from "@skill-studio/lib";
 import type { InstalledSkill } from "@skill-studio/lib";
 import { ProjectDirectorySelect } from "../SkillStore/ProjectDirectorySelect";
@@ -166,8 +166,7 @@ export function SkillTestForm({
               <span className="text-caption font-semibold tracking-[0.04em] text-text-tertiary uppercase">
                 Also install
               </span>
-              <input
-                className="h-8 rounded-sm border border-border bg-bg-primary px-3 text-body text-text-primary transition-colors duration-150 placeholder:text-text-quaternary focus-visible:border-border-focus"
+              <Input
                 value={extraQuery}
                 onChange={(e) => setExtraQuery(e.target.value)}
                 placeholder="Filter skills…"

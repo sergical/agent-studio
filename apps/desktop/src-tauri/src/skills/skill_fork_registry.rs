@@ -21,18 +21,21 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 
+use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
+use skill_studio_core::discovery_sources::DiscoverySources;
+use skill_studio_core::tracked_projects::TrackedProjects;
 
-use super::provenance::SourceKind;
 use super::skill_deployment::SkillDestination;
 use super::skill_dto::InstallScope;
+use super::SourceKind;
 
 fn path_is_empty(path: &Path) -> bool {
     path.as_os_str().is_empty()
 }
 
 /// Which CLI a forked skill was originally managed by.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "kebab-case")]
 pub enum OriginTool {
     Dotagents,
@@ -42,7 +45,7 @@ pub enum OriginTool {
 /// How `add_skill` installed a skill - shared by `AddSkillRequest.method` and
 /// `TrialRecord.method`, since a trial's expiry step needs to know which tool
 /// (if any) owns the skill it's about to remove.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "kebab-case")]
 pub enum AddMethod {
     Dotagents,
@@ -51,7 +54,7 @@ pub enum AddMethod {
 }
 
 /// Which scope a trial (or an `add_skill` request) targeted.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "lowercase")]
 pub enum TrialScope {
     Global,
@@ -60,7 +63,7 @@ pub enum TrialScope {
 
 /// Durable state for trial expiry. `Expiring` prevents an interrupted CLI
 /// removal from matching a later installation at the same path.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default, JsonSchema)]
 #[serde(rename_all = "kebab-case")]
 pub enum TrialStatus {
     #[default]
@@ -132,7 +135,7 @@ pub fn name_from_trial_key(key: &str) -> &str {
 /// One forked skill's provenance, enough to reinstall it from its origin
 /// (`unfork_skill`) or to fetch its upstream at a specific commit
 /// (`pull_fork_upstream`).
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct ForkRecord {
     /// Global Universal deployment detached by this fork. Empty only for a
     /// legacy record, which callers must resolve by its exact local path.
@@ -196,7 +199,7 @@ pub struct ClaudeLinkRemoved {
 /// One skill bundled into a pack: `name` is its directory name, `path` is
 /// the exact deployment directory it was bundled from - see
 /// `skill_pack::resolve_members`.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct PackMember {
     pub name: String,
     pub path: PathBuf,
@@ -291,6 +294,21 @@ pub struct ForkRegistry {
     /// by default: `kentcdodds/kcd-skills` still needs confirmation.
     #[serde(default, skip_serializing_if = "BTreeSet::is_empty")]
     pub trusted_dotagents_sources: BTreeSet<String>,
+    /// Folders the user added by hand or stopped tracking - the core's
+    /// [`TrackedProjects`], saved here so the CLI, the MCP server, and every
+    /// version of the desktop app discover the same projects.
+    #[serde(default, skip_serializing_if = "TrackedProjects::is_empty")]
+    pub projects: TrackedProjects,
+    /// Per-harness project discovery switches - see
+    /// `skill_studio_core::discovery_sources::DiscoverySources`. Saved here so
+    /// the desktop app, the CLI, and the MCP server honour the same choice.
+    #[serde(default, skip_serializing_if = "DiscoverySources::is_empty")]
+    pub discovery: DiscoverySources,
+    /// Every top-level key this build doesn't know about. Keeps a write from
+    /// erasing a field a newer or older build added - the file is shared
+    /// with the CLI and with whichever app version last wrote it.
+    #[serde(flatten)]
+    pub unknown: serde_json::Map<String, serde_json::Value>,
 }
 
 pub const CURRENT_REGISTRY_VERSION: u32 = 4;
@@ -317,6 +335,9 @@ impl Default for ForkRegistry {
             server_url: None,
             preferred_editor: None,
             trusted_dotagents_sources: BTreeSet::new(),
+            projects: TrackedProjects::default(),
+            discovery: DiscoverySources::default(),
+            unknown: serde_json::Map::new(),
         }
     }
 }
@@ -349,7 +370,7 @@ pub fn read_fork_registry(home: &Path) -> Result<ForkRegistry, String> {
         Err(e) => return Err(format!("Failed to read {}: {e}", path.display())),
     };
     serde_json::from_str(&content).map_err(|_| {
-        "~/.agents/skill-studio.json is malformed; fix or move it before forking".to_string()
+        "~/.agents/skill-studio.json is malformed; fix or move it, then try again".to_string()
     })
 }
 
@@ -470,6 +491,80 @@ mod tests {
         assert_ne!(global_key, project_key);
         assert_eq!(name_from_trial_key(&global_key), "find-bugs");
         assert_eq!(name_from_trial_key(&project_key), "find-bugs");
+    }
+
+    #[test]
+    fn an_unknown_top_level_key_survives_read_then_write() {
+        let tmp = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(tmp.path().join(".agents")).unwrap();
+        std::fs::write(
+            tmp.path().join(".agents/skill-studio.json"),
+            r#"{"version":4,"a_future_field":{"nested":true}}"#,
+        )
+        .unwrap();
+
+        let reg = read_fork_registry(tmp.path()).unwrap();
+        assert_eq!(
+            reg.unknown.get("a_future_field"),
+            Some(&serde_json::json!({"nested": true}))
+        );
+        write_fork_registry(tmp.path(), &reg).unwrap();
+
+        let reloaded = read_fork_registry(tmp.path()).unwrap();
+        assert_eq!(
+            reloaded.unknown.get("a_future_field"),
+            Some(&serde_json::json!({"nested": true}))
+        );
+    }
+
+    #[test]
+    fn projects_round_trips() {
+        let tmp = tempfile::tempdir().unwrap();
+        let mut reg = ForkRegistry::default();
+        reg.projects.added.push(tmp.path().join("proj"));
+        write_fork_registry(tmp.path(), &reg).unwrap();
+
+        let reloaded = read_fork_registry(tmp.path()).unwrap();
+        assert_eq!(reloaded.projects.added, [tmp.path().join("proj")]);
+    }
+
+    #[test]
+    fn an_empty_projects_list_is_not_written() {
+        let tmp = tempfile::tempdir().unwrap();
+        write_fork_registry(tmp.path(), &ForkRegistry::default()).unwrap();
+
+        let content =
+            std::fs::read_to_string(tmp.path().join(".agents/skill-studio.json")).unwrap();
+        assert!(!content.contains("\"projects\""));
+    }
+
+    #[test]
+    fn discovery_switches_round_trip() {
+        let tmp = tempfile::tempdir().unwrap();
+        let mut reg = ForkRegistry::default();
+        reg.discovery.set("codex", false);
+        write_fork_registry(tmp.path(), &reg).unwrap();
+
+        let content =
+            std::fs::read_to_string(tmp.path().join(".agents/skill-studio.json")).unwrap();
+        assert!(content.contains(r#""discovery": {"#));
+        assert_eq!(
+            serde_json::from_str::<serde_json::Value>(&content).unwrap()["discovery"],
+            serde_json::json!({ "codex": false })
+        );
+
+        let reloaded = read_fork_registry(tmp.path()).unwrap();
+        assert_eq!(reloaded.discovery, reg.discovery);
+    }
+
+    #[test]
+    fn default_discovery_is_not_written() {
+        let tmp = tempfile::tempdir().unwrap();
+        write_fork_registry(tmp.path(), &ForkRegistry::default()).unwrap();
+
+        let content =
+            std::fs::read_to_string(tmp.path().join(".agents/skill-studio.json")).unwrap();
+        assert!(!content.contains("\"discovery\""));
     }
 
     #[test]

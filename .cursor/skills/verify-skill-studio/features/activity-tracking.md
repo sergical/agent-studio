@@ -5,13 +5,14 @@ Invocation analytics and event history: GitHub-style heatmap, per-skill/project 
 ## Sub-features
 
 **Invocation Heatmap** (InvocationHeatmap component):
+
 - **52-week × 7-day grid** - GitHub contribution graph style, oldest week left, newest right
 - **Cell color intensity** - 5 levels (0-4) relative to max day count in range:
   - 0% = bg-tertiary (no activity)
   - 1-25% = 25% accent mix
   - 26-50% = 50% accent mix
   - 51-75% = 75% accent mix
-  - >75% = 100% accent
+  - > 75% = 100% accent
 - **Hover tooltips** - "N invocation(s) · Month DD" (native title attr, no custom tooltip)
 - **Month labels** - Above first week of each month, span width = weeks in that month
 - **Weekday labels** - Left gutter: Mon / Wed / Fri (empty strings for others, spacing only)
@@ -20,6 +21,7 @@ Invocation analytics and event history: GitHub-style heatmap, per-skill/project 
 - **Data source** - Claude Code transcripts only (subtitle: "Codex, OpenCode and pi are not tracked yet.")
 
 **By Skill Table**:
+
 - **Window selector** (WindowSegmentedControl) - 24h / 7d / 30d (shared state: `usageWindow` in appStore)
 - **Filters skills** - Only shows skills with invocations > 0 in current window (empty = "No invocations in the last N")
 - **Sorting** - `topSkills()` helper: descending by usage count in window, then alphabetical by name
@@ -31,6 +33,7 @@ Invocation analytics and event history: GitHub-style heatmap, per-skill/project 
 - **Row action** - Click anywhere on row → `onSelectSkill(name)` → skill detail page
 
 **By Project Table (30d only)**:
+
 - **Label** - "By project, 30 days" (not configurable window, always 30d)
 - **Sorting** - Descending by count, then alphabetical by full path
 - **Rows**:
@@ -40,6 +43,7 @@ Invocation analytics and event history: GitHub-style heatmap, per-skill/project 
 - **No click action** - Rows are divs, not buttons (display-only)
 
 **History Section** (SkillHistorySection component):
+
 - **Event Log** - One row per event from event store (`~/.agents/.skill-event-store.json`), newest first (up to `MAX_EVENTS = 200` loaded)
 - **Row data**:
   - Icon (per event kind: Undo2 for restore, Link2Off for unlink, Archive for move-aside, etc., colored by status: error=red, interrupted=yellow, success=tertiary)
@@ -62,6 +66,7 @@ Invocation analytics and event history: GitHub-style heatmap, per-skill/project 
 - **Collapsible** - History section can expand/collapse (default expanded)
 
 **Empty/First-Run States**:
+
 - **No invocations** → "No invocations recorded yet." (subtitle still mentions Claude Code only)
 - **Heatmap all zeros** → Grid renders but all cells bg-tertiary
 - **By Skill empty for window** → "No invocations in the last N" message
@@ -79,41 +84,41 @@ Invocation analytics and event history: GitHub-style heatmap, per-skill/project 
 
 ```typescript
 // Navigate to Activity
-await page.goto('http://localhost:1420');
+await page.goto("http://localhost:1420");
 await page.click('button:has-text("Activity")');
-await page.waitForSelector('text=Activity', { timeout: 5000 });
+await page.waitForSelector("text=Activity", { timeout: 5000 });
 
 // Verify heatmap renders
 const heatmap = page.locator('[role="img"][aria-label*="Invocations per day"]');
 await expect(heatmap).toBeVisible();
-const yearTotal = await page.locator('text=/\\d+ invocations in the last year/').textContent();
+const yearTotal = await page.locator("text=/\\d+ invocations in the last year/").textContent();
 console.log(`Year total: ${yearTotal}`);
 
 // Hover over heatmap cell (tooltip via title attr)
-const firstCell = heatmap.locator('div[title]').first();
-const cellTitle = await firstCell.getAttribute('title');
+const firstCell = heatmap.locator("div[title]").first();
+const cellTitle = await firstCell.getAttribute("title");
 console.log(`First cell: ${cellTitle}`); // e.g. "5 invocations · Jan 3"
 
 // Change usage window (By Skill table)
 await page.click('button:has-text("7d")'); // Or "24h" or "30d"
 await page.waitForTimeout(100); // Synchronous filter, no API call
-const skillCount = await page.locator('text=By skill').locator('..').locator('button').count();
+const skillCount = await page.locator("text=By skill").locator("..").locator("button").count();
 console.log(`Skills used in 7d: ${skillCount}`);
 
 // Click skill row → opens detail
-const firstSkillRow = page.locator('text=By skill').locator('..').locator('button').first();
-const skillName = await firstSkillRow.locator('span').first().textContent();
+const firstSkillRow = page.locator("text=By skill").locator("..").locator("button").first();
+const skillName = await firstSkillRow.locator("span").first().textContent();
 await firstSkillRow.click();
-await page.waitForSelector('text=Locations'); // Skill detail page
+await page.waitForSelector("text=Locations"); // Skill detail page
 await expect(page.locator(`text=${skillName}`)).toBeVisible();
 
 // Back to Activity
 await page.click('button:has-text("Activity")');
 
 // Check By Project table
-const projectRow = page.locator('text=By project').locator('..').locator('div').first();
+const projectRow = page.locator("text=By project").locator("..").locator("div").first();
 if (await projectRow.isVisible()) {
-  const projectLabel = await projectRow.locator('span').first().textContent();
+  const projectLabel = await projectRow.locator("span").first().textContent();
   console.log(`Top project: ${projectLabel}`);
 }
 
@@ -141,6 +146,7 @@ if (await revealButton.isVisible()) {
 ```
 
 Selectors:
+
 - Heatmap: `[role="img"][aria-label*="Invocations per day"]`
 - Heatmap cells: `div[title]` within heatmap
 - Window buttons: `button:has-text("24h")`, `button:has-text("7d")`, `button:has-text("30d")`
@@ -167,6 +173,7 @@ Selectors:
 ## Branches
 
 ### Happy path: View analytics, change window, restore event
+
 1. User clicks Activity → heatmap renders, By Skill shows 30d (default), By Project shows 30d, History shows events
 2. User hovers heatmap cell → tooltip shows date + count
 3. User clicks "7d" window → By Skill filters to last 7 days, table updates (some skills may disappear)
@@ -175,17 +182,20 @@ Selectors:
 6. User clicks "Restore" on event → confirmation dialog → confirms → backend restores → toast success → event status updates
 
 ### Empty / first-run states
+
 - **No invocations** → Heatmap empty (all zeros), By Skill empty, By Project hidden, History may have non-invocation events
 - **No invocations in window** → "No invocations in the last N" message under By Skill
 - **No events** → History shows "No history yet"
 - **By Project zero** → Section not rendered (conditional in component)
 
 ### Duplicate / conflict states
+
 - **Same project basename** → By Project rows use full path as key, different rows for `/Users/a/app` and `/Users/b/app`
 - **Skill invoked in multiple projects** → By Skill "Projects" column sums unique projects across all invocations
 - **Restore already-restored event** → Backend error "Event already restored", toast error
 
 ### Failure / error states
+
 - **Restore failure (file missing)** → Toast "Restore failed: backup not found"
 - **Restore failure (drift detected, user cancels)** → Dialog dismissed, no restore, no error toast
 - **Restore failure (filesystem error)** → Toast "Restore failed: <error>"
@@ -193,11 +203,13 @@ Selectors:
 - **History load failure** → Empty state or error message (backend returns empty array on error)
 
 ### Cancellation / close mid-flow
+
 - **Cancel restore confirmation** → Dialog dismissed, no restore, no backend call
 - **Cancel drift warning** → Dialog dismissed, no force-restore
 - **Navigate away during restore** → Restore continues in background (async, no cancellation), toast may show after nav
 
 ### Loading / progress states
+
 - **Initial snapshot loading** → Parent `isLoading` flag, Activity shows skeleton or spinner
 - **Restore in progress** → "Restore" button shows spinner icon, disabled, text "Restoring…"
 - **History loading** → Brief loading state on mount (< 200ms typically), no dedicated spinner
@@ -206,6 +218,7 @@ Selectors:
 ## Benchmarks & improvement
 
 ### Observable metrics
+
 - **Activity page render time**: Nav click → heatmap + tables visible
   - Measure: Route change → all sections rendered
   - Target: < 400ms for typical snapshot (< 100 skills, < 1000 invocations)
@@ -223,12 +236,14 @@ Selectors:
   - Target: < 300ms for 200 events
 
 ### Current instrumentation
+
 - Heatmap total count visible in UI ("N invocations in the last year")
 - Window selector state persisted in store
 - Restore button shows spinner during operation
 - No timing logs, per-event restore metrics, or heatmap render perf
 
 ### Suggested measurements for verification
+
 - **Heatmap cell count accuracy**: Verify 364 cells (52 weeks × 7 days) always render
 - **Window filter correctness**: Compare table counts vs raw invocation data for each window
 - **History pagination boundary**: Load exactly 200 events, verify oldest cutoff
@@ -236,6 +251,7 @@ Selectors:
 - **Drift guard accuracy**: Verify false-positive rate (file changed but restore should work)
 
 ### Improvement levers
+
 - **Virtualize heatmap** (currently renders 364 divs; 52 × 7 grid is fast, but 100-week grids would lag; not needed yet)
 - **Memoize heatmap intensity** (currently recalculates level for all 364 cells on every render; useMemo keyed by dates + heatmap)
 - **Cache By Skill sorting** (currently re-sorts on every render; memo sorted array)
@@ -258,6 +274,7 @@ After each interaction:
 - **Click Reveal**: Native file manager opens to backup path (not verifiable via Playwright)
 
 Invariants:
+
 - Heatmap year total === sum of all `heatmap.days` values in `dates` range (header, grid, aria-label all use same range)
 - By Skill window filter === store `usageWindow` (shared with Home lane card)
 - By Project always 30d (no window selector, hardcoded logic)

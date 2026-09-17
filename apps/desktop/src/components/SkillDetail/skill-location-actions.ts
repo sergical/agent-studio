@@ -8,28 +8,41 @@
 // ============================================================================
 
 import { useState } from "react";
-import { agentIdFromDeploymentLabel, parseSkillSource } from "@skill-studio/lib";
-import type { AgentId, Deployment, InstalledSkill, LifecycleTarget } from "@skill-studio/lib";
+import {
+  agentIdFromDeploymentLabel,
+  parseSkillSource,
+  toWireParsedSkillSource,
+} from "@skill-studio/lib";
+import type {
+  AgentId,
+  Deployment,
+  InstalledSkill,
+  InvocationPolicy,
+  LifecycleTarget,
+} from "@skill-studio/lib";
 import {
   addSkill,
+  forkSkill,
   openSkillPath,
   parkSkill,
   removeSkill,
   repairSkillLink,
   setDeploymentEnabled,
   setHarnessEnabled,
+  setPluginEnabled,
   setSkillInvocation,
   unparkSkill,
   updateSkill,
 } from "../../lib/skill-api";
 import {
+  lifecycleTargetForDeployment,
   lifecycleTargetForPark,
   lifecycleTargetForSkill,
   updateSkillOwners,
 } from "../../lib/skill-lifecycle-target";
 import { useAppStore } from "../../store/appStore";
 import { canToggleHarness } from "./skill-location-helpers";
-import type { LocationAction } from "./skill-location-status";
+import type { InvocationFile, LocationAction } from "./skill-location-status";
 
 interface UseLocationActionsResult {
   run: (action: LocationAction) => void;
@@ -46,6 +59,9 @@ interface UseLocationActionsResult {
     deployment?: Deployment;
   } | null;
   closeRemoveRequest: () => void;
+  /** Set while an "Uninstall the <name> plugin…" action is pending confirmation. */
+  pluginUninstallRequest: Deployment | null;
+  closePluginUninstallRequest: () => void;
 }
 
 export interface MaterializeLocationRequest {
@@ -125,6 +141,7 @@ export function useLocationActions(
     projectPath: string | null;
     deployment?: Deployment;
   } | null>(null);
+  const [pluginUninstallRequest, setPluginUninstallRequest] = useState<Deployment | null>(null);
 
   const runWithErrorToast = (title: string, fn: () => Promise<void>) => {
     setIsBusy(true);
@@ -194,16 +211,27 @@ export function useLocationActions(
           setHarnessEnabled(action.target, action.agent, action.enabled),
         );
         return;
+      case "set-plugin-enabled": {
+        const { deployment, enabled } = action;
+        runWithErrorToast(enabled ? "Couldn't enable plugin" : "Couldn't disable plugin", () =>
+          setPluginEnabled(deployment.plugin!.id, deployment.agent, enabled),
+        );
+        return;
+      }
+      case "uninstall-plugin":
+        setPluginUninstallRequest(action.deployment);
+        return;
       case "promote-global": {
         const { source, agents } = action;
         runWithErrorToast("Couldn't promote to global", async () => {
           await addSkill({
-            source: { kind: "local", localPath: source },
+            source: toWireParsedSkillSource({ kind: "local", localPath: source }),
             method: "copy",
             destination: "universal",
             agents,
             disabled_harnesses: [],
             scope: "global",
+            project_path: null,
             trial: false,
           });
           addToast({
@@ -249,12 +277,17 @@ export function useLocationActions(
             throw new Error(`Cannot reinstall ${skill.name}: no GitHub repository is recorded.`);
           }
           await addSkill({
-            source: { ...source, path: source.path ?? skill.name, skillName: skill.name },
+            source: toWireParsedSkillSource({
+              ...source,
+              path: source.path ?? skill.name,
+              skillName: skill.name,
+            }),
             method: "skills-sh",
             scope: "global",
             destination: "universal",
             agents: [],
             disabled_harnesses: [],
+            project_path: null,
             trial: false,
           });
         });
@@ -276,6 +309,8 @@ export function useLocationActions(
     closeIndependentCopyRequest: () => setIndependentCopyRequest(null),
     removeRequest,
     closeRemoveRequest: () => setRemoveRequest(null),
+    pluginUninstallRequest,
+    closePluginUninstallRequest: () => setPluginUninstallRequest(null),
   };
 }
 
@@ -283,3 +318,22 @@ export function useLocationActions(
 // re-exported here so `SkillLocationsCard` has one import site for every
 // Locations-card write call.
 export { setSkillInvocation };
+
+/**
+ * Sets `file`'s invocation policy, forking first when needed - the same rule
+ * the SKILL.md editor uses: only the global Universal folder can need a fork
+ * before editing (`fileEditability` keeps managed Project folders and copies
+ * out of this branch). Shared by `SkillLocationsCard`'s segmented control and
+ * the properties rail's Invocation select.
+ */
+export async function setInvocationForFile(
+  skill: InstalledSkill,
+  file: InvocationFile,
+  policy: InvocationPolicy,
+): Promise<void> {
+  const isManaged = skill.source_kind === "dotagents" || skill.source_kind === "skills-sh";
+  if (isManaged && file.kind === "shared") {
+    await forkSkill(lifecycleTargetForDeployment(file.deployment));
+  }
+  await setSkillInvocation(skill.name, `${file.path}/SKILL.md`, policy);
+}

@@ -16,6 +16,13 @@ const DOT_COLOR = {
   off: "bg-text-secondary",
 } satisfies Record<StatusLevel, string>;
 
+/** Screen-reader text for a level, since the dot itself only carries color. */
+const DOT_LABEL = {
+  error: "Error",
+  warning: "Warning",
+  off: "Off",
+} satisfies Record<StatusLevel, string>;
+
 /** 6px dot + 1.5px ring on a 16-18px row icon, 5px dot + 1px ring on a 12px stack glyph, see status-spec.md §1. */
 const DOT_SIZE = {
   18: "size-1.5 ring-[1.5px]",
@@ -31,7 +38,8 @@ interface StatusIconProps {
 }
 
 /** An identity icon with an optional severity dot ringed in the row background - never a tinted or swapped icon, see status-spec.md §1. */
-export function StatusIcon({ icon, level, tip, size = 16 }: StatusIconProps) {
+export function StatusIcon({ icon, level, tip, size: sizeProp }: StatusIconProps) {
+  const size = sizeProp ?? 16;
   const content = (
     <span className="relative inline-flex shrink-0 items-center justify-center text-text-secondary">
       {icon}
@@ -41,6 +49,7 @@ export function StatusIcon({ icon, level, tip, size = 16 }: StatusIconProps) {
           aria-hidden="true"
         />
       )}
+      {level && <span className="sr-only">{DOT_LABEL[level]}</span>}
     </span>
   );
   if (!tip || tip.length === 0) return content;

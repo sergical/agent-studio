@@ -5,14 +5,13 @@
 // ============================================================================
 
 import { useState } from "react";
-import { homeDir } from "@tauri-apps/api/path";
-import { open } from "@tauri-apps/plugin-dialog";
 import { PageShell } from "../Shell/PageShell";
 import { SkillCoverageMatrix } from "../Coverage/SkillCoverageMatrix";
+import { ScanPartialBanner } from "./ScanPartialBanner";
 import { SkillListTable } from "./SkillListTable";
 import type { SortMode } from "../../lib/skill-list-sort";
-import { SkillListFilterBar } from "./SkillListFilterBar";
-import { registerSkillProjects, unregisterSkillProject } from "../../lib/skill-api";
+import { SkillListActiveFilters, SkillListFilterBar } from "./SkillListFilterBar";
+import { useProjectFolderActions } from "../../hooks/useProjectFolderActions";
 import { collectDashboardIssues } from "@skill-studio/lib";
 import { applySkillListFilter, isProjectScope } from "@skill-studio/lib";
 import type { SkillListFilter } from "@skill-studio/lib";
@@ -38,6 +37,9 @@ function deploymentForScope(
 interface SkillsViewProps {
   snapshot: SkillSnapshot | undefined;
   onSelectSkill: (name: string, deploymentPath?: string) => void;
+  /** Whether Skills is the view on screen right now - `false` while it's kept mounted but hidden
+   * behind an open skill's page, so its window-level keyboard shortcuts stay off. */
+  active: boolean;
 }
 
 /**
@@ -46,7 +48,7 @@ interface SkillsViewProps {
  * the store's `skillListFilter`/`showCoverage`, so opening a skill and
  * coming back never loses them.
  */
-export function SkillsView({ snapshot, onSelectSkill }: SkillsViewProps) {
+export function SkillsView({ snapshot, onSelectSkill, active }: SkillsViewProps) {
   const filter = useAppStore((state) => state.skillListFilter);
   const setSkillListFilter = useAppStore((state) => state.setSkillListFilter);
   const resetSkillListFilter = useAppStore((state) => state.resetSkillListFilter);
@@ -56,12 +58,11 @@ export function SkillsView({ snapshot, onSelectSkill }: SkillsViewProps) {
   const selectedSkillName = useAppStore((state) =>
     state.activeView.kind === "skill" ? state.activeView.name : null,
   );
+  const lastClosedSkillName = useAppStore((state) => state.lastClosedSkillName);
   const userAddedProjects = useAppStore((state) => state.userAddedProjects);
   const excludedProjects = useAppStore((state) => state.excludedProjects);
-  const addProject = useAppStore((state) => state.addProject);
-  const removeProject = useAppStore((state) => state.removeProject);
-  const addToast = useAppStore((state) => state.addToast);
   const openAddSkillSheet = useAppStore((state) => state.openAddSkillSheet);
+  const { addProject, stopTracking } = useProjectFolderActions();
 
   const excludedProjectSet = new Set(excludedProjects);
   const projects = Array.from(
@@ -75,72 +76,37 @@ export function SkillsView({ snapshot, onSelectSkill }: SkillsViewProps) {
   const issues = collectDashboardIssues(baseSkills);
   const rows = applySkillListFilter(baseSkills, filter, issues, snapshot?.invocations);
 
+  /** Adds a project via the shared hook, then switches the scope to it. */
   const handleAddProject = async () => {
-    const selected = await open({ directory: true, multiple: false, title: "Add Project" });
-    if (!selected) return;
-
-    const home = await homeDir().catch(() => null);
-    if (home && selected === home) {
-      addToast({
-        type: "error",
-        title: "Can't add the home directory",
-        message: "It's the global scope, not a project.",
-      });
-      return;
-    }
-
-    try {
-      await registerSkillProjects([selected]);
-      addProject(selected);
-      setSkillListFilter({ scope: { project: selected } });
-    } catch (err) {
-      addToast({
-        type: "error",
-        title: "Couldn't add project",
-        message: err instanceof Error ? err.message : "Unknown error",
-      });
-    }
-  };
-
-  /**
-   * Un-registers `path` with the backend first; the store (and the scope,
-   * if it was the active project) only updates once that succeeds, so a
-   * failed unregister leaves tracking state unchanged and reports an error
-   * instead of silently un-tracking a project the backend still has.
-   */
-  const handleRemoveProject = async (path: string) => {
-    try {
-      await unregisterSkillProject(path);
-    } catch (err) {
-      addToast({
-        type: "error",
-        title: "Couldn't stop tracking project",
-        message: err instanceof Error ? err.message : "Unknown error",
-      });
-      return;
-    }
-    removeProject(path);
-    if (isProjectScope(filter.scope) && filter.scope.project === path) {
-      setSkillListFilter({ scope: "all" });
-    }
+    const added = await addProject();
+    if (added) setSkillListFilter({ scope: { project: added } });
   };
 
   return (
-    <PageShell title="Skills">
-      <SkillListFilterBar
+    <PageShell
+      title="Skills"
+      toolbar={
+        <SkillListFilterBar
+          filter={filter}
+          onChange={setSkillListFilter}
+          projects={projects}
+          onAddProject={handleAddProject}
+          onRemoveProject={stopTracking}
+          showCoverage={showCoverage}
+          onToggleCoverage={setShowCoverage}
+          resultCount={rows.length}
+          sort={sort}
+          onSortChange={setSort}
+          snapshot={snapshot}
+        />
+      }
+    >
+      <SkillListActiveFilters
         filter={filter}
         onChange={setSkillListFilter}
         onReset={resetSkillListFilter}
-        projects={projects}
-        onAddProject={handleAddProject}
-        onRemoveProject={handleRemoveProject}
-        showCoverage={showCoverage}
-        onToggleCoverage={setShowCoverage}
-        resultCount={rows.length}
-        sort={sort}
-        onSortChange={setSort}
-        snapshot={snapshot}
       />
+      {snapshot?.scan_partial && <ScanPartialBanner observations={snapshot.scan_observations} />}
       {showCoverage ? (
         <SkillCoverageMatrix skills={rows} onSelectSkill={onSelectSkill} />
       ) : (
@@ -150,6 +116,8 @@ export function SkillsView({ snapshot, onSelectSkill }: SkillsViewProps) {
           sort={sort}
           onSelectSkill={onSelectSkill}
           selectedSkillName={selectedSkillName}
+          initialCursorSkillName={lastClosedSkillName}
+          active={active}
           deploymentPathForSkill={(skill) => deploymentForScope(skill, filter.scope)}
           hasAnySkills={baseSkills.length > 0}
           onClearFilters={resetSkillListFilter}

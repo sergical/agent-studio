@@ -15,9 +15,15 @@ import {
   universalDisabledHarnesses,
   universalInstallHarnesses,
 } from "./universal-install-visibility";
-import { addSkill, getAddMethodDefaults } from "../../lib/skill-api";
+import {
+  addSkill,
+  getAddMethodDefaults,
+  invokeErrorMessage,
+  registerSkillProjects,
+} from "../../lib/skill-api";
 import { useAppStore } from "../../store/appStore";
 import type { SkillInstallCompletion } from "./InstallControls";
+import { toWireParsedSkillSource } from "@skill-studio/lib";
 import type { AgentId, InstallScope, SkillDestination, SkillWithStatus } from "@skill-studio/lib";
 
 const ACTION_BUTTON_CLASS =
@@ -49,7 +55,8 @@ export function SkillStoreInstallFlow({
   const [selectedProject, setSelectedProject] = useState<string | null>(null);
   const [isInstalling, setIsInstalling] = useState(false);
   const availableProjects = useAppStore((state) => state.userAddedProjects);
-  const addProject = useAppStore((state) => state.addProject);
+  const setTrackedProjects = useAppStore((state) => state.setTrackedProjects);
+  const addToast = useAppStore((state) => state.addToast);
 
   useEffect(() => {
     let cancelled = false;
@@ -88,9 +95,18 @@ export function SkillStoreInstallFlow({
       multiple: false,
       title: "Select Project Directory",
     });
-    if (selected) {
-      addProject(selected);
-      setSelectedProject(selected);
+    if (!selected) return;
+    // Installing into the folder does not depend on tracking it, so the pick
+    // stands even when the saved list cannot be written.
+    setSelectedProject(selected);
+    try {
+      setTrackedProjects(await registerSkillProjects([selected]));
+    } catch (err) {
+      addToast({
+        type: "error",
+        title: "Couldn't save project folder",
+        message: invokeErrorMessage(err),
+      });
     }
   };
 
@@ -111,12 +127,12 @@ export function SkillStoreInstallFlow({
     }
 
     addSkill({
-      source: {
+      source: toWireParsedSkillSource({
         kind: "github",
         repo: repoSource,
         path: skill.name,
         skillName: skill.name,
-      },
+      }),
       method: "skills-sh",
       scope: installScope,
       destination,
@@ -127,11 +143,15 @@ export function SkillStoreInstallFlow({
         claudeReadsUniversal,
         claudeLink,
       ),
-      project_path: installScope === "project" ? (selectedProject ?? undefined) : undefined,
+      project_path: installScope === "project" ? (selectedProject ?? null) : null,
       trial: false,
     })
       .then((result) => {
-        onInstallComplete({ success: true, skillName: result.name, warning: result.warning });
+        onInstallComplete({
+          success: true,
+          skillName: result.name,
+          warning: result.warning ?? undefined,
+        });
       })
       .catch((error) => {
         onInstallComplete({
@@ -208,7 +228,7 @@ export function SkillStoreInstallFlow({
 
       <div className="mt-auto flex flex-col gap-2 p-5">
         <Button
-          className={`${ACTION_BUTTON_CLASS} bg-accent text-text-on-accent hover:bg-accent-hover`}
+          className={`${ACTION_BUTTON_CLASS} bg-accent-solid text-text-on-accent hover:bg-accent-solid-hover`}
           onClick={handleInstall}
           disabled={isInstalling || (installScope === "project" && !selectedProject)}
         >

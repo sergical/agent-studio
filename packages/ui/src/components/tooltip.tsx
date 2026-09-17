@@ -12,11 +12,11 @@ function TooltipProvider({ delay = 0, ...props }: TooltipPrimitive.Provider.Prop
   return <TooltipPrimitive.Provider data-slot="tooltip-provider" delay={delay} {...props} />;
 }
 
-function Tooltip({ ...props }: TooltipPrimitive.Root.Props) {
+function Tooltip<Payload = unknown>({ ...props }: TooltipPrimitive.Root.Props<Payload>) {
   return <TooltipPrimitive.Root data-slot="tooltip" {...props} />;
 }
 
-function TooltipTrigger({ ...props }: TooltipPrimitive.Trigger.Props) {
+function TooltipTrigger<Payload = unknown>({ ...props }: TooltipPrimitive.Trigger.Props<Payload>) {
   return <TooltipPrimitive.Trigger data-slot="tooltip-trigger" {...props} />;
 }
 
@@ -42,7 +42,7 @@ function TooltipContent({
         <TooltipPrimitive.Popup
           data-slot="tooltip-content"
           className={cn(
-            "z-[var(--z-tooltip,50)] inline-flex w-fit max-w-xs origin-(--transform-origin) items-center gap-1.5 rounded-md bg-foreground px-3 py-1.5 text-xs text-background has-data-[slot=kbd]:pr-1.5 data-[side=bottom]:slide-in-from-top-2 data-[side=inline-end]:slide-in-from-left-2 data-[side=inline-start]:slide-in-from-right-2 data-[side=left]:slide-in-from-right-2 data-[side=right]:slide-in-from-left-2 data-[side=top]:slide-in-from-bottom-2 **:data-[slot=kbd]:relative **:data-[slot=kbd]:isolate **:data-[slot=kbd]:z-50 **:data-[slot=kbd]:rounded-sm data-[state=delayed-open]:animate-in data-[state=delayed-open]:fade-in-0 data-[state=delayed-open]:zoom-in-95 data-open:animate-in data-open:fade-in-0 data-open:zoom-in-95 data-closed:animate-out data-closed:fade-out-0 data-closed:zoom-out-95",
+            "z-[var(--z-tooltip,50)] inline-flex w-fit max-w-xs origin-(--transform-origin) items-center gap-1.5 rounded-md bg-foreground px-3 py-1.5 text-xs text-background has-data-[slot=kbd]:pr-1.5 data-[side=bottom]:slide-in-from-top-2 data-[side=inline-end]:slide-in-from-left-2 data-[side=inline-start]:slide-in-from-right-2 data-[side=left]:slide-in-from-right-2 data-[side=right]:slide-in-from-left-2 data-[side=top]:slide-in-from-bottom-2 **:data-[slot=kbd]:relative **:data-[slot=kbd]:isolate **:data-[slot=kbd]:z-50 **:data-[slot=kbd]:rounded-sm data-open:animate-in data-open:fade-in-0 data-open:zoom-in-95 data-closed:animate-out data-closed:fade-out-0 data-closed:zoom-out-95 data-[instant]:animate-none",
             className,
           )}
           {...props}
@@ -58,4 +58,10 @@ function TooltipContent({
   );
 }
 
-export { Tooltip, TooltipTrigger, TooltipContent, TooltipProvider };
+/** Creates a handle to connect one `Tooltip` root to many detached `TooltipTrigger`s, so a list
+ * of rows can share a single tooltip instance instead of mounting one per row. */
+const createTooltipHandle = TooltipPrimitive.createHandle;
+type TooltipHandle<Payload = unknown> = TooltipPrimitive.Handle<Payload>;
+
+export { Tooltip, TooltipTrigger, TooltipContent, TooltipProvider, createTooltipHandle };
+export type { TooltipHandle };
