@@ -8,23 +8,11 @@ use std::collections::BTreeSet;
 use std::fs;
 use std::path::Path;
 
-/// Registration groups the run/pack epic tracks as a deferred, unbuilt
-/// frontend (see `docs/action-map/plan.md`'s Group 4 note: "runs/packs
-/// deferred") - `lib.rs`'s own `//` section headers mark them, so excluding
-/// them from the orphan check reads the deferral off the source instead of
-/// hand-listing the function names it currently covers.
-const DEFERRED_SECTIONS: &[&str] = &[
-    "Local harness runner",
-    "Test run targets (scratch / worktree / in place)",
-    "Run history",
-];
-
 /// Pulls every `module::path::fn_name` entry out of the
-/// `tauri::generate_handler![ ... ]` list in `lib.rs`, paired with the most
-/// recent `//` section header above it, and returns the bare `fn_name`s -
-/// what Tauri registers each command under, absent a
-/// `#[tauri::command(rename_all = ...)]` override (none of these use one) -
-/// for every entry whose section isn't in `DEFERRED_SECTIONS`.
+/// `tauri::generate_handler![ ... ]` list in `lib.rs` and returns the bare
+/// `fn_name`s - what Tauri registers each command under, absent a
+/// `#[tauri::command(rename_all = ...)]` override (none of these use one).
+/// `//` section headers inside the list are skipped.
 fn registered_commands(lib_rs: &str) -> BTreeSet<String> {
     let start_marker = "tauri::generate_handler![";
     let start = lib_rs
@@ -36,17 +24,9 @@ fn registered_commands(lib_rs: &str) -> BTreeSet<String> {
         .expect("the generate_handler! list must close with ]")
         + start;
 
-    let mut section = "";
     let mut commands = BTreeSet::new();
     for line in lib_rs[start..end].lines().map(str::trim) {
-        if line.is_empty() {
-            continue;
-        }
-        if let Some(header) = line.strip_prefix("//") {
-            section = header.trim();
-            continue;
-        }
-        if DEFERRED_SECTIONS.contains(&section) {
+        if line.is_empty() || line.starts_with("//") {
             continue;
         }
         let path = line.trim_end_matches(',');
