@@ -20,6 +20,7 @@ mod builder;
 mod clock;
 mod discovery;
 mod fs;
+mod harness_detect;
 mod history;
 mod ids;
 mod lease;
@@ -32,6 +33,7 @@ pub use builder::{default_ports, default_ports_with_discovery, default_ports_wit
 pub use clock::SystemClock;
 pub use discovery::{discover_skill_projects, discovery_harnesses, HostProjectDiscovery};
 pub use fs::RealFs;
+pub use harness_detect::RealProcessSpawner;
 pub use history::{hash_entry, NoHistoryOpener, SqliteHistoryOpener};
 pub use ids::UlidIds;
 pub use lease::FileLease;

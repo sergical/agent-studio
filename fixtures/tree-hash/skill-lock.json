@@ -1,0 +1,77 @@
+{
+  "version": 3,
+  "skills": {
+    "simple": {
+      "source": "fixture/tree-hash",
+      "sourceType": "github",
+      "sourceUrl": "https://github.com/fixture/tree-hash",
+      "skillFolderHash": "d0bec03293b02111e717e3b3ab58cbc544ea543e",
+      "installedAt": "2024-01-31T00:00:00Z",
+      "updatedAt": "2024-01-31T00:00:00Z"
+    },
+    "nested": {
+      "source": "fixture/tree-hash",
+      "sourceType": "github",
+      "sourceUrl": "https://github.com/fixture/tree-hash",
+      "skillFolderHash": "ad489fbfda3ca76c014a29ee02f1893069eccd35",
+      "installedAt": "2024-01-31T00:00:00Z",
+      "updatedAt": "2024-01-31T00:00:00Z"
+    },
+    "executable": {
+      "source": "fixture/tree-hash",
+      "sourceType": "github",
+      "sourceUrl": "https://github.com/fixture/tree-hash",
+      "skillFolderHash": "c9ed8ce69f4377ba8a2942f7e9719b22903ebbb8",
+      "installedAt": "2024-01-31T00:00:00Z",
+      "updatedAt": "2024-01-31T00:00:00Z"
+    },
+    "symlink": {
+      "source": "fixture/tree-hash",
+      "sourceType": "github",
+      "sourceUrl": "https://github.com/fixture/tree-hash",
+      "skillFolderHash": "fec552984b58211f1c614f3425a54617b1138dea",
+      "installedAt": "2024-01-31T00:00:00Z",
+      "updatedAt": "2024-01-31T00:00:00Z"
+    },
+    "empty-dir": {
+      "source": "fixture/tree-hash",
+      "sourceType": "github",
+      "sourceUrl": "https://github.com/fixture/tree-hash",
+      "skillFolderHash": "a957948f3226f583f7e45afc0b34670edace6f8c",
+      "installedAt": "2024-01-31T00:00:00Z",
+      "updatedAt": "2024-01-31T00:00:00Z"
+    },
+    "name-order": {
+      "source": "fixture/tree-hash",
+      "sourceType": "github",
+      "sourceUrl": "https://github.com/fixture/tree-hash",
+      "skillFolderHash": "427fd15b44567e34b55d159c989ff1841f22b5b8",
+      "installedAt": "2024-01-31T00:00:00Z",
+      "updatedAt": "2024-01-31T00:00:00Z"
+    },
+    "unicode-names": {
+      "source": "fixture/tree-hash",
+      "sourceType": "github",
+      "sourceUrl": "https://github.com/fixture/tree-hash",
+      "skillFolderHash": "c7b1c2eeaed3eb4854ccc79fe0b7f472cc2e1f55",
+      "installedAt": "2024-01-31T00:00:00Z",
+      "updatedAt": "2024-01-31T00:00:00Z"
+    },
+    "deep-nesting": {
+      "source": "fixture/tree-hash",
+      "sourceType": "github",
+      "sourceUrl": "https://github.com/fixture/tree-hash",
+      "skillFolderHash": "63598aaf2ec99e17e59b3b0f0faa61e1185f8c36",
+      "installedAt": "2024-01-31T00:00:00Z",
+      "updatedAt": "2024-01-31T00:00:00Z"
+    },
+    "binary-file": {
+      "source": "fixture/tree-hash",
+      "sourceType": "github",
+      "sourceUrl": "https://github.com/fixture/tree-hash",
+      "skillFolderHash": "e1b7eefe93fe9ca44b5897d0190aad4e958818dc",
+      "installedAt": "2024-01-31T00:00:00Z",
+      "updatedAt": "2024-01-31T00:00:00Z"
+    }
+  }
+}

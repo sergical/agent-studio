@@ -536,6 +536,31 @@ fn a_write_command_under_a_held_lease_exits_3_instead_of_blocking() {
 }
 
 #[test]
+fn harnesses_with_no_binaries_on_path_prints_unknown_for_every_row() {
+    let home = materialized_fixture("basic");
+    // Override the child's PATH to an empty directory so no harness
+    // executable resolves; the test process's own PATH and HOME are left
+    // untouched.
+    let empty_path_dir = tempfile::tempdir().unwrap();
+    let output = Command::new(bin())
+        .args(["harnesses", "--fixture", home.to_str().unwrap()])
+        .env("PATH", empty_path_dir.path())
+        .output()
+        .expect("run skill-studio harnesses");
+    assert!(output.status.success(), "expected exit 0");
+    let stdout = String::from_utf8(output.stdout).expect("utf8 stdout");
+    let rows: Vec<&str> = stdout.lines().collect();
+    assert_eq!(rows.len(), 6, "one row per first-class harness:\n{stdout}");
+    for row in &rows {
+        assert!(
+            row.contains("Unknown"),
+            "row named no version/install-method evidence as Unknown:\n{row}"
+        );
+    }
+    std::fs::remove_dir_all(&home).ok();
+}
+
+#[test]
 fn schema_regenerates_the_checked_in_snapshot() {
     let out = tempfile::tempdir().unwrap();
     let status = Command::new(bin())

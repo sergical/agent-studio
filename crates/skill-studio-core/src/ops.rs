@@ -18,17 +18,18 @@ use tiktoken_rs::CoreBPE;
 
 use crate::dto::{
     CapabilitiesRequest, Completeness, DeploymentDto, Diagnosis, DriftState, EventDto,
-    FrontmatterRepairPreview, InstalledSkillDto, Inventory, Issue, IssueKind, ListEventsRequest,
-    NextAction, Observation, PluginSourceDto, RepairApplyMode, RepairApplyRequest, RepairOutcome,
-    RepairPreviewRequest, RestoreOutcome, RestoreRequest, ScanRequest, Severity, Timing,
+    FrontmatterRepairPreview, HarnessesRequest, InstalledSkillDto, Inventory, Issue, IssueKind,
+    ListEventsRequest, NextAction, Observation, PluginSourceDto, RepairApplyMode,
+    RepairApplyRequest, RepairOutcome, RepairPreviewRequest, RestoreOutcome, RestoreRequest,
+    ScanRequest, Severity, Timing,
 };
 use crate::error::{CoreError, ErrorCode, ErrorEntry};
 use crate::events::EventFilter;
 use crate::frontmatter;
 use crate::frontmatter_repair::propose_colon_scalar_repair;
 use crate::harness::{
-    Capabilities, CapabilityReport, DisabledBy, HarnessFacts, HarnessObserved, RootRole,
-    ScopeLevel, Support, ToolAvailability,
+    builtin_adapters, Capabilities, CapabilityReport, DetectionPorts, DisabledBy, HarnessFacts,
+    HarnessObserved, HarnessReport, RootRole, ScopeLevel, Support, ToolAvailability,
 };
 use crate::identity::{
     AgentId, BackingRelationship, CorrelationId, DeploymentId, DeploymentMutability, EventId,
@@ -77,6 +78,8 @@ pub enum Operation {
     Diagnose,
     /// Phase 1: harness facts.
     Capabilities,
+    /// Phase 1: runtime harness detection.
+    Harnesses,
     /// Phase 2: propose a frontmatter fix.
     PreviewFrontmatterRepair,
     /// Phase 2: apply a proposed fix.
@@ -148,6 +151,7 @@ impl Outcome for Diagnosis {
 }
 
 impl Outcome for Capabilities {}
+impl Outcome for HarnessReport {}
 impl Outcome for FrontmatterRepairPreview {}
 impl Outcome for RepairOutcome {
     fn event_id(&self) -> Option<EventId> {
@@ -2601,6 +2605,44 @@ pub fn capabilities(
     Ok(Capabilities { harnesses, tools })
 }
 
+/// Detects, per first-class harness, whether it exists on this machine: the
+/// executable on `PATH`, its version and install method (probed with
+/// `--version`, evidence-backed), whether it is configured, and whether it
+/// has run. Pure over ports: this is the only op that touches
+/// `rt.ports.spawner`; `scan` and every other op never do.
+///
+/// Preconditions: none. Without a `ToolLookup` port every executable reads
+/// as absent; without a `ProcessSpawner` port version and install method
+/// stay `Unknown` even when the binary is found.
+pub fn harnesses(
+    rt: &Runtime,
+    ctx: &OpContext,
+    _req: &HarnessesRequest,
+) -> Result<HarnessReport, CoreError> {
+    ctx.checkpoint()?;
+    let clock = rt.ports.clock.as_ref();
+    let op_start = clock.monotonic();
+    let step_start = clock.monotonic();
+    let ports = DetectionPorts {
+        fs: rt.ports.fs.as_ref(),
+        home: &rt.scope.home.canonical,
+        tools: rt.ports.tools.as_deref(),
+        spawner: rt.ports.spawner.as_deref(),
+    };
+    let harnesses = builtin_adapters()
+        .iter()
+        .map(|adapter| adapter.detect(&ports))
+        .collect();
+    let detect_step = crate::timing::step(clock, "detect_harnesses", step_start);
+    ctx.record_timing(crate::timing::op_timing(
+        clock,
+        "harnesses",
+        op_start,
+        vec![detect_step],
+    ));
+    Ok(HarnessReport { harnesses })
+}
+
 /// Probes the machine for one harness's [`HarnessObserved`] facts.
 ///
 /// `config_present` is `true` when any of the harness's global roots exists
@@ -3411,6 +3453,86 @@ mod tests {
     }
 
     #[test]
+    fn harnesses_reports_every_first_class_harness_with_a_state_and_evidence_or_names_the_missing_row(
+    ) {
+        use crate::harness::HarnessCatalog;
+        use crate::identity::AgentId;
+        use crate::ports::Ports;
+        use crate::testing::{
+            FakeClock, FakeIds, FakeLease, FakeProcessSpawner, FakeToolLookup, NoHistory,
+            RecordingSink,
+        };
+        use std::sync::Arc;
+
+        // Claude Code resolves on PATH and answers `--version`; every other
+        // harness is absent, so its state must fall back to `NotFound` with
+        // `Unknown` version/install-method evidence rather than a panic or a
+        // missing row.
+        let fs = FixtureBuilder::new().dir("/h").build_fs();
+        let mut lookup = FakeToolLookup::default();
+        lookup.binaries.insert(
+            "claude".into(),
+            "/usr/local/Cellar/claude/1.2.3/bin/claude".into(),
+        );
+        let mut spawner = FakeProcessSpawner::default();
+        spawner.outputs.insert(
+            "/usr/local/Cellar/claude/1.2.3/bin/claude".into(),
+            ("claude-code 1.2.3\n".into(), 0),
+        );
+        let ports = Ports {
+            fs: Arc::new(fs),
+            clock: Arc::new(FakeClock::at(0)),
+            ids: Arc::new(FakeIds::default()),
+            leases: Arc::new(FakeLease::default()),
+            history: Arc::new(NoHistory),
+            sink: Arc::new(RecordingSink::default()),
+            spawner: Some(Arc::new(spawner)),
+            discovery: None,
+            tools: Some(Arc::new(lookup)),
+            catalog: Arc::new(HarnessCatalog::builtin()),
+        };
+        let rt = Runtime::new(&RuntimeScope::fixture("/h"), ports).unwrap();
+        let ctx = OpContext::uncancellable(CorrelationId("c6".into()));
+
+        let report = harnesses(&rt, &ctx, &HarnessesRequest {}).unwrap();
+        assert_eq!(report.harnesses.len(), 6, "one row per first-class harness");
+
+        let claude = report
+            .harnesses
+            .iter()
+            .find(|row| row.id.as_str() == AgentId::CLAUDE_CODE)
+            .expect("claude-code row is missing");
+        assert!(claude.executable.is_some());
+        assert_eq!(claude.version.value.as_deref(), Some("claude-code 1.2.3"));
+        assert!(
+            claude.install_method.value.is_some(),
+            "a resolved executable path must infer an install method, not stay Unknown"
+        );
+
+        for row in report
+            .harnesses
+            .iter()
+            .filter(|r| r.id.as_str() != AgentId::CLAUDE_CODE)
+        {
+            assert!(
+                row.executable.is_none(),
+                "{} should not resolve without a binary on PATH",
+                row.id.as_str()
+            );
+            assert!(
+                row.version.value.is_none(),
+                "{} version must be Unknown",
+                row.id.as_str()
+            );
+            assert!(
+                row.install_method.value.is_none(),
+                "{} install method must be Unknown",
+                row.id.as_str()
+            );
+        }
+    }
+
+    #[test]
     fn busy_lease_exits_3() {
         let env: ResultEnvelope<Inventory> = ResultEnvelope::from_result(
             Operation::Scan,
@@ -3483,6 +3605,34 @@ mod tests {
             let inv = scan(&rt, &ctx(), &ScanRequest::default()).unwrap();
             assert!(inv.skills.is_empty());
             assert_eq!(inv.completeness, Completeness::Complete);
+        }
+
+        #[test]
+        fn scan_never_spawns_a_probe_even_when_a_spawner_port_is_wired() {
+            use crate::testing::PanicOnSpawn;
+
+            let fs = FixtureBuilder::new()
+                .dir("/h/.claude/skills/write-tests")
+                .file(
+                    "/h/.claude/skills/write-tests/SKILL.md",
+                    b"---\nname: write-tests\ndescription: Writes tests.\n---\nBody.",
+                )
+                .build_fs();
+            let ports = Ports {
+                fs: Arc::new(fs),
+                clock: Arc::new(FakeClock::at(0)),
+                ids: Arc::new(FakeIds::default()),
+                leases: Arc::new(FakeLease::default()),
+                history: Arc::new(NoHistory),
+                sink: Arc::new(RecordingSink::default()),
+                spawner: Some(Arc::new(PanicOnSpawn)),
+                discovery: None,
+                tools: None,
+                catalog: Arc::new(HarnessCatalog::builtin()),
+            };
+            let rt = Runtime::new(&RuntimeScope::fixture("/h"), ports).unwrap();
+            let inv = scan(&rt, &ctx(), &ScanRequest::default()).unwrap();
+            assert_eq!(inv.skills.len(), 1, "scan must still find the skill");
         }
 
         #[test]

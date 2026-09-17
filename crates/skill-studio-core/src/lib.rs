@@ -40,6 +40,7 @@ pub mod skill_uses;
 pub mod snapshot;
 pub mod timing;
 pub mod tracked_projects;
+pub mod tree_hash;
 
 #[cfg(any(test, feature = "testing"))]
 pub mod testing;
