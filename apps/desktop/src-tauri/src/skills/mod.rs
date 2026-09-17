@@ -9,6 +9,7 @@ pub mod api;
 pub mod codex_skill_config;
 pub mod commands;
 pub mod core_content_hash;
+pub mod core_runtime;
 pub mod dotagents_ledger;
 pub mod event_commands;
 pub mod event_store;
