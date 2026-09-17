@@ -160,7 +160,7 @@ fn rehome_table_decor(doc: &mut DocumentMut, removed_position: Option<isize>, te
 
 fn rehome_table_decor_blocks(doc: &mut DocumentMut, mut blocks: Vec<OrphanedTableDecor>) {
     blocks.retain(|block| !block.text.is_empty());
-    blocks.sort_by(|left, right| right.position.cmp(&left.position));
+    blocks.sort_by_key(|block| std::cmp::Reverse(block.position));
     for block in blocks {
         rehome_table_decor(doc, block.position, &block.text);
     }
