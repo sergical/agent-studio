@@ -1261,6 +1261,198 @@ impl HarnessAdapter for GrokBuildAdapter {
     }
 }
 
+// ---------------------------------------------------------------------------
+// Claude Code adapter operations
+//
+// Beyond the shared `HarnessAdapter` detection recipe, Claude Code needs its
+// own root resolution (honouring `CLAUDE_CONFIG_DIR` and skipping the
+// reserved `synced` folder), a per-skill link switch, a `skillOverrides`
+// reader/writer for `settings.json`, and a plugin cache reader. The
+// transcript reader lives in `skill_uses::claude_code` and the resume/rewrite
+// cache lives in `skill-studio-host`; both are shared machinery, not
+// Claude-specific code, so they stay where they are.
+// ---------------------------------------------------------------------------
+
+/// `synced` under `~/.claude/skills` is reserved by Claude Code itself and
+/// must never be treated as a skill folder (docs/action-map/harnesses/
+/// claude-code.md, "Resolved by the docs on 2026-09-16").
+const CLAUDE_RESERVED_SKILLS_ENTRY: &str = "synced";
+
+/// Claude Code's skills root: `<CLAUDE_CONFIG_DIR>/skills` when the caller
+/// supplies the env var's value, else `<home>/.claude/skills`. Reading the
+/// env var itself is a host concern (core has no `std::env` access); the
+/// caller resolves `CLAUDE_CONFIG_DIR` and passes it through.
+pub fn claude_code_skills_root(home: &Path, config_dir_override: Option<&Path>) -> PathBuf {
+    match config_dir_override {
+        Some(dir) => dir.join("skills"),
+        None => home.join(".claude").join("skills"),
+    }
+}
+
+/// Lists the skill folder names directly under Claude Code's skills root,
+/// honouring `CLAUDE_CONFIG_DIR` and skipping the reserved `synced` entry. A
+/// missing root reads as no skills rather than an error, matching the rest
+/// of the harness readers.
+pub fn claude_code_skill_entries(
+    fs: &dyn ScopeFs,
+    home: &Path,
+    config_dir_override: Option<&Path>,
+) -> Vec<String> {
+    let root = claude_code_skills_root(home, config_dir_override);
+    let Ok(entries) = fs.read_dir(&root) else {
+        return Vec::new();
+    };
+    entries
+        .into_iter()
+        .filter(|e| e.name != CLAUDE_RESERVED_SKILLS_ENTRY)
+        .map(|e| e.name)
+        .collect()
+}
+
+/// How `~/.claude/skills/<name>` is deployed, per the desktop's
+/// `ClaudeLinkState` (skill_harness_disable.rs:292): a whole-folder link to
+/// the universal root, a per-skill link, or nothing.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ClaudeLinkState {
+    /// `~/.claude/skills` itself is a symlink (to `~/.agents/skills`).
+    WholeDir,
+    /// `~/.claude/skills/<name>` is its own symlink.
+    PerSkill,
+    /// Neither: a plain folder, or nothing at that path.
+    None,
+}
+
+/// Reads the current link state at `link_path` (expected to be
+/// `~/.claude/skills/<name>`), checking the parent first since a whole-dir
+/// link makes every per-skill path underneath it meaningless.
+pub fn claude_link_state(fs: &dyn ScopeFs, link_path: &Path) -> ClaudeLinkState {
+    if let Some(parent) = link_path.parent() {
+        if fs
+            .symlink_metadata(parent)
+            .is_ok_and(|f| f.kind == crate::ports::FileKind::Symlink)
+        {
+            return ClaudeLinkState::WholeDir;
+        }
+    }
+    match fs.symlink_metadata(link_path) {
+        Ok(f) if f.kind == crate::ports::FileKind::Symlink => ClaudeLinkState::PerSkill,
+        _ => ClaudeLinkState::None,
+    }
+}
+
+/// Removes a per-skill link, returning the link's former target so the
+/// caller can record it (the desktop's registry calls this field
+/// `harness_disabled`) and recreate the link later. Refuses when the
+/// deployment is a whole-folder link, since there is no per-skill link to
+/// remove without breaking every other skill Claude Code reads through it.
+pub fn disable_claude_link(
+    fs: &dyn ScopeFs,
+    scope: &crate::scope::NormalizedScope,
+    guard: &crate::ports::ExclusiveGuard,
+    link_path: &Path,
+) -> Result<PathBuf, crate::error::CoreError> {
+    use crate::error::{CoreError, ErrorCode};
+    match claude_link_state(fs, link_path) {
+        ClaudeLinkState::WholeDir => Err(CoreError::new(
+            ErrorCode::Unsupported,
+            "Claude Code reads this skill through a whole-folder link, not a per-skill link - \
+             it cannot be disabled without breaking every other skill under the same link",
+        )
+        .at(link_path)),
+        ClaudeLinkState::None => Err(CoreError::new(
+            ErrorCode::InvalidRequest,
+            "not deployed to Claude Code as a per-skill link",
+        )
+        .at(link_path)),
+        ClaudeLinkState::PerSkill => {
+            let target = fs
+                .read_link(link_path)
+                .map_err(|e| CoreError::io(link_path, e))?;
+            let scoped = crate::ports::confine(scope, fs, link_path)?;
+            fs.remove_file(guard, &scoped)
+                .map_err(|e| CoreError::io(link_path, e))?;
+            Ok(target)
+        }
+    }
+}
+
+/// Recreates a per-skill link previously removed by [`disable_claude_link`].
+/// Idempotent: a link already present at `link_path` is left untouched
+/// rather than replaced, matching `unpark`'s recreate-on-restore behaviour.
+pub fn enable_claude_link(
+    fs: &dyn ScopeFs,
+    scope: &crate::scope::NormalizedScope,
+    guard: &crate::ports::ExclusiveGuard,
+    link_path: &Path,
+    target: &Path,
+) -> Result<(), crate::error::CoreError> {
+    if !matches!(claude_link_state(fs, link_path), ClaudeLinkState::None) {
+        return Ok(());
+    }
+    let scoped_target = crate::ports::confine(scope, fs, target)?;
+    let scoped_link = crate::ports::confine(scope, fs, link_path)?;
+    fs.symlink(guard, &scoped_target, &scoped_link)
+        .map_err(|e| crate::error::CoreError::io(link_path, e))
+}
+
+/// Reads `skillOverrides` from Claude Code's `~/.claude/settings.json`. A
+/// missing file, an unparsable file, or a missing/malformed key all read as
+/// no overrides, matching [`read_claude_enabled_plugins`] in `ops.rs`
+/// (kept private there since it only serves `capabilities`).
+pub fn read_claude_skill_overrides(
+    fs: &dyn ScopeFs,
+    home: &Path,
+) -> serde_json::Map<String, serde_json::Value> {
+    let path = home.join(".claude").join("settings.json");
+    let Ok(bytes) = fs.read_capped(&path, 1024 * 1024) else {
+        return serde_json::Map::new();
+    };
+    let Ok(value) = serde_json::from_slice::<serde_json::Value>(&bytes) else {
+        return serde_json::Map::new();
+    };
+    value
+        .get("skillOverrides")
+        .and_then(|v| v.as_object())
+        .cloned()
+        .unwrap_or_default()
+}
+
+/// Writes `skillOverrides` into Claude Code's `~/.claude/settings.json`,
+/// preserving every other top-level key byte-for-byte (only the
+/// `skillOverrides` value itself is replaced or inserted). Starts from an
+/// empty object when the file is missing or unparsable, so a first write
+/// still succeeds; a caller that needs to preserve a malformed file's
+/// content should read it before calling this.
+pub fn write_claude_skill_overrides(
+    fs: &dyn ScopeFs,
+    scope: &crate::scope::NormalizedScope,
+    guard: &crate::ports::ExclusiveGuard,
+    home: &Path,
+    overrides: serde_json::Map<String, serde_json::Value>,
+) -> Result<(), crate::error::CoreError> {
+    use crate::error::CoreError;
+    let path = home.join(".claude").join("settings.json");
+    let mut doc = match fs.read_capped(&path, 1024 * 1024) {
+        Ok(bytes) => serde_json::from_slice::<serde_json::Value>(&bytes)
+            .unwrap_or_else(|_| serde_json::Value::Object(serde_json::Map::new())),
+        Err(_) => serde_json::Value::Object(serde_json::Map::new()),
+    };
+    if !doc.is_object() {
+        doc = serde_json::Value::Object(serde_json::Map::new());
+    }
+    doc.as_object_mut()
+        .expect("just normalized to an object")
+        .insert(
+            "skillOverrides".to_string(),
+            serde_json::Value::Object(overrides),
+        );
+    let bytes = serde_json::to_vec_pretty(&doc)
+        .map_err(|e| CoreError::new(crate::error::ErrorCode::Io, e.to_string()).at(&path))?;
+    let scoped = crate::ports::confine(scope, fs, &path)?;
+    fs.write_atomic(guard, &scoped, &bytes)
+        .map_err(|e| CoreError::io(&path, e))
+}
+
 /// One [`HarnessAdapter`] per first-class harness, in the same order as
 /// [`HarnessCatalog::builtin`].
 pub fn builtin_adapters() -> Vec<Box<dyn HarnessAdapter>> {
@@ -1340,6 +1532,69 @@ mod tests {
                 .any(|n| n.contains("per-skill link") || n.contains("whole-dir link")),
             "resolved facts must not still be reported as Unknown: {:?}",
             report.runtime_notes
+        );
+    }
+
+    #[test]
+    fn claude_code_roots_resolve_claude_config_dir_and_skip_the_synced_folder_or_names_the_leaking_path(
+    ) {
+        // No override: reads under the default `~/.claude/skills`, and
+        // `synced` (a reserved folder, never a skill) is skipped.
+        let fs = crate::testing::FixtureBuilder::new()
+            .dir("/home/.claude/skills/foo")
+            .dir("/home/.claude/skills/synced")
+            .build_fs();
+        let default_entries = claude_code_skill_entries(&fs, Path::new("/home"), None);
+        assert_eq!(
+            default_entries,
+            vec!["foo".to_string()],
+            "the reserved `synced` folder leaked into the skill list: {default_entries:?}"
+        );
+
+        // `CLAUDE_CONFIG_DIR` override: reads from the override, not the
+        // default home path, and still skips `synced` there.
+        let fs = crate::testing::FixtureBuilder::new()
+            .dir("/home/.claude/skills/should-not-be-read")
+            .dir("/custom/config/skills/bar")
+            .dir("/custom/config/skills/synced")
+            .build_fs();
+        let override_entries =
+            claude_code_skill_entries(&fs, Path::new("/home"), Some(Path::new("/custom/config")));
+        assert_eq!(
+            override_entries,
+            vec!["bar".to_string()],
+            "CLAUDE_CONFIG_DIR override was not honoured, or `synced` leaked: {override_entries:?}"
+        );
+    }
+
+    #[test]
+    fn claude_code_link_state_reads_per_skill_whole_dir_and_none() {
+        let fs = crate::testing::FixtureBuilder::new()
+            .dir("/home/.claude/skills/plain")
+            .alias("/home/.claude/skills/linked", "/home/.agents/skills/linked")
+            .dir("/home/.agents/skills/linked")
+            .build_fs();
+        assert_eq!(
+            claude_link_state(&fs, Path::new("/home/.claude/skills/linked")),
+            ClaudeLinkState::PerSkill
+        );
+        assert_eq!(
+            claude_link_state(&fs, Path::new("/home/.claude/skills/plain")),
+            ClaudeLinkState::None
+        );
+        assert_eq!(
+            claude_link_state(&fs, Path::new("/home/.claude/skills/missing")),
+            ClaudeLinkState::None
+        );
+
+        let whole_dir_fs = crate::testing::FixtureBuilder::new()
+            .alias("/home/.claude/skills", "/home/.agents/skills")
+            .dir("/home/.agents/skills/any")
+            .build_fs();
+        assert_eq!(
+            claude_link_state(&whole_dir_fs, Path::new("/home/.claude/skills/any")),
+            ClaudeLinkState::WholeDir,
+            "a whole-folder link at the parent must be reported for every child path under it"
         );
     }
 }
