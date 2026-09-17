@@ -62,6 +62,7 @@ pub fn live_skill_content_hash_controlled(
     let ctx = OpContext {
         correlation_id: CorrelationId("desktop-content-hash".into()),
         cancel: Arc::new(ControlCancelToken(control.clone())),
+        timing: std::sync::Mutex::new(None),
     };
     skill_content_hash(&fs, &ctx, skill_dir).map_err(|err| {
         if err.code == skill_studio_core::error::ErrorCode::Cancelled {

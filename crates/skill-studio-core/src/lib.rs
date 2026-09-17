@@ -37,10 +37,14 @@ pub mod ports;
 pub mod scope;
 pub mod skill_uses;
 pub mod snapshot;
+pub mod timing;
 pub mod tracked_projects;
 
 #[cfg(any(test, feature = "testing"))]
 pub mod testing;
+
+#[cfg(any(test, feature = "testing"))]
+pub mod bench_estate;
 
 /// Version of the wire contract (envelope, DTOs, MCP tool schemas).
 ///

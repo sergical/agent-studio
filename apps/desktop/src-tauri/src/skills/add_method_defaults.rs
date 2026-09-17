@@ -109,10 +109,14 @@ fn add_method_defaults(home: &Path, path_var: &str) -> AddMethodDefaults {
 /// which first-class agents are installed - the Add Skill sheet fetches this
 /// once when it opens to pick its Method and Harnesses defaults.
 #[tauri::command]
-pub fn get_add_method_defaults() -> Result<AddMethodDefaults, String> {
-    let home = dirs::home_dir().ok_or("Could not find home directory")?;
-    let path_var = std::env::var("PATH").unwrap_or_default();
-    Ok(add_method_defaults(&home, &path_var))
+pub async fn get_add_method_defaults(app: tauri::AppHandle) -> Result<AddMethodDefaults, String> {
+    let timing_app = app.clone();
+    crate::timing_log::time_command_blocking(&timing_app, "get_add_method_defaults", move || {
+        let home = dirs::home_dir().ok_or("Could not find home directory")?;
+        let path_var = std::env::var("PATH").unwrap_or_default();
+        Ok(add_method_defaults(&home, &path_var))
+    })
+    .await
 }
 
 #[cfg(test)]

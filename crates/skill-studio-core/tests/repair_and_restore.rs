@@ -623,6 +623,38 @@ fn a_crashed_pending_row_is_marked_interrupted_idempotently() {
     std::fs::remove_dir_all(&home).ok();
 }
 
+/// An error `preview_frontmatter_repair` returns after its nested `scan`
+/// must never leave that nested scan's `OpTiming` on `ctx`: a reader would
+/// see `timings.op == "scan"` under an envelope whose `operation` says
+/// `preview_frontmatter_repair`.
+#[test]
+fn preview_repair_error_never_leaks_the_nested_scans_timing() {
+    use skill_studio_core::identity::DeploymentId;
+
+    let home = unique_temp_dir("preview_repair_no_such_deployment");
+    repairable_home(&home);
+    let rt = runtime_for(&home);
+
+    let c = ctx();
+    let result = ops::preview_frontmatter_repair(
+        &rt,
+        &c,
+        &RepairPreviewRequest {
+            deployment_id: DeploymentId::parse("dep:v1/does-not-exist").unwrap(),
+        },
+    );
+    assert!(result.is_err(), "no deployment has this id");
+    let timing = c.take_timing();
+    assert!(
+        timing
+            .as_ref()
+            .is_none_or(|t| t.op == "preview_frontmatter_repair"),
+        "expected None or preview_frontmatter_repair, got {timing:?}"
+    );
+
+    std::fs::remove_dir_all(&home).ok();
+}
+
 /// The envelope's `event_id` is the field a surface reads to learn what a
 /// mutating call recorded. It is filled from the outcome inside
 /// `from_result`, so every surface reports the same id without each call
@@ -648,12 +680,8 @@ fn the_envelope_carries_the_event_id_a_mutating_call_recorded() {
 
     let c = ctx();
     let applied = ops::apply_frontmatter_repair(&rt, &c, &request);
-    let envelope = ResultEnvelope::from_result(
-        Operation::ApplyFrontmatterRepair,
-        &rt.scope,
-        c.correlation_id.clone(),
-        applied,
-    );
+    let envelope =
+        ResultEnvelope::from_result(Operation::ApplyFrontmatterRepair, &rt.scope, &c, applied);
     let repair_event_id = envelope
         .event_id
         .clone()
@@ -668,12 +696,8 @@ fn the_envelope_carries_the_event_id_a_mutating_call_recorded() {
     // The second apply writes nothing, so it names no event.
     let c = ctx();
     let again = ops::apply_frontmatter_repair(&rt, &c, &request);
-    let envelope = ResultEnvelope::from_result(
-        Operation::ApplyFrontmatterRepair,
-        &rt.scope,
-        c.correlation_id.clone(),
-        again,
-    );
+    let envelope =
+        ResultEnvelope::from_result(Operation::ApplyFrontmatterRepair, &rt.scope, &c, again);
     assert_eq!(envelope.event_id, None);
 
     // A restore names the restore event it created, not the one it reverted.
@@ -686,12 +710,7 @@ fn the_envelope_carries_the_event_id_a_mutating_call_recorded() {
             force: false,
         },
     );
-    let envelope = ResultEnvelope::from_result(
-        Operation::RestoreEvent,
-        &rt.scope,
-        c.correlation_id.clone(),
-        restored,
-    );
+    let envelope = ResultEnvelope::from_result(Operation::RestoreEvent, &rt.scope, &c, restored);
     let outcome = envelope.data.as_ref().unwrap();
     assert_eq!(envelope.event_id.as_ref(), Some(&outcome.restore_event_id));
     assert_eq!(outcome.reverted_event_id, repair_event_id);

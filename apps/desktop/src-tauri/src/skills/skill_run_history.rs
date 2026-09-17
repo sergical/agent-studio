@@ -81,13 +81,17 @@ fn skill_dir(root: &Path, skill_name: &str) -> PathBuf {
 /// Records one run's summary and transcript, then trims the skill's run
 /// history down to `MAX_RUNS_PER_SKILL`.
 #[tauri::command]
-pub fn record_skill_run(
+pub async fn record_skill_run(
     app: AppHandle,
     record: SkillRunRecord,
     events: Vec<SkillAgentEvent>,
 ) -> Result<(), String> {
-    let root = runs_root(&app)?;
-    record_run_at(&root, &record, &events)
+    let timing_app = app.clone();
+    crate::timing_log::time_command_blocking(&timing_app, "record_skill_run", move || {
+        let root = runs_root(&app)?;
+        record_run_at(&root, &record, &events)
+    })
+    .await
 }
 
 /// `record_skill_run`'s logic, taking the runs root directly so it's
@@ -211,9 +215,16 @@ fn trim_run_history(
 
 /// Every run recorded for `skill_name`, newest first, without transcripts.
 #[tauri::command]
-pub fn list_skill_runs(app: AppHandle, skill_name: String) -> Result<Vec<SkillRunRecord>, String> {
-    let root = runs_root(&app)?;
-    list_runs_at(&root, &skill_name)
+pub async fn list_skill_runs(
+    app: AppHandle,
+    skill_name: String,
+) -> Result<Vec<SkillRunRecord>, String> {
+    let timing_app = app.clone();
+    crate::timing_log::time_command_blocking(&timing_app, "list_skill_runs", move || {
+        let root = runs_root(&app)?;
+        list_runs_at(&root, &skill_name)
+    })
+    .await
 }
 
 /// `list_skill_runs`'s logic, taking the runs root directly so it's testable
@@ -249,13 +260,17 @@ fn list_runs_at(root: &Path, skill_name: &str) -> Result<Vec<SkillRunRecord>, St
 /// The transcript events recorded for run `id`, across every skill (the id
 /// is a UUID, so a single directory scan first locates its skill folder).
 #[tauri::command]
-pub fn read_skill_run_events(
+pub async fn read_skill_run_events(
     app: AppHandle,
     skill_name: String,
     id: String,
 ) -> Result<Vec<SkillAgentEvent>, String> {
-    let root = runs_root(&app)?;
-    read_events_at(&root, &skill_name, &id)
+    let timing_app = app.clone();
+    crate::timing_log::time_command_blocking(&timing_app, "read_skill_run_events", move || {
+        let root = runs_root(&app)?;
+        read_events_at(&root, &skill_name, &id)
+    })
+    .await
 }
 
 /// `read_skill_run_events`'s logic, taking the runs root directly so it's

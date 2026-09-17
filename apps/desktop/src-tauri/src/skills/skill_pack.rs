@@ -1606,144 +1606,176 @@ fn confirm_pack_import_trust_with(
 // ============================================================================
 
 #[tauri::command]
-pub fn create_skill_pack(
+pub async fn create_skill_pack(
     name: String,
     members: Vec<PackMemberInput>,
     app: tauri::AppHandle,
-    fork_lock: tauri::State<ForkMutationLock>,
 ) -> Result<PackInfo, String> {
-    let _guard = fork_lock.try_acquire()?;
-    let home = dirs::home_dir().ok_or("Could not find home directory")?;
-    let app_data = app
-        .path()
-        .app_data_dir()
-        .map_err(|e| format!("Could not resolve app data dir: {e}"))?;
-    create_skill_pack_with(&home, &app_data, &name, &members, &RealGitRunner)
+    let timing_app = app.clone();
+    crate::timing_log::time_command_blocking(&timing_app, "create_skill_pack", move || {
+        let fork_lock = app.state::<ForkMutationLock>();
+        let _guard = fork_lock.try_acquire()?;
+        let home = dirs::home_dir().ok_or("Could not find home directory")?;
+        let app_data = app
+            .path()
+            .app_data_dir()
+            .map_err(|e| format!("Could not resolve app data dir: {e}"))?;
+        create_skill_pack_with(&home, &app_data, &name, &members, &RealGitRunner)
+    })
+    .await
 }
 
 #[tauri::command]
-pub fn update_skill_pack(
+pub async fn update_skill_pack(
     name: String,
     app: tauri::AppHandle,
-    fork_lock: tauri::State<ForkMutationLock>,
 ) -> Result<UpdatePackResult, String> {
-    let _guard = fork_lock.try_acquire()?;
-    let home = dirs::home_dir().ok_or("Could not find home directory")?;
-    let app_data = app
-        .path()
-        .app_data_dir()
-        .map_err(|e| format!("Could not resolve app data dir: {e}"))?;
-    update_skill_pack_with(&home, &app_data, &name, &RealGitRunner)
+    let timing_app = app.clone();
+    crate::timing_log::time_command_blocking(&timing_app, "update_skill_pack", move || {
+        let fork_lock = app.state::<ForkMutationLock>();
+        let _guard = fork_lock.try_acquire()?;
+        let home = dirs::home_dir().ok_or("Could not find home directory")?;
+        let app_data = app
+            .path()
+            .app_data_dir()
+            .map_err(|e| format!("Could not resolve app data dir: {e}"))?;
+        update_skill_pack_with(&home, &app_data, &name, &RealGitRunner)
+    })
+    .await
 }
 
 #[tauri::command]
-pub fn publish_skill_pack(
+pub async fn publish_skill_pack(
     name: String,
     visibility: String,
     app: tauri::AppHandle,
-    fork_lock: tauri::State<ForkMutationLock>,
 ) -> Result<PackInfo, String> {
-    let _guard = fork_lock.try_acquire()?;
-    let home = dirs::home_dir().ok_or("Could not find home directory")?;
-    let gh_bin =
-        skill_update_check::resolve_gh_binary().ok_or_else(|| "gh is not installed".to_string())?;
-    publish_skill_pack_with(
-        &home,
-        &name,
-        &visibility,
-        &RealGitRunner,
-        &RealGhRepoCreate { gh_bin },
-        &RealPublishConfirm { app: &app },
-    )
+    let timing_app = app.clone();
+    crate::timing_log::time_command_blocking(&timing_app, "publish_skill_pack", move || {
+        let fork_lock = app.state::<ForkMutationLock>();
+        let _guard = fork_lock.try_acquire()?;
+        let home = dirs::home_dir().ok_or("Could not find home directory")?;
+        let gh_bin = skill_update_check::resolve_gh_binary()
+            .ok_or_else(|| "gh is not installed".to_string())?;
+        publish_skill_pack_with(
+            &home,
+            &name,
+            &visibility,
+            &RealGitRunner,
+            &RealGhRepoCreate { gh_bin },
+            &RealPublishConfirm { app: &app },
+        )
+    })
+    .await
 }
 
 #[tauri::command]
-pub fn delete_skill_pack(
-    name: String,
-    fork_lock: tauri::State<ForkMutationLock>,
-) -> Result<(), String> {
-    let _guard = fork_lock.try_acquire()?;
-    let home = dirs::home_dir().ok_or("Could not find home directory")?;
-    delete_skill_pack_with(&home, &name)
+pub async fn delete_skill_pack(name: String, app: tauri::AppHandle) -> Result<(), String> {
+    let timing_app = app.clone();
+    crate::timing_log::time_command_blocking(&timing_app, "delete_skill_pack", move || {
+        let fork_lock = app.state::<ForkMutationLock>();
+        let _guard = fork_lock.try_acquire()?;
+        let home = dirs::home_dir().ok_or("Could not find home directory")?;
+        delete_skill_pack_with(&home, &name)
+    })
+    .await
 }
 
 #[tauri::command]
-pub fn import_skill_pack(
+pub async fn import_skill_pack(
     request: PackImportRequest,
     app: tauri::AppHandle,
-    trust_state: tauri::State<PackImportTrustState>,
-    fork_lock: tauri::State<ForkMutationLock>,
 ) -> Result<PackImportPreflightResult, String> {
-    let home = dirs::home_dir().ok_or("Could not find home directory")?;
-    let gh_bin = if validate_pack_manifest_source(&request.source).is_ok() {
-        skill_update_check::resolve_gh_binary().ok_or_else(|| "gh is not installed".to_string())?
-    } else {
-        PathBuf::new()
-    };
-    let result = preflight_pack_import_with(
-        &home,
-        request,
-        &RealGhContentsFetch { gh_bin },
-        &RealCommandRunner::new(),
-        &trust_state,
-        &fork_lock,
-    )?;
-    if matches!(result, PackImportPreflightResult::Imported { .. }) {
-        skill_refresh::request_snapshot_rebuild(&app);
-    }
-    Ok(result)
+    let timing_app = app.clone();
+    crate::timing_log::time_command_blocking(&timing_app, "import_skill_pack", move || {
+        let trust_state = app.state::<PackImportTrustState>();
+        let fork_lock = app.state::<ForkMutationLock>();
+        let home = dirs::home_dir().ok_or("Could not find home directory")?;
+        let gh_bin = if validate_pack_manifest_source(&request.source).is_ok() {
+            skill_update_check::resolve_gh_binary()
+                .ok_or_else(|| "gh is not installed".to_string())?
+        } else {
+            PathBuf::new()
+        };
+        let result = preflight_pack_import_with(
+            &home,
+            request,
+            &RealGhContentsFetch { gh_bin },
+            &RealCommandRunner::new(),
+            &trust_state,
+            &fork_lock,
+        )?;
+        if matches!(result, PackImportPreflightResult::Imported { .. }) {
+            skill_refresh::request_snapshot_rebuild(&app);
+        }
+        Ok(result)
+    })
+    .await
 }
 
 /// Consume one pack trust token, revalidate the request and manifest, record
 /// every displayed identity, then import while the mutation lock is held.
 #[tauri::command]
-pub fn confirm_skill_pack_trust(
+pub async fn confirm_skill_pack_trust(
     confirmation_token: String,
     request: PackImportRequest,
     app: tauri::AppHandle,
-    trust_state: tauri::State<PackImportTrustState>,
-    fork_lock: tauri::State<ForkMutationLock>,
 ) -> Result<ImportResult, String> {
-    let home = dirs::home_dir().ok_or("Could not find home directory")?;
-    let gh_bin = if validate_pack_manifest_source(&request.source).is_ok() {
-        skill_update_check::resolve_gh_binary().ok_or_else(|| "gh is not installed".to_string())?
-    } else {
-        PathBuf::new()
-    };
-    let result = confirm_pack_import_trust_with(
-        &home,
-        &confirmation_token,
-        request,
-        &RealGhContentsFetch { gh_bin },
-        &RealCommandRunner::new(),
-        &trust_state,
-        &fork_lock,
-    )?;
-    skill_refresh::request_snapshot_rebuild(&app);
-    Ok(result)
+    let timing_app = app.clone();
+    crate::timing_log::time_command_blocking(&timing_app, "confirm_skill_pack_trust", move || {
+        let trust_state = app.state::<PackImportTrustState>();
+        let fork_lock = app.state::<ForkMutationLock>();
+        let home = dirs::home_dir().ok_or("Could not find home directory")?;
+        let gh_bin = if validate_pack_manifest_source(&request.source).is_ok() {
+            skill_update_check::resolve_gh_binary()
+                .ok_or_else(|| "gh is not installed".to_string())?
+        } else {
+            PathBuf::new()
+        };
+        let result = confirm_pack_import_trust_with(
+            &home,
+            &confirmation_token,
+            request,
+            &RealGhContentsFetch { gh_bin },
+            &RealCommandRunner::new(),
+            &trust_state,
+            &fork_lock,
+        )?;
+        skill_refresh::request_snapshot_rebuild(&app);
+        Ok(result)
+    })
+    .await
 }
 
 /// Consume one pending pack trust token without trusting or importing it.
 #[tauri::command]
-pub fn abandon_pack_import_trust(
+pub async fn abandon_pack_import_trust(
     confirmation_token: String,
-    trust_state: tauri::State<PackImportTrustState>,
+    app: tauri::AppHandle,
 ) -> Result<bool, String> {
-    let home = dirs::home_dir().ok_or("Could not find home directory")?;
-    abandon_pack_import_trust_with(&home, &confirmation_token, &trust_state)
+    let timing_app = app.clone();
+    crate::timing_log::time_command_blocking(&timing_app, "abandon_pack_import_trust", move || {
+        let trust_state = app.state::<PackImportTrustState>();
+        let home = dirs::home_dir().ok_or("Could not find home directory")?;
+        abandon_pack_import_trust_with(&home, &confirmation_token, &trust_state)
+    })
+    .await
 }
 
 /// Read-only: the Packs view's list, straight off the registry - not part of
 /// `SkillSnapshot` since packs aren't installed skills.
 #[tauri::command]
-pub fn list_skill_packs() -> Result<Vec<PackInfo>, String> {
-    let home = dirs::home_dir().ok_or("Could not find home directory")?;
-    let registry = skill_fork_registry::read_fork_registry_or_default(&home);
-    Ok(registry
-        .packs
-        .iter()
-        .map(|(name, record)| PackInfo::from_record(&home, name, record))
-        .collect())
+pub async fn list_skill_packs(app: tauri::AppHandle) -> Result<Vec<PackInfo>, String> {
+    crate::timing_log::time_command_blocking(&app, "list_skill_packs", move || {
+        let home = dirs::home_dir().ok_or("Could not find home directory")?;
+        let registry = skill_fork_registry::read_fork_registry_or_default(&home);
+        Ok(registry
+            .packs
+            .iter()
+            .map(|(name, record)| PackInfo::from_record(&home, name, record))
+            .collect())
+    })
+    .await
 }
 
 #[cfg(test)]

@@ -1,0 +1,107 @@
+# Performance
+
+What blocks the UI thread today, what the scan budget is, what timing exists, and the minimal baseline to add first. Audited on 2026-09-17 from apps/desktop/src-tauri/src/skills/. Budgets are in definition-of-done.md: scan under 100 ms, any local mutation under 50 ms, UI event within one frame of the journal commit.
+
+## How Tauri runs a command
+
+A sync `#[tauri::command]` runs on the main thread and blocks paint and input for its whole duration. An async command runs on the Tokio runtime, but a blocking call inside it (`std::fs`, `std::process::Command::output`, rusqlite) stalls a Tokio worker unless it is wrapped in `tauri::async_runtime::spawn_blocking`. Three commands already do this right and are the pattern to copy: get_editor_choices (commands.rs:2374), list_project_folders (skill_project_folders.rs:136), check_skill_updates_now (skill_update_check.rs:892).
+
+## Commands that block
+
+"Blocks" means a process spawn, a multi-file walk, or SQLite on the main thread. "Small" is a single file read or write.
+
+| Command                                                                                                                         | File                                        | Sync or async | Work                                                                                  | Blocks |
+| ------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------- | ------------- | ------------------------------------------------------------------------------------- | ------ |
+| get_skills_sh_access                                                                                                            | commands.rs:108                             | async         | fs read of `~/.agents/skill-studio.json`, in `spawn_blocking`                         | no     |
+| set_skills_sh_api_key                                                                                                           | commands.rs:120                             | async         | fs write of `~/.agents/skill-studio.json`, in `spawn_blocking`                        | no     |
+| get_installed_skills                                                                                                            | commands.rs:180                             | async         | full fs scan, legacy path, in `spawn_blocking`                                        | no     |
+| list_skill_projects                                                                                                             | commands.rs:1459                            | async         | fs, in `spawn_blocking`                                                               | no     |
+| is_skill_installed                                                                                                              | commands.rs:1480                            | async         | fs read of `~/.agents/.skill-lock.json`, in `spawn_blocking`                          | no     |
+| remove_skill                                                                                                                    | commands.rs:1881                            | async         | `npx skills remove`, in `spawn_blocking`                                              | no     |
+| read_installed_skill_md                                                                                                         | commands.rs:2251                            | async         | fs read of a `SKILL.md`, in `spawn_blocking`                                          | no     |
+| write_installed_skill_md                                                                                                        | commands.rs:2326                            | async         | fs write of a `SKILL.md`, in `spawn_blocking`                                         | no     |
+| write_installed_skill_md_if_unchanged                                                                                           | commands.rs:2348                            | async         | fs compare-and-swap write of a `SKILL.md`, in `spawn_blocking`                        | no     |
+| update_skill                                                                                                                    | commands.rs:2454                            | async         | `npx skills update` or dotagents `add`, in `spawn_blocking`                           | no     |
+| set_plugin_enabled, uninstall_plugin                                                                                            | commands.rs:2594, 2618                      | async         | `claude plugin` process, in `spawn_blocking`                                          | no     |
+| add_skill, add_skills                                                                                                           | skill_add.rs:1359, 1340                     | async         | fs, network, npx, in `spawn_blocking`                                                 | no     |
+| fork_skill                                                                                                                      | skill_fork.rs:961                           | async         | fs, git, npx, in `spawn_blocking`                                                     | no     |
+| pull_fork_upstream                                                                                                              | skill_fork.rs:1408                          | async         | fs, fetch, git merge-file, in `spawn_blocking`                                        | no     |
+| unfork_skill                                                                                                                    | skill_fork.rs:1476                          | async         | fs, in `spawn_blocking`                                                               | no     |
+| create_skill_pack, update_skill_pack, publish_skill_pack, delete_skill_pack, import_skill_pack                                  | skill_pack.rs:1609, 1629, 1648, 1673, 1685  | async         | fs, git, network, tar, in `spawn_blocking`                                            | no     |
+| confirm_skill_pack_trust, abandon_pack_import_trust, list_skill_packs                                                           | skill_pack.rs:1719, 1752, 1768              | async         | fs, git, network, in `spawn_blocking`                                                 | no     |
+| list_skill_events, restore_skill_event, make_skill_independent_copy                                                             | event_commands.rs:66, 90, 426               | async         | SQLite open at event_store.rs:45, in `spawn_blocking`                                 | no     |
+| set_shared_harness_skill_enabled, materialize_harness_root, materialize_harness_root_then_disable, repair_skill_link            | event_commands.rs:139, 292, 338, 593        | async         | fs, in `spawn_blocking`                                                               | no     |
+| set_harness_enabled                                                                                                             | skill_harness_disable.rs:748                | async         | fs move-aside/symlink for a per-harness disable, in `spawn_blocking`                  | no     |
+| set_deployment_enabled                                                                                                          | skill_harness_disable.rs:824                | async         | fs move-aside, SQLite event store open, in `spawn_blocking`                           | no     |
+| set_skill_invocation                                                                                                            | skill_invocation.rs:356                     | async         | fs rewrite of a `SKILL.md`'s frontmatter, in `spawn_blocking`                         | no     |
+| preview_skill_frontmatter_repair                                                                                                | skill_frontmatter_repair.rs:281             | async         | fs read of a `SKILL.md`, in `spawn_blocking`                                          | no     |
+| apply_skill_frontmatter_repair                                                                                                  | skill_frontmatter_repair.rs:416             | async         | fs write, SQLite event store, in `spawn_blocking`                                     | no     |
+| park_skill, unpark_skill                                                                                                        | skill_park.rs:464, 505                      | async         | fs, in `spawn_blocking`                                                               | no     |
+| prepare_skill_run_target, reveal_skill_run_target, skill_run_target_diff, apply_skill_run_target_diff, discard_skill_run_target | skill_run_target.rs:173, 449, 484, 613, 748 | async         | fs, git, `open` process (reveal), in `spawn_blocking`                                 | no     |
+| keep_skill_trial, restore_trashed_skill                                                                                         | skill_trial.rs:843, 987                     | async         | fs, in `spawn_blocking`                                                               | no     |
+| get_tracked_projects, register_skill_projects, unregister_skill_project, remove_skill_project, import_tracked_projects          | skill_refresh.rs:297, 330, 357, 383, 410    | async         | fs read/write of the fork registry, in `spawn_blocking`                               | no     |
+| get_discovery_sources, set_discovery_source                                                                                     | skill_refresh.rs:463, 500                   | async         | fs read/write of the fork registry, in `spawn_blocking`                               | no     |
+| record_skill_run, list_skill_runs, read_skill_run_events                                                                        | skill_run_history.rs:84, 218, 263           | async         | fs, in `spawn_blocking`                                                               | no     |
+| start_skill_agent_run                                                                                                           | skill_agent_runner.rs:956                   | async         | tokio process; the sync shell probe runs in `spawn_blocking` at :977                  | no     |
+| create_skill_scratch_dir, remove_skill_scratch_dir                                                                              | skill_agent_runner.rs:1436, 1467            | async         | fs copy/symlink and a best-effort `git init`, in `spawn_blocking`                     | no     |
+| confirm_add_skill_trust                                                                                                         | skill_add_operation.rs:1066                 | async         | fs read of the trust registry, in `spawn_blocking`                                    | no     |
+| get_add_method_defaults                                                                                                         | add_method_defaults.rs:112                  | async         | fs `.exists()`/symlink checks for the Add Skill sheet's defaults, in `spawn_blocking` | no     |
+
+Unit 0.3 (issue #146) converted every command above (plus the earlier `get_editor_choices`, `list_project_folders`, `check_skill_updates_now`, already the pattern to copy) to async with the blocking work in `spawn_blocking`: zero rows in this table now block.
+
+Left sync (`pub fn`, `#[tauri::command]`, runs on the main thread), reason "touches no file, process, network, or database": `get_skill_snapshot` (skill_refresh.rs:215, reads a cached `RwLock`), `request_skill_rescan` (skill_refresh.rs:227, flips an `AtomicBool`), `get_agent_targets` (commands.rs:1490, in-memory `AgentId` list), `cancel_skill_agent_run` (skill_agent_runner.rs:1282, signals an in-memory handle), `start_add_skill_operation`, `start_add_skills_operation`, `get_add_skill_operation`, `cancel_add_skill_operation` (skill_add_operation.rs:880, 901, 922, 935 - queue/read/cancel an in-memory operation record; the fs/network/npx work happens later, on a spawned background task, not in the command body itself).
+
+Two commands are neither: `open_skill_path` and `set_preferred_editor` (commands.rs:2374, 2442) are `pub fn` bodies that do fs/process work, but are marked `#[tauri::command(async)]` rather than written as `pub async fn` - Tauri's own IPC layer dispatches that attribute's commands onto its blocking pool before the body runs, so they already never touch the main thread. They predate this unit, aren't in its command list, and don't go through this file's `time_command`/`time_command_blocking` helpers, so they're untimed in `timing.jsonl`.
+
+76 `#[tauri::command]` commands, plus these 2 `#[tauri::command(async)]` ones, for 78 total: 68 `pub async fn` (timed via `time_command_blocking`/`time_command_async`), 2 `#[tauri::command(async)]` with a `pub fn` body (Tauri's own blocking-pool dispatch, untimed here), 8 plain sync `pub fn` (main thread, no file/process/network/database work).
+
+Cheap by design: get_skill_snapshot (skill_refresh.rs:215) reads a cached `RwLock` only; request_skill_rescan (:227) flips an `AtomicBool`; the add-skill operations dispatch to a spawned background task (skill_add_operation.rs).
+
+## Scan budget and background loop
+
+- Core read budget: 2 s by default (crates/skill-studio-core/src/scope.rs:84, `DEFAULT_READ_TIMEOUT_MS`), used by CLI and MCP calls. The desktop raises it to 60 s (skill_refresh.rs:1373) so the background refresh reaches every root.
+- Over budget, the scan does not abort; it records "read budget exceeded" per root, marks `Completeness::Partial`, and the snapshot carries `scan_partial` and `scan_observations` (ops.rs:447, 534; skill_refresh.rs:81).
+- One background thread, spawned once at start (skill_refresh.rs:208), runs the watcher and rebuild loop: notify debounce 750 ms (:43), poll every 200 ms for the rescan flag (:48), a `rebuild_lock` so rebuilds never overlap (:109), an invocations-only rebuild at most every 5 s (:52), and an hourly rebuild for rolling windows (:946).
+- Watched: skill roots, plugin caches, the lock file, Codex config, Claude transcripts, OpenCode databases (module doc, :1 to 8).
+
+## Frontend
+
+- The skills table is virtualized with `@tanstack/react-virtual` (SkillListTable.tsx:11, 72), fixed row heights (:42).
+- The snapshot is one object: skills, projects, invocations, heatmap, last test by skill, update check, scan diagnostics (skill_refresh.rs:57 to 88). Metadata only, no file bodies, so size scales with skill count.
+- Every rebuild, including an invocations-only one, sends the whole snapshot; the hook replaces it when the revision is newer (useSkillSnapshot.ts:11 to 18, 96). No patching.
+- The store is plain Zustand (appStore.ts, 345 lines); derived views live in components and are compiled by React Compiler.
+
+## Timing that exists
+
+| Where                                                              | What                                                                                                                                                          | Reaches                                                               |
+| ------------------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------- |
+| build_snapshot (skill_refresh.rs:482 to 580)                       | `projects_ms`, `scan_ms`, `assembly_ms`, `overlays_ms`, `invocations_ms`, `last_test_ms`, `total_ms`                                                          | one `eprintln!` line per full rebuild (:1571); not the UI, not a file |
+| core `--timings` (apps/cli/src/main.rs:45; dto.rs:129; ops.rs:388) | one phase, `scan`                                                                                                                                             | CLI and MCP output only; the desktop does not set it                  |
+| tests                                                              | budget behaviour with a fake clock (ops.rs:3399, `exceeded_read_budget_marks_inventory_partial`); scan golden (crates/skill-studio-core/tests/scan_golden.rs) | correctness, not wall-clock                                           |
+
+There is no criterion dependency, no `benches/` folder, no command-latency wrapper, and no frontend frame timing. Past performance commits: b1b81f6 event store and non-blocking refresh, 61b135b one shared tooltip and menu, 43a788a keep the list mounted, b13ff06 dev estate padding, 2c68be2 React Compiler, 857b89d virtualized rows.
+
+## How timing is recorded
+
+Unit 0.1 (issue #144) added per-op and per-command timing end to end:
+
+- **Core**: `crates/skill-studio-core/src/timing.rs` defines `StepTiming` (one named section) and `OpTiming` (a whole op call plus its steps), both measured through `Ports::clock` (`Clock::monotonic`), never `std::time::Instant` - a fake clock in a test measures the same code path a real one does in production. Every op in `ops.rs` (`scan`, `diagnose`, `capabilities`, `preview_frontmatter_repair`, `apply_frontmatter_repair`, `list_events`, `restore_event`) files an `OpTiming` on `OpContext` via `ctx.record_timing`; the CLI and MCP take it back out with `ctx.take_timing()` and attach it to `ResultEnvelope.timings`. `skill_content_hash` is the one op function with no `Runtime` (and so no clock) and is not instrumented.
+- **CLI**: a global `--time` flag (`apps/cli/src/main.rs`) prints the op line and one indented line per step to stderr after the normal output, for every subcommand: `skill-studio scan --time` works against the real home directly, no fixture needed.
+- **MCP**: every tool response's `ResultEnvelope` carries the same `timings` field; no separate tool.
+- **Desktop**: `apps/desktop/src-tauri/src/timing_log.rs` appends one JSON line per Tauri command call to `<app_data_dir>/timing.jsonl` (fields `ts`, `command`, `elapsed_ms`, `steps`, `thread`), rotating to `timing.prev.jsonl` at 5 MB (`ROTATE_AT_BYTES`, one previous file kept). Every `#[tauri::command]` routes through the module's `time_command`/`time_command_async` helper rather than timing itself by hand.
+
+## How performance is checked
+
+Measurement tools - the CLI's `--time` flag, `timing.jsonl`, the frontend perf marks, and `cargo bench -p skill-studio-core --features testing --bench scan` - exist for someone working on speed to run by hand and read the numbers. CI never reads wall-clock output from any of them. The one thing CI enforces is a deterministic invariant: `crates/skill-studio-core/tests/scan_work_count.rs` counts filesystem calls (not milliseconds) on a generated 400-skill estate and asserts the scan reads each `SKILL.md` once and lists each directory once, regardless of how many harnesses or links the estate has.
+
+Full scan, 400-skill estate: **166.98 ms** median on disk, **1.9347 s** median in memory (`FixtureFs`, no real I/O but paying `BTreeMap`-scan `read_dir`/`canonicalize` costs `RealFs` doesn't), measured 2026-09-17 on an Apple M3 Max with `cargo bench -p skill-studio-core --features testing --bench scan`. A number like this is worth re-measuring by hand when working on scan speed; it is not a gate.
+
+Targets to work toward: zero commands in the blocking table; scan on the bench estate under 100 ms; snapshot apply for 400 skills under 5 ms; no IPC call on the main thread over one frame.
+
+## Frontend timing
+
+Unit 0.4 (issue #147) added the frontend half of the picture:
+
+- `apps/desktop/src/lib/skill-api.ts`'s `callCommand` wrapper is the one place every exported function calls `invoke` through - a pure re-route, same names and return types. It marks each call's start and measures an `"ipc:<command>"` `performance` entry at resolve or reject, then hands the duration to `apps/desktop/src/lib/perf-marks.ts`, which schedules one `requestAnimationFrame` after resolve and measures `"paint:<command>"` from resolve to that frame - the commit-to-paint number. `perf-marks.ts` keeps the last 50 calls in memory and exposes `subscribe(listener)`; no Zustand store involvement.
+- `apps/desktop/src/components/dev/PerfOverlay.tsx` reads that log and renders the last 20 calls (command, IPC ms, paint ms, over-16ms rows flagged) fixed bottom-right. `main.tsx` mounts it only when `import.meta.env.DEV` and the URL has `?perf=1`, e.g. `npm run dev` then visit with `?perf=1`.
+- `apps/desktop/src/lib/skill-list-model.ts` holds `groupSkillRows`, the pure computation from a `SkillSnapshot`'s skills to the Skills list's three state buckets (moved out of `components/SkillList` so it can be timed without mounting the table). `skill-list-model.test.ts` builds a 400-skill snapshot with the dev harness's `buildHarnessSnapshot` padding, runs `selectNewerSkillSnapshot` plus `groupSkillRows`, and asserts every skill lands in exactly one bucket; its speed is measured by hand with the `PerfOverlay`, not asserted in CI.

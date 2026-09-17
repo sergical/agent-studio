@@ -19,6 +19,7 @@ use super::skill_dto::{Deployment, LifecycleTarget, SkillEventDto};
 use super::skill_fork::ForkMutationLock;
 use super::skill_materialize;
 use super::skill_refresh::{self, SkillRefreshState, SkillSnapshot};
+use tauri::Manager;
 
 pub struct EventStoreState(pub Mutex<Option<EventStore>>);
 
@@ -62,63 +63,72 @@ fn dto_from_row(store: &EventStore, home: &Path, row: EventRow) -> SkillEventDto
 
 /// Lists events newest-first, for the Activity view's History section.
 #[tauri::command]
-pub fn list_skill_events(
+pub async fn list_skill_events(
     limit: Option<usize>,
     skill: Option<String>,
-    event_store: tauri::State<EventStoreState>,
+    app: tauri::AppHandle,
 ) -> Result<Vec<SkillEventDto>, String> {
-    let guard = locked_store(&event_store)?;
-    let store = guard.as_ref().ok_or("Event store is unavailable")?;
-    let home = dirs::home_dir().ok_or("Could not find home directory")?;
-    let rows = store.list(limit.unwrap_or(200), skill.as_deref())?;
-    Ok(rows
-        .into_iter()
-        .map(|row| dto_from_row(store, &home, row))
-        .collect())
+    let timing_app = app.clone();
+    crate::timing_log::time_command_blocking(&timing_app, "list_skill_events", move || {
+        let event_store = app.state::<EventStoreState>();
+        let guard = locked_store(&event_store)?;
+        let store = guard.as_ref().ok_or("Event store is unavailable")?;
+        let home = dirs::home_dir().ok_or("Could not find home directory")?;
+        let rows = store.list(limit.unwrap_or(200), skill.as_deref())?;
+        Ok(rows
+            .into_iter()
+            .map(|row| dto_from_row(store, &home, row))
+            .collect())
+    })
+    .await
 }
 
 /// Undoes one event. Refuses an `explode_shared_dir` restore while any of
 /// its skills are individually disabled (`restore_guard_for_explode`), and
 /// unregisters the materialized root once such a restore succeeds.
 #[tauri::command]
-pub fn restore_skill_event(
+pub async fn restore_skill_event(
     event_id: String,
     force: bool,
     app: tauri::AppHandle,
-    fork_lock: tauri::State<ForkMutationLock>,
-    event_store: tauri::State<EventStoreState>,
 ) -> Result<(), String> {
-    let _guard = fork_lock.try_acquire()?;
-    let guard = locked_store(&event_store)?;
-    let store = guard.as_ref().ok_or("Event store is unavailable")?;
+    let timing_app = app.clone();
+    crate::timing_log::time_command_blocking(&timing_app, "restore_skill_event", move || {
+        let fork_lock = app.state::<ForkMutationLock>();
+        let event_store = app.state::<EventStoreState>();
+        let _guard = fork_lock.try_acquire()?;
+        let guard = locked_store(&event_store)?;
+        let store = guard.as_ref().ok_or("Event store is unavailable")?;
 
-    let target = store
-        .get(&event_id)?
-        .ok_or_else(|| format!("Event {event_id} not found"))?;
-    let home = dirs::home_dir().ok_or("Could not find home directory")?;
-    skill_materialize::restore_guard_for_explode(store, &target, &home)?;
-    if target.kind == "make_independent_copy" {
-        if force {
-            return Err(
+        let target = store
+            .get(&event_id)?
+            .ok_or_else(|| format!("Event {event_id} not found"))?;
+        let home = dirs::home_dir().ok_or("Could not find home directory")?;
+        skill_materialize::restore_guard_for_explode(store, &target, &home)?;
+        if target.kind == "make_independent_copy" {
+            if force {
+                return Err(
                 "An independent copy cannot be force-restored because that could delete local edits"
                     .to_string(),
             );
+            }
+            super::skill_independent_copy::restore_independent_copy(store, &home, &target)?;
+            drop(guard);
+            skill_refresh::request_snapshot_rebuild(&app);
+            return Ok(());
         }
-        super::skill_independent_copy::restore_independent_copy(store, &home, &target)?;
+        store.restore(&event_id, force)?;
+        if target.kind == "explode_shared_dir" {
+            if let Some(root) = target.payload.get("root").and_then(|v| v.as_str()) {
+                store.unregister_materialized_root(Path::new(root))?;
+            }
+        }
         drop(guard);
-        skill_refresh::request_snapshot_rebuild(&app);
-        return Ok(());
-    }
-    store.restore(&event_id, force)?;
-    if target.kind == "explode_shared_dir" {
-        if let Some(root) = target.payload.get("root").and_then(|v| v.as_str()) {
-            store.unregister_materialized_root(Path::new(root))?;
-        }
-    }
-    drop(guard);
 
-    skill_refresh::request_snapshot_rebuild(&app);
-    Ok(())
+        skill_refresh::request_snapshot_rebuild(&app);
+        Ok(())
+    })
+    .await
 }
 
 /// The Locations card's entry point for disabling/enabling one skill under
@@ -126,79 +136,88 @@ pub fn restore_skill_event(
 /// per-skill links on first disable (`explode_shared_dir`), then delegates
 /// to `unlink_harness`/`relink_harness`.
 #[tauri::command]
-#[allow(clippy::too_many_arguments)]
-pub fn set_shared_harness_skill_enabled(
+pub async fn set_shared_harness_skill_enabled(
     root_path: String,
     target: LifecycleTarget,
     harness: String,
     enabled: bool,
     app: tauri::AppHandle,
-    refresh_state: tauri::State<SkillRefreshState>,
-    fork_lock: tauri::State<ForkMutationLock>,
-    event_store: tauri::State<EventStoreState>,
 ) -> Result<(), String> {
-    let _guard = fork_lock.try_acquire()?;
-    let deployment_id = target
-        .deployment_id
-        .as_deref()
-        .ok_or("Shared harness disable needs one deployment_id")?;
-    if target.owner_id.is_some() {
-        return Err(
-            "Shared harness disable targets one deployment, not an owner group".to_string(),
-        );
-    }
-    let snapshot = super::skill_lifecycle::rebuild_fresh_lifecycle_snapshot(&app, &refresh_state)?;
-    let (installed_skill, deployment) =
-        super::skill_lifecycle::find_deployment(&snapshot, deployment_id)?;
-    super::skill_lifecycle::revalidate_deployment(deployment, deployment_id)?;
-    let display = AgentId::all()
-        .into_iter()
-        .find(|agent| {
-            agent.cli_name() == harness || (*agent == AgentId::OpenCode && harness == "open-code")
-        })
-        .map(|agent| agent.display_name())
-        .ok_or_else(|| format!("Unknown harness: {harness}"))?;
-    if deployment.agent != display
-        || Path::new(&deployment.path).parent() != Some(Path::new(&root_path))
-        || !matches!(
-            deployment.backing,
-            super::skill_deployment::BackingRelationship::LinkedTo { .. }
-        )
-    {
-        return Err(format!(
+    let timing_app = app.clone();
+    crate::timing_log::time_command_blocking(
+        &timing_app,
+        "set_shared_harness_skill_enabled",
+        move || {
+            let refresh_state = app.state::<SkillRefreshState>();
+            let fork_lock = app.state::<ForkMutationLock>();
+            let event_store = app.state::<EventStoreState>();
+            let _guard = fork_lock.try_acquire()?;
+            let deployment_id = target
+                .deployment_id
+                .as_deref()
+                .ok_or("Shared harness disable needs one deployment_id")?;
+            if target.owner_id.is_some() {
+                return Err(
+                    "Shared harness disable targets one deployment, not an owner group".to_string(),
+                );
+            }
+            let snapshot =
+                super::skill_lifecycle::rebuild_fresh_lifecycle_snapshot(&app, &refresh_state)?;
+            let (installed_skill, deployment) =
+                super::skill_lifecycle::find_deployment(&snapshot, deployment_id)?;
+            super::skill_lifecycle::revalidate_deployment(deployment, deployment_id)?;
+            let display = AgentId::all()
+                .into_iter()
+                .find(|agent| {
+                    agent.cli_name() == harness
+                        || (*agent == AgentId::OpenCode && harness == "open-code")
+                })
+                .map(|agent| agent.display_name())
+                .ok_or_else(|| format!("Unknown harness: {harness}"))?;
+            if deployment.agent != display
+                || Path::new(&deployment.path).parent() != Some(Path::new(&root_path))
+                || !matches!(
+                    deployment.backing,
+                    super::skill_deployment::BackingRelationship::LinkedTo { .. }
+                )
+            {
+                return Err(format!(
             "Deployment {deployment_id} is not the selected {harness} deployment under {root_path}"
         ));
-    }
-    let skill = installed_skill.name.clone();
-    validate_skill_dir_name(&skill)?;
-    let root = PathBuf::from(&root_path);
+            }
+            let skill = installed_skill.name.clone();
+            validate_skill_dir_name(&skill)?;
+            let root = PathBuf::from(&root_path);
 
-    let guard = locked_store(&event_store)?;
-    let store = guard.as_ref().ok_or("Event store is unavailable")?;
+            let guard = locked_store(&event_store)?;
+            let store = guard.as_ref().ok_or("Event store is unavailable")?;
 
-    if enabled {
-        skill_materialize::relink_harness(store, &root, &skill, &harness)?;
-    } else {
-        // No longer converts a whole-dir link implicitly (that used to run
-        // silently on first disable) - the frontend routes that case through
-        // the explicit `materialize_harness_root` dialog first (Locations
-        // card / Home repair card) and only calls this once the root is
-        // already per-skill links.
-        let is_whole_dir_link = std::fs::symlink_metadata(&root)
-            .map(|m| m.file_type().is_symlink())
-            .unwrap_or(false);
-        if is_whole_dir_link {
-            return Err(format!(
-                "{} is a link to the Universal folder; convert it to per-skill links first",
-                root.display()
-            ));
-        }
-        skill_materialize::unlink_harness(store, &root, &skill, &harness)?;
-    }
-    drop(guard);
+            if enabled {
+                skill_materialize::relink_harness(store, &root, &skill, &harness)?;
+            } else {
+                // No longer converts a whole-dir link implicitly (that used to run
+                // silently on first disable) - the frontend routes that case through
+                // the explicit `materialize_harness_root` dialog first (Locations
+                // card / Home repair card) and only calls this once the root is
+                // already per-skill links.
+                let is_whole_dir_link = std::fs::symlink_metadata(&root)
+                    .map(|m| m.file_type().is_symlink())
+                    .unwrap_or(false);
+                if is_whole_dir_link {
+                    return Err(format!(
+                        "{} is a link to the Universal folder; convert it to per-skill links first",
+                        root.display()
+                    ));
+                }
+                skill_materialize::unlink_harness(store, &root, &skill, &harness)?;
+            }
+            drop(guard);
 
-    skill_refresh::request_snapshot_rebuild(&app);
-    Ok(())
+            skill_refresh::request_snapshot_rebuild(&app);
+            Ok(())
+        },
+    )
+    .await
 }
 
 /// `materialize_harness_root`'s guard against a renderer-supplied
@@ -270,217 +289,262 @@ fn validate_materialize_request(
 /// `root` isn't a symlink whose canonical target ends in `.agents/skills`, or
 /// when the snapshot has no matching whole-dir-link deployment for `harness`.
 #[tauri::command]
-pub fn materialize_harness_root(
+pub async fn materialize_harness_root(
     app: tauri::AppHandle,
     target: LifecycleTarget,
     harness: String,
     root: String,
-    refresh_state: tauri::State<SkillRefreshState>,
-    fork_lock: tauri::State<ForkMutationLock>,
-    event_store: tauri::State<EventStoreState>,
 ) -> Result<(), String> {
-    let _guard = fork_lock.try_acquire()?;
-    let root_path = PathBuf::from(&root);
-    skill_materialize::validate_materialize_root(&root_path)?;
+    let timing_app = app.clone();
+    crate::timing_log::time_command_blocking(&timing_app, "materialize_harness_root", move || {
+        let refresh_state = app.state::<SkillRefreshState>();
+        let fork_lock = app.state::<ForkMutationLock>();
+        let event_store = app.state::<EventStoreState>();
+        let _guard = fork_lock.try_acquire()?;
+        let root_path = PathBuf::from(&root);
+        skill_materialize::validate_materialize_root(&root_path)?;
 
-    let snapshot = super::skill_lifecycle::rebuild_fresh_lifecycle_snapshot(&app, &refresh_state)?;
-    let universal_root = validate_materialize_request(&snapshot, &target, &harness, &root)?;
-    let resolved_harness_root = std::fs::canonicalize(&root_path)
-        .map_err(|error| format!("Failed to resolve {root}: {error}"))?;
-    let resolved_universal_root = std::fs::canonicalize(&universal_root).map_err(|error| {
-        format!(
-            "Failed to resolve selected Universal root {}: {error}",
-            universal_root.display()
-        )
-    })?;
-    if resolved_harness_root != resolved_universal_root {
-        return Err(format!(
-            "{root} does not point to the selected deployment's exact scoped Universal root {}",
-            universal_root.display()
-        ));
-    }
+        let snapshot =
+            super::skill_lifecycle::rebuild_fresh_lifecycle_snapshot(&app, &refresh_state)?;
+        let universal_root = validate_materialize_request(&snapshot, &target, &harness, &root)?;
+        let resolved_harness_root = std::fs::canonicalize(&root_path)
+            .map_err(|error| format!("Failed to resolve {root}: {error}"))?;
+        let resolved_universal_root = std::fs::canonicalize(&universal_root).map_err(|error| {
+            format!(
+                "Failed to resolve selected Universal root {}: {error}",
+                universal_root.display()
+            )
+        })?;
+        if resolved_harness_root != resolved_universal_root {
+            return Err(format!(
+                "{root} does not point to the selected deployment's exact scoped Universal root {}",
+                universal_root.display()
+            ));
+        }
 
-    let guard = locked_store(&event_store)?;
-    let store = guard.as_ref().ok_or("Event store is unavailable")?;
-    skill_materialize::explode_shared_dir(store, &root_path, &harness)?;
-    drop(guard);
+        let guard = locked_store(&event_store)?;
+        let store = guard.as_ref().ok_or("Event store is unavailable")?;
+        skill_materialize::explode_shared_dir(store, &root_path, &harness)?;
+        drop(guard);
 
-    skill_refresh::request_snapshot_rebuild(&app);
-    Ok(())
+        skill_refresh::request_snapshot_rebuild(&app);
+        Ok(())
+    })
+    .await
 }
 
 /// Converts a whole harness root and turns off the exact selected deployment as one durable operation.
 #[tauri::command]
-pub fn materialize_harness_root_then_disable(
+pub async fn materialize_harness_root_then_disable(
     app: tauri::AppHandle,
     target: LifecycleTarget,
     harness: String,
     root: String,
-    refresh_state: tauri::State<SkillRefreshState>,
-    fork_lock: tauri::State<ForkMutationLock>,
-    event_store: tauri::State<EventStoreState>,
 ) -> Result<(), String> {
-    let _guard = fork_lock.try_acquire()?;
-    let deployment_id = target
-        .deployment_id
-        .as_deref()
-        .ok_or("Convert and turn off needs one deployment_id")?;
-    if target.owner_id.is_some() {
-        return Err("Convert and turn off targets one deployment, not an owner group".to_string());
-    }
-    let root_path = PathBuf::from(&root);
-    skill_materialize::validate_materialize_root(&root_path)?;
-    let snapshot = super::skill_lifecycle::rebuild_fresh_lifecycle_snapshot(&app, &refresh_state)?;
-    let universal_root = validate_materialize_request(&snapshot, &target, &harness, &root)?;
-    let (installed_skill, deployment) =
-        super::skill_lifecycle::find_deployment(&snapshot, deployment_id)?;
-    let parsed = super::skill_deployment::parse_deployment_id(deployment_id)
-        .ok_or_else(|| format!("Not a deployment id: {deployment_id}"))?;
-    let deployment_path = PathBuf::from(&deployment.path);
-    if parsed.name != installed_skill.name
-        || parsed.scope != deployment.scope
-        || parsed.project_path != deployment.project_path
-        || parsed.lexical_path != deployment_path
-        || deployment_path.parent() != Some(root_path.as_path())
-    {
-        return Err(
-            "The selected deployment identity no longer matches its exact path".to_string(),
-        );
-    }
-    validate_skill_dir_name(&installed_skill.name)?;
-    let resolved_harness_root = std::fs::canonicalize(&root_path)
-        .map_err(|error| format!("Failed to resolve {root}: {error}"))?;
-    let resolved_universal_root = std::fs::canonicalize(&universal_root).map_err(|error| {
-        format!(
-            "Failed to resolve selected Universal root {}: {error}",
-            universal_root.display()
-        )
-    })?;
-    if resolved_harness_root != resolved_universal_root {
-        return Err(format!(
+    let timing_app = app.clone();
+    crate::timing_log::time_command_blocking(
+        &timing_app,
+        "materialize_harness_root_then_disable",
+        move || {
+            let refresh_state = app.state::<SkillRefreshState>();
+            let fork_lock = app.state::<ForkMutationLock>();
+            let event_store = app.state::<EventStoreState>();
+            let _guard = fork_lock.try_acquire()?;
+            let deployment_id = target
+                .deployment_id
+                .as_deref()
+                .ok_or("Convert and turn off needs one deployment_id")?;
+            if target.owner_id.is_some() {
+                return Err(
+                    "Convert and turn off targets one deployment, not an owner group".to_string(),
+                );
+            }
+            let root_path = PathBuf::from(&root);
+            skill_materialize::validate_materialize_root(&root_path)?;
+            let snapshot =
+                super::skill_lifecycle::rebuild_fresh_lifecycle_snapshot(&app, &refresh_state)?;
+            let universal_root = validate_materialize_request(&snapshot, &target, &harness, &root)?;
+            let (installed_skill, deployment) =
+                super::skill_lifecycle::find_deployment(&snapshot, deployment_id)?;
+            let parsed = super::skill_deployment::parse_deployment_id(deployment_id)
+                .ok_or_else(|| format!("Not a deployment id: {deployment_id}"))?;
+            let deployment_path = PathBuf::from(&deployment.path);
+            if parsed.name != installed_skill.name
+                || parsed.scope != deployment.scope
+                || parsed.project_path != deployment.project_path
+                || parsed.lexical_path != deployment_path
+                || deployment_path.parent() != Some(root_path.as_path())
+            {
+                return Err(
+                    "The selected deployment identity no longer matches its exact path".to_string(),
+                );
+            }
+            validate_skill_dir_name(&installed_skill.name)?;
+            let resolved_harness_root = std::fs::canonicalize(&root_path)
+                .map_err(|error| format!("Failed to resolve {root}: {error}"))?;
+            let resolved_universal_root =
+                std::fs::canonicalize(&universal_root).map_err(|error| {
+                    format!(
+                        "Failed to resolve selected Universal root {}: {error}",
+                        universal_root.display()
+                    )
+                })?;
+            if resolved_harness_root != resolved_universal_root {
+                return Err(format!(
             "{root} does not point to the selected deployment's exact scoped Universal root {}",
             universal_root.display()
         ));
-    }
+            }
 
-    let guard = locked_store(&event_store)?;
-    let store = guard.as_ref().ok_or("Event store is unavailable")?;
-    skill_materialize::convert_root_then_disable(
-        store,
-        skill_materialize::ConvertThenDisableRequest {
-            root: &root_path,
-            shared_root: &universal_root,
-            skill: &installed_skill.name,
-            harness: &harness,
-            deployment_id,
-            deployment_path: &deployment_path,
-            scope: &deployment.scope,
-            project_path: deployment.project_path.as_deref(),
+            let guard = locked_store(&event_store)?;
+            let store = guard.as_ref().ok_or("Event store is unavailable")?;
+            skill_materialize::convert_root_then_disable(
+                store,
+                skill_materialize::ConvertThenDisableRequest {
+                    root: &root_path,
+                    shared_root: &universal_root,
+                    skill: &installed_skill.name,
+                    harness: &harness,
+                    deployment_id,
+                    deployment_path: &deployment_path,
+                    scope: &deployment.scope,
+                    project_path: deployment.project_path.as_deref(),
+                },
+            )?;
+            drop(guard);
+            skill_refresh::request_snapshot_rebuild(&app);
+            Ok(())
         },
-    )?;
-    drop(guard);
-    skill_refresh::request_snapshot_rebuild(&app);
-    Ok(())
+    )
+    .await
 }
 
 /// Replaces one healthy Universal-backed deployment link with a local Copy
 /// deployment at that exact path. A whole-root link is first converted to
 /// per-skill links and restored if the selected copy cannot be completed.
 #[tauri::command]
-pub fn make_skill_independent_copy(
+pub async fn make_skill_independent_copy(
     target: LifecycleTarget,
     app: tauri::AppHandle,
-    refresh_state: tauri::State<SkillRefreshState>,
-    fork_lock: tauri::State<ForkMutationLock>,
-    event_store: tauri::State<EventStoreState>,
 ) -> Result<(), String> {
-    let _guard = fork_lock.try_acquire()?;
-    let deployment_id = target
-        .deployment_id
-        .as_deref()
-        .ok_or("Make independent copy needs one deployment_id")?;
-    if target.owner_id.is_some() {
-        return Err("Make independent copy targets one deployment, not an owner group".to_string());
-    }
+    let timing_app = app.clone();
+    crate::timing_log::time_command_blocking(
+        &timing_app,
+        "make_skill_independent_copy",
+        move || {
+            let refresh_state = app.state::<SkillRefreshState>();
+            let fork_lock = app.state::<ForkMutationLock>();
+            let event_store = app.state::<EventStoreState>();
+            let _guard = fork_lock.try_acquire()?;
+            let deployment_id = target
+                .deployment_id
+                .as_deref()
+                .ok_or("Make independent copy needs one deployment_id")?;
+            if target.owner_id.is_some() {
+                return Err(
+                    "Make independent copy targets one deployment, not an owner group".to_string(),
+                );
+            }
 
-    let snapshot = super::skill_lifecycle::rebuild_fresh_lifecycle_snapshot(&app, &refresh_state)?;
-    let (installed_skill, deployment) =
-        super::skill_lifecycle::find_deployment(&snapshot, deployment_id)?;
-    super::skill_lifecycle::revalidate_deployment(deployment, deployment_id)?;
-    if deployment.disabled || deployment.symlink_is_broken || deployment.symlink_error.is_some() {
-        return Err("Make independent copy requires a healthy enabled link".to_string());
-    }
-    let universal_id = match &deployment.backing {
-        super::skill_deployment::BackingRelationship::LinkedTo { deployment_id } => deployment_id,
-        _ => return Err("Make independent copy requires a Universal-backed link".to_string()),
-    };
-    if !deployment.is_symlink && !deployment.shared_via_whole_dir_link {
-        return Err("Make independent copy requires a symlink-backed deployment".to_string());
-    }
-    let (_, universal) = super::skill_lifecycle::find_deployment(&snapshot, universal_id)?;
-    if universal.scope != deployment.scope
-        || universal.project_path != deployment.project_path
-        || !matches!(
-            universal.backing,
-            super::skill_deployment::BackingRelationship::Canonical
-        )
-    {
-        return Err("The link does not match its exact scoped Universal deployment".to_string());
-    }
-    let parsed = super::skill_deployment::parse_deployment_id(deployment_id)
-        .ok_or_else(|| format!("Not a deployment id: {deployment_id}"))?;
-    if parsed.name != installed_skill.name
-        || parsed.project_path != deployment.project_path
-        || parsed.lexical_path != Path::new(&deployment.path)
-    {
-        return Err("The selected deployment identity no longer matches its path".to_string());
-    }
-    let scope = match deployment.scope.as_str() {
-        "global" => super::skill_dto::InstallScope::Global,
-        "project" => super::skill_dto::InstallScope::Project,
-        _ => {
-            return Err("Make independent copy supports global or project deployments".to_string())
-        }
-    };
-    let home = dirs::home_dir().ok_or("Could not find home directory")?;
-    let link = PathBuf::from(&deployment.path);
-    let expected_source = PathBuf::from(&universal.path);
-    let harness = deployment.agent.clone();
-    let skill = installed_skill.name.clone();
-    let project_path = deployment.project_path.clone();
-    let whole_root = deployment.shared_via_whole_dir_link;
-    if link.parent().is_none() {
-        return Err(format!("{} has no skills root", link.display()));
-    }
+            let snapshot =
+                super::skill_lifecycle::rebuild_fresh_lifecycle_snapshot(&app, &refresh_state)?;
+            let (installed_skill, deployment) =
+                super::skill_lifecycle::find_deployment(&snapshot, deployment_id)?;
+            super::skill_lifecycle::revalidate_deployment(deployment, deployment_id)?;
+            if deployment.disabled
+                || deployment.symlink_is_broken
+                || deployment.symlink_error.is_some()
+            {
+                return Err("Make independent copy requires a healthy enabled link".to_string());
+            }
+            let universal_id = match &deployment.backing {
+                super::skill_deployment::BackingRelationship::LinkedTo { deployment_id } => {
+                    deployment_id
+                }
+                _ => {
+                    return Err("Make independent copy requires a Universal-backed link".to_string())
+                }
+            };
+            if !deployment.is_symlink && !deployment.shared_via_whole_dir_link {
+                return Err(
+                    "Make independent copy requires a symlink-backed deployment".to_string()
+                );
+            }
+            let (_, universal) = super::skill_lifecycle::find_deployment(&snapshot, universal_id)?;
+            if universal.scope != deployment.scope
+                || universal.project_path != deployment.project_path
+                || !matches!(
+                    universal.backing,
+                    super::skill_deployment::BackingRelationship::Canonical
+                )
+            {
+                return Err(
+                    "The link does not match its exact scoped Universal deployment".to_string(),
+                );
+            }
+            let parsed = super::skill_deployment::parse_deployment_id(deployment_id)
+                .ok_or_else(|| format!("Not a deployment id: {deployment_id}"))?;
+            if parsed.name != installed_skill.name
+                || parsed.project_path != deployment.project_path
+                || parsed.lexical_path != Path::new(&deployment.path)
+            {
+                return Err(
+                    "The selected deployment identity no longer matches its path".to_string(),
+                );
+            }
+            let scope = match deployment.scope.as_str() {
+                "global" => super::skill_dto::InstallScope::Global,
+                "project" => super::skill_dto::InstallScope::Project,
+                _ => {
+                    return Err(
+                        "Make independent copy supports global or project deployments".to_string(),
+                    )
+                }
+            };
+            let home = dirs::home_dir().ok_or("Could not find home directory")?;
+            let link = PathBuf::from(&deployment.path);
+            let expected_source = PathBuf::from(&universal.path);
+            let harness = deployment.agent.clone();
+            let skill = installed_skill.name.clone();
+            let project_path = deployment.project_path.clone();
+            let whole_root = deployment.shared_via_whole_dir_link;
+            if link.parent().is_none() {
+                return Err(format!("{} has no skills root", link.display()));
+            }
 
-    let guard = locked_store(&event_store)?;
-    let store = guard.as_ref().ok_or("Event store is unavailable")?;
-    super::skill_independent_copy::make_skill_independent_copy(
-        store,
-        super::skill_independent_copy::IndependentCopyRequest {
-            home: &home,
-            skill: &skill,
-            link: &link,
-            expected_source: &expected_source,
-            harness: &harness,
-            scope,
-            project_path: project_path.as_deref(),
-            slot: &parsed.slot,
-            convert_whole_root: whole_root,
+            let guard = locked_store(&event_store)?;
+            let store = guard.as_ref().ok_or("Event store is unavailable")?;
+            super::skill_independent_copy::make_skill_independent_copy(
+                store,
+                super::skill_independent_copy::IndependentCopyRequest {
+                    home: &home,
+                    skill: &skill,
+                    link: &link,
+                    expected_source: &expected_source,
+                    harness: &harness,
+                    scope,
+                    project_path: project_path.as_deref(),
+                    slot: &parsed.slot,
+                    convert_whole_root: whole_root,
+                },
+            )?;
+            drop(guard);
+            let affected_projects: Vec<PathBuf> = project_path.iter().map(PathBuf::from).collect();
+            if let Err(error) = skill_refresh::reconcile_skill_names_and_emit(
+                &app,
+                &refresh_state,
+                [skill],
+                &affected_projects,
+            ) {
+                eprintln!(
+                "[make_skill_independent_copy] targeted snapshot reconciliation failed: {error}"
+            );
+                refresh_state.mark_skills_dirty();
+            }
+            Ok(())
         },
-    )?;
-    drop(guard);
-    let affected_projects: Vec<PathBuf> = project_path.iter().map(PathBuf::from).collect();
-    if let Err(error) = skill_refresh::reconcile_skill_names_and_emit(
-        &app,
-        &refresh_state,
-        [skill],
-        &affected_projects,
-    ) {
-        eprintln!("[make_skill_independent_copy] targeted snapshot reconciliation failed: {error}");
-        refresh_state.mark_skills_dirty();
-    }
-    Ok(())
+    )
+    .await
 }
 
 /// Normalizes a deployment path for comparison against the snapshot without
@@ -526,106 +590,111 @@ fn is_unresolved(deployment: &Deployment) -> bool {
 /// `target` as a healthy deployment of the *same* skill, so this can't be
 /// used to rm/ln an arbitrary path.
 #[tauri::command]
-pub fn repair_skill_link(
+pub async fn repair_skill_link(
     path: String,
     action: String,
     target: Option<String>,
     app: tauri::AppHandle,
-    refresh_state: tauri::State<SkillRefreshState>,
-    fork_lock: tauri::State<ForkMutationLock>,
-    event_store: tauri::State<EventStoreState>,
 ) -> Result<(), String> {
-    let _guard = fork_lock.try_acquire()?;
-    let link = PathBuf::from(&path);
+    let timing_app = app.clone();
+    crate::timing_log::time_command_blocking(&timing_app, "repair_skill_link", move || {
+        let refresh_state = app.state::<SkillRefreshState>();
+        let fork_lock = app.state::<ForkMutationLock>();
+        let event_store = app.state::<EventStoreState>();
+        let _guard = fork_lock.try_acquire()?;
+        let link = PathBuf::from(&path);
 
-    let snapshot = super::skill_lifecycle::rebuild_fresh_lifecycle_snapshot(&app, &refresh_state)?;
+        let snapshot =
+            super::skill_lifecycle::rebuild_fresh_lifecycle_snapshot(&app, &refresh_state)?;
 
-    let (skill_name, deployment) = find_deployment_at(&snapshot, &link)
-        .ok_or_else(|| format!("Path is not an installed skill: {path}"))?;
-    if !is_unresolved(deployment) {
-        return Err(format!("{path} is not a broken link"));
-    }
-    let skill_name = skill_name.to_string();
-    let harness = deployment.agent.clone();
-
-    let guard = locked_store(&event_store)?;
-    let store = guard.as_ref().ok_or("Event store is unavailable")?;
-
-    let mut relinked_target: Option<String> = None;
-    match action.as_str() {
-        "remove" => skill_materialize::repair_remove_link(store, &link, &skill_name, &harness)?,
-        "relink" => {
-            let target = target.ok_or("relink requires a target")?;
-            let target_path = PathBuf::from(&target);
-            let (target_skill, target_deployment) = find_deployment_at(&snapshot, &target_path)
-                .ok_or_else(|| format!("Target is not an installed skill: {target}"))?;
-            if target_skill != skill_name {
-                return Err("Target must be a deployment of the same skill".to_string());
-            }
-            if is_unresolved(target_deployment) {
-                return Err("Target location is not healthy".to_string());
-            }
-            let resolved_target = std::fs::canonicalize(&target_path)
-                .map_err(|e| format!("Failed to resolve {target}: {e}"))?;
-            skill_materialize::repair_relink_link(
-                store,
-                &link,
-                &resolved_target,
-                &skill_name,
-                &harness,
-            )?;
-            relinked_target = Some(resolved_target.to_string_lossy().into_owned());
+        let (skill_name, deployment) = find_deployment_at(&snapshot, &link)
+            .ok_or_else(|| format!("Path is not an installed skill: {path}"))?;
+        if !is_unresolved(deployment) {
+            return Err(format!("{path} is not a broken link"));
         }
-        other => return Err(format!("Unknown repair action: {other}")),
-    }
-    drop(guard);
+        let skill_name = skill_name.to_string();
+        let harness = deployment.agent.clone();
 
-    let normalized_link = normalize_link_path(&link);
-    match action.as_str() {
-        "remove" => {
-            if let Err(e) =
-                skill_refresh::patch_snapshot_and_emit(&app, &refresh_state, |snapshot| {
-                    let Some(skill) = snapshot.skills.iter_mut().find(|s| s.name == skill_name)
-                    else {
-                        return;
-                    };
-                    skill.deployments.retain(|d| {
-                        normalize_link_path(Path::new(&d.path)).as_deref()
-                            != normalized_link.as_deref()
-                    });
-                    if skill.deployments.is_empty() {
-                        snapshot.skills.retain(|s| s.name != skill_name);
-                    }
-                })
-            {
-                eprintln!("[repair_skill_link] snapshot patch failed: {e}");
+        let guard = locked_store(&event_store)?;
+        let store = guard.as_ref().ok_or("Event store is unavailable")?;
+
+        let mut relinked_target: Option<String> = None;
+        match action.as_str() {
+            "remove" => skill_materialize::repair_remove_link(store, &link, &skill_name, &harness)?,
+            "relink" => {
+                let target = target.ok_or("relink requires a target")?;
+                let target_path = PathBuf::from(&target);
+                let (target_skill, target_deployment) = find_deployment_at(&snapshot, &target_path)
+                    .ok_or_else(|| format!("Target is not an installed skill: {target}"))?;
+                if target_skill != skill_name {
+                    return Err("Target must be a deployment of the same skill".to_string());
+                }
+                if is_unresolved(target_deployment) {
+                    return Err("Target location is not healthy".to_string());
+                }
+                let resolved_target = std::fs::canonicalize(&target_path)
+                    .map_err(|e| format!("Failed to resolve {target}: {e}"))?;
+                skill_materialize::repair_relink_link(
+                    store,
+                    &link,
+                    &resolved_target,
+                    &skill_name,
+                    &harness,
+                )?;
+                relinked_target = Some(resolved_target.to_string_lossy().into_owned());
             }
+            other => return Err(format!("Unknown repair action: {other}")),
         }
-        "relink" => {
-            let new_target = relinked_target;
-            if let Err(e) =
-                skill_refresh::patch_snapshot_and_emit(&app, &refresh_state, |snapshot| {
-                    let Some(skill) = snapshot.skills.iter_mut().find(|s| s.name == skill_name)
-                    else {
-                        return;
-                    };
-                    let Some(deployment) = skill.deployments.iter_mut().find(|d| {
-                        normalize_link_path(Path::new(&d.path)).as_deref()
-                            == normalized_link.as_deref()
-                    }) else {
-                        return;
-                    };
-                    deployment.symlink_target = new_target;
-                    deployment.symlink_is_broken = false;
-                    deployment.symlink_error = None;
-                })
-            {
-                eprintln!("[repair_skill_link] snapshot patch failed: {e}");
+        drop(guard);
+
+        let normalized_link = normalize_link_path(&link);
+        match action.as_str() {
+            "remove" => {
+                if let Err(e) =
+                    skill_refresh::patch_snapshot_and_emit(&app, &refresh_state, |snapshot| {
+                        let Some(skill) = snapshot.skills.iter_mut().find(|s| s.name == skill_name)
+                        else {
+                            return;
+                        };
+                        skill.deployments.retain(|d| {
+                            normalize_link_path(Path::new(&d.path)).as_deref()
+                                != normalized_link.as_deref()
+                        });
+                        if skill.deployments.is_empty() {
+                            snapshot.skills.retain(|s| s.name != skill_name);
+                        }
+                    })
+                {
+                    eprintln!("[repair_skill_link] snapshot patch failed: {e}");
+                }
             }
+            "relink" => {
+                let new_target = relinked_target;
+                if let Err(e) =
+                    skill_refresh::patch_snapshot_and_emit(&app, &refresh_state, |snapshot| {
+                        let Some(skill) = snapshot.skills.iter_mut().find(|s| s.name == skill_name)
+                        else {
+                            return;
+                        };
+                        let Some(deployment) = skill.deployments.iter_mut().find(|d| {
+                            normalize_link_path(Path::new(&d.path)).as_deref()
+                                == normalized_link.as_deref()
+                        }) else {
+                            return;
+                        };
+                        deployment.symlink_target = new_target;
+                        deployment.symlink_is_broken = false;
+                        deployment.symlink_error = None;
+                    })
+                {
+                    eprintln!("[repair_skill_link] snapshot patch failed: {e}");
+                }
+            }
+            _ => unreachable!("validated above"),
         }
-        _ => unreachable!("validated above"),
-    }
-    Ok(())
+        Ok(())
+    })
+    .await
 }
 
 #[cfg(test)]

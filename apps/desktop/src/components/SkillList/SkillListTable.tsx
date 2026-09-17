@@ -12,6 +12,7 @@ import {
 } from "@tanstack/react-virtual";
 import type { InstalledSkill, PackMember, SkillInvocationStats } from "@skill-studio/lib";
 import { isFeatureEnabled } from "../../lib/feature-flags";
+import { groupSkillRows } from "../../lib/skill-list-model";
 import type { SortMode } from "../../lib/skill-list-sort";
 import { useRowCursor, useRowCursorWindowEntry } from "../../hooks/useRowCursor";
 import { RichTooltipScope } from "../ui/RichTooltip";
@@ -21,7 +22,6 @@ import { SkillListEmptyState } from "./SkillListEmptyState";
 import { SkillListGroup } from "./SkillListGroup";
 import { SkillListRow } from "./SkillListRow";
 import { SkillListSelectionBar } from "./SkillListSelectionBar";
-import { groupSkillRows } from "./skill-list-rows";
 import { useSkillListAct } from "./useSkillListAct";
 import { useSkillListScrollMargin } from "./useSkillListScrollMargin";
 import { useSkillListSelection } from "./useSkillListSelection";

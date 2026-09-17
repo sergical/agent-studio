@@ -609,12 +609,13 @@ pub struct Ports {
 }
 
 /// Per-call context.
-#[derive(Clone)]
 pub struct OpContext {
     /// Id the adapter uses to match notices to this request.
     pub correlation_id: CorrelationId,
     /// Cancellation for this request only.
     pub cancel: Arc<dyn CancelToken>,
+    /// Where the op function in progress files its [`crate::timing::OpTiming`].
+    pub timing: std::sync::Mutex<Option<crate::timing::OpTiming>>,
 }
 
 impl OpContext {
@@ -623,6 +624,7 @@ impl OpContext {
         OpContext {
             correlation_id,
             cancel: Arc::new(NeverCancel),
+            timing: std::sync::Mutex::new(None),
         }
     }
 
@@ -633,6 +635,18 @@ impl OpContext {
         } else {
             Ok(())
         }
+    }
+
+    /// Files this call's timing, replacing any timing an op it called
+    /// (e.g. `scan` inside `diagnose`) filed first.
+    pub fn record_timing(&self, timing: crate::timing::OpTiming) {
+        *self.timing.lock().unwrap() = Some(timing);
+    }
+
+    /// Takes the timing the last op function run through this context
+    /// filed, leaving `None` behind.
+    pub fn take_timing(&self) -> Option<crate::timing::OpTiming> {
+        self.timing.lock().unwrap().take()
     }
 }
 

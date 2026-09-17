@@ -840,52 +840,54 @@ pub fn spawn_trial_expiry_loop(app: AppHandle) {
 /// was clicked on, so a same-named global and project trial are kept
 /// independently.
 #[tauri::command]
-pub fn keep_skill_trial(
-    target: LifecycleTarget,
-    app: AppHandle,
-    refresh_state: tauri::State<SkillRefreshState>,
-    fork_lock: tauri::State<ForkMutationLock>,
-) -> Result<(), String> {
-    let _guard = fork_lock.try_acquire()?;
-    let deployment_id = target
-        .deployment_id
-        .as_deref()
-        .ok_or("Keep trial needs one deployment_id")?;
-    if target.owner_id.is_some() {
-        return Err("Keep trial targets one deployment, not an owner group".to_string());
-    }
-    let snapshot = super::skill_lifecycle::rebuild_fresh_lifecycle_snapshot(&app, &refresh_state)?;
-    let home = dirs::home_dir().ok_or("Could not find home directory")?;
-    let (skill, deployment) = match find_deployment(&snapshot, deployment_id) {
-        Ok(found) => found,
-        Err(error) => {
-            if !drop_recovery_trial_without_deployment(&home, deployment_id)? {
-                return Err(error);
-            }
-            skill_refresh::request_snapshot_rebuild(&app);
-            return Ok(());
+pub async fn keep_skill_trial(target: LifecycleTarget, app: AppHandle) -> Result<(), String> {
+    let timing_app = app.clone();
+    crate::timing_log::time_command_blocking(&timing_app, "keep_skill_trial", move || {
+        let refresh_state = app.state::<SkillRefreshState>();
+        let fork_lock = app.state::<ForkMutationLock>();
+        let _guard = fork_lock.try_acquire()?;
+        let deployment_id = target
+            .deployment_id
+            .as_deref()
+            .ok_or("Keep trial needs one deployment_id")?;
+        if target.owner_id.is_some() {
+            return Err("Keep trial targets one deployment, not an owner group".to_string());
         }
-    };
-    revalidate_deployment(deployment, deployment_id)?;
-    let scope = if deployment.scope == "global" {
-        TrialScope::Global
-    } else if deployment.scope == "project" {
-        TrialScope::Project
-    } else {
-        return Err(format!(
-            "Keep trial is not available for {} scope",
-            deployment.scope
-        ));
-    };
-    drop_trial_record(
-        &home,
-        deployment_id,
-        &skill.name,
-        scope,
-        Path::new(&deployment.path),
-    )?;
-    skill_refresh::request_snapshot_rebuild(&app);
-    Ok(())
+        let snapshot =
+            super::skill_lifecycle::rebuild_fresh_lifecycle_snapshot(&app, &refresh_state)?;
+        let home = dirs::home_dir().ok_or("Could not find home directory")?;
+        let (skill, deployment) = match find_deployment(&snapshot, deployment_id) {
+            Ok(found) => found,
+            Err(error) => {
+                if !drop_recovery_trial_without_deployment(&home, deployment_id)? {
+                    return Err(error);
+                }
+                skill_refresh::request_snapshot_rebuild(&app);
+                return Ok(());
+            }
+        };
+        revalidate_deployment(deployment, deployment_id)?;
+        let scope = if deployment.scope == "global" {
+            TrialScope::Global
+        } else if deployment.scope == "project" {
+            TrialScope::Project
+        } else {
+            return Err(format!(
+                "Keep trial is not available for {} scope",
+                deployment.scope
+            ));
+        };
+        drop_trial_record(
+            &home,
+            deployment_id,
+            &skill.name,
+            scope,
+            Path::new(&deployment.path),
+        )?;
+        skill_refresh::request_snapshot_rebuild(&app);
+        Ok(())
+    })
+    .await
 }
 
 /// `<name>-YYYYMMDD-HHMMSS` -> `name`. The suffix is always exactly 16 chars
@@ -982,18 +984,17 @@ pub fn restore_trashed_skill_with(home: &Path, trash_path: &str) -> Result<Strin
 /// (the trial record is gone; this isn't re-registered as a new trial), and
 /// re-applies the Claude Code symlink rule.
 #[tauri::command]
-pub fn restore_trashed_skill(
-    trash_path: String,
-    app: AppHandle,
-    refresh_state: tauri::State<SkillRefreshState>,
-    fork_lock: tauri::State<ForkMutationLock>,
-) -> Result<(), String> {
-    let _guard = fork_lock.try_acquire()?;
-    let _ = &refresh_state;
-    let home = dirs::home_dir().ok_or("Could not find home directory")?;
-    restore_trashed_skill_with(&home, &trash_path)?;
-    skill_refresh::request_snapshot_rebuild(&app);
-    Ok(())
+pub async fn restore_trashed_skill(trash_path: String, app: AppHandle) -> Result<(), String> {
+    let timing_app = app.clone();
+    crate::timing_log::time_command_blocking(&timing_app, "restore_trashed_skill", move || {
+        let fork_lock = app.state::<ForkMutationLock>();
+        let _guard = fork_lock.try_acquire()?;
+        let home = dirs::home_dir().ok_or("Could not find home directory")?;
+        restore_trashed_skill_with(&home, &trash_path)?;
+        skill_refresh::request_snapshot_rebuild(&app);
+        Ok(())
+    })
+    .await
 }
 
 // ============================================================================

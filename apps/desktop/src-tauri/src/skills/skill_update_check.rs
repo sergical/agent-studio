@@ -894,11 +894,15 @@ pub async fn check_skill_updates_now(
     state: tauri::State<'_, UpdateCheckState>,
     refresh_state: tauri::State<'_, skill_refresh::SkillRefreshState>,
 ) -> Result<UpdateCheckSummary, String> {
-    let state = state.inner().clone();
-    let refresh_state = refresh_state.inner().clone();
-    tauri::async_runtime::spawn_blocking(move || check_now(&app, &state, &refresh_state))
-        .await
-        .map_err(|e| format!("Update check task failed: {e}"))?
+    let timing_app = app.clone();
+    crate::timing_log::time_command_async(&timing_app, "check_skill_updates_now", async move {
+        let state = state.inner().clone();
+        let refresh_state = refresh_state.inner().clone();
+        tauri::async_runtime::spawn_blocking(move || check_now(&app, &state, &refresh_state))
+            .await
+            .map_err(|e| format!("Update check task failed: {e}"))?
+    })
+    .await
 }
 
 #[cfg(test)]

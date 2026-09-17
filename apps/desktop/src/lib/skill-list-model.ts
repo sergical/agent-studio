@@ -1,13 +1,15 @@
 // ============================================================================
-// skill-list-rows - Sorts a skill list and buckets it into SkillListTable's
-// three state groups (attention, healthy, parked), in display order.
+// skill-list-model - Sorts a skill list and buckets it into SkillListTable's
+// three state groups (attention, healthy, parked), in display order. The one
+// pure computation between a SkillSnapshot's skills and what the Skills list
+// renders.
 // ============================================================================
 
 import type { InstalledSkill, SkillInvocationStats } from "@skill-studio/lib";
-import type { SortMode } from "../../lib/skill-list-sort";
-import { sortRows } from "./skill-row-format";
-import { rowGroup, rowState } from "./skill-row-state";
-import type { RowGroup, RowState } from "./skill-row-state";
+import type { SortMode } from "./skill-list-sort";
+import { sortRows } from "../components/SkillList/skill-row-format";
+import { rowGroup, rowState } from "../components/SkillList/skill-row-state";
+import type { RowGroup, RowState } from "../components/SkillList/skill-row-state";
 
 export interface GroupedSkillRows {
   buckets: Record<RowGroup, InstalledSkill[]>;

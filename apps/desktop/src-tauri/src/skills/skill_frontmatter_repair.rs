@@ -278,13 +278,22 @@ fn exact_target<'a>(
 }
 
 #[tauri::command]
-pub fn preview_skill_frontmatter_repair(
+pub async fn preview_skill_frontmatter_repair(
     target: LifecycleTarget,
     app: tauri::AppHandle,
-    refresh_state: tauri::State<SkillRefreshState>,
 ) -> Result<FrontmatterRepairPreview, String> {
-    let snapshot = super::skill_lifecycle::rebuild_fresh_lifecycle_snapshot(&app, &refresh_state)?;
-    preview_from_deployment(exact_target(&snapshot, &target)?)
+    let timing_app = app.clone();
+    crate::timing_log::time_command_blocking(
+        &timing_app,
+        "preview_skill_frontmatter_repair",
+        move || {
+            let refresh_state = app.state::<SkillRefreshState>();
+            let snapshot =
+                super::skill_lifecycle::rebuild_fresh_lifecycle_snapshot(&app, &refresh_state)?;
+            preview_from_deployment(exact_target(&snapshot, &target)?)
+        },
+    )
+    .await
 }
 
 fn finish_repair_write(
@@ -404,141 +413,157 @@ fn reconcile_interrupted_frontmatter_repair_with(
 }
 
 #[tauri::command]
-pub fn apply_skill_frontmatter_repair(
+pub async fn apply_skill_frontmatter_repair(
     request: ApplyFrontmatterRepairRequest,
     app: tauri::AppHandle,
-    refresh_state: tauri::State<SkillRefreshState>,
-    fork_lock: tauri::State<ForkMutationLock>,
-    event_store: tauri::State<EventStoreState>,
 ) -> Result<(), String> {
-    let ApplyFrontmatterRepairRequest {
-        target,
-        proposal_id,
-        expected_content_fingerprint,
-        mode,
-    } = request;
-    let _guard = fork_lock.try_acquire()?;
-    let snapshot = super::skill_lifecycle::rebuild_fresh_lifecycle_snapshot(&app, &refresh_state)?;
-    let deployment = exact_target(&snapshot, &target)?.clone();
-    let skill_md = PathBuf::from(&deployment.path).join("SKILL.md");
-    let name = super::skill_deployment::parse_deployment_id(&deployment.id)
-        .map(|id| id.name)
-        .unwrap_or_default();
-    let mut guard = event_store
-        .0
-        .lock()
-        .map_err(|error| format!("event store lock poisoned: {error}"))?;
-    let store = guard.as_mut().ok_or("Event store is unavailable")?;
-    let (transaction, preview) = begin_bound_frontmatter_repair_transaction(
-        &deployment,
-        &expected_content_fingerprint,
-        &proposal_id,
-    )?;
-    if !preview.allowed_apply_modes.contains(&mode) {
-        return Err("This repair mode is not allowed for the selected deployment".to_string());
-    }
-    let event_id = allocate_id();
-    let pre_fingerprint = fingerprint_path(&skill_md);
-    let intent = FrontmatterRepairIntent {
-        deployment_id: deployment.id.clone(),
-        name: name.clone(),
-        path: PathBuf::from(&deployment.path),
-        expected_content_fingerprint: expected_content_fingerprint.clone(),
-        proposed_content_fingerprint: content_fingerprint(preview.proposed_content.as_bytes()),
-        proposed_content: preview.proposed_content.clone(),
-        mode,
-        managed_update_warning: mode == FrontmatterRepairApplyMode::FixInstalledCopy,
-        fork_registry_before: if mode == FrontmatterRepairApplyMode::ForkAndFix {
-            Some(super::skill_fork_registry::read_fork_registry(
-                &dirs::home_dir().ok_or("Could not find home directory")?,
-            )?)
-        } else {
-            None
-        },
-    };
-    store.backup_paths(&event_id, std::slice::from_ref(&skill_md))?;
-    store.record(
-        &event_id,
-        EventDraft {
-            kind: "repair_skill_frontmatter".to_string(),
-            skill: name.clone(),
-            harness: None,
-            scope: Some(deployment.scope.clone()),
-            project_path: deployment.project_path.clone(),
-            payload: serde_json::to_value(&intent)
-                .map_err(|error| format!("Failed to serialize repair intent: {error}"))?,
-            inverse: Some(
-                serde_json::to_value(InverseOp::RestoreBackup {
-                    path: skill_md.clone(),
-                    pre_fingerprint,
-                    post_fingerprint: None,
-                })
-                .map_err(|error| format!("Failed to serialize repair undo: {error}"))?,
-            ),
-            backup_dir: Some(format!("backups/{event_id}")),
-            restorable: true,
-        },
-    )?;
+    let timing_app = app.clone();
+    crate::timing_log::time_command_blocking(
+        &timing_app,
+        "apply_skill_frontmatter_repair",
+        move || {
+            let refresh_state = app.state::<SkillRefreshState>();
+            let fork_lock = app.state::<ForkMutationLock>();
+            let event_store = app.state::<EventStoreState>();
+            let ApplyFrontmatterRepairRequest {
+                target,
+                proposal_id,
+                expected_content_fingerprint,
+                mode,
+            } = request;
+            let _guard = fork_lock.try_acquire()?;
+            let snapshot =
+                super::skill_lifecycle::rebuild_fresh_lifecycle_snapshot(&app, &refresh_state)?;
+            let deployment = exact_target(&snapshot, &target)?.clone();
+            let skill_md = PathBuf::from(&deployment.path).join("SKILL.md");
+            let name = super::skill_deployment::parse_deployment_id(&deployment.id)
+                .map(|id| id.name)
+                .unwrap_or_default();
+            let mut guard = event_store
+                .0
+                .lock()
+                .map_err(|error| format!("event store lock poisoned: {error}"))?;
+            let store = guard.as_mut().ok_or("Event store is unavailable")?;
+            let (transaction, preview) = begin_bound_frontmatter_repair_transaction(
+                &deployment,
+                &expected_content_fingerprint,
+                &proposal_id,
+            )?;
+            if !preview.allowed_apply_modes.contains(&mode) {
+                return Err(
+                    "This repair mode is not allowed for the selected deployment".to_string(),
+                );
+            }
+            let event_id = allocate_id();
+            let pre_fingerprint = fingerprint_path(&skill_md);
+            let intent = FrontmatterRepairIntent {
+                deployment_id: deployment.id.clone(),
+                name: name.clone(),
+                path: PathBuf::from(&deployment.path),
+                expected_content_fingerprint: expected_content_fingerprint.clone(),
+                proposed_content_fingerprint: content_fingerprint(
+                    preview.proposed_content.as_bytes(),
+                ),
+                proposed_content: preview.proposed_content.clone(),
+                mode,
+                managed_update_warning: mode == FrontmatterRepairApplyMode::FixInstalledCopy,
+                fork_registry_before: if mode == FrontmatterRepairApplyMode::ForkAndFix {
+                    Some(super::skill_fork_registry::read_fork_registry(
+                        &dirs::home_dir().ok_or("Could not find home directory")?,
+                    )?)
+                } else {
+                    None
+                },
+            };
+            store.backup_paths(&event_id, std::slice::from_ref(&skill_md))?;
+            store.record(
+                &event_id,
+                EventDraft {
+                    kind: "repair_skill_frontmatter".to_string(),
+                    skill: name.clone(),
+                    harness: None,
+                    scope: Some(deployment.scope.clone()),
+                    project_path: deployment.project_path.clone(),
+                    payload: serde_json::to_value(&intent)
+                        .map_err(|error| format!("Failed to serialize repair intent: {error}"))?,
+                    inverse: Some(
+                        serde_json::to_value(InverseOp::RestoreBackup {
+                            path: skill_md.clone(),
+                            pre_fingerprint,
+                            post_fingerprint: None,
+                        })
+                        .map_err(|error| format!("Failed to serialize repair undo: {error}"))?,
+                    ),
+                    backup_dir: Some(format!("backups/{event_id}")),
+                    restorable: true,
+                },
+            )?;
 
-    if mode == FrontmatterRepairApplyMode::ForkAndFix {
-        let home = dirs::home_dir().ok_or("Could not find home directory")?;
-        let app_data = app
-            .path()
-            .app_data_dir()
-            .map_err(|error| format!("Could not resolve app data dir: {error}"))?;
-        if let Err(error) = super::skill_fork::fork_resolved_deployment_with_real_services(
-            &home,
-            &app_data,
-            &name,
-            Path::new(&deployment.path),
-        ) {
-            store.finish(&event_id, EventStatus::Failed)?;
-            return Err(error);
-        }
-        let live = transaction
-            .read(&skill_md)
-            .map_err(|error| format!("Fork completed, but the repair needs recovery: {error}"))?;
-        if content_fingerprint(&live) != expected_content_fingerprint {
-            return Err(
+            if mode == FrontmatterRepairApplyMode::ForkAndFix {
+                let home = dirs::home_dir().ok_or("Could not find home directory")?;
+                let app_data = app
+                    .path()
+                    .app_data_dir()
+                    .map_err(|error| format!("Could not resolve app data dir: {error}"))?;
+                if let Err(error) = super::skill_fork::fork_resolved_deployment_with_real_services(
+                    &home,
+                    &app_data,
+                    &name,
+                    Path::new(&deployment.path),
+                ) {
+                    store.finish(&event_id, EventStatus::Failed)?;
+                    return Err(error);
+                }
+                let live = transaction.read(&skill_md).map_err(|error| {
+                    format!("Fork completed, but the repair needs recovery: {error}")
+                })?;
+                if content_fingerprint(&live) != expected_content_fingerprint {
+                    return Err(
                 "Fork completed, but SKILL.md changed before repair; Activity recovery is required"
                     .to_string(),
             );
-        }
-    }
-    let result = if mode == FrontmatterRepairApplyMode::ForkAndFix {
-        // Keep durable intent pending if the write fails. Startup can safely
-        // finish it because the exact fork record and source fingerprint bind it.
-        transaction
-            .replace_bytes(&skill_md, preview.proposed_content.as_bytes())
-            .and_then(|()| {
-                store.patch_inverse_post_fingerprint(&event_id, &fingerprint_path(&skill_md))?;
-                store.finish(&event_id, EventStatus::Done)
-            })
-    } else {
-        finish_repair_write(
-            store,
-            &event_id,
-            &skill_md,
-            preview.proposed_content.as_bytes(),
-            |path, bytes| transaction.replace_bytes(path, bytes),
-        )
-    };
-    drop(transaction);
-    drop(guard);
-    let affected_projects: Vec<PathBuf> = deployment
-        .project_path
-        .as_deref()
-        .map(PathBuf::from)
-        .into_iter()
-        .collect();
-    skill_refresh::reconcile_skill_names_and_emit(
-        &app,
-        &refresh_state,
-        [name],
-        &affected_projects,
-    )?;
-    skill_refresh::request_snapshot_rebuild(&app);
-    result
+                }
+            }
+            let result = if mode == FrontmatterRepairApplyMode::ForkAndFix {
+                // Keep durable intent pending if the write fails. Startup can safely
+                // finish it because the exact fork record and source fingerprint bind it.
+                transaction
+                    .replace_bytes(&skill_md, preview.proposed_content.as_bytes())
+                    .and_then(|()| {
+                        store.patch_inverse_post_fingerprint(
+                            &event_id,
+                            &fingerprint_path(&skill_md),
+                        )?;
+                        store.finish(&event_id, EventStatus::Done)
+                    })
+            } else {
+                finish_repair_write(
+                    store,
+                    &event_id,
+                    &skill_md,
+                    preview.proposed_content.as_bytes(),
+                    |path, bytes| transaction.replace_bytes(path, bytes),
+                )
+            };
+            drop(transaction);
+            drop(guard);
+            let affected_projects: Vec<PathBuf> = deployment
+                .project_path
+                .as_deref()
+                .map(PathBuf::from)
+                .into_iter()
+                .collect();
+            skill_refresh::reconcile_skill_names_and_emit(
+                &app,
+                &refresh_state,
+                [name],
+                &affected_projects,
+            )?;
+            skill_refresh::request_snapshot_rebuild(&app);
+            result
+        },
+    )
+    .await
 }
 
 #[cfg(test)]
