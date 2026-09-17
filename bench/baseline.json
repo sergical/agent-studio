@@ -1,0 +1,12 @@
+{
+  "benches": [
+    {
+      "name": "scan_400_skills_on_disk",
+      "median_ns": 174334531.0,
+      "recorded_on": "2026-09-17",
+      "machine": "Apple M3 Max",
+      "command": "cargo bench -p skill-studio-core --features testing --bench scan"
+    }
+  ],
+  "ungated": ["scan_400_skills_in_memory"]
+}
