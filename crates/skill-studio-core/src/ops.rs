@@ -19,8 +19,9 @@ use tiktoken_rs::CoreBPE;
 use crate::dto::{
     CapabilitiesRequest, Completeness, DeploymentDto, Diagnosis, DriftState, EventDto,
     FrontmatterRepairPreview, InstalledSkillDto, Inventory, Issue, IssueKind, ListEventsRequest,
-    NextAction, Observation, PluginSourceDto, RepairApplyMode, RepairApplyRequest, RepairOutcome,
-    RepairPreviewRequest, RestoreOutcome, RestoreRequest, ScanRequest, Severity, Timing,
+    NextAction, Observation, ParkOutcome, ParkRequest, PluginSourceDto, RepairApplyMode,
+    RepairApplyRequest, RepairOutcome, RepairPreviewRequest, RestoreOutcome, RestoreRequest,
+    ScanRequest, Severity, Timing, UnparkOutcome, UnparkRequest,
 };
 use crate::error::{CoreError, ErrorCode, ErrorEntry};
 use crate::events::EventFilter;
@@ -34,6 +35,7 @@ use crate::identity::{
     AgentId, BackingRelationship, CorrelationId, DeploymentId, DeploymentMutability, EventId,
     Fingerprint, LifecycleOwnerKind, OwnerId, ProjectRef, RootKind, RootRef, RootScope,
     SkillDestination, SkillName, SourceKind, MOVE_ASIDE_DIR_NAME, PARKED_ROOT_RELATIVE,
+    UNIVERSAL_ROOT_RELATIVE,
 };
 use crate::lock_file;
 use crate::ownership;
@@ -85,6 +87,10 @@ pub enum Operation {
     ListEvents,
     /// Phase 2: revert one event.
     RestoreEvent,
+    /// Phase 3: move a universal deployment to the parked root.
+    Park,
+    /// Phase 3: move a parked deployment back to the universal root.
+    Unpark,
 }
 
 /// Outcome status of one call.
@@ -164,6 +170,16 @@ impl Outcome for RestoreOutcome {
         // The restore event, not the event it reverted: `event_id` names
         // what this call created.
         Some(self.restore_event_id.clone())
+    }
+}
+impl Outcome for ParkOutcome {
+    fn event_id(&self) -> Option<EventId> {
+        Some(self.event_id.clone())
+    }
+}
+impl Outcome for UnparkOutcome {
+    fn event_id(&self) -> Option<EventId> {
+        Some(self.event_id.clone())
     }
 }
 
@@ -3233,6 +3249,291 @@ pub fn restore_event(
         restore_event_id: restore_id,
         reverted_event_id: target.id,
         restored_paths: vec![path],
+    })
+}
+
+/// Finds the skill entry that owns `deployment_id` in `inventory`.
+fn resolve_skill<'a>(
+    inventory: &'a Inventory,
+    deployment_id: &DeploymentId,
+) -> Result<&'a InstalledSkillDto, CoreError> {
+    inventory
+        .skills
+        .iter()
+        .find(|s| s.deployments.iter().any(|d| &d.id == deployment_id))
+        .ok_or_else(|| {
+            CoreError::new(
+                ErrorCode::AmbiguousTarget,
+                format!("no deployment matches {}", deployment_id.as_str()),
+            )
+        })
+}
+
+/// Finds the Claude Code per-skill link deployment pointing at
+/// `target_path`, among `skill`'s other deployments.
+///
+/// `target_path` is canonicalized here rather than compared lexically: scan
+/// records a link's target already canonical (`link_target`), but a
+/// deployment's own `path` is lexical, so the two only compare equal once
+/// both sides go through the same filesystem, and not, for example, when
+/// `target_path`'s ancestry crosses a symlink the test host (or the user's
+/// `$HOME`) happens to have, like macOS's `/tmp` -> `/private/tmp`.
+fn find_claude_link<'a>(
+    skill: &'a InstalledSkillDto,
+    target_path: &Path,
+    fs: &dyn ScopeFs,
+) -> Option<&'a DeploymentDto> {
+    let canonical_target = fs.canonicalize(target_path).ok()?;
+    skill.deployments.iter().find(|d| {
+        d.harness.as_ref().map(AgentId::as_str) == Some(AgentId::CLAUDE_CODE)
+            && d.backing == BackingRelationship::LinkedTo
+            && d.link_target.as_deref() == Some(canonical_target.as_path())
+    })
+}
+
+/// Moves a universal deployment's directory into the parked root.
+///
+/// Preconditions: exclusive lease; the deployment must resolve exactly once,
+/// live at the universal root ([`RootKind::Universal`]), and hold its own
+/// bytes ([`BackingRelationship::Canonical`]). Undo is not implemented by
+/// this build: the event's `inverse` is `None`, and `restore_event` refuses
+/// it ([`ErrorCode::Unsupported`]); use `unpark` instead.
+///
+/// Sequence, matching `docs/action-map/primitives-and-call-stack.md`'s Park
+/// row: the journal row is recorded before any filesystem step, the Claude
+/// Code link (if any) is removed first, then the directory is renamed into
+/// `.agents/skills-parked`.
+pub fn park(rt: &Runtime, ctx: &OpContext, req: &ParkRequest) -> Result<ParkOutcome, CoreError> {
+    ctx.checkpoint()?;
+    let clock = rt.ports.clock.as_ref();
+    let op_start = clock.monotonic();
+    let step_start = clock.monotonic();
+    let session = crate::ports::MutationSession::begin(rt, ctx);
+    ctx.take_timing();
+    let mut session = session?;
+
+    let deployment = session.resolve_exact(&req.deployment_id)?.clone();
+    if deployment.root.kind != RootKind::Universal {
+        return Err(CoreError::new(
+            ErrorCode::Unsupported,
+            "only a universal deployment can be parked",
+        )
+        .at(&deployment.path));
+    }
+    if deployment.backing != BackingRelationship::Canonical {
+        return Err(CoreError::new(
+            ErrorCode::Unsupported,
+            "only the deployment holding the bytes can be parked, not a link",
+        )
+        .at(&deployment.path));
+    }
+    let skill = resolve_skill(&session.fresh, &deployment.id)?.clone();
+    let fs = rt.ports.fs.as_ref();
+    let claude_link = find_claude_link(&skill, &deployment.path, fs).cloned();
+    let begin_step = crate::timing::step(clock, "begin_session", step_start);
+
+    let step_start = clock.monotonic();
+    let parked_dir = rt
+        .scope
+        .home
+        .lexical
+        .join(PARKED_ROOT_RELATIVE)
+        .join(&skill.name.0);
+    if fs.symlink_metadata(&parked_dir).is_ok() {
+        return Err(CoreError::new(
+            ErrorCode::InvalidRequest,
+            "a parked deployment already exists for this skill",
+        )
+        .at(&parked_dir));
+    }
+    let scope_label = scope_label(&deployment.root.scope).to_string();
+    let project_path = match &deployment.root.scope {
+        RootScope::Global => None,
+        RootScope::Project(project) => Some(project.0.clone()),
+    };
+
+    let id = rt.ports.ids.next_event_id();
+    let draft = crate::events::EventDraft {
+        kind: crate::events::EventKind::Park,
+        skill: skill.name.clone(),
+        harness: None,
+        scope: Some(scope_label),
+        project_path,
+        payload: serde_json::json!({
+            "deployment_id": deployment.id.as_str(),
+            "from": deployment.path,
+            "to": parked_dir,
+            "claude_link": claude_link.as_ref().map(|l| &l.path),
+        }),
+        // Undo of a directory move is out of this build's scope: `Park`
+        // deliberately carries no inverse.
+        inverse: None,
+        backup_dir: None,
+    };
+    session.store.record(&session.guard, &id, &draft)?;
+
+    if let Some(link) = &claude_link {
+        let scoped_link = crate::ports::confine(&rt.scope, fs, &link.path)?;
+        fs.remove_file(&session.guard, &scoped_link)
+            .map_err(|e| CoreError::io(&link.path, e))?;
+    }
+    let parent = parked_dir.parent().unwrap_or(&parked_dir).to_path_buf();
+    let scoped_parent = crate::ports::confine(&rt.scope, fs, &parent)?;
+    fs.create_dir_all(&session.guard, &scoped_parent)
+        .map_err(|e| CoreError::io(&parent, e))?;
+    let scoped_from = crate::ports::confine(&rt.scope, fs, &deployment.path)?;
+    let scoped_to = crate::ports::confine(&rt.scope, fs, &parked_dir)?;
+    fs.rename(&session.guard, &scoped_from, &scoped_to)
+        .map_err(|e| CoreError::io(&deployment.path, e))?;
+
+    session
+        .store
+        .finish(&session.guard, &id, crate::events::EventStatus::Done, None)?;
+    session.finish(rt, ctx);
+    let write_step = crate::timing::step(clock, "remove_link_and_rename", step_start);
+    ctx.record_timing(crate::timing::op_timing(
+        clock,
+        "park",
+        op_start,
+        vec![begin_step, write_step],
+    ));
+    Ok(ParkOutcome {
+        event_id: id,
+        deployment_id: deployment.id,
+        parked_path: parked_dir,
+    })
+}
+
+/// Moves a parked deployment's directory back to the universal root and
+/// recreates the Claude Code link it had, if any.
+///
+/// Preconditions: exclusive lease; the deployment must resolve exactly once,
+/// live at the parked root ([`RootKind::Parked`]); nothing may already
+/// occupy the universal path this skill would return to.
+///
+/// This reverses the most recent unreverted `park` event recorded for the
+/// skill (matched by `payload.to` naming this deployment's path), per
+/// `primitives-and-call-stack.md`'s "the reverse, from the journal entry".
+/// A parked directory with no matching `park` row (never parked by this
+/// build, or the row aged out) still unparks: the Claude Code link is then
+/// simply not recreated.
+pub fn unpark(
+    rt: &Runtime,
+    ctx: &OpContext,
+    req: &UnparkRequest,
+) -> Result<UnparkOutcome, CoreError> {
+    ctx.checkpoint()?;
+    let clock = rt.ports.clock.as_ref();
+    let op_start = clock.monotonic();
+    let step_start = clock.monotonic();
+    let session = crate::ports::MutationSession::begin(rt, ctx);
+    ctx.take_timing();
+    let mut session = session?;
+
+    let deployment = session.resolve_exact(&req.deployment_id)?.clone();
+    if deployment.root.kind != RootKind::Parked {
+        return Err(CoreError::new(
+            ErrorCode::Unsupported,
+            "only a parked deployment can be unparked",
+        )
+        .at(&deployment.path));
+    }
+    let skill = resolve_skill(&session.fresh, &deployment.id)?.clone();
+
+    let park_row = session
+        .store
+        .list(&crate::events::EventFilter {
+            skill: Some(skill.name.clone()),
+            limit: DEFAULT_EVENT_LIMIT,
+            after: None,
+        })?
+        .into_iter()
+        .find(|row| {
+            row.kind == crate::events::EventKind::Park.as_str()
+                && row.reverted_by.is_none()
+                && row
+                    .payload
+                    .get("to")
+                    .and_then(|v| v.as_str())
+                    .map(Path::new)
+                    == Some(deployment.path.as_path())
+        });
+    let claude_link_path = park_row
+        .as_ref()
+        .and_then(|row| row.payload.get("claude_link"))
+        .and_then(|v| v.as_str())
+        .map(PathBuf::from);
+    let begin_step = crate::timing::step(clock, "begin_session", step_start);
+
+    let step_start = clock.monotonic();
+    let restored_dir = rt
+        .scope
+        .home
+        .lexical
+        .join(UNIVERSAL_ROOT_RELATIVE)
+        .join(&skill.name.0);
+    let fs = rt.ports.fs.as_ref();
+    if fs.symlink_metadata(&restored_dir).is_ok() {
+        return Err(CoreError::new(
+            ErrorCode::InvalidRequest,
+            "a universal deployment already exists for this skill",
+        )
+        .at(&restored_dir));
+    }
+    let scope_label = scope_label(&deployment.root.scope).to_string();
+    let project_path = match &deployment.root.scope {
+        RootScope::Global => None,
+        RootScope::Project(project) => Some(project.0.clone()),
+    };
+
+    let id = rt.ports.ids.next_event_id();
+    let draft = crate::events::EventDraft {
+        kind: crate::events::EventKind::Unpark,
+        skill: skill.name.clone(),
+        harness: None,
+        scope: Some(scope_label),
+        project_path,
+        payload: serde_json::json!({
+            "deployment_id": deployment.id.as_str(),
+            "from": deployment.path,
+            "to": restored_dir,
+            "claude_link": claude_link_path,
+        }),
+        inverse: None,
+        backup_dir: None,
+    };
+    session.store.record(&session.guard, &id, &draft)?;
+
+    let parent = restored_dir.parent().unwrap_or(&restored_dir).to_path_buf();
+    let scoped_parent = crate::ports::confine(&rt.scope, fs, &parent)?;
+    fs.create_dir_all(&session.guard, &scoped_parent)
+        .map_err(|e| CoreError::io(&parent, e))?;
+    let scoped_from = crate::ports::confine(&rt.scope, fs, &deployment.path)?;
+    let scoped_to = crate::ports::confine(&rt.scope, fs, &restored_dir)?;
+    fs.rename(&session.guard, &scoped_from, &scoped_to)
+        .map_err(|e| CoreError::io(&deployment.path, e))?;
+    if let Some(link_path) = &claude_link_path {
+        let scoped_target = crate::ports::confine(&rt.scope, fs, &restored_dir)?;
+        let scoped_link = crate::ports::confine(&rt.scope, fs, link_path)?;
+        fs.symlink(&session.guard, &scoped_target, &scoped_link)
+            .map_err(|e| CoreError::io(link_path, e))?;
+    }
+
+    session
+        .store
+        .finish(&session.guard, &id, crate::events::EventStatus::Done, None)?;
+    session.finish(rt, ctx);
+    let write_step = crate::timing::step(clock, "rename_and_relink", step_start);
+    ctx.record_timing(crate::timing::op_timing(
+        clock,
+        "unpark",
+        op_start,
+        vec![begin_step, write_step],
+    ));
+    Ok(UnparkOutcome {
+        event_id: id,
+        deployment_id: deployment.id,
+        restored_path: restored_dir,
     })
 }
 

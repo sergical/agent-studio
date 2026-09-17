@@ -475,3 +475,41 @@ pub struct RestoreOutcome {
     /// Paths put back.
     pub restored_paths: Vec<PathBuf>,
 }
+
+/// Request to park one universal deployment: remove its per-harness links
+/// and move its directory into the parked root.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct ParkRequest {
+    /// The universal deployment to park.
+    pub deployment_id: DeploymentId,
+}
+
+/// Result of `park`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct ParkOutcome {
+    /// The `park` event.
+    pub event_id: EventId,
+    /// The deployment that was parked.
+    pub deployment_id: DeploymentId,
+    /// Where the directory now lives, under the parked root.
+    pub parked_path: PathBuf,
+}
+
+/// Request to unpark one deployment: move its directory back to the
+/// universal root and recreate any per-harness link it had.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct UnparkRequest {
+    /// The parked deployment to restore.
+    pub deployment_id: DeploymentId,
+}
+
+/// Result of `unpark`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct UnparkOutcome {
+    /// The `unpark` event.
+    pub event_id: EventId,
+    /// The deployment that was restored.
+    pub deployment_id: DeploymentId,
+    /// Where the directory now lives, under the universal root.
+    pub restored_path: PathBuf,
+}
