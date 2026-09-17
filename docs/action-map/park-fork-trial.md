@@ -9,13 +9,13 @@ UI entry points: header Park/Unpark/Fork/Un-fork/Pull latest, Locations card Unp
 
 | Command            | Journal | Concurrency                                | Partial-state risk                                         |
 | ------------------ | ------- | ------------------------------------------ | ---------------------------------------------------------- |
-| park_skill         | no      | ForkMutationLock                           | crash between the rename and the registry write            |
-| unpark_skill       | no      | ForkMutationLock                           | unparked skill with a missing Claude link                  |
-| fork_skill         | no      | ForkMutationLock                           | detached but empty skill dir if manual recovery is skipped |
-| pull_fork_upstream | no      | ForkMutationLock                           | crash between two renames inside the swap                  |
-| unfork_skill       | no      | ForkMutationLock                           | stale fork record pointing at a reinstalled skill          |
-| keep_skill_trial   | no      | ForkMutationLock                           | none noted, the registry write is atomic                   |
-| trial expiry loop  | no      | ForkMutationLock, taken by the loop itself | none noted beyond the trash-and-drop it performs           |
+| park_skill         | no      | per-root lease                           | crash between the rename and the registry write            |
+| unpark_skill       | no      | per-root lease                           | unparked skill with a missing Claude link                  |
+| fork_skill         | no      | per-root lease                           | detached but empty skill dir if manual recovery is skipped |
+| pull_fork_upstream | no      | per-root lease                           | crash between two renames inside the swap                  |
+| unfork_skill       | no      | per-root lease                           | stale fork record pointing at a reinstalled skill          |
+| keep_skill_trial   | no      | per-root lease                           | none noted, the registry write is atomic                   |
+| trial expiry loop  | no      | per-root lease, taken by the loop itself | none noted beyond the trash-and-drop it performs           |
 
 `park_skill` removes the per-skill Claude link, renames `~/.agents/skills/<name>` to `~/.agents/skills-parked/<name>`, inserts a `ParkedRecord`, retargets any trial, then writes the registry (skill_park.rs:463 → 210, :242, :254, :278).
 A rename failure restores the link.
