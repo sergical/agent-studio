@@ -44,6 +44,22 @@ pub struct GeneratedEstate {
     pub stats: EstateStats,
 }
 
+impl GeneratedEstate {
+    /// Distinct root directories this estate places skills under: each
+    /// harness's global and project root (some harnesses share one relative
+    /// path for both), plus the shared `.agents/skills` universal root.
+    /// Fixed regardless of `n` or how many skills land under each root, so a
+    /// test can bound scan work without depending on a run's counts.
+    pub fn root_count(&self) -> usize {
+        let mut roots = std::collections::HashSet::new();
+        for harness in HARNESSES {
+            roots.insert(harness_root_path(harness, true));
+            roots.insert(harness_root_path(harness, false));
+        }
+        roots.len() + 1 // + the shared universal root
+    }
+}
+
 /// The measured shape a bench estate is checked against.
 #[derive(Debug, Clone)]
 pub struct EstateStats {
@@ -339,7 +355,7 @@ mod tests {
     }
 
     /// Guards: a bench that silently regenerated a different tree between
-    /// runs would make `bench/baseline.json` compare noise, not signal.
+    /// runs would make its medians compare noise, not signal.
     #[test]
     fn estate_same_seed_generates_an_identical_tree() {
         let a = estate(400, 1);
