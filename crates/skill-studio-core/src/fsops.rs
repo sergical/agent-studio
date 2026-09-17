@@ -198,10 +198,7 @@ impl<'a> Root<'a> {
                 break;
             }
             let mut hops = 0;
-            loop {
-                let Ok(facts) = self.fs.symlink_metadata(&resolved) else {
-                    break;
-                };
+            while let Ok(facts) = self.fs.symlink_metadata(&resolved) {
                 if facts.kind != FileKind::Symlink {
                     break;
                 }
