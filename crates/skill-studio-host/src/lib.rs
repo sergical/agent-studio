@@ -35,10 +35,9 @@ pub use fs::RealFs;
 pub use history::{hash_entry, NoHistoryOpener, SqliteHistoryOpener};
 pub use ids::UlidIds;
 pub use lease::FileLease;
-pub use sink::{
-    HttpReportTransport, NoopSink, QueuedReportSink, ReportTransport, StderrSink,
-    REPORT_ENDPOINT_ENV,
-};
+#[cfg(feature = "error-reporting")]
+pub use sink::HttpReportTransport;
+pub use sink::{NoopSink, QueuedReportSink, ReportTransport, StderrSink, REPORT_ENDPOINT_ENV};
 pub use skill_uses::{
     is_skill_use_change, skill_use_watch_paths, SkillInvocationIndex, SkillUseRefreshReport,
     SkillUseWatchPath,

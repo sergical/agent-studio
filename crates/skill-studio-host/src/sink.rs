@@ -101,11 +101,17 @@ pub const REPORT_ENDPOINT_ENV: &str = "SKILL_STUDIO_SENTRY_DSN";
 /// adapter behind [`ReportTransport`]: it does not speak the Sentry
 /// envelope protocol, retry, or batch - `QueuedReportSink` already batches,
 /// and a hanging endpoint's timeout is unit 6.4's shutdown-flush follow-up.
+///
+/// Behind the `error-reporting` feature - only the desktop adapter enables
+/// it, so the CLI and MCP adapters, which never build this transport, don't
+/// link `reqwest`.
+#[cfg(feature = "error-reporting")]
 pub struct HttpReportTransport {
     endpoint: String,
     client: reqwest::blocking::Client,
 }
 
+#[cfg(feature = "error-reporting")]
 impl HttpReportTransport {
     /// Reads [`REPORT_ENDPOINT_ENV`]; `None` when it's unset or empty, which
     /// is how the switch being off keeps the app from ever building a
@@ -122,6 +128,7 @@ impl HttpReportTransport {
     }
 }
 
+#[cfg(feature = "error-reporting")]
 impl ReportTransport for HttpReportTransport {
     fn send(&self, bytes: Vec<u8>) -> Result<(), String> {
         self.client
