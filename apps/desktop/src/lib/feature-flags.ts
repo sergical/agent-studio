@@ -3,16 +3,11 @@
 // Build-time defaults with a per-machine localStorage override, so unfinished
 // features stay in the codebase without shipping in the UI. Toggle one from
 // the devtools console:
-//   localStorage.setItem("feature:skill-packs", "on")   // or "off"
+//   localStorage.setItem("feature:skill-assistant", "on")   // or "off"
 // and reload. Flags are read at render time; there is no live subscription.
 // ============================================================================
 
 const FLAG_DEFAULTS = {
-  /**
-   * Multi-select in the Skills table, "Create pack", and the Packs view.
-   * Off until packs earn a place in v1.
-   */
-  "skill-packs": false,
   /**
    * The skill page's Assistant drawer (ask/audit/test a skill in a scratch
    * harness) and the "last test" link that opens its run history.

@@ -1,7 +1,7 @@
 // ============================================================================
 // SkillListSelectionBar - The docked bar that appears once any row is
-// checked: the selected count, plus Create pack (behind the skill-packs
-// flag) and Cancel.
+// checked: the selected count, plus Create pack (hidden while pack creation
+// is deferred, see unit 4.3) and Cancel.
 // ============================================================================
 
 import { Button } from "@skill-studio/ui";

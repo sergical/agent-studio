@@ -11,7 +11,6 @@ import {
   useVirtualizer,
 } from "@tanstack/react-virtual";
 import type { InstalledSkill, PackMember, SkillInvocationStats } from "@skill-studio/lib";
-import { isFeatureEnabled } from "../../lib/feature-flags";
 import { groupSkillRows } from "../../lib/skill-list-model";
 import type { SortMode } from "../../lib/skill-list-sort";
 import { useRowCursor, useRowCursorWindowEntry } from "../../hooks/useRowCursor";
@@ -144,7 +143,8 @@ interface SkillListTableProps {
  * attention, Healthy, Parked): the state glyph, name, disk location, harness
  * stack, and token pair. Checking a row's checkbox selects it - no separate
  * selection mode - and the action bar (Create pack, Cancel) shows once
- * anything is checked. Packs sit behind the "skill-packs" feature flag.
+ * anything is checked. Pack creation is deferred (unit 4.3), so the bar's
+ * Create pack button never renders.
  */
 export function SkillListTable({
   skills,
@@ -164,7 +164,7 @@ export function SkillListTable({
   const hasAnySkills = hasAnySkillsProp ?? true;
   const [showPackPrompt, setShowPackPrompt] = useState(false);
   const [collapsedGroups, setCollapsedGroups] = useState<Set<RowGroup>>(() => new Set());
-  const packsEnabled = isFeatureEnabled("skill-packs");
+  const packsEnabled = false;
   /** The roving cursor's key, mirrored here so the virtualizer's `rangeExtractor` (a plain
    * callback, not part of render) can always keep that row's item in range without depending on
    * `useRowCursor`'s return value before it exists. */
