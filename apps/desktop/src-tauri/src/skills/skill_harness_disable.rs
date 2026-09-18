@@ -649,6 +649,7 @@ pub fn set_harness_enabled_with(
 /// Applies a post-install reader switch before a refreshed snapshot exists.
 /// The caller supplies the exact Universal deployment and Claude link paths
 /// that the completed install selected.
+#[allow(clippy::too_many_arguments)]
 pub fn set_new_universal_reader_enabled(
     home: &Path,
     data_root: &Path,
