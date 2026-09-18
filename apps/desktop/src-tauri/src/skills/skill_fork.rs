@@ -1368,15 +1368,24 @@ pub fn pull_fork_upstream_with(
     drop(cleanup_staging);
 
     if !result.conflicts.is_empty() {
-        // The markers are already on disk under `mine_dir` either way; a
-        // failed editor launch is surfaced as this call's error rather than
-        // rolled back, since nothing here would undo the merge markers.
+        // The markers are already on disk under `mine_dir`, and
+        // `swap_in_pull_result` above already committed the registry and
+        // swapped the marker file in - the pull itself is done. A failed
+        // editor launch must not turn a completed pull into an `Err` (that
+        // would discard `result.conflicts`, the only place the caller
+        // learns markers are in SKILL.md); it's reported as a message on
+        // the still-`Ok` result instead.
         let conflict_paths: Vec<PathBuf> = result
             .conflicts
             .iter()
             .map(|rel| mine_dir.join(rel))
             .collect();
-        editor.open_paths(&conflict_paths)?;
+        if let Err(e) = editor.open_paths(&conflict_paths) {
+            let rel = &result.conflicts[0];
+            result.message = Some(format!(
+                "Conflict markers written to {rel}; could not open editor: {e}"
+            ));
+        }
     }
 
     Ok(result)
@@ -1618,6 +1627,15 @@ mod tests {
         fn open_paths(&self, paths: &[PathBuf]) -> Result<(), String> {
             self.opened.lock().unwrap().push(paths.to_vec());
             Ok(())
+        }
+    }
+
+    /// An `EditorOpener` that always fails, for the F2 regression: a
+    /// failed editor launch must not turn a completed pull into an `Err`.
+    struct FailingEditorOpener;
+    impl EditorOpener for FailingEditorOpener {
+        fn open_paths(&self, _paths: &[PathBuf]) -> Result<(), String> {
+            Err("no editor configured".to_string())
         }
     }
 
@@ -1953,6 +1971,69 @@ mod tests {
             !editor.opened.lock().unwrap().is_empty(),
             "expected the conflict to open the editor"
         );
+    }
+
+    /// F2 (unit 3.7b review round 1): `swap_in_pull_result` already
+    /// committed the registry and swapped the marker file in by the time
+    /// the editor is asked to open - a failing opener must keep that
+    /// result and name it in `message`, not discard it as an `Err`.
+    #[test]
+    fn fork_pull_conflict_with_a_failing_editor_keeps_the_markers_and_names_them_or_names_the_lost_result(
+    ) {
+        let tmp = tempfile::tempdir().unwrap();
+        let home = tmp.path().join("home");
+        let app_data = tmp.path().join("data");
+        let base_commit = "a".repeat(40);
+        seed_dotagents_ledger(
+            &home,
+            "find-bugs",
+            "getsentry/find-bugs",
+            "skills/find-bugs",
+            &base_commit,
+        );
+        write_file(
+            &home.join(".agents/skills/find-bugs/SKILL.md"),
+            "line one\nmine edit\n",
+        );
+
+        let ledger = FakeLedger::default();
+        let fetch_at_fork = FakeFetch {
+            files: vec![("SKILL.md", "line one\nbase line\n")],
+        };
+        fork_skill_with(
+            &test_guard(&home),
+            &home,
+            &app_data,
+            "find-bugs",
+            &home.join(".agents/skills/find-bugs"),
+            &ledger,
+            &fetch_at_fork,
+            &NeverCalledLookup,
+        )
+        .unwrap();
+
+        seed_update_check_latest(&app_data, "find-bugs", &"b".repeat(40));
+        let fetch_at_pull = FakeFetch {
+            files: vec![("SKILL.md", "line one\ntheirs edit\n")],
+        };
+        let result = pull_fork_upstream_with(
+            &test_guard(&home),
+            &home,
+            &app_data,
+            "find-bugs",
+            &fetch_at_pull,
+            &NeverCalledLookup,
+            &FailingEditorOpener,
+        )
+        .expect("a failed editor open must not turn a completed pull into an Err");
+
+        assert_eq!(result.conflicts, vec!["SKILL.md".to_string()]);
+        let message = result.message.expect("failed editor open must be named");
+        assert!(message.contains("SKILL.md"), "{message}");
+        assert!(message.contains("no editor configured"), "{message}");
+        // The markers are on disk regardless of whether the editor opened.
+        let on_disk = fs::read_to_string(home.join(".agents/skills/find-bugs/SKILL.md")).unwrap();
+        assert!(on_disk.contains("<<<<<<<"), "{on_disk}");
     }
 
     /// Finding 7: forking a same-named copy that isn't the shared folder
