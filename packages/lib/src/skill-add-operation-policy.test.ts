@@ -59,8 +59,12 @@ describe("selectNewerAddSkillOperationEvent", () => {
 
 describe("add skill operation phase policy", () => {
   it("keeps cancel enabled only while work can still stop", () => {
+    // Review item 2: `installing`/`fetching`/`finalizing` dropped from
+    // `CANCELLABLE_PHASES` - once the op has started its one write path
+    // there is nothing left a cancel button press could still stop.
     expect(isAddSkillOperationCancellable("queued")).toBe(true);
-    expect(isAddSkillOperationCancellable("installing")).toBe(true);
+    expect(isAddSkillOperationCancellable("validating")).toBe(true);
+    expect(isAddSkillOperationCancellable("installing")).toBe(false);
     expect(isAddSkillOperationCancellable("needs-trust")).toBe(false);
     expect(isAddSkillOperationCancellable("completed")).toBe(false);
   });
