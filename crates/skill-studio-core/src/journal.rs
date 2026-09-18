@@ -12,7 +12,19 @@
 //!
 //! [`PlanWriter`]'s `record_*` methods are how `crate::fsops`'s four
 //! primitives themselves record the step that ran - see that module - so a
-//! caller cannot call a primitive without a plan step landing for it.
+//! caller cannot call a primitive without a plan step landing for it. Each
+//! `record_*` call happens *before* its primitive's own mutation, with
+//! everything reversal will need - the quarantine path, the previous link
+//! target, the pre-write backup - already computed and durable: `stage`
+//! records its temp path before creating it, `swap` records the exchange's
+//! quarantine destination before running it, `link` records the previous
+//! target before renaming the new one into place, and `write_file` fsyncs
+//! its backup before renaming the new bytes into place. A crash can now only
+//! ever land between "step recorded" and "mutation done", never the other
+//! way around, so [`reverse_steps`] inspects the disk for each step to tell
+//! whether its mutation actually landed and reverses only what did -
+//! idempotent, since a step whose mutation never landed is already a no-op
+//! to reverse.
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -287,8 +299,10 @@ impl<'a> PlanWriter<'a> {
         &self.id
     }
 
-    /// Records that [`crate::fsops::stage`] built `staged` (its temp path).
-    /// Reversal removes it - nothing else has touched it.
+    /// Records that [`crate::fsops::stage`] is about to build `staged` (its
+    /// temp path). Called before the folder is created, so a crash before
+    /// it exists leaves nothing for reversal's `remove_tree` to remove -
+    /// nothing else has touched it either way.
     pub fn record_stage(&self, staged: &Path) -> Result<(), CoreError> {
         self.journal.record_step(
             self.guard,
@@ -299,25 +313,39 @@ impl<'a> PlanWriter<'a> {
         )
     }
 
-    /// Records that [`crate::fsops::swap`] put a folder at `path`.
-    /// `quarantined` is where the folder that sat at `path` before was
-    /// relocated to, when one did - `None` when `path` was created fresh.
-    pub fn record_swap(&self, path: &Path, quarantined: Option<PathBuf>) -> Result<(), CoreError> {
+    /// Records that [`crate::fsops::swap`] is about to put a folder at
+    /// `path` by exchanging it with `staged` (captured at `staged_binding`,
+    /// its device/inode right before the exchange). `quarantined` is where
+    /// the folder that sits at `path` before the exchange will be relocated
+    /// to, when one is there - `None` when `path` does not exist yet
+    /// (`swap` will create it fresh). Called before the exchange runs.
+    pub fn record_swap(
+        &self,
+        path: &Path,
+        staged: &Path,
+        staged_binding: (u64, u64),
+        quarantined: Option<PathBuf>,
+    ) -> Result<(), CoreError> {
         self.journal.record_step(
             self.guard,
             &self.id,
             PlanStep::Swap {
                 path: path.to_path_buf(),
+                staged: staged.to_path_buf(),
+                staged_binding,
                 quarantined,
             },
         )
     }
 
-    /// Records that [`crate::fsops::link`] set `path`. `previous_target` is
-    /// what `path` pointed at before, when it already existed as a symlink.
+    /// Records that [`crate::fsops::link`] is about to set `path` to point
+    /// at `target`. `previous_target` is what `path` pointed at before,
+    /// when it already existed as a symlink. Called before the rename that
+    /// makes the new link visible.
     pub fn record_link(
         &self,
         path: &Path,
+        target: &Path,
         previous_target: Option<PathBuf>,
     ) -> Result<(), CoreError> {
         self.journal.record_step(
@@ -325,16 +353,18 @@ impl<'a> PlanWriter<'a> {
             &self.id,
             PlanStep::Link {
                 path: path.to_path_buf(),
+                target: target.to_path_buf(),
                 previous_target,
             },
         )
     }
 
-    /// Records that [`crate::fsops::write_file`] wrote `path`. When
-    /// `previous` holds the file's pre-write bytes, writes them durably
-    /// into this plan's own backup store first (via
+    /// Records that [`crate::fsops::write_file`] is about to write `path`.
+    /// When `previous` holds the file's pre-write bytes, writes them
+    /// durably into this plan's own backup store first (via
     /// [`Journal::write_backup`]) and points the recorded step at that
-    /// backup, so reversal can read them back.
+    /// backup, so reversal can read them back. Called before the rename
+    /// that puts the new bytes in place.
     pub fn record_write_file(&self, path: &Path, previous: Option<&[u8]>) -> Result<(), CoreError> {
         let backup = match previous {
             Some(bytes) => {
@@ -446,6 +476,22 @@ pub fn reconcile(
 /// step whose undo fails; steps already undone stay undone (there is no
 /// partial-undo rollback - a step's own undo is the smallest unit this
 /// resolves).
+///
+/// Every step was recorded before its own mutation ran (see the module
+/// doc), so a crash can only ever land between "recorded" and "mutation
+/// landed" - never the reverse. Before undoing a step, this checks the disk
+/// to tell whether the mutation it describes actually landed, and reverses
+/// only what did:
+/// - `Stage`: `remove_tree` is already a no-op when nothing is at `staged`.
+/// - `Swap`: landed iff `path`'s current device/inode matches
+///   `staged_binding` (the staged folder's identity, captured before the
+///   exchange - a rename/exchange preserves identity across the name
+///   change, so this holds regardless of whether the follow-up move into
+///   `quarantined` also landed).
+/// - `Link`: landed iff `path` is currently a symlink pointing at `target`.
+/// - `WriteFile`: landed iff the live bytes at `path` no longer match the
+///   backup (the backup was fsynced durable before the rename that would
+///   have changed them).
 fn reverse_steps(
     journal: &dyn Journal,
     plan: &PlanRecord,
@@ -454,36 +500,74 @@ fn reverse_steps(
     for step in plan.steps.iter().rev() {
         match step {
             PlanStep::Stage { staged } => remove_tree(fs, staged)?,
-            PlanStep::Swap { path, quarantined } => match quarantined {
-                Some(quarantined) => {
-                    fs.fsops_exchange(quarantined, path)?;
-                    remove_tree(fs, quarantined)?;
+            PlanStep::Swap {
+                path,
+                staged,
+                staged_binding,
+                quarantined,
+            } => {
+                let landed = fs.fsops_device_inode(path).ok() == Some(*staged_binding);
+                if !landed {
+                    // The exchange never ran; `path` still shows whatever
+                    // was there before this plan. Nothing to undo here -
+                    // the preceding `Stage` step's own reversal removes
+                    // the still-unswapped staged folder.
+                    continue;
                 }
-                None => remove_tree(fs, path)?,
-            },
+                match quarantined {
+                    Some(quarantined) if fs.symlink_metadata(quarantined).is_ok() => {
+                        // Both the exchange and the follow-up move into
+                        // quarantine landed.
+                        fs.fsops_exchange(quarantined, path)?;
+                        remove_tree(fs, quarantined)?;
+                    }
+                    Some(_) => {
+                        // The exchange landed but the move into quarantine
+                        // never did: the pre-swap folder is still sitting
+                        // at `staged`'s temp name. Exchange it back; the
+                        // preceding `Stage` step's own reversal then
+                        // removes what is left at `staged` (the folder
+                        // this step is undoing).
+                        fs.fsops_exchange(staged, path)?;
+                    }
+                    None => remove_tree(fs, path)?,
+                }
+            }
             PlanStep::Link {
                 path,
+                target,
                 previous_target,
             } => {
-                if fs.symlink_metadata(path).is_ok() {
-                    fs.fsops_remove_file(path)?;
+                let landed = fs.read_link(path).ok().as_deref() == Some(target.as_path());
+                if !landed {
+                    continue;
                 }
+                fs.fsops_remove_file(path)?;
                 if let Some(target) = previous_target {
                     fs.fsops_symlink(target, path)?;
                 }
             }
-            PlanStep::WriteFile { path, backup } => {
-                if fs.symlink_metadata(path).is_ok() {
-                    fs.fsops_remove_file(path)?;
-                }
-                if let Some(entry) = backup {
-                    let bytes = journal
+            PlanStep::WriteFile { path, backup } => match backup {
+                Some(entry) => {
+                    let backup_bytes = journal
                         .read_backup(&plan.id, &entry.relative)
                         .map_err(|e| std::io::Error::other(e.to_string()))?;
-                    fs.fsops_write_new_file(path, &bytes)?;
-                    fs.fsops_fsync_file(path)?;
+                    let live = fs.read_capped(path, u64::MAX).ok();
+                    let landed = live.as_deref() != Some(backup_bytes.as_slice());
+                    if landed {
+                        if fs.symlink_metadata(path).is_ok() {
+                            fs.fsops_remove_file(path)?;
+                        }
+                        fs.fsops_write_new_file(path, &backup_bytes)?;
+                        fs.fsops_fsync_file(path)?;
+                    }
                 }
-            }
+                None => {
+                    if fs.symlink_metadata(path).is_ok() {
+                        fs.fsops_remove_file(path)?;
+                    }
+                }
+            },
         }
     }
     Ok(())
@@ -545,7 +629,7 @@ pub fn trim_backups(
                 .map(move |backup| (plan.created_at, plan.id.clone(), backup))
         })
         .collect();
-    entries.sort_by(|a, b| a.0.cmp(&b.0));
+    entries.sort_by_key(|a| a.0);
 
     let mut trimmed = Vec::new();
     let mut kept = Vec::new();
@@ -584,7 +668,7 @@ mod tests {
     use super::*;
     use crate::fsops::{self, Root};
     use crate::ports::{LeaseMode, LeaseProvider};
-    use crate::testing::{FakeLease, FixtureBuilder};
+    use crate::testing::{FailingFs, FakeLease, FixtureBuilder};
 
     fn guard(lease: &FakeLease) -> ExclusiveGuard {
         let handle = lease
@@ -902,6 +986,281 @@ mod tests {
             "plan {} must be Interrupted since its backup could not be read back, was {:?}",
             unresolvable.0,
             after_unresolvable.status
+        );
+    }
+
+    /// Given a root with an existing `skill` folder, when `swap`'s exchange
+    /// lands but the process dies before the follow-up move of the old
+    /// folder into quarantine, then startup reconciliation still restores
+    /// `skill` to exactly its pre-plan bytes - using the quarantine path
+    /// and the staged folder's identity `swap` recorded *before* the
+    /// exchange ran, not the (never-written) quarantine folder itself; on
+    /// failure the panic names the diverging path, which would be the old
+    /// folder deleted rather than restored.
+    #[test]
+    fn a_crash_between_the_swap_exchange_and_its_journal_row_reverses_to_the_old_folder_or_names_the_folder_it_deleted(
+    ) {
+        let fixture = FixtureBuilder::new()
+            .dir("/journal")
+            .dir("/root")
+            .dir("/root/skill")
+            .file("/root/skill/SKILL.md", b"old content")
+            .build_fs();
+        let root_path = PathBuf::from("/root");
+        let before = tree_snapshot(&fixture, &root_path);
+
+        let failing = FailingFs::wrap(Arc::new(fixture.clone()));
+        let root = Root::open(&failing, root_path.clone()).expect("open root");
+        let journal = journal_over(Arc::new(fixture.clone()));
+        let lease = FakeLease::default();
+        let g = guard(&lease);
+
+        let id = PlanId("01PLANSWAPCRASH00000000001".into());
+        let plan = PlanWriter::begin(
+            &journal,
+            &g,
+            id.clone(),
+            Utc::now(),
+            "crash between exchange and quarantine move",
+            root_path.clone(),
+            Vec::new(),
+        )
+        .expect("begin");
+
+        let staged = fsops::stage(
+            &root,
+            &plan,
+            &[(PathBuf::from("SKILL.md"), b"new content".to_vec())],
+        )
+        .expect("stage");
+        // The exchange itself (a `fsops_exchange` call) is unaffected; only
+        // the follow-up `fsops_rename` that moves the old folder into
+        // quarantine fails, landing the crash exactly between the two.
+        failing.fail_next_fsops_rename();
+        fsops::swap(
+            &root,
+            &plan,
+            Path::new("skill"),
+            staged,
+            Path::new(".trash"),
+        )
+        .expect_err("the quarantine move must fail, or this test proves nothing about the window between it and the exchange");
+        // The process dies here: `plan` is dropped, never finished.
+        drop(plan);
+
+        let report = reconcile(&journal, &g, &fixture).expect("reconciliation must run");
+        assert!(
+            report.reversed.contains(&id),
+            "a swap step whose exchange landed must still be fully reversible, not {report:?}"
+        );
+
+        let after = tree_snapshot(&fixture, &root_path);
+        assert_eq!(
+            after, before,
+            "reconciliation must restore the old folder byte-for-byte, or name the folder it deleted"
+        );
+    }
+
+    /// Given an existing file, when `write_file`'s rename lands but the
+    /// process dies before the primitive returns, then startup
+    /// reconciliation restores the previous bytes from the backup
+    /// `write_file` fsynced *before* that rename ran; on failure the panic
+    /// names the lost backup (the live content stuck on the new bytes).
+    #[test]
+    fn a_crash_after_the_write_file_rename_restores_the_previous_bytes_or_names_the_lost_backup() {
+        let fixture = FixtureBuilder::new()
+            .dir("/journal")
+            .dir("/root")
+            .file("/root/file.txt", b"original")
+            .build_fs();
+        let root_path = PathBuf::from("/root");
+        let before = tree_snapshot(&fixture, &root_path);
+
+        let failing = FailingFs::wrap(Arc::new(fixture.clone()));
+        let root = Root::open(&failing, root_path.clone()).expect("open root");
+        let journal = journal_over(Arc::new(fixture.clone()));
+        let lease = FakeLease::default();
+        let g = guard(&lease);
+
+        let id = PlanId("01PLANWRITECRASH0000000001".into());
+        let plan = PlanWriter::begin(
+            &journal,
+            &g,
+            id.clone(),
+            Utc::now(),
+            "crash after the write_file rename",
+            root_path.clone(),
+            Vec::new(),
+        )
+        .expect("begin");
+
+        let target = root_path.join("file.txt");
+        let stamp = fsops::read_stamp(&failing, &target).expect("read the stamp");
+        // The rename that lands the new bytes is unaffected; the very next
+        // call - `fsync_up_to_root`'s first `fsops_fsync_dir` - fails,
+        // landing the crash right after the rename.
+        failing.fail_next_fsops_fsync_dir();
+        fsops::write_file(&root, &plan, Path::new("file.txt"), b"new bytes", &stamp)
+            .expect_err("the fsync after the rename must fail, or this test proves nothing about the window after it");
+        drop(plan);
+
+        let report = reconcile(&journal, &g, &fixture).expect("reconciliation must run");
+        assert!(
+            report.reversed.contains(&id),
+            "a write_file step whose rename landed must still be fully reversible, not {report:?}"
+        );
+
+        let after = tree_snapshot(&fixture, &root_path);
+        assert_eq!(
+            after, before,
+            "reconciliation must restore the previous bytes, or name the lost backup"
+        );
+    }
+
+    /// Given an existing symlink, when `link`'s rename lands but the
+    /// process dies before the primitive returns, then startup
+    /// reconciliation restores the previous target `link` recorded before
+    /// that rename ran; on failure the panic names the target it forgot
+    /// (the live link stuck on the new target instead).
+    #[test]
+    fn a_crash_after_the_link_rename_restores_the_previous_link_target_or_names_the_target_it_forgot(
+    ) {
+        let fixture = FixtureBuilder::new()
+            .dir("/journal")
+            .dir("/root")
+            .file("/root/old.txt", b"old")
+            .file("/root/new.txt", b"new")
+            .build_fs();
+        let root_path = PathBuf::from("/root");
+        let journal = journal_over(Arc::new(fixture.clone()));
+        let lease = FakeLease::default();
+        let g = guard(&lease);
+
+        // Seed an existing link pointing at `old.txt`, fully committed, so
+        // this test's own crash is about *replacing* a link, not creating
+        // one from nothing.
+        let seed_root = Root::open(&fixture, root_path.clone()).expect("open root");
+        let seed_id = PlanId("01PLANLINKSEED000000000001".into());
+        let seed_plan = PlanWriter::begin(
+            &journal,
+            &g,
+            seed_id,
+            Utc::now(),
+            "seed the existing link",
+            root_path.clone(),
+            Vec::new(),
+        )
+        .expect("begin seed plan");
+        fsops::link(
+            &seed_root,
+            &seed_plan,
+            Path::new("skill-current"),
+            Path::new("old.txt"),
+        )
+        .expect("seed link");
+        seed_plan
+            .finish(PlanStatus::Done)
+            .expect("finish seed plan");
+
+        let before = tree_snapshot(&fixture, &root_path);
+
+        let failing = FailingFs::wrap(Arc::new(fixture.clone()));
+        let root = Root::open(&failing, root_path.clone()).expect("open root");
+        let id = PlanId("01PLANLINKCRASH0000000001".into());
+        let plan = PlanWriter::begin(
+            &journal,
+            &g,
+            id.clone(),
+            Utc::now(),
+            "crash after the link rename",
+            root_path.clone(),
+            Vec::new(),
+        )
+        .expect("begin");
+        // Same window as the write_file test above: the rename lands, the
+        // fsync right after it fails.
+        failing.fail_next_fsops_fsync_dir();
+        fsops::link(&root, &plan, Path::new("skill-current"), Path::new("new.txt"))
+            .expect_err("the fsync after the rename must fail, or this test proves nothing about the window after it");
+        drop(plan);
+
+        let report = reconcile(&journal, &g, &fixture).expect("reconciliation must run");
+        assert!(
+            report.reversed.contains(&id),
+            "a link step whose rename landed must still be fully reversible, not {report:?}"
+        );
+
+        let after = tree_snapshot(&fixture, &root_path);
+        assert_eq!(
+            after, before,
+            "reconciliation must restore the previous link target, or name the target it forgot"
+        );
+    }
+
+    /// Given a step recorded before its mutation ran, when the mutation
+    /// itself then fails and never lands - the crash landing in the window
+    /// `record_*` guarantees now exists between "recorded" and "mutated" -
+    /// then startup reconciliation must still resolve the plan, doing
+    /// nothing to a tree that already matches the pre-plan snapshot; on
+    /// failure the panic names the step reversal undid a second time
+    /// (proof it was not the no-op reversing an unlanded step must be).
+    #[test]
+    fn a_step_recorded_before_a_mutation_that_never_landed_reverses_to_a_no_op_or_names_the_step_it_undid_twice(
+    ) {
+        let fixture = FixtureBuilder::new()
+            .dir("/journal")
+            .dir("/root")
+            .build_fs();
+        let root_path = PathBuf::from("/root");
+        let before = tree_snapshot(&fixture, &root_path);
+
+        let failing = FailingFs::wrap(Arc::new(fixture.clone()));
+        let root = Root::open(&failing, root_path.clone()).expect("open root");
+        let journal = journal_over(Arc::new(fixture.clone()));
+        let lease = FakeLease::default();
+        let g = guard(&lease);
+
+        let id = PlanId("01PLANNEVERLANDED000000001".into());
+        let plan = PlanWriter::begin(
+            &journal,
+            &g,
+            id.clone(),
+            Utc::now(),
+            "step recorded, mutation never lands",
+            root_path.clone(),
+            Vec::new(),
+        )
+        .expect("begin");
+
+        // `newskill` does not exist yet, so `swap` takes its fresh-target
+        // branch: no quarantine, just a rename of the staged folder into
+        // place. That rename is the one made to fail, so the only trace
+        // left behind is the staged folder itself - which the paired
+        // `Stage` step's own (unconditional) reversal already removes,
+        // proving the no-op holds even with two steps recorded and only
+        // one of them mutating anything.
+        let staged = fsops::stage(
+            &root,
+            &plan,
+            &[(PathBuf::from("SKILL.md"), b"new content".to_vec())],
+        )
+        .expect("stage");
+        failing.fail_next_fsops_rename();
+        fsops::swap(&root, &plan, Path::new("newskill"), staged, Path::new(".trash"))
+            .expect_err("the rename must fail, or this test proves nothing about a step whose mutation never lands");
+        drop(plan);
+
+        let report =
+            reconcile(&journal, &g, &fixture).expect("reconciliation must run without error");
+        assert!(
+            report.reversed.contains(&id),
+            "a step recorded but never landed must still resolve as a (no-op) reversal, not {report:?}"
+        );
+
+        let after = tree_snapshot(&fixture, &root_path);
+        assert_eq!(
+            after, before,
+            "reversing a step whose mutation never landed must be a no-op, or name the step it undid twice"
         );
     }
 

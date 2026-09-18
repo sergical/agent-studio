@@ -12,9 +12,10 @@
 //! in-memory.
 //!
 //! [`stage`], [`swap`], [`link`], and [`write_file`] each take a
-//! [`crate::journal::PlanWriter`] and record their own step against it right
-//! after the mutation lands - see `docs/action-map/plan.md` unit 1.2 - so a
-//! caller cannot run one of these four without a plan step landing for it.
+//! [`crate::journal::PlanWriter`] and record their own step against it
+//! *before* their mutation runs, with the reversal data (the staged path's
+//! identity, the previous link target, the fsynced backup) computed and
+//! made durable first - see `docs/action-map/plan.md` unit 1.2.
 //! `crates/skill-studio-core/tests/architecture.rs` pins that these four
 //! names are only ever called from this module, `journal.rs`, and tests.
 
@@ -291,6 +292,10 @@ pub fn stage(
     root.revalidate()?;
     let tmp_name = PathBuf::from(format!(".skill-studio-stage-{}", unique_suffix()));
     let tmp_path = root.confine(&tmp_name)?;
+    // Recorded before anything is created: a crash here leaves nothing at
+    // `tmp_path` for reversal's `remove_tree` to remove, which is already
+    // its no-op case.
+    plan.record_stage(&tmp_path).map_err(FsOpsError::Journal)?;
     root.fs.fsops_create_dir(&tmp_path).fs_err(&tmp_path)?;
 
     let mut created_dirs = vec![tmp_path.clone()];
@@ -327,7 +332,6 @@ pub fn stage(
     }
     fsync_up_to_root(root, tmp_path.clone())?;
     root.revalidate()?;
-    plan.record_stage(&tmp_path).map_err(FsOpsError::Journal)?;
     Ok(Staged { path: tmp_path })
 }
 
@@ -369,10 +373,21 @@ pub fn swap(
     root.revalidate()?;
     let final_path = root.confine(final_name)?;
     let old_facts = root.fs.symlink_metadata(&final_path).ok();
-    let mut quarantined = None;
+    // The identity the exchange will give `final_path` once it lands -
+    // captured now, before anything moves, so reversal can later tell
+    // whether the exchange landed without needing a second fake filesystem
+    // snapshot: a rename/exchange carries a directory's identity across the
+    // name change, so `final_path`'s device/inode equals this afterward iff
+    // the exchange ran.
+    let staged_binding = root
+        .fs
+        .fsops_device_inode(&staged.path)
+        .fs_err(&staged.path)?;
 
     match old_facts {
         None => {
+            plan.record_swap(&final_path, &staged.path, staged_binding, None)
+                .map_err(FsOpsError::Journal)?;
             root.fs
                 .fsops_rename(&staged.path, &final_path)
                 .fs_err(&final_path)?;
@@ -402,6 +417,17 @@ pub fn swap(
                 .unwrap_or("quarantined");
             let quarantine_target = quarantine_root.join(format!("{leaf}-{}", unique_suffix()));
 
+            // The quarantine path is chosen and recorded before the
+            // exchange runs: a crash between the exchange and the
+            // follow-up move into quarantine still leaves reversal knowing
+            // exactly where the old folder must have gone.
+            plan.record_swap(
+                &final_path,
+                &staged.path,
+                staged_binding,
+                Some(quarantine_target.clone()),
+            )
+            .map_err(FsOpsError::Journal)?;
             root.fs
                 .fsops_exchange(&staged.path, &final_path)
                 .fs_err(&final_path)?;
@@ -413,7 +439,6 @@ pub fn swap(
             root.fs
                 .fsops_rename(&staged.path, &quarantine_target)
                 .fs_err(&quarantine_target)?;
-            quarantined = Some(quarantine_target);
         }
         Some(_) => {
             return Err(FsOpsError::ReplacedBySymlink { path: final_path });
@@ -423,8 +448,6 @@ pub fn swap(
     let parent = final_path.parent().unwrap_or(root.path()).to_path_buf();
     fsync_up_to_root(root, parent)?;
     root.revalidate()?;
-    plan.record_swap(&final_path, quarantined)
-        .map_err(FsOpsError::Journal)?;
     Ok(())
 }
 
@@ -452,14 +475,17 @@ pub fn link(
         .unwrap_or("link");
     let tmp_path = parent.join(format!(".{leaf}-{}", unique_suffix()));
 
+    // Recorded before the rename that makes the new link visible, with the
+    // target it will point at so reversal can later tell whether that
+    // rename landed.
+    plan.record_link(&link_path, target, previous_target)
+        .map_err(FsOpsError::Journal)?;
     root.fs.fsops_symlink(target, &tmp_path).fs_err(&tmp_path)?;
     root.fs
         .fsops_rename(&tmp_path, &link_path)
         .fs_err(&link_path)?;
     fsync_up_to_root(root, parent)?;
     root.revalidate()?;
-    plan.record_link(&link_path, previous_target)
-        .map_err(FsOpsError::Journal)?;
     Ok(())
 }
 
@@ -534,6 +560,12 @@ pub fn write_file(
         .unwrap_or("write");
     let tmp_path = parent.join(format!(".{leaf}-{}.tmp", unique_suffix()));
 
+    // Recorded before the rename that puts the new bytes in place: when
+    // `previous` is `Some`, this fsyncs it into the plan's own backup store
+    // first, so a crash right after the rename below still has somewhere
+    // durable to restore from.
+    plan.record_write_file(&target, previous.as_deref())
+        .map_err(FsOpsError::Journal)?;
     root.fs
         .fsops_write_new_file(&tmp_path, bytes)
         .fs_err(&tmp_path)?;
@@ -541,7 +573,5 @@ pub fn write_file(
     root.fs.fsops_rename(&tmp_path, &target).fs_err(&target)?;
     fsync_up_to_root(root, parent)?;
     root.revalidate()?;
-    plan.record_write_file(&target, previous.as_deref())
-        .map_err(FsOpsError::Journal)?;
     Ok(())
 }

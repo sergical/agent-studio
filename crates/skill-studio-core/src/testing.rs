@@ -804,6 +804,9 @@ pub struct FailingFs {
     fail_next_write_atomic: AtomicBool,
     fail_next_rename: AtomicBool,
     fail_next_create_dir: AtomicBool,
+    fail_next_fsops_rename: AtomicBool,
+    fail_next_fsops_exchange: AtomicBool,
+    fail_next_fsops_fsync_dir: AtomicBool,
 }
 
 impl FailingFs {
@@ -814,6 +817,9 @@ impl FailingFs {
             fail_next_write_atomic: AtomicBool::new(false),
             fail_next_rename: AtomicBool::new(false),
             fail_next_create_dir: AtomicBool::new(false),
+            fail_next_fsops_rename: AtomicBool::new(false),
+            fail_next_fsops_exchange: AtomicBool::new(false),
+            fail_next_fsops_fsync_dir: AtomicBool::new(false),
         }
     }
 
@@ -837,6 +843,36 @@ impl FailingFs {
     /// `fsops::swap` reaches its crash-critical exchange.
     pub fn fail_next_create_dir(&self) {
         self.fail_next_create_dir.store(true, Ordering::SeqCst);
+    }
+
+    /// The next `fsops_rename` call returns an error instead of reaching
+    /// `inner`; later calls delegate normally again. Every `fsops`
+    /// primitive's crash-critical mutation is a rename or an exchange; this
+    /// lets a test crash a primitive after it has recorded its step but
+    /// before that rename lands, so reversal must treat the step as never
+    /// having landed.
+    pub fn fail_next_fsops_rename(&self) {
+        self.fail_next_fsops_rename.store(true, Ordering::SeqCst);
+    }
+
+    /// The next `fsops_exchange` call returns an error instead of reaching
+    /// `inner`; later calls delegate normally again. Lets a test crash
+    /// `fsops::swap` before its exchange lands, symmetric to
+    /// [`Self::fail_next_fsops_rename`] for the rest of the primitives.
+    pub fn fail_next_fsops_exchange(&self) {
+        self.fail_next_fsops_exchange.store(true, Ordering::SeqCst);
+    }
+
+    /// The next `fsops_fsync_dir` call returns an error instead of reaching
+    /// `inner`; later calls delegate normally again. Every primitive's
+    /// crash-critical rename or exchange is immediately followed by
+    /// `fsync_up_to_root`, whose first call is always `fsops_fsync_dir` on
+    /// the mutated path's parent; failing it lets a test simulate a crash
+    /// *after* the mutation landed but before the primitive call returns,
+    /// so the step is already durably recorded (it was recorded before the
+    /// mutation) while the caller never sees `Ok`.
+    pub fn fail_next_fsops_fsync_dir(&self) {
+        self.fail_next_fsops_fsync_dir.store(true, Ordering::SeqCst);
     }
 }
 
@@ -907,6 +943,11 @@ impl ScopeFs for FailingFs {
         self.inner.fsops_fsync_file(path)
     }
     fn fsops_fsync_dir(&self, path: &Path) -> std::io::Result<()> {
+        if self.fail_next_fsops_fsync_dir.swap(false, Ordering::SeqCst) {
+            return Err(std::io::Error::other(
+                "FailingFs: injected fsops_fsync_dir failure",
+            ));
+        }
         self.inner.fsops_fsync_dir(path)
     }
     fn fsops_create_dir(&self, path: &Path) -> std::io::Result<()> {
@@ -921,6 +962,11 @@ impl ScopeFs for FailingFs {
         self.inner.fsops_write_new_file(path, bytes)
     }
     fn fsops_rename(&self, from: &Path, to: &Path) -> std::io::Result<()> {
+        if self.fail_next_fsops_rename.swap(false, Ordering::SeqCst) {
+            return Err(std::io::Error::other(
+                "FailingFs: injected fsops_rename failure",
+            ));
+        }
         self.inner.fsops_rename(from, to)
     }
     fn fsops_symlink(&self, target: &Path, link: &Path) -> std::io::Result<()> {
@@ -933,6 +979,11 @@ impl ScopeFs for FailingFs {
         self.inner.fsops_remove_file(path)
     }
     fn fsops_exchange(&self, a: &Path, b: &Path) -> std::io::Result<()> {
+        if self.fail_next_fsops_exchange.swap(false, Ordering::SeqCst) {
+            return Err(std::io::Error::other(
+                "FailingFs: injected fsops_exchange failure",
+            ));
+        }
         self.inner.fsops_exchange(a, b)
     }
 }

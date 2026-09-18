@@ -595,21 +595,38 @@ pub enum PlanStep {
         /// The staged folder's temp path.
         staged: PathBuf,
     },
-    /// [`crate::fsops::swap`] made `path` show the staged folder.
+    /// [`crate::fsops::swap`] is about to make `path` show the staged
+    /// folder. Recorded before the exchange runs, so every field here is
+    /// chosen up front rather than discovered after the fact.
     Swap {
-        /// The path that was swapped into place.
+        /// The path that is being swapped into place.
         path: PathBuf,
-        /// Where `swap` moved the folder that sat at `path` before, when
-        /// one did - `swap` never deletes it, only relocates it inside the
-        /// root, so reversal restores from here rather than a byte-level
-        /// journal backup. `None` when `path` did not exist before (`swap`
-        /// created it fresh); reversal then removes what is at `path`.
+        /// The staged folder's temp path (the other side of the exchange).
+        /// Reversal compares `path`'s current device/inode against
+        /// `staged_binding` to tell whether the exchange itself landed,
+        /// since a rename/exchange preserves a directory's identity across
+        /// a name change.
+        staged: PathBuf,
+        /// `staged`'s device and inode, captured right before the exchange
+        /// - the identity `path` will carry once the exchange lands.
+        staged_binding: (u64, u64),
+        /// Where `swap` intends to move the folder that sits at `path`
+        /// before the exchange, when one is there - `swap` never deletes
+        /// it, only relocates it inside the root, so reversal restores from
+        /// here rather than a byte-level journal backup. `None` when `path`
+        /// does not exist yet (`swap` will create it fresh); reversal then
+        /// removes what is at `path` once the exchange has landed.
         quarantined: Option<PathBuf>,
     },
-    /// [`crate::fsops::link`] created or replaced a symlink at `path`.
+    /// [`crate::fsops::link`] is about to create or replace a symlink at
+    /// `path`. Recorded before the rename that makes it visible.
     Link {
         /// The link's path.
         path: PathBuf,
+        /// The target the new symlink will point at once the rename lands.
+        /// Reversal compares the live link against this to tell whether
+        /// the rename landed.
+        target: PathBuf,
         /// What `path` pointed at before this step, when it already
         /// existed as a symlink. `None` when nothing was there.
         previous_target: Option<PathBuf>,
