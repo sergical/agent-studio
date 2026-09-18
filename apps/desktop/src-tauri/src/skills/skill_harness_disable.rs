@@ -655,11 +655,9 @@ pub fn set_harness_enabled_with(
             fs::create_dir_all(&config_dir)
                 .map_err(|e| format!("Failed to create {}: {e}", config_dir.display()))?;
             let real_fs = skill_studio_host::RealFs::new();
-            let leases =
-                skill_studio_host::FileLease::new(super::core_runtime::data_root().join("leases"));
-            skill_studio_core::opencode_config::set_skill_denied(
-                &leases,
+            skill_studio_core::opencode_config::set_skill_denied_with(
                 &real_fs,
+                guard.as_exclusive_guard(),
                 &config_dir,
                 name,
                 !enabled,

@@ -11,11 +11,15 @@
 //! call (see `registry_write.rs`) - this module's whole job is the write.
 
 use std::path::Path;
+use std::sync::Arc;
 
 use skill_studio_core::opencode_config::{
-    detect_config_kind, opencode_json_path, read_denied_patterns, set_skill_denied,
-    OpencodeConfigKind,
+    detect_config_kind, opencode_json_path, read_denied_patterns, read_skill_rules,
+    set_skill_denied, set_skill_denied_with, OpencodeConfigKind,
 };
+use skill_studio_core::ports::{acquire_exclusive, Ports, Runtime};
+use skill_studio_core::scope::RuntimeScope;
+use skill_studio_core::testing::{FakeClock, FakeIds, NoHistory, RecordingSink};
 use skill_studio_host::{FileLease, RealFs};
 
 fn deny(config_dir: &Path, name: &str, denied: bool) {
@@ -145,6 +149,50 @@ fn set_skill_denied_writes_the_shape_read_denied_patterns_reads_back_or_names_th
         read_denied_patterns(&fs, config_dir),
         vec!["epsilon".to_string()]
     );
+}
+
+/// Flow: the caller already holds the exclusive lease on `config_dir`'s
+/// parent (`home`) - the desktop disable command's `WriteLease`, e.g. when
+/// `OPENCODE_CONFIG_DIR=$HOME/x` hashes the config write's scope root to the
+/// same lease key as the outer `home` lease - and calls
+/// `set_skill_denied_with` with that guard, on the SAME `FileLease` root the
+/// production desktop code shares between the Codex and `OpenCode` arms.
+/// Expectation: the write lands with the guard still held - proven by
+/// reading the deny rule back afterward - with no second `acquire` in
+/// between; a second real `acquire_exclusive` on the same lease root while
+/// the first is held would flock-fail (`ScopeBusy`), which this test would
+/// need to work around if `set_skill_denied_with` still acquired internally.
+/// Failure: `set_skill_denied_with` errors (or hangs) here, which would mean
+/// it still acquires its own lease and self-deadlocks against the caller's
+/// held guard.
+#[test]
+fn opencode_disable_under_a_held_home_lease_writes_or_names_the_lease_it_deadlocked_on() {
+    let tmp = tempfile::tempdir().unwrap();
+    let home = tmp.path();
+    let config_dir = home.join("x");
+    std::fs::create_dir_all(&config_dir).unwrap();
+
+    let ports = Ports {
+        fs: Arc::new(RealFs::new()),
+        clock: Arc::new(FakeClock::at(0)),
+        ids: Arc::new(FakeIds::default()),
+        leases: Arc::new(FileLease::new(home.join(".leases"))),
+        history: Arc::new(NoHistory),
+        sink: Arc::new(RecordingSink::default()),
+        spawner: None,
+        discovery: None,
+        tools: None,
+        catalog: Arc::new(skill_studio_core::harness::HarnessCatalog::builtin()),
+    };
+    let rt = Runtime::new(&RuntimeScope::fixture(home), ports).unwrap();
+    let fs = rt.ports.fs.as_ref();
+    let guard = acquire_exclusive(rt.ports.leases.as_ref(), &rt.scope).unwrap();
+
+    set_skill_denied_with(fs, &guard, &config_dir, "epsilon", true)
+        .expect("set_skill_denied_with deadlocked on its own caller's held lease");
+
+    let rules = read_skill_rules(fs, &config_dir);
+    assert!(rules.is_denied("epsilon"), "the write did not land");
 }
 
 /// Flow: only `opencode.jsonc` exists in the config directory (no `.json`

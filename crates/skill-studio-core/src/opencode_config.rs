@@ -40,7 +40,7 @@ use std::path::{Path, PathBuf};
 use serde_json::{Map, Value};
 
 use crate::error::{CoreError, ErrorCode};
-use crate::ports::{acquire_exclusive, confine, LeaseProvider, ScopeFs};
+use crate::ports::{acquire_exclusive, confine, ExclusiveGuard, LeaseProvider, ScopeFs};
 use crate::registry::home_only_scope;
 
 /// `opencode.json`'s documented `$schema` value, added when the file is
@@ -299,6 +299,37 @@ pub fn set_skill_denied(
     name: &str,
     denied: bool,
 ) -> Result<(), CoreError> {
+    let config_dir = resolve_config_dir(fs, config_dir)?;
+    let home = config_dir.parent().ok_or_else(|| {
+        CoreError::new(
+            ErrorCode::InvalidRequest,
+            "config directory has no parent to scope the write to",
+        )
+        .at(&config_dir)
+    })?;
+    let scope = home_only_scope(home, fs)?;
+    let guard = acquire_exclusive(leases, &scope)?;
+    set_skill_denied_with(fs, &guard, &config_dir, name, denied)
+}
+
+/// The lease-holding half of [`set_skill_denied`]. The caller already holds
+/// an exclusive lease on `config_dir`'s parent - the desktop command's
+/// `WriteLease`, or a second lease request from the same process - so this
+/// must not acquire a second one; advisory locks do not nest in-process, and
+/// `OPENCODE_CONFIG_DIR`/`XDG_CONFIG_HOME` pointing back under the held
+/// home's own lease root would otherwise self-deadlock the caller against
+/// itself.
+///
+/// `config_dir` need not already be resolved - this re-resolves it itself
+/// (see [`resolve_config_dir`]; a no-op when it's already canonical), the
+/// same as [`set_skill_denied`] does before acquiring its own guard.
+pub fn set_skill_denied_with(
+    fs: &dyn ScopeFs,
+    guard: &ExclusiveGuard,
+    config_dir: &Path,
+    name: &str,
+    denied: bool,
+) -> Result<(), CoreError> {
     let config_dir = &resolve_config_dir(fs, config_dir)?;
     let jsonc_path = opencode_jsonc_path(config_dir);
     let path = opencode_json_path(config_dir);
@@ -318,7 +349,6 @@ pub fn set_skill_denied(
         .at(config_dir)
     })?;
     let scope = home_only_scope(home, fs)?;
-    let guard = acquire_exclusive(leases, &scope)?;
 
     let mut root: Map<String, Value> = match fs.read_capped(&path, OPENCODE_CONFIG_MAX_BYTES) {
         Ok(bytes) => serde_json::from_slice(&bytes)
