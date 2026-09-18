@@ -3395,22 +3395,18 @@ mod tests {
         );
     }
 
-    /// Serializes every test in this module that sets `CODEX_HOME`, mirroring
-    /// `test_support::OpencodeHomeGuard`'s lock for `XDG_CONFIG_HOME`.
-    fn codex_home_env_lock() -> &'static std::sync::Mutex<()> {
-        static LOCK: std::sync::OnceLock<std::sync::Mutex<()>> = std::sync::OnceLock::new();
-        LOCK.get_or_init(|| std::sync::Mutex::new(()))
-    }
-
     /// N2 fix: `core_scan_installed_skills`'s total-failure branch (the
     /// `Runtime` itself failed to build) must carry over `CODEX_HOME` too,
     /// not just `home` and tracked projects - `CODEX_HOME` can live outside
     /// `home`. Fails if `unread_roots` omits it, which would make the
     /// merge in `merge_partial_scan_skills` drop every previous deployment
-    /// under it.
+    /// under it. Uses `test_support::opencode_env_lock` (not a dedicated
+    /// lock) because it must also pin `SKILL_STUDIO_FIXTURE` unset for the
+    /// scan's live (non-fixture) branch to run; that var is the same one
+    /// `OpencodeHomeGuard` serializes on.
     #[test]
     fn a_scan_level_error_carries_over_codex_home_even_when_it_is_outside_home() {
-        let _guard = codex_home_env_lock()
+        let _guard = super::super::test_support::opencode_env_lock()
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         let tmp = tempfile::tempdir().unwrap();
@@ -3420,20 +3416,26 @@ mod tests {
         let codex_home = tmp.path().join("codex-home-outside-home");
         fs::create_dir_all(&codex_home).unwrap();
         let prev_codex_home = std::env::var_os("CODEX_HOME");
-        // SAFETY: `codex_home_env_lock` above serializes every test in this
-        // module that touches `CODEX_HOME`.
+        let prev_skill_studio_fixture = std::env::var_os("SKILL_STUDIO_FIXTURE");
+        // SAFETY: `opencode_env_lock` above serializes every test in this
+        // process that touches `CODEX_HOME`/`SKILL_STUDIO_FIXTURE`.
         #[allow(unsafe_code)]
         unsafe {
             std::env::set_var("CODEX_HOME", &codex_home);
+            std::env::remove_var("SKILL_STUDIO_FIXTURE");
         }
         let result =
             core_scan_installed_skills(&home, &[], &tmp.path().join("update-check.json"), &[]);
-        // SAFETY: same as above - still under `codex_home_env_lock`.
+        // SAFETY: same as above - still under `opencode_env_lock`.
         #[allow(unsafe_code)]
         unsafe {
             match prev_codex_home {
                 Some(v) => std::env::set_var("CODEX_HOME", v),
                 None => std::env::remove_var("CODEX_HOME"),
+            }
+            match prev_skill_studio_fixture {
+                Some(v) => std::env::set_var("SKILL_STUDIO_FIXTURE", v),
+                None => std::env::remove_var("SKILL_STUDIO_FIXTURE"),
             }
         }
 

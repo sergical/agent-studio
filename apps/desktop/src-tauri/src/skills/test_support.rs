@@ -42,6 +42,17 @@ pub struct OpencodeHomeGuard {
     prev_skill_studio_fixture: Option<std::ffi::OsString>,
 }
 
+/// The lock `OpencodeHomeGuard` holds, shared with any other test that
+/// touches `SKILL_STUDIO_FIXTURE` directly (without going through the
+/// guard) so the two never race: `SKILL_STUDIO_FIXTURE` picks
+/// `core_scan_installed_skills`'s fixture-vs-live branch, and a test
+/// asserting on the live branch's `CODEX_HOME` handling must not have
+/// another parallel test flip it to fixture mid-scan.
+pub fn opencode_env_lock() -> &'static std::sync::Mutex<()> {
+    static LOCK: std::sync::OnceLock<std::sync::Mutex<()>> = std::sync::OnceLock::new();
+    LOCK.get_or_init(|| std::sync::Mutex::new(()))
+}
+
 /// Sets `XDG_CONFIG_HOME` to `<home>/.config` and clears
 /// `OPENCODE_CONFIG_DIR`, without touching the lock or saving the previous
 /// values. Split out of `OpencodeHomeGuard::new` so a test can re-pin the
@@ -64,9 +75,7 @@ impl OpencodeHomeGuard {
     /// `OpenCode` config resolver in the desktop app - fixture-aware or
     /// not - agrees on `home/.config/opencode`.
     pub fn new(home: &Path) -> Self {
-        static LOCK: std::sync::OnceLock<std::sync::Mutex<()>> = std::sync::OnceLock::new();
-        let lock = LOCK
-            .get_or_init(|| std::sync::Mutex::new(()))
+        let lock = opencode_env_lock()
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         let prev_xdg_config_home = std::env::var_os("XDG_CONFIG_HOME");
