@@ -2574,7 +2574,6 @@ mod tests {
                     "latest_commit_at": Utc::now().to_rfc3339(),
                     "checked_at": Utc::now().to_rfc3339(),
                     "error": null,
-                    "lock_updated_at": null,
                 }
             }
         });
@@ -2807,7 +2806,6 @@ mod tests {
                         "latest_commit": if index == 0 { "b".repeat(40) } else { "c".repeat(40) },
                         "latest_commit_at": if index == 0 { "2026-02-01T00:00:00Z" } else { "2026-03-01T00:00:00Z" },
                         "checked_at": Utc::now().to_rfc3339(), "error": null,
-                        "lock_updated_at": null
                     }),
                 )
             })

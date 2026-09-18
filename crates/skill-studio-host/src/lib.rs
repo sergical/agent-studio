@@ -35,6 +35,7 @@ mod builder;
 mod clock;
 mod discovery;
 mod fs;
+mod gh_currency;
 mod harness_detect;
 mod history;
 mod ids;
@@ -51,6 +52,7 @@ pub use discovery::{
     opencode_config_dir_under, HostProjectDiscovery,
 };
 pub use fs::RealFs;
+pub use gh_currency::{GhCommitLookup, GhPluginManifestLookup, GhSourceTreeLookup};
 pub use harness_detect::RealProcessSpawner;
 pub use history::{hash_entry, NoHistoryOpener, SqliteHistoryOpener};
 pub use ids::UlidIds;

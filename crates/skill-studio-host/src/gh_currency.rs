@@ -1,0 +1,327 @@
+//! Real `gh` CLI adapters for `skill_studio_core::skill_update_check`'s
+//! three currency ports. Read-only `gh api` calls through the user's own
+//! `gh` login, mirroring the desktop's `gh_cli.rs`; the app stores no
+//! tokens. Codex has no plugin CLI, so [`GhPluginManifestLookup`] is Claude
+//! Code marketplaces only, per plan.md unit 3.4.
+
+use std::path::PathBuf;
+use std::process::{Command, Output};
+
+use skill_studio_core::error::{CoreError, ErrorCode};
+use skill_studio_core::skill_update_check::{CommitLookup, PluginManifestLookup, SourceTreeLookup};
+
+use std::collections::HashMap;
+use std::sync::Arc;
+
+/// Runs `gh` and returns its raw `Output`, or the `std::io::Error` from
+/// failing to spawn it at all. A trait, not a bare fn pointer, so tests can
+/// script stdout/stderr/exit code without spawning a real `gh` process.
+pub trait GhRunner: Send + Sync {
+    fn run(&self, args: &[&str]) -> std::io::Result<Output>;
+}
+
+/// [`GhRunner`] backed by a real `gh` binary on disk.
+pub struct RealGhRunner {
+    pub gh_bin: PathBuf,
+}
+
+impl GhRunner for RealGhRunner {
+    fn run(&self, args: &[&str]) -> std::io::Result<Output> {
+        Command::new(&self.gh_bin).args(args).output()
+    }
+}
+
+/// Runs `gh <args>` and returns stdout, or a [`CoreError`] built from
+/// stderr (falling back to stdout, then a generic message) on a non-zero
+/// exit or a failure to spawn `gh` at all.
+fn run_gh(runner: &dyn GhRunner, args: &[&str]) -> Result<Vec<u8>, CoreError> {
+    let output = runner
+        .run(args)
+        .map_err(|e| CoreError::new(ErrorCode::Unsupported, format!("failed to run gh: {e}")))?;
+    if output.status.success() {
+        return Ok(output.stdout);
+    }
+    let message = if !output.stderr.is_empty() {
+        String::from_utf8_lossy(&output.stderr).into_owned()
+    } else if !output.stdout.is_empty() {
+        String::from_utf8_lossy(&output.stdout).into_owned()
+    } else {
+        format!("gh exited with {:?}", output.status.code())
+    };
+    Err(CoreError::new(ErrorCode::Unsupported, message))
+}
+
+/// [`SourceTreeLookup`] over `gh api repos/<repo>/git/trees/HEAD?recursive=1`,
+/// one call per repo, returning every subtree's SHA at once so a caller
+/// checking many skills from the same repo never re-fetches it.
+pub struct GhSourceTreeLookup {
+    runner: Arc<dyn GhRunner>,
+}
+
+impl GhSourceTreeLookup {
+    /// A `GhSourceTreeLookup` that shells the real `gh` binary at `gh_bin`.
+    pub fn new(gh_bin: PathBuf) -> Self {
+        Self {
+            runner: Arc::new(RealGhRunner { gh_bin }),
+        }
+    }
+
+    /// For tests: a `GhSourceTreeLookup` over a scripted [`GhRunner`].
+    pub fn with_runner(runner: Arc<dyn GhRunner>) -> Self {
+        Self { runner }
+    }
+}
+
+impl SourceTreeLookup for GhSourceTreeLookup {
+    fn tree_shas_at_head(&self, repo: &str) -> Result<HashMap<String, String>, CoreError> {
+        let api_path = format!("repos/{repo}/git/trees/HEAD?recursive=1");
+        // No `--jq` filter here (unlike the other two lookups): the response
+        // must be inspected for `truncated` before its `tree` entries are
+        // trusted, and `--jq` would already have thrown that field away.
+        let stdout = run_gh(self.runner.as_ref(), &["api", &api_path])?;
+        parse_tree_response(repo, &stdout)
+    }
+}
+
+/// Parses a `gh api repos/<repo>/git/trees/HEAD?recursive=1` response body.
+/// A `truncated: true` response means GitHub's recursive listing stopped
+/// early - the caller cannot tell "not in the tree" from "not fetched yet"
+/// for the paths past the cutoff, so this is an error naming the repo
+/// rather than a partial (and silently misleading) map.
+fn parse_tree_response(repo: &str, stdout: &[u8]) -> Result<HashMap<String, String>, CoreError> {
+    let value: serde_json::Value = serde_json::from_slice(stdout).map_err(|e| {
+        CoreError::new(
+            ErrorCode::Unsupported,
+            format!("{repo}: could not parse tree listing: {e}"),
+        )
+    })?;
+    if value.get("truncated").and_then(serde_json::Value::as_bool) == Some(true) {
+        return Err(CoreError::new(
+            ErrorCode::Unsupported,
+            format!("{repo}: tree listing truncated"),
+        ));
+    }
+    let mut shas = HashMap::new();
+    for entry in value
+        .get("tree")
+        .and_then(serde_json::Value::as_array)
+        .into_iter()
+        .flatten()
+    {
+        if entry.get("type").and_then(serde_json::Value::as_str) != Some("tree") {
+            continue;
+        }
+        let (Some(path), Some(sha)) = (
+            entry.get("path").and_then(serde_json::Value::as_str),
+            entry.get("sha").and_then(serde_json::Value::as_str),
+        ) else {
+            continue;
+        };
+        shas.insert(path.to_string(), sha.to_string());
+    }
+    Ok(shas)
+}
+
+/// [`CommitLookup`] over `gh api repos/<repo>/commits?path=<path>&per_page=1`
+/// - the same call the desktop's dotagents currency check already made.
+pub struct GhCommitLookup {
+    runner: Arc<dyn GhRunner>,
+}
+
+impl GhCommitLookup {
+    /// A `GhCommitLookup` that shells the real `gh` binary at `gh_bin`.
+    pub fn new(gh_bin: PathBuf) -> Self {
+        Self {
+            runner: Arc::new(RealGhRunner { gh_bin }),
+        }
+    }
+
+    /// For tests: a `GhCommitLookup` over a scripted [`GhRunner`].
+    pub fn with_runner(runner: Arc<dyn GhRunner>) -> Self {
+        Self { runner }
+    }
+}
+
+impl CommitLookup for GhCommitLookup {
+    fn latest_commit(&self, repo: &str, path: &str) -> Result<Option<String>, CoreError> {
+        let api_path = format!(
+            "repos/{repo}/commits?path={}&per_page=1",
+            percent_encoding::utf8_percent_encode(path, percent_encoding::NON_ALPHANUMERIC)
+        );
+        let stdout = run_gh(
+            self.runner.as_ref(),
+            &["api", &api_path, "--jq", ".[0].sha"],
+        )?;
+        let sha = String::from_utf8_lossy(&stdout).trim().to_string();
+        if sha.is_empty() || sha == "null" {
+            Ok(None)
+        } else {
+            Ok(Some(sha))
+        }
+    }
+}
+
+/// [`PluginManifestLookup`] over `gh api repos/<marketplace>/contents/...` -
+/// left unresolvable ([`Ok(None)`]) until a marketplace's real manifest
+/// layout is confirmed against a live account; see `issue-3.4-followup-a.md`.
+/// Never guesses a version, so a plugin currency check reads `Unknown`
+/// rather than a false "current" or "outdated".
+pub struct GhPluginManifestLookup;
+
+impl PluginManifestLookup for GhPluginManifestLookup {
+    fn marketplace_version(
+        &self,
+        _marketplace: &str,
+        _plugin: &str,
+    ) -> Result<Option<String>, CoreError> {
+        Ok(None)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::os::unix::process::ExitStatusExt;
+    use std::process::ExitStatus;
+    use std::sync::Mutex;
+
+    fn output(status: i32, stdout: &str, stderr: &str) -> Output {
+        Output {
+            status: ExitStatus::from_raw(status << 8),
+            stdout: stdout.as_bytes().to_vec(),
+            stderr: stderr.as_bytes().to_vec(),
+        }
+    }
+
+    /// Scripted `GhRunner`: one queued `Output` per call, in order, and a
+    /// record of the `args` each call received.
+    struct ScriptedGhRunner {
+        outputs: Mutex<Vec<Output>>,
+        calls: Mutex<Vec<Vec<String>>>,
+    }
+
+    impl ScriptedGhRunner {
+        fn new(outputs: Vec<Output>) -> Self {
+            Self {
+                outputs: Mutex::new(outputs.into_iter().rev().collect()),
+                calls: Mutex::new(Vec::new()),
+            }
+        }
+    }
+
+    impl GhRunner for ScriptedGhRunner {
+        fn run(&self, args: &[&str]) -> std::io::Result<Output> {
+            self.calls
+                .lock()
+                .unwrap()
+                .push(args.iter().map(|s| (*s).to_string()).collect());
+            Ok(self
+                .outputs
+                .lock()
+                .unwrap()
+                .pop()
+                .expect("test script ran out of queued gh outputs"))
+        }
+    }
+
+    /// Flow: `gh api` exits non-zero with a 403 rate-limit body on stderr.
+    /// Expectation: `Err` whose message is neither "up to date" nor "update
+    /// available" wording - a lookup failure must read as unknown, not as
+    /// either currency state.
+    /// A failure here means a non-zero exit was swallowed into `Ok`, or the
+    /// error text leaked one of the currency labels.
+    #[test]
+    fn a_403_response_maps_to_an_error_or_names_the_leaked_currency_label() {
+        let runner = ScriptedGhRunner::new(vec![output(
+            1,
+            "",
+            r#"{"message":"API rate limit exceeded"}"#,
+        )]);
+        let lookup = GhSourceTreeLookup::with_runner(Arc::new(runner));
+        let err = lookup.tree_shas_at_head("obra/write-tests").unwrap_err();
+        assert!(err.message.contains("rate limit"));
+        assert!(!err.message.to_lowercase().contains("up to date"));
+        assert!(!err.message.to_lowercase().contains("update available"));
+    }
+
+    /// Flow: `gh` itself fails to spawn (offline, not installed).
+    /// Expectation: the same `Err` shape as an API-level failure - the
+    /// caller (`skills_sh_currency`) treats both as `Currency::Unknown`.
+    /// A failure here means a spawn failure panics or is treated
+    /// differently from an API error, instead of mapping to the same
+    /// `CoreError`.
+    #[test]
+    fn a_spawn_failure_maps_to_the_same_error_shape_as_an_api_failure_or_names_the_difference() {
+        struct FailingRunner;
+        impl GhRunner for FailingRunner {
+            fn run(&self, _args: &[&str]) -> std::io::Result<Output> {
+                Err(std::io::Error::other("gh: command not found"))
+            }
+        }
+        let lookup = GhSourceTreeLookup::with_runner(Arc::new(FailingRunner));
+        let err = lookup.tree_shas_at_head("obra/write-tests").unwrap_err();
+        assert_eq!(err.code, ErrorCode::Unsupported);
+        assert!(err.message.contains("gh: command not found"));
+    }
+
+    /// Flow: `GhCommitLookup` against a path with no commits, where `gh`'s
+    /// `--jq ".[0].sha"` renders the missing element as the literal text
+    /// `"null"`.
+    /// Expectation: `Ok(None)`, not `Ok(Some("null".to_string()))`.
+    /// A failure here means the `"null"` sentinel was treated as a real SHA.
+    #[test]
+    fn commit_lookup_null_sentinel_reads_as_no_commits_or_names_the_fake_sha() {
+        let runner = ScriptedGhRunner::new(vec![output(0, "null\n", "")]);
+        let lookup = GhCommitLookup::with_runner(Arc::new(runner));
+        let result = lookup
+            .latest_commit("obra/write-tests", "skills/x")
+            .unwrap();
+        assert_eq!(result, None);
+    }
+
+    /// Flow: the tree endpoint's real JSON shape, `tree[]` entries plus a
+    /// two-column parse of path and sha.
+    /// Expectation: every `"tree"`-typed entry is keyed by path, `"blob"`
+    /// entries are skipped.
+    /// A failure here means a blob (file) entry leaked into the map, or a
+    /// path/sha pair was dropped or swapped.
+    #[test]
+    fn tree_response_parses_tree_entries_by_path_or_names_the_dropped_entry() {
+        let body = serde_json::json!({
+            "sha": "head-sha",
+            "truncated": false,
+            "tree": [
+                {"path": "skills/a", "type": "tree", "sha": "sha-a"},
+                {"path": "skills/a/SKILL.md", "type": "blob", "sha": "sha-blob"},
+                {"path": "skills/b", "type": "tree", "sha": "sha-b"},
+            ]
+        });
+        let runner = ScriptedGhRunner::new(vec![output(0, &body.to_string(), "")]);
+        let lookup = GhSourceTreeLookup::with_runner(Arc::new(runner));
+        let shas = lookup.tree_shas_at_head("obra/write-tests").unwrap();
+        assert_eq!(shas.get("skills/a"), Some(&"sha-a".to_string()));
+        assert_eq!(shas.get("skills/b"), Some(&"sha-b".to_string()));
+        assert_eq!(shas.len(), 2);
+    }
+
+    /// Flow: the tree endpoint reports `truncated: true` (a repo with more
+    /// subtrees than one recursive listing covers).
+    /// Expectation: `Err` naming the repo and "truncated", not an empty or
+    /// partial map that would read as "no skill folder here".
+    /// A failure here means truncation was ignored and a real skill folder
+    /// past the cutoff silently read as `Currency::Unknown` with no error
+    /// on record, or names the wrong repo.
+    #[test]
+    fn truncated_tree_response_is_an_error_or_names_the_silent_truncation() {
+        let body = serde_json::json!({
+            "sha": "head-sha",
+            "truncated": true,
+            "tree": [{"path": "skills/a", "type": "tree", "sha": "sha-a"}]
+        });
+        let runner = ScriptedGhRunner::new(vec![output(0, &body.to_string(), "")]);
+        let lookup = GhSourceTreeLookup::with_runner(Arc::new(runner));
+        let err = lookup.tree_shas_at_head("obra/write-tests").unwrap_err();
+        assert!(err.message.contains("obra/write-tests"));
+        assert!(err.message.contains("truncated"));
+    }
+}

@@ -1,19 +1,28 @@
 // ============================================================================
 // Skills Module - skill_update_check
-// One searchable concept: check installed skills for upstream updates.
-// Compares each dotagents/skills.sh skill's installed commit against the
-// newest commit `gh api` reports for its path in the source repo, on a 6 h
-// timer plus a manual "Check now". Results persist at
+// One searchable concept: check installed skills for upstream updates. A
+// dotagents skill compares its pinned installed commit against the newest
+// commit `gh api` reports for its path. A skills.sh skill compares its lock
+// file's `skillFolderHash` against the source repo's tree SHA at HEAD for
+// that path (unit 3.4: one `gh api` tree call per source repo, cached across
+// every skills.sh candidate from that repo, not one commits call per skill).
+// Runs on a 6 h timer (`spawn_update_check_loop`); no manual "Check now" is
+// exposed to the frontend. Results persist at
 // `<app data>/skill-studio/update-check.json` so `skill_refresh::build_snapshot`
 // can read them without shelling out on every rebuild. Read-only GitHub
 // access via the user's own `gh` login; the app stores no tokens.
+//
+// The 6 h background loop (`spawn_update_check_loop`) is the only trigger for
+// a full check; there is no `check_skill_updates_now` command exposed to the
+// frontend. `check_now_for_owner` re-checks one skill after `update_skill`
+// succeeds, sharing the same "in progress" guard.
 // ============================================================================
 
-use std::collections::{BTreeMap, VecDeque};
+use std::collections::{BTreeMap, HashMap, VecDeque};
 use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex, OnceLock};
 use std::time::Duration;
 
 use chrono::Utc;
@@ -47,12 +56,6 @@ pub struct SkillUpdateState {
     pub latest_commit_at: Option<String>,
     pub checked_at: String,
     pub error: Option<String>,
-    /// The skills.sh lock entry's `updatedAt` this state's `installed_commit`
-    /// baseline was computed from, so a later run can tell whether the lock
-    /// changed and the baseline needs re-querying. `None` for dotagents
-    /// skills, which get `installed_commit` straight from `agents.lock`.
-    #[serde(default)]
-    pub lock_updated_at: Option<String>,
 }
 
 /// Result of `gh api ... commits`, or why it couldn't be run.
@@ -375,6 +378,112 @@ impl CommitLookup for GhCommitLookup {
     }
 }
 
+/// Looks up every subtree's SHA at HEAD for a skills.sh source repo, one
+/// call per repo rather than one per skill folder in it. Implementors must
+/// be `Sync`: `run_update_check` shares one `&dyn TreeLookup` across a small
+/// worker pool.
+pub trait TreeLookup: Sync {
+    /// Returns every subtree path in `repo` mapped to its git tree SHA at
+    /// HEAD (uncached - callers go through `tree_shas_cached` for the
+    /// one-call-per-repo guarantee).
+    fn tree_shas_at_head_uncached(&self, repo: &str) -> Result<HashMap<String, String>, String>;
+}
+
+/// Per-run cache of `TreeLookup` results, keyed by the normalised repo name
+/// (`normalize_repo_key`). Each repo gets its own `OnceLock` so two different
+/// repos' `gh api` calls run in parallel;
+/// only two threads racing the *same* repo serialize, on that repo's cell.
+type TreeCache = Mutex<HashMap<String, Arc<OnceLock<Result<HashMap<String, String>, String>>>>>;
+
+/// Looks up `repo`'s tree, reusing an already-cached result (or error) for
+/// this run instead of calling `gh` again. The outer `cache` lock is held
+/// only long enough to fetch-or-create `repo`'s cell, not across the network
+/// call - so a worker checking a different repo never waits on this one's
+/// `gh api` round trip. Two worker threads racing the same uncached repo
+/// still make exactly one call: `OnceLock::get_or_init` blocks the second
+/// caller on the first's initialization instead of both running it.
+///
+/// The cache is keyed by `normalize_repo_key(repo)` (shared with the core
+/// crate's own tree cache) so two spellings of the same source - a
+/// different case, most often - cost one `gh api` call rather than one
+/// each; the lookup itself still receives the caller's original `repo`
+/// spelling, which the GitHub API accepts case-insensitively.
+fn tree_shas_cached(
+    tree_lookup: &dyn TreeLookup,
+    cache: &TreeCache,
+    repo: &str,
+) -> Result<HashMap<String, String>, String> {
+    let key = skill_studio_core::skill_update_check::normalize_repo_key(repo);
+    let cell = {
+        let mut guard = cache
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        guard
+            .entry(key)
+            .or_insert_with(|| Arc::new(OnceLock::new()))
+            .clone()
+    };
+    cell.get_or_init(|| tree_lookup.tree_shas_at_head_uncached(repo))
+        .clone()
+}
+
+/// Real `TreeLookup` backed by the `gh` CLI, over the same
+/// `repos/<repo>/git/trees/HEAD?recursive=1` shape as
+/// `skill_studio_host::GhSourceTreeLookup` - this desktop copy stays on the
+/// existing `gh_cli::run_gh` wrapper so its errors keep this file's plain
+/// `String` shape (`is_not_logged_in` detection, "gh missing" handling) that
+/// `CommitLookup` already relies on, rather than converting `CoreError` back
+/// and forth for one caller.
+pub struct GhTreeLookup {
+    pub gh_bin: PathBuf,
+}
+
+impl TreeLookup for GhTreeLookup {
+    fn tree_shas_at_head_uncached(&self, repo: &str) -> Result<HashMap<String, String>, String> {
+        let api_path = format!("repos/{repo}/git/trees/HEAD?recursive=1");
+        // No `--jq` filter here (unlike `GhCommitLookup`): the response must
+        // be inspected for `truncated` before its `tree` entries are
+        // trusted, and `--jq` would already have thrown that field away.
+        let stdout_bytes = super::gh_cli::run_gh(&self.gh_bin, &["api", &api_path], None)
+            .map_err(|e| e.message())?;
+        parse_tree_response(repo, &stdout_bytes)
+    }
+}
+
+/// Parses a `gh api repos/<repo>/git/trees/HEAD?recursive=1` response body,
+/// the same shape `skill_studio_host::gh_currency::parse_tree_response`
+/// parses for the core stack's own tree lookup. A `truncated: true` response
+/// means GitHub's recursive listing stopped early - the caller cannot tell
+/// "not in the tree" from "not fetched yet" for the paths past the cutoff,
+/// so this is an error naming the repo rather than a partial (and silently
+/// misleading) map.
+fn parse_tree_response(repo: &str, stdout: &[u8]) -> Result<HashMap<String, String>, String> {
+    let value: serde_json::Value = serde_json::from_slice(stdout)
+        .map_err(|e| format!("{repo}: could not parse tree listing: {e}"))?;
+    if value.get("truncated").and_then(serde_json::Value::as_bool) == Some(true) {
+        return Err(format!("{repo}: tree listing truncated"));
+    }
+    let mut shas = HashMap::new();
+    for entry in value
+        .get("tree")
+        .and_then(serde_json::Value::as_array)
+        .into_iter()
+        .flatten()
+    {
+        if entry.get("type").and_then(serde_json::Value::as_str) != Some("tree") {
+            continue;
+        }
+        let (Some(path), Some(sha)) = (
+            entry.get("path").and_then(serde_json::Value::as_str),
+            entry.get("sha").and_then(serde_json::Value::as_str),
+        ) else {
+            continue;
+        };
+        shas.insert(path.to_string(), sha.to_string());
+    }
+    Ok(shas)
+}
+
 /// Resolve `gh` on `$PATH` via a login shell, the same way
 /// `skill_agent_runner::resolve_binary` finds harness binaries. `None` when
 /// `gh` isn't installed.
@@ -411,10 +520,10 @@ struct Candidate {
 enum CandidateKind {
     /// `installed_commit` comes straight from `agents.lock`.
     Dotagents { installed_commit: Option<String> },
-    /// `installed_commit` is the newest commit at or before this lock
-    /// entry's `updatedAt` - queried unless the cached baseline is still
-    /// valid for the same `updatedAt`.
-    SkillsSh { updated_at: String },
+    /// `installed_commit` is the lock file's `skillFolderHash`, compared
+    /// against the source repo's tree SHA for this candidate's `path` at
+    /// HEAD (one `gh api` tree call per repo, not per skill).
+    SkillsSh { skill_folder_hash: String },
 }
 
 /// Build the candidate list from the dotagents ledger and the skills.sh lock
@@ -486,18 +595,15 @@ fn build_candidates(home: &Path, project_paths: &[PathBuf]) -> Vec<Candidate> {
                 .strip_suffix("/SKILL.md")
                 .unwrap_or(skill_path)
                 .to_string();
-            let updated_at = if entry.updated_at.is_empty() {
-                entry.installed_at.clone()
-            } else {
-                entry.updated_at.clone()
-            };
             candidates.push(Candidate {
                 owner_id: owner_id(name),
                 name: name.clone(),
                 scope: ledger.scope,
                 repo,
                 path,
-                kind: CandidateKind::SkillsSh { updated_at },
+                kind: CandidateKind::SkillsSh {
+                    skill_folder_hash: entry.skill_folder_hash.clone(),
+                },
             });
         }
     }
@@ -506,13 +612,41 @@ fn build_candidates(home: &Path, project_paths: &[PathBuf]) -> Vec<Candidate> {
     candidates
 }
 
+/// The two source lookups `check_candidate` needs, bundled so the function
+/// stays under clippy's argument-count limit: a dotagents commit lookup and
+/// a skills.sh tree-SHA lookup (with its per-repo cache).
+struct Lookups<'a> {
+    commit: &'a dyn CommitLookup,
+    tree: &'a dyn TreeLookup,
+    tree_cache: &'a TreeCache,
+}
+
+/// On a lookup failure, the previous run's `latest_commit`/`latest_commit_at`
+/// are only safe to reuse when `previous.installed_commit` still matches the
+/// candidate's current `installed_commit` - otherwise `previous` was
+/// computed against an older install (a stale generation), and pairing its
+/// `latest_commit` with today's fresh `installed_commit` can make
+/// `has_update()` true for a skill nothing actually flagged this run
+/// (`a_lookup_error_on_the_first_check_after_upgrade_never_flags_an_update_or_names_the_false_positive`).
+fn previous_metadata_if_same_generation(
+    previous: Option<&SkillUpdateState>,
+    installed_commit: Option<&str>,
+) -> (Option<String>, Option<String>) {
+    match previous {
+        Some(p) if p.installed_commit.as_deref() == installed_commit => {
+            (p.latest_commit.clone(), p.latest_commit_at.clone())
+        }
+        _ => (None, None),
+    }
+}
+
 /// Check one candidate, given the previous run's state for it (if any).
 /// Returns `None` when `stop` was already set before this candidate could be
 /// looked up at all - the caller falls back to the previous state, if any.
 fn check_candidate(
     candidate: &Candidate,
     previous: Option<&SkillUpdateState>,
-    lookup: &dyn CommitLookup,
+    lookups: &Lookups,
     stop: &AtomicBool,
     not_logged_in_message: &Mutex<Option<String>>,
     now: &str,
@@ -522,77 +656,75 @@ fn check_candidate(
     }
 
     let mut error: Option<String> = None;
-    let mut stopped = false;
-    // Only set for `SkillsSh` candidates, and only once the baseline lookup
-    // for `updated_at` actually succeeds (or was already cached for that
-    // exact `updated_at`). A failed lookup falls back to the previous
-    // installed_commit but must NOT record the new `updated_at` here, or the
-    // next run's cache check would treat the stale fallback as a valid
-    // baseline for `updated_at` forever and never retry the lookup.
-    let mut lock_updated_at: Option<String> = None;
 
-    let installed_commit = match &candidate.kind {
-        CandidateKind::Dotagents { installed_commit } => installed_commit.clone(),
-        CandidateKind::SkillsSh { updated_at } => {
-            let cached = previous.filter(|p| {
-                p.installed_commit.is_some() && p.lock_updated_at.as_deref() == Some(updated_at)
-            });
-            if let Some(cached) = cached {
-                lock_updated_at = Some(updated_at.clone());
-                cached.installed_commit.clone()
-            } else {
-                match lookup.latest_commit(&candidate.repo, &candidate.path, Some(updated_at)) {
-                    Ok(found) => {
-                        lock_updated_at = Some(updated_at.clone());
-                        found.map(|(sha, _)| sha)
-                    }
-                    Err(e) if is_not_logged_in(&e) => {
-                        stop.store(true, Ordering::SeqCst);
-                        *not_logged_in_message
-                            .lock()
-                            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(e);
-                        stopped = true;
-                        // Keep whatever baseline key (if any) the previous
-                        // run recorded, so a retry happens once this stops
-                        // short-circuiting.
-                        lock_updated_at = previous.and_then(|p| p.lock_updated_at.clone());
-                        previous.and_then(|p| p.installed_commit.clone())
-                    }
-                    Err(e) => {
-                        error = Some(e);
-                        lock_updated_at = previous.and_then(|p| p.lock_updated_at.clone());
-                        previous.and_then(|p| p.installed_commit.clone())
-                    }
+    let (installed_commit, latest_commit, latest_commit_at) = match &candidate.kind {
+        CandidateKind::Dotagents { installed_commit } => {
+            match lookups
+                .commit
+                .latest_commit(&candidate.repo, &candidate.path, None)
+            {
+                Ok(Some((sha, date))) => (installed_commit.clone(), Some(sha), Some(date)),
+                Ok(None) => (installed_commit.clone(), None, None),
+                Err(e) if is_not_logged_in(&e) => {
+                    stop.store(true, Ordering::SeqCst);
+                    *not_logged_in_message
+                        .lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(e);
+                    let (latest_commit, latest_commit_at) =
+                        previous_metadata_if_same_generation(previous, installed_commit.as_deref());
+                    (installed_commit.clone(), latest_commit, latest_commit_at)
+                }
+                Err(e) => {
+                    error = Some(e);
+                    let (latest_commit, latest_commit_at) =
+                        previous_metadata_if_same_generation(previous, installed_commit.as_deref());
+                    (installed_commit.clone(), latest_commit, latest_commit_at)
                 }
             }
         }
-    };
-
-    let (latest_commit, latest_commit_at) = if stopped {
-        (
-            previous.and_then(|p| p.latest_commit.clone()),
-            previous.and_then(|p| p.latest_commit_at.clone()),
-        )
-    } else {
-        match lookup.latest_commit(&candidate.repo, &candidate.path, None) {
-            Ok(Some((sha, date))) => (Some(sha), Some(date)),
-            Ok(None) => (None, None),
-            Err(e) if is_not_logged_in(&e) => {
-                stop.store(true, Ordering::SeqCst);
-                *not_logged_in_message
-                    .lock()
-                    .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(e);
-                (
-                    previous.and_then(|p| p.latest_commit.clone()),
-                    previous.and_then(|p| p.latest_commit_at.clone()),
-                )
-            }
-            Err(e) => {
-                error = Some(e);
-                (
-                    previous.and_then(|p| p.latest_commit.clone()),
-                    previous.and_then(|p| p.latest_commit_at.clone()),
-                )
+        CandidateKind::SkillsSh { skill_folder_hash } => {
+            match tree_shas_cached(lookups.tree, lookups.tree_cache, &candidate.repo) {
+                Ok(shas) => {
+                    if let Some(sha) = shas.get(&candidate.path) {
+                        (Some(skill_folder_hash.clone()), Some(sha.clone()), None)
+                    } else {
+                        // The tree call itself succeeded, so a missing path
+                        // isn't a lookup failure - it means the folder this
+                        // skill was installed from is gone from the repo's
+                        // current tree. Name it rather than read as "no
+                        // update" (`shas.get` returning `None` used to look
+                        // identical to "already current" to `has_update`)
+                        // (`a_skill_folder_missing_from_the_source_tree_reports_unknown_with_the_folder_named_or_names_the_silent_row`).
+                        // `latest_commit` is dropped here rather than reused
+                        // from a same-generation previous row: a stale
+                        // "Update available" next to "not found" would read
+                        // as two contradictory signals for the same row.
+                        error = Some(format!(
+                            "{} not found in {}'s source tree",
+                            candidate.path, candidate.repo
+                        ));
+                        (Some(skill_folder_hash.clone()), None, None)
+                    }
+                }
+                Err(e) if is_not_logged_in(&e) => {
+                    stop.store(true, Ordering::SeqCst);
+                    *not_logged_in_message
+                        .lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(e);
+                    let (latest_commit, _) = previous_metadata_if_same_generation(
+                        previous,
+                        Some(skill_folder_hash.as_str()),
+                    );
+                    (Some(skill_folder_hash.clone()), latest_commit, None)
+                }
+                Err(e) => {
+                    error = Some(e);
+                    let (latest_commit, _) = previous_metadata_if_same_generation(
+                        previous,
+                        Some(skill_folder_hash.as_str()),
+                    );
+                    (Some(skill_folder_hash.clone()), latest_commit, None)
+                }
             }
         }
     };
@@ -605,7 +737,6 @@ fn check_candidate(
         latest_commit_at,
         checked_at: now.to_string(),
         error,
-        lock_updated_at,
     })
 }
 
@@ -617,6 +748,7 @@ fn run_update_check_impl(
     project_paths: &[PathBuf],
     app_data: &Path,
     lookup: &dyn CommitLookup,
+    tree_lookup: &dyn TreeLookup,
     only_owner_ids: Option<&[String]>,
 ) -> UpdateCheckStore {
     let previous = read_update_check_store(app_data);
@@ -632,6 +764,7 @@ fn run_update_check_impl(
     let not_logged_in_message: Mutex<Option<String>> = Mutex::new(None);
     let queue: Mutex<VecDeque<Candidate>> = Mutex::new(candidates.into_iter().collect());
     let computed: Mutex<BTreeMap<String, SkillUpdateState>> = Mutex::new(BTreeMap::new());
+    let tree_cache: TreeCache = Mutex::new(HashMap::new());
 
     std::thread::scope(|scope| {
         for _ in 0..LOOKUP_POOL_SIZE {
@@ -653,10 +786,15 @@ fn run_update_check_impl(
                         .then(|| previous.legacy_skills.get(&candidate.name))
                         .flatten()
                 });
+                let lookups = Lookups {
+                    commit: lookup,
+                    tree: tree_lookup,
+                    tree_cache: &tree_cache,
+                };
                 if let Some(state) = check_candidate(
                     &candidate,
                     prev_state,
-                    lookup,
+                    &lookups,
                     &stop,
                     &not_logged_in_message,
                     &now,
@@ -708,14 +846,15 @@ fn run_update_check_impl(
 }
 
 /// Check every dotagents/skills.sh skill for an upstream update, using
-/// `lookup` for the actual GitHub queries. Pure aside from the filesystem
-/// reads/writes, so it's the unit under test.
+/// `lookup` and `tree_lookup` for the actual GitHub queries. Pure aside from
+/// the filesystem reads/writes, so it's the unit under test.
 pub fn run_update_check(
     home: &Path,
     app_data: &Path,
     lookup: &dyn CommitLookup,
+    tree_lookup: &dyn TreeLookup,
 ) -> UpdateCheckStore {
-    run_update_check_impl(home, &[], app_data, lookup, None)
+    run_update_check_impl(home, &[], app_data, lookup, tree_lookup, None)
 }
 
 /// Check Global and the supplied registered Project Universal owners.
@@ -724,8 +863,9 @@ pub fn run_update_check_with_projects(
     project_paths: &[PathBuf],
     app_data: &Path,
     lookup: &dyn CommitLookup,
+    tree_lookup: &dyn TreeLookup,
 ) -> UpdateCheckStore {
-    run_update_check_impl(home, project_paths, app_data, lookup, None)
+    run_update_check_impl(home, project_paths, app_data, lookup, tree_lookup, None)
 }
 
 /// Re-check exact lifecycle owners and preserve every other recorded owner.
@@ -736,13 +876,21 @@ pub fn run_update_check_for_owners(
     project_paths: &[PathBuf],
     app_data: &Path,
     lookup: &dyn CommitLookup,
+    tree_lookup: &dyn TreeLookup,
     owner_ids: &[String],
 ) -> UpdateCheckStore {
-    run_update_check_impl(home, project_paths, app_data, lookup, Some(owner_ids))
+    run_update_check_impl(
+        home,
+        project_paths,
+        app_data,
+        lookup,
+        tree_lookup,
+        Some(owner_ids),
+    )
 }
 
 /// Resolve `gh`, then run the check for real - the production entry point
-/// both `spawn_update_check_loop` and `check_skill_updates_now` call. When
+/// both `spawn_update_check_loop` and `check_now_for_owner` call. When
 /// `gh` isn't installed, writes `gh_status: Missing` without doing any
 /// lookups (and without touching previously recorded skill states).
 fn run_update_check_now(
@@ -751,7 +899,15 @@ fn run_update_check_now(
     app_data: &Path,
 ) -> UpdateCheckStore {
     if let Some(gh_bin) = resolve_gh_binary() {
-        run_update_check_with_projects(home, project_paths, app_data, &GhCommitLookup { gh_bin })
+        run_update_check_with_projects(
+            home,
+            project_paths,
+            app_data,
+            &GhCommitLookup {
+                gh_bin: gh_bin.clone(),
+            },
+            &GhTreeLookup { gh_bin },
+        )
     } else {
         let previous = read_update_check_store(app_data);
         let store = UpdateCheckStore {
@@ -768,8 +924,8 @@ fn run_update_check_now(
     }
 }
 
-/// Shared "a check is already running" guard, so the background loop and the
-/// manual `check_skill_updates_now` command never run `gh api` concurrently.
+/// Shared "a check is already running" guard, so the background loop and a
+/// per-owner `check_now_for_owner` call never run `gh api` concurrently.
 #[derive(Clone, Default)]
 pub struct UpdateCheckState {
     in_progress: std::sync::Arc<Mutex<bool>>,
@@ -835,7 +991,7 @@ pub fn check_now(
 /// Re-check a single skill (after a successful `update_skill`) and request a
 /// rebuild. Best-effort: errors are logged, never propagated, since this
 /// runs after the update itself already succeeded. Shares `state`'s
-/// "in progress" guard with `check_now`/`check_skill_updates_now`: if a full
+/// "in progress" guard with the background loop's `check_now`: if a full
 /// check is already running, this skips its own `gh api` calls entirely
 /// (rather than queuing behind it) and just requests a rebuild, since the
 /// full check it's yielding to will cover this skill anyway.
@@ -866,7 +1022,10 @@ pub fn check_now_for_owner(
             &home,
             project_paths,
             &app_data,
-            &GhCommitLookup { gh_bin },
+            &GhCommitLookup {
+                gh_bin: gh_bin.clone(),
+            },
+            &GhTreeLookup { gh_bin },
             &owner_ids,
         );
     } // else: gh_status stays whatever it already was; nothing to re-check
@@ -876,7 +1035,7 @@ pub fn check_now_for_owner(
 
 /// Start the background loop on its own thread: waits `INITIAL_DELAY`, checks,
 /// sleeps `UPDATE_CHECK_INTERVAL`, repeats for the app's lifetime. Registers
-/// its `UpdateCheckState` as managed state so `check_skill_updates_now` shares
+/// its `UpdateCheckState` as managed state so `check_now_for_owner` shares
 /// the same "in progress" guard.
 pub fn spawn_update_check_loop(app: AppHandle) {
     let state = UpdateCheckState::default();
@@ -899,6 +1058,51 @@ mod tests {
     use super::*;
     use std::fs;
     use std::sync::Mutex as StdMutex;
+
+    /// Flow: `GhTreeLookup`'s response parser sees `truncated: true` (a repo
+    /// with more subtrees than one recursive listing covers).
+    /// Expectation: `Err` naming the repo and "truncated", not an empty or
+    /// partial map that would read as "no skill folder here".
+    /// A failure here means the desktop tree lookup, unlike the host's
+    /// `GhSourceTreeLookup`, never saw `truncated` at all (the old `--jq`
+    /// program threw the field away before Rust ever read the response), so
+    /// a real skill folder past the cutoff would silently read as unknown
+    /// with no error on record, or names the wrong repo.
+    #[test]
+    fn truncated_tree_response_is_an_error_or_names_the_silent_truncation() {
+        let body = serde_json::json!({
+            "sha": "head-sha",
+            "truncated": true,
+            "tree": [{"path": "skills/a", "type": "tree", "sha": "sha-a"}]
+        });
+        let err = parse_tree_response("obra/write-tests", body.to_string().as_bytes()).unwrap_err();
+        assert!(err.contains("obra/write-tests"));
+        assert!(err.contains("truncated"));
+    }
+
+    /// Flow: the tree endpoint's real JSON shape, `tree[]` entries with a
+    /// mix of `"tree"` and `"blob"` types.
+    /// Expectation: every `"tree"`-typed entry is keyed by path, `"blob"`
+    /// entries are skipped - the same parse the dropped `--jq` filter used
+    /// to do, now done in Rust so `truncated` can be checked first.
+    /// A failure here means a blob (file) entry leaked into the map, or a
+    /// path/sha pair was dropped or swapped.
+    #[test]
+    fn tree_response_parses_tree_entries_by_path_or_names_the_dropped_entry() {
+        let body = serde_json::json!({
+            "sha": "head-sha",
+            "truncated": false,
+            "tree": [
+                {"path": "skills/a", "type": "tree", "sha": "sha-a"},
+                {"path": "skills/a/SKILL.md", "type": "blob", "sha": "sha-blob"},
+                {"path": "skills/b", "type": "tree", "sha": "sha-b"},
+            ]
+        });
+        let shas = parse_tree_response("obra/write-tests", body.to_string().as_bytes()).unwrap();
+        assert_eq!(shas.get("skills/a"), Some(&"sha-a".to_string()));
+        assert_eq!(shas.get("skills/b"), Some(&"sha-b".to_string()));
+        assert_eq!(shas.len(), 2);
+    }
 
     /// One scripted answer to a `CommitLookup::latest_commit` call: the sha
     /// and commit date on a hit, or the error message on a failure.
@@ -971,6 +1175,59 @@ mod tests {
         }
     }
 
+    /// A `TreeLookup` for dotagents-only tests: fails loudly if a skills.sh
+    /// candidate ever reaches it, since none of these fixtures should build
+    /// one.
+    struct UnusedTreeLookup;
+
+    impl TreeLookup for UnusedTreeLookup {
+        fn tree_shas_at_head_uncached(
+            &self,
+            repo: &str,
+        ) -> Result<HashMap<String, String>, String> {
+            panic!("no skills.sh candidate expected a tree lookup, got one for {repo}");
+        }
+    }
+
+    /// Records every distinct repo `tree_shas_at_head_uncached` is called
+    /// for, and returns the scripted tree for that repo. Used to test both
+    /// currency results and the "one call per repo" guarantee.
+    #[derive(Default)]
+    struct FakeTreeLookup {
+        calls: StdMutex<Vec<String>>,
+        trees: StdMutex<HashMap<String, HashMap<String, String>>>,
+    }
+
+    impl FakeTreeLookup {
+        fn with_tree(repo: &str, tree: HashMap<String, String>) -> Self {
+            let trees = HashMap::from([(repo.to_string(), tree)]);
+            Self {
+                calls: StdMutex::new(Vec::new()),
+                trees: StdMutex::new(trees),
+            }
+        }
+
+        fn call_count(&self) -> usize {
+            self.calls.lock().unwrap().len()
+        }
+    }
+
+    impl TreeLookup for FakeTreeLookup {
+        fn tree_shas_at_head_uncached(
+            &self,
+            repo: &str,
+        ) -> Result<HashMap<String, String>, String> {
+            self.calls.lock().unwrap().push(repo.to_string());
+            Ok(self
+                .trees
+                .lock()
+                .unwrap()
+                .get(repo)
+                .cloned()
+                .unwrap_or_default())
+        }
+    }
+
     fn write_agents_lock(home: &Path, name: &str, repo: &str, path: &str, commit: &str) {
         fs::create_dir_all(home.join(".agents")).unwrap();
         fs::write(
@@ -987,7 +1244,13 @@ resolved_commit = "{commit}"
         .unwrap();
     }
 
-    fn write_skill_lock(home: &Path, name: &str, source: &str, skill_path: &str, updated_at: &str) {
+    fn write_skill_lock(
+        home: &Path,
+        name: &str,
+        source: &str,
+        skill_path: &str,
+        folder_hash: &str,
+    ) {
         fs::create_dir_all(home.join(".agents")).unwrap();
         let json = serde_json::json!({
             "version": 3,
@@ -997,9 +1260,9 @@ resolved_commit = "{commit}"
                     "sourceType": "github",
                     "sourceUrl": format!("https://github.com/{source}"),
                     "skillPath": skill_path,
-                    "skillFolderHash": "abc",
+                    "skillFolderHash": folder_hash,
                     "installedAt": "2026-01-01T00:00:00Z",
-                    "updatedAt": updated_at,
+                    "updatedAt": "2026-01-01T00:00:00Z",
                 }
             }
         });
@@ -1027,7 +1290,7 @@ resolved_commit = "{commit}"
             "b".repeat(40),
             "2026-02-01T00:00:00Z".to_string(),
         )))]);
-        let store = run_update_check(&home, &app_data, &lookup);
+        let store = run_update_check(&home, &app_data, &lookup, &UnusedTreeLookup);
 
         let state = store.owners.get("owner:v1/global/find-bugs").unwrap();
         assert!(has_update(state));
@@ -1059,14 +1322,18 @@ resolved_commit = "{commit}"
             commit.clone(),
             "2026-02-01T00:00:00Z".to_string(),
         )))]);
-        let store = run_update_check(&home, &app_data, &lookup);
+        let store = run_update_check(&home, &app_data, &lookup, &UnusedTreeLookup);
 
         let state = store.owners.get("owner:v1/global/find-bugs").unwrap();
         assert!(!has_update(state));
     }
 
+    /// A stale `skillFolderHash` (the lock file's baseline) against a
+    /// different tree SHA at HEAD must surface as an update - a failure here
+    /// means the tree-hash compare always trusts the lock file, or names the
+    /// wrong skill's row.
     #[test]
-    fn skills_sh_baseline_queried_with_until_then_latest() {
+    fn skills_sh_stale_hash_shows_update_available_or_names_the_missing_row() {
         let tmp = tempfile::tempdir().unwrap();
         let home = tmp.path().join("home");
         let app_data = tmp.path().join("data");
@@ -1075,40 +1342,29 @@ resolved_commit = "{commit}"
             "write-tests",
             "obra/write-tests",
             "apps/skills/extra/write-tests/SKILL.md",
-            "2026-01-15T00:00:00Z",
+            "old-hash",
         );
 
-        let baseline_sha = "c".repeat(40);
-        let latest_sha = "d".repeat(40);
-        let lookup = FakeLookup::with_answers(vec![
-            Ok(Some((
-                baseline_sha.clone(),
-                "2026-01-14T00:00:00Z".to_string(),
-            ))),
-            Ok(Some((
-                latest_sha.clone(),
-                "2026-02-01T00:00:00Z".to_string(),
-            ))),
-        ]);
-        let store = run_update_check(&home, &app_data, &lookup);
-
-        let calls = lookup.calls.lock().unwrap();
-        assert_eq!(calls.len(), 2);
-        assert_eq!(calls[0].2, Some("2026-01-15T00:00:00Z".to_string()));
-        assert_eq!(calls[1].2, None);
-        drop(calls);
+        let tree_lookup = FakeTreeLookup::with_tree(
+            "obra/write-tests",
+            HashMap::from([(
+                "apps/skills/extra/write-tests".to_string(),
+                "new-hash".to_string(),
+            )]),
+        );
+        let store = run_update_check(&home, &app_data, &AlwaysErrorLookup, &tree_lookup);
 
         let state = store.owners.get("owner:v1/global/write-tests").unwrap();
-        assert_eq!(
-            state.installed_commit.as_deref(),
-            Some(baseline_sha.as_str())
-        );
-        assert_eq!(state.latest_commit.as_deref(), Some(latest_sha.as_str()));
+        assert_eq!(state.installed_commit.as_deref(), Some("old-hash"));
+        assert_eq!(state.latest_commit.as_deref(), Some("new-hash"));
         assert!(has_update(state));
     }
 
+    /// A `skillFolderHash` that already matches the tree SHA must not report
+    /// an update - a failure here means the compare gives a false positive
+    /// on every skills.sh skill.
     #[test]
-    fn skills_sh_baseline_reused_when_updated_at_unchanged() {
+    fn skills_sh_current_hash_shows_no_update_or_names_the_false_positive() {
         let tmp = tempfile::tempdir().unwrap();
         let home = tmp.path().join("home");
         let app_data = tmp.path().join("data");
@@ -1117,35 +1373,37 @@ resolved_commit = "{commit}"
             "write-tests",
             "obra/write-tests",
             "apps/skills/extra/write-tests/SKILL.md",
-            "2026-01-15T00:00:00Z",
+            "same-hash",
         );
 
-        let baseline_sha = "c".repeat(40);
-        let lookup1 = FakeLookup::with_answers(vec![
-            Ok(Some((
-                baseline_sha.clone(),
-                "2026-01-14T00:00:00Z".to_string(),
-            ))),
-            Ok(Some((
-                baseline_sha.clone(),
-                "2026-01-14T00:00:00Z".to_string(),
-            ))),
-        ]);
-        run_update_check(&home, &app_data, &lookup1);
-        assert_eq!(lookup1.call_count(), 2); // baseline + latest, first run
+        let tree_lookup = FakeTreeLookup::with_tree(
+            "obra/write-tests",
+            HashMap::from([(
+                "apps/skills/extra/write-tests".to_string(),
+                "same-hash".to_string(),
+            )]),
+        );
+        let store = run_update_check(&home, &app_data, &AlwaysErrorLookup, &tree_lookup);
 
-        let lookup2 = FakeLookup::with_answers(vec![Ok(Some((
-            baseline_sha.clone(),
-            "2026-01-14T00:00:00Z".to_string(),
-        )))]);
-        run_update_check(&home, &app_data, &lookup2);
-        // Only the "latest" query; the baseline is reused from the cache.
-        assert_eq!(lookup2.call_count(), 1);
-        assert_eq!(lookup2.calls.lock().unwrap()[0].2, None);
+        let state = store.owners.get("owner:v1/global/write-tests").unwrap();
+        assert!(!has_update(state));
     }
 
+    /// A skill folder absent from the repo's current tree must not read as
+    /// "no update" - `shas.get` returning `None` used to look identical to
+    /// an up-to-date compare, silently hiding the row from the user.
+    ///
+    /// A same-generation previous row (its `skillFolderHash` unchanged) must
+    /// not leak its old `latest_commit` into this run either, even when that
+    /// previous `latest_commit` already differed from the hash: pairing a
+    /// stale "Update available" with "not found in ... source tree" reads as
+    /// two contradictory signals for one row.
+    /// A failure here means the missing-folder branch reused
+    /// `previous_metadata_if_same_generation`'s `latest_commit` instead of
+    /// dropping it, so `has_update` stayed true alongside the error.
     #[test]
-    fn skills_sh_baseline_retries_after_updated_at_changes_and_lookup_fails() {
+    fn a_skill_folder_missing_from_the_source_tree_reports_unknown_with_the_folder_named_or_names_the_silent_row(
+    ) {
         let tmp = tempfile::tempdir().unwrap();
         let home = tmp.path().join("home");
         let app_data = tmp.path().join("data");
@@ -1154,64 +1412,133 @@ resolved_commit = "{commit}"
             "write-tests",
             "obra/write-tests",
             "apps/skills/extra/write-tests/SKILL.md",
-            "2026-01-15T00:00:00Z",
+            "old-hash",
         );
 
-        let baseline_sha = "c".repeat(40);
-        let lookup1 = FakeLookup::with_answers(vec![
-            Ok(Some((
-                baseline_sha.clone(),
-                "2026-01-14T00:00:00Z".to_string(),
-            ))),
-            Ok(Some((
-                baseline_sha.clone(),
-                "2026-01-14T00:00:00Z".to_string(),
-            ))),
-        ]);
-        run_update_check(&home, &app_data, &lookup1);
+        let seeded = UpdateCheckStore {
+            version: update_store_version(),
+            checked_at: Some("2026-01-01T00:00:00Z".to_string()),
+            gh_status: GhStatus::Ok,
+            owners: BTreeMap::from([(
+                "owner:v1/global/write-tests".to_string(),
+                SkillUpdateState {
+                    repo: "obra/write-tests".to_string(),
+                    path: "apps/skills/extra/write-tests".to_string(),
+                    installed_commit: Some("old-hash".to_string()),
+                    latest_commit: Some("stale-newer-hash".to_string()),
+                    latest_commit_at: None,
+                    checked_at: "2026-01-01T00:00:00Z".to_string(),
+                    error: None,
+                },
+            )]),
+            legacy_skills: BTreeMap::new(),
+        };
+        write_store(&app_data, &seeded).unwrap();
 
-        // The lock's updatedAt moves on, and the baseline lookup for the new
-        // updatedAt fails.
-        write_skill_lock(
-            &home,
-            "write-tests",
+        let tree_lookup = FakeTreeLookup::with_tree(
             "obra/write-tests",
-            "apps/skills/extra/write-tests/SKILL.md",
-            "2026-02-15T00:00:00Z",
+            HashMap::from([("some/other/folder".to_string(), "new-hash".to_string())]),
         );
-        let lookup2 = FakeLookup::with_answers(vec![
-            Err("network unreachable".to_string()),
-            Ok(Some((
-                baseline_sha.clone(),
-                "2026-01-14T00:00:00Z".to_string(),
-            ))),
-        ]);
-        let store2 = run_update_check(&home, &app_data, &lookup2);
-        let state2 = store2.owners.get("owner:v1/global/write-tests").unwrap();
-        // Stale baseline kept, but not recorded as valid for the new
-        // updatedAt - and an error surfaces so the UI can show it.
-        assert_eq!(
-            state2.installed_commit.as_deref(),
-            Some(baseline_sha.as_str())
-        );
-        assert_eq!(state2.error.as_deref(), Some("network unreachable"));
-        assert_ne!(
-            state2.lock_updated_at.as_deref(),
-            Some("2026-02-15T00:00:00Z")
-        );
+        let store = run_update_check(&home, &app_data, &AlwaysErrorLookup, &tree_lookup);
 
-        // Next run must retry the baseline lookup instead of trusting the
-        // stale fallback forever.
-        let lookup3 = FakeLookup::with_answers(vec![
-            Ok(Some(("e".repeat(40), "2026-02-10T00:00:00Z".to_string()))),
-            Ok(Some(("e".repeat(40), "2026-02-10T00:00:00Z".to_string()))),
-        ]);
-        run_update_check(&home, &app_data, &lookup3);
-        assert_eq!(lookup3.call_count(), 2); // baseline retried + latest
-        assert_eq!(
-            lookup3.calls.lock().unwrap()[0].2,
-            Some("2026-02-15T00:00:00Z".to_string())
+        let state = store.owners.get("owner:v1/global/write-tests").unwrap();
+        assert_eq!(state.latest_commit, None);
+        assert!(!has_update(state));
+        let error = state.error.as_deref().unwrap_or_default();
+        assert!(
+            error.contains("apps/skills/extra/write-tests") && error.contains("obra/write-tests"),
+            "expected the error to name the missing folder and repo, got {error:?}"
         );
+    }
+
+    /// Three skills.sh skills from the same source repo must cost exactly
+    /// one tree lookup, not one per skill - a failure here means the desktop
+    /// cache is keyed wrong (or missing) and every check re-fetches the
+    /// whole repo tree per skill.
+    #[test]
+    fn skills_sh_tree_lookup_runs_once_per_repo_not_per_skill() {
+        let tmp = tempfile::tempdir().unwrap();
+        let home = tmp.path().join("home");
+        let app_data = tmp.path().join("data");
+        fs::create_dir_all(home.join(".agents")).unwrap();
+        let json = serde_json::json!({
+            "version": 3,
+            "skills": {
+                "one": {
+                    "source": "obra/write-tests", "sourceType": "github",
+                    "sourceUrl": "https://github.com/obra/write-tests",
+                    "skillPath": "apps/skills/one/SKILL.md",
+                    "skillFolderHash": "hash-one",
+                    "installedAt": "2026-01-01T00:00:00Z", "updatedAt": "2026-01-01T00:00:00Z",
+                },
+                "two": {
+                    "source": "obra/write-tests", "sourceType": "github",
+                    "sourceUrl": "https://github.com/obra/write-tests",
+                    "skillPath": "apps/skills/two/SKILL.md",
+                    "skillFolderHash": "hash-two",
+                    "installedAt": "2026-01-01T00:00:00Z", "updatedAt": "2026-01-01T00:00:00Z",
+                },
+                "three": {
+                    "source": "obra/write-tests", "sourceType": "github",
+                    "sourceUrl": "https://github.com/obra/write-tests",
+                    "skillPath": "apps/skills/three/SKILL.md",
+                    "skillFolderHash": "hash-three",
+                    "installedAt": "2026-01-01T00:00:00Z", "updatedAt": "2026-01-01T00:00:00Z",
+                }
+            }
+        });
+        fs::write(
+            home.join(".agents/.skill-lock.json"),
+            serde_json::to_string(&json).unwrap(),
+        )
+        .unwrap();
+
+        let tree_lookup = FakeTreeLookup::with_tree("obra/write-tests", HashMap::new());
+        run_update_check(&home, &app_data, &AlwaysErrorLookup, &tree_lookup);
+
+        assert_eq!(tree_lookup.call_count(), 1);
+    }
+
+    /// Two skills.sh skills whose `source` differs only by case must still
+    /// cost one tree lookup - a failure here means the desktop tree cache
+    /// keys by raw repo spelling, so "Obra/Write-Tests" and
+    /// "obra/write-tests" each pay for their own `gh api` call instead of
+    /// sharing the one this repo already fetched.
+    #[test]
+    fn skills_sh_tree_lookup_normalises_repo_case_or_names_the_extra_call() {
+        let tmp = tempfile::tempdir().unwrap();
+        let home = tmp.path().join("home");
+        let app_data = tmp.path().join("data");
+        fs::create_dir_all(home.join(".agents")).unwrap();
+        let json = serde_json::json!({
+            "version": 3,
+            "skills": {
+                "one": {
+                    "source": "Obra/Write-Tests", "sourceType": "github",
+                    "sourceUrl": "https://github.com/Obra/Write-Tests",
+                    "skillPath": "apps/skills/one/SKILL.md",
+                    "skillFolderHash": "hash-one",
+                    "installedAt": "2026-01-01T00:00:00Z", "updatedAt": "2026-01-01T00:00:00Z",
+                },
+                "two": {
+                    "source": "obra/write-tests", "sourceType": "github",
+                    "sourceUrl": "https://github.com/obra/write-tests",
+                    "skillPath": "apps/skills/two/SKILL.md",
+                    "skillFolderHash": "hash-two",
+                    "installedAt": "2026-01-01T00:00:00Z", "updatedAt": "2026-01-01T00:00:00Z",
+                }
+            }
+        });
+        fs::write(
+            home.join(".agents/.skill-lock.json"),
+            serde_json::to_string(&json).unwrap(),
+        )
+        .unwrap();
+
+        let tree_lookup = FakeTreeLookup::with_tree("Obra/Write-Tests", HashMap::new());
+        run_update_check(&home, &app_data, &AlwaysErrorLookup, &tree_lookup);
+
+        assert_eq!(tree_lookup.call_count(), 1);
     }
 
     #[test]
@@ -1253,7 +1580,7 @@ resolved_commit = "{commit}"
             "b".repeat(40),
             "2026-02-01T00:00:00Z".to_string(),
         )))]);
-        let store = run_update_check(&home, &app_data, &lookup);
+        let store = run_update_check(&home, &app_data, &lookup, &UnusedTreeLookup);
 
         assert_eq!(lookup.call_count(), 1); // one candidate, not two
         let state = store.owners.get("owner:v1/global/find-bugs").unwrap();
@@ -1291,7 +1618,7 @@ resolved_commit = "{commit}"
         .unwrap();
 
         let lookup = FakeLookup::default();
-        let store = run_update_check(&home, &app_data, &lookup);
+        let store = run_update_check(&home, &app_data, &lookup, &UnusedTreeLookup);
 
         assert!(store.owners.is_empty());
         assert_eq!(lookup.call_count(), 0);
@@ -1326,7 +1653,6 @@ resolved_commit = "{commit}"
                     latest_commit_at: Some("2026-01-01T00:00:00Z".to_string()),
                     checked_at: "2026-01-01T00:00:00Z".to_string(),
                     error: None,
-                    lock_updated_at: None,
                 },
             )]),
             legacy_skills: BTreeMap::new(),
@@ -1334,7 +1660,7 @@ resolved_commit = "{commit}"
         write_store(&app_data, &seeded).unwrap();
 
         let lookup = FakeLookup::with_answers(vec![Err("network unreachable".to_string())]);
-        let store = run_update_check(&home, &app_data, &lookup);
+        let store = run_update_check(&home, &app_data, &lookup, &UnusedTreeLookup);
 
         let state = store.owners.get("owner:v1/global/find-bugs").unwrap();
         assert_eq!(
@@ -1342,6 +1668,63 @@ resolved_commit = "{commit}"
             Some(previous_latest.as_str())
         );
         assert_eq!(state.error.as_deref(), Some("network unreachable"));
+    }
+
+    /// Flow: a skill upgraded since the previous check (its `agents.lock`
+    /// `installed_commit` moved), then a lookup error on the very next
+    /// check.
+    /// Expectation: `has_update()` is false - the previous run's
+    /// `latest_commit` was computed against the old install and is not
+    /// paired with the new one, so nothing false-positives as "update
+    /// available" from a network error alone.
+    /// A failure here means `previous.latest_commit` was reused across the
+    /// generation boundary, pairing a stale "latest" with a fresh
+    /// "installed" and flagging every post-upgrade lookup failure as an
+    /// update.
+    #[test]
+    fn a_lookup_error_on_the_first_check_after_upgrade_never_flags_an_update_or_names_the_false_positive(
+    ) {
+        let tmp = tempfile::tempdir().unwrap();
+        let home = tmp.path().join("home");
+        let app_data = tmp.path().join("data");
+        let old_commit = "a".repeat(40);
+        let new_commit = "c".repeat(40);
+        write_agents_lock(
+            &home,
+            "find-bugs",
+            "getsentry/find-bugs",
+            "skills/find-bugs",
+            &new_commit,
+        );
+
+        let previous_latest = "b".repeat(40);
+        let seeded = UpdateCheckStore {
+            version: update_store_version(),
+            checked_at: Some("2026-01-01T00:00:00Z".to_string()),
+            gh_status: GhStatus::Ok,
+            owners: BTreeMap::from([(
+                "owner:v1/global/find-bugs".to_string(),
+                SkillUpdateState {
+                    repo: "getsentry/find-bugs".to_string(),
+                    path: "skills/find-bugs".to_string(),
+                    installed_commit: Some(old_commit),
+                    latest_commit: Some(previous_latest),
+                    latest_commit_at: Some("2026-01-01T00:00:00Z".to_string()),
+                    checked_at: "2026-01-01T00:00:00Z".to_string(),
+                    error: None,
+                },
+            )]),
+            legacy_skills: BTreeMap::new(),
+        };
+        write_store(&app_data, &seeded).unwrap();
+
+        let lookup = FakeLookup::with_answers(vec![Err("network unreachable".to_string())]);
+        let store = run_update_check(&home, &app_data, &lookup, &UnusedTreeLookup);
+
+        let state = store.owners.get("owner:v1/global/find-bugs").unwrap();
+        assert_eq!(state.installed_commit.as_deref(), Some(new_commit.as_str()));
+        assert_eq!(state.latest_commit, None);
+        assert!(!has_update(state));
     }
 
     #[test]
@@ -1361,7 +1744,7 @@ resolved_commit = "{commit}"
             "b".repeat(40),
             "2026-02-01T00:00:00Z".to_string(),
         )))]);
-        run_update_check(&home, &app_data, &lookup);
+        run_update_check(&home, &app_data, &lookup, &UnusedTreeLookup);
 
         let reloaded = read_update_check_store(&app_data);
         let state = reloaded.owners.get("owner:v1/global/find-bugs").unwrap();
@@ -1406,6 +1789,7 @@ resolved_commit = "{commit}"
             &[project_a.clone(), project_b.clone()],
             &app_data,
             &RepoLookup,
+            &UnusedTreeLookup,
         );
         let global = store.owners.get("owner:v1/global/shared-name").unwrap();
         let project_a_id = owner_id_for(
@@ -1458,7 +1842,7 @@ resolved_commit = "{commit}"
         )
         .unwrap();
 
-        let store = run_update_check(&home, &app_data, &AlwaysErrorLookup);
+        let store = run_update_check(&home, &app_data, &AlwaysErrorLookup, &UnusedTreeLookup);
         let state = store.owners.get("owner:v1/global/find-bugs").unwrap();
         assert_eq!(state.latest_commit.as_deref(), Some("legacy-latest"));
         let persisted: serde_json::Value =
@@ -1510,6 +1894,7 @@ resolved_commit = "{commit}"
             std::slice::from_ref(&project),
             &app_data,
             &AlwaysErrorLookup,
+            &UnusedTreeLookup,
         );
         assert_eq!(store.owners.len(), 2);
         assert!(store
@@ -1534,7 +1919,7 @@ resolved_commit = "{commit}"
         let lookup = FakeLookup::with_answers(vec![Err(
             "gh: To get started with GitHub CLI, run: gh auth login".to_string(),
         )]);
-        let store = run_update_check(&home, &app_data, &lookup);
+        let store = run_update_check(&home, &app_data, &lookup, &UnusedTreeLookup);
 
         assert_eq!(store.gh_status, GhStatus::NotLoggedIn);
     }

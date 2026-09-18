@@ -2688,7 +2688,6 @@ mod tests {
                     latest_commit_at: None,
                     checked_at: "2026-01-01T00:00:00Z".to_string(),
                     error: None,
-                    lock_updated_at: None,
                 },
             )]),
             legacy_skills: BTreeMap::new(),
