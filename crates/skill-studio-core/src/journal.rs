@@ -1535,6 +1535,7 @@ mod tests {
         seed_plan
             .finish(PlanStatus::Done)
             .expect("finish seed plan");
+        let pristine = tree_snapshot(&fixture, &root_path);
 
         // A second plan replaces the link with one pointing at `new.txt`,
         // fully landing (no crash in the forward direction), then is left
@@ -1598,6 +1599,12 @@ mod tests {
             restored,
             PathBuf::from("old.txt"),
             "reconciliation must restore the previous target, or name the target it lost"
+        );
+
+        let after = tree_snapshot(&fixture, &root_path);
+        assert_eq!(
+            after, pristine,
+            "a fully retried reversal must leave no leaked temp entry behind, or names the extra entry"
         );
     }
 
