@@ -1,16 +1,24 @@
 //! [`LeaseProvider`] over advisory file locks.
 
 use std::fs::{self, File, OpenOptions};
-use std::io;
-use std::path::PathBuf;
-use std::time::{Duration, Instant};
+use std::io::{self, Seek, SeekFrom, Write};
+use std::path::{Path, PathBuf};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
-use skill_studio_core::error::{CoreError, ErrorCode};
+use skill_studio_core::error::{CoreError, ErrorCode, LeaseBusy};
 use skill_studio_core::identity::sha256_hex;
 use skill_studio_core::ports::{LeaseHandle, LeaseKey, LeaseMode, LeaseProvider};
 
 /// How long to sleep between two lock attempts while waiting for a lease.
 const RETRY_INTERVAL: Duration = Duration::from_millis(20);
+
+/// Upper bound on how long a takeover of a lease whose recorded holder is
+/// gone may take. The OS releases the advisory lock as part of tearing down
+/// the dead process's file descriptors; this window only bridges the small
+/// gap between that teardown and our next lock attempt, independent of the
+/// caller's own `wait` budget (which may be zero).
+const STALE_TAKEOVER_TIMEOUT: Duration = Duration::from_millis(500);
+const STALE_RETRY_INTERVAL: Duration = Duration::from_millis(5);
 
 /// `LeaseProvider` backed by one advisory-locked file per canonical root,
 /// under `lease_root`.
@@ -66,6 +74,55 @@ fn try_lock(file: &File, mode: LeaseMode) -> Result<bool, io::Error> {
     }
 }
 
+/// Records this process as the holder: pid and the wall-clock time of
+/// acquisition, so a later `Busy` error can name both. Written only for
+/// `LeaseMode::Exclusive`; a shared lease has no single holder to name.
+///
+/// Best effort: a write failure here only means a later reader sees no
+/// holder info, never a wrong one, so the caller ignores its result.
+fn write_holder(file: &File) -> io::Result<()> {
+    let pid = std::process::id();
+    let now_ms = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis();
+    let mut file = file;
+    file.set_len(0)?;
+    file.seek(SeekFrom::Start(0))?;
+    write!(file, "{pid}|{now_ms}")?;
+    file.sync_all()
+}
+
+/// Reads the holder an earlier `write_holder` recorded, if any and if
+/// parseable. Returns the pid and how long ago it acquired the lease.
+fn read_holder(path: &Path) -> Option<(u32, Duration)> {
+    let content = fs::read_to_string(path).ok()?;
+    let (pid_str, ts_str) = content.trim().split_once('|')?;
+    let pid: u32 = pid_str.parse().ok()?;
+    let recorded_ms: u128 = ts_str.parse().ok()?;
+    let now_ms = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .ok()?
+        .as_millis();
+    let age_ms = now_ms.saturating_sub(recorded_ms);
+    Some((
+        pid,
+        Duration::from_millis(u64::try_from(age_ms).unwrap_or(u64::MAX)),
+    ))
+}
+
+/// Whether `pid` still names a live process. `sysinfo`, not `libc`'s
+/// `kill(pid, 0)`, because this crate forbids unsafe code; it refreshes only
+/// the one process, so the check stays cheap.
+fn pid_alive(pid: u32) -> bool {
+    let mut system = sysinfo::System::new();
+    system.refresh_processes(
+        sysinfo::ProcessesToUpdate::Some(&[sysinfo::Pid::from_u32(pid)]),
+        true,
+    );
+    system.process(sysinfo::Pid::from_u32(pid)).is_some()
+}
+
 impl LeaseProvider for FileLease {
     fn acquire(
         &self,
@@ -85,23 +142,54 @@ impl LeaseProvider for FileLease {
             let file = OpenOptions::new()
                 .create(true)
                 .truncate(false)
+                .read(true)
                 .write(true)
                 .open(&path)
                 .map_err(|e| CoreError::io(&path, e))?;
+            let stale_deadline = Instant::now() + STALE_TAKEOVER_TIMEOUT;
+            let mut attempted = false;
             loop {
                 match try_lock(&file, mode) {
-                    Ok(true) => break,
+                    Ok(true) => {
+                        if mode == LeaseMode::Exclusive {
+                            let _ = write_holder(&file);
+                        }
+                        break;
+                    }
                     Ok(false) => {
-                        if Instant::now() >= deadline {
-                            return Err(CoreError::new(
+                        let holder = read_holder(&path);
+                        let holder_alive = holder.map(|(pid, _)| pid_alive(pid)).unwrap_or(true);
+                        if !holder_alive && Instant::now() < stale_deadline {
+                            // The recorded holder is dead; the OS releases
+                            // its advisory lock as part of exiting, usually
+                            // before we even observe `WouldBlock`. Bridge
+                            // the rare remaining gap instead of reporting a
+                            // holder that is already gone.
+                            std::thread::sleep(STALE_RETRY_INTERVAL);
+                            continue;
+                        }
+                        // A zero (or already-elapsed) `wait` collapses
+                        // `deadline` to "now", which would otherwise turn a
+                        // single spurious `WouldBlock` - the OS can report
+                        // one for a moment right after another fd on this
+                        // process closes and releases the same lock under
+                        // heavy concurrent load - into a false "busy". Always
+                        // re-check once before trusting the first read.
+                        if Instant::now() >= deadline && attempted {
+                            let mut err = CoreError::new(
                                 ErrorCode::ScopeBusy,
                                 format!(
                                     "another process holds the lease on {}",
                                     key.canonical_root.display()
                                 ),
                             )
-                            .at(&path));
+                            .at(&path);
+                            if let Some((pid, age)) = holder {
+                                err = err.with_busy(LeaseBusy { pid, age });
+                            }
+                            return Err(err);
                         }
+                        attempted = true;
                         std::thread::sleep(RETRY_INTERVAL);
                     }
                     Err(e) => return Err(CoreError::io(&path, e)),

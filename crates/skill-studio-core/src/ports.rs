@@ -12,6 +12,7 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
 use crate::dto::{DeploymentDto, Inventory};
+pub use crate::error::LeaseBusy;
 use crate::error::{CoreError, ErrorCode};
 use crate::events::{EventDraft, EventFilter, EventRecord, EventStatus};
 use crate::harness::HarnessCatalog;
@@ -423,12 +424,25 @@ impl ExclusiveGuard {
     pub fn keys(&self) -> &[LeaseKey] {
         self.0.keys()
     }
+
+    /// Wraps an already-held exclusive [`LeaseHandle`] as proof-of-lease,
+    /// without acquiring a new one. For a caller that took its own exclusive
+    /// lease over a root through a different entry point (e.g. the desktop's
+    /// `WriteLease`) and then needs to call a core write helper that expects
+    /// this type - advisory locks don't nest within one process, so a second
+    /// `acquire` on the same root would report the caller's own lease as
+    /// busy.
+    pub fn from_handle(handle: Box<dyn LeaseHandle>) -> Self {
+        ExclusiveGuard(handle)
+    }
 }
 
 /// Acquires and releases leases.
 pub trait LeaseProvider: Send + Sync {
     /// Acquires `keys` in the given order, waiting at most `wait`.
-    /// Fails with [`ErrorCode::ScopeBusy`] when the budget runs out.
+    /// Fails with [`ErrorCode::ScopeBusy`] when the budget runs out, with
+    /// [`LeaseBusy`] attached through [`CoreError::with_busy`] naming the
+    /// current holder's pid and how long it has held the lease.
     fn acquire(
         &self,
         keys: &[LeaseKey],

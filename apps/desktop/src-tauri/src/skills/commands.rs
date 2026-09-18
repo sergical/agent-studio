@@ -17,7 +17,6 @@ use super::skill_dto::{
     SkillDetails,
 };
 use super::skill_editor;
-use super::skill_fork;
 use super::skill_fork_registry;
 use super::skill_lifecycle::{
     dotagents_update_args, ledger_matching_deployment, rebuild_fresh_lifecycle_snapshot,
@@ -1737,12 +1736,13 @@ pub async fn remove_skill(
     let timing_app = app.clone();
     crate::timing_log::time_command_blocking(&timing_app, "remove_skill", move || {
     let refresh_state = app.state::<SkillRefreshState>();
-    let fork_lock = app.state::<skill_fork::ForkMutationLock>();
+    let home = dirs::home_dir().ok_or("Could not find home directory")?;
+    let write_lease = super::write_lease::WriteLease::default();
     // Held for the whole removal (ownership check, CLI removal or direct
     // delete, registry update, rebuild) so a concurrent fork/pull/unfork
-    // can't race a removal - `ForkMutationLock` isn't reentrant, so
+    // can't race a removal - the lease isn't reentrant, so
     // `remove_forked_skill` must not acquire it again itself.
-    let _guard = fork_lock.try_acquire()?;
+    let guard = write_lease.try_acquire(&home)?;
 
     let snapshot = rebuild_fresh_lifecycle_snapshot(&app, &refresh_state)?;
     let (skill, deployment) = resolve_lifecycle_target(&snapshot, &target, "Remove")?;
@@ -1768,6 +1768,7 @@ pub async fn remove_skill(
         global && deployment.owner_kind == super::skill_ownership::LifecycleOwnerKind::Fork;
     if is_fork {
         return remove_forked_skill(
+            &guard,
             skill_name,
             &deployment.id,
             &deployment.path,
@@ -1782,7 +1783,6 @@ pub async fn remove_skill(
         skill_fork_registry::TrialScope::Project
     };
     if deployment.owner_kind == super::skill_ownership::LifecycleOwnerKind::Dotagents {
-        let home = dirs::home_dir().ok_or("Could not find home directory")?;
         remove_dotagents_deployment_with(
             DotagentsRemovalContext {
                 home: &home,
@@ -1796,6 +1796,7 @@ pub async fn remove_skill(
             |stage_root| std::fs::remove_dir_all(stage_root).map_err(|error| error.to_string()),
         )?;
         skill_trial::drop_trial_record(
+            &guard,
             &home,
             &deployment.id,
             &skill_name,
@@ -1849,7 +1850,9 @@ pub async fn remove_skill(
                 &deployment,
                 &copy_record,
                 &mut registry,
-                skill_fork_registry::write_fork_registry,
+                |home, registry| {
+                    skill_fork_registry::write_fork_registry_locked(&guard, home, registry)
+                },
             )?;
             skill_refresh::request_snapshot_rebuild(&app);
             return Ok(InstallResult {
@@ -1886,6 +1889,7 @@ pub async fn remove_skill(
     if output.status.success() {
         if let Some(home) = dirs::home_dir() {
             if let Err(e) = skill_trial::drop_trial_record(
+                &guard,
                 &home,
                 &deployment.id,
                 &skill_name,
@@ -1922,14 +1926,15 @@ pub async fn remove_skill(
 /// there's nothing for a CLI to remove - delete the directory directly and
 /// drop the fork-registry record and snapshot.
 fn remove_forked_skill(
+    guard: &super::write_lease::WriteLeaseGuard,
     skill_name: String,
     deployment_id: &str,
     deployment_path: &str,
     deployment_content_hash: &str,
     app: &tauri::AppHandle,
 ) -> Result<InstallResult, String> {
-    // Callers hold `ForkMutationLock` for the whole `remove_skill` call - the
-    // mutex isn't reentrant, so this function must not acquire it again.
+    // Callers hold the write lease for the whole `remove_skill` call - it
+    // isn't reentrant, so this function must not acquire it again.
     validate_skill_dir_name(&skill_name)?;
     let home = dirs::home_dir().ok_or("Could not find home directory")?;
     let app_data = app
@@ -1943,7 +1948,7 @@ fn remove_forked_skill(
         deployment_id,
         Path::new(deployment_path),
         deployment_content_hash,
-        skill_fork_registry::write_fork_registry,
+        |home, registry| skill_fork_registry::write_fork_registry_locked(guard, home, registry),
     )?;
 
     skill_refresh::request_snapshot_rebuild(app);
@@ -2325,9 +2330,9 @@ pub async fn update_skill(
     crate::timing_log::time_command_blocking(&timing_app, "update_skill", move || {
         let refresh_state = app.state::<SkillRefreshState>();
         let update_check_state = app.state::<skill_update_check::UpdateCheckState>();
-        let fork_lock = app.state::<skill_fork::ForkMutationLock>();
-        let _guard = fork_lock.try_acquire()?;
         let home = dirs::home_dir().ok_or("Could not find home directory")?;
+        let write_lease = super::write_lease::WriteLease::default();
+        let _guard = write_lease.try_acquire(&home)?;
         let snapshot = rebuild_fresh_lifecycle_snapshot(&app, &refresh_state)?;
         let (skill, deployment) = resolve_lifecycle_target(&snapshot, &target, "Update")?;
         let skill_name = skill.name;
@@ -2433,17 +2438,18 @@ pub async fn update_skill(
 }
 
 /// Runs one Claude-Code-only plugin lifecycle action: checks `harness`,
-/// holds `fork_lock` for the CLI call, then requests a snapshot rebuild.
+/// holds the write lease for the CLI call, then requests a snapshot rebuild.
 /// Shared by [`set_plugin_enabled`] and [`uninstall_plugin`], which differ
 /// only in which `claude plugin` subcommand `action` runs.
 fn run_plugin_lifecycle_action(
     harness: &str,
     app: &tauri::AppHandle,
-    fork_lock: &skill_fork::ForkMutationLock,
+    home: &Path,
     action: impl FnOnce() -> Result<(), String>,
 ) -> Result<(), String> {
     super::skill_plugin_lifecycle::require_claude_code_harness(harness)?;
-    let _guard = fork_lock.try_acquire()?;
+    let write_lease = super::write_lease::WriteLease::default();
+    let _guard = write_lease.try_acquire(home)?;
     action()?;
     skill_refresh::request_snapshot_rebuild(app);
     Ok(())
@@ -2461,8 +2467,8 @@ pub async fn set_plugin_enabled(
 ) -> Result<(), String> {
     let timing_app = app.clone();
     crate::timing_log::time_command_blocking(&timing_app, "set_plugin_enabled", move || {
-        let fork_lock = app.state::<skill_fork::ForkMutationLock>();
-        run_plugin_lifecycle_action(&harness, &app, &fork_lock, || {
+        let home = dirs::home_dir().ok_or("Could not find home directory")?;
+        run_plugin_lifecycle_action(&harness, &app, &home, || {
             super::skill_plugin_lifecycle::set_plugin_enabled_with(
                 &RealCommandRunner::new(),
                 &plugin_id,
@@ -2484,8 +2490,8 @@ pub async fn uninstall_plugin(
 ) -> Result<(), String> {
     let timing_app = app.clone();
     crate::timing_log::time_command_blocking(&timing_app, "uninstall_plugin", move || {
-        let fork_lock = app.state::<skill_fork::ForkMutationLock>();
-        run_plugin_lifecycle_action(&harness, &app, &fork_lock, || {
+        let home = dirs::home_dir().ok_or("Could not find home directory")?;
+        run_plugin_lifecycle_action(&harness, &app, &home, || {
             super::skill_plugin_lifecycle::uninstall_plugin_with(
                 &RealCommandRunner::new(),
                 &plugin_id,
