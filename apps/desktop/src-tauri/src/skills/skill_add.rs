@@ -1102,6 +1102,7 @@ fn apply_disabled_harnesses(home: &Path, request: &AddSkillRequest, result: &mut
             };
             if let Err(e) = set_new_universal_reader_enabled(
                 home,
+                &home.join(".skill-studio"),
                 name,
                 &target,
                 false,

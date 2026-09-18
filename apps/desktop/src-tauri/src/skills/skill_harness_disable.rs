@@ -604,8 +604,12 @@ fn restore_claude_link_at(link_path: &Path, target: &Path) -> Result<(), String>
 /// deployment path Codex can see the skill at - its own dir and any shared
 /// root) directly so it's testable without a Tauri `AppHandle`. `agent` is an
 /// `AgentId::cli_name()`, e.g. `"codex"`, `"opencode"`, `"claude-code"`.
+/// `data_root` is the lease/history root Codex's write shares with every
+/// other desktop mutation (`super::core_runtime::data_root()` in
+/// production); a test passes its own tempdir root for isolation.
 pub fn set_harness_enabled_with(
     home: &Path,
+    data_root: &Path,
     name: &str,
     agent: &str,
     enabled: bool,
@@ -619,7 +623,7 @@ pub fn set_harness_enabled_with(
             }
             let rt = super::core_runtime::build_runtime_write_at(
                 home.to_path_buf(),
-                home.join(".skill-studio"),
+                data_root.to_path_buf(),
             )?;
             let ctx = skill_studio_core::ports::OpContext::uncancellable(
                 skill_studio_core::identity::CorrelationId(ulid::Ulid::new().to_string()),
@@ -647,6 +651,7 @@ pub fn set_harness_enabled_with(
 /// that the completed install selected.
 pub fn set_new_universal_reader_enabled(
     home: &Path,
+    data_root: &Path,
     name: &str,
     target: &HarnessVisibilityTarget,
     enabled: bool,
@@ -668,7 +673,7 @@ pub fn set_new_universal_reader_enabled(
     if matches!(agent, "opencode" | "open-code") {
         guard_new_opencode_deployment(home, name, &target.deployment_id)?;
     }
-    set_harness_enabled_with(home, name, agent, enabled, codex_skill_md_paths)
+    set_harness_enabled_with(home, data_root, name, agent, enabled, codex_skill_md_paths)
 }
 
 fn move_copy_deployment_and_update_registry(
@@ -789,7 +794,14 @@ pub async fn set_harness_enabled(
                 enabled,
             )
         } else {
-            set_harness_enabled_with(&home, &skill.name, agent, enabled, &codex_skill_md_paths)
+            set_harness_enabled_with(
+                &home,
+                &super::core_runtime::data_root(),
+                &skill.name,
+                agent,
+                enabled,
+                &codex_skill_md_paths,
+            )
         };
         if result.is_ok() {
             // Surgical: mark the harness's deployments right away; the background
@@ -1211,11 +1223,13 @@ mod tests {
     fn codex_disable_and_reenable_round_trip() {
         let tmp = tempfile::tempdir().unwrap();
         let home = tmp.path();
+        let data_root = home.join(".skill-studio");
         let skill_md = home.join("skills/find-bugs/SKILL.md");
         write_skill(skill_md.parent().unwrap(), "find-bugs");
 
         set_harness_enabled_with(
             home,
+            &data_root,
             "find-bugs",
             "codex",
             false,
@@ -1229,6 +1243,7 @@ mod tests {
 
         set_harness_enabled_with(
             home,
+            &data_root,
             "find-bugs",
             "codex",
             true,
@@ -1238,11 +1253,48 @@ mod tests {
         assert!(read_codex_disabled_skill_md_paths_for_test(home).is_empty());
     }
 
+    /// codex_disable_runs_under_the_shared_data_root_or_names_the_separate_lease_root:
+    /// a Codex disable's lease/journal artifacts land under the `data_root`
+    /// the caller gives it - not a second `home/.skill-studio` tree built
+    /// independently of `super::core_runtime::data_root()` - so Codex
+    /// disable shares one lock and event store with `park` and every other
+    /// desktop mutation.
+    #[test]
+    fn codex_disable_runs_under_the_shared_data_root_or_names_the_separate_lease_root() {
+        let tmp = tempfile::tempdir().unwrap();
+        let home = tmp.path();
+        let shared_data_root = tmp.path().join("shared-data-root");
+        let skill_md = home.join("skills/find-bugs/SKILL.md");
+        write_skill(skill_md.parent().unwrap(), "find-bugs");
+
+        set_harness_enabled_with(
+            home,
+            &shared_data_root,
+            "find-bugs",
+            "codex",
+            false,
+            std::slice::from_ref(&skill_md),
+        )
+        .unwrap();
+
+        assert!(
+            shared_data_root.join("leases").exists(),
+            "the lease root the caller gave it was never used: {}",
+            shared_data_root.display()
+        );
+        assert!(
+            !home.join(".skill-studio").exists(),
+            "a second, separate lease root was created under home/.skill-studio"
+        );
+    }
+
     #[test]
     fn codex_disable_without_a_deployment_path_refuses() {
         let tmp = tempfile::tempdir().unwrap();
+        let data_root = tmp.path().join(".skill-studio");
         let err =
-            set_harness_enabled_with(tmp.path(), "find-bugs", "codex", false, &[]).unwrap_err();
+            set_harness_enabled_with(tmp.path(), &data_root, "find-bugs", "codex", false, &[])
+                .unwrap_err();
         assert!(err.contains("No Codex-visible deployment"));
     }
 
@@ -1250,14 +1302,15 @@ mod tests {
     fn opencode_disable_and_reenable_round_trip() {
         let tmp = tempfile::tempdir().unwrap();
         let home = tmp.path();
+        let data_root = home.join(".skill-studio");
 
-        set_harness_enabled_with(home, "find-bugs", "opencode", false, &[]).unwrap();
+        set_harness_enabled_with(home, &data_root, "find-bugs", "opencode", false, &[]).unwrap();
         assert_eq!(
             opencode_skill_permission::read_denied_patterns(home),
             vec!["find-bugs".to_string()]
         );
 
-        set_harness_enabled_with(home, "find-bugs", "opencode", true, &[]).unwrap();
+        set_harness_enabled_with(home, &data_root, "find-bugs", "opencode", true, &[]).unwrap();
         assert!(opencode_skill_permission::read_denied_patterns(home).is_empty());
     }
 
@@ -1284,6 +1337,7 @@ mod tests {
 
         let error = set_new_universal_reader_enabled(
             &home,
+            &home.join(".skill-studio"),
             "find-bugs",
             &target,
             false,
@@ -1535,9 +1589,11 @@ mod tests {
     #[test]
     fn pi_cursor_and_grok_build_refuse() {
         let tmp = tempfile::tempdir().unwrap();
+        let data_root = tmp.path().join(".skill-studio");
         for agent in ["pi", "cursor", "grok-build"] {
             let err =
-                set_harness_enabled_with(tmp.path(), "find-bugs", agent, false, &[]).unwrap_err();
+                set_harness_enabled_with(tmp.path(), &data_root, "find-bugs", agent, false, &[])
+                    .unwrap_err();
             assert!(err.contains("no per-skill disable"), "{agent}: {err}");
         }
     }
