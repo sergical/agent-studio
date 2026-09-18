@@ -1786,14 +1786,29 @@ pub fn set_codex_skill_disabled(
     skill_md_path: &Path,
     disabled: bool,
 ) -> Result<(), CoreError> {
+    let guard = acquire_exclusive(rt.ports.leases.as_ref(), &rt.scope)?;
+    set_codex_skill_disabled_with(rt, ctx, &guard, skill_md_path, disabled)
+}
+
+/// The lease-holding half of [`set_codex_skill_disabled`]. The caller
+/// already holds the root's exclusive lease - the desktop command's
+/// `WriteLease`, or a `MutationSession` - so this must not acquire a second
+/// one; advisory locks do not nest in-process, and a second `acquire_exclusive`
+/// on the same root self-deadlocks until the lease times out.
+pub fn set_codex_skill_disabled_with(
+    rt: &Runtime,
+    ctx: &OpContext,
+    guard: &ExclusiveGuard,
+    skill_md_path: &Path,
+    disabled: bool,
+) -> Result<(), CoreError> {
     ctx.checkpoint()?;
     let fs = rt.ports.fs.as_ref();
-    let guard = acquire_exclusive(rt.ports.leases.as_ref(), &rt.scope)?;
     let codex_home = &rt.scope.codex_home;
     let mut doc = read_codex_config_document(fs, codex_home)?;
     codex_write_disabled_row(&mut doc, skill_md_path, disabled)
         .map_err(|e| e.at(codex_config_path(codex_home)))?;
-    codex_write_config_document(rt, fs, &guard, codex_home, &doc)
+    codex_write_config_document(rt, fs, guard, codex_home, &doc)
 }
 
 /// The in-memory half of [`set_codex_skill_disabled`], split out so
