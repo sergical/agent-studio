@@ -4766,6 +4766,7 @@ pub(crate) fn find_all_links<'a>(
         .collect()
 }
 
+pub use crate::ops_doctor::doctor;
 pub use crate::ops_install::{install, install_preferences};
 pub use crate::ops_remove::remove;
 pub use crate::ops_update::{update, update_all};

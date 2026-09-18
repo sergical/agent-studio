@@ -42,8 +42,13 @@ pub(crate) const QUARANTINE_DIR_NAME: &str = ".skill-studio-quarantine";
 /// tuning it as unmeasured.
 pub const QUARANTINE_RETENTION_CAP: usize = 20;
 
-/// One of the six doctor invariants from `lifecycle-states.md`.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+/// One of the six doctor invariants from `lifecycle-states.md`. Carries
+/// `Serialize`/`Deserialize`/`JsonSchema` (unlike the rest of this
+/// detect-only module) because `ops::doctor`'s [`crate::dto::DoctorReport`]
+/// crosses the CLI/desktop/MCP boundary and needs to name which invariant a
+/// violation is.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize, schemars::JsonSchema)]
+#[serde(rename_all = "snake_case")]
 pub enum DoctorInvariant {
     /// 1. Every link resolves inside its root.
     LinkResolvesInRoot,
