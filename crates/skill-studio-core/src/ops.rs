@@ -109,6 +109,10 @@ pub enum Operation {
     Update,
     /// Group 3: refresh a batch of already-installed skills in place.
     UpdateAll,
+    /// Group 3: put one skill on disk by `Copy`, `Dotagents`, or `SkillsSh`.
+    Install,
+    /// Group 3: read the saved or defaulted install method/harnesses.
+    InstallPreferences,
 }
 
 /// Outcome status of one call.
@@ -246,6 +250,16 @@ impl Outcome for crate::dto::UpdateAllOutcome {
         !self.errors.is_empty()
     }
 }
+impl Outcome for crate::dto::InstallOutcome {
+    fn event_id(&self) -> Option<EventId> {
+        match self {
+            // `NeedsTrust` wrote nothing, so it records no event.
+            crate::dto::InstallOutcome::Installed { event_id, .. } => Some(event_id.clone()),
+            crate::dto::InstallOutcome::NeedsTrust { .. } => None,
+        }
+    }
+}
+impl Outcome for crate::dto::InstallPreferences {}
 
 /// The envelope every surface returns.
 ///
@@ -3119,6 +3133,7 @@ pub fn fix_skill(
             unrepaired.push(UnrepairedIssue {
                 path: issue_path(&diagnosis, issue),
                 message: issue.message.clone(),
+                kind: unrepaired_issue_kind(issue.kind),
             });
             continue;
         };
@@ -3136,6 +3151,7 @@ pub fn fix_skill(
                 unrepaired.push(UnrepairedIssue {
                     path: issue_path(&diagnosis, issue),
                     message: error.message,
+                    kind: crate::dto::UnrepairedIssueKind::Frontmatter,
                 });
                 continue;
             }
@@ -3161,6 +3177,7 @@ pub fn fix_skill(
             Err(error) => unrepaired.push(UnrepairedIssue {
                 path: preview.path.clone(),
                 message: error.message,
+                kind: crate::dto::UnrepairedIssueKind::Frontmatter,
             }),
         }
     }
@@ -3182,6 +3199,7 @@ pub fn fix_skill(
         .filter(|violation| violation.skill.as_ref() == Some(&req.skill))
     {
         unrepaired.push(UnrepairedIssue {
+            kind: unrepaired_issue_kind_for_invariant(violation.invariant),
             path: violation.path,
             message: violation.message,
         });
@@ -3193,6 +3211,7 @@ pub fn fix_skill(
         .next()
     {
         unrepaired.push(UnrepairedIssue {
+            kind: unrepaired_issue_kind_for_invariant(violation.invariant),
             path: violation.path,
             message: violation.message,
         });
@@ -3207,6 +3226,32 @@ pub fn fix_skill(
         unrepaired,
         conflicts,
     })
+}
+
+/// Maps a diagnosed [`IssueKind`] to the coarser [`UnrepairedIssueKind`] a
+/// caller branches on. `RepairableFrontmatter` issues never reach here
+/// unrepaired at this kind (see the two call sites below that classify
+/// their own repair-attempt failures), so any unmatched kind falls back to
+/// `Other` rather than claiming a category the caller can't act on.
+fn unrepaired_issue_kind(kind: IssueKind) -> crate::dto::UnrepairedIssueKind {
+    match kind {
+        IssueKind::UnreadableLink => crate::dto::UnrepairedIssueKind::Link,
+        IssueKind::SpecViolation | IssueKind::RepairableFrontmatter => {
+            crate::dto::UnrepairedIssueKind::Frontmatter
+        }
+        _ => crate::dto::UnrepairedIssueKind::Other,
+    }
+}
+
+/// Maps a [`DoctorInvariant`] to the coarser [`UnrepairedIssueKind`] a
+/// caller branches on.
+fn unrepaired_issue_kind_for_invariant(
+    invariant: crate::doctor::DoctorInvariant,
+) -> crate::dto::UnrepairedIssueKind {
+    match invariant {
+        crate::doctor::DoctorInvariant::LinkResolvesInRoot => crate::dto::UnrepairedIssueKind::Link,
+        _ => crate::dto::UnrepairedIssueKind::Other,
+    }
 }
 
 /// Resolves `issue`'s own deployment to its path via `diagnosis`'s

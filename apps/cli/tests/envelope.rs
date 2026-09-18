@@ -863,3 +863,174 @@ fn a_fixture_scan_reads_opencode_config_under_the_fixture_even_with_xdg_config_h
 
     std::fs::remove_dir_all(&home).ok();
 }
+
+/// `add_with_project_path_alone_installs_under_that_project_or_names_the_scope_error`
+/// (R1): `--project-path` on its own, with no `--project`, must still resolve
+/// the write inside the runtime scope. Before the fix, the runtime scope's
+/// `projects` list only ever came from `--project`, so `ScopeFs` rejected the
+/// write as "path lies outside the scope" even though `--project-path` named
+/// exactly where to write it.
+#[test]
+fn add_with_project_path_alone_installs_under_that_project_or_names_the_scope_error() {
+    let home = materialized_fixture("empty_home");
+    let project = tempfile::tempdir().unwrap().keep();
+    let source = tempfile::tempdir().unwrap().keep();
+    std::fs::write(
+        source.join("SKILL.md"),
+        "---\nname: r1-project-path\ndescription: a copy source for the R1 regression\n---\nBody.\n",
+    )
+    .unwrap();
+
+    let run = run(&[
+        "add",
+        "--fixture",
+        home.to_str().unwrap(),
+        "--method",
+        "copy",
+        "--project-path",
+        project.to_str().unwrap(),
+        "--name",
+        "r1-project-path",
+        "--json",
+        source.to_str().unwrap(),
+    ]);
+    assert_eq!(run.status, 0, "expected add to succeed: {:?}", run.json);
+    assert_eq!(run.json["status"], "ok", "{:?}", run.json);
+    assert!(
+        project
+            .join(".agents/skills/r1-project-path/SKILL.md")
+            .exists(),
+        "expected the skill under the project's .agents/skills, got: {:?}",
+        run.json
+    );
+
+    std::fs::remove_dir_all(&home).ok();
+    std::fs::remove_dir_all(&project).ok();
+    std::fs::remove_dir_all(&source).ok();
+}
+
+/// `add_skills_sh_without_a_name_returns_invalid_request_naming_the_flag`
+/// (R2): `skills-sh`/`dotagents` shell out to a CLI that always installs
+/// under the given `--skill`/`--name`; a name derived from `source`'s last
+/// path segment names the wrong folder for a multi-skill or differently
+/// named repo, so the CLI must refuse to guess and name the missing flag.
+#[test]
+fn add_skills_sh_without_a_name_returns_invalid_request_naming_the_flag() {
+    let home = materialized_fixture("empty_home");
+    let run = run(&[
+        "add",
+        "--fixture",
+        home.to_str().unwrap(),
+        "--method",
+        "skills-sh",
+        "--json",
+        "owner/repo",
+    ]);
+    assert_eq!(run.status, 2, "{:?}", run.json);
+    assert_eq!(run.json["status"], "error", "{:?}", run.json);
+    let errors = run.json["errors"].as_array().expect("errors array");
+    assert!(
+        errors
+            .iter()
+            .any(|e| e["code"] == "invalid_request"
+                && e["message"].as_str().unwrap().contains("--name")),
+        "expected an invalid_request error naming --name: {errors:?}"
+    );
+    std::fs::remove_dir_all(&home).ok();
+}
+
+/// `add_with_an_unknown_harness_returns_invalid_request_naming_the_value`
+/// (R5): a harness id that is syntactically kebab-case but not in
+/// `HarnessCatalog` (a typo, or a harness this build never shipped) must be
+/// rejected before `ops::install` runs, not silently ignored.
+#[test]
+fn add_with_an_unknown_harness_returns_invalid_request_naming_the_value() {
+    let home = materialized_fixture("empty_home");
+    let source = tempfile::tempdir().unwrap().keep();
+    std::fs::write(
+        source.join("SKILL.md"),
+        "---\nname: r5-unknown-harness\ndescription: a copy source for the R5 regression\n---\nBody.\n",
+    )
+    .unwrap();
+
+    let run = run(&[
+        "add",
+        "--fixture",
+        home.to_str().unwrap(),
+        "--method",
+        "copy",
+        "--harness",
+        "not-a-real-harness",
+        "--name",
+        "r5-unknown-harness",
+        "--json",
+        source.to_str().unwrap(),
+    ]);
+    assert_eq!(run.status, 2, "{:?}", run.json);
+    assert_eq!(run.json["status"], "error", "{:?}", run.json);
+    let errors = run.json["errors"].as_array().expect("errors array");
+    assert!(
+        errors.iter().any(|e| e["code"] == "invalid_request"
+            && e["message"]
+                .as_str()
+                .unwrap()
+                .contains("not-a-real-harness")),
+        "expected an invalid_request error naming the unknown harness: {errors:?}"
+    );
+    assert!(
+        !home.join(".agents/skills/r5-unknown-harness").exists(),
+        "an unknown harness must fail before any write"
+    );
+    std::fs::remove_dir_all(&home).ok();
+    std::fs::remove_dir_all(&source).ok();
+}
+
+/// `add_copy_with_a_symlinked_file_copies_it_as_a_file_or_names_the_missing_path`
+/// (R6): `read_skill_files` used `DirEntry::file_type`, which is
+/// `lstat`-based and reports a symlink as neither a file nor a directory, so
+/// a symlinked file inside the source folder silently dropped out of the
+/// copy. `std::fs::metadata` follows the link and reports what it points at.
+#[test]
+#[cfg(unix)]
+fn add_copy_with_a_symlinked_file_copies_it_as_a_file_or_names_the_missing_path() {
+    let home = materialized_fixture("empty_home");
+    let source = tempfile::tempdir().unwrap().keep();
+    std::fs::write(
+        source.join("SKILL.md"),
+        "---\nname: r6-symlink\ndescription: a copy source for the R6 regression\n---\nBody.\n",
+    )
+    .unwrap();
+    std::fs::write(source.join("reference.md"), "Reference body.\n").unwrap();
+    std::os::unix::fs::symlink(
+        source.join("reference.md"),
+        source.join("reference-link.md"),
+    )
+    .unwrap();
+
+    let run = run(&[
+        "add",
+        "--fixture",
+        home.to_str().unwrap(),
+        "--method",
+        "copy",
+        "--name",
+        "r6-symlink",
+        "--json",
+        source.to_str().unwrap(),
+    ]);
+    assert_eq!(run.status, 0, "expected add to succeed: {:?}", run.json);
+    let copied = home.join(".agents/skills/r6-symlink/reference-link.md");
+    assert!(
+        copied.is_file(),
+        "expected the symlinked file to be copied as a file, got: {:?}",
+        run.json
+    );
+    assert_eq!(
+        std::fs::read_to_string(&copied).unwrap(),
+        "Reference body.\n",
+        "the symlinked file's bytes must match its target"
+    );
+
+    std::fs::remove_dir_all(&home).ok();
+    std::fs::remove_dir_all(&source).ok();
+}

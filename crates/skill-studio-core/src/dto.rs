@@ -417,6 +417,22 @@ pub enum FixApplied {
     },
 }
 
+/// Stable category for [`UnrepairedIssue`] so a caller can branch on
+/// structure instead of matching a substring of `message`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum UnrepairedIssueKind {
+    /// A dangling or unreadable symlink the detail page's own repair card
+    /// knows how to fix.
+    Link,
+    /// A frontmatter field or value `fix_skill` could not repair.
+    Frontmatter,
+    /// Two deployments differ and need the user to reconcile them.
+    Conflict,
+    /// Anything else (registry/lockfile drift, quarantine cap, and so on).
+    Other,
+}
+
 /// One issue `fix_skill` found but could not repair, named with its path so
 /// the caller can show it rather than a generic toast.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
@@ -425,6 +441,8 @@ pub struct UnrepairedIssue {
     pub path: PathBuf,
     /// Message for a person.
     pub message: String,
+    /// Stable category a caller can branch on instead of `message`.
+    pub kind: UnrepairedIssueKind,
 }
 
 /// One pair of differing copies: never merged, named for the caller to open
