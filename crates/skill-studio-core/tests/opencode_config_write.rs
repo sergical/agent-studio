@@ -105,7 +105,7 @@ fn clearing_the_last_denied_skill_removes_the_permission_key() {
 }
 
 /// Flow: enabling the last denied skill (`x`), which empties
-/// `permission.skill` and then empties `permission` itself, against a
+/// `permission.skill` while `permission` keeps `bash` and `edit`, against a
 /// fixture with sibling keys before and after `permission` at both levels
 /// (`$schema` before, `theme`/`model` after; `bash`/`edit` alongside
 /// `skill`).
