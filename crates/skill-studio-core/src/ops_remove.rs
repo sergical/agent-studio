@@ -582,9 +582,15 @@ fn remove_and_link(
         // any CLI, so for them a missing link would instead mean this same
         // op already ran once for this deployment; treating it as removed
         // either way keeps `remove` idempotent rather than failing a row
-        // whose deployment, links, and lock entry are already gone.
-        if fs.symlink_metadata(link_path).is_err() {
-            continue;
+        // whose deployment, links, and lock entry are already gone. Only
+        // `NotFound` gets this tolerance: any other `symlink_metadata` error
+        // (a `PermissionDenied` on an unreadable parent, for example) means
+        // this cannot tell whether the link is actually gone, so it fails
+        // the row rather than reporting `Done` with a link still on disk.
+        match fs.symlink_metadata(link_path) {
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => continue,
+            Err(e) => return Err(CoreError::io(link_path, e)),
+            Ok(_) => {}
         }
         let scoped_link = crate::ports::confine(&rt.scope, fs, link_path)?;
         fs.remove_file(&session.guard, &scoped_link)

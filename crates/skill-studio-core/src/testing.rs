@@ -866,6 +866,12 @@ pub struct FailingFs {
     /// path for the same reason as `fail_read_dir_for`: a scan reads many
     /// skills' `SKILL.md` before reaching the one a test wants unreadable.
     fail_read_prefix_for: Mutex<Option<PathBuf>>,
+    /// The one `symlink_metadata` call this path should fail with
+    /// `PermissionDenied`, or `None`. Keyed by path, like
+    /// `fail_read_dir_for`: `remove`'s own link loop calls
+    /// `symlink_metadata` once per link, so a test names the one link whose
+    /// parent it wants unreadable (round 3, B2) rather than counting calls.
+    fail_symlink_metadata_for: Mutex<Option<PathBuf>>,
 }
 
 impl FailingFs {
@@ -891,6 +897,7 @@ impl FailingFs {
             fsops_rename_calls: AtomicU64::new(0),
             fail_read_dir_for: Mutex::new(None),
             fail_read_prefix_for: Mutex::new(None),
+            fail_symlink_metadata_for: Mutex::new(None),
         }
     }
 
@@ -1046,6 +1053,19 @@ impl FailingFs {
             .lock()
             .expect("fail_read_prefix_for lock") = Some(path);
     }
+
+    /// The next `symlink_metadata` call for exactly `path` returns
+    /// `PermissionDenied` instead of reaching `inner`; a call for any other
+    /// path delegates normally, and once consumed `path` itself succeeds
+    /// again. Lets a test simulate a link whose parent directory this
+    /// cannot read (round 3, B2) without the `NotFound` a genuinely absent
+    /// link would report.
+    pub fn fail_symlink_metadata_for(&self, path: PathBuf) {
+        *self
+            .fail_symlink_metadata_for
+            .lock()
+            .expect("fail_symlink_metadata_for lock") = Some(path);
+    }
 }
 
 impl ScopeFs for FailingFs {
@@ -1053,6 +1073,18 @@ impl ScopeFs for FailingFs {
         self.inner.canonicalize(path)
     }
     fn symlink_metadata(&self, path: &Path) -> std::io::Result<FileFacts> {
+        let mut target = self
+            .fail_symlink_metadata_for
+            .lock()
+            .expect("fail_symlink_metadata_for lock");
+        if target.as_deref() == Some(path) {
+            *target = None;
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::PermissionDenied,
+                "FailingFs: injected symlink_metadata failure",
+            ));
+        }
+        drop(target);
         self.inner.symlink_metadata(path)
     }
     fn read_link(&self, path: &Path) -> std::io::Result<PathBuf> {
