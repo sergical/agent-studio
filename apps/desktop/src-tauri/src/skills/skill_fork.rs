@@ -3,10 +3,12 @@
 // Fork / Pull upstream / Un-fork for a dotagents- or skills.sh-managed skill:
 // "Fork" detaches it from its owning ledger (so `sync`/`update` can't
 // overwrite local edits) while keeping a snapshot of the last-synced copy;
-// "Pull upstream" three-way merges that snapshot against the skill's current
-// on-disk copy and a freshly fetched upstream copy; "Un-fork" discards local
-// edits and reinstalls from the recorded origin. The CLI-shelling and
-// GitHub-fetching bits are behind small traits so the merge/refusal logic is
+// "Pull upstream" compares that snapshot against the skill's current on-disk
+// copy and a freshly fetched upstream copy, never merging automatically: a
+// file that differs on all three sides gets conflict markers written into it
+// and is opened in the user's editor; "Un-fork" discards local edits and
+// reinstalls from the recorded origin. The CLI-shelling and GitHub-fetching
+// bits are behind small traits so the conflict-marker/refusal logic is
 // testable with fakes.
 // ============================================================================
 
