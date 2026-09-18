@@ -310,6 +310,13 @@ pub struct CapabilitiesRequest {
 #[serde(default)]
 pub struct HarnessesRequest {}
 
+/// Request for `sweep_quarantine`. Empty: the op only ever sweeps the
+/// global root (see `ops::sweep_quarantine`'s own doc), so there is nothing
+/// for a caller to choose yet.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(default)]
+pub struct SweepQuarantineRequest {}
+
 /// Ways a frontmatter repair may be applied.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "kebab-case")]

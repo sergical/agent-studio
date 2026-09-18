@@ -117,6 +117,8 @@ pub enum Operation {
     InstallPreferences,
     /// Unit 3.4: per-install-method currency ("update available").
     Outdated,
+    /// Unit 3.9b: prune the quarantine cap without a `remove` call.
+    SweepQuarantine,
 }
 
 /// Outcome status of one call.
@@ -273,6 +275,10 @@ impl Outcome for crate::dto::InstallPreferences {}
 /// partial - a lookup failure resolves the affected skill to `Unknown`
 /// rather than raising.
 impl Outcome for std::collections::BTreeMap<String, crate::skill_update_check::Currency> {}
+/// `sweep_quarantine` has no outcome payload of its own - it either prunes
+/// the cap or returns an error - so it wraps in an envelope over `()`,
+/// taking every `Outcome` default (always `Ok`, no event).
+impl Outcome for () {}
 
 /// The envelope every surface returns.
 ///

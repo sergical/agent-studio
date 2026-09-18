@@ -318,6 +318,15 @@ enum Command {
         #[arg(long)]
         json: bool,
     },
+    /// Prune the global quarantine cap without a `remove` call, via
+    /// `ops::sweep_quarantine`. Global scope only - see that function's
+    /// own doc.
+    SweepQuarantine {
+        #[command(flatten)]
+        scope: ScopeArgs,
+        #[arg(long)]
+        json: bool,
+    },
     /// Refresh one or more already-installed skills in place.
     Update {
         #[command(flatten)]
@@ -489,6 +498,7 @@ fn main() -> ExitCode {
             skills,
             json,
         } => run_outdated(&scope, skills, json, time),
+        Command::SweepQuarantine { scope, json } => run_sweep_quarantine(&scope, json, time),
         Command::Update {
             scope,
             skills,
@@ -1577,6 +1587,22 @@ fn run_outdated(scope: &ScopeArgs, skills: Vec<String>, json: bool, time: bool) 
     };
     let envelope = ResultEnvelope::from_result(Operation::Outdated, &rt.scope, &ctx, result);
     finish(&envelope, json, time, output::print_outdated_table)
+}
+
+/// Prunes the global quarantine cap, via `ops::sweep_quarantine`. Global
+/// scope only, matching the desktop's own startup sweep
+/// (`skill_refresh.rs::run_startup_quarantine_sweep`) - a project's
+/// `.agents/skills` quarantine directory is swept the next time that
+/// project's own `remove` runs.
+fn run_sweep_quarantine(scope: &ScopeArgs, json: bool, time: bool) -> ExitCode {
+    let rt = match build_runtime_write::<()>(scope, Operation::SweepQuarantine, json) {
+        Ok(rt) => rt,
+        Err(code) => return code,
+    };
+    let ctx = OpContext::uncancellable(CorrelationId(ulid::Ulid::new().to_string()));
+    let result = ops::sweep_quarantine(&rt, &ctx, &RootScope::Global);
+    let envelope = ResultEnvelope::from_result(Operation::SweepQuarantine, &rt.scope, &ctx, result);
+    finish(&envelope, json, time, output::print_sweep_quarantine_table)
 }
 
 /// One `timing.jsonl` line, as written by the desktop's `timing_log`

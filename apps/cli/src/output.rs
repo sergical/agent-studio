@@ -407,6 +407,16 @@ pub fn print_outdated_table(envelope: &ResultEnvelope<BTreeMap<String, Currency>
     }
 }
 
+/// Prints `sweep_quarantine`'s table: it has no outcome payload, so a
+/// success just confirms the sweep ran; errors already went to stderr via
+/// `print_errors`.
+pub fn print_sweep_quarantine_table(envelope: &ResultEnvelope<()>) {
+    print_errors(envelope);
+    if envelope.data.is_some() {
+        println!("quarantine swept");
+    }
+}
+
 /// Prints `health`'s table: `COMMAND COUNT FAILURES P50_MS P95_MS
 /// LAST_ERROR`, one row per command, in the rollup's own (command-name)
 /// order.
