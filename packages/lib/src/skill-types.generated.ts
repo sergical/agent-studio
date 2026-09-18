@@ -1082,3 +1082,101 @@ export interface CommandHealth {
    */
   last_error: string | null;
 }
+/**
+ * Result of the `harnesses` operation: one detection row per first-class
+ * harness.
+ */
+export interface HarnessReport {
+  /**
+   * Rows, one per [`builtin_adapters`] harness, in that order.
+   */
+  harnesses: HarnessDetection[];
+}
+/**
+ * Runtime detection facts for one harness: proven, not guessed.
+ */
+export interface HarnessDetection {
+  /**
+   * Catalog id.
+   */
+  id: string;
+  /**
+   * Display name shown to a person.
+   */
+  display_name: string;
+  /**
+   * Derived state.
+   */
+  state: "not_found" | "data_only" | "installed" | "configured" | "used";
+  /**
+   * Resolved executable path, when found on `PATH`.
+   */
+  executable: string | null;
+  version: DetectedString;
+  install_method: DetectedString1;
+  /**
+   * The vendor config file exists under the home root.
+   */
+  configured: boolean;
+  /**
+   * A session or transcript record exists under the home root.
+   */
+  used: boolean;
+}
+/**
+ * Version, proven by `<bin> --version`.
+ */
+export interface DetectedString {
+  /**
+   * The value, when proven.
+   */
+  value: string | null;
+  evidence: Evidence;
+}
+/**
+ * Where the value came from, or why it is `Unknown`.
+ */
+export interface Evidence {
+  /**
+   * URL or document reference.
+   */
+  source: string;
+  /**
+   * Confidence level.
+   */
+  confidence: "verified-from-docs" | "inferred" | "unknown";
+}
+/**
+ * Install method, inferred from the resolved executable path.
+ */
+export interface DetectedString1 {
+  /**
+   * The value, when proven.
+   */
+  value: string | null;
+  evidence: Evidence;
+}
+/**
+ * The first-run screen's saved choice, round-tripped through the registry.
+ * Kept small and documented per unit 3.2's issue: unit 4.4 reads `kept` to
+ * decide which harnesses the rest of the app still shows.
+ */
+export interface HarnessesChoice {
+  /**
+   * Catalog ids (`AgentId::as_str()`, e.g. `"claude-code"`) of the rows
+   * the user kept on the first-run screen.
+   */
+  kept: string[];
+  /**
+   * Whether the user opted in to searching harness history (Codex
+   * `config.toml` trust rows, Claude Code transcripts, ...) for project
+   * folders, mirroring the per-harness discovery switch in
+   * `docs/action-map/settings-and-projects.md`.
+   */
+  search_project_folders: boolean;
+  /**
+   * RFC 3339 timestamp of the save, for a support report; not read by any
+   * decision in the app.
+   */
+  saved_at: string;
+}

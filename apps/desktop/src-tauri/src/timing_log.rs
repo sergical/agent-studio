@@ -172,7 +172,7 @@ pub async fn time_command_blocking<T: Send + 'static>(
 /// `JoinError` (the task panicked or was cancelled) becomes an `Err`
 /// carrying the panic message instead of a `spawn_blocking(..).await.unwrap()`
 /// that would itself panic on the calling thread.
-fn join_result_to_err<T>(
+pub(crate) fn join_result_to_err<T>(
     command: &str,
     joined: Result<Result<T, String>, tauri::Error>,
 ) -> Result<T, String> {

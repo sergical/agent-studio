@@ -315,6 +315,11 @@ pub struct ForkRegistry {
     /// sanitized and sent to Sentry only once this is `true`.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub error_reporting_enabled: bool,
+    /// The first-run screen's saved choice - see `harness_first_run`.
+    /// Absent means the screen has never been completed, so the app shows
+    /// it again on the next launch.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub harnesses: Option<super::harness_first_run::HarnessesChoice>,
     /// Every top-level key this build doesn't know about. Keeps a write from
     /// erasing a field a newer or older build added - the file is shared
     /// with the CLI and with whichever app version last wrote it.
@@ -360,6 +365,7 @@ impl Default for ForkRegistry {
             projects: TrackedProjects::default(),
             discovery: DiscoverySources::default(),
             error_reporting_enabled: false,
+            harnesses: None,
             unknown: serde_json::Map::new(),
         }
     }

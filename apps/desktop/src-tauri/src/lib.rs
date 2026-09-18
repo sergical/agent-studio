@@ -334,6 +334,10 @@ pub fn run() {
             skills::skill_refresh::get_discovery_sources,
             skills::skill_refresh::set_discovery_source,
             skills::skill_project_folders::list_project_folders,
+            // First-run harness detection (unit 3.2)
+            skills::harness_first_run::detect_harnesses,
+            skills::harness_first_run::get_harnesses_choice,
+            skills::harness_first_run::save_harnesses_choice,
             // Agent runs and packs are deferred (unit 4.3): skill_agent_runner,
             // skill_run_target, skill_run_history, skill_pack, and skill_process still
             // compile and test, but none of their commands are registered here.

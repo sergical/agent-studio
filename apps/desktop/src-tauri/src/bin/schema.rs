@@ -10,11 +10,13 @@
 use schemars::generate::SchemaSettings;
 use schemars::JsonSchema;
 use skill_studio_core::dto::CommandHealth;
+use skill_studio_core::harness::HarnessReport;
 use skill_studio_core::skill_uses::{InvocationHeatmap, SkillInvocation, SkillTrigger};
 use skill_studio_core::tracked_projects::TrackedProjects;
 use skill_studio_lib::skills::add_method_defaults::AddMethodDefaults;
 use skill_studio_lib::skills::agents::AgentTarget;
 use skill_studio_lib::skills::github_skill_listing::GithubSkillListing;
+use skill_studio_lib::skills::harness_first_run::HarnessesChoice;
 use skill_studio_lib::skills::skill_dto::{
     AddSkillOutcome, AddSkillRequest, AddSkillResult, AddSkillsRequest, HarnessVisibilityTarget,
     InstallResult, LifecycleTarget, PaginatedSkillsResponse, SkillDetails, SkillEventDto,
@@ -64,6 +66,8 @@ struct WireTypes {
     project_folder: ProjectFolder,
     project_folder_source: ProjectFolderSource,
     command_health: CommandHealth,
+    harness_report: HarnessReport,
+    harnesses_choice: HarnessesChoice,
 }
 
 // This bin's entire job is writing the generated schema JSON to stdout for
