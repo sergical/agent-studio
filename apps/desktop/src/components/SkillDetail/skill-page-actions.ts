@@ -73,6 +73,15 @@ export function pullUpstreamToast(result: PullResult): Omit<Toast, "id"> {
 }
 
 /**
+ * The header Remove button's success toast: "Removed" plus the skill name,
+ * not "Updated N deployments" (unit 3.9b) - `removeSkill` takes exactly one
+ * deployment off disk, so a deployment count has nothing to count.
+ */
+export function removeSuccessToast(skillName: string): Omit<Toast, "id"> {
+  return { type: "success", title: "Removed", message: skillName };
+}
+
+/**
  * Runs `fn` with `setBusy` bracketing it, and reports a thrown error as an
  * error toast titled `errorTitle`. Every action below is this same shape.
  */
@@ -279,12 +288,9 @@ export function useSkillPageActions(
     });
     if (!confirmed) return;
     await runAction(addToast, setIsRemoving, "Remove failed", async () => {
-      const result = await removeSkill(globalRemovalTarget);
-      if (result.success) {
-        onRemoveComplete();
-      } else {
-        addToast({ type: "error", title: "Remove failed", message: result.error ?? undefined });
-      }
+      await removeSkill(globalRemovalTarget);
+      addToast(removeSuccessToast(skill.name));
+      onRemoveComplete();
     });
   };
 

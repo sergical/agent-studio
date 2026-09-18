@@ -35,6 +35,7 @@ import type {
   PaginatedSkillsResponse,
   ProjectFolder,
   PullResult,
+  RemoveOutcome,
   SkillDetails,
   SkillEvent,
   SkillSnapshot,
@@ -270,11 +271,12 @@ export async function importTrackedProjects(
 }
 
 /**
- * Remove a skill using npx skills CLI. `projectPath` is `null` for a global
- * removal, or the project directory to remove from - validated on the Rust
- * side against the current snapshot and used as the CLI's working directory.
+ * Remove one deployment through `skill_studio_core::ops::remove` (unit
+ * 3.9b): quarantines a Copy/Fork folder (see `quarantine_path`) or shells
+ * out for Dotagents/SkillsSh. Rejects on failure - unlike the old
+ * `InstallResult` shape, there is no `success`/`error` pair to check.
  */
-export async function removeSkill(target: LifecycleTarget): Promise<InstallResult> {
+export async function removeSkill(target: LifecycleTarget): Promise<RemoveOutcome> {
   return callCommand("remove_skill", { target });
 }
 

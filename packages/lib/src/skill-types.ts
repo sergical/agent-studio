@@ -53,6 +53,7 @@ export type {
   PaginatedSkillsResponse,
   SkillSearchResult,
   PullResult,
+  RemoveOutcome,
   SkillDetails,
   SkillEventDto,
   SkillEventDto as SkillEvent,
