@@ -579,6 +579,27 @@ fn publish_skill_snapshot(
     Ok(built)
 }
 
+/// A partial scan (`built.scan_partial`) keeps whatever `ops::scan` managed
+/// to read this run, but the roots it could not read contribute nothing -
+/// `store_skill_snapshot` folds in the previous snapshot's skills so a
+/// transient failure (a lease held elsewhere, one unreadable root) never
+/// makes the published list shrink. `built`'s own rows win on a name
+/// collision: they are this run's freshest read of that skill.
+fn merge_partial_scan_skills(
+    built: Vec<InstalledSkill>,
+    previous: &[InstalledSkill],
+) -> Vec<InstalledSkill> {
+    let mut by_name: BTreeMap<String, InstalledSkill> = previous
+        .iter()
+        .cloned()
+        .map(|skill| (skill.name.clone(), skill))
+        .collect();
+    for skill in built {
+        by_name.insert(skill.name.clone(), skill);
+    }
+    by_name.into_values().collect()
+}
+
 fn store_skill_snapshot(
     state: &SkillRefreshState,
     mut built: SkillSnapshot,
@@ -587,6 +608,11 @@ fn store_skill_snapshot(
         .snapshot
         .write()
         .map_err(|e| format!("snapshot lock poisoned: {e}"))?;
+    if built.scan_partial {
+        if let Some(current) = guard.as_ref() {
+            built.skills = merge_partial_scan_skills(built.skills, &current.skills);
+        }
+    }
     built.revision = match guard.as_ref() {
         Some(current) => current
             .revision
