@@ -614,9 +614,9 @@ fn schema_regenerates_the_checked_in_snapshot() {
 /// Expectation: the scan still resolves `opencode_config_root` under the
 /// fixture (`ScopeArgs::resolve`'s `--fixture` arm now uses
 /// `opencode_config_dir_under`, not the env-aware `opencode_config_dir`),
-/// so epsilon's OpenCode deployment still shows disabled.
+/// so epsilon's `OpenCode` deployment still shows disabled.
 /// Failure here would mean a `--fixture` scan on a machine with either
-/// variable set reads the real user's OpenCode config instead of the
+/// variable set reads the real user's `OpenCode` config instead of the
 /// fixture's, exactly the bug this test guards against.
 #[test]
 fn a_fixture_scan_reads_opencode_config_under_the_fixture_even_with_xdg_config_home_set() {

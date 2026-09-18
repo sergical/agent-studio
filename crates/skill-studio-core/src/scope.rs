@@ -80,12 +80,12 @@ pub struct RuntimeScope {
     /// cache. `None` means the operations that need it fail with
     /// [`ErrorCode::InvalidScope`]. Phase 1 and 2 operations never read it.
     pub data_root: Option<PathBuf>,
-    /// Directory OpenCode's own `opencode.json`/`opencode.jsonc` lives in.
+    /// Directory `OpenCode`'s own `opencode.json`/`opencode.jsonc` lives in.
     /// `None` means the plain default, `<home_root>/.config/opencode`: an
     /// adapter that wants `XDG_CONFIG_HOME`/`OPENCODE_CONFIG_DIR` honored
     /// resolves them itself (see the host's `opencode_config_dir`) and sets
     /// this field, since the core reads no environment variable. Read by
-    /// [`crate::ops::scan`] for OpenCode's native per-skill deny switch.
+    /// [`crate::ops::scan`] for `OpenCode`'s native per-skill deny switch.
     pub opencode_config_root: Option<PathBuf>,
     /// Codex's own directory, in place of `home_root/.codex`. `None` keeps
     /// the default. The adapter is the one place allowed to read

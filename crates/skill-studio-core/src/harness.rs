@@ -125,7 +125,7 @@ pub enum DisableMechanism {
     ClaudeSkillOverrides,
     /// Codex `config.toml` `[[skills.config]]`.
     CodexSkillsConfig,
-    /// OpenCode `opencode.json` `permission.skill.<name> = "deny"`. The v2
+    /// `OpenCode` `opencode.json` `permission.skill.<name> = "deny"`. The v2
     /// skills doc page describes deny as `{ action, resource, effect }`, but
     /// that shape is the runtime ask/approve protocol
     /// (`packages/schema/src/permission.ts`, `PermissionV2.Rule`), not what

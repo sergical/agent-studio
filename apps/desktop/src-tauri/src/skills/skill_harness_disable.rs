@@ -626,7 +626,7 @@ pub fn set_harness_enabled_with(
             if codex_skill_md_paths.is_empty() {
                 return Err(format!("No Codex-visible deployment found for \"{name}\""));
             }
-            let rt = super::core_runtime::build_runtime_write_at(home.to_path_buf(), data_root)?;
+            let rt = super::core_runtime::build_runtime_write_at(home, data_root)?;
             let ctx = skill_studio_core::ports::OpContext::uncancellable(
                 skill_studio_core::identity::CorrelationId(ulid::Ulid::new().to_string()),
             );
@@ -1034,7 +1034,7 @@ mod tests {
     }
 
     /// Serializes and confines every test in this module that reads or
-    /// writes OpenCode config through `skill_studio_host::opencode_config_dir`.
+    /// writes `OpenCode` config through `skill_studio_host::opencode_config_dir`.
     /// That resolver checks the process-global `XDG_CONFIG_HOME`/
     /// `OPENCODE_CONFIG_DIR` env vars before falling back to `home` -
     /// unset on a developer machine, but GitHub's `ubuntu-latest` runners
@@ -1058,6 +1058,9 @@ mod tests {
     /// still holding the guard's lock, instead of racing another guarded
     /// test between the overwrite and the guard's own pin.
     fn pin_opencode_env(home: &Path) {
+        // SAFETY: every caller holds `OpencodeHomeGuard`'s lock, which
+        // serializes every test in this module that touches these vars.
+        #[allow(unsafe_code)]
         unsafe {
             std::env::set_var("XDG_CONFIG_HOME", home.join(".config"));
             std::env::remove_var("OPENCODE_CONFIG_DIR");
@@ -1070,7 +1073,7 @@ mod tests {
             let lock = LOCK
                 .get_or_init(|| std::sync::Mutex::new(()))
                 .lock()
-                .unwrap_or_else(|p| p.into_inner());
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
             let prev_xdg_config_home = std::env::var_os("XDG_CONFIG_HOME");
             let prev_opencode_config_dir = std::env::var_os("OPENCODE_CONFIG_DIR");
             pin_opencode_env(home);
@@ -1084,6 +1087,10 @@ mod tests {
 
     impl Drop for OpencodeHomeGuard {
         fn drop(&mut self) {
+            // SAFETY: `self._lock` is still held for the whole body of
+            // `drop`, serializing every test in this module that touches
+            // these vars.
+            #[allow(unsafe_code)]
             unsafe {
                 match self.prev_xdg_config_home.take() {
                     Some(v) => std::env::set_var("XDG_CONFIG_HOME", v),
@@ -1581,6 +1588,9 @@ mod tests {
         let unrelated = tmp.path().join("unrelated-xdg-config");
 
         let _guard = OpencodeHomeGuard::new(&home);
+        // SAFETY: `_guard` holds `OpencodeHomeGuard`'s lock, serializing
+        // every test in this module that touches this var.
+        #[allow(unsafe_code)]
         unsafe {
             std::env::set_var("XDG_CONFIG_HOME", &unrelated);
         }

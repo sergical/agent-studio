@@ -1558,8 +1558,7 @@ impl DisableSources {
         codex_home: &Path,
     ) -> Self {
         let opencode_config_dir = opencode_config_root
-            .map(Path::to_path_buf)
-            .unwrap_or_else(|| home.join(".config").join("opencode"));
+            .map_or_else(|| home.join(".config").join("opencode"), Path::to_path_buf);
         DisableSources {
             codex_disabled_skill_md: read_codex_disabled_skill_md_paths(fs, codex_home),
             opencode_denied_skills: crate::opencode_config::read_denied_patterns(

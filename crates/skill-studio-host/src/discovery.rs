@@ -374,7 +374,7 @@ fn cursor_workspace_folder(path: &Path) -> Option<PathBuf> {
     url::Url::parse(folder).ok()?.to_file_path().ok()
 }
 
-/// OpenCode's config directory (holds `opencode.json`/`opencode.jsonc`) for
+/// `OpenCode`'s config directory (holds `opencode.json`/`opencode.jsonc`) for
 /// the real user home: `OPENCODE_CONFIG_DIR` overrides it outright;
 /// otherwise `$XDG_CONFIG_HOME/opencode`, or `<home>/.config/opencode` when
 /// `XDG_CONFIG_HOME` is unset. Matches `packages/core/src/global.ts`
@@ -385,7 +385,7 @@ fn cursor_workspace_folder(path: &Path) -> Option<PathBuf> {
 ///
 /// Use this only when `home` is the real user home. A fixture or explicit
 /// `--home` scope must use [`opencode_config_dir_under`] instead, or a
-/// harness scan silently reads/writes the real user's OpenCode config when
+/// harness scan silently reads/writes the real user's `OpenCode` config when
 /// `XDG_CONFIG_HOME`/`OPENCODE_CONFIG_DIR` happen to be set.
 pub fn opencode_config_dir(home: &Path) -> PathBuf {
     if let Some(dir) = std::env::var_os("OPENCODE_CONFIG_DIR") {
@@ -399,7 +399,7 @@ pub fn opencode_config_dir(home: &Path) -> PathBuf {
     }
 }
 
-/// OpenCode's config directory under an arbitrary `root`, ignoring
+/// `OpenCode`'s config directory under an arbitrary `root`, ignoring
 /// `XDG_CONFIG_HOME`/`OPENCODE_CONFIG_DIR` entirely: always `<root>/.config/opencode`.
 ///
 /// Use this for fixture scopes and any explicit `--home`/`--fixture`
@@ -1373,7 +1373,9 @@ mod tests {
 
     #[test]
     fn opencode_rows_from_every_channel_database_are_discovered() {
-        let _guard = xdg_env_lock().lock().unwrap_or_else(|p| p.into_inner());
+        let _guard = xdg_env_lock()
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         let tmp = tempfile::tempdir().unwrap();
         let home = tmp.path();
         let root = opencode_root(home);
@@ -1392,7 +1394,9 @@ mod tests {
 
     #[test]
     fn legacy_opencode_project_json_is_discovered_without_a_database() {
-        let _guard = xdg_env_lock().lock().unwrap_or_else(|p| p.into_inner());
+        let _guard = xdg_env_lock()
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         let tmp = tempfile::tempdir().unwrap();
         let home = tmp.path();
         let root = opencode_root(home);
@@ -1405,7 +1409,9 @@ mod tests {
 
     #[test]
     fn opencode_project_in_database_and_legacy_json_is_reported_once() {
-        let _guard = xdg_env_lock().lock().unwrap_or_else(|p| p.into_inner());
+        let _guard = xdg_env_lock()
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         let tmp = tempfile::tempdir().unwrap();
         let home = tmp.path();
         let root = opencode_root(home);
@@ -1419,7 +1425,9 @@ mod tests {
 
     #[test]
     fn unreadable_and_foreign_databases_are_skipped() {
-        let _guard = xdg_env_lock().lock().unwrap_or_else(|p| p.into_inner());
+        let _guard = xdg_env_lock()
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         let tmp = tempfile::tempdir().unwrap();
         let home = tmp.path();
         let root = opencode_root(home);
@@ -1440,7 +1448,9 @@ mod tests {
 
     #[test]
     fn closed_opencode_database_is_read_without_creating_or_changing_files() {
-        let _guard = xdg_env_lock().lock().unwrap_or_else(|p| p.into_inner());
+        let _guard = xdg_env_lock()
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         let tmp = tempfile::tempdir().unwrap();
         let home = tmp.path();
         let root = opencode_root(home);
@@ -1465,11 +1475,13 @@ mod tests {
     /// touched.
     /// Failure here would mean a user who sets either var (or runs a
     /// `--user` systemd session, which sets both) gets an empty inventory
-    /// and no way to disable a skill for OpenCode.
+    /// and no way to disable a skill for `OpenCode`.
     #[test]
     fn opencode_reader_honours_xdg_data_home_and_config_home_or_names_the_default_path_read_instead(
     ) {
-        let _guard = xdg_env_lock().lock().unwrap_or_else(|p| p.into_inner());
+        let _guard = xdg_env_lock()
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         let tmp = tempfile::tempdir().unwrap();
         let home = tmp.path();
         let xdg_data = tmp.path().join("xdg-data");
@@ -1484,6 +1496,9 @@ mod tests {
 
         let previous_data = std::env::var_os("XDG_DATA_HOME");
         let previous_config = std::env::var_os("XDG_CONFIG_HOME");
+        // SAFETY: `xdg_env_lock` above serializes every test in this module
+        // that touches these vars.
+        #[allow(unsafe_code)]
         unsafe {
             std::env::set_var("XDG_DATA_HOME", &xdg_data);
             std::env::set_var("XDG_CONFIG_HOME", &xdg_config);
@@ -1497,6 +1512,8 @@ mod tests {
             assert!(!home.join(OPENCODE_DATA_ROOT).exists());
             assert!(!home.join(".config").join("opencode").exists());
         });
+        // SAFETY: same as above - still under `xdg_env_lock`.
+        #[allow(unsafe_code)]
         unsafe {
             match previous_data {
                 Some(v) => std::env::set_var("XDG_DATA_HOME", v),
@@ -1515,11 +1532,13 @@ mod tests {
     /// Expectation: `opencode_config_dir_under(fixture)` still resolves to
     /// `<fixture>/.config/opencode` and starts with neither env value.
     /// Failure here would mean a `--fixture` scan reads or writes the real
-    /// user's OpenCode config instead of staying under the fixture.
+    /// user's `OpenCode` config instead of staying under the fixture.
     #[test]
     fn a_fixture_scope_keeps_opencode_config_under_the_fixture_or_names_the_real_directory_it_would_write(
     ) {
-        let _guard = xdg_env_lock().lock().unwrap_or_else(|p| p.into_inner());
+        let _guard = xdg_env_lock()
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         let tmp = tempfile::tempdir().unwrap();
         let fixture = tmp.path().join("fixture-home");
         let xdg_config = tmp.path().join("xdg-config");
@@ -1527,6 +1546,9 @@ mod tests {
 
         let previous_xdg_config = std::env::var_os("XDG_CONFIG_HOME");
         let previous_opencode_config_dir = std::env::var_os("OPENCODE_CONFIG_DIR");
+        // SAFETY: `xdg_env_lock` above serializes every test in this module
+        // that touches these vars.
+        #[allow(unsafe_code)]
         unsafe {
             std::env::set_var("XDG_CONFIG_HOME", &xdg_config);
             std::env::set_var("OPENCODE_CONFIG_DIR", &opencode_config_dir_env);
@@ -1537,6 +1559,8 @@ mod tests {
             assert!(!resolved.starts_with(&xdg_config));
             assert!(!resolved.starts_with(&opencode_config_dir_env));
         });
+        // SAFETY: same as above - still under `xdg_env_lock`.
+        #[allow(unsafe_code)]
         unsafe {
             match previous_xdg_config {
                 Some(v) => std::env::set_var("XDG_CONFIG_HOME", v),
@@ -1551,17 +1575,19 @@ mod tests {
     }
 
     /// Flow: `XDG_DATA_HOME` points at a temp directory that is not `home`,
-    /// and OpenCode's database lives under it.
+    /// and `OpenCode`'s database lives under it.
     /// Expectation: `opencode_worktrees` (the project-worktree scan) and
-    /// `skill_use_watch_paths` (the OpenCode disk watch) both resolve to the
+    /// `skill_use_watch_paths` (the `OpenCode` disk watch) both resolve to the
     /// XDG override, matching `opencode_databases`; the default
     /// `home`-relative data dir stays untouched.
     /// Failure here would mean a user who sets `XDG_DATA_HOME` gets projects
-    /// discovered from the wrong OpenCode install, or a watch that never
+    /// discovered from the wrong `OpenCode` install, or a watch that never
     /// fires when the real database changes.
     #[test]
     fn opencode_worktrees_and_watches_follow_xdg_data_home_or_names_the_legacy_path() {
-        let _guard = xdg_env_lock().lock().unwrap_or_else(|p| p.into_inner());
+        let _guard = xdg_env_lock()
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         let tmp = tempfile::tempdir().unwrap();
         let home = tmp.path();
         let xdg_data = tmp.path().join("xdg-data");
@@ -1571,6 +1597,9 @@ mod tests {
         drop(opencode_db(&data_root.join("opencode.db"), &[&project]));
 
         let previous_data = std::env::var_os("XDG_DATA_HOME");
+        // SAFETY: `xdg_env_lock` above serializes every test in this module
+        // that touches this var.
+        #[allow(unsafe_code)]
         unsafe {
             std::env::set_var("XDG_DATA_HOME", &xdg_data);
         }
@@ -1583,6 +1612,8 @@ mod tests {
                 .any(|w| w.path == home.join(OPENCODE_DATA_ROOT)));
             assert!(!home.join(OPENCODE_DATA_ROOT).exists());
         });
+        // SAFETY: same as above - still under `xdg_env_lock`.
+        #[allow(unsafe_code)]
         unsafe {
             match previous_data {
                 Some(v) => std::env::set_var("XDG_DATA_HOME", v),
@@ -1594,7 +1625,9 @@ mod tests {
 
     #[test]
     fn live_opencode_database_rows_in_the_wal_are_read_without_changing_files() {
-        let _guard = xdg_env_lock().lock().unwrap_or_else(|p| p.into_inner());
+        let _guard = xdg_env_lock()
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         let tmp = tempfile::tempdir().unwrap();
         let home = tmp.path();
         let root = opencode_root(home);
@@ -1624,7 +1657,9 @@ mod tests {
     /// connection open, so the discovery connection is the last one to close.
     #[test]
     fn leftover_opencode_wal_is_read_without_changing_the_database_or_wal() {
-        let _guard = xdg_env_lock().lock().unwrap_or_else(|p| p.into_inner());
+        let _guard = xdg_env_lock()
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         let tmp = tempfile::tempdir().unwrap();
         let home = tmp.path();
         let root = opencode_root(home);

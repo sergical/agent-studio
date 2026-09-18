@@ -129,7 +129,7 @@
           "const": "codex_skills_config"
         },
         {
-          "description": "OpenCode `opencode.json` `permission.skill.<name> = \"deny\"`. The v2\nskills doc page describes deny as `{ action, resource, effect }`, but\nthat shape is the runtime ask/approve protocol\n(`packages/schema/src/permission.ts`, `PermissionV2.Rule`), not what\n`opencode.json` holds; the config-file schema\n(`packages/core/src/v1/config/permission.ts`) still decodes a bare\n`Action` string per skill, confirmed in `opencode_config.rs`'s module\ndoc comment. `opencode.jsonc` is detected but never written.",
+          "description": "`OpenCode` `opencode.json` `permission.skill.<name> = \"deny\"`. The v2\nskills doc page describes deny as `{ action, resource, effect }`, but\nthat shape is the runtime ask/approve protocol\n(`packages/schema/src/permission.ts`, `PermissionV2.Rule`), not what\n`opencode.json` holds; the config-file schema\n(`packages/core/src/v1/config/permission.ts`) still decodes a bare\n`Action` string per skill, confirmed in `opencode_config.rs`'s module\ndoc comment. `opencode.jsonc` is detected but never written.",
           "type": "string",
           "const": "opencode_permission"
         },

@@ -30,14 +30,14 @@ pub(crate) fn is_opencode_database_name(name: &str) -> bool {
         || (name.starts_with("opencode-") && Path::new(name).extension() == Some("db".as_ref()))
 }
 
-/// OpenCode's data directory: `$XDG_DATA_HOME/opencode` when
+/// `OpenCode`'s data directory: `$XDG_DATA_HOME/opencode` when
 /// `XDG_DATA_HOME` is set and non-empty, else `<home>/.local/share/opencode`.
 /// Matches `packages/core/src/global.ts` (`anomalyco/opencode`, commit
 /// `83452558f70207ddaeaffce68b36ebac77019fae` on `dev`): `Global.Path.data`
 /// joins the `xdg-basedir` package's `xdgData` (which itself falls back to
 /// `~/.local/share`) with `"opencode"`.
 ///
-/// The single resolver every OpenCode data-dir reader shares: the database
+/// The single resolver every `OpenCode` data-dir reader shares: the database
 /// lookup (`opencode_databases`), the project-worktree scan
 /// (`discovery::opencode_worktrees`), and the skill-use reader's root and
 /// disk watch (`skill_uses::opencode_root`, `SOURCES`'s `OPEN_CODE` watch).
@@ -142,7 +142,7 @@ pub(crate) fn table_exists(conn: &Connection, table: &str) -> rusqlite::Result<b
 /// `opencode_databases(home)`/`opencode_config_dir(home)` call can read the
 /// override set by a mutating test and look at the wrong directory. Mirrors
 /// `core_scan_parity.rs`'s `home_env_lock` for `HOME`. Shared across
-/// `discovery.rs` and `skill_uses.rs` so every OpenCode XDG test in the
+/// `discovery.rs` and `skill_uses.rs` so every `OpenCode` XDG test in the
 /// crate serializes on the same lock.
 #[cfg(test)]
 pub(crate) fn xdg_env_lock() -> &'static std::sync::Mutex<()> {
@@ -159,7 +159,7 @@ mod tests {
     /// Expectation: the immutable open reads it correctly and creates no
     /// `-wal` or `-shm` sidecar.
     /// Failure here would mean Skill Studio writes next to a database
-    /// OpenCode itself might still open, corrupting or confusing it.
+    /// `OpenCode` itself might still open, corrupting or confusing it.
     #[test]
     fn opencode_sqlite_reader_creates_no_wal_or_shm_sidecar_on_a_closed_database_or_names_the_created_file(
     ) {

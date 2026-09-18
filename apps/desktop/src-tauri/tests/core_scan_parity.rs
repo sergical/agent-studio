@@ -657,7 +657,9 @@ fn desktop_assembly_matches_core_scan_for_every_fixture() {
             .unwrap_or_else(|e| panic!("materialize {name}: {e}"));
 
         let desktop = {
-            let _guard = home_env_lock().lock().unwrap_or_else(|p| p.into_inner());
+            let _guard = home_env_lock()
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
             run_desktop(name, &home)
         };
         let core = run_core(name, &home);
@@ -678,10 +680,10 @@ fn desktop_assembly_matches_core_scan_for_every_fixture() {
 
 /// Flow: `disabled`'s `opencode.json` deny rule lives under a custom
 /// `XDG_CONFIG_HOME`, not the plain `home/.config` default - the condition
-/// that moves OpenCode's config directory on a Linux desktop, where
+/// that moves `OpenCode`'s config directory on a Linux desktop, where
 /// `XDG_CONFIG_HOME` is far more often already set than on a developer's
 /// macOS machine. Before `RuntimeScope::opencode_config_root` existed,
-/// `ops::scan` resolved OpenCode's config at the hard-coded
+/// `ops::scan` resolved `OpenCode`'s config at the hard-coded
 /// `home/.config/opencode` regardless of `XDG_CONFIG_HOME`, while the
 /// desktop's assembly overlay already resolved it through
 /// `skill_studio_host::opencode_config_dir` - the same override-aware rule
@@ -716,13 +718,20 @@ fn opencode_config_dir_resolves_the_same_on_linux_and_macos_rules_or_names_the_d
     )
     .unwrap();
 
-    let _guard = home_env_lock().lock().unwrap_or_else(|p| p.into_inner());
+    let _guard = home_env_lock()
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
     let previous = std::env::var("XDG_CONFIG_HOME").ok();
+    // SAFETY: `home_env_lock` above serializes every test in this file that
+    // touches this var.
+    #[allow(unsafe_code)]
     unsafe {
         std::env::set_var("XDG_CONFIG_HOME", &xdg_config_home);
     }
     let desktop = run_desktop("disabled", &home);
     let core = run_core("disabled", &home);
+    // SAFETY: same as above - still under `home_env_lock`.
+    #[allow(unsafe_code)]
     unsafe {
         match &previous {
             Some(v) => std::env::set_var("XDG_CONFIG_HOME", v),

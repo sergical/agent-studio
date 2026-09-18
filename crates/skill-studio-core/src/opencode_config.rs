@@ -1,15 +1,15 @@
-//! OpenCode's own per-skill disable switch: `opencode.json`
+//! `OpenCode`'s own per-skill disable switch: `opencode.json`
 //! `permission.skill.<name-or-glob> = "deny"`.
 //!
 //! Ported from the desktop app's `skills/opencode_skill_permission.rs`,
-//! which this module replaces. OpenCode also accepts `opencode.jsonc` (with
+//! which this module replaces. `OpenCode` also accepts `opencode.jsonc` (with
 //! comments); this module never parses or writes that format, so a config
 //! directory holding only a `.jsonc` file is reported as unreadable
 //! ([`OpencodeConfigKind::Jsonc`]) rather than risking a write that drops
 //! the user's comments.
 //!
 //! The config directory itself is not resolved here: `~/.config/opencode`
-//! is only OpenCode's *default*, and `XDG_CONFIG_HOME`/`OPENCODE_CONFIG_DIR`
+//! is only `OpenCode`'s *default*, and `XDG_CONFIG_HOME`/`OPENCODE_CONFIG_DIR`
 //! move it (`docs/action-map/harnesses/opencode.md`). Per this crate's own
 //! rule against reading environment variables, the caller (the host
 //! adapter, `skill_studio_host::opencode_config_dir`) resolves the env
@@ -49,7 +49,7 @@ const OPENCODE_CONFIG_SCHEMA: &str = "https://opencode.ai/config.json";
 
 /// The one action string this module ever writes. `opencode.json` accepts
 /// `"ask"` and `"allow"` too (`ConfigPermissionV1.Action`), but Skill
-/// Studio's only native OpenCode switch is the deny rule.
+/// Studio's only native `OpenCode` switch is the deny rule.
 const DENY: &str = "deny";
 
 /// `<config_dir>/opencode.json`.
@@ -63,7 +63,7 @@ pub fn opencode_jsonc_path(config_dir: &Path) -> PathBuf {
     config_dir.join("opencode.jsonc")
 }
 
-/// Which OpenCode config format is present, so a caller can tell the user
+/// Which `OpenCode` config format is present, so a caller can tell the user
 /// to hand-edit a `.jsonc` file rather than silently showing no disables.
 #[derive(
     Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize, schemars::JsonSchema,
@@ -76,7 +76,7 @@ pub enum OpencodeConfigKind {
     Jsonc,
 }
 
-/// Which config file exists, if any - `None` when neither does (OpenCode
+/// Which config file exists, if any - `None` when neither does (`OpenCode`
 /// isn't configured, or uses its defaults).
 pub fn detect_config_kind(fs: &dyn ScopeFs, config_dir: &Path) -> Option<OpencodeConfigKind> {
     if fs.symlink_metadata(&opencode_json_path(config_dir)).is_ok() {
@@ -159,7 +159,7 @@ pub fn pattern_matches(pattern: &str, name: &str) -> bool {
 /// checks the *canonical* parent of the write path against the scope, so an
 /// unresolved symlinked `config_dir` would put the write's canonical parent
 /// outside `<config_dir>/..` and get refused even though the write is well
-/// inside the intended directory. `config_dir` not existing yet (OpenCode
+/// inside the intended directory. `config_dir` not existing yet (`OpenCode`
 /// never configured) is not an error - there is nothing on disk to follow,
 /// so it is used as given and created fresh under its own (unresolved) path.
 fn resolve_config_dir(fs: &dyn ScopeFs, config_dir: &Path) -> Result<PathBuf, CoreError> {
@@ -174,10 +174,10 @@ fn resolve_config_dir(fs: &dyn ScopeFs, config_dir: &Path) -> Result<PathBuf, Co
 /// preserving every other key and writing back pretty-printed. Creates the
 /// file with the documented `$schema` when missing. Refuses when only
 /// `opencode.jsonc` exists, since this module must not silently create a
-/// `.json` sibling OpenCode would then have to merge, nor rewrite the
+/// `.json` sibling `OpenCode` would then have to merge, nor rewrite the
 /// `.jsonc` and drop its comments.
 ///
-/// `config_dir` is the already-resolved OpenCode config directory
+/// `config_dir` is the already-resolved `OpenCode` config directory
 /// (`XDG_CONFIG_HOME`/`OPENCODE_CONFIG_DIR` already applied by the caller),
 /// which may sit outside the app's own home - so this takes its own
 /// home-only scope rather than reusing one built from the app's home.
@@ -188,7 +188,7 @@ fn resolve_config_dir(fs: &dyn ScopeFs, config_dir: &Path) -> Result<PathBuf, Co
 /// confining `config_dir` as a path directly under its own scope's home
 /// would always fail, since a scope's home is never "in scope" of itself
 /// one level up. `config_dir`'s parent is expected to exist even when
-/// `config_dir` (OpenCode's config directory) does not yet - e.g.
+/// `config_dir` (`OpenCode`'s config directory) does not yet - e.g.
 /// `~/.config` exists before `~/.config/opencode` is ever created.
 pub fn set_skill_denied(
     leases: &dyn LeaseProvider,
@@ -362,7 +362,7 @@ const InputObject = Schema.StructWithRest(
     /// module writes for a single-pattern deny - not an object with an
     /// `effect` field.
     /// Failure here (the source fixture no longer declaring `skill` under
-    /// `Rule`, or `Action` no longer listing `"deny"`) would mean OpenCode
+    /// `Rule`, or `Action` no longer listing `"deny"`) would mean `OpenCode`
     /// v2 silently ignores the key the app writes today.
     #[test]
     fn opencode_deny_rule_shape_matches_the_v2_source_or_names_the_shape_the_code_writes_instead() {

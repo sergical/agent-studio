@@ -1,3 +1,8 @@
+// Integration test binaries aren't covered by the lib crate's
+// `cfg_attr(test, allow(...))`: this file compiles as its own crate, so
+// the same allow needs to be declared here too.
+#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+
 //! Real-disk integration tests for [`skill_studio_core::opencode_config`]'s
 //! lease-guarded write path.
 //!
@@ -92,7 +97,7 @@ fn clearing_the_last_denied_skill_removes_the_permission_key() {
 /// otherwise refuse the write, since the target sits outside
 /// `~/.config`.
 /// Failure here would mean a dotfiles user can never disable a skill for
-/// OpenCode from Skill Studio.
+/// `OpenCode` from Skill Studio.
 #[cfg(unix)]
 #[test]
 fn opencode_deny_write_follows_a_symlinked_config_dir_or_names_the_refused_write() {
@@ -114,7 +119,7 @@ fn opencode_deny_write_follows_a_symlinked_config_dir_or_names_the_refused_write
 /// Flow: only `opencode.jsonc` exists in the config directory (no `.json`
 /// sibling).
 /// Expectation: the write refuses rather than creating a `.json` file
-/// OpenCode would then have to merge, or silently doing nothing.
+/// `OpenCode` would then have to merge, or silently doing nothing.
 #[test]
 fn refuses_to_write_when_only_jsonc_exists() {
     let tmp = tempfile::tempdir().unwrap();

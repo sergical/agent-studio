@@ -238,7 +238,7 @@ struct UseSource {
 /// source's uses.
 struct SourceWatch {
     /// Resolved from `home`. Most sources just join a fixed relative path
-    /// (e.g. [`claude_projects_watch_dir`]); OpenCode's
+    /// (e.g. [`claude_projects_watch_dir`]); `OpenCode`'s
     /// ([`opencode_data_watch_dir`]) instead defers to
     /// `opencode_db::opencode_data_dir`, so a `XDG_DATA_HOME` override moves
     /// the watch along with the data it watches.
@@ -933,7 +933,7 @@ pub struct SkillUseWatchPath {
     pub recursive: bool,
 }
 
-/// The directories to watch for OpenCode skill-use changes, derived from
+/// The directories to watch for `OpenCode` skill-use changes, derived from
 /// `opencode_databases` (the same list the reader itself uses) rather than
 /// the data dir alone: the data dir is always included, so a newly created
 /// rotated `opencode*.db` is watched before it would even show up in
@@ -967,7 +967,7 @@ fn is_opencode_database_path_or_wal(databases: &[PathBuf], path: &Path) -> bool 
     })
 }
 
-/// True when a change at `path` counts as an OpenCode skill-use change: a
+/// True when a change at `path` counts as an `OpenCode` skill-use change: a
 /// `opencode*.db`/`-wal` file directly inside the data dir (the pattern
 /// [`is_opencode_database_or_wal`] matches, kept so a rotated file counts
 /// even before `opencode_databases` lists it), or `path` (or its `-wal`
@@ -1009,7 +1009,7 @@ pub fn skill_use_watch_paths(home: &Path) -> Vec<SkillUseWatchPath> {
 /// True when a change at `path` can change skill uses: `path` is under a
 /// recursive watch dir, or directly inside a non-recursive one, and the
 /// path relative to that dir passes the watch's `accepts`; or `path` is an
-/// OpenCode skill-use change per [`is_opencode_skill_use_change`].
+/// `OpenCode` skill-use change per [`is_opencode_skill_use_change`].
 pub fn is_skill_use_change(home: &Path, path: &Path) -> bool {
     SOURCES.iter().flat_map(|source| source.watch).any(|watch| {
         let dir = (watch.dir)(home);
@@ -2321,7 +2321,7 @@ mod tests {
         // every other OpenCode-env-reading test in the crate takes.
         let _guard = crate::opencode_db::xdg_env_lock()
             .lock()
-            .unwrap_or_else(|p| p.into_inner());
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         let home = PathBuf::from("/home/tester");
         let paths = skill_use_watch_paths(&home);
         assert!(paths.contains(&SkillUseWatchPath {
@@ -2361,7 +2361,7 @@ mod tests {
         // lock every other OpenCode-env-reading test in the crate takes.
         let _guard = crate::opencode_db::xdg_env_lock()
             .lock()
-            .unwrap_or_else(|p| p.into_inner());
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         let home = PathBuf::from("/home/tester");
         assert!(is_skill_use_change(
             &home,
@@ -2462,7 +2462,7 @@ mod tests {
     }
 
     /// Flow: `OPENCODE_DB` names an absolute path in a temp directory that
-    /// is not OpenCode's data dir, next to a sibling `other.db` it does not
+    /// is not `OpenCode`'s data dir, next to a sibling `other.db` it does not
     /// name.
     /// Expectation: the watch set (`skill_use_watch_paths`) contains that
     /// file's parent directory, and the change filter
@@ -2477,7 +2477,7 @@ mod tests {
     fn a_custom_opencode_db_path_is_watched_or_names_the_database_whose_edits_never_count() {
         let _guard = crate::opencode_db::xdg_env_lock()
             .lock()
-            .unwrap_or_else(|p| p.into_inner());
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         let tmp = tempfile::tempdir().unwrap();
         let home = tmp.path().join("home");
         fs::create_dir_all(&home).unwrap();
@@ -2489,6 +2489,9 @@ mod tests {
         fs::write(&sibling_db, b"").unwrap();
 
         let previous = std::env::var_os("OPENCODE_DB");
+        // SAFETY: `xdg_env_lock` above serializes every test in this module
+        // that touches this var.
+        #[allow(unsafe_code)]
         unsafe {
             std::env::set_var("OPENCODE_DB", &custom_db);
         }
@@ -2507,6 +2510,8 @@ mod tests {
             assert!(is_skill_use_change(&home, &custom_db));
             assert!(!is_skill_use_change(&home, &sibling_db));
         });
+        // SAFETY: same as above - still under `xdg_env_lock`.
+        #[allow(unsafe_code)]
         unsafe {
             match previous {
                 Some(v) => std::env::set_var("OPENCODE_DB", v),
@@ -3574,7 +3579,7 @@ mod tests {
         fn skill_row_gives_one_user_use_with_project_from_session_v2() {
             let _guard = crate::opencode_db::xdg_env_lock()
                 .lock()
-                .unwrap_or_else(|p| p.into_inner());
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
             let (tmp, db_path) = temp_opencode_db_home();
             let home = tmp.path();
             {
@@ -3614,7 +3619,7 @@ mod tests {
         fn skill_row_without_session_v2_uses_session_directory() {
             let _guard = crate::opencode_db::xdg_env_lock()
                 .lock()
-                .unwrap_or_else(|p| p.into_inner());
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
             let (tmp, db_path) = temp_opencode_db_home();
             let home = tmp.path();
             {
@@ -3646,7 +3651,7 @@ mod tests {
         fn skill_tool_completed_gives_agent_use_and_error_gives_nothing() {
             let _guard = crate::opencode_db::xdg_env_lock()
                 .lock()
-                .unwrap_or_else(|p| p.into_inner());
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
             let (tmp, db_path) = temp_opencode_db_home();
             let home = tmp.path();
             {
@@ -3686,7 +3691,7 @@ mod tests {
         fn read_tool_on_known_skill_md_path_gives_file_read_others_give_nothing() {
             let _guard = crate::opencode_db::xdg_env_lock()
                 .lock()
-                .unwrap_or_else(|p| p.into_inner());
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
             let (tmp, db_path) = temp_opencode_db_home();
             let home = tmp.path();
             {
@@ -3736,7 +3741,7 @@ mod tests {
         fn part_read_row_with_file_path_uses_session_directory() {
             let _guard = crate::opencode_db::xdg_env_lock()
                 .lock()
-                .unwrap_or_else(|p| p.into_inner());
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
             let (tmp, db_path) = temp_opencode_db_home();
             let home = tmp.path();
             {
@@ -3768,7 +3773,7 @@ mod tests {
         fn second_refresh_with_no_change_reads_no_databases() {
             let _guard = crate::opencode_db::xdg_env_lock()
                 .lock()
-                .unwrap_or_else(|p| p.into_inner());
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
             let (tmp, db_path) = temp_opencode_db_home();
             let home = tmp.path();
             {
@@ -3798,7 +3803,7 @@ mod tests {
         fn a_later_row_is_counted_without_doubling_the_earlier_one() {
             let _guard = crate::opencode_db::xdg_env_lock()
                 .lock()
-                .unwrap_or_else(|p| p.into_inner());
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
             let (tmp, db_path) = temp_opencode_db_home();
             let home = tmp.path();
             {
@@ -3845,7 +3850,7 @@ mod tests {
         fn updating_a_row_in_place_gives_exactly_one_use() {
             let _guard = crate::opencode_db::xdg_env_lock()
                 .lock()
-                .unwrap_or_else(|p| p.into_inner());
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
             let (tmp, db_path) = temp_opencode_db_home();
             let home = tmp.path();
             {
@@ -3887,7 +3892,7 @@ mod tests {
         fn deleting_a_row_removes_its_use() {
             let _guard = crate::opencode_db::xdg_env_lock()
                 .lock()
-                .unwrap_or_else(|p| p.into_inner());
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
             let (tmp, db_path) = temp_opencode_db_home();
             let home = tmp.path();
             {
@@ -3939,7 +3944,7 @@ mod tests {
         fn same_row_id_in_two_databases_counts_once() {
             let _guard = crate::opencode_db::xdg_env_lock()
                 .lock()
-                .unwrap_or_else(|p| p.into_inner());
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
             let tmp = tempfile::tempdir().unwrap();
             let home = tmp.path();
             for name in ["opencode.db", "opencode-next.db"] {
@@ -3971,7 +3976,7 @@ mod tests {
         fn switched_off_source_reads_nothing_and_keeps_cached_uses() {
             let _guard = crate::opencode_db::xdg_env_lock()
                 .lock()
-                .unwrap_or_else(|p| p.into_inner());
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
             let (tmp, db_path) = temp_opencode_db_home();
             let home = tmp.path();
             {
@@ -4012,7 +4017,7 @@ mod tests {
         fn deleting_the_database_file_drops_its_entry() {
             let _guard = crate::opencode_db::xdg_env_lock()
                 .lock()
-                .unwrap_or_else(|p| p.into_inner());
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
             let (tmp, db_path) = temp_opencode_db_home();
             let home = tmp.path();
             {
@@ -4045,7 +4050,7 @@ mod tests {
         fn refresh_never_creates_wal_or_shm_sidecars() {
             let _guard = crate::opencode_db::xdg_env_lock()
                 .lock()
-                .unwrap_or_else(|p| p.into_inner());
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
             let (tmp, db_path) = temp_opencode_db_home();
             let home = tmp.path();
             {
@@ -4078,7 +4083,7 @@ mod tests {
         fn cache_round_trip_keeps_database_uses_and_a_files_only_cache_still_loads() {
             let _guard = crate::opencode_db::xdg_env_lock()
                 .lock()
-                .unwrap_or_else(|p| p.into_inner());
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
             let (tmp, db_path) = temp_opencode_db_home();
             let home = tmp.path();
             {
@@ -4118,7 +4123,7 @@ mod tests {
         fn a_row_with_a_null_time_created_is_skipped_and_the_other_row_still_counts() {
             let _guard = crate::opencode_db::xdg_env_lock()
                 .lock()
-                .unwrap_or_else(|p| p.into_inner());
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
             let (tmp, db_path) = temp_opencode_db_home();
             let home = tmp.path();
             {
