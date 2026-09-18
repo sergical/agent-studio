@@ -11,13 +11,24 @@
 use std::path::Path;
 use std::time::Duration;
 
-use skill_studio_core::ports::{LeaseHandle, LeaseKey, LeaseMode, LeaseProvider};
+use skill_studio_core::ports::{ExclusiveGuard, LeaseKey, LeaseMode, LeaseProvider};
 use skill_studio_host::FileLease;
 
 use super::core_runtime;
 
 /// Holds the write lease until dropped, releasing it.
-pub struct WriteLeaseGuard(#[allow(dead_code)] Box<dyn LeaseHandle>);
+pub struct WriteLeaseGuard(ExclusiveGuard);
+
+impl WriteLeaseGuard {
+    /// The proof-of-lease token for a nested write to the same root - e.g.
+    /// `write_fork_registry_locked`, which would otherwise need to take a
+    /// second, conflicting lease. Advisory locks don't nest within one
+    /// process, so anything writing the registry while this guard is held
+    /// must go through it instead of acquiring its own lease.
+    pub fn as_exclusive_guard(&self) -> &ExclusiveGuard {
+        &self.0
+    }
+}
 
 /// One lease per root, backed by a `FileLease` rooted at the same
 /// `<data_root>/leases` directory `build_runtime_write` uses for park and
@@ -54,7 +65,7 @@ impl WriteLease {
         let key = LeaseKey { canonical_root };
         self.lease
             .acquire(&[key], LeaseMode::Exclusive, Duration::ZERO)
-            .map(WriteLeaseGuard)
+            .map(|handle| WriteLeaseGuard(ExclusiveGuard::from_handle(handle)))
             .map_err(|e| match e.busy {
                 Some(busy) => format!(
                     "Another write is in progress (pid {}, held for {:?})",
@@ -97,10 +108,11 @@ mod tests {
         std::fs::create_dir_all(&home).unwrap();
 
         let write_lease = WriteLease::default();
-        let _guard = write_lease.try_acquire(&home).unwrap();
+        let guard = write_lease.try_acquire(&home).unwrap();
 
         let registry = super::super::skill_fork_registry::ForkRegistry::default();
-        let result = super::super::skill_fork_registry::write_fork_registry(&home, &registry);
+        let result =
+            super::super::skill_fork_registry::write_fork_registry_locked(&guard, &home, &registry);
         assert!(
             result.is_ok(),
             "writing the fork registry while the caller holds the root's write lease must \

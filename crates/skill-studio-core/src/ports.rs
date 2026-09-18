@@ -350,6 +350,17 @@ impl ExclusiveGuard {
     pub fn keys(&self) -> &[LeaseKey] {
         self.0.keys()
     }
+
+    /// Wraps an already-held exclusive [`LeaseHandle`] as proof-of-lease,
+    /// without acquiring a new one. For a caller that took its own exclusive
+    /// lease over a root through a different entry point (e.g. the desktop's
+    /// `WriteLease`) and then needs to call a core write helper that expects
+    /// this type - advisory locks don't nest within one process, so a second
+    /// `acquire` on the same root would report the caller's own lease as
+    /// busy.
+    pub fn from_handle(handle: Box<dyn LeaseHandle>) -> Self {
+        ExclusiveGuard(handle)
+    }
 }
 
 /// Acquires and releases leases.

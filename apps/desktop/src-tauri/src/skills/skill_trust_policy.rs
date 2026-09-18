@@ -10,7 +10,10 @@ use std::path::Path;
 use std::{error::Error, fmt};
 
 use super::skill_dto::{ParsedSkillSource, ParsedSkillSourceKind};
-use super::skill_fork_registry::{read_fork_registry, write_fork_registry};
+use super::skill_fork_registry::{
+    read_fork_registry, write_fork_registry, write_fork_registry_locked,
+};
+use super::write_lease::WriteLeaseGuard;
 
 /// Unique prefix so an untrusted-source error greps back to this module.
 pub const UNTRUSTED_DOTAGENTS_SOURCE_PREFIX: &str = "Untrusted dotagents source";
@@ -117,6 +120,22 @@ pub fn record_trusted_dotagents_source(home: &Path, identity: &str) -> Result<St
     Ok(normalized)
 }
 
+/// Same as `record_trusted_dotagents_source`, for a caller that already
+/// holds the per-root write lease.
+pub fn record_trusted_dotagents_source_locked(
+    guard: &WriteLeaseGuard,
+    home: &Path,
+    identity: &str,
+) -> Result<String, String> {
+    let normalized = normalize_confirmation_identity(identity)?;
+    let mut registry = read_fork_registry(home)?;
+    registry
+        .trusted_dotagents_sources
+        .insert(normalized.clone());
+    write_fork_registry_locked(guard, home, &registry)?;
+    Ok(normalized)
+}
+
 /// Record one explicit pack confirmation as one registry read and write.
 /// Callers must hold the per-root write lease so unrelated concurrent registry
 /// changes cannot be overwritten.
@@ -133,6 +152,25 @@ pub fn record_trusted_dotagents_sources(
         .trusted_dotagents_sources
         .extend(normalized.iter().cloned());
     write_fork_registry(home, &registry)?;
+    Ok(normalized)
+}
+
+/// Same as `record_trusted_dotagents_sources`, for a caller that already
+/// holds the per-root write lease.
+pub fn record_trusted_dotagents_sources_locked(
+    guard: &WriteLeaseGuard,
+    home: &Path,
+    identities: &[String],
+) -> Result<Vec<String>, String> {
+    let normalized = identities
+        .iter()
+        .map(|identity| normalize_confirmation_identity(identity))
+        .collect::<Result<Vec<_>, _>>()?;
+    let mut registry = read_fork_registry(home)?;
+    registry
+        .trusted_dotagents_sources
+        .extend(normalized.iter().cloned());
+    write_fork_registry_locked(guard, home, &registry)?;
     Ok(normalized)
 }
 

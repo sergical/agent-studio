@@ -1741,7 +1741,7 @@ pub async fn remove_skill(
     // delete, registry update, rebuild) so a concurrent fork/pull/unfork
     // can't race a removal - the lease isn't reentrant, so
     // `remove_forked_skill` must not acquire it again itself.
-    let _guard = write_lease.try_acquire(&home)?;
+    let guard = write_lease.try_acquire(&home)?;
 
     let snapshot = rebuild_fresh_lifecycle_snapshot(&app, &refresh_state)?;
     let (skill, deployment) = resolve_lifecycle_target(&snapshot, &target, "Remove")?;
@@ -1767,6 +1767,7 @@ pub async fn remove_skill(
         global && deployment.owner_kind == super::skill_ownership::LifecycleOwnerKind::Fork;
     if is_fork {
         return remove_forked_skill(
+            &guard,
             skill_name,
             deployment.id,
             deployment.path,
@@ -1794,6 +1795,7 @@ pub async fn remove_skill(
             |stage_root| std::fs::remove_dir_all(stage_root).map_err(|error| error.to_string()),
         )?;
         skill_trial::drop_trial_record(
+            &guard,
             &home,
             &deployment.id,
             &skill_name,
@@ -1847,7 +1849,9 @@ pub async fn remove_skill(
                 &deployment,
                 &copy_record,
                 &mut registry,
-                skill_fork_registry::write_fork_registry,
+                |home, registry| {
+                    skill_fork_registry::write_fork_registry_locked(&guard, home, registry)
+                },
             )?;
             skill_refresh::request_snapshot_rebuild(&app);
             return Ok(InstallResult {
@@ -1884,6 +1888,7 @@ pub async fn remove_skill(
     if output.status.success() {
         if let Some(home) = dirs::home_dir() {
             if let Err(e) = skill_trial::drop_trial_record(
+                &guard,
                 &home,
                 &deployment.id,
                 &skill_name,
@@ -1920,6 +1925,7 @@ pub async fn remove_skill(
 /// there's nothing for a CLI to remove - delete the directory directly and
 /// drop the fork-registry record and snapshot.
 fn remove_forked_skill(
+    guard: &super::write_lease::WriteLeaseGuard,
     skill_name: String,
     deployment_id: String,
     deployment_path: String,
@@ -1941,7 +1947,7 @@ fn remove_forked_skill(
         &deployment_id,
         Path::new(&deployment_path),
         &deployment_content_hash,
-        skill_fork_registry::write_fork_registry,
+        |home, registry| skill_fork_registry::write_fork_registry_locked(guard, home, registry),
     )?;
 
     skill_refresh::request_snapshot_rebuild(&app);
