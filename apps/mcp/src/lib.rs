@@ -79,6 +79,28 @@ fn build_runtime(with_history: bool) -> Result<Runtime, CoreError> {
     Runtime::new(&runtime_scope, ports)
 }
 
+/// The transport-free half of [`run_op`]: builds the `Runtime`, runs the
+/// operation, and returns the envelope, with no `RequestContext` and no
+/// progress notifications. Every tool goes through here, so a test that
+/// calls it runs exactly the code a tool call runs, minus the live
+/// transport peer it has no reason to stand up - which is how
+/// `apps/desktop/src-tauri/tests/park_parity.rs` drives the MCP surface.
+pub fn run_op_envelope<T: Outcome + serde::Serialize>(
+    operation: Operation,
+    with_history: bool,
+    call: impl FnOnce(&Runtime, &OpContext) -> Result<T, CoreError>,
+) -> ResultEnvelope<T> {
+    let correlation_id = CorrelationId(ulid::Ulid::new().to_string());
+    match build_runtime(with_history) {
+        Ok(rt) => {
+            let ctx = OpContext::uncancellable(correlation_id);
+            let result = call(&rt, &ctx);
+            ResultEnvelope::from_result(operation, &rt.scope, &ctx, result)
+        }
+        Err(err) => scope_error_envelope(operation, err, correlation_id),
+    }
+}
+
 /// Runs one core operation end to end for one tool call: builds a fresh
 /// `Runtime` from the environment, reports progress around the call when
 /// the caller supplied a progress token, and wraps the result in the same
@@ -91,7 +113,6 @@ async fn run_op<T: Outcome + serde::Serialize>(
     context: &RequestContext<RoleServer>,
     call: impl FnOnce(&Runtime, &OpContext) -> Result<T, CoreError>,
 ) -> CallToolResult {
-    let correlation_id = CorrelationId(ulid::Ulid::new().to_string());
     let progress_token = context.meta.get_progress_token();
     if let Some(token) = &progress_token {
         let _ = context
@@ -100,14 +121,7 @@ async fn run_op<T: Outcome + serde::Serialize>(
             .await;
     }
 
-    let envelope = match build_runtime(with_history) {
-        Ok(rt) => {
-            let ctx = OpContext::uncancellable(correlation_id);
-            let result = call(&rt, &ctx);
-            ResultEnvelope::from_result(operation, &rt.scope, &ctx, result)
-        }
-        Err(err) => scope_error_envelope(operation, err, correlation_id),
-    };
+    let envelope = run_op_envelope(operation, with_history, call);
 
     if let Some(token) = &progress_token {
         let _ = context
@@ -198,20 +212,6 @@ impl skill_studio_core::skill_update_check::PluginManifestLookup for NoGhLookup 
     ) -> Result<Option<String>, CoreError> {
         Ok(None)
     }
-}
-
-/// The same call the `park` tool method below makes - `build_runtime(true)`
-/// then `ops::park` - minus the `RequestContext`/progress-notification
-/// wrapping, which needs a live transport peer a test has no reason to
-/// stand up. A parity test that wants to prove the MCP server writes the
-/// same disk state as the CLI and the desktop calls this directly instead
-/// of spawning the binary over stdio.
-pub fn park_direct(
-    req: &skill_studio_core::dto::ParkRequest,
-) -> Result<skill_studio_core::dto::ParkOutcome, CoreError> {
-    let rt = build_runtime(true)?;
-    let ctx = OpContext::uncancellable(CorrelationId(ulid::Ulid::new().to_string()));
-    ops::park(&rt, &ctx, req)
 }
 
 #[tool_router]

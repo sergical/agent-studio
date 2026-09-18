@@ -10,8 +10,9 @@
 //!
 //! The scan reads each surface's own declaration - the `Command` enum's
 //! variants, the `#[tool]`-attributed methods - not the `ops::<name>(` call
-//! sites: a private helper that calls an op (`apps/mcp`'s `park_direct`) is
-//! not a subcommand and not a tool, and must not stand in for one.
+//! sites: a shared helper that calls an op (`apps/mcp`'s `run_op_envelope`,
+//! reached from every tool) is not itself a tool, and must not stand in for
+//! one.
 
 use std::path::PathBuf;
 

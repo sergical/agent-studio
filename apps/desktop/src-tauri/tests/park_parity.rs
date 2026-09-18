@@ -5,7 +5,7 @@
 
 //! Unit 4.2: `park` run once through each of the three surfaces - the real
 //! CLI binary, the MCP server's tool handler (called directly, in-process,
-//! per `apps/mcp/src/lib.rs::park_direct`), and the desktop's own
+//! per `apps/mcp/src/lib.rs::run_op_envelope`), and the desktop's own
 //! `park_with_runtime` seam - must leave byte-identical disk state. Unlike
 //! `fix_parity.rs`, which reasons that CLI parity stands in for MCP because
 //! both shared one runtime builder, `apps/mcp` now has its own `lib.rs`
@@ -24,8 +24,9 @@ use std::path::{Path, PathBuf};
 
 use skill_studio_core::dto::{ParkRequest, ScanRequest};
 use skill_studio_core::identity::{DeploymentId, RootKind};
-use skill_studio_core::ops;
+use skill_studio_core::ops::{self, Operation};
 use skill_studio_core::testing::golden::ctx;
+use skill_studio_core::OpStatus;
 
 use skill_studio_lib::skills::core_runtime::build_runtime_write_at;
 use skill_studio_lib::skills::skill_park::park_with_runtime;
@@ -124,21 +125,30 @@ fn cli_park(home: &Path, deployment_id: &DeploymentId) {
     );
 }
 
-/// Runs `ops::park` the way the MCP server's `park` tool does -
-/// `apps/mcp/src/lib.rs::park_direct` - against `home`, via
-/// `SKILL_STUDIO_HOME` (the only way `apps/mcp`'s `scope::resolve` learns
-/// which home to use).
+/// Runs `park` through the same function the MCP server's `park` tool runs
+/// - `apps/mcp/src/lib.rs::run_op_envelope`, which `run_op` and therefore
+/// every tool method goes through - against `home`, via `SKILL_STUDIO_HOME`
+/// (the only way `apps/mcp`'s `scope::resolve` learns which home to use).
 fn mcp_park(home: &Path, deployment_id: &DeploymentId) {
     // SAFETY (env-var race): this file has exactly one #[test]; nothing
     // else in this process reads or writes these vars concurrently.
     std::env::set_var("SKILL_STUDIO_HOME", home);
     std::env::remove_var("SKILL_STUDIO_FIXTURE");
     std::env::remove_var("SKILL_STUDIO_PROJECT");
-    let result = skill_studio_mcp::park_direct(&ParkRequest {
+    let req = ParkRequest {
         deployment_id: deployment_id.clone(),
+    };
+    let envelope = skill_studio_mcp::run_op_envelope(Operation::Park, true, |rt, ctx| {
+        ops::park(rt, ctx, &req)
     });
     std::env::remove_var("SKILL_STUDIO_HOME");
-    result.unwrap_or_else(|e| panic!("mcp park_direct at {}: {e:?}", home.display()));
+    assert_eq!(
+        envelope.status,
+        OpStatus::Ok,
+        "mcp park at {}: {:?}",
+        home.display(),
+        envelope.errors
+    );
 }
 
 /// Runs `ops::park` the way the desktop's `park_skill` Tauri command does -
