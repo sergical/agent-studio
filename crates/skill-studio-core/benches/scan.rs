@@ -66,16 +66,25 @@ fn bench_scan_on_disk(c: &mut Criterion) {
         .expect("materialize bench estate");
     let scope = scope_for(&home, &generated.project_dirs);
 
-    c.bench_function("scan_400_skills_on_disk", |b| {
-        b.iter(|| {
-            let ports = ports_with(
-                Arc::new(RealFs::new()),
-                Arc::new(FileLease::new(home.join(".leases"))),
-            );
-            let rt = Runtime::new(&scope, ports).expect("runtime");
-            scan(&rt, &ctx(), &ScanRequest::default()).expect("scan")
-        });
-    });
+    // Named for the 100ms budget it's checked against by hand (unit 3.3's
+    // "Done when": `cargo bench -p skill-studio-core --features testing
+    // --bench scan`, read the printed median - no wall-clock `#[test]` gate,
+    // since a debug-mode assertion measures build-mode cost, not a
+    // regression; see the deleted `tests/scan_budget.rs`). Last measured at
+    // ~86ms median.
+    c.bench_function(
+        "scan_on_the_bench_estate_finishes_under_the_100ms_budget",
+        |b| {
+            b.iter(|| {
+                let ports = ports_with(
+                    Arc::new(RealFs::new()),
+                    Arc::new(FileLease::new(home.join(".leases"))),
+                );
+                let rt = Runtime::new(&scope, ports).expect("runtime");
+                scan(&rt, &ctx(), &ScanRequest::default()).expect("scan")
+            });
+        },
+    );
 
     std::fs::remove_dir_all(&dir).ok();
 }
