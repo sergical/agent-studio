@@ -564,6 +564,7 @@ export function installMockTauri(initial: SkillSnapshot): HarnessControl {
             .object({ deployment_id: z.string().nullish(), owner_id: z.string().nullish() })
             .parse(payload.target);
           const name = skillNameForTarget(target);
+          const deployment = currentSnapshot.skills.find((s) => s.name === name)?.deployments[0];
           await updateSkill(name, (item) => ({
             ...item,
             has_update: false,
@@ -573,13 +574,45 @@ export function installMockTauri(initial: SkillSnapshot): HarnessControl {
             update_commit_at: null,
           }));
           return {
-            skill_name: name,
-            success: true,
-            error: null,
-            installed_path: null,
-            command: "npx skills update",
-            tool: "dotagents",
+            event_id: `fixture-update-${name}`,
+            skill: name,
+            deployment_path: deployment?.path ?? `${HARNESS_HOME}/.agents/skills/${name}`,
+            tree_hash_before: "fixture-before",
+            tree_hash_after: "fixture-after",
           };
+        }
+        case "update_all_skills": {
+          const targets = z
+            .array(
+              z.object({ deployment_id: z.string().nullish(), owner_id: z.string().nullish() }),
+            )
+            .parse(payload.targets);
+          const skillsByName = new Map(currentSnapshot.skills.map((s) => [s.name, s]));
+          const items = [];
+          for (const target of targets) {
+            const name = skillNameForTarget(target);
+            const deployment = skillsByName.get(name)?.deployments[0];
+            // react-doctor-disable-next-line react-doctor/async-await-in-loop -- fixture applies each update sequentially, mirroring the real op's per-request loop
+            await updateSkill(name, (item) => ({
+              ...item,
+              has_update: false,
+              update_owner_ids: [],
+              update_owners: [],
+              update_commit: null,
+              update_commit_at: null,
+            }));
+            items.push({
+              skill: name,
+              outcome: {
+                event_id: `fixture-update-${name}`,
+                skill: name,
+                deployment_path: deployment?.path ?? `${HARNESS_HOME}/.agents/skills/${name}`,
+                tree_hash_before: "fixture-before",
+                tree_hash_after: "fixture-after",
+              },
+            });
+          }
+          return { items, errors: {} };
         }
 
         case "fork_skill": {
