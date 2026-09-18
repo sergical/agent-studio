@@ -1,84 +1,85 @@
 {
   "inventory": {
-    "completeness": "complete",
-    "observations": [],
-    "projects": [],
     "skills": [
       {
+        "name": "badfm",
+        "description": null,
         "deployments": [
           {
-            "backing": "independent",
-            "content_fingerprint": "sha256:18d1358bbab5d13d6d52cca36db15d6526acfee4ae47015f437455a6e38bd068",
-            "content_hash": "18d1358bbab5d13d6d52cca36db15d6526acfee4ae47015f437455a6e38bd068",
-            "description_tokens": 2,
-            "destination": "per_harness",
-            "disabled_by": null,
-            "disabled_readers": [],
-            "file_count": 1,
-            "folder_bytes": 80,
-            "folder_truncated": false,
-            "frontmatter": null,
-            "frontmatter_fields": {},
-            "harness": "claude-code",
-            "has_spec": false,
             "id": "dep:v1/global/claude-code/per-harness/badfm/-/%24HOME%2F.claude%2Fskills%2Fbadfm",
-            "in_git_repo": false,
-            "is_symlink": false,
-            "link_target": null,
-            "modified_at": "-",
-            "mutability": "read_only",
-            "owner_id": null,
-            "owner_kind": "manual",
-            "path": "$HOME/.claude/skills/badfm",
-            "plugin": null,
-            "resolved_path": null,
             "root": {
-              "kind": {
-                "harness": "claude-code",
-                "kind": "harness"
-              },
               "scope": {
                 "scope": "global"
+              },
+              "kind": {
+                "kind": "harness",
+                "harness": "claude-code"
               }
             },
+            "harness": "claude-code",
+            "path": "$HOME/.claude/skills/badfm",
+            "destination": "per_harness",
+            "backing": "independent",
+            "mutability": "read_only",
+            "link_target": null,
             "shared_via_whole_dir_link": false,
-            "skill_md_tokens": 21,
-            "source_kind": "manual",
+            "is_symlink": false,
+            "resolved_path": null,
+            "symlink_is_broken": false,
+            "symlink_error": null,
+            "owner_kind": "manual",
+            "owner_id": null,
+            "content_fingerprint": "sha256:18d1358bbab5d13d6d52cca36db15d6526acfee4ae47015f437455a6e38bd068",
+            "disabled_by": null,
+            "disabled_readers": [],
             "spec_violations": [
               "invalid YAML frontmatter at line 3, column 22: mapping values are not allowed in this context"
             ],
+            "plugin": null,
+            "frontmatter": null,
+            "frontmatter_fields": {},
+            "has_spec": false,
+            "folder_bytes": 80,
+            "file_count": 1,
+            "skill_md_tokens": 21,
+            "description_tokens": 2,
+            "content_hash": "18d1358bbab5d13d6d52cca36db15d6526acfee4ae47015f437455a6e38bd068",
+            "modified_at": "-",
+            "folder_truncated": false,
+            "in_git_repo": false,
             "studio_disabled": false,
-            "symlink_error": null,
-            "symlink_is_broken": false
+            "source_kind": "manual"
           }
-        ],
-        "description": null,
-        "name": "badfm"
+        ]
       }
     ],
+    "projects": [],
+    "completeness": "complete",
+    "observations": [],
+    "unread_roots": [],
     "timings": []
   },
   "issues": [
     {
-      "deployment_id": "dep:v1/global/claude-code/per-harness/badfm/-/%24HOME%2F.claude%2Fskills%2Fbadfm",
       "kind": "repairable_frontmatter",
+      "severity": "warning",
+      "skill": "badfm",
+      "deployment_id": "dep:v1/global/claude-code/per-harness/badfm/-/%24HOME%2F.claude%2Fskills%2Fbadfm",
       "message": "Encode the top-level description value so its `: ` is text, not YAML syntax.",
       "next_action": {
         "action": "preview_repair",
         "deployment_id": "dep:v1/global/claude-code/per-harness/badfm/-/%24HOME%2F.claude%2Fskills%2Fbadfm"
-      },
-      "severity": "warning",
-      "skill": "badfm"
+      }
     },
     {
-      "deployment_id": "dep:v1/global/claude-code/per-harness/badfm/-/%24HOME%2F.claude%2Fskills%2Fbadfm",
       "kind": "spec_violation",
+      "severity": "warning",
+      "skill": "badfm",
+      "deployment_id": "dep:v1/global/claude-code/per-harness/badfm/-/%24HOME%2F.claude%2Fskills%2Fbadfm",
       "message": "invalid YAML frontmatter at line 3, column 22: mapping values are not allowed in this context",
       "next_action": {
         "action": "none"
-      },
-      "severity": "warning",
-      "skill": "badfm"
+      }
     }
   ]
 }

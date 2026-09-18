@@ -1,84 +1,85 @@
 {
   "inventory": {
-    "completeness": "complete",
-    "observations": [
-      {
-        "message": "skill_md_truncated: giant's SKILL.md is over the 2097152 byte read cap; only the first 2097152 bytes were read",
-        "root": {
-          "kind": {
-            "harness": "claude-code",
-            "kind": "harness"
-          },
-          "scope": {
-            "scope": "global"
-          }
-        }
-      }
-    ],
-    "projects": [],
     "skills": [
       {
+        "name": "giant",
+        "description": "Helps with giant for fixture-driven tests.",
         "deployments": [
           {
-            "backing": "independent",
-            "content_fingerprint": "sha256:7444d3fb3762a7091aab56309714c033e21f32d00d4b8d1a5b2cb75f4f5dcabe",
-            "content_hash": "7444d3fb3762a7091aab56309714c033e21f32d00d4b8d1a5b2cb75f4f5dcabe",
-            "description_tokens": 11,
+            "id": "dep:v1/global/claude-code/per-harness/giant/-/%24HOME%2F.claude%2Fskills%2Fgiant",
+            "root": {
+              "scope": {
+                "scope": "global"
+              },
+              "kind": {
+                "kind": "harness",
+                "harness": "claude-code"
+              }
+            },
+            "harness": "claude-code",
+            "path": "$HOME/.claude/skills/giant",
             "destination": "per_harness",
+            "backing": "independent",
+            "mutability": "read_only",
+            "link_target": null,
+            "shared_via_whole_dir_link": false,
+            "is_symlink": false,
+            "resolved_path": null,
+            "symlink_is_broken": false,
+            "symlink_error": null,
+            "owner_kind": "manual",
+            "owner_id": null,
+            "content_fingerprint": "sha256:7444d3fb3762a7091aab56309714c033e21f32d00d4b8d1a5b2cb75f4f5dcabe",
             "disabled_by": null,
             "disabled_readers": [],
-            "file_count": 1,
-            "folder_bytes": 2097250,
-            "folder_truncated": true,
+            "spec_violations": [],
+            "plugin": null,
             "frontmatter": {
-              "allowed-tools": null,
-              "compatibility": null,
-              "description": "Helps with giant for fixture-driven tests.",
-              "disable-model-invocation": null,
-              "license": null,
-              "metadata": null,
               "name": "giant",
+              "description": "Helps with giant for fixture-driven tests.",
+              "license": null,
+              "compatibility": null,
+              "metadata": null,
+              "allowed-tools": null,
+              "disable-model-invocation": null,
               "user-invocable": null
             },
             "frontmatter_fields": {
               "description": "Helps with giant for fixture-driven tests.",
               "name": "giant"
             },
-            "harness": "claude-code",
             "has_spec": false,
-            "id": "dep:v1/global/claude-code/per-harness/giant/-/%24HOME%2F.claude%2Fskills%2Fgiant",
-            "in_git_repo": false,
-            "is_symlink": false,
-            "link_target": null,
-            "modified_at": "-",
-            "mutability": "read_only",
-            "owner_id": null,
-            "owner_kind": "manual",
-            "path": "$HOME/.claude/skills/giant",
-            "plugin": null,
-            "resolved_path": null,
-            "root": {
-              "kind": {
-                "harness": "claude-code",
-                "kind": "harness"
-              },
-              "scope": {
-                "scope": "global"
-              }
-            },
-            "shared_via_whole_dir_link": false,
+            "folder_bytes": 2097250,
+            "file_count": 1,
             "skill_md_tokens": 262154,
-            "source_kind": "manual",
-            "spec_violations": [],
+            "description_tokens": 11,
+            "content_hash": "7444d3fb3762a7091aab56309714c033e21f32d00d4b8d1a5b2cb75f4f5dcabe",
+            "modified_at": "-",
+            "folder_truncated": true,
+            "in_git_repo": false,
             "studio_disabled": false,
-            "symlink_error": null,
-            "symlink_is_broken": false
+            "source_kind": "manual"
           }
-        ],
-        "description": "Helps with giant for fixture-driven tests.",
-        "name": "giant"
+        ]
       }
     ],
+    "projects": [],
+    "completeness": "complete",
+    "observations": [
+      {
+        "root": {
+          "scope": {
+            "scope": "global"
+          },
+          "kind": {
+            "kind": "harness",
+            "harness": "claude-code"
+          }
+        },
+        "message": "skill_md_truncated: giant's SKILL.md is over the 2097152 byte read cap; only the first 2097152 bytes were read"
+      }
+    ],
+    "unread_roots": [],
     "timings": []
   },
   "issues": []

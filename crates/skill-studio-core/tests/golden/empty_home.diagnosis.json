@@ -1,9 +1,10 @@
 {
   "inventory": {
+    "skills": [],
+    "projects": [],
     "completeness": "complete",
     "observations": [],
-    "projects": [],
-    "skills": [],
+    "unread_roots": [],
     "timings": []
   },
   "issues": []

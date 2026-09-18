@@ -1,123 +1,124 @@
 {
-  "completeness": "complete",
-  "observations": [],
-  "projects": [],
   "skills": [
     {
+      "name": "omega",
+      "description": "Helps with omega for fixture-driven tests.",
       "deployments": [
         {
-          "backing": "linked_to",
-          "content_fingerprint": "sha256:29237022f8996917d93b79db5fe5729defa4a2cf8521aa10dbb18f6acf44d6cd",
-          "content_hash": "29237022f8996917d93b79db5fe5729defa4a2cf8521aa10dbb18f6acf44d6cd",
-          "description_tokens": 10,
-          "destination": "universal",
-          "disabled_by": null,
-          "disabled_readers": [],
-          "file_count": 1,
-          "folder_bytes": 97,
-          "folder_truncated": false,
-          "frontmatter": {
-            "allowed-tools": null,
-            "compatibility": null,
-            "description": "Helps with omega for fixture-driven tests.",
-            "disable-model-invocation": null,
-            "license": null,
-            "metadata": null,
-            "name": "omega",
-            "user-invocable": null
-          },
-          "frontmatter_fields": {
-            "description": "Helps with omega for fixture-driven tests.",
-            "name": "omega"
+          "id": "dep:v1/global/claude-code/universal/omega/-/%24HOME%2F.claude%2Fskills%2Fomega",
+          "root": {
+            "scope": {
+              "scope": "global"
+            },
+            "kind": {
+              "kind": "harness",
+              "harness": "claude-code"
+            }
           },
           "harness": "claude-code",
-          "has_spec": false,
-          "id": "dep:v1/global/claude-code/universal/omega/-/%24HOME%2F.claude%2Fskills%2Fomega",
-          "in_git_repo": false,
-          "is_symlink": false,
-          "link_target": null,
-          "modified_at": "-",
-          "mutability": "read_only",
-          "owner_id": null,
-          "owner_kind": "manual",
           "path": "$HOME/.claude/skills/omega",
-          "plugin": null,
-          "resolved_path": "$HOME/.agents/skills/omega",
-          "root": {
-            "kind": {
-              "harness": "claude-code",
-              "kind": "harness"
-            },
-            "scope": {
-              "scope": "global"
-            }
-          },
-          "shared_via_whole_dir_link": true,
-          "skill_md_tokens": 21,
-          "source_kind": "manual",
-          "spec_violations": [],
-          "studio_disabled": false,
-          "symlink_error": null,
-          "symlink_is_broken": false
-        },
-        {
-          "backing": "canonical",
-          "content_fingerprint": "sha256:29237022f8996917d93b79db5fe5729defa4a2cf8521aa10dbb18f6acf44d6cd",
-          "content_hash": "29237022f8996917d93b79db5fe5729defa4a2cf8521aa10dbb18f6acf44d6cd",
-          "description_tokens": 10,
           "destination": "universal",
+          "backing": "linked_to",
+          "mutability": "read_only",
+          "link_target": null,
+          "shared_via_whole_dir_link": true,
+          "is_symlink": false,
+          "resolved_path": "$HOME/.agents/skills/omega",
+          "symlink_is_broken": false,
+          "symlink_error": null,
+          "owner_kind": "manual",
+          "owner_id": null,
+          "content_fingerprint": "sha256:29237022f8996917d93b79db5fe5729defa4a2cf8521aa10dbb18f6acf44d6cd",
           "disabled_by": null,
           "disabled_readers": [],
-          "file_count": 1,
-          "folder_bytes": 97,
-          "folder_truncated": false,
+          "spec_violations": [],
+          "plugin": null,
           "frontmatter": {
-            "allowed-tools": null,
-            "compatibility": null,
-            "description": "Helps with omega for fixture-driven tests.",
-            "disable-model-invocation": null,
-            "license": null,
-            "metadata": null,
             "name": "omega",
+            "description": "Helps with omega for fixture-driven tests.",
+            "license": null,
+            "compatibility": null,
+            "metadata": null,
+            "allowed-tools": null,
+            "disable-model-invocation": null,
             "user-invocable": null
           },
           "frontmatter_fields": {
             "description": "Helps with omega for fixture-driven tests.",
             "name": "omega"
           },
-          "harness": null,
           "has_spec": false,
-          "id": "dep:v1/global/universal/universal/omega/-/%24HOME%2F.agents%2Fskills%2Fomega",
-          "in_git_repo": false,
-          "is_symlink": false,
-          "link_target": null,
+          "folder_bytes": 97,
+          "file_count": 1,
+          "skill_md_tokens": 21,
+          "description_tokens": 10,
+          "content_hash": "29237022f8996917d93b79db5fe5729defa4a2cf8521aa10dbb18f6acf44d6cd",
           "modified_at": "-",
-          "mutability": "read_only",
-          "owner_id": null,
-          "owner_kind": "manual",
-          "path": "$HOME/.agents/skills/omega",
-          "plugin": null,
-          "resolved_path": null,
+          "folder_truncated": false,
+          "in_git_repo": false,
+          "studio_disabled": false,
+          "source_kind": "manual"
+        },
+        {
+          "id": "dep:v1/global/universal/universal/omega/-/%24HOME%2F.agents%2Fskills%2Fomega",
           "root": {
-            "kind": {
-              "kind": "universal"
-            },
             "scope": {
               "scope": "global"
+            },
+            "kind": {
+              "kind": "universal"
             }
           },
+          "harness": null,
+          "path": "$HOME/.agents/skills/omega",
+          "destination": "universal",
+          "backing": "canonical",
+          "mutability": "read_only",
+          "link_target": null,
           "shared_via_whole_dir_link": false,
-          "skill_md_tokens": 21,
-          "source_kind": "manual",
-          "spec_violations": [],
-          "studio_disabled": false,
+          "is_symlink": false,
+          "resolved_path": null,
+          "symlink_is_broken": false,
           "symlink_error": null,
-          "symlink_is_broken": false
+          "owner_kind": "manual",
+          "owner_id": null,
+          "content_fingerprint": "sha256:29237022f8996917d93b79db5fe5729defa4a2cf8521aa10dbb18f6acf44d6cd",
+          "disabled_by": null,
+          "disabled_readers": [],
+          "spec_violations": [],
+          "plugin": null,
+          "frontmatter": {
+            "name": "omega",
+            "description": "Helps with omega for fixture-driven tests.",
+            "license": null,
+            "compatibility": null,
+            "metadata": null,
+            "allowed-tools": null,
+            "disable-model-invocation": null,
+            "user-invocable": null
+          },
+          "frontmatter_fields": {
+            "description": "Helps with omega for fixture-driven tests.",
+            "name": "omega"
+          },
+          "has_spec": false,
+          "folder_bytes": 97,
+          "file_count": 1,
+          "skill_md_tokens": 21,
+          "description_tokens": 10,
+          "content_hash": "29237022f8996917d93b79db5fe5729defa4a2cf8521aa10dbb18f6acf44d6cd",
+          "modified_at": "-",
+          "folder_truncated": false,
+          "in_git_repo": false,
+          "studio_disabled": false,
+          "source_kind": "manual"
         }
-      ],
-      "description": "Helps with omega for fixture-driven tests.",
-      "name": "omega"
+      ]
     }
   ],
+  "projects": [],
+  "completeness": "complete",
+  "observations": [],
+  "unread_roots": [],
   "timings": []
 }
