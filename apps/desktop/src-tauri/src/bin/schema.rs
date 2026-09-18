@@ -9,6 +9,7 @@
 //! walk - it is never constructed and is filtered out of the generated output.
 use schemars::generate::SchemaSettings;
 use schemars::JsonSchema;
+use skill_studio_core::dto::CommandHealth;
 use skill_studio_core::skill_uses::{InvocationHeatmap, SkillInvocation, SkillTrigger};
 use skill_studio_core::tracked_projects::TrackedProjects;
 use skill_studio_lib::skills::add_method_defaults::AddMethodDefaults;
@@ -62,6 +63,7 @@ struct WireTypes {
     discovery_source_setting: DiscoverySourceSetting,
     project_folder: ProjectFolder,
     project_folder_source: ProjectFolderSource,
+    command_health: CommandHealth,
 }
 
 fn main() {

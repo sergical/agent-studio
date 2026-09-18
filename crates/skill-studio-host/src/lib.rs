@@ -14,12 +14,15 @@
 //! `PATH` lookup sets those fields on the returned `Ports` itself.
 
 #![deny(missing_docs)]
-// `forbid` only outside `cfg(test)`: the XDG/env-override tests for OpenCode
-// discovery mutate process-global env vars in place (`std::env::set_var`
-// needs `unsafe` on this toolchain) to cover the real `std::env::var_os`
-// call sites - there is no other seam to test them through without
-// threading an env-lookup port through every adapter for one test.
-#![cfg_attr(not(test), forbid(unsafe_code))]
+// `deny`, not `forbid`, so `fs::macos_exchange` can locally `#[allow(unsafe_code)]`
+// for `renamex_np` (atomic path exchange, no safe `std` wrapper - see its
+// module doc for what the `unsafe` block promises). Applied only outside
+// `cfg(test)`: the XDG/env-override tests for OpenCode discovery mutate
+// process-global env vars in place (`std::env::set_var` needs `unsafe` on
+// this toolchain) to cover the real `std::env::var_os` call sites - there is
+// no other seam to test them through without threading an env-lookup port
+// through every adapter for one test.
+#![cfg_attr(not(test), deny(unsafe_code))]
 
 mod builder;
 mod clock;

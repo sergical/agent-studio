@@ -2270,6 +2270,32 @@ pub async fn get_editor_choices(
     .await
 }
 
+/// Settings' "Command health" card and `skill-studio health`: the last 7
+/// days of `timing.jsonl` (unit 0.1), folded to one row per command by
+/// `skill_studio_core::health::health_rollup`. Reads and folds run in
+/// `spawn_blocking` - the log can grow to `timing_log::ROTATE_AT_BYTES`
+/// (5 MiB) before it rotates, and parsing that off the main thread is the
+/// same reasoning `get_installed_skills` already applies to its own read.
+#[tauri::command]
+pub async fn command_health(
+    app: tauri::AppHandle,
+) -> Result<Vec<skill_studio_core::dto::CommandHealth>, String> {
+    let timing_app = app.clone();
+    crate::timing_log::time_command_async(&timing_app, "command_health", async move {
+        tauri::async_runtime::spawn_blocking(move || {
+            let rows = crate::timing_log::read_rows(&app);
+            Ok(skill_studio_core::health::health_rollup(
+                &rows,
+                chrono::Utc::now(),
+                std::time::Duration::from_secs(7 * 24 * 3600),
+            ))
+        })
+        .await
+        .map_err(|e| format!("Failed to compute command health: {e}"))?
+    })
+    .await
+}
+
 /// `async` because saving `"$EDITOR"` can start the login shell to check that
 /// a terminal editor is actually set - see `skill_editor::set_preferred_editor`.
 #[tauri::command(async)]
