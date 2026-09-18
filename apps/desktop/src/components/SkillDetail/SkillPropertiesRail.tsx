@@ -22,7 +22,7 @@ import {
 } from "@skill-studio/ui";
 import { formatTokens } from "@skill-studio/lib";
 import type { AgentId, InstalledSkill, InvocationPolicy } from "@skill-studio/lib";
-import { setDeploymentEnabled, setHarnessEnabled } from "../../lib/skill-api";
+import { parkSkill, setHarnessEnabled, unparkSkill } from "../../lib/skill-api";
 import { useAppStore } from "../../store/appStore";
 import { HarnessStack } from "../SkillList/HarnessStack";
 import { DEFAULT_HARNESS_LIST, whereFacts } from "../SkillList/skill-row-state";
@@ -120,7 +120,11 @@ export function SkillPropertiesRail({ skill, updateAction }: SkillPropertiesRail
         await setHarnessEnabled(row.lifecycleTarget, harness, enabled);
       } else if (row.deployment) {
         if (useDeploymentToggle) {
-          await setDeploymentEnabled({ deployment_id: row.deployment.id }, enabled);
+          if (enabled) {
+            await unparkSkill({ deployment_id: row.deployment.id });
+          } else {
+            await parkSkill({ deployment_id: row.deployment.id });
+          }
         } else {
           await setHarnessEnabled({ deployment_id: row.deployment.id }, harness, enabled);
         }

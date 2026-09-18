@@ -264,17 +264,6 @@ export function installMockTauri(initial: SkillSnapshot): HarnessControl {
     return name;
   }
 
-  function updateDeployment(
-    skillItem: InstalledSkill,
-    deploymentId: string,
-    transform: (d: Deployment) => Deployment,
-  ): InstalledSkill {
-    return {
-      ...skillItem,
-      deployments: skillItem.deployments.map((d) => (d.id === deploymentId ? transform(d) : d)),
-    };
-  }
-
   function buildAddedSkill(
     request: AddRequestLike,
     name: string,
@@ -504,19 +493,6 @@ export function installMockTauri(initial: SkillSnapshot): HarnessControl {
                 : entry;
             }),
           }));
-          return undefined;
-        }
-        case "set_deployment_enabled": {
-          const { deployment_id } = z.object({ deployment_id: z.string() }).parse(payload.target);
-          const enabled = payload.enabled === true;
-          const name = skillNameForTarget({ deployment_id });
-          await updateSkill(name, (item) =>
-            updateDeployment(item, deployment_id, (d) => ({
-              ...d,
-              disabled: !enabled,
-              disabled_by: enabled ? null : "studio-moved",
-            })),
-          );
           return undefined;
         }
         case "set_skill_invocation": {

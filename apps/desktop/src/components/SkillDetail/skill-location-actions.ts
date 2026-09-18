@@ -27,7 +27,6 @@ import {
   parkSkill,
   removeSkill,
   repairSkillLink,
-  setDeploymentEnabled,
   setHarnessEnabled,
   setPluginEnabled,
   setSkillInvocation,
@@ -199,7 +198,9 @@ export function useLocationActions(
         }
         runWithErrorToast(enabled ? "Couldn't enable" : "Couldn't disable", () =>
           deployment.disabled_by === "studio-moved" || !canToggleHarness(deployment)
-            ? setDeploymentEnabled({ deployment_id: deployment.id }, enabled)
+            ? enabled
+              ? unparkSkill({ deployment_id: deployment.id })
+              : parkSkill({ deployment_id: deployment.id })
             : readerAgent && readerAgent !== "shared"
               ? setHarnessEnabled({ deployment_id: deployment.id }, readerAgent, enabled)
               : Promise.reject(new Error(`${deployment.agent} is not a supported reader`)),

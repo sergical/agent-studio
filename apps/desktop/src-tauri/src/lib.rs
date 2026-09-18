@@ -316,7 +316,6 @@ pub fn run() {
             skills::skill_park::park_skill,
             skills::skill_park::unpark_skill,
             skills::skill_harness_disable::set_harness_enabled,
-            skills::skill_harness_disable::set_deployment_enabled,
             skills::skill_invocation::set_skill_invocation,
             skills::commands::set_plugin_enabled,
             skills::commands::uninstall_plugin,
