@@ -62,11 +62,16 @@ impl ToolLookup for PathToolLookup {
     }
 }
 
-/// Marker the login-shell probe script prints after `PATH`, so the reader
-/// thread can stop without waiting for the shell to exit; see
-/// `run_with_timeout`'s doc comment for why a plain `read_to_string` would
-/// hang on some machines (an rc file that leaves a background process
-/// holding the pipe open).
+/// Markers the login-shell probe script prints around `PATH`, mirroring
+/// `skill_editor.rs`'s `MARKER_START`/`MARKER_END`: a login shell's rc files
+/// can print a banner (`echo Welcome`, nvm's "Now using node ...") before
+/// the value the script asked for, so the parser must find the line between
+/// these markers rather than assume `PATH` is the first line printed. The
+/// end marker also lets the reader thread stop without waiting for the
+/// shell to exit; see `run_with_timeout`'s doc comment for why a plain
+/// `read_to_string` would hang on some machines (an rc file that leaves a
+/// background process holding the pipe open).
+const PATH_MARKER_START: &str = "__skill_studio_path_start__";
 const PATH_MARKER_END: &str = "__skill_studio_path_end__";
 
 /// Deadline for the login-shell `PATH` probe, matching the `$EDITOR` probe
@@ -119,10 +124,27 @@ fn run_with_timeout(mut command: Command, end_marker: &str, timeout: Duration) -
 /// asks the user's own login shell instead.
 fn login_shell_path_probe(shell: &str) -> Command {
     let mut command = Command::new(shell);
+    command.arg("-lic").arg(format!(
+        "echo {PATH_MARKER_START}; echo \"$PATH\"; echo {PATH_MARKER_END}"
+    ));
     command
-        .arg("-lic")
-        .arg(format!("echo \"$PATH\"; echo {PATH_MARKER_END}"));
-    command
+}
+
+/// Parses the `$PATH` line between the start and end markers, tolerating
+/// any banner text a login shell's rc files print before or after them (an
+/// `echo Welcome`, nvm's "Now using node ..."). Mirrors `skill_editor.rs`'s
+/// `parse_terminal_editor`. Returns `None` when the start marker never
+/// appears (spawn failure, timeout, or a marker the shell mangled).
+fn parse_path_probe_output(stdout: &str) -> Option<String> {
+    let start = stdout.find(PATH_MARKER_START)?;
+    let after_start = &stdout[start + PATH_MARKER_START.len()..];
+    let end = after_start
+        .find(PATH_MARKER_END)
+        .unwrap_or(after_start.len());
+    let body = &after_start[..end];
+    body.lines()
+        .find(|line| !line.trim().is_empty())
+        .map(str::to_string)
 }
 
 /// Runs the login shell once to read `$PATH`. Returns the fallback
@@ -137,7 +159,7 @@ fn read_login_shell_path(fallback_dirs: &[PathBuf]) -> Vec<PathBuf> {
         PATH_MARKER_END,
         SHELL_PROBE_TIMEOUT,
     )
-    .and_then(|output| output.lines().next().map(str::to_string))
+    .and_then(|output| parse_path_probe_output(&output))
     .map(|line| std::env::split_paths(&line).collect::<Vec<_>>())
     .filter(|dirs| !dirs.is_empty());
     match probed {
@@ -259,6 +281,27 @@ mod tests {
         assert_eq!(found, fs::canonicalize(first.path().join("tool")).unwrap());
     }
 
+    /// `a_shell_banner_printed_before_the_marker_never_becomes_the_path_or_names_the_banner_it_kept`:
+    /// rc-file banner text (`Welcome to zsh`, nvm's "Now using node ...")
+    /// printed before `PATH_MARKER_START` must never be read as the `PATH`
+    /// value. Fails if the parser takes the stdout's first line instead of
+    /// the first non-empty line after the start marker.
+    #[test]
+    fn a_shell_banner_printed_before_the_marker_never_becomes_the_path_or_names_the_banner_it_kept()
+    {
+        let stdout = format!(
+            "Welcome to zsh\nNow using node v20.11.0 (npm v10.2.4)\n{PATH_MARKER_START}\n/usr/bin:/bin:/opt/homebrew/bin\n{PATH_MARKER_END}\n"
+        );
+
+        let path = parse_path_probe_output(&stdout);
+
+        assert_eq!(
+            path.as_deref(),
+            Some("/usr/bin:/bin:/opt/homebrew/bin"),
+            "a banner line before the marker was read as PATH instead of the real value: {path:?}"
+        );
+    }
+
     /// Serializes the one test below that sets `$SHELL`, so a parallel test
     /// run never lets two tests race on the same process-wide env var.
     fn shell_env_lock() -> std::sync::MutexGuard<'static, ()> {
@@ -282,7 +325,7 @@ mod tests {
         fs::write(
             &fake_shell,
             format!(
-                "#!/bin/sh\necho call >> \"{}\"\necho \"{}\"\necho {PATH_MARKER_END}\n",
+                "#!/bin/sh\necho call >> \"{}\"\necho {PATH_MARKER_START}\necho \"{}\"\necho {PATH_MARKER_END}\n",
                 counter.display(),
                 tmp.path().display(),
             ),
