@@ -1,0 +1,18 @@
+{
+  "_comment": "Hand-built, not recorded from a real `npx skills add` run - unit 5.4 owns recording the real trace and replacing this file. Shape: `npx skills add <source> --yes --global --skill <name> --agent universal --agent claude-code`, matching `cli_args_and_cwd`'s SkillsSh branch (apps/cli's `add --method skills-sh --global --harness claude-code`).",
+  "program": "npx",
+  "args": [
+    "skills",
+    "add",
+    "owner/repo",
+    "--yes",
+    "--global",
+    "--skill",
+    "owner-repo-skill",
+    "--agent",
+    "universal",
+    "--agent",
+    "claude-code"
+  ],
+  "cwd": null
+}

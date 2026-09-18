@@ -651,6 +651,67 @@ fn install_over_a_non_object_registry_document_fails_before_any_write_or_names_t
     std::fs::remove_dir_all(&home).ok();
 }
 
+/// One recorded (here, hand-built) `npx` call's shape:
+/// `crates/skill-studio-core/tests/fixtures/cli_traces/*.trace.json`.
+#[derive(serde::Deserialize)]
+struct CliTrace {
+    program: String,
+    args: Vec<String>,
+    cwd: Option<PathBuf>,
+}
+
+/// `install_via_cli_matches_the_hand_built_skills_sh_trace_or_names_the_differing_argv`:
+/// `docs/action-map/definition-of-done.md` check 4's parity test (nine
+/// recorded CLI traces, diffed against our own result tree) is unit 5.4's -
+/// recording a real `npx skills add` run needs a real `npx`, which this
+/// worktree cannot do. This is its narrower stand-in for `install_via_cli`
+/// alone: `cli_args_and_cwd`'s SkillsSh/global/Claude-Code-harness argv,
+/// checked against a fixture built by hand from the skills CLI source facts
+/// rather than a recording, same caveat `direct_ops_call_leaves_the_disk_state_every_surface_shares`
+/// already named for 3.5a. Follow-up: swap the hand-built fixture for a
+/// recorded one once 5.4 exists.
+#[test]
+fn install_via_cli_matches_the_hand_built_skills_sh_trace_or_names_the_differing_argv() {
+    let fixture_bytes = std::fs::read(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/tests/fixtures/cli_traces/skills_sh_add_global_claude_code.trace.json"
+    ))
+    .unwrap();
+    let trace: CliTrace = serde_json::from_slice(&fixture_bytes).unwrap();
+
+    let home = unique_temp_dir("install_cli_trace_parity");
+    std::fs::create_dir_all(&home).unwrap();
+    let spawner = Arc::new(FakeNpxSpawner::new(home.clone()));
+    let rt = runtime_with(&home, Arc::new(RealFs::new()), Some(spawner.clone()));
+    let mut req = cli_request("owner-repo-skill", InstallMethod::SkillsSh);
+    req.source = Some("owner/repo".to_string());
+
+    let outcome = ops::install(&rt, &ctx(), &req).unwrap();
+    assert!(matches!(outcome, InstallOutcome::Installed { .. }));
+
+    let recorded = spawner.recorded.lock().unwrap();
+    assert_eq!(
+        recorded.len(),
+        1,
+        "install_via_cli must call npx exactly once"
+    );
+    let (args, cwd) = &recorded[0];
+    assert_eq!(
+        trace.program, "npx",
+        "the fixture's own program must be npx"
+    );
+    assert_eq!(
+        args, &trace.args,
+        "install_via_cli's argv drifted from the recorded skills.sh trace"
+    );
+    assert_eq!(
+        cwd, &trace.cwd,
+        "install_via_cli's cwd drifted from the recorded skills.sh trace"
+    );
+
+    std::fs::remove_dir_all(&home).ok();
+}
+
 /// `install_over_corrupt_json_registry_document_fails_before_any_write_or_names_the_wiped_registry`
 /// (R7): the same guard as the non-object case, this time for bytes that
 /// don't even parse as JSON (`{`, a truncated object) - `serde_json`'s own
