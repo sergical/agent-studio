@@ -600,23 +600,12 @@ pub async fn set_harness_enabled(
     .await
 }
 
-/// Restores a deployment the removed (unit 4.4) move-aside disable left
-/// under `.skill-studio-disabled/`. `ops::scan` still reports those rows as
-/// `disabled_by: "studio-moved"` (`crates/skill-studio-core/src/ops.rs`'s
-/// `scan_move_aside_dir`) so the UI keeps showing them, but `unpark` refuses
-/// them - their root is a plain directory, not `RootKind::Parked` - and no
-/// native per-harness switch applies to a plain directory copy either. This
-/// is the only way back for one of those legacy rows now that the disable
-/// side (`disable_deployment_at`) is gone; `issue-4.4-followup-a.md` tracks
-/// a one-shot migration that retires `.skill-studio-disabled/` entirely,
-/// after which this command goes too. See
-/// `docs/action-map/enable-and-links.md`.
-/// A Copy-owned row also has an entry in the fork registry's `copies` map,
-/// tracking its own path and `disabled` flag. Restoring the folder here
-/// would leave that entry stale (still pointing at `.skill-studio-disabled/`,
-/// still `disabled: true`) since `restore_moved_deployment` only patches the
-/// scan snapshot, not the registry - see `issue-4.4-followup-a.md`'s
-/// one-shot migration note.
+/// Refuses a Copy-owned `studio-moved` row. A Copy-owned row also has an
+/// entry in the fork registry's `copies` map, tracking its own path and
+/// `disabled` flag. Restoring the folder here would leave that entry stale
+/// (still pointing at `.skill-studio-disabled/`, still `disabled: true`)
+/// since `restore_moved_deployment` only patches the scan snapshot, not the
+/// registry - see `issue-4.4-followup-a.md`'s one-shot migration note.
 fn refuse_registry_copy_restore(deployment: &Deployment) -> Result<(), String> {
     if deployment.owner_kind == LifecycleOwnerKind::Copy {
         return Err(format!(
@@ -628,6 +617,50 @@ fn refuse_registry_copy_restore(deployment: &Deployment) -> Result<(), String> {
     Ok(())
 }
 
+/// The synchronous half of `restore_moved_deployment`: validates `deployment`
+/// was actually moved aside, refuses a Copy-owned row
+/// (`refuse_registry_copy_restore`), and performs the filesystem restore and
+/// id recompute. Split out so it's testable with a `Deployment` fixture and
+/// no `tauri::AppHandle` - the async command only adds the snapshot patch,
+/// which does need one.
+fn restore_moved_deployment_for(
+    deployment: &Deployment,
+    deployment_id: &str,
+) -> Result<(PathBuf, String), String> {
+    if deployment.disabled_by != Some(DisabledBy::StudioMoved) {
+        return Err(format!(
+            "\"{}\" was not moved aside by Skill Studio",
+            deployment.path
+        ));
+    }
+    refuse_registry_copy_restore(deployment)?;
+    let path_buf = PathBuf::from(&deployment.path);
+    let new_path = restore_deployment_at(&path_buf)?;
+    let parsed = super::skill_deployment::parse_deployment_id(deployment_id)
+        .ok_or_else(|| format!("Not a deployment id: {deployment_id}"))?;
+    let new_id = super::skill_deployment::deployment_id(
+        &parsed.name,
+        &parsed.scope,
+        parsed.destination,
+        &parsed.slot,
+        parsed.project_path.as_deref(),
+        &new_path,
+    );
+    Ok((new_path, new_id))
+}
+
+/// Restores a deployment the removed (unit 4.4) move-aside disable left
+/// under `.skill-studio-disabled/`. `ops::scan` still reports those rows as
+/// `disabled_by: "studio-moved"` (`crates/skill-studio-core/src/ops.rs`'s
+/// `scan_move_aside_dir`) so the UI keeps showing them, but `unpark` refuses
+/// them - their root is a plain directory, not `RootKind::Parked` - and no
+/// native per-harness switch applies to a plain directory copy either. This
+/// is the only way back for one of those legacy rows now that the disable
+/// side (`disable_deployment_at`) is gone; `issue-4.4-followup-a.md` tracks
+/// a one-shot migration that retires `.skill-studio-disabled/` entirely,
+/// after which this command goes too. See
+/// `docs/action-map/enable-and-links.md`. Delegates the synchronous checks
+/// and restore to `restore_moved_deployment_for`.
 #[tauri::command]
 pub async fn restore_moved_deployment(
     target: LifecycleTarget,
@@ -647,25 +680,7 @@ pub async fn restore_moved_deployment(
             "Restore moved deployment",
         )?;
         let deployment = resolved.deployment;
-        if deployment.disabled_by != Some(DisabledBy::StudioMoved) {
-            return Err(format!(
-                "\"{}\" was not moved aside by Skill Studio",
-                deployment.path
-            ));
-        }
-        refuse_registry_copy_restore(&deployment)?;
-        let path_buf = PathBuf::from(&deployment.path);
-        let new_path = restore_deployment_at(&path_buf)?;
-        let parsed = super::skill_deployment::parse_deployment_id(&deployment_id)
-            .ok_or_else(|| format!("Not a deployment id: {deployment_id}"))?;
-        let new_id = super::skill_deployment::deployment_id(
-            &parsed.name,
-            &parsed.scope,
-            parsed.destination,
-            &parsed.slot,
-            parsed.project_path.as_deref(),
-            &new_path,
-        );
+        let (new_path, new_id) = restore_moved_deployment_for(&deployment, &deployment_id)?;
 
         // Surgical: patch the moved deployment's path and disabled state right
         // away, same as `set_harness_enabled`; the background loop's full
@@ -1485,17 +1500,26 @@ mod tests {
         );
     }
 
+    /// Goes through `restore_moved_deployment_for`, the function the
+    /// `restore_moved_deployment` command delegates to, so deleting its
+    /// call to `refuse_registry_copy_restore` turns this test red instead of
+    /// leaving it green against the guard in isolation.
     #[test]
     fn restore_moved_deployment_refuses_a_registry_copy_or_names_the_path() {
         let copy = Deployment {
             owner_kind: LifecycleOwnerKind::Copy,
+            disabled_by: Some(DisabledBy::StudioMoved),
             path: "/home/.claude/skills/find-bugs".to_string(),
             ..Default::default()
         };
-        let err = refuse_registry_copy_restore(&copy).unwrap_err();
+        let err = restore_moved_deployment_for(&copy, "dep:v1/project/claude-code/find-bugs")
+            .unwrap_err();
         assert!(err.contains("/home/.claude/skills/find-bugs"), "{err}");
         assert!(err.contains("fork registry"), "{err}");
+    }
 
+    #[test]
+    fn refuse_registry_copy_restore_passes_through_a_manual_row() {
         let manual = Deployment {
             owner_kind: LifecycleOwnerKind::Manual,
             path: "/home/.claude/skills/find-bugs".to_string(),
