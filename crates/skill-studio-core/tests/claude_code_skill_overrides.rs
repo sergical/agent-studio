@@ -56,7 +56,7 @@ fn claude_code_skill_overrides_round_trips_unrelated_keys_in_settings_json_or_na
 
     let rt = runtime_for(&home);
     let fs = rt.ports.fs.as_ref();
-    let before = read_claude_skill_overrides(fs, &home);
+    let before = read_claude_skill_overrides(fs, &home, None);
     assert!(before.is_empty(), "no skillOverrides were written yet");
 
     let mut overrides = before;
@@ -65,7 +65,7 @@ fn claude_code_skill_overrides_round_trips_unrelated_keys_in_settings_json_or_na
         serde_json::Value::String("user-invocable-only".to_string()),
     );
     let guard = acquire_exclusive(rt.ports.leases.as_ref(), &rt.scope).unwrap();
-    write_claude_skill_overrides(fs, &rt.scope, &guard, &home, overrides).unwrap();
+    write_claude_skill_overrides(fs, &rt.scope, &guard, &home, None, overrides).unwrap();
 
     let on_disk: serde_json::Value =
         serde_json::from_str(&std::fs::read_to_string(&settings_path).unwrap()).unwrap();
@@ -80,12 +80,76 @@ fn claude_code_skill_overrides_round_trips_unrelated_keys_in_settings_json_or_na
         "the enabledPlugins map, read by a different function, was dropped"
     );
 
-    let after = read_claude_skill_overrides(fs, &home);
+    let after = read_claude_skill_overrides(fs, &home, None);
     assert_eq!(
         after.get("gamma"),
         Some(&serde_json::Value::String(
             "user-invocable-only".to_string()
         )),
         "the new override was not read back"
+    );
+}
+
+/// Flow: `CLAUDE_CONFIG_DIR` points a Claude Code install's config directory
+/// somewhere other than `~/.claude` (the host resolves the env var and
+/// passes it through as `config_dir_override`). A caller writes an override
+/// with that override set.
+/// Expectation: the write lands in `<override>/settings.json`, a read with
+/// the same override sees it back, and `~/.claude/settings.json` is never
+/// touched.
+/// Failure here (the write landing under `~/.claude` regardless) would mean
+/// an override user's real settings file silently diverges from what the
+/// app reads and writes.
+#[test]
+fn claude_code_skill_overrides_follow_claude_config_dir_or_names_the_wrong_settings_file() {
+    let home = unique_temp_dir("claude_skill_overrides_config_dir");
+    let config_dir = home.join("custom-claude-config");
+    std::fs::create_dir_all(&config_dir).unwrap();
+
+    let rt = runtime_for(&home);
+    let fs = rt.ports.fs.as_ref();
+    let guard = acquire_exclusive(rt.ports.leases.as_ref(), &rt.scope).unwrap();
+
+    let mut overrides = serde_json::Map::new();
+    overrides.insert(
+        "delta".to_string(),
+        serde_json::Value::String("user-invocable-only".to_string()),
+    );
+    write_claude_skill_overrides(
+        fs,
+        &rt.scope,
+        &guard,
+        &home,
+        Some(&config_dir),
+        overrides.clone(),
+    )
+    .unwrap();
+
+    let override_settings_path = config_dir.join("settings.json");
+    assert!(
+        override_settings_path.exists(),
+        "the write did not land in the override config dir"
+    );
+
+    let default_settings_path = home.join(".claude").join("settings.json");
+    assert!(
+        !default_settings_path.exists(),
+        "the default `~/.claude/settings.json` was written to, ignoring the override: {:?}",
+        default_settings_path
+    );
+
+    let after = read_claude_skill_overrides(fs, &home, Some(&config_dir));
+    assert_eq!(
+        after.get("delta"),
+        Some(&serde_json::Value::String(
+            "user-invocable-only".to_string()
+        )),
+        "reading with the same config dir override did not see the write"
+    );
+
+    let ignoring_override = read_claude_skill_overrides(fs, &home, None);
+    assert!(
+        ignoring_override.is_empty(),
+        "reading with no override saw the override dir's overrides: {ignoring_override:?}"
     );
 }

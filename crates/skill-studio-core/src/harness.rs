@@ -1282,15 +1282,23 @@ impl HarnessAdapter for GrokBuildAdapter {
 /// claude-code.md, "Resolved by the docs on 2026-09-16").
 const CLAUDE_RESERVED_SKILLS_ENTRY: &str = "synced";
 
-/// Claude Code's skills root: `<CLAUDE_CONFIG_DIR>/skills` when the caller
-/// supplies the env var's value, else `<home>/.claude/skills`. Reading the
-/// env var itself is a host concern (core has no `std::env` access); the
-/// caller resolves `CLAUDE_CONFIG_DIR` and passes it through.
-pub fn claude_code_skills_root(home: &Path, config_dir_override: Option<&Path>) -> PathBuf {
+/// Claude Code's config directory: `CLAUDE_CONFIG_DIR` when the caller
+/// supplies the env var's value, else `<home>/.claude`. Reading the env var
+/// itself is a host concern (core has no `std::env` access); the caller
+/// resolves `CLAUDE_CONFIG_DIR` and passes it through. Every Claude Code
+/// path under the config dir (`skills`, `settings.json`) is resolved from
+/// this one function, so an override moves them all together.
+fn claude_code_config_dir(home: &Path, config_dir_override: Option<&Path>) -> PathBuf {
     match config_dir_override {
-        Some(dir) => dir.join("skills"),
-        None => home.join(".claude").join("skills"),
+        Some(dir) => dir.to_path_buf(),
+        None => home.join(".claude"),
     }
+}
+
+/// Claude Code's skills root: `<CLAUDE_CONFIG_DIR>/skills` when the caller
+/// supplies the env var's value, else `<home>/.claude/skills`.
+pub fn claude_code_skills_root(home: &Path, config_dir_override: Option<&Path>) -> PathBuf {
+    claude_code_config_dir(home, config_dir_override).join("skills")
 }
 
 /// Lists the skill folder names directly under Claude Code's skills root,
@@ -1399,15 +1407,17 @@ pub fn enable_claude_link(
         .map_err(|e| crate::error::CoreError::io(link_path, e))
 }
 
-/// Reads `skillOverrides` from Claude Code's `~/.claude/settings.json`. A
-/// missing file, an unparsable file, or a missing/malformed key all read as
-/// no overrides, matching [`read_claude_enabled_plugins`] in `ops.rs`
-/// (kept private there since it only serves `capabilities`).
+/// Reads `skillOverrides` from Claude Code's `<CLAUDE_CONFIG_DIR>/settings.json`
+/// (`~/.claude/settings.json` with no override). A missing file, an
+/// unparsable file, or a missing/malformed key all read as no overrides,
+/// matching [`read_claude_enabled_plugins`] in `ops.rs` (kept private there
+/// since it only serves `capabilities`).
 pub fn read_claude_skill_overrides(
     fs: &dyn ScopeFs,
     home: &Path,
+    config_dir_override: Option<&Path>,
 ) -> serde_json::Map<String, serde_json::Value> {
-    let path = home.join(".claude").join("settings.json");
+    let path = claude_code_config_dir(home, config_dir_override).join("settings.json");
     let Ok(bytes) = fs.read_capped(&path, 1024 * 1024) else {
         return serde_json::Map::new();
     };
@@ -1421,8 +1431,9 @@ pub fn read_claude_skill_overrides(
         .unwrap_or_default()
 }
 
-/// Writes `skillOverrides` into Claude Code's `~/.claude/settings.json`,
-/// preserving every other top-level key byte-for-byte (only the
+/// Writes `skillOverrides` into Claude Code's
+/// `<CLAUDE_CONFIG_DIR>/settings.json` (`~/.claude/settings.json` with no
+/// override), preserving every other top-level key byte-for-byte (only the
 /// `skillOverrides` value itself is replaced or inserted). Starts from an
 /// empty object when the file is missing or unparsable, so a first write
 /// still succeeds; a caller that needs to preserve a malformed file's
@@ -1432,10 +1443,11 @@ pub fn write_claude_skill_overrides(
     scope: &crate::scope::NormalizedScope,
     guard: &crate::ports::ExclusiveGuard,
     home: &Path,
+    config_dir_override: Option<&Path>,
     overrides: serde_json::Map<String, serde_json::Value>,
 ) -> Result<(), crate::error::CoreError> {
     use crate::error::CoreError;
-    let path = home.join(".claude").join("settings.json");
+    let path = claude_code_config_dir(home, config_dir_override).join("settings.json");
     let mut doc = match fs.read_capped(&path, 1024 * 1024) {
         Ok(bytes) => serde_json::from_slice::<serde_json::Value>(&bytes)
             .unwrap_or_else(|_| serde_json::Value::Object(serde_json::Map::new())),
