@@ -51,6 +51,27 @@ The job the app does is "keep my skills in good shape". Today only the desktop c
 
 Desired state: every operation in docs/action-map is one function in the core crate, and the desktop, the CLI, and the MCP server are three thin adapters over it. Done when the CLI and MCP tool lists contain every write command named in the area files, and a parity test runs the same operation through all three adapters and compares the disk.
 
+## Rollback rehearsal (unit 6.3)
+
+At every release, before announcing it, run the n-1 over n rehearsal by
+hand on a Mac that already ran the previous tag - the same checklist
+`.github/workflows/release.yml`'s `rehearsal-summary` job prints to the
+run's step summary:
+
+- [ ] Install the previous tag's signed DMG and launch it at least once.
+- [ ] Install this tag's signed DMG over it (same Applications path).
+- [ ] Launch, confirm the app opens to the normal skill list, not the
+      newer-data-folder message.
+- [ ] Note the app data folder's `schema_version` before and after
+      (`~/Library/Application Support/<bundle id>/schema_version`).
+- [ ] Reinstall the previous tag's DMG over this one (the rollback),
+      launch, and record what the user sees.
+
+Result: (fill in)
+
+This is a manual rehearsal, run once per release by the release author, not
+a CI gate - the workflow only prints the checklist, never blocks on it.
+
 ## Gaps
 
 - No updater plugin, no signing, no notarization, no CI, no release workflow.
