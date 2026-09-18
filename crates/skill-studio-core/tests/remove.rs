@@ -17,6 +17,7 @@ use std::sync::{Arc, Mutex};
 
 use skill_studio_core::dto::{
     InstallFile, InstallMethod, InstallOutcome, InstallRequest, ListEventsRequest, RemoveRequest,
+    RestoreRequest,
 };
 use skill_studio_core::harness::HarnessCatalog;
 use skill_studio_core::identity::{RootKind, RootScope, SkillName};
@@ -201,12 +202,12 @@ fn remove_writes_a_journal_row_before_the_first_write_or_names_the_missing_step(
     assert_eq!(events[0].status, "done");
 }
 
-/// `copy_remove_moves_the_tree_into_quarantine_with_the_same_tree_hash`:
+/// `copy_remove_moves_the_tree_into_quarantine_with_the_same_tree_hash_or_names_the_diverging_file`:
 /// `Copy`'s removal never deletes the tree - it lands, intact, in
 /// `.skill-studio-quarantine`, and the registry's `copies` entry for it is
 /// gone.
 #[test]
-fn copy_remove_moves_the_tree_into_quarantine_with_the_same_tree_hash() {
+fn copy_remove_moves_the_tree_into_quarantine_with_the_same_tree_hash_or_names_the_diverging_file() {
     let home = unique_temp_dir("remove_quarantine");
     std::fs::create_dir_all(&home).unwrap();
     let rt = runtime_for(&home);
@@ -232,6 +233,44 @@ fn copy_remove_moves_the_tree_into_quarantine_with_the_same_tree_hash() {
             .values()
             .any(|v| v.get("name").and_then(|n| n.as_str()) == Some("beta"))),
         "the removed copy's registry entry must be dropped"
+    );
+}
+
+/// `remove_undo_restores_the_copy_tree_with_the_same_tree_hash_or_names_the_diverging_file`
+/// (round 1, Q1): `restore_event` on a `Copy` removal's own event id must
+/// bring the tree back to the universal root, byte-for-byte - it fails
+/// without Q1's fix, whose `remove` recorded `inverse: None` for every
+/// branch, so `restore_event` returned `Unsupported` instead of moving
+/// anything back.
+#[test]
+fn remove_undo_restores_the_copy_tree_with_the_same_tree_hash_or_names_the_diverging_file() {
+    let home = unique_temp_dir("remove_undo_copy");
+    std::fs::create_dir_all(&home).unwrap();
+    let rt = runtime_for(&home);
+    let deployment_id = install_and_resolve(&rt, "epsilon");
+
+    let outcome = ops::remove(&rt, &ctx(), &RemoveRequest { deployment_id }).unwrap();
+    let restored = ops::restore_event(
+        &rt,
+        &ctx(),
+        &RestoreRequest {
+            event_id: outcome.event_id,
+            force: false,
+        },
+    )
+    .unwrap();
+
+    let restored_path = home.join(UNIVERSAL_ROOT_RELATIVE).join("epsilon");
+    assert!(
+        restored.restored_paths.contains(&restored_path),
+        "restore must name the deployment path among what it put back: {:?}",
+        restored.restored_paths
+    );
+    let tree_hash_after = skill_studio_core::tree_hash::tree_hash(&RealFs::new(), &restored_path)
+        .expect("the tree must be back at the universal root, byte-for-byte");
+    assert_eq!(
+        outcome.tree_hash_before, tree_hash_after,
+        "the undone tree must match the original hash exactly"
     );
 }
 
@@ -278,6 +317,76 @@ fn remove_crash_mid_rename_leaves_disk_in_the_before_or_after_state_or_names_the
             .unwrap();
         assert!(entry.path().join("SKILL.md").exists());
     }
+
+    // Round 1, Q3: the row itself must record the crash, not just leave the
+    // tree in a valid state - a `failed` `remove` row with its `backup_dir`
+    // set, so a later prune (Q2) and a manual retry both have something to
+    // find.
+    let events = ops::list_events(&rt, &ctx(), &ListEventsRequest::default()).unwrap();
+    let remove_row = events
+        .iter()
+        .find(|e| e.kind == "remove")
+        .expect("the crashed remove must still have written its own row");
+    assert_eq!(remove_row.status, "failed", "a crashed rename must mark the row failed");
+    assert!(
+        remove_row.backup_dir.is_some(),
+        "a failed remove must still have an archival backup_dir"
+    );
+}
+
+/// `quarantine_prune_keeps_the_entry_of_a_failed_remove_or_names_the_lost_entry`
+/// (round 1, Q2): a `remove` whose tree already landed in quarantine but
+/// whose own row finishes `Failed` (registry write-back fails after the
+/// rename succeeds) must not have its own quarantine entry pruned by a
+/// later removal that pushes the directory over the cap - without Q2's
+/// skip-if-referenced-by-an-open-remove check, `prune_quarantine` sorted
+/// every entry purely by age and could delete the very backup a retry or an
+/// undo of the failed row still needs.
+#[test]
+fn quarantine_prune_keeps_the_entry_of_a_failed_remove_or_names_the_lost_entry() {
+    let home = unique_temp_dir("remove_quarantine_keeps_failed");
+    std::fs::create_dir_all(&home).unwrap();
+    let failing_fs = Arc::new(FailingFs::wrap(Arc::new(RealFs::new())));
+    let rt = runtime_with(
+        &home,
+        failing_fs.clone(),
+        Some(Arc::new(FakeNpxSpawner::new(home.clone()))),
+    );
+    let deployment_id = install_and_resolve(&rt, "zeta");
+
+    // The rename into quarantine succeeds; the registry write-back right
+    // after it does not, so the row finishes `Failed` with its tree already
+    // quarantined.
+    failing_fs.fail_next_write_atomic();
+    let err = ops::remove(&rt, &ctx(), &RemoveRequest { deployment_id }).unwrap_err();
+    assert_eq!(err.code, skill_studio_core::ErrorCode::Io);
+
+    let quarantine_dir = home.join(UNIVERSAL_ROOT_RELATIVE).join(QUARANTINE_DIR_NAME);
+    let failed_entry = std::fs::read_dir(&quarantine_dir)
+        .unwrap()
+        .next()
+        .expect("the failed remove's tree must have landed in quarantine")
+        .unwrap()
+        .file_name()
+        .to_string_lossy()
+        .into_owned();
+
+    // Push the directory over the cap with fresh, uncontested removals -
+    // enough that a naive oldest-first prune would reach the failed entry.
+    let cap = skill_studio_core::doctor::QUARANTINE_RETENTION_CAP;
+    for i in 0..=cap {
+        let deployment_id = install_and_resolve(&rt, &format!("filler-{i}"));
+        ops::remove(&rt, &ctx(), &RemoveRequest { deployment_id }).unwrap();
+    }
+
+    let remaining: Vec<String> = std::fs::read_dir(&quarantine_dir)
+        .unwrap()
+        .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+        .collect();
+    assert!(
+        remaining.contains(&failed_entry),
+        "the failed remove's own quarantine entry must survive later prunes: {remaining:?}"
+    );
 }
 
 /// `quarantine_stays_within_the_retention_cap_and_prunes_the_oldest_entries_or_names_the_stray_entry`:
