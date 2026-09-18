@@ -600,3 +600,79 @@ fn skills_sh_install_with_claude_code_keeps_the_cli_link_or_names_the_eexist_fai
 
     std::fs::remove_dir_all(&home).ok();
 }
+
+/// `install_over_a_non_object_registry_document_fails_before_any_write_or_names_the_wiped_registry`
+/// (R7): `<home>/.agents/skill-studio.json` holding `[]` - valid JSON, but
+/// not an object - must fail `read_registry_document` instead of silently
+/// downgrading to an empty document, which would wipe `added_folders`,
+/// `forks`, and the trust list on the write-back. The read happens before
+/// `session.store.record`, so nothing this install would otherwise do -
+/// the destination folder, the journal row - must exist afterward either.
+#[test]
+fn install_over_a_non_object_registry_document_fails_before_any_write_or_names_the_wiped_registry()
+{
+    let home = unique_temp_dir("install_non_object_registry");
+    std::fs::create_dir_all(home.join(".agents")).unwrap();
+    let registry_path = home.join(".agents").join("skill-studio.json");
+    std::fs::write(&registry_path, b"[]").unwrap();
+    let original_bytes = std::fs::read(&registry_path).unwrap();
+    let rt = runtime_for(&home);
+    let req = copy_request("kappa");
+
+    let err = ops::install(&rt, &ctx(), &req).unwrap_err();
+    assert_eq!(err.code, skill_studio_core::ErrorCode::Io);
+
+    assert_eq!(
+        std::fs::read(&registry_path).unwrap(),
+        original_bytes,
+        "a registry document that fails to read must not be rewritten"
+    );
+    assert!(
+        !home.join(UNIVERSAL_ROOT_RELATIVE).join("kappa").exists(),
+        "no destination folder may exist when the registry read fails before the first write"
+    );
+    let events = ops::list_events(&rt, &ctx(), &ListEventsRequest::default()).unwrap();
+    assert!(
+        events.is_empty(),
+        "the registry read happens before session.store.record, so no journal row exists either"
+    );
+
+    std::fs::remove_dir_all(&home).ok();
+}
+
+/// `install_over_corrupt_json_registry_document_fails_before_any_write_or_names_the_wiped_registry`
+/// (R7): the same guard as the non-object case, this time for bytes that
+/// don't even parse as JSON (`{`, a truncated object) - `serde_json`'s own
+/// parse error, not the "not an object" branch, must still fail the install
+/// before any write.
+#[test]
+fn install_over_corrupt_json_registry_document_fails_before_any_write_or_names_the_wiped_registry()
+{
+    let home = unique_temp_dir("install_corrupt_registry");
+    std::fs::create_dir_all(home.join(".agents")).unwrap();
+    let registry_path = home.join(".agents").join("skill-studio.json");
+    std::fs::write(&registry_path, b"{").unwrap();
+    let original_bytes = std::fs::read(&registry_path).unwrap();
+    let rt = runtime_for(&home);
+    let req = copy_request("lambda");
+
+    let err = ops::install(&rt, &ctx(), &req).unwrap_err();
+    assert_eq!(err.code, skill_studio_core::ErrorCode::Io);
+
+    assert_eq!(
+        std::fs::read(&registry_path).unwrap(),
+        original_bytes,
+        "a registry document that fails to read must not be rewritten"
+    );
+    assert!(
+        !home.join(UNIVERSAL_ROOT_RELATIVE).join("lambda").exists(),
+        "no destination folder may exist when the registry read fails before the first write"
+    );
+    let events = ops::list_events(&rt, &ctx(), &ListEventsRequest::default()).unwrap();
+    assert!(
+        events.is_empty(),
+        "the registry read happens before session.store.record, so no journal row exists either"
+    );
+
+    std::fs::remove_dir_all(&home).ok();
+}
