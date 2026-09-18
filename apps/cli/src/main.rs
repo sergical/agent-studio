@@ -23,12 +23,15 @@ use std::sync::Arc;
 
 use clap::{Parser, Subcommand};
 use skill_studio_core::dto::{
-    CapabilitiesRequest, HarnessesRequest, Inventory, ListEventsRequest, RepairApplyMode,
-    RepairApplyRequest, RepairPreviewRequest, RestoreRequest, ScanRequest,
+    CapabilitiesRequest, HarnessesRequest, InstallFile, InstallMethod, InstallRequest, Inventory,
+    ListEventsRequest, RepairApplyMode, RepairApplyRequest, RepairPreviewRequest, RestoreRequest,
+    ScanRequest,
 };
 use skill_studio_core::harness::HarnessCatalog;
 use skill_studio_core::health::{self, Outcome, TimingRow};
-use skill_studio_core::identity::{AgentId, CorrelationId, DeploymentId, EventId, SkillName};
+use skill_studio_core::identity::{
+    AgentId, CorrelationId, DeploymentId, EventId, ProjectRef, RootScope, SkillName,
+};
 use skill_studio_core::ops::{self, Operation, ResultEnvelope};
 use skill_studio_core::ports::{OpContext, Runtime};
 use skill_studio_core::snapshot::SnapshotCell;
@@ -48,6 +51,26 @@ const VERSION: &str = concat!(
     env!("SKILL_STUDIO_COMMIT"),
     ")"
 );
+
+/// `--method` for `add`: the wire-level `InstallMethod`, spelled the way a
+/// flag reads (`skills-sh`, not `skills_sh`).
+#[derive(Clone, Copy, clap::ValueEnum)]
+enum AddMethod {
+    Copy,
+    Dotagents,
+    #[value(name = "skills-sh")]
+    SkillsSh,
+}
+
+impl From<AddMethod> for InstallMethod {
+    fn from(method: AddMethod) -> Self {
+        match method {
+            AddMethod::Copy => InstallMethod::Copy,
+            AddMethod::Dotagents => InstallMethod::Dotagents,
+            AddMethod::SkillsSh => InstallMethod::SkillsSh,
+        }
+    }
+}
 
 #[derive(Parser)]
 #[command(name = "skill-studio", about = "Manage agent skills across harnesses", version = VERSION)]
@@ -205,6 +228,40 @@ enum Command {
         #[arg(long)]
         json: bool,
     },
+    /// Install one skill by `copy`, `dotagents`, or `skills-sh`.
+    Add {
+        #[command(flatten)]
+        scope: ScopeArgs,
+        /// For `copy`: the local skill folder to stage. For `dotagents`/
+        /// `skills-sh`: the source argument passed to the CLI's own `add`.
+        source: String,
+        /// Which method writes the bytes.
+        #[arg(long, value_enum, default_value_t = AddMethod::SkillsSh)]
+        method: AddMethod,
+        /// Harnesses to link the new skill into right after install
+        /// (repeatable). Only Claude Code gets a per-skill link this build
+        /// writes.
+        #[arg(long = "harness")]
+        harnesses: Vec<String>,
+        /// Install under the scope home. Default when neither this nor
+        /// `--project-path` is given.
+        #[arg(long, conflicts_with = "project_path")]
+        global: bool,
+        /// Install under this project instead of the scope home. Named
+        /// `--project-path`, not `--project`: `ScopeArgs` already flattens a
+        /// repeatable `--project` for discovery scoping.
+        #[arg(long)]
+        project_path: Option<PathBuf>,
+        /// Folder name the skill is installed under; defaults to `source`'s
+        /// final path segment.
+        #[arg(long)]
+        name: Option<String>,
+        /// Confirms the trust prompt for an untrusted dotagents source.
+        #[arg(long)]
+        trust: bool,
+        #[arg(long)]
+        json: bool,
+    },
     /// Find differing copies of a skill without merging them; writes
     /// nothing.
     Conflicts {
@@ -303,6 +360,36 @@ fn main() -> ExitCode {
             project_path,
             json,
         } => run_set_harness_enabled(&scope, skill, &harness, enabled, project_path, json, time),
+        Command::Add {
+            scope,
+            source,
+            method,
+            harnesses,
+            global,
+            project_path,
+            name,
+            trust,
+            json,
+        } => {
+            // `global` is `--project-path`'s own inverse for clap's help
+            // text and `conflicts_with`; the request's scope is derived
+            // from `project_path` alone (`None` means global), so this
+            // flag carries no further meaning once parsing is done.
+            let _ = global;
+            run_add(
+                &scope,
+                AddArgs {
+                    source,
+                    method,
+                    harnesses,
+                    project: project_path,
+                    name,
+                    trust,
+                },
+                json,
+                time,
+            )
+        }
         Command::Fix { scope, skill, json } => run_fix(&scope, &skill, json, time),
         Command::Conflicts { scope, json } => run_diagnose_conflict(&scope, json, time),
         Command::Schema { out } => output::write_schemas(out),
@@ -647,6 +734,123 @@ fn run_apply_repair(scope: &ScopeArgs, preview_json: &PathBuf, json: bool, time:
     let envelope =
         ResultEnvelope::from_result(Operation::ApplyFrontmatterRepair, &rt.scope, &ctx, result);
     finish(&envelope, json, time, output::print_repair_outcome_table)
+}
+
+/// `add`'s own flags, bundled so `run_add` stays under clippy's
+/// argument-count lint.
+struct AddArgs {
+    source: String,
+    method: AddMethod,
+    harnesses: Vec<String>,
+    project: Option<PathBuf>,
+    name: Option<String>,
+    trust: bool,
+}
+
+/// Reads `dir` into the `InstallFile` list `InstallMethod::Copy` stages,
+/// walking every subdirectory; each entry's `relative_path` is relative to
+/// `dir` itself. `Dotagents`/`SkillsSh` never call this - their bytes come
+/// from the CLI the core op shells out to.
+fn read_skill_files(dir: &std::path::Path) -> std::io::Result<Vec<InstallFile>> {
+    fn walk(
+        root: &std::path::Path,
+        dir: &std::path::Path,
+        out: &mut Vec<InstallFile>,
+    ) -> std::io::Result<()> {
+        for entry in std::fs::read_dir(dir)? {
+            let entry = entry?;
+            let path = entry.path();
+            let file_type = entry.file_type()?;
+            if file_type.is_dir() {
+                walk(root, &path, out)?;
+            } else if file_type.is_file() {
+                let contents = std::fs::read(&path)?;
+                let relative_path = path.strip_prefix(root).unwrap_or(&path).to_path_buf();
+                out.push(InstallFile {
+                    relative_path,
+                    contents,
+                });
+            }
+        }
+        Ok(())
+    }
+    let mut out = Vec::new();
+    walk(dir, dir, &mut out)?;
+    Ok(out)
+}
+
+/// Installs one skill via `ops::install`, by `Copy`, `Dotagents`, or
+/// `SkillsSh`. `NeedsTrust` is printed/returned as a non-error outcome, not
+/// an exit failure - the caller retries with `--trust` once it confirms.
+fn run_add(scope: &ScopeArgs, args: AddArgs, json: bool, time: bool) -> ExitCode {
+    let rt = match build_runtime_write::<skill_studio_core::dto::InstallOutcome>(
+        scope,
+        Operation::Install,
+        json,
+    ) {
+        Ok(rt) => rt,
+        Err(code) => return code,
+    };
+    let ctx = OpContext::uncancellable(CorrelationId(ulid::Ulid::new().to_string()));
+    let name = args.name.clone().unwrap_or_else(|| {
+        std::path::Path::new(&args.source)
+            .file_name()
+            .map_or_else(|| args.source.clone(), |n| n.to_string_lossy().into_owned())
+    });
+    let harnesses = match args
+        .harnesses
+        .iter()
+        .map(|h| AgentId::parse(h))
+        .collect::<Result<Vec<_>, _>>()
+    {
+        Ok(harnesses) => harnesses,
+        Err(err) => {
+            let envelope = ResultEnvelope::<skill_studio_core::dto::InstallOutcome>::from_result(
+                Operation::Install,
+                &rt.scope,
+                &ctx,
+                Err(err),
+            );
+            return finish(&envelope, json, time, output::print_install_outcome_table);
+        }
+    };
+    let method: InstallMethod = args.method.into();
+    let files = if matches!(method, InstallMethod::Copy) {
+        match read_skill_files(std::path::Path::new(&args.source)) {
+            Ok(files) => files,
+            Err(e) => {
+                let err = skill_studio_core::CoreError::io(&args.source, e);
+                let envelope =
+                    ResultEnvelope::<skill_studio_core::dto::InstallOutcome>::from_result(
+                        Operation::Install,
+                        &rt.scope,
+                        &ctx,
+                        Err(err),
+                    );
+                return finish(&envelope, json, time, output::print_install_outcome_table);
+            }
+        }
+    } else {
+        Vec::new()
+    };
+    let scope_target = match args.project {
+        Some(project) => RootScope::Project(ProjectRef(project)),
+        None => RootScope::Global,
+    };
+    let req = InstallRequest {
+        skill: SkillName(name),
+        method,
+        scope: scope_target,
+        harnesses,
+        files,
+        source: (!matches!(method, InstallMethod::Copy)).then_some(args.source),
+        trust_identity: None,
+        trust_confirmed: args.trust,
+        save_as_preference: true,
+    };
+    let result = ops::install(&rt, &ctx, &req);
+    let envelope = ResultEnvelope::from_result(Operation::Install, &rt.scope, &ctx, result);
+    finish(&envelope, json, time, output::print_install_outcome_table)
 }
 
 fn run_fix(scope: &ScopeArgs, skill: &str, json: bool, time: bool) -> ExitCode {
