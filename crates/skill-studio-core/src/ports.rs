@@ -55,6 +55,14 @@ pub struct DirEntryFacts {
     pub kind: FileKind,
 }
 
+/// Whether a directory entry can be a skill folder: a directory or a
+/// symlink (never a plain file), and not dot-prefixed. Shared by every root
+/// reader (`ops::read_root_entries`, `harness::claude_code_skill_entries`)
+/// so "what counts as a skill-shaped entry" has one definition.
+pub(crate) fn is_skill_shaped_entry(entry: &DirEntryFacts) -> bool {
+    matches!(entry.kind, FileKind::Dir | FileKind::Symlink) && !entry.name.starts_with('.')
+}
+
 /// A path proven to lie inside the scope.
 ///
 /// Invariant: only [`confine`] builds one. Every write helper takes a

@@ -1302,9 +1302,11 @@ pub fn claude_code_skills_root(home: &Path, config_dir_override: Option<&Path>) 
 }
 
 /// Lists the skill folder names directly under Claude Code's skills root,
-/// honouring `CLAUDE_CONFIG_DIR` and skipping the reserved `synced` entry. A
-/// missing root reads as no skills rather than an error, matching the rest
-/// of the harness readers.
+/// honouring `CLAUDE_CONFIG_DIR` and skipping the reserved `synced` entry
+/// and anything that is not a directory or symlink (files, dotfiles), the
+/// same rule [`crate::ports::is_skill_shaped_entry`] applies for every other
+/// root reader. A missing root reads as no skills rather than an error,
+/// matching the rest of the harness readers.
 pub fn claude_code_skill_entries(
     fs: &dyn ScopeFs,
     home: &Path,
@@ -1316,6 +1318,7 @@ pub fn claude_code_skill_entries(
     };
     entries
         .into_iter()
+        .filter(crate::ports::is_skill_shaped_entry)
         .filter(|e| e.name != CLAUDE_RESERVED_SKILLS_ENTRY)
         .map(|e| e.name)
         .collect()
@@ -1581,6 +1584,29 @@ mod tests {
             override_entries,
             vec!["bar".to_string()],
             "CLAUDE_CONFIG_DIR override was not honoured, or `synced` leaked: {override_entries:?}"
+        );
+    }
+
+    #[test]
+    fn claude_code_skill_entries_skip_files_and_dot_entries_or_names_the_non_skill_entry() {
+        let fs = crate::testing::FixtureBuilder::new()
+            .dir("/home/.claude/skills/real-skill")
+            .dir("/home/.agents/skills/linked-skill")
+            .alias(
+                "/home/.claude/skills/linked-skill",
+                "/home/.agents/skills/linked-skill",
+            )
+            .file("/home/.claude/skills/notes.txt", b"not a skill")
+            .dir("/home/.claude/skills/.skill-studio-disabled")
+            .dir("/home/.claude/skills/synced")
+            .build_fs();
+        let mut entries = claude_code_skill_entries(&fs, Path::new("/home"), None);
+        entries.sort();
+        assert_eq!(
+            entries,
+            vec!["linked-skill".to_string(), "real-skill".to_string()],
+            "a file, a dot-prefixed entry, or the reserved `synced` folder leaked \
+             into the skill list: {entries:?}"
         );
     }
 
