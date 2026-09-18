@@ -146,6 +146,48 @@ fn seed_installed_skill(home: &std::path::Path, skill: &str, revision: &str) {
     .unwrap();
 }
 
+/// Same as [`seed_installed_skill`], but two files - the crash test needs a
+/// tree wide enough that `stage`'s own copy is more than a single rename,
+/// so a mid-swap failure has an actual multi-file "before" tree to diverge
+/// from a multi-file "after" tree.
+fn seed_installed_skill_two_files(home: &std::path::Path, skill: &str, revision: &str) {
+    let dir = home.join(UNIVERSAL_ROOT_RELATIVE).join(skill);
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(
+        dir.join("SKILL.md"),
+        format!("---\nname: {skill}\ndescription: seeded\n---\nBody at {revision}.\n"),
+    )
+    .unwrap();
+    std::fs::write(
+        dir.join("reference.md"),
+        format!("Reference at {revision}.\n"),
+    )
+    .unwrap();
+}
+
+fn copy_request_two_files(skill: &str, revision: &str) -> UpdateRequest {
+    UpdateRequest {
+        skill: SkillName(skill.to_string()),
+        method: InstallMethod::Copy,
+        scope: RootScope::Global,
+        files: vec![
+            InstallFile {
+                relative_path: PathBuf::from("SKILL.md"),
+                contents: format!(
+                    "---\nname: {skill}\ndescription: a copied skill\n---\nBody at {revision}.\n"
+                )
+                .into_bytes(),
+            },
+            InstallFile {
+                relative_path: PathBuf::from("reference.md"),
+                contents: format!("Reference at {revision}.\n").into_bytes(),
+            },
+        ],
+        source: None,
+        ref_pin: None,
+    }
+}
+
 fn cli_request(skill: &str, method: InstallMethod) -> UpdateRequest {
     UpdateRequest {
         skill: SkillName(skill.to_string()),
@@ -177,10 +219,12 @@ fn copy_request(skill: &str, revision: &str) -> UpdateRequest {
 /// `update_writes_a_journal_row_and_quarantines_the_old_tree_before_the_swap_or_names_the_missing_step`:
 /// a `Copy` update leaves exactly one `update` event, `done`, the fresh
 /// bytes at the destination, and the previous tree moved (not deleted) into
-/// `.skill-studio-update-quarantine` - proof the swap quarantined the old
-/// folder rather than clobbering it in place. Fails if `update_copy` were to
-/// call `fsops::stage`/`swap` with the old folder deleted first instead of
-/// swapped, or if the journal row were dropped.
+/// the shared `.skill-studio-quarantine` folder (`doctor::QUARANTINE_DIR_NAME`,
+/// U3: the same one the doctor prune and check sweep, not an
+/// update-specific name a prune pass would never see) - proof the swap
+/// quarantined the old folder rather than clobbering it in place. Fails if
+/// `update_copy` were to call `fsops::stage`/`swap` with the old folder
+/// deleted first instead of swapped, or if the journal row were dropped.
 #[test]
 fn update_writes_a_journal_row_and_quarantines_the_old_tree_before_the_swap_or_names_the_missing_step(
 ) {
@@ -204,7 +248,7 @@ fn update_writes_a_journal_row_and_quarantines_the_old_tree_before_the_swap_or_n
 
     let quarantine = home
         .join(UNIVERSAL_ROOT_RELATIVE)
-        .join(".skill-studio-update-quarantine");
+        .join(".skill-studio-quarantine");
     let entries: Vec<_> = std::fs::read_dir(&quarantine)
         .unwrap()
         .filter_map(Result::ok)
@@ -224,15 +268,19 @@ fn update_writes_a_journal_row_and_quarantines_the_old_tree_before_the_swap_or_n
     std::fs::remove_dir_all(&home).ok();
 }
 
-/// `undo_after_an_update_restores_the_previous_tree_with_the_same_tree_hash`:
+/// `undo_after_an_update_restores_the_previous_tree_with_the_same_tree_hash_or_names_the_diverging_file`:
 /// the `update` event's backup-and-inverse round-trips through
-/// `ops::restore_event` back to the pre-update tree, with the same
-/// `TreeHash` the update reported as `tree_hash_before`. Fails if `update`
-/// were to skip `backup_paths` before its first write (nothing to restore
-/// from), or record `EventKind::Install` instead of `Update` (the SQL
-/// history reader would then reject it as the wrong shape).
+/// `ops::restore_event` - without `force` - back to the pre-update tree,
+/// with the same `TreeHash` the update reported as `tree_hash_before`.
+/// Fails if `update` were to skip `backup_paths` before its first write
+/// (nothing to restore from), record `EventKind::Install` instead of
+/// `Update` (the SQL history reader would then reject it as the wrong
+/// shape), or finish the row with `post_fingerprint: None` (U1: that would
+/// tell `restore_event` the path was "absent" after the update, so even an
+/// undrifted restore would return `DriftConflict` instead of restoring).
 #[test]
-fn undo_after_an_update_restores_the_previous_tree_with_the_same_tree_hash() {
+fn undo_after_an_update_restores_the_previous_tree_with_the_same_tree_hash_or_names_the_diverging_file(
+) {
     let home = unique_temp_dir("update_undo_restores_tree_hash");
     std::fs::create_dir_all(&home).unwrap();
     seed_installed_skill(&home, "beta", "v1");
@@ -254,10 +302,10 @@ fn undo_after_an_update_restores_the_previous_tree_with_the_same_tree_hash() {
         &ctx(),
         &RestoreRequest {
             event_id: outcome.event_id,
-            force: true,
+            force: false,
         },
     )
-    .unwrap();
+    .unwrap_or_else(|e| panic!("undo without force must succeed on an undrifted tree: {e}"));
     assert_eq!(restore.restored_paths, vec![destination.clone()]);
 
     let tree_hash_after_undo =
@@ -270,78 +318,154 @@ fn undo_after_an_update_restores_the_previous_tree_with_the_same_tree_hash() {
     std::fs::remove_dir_all(&home).ok();
 }
 
-/// `update_crash_after_each_step_leaves_disk_in_the_before_or_after_state_or_names_the_stray_folder`
-/// (the red check): failing the landing rename inside `swap` must never
-/// leave a half-swapped deployment - either the destination still shows the
-/// old tree (before state) or the new one, complete (after state), never a
-/// mix, and any stray stage folder left behind is exactly what the next
-/// `MutationSession::begin`'s reconcile removes.
+/// `undo_after_an_update_refuses_when_the_tree_changed_since_or_names_the_drift`:
+/// a caller that edits a file after `update` lands, then tries an
+/// unforced restore, must get `DriftConflict` naming the path - `update`'s
+/// row records the post-write fingerprint, so `restore_event`'s live-vs-
+/// recorded comparison has something real to catch the edit against.
 #[test]
-fn update_crash_after_each_step_leaves_disk_in_the_before_or_after_state_or_names_the_stray_folder()
-{
-    let home = unique_temp_dir("update_crash_window");
+fn undo_after_an_update_refuses_when_the_tree_changed_since_or_names_the_drift() {
+    let home = unique_temp_dir("update_undo_refuses_on_drift");
     std::fs::create_dir_all(&home).unwrap();
-    seed_installed_skill(&home, "gamma", "v1");
-    let failing_fs = Arc::new(FailingFs::wrap(Arc::new(RealFs::new())));
-    let rt = runtime_with(
-        &home,
-        failing_fs.clone(),
-        Some(Arc::new(FakeNpxUpdateSpawner::new(home.clone(), "v2"))),
-    );
-    let req = copy_request("gamma", "v2");
+    seed_installed_skill(&home, "zeta", "v1");
+    let rt = runtime_for(&home, "v2");
+    let destination = home.join(UNIVERSAL_ROOT_RELATIVE).join("zeta");
 
-    // Same counting rule `install.rs`'s own crash test documents: 1
-    // (manifest), 2 (plan), 3 (record_stage), 4 (record_swap), 5 (the
-    // rename/exchange `swap` itself runs) - the first `fsops_rename` this
-    // update makes is `stage`'s own plan-manifest write, since `update`'s
-    // `backup_paths` copy of the existing tree runs through `RealFs`'s
-    // regular `fs::rename`-free `copy_recursive`, not `fsops_rename`.
-    failing_fs.fail_nth_fsops_rename(5);
-    let err = ops::update(&rt, &ctx(), &req).unwrap_err();
-    assert_eq!(err.code, skill_studio_core::ErrorCode::Io);
+    let outcome = ops::update(&rt, &ctx(), &copy_request("zeta", "v2")).unwrap();
 
-    let destination = home.join(UNIVERSAL_ROOT_RELATIVE).join("gamma");
-    assert!(
-        destination.exists(),
-        "the destination must never disappear entirely"
-    );
-    let bytes = std::fs::read_to_string(destination.join("SKILL.md")).unwrap();
-    assert!(
-        bytes.contains("Body at v1") || bytes.contains("Body at v2"),
-        "the destination must show a complete tree, old or new, never a mix: {bytes}"
-    );
+    std::fs::write(destination.join("SKILL.md"), "drifted after the update\n").unwrap();
 
-    let events = ops::list_events(&rt, &ctx(), &ListEventsRequest::default()).unwrap();
-    assert_eq!(events.len(), 1, "the crashed update left exactly one row");
-    assert_eq!(
-        events[0].status, "failed",
-        "a crash mid-swap must mark the row failed, not leave it pending"
-    );
-
-    // Recovery: the next mutation session reconciles the interrupted plan,
-    // sweeping any stray `.skill-studio-stage-*` folder, and a retry (with
-    // the filesystem working again) completes the update a crash mid-swap
-    // could not.
-    let session = MutationSession::begin(&rt, &ctx()).unwrap();
-    session.finish(&rt, &ctx());
-    let retry = ops::update(&rt, &ctx(), &copy_request("gamma", "v2")).unwrap();
-    let bytes = std::fs::read_to_string(retry.deployment_path.join("SKILL.md")).unwrap();
-    assert!(
-        bytes.contains("Body at v2"),
-        "the retry must land the fresh bytes: {bytes}"
-    );
+    let err = ops::restore_event(
+        &rt,
+        &ctx(),
+        &RestoreRequest {
+            event_id: outcome.event_id,
+            force: false,
+        },
+    )
+    .unwrap_err();
+    assert_eq!(err.code, skill_studio_core::ErrorCode::DriftConflict);
+    assert_eq!(err.path.as_deref(), Some(destination.as_path()));
 
     std::fs::remove_dir_all(&home).ok();
 }
 
+/// `update_crash_after_each_step_leaves_disk_in_the_before_or_after_state_or_names_the_stray_folder`
+/// (the red check, U2): unlike a fresh install, `update`'s `swap` runs over
+/// an already-existing destination, so it takes `fsops::swap`'s
+/// exchange-then-quarantine-move path, not a bare rename - `FailingFs`'s
+/// `fsops_exchange` never advances the `fsops_rename` counter
+/// (`testing.rs`), so failing only the 5th `fsops_rename` call (the old,
+/// install-copied comment this replaces) never actually hits the exchange
+/// itself. This loops `fail_nth_fsops_rename(1..=5)` - the journal's own
+/// manifest/plan/`record_stage`/`record_swap` writes, plus the post-exchange
+/// quarantine-move rename - and adds a `fail_next_fsops_exchange` case for
+/// the one step that counter cannot reach: the exchange the module doc
+/// calls out as the actual crash-critical commit point. Every case, on a
+/// two-file tree, must leave the destination showing exactly the before
+/// tree hash (nothing committed yet) or the after tree hash (the exchange
+/// already landed), never a hash that matches neither - which a half-copied
+/// `stage` or a half-exchanged `final_name` would produce.
+#[test]
+fn update_crash_after_each_step_leaves_disk_in_the_before_or_after_state_or_names_the_stray_folder()
+{
+    // Golden run, unfailing: the exact before/after `TreeHash`es every
+    // failing attempt below is allowed to land on.
+    let golden_home = unique_temp_dir("update_crash_window_golden");
+    std::fs::create_dir_all(&golden_home).unwrap();
+    seed_installed_skill_two_files(&golden_home, "gamma", "v1");
+    let golden_rt = runtime_for(&golden_home, "v2");
+    let golden_destination = golden_home.join(UNIVERSAL_ROOT_RELATIVE).join("gamma");
+    let hash_before =
+        skill_studio_core::tree_hash::tree_hash(golden_rt.ports.fs.as_ref(), &golden_destination)
+            .unwrap();
+    let golden_outcome =
+        ops::update(&golden_rt, &ctx(), &copy_request_two_files("gamma", "v2")).unwrap();
+    let hash_after = golden_outcome.tree_hash_after;
+    assert_ne!(
+        hash_before, hash_after,
+        "the update must actually change the tree"
+    );
+    std::fs::remove_dir_all(&golden_home).ok();
+
+    type FailureCase = (&'static str, fn(&FailingFs));
+    let cases: Vec<FailureCase> = vec![
+        ("rename-1", |fs: &FailingFs| fs.fail_nth_fsops_rename(1)),
+        ("rename-2", |fs: &FailingFs| fs.fail_nth_fsops_rename(2)),
+        ("rename-3", |fs: &FailingFs| fs.fail_nth_fsops_rename(3)),
+        ("rename-4", |fs: &FailingFs| fs.fail_nth_fsops_rename(4)),
+        ("rename-5", |fs: &FailingFs| fs.fail_nth_fsops_rename(5)),
+        ("exchange", |fs: &FailingFs| fs.fail_next_fsops_exchange()),
+    ];
+    for (label, apply_failure) in cases {
+        let home = unique_temp_dir(&format!("update_crash_window_{label}"));
+        std::fs::create_dir_all(&home).unwrap();
+        seed_installed_skill_two_files(&home, "gamma", "v1");
+        let failing_fs = Arc::new(FailingFs::wrap(Arc::new(RealFs::new())));
+        let rt = runtime_with(
+            &home,
+            failing_fs.clone(),
+            Some(Arc::new(FakeNpxUpdateSpawner::new(home.clone(), "v2"))),
+        );
+        apply_failure(failing_fs.as_ref());
+
+        let result = ops::update(&rt, &ctx(), &copy_request_two_files("gamma", "v2"));
+
+        let destination = home.join(UNIVERSAL_ROOT_RELATIVE).join("gamma");
+        assert!(
+            destination.exists(),
+            "{label}: the destination must never disappear entirely"
+        );
+        let hash_now =
+            skill_studio_core::tree_hash::tree_hash(rt.ports.fs.as_ref(), &destination).unwrap();
+        assert!(
+            hash_now == hash_before || hash_now == hash_after,
+            "{label}: destination tree hash {hash_now} matches neither the before ({hash_before}) \
+             nor the after ({hash_after}) state - a crash at this step left a half-swapped tree"
+        );
+
+        if let Err(e) = result {
+            let events = ops::list_events(&rt, &ctx(), &ListEventsRequest::default()).unwrap();
+            assert_eq!(
+                events.len(),
+                1,
+                "{label}: a crashed update left exactly one row, got error {e}"
+            );
+            assert_eq!(
+                events[0].status, "failed",
+                "{label}: a crash must mark the row failed, not leave it pending"
+            );
+
+            // Recovery: the next mutation session reconciles the
+            // interrupted plan, sweeping any stray
+            // `.skill-studio-stage-*` folder, and a retry (with the
+            // filesystem working again) completes the update the crash
+            // could not.
+            let session = MutationSession::begin(&rt, &ctx()).unwrap();
+            session.finish(&rt, &ctx());
+            let retry = ops::update(&rt, &ctx(), &copy_request_two_files("gamma", "v2")).unwrap();
+            let bytes = std::fs::read_to_string(retry.deployment_path.join("SKILL.md")).unwrap();
+            assert!(
+                bytes.contains("Body at v2"),
+                "{label}: the retry must land the fresh bytes: {bytes}"
+            );
+        }
+
+        std::fs::remove_dir_all(&home).ok();
+    }
+}
+
 /// `cli_update_matches_the_npx_skills_update_trace_byte_for_byte_apart_from_timestamps_or_names_the_diverging_file`
 /// (the CLI parity test, per `definition-of-done.md` check 4): replays a
-/// hand-built fixture trace of `npx skills update <name> --global` and `npx
-/// -y @sentry/dotagents add <source> --name <name>` against `ops::update`
-/// and asserts the argv `update_cli_args_and_cwd` built and the resulting
-/// tree both match the trace exactly. Hand-built, not recorded from a real
-/// `npx` run - unit 5.4 owns recording one; replacing this fixture with a
-/// recorded trace is a follow-up.
+/// hand-built (not a checked-in fixture file, and not recorded from a real
+/// `npx` run - unit 5.4 owns recording one) trace of `npx skills update
+/// <name> --global` and `npx -y @sentry/dotagents add <source> --name
+/// <name>` against `ops::update`. What this actually proves: the argv
+/// `update_cli_args_and_cwd` built matches the trace's own argv exactly, and
+/// the file the fake CLI wrote lands at the destination with the expected
+/// revision marker in it - not a full result-tree byte diff against a
+/// recorded trace, which check 4 in full would need a real `npx` capture
+/// for (5.4's job).
 #[test]
 fn cli_update_matches_the_npx_skills_update_trace_byte_for_byte_apart_from_timestamps_or_names_the_diverging_file(
 ) {
@@ -399,6 +523,67 @@ fn update_over_a_missing_deployment_fails_before_any_write_or_names_the_created_
     assert!(!home.join(UNIVERSAL_ROOT_RELATIVE).join("epsilon").exists());
     let events = ops::list_events(&rt, &ctx(), &ListEventsRequest::default()).unwrap();
     assert!(events.is_empty());
+
+    std::fs::remove_dir_all(&home).ok();
+}
+
+/// `update_with_an_unreadable_registry_fails_before_the_first_write_or_names_the_stray_tree`
+/// (round 1, U4): a `Copy` update over a corrupt `.agents/skill-studio.json`
+/// (not a JSON object, so `read_registry_document` refuses it) must fail
+/// before `update_copy`'s swap ever runs - the old tree still on disk, no
+/// journal row - not after the swap has already landed the new tree with a
+/// stray, unrecorded copy in the registry.
+#[test]
+fn update_with_an_unreadable_registry_fails_before_the_first_write_or_names_the_stray_tree() {
+    let home = unique_temp_dir("update_unreadable_registry");
+    std::fs::create_dir_all(&home).unwrap();
+    seed_installed_skill(&home, "theta", "v1");
+    let registry_dir = home.join(".agents");
+    std::fs::create_dir_all(&registry_dir).unwrap();
+    std::fs::write(registry_dir.join("skill-studio.json"), b"[]").unwrap();
+    let rt = runtime_for(&home, "v2");
+
+    let err = ops::update(&rt, &ctx(), &copy_request("theta", "v2")).unwrap_err();
+    assert_eq!(err.code, skill_studio_core::ErrorCode::Io);
+
+    let destination = home.join(UNIVERSAL_ROOT_RELATIVE).join("theta");
+    let bytes = std::fs::read_to_string(destination.join("SKILL.md")).unwrap();
+    assert!(
+        bytes.contains("Body at v1"),
+        "an unreadable registry must fail before update_copy's swap lands the new tree: {bytes}"
+    );
+
+    let events = ops::list_events(&rt, &ctx(), &ListEventsRequest::default()).unwrap();
+    assert!(
+        events.is_empty(),
+        "no journal row when the registry read fails before backup_paths"
+    );
+
+    std::fs::remove_dir_all(&home).ok();
+}
+
+/// `update_without_a_source_records_no_journal_row_or_names_the_stray_row`
+/// (round 1, U5): a `Dotagents` update with no `source` must fail before
+/// `backup_paths` records anything - `validate_cli_request` runs ahead of
+/// the journal row, so this leaves no `update` event at all, not a
+/// `Failed` one.
+#[test]
+fn update_without_a_source_records_no_journal_row_or_names_the_stray_row() {
+    let home = unique_temp_dir("update_missing_source");
+    std::fs::create_dir_all(&home).unwrap();
+    seed_installed_skill(&home, "iota", "v1");
+    let rt = runtime_for(&home, "v2");
+
+    let mut req = cli_request("iota", InstallMethod::Dotagents);
+    req.source = None;
+    let err = ops::update(&rt, &ctx(), &req).unwrap_err();
+    assert_eq!(err.code, skill_studio_core::ErrorCode::InvalidRequest);
+
+    let events = ops::list_events(&rt, &ctx(), &ListEventsRequest::default()).unwrap();
+    assert!(
+        events.is_empty(),
+        "a missing source must leave no journal row, not a Failed one: {events:?}"
+    );
 
     std::fs::remove_dir_all(&home).ok();
 }
