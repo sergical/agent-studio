@@ -115,6 +115,8 @@ pub enum Operation {
     Install,
     /// Group 3: read the saved or defaulted install method/harnesses.
     InstallPreferences,
+    /// Unit 5.3: run all six lifecycle invariants over the whole scope.
+    Doctor,
 }
 
 /// Outcome status of one call.
@@ -230,6 +232,11 @@ impl Outcome for crate::dto::FixSkillOutcome {
 impl Outcome for crate::dto::ConflictReport {
     fn found_issues(&self) -> bool {
         !self.conflicts.is_empty()
+    }
+}
+impl Outcome for crate::dto::DoctorReport {
+    fn found_issues(&self) -> bool {
+        !self.violations.is_empty()
     }
 }
 impl Outcome for crate::dto::RemoveOutcome {
