@@ -174,7 +174,7 @@ enum Command {
         json: bool,
     },
     /// Turn a skill's native per-harness switch on or off (Claude Code,
-    /// Codex, `OpenCode`; pi has no native switch).
+    /// Codex, `OpenCode`, pi).
     SetHarnessEnabled {
         #[command(flatten)]
         scope: ScopeArgs,
