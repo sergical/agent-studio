@@ -25,7 +25,7 @@ import type {
   LifecycleTarget,
 } from "@skill-studio/lib";
 import type { TooltipLine } from "../ui/TooltipControl";
-import { canOfferHarnessSwitch } from "./skill-location-helpers";
+import { canOfferHarnessSwitch, REGISTRY_COPY_NO_SWITCH_TITLE } from "./skill-location-helpers";
 
 export type StatusLevel = "error" | "warning" | "off";
 
@@ -48,7 +48,7 @@ function offSwitchReason(deployment: Deployment, hasGlobalUniversal: boolean): s
   // refuses it outright rather than restoring the folder while leaving the
   // fork registry's `copies` entry stale - see `refuse_registry_copy_restore`.
   if (deployment.disabled_by === "studio-moved" && deployment.owner_kind === "copy") {
-    return "This copy is tracked by the fork registry; restore it by hand or wait for the .skill-studio-disabled/ migration";
+    return REGISTRY_COPY_NO_SWITCH_TITLE;
   }
   return hasGlobalUniversal
     ? "This copy has no off switch; park the skill from the header instead"
