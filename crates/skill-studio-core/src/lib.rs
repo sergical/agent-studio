@@ -66,6 +66,9 @@ pub mod tree_hash;
 pub mod testing;
 
 #[cfg(any(test, feature = "testing"))]
+pub mod testing_shapes;
+
+#[cfg(any(test, feature = "testing"))]
 pub mod bench_estate;
 
 /// Version of the wire contract (envelope, DTOs, MCP tool schemas).
