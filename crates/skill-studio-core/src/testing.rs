@@ -564,11 +564,22 @@ impl ScopeFs for FixtureFs {
 
     fn read_link(&self, path: &Path) -> std::io::Result<PathBuf> {
         let path = self.resolve_leaf(path);
-        self.lock()
-            .aliases
-            .get(&path)
-            .cloned()
-            .ok_or_else(|| Self::not_found(&path))
+        let state = self.lock();
+        if let Some(target) = state.aliases.get(&path) {
+            return Ok(target.clone());
+        }
+        // A regular file (or a directory) at `path` is a real entry, just
+        // not a symlink - `RealFs::read_link` reports that as `EINVAL`, not
+        // `NotFound`. Diverging here would let reversal's "absent means
+        // never landed" probe (journal.rs) misread a regular file sitting
+        // at a link's path as an absent link and replace it.
+        if state.files.contains_key(&path) || state.dirs.contains(&path) {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                "not a symlink",
+            ));
+        }
+        Err(Self::not_found(&path))
     }
 
     fn ancestor_holds(&self, start: &Path, name: &str) -> std::io::Result<bool> {

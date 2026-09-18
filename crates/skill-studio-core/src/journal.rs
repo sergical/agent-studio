@@ -1716,6 +1716,70 @@ mod tests {
         );
     }
 
+    /// Given a `Link` step's `path` recorded as a symlink but now showing a
+    /// regular file - something else replaced it since the step was
+    /// recorded, or the fake's `read_link` used to misreport a regular file
+    /// as absent (`NotFound`) rather than `RealFs`'s `EINVAL` - when
+    /// reconciliation reverses it, the probe's non-`NotFound` error must
+    /// leave "landed" unknown rather than read the absence-shaped error as
+    /// "never landed" (which would have renamed the restored target
+    /// straight over the file). The plan resolves `Interrupted` and the
+    /// file's bytes never move; on failure the panic names the file it
+    /// overwrote.
+    #[test]
+    fn link_reversal_never_replaces_a_regular_file_at_the_link_path_or_names_the_file_it_overwrote(
+    ) {
+        let fixture = FixtureBuilder::new()
+            .dir("/journal")
+            .dir("/root")
+            .file("/root/skill-current", b"the user's own file, not a link")
+            .build_fs();
+        let root_path = PathBuf::from("/root");
+        let journal = journal_over(Arc::new(fixture.clone()));
+        let lease = FakeLease::default();
+        let g = guard(&lease);
+
+        // Record a `Link` step directly - bypassing `fsops::link`'s own
+        // `WouldReplaceFile` guard - as if the step was recorded before a
+        // regular file ended up at `path` some other way.
+        let id = PlanId("01PLANLINKREGULARFILE00001".into());
+        let plan = PlanWriter::begin(
+            &journal,
+            &g,
+            id.clone(),
+            Utc::now(),
+            "a Link step whose path now holds a regular file",
+            root_path.clone(),
+            Vec::new(),
+        )
+        .expect("begin");
+        plan.record_link(
+            Path::new("/root/skill-current"),
+            Path::new("new.txt"),
+            Some(PathBuf::from("old.txt")),
+        )
+        .expect("record link");
+        drop(plan);
+
+        let before = fixture
+            .read_capped(Path::new("/root/skill-current"), u64::MAX)
+            .expect("read the file's bytes before reconciliation");
+
+        let report = reconcile(&journal, &g, &fixture).expect("reconciliation must run");
+        assert!(
+            report.interrupted.iter().any(|p| p.id == id),
+            "a regular file at the link path must interrupt the plan rather than being read as an absent link, not {report:?}"
+        );
+
+        let after = fixture
+            .read_capped(Path::new("/root/skill-current"), u64::MAX)
+            .expect("read the file's bytes after reconciliation");
+        assert_eq!(
+            after, before,
+            "reconciliation must never replace a regular file at a link's path, or names the file it overwrote"
+        );
+    }
+
     /// Given a step recorded before its mutation ran, when the mutation
     /// itself then fails and never lands - the crash landing in the window
     /// `record_*` guarantees now exists between "recorded" and "mutated" -
