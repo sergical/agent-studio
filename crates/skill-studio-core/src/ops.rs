@@ -2371,7 +2371,7 @@ fn encode_id_path(path: &str) -> String {
 /// {scope}/{slot}/{destination}/{name}/{project}/{lexical-entry}`. Matches
 /// the desktop's `deployment_id` (`skill_deployment.rs`) byte for byte, given
 /// the same inputs.
-fn deployment_id(
+pub(crate) fn deployment_id(
     name: &str,
     scope_label: &str,
     destination: SkillDestination,

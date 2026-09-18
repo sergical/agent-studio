@@ -262,21 +262,25 @@ fn method_from_wire_name(name: &str) -> Option<InstallMethod> {
 
 /// Builds the same `dep:v1/{scope}/{slot}/{destination}/{name}/{project}/
 /// {lexical-entry}` id the desktop's `skill_deployment::deployment_id` does,
-/// for the `Copy` `copies` entry this op writes into the registry - `slot`
-/// and `destination` are always `universal` for a `Copy` install, since this
-/// op only ever writes the shared universal root (see the module doc,
-/// "Linking").
+/// via `ops::deployment_id` - `slot` and `destination` are always `universal`
+/// for a `Copy` install, since this op only ever writes the shared universal
+/// root (see the module doc, "Linking").
 fn copy_deployment_id(scope: &RootScope, skill: &SkillName, destination: &Path) -> String {
     let scope_label = crate::ops::scope_label(scope);
-    let project = match scope {
-        RootScope::Global => "-".to_string(),
-        RootScope::Project(project) => encode_id_path_segment(&project.0.to_string_lossy()),
+    let project_path = match scope {
+        RootScope::Global => None,
+        RootScope::Project(project) => Some(project.0.to_string_lossy()),
     };
-    format!(
-        "dep:v1/{scope_label}/universal/universal/{}/{project}/{}",
-        skill.0,
-        encode_id_path_segment(&destination.to_string_lossy())
+    crate::ops::deployment_id(
+        &skill.0,
+        scope_label,
+        crate::identity::SkillDestination::Universal,
+        "universal",
+        project_path.as_deref(),
+        destination,
     )
+    .as_str()
+    .to_string()
 }
 
 /// Reads `preferred_method`/`preferred_harnesses` from the scope's
