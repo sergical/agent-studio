@@ -666,7 +666,8 @@ fn scan_one_target(
     // and matching its `NotFound`, is a real directory listing saved, not
     // just the same cost moved elsewhere.
     if !root_dir_missing(sc.fs, &target.path) {
-        match timed_read_root_entries(sc, &target.path) {
+        let reserved = crate::harness::reserved_skills_root_entry(target.harness.as_ref());
+        match timed_read_root_entries(sc, &target.path, reserved) {
             Ok(names) => process_entries(
                 &EntryContext {
                     fs: sc.fs,
@@ -730,7 +731,9 @@ fn scan_move_aside_dir(
     if root_dir_missing(sc.fs, &move_aside_dir) {
         return Ok(());
     }
-    if let Ok(names) = timed_read_root_entries(sc, &move_aside_dir) {
+    // No reserved name applies here: the holding directory is Skill
+    // Studio's own, not the harness's root.
+    if let Ok(names) = timed_read_root_entries(sc, &move_aside_dir, None) {
         process_entries(
             &EntryContext {
                 fs: sc.fs,
@@ -920,12 +923,21 @@ fn scan_one_plugin_target(
 /// Lists a root directory's visible skill-shaped entries (dirs and
 /// symlinks), sorted for a deterministic scan order. Dot-prefixed entries
 /// (including [`MOVE_ASIDE_DIR_NAME`] itself) are never a skill; the caller
-/// walks that holding directory separately.
+/// walks that holding directory separately. `reserved` is the entry name
+/// the root's own harness owns, from
+/// [`crate::harness::reserved_skills_root_entry`]: Claude Code's `synced`
+/// folder is the vendor's, so it is skipped even when it holds a
+/// `SKILL.md` (`docs/action-map/harnesses/claude-code.md`: "`synced` under
+/// `~/.claude/skills` is reserved; the scanner must skip it").
 /// As [`read_root_entries`], accumulating the read's duration onto
 /// `sc.timings.dir_walk` (the scan step this call is part of).
-fn timed_read_root_entries(sc: &ScanCtx, dir: &Path) -> std::io::Result<Vec<DirEntryFacts>> {
+fn timed_read_root_entries(
+    sc: &ScanCtx,
+    dir: &Path,
+    reserved: Option<&str>,
+) -> std::io::Result<Vec<DirEntryFacts>> {
     let start = sc.rt.ports.clock.monotonic();
-    let result = read_root_entries(sc.fs, dir);
+    let result = read_root_entries(sc.fs, dir, reserved);
     ScanTimings::add(
         &sc.timings.dir_walk,
         sc.rt.ports.clock.monotonic().saturating_sub(start),
@@ -933,11 +945,16 @@ fn timed_read_root_entries(sc: &ScanCtx, dir: &Path) -> std::io::Result<Vec<DirE
     result
 }
 
-fn read_root_entries(fs: &dyn ScopeFs, dir: &Path) -> std::io::Result<Vec<DirEntryFacts>> {
+fn read_root_entries(
+    fs: &dyn ScopeFs,
+    dir: &Path,
+    reserved: Option<&str>,
+) -> std::io::Result<Vec<DirEntryFacts>> {
     let entries = fs.read_dir(dir)?;
     let mut names: Vec<_> = entries
         .into_iter()
         .filter(crate::ports::is_skill_shaped_entry)
+        .filter(|entry| reserved != Some(entry.name.as_str()))
         .collect();
     names.sort_by(|a, b| a.name.cmp(&b.name));
     Ok(names)
