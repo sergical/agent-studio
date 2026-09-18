@@ -534,6 +534,19 @@ fn confine_to_root(root: &Root, plan_root: &Path, path: &Path) -> std::io::Resul
     })
 }
 
+/// Whether `name` is a temp link a link restore minted: the `.{leaf}-`
+/// prefix followed by the `<pid>-<counter>` shape `fsops::unique_suffix`
+/// produces. Anything looser would let the pre-restore sweep delete a
+/// user's own dot-prefixed entry that merely shares the prefix.
+fn is_link_restore_temp_name(name: &str, temp_prefix: &str) -> bool {
+    let Some(suffix) = name.strip_prefix(temp_prefix) else {
+        return false;
+    };
+    let mut parts = suffix.splitn(2, '-');
+    let is_digits = |s: &str| !s.is_empty() && s.bytes().all(|b| b.is_ascii_digit());
+    matches!((parts.next(), parts.next()), (Some(pid), Some(n)) if is_digits(pid) && is_digits(n))
+}
+
 /// Undoes `plan`'s recorded steps in reverse order. Stops at the first
 /// step whose undo fails; steps already undone stay undone (there is no
 /// partial-undo rollback - a step's own undo is the smallest unit this
@@ -664,7 +677,9 @@ fn reverse_steps(
                         // first so a retry always converges instead of
                         // accumulating orphaned temp links across retries.
                         for entry in fs.read_dir(&parent)? {
-                            if !entry.name.starts_with(&temp_prefix) {
+                            if entry.kind != FileKind::Symlink
+                                || !is_link_restore_temp_name(&entry.name, &temp_prefix)
+                            {
                                 continue;
                             }
                             let stale = parent.join(&entry.name);
@@ -1619,6 +1634,83 @@ mod tests {
     /// before minting its own, rather than failing `AlreadyExists` and
     /// leaving `path` stuck on the plan's new target; on failure the panic
     /// names the temp link it collided with.
+    #[test]
+    fn the_pre_restore_sweep_leaves_a_users_dot_entry_that_shares_the_temp_prefix_or_names_the_entry_it_deleted(
+    ) {
+        let fixture = FixtureBuilder::new()
+            .dir("/journal")
+            .dir("/root")
+            .file("/root/old.txt", b"old")
+            .file("/root/new.txt", b"new")
+            .file("/root/.skill-current-notes", b"mine")
+            .build_fs();
+        let root_path = PathBuf::from("/root");
+        let journal = journal_over(Arc::new(fixture.clone()));
+        let lease = FakeLease::default();
+        let g = guard(&lease);
+
+        let seed_root = Root::open(&fixture, root_path.clone()).expect("open root");
+        let seed_plan = PlanWriter::begin(
+            &journal,
+            &g,
+            PlanId("01PLANLINKSWEEPSEED000001".into()),
+            Utc::now(),
+            "seed the existing link",
+            root_path.clone(),
+            Vec::new(),
+        )
+        .expect("begin seed plan");
+        fsops::link(
+            &seed_root,
+            &seed_plan,
+            Path::new("skill-current"),
+            Path::new("old.txt"),
+        )
+        .expect("seed link");
+        seed_plan
+            .finish(PlanStatus::Done)
+            .expect("finish seed plan");
+        // A user's own symlink that shares the prefix but not the pid-counter
+        // shape must survive the sweep too.
+        fixture
+            .fsops_symlink(Path::new("old.txt"), Path::new("/root/.skill-current-mine"))
+            .expect("seed the user's own dot-prefixed link");
+
+        let pristine = tree_snapshot(&fixture, &root_path);
+
+        let root = Root::open(&fixture, root_path.clone()).expect("open root");
+        let id = PlanId("01PLANLINKSWEEP0000000001".into());
+        let plan = PlanWriter::begin(
+            &journal,
+            &g,
+            id.clone(),
+            Utc::now(),
+            "replace the link, then crash before finish",
+            root_path.clone(),
+            Vec::new(),
+        )
+        .expect("begin");
+        fsops::link(
+            &root,
+            &plan,
+            Path::new("skill-current"),
+            Path::new("new.txt"),
+        )
+        .expect("link");
+        drop(plan);
+
+        let report = reconcile(&journal, &g, &fixture).expect("reconciliation must run");
+        assert!(
+            report.reversed.contains(&id),
+            "the reversal must still converge, not {report:?}"
+        );
+        let after = tree_snapshot(&fixture, &root_path);
+        assert_eq!(
+            after, pristine,
+            "the sweep must only delete its own pid-counter temp links, or name the user entry it deleted"
+        );
+    }
+
     #[test]
     fn a_link_restore_retried_by_a_fresh_process_converges_or_names_the_temp_link_it_collided_with()
     {
