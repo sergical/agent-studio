@@ -1324,6 +1324,18 @@ impl HarnessAdapter for GrokBuildAdapter {
 /// claude-code.md, "Resolved by the docs on 2026-09-16").
 const CLAUDE_RESERVED_SKILLS_ENTRY: &str = "synced";
 
+/// The entry name `harness` reserves inside its own skills root: an entry
+/// the vendor owns, which is never a skill folder even when a `SKILL.md`
+/// sits inside it. Claude Code reserves `synced`; no other harness in the
+/// catalog reserves a name, so every other root lists every skill-shaped
+/// entry it holds.
+pub fn reserved_skills_root_entry(harness: Option<&AgentId>) -> Option<&'static str> {
+    match harness {
+        Some(id) if id.as_str() == AgentId::CLAUDE_CODE => Some(CLAUDE_RESERVED_SKILLS_ENTRY),
+        _ => None,
+    }
+}
+
 /// Claude Code's config directory: `CLAUDE_CONFIG_DIR` when the caller
 /// supplies the env var's value, else `<home>/.claude`. Reading the env var
 /// itself is a host concern (core has no `std::env` access); the caller
