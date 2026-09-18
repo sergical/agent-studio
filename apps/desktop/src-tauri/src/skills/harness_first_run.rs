@@ -8,9 +8,11 @@
 // result - which rows the user kept, and whether to search harness history
 // for project folders - is saved once under the registry's `harnesses` key
 // (`skill_fork_registry::ForkRegistry::harnesses`); a later launch with that
-// key present skips the screen and calls `detect_harnesses` again only to
-// refresh the rows in the background, per
-// `docs/action-map/harnesses/harness-detection.md`.
+// key present skips the screen entirely, per
+// `docs/action-map/harnesses/harness-detection.md`. Re-running detection in
+// the background on a later launch to refresh the saved rows is a named
+// follow-up, not implemented here: nothing in this release consumes such a
+// refreshed report.
 //
 // Old path deleted in this PR: there wasn't one - no first-run screen
 // existed before this unit, so there is no ad-hoc detection to remove here.
@@ -47,9 +49,7 @@ pub struct HarnessesChoice {
     pub saved_at: String,
 }
 
-/// Runs `ops::harnesses` off the UI thread. Called both for the first-run
-/// screen itself and for the background re-detection a later launch runs
-/// once the screen has already been completed.
+/// Runs `ops::harnesses` off the UI thread, for the first-run screen.
 #[tauri::command]
 pub async fn detect_harnesses(app: tauri::AppHandle) -> Result<HarnessReport, String> {
     crate::timing_log::time_command_blocking(&app, "detect_harnesses", move || {
@@ -189,15 +189,14 @@ mod tests {
         );
     }
 
-    /// `a_second_launch_skips_the_screen_and_re_detects_in_the_background_or_shows_the_screen_again`:
+    /// `a_second_launch_skips_the_screen_when_the_harnesses_key_is_present_or_shows_it_again`:
     /// a registry with a saved `harnesses` key must round-trip through
     /// `read_fork_registry`/`write_fork_registry` so `get_harnesses_choice`
     /// (the frontend's screen-or-skip signal) reads `Some`; a registry with
     /// no key at all reads `None`. Fails if `harnesses` isn't wired into
     /// `ForkRegistry`'s serde shape or its `Default` impl.
     #[test]
-    fn a_second_launch_skips_the_screen_and_re_detects_in_the_background_or_shows_the_screen_again()
-    {
+    fn a_second_launch_skips_the_screen_when_the_harnesses_key_is_present_or_shows_it_again() {
         let tmp = tempfile::tempdir().unwrap();
         let home = tmp.path().join("home");
         std::fs::create_dir_all(home.join(".agents")).unwrap();

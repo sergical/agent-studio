@@ -210,9 +210,7 @@ export async function setDiscoverySource(
 /**
  * Detects, per first-class harness, whether it exists on this machine -
  * executable, version, install method, configured, used. Runs off the UI
- * thread (`spawn_blocking`, see `harness_first_run.rs`); safe to call again
- * in the background on a later launch to refresh the first-run screen's
- * rows.
+ * thread (`spawn_blocking`, see `harness_first_run.rs`).
  */
 export async function detectHarnesses(): Promise<HarnessReport> {
   return callCommand("detect_harnesses");
