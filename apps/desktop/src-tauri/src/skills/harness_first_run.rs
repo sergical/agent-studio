@@ -52,14 +52,27 @@ pub struct HarnessesChoice {
 /// Runs `ops::harnesses` off the UI thread, for the first-run screen.
 #[tauri::command]
 pub async fn detect_harnesses(app: tauri::AppHandle) -> Result<HarnessReport, String> {
-    crate::timing_log::time_command_blocking(&app, "detect_harnesses", move || {
+    crate::timing_log::time_command_async(&app, "detect_harnesses", async {
         let rt = super::core_runtime::build_runtime_detect()?;
+        detect_with_runtime(rt).await
+    })
+    .await
+}
+
+/// The command body after the runtime is built, kept apart so the test that
+/// pins the probes to `spawn_blocking` can run it without a
+/// `tauri::AppHandle`.
+pub(crate) async fn detect_with_runtime(
+    rt: skill_studio_core::ports::Runtime,
+) -> Result<HarnessReport, String> {
+    let joined = tauri::async_runtime::spawn_blocking(move || {
         let ctx = OpContext::uncancellable(CorrelationId(ulid::Ulid::new().to_string()));
         let result = ops::harnesses(&rt, &ctx, &HarnessesRequest {});
         let envelope = ResultEnvelope::from_result(Operation::Harnesses, &rt.scope, &ctx, result);
         super::core_runtime::to_command_result(envelope)
     })
-    .await
+    .await;
+    crate::timing_log::join_result_to_err("detect_harnesses", joined)
 }
 
 /// The saved first-run choice, or `None` when the screen has never been
@@ -309,18 +322,13 @@ mod tests {
     }
 
     /// `detect_runs_the_probes_on_a_blocking_thread_not_the_ui_task_or_names_the_task_it_blocks`:
-    /// `detect_harnesses` runs `ops::harnesses` through
-    /// `crate::timing_log::time_command_blocking`, which is
-    /// `tauri::async_runtime::spawn_blocking(f).await` (see that function's
-    /// body) - the same call this test makes directly around
-    /// `ops::harnesses`, since the command itself needs a real
-    /// `tauri::AppHandle` that a unit test cannot construct. Run under a
-    /// `current_thread` runtime, the test task's own thread IS the
-    /// runtime's only async worker, so a probe that lands anywhere else
-    /// must have run on `spawn_blocking`'s separate pool - a deterministic
-    /// fact, not a timing measurement. Fails if `detect_harnesses` (or a
-    /// future edit to it) calls `ops::harnesses` directly on the calling
-    /// task instead of through `spawn_blocking`.
+    /// runs the command body `detect_with_runtime` (the command itself needs
+    /// a real `tauri::AppHandle` a unit test cannot construct). Under a
+    /// `current_thread` runtime the test task's own thread is the runtime's
+    /// only async worker, so a probe that lands anywhere else must have run
+    /// on `spawn_blocking`'s pool - a deterministic fact, not a timing
+    /// measurement. Fails if `detect_with_runtime` calls `ops::harnesses`
+    /// on the calling task instead of through `spawn_blocking`.
     #[tokio::test(flavor = "current_thread")]
     async fn detect_runs_the_probes_on_a_blocking_thread_not_the_ui_task_or_names_the_task_it_blocks(
     ) {
@@ -353,14 +361,10 @@ mod tests {
         });
         ports.spawner = Some(spawner.clone());
         let rt = Runtime::new(&scope, ports).unwrap();
-        let ctx = OpContext::uncancellable(CorrelationId("test".into()));
 
         let test_task_thread = std::thread::current().id();
 
-        let detect = tauri::async_runtime::spawn_blocking(move || {
-            ops::harnesses(&rt, &ctx, &HarnessesRequest {})
-        });
-        let result = detect.await.unwrap().unwrap();
+        let result = detect_with_runtime(rt).await.unwrap();
 
         assert!(
             result
