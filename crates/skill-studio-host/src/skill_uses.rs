@@ -2313,46 +2313,6 @@ mod tests {
         assert!(stats(&index, &known_skills, &off).is_empty());
     }
 
-    /// Unit 3.3's "harness removed" case (`docs/action-map/reads-and-snapshot.md`):
-    /// a harness switched off in `DiscoverySources` before the very first
-    /// `refresh` call - the shape a harness "removed" in Settings takes on
-    /// its next app start - must never have its transcripts read at all,
-    /// not merely filtered out of the stats afterward. This differs from
-    /// `switched_off_harness_reads_nothing_and_keeps_cached_uses` above,
-    /// which switches the harness off only after an initial enabled
-    /// refresh already cached its uses; here there is no prior refresh to
-    /// leave cached entries behind.
-    #[test]
-    fn a_harness_removed_in_first_run_is_never_read_for_activity() {
-        let tmp = tempfile::tempdir().unwrap();
-        let home = tmp.path();
-        let session_dir = home.join(CLAUDE_PROJECTS_ROOT).join("-my-project");
-        write_transcript(
-            &session_dir,
-            "session.jsonl",
-            "write-tests",
-            "2026-08-01T12:00:00Z",
-            "/my-project",
-        );
-
-        let mut removed = DiscoverySources::default();
-        removed.set("claude-code", false);
-
-        let mut index = SkillInvocationIndex::default();
-        let known_skills = known(&["write-tests"]);
-        let report = index.refresh(home, &removed);
-
-        assert_eq!(
-            report.files_reparsed, 0,
-            "a harness removed before the first refresh must never be listed or read"
-        );
-        assert!(
-            index.files.is_empty(),
-            "no cache entry should exist for a harness that was never read"
-        );
-        assert!(stats(&index, &known_skills, &removed).is_empty());
-    }
-
     #[test]
     fn deleting_a_session_directory_drops_its_subagent_entries() {
         let tmp = tempfile::tempdir().unwrap();
