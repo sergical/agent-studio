@@ -39,7 +39,7 @@ use skill_studio_core::skill_uses::{
 };
 
 use crate::discovery::{cursor_workspace_folders, grok_session_cwd, MAX_GROK_SESSION_DIRS};
-use crate::opencode_db::{opencode_databases, OPENCODE_DATA_ROOT};
+use crate::opencode_db::opencode_databases;
 
 mod opencode;
 
@@ -64,6 +64,10 @@ const MAX_CACHE_BYTES: u64 = 256 * 1024 * 1024;
 /// Claude Code keeps one directory per project here, and (for subagent
 /// sessions) one `<session>/subagents/*.jsonl` per parent session inside it.
 const CLAUDE_PROJECTS_ROOT: &str = ".claude/projects";
+
+fn claude_projects_watch_dir(home: &Path) -> PathBuf {
+    home.join(CLAUDE_PROJECTS_ROOT)
+}
 
 fn default_file_budget() -> u64 {
     MAX_FILE_BYTES
@@ -235,8 +239,12 @@ struct UseSource {
 /// A directory under `home` whose changes can add, change, or remove this
 /// source's uses.
 struct SourceWatch {
-    /// Relative to `home`.
-    dir: &'static str,
+    /// Resolved from `home`. Most sources just join a fixed relative path
+    /// (e.g. [`claude_projects_watch_dir`]); OpenCode's
+    /// ([`opencode_data_watch_dir`]) instead defers to
+    /// `opencode_db::opencode_data_dir`, so a `XDG_DATA_HOME` override moves
+    /// the watch along with the data it watches.
+    dir: fn(&Path) -> PathBuf,
     recursive: bool,
     /// Which changed paths under `dir` matter, given relative to `dir`.
     accepts: fn(&Path) -> bool,
@@ -400,7 +408,7 @@ fn parse_codex_uses_with_file(
 }
 
 fn opencode_root(home: &Path) -> PathBuf {
-    home.join(OPENCODE_DATA_ROOT)
+    crate::opencode_db::opencode_data_dir(home)
 }
 
 /// Codex keeps its own directory, not shared with OpenCode's.
@@ -412,6 +420,14 @@ const CODEX_ARCHIVED_SESSIONS_DIR: &str = ".codex/archived_sessions";
 
 fn codex_root(home: &Path) -> PathBuf {
     home.join(CODEX_ROOT)
+}
+
+fn codex_sessions_watch_dir(home: &Path) -> PathBuf {
+    home.join(CODEX_SESSIONS_DIR)
+}
+
+fn codex_archived_sessions_watch_dir(home: &Path) -> PathBuf {
+    home.join(CODEX_ARCHIVED_SESSIONS_DIR)
 }
 
 /// How many directory levels [`list_codex_rollouts`] descends below each of
@@ -822,7 +838,7 @@ const SOURCES: &[UseSource] = &[
             parse: parse_claude_code_uses_with_context,
         },
         watch: &[SourceWatch {
-            dir: CLAUDE_PROJECTS_ROOT,
+            dir: claude_projects_watch_dir,
             recursive: true,
             accepts: any_path,
         }],
@@ -836,12 +852,12 @@ const SOURCES: &[UseSource] = &[
         },
         watch: &[
             SourceWatch {
-                dir: CODEX_SESSIONS_DIR,
+                dir: codex_sessions_watch_dir,
                 recursive: true,
                 accepts: any_path,
             },
             SourceWatch {
-                dir: CODEX_ARCHIVED_SESSIONS_DIR,
+                dir: codex_archived_sessions_watch_dir,
                 recursive: true,
                 accepts: any_path,
             },
@@ -855,7 +871,7 @@ const SOURCES: &[UseSource] = &[
             read: opencode::read_database,
         },
         watch: &[SourceWatch {
-            dir: OPENCODE_DATA_ROOT,
+            dir: opencode_root,
             recursive: false,
             accepts: is_opencode_database_or_wal,
         }],
@@ -868,7 +884,7 @@ const SOURCES: &[UseSource] = &[
             parse: parse_pi_uses_with_file,
         },
         watch: &[SourceWatch {
-            dir: PI_SESSIONS_ROOT,
+            dir: pi_root,
             recursive: true,
             accepts: any_path,
         }],
@@ -881,7 +897,7 @@ const SOURCES: &[UseSource] = &[
             parse: parse_cursor_uses_with_file,
         },
         watch: &[SourceWatch {
-            dir: CURSOR_PROJECTS_ROOT,
+            dir: cursor_root,
             recursive: true,
             accepts: is_cursor_transcript_path,
         }],
@@ -894,7 +910,7 @@ const SOURCES: &[UseSource] = &[
             parse: parse_grok_uses_with_file,
         },
         watch: &[SourceWatch {
-            dir: GROK_SESSIONS_ROOT,
+            dir: grok_root,
             recursive: true,
             accepts: is_grok_session_file,
         }],
@@ -920,7 +936,7 @@ pub fn skill_use_watch_paths(home: &Path) -> Vec<SkillUseWatchPath> {
         .iter()
         .flat_map(|source| source.watch)
         .map(|watch| SkillUseWatchPath {
-            path: home.join(watch.dir),
+            path: (watch.dir)(home),
             recursive: watch.recursive,
         })
         .collect()
@@ -931,7 +947,7 @@ pub fn skill_use_watch_paths(home: &Path) -> Vec<SkillUseWatchPath> {
 /// path relative to that dir passes the watch's `accepts`.
 pub fn is_skill_use_change(home: &Path, path: &Path) -> bool {
     SOURCES.iter().flat_map(|source| source.watch).any(|watch| {
-        let dir = home.join(watch.dir);
+        let dir = (watch.dir)(home);
         let Ok(rel) = path.strip_prefix(&dir) else {
             return false;
         };
@@ -1487,6 +1503,7 @@ fn read_transcript_from_offset(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::opencode_db::OPENCODE_DATA_ROOT;
     use skill_studio_core::skill_uses::SkillTrigger;
     use std::collections::BTreeSet as StdBTreeSet;
     use std::time::Duration;
@@ -3225,6 +3242,9 @@ mod tests {
 
         #[test]
         fn skill_row_gives_one_user_use_with_project_from_session_v2() {
+            let _guard = crate::opencode_db::xdg_env_lock()
+                .lock()
+                .unwrap_or_else(|p| p.into_inner());
             let (tmp, db_path) = temp_opencode_db_home();
             let home = tmp.path();
             {
@@ -3262,6 +3282,9 @@ mod tests {
 
         #[test]
         fn skill_row_without_session_v2_uses_session_directory() {
+            let _guard = crate::opencode_db::xdg_env_lock()
+                .lock()
+                .unwrap_or_else(|p| p.into_inner());
             let (tmp, db_path) = temp_opencode_db_home();
             let home = tmp.path();
             {
@@ -3291,6 +3314,9 @@ mod tests {
 
         #[test]
         fn skill_tool_completed_gives_agent_use_and_error_gives_nothing() {
+            let _guard = crate::opencode_db::xdg_env_lock()
+                .lock()
+                .unwrap_or_else(|p| p.into_inner());
             let (tmp, db_path) = temp_opencode_db_home();
             let home = tmp.path();
             {
@@ -3328,6 +3354,9 @@ mod tests {
 
         #[test]
         fn read_tool_on_known_skill_md_path_gives_file_read_others_give_nothing() {
+            let _guard = crate::opencode_db::xdg_env_lock()
+                .lock()
+                .unwrap_or_else(|p| p.into_inner());
             let (tmp, db_path) = temp_opencode_db_home();
             let home = tmp.path();
             {
@@ -3375,6 +3404,9 @@ mod tests {
 
         #[test]
         fn part_read_row_with_file_path_uses_session_directory() {
+            let _guard = crate::opencode_db::xdg_env_lock()
+                .lock()
+                .unwrap_or_else(|p| p.into_inner());
             let (tmp, db_path) = temp_opencode_db_home();
             let home = tmp.path();
             {
@@ -3404,6 +3436,9 @@ mod tests {
 
         #[test]
         fn second_refresh_with_no_change_reads_no_databases() {
+            let _guard = crate::opencode_db::xdg_env_lock()
+                .lock()
+                .unwrap_or_else(|p| p.into_inner());
             let (tmp, db_path) = temp_opencode_db_home();
             let home = tmp.path();
             {
@@ -3431,6 +3466,9 @@ mod tests {
 
         #[test]
         fn a_later_row_is_counted_without_doubling_the_earlier_one() {
+            let _guard = crate::opencode_db::xdg_env_lock()
+                .lock()
+                .unwrap_or_else(|p| p.into_inner());
             let (tmp, db_path) = temp_opencode_db_home();
             let home = tmp.path();
             {
@@ -3475,6 +3513,9 @@ mod tests {
 
         #[test]
         fn updating_a_row_in_place_gives_exactly_one_use() {
+            let _guard = crate::opencode_db::xdg_env_lock()
+                .lock()
+                .unwrap_or_else(|p| p.into_inner());
             let (tmp, db_path) = temp_opencode_db_home();
             let home = tmp.path();
             {
@@ -3514,6 +3555,9 @@ mod tests {
 
         #[test]
         fn deleting_a_row_removes_its_use() {
+            let _guard = crate::opencode_db::xdg_env_lock()
+                .lock()
+                .unwrap_or_else(|p| p.into_inner());
             let (tmp, db_path) = temp_opencode_db_home();
             let home = tmp.path();
             {
@@ -3563,6 +3607,9 @@ mod tests {
 
         #[test]
         fn same_row_id_in_two_databases_counts_once() {
+            let _guard = crate::opencode_db::xdg_env_lock()
+                .lock()
+                .unwrap_or_else(|p| p.into_inner());
             let tmp = tempfile::tempdir().unwrap();
             let home = tmp.path();
             for name in ["opencode.db", "opencode-next.db"] {
@@ -3592,6 +3639,9 @@ mod tests {
 
         #[test]
         fn switched_off_source_reads_nothing_and_keeps_cached_uses() {
+            let _guard = crate::opencode_db::xdg_env_lock()
+                .lock()
+                .unwrap_or_else(|p| p.into_inner());
             let (tmp, db_path) = temp_opencode_db_home();
             let home = tmp.path();
             {
@@ -3630,6 +3680,9 @@ mod tests {
 
         #[test]
         fn deleting_the_database_file_drops_its_entry() {
+            let _guard = crate::opencode_db::xdg_env_lock()
+                .lock()
+                .unwrap_or_else(|p| p.into_inner());
             let (tmp, db_path) = temp_opencode_db_home();
             let home = tmp.path();
             {
@@ -3660,6 +3713,9 @@ mod tests {
 
         #[test]
         fn refresh_never_creates_wal_or_shm_sidecars() {
+            let _guard = crate::opencode_db::xdg_env_lock()
+                .lock()
+                .unwrap_or_else(|p| p.into_inner());
             let (tmp, db_path) = temp_opencode_db_home();
             let home = tmp.path();
             {

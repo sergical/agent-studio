@@ -35,8 +35,13 @@ pub(crate) fn is_opencode_database_name(name: &str) -> bool {
 /// `83452558f70207ddaeaffce68b36ebac77019fae` on `dev`): `Global.Path.data`
 /// joins the `xdg-basedir` package's `xdgData` (which itself falls back to
 /// `~/.local/share`) with `"opencode"`.
-fn opencode_data_dir(home: &Path, xdg_data_home: Option<&std::ffi::OsStr>) -> PathBuf {
-    match xdg_data_home {
+///
+/// The single resolver every OpenCode data-dir reader shares: the database
+/// lookup (`opencode_databases`), the project-worktree scan
+/// (`discovery::opencode_worktrees`), and the skill-use reader's root and
+/// disk watch (`skill_uses::opencode_root`, `SOURCES`'s `OPEN_CODE` watch).
+pub(crate) fn opencode_data_dir(home: &Path) -> PathBuf {
+    match std::env::var_os("XDG_DATA_HOME") {
         Some(dir) if !dir.is_empty() => PathBuf::from(dir).join("opencode"),
         _ => home.join(OPENCODE_DATA_ROOT),
     }
@@ -51,7 +56,7 @@ fn opencode_data_dir(home: &Path, xdg_data_home: Option<&std::ffi::OsStr>) -> Pa
 /// `packages/core/src/database/database.ts` `path()`, same commit as
 /// [`opencode_data_dir`].
 pub(crate) fn opencode_databases(home: &Path) -> Vec<PathBuf> {
-    let data_dir = opencode_data_dir(home, std::env::var_os("XDG_DATA_HOME").as_deref());
+    let data_dir = opencode_data_dir(home);
     if let Some(over) = std::env::var_os("OPENCODE_DB") {
         if over.is_empty() || over == ":memory:" {
             return Vec::new();
@@ -128,6 +133,20 @@ pub(crate) fn table_exists(conn: &Connection, table: &str) -> rusqlite::Result<b
     )
     .optional()
     .map(|found| found.is_some())
+}
+
+/// Serializes every test in the crate that touches `XDG_DATA_HOME` or
+/// `XDG_CONFIG_HOME`: both are process-global and cargo runs tests on
+/// multiple threads, so without this an unrelated test's
+/// `opencode_databases(home)`/`opencode_config_dir(home)` call can read the
+/// override set by a mutating test and look at the wrong directory. Mirrors
+/// `core_scan_parity.rs`'s `home_env_lock` for `HOME`. Shared across
+/// `discovery.rs` and `skill_uses.rs` so every OpenCode XDG test in the
+/// crate serializes on the same lock.
+#[cfg(test)]
+pub(crate) fn xdg_env_lock() -> &'static std::sync::Mutex<()> {
+    static LOCK: std::sync::OnceLock<std::sync::Mutex<()>> = std::sync::OnceLock::new();
+    LOCK.get_or_init(|| std::sync::Mutex::new(()))
 }
 
 #[cfg(test)]

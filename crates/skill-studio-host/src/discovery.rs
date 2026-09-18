@@ -22,7 +22,7 @@ use skill_studio_core::ports::ProjectDiscovery;
 use skill_studio_core::tracked_projects::SKILL_DIR_MARKERS;
 
 use crate::fs::RealFs;
-use crate::opencode_db::{open_opencode_database, opencode_databases, OPENCODE_DATA_ROOT};
+use crate::opencode_db::{open_opencode_database, opencode_data_dir, opencode_databases};
 
 /// Project paths recorded in Codex's `[projects."/abs/path"]` config
 /// sections (`~/.codex/config.toml`).
@@ -295,7 +295,7 @@ const MAX_OPENCODE_PROJECTS: usize = 10_000;
 /// channel and from the `storage/project/<id>.json` records that OpenCode
 /// wrote before it moved to SQLite.
 fn opencode_worktrees(home: &Path) -> Vec<PathBuf> {
-    let root = home.join(OPENCODE_DATA_ROOT);
+    let root = opencode_data_dir(home);
     let mut out = opencode_legacy_worktrees(&root.join("storage/project"));
     for database in opencode_databases(home) {
         out.extend(opencode_database_worktrees(&database));
@@ -511,6 +511,7 @@ impl ProjectDiscovery for HostProjectDiscovery {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::opencode_db::{xdg_env_lock, OPENCODE_DATA_ROOT};
     use rusqlite::Connection;
 
     #[test]
@@ -1206,18 +1207,6 @@ mod tests {
         assert_eq!(size_and_mtime(&database), database_before);
     }
 
-    /// Serializes every test in this module that calls `opencode_databases`
-    /// or `opencode_config_dir` - not just the one that mutates
-    /// `XDG_DATA_HOME`/`XDG_CONFIG_HOME`, since both are process-global and
-    /// cargo runs tests on multiple threads: without this, an unrelated
-    /// test's `opencode_databases(home)` call can read the override set by
-    /// the mutating test and look at the wrong directory. Mirrors
-    /// `core_scan_parity.rs`'s `home_env_lock` for `HOME`.
-    fn xdg_env_lock() -> &'static std::sync::Mutex<()> {
-        static LOCK: std::sync::OnceLock<std::sync::Mutex<()>> = std::sync::OnceLock::new();
-        LOCK.get_or_init(|| std::sync::Mutex::new(()))
-    }
-
     /// Flow: `XDG_DATA_HOME` and `XDG_CONFIG_HOME` point at a temp directory
     /// that is not `home`.
     /// Expectation: the database open (`opencode_databases`) and the config
@@ -1266,6 +1255,48 @@ mod tests {
             match previous_config {
                 Some(v) => std::env::set_var("XDG_CONFIG_HOME", v),
                 None => std::env::remove_var("XDG_CONFIG_HOME"),
+            }
+        }
+        result.unwrap();
+    }
+
+    /// Flow: `XDG_DATA_HOME` points at a temp directory that is not `home`,
+    /// and OpenCode's database lives under it.
+    /// Expectation: `opencode_worktrees` (the project-worktree scan) and
+    /// `skill_use_watch_paths` (the OpenCode disk watch) both resolve to the
+    /// XDG override, matching `opencode_databases`; the default
+    /// `home`-relative data dir stays untouched.
+    /// Failure here would mean a user who sets `XDG_DATA_HOME` gets projects
+    /// discovered from the wrong OpenCode install, or a watch that never
+    /// fires when the real database changes.
+    #[test]
+    fn opencode_worktrees_and_watches_follow_xdg_data_home_or_names_the_legacy_path() {
+        let _guard = xdg_env_lock().lock().unwrap_or_else(|p| p.into_inner());
+        let tmp = tempfile::tempdir().unwrap();
+        let home = tmp.path();
+        let xdg_data = tmp.path().join("xdg-data");
+        let data_root = xdg_data.join("opencode");
+        fs::create_dir_all(&data_root).unwrap();
+        let project = opencode_project(home, "xdg-watch");
+        drop(opencode_db(&data_root.join("opencode.db"), &[&project]));
+
+        let previous_data = std::env::var_os("XDG_DATA_HOME");
+        unsafe {
+            std::env::set_var("XDG_DATA_HOME", &xdg_data);
+        }
+        let result = std::panic::catch_unwind(|| {
+            assert_eq!(opencode_worktrees(home), vec![project.clone()]);
+            let watch_paths = crate::skill_uses::skill_use_watch_paths(home);
+            assert!(watch_paths.iter().any(|w| w.path == data_root));
+            assert!(!watch_paths
+                .iter()
+                .any(|w| w.path == home.join(OPENCODE_DATA_ROOT)));
+            assert!(!home.join(OPENCODE_DATA_ROOT).exists());
+        });
+        unsafe {
+            match previous_data {
+                Some(v) => std::env::set_var("XDG_DATA_HOME", v),
+                None => std::env::remove_var("XDG_DATA_HOME"),
             }
         }
         result.unwrap();
