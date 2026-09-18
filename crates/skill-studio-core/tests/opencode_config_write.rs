@@ -118,8 +118,7 @@ fn clearing_the_last_denied_skill_removes_the_permission_key() {
 /// `permission`'s slot lands somewhere other than where it started), which
 /// means a `swap_remove` crept back in.
 #[test]
-fn enabling_the_last_denied_skill_keeps_sibling_keys_in_document_order_or_names_the_key_it_moved()
-{
+fn enabling_the_last_denied_skill_keeps_sibling_keys_in_document_order_or_names_the_key_it_moved() {
     let tmp = tempfile::tempdir().unwrap();
     let config_dir = tmp.path();
     std::fs::write(

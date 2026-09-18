@@ -4069,6 +4069,7 @@ dependencies = [
  "serde_yaml",
  "sha2 0.11.0",
  "similar",
+ "skill-studio",
  "skill-studio-core",
  "skill-studio-host",
  "tauri",
