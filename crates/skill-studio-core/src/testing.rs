@@ -870,7 +870,7 @@ pub struct FailingFs {
     /// `PermissionDenied`, or `None`. Keyed by path, like
     /// `fail_read_dir_for`: `remove`'s own link loop calls
     /// `symlink_metadata` once per link, so a test names the one link whose
-    /// parent it wants unreadable (round 3, B2) rather than counting calls.
+    /// parent it wants unreadable rather than counting calls.
     fail_symlink_metadata_for: Mutex<Option<PathBuf>>,
 }
 
@@ -1058,8 +1058,8 @@ impl FailingFs {
     /// `PermissionDenied` instead of reaching `inner`; a call for any other
     /// path delegates normally, and once consumed `path` itself succeeds
     /// again. Lets a test simulate a link whose parent directory this
-    /// cannot read (round 3, B2) without the `NotFound` a genuinely absent
-    /// link would report.
+    /// cannot read, without the `NotFound` a genuinely absent link would
+    /// report.
     pub fn fail_symlink_metadata_for(&self, path: PathBuf) {
         *self
             .fail_symlink_metadata_for

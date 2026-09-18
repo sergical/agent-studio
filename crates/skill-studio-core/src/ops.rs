@@ -4638,10 +4638,10 @@ pub fn restore_event(
     for (other_path, other_plan) in &extra_plans {
         if let Ok(other_scoped) = crate::ports::confine(&rt.scope, fs, other_path) {
             // `extra_plans` only ever receives `Write`/`WriteDir` (see the
-            // loop that builds it above, in the `RestorePlan::WriteDir` arm)
-            // - a secondary manifest entry is always a backed-up path, never
-            // one recorded as absent, so `RemoveIfPresent` has no case here
-            // to match (round 3, N7).
+            // loop that builds it above, in the `Some(_pre_fingerprint)` arm
+            // of `match &pre`) - a secondary manifest entry is always a
+            // backed-up path, never one recorded as absent, so
+            // `RemoveIfPresent` has no case here to match.
             let result: Result<(), CoreError> = match other_plan {
                 RestorePlan::RemoveIfPresent => {
                     unreachable!(
