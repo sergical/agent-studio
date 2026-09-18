@@ -1,0 +1,127 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "FixSkillOutcome",
+  "description": "Result of `fix_skill`.",
+  "type": "object",
+  "properties": {
+    "skill": {
+      "description": "Skill the fix ran for.",
+      "$ref": "#/$defs/SkillName"
+    },
+    "applied": {
+      "description": "Repairs written.",
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/FixApplied"
+      }
+    },
+    "unrepaired": {
+      "description": "Issues named but not repaired, with their paths.",
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/UnrepairedIssue"
+      }
+    },
+    "conflicts": {
+      "description": "Conflicts found; the app opens both paths in the user's editor.",
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/ConflictSummary"
+      }
+    }
+  },
+  "required": [
+    "skill",
+    "applied",
+    "unrepaired",
+    "conflicts"
+  ],
+  "$defs": {
+    "SkillName": {
+      "description": "Lexical skill name: the directory name that holds `SKILL.md`.\n\nInvariant: two deployments with the same `SkillName` are the same skill,\neven when their bytes differ. A symlink alias with another name is another\nskill.",
+      "type": "string"
+    },
+    "FixApplied": {
+      "description": "One repair `fix_skill` applied.",
+      "oneOf": [
+        {
+          "description": "A frontmatter repair was written, the same write\n`apply_frontmatter_repair` performs.",
+          "type": "object",
+          "properties": {
+            "deployment_id": {
+              "description": "Deployment written.",
+              "$ref": "#/$defs/DeploymentId"
+            },
+            "event_id": {
+              "description": "History event.",
+              "$ref": "#/$defs/EventId"
+            },
+            "kind": {
+              "type": "string",
+              "const": "frontmatter_repair"
+            }
+          },
+          "required": [
+            "kind",
+            "deployment_id",
+            "event_id"
+          ]
+        }
+      ]
+    },
+    "DeploymentId": {
+      "description": "Opaque deployment id.\n\nInvariant: the string starts with `dep:v1/`. Its internal layout is a core\ndetail; adapters and the UI compare it as a string and never split it.",
+      "type": "string"
+    },
+    "EventId": {
+      "description": "History event id (ULID string).\n\nInvariant: lexical order equals creation order inside one store.",
+      "type": "string"
+    },
+    "UnrepairedIssue": {
+      "description": "One issue `fix_skill` found but could not repair, named with its path so\nthe caller can show it rather than a generic toast.",
+      "type": "object",
+      "properties": {
+        "path": {
+          "description": "Path of the offending file or folder, when the issue names one.",
+          "type": "string"
+        },
+        "message": {
+          "description": "Message for a person.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "path",
+        "message"
+      ]
+    },
+    "ConflictSummary": {
+      "description": "One pair of differing copies: never merged, named for the caller to open\nside by side in the user's editor.",
+      "type": "object",
+      "properties": {
+        "skill": {
+          "description": "Skill the conflict belongs to.",
+          "$ref": "#/$defs/SkillName"
+        },
+        "message": {
+          "description": "One-line summary for a person.",
+          "type": "string"
+        },
+        "path_a": {
+          "description": "First copy's path.",
+          "type": "string"
+        },
+        "path_b": {
+          "description": "Second copy's path.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "skill",
+        "message",
+        "path_a",
+        "path_b"
+      ]
+    }
+  }
+}

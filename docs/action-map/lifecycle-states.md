@@ -98,12 +98,12 @@ Each harness has its own discovery path, and the shared root under `.agents/skil
 
 A doctor pass checks the disk against these six invariants, independent of any single command's own rollback logic, so a violation left by an old bug or a manual edit surfaces even when no command is running.
 
-1. Every link resolves inside its root. Partly checked: `confine` and `ancestor_holds` (`crates/skill-studio-core/src/ports.rs:79`, `:116`) implement the check, but only inside the core's read/scan path; no doctor pass runs it against every existing link.
-2. Every registry entry has a folder. Not checked today; no audit code found for this.
-3. Every lockfile entry has a folder. Not checked today; the app only reads `~/.agents/.skill-lock.json`, never audits it (shared-state.md:14).
-4. No folder is in two states at once (for example parked and trashed). Not checked today; no dedicated check found.
-5. Quarantine stays within a retention cap. Not checked today; `skills-trash`, `skills-parked`, and fork snapshot directories have no retention limit at all (shared-state.md gaps).
-6. The journal has no open plan at rest. Partly checked: `reconcile_at_startup` (`event_store.rs:351`) flips every pending row to `interrupted` and runs three repairers on launch (`lib.rs:26`, `:48-96`), but this only covers the 8 commands that journal today.
+1. Every link resolves inside its root. Checked: `doctor::check_link_resolves_in_root` (`crates/skill-studio-core/src/doctor.rs`) reuses `diagnose`'s own broken-link detection and is wired into `ops::fix_skill`; naming the offending path is detect-only, the repair itself is desktop's journaled `repair_skill_link`, not duplicated in core.
+2. Every registry entry has a folder. Checked: `doctor::check_registry_entry_has_folder`, wired into `ops::fix_skill`; detect-only, repair is `fix_skill`'s deferred follow-up.
+3. Every lockfile entry has a folder. Checked: `doctor::check_lockfile_entry_has_folder`, resolved through the scanned `Inventory`'s own deployments (not a fixed path guess), wired into `ops::fix_skill`; detect-only.
+4. No folder is in two states at once (for example parked and trashed). Checked: `doctor::check_no_folder_in_two_states`, resolved through the scanned `Inventory`'s deployments across every root, wired into `ops::fix_skill`; detect-only.
+5. Quarantine stays within a retention cap. Checked (detect-only): `doctor::check_quarantine_within_cap` reports the quarantine path, its entry count, and the cap, wired into `ops::fix_skill`. Pruning is not implemented here - it needs a lease and a journal entry to be safe, which is unit 3.9's scope.
+6. The journal has no open plan at rest. Partly checked: `reconcile_at_startup` (`event_store.rs:351`) flips every pending row to `interrupted` and runs three repairers on launch (`lib.rs:26`, `:48-96`), but this only covers the 8 commands that journal today. `doctor::check_journal_has_no_open_plan` exists and is exercised by tests, but has no caller inside `ops::fix_skill`: the core's `Journal` port is `Send`-only (desktop's `EventStore` wraps a non-`Sync` `rusqlite::Connection`), so widening `Ports` to carry a `Journal` for cross-thread use would break that impl; wiring this in is left as a follow-up.
 
 Nothing in this file changes what a scan reports; it only names the states a scan's output already implies.
 
@@ -114,7 +114,7 @@ Nothing in this file changes what a scan reports; it only names the states a sca
 - `park_skill` and `unpark_skill`'s rollback writes use `let _ =`, discarding the result instead of checking or repairing it.
 - `pull_fork_upstream`'s four-rename swap has no transaction boundary; a crash between renames is a named, unrepaired risk.
 - `unfork_skill` writes the registry after the CLI reinstall already discarded local edits, so a write failure leaves a stale fork record.
-- No invariant doctor pass exists; the five checks above that are "not checked" have no code path at all, journaled or not.
+- Invariants 1-5 now have a detect-only doctor pass (`crates/skill-studio-core/src/doctor.rs`), wired into `ops::fix_skill`; none of the five repairs itself from core. Invariant 6's `check_journal_has_no_open_plan` still has no caller in `fix_skill` - see the Invariants section above.
 - Trashed, parked, and fork-snapshot directories accumulate with no retention limit or scheduled cleanup.
 - `restore_trashed_skill` does not clean up a half-written target or the trash copy when its entry-count check fails.
 - The header Remove button's success toast reads "Updated N deployments," which does not name the Removing-to-Not-installed transition it just completed.

@@ -5,8 +5,9 @@ use std::process::ExitCode;
 
 use serde::Serialize;
 use skill_studio_core::dto::{
-    CommandHealth, Diagnosis, EventDto, FrontmatterRepairPreview, Inventory, RepairOutcome,
-    RestoreOutcome, ScanRequest, SetHarnessEnabledOutcome,
+    CommandHealth, ConflictReport, Diagnosis, EventDto, FixApplied, FixSkillOutcome,
+    FrontmatterRepairPreview, Inventory, RepairOutcome, RestoreOutcome, ScanRequest,
+    SetHarnessEnabledOutcome,
 };
 use skill_studio_core::harness::{Capabilities, HarnessReport};
 use skill_studio_core::ops::ResultEnvelope;
@@ -175,6 +176,63 @@ pub fn print_repair_outcome_table(envelope: &ResultEnvelope<RepairOutcome>) {
     }
 }
 
+/// Prints `fix`'s table: one line per applied repair, then one line per
+/// issue it could not repair, then one line per conflict it found (fix never
+/// writes into a conflict; it only names both paths).
+pub fn print_fix_outcome_table(envelope: &ResultEnvelope<FixSkillOutcome>) {
+    print_errors(envelope);
+    let Some(outcome) = &envelope.data else {
+        return;
+    };
+    for applied in &outcome.applied {
+        let FixApplied::FrontmatterRepair {
+            deployment_id,
+            event_id,
+        } = applied;
+        println!("repaired {} (event {})", deployment_id.as_str(), event_id.0);
+    }
+    for issue in &outcome.unrepaired {
+        println!(
+            "could not repair {}: {}",
+            issue.path.display(),
+            issue.message
+        );
+    }
+    for conflict in &outcome.conflicts {
+        println!(
+            "conflict: {} vs {} ({})",
+            conflict.path_a.display(),
+            conflict.path_b.display(),
+            conflict.message
+        );
+    }
+    if outcome.applied.is_empty() && outcome.unrepaired.is_empty() && outcome.conflicts.is_empty() {
+        println!("{} had nothing to fix", outcome.skill.0);
+    }
+}
+
+/// Prints `conflicts`'s table: one line per differing copy pair, naming
+/// both paths.
+pub fn print_conflict_report_table(envelope: &ResultEnvelope<ConflictReport>) {
+    print_errors(envelope);
+    let Some(report) = &envelope.data else {
+        return;
+    };
+    if report.conflicts.is_empty() {
+        println!("no conflicts");
+        return;
+    }
+    for conflict in &report.conflicts {
+        println!(
+            "{}: {} vs {} ({})",
+            conflict.skill.0,
+            conflict.path_a.display(),
+            conflict.path_b.display(),
+            conflict.message
+        );
+    }
+}
+
 /// Prints `events`'s table: one line per event, newest first.
 pub fn print_events_table(envelope: &ResultEnvelope<Vec<EventDto>>) {
     print_errors(envelope);
@@ -283,6 +341,16 @@ pub fn write_schemas(out: Option<PathBuf>) -> ExitCode {
             schemars::schema_for!(skill_studio_core::dto::RestoreRequest)
         }),
         ("restore_outcome", || schemars::schema_for!(RestoreOutcome)),
+        ("fix_skill_request", || {
+            schemars::schema_for!(skill_studio_core::dto::FixSkillRequest)
+        }),
+        ("fix_skill_outcome", || {
+            schemars::schema_for!(FixSkillOutcome)
+        }),
+        ("diagnose_conflict_request", || {
+            schemars::schema_for!(skill_studio_core::dto::DiagnoseConflictRequest)
+        }),
+        ("conflict_report", || schemars::schema_for!(ConflictReport)),
     ];
     for (name, build) in schemas {
         let schema = build();

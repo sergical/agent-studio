@@ -194,6 +194,25 @@ enum Command {
         #[arg(long)]
         json: bool,
     },
+    /// Run the doctor invariants for one skill and repair whatever it can;
+    /// anything it cannot repair is named with its path.
+    Fix {
+        #[command(flatten)]
+        scope: ScopeArgs,
+        /// Skill to fix.
+        #[arg(long)]
+        skill: String,
+        #[arg(long)]
+        json: bool,
+    },
+    /// Find differing copies of a skill without merging them; writes
+    /// nothing.
+    Conflicts {
+        #[command(flatten)]
+        scope: ScopeArgs,
+        #[arg(long)]
+        json: bool,
+    },
     /// Write one JSON Schema file per request/result DTO.
     Schema {
         /// Directory to write schema files into.
@@ -284,6 +303,8 @@ fn main() -> ExitCode {
             project_path,
             json,
         } => run_set_harness_enabled(&scope, skill, &harness, enabled, project_path, json, time),
+        Command::Fix { scope, skill, json } => run_fix(&scope, &skill, json, time),
+        Command::Conflicts { scope, json } => run_diagnose_conflict(&scope, json, time),
         Command::Schema { out } => output::write_schemas(out),
         Command::Health { timing_log, json } => run_health(timing_log, json),
         Command::Watch { scope, since, json } => run_watch(&scope, since, json, time),
@@ -626,6 +647,44 @@ fn run_apply_repair(scope: &ScopeArgs, preview_json: &PathBuf, json: bool, time:
     let envelope =
         ResultEnvelope::from_result(Operation::ApplyFrontmatterRepair, &rt.scope, &ctx, result);
     finish(&envelope, json, time, output::print_repair_outcome_table)
+}
+
+fn run_fix(scope: &ScopeArgs, skill: &str, json: bool, time: bool) -> ExitCode {
+    let rt = match build_runtime_write::<skill_studio_core::dto::FixSkillOutcome>(
+        scope,
+        Operation::FixSkill,
+        json,
+    ) {
+        Ok(rt) => rt,
+        Err(code) => return code,
+    };
+    let ctx = OpContext::uncancellable(CorrelationId(ulid::Ulid::new().to_string()));
+    let req = skill_studio_core::dto::FixSkillRequest {
+        skill: SkillName(skill.to_string()),
+    };
+    let result = ops::fix_skill(&rt, &ctx, &req);
+    let envelope = ResultEnvelope::from_result(Operation::FixSkill, &rt.scope, &ctx, result);
+    finish(&envelope, json, time, output::print_fix_outcome_table)
+}
+
+fn run_diagnose_conflict(scope: &ScopeArgs, json: bool, time: bool) -> ExitCode {
+    let rt = match build_runtime::<skill_studio_core::dto::ConflictReport>(
+        scope,
+        Operation::DiagnoseConflict,
+        json,
+    ) {
+        Ok(rt) => rt,
+        Err(code) => return code,
+    };
+    let ctx = OpContext::uncancellable(CorrelationId(ulid::Ulid::new().to_string()));
+    let result = ops::diagnose_conflict(
+        &rt,
+        &ctx,
+        &skill_studio_core::dto::DiagnoseConflictRequest::default(),
+    );
+    let envelope =
+        ResultEnvelope::from_result(Operation::DiagnoseConflict, &rt.scope, &ctx, result);
+    finish(&envelope, json, time, output::print_conflict_report_table)
 }
 
 fn run_events(

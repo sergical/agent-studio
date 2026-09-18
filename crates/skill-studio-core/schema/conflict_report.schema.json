@@ -1,0 +1,52 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "ConflictReport",
+  "description": "Result of `diagnose_conflict`.",
+  "type": "object",
+  "properties": {
+    "conflicts": {
+      "description": "Every conflict found. Read-only: nothing is written.",
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/ConflictSummary"
+      }
+    }
+  },
+  "required": [
+    "conflicts"
+  ],
+  "$defs": {
+    "ConflictSummary": {
+      "description": "One pair of differing copies: never merged, named for the caller to open\nside by side in the user's editor.",
+      "type": "object",
+      "properties": {
+        "skill": {
+          "description": "Skill the conflict belongs to.",
+          "$ref": "#/$defs/SkillName"
+        },
+        "message": {
+          "description": "One-line summary for a person.",
+          "type": "string"
+        },
+        "path_a": {
+          "description": "First copy's path.",
+          "type": "string"
+        },
+        "path_b": {
+          "description": "Second copy's path.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "skill",
+        "message",
+        "path_a",
+        "path_b"
+      ]
+    },
+    "SkillName": {
+      "description": "Lexical skill name: the directory name that holds `SKILL.md`.\n\nInvariant: two deployments with the same `SkillName` are the same skill,\neven when their bytes differ. A symlink alias with another name is another\nskill.",
+      "type": "string"
+    }
+  }
+}

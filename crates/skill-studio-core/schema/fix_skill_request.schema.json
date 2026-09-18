@@ -1,0 +1,21 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "FixSkillRequest",
+  "description": "Request for `fix_skill`.",
+  "type": "object",
+  "properties": {
+    "skill": {
+      "description": "Skill to run the doctor checks and repairs for.",
+      "$ref": "#/$defs/SkillName"
+    }
+  },
+  "required": [
+    "skill"
+  ],
+  "$defs": {
+    "SkillName": {
+      "description": "Lexical skill name: the directory name that holds `SKILL.md`.\n\nInvariant: two deployments with the same `SkillName` are the same skill,\neven when their bytes differ. A symlink alias with another name is another\nskill.",
+      "type": "string"
+    }
+  }
+}
