@@ -598,3 +598,52 @@ fn schema_regenerates_the_checked_in_snapshot() {
         );
     }
 }
+
+/// Flow: `--fixture <dir>` scans the `disabled` fixture (epsilon is denied
+/// through `.config/opencode/opencode.json` under the fixture) while
+/// `XDG_CONFIG_HOME` and `OPENCODE_CONFIG_DIR` are both set on the child
+/// process to unrelated real-looking directories, the way a Linux desktop
+/// or CI runner (`ubuntu-latest` exports `XDG_CONFIG_HOME`) commonly does.
+/// Expectation: the scan still resolves `opencode_config_root` under the
+/// fixture (`ScopeArgs::resolve`'s `--fixture` arm now uses
+/// `opencode_config_dir_under`, not the env-aware `opencode_config_dir`),
+/// so epsilon's OpenCode deployment still shows disabled.
+/// Failure here would mean a `--fixture` scan on a machine with either
+/// variable set reads the real user's OpenCode config instead of the
+/// fixture's, exactly the bug this test guards against.
+#[test]
+fn a_fixture_scan_reads_opencode_config_under_the_fixture_even_with_xdg_config_home_set() {
+    let home = materialized_fixture("disabled");
+    let unrelated_xdg = tempfile::tempdir().unwrap();
+    let unrelated_opencode_config_dir = tempfile::tempdir().unwrap();
+
+    let output = Command::new(bin())
+        .args(["scan", "--fixture", home.to_str().unwrap(), "--json"])
+        .env("XDG_CONFIG_HOME", unrelated_xdg.path())
+        .env("OPENCODE_CONFIG_DIR", unrelated_opencode_config_dir.path())
+        .output()
+        .expect("run skill-studio");
+    let stdout = String::from_utf8(output.stdout).expect("utf8 stdout");
+    let json: serde_json::Value = serde_json::from_str(stdout.trim())
+        .unwrap_or_else(|e| panic!("stdout is not one JSON document: {e}\n{stdout}"));
+
+    let deployments = json["data"]["skills"]
+        .as_array()
+        .expect("skills array")
+        .iter()
+        .flat_map(|skill| skill["deployments"].as_array().unwrap())
+        .filter(|deployment| deployment["harness"] == "open-code")
+        .collect::<Vec<_>>();
+    assert!(
+        !deployments.is_empty(),
+        "expected an OpenCode deployment in the scan: {json}"
+    );
+    assert!(
+        deployments
+            .iter()
+            .all(|deployment| deployment["disabled_by"] == "opencode-permission"),
+        "expected every OpenCode deployment disabled by the fixture's opencode.json deny rule: {json}"
+    );
+
+    std::fs::remove_dir_all(&home).ok();
+}

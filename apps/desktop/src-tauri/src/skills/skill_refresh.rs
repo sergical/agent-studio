@@ -1450,16 +1450,28 @@ pub(crate) fn core_scan_installed_skills(
     let lease_root = data_dir.join("core-leases");
     let history_root = data_dir.join("core-history");
 
-    let mut scope = if std::env::var_os("SKILL_STUDIO_FIXTURE").is_some() {
-        skill_studio_core::scope::RuntimeScope::fixture(home)
+    let (mut scope, opencode_config_root) = if std::env::var_os("SKILL_STUDIO_FIXTURE").is_some() {
+        // Fixture mode: `home` is the fixture root (see
+        // `apply_fixture_home_override`), so the config root must stay under
+        // it even when the ambient `XDG_CONFIG_HOME`/`OPENCODE_CONFIG_DIR`
+        // point somewhere else, or a checklist run silently reads/writes the
+        // real user's OpenCode config.
+        (
+            skill_studio_core::scope::RuntimeScope::fixture(home),
+            skill_studio_host::opencode_config_dir_under(home),
+        )
     } else {
         let codex_home = skill_studio_host::codex_home(home);
-        skill_studio_core::scope::RuntimeScope::live(home, history_root).with_codex_home(codex_home)
+        (
+            skill_studio_core::scope::RuntimeScope::live(home, history_root)
+                .with_codex_home(codex_home),
+            skill_studio_host::opencode_config_dir(home),
+        )
     };
     scope.projects = skill_studio_core::scope::ProjectSelection::Explicit {
         paths: project_paths.to_vec(),
     };
-    scope.opencode_config_root = Some(skill_studio_host::opencode_config_dir(home));
+    scope.opencode_config_root = Some(opencode_config_root);
     // The 2s default guards stateless CLI/MCP calls; the desktop refresh
     // runs in the background and must reach every root even on a home with
     // many projects and plugin caches.

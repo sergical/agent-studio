@@ -41,7 +41,7 @@ pub use builder::{default_ports, default_ports_with_discovery, default_ports_wit
 pub use clock::SystemClock;
 pub use discovery::{
     codex_home, discover_skill_projects, discovery_harnesses, opencode_config_dir,
-    HostProjectDiscovery,
+    opencode_config_dir_under, HostProjectDiscovery,
 };
 pub use fs::RealFs;
 pub use harness_detect::RealProcessSpawner;

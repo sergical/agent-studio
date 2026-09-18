@@ -24,7 +24,7 @@ pub fn resolve() -> (RuntimeScope, PathBuf) {
         if !projects.is_empty() {
             scope.projects = ProjectSelection::Explicit { paths: projects };
         }
-        scope.opencode_config_root = Some(skill_studio_host::opencode_config_dir(&fixture));
+        scope.opencode_config_root = Some(skill_studio_host::opencode_config_dir_under(&fixture));
         let lease_root = fixture.join(".history").join("leases");
         return (scope, lease_root);
     }
@@ -38,7 +38,7 @@ pub fn resolve() -> (RuntimeScope, PathBuf) {
         if !projects.is_empty() {
             scope.projects = ProjectSelection::Explicit { paths: projects };
         }
-        scope.opencode_config_root = Some(skill_studio_host::opencode_config_dir(&home));
+        scope.opencode_config_root = Some(skill_studio_host::opencode_config_dir_under(&home));
         let lease_root = data_root.join("leases");
         return (scope, lease_root);
     }

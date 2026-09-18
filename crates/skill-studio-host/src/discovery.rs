@@ -375,14 +375,19 @@ fn cursor_workspace_folder(path: &Path) -> Option<PathBuf> {
     url::Url::parse(folder).ok()?.to_file_path().ok()
 }
 
-/// OpenCode's config directory (holds `opencode.json`/`opencode.jsonc`):
-/// `OPENCODE_CONFIG_DIR` overrides it outright; otherwise
-/// `$XDG_CONFIG_HOME/opencode`, or `<home>/.config/opencode` when
+/// OpenCode's config directory (holds `opencode.json`/`opencode.jsonc`) for
+/// the real user home: `OPENCODE_CONFIG_DIR` overrides it outright;
+/// otherwise `$XDG_CONFIG_HOME/opencode`, or `<home>/.config/opencode` when
 /// `XDG_CONFIG_HOME` is unset. Matches `packages/core/src/global.ts`
 /// (`anomalyco/opencode`, commit `83452558f70207ddaeaffce68b36ebac77019fae`
 /// on `dev`): `Flag.OPENCODE_CONFIG_DIR ?? Path.config`, where `Path.config`
 /// joins the `xdg-basedir` package's `xdgConfig` (falls back to `~/.config`)
 /// with `"opencode"`.
+///
+/// Use this only when `home` is the real user home. A fixture or explicit
+/// `--home` scope must use [`opencode_config_dir_under`] instead, or a
+/// harness scan silently reads/writes the real user's OpenCode config when
+/// `XDG_CONFIG_HOME`/`OPENCODE_CONFIG_DIR` happen to be set.
 pub fn opencode_config_dir(home: &Path) -> PathBuf {
     if let Some(dir) = std::env::var_os("OPENCODE_CONFIG_DIR") {
         if !dir.is_empty() {
@@ -393,6 +398,17 @@ pub fn opencode_config_dir(home: &Path) -> PathBuf {
         Some(dir) if !dir.is_empty() => PathBuf::from(dir).join("opencode"),
         _ => home.join(".config").join("opencode"),
     }
+}
+
+/// OpenCode's config directory under an arbitrary `root`, ignoring
+/// `XDG_CONFIG_HOME`/`OPENCODE_CONFIG_DIR` entirely: always `<root>/.config/opencode`.
+///
+/// Use this for fixture scopes and any explicit `--home`/`--fixture`
+/// constructor, where the resolved path must stay under the given root no
+/// matter what the ambient environment has set. Use [`opencode_config_dir`]
+/// only for the real user home.
+pub fn opencode_config_dir_under(root: &Path) -> PathBuf {
+    root.join(".config").join("opencode")
 }
 
 /// Project rows read per database, and legacy project files read in total.
@@ -1491,6 +1507,46 @@ mod tests {
             match previous_config {
                 Some(v) => std::env::set_var("XDG_CONFIG_HOME", v),
                 None => std::env::remove_var("XDG_CONFIG_HOME"),
+            }
+        }
+        result.unwrap();
+    }
+
+    /// Flow: `XDG_CONFIG_HOME` and `OPENCODE_CONFIG_DIR` are both set to temp
+    /// directories unrelated to the fixture `home`.
+    /// Expectation: `opencode_config_dir_under(fixture)` still resolves to
+    /// `<fixture>/.config/opencode` and starts with neither env value.
+    /// Failure here would mean a `--fixture` scan reads or writes the real
+    /// user's OpenCode config instead of staying under the fixture.
+    #[test]
+    fn a_fixture_scope_keeps_opencode_config_under_the_fixture_or_names_the_real_directory_it_would_write(
+    ) {
+        let _guard = xdg_env_lock().lock().unwrap_or_else(|p| p.into_inner());
+        let tmp = tempfile::tempdir().unwrap();
+        let fixture = tmp.path().join("fixture-home");
+        let xdg_config = tmp.path().join("xdg-config");
+        let opencode_config_dir_env = tmp.path().join("opencode-config-dir-env");
+
+        let previous_xdg_config = std::env::var_os("XDG_CONFIG_HOME");
+        let previous_opencode_config_dir = std::env::var_os("OPENCODE_CONFIG_DIR");
+        unsafe {
+            std::env::set_var("XDG_CONFIG_HOME", &xdg_config);
+            std::env::set_var("OPENCODE_CONFIG_DIR", &opencode_config_dir_env);
+        }
+        let result = std::panic::catch_unwind(|| {
+            let resolved = opencode_config_dir_under(&fixture);
+            assert_eq!(resolved, fixture.join(".config").join("opencode"));
+            assert!(!resolved.starts_with(&xdg_config));
+            assert!(!resolved.starts_with(&opencode_config_dir_env));
+        });
+        unsafe {
+            match previous_xdg_config {
+                Some(v) => std::env::set_var("XDG_CONFIG_HOME", v),
+                None => std::env::remove_var("XDG_CONFIG_HOME"),
+            }
+            match previous_opencode_config_dir {
+                Some(v) => std::env::set_var("OPENCODE_CONFIG_DIR", v),
+                None => std::env::remove_var("OPENCODE_CONFIG_DIR"),
             }
         }
         result.unwrap();
