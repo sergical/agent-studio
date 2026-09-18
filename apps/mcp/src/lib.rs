@@ -33,8 +33,8 @@ use rmcp::{tool, tool_handler, tool_router, RoleServer, ServerHandler};
 use skill_studio_core::dto::{
     CapabilitiesRequest, DiagnoseConflictRequest, FixSkillRequest, HarnessesRequest,
     InstallRequest, ListEventsRequest, ParkRequest, RemoveRequest, RepairApplyRequest,
-    RepairPreviewRequest, RestoreRequest, ScanRequest, SetHarnessEnabledRequest, UnparkRequest,
-    UpdateAllRequest, UpdateRequest,
+    RepairPreviewRequest, RestoreRequest, ScanRequest, SetHarnessEnabledRequest,
+    SweepQuarantineRequest, UnparkRequest, UpdateAllRequest, UpdateRequest,
 };
 use skill_studio_core::harness::HarnessCatalog;
 use skill_studio_core::identity::CorrelationId;
@@ -478,6 +478,20 @@ impl SkillStudioServer {
                 ),
                 None => ops::outdated(rt, ctx, &req, &NoGhLookup, &NoGhLookup, &NoGhLookup),
             }
+        })
+        .await
+    }
+
+    #[tool(
+        description = "Prune the global quarantine cap without a remove call. Global scope only."
+    )]
+    async fn sweep_quarantine(
+        &self,
+        Parameters(SweepQuarantineRequest {}): Parameters<SweepQuarantineRequest>,
+        context: RequestContext<RoleServer>,
+    ) -> CallToolResult {
+        run_op(Operation::SweepQuarantine, true, &context, |rt, ctx| {
+            ops::sweep_quarantine(rt, ctx, &skill_studio_core::identity::RootScope::Global)
         })
         .await
     }
