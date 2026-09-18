@@ -67,7 +67,7 @@ export async function declineStoreInstallTrust(
  * `TrustConfirmFooter`, and a decline settles on `cancelled` - both must clear the
  * parent's modal or the trust prompt sits hidden under an endless "Installing…"
  * spinner. Every other phase keeps the modal as the caller already has it. */
-export function parentProgressForPhase(phase: AddSkillOperationPhase): "show" | "clear" | "keep" {
+export function parentProgressForPhase(phase: AddSkillOperationPhase): "clear" | "keep" {
   if (phase === "needs-trust" || phase === "cancelled") return "clear";
   return "keep";
 }

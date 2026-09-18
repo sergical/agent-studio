@@ -940,6 +940,10 @@ function useAddSkillSubmit(input: {
       const snapshot = await getAddSkillOperation(retry.operation_id);
       setOperation((current) => applyAddSkillOperationEvent(current, snapshot, retry.operation_id));
     } catch (error) {
+      // The retry id tracked above (N1) is only valid once the confirm call
+      // settles; a failed confirm leaves the paused operation as the real
+      // one Trust and Decline must act on next.
+      operationIdRef.current = operationId;
       dispatch({
         type: "submit_error",
         error: error instanceof Error ? error.message : "Trust confirmation failed",

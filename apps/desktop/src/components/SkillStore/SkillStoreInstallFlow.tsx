@@ -261,7 +261,7 @@ export function SkillStoreInstallFlow({
     operationIdRef.current = undefined;
     setOperation(undefined);
     setIsInstalling(false);
-    onInstallPaused();
+    if (parentProgressForPhase("cancelled") === "clear") onInstallPaused();
     if (!operationId) return;
     try {
       await declineStoreInstallTrust(operationId, cancelAddSkillOperation);
@@ -297,7 +297,9 @@ export function SkillStoreInstallFlow({
       });
       applyOperationEvent(settled);
     } catch (error) {
+      operationIdRef.current = operationId;
       setIsInstalling(false);
+      onInstallPaused();
       onInstallComplete({
         success: false,
         error: error instanceof Error ? error.message : "Trust confirmation failed",
