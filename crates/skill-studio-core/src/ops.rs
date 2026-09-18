@@ -2941,6 +2941,53 @@ pub fn diagnose(rt: &Runtime, ctx: &OpContext, req: &ScanRequest) -> Result<Diag
     Ok(Diagnosis { inventory, issues })
 }
 
+/// Runs `scan` and checks every deployment's currency against its install
+/// method's source - skills.sh by lock hash against tree hash, dotagents by
+/// pinned commit against newest commit, plugin by cache version against the
+/// marketplace manifest, manual/in-repo/fork never. One entry per skill
+/// name; see [`crate::skill_update_check`] for the rule each method follows.
+///
+/// Preconditions: same as [`scan`]. Ports for skills.sh, dotagents, and
+/// plugin lookups are supplied directly, not through [`crate::ports::Ports`]:
+/// unlike a mutation's fs/lease/journal ports, these three are read-only
+/// network lookups this one op needs, so a direct parameter avoids adding
+/// three more `Option<Arc<dyn _>>` fields (and every existing `Ports`
+/// literal in this crate's other tests) for a single caller.
+pub fn outdated(
+    rt: &Runtime,
+    ctx: &OpContext,
+    req: &ScanRequest,
+    tree_lookup: &dyn crate::skill_update_check::SourceTreeLookup,
+    commit_lookup: &dyn crate::skill_update_check::CommitLookup,
+    plugin_lookup: &dyn crate::skill_update_check::PluginManifestLookup,
+) -> Result<BTreeMap<String, crate::skill_update_check::Currency>, CoreError> {
+    let inventory = scan(rt, ctx, req)?;
+    let targets: Vec<crate::skill_update_check::OutdatedTarget> = inventory
+        .skills
+        .iter()
+        .filter_map(|skill| {
+            let deployment = skill.deployments.first()?;
+            let plugin = deployment
+                .plugin
+                .as_ref()
+                .map(|p| (p.marketplace.clone(), p.plugin.clone(), p.version.clone()));
+            Some(crate::skill_update_check::OutdatedTarget {
+                name: skill.name.0.clone(),
+                source_kind: deployment.source_kind,
+                plugin,
+            })
+        })
+        .collect();
+    Ok(crate::skill_update_check::outdated(
+        rt.ports.fs.as_ref(),
+        &rt.scope.home.lexical,
+        &targets,
+        tree_lookup,
+        commit_lookup,
+        plugin_lookup,
+    ))
+}
+
 /// Pure(ish) issue derivation over an [`Inventory`]; see [`diagnose`] for the
 /// two rules that re-read a file. Issues are sorted by severity (`Error`,
 /// `Warning`, `Off`), then skill name, then kind, matching the doc comment on
