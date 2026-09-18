@@ -19,6 +19,7 @@ import type {
   DiscoverySourceSetting,
   InstalledSkill,
   ProjectFolder,
+  RemoveOutcome,
   SkillSnapshot,
   TrackedProjects,
 } from "@skill-studio/lib";
@@ -546,18 +547,21 @@ export function installMockTauri(initial: SkillSnapshot): HarnessControl {
             .object({ deployment_id: z.string().nullish(), owner_id: z.string().nullish() })
             .parse(payload.target);
           const name = skillNameForTarget(target);
+          const deploymentId =
+            target.deployment_id ??
+            currentSnapshot.skills.find((s) => s.name === name)?.deployments[0]?.id ??
+            `dep:v1/mock/${name}`;
           await publish({
             ...currentSnapshot,
             skills: currentSnapshot.skills.filter((s) => s.name !== name),
           });
           return {
-            skill_name: name,
-            success: true,
-            error: null,
-            installed_path: null,
-            command: "npx skills remove",
-            tool: "dotagents",
-          };
+            event_id: `evt:v1/mock/${name}`,
+            deployment_id: deploymentId,
+            skill: name,
+            tree_hash_before: "mock-tree-hash",
+            quarantine_path: null,
+          } satisfies RemoveOutcome;
         }
         case "update_skill": {
           const target = z
