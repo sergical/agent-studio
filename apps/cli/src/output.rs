@@ -6,8 +6,8 @@ use std::process::ExitCode;
 use serde::Serialize;
 use skill_studio_core::dto::{
     CommandHealth, ConflictReport, Diagnosis, EventDto, FixApplied, FixSkillOutcome,
-    FrontmatterRepairPreview, InstallOutcome, Inventory, RepairOutcome, RestoreOutcome,
-    ScanRequest, SetHarnessEnabledOutcome, UpdateAllOutcome, UpdateOutcome,
+    FrontmatterRepairPreview, InstallOutcome, Inventory, RemoveOutcome, RepairOutcome,
+    RestoreOutcome, ScanRequest, SetHarnessEnabledOutcome, UpdateAllOutcome, UpdateOutcome,
 };
 use skill_studio_core::harness::{Capabilities, HarnessReport};
 use skill_studio_core::ops::ResultEnvelope;
@@ -343,6 +343,23 @@ pub fn print_set_harness_enabled_outcome_table(
     );
 }
 
+/// Prints `remove`'s table: the skill removed and, when the deployment was
+/// `Copy`/`Fork` (quarantined rather than deleted), where its bytes landed.
+pub fn print_remove_outcome_table(envelope: &ResultEnvelope<RemoveOutcome>) {
+    print_errors(envelope);
+    let Some(outcome) = &envelope.data else {
+        return;
+    };
+    match &outcome.quarantine_path {
+        Some(path) => println!(
+            "removed {} -> quarantined at {}",
+            outcome.skill.0,
+            path.display()
+        ),
+        None => println!("removed {}", outcome.skill.0),
+    }
+}
+
 /// Prints `health`'s table: `COMMAND COUNT FAILURES P50_MS P95_MS
 /// LAST_ERROR`, one row per command, in the rollup's own (command-name)
 /// order.
@@ -411,6 +428,10 @@ pub fn write_schemas(out: Option<PathBuf>) -> ExitCode {
             schemars::schema_for!(skill_studio_core::dto::DiagnoseConflictRequest)
         }),
         ("conflict_report", || schemars::schema_for!(ConflictReport)),
+        ("remove_request", || {
+            schemars::schema_for!(skill_studio_core::dto::RemoveRequest)
+        }),
+        ("remove_outcome", || schemars::schema_for!(RemoveOutcome)),
         ("update_request", || {
             schemars::schema_for!(skill_studio_core::dto::UpdateRequest)
         }),

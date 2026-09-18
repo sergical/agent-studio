@@ -105,6 +105,8 @@ pub enum Operation {
     FixSkill,
     /// Group 3: find differing copies of a skill without merging them.
     DiagnoseConflict,
+    /// Unit 3.9: take a mutable deployment off disk.
+    Remove,
     /// Group 3: refresh one already-installed skill in place.
     Update,
     /// Group 3: refresh a batch of already-installed skills in place.
@@ -228,6 +230,11 @@ impl Outcome for crate::dto::FixSkillOutcome {
 impl Outcome for crate::dto::ConflictReport {
     fn found_issues(&self) -> bool {
         !self.conflicts.is_empty()
+    }
+}
+impl Outcome for crate::dto::RemoveOutcome {
+    fn event_id(&self) -> Option<EventId> {
+        Some(self.event_id.clone())
     }
 }
 impl Outcome for crate::dto::UpdateOutcome {
@@ -4469,14 +4476,6 @@ pub fn restore_event(
     let live = live_fingerprint
         .as_ref()
         .map_or("absent", super::identity::Fingerprint::bare_hex);
-    // Captured before any mutation below: a directory's backup was copied
-    // recursively (`HistoryStore::backup_paths`), so a directory's restore
-    // reads it back the same way, through `WriteDir` below, instead of
-    // `ScopeFs::write_atomic`'s single-file write.
-    let live_is_dir = matches!(
-        fs.symlink_metadata(&path).map(|m| m.kind),
-        Ok(FileKind::Dir)
-    );
     if live != expected && !req.force {
         return Err(CoreError::new(
             ErrorCode::DriftConflict,
@@ -4513,6 +4512,13 @@ pub fn restore_event(
     // failure here must leave the target event revertible, not stuck behind
     // a claim nothing ever undoes.
     let scoped = crate::ports::confine(&rt.scope, fs, &path)?;
+    // Every manifest entry besides `path` itself - e.g. `remove`'s own
+    // registry.json backup, next to its deployment tree - restores
+    // best-effort alongside the primary path below, keyed by its own
+    // original location rather than folded into `plan`: `path`'s restore is
+    // the one drift-checked and claimed against above, so a problem with a
+    // secondary entry must not block or fail it.
+    let mut extra_plans: Vec<(PathBuf, RestorePlan)> = Vec::new();
     let plan = match &pre {
         None => {
             // The original event's backup recorded the path as absent:
@@ -4539,7 +4545,12 @@ pub fn restore_event(
                     )
                     .at(&path)
                 })?;
-            if live_is_dir {
+            // Read from the backup entry itself (see `BackupEntry::is_dir`'s
+            // own doc), not the live path's current type: after a `remove`
+            // the live path is absent, which would otherwise always look
+            // like "not a directory" and send a directory's restore through
+            // the single-file `Write` branch below.
+            let plan = if entry.is_dir {
                 let files = session
                     .store
                     .read_backup_files(backup_dir, &entry.relative)?;
@@ -4549,7 +4560,27 @@ pub fn restore_event(
                     .store
                     .read_backup_bytes(backup_dir, &entry.relative)?;
                 RestorePlan::Write(bytes)
+            };
+            for other in &original_manifest.entries {
+                if other.original == path {
+                    continue;
+                }
+                let other_plan = if other.is_dir {
+                    session
+                        .store
+                        .read_backup_files(backup_dir, &other.relative)
+                        .map(RestorePlan::WriteDir)
+                } else {
+                    session
+                        .store
+                        .read_backup_bytes(backup_dir, &other.relative)
+                        .map(RestorePlan::Write)
+                };
+                if let Ok(other_plan) = other_plan {
+                    extra_plans.push((other.original.clone(), other_plan));
+                }
             }
+            plan
         }
     };
 
@@ -4599,6 +4630,60 @@ pub fn restore_event(
         return Err(err);
     }
 
+    // Best-effort, after the primary path is already restored and claimed:
+    // a secondary path this cannot put back (a permissions error, a path no
+    // longer confined to the scope) leaves the restore's own outcome
+    // reporting only `path`, rather than failing a restore that otherwise
+    // succeeded. See `extra_plans`' own comment above.
+    for (other_path, other_plan) in &extra_plans {
+        if let Ok(other_scoped) = crate::ports::confine(&rt.scope, fs, other_path) {
+            // `extra_plans` only ever receives `Write`/`WriteDir` (see the
+            // loop that builds it above, in the `Some(_pre_fingerprint)` arm
+            // of `match &pre`) - a secondary manifest entry is always a
+            // backed-up path, never one recorded as absent, so
+            // `RemoveIfPresent` has no case here to match.
+            let result: Result<(), CoreError> = match other_plan {
+                RestorePlan::RemoveIfPresent => {
+                    unreachable!(
+                        "extra_plans never carries RemoveIfPresent - see the comment above"
+                    )
+                }
+                RestorePlan::Write(bytes) => fs
+                    .write_atomic(&session.guard, &other_scoped, bytes)
+                    .map_err(|e| CoreError::io(other_path, e)),
+                RestorePlan::WriteDir(files) => {
+                    restore_write_dir(rt, &session.guard, other_path, files)
+                }
+            };
+            let _ = result;
+        }
+    }
+    // Every harness link `remove` (or whichever event this reverts) took
+    // down, recreated the same best-effort way - see
+    // `crate::events::restore_backup_inverse_with_links`'s own doc for why
+    // this cannot go through `RestorePlan` like the entries above. The
+    // recorded `target` is the raw `read_link` text, which the real skills
+    // CLI writes relative to the link's own directory (`skills/dist/cli.mjs`
+    // calls `symlink(relativePath, linkPath)`); `confine` rejects any `..`
+    // segment, so a relative target is resolved against `link_path`'s parent
+    // first, the same lexical join `set_claude_code_switch`'s own drift
+    // check already applies to a live link's target (see its `join_lexical`
+    // call above). An escape past the scope root is caught by `confine`
+    // itself, not by this join.
+    for (link_path, target) in crate::events::parse_restore_links(inverse) {
+        if fs.symlink_metadata(&link_path).is_ok() {
+            continue;
+        }
+        let resolved_target =
+            crate::fsops::join_lexical(link_path.parent().unwrap_or(&link_path), &target);
+        if let (Ok(scoped_link), Ok(scoped_target)) = (
+            crate::ports::confine(&rt.scope, fs, &link_path),
+            crate::ports::confine(&rt.scope, fs, &resolved_target),
+        ) {
+            let _ = fs.symlink(&session.guard, &scoped_target, &scoped_link);
+        }
+    }
+
     let restored_fingerprint = crate::events::fingerprint_path(fs, &path)?;
     session.store.finish(
         &session.guard,
@@ -4623,7 +4708,7 @@ pub fn restore_event(
 }
 
 /// Finds the skill entry that owns `deployment_id` in `inventory`.
-fn resolve_skill<'a>(
+pub(crate) fn resolve_skill<'a>(
     inventory: &'a Inventory,
     deployment_id: &DeploymentId,
 ) -> Result<&'a InstalledSkillDto, CoreError> {
@@ -4648,20 +4733,41 @@ fn resolve_skill<'a>(
 /// both sides go through the same filesystem, and not, for example, when
 /// `target_path`'s ancestry crosses a symlink the test host (or the user's
 /// `$HOME`) happens to have, like macOS's `/tmp` -> `/private/tmp`.
-fn find_claude_link<'a>(
+pub(crate) fn find_claude_link<'a>(
     skill: &'a InstalledSkillDto,
     target_path: &Path,
     fs: &dyn ScopeFs,
 ) -> Option<&'a DeploymentDto> {
-    let canonical_target = fs.canonicalize(target_path).ok()?;
-    skill.deployments.iter().find(|d| {
-        d.harness.as_ref().map(AgentId::as_str) == Some(AgentId::CLAUDE_CODE)
-            && d.backing == BackingRelationship::LinkedTo
-            && d.link_target.as_deref() == Some(canonical_target.as_path())
-    })
+    find_all_links(skill, target_path, fs)
+        .into_iter()
+        .find(|d| d.harness.as_ref().map(AgentId::as_str) == Some(AgentId::CLAUDE_CODE))
+}
+
+/// Finds every per-harness link deployment pointing at `target_path`, among
+/// `skill`'s other deployments - the same canonicalized comparison
+/// [`find_claude_link`] uses, generalized to every harness rather than just
+/// Claude Code, for `ops::remove`'s own link cleanup (every harness a skill
+/// was ever linked into must lose that link, not just Claude Code's).
+pub(crate) fn find_all_links<'a>(
+    skill: &'a InstalledSkillDto,
+    target_path: &Path,
+    fs: &dyn ScopeFs,
+) -> Vec<&'a DeploymentDto> {
+    let Ok(canonical_target) = fs.canonicalize(target_path) else {
+        return Vec::new();
+    };
+    skill
+        .deployments
+        .iter()
+        .filter(|d| {
+            d.backing == BackingRelationship::LinkedTo
+                && d.link_target.as_deref() == Some(canonical_target.as_path())
+        })
+        .collect()
 }
 
 pub use crate::ops_install::{install, install_preferences};
+pub use crate::ops_remove::remove;
 pub use crate::ops_update::{update, update_all};
 
 /// Moves a universal deployment's directory into the parked root.

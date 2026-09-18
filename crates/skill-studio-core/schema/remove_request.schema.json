@@ -1,0 +1,21 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "RemoveRequest",
+  "description": "Request to take one mutable deployment off disk.",
+  "type": "object",
+  "properties": {
+    "deployment_id": {
+      "description": "The deployment to remove. Must resolve to a universal, canonical\ndeployment whose owner kind is mutable (`Copy`, `Fork`, `Dotagents`,\nor `SkillsSh`) - see [`crate::identity::LifecycleOwnerKind::is_mutable`].",
+      "$ref": "#/$defs/DeploymentId"
+    }
+  },
+  "required": [
+    "deployment_id"
+  ],
+  "$defs": {
+    "DeploymentId": {
+      "description": "Opaque deployment id.\n\nInvariant: the string starts with `dep:v1/`. Its internal layout is a core\ndetail; adapters and the UI compare it as a string and never split it.",
+      "type": "string"
+    }
+  }
+}

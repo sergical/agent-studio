@@ -29,8 +29,8 @@ use rmcp::transport::stdio;
 use rmcp::{tool, tool_handler, tool_router, RoleServer, ServerHandler, ServiceExt};
 use skill_studio_core::dto::{
     CapabilitiesRequest, DiagnoseConflictRequest, FixSkillRequest, HarnessesRequest,
-    InstallRequest, ListEventsRequest, RepairApplyRequest, RepairPreviewRequest, RestoreRequest,
-    ScanRequest, UpdateAllRequest, UpdateRequest,
+    InstallRequest, ListEventsRequest, RemoveRequest, RepairApplyRequest, RepairPreviewRequest,
+    RestoreRequest, ScanRequest, UpdateAllRequest, UpdateRequest,
 };
 use skill_studio_core::harness::HarnessCatalog;
 use skill_studio_core::identity::CorrelationId;
@@ -309,6 +309,20 @@ impl SkillStudioServer {
     ) -> CallToolResult {
         run_op(Operation::UpdateAll, true, &context, |rt, ctx| {
             Ok(ops::update_all(rt, ctx, &req.requests, |_, _| {}))
+        })
+        .await
+    }
+
+    #[tool(
+        description = "Take a mutable deployment off disk. Copy/Fork land intact in quarantine; Dotagents/SkillsSh are removed by their own CLI."
+    )]
+    async fn remove(
+        &self,
+        Parameters(req): Parameters<RemoveRequest>,
+        context: RequestContext<RoleServer>,
+    ) -> CallToolResult {
+        run_op(Operation::Remove, true, &context, |rt, ctx| {
+            ops::remove(rt, ctx, &req)
         })
         .await
     }

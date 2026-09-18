@@ -232,9 +232,13 @@ impl HistoryStore for SqliteHistoryStore {
                     original: path.clone(),
                     relative: String::new(),
                     fingerprint: None,
+                    is_dir: false,
                 });
                 continue;
             }
+            let is_dir = fs::symlink_metadata(path)
+                .map(|m| m.is_dir())
+                .map_err(|e| CoreError::io(path, e))?;
             let basename = path
                 .file_name()
                 .map_or_else(|| format!("path-{i}"), |n| n.to_string_lossy().into_owned());
@@ -259,6 +263,7 @@ impl HistoryStore for SqliteHistoryStore {
                 original: path.clone(),
                 relative: relative_path,
                 fingerprint: Some(fingerprint),
+                is_dir,
             });
         }
 
@@ -422,10 +427,19 @@ impl HistoryStore for SqliteHistoryStore {
                             Fingerprint::of_bytes(entry.fingerprint.as_bytes())
                         }))
                     };
+                // Read from the copy itself, not stored in `manifest.json`
+                // (see `BackupEntry::is_dir`'s own doc): an absent entry's
+                // `relative_path` is empty and never resolves under `dir`,
+                // so it falls through to `false` the same as any other
+                // path `symlink_metadata` cannot see.
+                let is_dir = (!entry.relative_path.is_empty())
+                    && fs::symlink_metadata(dir.join(&entry.relative_path))
+                        .is_ok_and(|m| m.is_dir());
                 BackupEntry {
                     original: PathBuf::from(original),
                     relative: entry.relative_path,
                     fingerprint,
+                    is_dir,
                 }
             })
             .collect();

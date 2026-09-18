@@ -64,11 +64,14 @@ pub enum EventKind {
     RepairSkillFrontmatter,
     /// Undo of another event; `payload.target_event` names it.
     Restore,
+    /// `ops::remove`'s own quarantine prune; `payload.pruned` names every
+    /// entry it deleted.
+    QuarantinePrune,
 }
 
 impl EventKind {
     /// Every kind, in declaration order.
-    pub const ALL: [EventKind; 21] = [
+    pub const ALL: [EventKind; 22] = [
         EventKind::Install,
         EventKind::Remove,
         EventKind::Update,
@@ -90,6 +93,7 @@ impl EventKind {
         EventKind::MakeIndependentCopy,
         EventKind::RepairSkillFrontmatter,
         EventKind::Restore,
+        EventKind::QuarantinePrune,
     ];
 
     /// The literal stored in the `kind` column.
@@ -116,6 +120,7 @@ impl EventKind {
             EventKind::MakeIndependentCopy => "make_independent_copy",
             EventKind::RepairSkillFrontmatter => "repair_skill_frontmatter",
             EventKind::Restore => "restore",
+            EventKind::QuarantinePrune => "quarantine_prune",
         }
     }
 
@@ -320,6 +325,13 @@ pub struct BackupEntry {
     /// Fingerprint of the preserved bytes, or `None` for a path that did not
     /// exist when it was backed up.
     pub fingerprint: Option<Fingerprint>,
+    /// Whether the backed-up copy is a directory tree rather than one file -
+    /// read from the shape of the copy itself, never stored in
+    /// `manifest.json`, so `restore_event` can choose its directory restore
+    /// path from what was actually backed up rather than from the live
+    /// path's current type, which after a `remove` is absent and would
+    /// otherwise always read as "not a directory".
+    pub is_dir: bool,
 }
 
 /// `manifest.json` inside a backup directory.
@@ -460,15 +472,59 @@ pub(crate) fn restore_backup_inverse(
     pre: Option<&Fingerprint>,
     post: Option<&Fingerprint>,
 ) -> serde_json::Value {
+    restore_backup_inverse_with_links(path, pre, post, &[])
+}
+
+/// [`restore_backup_inverse`] plus a `"links"` array the desktop side never
+/// wrote: symlinks the same event removed, to recreate on restore alongside
+/// the primary path. Kept as an extra field on the same `restore_backup` op
+/// rather than a second inverse, so one event still carries exactly one
+/// `inverse` - `restore_event` applies these best-effort, after its own
+/// `path` restore succeeds, via [`crate::ports::ScopeFs::symlink`] rather
+/// than the byte-write `RestorePlan` branches: those would turn a symlink
+/// into a regular file holding its target's text, per this module's own
+/// [`SymlinkInverse`] doc. An old reader that does not know `"links"` still
+/// restores `path` correctly; the field is additive.
+pub(crate) fn restore_backup_inverse_with_links(
+    path: &Path,
+    pre: Option<&Fingerprint>,
+    post: Option<&Fingerprint>,
+    links: &[(PathBuf, PathBuf)],
+) -> serde_json::Value {
     fn as_str(f: Option<&Fingerprint>) -> String {
         f.map_or_else(|| "absent".to_string(), |f| f.bare_hex().to_string())
     }
-    serde_json::json!({
+    let mut value = serde_json::json!({
         "op": "restore_backup",
         "path": path,
         "pre_fingerprint": as_str(pre),
         "post_fingerprint": as_str(post),
-    })
+    });
+    if !links.is_empty() {
+        let links: Vec<serde_json::Value> = links
+            .iter()
+            .map(|(link_path, target)| serde_json::json!({ "path": link_path, "target": target }))
+            .collect();
+        value["links"] = serde_json::Value::Array(links);
+    }
+    value
+}
+
+/// Reads back the `"links"` array [`restore_backup_inverse_with_links`]
+/// adds, or an empty list for an inverse that has none (including every
+/// `restore_backup` recorded before this field existed).
+pub(crate) fn parse_restore_links(inverse: &serde_json::Value) -> Vec<(PathBuf, PathBuf)> {
+    inverse
+        .get("links")
+        .and_then(|v| v.as_array())
+        .into_iter()
+        .flatten()
+        .filter_map(|entry| {
+            let path = PathBuf::from(entry.get("path")?.as_str()?);
+            let target = PathBuf::from(entry.get("target")?.as_str()?);
+            Some((path, target))
+        })
+        .collect()
 }
 
 /// Reads a `restore_backup` inverse payload back into its path and

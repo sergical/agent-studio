@@ -1,0 +1,51 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "RemoveOutcome",
+  "description": "Result of `remove`.",
+  "type": "object",
+  "properties": {
+    "event_id": {
+      "description": "The `remove` event.",
+      "$ref": "#/$defs/EventId"
+    },
+    "deployment_id": {
+      "description": "The deployment that was removed.",
+      "$ref": "#/$defs/DeploymentId"
+    },
+    "skill": {
+      "description": "The skill that was removed.",
+      "$ref": "#/$defs/SkillName"
+    },
+    "tree_hash_before": {
+      "description": "The removed folder's `TreeHash`, taken before the first write.",
+      "type": "string"
+    },
+    "quarantine_path": {
+      "description": "Where the folder now lives under quarantine, for `Copy`/`Fork`\n(never deleted - see `docs/action-map/primitives-and-call-stack.md`'s\nRemove row). `None` for `Dotagents`/`SkillsSh`, whose own CLI deletes\nthe bytes directly, the same as it does for every other build's\nremove today.",
+      "type": [
+        "string",
+        "null"
+      ]
+    }
+  },
+  "required": [
+    "event_id",
+    "deployment_id",
+    "skill",
+    "tree_hash_before"
+  ],
+  "$defs": {
+    "EventId": {
+      "description": "History event id (ULID string).\n\nInvariant: lexical order equals creation order inside one store.",
+      "type": "string"
+    },
+    "DeploymentId": {
+      "description": "Opaque deployment id.\n\nInvariant: the string starts with `dep:v1/`. Its internal layout is a core\ndetail; adapters and the UI compare it as a string and never split it.",
+      "type": "string"
+    },
+    "SkillName": {
+      "description": "Lexical skill name: the directory name that holds `SKILL.md`.\n\nInvariant: two deployments with the same `SkillName` are the same skill,\neven when their bytes differ. A symlink alias with another name is another\nskill.",
+      "type": "string"
+    }
+  }
+}
