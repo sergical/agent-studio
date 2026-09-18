@@ -69,9 +69,8 @@ fn bench_scan_on_disk(c: &mut Criterion) {
     // Named for the 100ms budget it's checked against by hand (unit 3.3's
     // "Done when": `cargo bench -p skill-studio-core --features testing
     // --bench scan`, read the printed median - no wall-clock `#[test]` gate,
-    // since a debug-mode assertion measures build-mode cost, not a
-    // regression; see the deleted `tests/scan_budget.rs`). Last measured at
-    // ~86ms median.
+    // since a debug-mode assertion would measure build-mode cost, not a
+    // regression). Last measured at ~86ms median.
     c.bench_function(
         "scan_on_the_bench_estate_finishes_under_the_100ms_budget",
         |b| {
