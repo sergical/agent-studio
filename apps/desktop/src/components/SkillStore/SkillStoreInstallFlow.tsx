@@ -14,12 +14,8 @@ import {
   universalDisabledHarnesses,
   universalInstallHarnesses,
 } from "./universal-install-visibility";
-import {
-  confirmStoreInstallTrust,
-  declineStoreInstallTrust,
-  parentProgressForPhase,
-  startStoreInstall,
-} from "./store-install-flow";
+import { parentProgressForPhase, startStoreInstall } from "./store-install-flow";
+import { useStoreTrustStep } from "./use-store-trust-step";
 import {
   cancelAddSkillOperation,
   confirmAddSkillTrust,
@@ -254,60 +250,25 @@ export function SkillStoreInstallFlow({
     }
   };
 
-  const handleDeclineTrust = async () => {
-    const operationId = operationIdRef.current;
-    unlistenRef.current?.();
-    unlistenRef.current = undefined;
-    operationIdRef.current = undefined;
-    setOperation(undefined);
-    setIsInstalling(false);
-    if (parentProgressForPhase("cancelled") === "clear") onInstallPaused();
-    if (!operationId) return;
-    try {
-      await declineStoreInstallTrust(operationId, cancelAddSkillOperation);
-    } catch (error) {
-      addToast({
-        type: "error",
-        title: "Could not decline repository trust",
-        message: error instanceof Error ? error.message : "Unknown error",
-      });
-    }
-  };
-
-  const handleTrustAndRetry = async () => {
-    const operationId = operationIdRef.current;
-    const identity = operation?.untrusted_source?.identity;
-    if (!operationId || !identity || trustBusy) return;
-    setTrustBusy(true);
-    // The parent's `InstallProgressModal` was cleared for `needs-trust`
-    // (`applyOperationEvent`); show it again so the retry has the same
-    // "Installing…" feedback the initial attempt had.
-    onInstallStart(skill.name);
-    try {
-      const retryOperationId = crypto.randomUUID();
-      // The retry id is client-generated, so it is tracked before the await
-      // below, not after: a terminal event for the retry op delivered while
-      // this call is in flight would otherwise be dropped by the id filter
-      // in `applyOperationEvent` (review round 3, N1).
-      operationIdRef.current = retryOperationId;
-      consumedIdRef.current = undefined;
-      const settled = await confirmStoreInstallTrust(operationId, retryOperationId, identity, {
-        confirmTrust: confirmAddSkillTrust,
-        getOperation: getAddSkillOperation,
-      });
-      applyOperationEvent(settled);
-    } catch (error) {
-      operationIdRef.current = operationId;
-      setIsInstalling(false);
-      onInstallPaused();
-      onInstallComplete({
-        success: false,
-        error: error instanceof Error ? error.message : "Trust confirmation failed",
-        skillName: skill.name,
-      });
-    }
-    setTrustBusy(false);
-  };
+  const { handleDeclineTrust, handleTrustAndRetry } = useStoreTrustStep({
+    skillName: skill.name,
+    operation,
+    trustBusy,
+    operationIdRef,
+    consumedIdRef,
+    unlistenRef,
+    setOperation,
+    setIsInstalling,
+    setTrustBusy,
+    onInstallStart,
+    onInstallPaused,
+    onInstallComplete,
+    addToast,
+    applyOperationEvent,
+    cancelAddSkillOperation,
+    confirmAddSkillTrust,
+    getAddSkillOperation,
+  });
 
   return (
     <>
