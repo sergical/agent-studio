@@ -271,6 +271,56 @@ mod tests {
         )
     }
 
+    /// A snapshot with one skill owned by a single mutable owner (no
+    /// direct-deployment target), matching what `lifecycleTargetForSkill`
+    /// sends for Fork, `SkillsSh` and Dotagents owners: `{ owner_id }` with
+    /// `deployment_id` absent.
+    fn single_owner_target_fixture(
+        root: &Path,
+    ) -> (skill_refresh::SkillSnapshot, LifecycleTarget) {
+        use super::super::skill_deployment::{
+            deployment_id, BackingRelationship, DeploymentMutability, SkillDestination,
+        };
+        use super::super::skill_ownership::LifecycleOwnerKind;
+
+        let dep_dir = root.join(".agents/skills/foo");
+        std::fs::create_dir_all(&dep_dir).unwrap();
+        std::fs::write(dep_dir.join("SKILL.md"), "---\nname: foo\n---\n").unwrap();
+        let content_hash =
+            crate::skills::core_content_hash::live_skill_content_hash(&dep_dir).unwrap();
+        let id = deployment_id(
+            "foo",
+            "global",
+            SkillDestination::Universal,
+            "universal",
+            None,
+            &dep_dir,
+        );
+        let owner_id = "owner:v1/global/foo".to_string();
+
+        let mut snapshot = fixture_snapshot(&dep_dir, None);
+        snapshot.skills[0].deployments[0] = super::super::skill_dto::Deployment {
+            id: id.clone(),
+            destination: SkillDestination::Universal,
+            owner_kind: LifecycleOwnerKind::SkillsSh,
+            owner_id: Some(owner_id.clone()),
+            mutability: DeploymentMutability::Mutable,
+            backing: BackingRelationship::Canonical,
+            agent: "shared".to_string(),
+            scope: "global".to_string(),
+            path: dep_dir.to_string_lossy().to_string(),
+            content_hash,
+            ..Default::default()
+        };
+        (
+            snapshot,
+            LifecycleTarget {
+                deployment_id: None,
+                owner_id: Some(owner_id),
+            },
+        )
+    }
+
     fn run_counted_lifecycle_command(
         snapshot: &skill_refresh::SkillSnapshot,
         target: &LifecycleTarget,
@@ -630,10 +680,14 @@ mod tests {
             Arc::new(std::sync::Mutex::new(None));
         let record_build_thread = runtime_built_on.clone();
 
-        let _ = remove_with_runtime(target, move || {
-            *record_build_thread.lock().unwrap() = Some(std::thread::current().id());
-            Ok(rt)
-        })
+        let _ = remove_with_runtime(
+            target,
+            || panic!("resolve_snapshot must not run for a direct deployment_id target"),
+            move |_deployment_id| {
+                *record_build_thread.lock().unwrap() = Some(std::thread::current().id());
+                Ok(rt)
+            },
+        )
         .await;
 
         let build_thread = runtime_built_on
@@ -644,6 +698,45 @@ mod tests {
             build_thread, test_task_thread,
             "remove_with_runtime built the runtime (and ran ops::remove) on the test task's own \
              thread ({test_task_thread:?}) instead of a spawn_blocking pool thread"
+        );
+    }
+
+    /// Every UI remove path builds its target through
+    /// `lifecycleTargetForSkill`, which sends `{ owner_id }` (no
+    /// `deployment_id`) whenever the scope has one mutable owner - Fork,
+    /// `SkillsSh` and Dotagents. `remove_with_runtime` must resolve that
+    /// owner target against a fresh snapshot and hand the runtime builder
+    /// the resolved deployment's id, not reject it for lacking one.
+    #[tokio::test(flavor = "current_thread")]
+    async fn remove_of_an_owner_target_resolves_the_canonical_deployment_or_names_the_missing_id()
+    {
+        use std::sync::Arc;
+
+        let tmp = tempfile::tempdir().unwrap();
+        let (snapshot, target) = single_owner_target_fixture(tmp.path());
+        let expected_id = snapshot.skills[0].deployments[0].id.clone();
+
+        let built_with_id: Arc<std::sync::Mutex<Option<String>>> = Arc::new(std::sync::Mutex::new(None));
+        let record_id = built_with_id.clone();
+
+        let _ = remove_with_runtime(
+            target,
+            move || Ok(snapshot),
+            move |deployment_id| {
+                *record_id.lock().unwrap() = Some(deployment_id.as_str().to_string());
+                Err("stop before a real runtime is needed".to_string())
+            },
+        )
+        .await;
+
+        let resolved_id = built_with_id
+            .lock()
+            .unwrap()
+            .clone()
+            .expect("the runtime builder never ran, so the owner target was never resolved");
+        assert_eq!(
+            resolved_id, expected_id,
+            "remove_with_runtime did not resolve the owner target to its deployment id"
         );
     }
 }
@@ -659,10 +752,18 @@ pub async fn remove_skill(
     target: LifecycleTarget,
     app: tauri::AppHandle,
 ) -> Result<RemoveOutcome, String> {
+    let snapshot_app = app.clone();
     crate::timing_log::time_command_async(
         &app,
         "remove_skill",
-        remove_with_runtime(target, super::core_runtime::build_runtime_write),
+        remove_with_runtime(
+            target,
+            move || {
+                let refresh_state = snapshot_app.state::<SkillRefreshState>();
+                rebuild_fresh_lifecycle_snapshot(&snapshot_app, &refresh_state)
+            },
+            |_deployment_id| super::core_runtime::build_runtime_write(),
+        ),
     )
     .await
 }
@@ -672,17 +773,36 @@ pub async fn remove_skill(
 /// `harness_first_run.rs`'s `detect_with_runtime` uses. The runtime is
 /// built inside the blocking closure too, so `Runtime::new` never runs on
 /// the async task.
+///
+/// `resolve_snapshot` is only called for an owner-only target
+/// (`{ owner_id }`, no `deployment_id`) - every UI remove path builds its
+/// target that way whenever the scope has one mutable owner
+/// (`lifecycleTargetForSkill`), so `remove_with_runtime` resolves it to a
+/// deployment id the same way `update_skill` does, against a freshly
+/// rebuilt snapshot. Deferred to a closure so the direct-`deployment_id`
+/// path (the common case) never pays for a snapshot rebuild, and so the
+/// rebuild - which walks the filesystem - runs inside `spawn_blocking`
+/// alongside `build_runtime`, not on the async task.
 pub(crate) async fn remove_with_runtime(
     target: LifecycleTarget,
-    build_runtime: impl FnOnce() -> Result<skill_studio_core::ports::Runtime, String> + Send + 'static,
+    resolve_snapshot: impl FnOnce() -> Result<skill_refresh::SkillSnapshot, String> + Send + 'static,
+    build_runtime: impl FnOnce(&DeploymentId) -> Result<skill_studio_core::ports::Runtime, String>
+        + Send
+        + 'static,
 ) -> Result<RemoveOutcome, String> {
-    let deployment_id = target
-        .deployment_id
-        .as_deref()
-        .ok_or_else(|| "Remove requires a deployment id".to_string())
-        .and_then(|raw| DeploymentId::parse(raw).map_err(|e| e.message))?;
+    if target.deployment_id.is_none() && target.owner_id.is_none() {
+        return Err("Remove requires a deployment id".to_string());
+    }
     let joined = tauri::async_runtime::spawn_blocking(move || {
-        let rt = build_runtime()?;
+        let deployment_id = match target.deployment_id.as_deref() {
+            Some(raw) => DeploymentId::parse(raw).map_err(|e| e.message)?,
+            None => {
+                let snapshot = resolve_snapshot()?;
+                let (_, deployment) = resolve_lifecycle_target(&snapshot, &target, "Remove")?;
+                DeploymentId::parse(&deployment.id).map_err(|e| e.message)?
+            }
+        };
+        let rt = build_runtime(&deployment_id)?;
         let ctx = OpContext::uncancellable(CorrelationId(ulid::Ulid::new().to_string()));
         let result = ops::remove(&rt, &ctx, &RemoveRequest { deployment_id });
         let envelope = ResultEnvelope::from_result(Operation::Remove, &rt.scope, &ctx, result);
