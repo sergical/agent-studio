@@ -27,7 +27,7 @@ import {
   skillGlobalRemovalTarget,
   updateSkillOwners,
 } from "../../lib/skill-lifecycle-target";
-import type { InstalledSkill, TrialInfo } from "@skill-studio/lib";
+import type { InstalledSkill, PullResult, Toast, TrialInfo } from "@skill-studio/lib";
 import { useAppStore } from "../../store/appStore";
 
 /**
@@ -43,6 +43,34 @@ function sharedFolderDeployment(skill: InstalledSkill) {
 }
 
 type AddToast = ReturnType<typeof useAppStore.getState>["addToast"];
+
+/**
+ * Builds the toast for a finished `pull_fork_upstream` call. Conflicts win
+ * over `message` when both are set - the only case that happens in
+ * practice is a failed editor open after a conflicted pull, where
+ * `message` names the file and the open error (see `skill_fork.rs`'s
+ * `pull_fork_upstream`) and would otherwise silently replace the conflict
+ * count and title. `message` alone (the "Already up to date" case) still
+ * gets its own info toast.
+ */
+export function pullUpstreamToast(result: PullResult): Omit<Toast, "id"> {
+  if (result.conflicts.length > 0) {
+    const conflictText = result.conflicts.join(", ");
+    return {
+      type: "warning",
+      title: `${result.conflicts.length} conflicts — open the editor to resolve`,
+      message: result.message ? `${conflictText} ${result.message}` : conflictText,
+    };
+  }
+  if (result.message) {
+    return { type: "info", title: result.message };
+  }
+  // No conflicts and no message: every file here was a clean pull from
+  // upstream (nothing merged - a file both sides changed would have
+  // landed in `result.conflicts` instead, with markers).
+  const updatedCount = result.merged.length + result.added.length + result.removed.length;
+  return { type: "success", title: `Updated ${updatedCount} files` };
+}
 
 /**
  * Runs `fn` with `setBusy` bracketing it, and reports a thrown error as an
@@ -222,21 +250,7 @@ export function useSkillPageActions(
   const doPullUpstream = () =>
     runAction(addToast, setIsPulling, "Pull upstream failed", async () => {
       const result = await pullForkUpstream(lifecycleTargetForSkill(skill, "global"));
-      if (result.message) {
-        addToast({ type: "info", title: result.message });
-      } else if (result.conflicts.length > 0) {
-        addToast({
-          type: "warning",
-          title: `${result.conflicts.length} conflicts — open the editor to resolve`,
-          message: result.conflicts.join(", "),
-        });
-      } else {
-        // No conflicts on this path: every file here was a clean pull from
-        // upstream (nothing merged - a file both sides changed would have
-        // landed in `result.conflicts` instead, with markers).
-        const updatedCount = result.merged.length + result.added.length + result.removed.length;
-        addToast({ type: "success", title: `Updated ${updatedCount} files` });
-      }
+      addToast(pullUpstreamToast(result));
     });
 
   const doUpdate = () =>
