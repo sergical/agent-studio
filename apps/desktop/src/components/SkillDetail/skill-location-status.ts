@@ -43,7 +43,13 @@ const RANK = { error: 3, warning: 2, off: 1 } satisfies Record<StatusLevel, numb
  * actually has a Global Universal deployment to park - a skill with none has
  * no header park action to point at.
  */
-function offSwitchReason(hasGlobalUniversal: boolean): string {
+function offSwitchReason(deployment: Deployment, hasGlobalUniversal: boolean): string {
+  // A Copy-owned studio-moved row has its own reason: `restore_moved_deployment`
+  // refuses it outright rather than restoring the folder while leaving the
+  // fork registry's `copies` entry stale - see `refuse_registry_copy_restore`.
+  if (deployment.disabled_by === "studio-moved" && deployment.owner_kind === "copy") {
+    return "This copy is tracked by the fork registry; restore it by hand or wait for the .skill-studio-disabled/ migration";
+  }
   return hasGlobalUniversal
     ? "This copy has no off switch; park the skill from the header instead"
     : "This copy has no off switch";
@@ -593,7 +599,7 @@ export function buildScopeGroups(skill: InstalledSkill): ScopeGroup[] {
         hasSwitch: canToggle,
         switchOn: !d.disabled && !parkedScope,
         switchDisabledReason:
-          offersSwitch && !canToggle ? offSwitchReason(ctx.anyShared) : undefined,
+          offersSwitch && !canToggle ? offSwitchReason(d, ctx.anyShared) : undefined,
         invocation: d.invocation ?? skill.invocation,
       };
     });

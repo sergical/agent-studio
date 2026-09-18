@@ -13,6 +13,18 @@ import type { AgentLocationRow, ScopeGroup } from "./skill-location-status";
 export const NO_OFF_SWITCH_TITLE =
   "This copy has no off switch; park the skill from the header instead";
 
+/** Shown on a disabled switch for a Copy-owned studio-moved row - see `canOfferHarnessSwitch`. */
+export const REGISTRY_COPY_NO_SWITCH_TITLE =
+  "This copy is tracked by the fork registry; restore it by hand or wait for the .skill-studio-disabled/ migration";
+
+/** The Harnesses rail's disabled-switch title for `row` - `REGISTRY_COPY_NO_SWITCH_TITLE` for a Copy-owned studio-moved row, `NO_OFF_SWITCH_TITLE` otherwise. */
+export function harnessSwitchOffTitle(row: AgentLocationRow): string {
+  if (row.deployment?.disabled_by === "studio-moved" && row.deployment.owner_kind === "copy") {
+    return REGISTRY_COPY_NO_SWITCH_TITLE;
+  }
+  return NO_OFF_SWITCH_TITLE;
+}
+
 /** Harnesses with a per-skill disable switch - see `skill_harness_disable.rs`. */
 const HARNESSES_WITH_PER_SKILL_DISABLE = ["codex", "open-code", "claude-code"];
 
@@ -44,12 +56,18 @@ export function canToggleHarness(deployment: Deployment): boolean {
  * toggle-off. `park`/`unpark` are the Global Universal deployment's off
  * switch only (see `ops::park` in the core crate) - never this row's. A
  * `studio-moved` row is the one legacy exception with a way back in
- * (`restore_moved_deployment`); every other row with no native per-harness
- * disable has no off switch at all, and the caller must disable the control
- * instead of offering it.
+ * (`restore_moved_deployment`) - except when it's Copy-owned, since
+ * `restore_moved_deployment` itself refuses those
+ * (`refuse_registry_copy_restore` in `skill_harness_disable.rs`) to avoid
+ * restoring the folder while leaving the fork registry's `copies` entry
+ * stale. Every other row with no native per-harness disable has no off
+ * switch at all, and the caller must disable the control instead of
+ * offering it.
  */
 export function canOfferHarnessSwitch(deployment: Deployment): boolean {
-  return deployment.disabled_by === "studio-moved" || canToggleHarness(deployment);
+  const canRestoreMoved =
+    deployment.disabled_by === "studio-moved" && deployment.owner_kind !== "copy";
+  return canRestoreMoved || canToggleHarness(deployment);
 }
 
 /**

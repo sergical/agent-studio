@@ -29,7 +29,7 @@ import { DEFAULT_HARNESS_LIST, whereFacts } from "../SkillList/skill-row-state";
 import { SwitchControl } from "../ui/SwitchControl";
 import { buildInstalledSkillSourceLedgerModel } from "./installed-skill-source-ledger-model";
 import { setInvocationForFile } from "./skill-location-actions";
-import { canOfferHarnessSwitchForRow, NO_OFF_SWITCH_TITLE } from "./skill-location-helpers";
+import { canOfferHarnessSwitchForRow, harnessSwitchOffTitle } from "./skill-location-helpers";
 import {
   buildInvocationFiles,
   buildScopeGroups,
@@ -203,7 +203,7 @@ export function SkillPropertiesRail({ skill, updateAction }: SkillPropertiesRail
                         disabled={!offerSwitch || pendingHarness === h.harness}
                         onCheckedChange={(next) => row && toggleHarness(h.harness, row, next)}
                         ariaLabel={`Enabled for ${h.label}`}
-                        title={offerSwitch ? undefined : NO_OFF_SWITCH_TITLE}
+                        title={offerSwitch || !row ? undefined : harnessSwitchOffTitle(row)}
                       />
                     </div>
                   );

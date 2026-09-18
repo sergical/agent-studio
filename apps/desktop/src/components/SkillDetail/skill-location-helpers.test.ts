@@ -10,7 +10,9 @@ import { SwitchControl } from "../ui/SwitchControl";
 import {
   canOfferHarnessSwitch,
   canOfferHarnessSwitchForRow,
+  harnessSwitchOffTitle,
   NO_OFF_SWITCH_TITLE,
+  REGISTRY_COPY_NO_SWITCH_TITLE,
   sharedFolderSwitchPolicy,
 } from "./skill-location-helpers";
 import { buildScopeGroups, rowMenu } from "./skill-location-status";
@@ -141,6 +143,40 @@ describe("canOfferHarnessSwitch", () => {
     });
 
     expect(canOfferHarnessSwitch(movedCopy)).toBe(true);
+  });
+
+  it("studio_moved_copy_row_has_no_switch_or_names_the_row", () => {
+    const registryCopy = sharedDeployment({
+      id: "dep:v1/project/pi/find-bugs",
+      agent: "pi",
+      scope: "project",
+      project_path: "/repo",
+      path: "/repo/.pi/skills/find-bugs",
+      owner_kind: "copy",
+      backing: { kind: "independent" },
+      disabled: true,
+      disabled_by: "studio-moved",
+    });
+
+    // `restore_moved_deployment` refuses a Copy-owned row outright
+    // (`refuse_registry_copy_restore`), so the switch must not pretend it
+    // has a way back either.
+    expect(canOfferHarnessSwitch(registryCopy)).toBe(false);
+    const row: AgentLocationRow = {
+      kind: "copy",
+      harness: "pi",
+      harnessLabel: "pi",
+      path: registryCopy.path,
+      caption: "",
+      conditions: [],
+      level: null,
+      deployment: registryCopy,
+      lifecycleTarget: { deployment_id: registryCopy.id },
+      hasSwitch: false,
+      switchOn: false,
+      invocation: null,
+    };
+    expect(harnessSwitchOffTitle(row)).toBe(REGISTRY_COPY_NO_SWITCH_TITLE);
   });
 });
 
