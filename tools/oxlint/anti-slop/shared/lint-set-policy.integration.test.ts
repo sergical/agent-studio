@@ -30,7 +30,9 @@ describe("npm run check runs knip, no-restricted-imports, and vitest, or names t
 		if (!checkScript?.includes("knip")) {
 			missing.push('"check" does not run knip (dead-code detection)');
 		}
-		if (!checkScript?.includes("test")) {
+		// The vitest gate is the root "test" script; "typecheck" and
+		// "types:check" also contain the substring, so match the step itself.
+		if (!/(^|&&)\s*npm run test(\s*(&&|$))/.test(checkScript ?? "")) {
 			missing.push('"check" does not run the vitest test step');
 		}
 

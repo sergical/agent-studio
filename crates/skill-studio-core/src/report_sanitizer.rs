@@ -280,11 +280,7 @@ fn cap_items(envelope: &mut SanitizedEnvelope) {
 /// [`MAX_BYTES`]. Serializing to measure is what "per envelope" means;
 /// nothing here assumes a particular wire format beyond JSON.
 fn cap_bytes(envelope: &mut SanitizedEnvelope) {
-    while serde_json::to_vec(envelope)
-        .map(|bytes| bytes.len())
-        .unwrap_or(0)
-        > MAX_BYTES
-    {
+    while serde_json::to_vec(envelope).map_or(0, |bytes| bytes.len()) > MAX_BYTES {
         if let Some(exception) = envelope
             .exceptions
             .iter_mut()
