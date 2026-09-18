@@ -212,6 +212,14 @@ const QUARANTINE_AGE_CAP: chrono::Duration = chrono::Duration::days(30);
 /// remove would delete the very backup that row's own undo (or a retry)
 /// still needs. A row this cannot find (already gone, or never written) is
 /// not "open", so it does not block the prune.
+///
+/// This exemption holds regardless of either cap in [`prune_quarantine`]:
+/// an entry whose own `remove` row stays `Failed` is exempt from both the
+/// count cap and [`QUARANTINE_AGE_CAP`] until that row is restored (through
+/// `ops::restore_event`) or its remove is retried and reaches `Done` -
+/// `quarantine_prune_keeps_the_entry_of_a_failed_remove_or_names_the_lost_entry`
+/// covers the count cap; the age cap shares this same check
+/// (`issue-3.9a-followup-a.md` tracks adding the age-cap counterpart).
 fn is_referenced_by_open_remove(session: &MutationSession, event_id: &str) -> bool {
     let Ok(Some(record)) = session
         .store
@@ -377,6 +385,14 @@ pub fn remove(
         .into_iter()
         .map(|d| d.path.clone())
         .collect();
+    // Each link's own target, read before anything moves, so the inverse
+    // below can recreate it verbatim - the CLI kinds' own links target
+    // `deployment.path` itself, about to be renamed away or deleted, so
+    // reading the target after the write would find nothing to read.
+    let link_targets: Vec<(PathBuf, PathBuf)> = links
+        .iter()
+        .filter_map(|link| fs.read_link(link).ok().map(|target| (link.clone(), target)))
+        .collect();
     let begin_step = crate::timing::step(clock, "begin_session", step_start);
 
     let step_start = clock.monotonic();
@@ -408,16 +424,36 @@ pub fn remove(
     // first write - see the module doc on why this also wires up a real
     // `restore_backup_inverse`, unlike `park`. `deployment.path` is listed
     // first so its manifest entry (and thus `pre_fingerprint` below) is
-    // `manifest.entries[0]` regardless of whether a link follows it.
-    let manifest =
-        session
-            .store
-            .backup_paths(&session.guard, &id, std::slice::from_ref(&deployment.path))?;
+    // `manifest.entries[0]` regardless of what else this backs up.
+    // `Copy`/`Fork` also get their own registry.json backed up in the same
+    // manifest, since removing either drops a row from it
+    // (`drop_copy_registry_entry`/`drop_fork_registry_entry` below) that a
+    // restore should bring back, not just the tree's bytes -
+    // `restore_event` replays every entry in a manifest, not only the one
+    // matching its primary `path`, for exactly this reason. Each harness
+    // link this removes goes in `inverse.links` instead (see
+    // `restore_backup_inverse_with_links`'s own doc): a symlink copied into
+    // a backup manifest would restore as a plain file, not a link.
+    let mut backup_targets = vec![deployment.path.clone()];
+    if matches!(
+        deployment.owner_kind,
+        LifecycleOwnerKind::Copy | LifecycleOwnerKind::Fork
+    ) {
+        backup_targets.push(crate::ops_install::registry_path(&rt.scope.home.lexical));
+    }
+    let manifest = session
+        .store
+        .backup_paths(&session.guard, &id, &backup_targets)?;
     let pre_fingerprint = manifest
         .entries
         .first()
         .and_then(|e| e.fingerprint.as_ref());
-    let inverse = crate::events::restore_backup_inverse(&deployment.path, pre_fingerprint, None);
+    let inverse = crate::events::restore_backup_inverse_with_links(
+        &deployment.path,
+        pre_fingerprint,
+        None,
+        &link_targets,
+    );
     let backup_dir = Some(manifest.backup_dir);
 
     let draft = EventDraft {
@@ -537,6 +573,19 @@ fn remove_and_link(
         }
     }
     for link_path in args.link_paths {
+        // The real `npx skills remove`/`npx -y @sentry/dotagents remove`
+        // (no `--agent` given) already deletes every per-agent link itself
+        // before this op ever reaches its own link loop (skills CLI v1.5.23
+        // `dist/cli.mjs:6217-6263`) - so for `Dotagents`/`SkillsSh` a link
+        // this finds already gone is the expected, successful case, not a
+        // crash partway through. `Copy`/`Fork` links are never touched by
+        // any CLI, so for them a missing link would instead mean this same
+        // op already ran once for this deployment; treating it as removed
+        // either way keeps `remove` idempotent rather than failing a row
+        // whose deployment, links, and lock entry are already gone.
+        if fs.symlink_metadata(link_path).is_err() {
+            continue;
+        }
         let scoped_link = crate::ports::confine(&rt.scope, fs, link_path)?;
         fs.remove_file(&session.guard, &scoped_link)
             .map_err(|e| CoreError::io(link_path, e))?;

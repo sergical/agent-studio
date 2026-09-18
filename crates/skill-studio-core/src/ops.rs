@@ -4512,6 +4512,13 @@ pub fn restore_event(
     // failure here must leave the target event revertible, not stuck behind
     // a claim nothing ever undoes.
     let scoped = crate::ports::confine(&rt.scope, fs, &path)?;
+    // Every manifest entry besides `path` itself - e.g. `remove`'s own
+    // registry.json backup, next to its deployment tree - restores
+    // best-effort alongside the primary path below, keyed by its own
+    // original location rather than folded into `plan`: `path`'s restore is
+    // the one drift-checked and claimed against above, so a problem with a
+    // secondary entry must not block or fail it.
+    let mut extra_plans: Vec<(PathBuf, RestorePlan)> = Vec::new();
     let plan = match &pre {
         None => {
             // The original event's backup recorded the path as absent:
@@ -4543,7 +4550,7 @@ pub fn restore_event(
             // the live path is absent, which would otherwise always look
             // like "not a directory" and send a directory's restore through
             // the single-file `Write` branch below.
-            if entry.is_dir {
+            let plan = if entry.is_dir {
                 let files = session
                     .store
                     .read_backup_files(backup_dir, &entry.relative)?;
@@ -4553,7 +4560,27 @@ pub fn restore_event(
                     .store
                     .read_backup_bytes(backup_dir, &entry.relative)?;
                 RestorePlan::Write(bytes)
+            };
+            for other in &original_manifest.entries {
+                if other.original == path {
+                    continue;
+                }
+                let other_plan = if other.is_dir {
+                    session
+                        .store
+                        .read_backup_files(backup_dir, &other.relative)
+                        .map(RestorePlan::WriteDir)
+                } else {
+                    session
+                        .store
+                        .read_backup_bytes(backup_dir, &other.relative)
+                        .map(RestorePlan::Write)
+                };
+                if let Ok(other_plan) = other_plan {
+                    extra_plans.push((other.original.clone(), other_plan));
+                }
             }
+            plan
         }
     };
 
@@ -4601,6 +4628,48 @@ pub fn restore_event(
             None,
         );
         return Err(err);
+    }
+
+    // Best-effort, after the primary path is already restored and claimed:
+    // a secondary path this cannot put back (a permissions error, a path no
+    // longer confined to the scope) leaves the restore's own outcome
+    // reporting only `path`, rather than failing a restore that otherwise
+    // succeeded. See `extra_plans`' own comment above.
+    for (other_path, other_plan) in &extra_plans {
+        if let Ok(other_scoped) = crate::ports::confine(&rt.scope, fs, other_path) {
+            let result: Result<(), CoreError> = match other_plan {
+                RestorePlan::RemoveIfPresent => {
+                    if fs.symlink_metadata(other_path).is_ok() {
+                        fs.remove_file(&session.guard, &other_scoped)
+                            .map_err(|e| CoreError::io(other_path, e))
+                    } else {
+                        Ok(())
+                    }
+                }
+                RestorePlan::Write(bytes) => fs
+                    .write_atomic(&session.guard, &other_scoped, bytes)
+                    .map_err(|e| CoreError::io(other_path, e)),
+                RestorePlan::WriteDir(files) => {
+                    restore_write_dir(rt, &session.guard, other_path, files)
+                }
+            };
+            let _ = result;
+        }
+    }
+    // Every harness link `remove` (or whichever event this reverts) took
+    // down, recreated the same best-effort way - see
+    // `crate::events::restore_backup_inverse_with_links`'s own doc for why
+    // this cannot go through `RestorePlan` like the entries above.
+    for (link_path, target) in crate::events::parse_restore_links(inverse) {
+        if fs.symlink_metadata(&link_path).is_ok() {
+            continue;
+        }
+        if let (Ok(scoped_link), Ok(scoped_target)) = (
+            crate::ports::confine(&rt.scope, fs, &link_path),
+            crate::ports::confine(&rt.scope, fs, &target),
+        ) {
+            let _ = fs.symlink(&session.guard, &scoped_target, &scoped_link);
+        }
     }
 
     let restored_fingerprint = crate::events::fingerprint_path(fs, &path)?;
