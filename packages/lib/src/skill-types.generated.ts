@@ -98,7 +98,7 @@ export type ProjectFolderSource = "discovered" | "added";
  */
 export type HarnessId = "claude-code" | "codex" | "open-code" | "pi";
 /**
- * Which OpenCode config format is present, so a caller can tell the user
+ * Which `OpenCode` config format is present, so a caller can tell the user
  * to hand-edit a `.jsonc` file rather than silently showing no disables.
  */
 export type OpencodeConfigKind = "json" | "jsonc";
