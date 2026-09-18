@@ -101,7 +101,12 @@ fn unique_suffix() -> String {
 /// Joins `target` onto `base` (unless `target` is already absolute) and
 /// collapses `.`/`..` segments lexically, matching how a real symlink
 /// target resolves relative to the directory holding the link.
-fn join_lexical(base: &Path, target: &Path) -> PathBuf {
+///
+/// `pub(crate)` so `ops::set_claude_code_switch` and
+/// `ops::restore_symlink_event` can resolve a `read_link` result the same
+/// way this module's own `Root::confine` does, instead of re-implementing
+/// the collapse.
+pub(crate) fn join_lexical(base: &Path, target: &Path) -> PathBuf {
     use std::path::Component;
     let joined = if target.is_absolute() {
         target.to_path_buf()

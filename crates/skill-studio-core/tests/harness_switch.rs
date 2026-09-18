@@ -1350,6 +1350,145 @@ fn claude_code_disable_records_the_links_real_target_or_names_the_body_undo_woul
     std::fs::remove_dir_all(&home).ok();
 }
 
+/// `claude_code_disable_of_a_relative_target_link_records_its_resolved_target_or_names_the_link_it_refused`:
+/// a Claude Code per-skill link written with a relative target
+/// (`../../.agents/skills/<name>`, the shape the scanner resolves at
+/// `ops.rs`'s scan, the desktop adapter relinks with, and the `basic`
+/// fixture in `scan_golden.rs` models) must disable the same way an
+/// absolute-target link does, not fail before any journal row is recorded
+/// because `confine` refuses a raw relative `read_link` value.
+#[test]
+fn claude_code_disable_of_a_relative_target_link_records_its_resolved_target_or_names_the_link_it_refused(
+) {
+    let home = unique_temp_dir("claude_disable_relative_target");
+    install_universal_skill(&home, "delta");
+    let canonical_dir = home.join(UNIVERSAL_ROOT_RELATIVE).join("delta");
+
+    let claude_skills = home.join(CLAUDE_ROOT_RELATIVE);
+    std::fs::create_dir_all(&claude_skills).unwrap();
+    let link = claude_skills.join("delta");
+    #[cfg(unix)]
+    std::os::unix::fs::symlink(Path::new("../../.agents/skills/delta"), &link).unwrap();
+
+    let rt = runtime_for(&home);
+    let disable = ops::set_harness_enabled(
+        &rt,
+        &ctx(),
+        &SetHarnessEnabledRequest {
+            skill: SkillName("delta".into()),
+            harness: AgentId::from(AgentId::CLAUDE_CODE),
+            enabled: false,
+            project_path: None,
+        },
+    )
+    .unwrap_or_else(|e| panic!("disable of a relative-target link must succeed, got: {e}"));
+    assert!(
+        std::fs::symlink_metadata(&link).is_err(),
+        "disable should remove {}",
+        link.display()
+    );
+
+    let store = rt
+        .ports
+        .history
+        .open(&rt.scope, HistoryAccess::ReadIfExists)
+        .unwrap()
+        .expect("the store exists after the write above");
+    let row = store.get(&disable.event_id).unwrap().unwrap();
+    let recorded_target = row
+        .inverse
+        .as_ref()
+        .and_then(|v| v.get("target"))
+        .and_then(|v| v.as_str())
+        .map(std::path::PathBuf::from)
+        .expect("a recreate_symlink inverse must carry a target");
+    assert_eq!(
+        recorded_target,
+        canonical_dir,
+        "the inverse should record the relative link's resolved target {}",
+        canonical_dir.display()
+    );
+
+    std::fs::remove_dir_all(&home).ok();
+}
+
+/// `undo_of_a_relative_target_link_disable_recreates_the_same_link_or_names_the_target_it_changed`:
+/// undoing the disable of a relative-target link must recreate a link the
+/// skill can be discovered through again, not leave the disable's own
+/// resolved-target fix half done.
+#[test]
+fn undo_of_a_relative_target_link_disable_recreates_the_same_link_or_names_the_target_it_changed() {
+    let home = unique_temp_dir("claude_undo_relative_target");
+    install_universal_skill(&home, "delta");
+    let canonical_dir = home.join(UNIVERSAL_ROOT_RELATIVE).join("delta");
+
+    let claude_skills = home.join(CLAUDE_ROOT_RELATIVE);
+    std::fs::create_dir_all(&claude_skills).unwrap();
+    let link = claude_skills.join("delta");
+    #[cfg(unix)]
+    std::os::unix::fs::symlink(Path::new("../../.agents/skills/delta"), &link).unwrap();
+
+    let rt = runtime_for(&home);
+    let disable = ops::set_harness_enabled(
+        &rt,
+        &ctx(),
+        &SetHarnessEnabledRequest {
+            skill: SkillName("delta".into()),
+            harness: AgentId::from(AgentId::CLAUDE_CODE),
+            enabled: false,
+            project_path: None,
+        },
+    )
+    .unwrap_or_else(|e| panic!("disable of a relative-target link must succeed, got: {e}"));
+
+    ops::restore_event(
+        &rt,
+        &ctx(),
+        &RestoreRequest {
+            event_id: disable.event_id.clone(),
+            force: false,
+        },
+    )
+    .unwrap_or_else(|e| panic!("undo of the relative-target disable must succeed, got: {e}"));
+    assert!(
+        std::fs::symlink_metadata(&link).is_ok(),
+        "undo should recreate {}",
+        link.display()
+    );
+    #[cfg(unix)]
+    {
+        let raw = std::fs::read_link(&link).unwrap();
+        let resolved = if raw.is_absolute() {
+            raw
+        } else {
+            claude_skills.join(raw)
+        };
+        assert_eq!(
+            resolved,
+            canonical_dir,
+            "the recreated link should resolve to {}",
+            canonical_dir.display()
+        );
+    }
+
+    let inventory = ops::scan(&rt, &ctx(), &ScanRequest::default()).unwrap();
+    let skill = inventory
+        .skills
+        .iter()
+        .find(|s| s.name.0 == "delta")
+        .expect("delta must still be in the inventory");
+    assert!(
+        skill
+            .deployments
+            .iter()
+            .any(|d| d.path == link && d.disabled_by.is_none()),
+        "expected a fresh scan to see delta enabled again for Claude Code at {}",
+        link.display()
+    );
+
+    std::fs::remove_dir_all(&home).ok();
+}
+
 /// `undo_of_a_symlink_refuses_a_parked_target_or_names_the_dangling_link_it_created`:
 /// a `Recreate` inverse must refuse to run once the target it would point at
 /// is gone - parked, or moved out from under it between the disable and the

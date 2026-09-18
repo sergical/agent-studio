@@ -3835,8 +3835,17 @@ fn restore_symlink_event(
                 // removing it only takes back what this event's own undo
                 // owns, even if something retargeted it since. A non-symlink
                 // at the path is never removed, `force` or not - that would
-                // delete bytes this event never wrote.
-                if !force && fs.read_link(path).ok().as_deref() != Some(target.as_path()) {
+                // delete bytes this event never wrote. `target` is always
+                // the resolved absolute form (see the recording site in
+                // `set_claude_code_switch`), so the live link is resolved
+                // the same way before the comparison: a relative link that
+                // still resolves to the recorded target must pass, not be
+                // flagged as drifted for a spelling difference alone.
+                let live_target = fs
+                    .read_link(path)
+                    .ok()
+                    .map(|raw| crate::fsops::join_lexical(path.parent().unwrap_or(path), &raw));
+                if !force && live_target.as_deref() != Some(target.as_path()) {
                     Err(CoreError::new(
                         ErrorCode::DriftConflict,
                         format!(
@@ -4670,11 +4679,24 @@ fn set_claude_code_switch(
         // current canonical deployment: a link retargeted by hand (or left
         // over from a moved skill) must undo back to its own real target,
         // not silently point the undo at wherever the universal directory
-        // happens to be now. `confine` refuses a target outside the
-        // runtime's scope the same way every other cross-boundary link does.
-        let real_target = fs
+        // happens to be now. `read_link` returns the raw on-disk text,
+        // which a Claude Code link written as `../../.agents/skills/<name>`
+        // (the shape the scanner resolves and the desktop relinker writes)
+        // leaves relative; `confine` refuses anything not absolute, so it
+        // is resolved against the link's own parent and lexically
+        // collapsed the same way the scanner resolves a link target,
+        // before `confine` refuses a target outside the runtime's scope
+        // the same way every other cross-boundary link does. The recorded
+        // inverse always carries this resolved absolute form, not the raw
+        // relative text: `ScopeFs::symlink` only accepts a `ScopedPath`,
+        // which `confine` only produces from an absolute path, so there is
+        // no port through which undo could recreate the original relative
+        // spelling even if it wanted to.
+        let raw_target = fs
             .read_link(&link_path)
             .map_err(|e| CoreError::io(&link_path, e))?;
+        let real_target =
+            crate::fsops::join_lexical(link_path.parent().unwrap_or(&link_path), &raw_target);
         crate::ports::confine(&rt.scope, fs, &real_target)?;
         Some(crate::events::recreate_symlink_inverse(
             &link_path,
