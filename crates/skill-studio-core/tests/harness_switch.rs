@@ -1423,7 +1423,7 @@ fn claude_code_disable_records_the_links_real_target_or_names_the_body_undo_woul
         "recording the canonical dir would relink undo to the wrong body"
     );
 
-    let undo = ops::restore_event(
+    ops::restore_event(
         &rt,
         &ctx(),
         &RestoreRequest {
@@ -1437,7 +1437,6 @@ fn claude_code_disable_records_the_links_real_target_or_names_the_body_undo_woul
         "undo should recreate {}",
         link.display()
     );
-    let _ = undo;
     #[cfg(unix)]
     {
         let relinked_target = std::fs::read_link(&link).unwrap();
