@@ -185,9 +185,19 @@ impl std::error::Error for MigrationError {
 
 /// Runs every step from `from` to `to`, in order, then writes the marker
 /// last. A crash before this returns `Ok` leaves the marker reading
-/// `from` still - see the module doc.
-pub fn migrate(fs: &dyn Fs, folder: &Path, from: u32, to: u32) -> Result<(), MigrationError> {
-    for step in STEPS.iter().filter(|s| s.from >= from && s.from < to) {
+/// `from` still - see the module doc. `migrate` calls this with [`STEPS`];
+/// the seam exists so a test can substitute a table where every step - not
+/// just `migrate_v0_to_v1` - performs a write of its own, which
+/// `fail_write_after` needs to land mid-loop rather than always hitting the
+/// marker write (B1, review round 1).
+fn migrate_with(
+    steps: &[MigrationStep],
+    fs: &dyn Fs,
+    folder: &Path,
+    from: u32,
+    to: u32,
+) -> Result<(), MigrationError> {
+    for step in steps.iter().filter(|s| s.from >= from && s.from < to) {
         (step.run)(fs, folder).map_err(|source| MigrationError::Step {
             from: step.from,
             source,
@@ -196,6 +206,13 @@ pub fn migrate(fs: &dyn Fs, folder: &Path, from: u32, to: u32) -> Result<(), Mig
     let path = folder.join(VERSION_FILE_NAME);
     fs.write_durable(&path, format!("{to}\n").as_bytes())
         .map_err(|source| MigrationError::VersionMarker { to, source })
+}
+
+/// Runs every step from `from` to `to`, in order, then writes the marker
+/// last. A crash before this returns `Ok` leaves the marker reading
+/// `from` still - see the module doc.
+pub fn migrate(fs: &dyn Fs, folder: &Path, from: u32, to: u32) -> Result<(), MigrationError> {
+    migrate_with(STEPS, fs, folder, from, to)
 }
 
 /// The data folder is newer than this app build understands.
@@ -332,34 +349,78 @@ mod tests {
         }
     }
 
+    // Records which `TEST_STEPS` entries actually ran, so a test can tell
+    // "skipped" from "ran but its write happened to succeed". Cleared at the
+    // start of every test that reads it; each test owns its own thread under
+    // the default test harness, so this thread-local never crosses tests.
+    thread_local! {
+        static STEP_LOG: std::cell::RefCell<Vec<u32>> = const { std::cell::RefCell::new(Vec::new()) };
+    }
+
+    fn record_step(id: u32) {
+        STEP_LOG.with(|log| log.borrow_mut().push(id));
+    }
+
+    fn test_step_1(fs: &dyn Fs, folder: &Path) -> io::Result<()> {
+        record_step(1);
+        fs.write_durable(&folder.join("step-1.marker"), b"step 1 ran")
+    }
+
+    fn test_step_2(fs: &dyn Fs, folder: &Path) -> io::Result<()> {
+        record_step(2);
+        fs.write_durable(&folder.join("step-2.marker"), b"step 2 ran")
+    }
+
+    /// A two-step table where - unlike [`STEPS`], whose only real step
+    /// (`migrate_v0_to_v1`) writes nothing - every step performs its own
+    /// `write_durable`. `fail_write_after` needs at least one such step to
+    /// land mid-loop instead of always hitting the final marker write.
+    const TEST_STEPS: &[MigrationStep] = &[
+        MigrationStep {
+            from: 0,
+            run: test_step_1,
+        },
+        MigrationStep {
+            from: 1,
+            run: test_step_2,
+        },
+    ];
+
     /// A failure at any point during migration - a step's own write, or
     /// the final marker write - leaves the marker reading the pre-
-    /// migration version and every other file byte-identical. Fails
-    /// production code that writes the marker before every step has run,
-    /// or that leaves a partial write on the disk when a step's write
-    /// fails (that would be `write_durable` not going through temp+rename;
-    /// see the read check in the PR body for how this test was proven not
-    /// vacuous).
+    /// migration version and every other file byte-identical, and the
+    /// error names the step (or the marker) that failed. Fails production
+    /// code that writes the marker before every step has run, or that
+    /// leaves a partial write on the disk when a step's write fails (that
+    /// would be `write_durable` not going through temp+rename).
     #[test]
     fn migration_crash_after_any_step_leaves_folder_at_old_version_with_data_intact() {
-        // `migrate(0, CURRENT_DATA_VERSION)` makes exactly one
-        // `write_durable` call today: `migrate_v0_to_v1` writes no step
-        // files of its own (module doc), so the only write is the final
-        // marker. The loop stays a loop, not a single assertion, so a
-        // future step that adds writes of its own extends this test for
-        // free by widening the range to `total_writes_for(0, CURRENT)`.
-        let total_writes = 1u32;
+        let step_count = TEST_STEPS.len() as u32;
+        let total_writes = step_count + 1;
 
         for crash_after in 0..total_writes {
             let fs = fixture_at_version(0);
             fs.fail_write_after(crash_after);
-            let err = migrate(&fs, Path::new(FOLDER), 0, CURRENT_DATA_VERSION)
+            STEP_LOG.with(|log| log.borrow_mut().clear());
+
+            let err = migrate_with(TEST_STEPS, &fs, Path::new(FOLDER), 0, 2)
                 .expect_err("crash injected before the marker write must surface as Err");
-            let failed_marker = matches!(err, MigrationError::VersionMarker { to, .. } if to == CURRENT_DATA_VERSION);
-            assert!(
-                failed_marker,
-                "expected the marker write to fail, got {err:?}"
-            );
+
+            if crash_after < step_count {
+                let expects_step =
+                    matches!(err, MigrationError::Step { from, .. } if from == crash_after);
+                assert!(
+                    expects_step,
+                    "crash after write #{crash_after} should name the step from version {crash_after}, got {err:?}"
+                );
+            } else {
+                let expects_marker =
+                    matches!(err, MigrationError::VersionMarker { to, .. } if to == 2);
+                assert!(
+                    expects_marker,
+                    "crash after write #{crash_after} should name the marker write, got {err:?}"
+                );
+            }
 
             let version = read_version(&fs, Path::new(FOLDER)).expect("read version");
             assert_eq!(
@@ -374,6 +435,28 @@ mod tests {
         }
     }
 
+    /// `migrate_with` skips every step whose `from` is below the folder's
+    /// current version - fails production code that runs every step in the
+    /// table regardless of `from` (N10a, review round 1).
+    #[test]
+    fn migrate_with_test_steps_skips_steps_before_from_or_names_the_extra_step_that_ran() {
+        let fs = fixture_at_version(1);
+        STEP_LOG.with(|log| log.borrow_mut().clear());
+
+        let result = migrate_with(TEST_STEPS, &fs, Path::new(FOLDER), 1, 2);
+        assert!(
+            result.is_ok(),
+            "migrating from version 1 failed: {result:?}"
+        );
+
+        let ran = STEP_LOG.with(|log| log.borrow().clone());
+        assert_eq!(
+            ran,
+            vec![2],
+            "migrating from version 1 should run only step 2 (from=1), ran {ran:?} instead"
+        );
+    }
+
     /// The read-side compatibility check names both versions when the
     /// folder is ahead of the app, and is silent otherwise. Fails
     /// production code that returns `Ok` for a newer folder, or that
@@ -386,10 +469,13 @@ mod tests {
         assert_eq!(mismatch.app_version, CURRENT_DATA_VERSION);
 
         let message = newer_data_folder_message(mismatch);
+        let folder_version_at = message.find(&(CURRENT_DATA_VERSION + 1).to_string());
+        let app_version_at = message.find(&CURRENT_DATA_VERSION.to_string());
         assert!(
-            message.contains(&(CURRENT_DATA_VERSION + 1).to_string())
-                && message.contains(&CURRENT_DATA_VERSION.to_string()),
-            "message should name both versions, got: {message}"
+            matches!((folder_version_at, app_version_at), (Some(f), Some(a)) if f < a),
+            "message should name the folder version ({}) before the app version ({}), got: {message}",
+            CURRENT_DATA_VERSION + 1,
+            CURRENT_DATA_VERSION
         );
 
         assert!(check_compatible(CURRENT_DATA_VERSION, CURRENT_DATA_VERSION).is_ok());
