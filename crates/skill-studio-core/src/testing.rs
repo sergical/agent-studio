@@ -847,6 +847,15 @@ pub struct FailingFs {
     /// `reverse_steps` run, skipping past `Root::open`'s own probe.
     fail_nth_fsops_device_inode: AtomicU64,
     fsops_device_inode_calls: AtomicU64,
+    /// 1-based call index to fail, or 0 when disarmed. Distinct from
+    /// `fail_next_fsops_rename`: the journal's own manifest and plan writes
+    /// (`FsJournal::write_through_tmp`) go through `fsops_rename` too, so a
+    /// test that wants to crash one primitive's own crash-critical rename -
+    /// for example `fsops::swap`'s landing rename - names its call index
+    /// rather than the next call, which would instead land on one of the
+    /// journal's own preceding writes.
+    fail_nth_fsops_rename: AtomicU64,
+    fsops_rename_calls: AtomicU64,
     /// The one `read_dir` call this path should fail, or `None`. Keyed by
     /// path rather than "next call": a scan walks many roots' `read_dir`
     /// before reaching any one target of interest, so a test names the
@@ -876,6 +885,8 @@ impl FailingFs {
             fail_next_fsops_device_inode: AtomicBool::new(false),
             fail_nth_fsops_device_inode: AtomicU64::new(0),
             fsops_device_inode_calls: AtomicU64::new(0),
+            fail_nth_fsops_rename: AtomicU64::new(0),
+            fsops_rename_calls: AtomicU64::new(0),
             fail_read_dir_for: Mutex::new(None),
             fail_read_prefix_for: Mutex::new(None),
         }
@@ -986,6 +997,18 @@ impl FailingFs {
     pub fn fail_nth_fsops_device_inode(&self, n: u64) {
         self.fsops_device_inode_calls.store(0, Ordering::SeqCst);
         self.fail_nth_fsops_device_inode.store(n, Ordering::SeqCst);
+    }
+
+    /// The `n`-th `fsops_rename` call (1-based, counting every call from
+    /// this point on) returns an error instead of reaching `inner`; every
+    /// other call delegates normally. Lets a test target one primitive's
+    /// own landing rename - e.g. `fsops::swap`'s - without it being
+    /// consumed by an earlier `fsops_rename` call, such as
+    /// `FsJournal::begin`'s manifest and plan writes or an earlier
+    /// `record_step`, that runs first in the same call.
+    pub fn fail_nth_fsops_rename(&self, n: u64) {
+        self.fsops_rename_calls.store(0, Ordering::SeqCst);
+        self.fail_nth_fsops_rename.store(n, Ordering::SeqCst);
     }
 
     /// The next `read_dir` call for exactly `path` returns an error instead
@@ -1163,6 +1186,13 @@ impl ScopeFs for FailingFs {
     }
     fn fsops_rename(&self, from: &Path, to: &Path) -> std::io::Result<()> {
         if self.fail_next_fsops_rename.swap(false, Ordering::SeqCst) {
+            return Err(std::io::Error::other(
+                "FailingFs: injected fsops_rename failure",
+            ));
+        }
+        let call = self.fsops_rename_calls.fetch_add(1, Ordering::SeqCst) + 1;
+        if self.fail_nth_fsops_rename.load(Ordering::SeqCst) == call {
+            self.fail_nth_fsops_rename.store(0, Ordering::SeqCst);
             return Err(std::io::Error::other(
                 "FailingFs: injected fsops_rename failure",
             ));
