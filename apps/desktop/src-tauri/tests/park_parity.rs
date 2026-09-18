@@ -17,6 +17,20 @@
 //! process-wide env vars `apps/mcp`'s `scope::resolve` reads at call time;
 //! this file has exactly one `#[test]`, so there is no other test in this
 //! binary to race with over those vars.
+//!
+//! The comparison covers the skill roots and the `.skill-studio` data root.
+//! Two things there cannot be compared as bytes and are compared by
+//! substitute instead:
+//!
+//! - `history/events.sqlite3`: a binary database file, whose pages,
+//!   rowids, and free space differ between two runs that recorded
+//!   identical history. Its
+//!   rows are compared instead, with the per-run columns (`id`, `ts`,
+//!   `reverted_by`, `created_by`) blanked and each home's own path
+//!   rewritten to `<home>`, plain and percent-encoded.
+//! - `leases/*.lock`: named after a hash of the root's absolute path and
+//!   holding `<pid>|<epoch ms>`, so neither the name nor the body repeats
+//!   across homes or runs. Only how many lock files exist is compared.
 
 use std::collections::BTreeMap;
 use std::fs;
@@ -33,6 +47,13 @@ use skill_studio_lib::skills::skill_park::park_with_runtime;
 
 const UNIVERSAL_ROOT_RELATIVE: &str = ".agents/skills";
 const CLAUDE_ROOT_RELATIVE: &str = ".claude/skills";
+const DATA_ROOT_RELATIVE: &str = ".skill-studio";
+
+/// A temp home that removes itself when it drops, whether the test passes
+/// or panics.
+fn temp_home(prefix: &str) -> tempfile::TempDir {
+    tempfile::Builder::new().prefix(prefix).tempdir().unwrap()
+}
 
 /// A home with one universal skill (`gamma`), linked from Claude Code's
 /// per-skill root - the shape `ops::park` looks for. Matches
@@ -125,10 +146,10 @@ fn cli_park(home: &Path, deployment_id: &DeploymentId) {
     );
 }
 
-/// Runs `park` through the same function the MCP server's `park` tool runs
-/// - `apps/mcp/src/lib.rs::run_op_envelope`, which `run_op` and therefore
-/// every tool method goes through - against `home`, via `SKILL_STUDIO_HOME`
-/// (the only way `apps/mcp`'s `scope::resolve` learns which home to use).
+/// Runs `park` through `apps/mcp/src/lib.rs::run_op_envelope`, the one
+/// function the MCP server's `park` tool runs (via `run_op`, as every tool
+/// method does), against `home`, via `SKILL_STUDIO_HOME` - the only way
+/// `apps/mcp`'s `scope::resolve` learns which home to use.
 fn mcp_park(home: &Path, deployment_id: &DeploymentId) {
     // SAFETY (env-var race): this file has exactly one #[test]; nothing
     // else in this process reads or writes these vars concurrently.
@@ -182,6 +203,124 @@ fn skill_tree_snapshot(home: &Path) -> BTreeMap<PathBuf, Vec<u8>> {
     out
 }
 
+/// Every file under `home`'s `.skill-studio` data root, keyed by its path
+/// relative to that root. Per the module doc, the journal is compared as
+/// normalised rows and the lease locks only by count; anything else a
+/// surface writes there is compared as bytes, with `home`'s own path
+/// rewritten so three different temp homes can still be equal.
+fn data_root_snapshot(home: &Path) -> BTreeMap<String, String> {
+    let data_root = home.join(DATA_ROOT_RELATIVE);
+    let mut out = BTreeMap::new();
+    let mut lease_locks = 0usize;
+    for entry in walkdir(&data_root) {
+        if !entry.is_file() {
+            continue;
+        }
+        let rel = entry.strip_prefix(&data_root).unwrap().to_path_buf();
+        if rel.starts_with("leases") {
+            lease_locks += 1;
+        } else if rel == Path::new("history/events.sqlite3") {
+            out.insert(
+                "history/events.sqlite3 rows".to_string(),
+                journal_rows(&entry, home),
+            );
+        } else {
+            let bytes = fs::read(&entry).unwrap();
+            out.insert(
+                rel.display().to_string(),
+                without_home(&String::from_utf8_lossy(&bytes), home),
+            );
+        }
+    }
+    out.insert("leases/*.lock count".to_string(), lease_locks.to_string());
+    out
+}
+
+/// Every row of every table in the history journal, rendered as text: one
+/// `column=value` line per row, tables in name order and rows sorted so
+/// insertion order does not decide equality. The per-run columns are
+/// blanked rather than dropped, so a surface that stops writing one still
+/// shows up as a difference.
+fn journal_rows(db_path: &Path, home: &Path) -> String {
+    const PER_RUN_COLUMNS: &[&str] = &[
+        "id",
+        "event_id",
+        "correlation_id",
+        "ts",
+        "reverted_by",
+        "created_by",
+    ];
+
+    let conn =
+        rusqlite::Connection::open_with_flags(db_path, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY)
+            .unwrap();
+    let tables: Vec<String> = conn
+        .prepare("SELECT name FROM sqlite_master WHERE type = 'table' ORDER BY name")
+        .unwrap()
+        .query_map([], |row| row.get::<_, String>(0))
+        .unwrap()
+        .map(Result::unwrap)
+        .collect();
+
+    let mut out = String::new();
+    for table in tables {
+        let mut statement = conn.prepare(&format!("SELECT * FROM {table}")).unwrap();
+        let columns: Vec<String> = statement
+            .column_names()
+            .into_iter()
+            .map(str::to_string)
+            .collect();
+        let mut lines: Vec<String> = statement
+            .query_map([], |row| {
+                Ok(columns
+                    .iter()
+                    .enumerate()
+                    .map(|(index, column)| {
+                        let value = if PER_RUN_COLUMNS.contains(&column.as_str()) {
+                            "<per-run>".to_string()
+                        } else {
+                            cell_text(row.get_ref_unwrap(index), home)
+                        };
+                        format!("{column}={value}")
+                    })
+                    .collect::<Vec<_>>()
+                    .join(" "))
+            })
+            .unwrap()
+            .map(Result::unwrap)
+            .collect();
+        lines.sort();
+        out.push('[');
+        out.push_str(&table);
+        out.push_str("]\n");
+        for line in lines {
+            out.push_str(&line);
+            out.push('\n');
+        }
+    }
+    out
+}
+
+fn cell_text(value: rusqlite::types::ValueRef<'_>, home: &Path) -> String {
+    match value {
+        rusqlite::types::ValueRef::Null => "null".to_string(),
+        rusqlite::types::ValueRef::Integer(n) => n.to_string(),
+        rusqlite::types::ValueRef::Real(n) => n.to_string(),
+        rusqlite::types::ValueRef::Text(bytes) => {
+            without_home(&String::from_utf8_lossy(bytes), home)
+        }
+        rusqlite::types::ValueRef::Blob(bytes) => format!("blob:{} bytes", bytes.len()),
+    }
+}
+
+/// Rewrites `home`'s absolute path to `<home>`, both as written and
+/// percent-encoded - a `DeploymentId` carries the path in the second form.
+fn without_home(text: &str, home: &Path) -> String {
+    let path = home.display().to_string();
+    text.replace(&path, "<home>")
+        .replace(&path.replace('/', "%2F"), "<home>")
+}
+
 fn walkdir(dir: &Path) -> Vec<PathBuf> {
     let mut out = Vec::new();
     let mut stack = vec![dir.to_path_buf()];
@@ -216,23 +355,26 @@ fn walkdir(dir: &Path) -> Vec<PathBuf> {
 /// names which surface diverged.
 #[test]
 fn cli_and_mcp_and_desktop_write_the_same_disk_state_for_each_op_or_names_the_diverging_surface() {
-    let home_cli = skill_studio_core::testing::golden::unique_temp_dir("park-parity-cli");
-    let home_mcp = skill_studio_core::testing::golden::unique_temp_dir("park-parity-mcp");
-    let home_desktop = skill_studio_core::testing::golden::unique_temp_dir("park-parity-desktop");
-    for home in [&home_cli, &home_mcp, &home_desktop] {
+    // TempDir, not a plain path: it removes the tree when it drops, so a
+    // failing assertion below does not leave three fixture homes behind.
+    let cli_dir = temp_home("park-parity-cli");
+    let mcp_dir = temp_home("park-parity-mcp");
+    let desktop_dir = temp_home("park-parity-desktop");
+    let (home_cli, home_mcp, home_desktop) = (cli_dir.path(), mcp_dir.path(), desktop_dir.path());
+    for home in [home_cli, home_mcp, home_desktop] {
         parkable_home(home);
     }
 
     // Each home's own deployment id: DeploymentId encodes the home's
     // absolute path, so the three temp directories get three different
     // (but each internally consistent) ids for the same `gamma` skill.
-    cli_park(&home_cli, &universal_deployment_id(&home_cli));
-    mcp_park(&home_mcp, &universal_deployment_id(&home_mcp));
-    desktop_park(&home_desktop, universal_deployment_id(&home_desktop));
+    cli_park(home_cli, &universal_deployment_id(home_cli));
+    mcp_park(home_mcp, &universal_deployment_id(home_mcp));
+    desktop_park(home_desktop, universal_deployment_id(home_desktop));
 
-    let cli_tree = skill_tree_snapshot(&home_cli);
-    let mcp_tree = skill_tree_snapshot(&home_mcp);
-    let desktop_tree = skill_tree_snapshot(&home_desktop);
+    let cli_tree = skill_tree_snapshot(home_cli);
+    let mcp_tree = skill_tree_snapshot(home_mcp);
+    let desktop_tree = skill_tree_snapshot(home_desktop);
 
     assert_eq!(
         cli_tree, mcp_tree,
@@ -243,15 +385,31 @@ fn cli_and_mcp_and_desktop_write_the_same_disk_state_for_each_op_or_names_the_di
         "the CLI and the desktop disagree on the disk state park left"
     );
 
+    let cli_data = data_root_snapshot(home_cli);
+    // Without this the two comparisons below could pass on three empty
+    // snapshots, proving nothing about the journal.
+    assert!(
+        cli_data
+            .get("history/events.sqlite3 rows")
+            .is_some_and(|rows| rows.contains("kind=park")),
+        "the data root snapshot holds no park row: {cli_data:?}"
+    );
+    assert_eq!(
+        cli_data,
+        data_root_snapshot(home_mcp),
+        "the CLI and the MCP server disagree on the data root park left"
+    );
+    assert_eq!(
+        cli_data,
+        data_root_snapshot(home_desktop),
+        "the CLI and the desktop disagree on the data root park left"
+    );
+
     // park moved `gamma` out of `.agents/skills` and dropped the Claude
     // Code link, on every surface.
-    for home in [&home_cli, &home_mcp, &home_desktop] {
+    for home in [home_cli, home_mcp, home_desktop] {
         assert!(!home.join(UNIVERSAL_ROOT_RELATIVE).join("gamma").exists());
         assert!(home.join(".agents/skills-parked/gamma/SKILL.md").is_file());
         assert!(!home.join(CLAUDE_ROOT_RELATIVE).join("gamma").exists());
-    }
-
-    for home in [&home_cli, &home_mcp, &home_desktop] {
-        let _ = fs::remove_dir_all(home);
     }
 }
