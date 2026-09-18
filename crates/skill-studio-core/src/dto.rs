@@ -773,6 +773,34 @@ pub enum InstallOutcome {
     },
 }
 
+/// Request to take one mutable deployment off disk.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct RemoveRequest {
+    /// The deployment to remove. Must resolve to a universal, canonical
+    /// deployment whose owner kind is mutable (`Copy`, `Fork`, `Dotagents`,
+    /// or `SkillsSh`) - see [`crate::identity::LifecycleOwnerKind::is_mutable`].
+    pub deployment_id: DeploymentId,
+}
+
+/// Result of `remove`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct RemoveOutcome {
+    /// The `remove` event.
+    pub event_id: EventId,
+    /// The deployment that was removed.
+    pub deployment_id: DeploymentId,
+    /// The skill that was removed.
+    pub skill: SkillName,
+    /// The removed folder's `TreeHash`, taken before the first write.
+    pub tree_hash_before: String,
+    /// Where the folder now lives under quarantine, for `Copy`/`Fork`
+    /// (never deleted - see `docs/action-map/primitives-and-call-stack.md`'s
+    /// Remove row). `None` for `Dotagents`/`SkillsSh`, whose own CLI deletes
+    /// the bytes directly, the same as it does for every other build's
+    /// remove today.
+    pub quarantine_path: Option<PathBuf>,
+}
+
 /// The method and harnesses the last successful install saved, or the
 /// environment default when nothing has been saved yet.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]

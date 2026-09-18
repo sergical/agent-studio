@@ -10,7 +10,6 @@ use std::process::Command;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use super::api;
-use super::skill_add::{CommandRunner, RealCommandRunner};
 use super::skill_agent_runner::validate_skill_dir_name;
 use super::skill_dto::{
     InstallResult, InstallScope, InstalledSkill, LifecycleTarget, PaginatedSkillsResponse,
@@ -23,6 +22,7 @@ use super::skill_lifecycle::{
     skills_sh_remove_args_for_scope,
 };
 use super::skill_md_write::write_skill_md_compare_and_swap;
+use super::skill_process::{CommandRunner, RealCommandRunner};
 use super::skill_refresh::{self, SkillRefreshState};
 use super::skill_trial;
 use super::skill_update_check;

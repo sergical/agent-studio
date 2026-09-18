@@ -829,6 +829,7 @@ pub struct FailingFs {
     inner: Arc<dyn ScopeFs>,
     fail_next_write_atomic: AtomicBool,
     fail_next_rename: AtomicBool,
+    fail_next_remove_file: AtomicBool,
     /// `-1` means unlimited. Otherwise the number of `write_atomic` calls
     /// still allowed to succeed before every later call fails; see
     /// [`Self::fail_write_atomic_after`].
@@ -865,6 +866,12 @@ pub struct FailingFs {
     /// path for the same reason as `fail_read_dir_for`: a scan reads many
     /// skills' `SKILL.md` before reaching the one a test wants unreadable.
     fail_read_prefix_for: Mutex<Option<PathBuf>>,
+    /// The one `symlink_metadata` call this path should fail with
+    /// `PermissionDenied`, or `None`. Keyed by path, like
+    /// `fail_read_dir_for`: `remove`'s own link loop calls
+    /// `symlink_metadata` once per link, so a test names the one link whose
+    /// parent it wants unreadable rather than counting calls.
+    fail_symlink_metadata_for: Mutex<Option<PathBuf>>,
 }
 
 impl FailingFs {
@@ -874,6 +881,7 @@ impl FailingFs {
             inner,
             fail_next_write_atomic: AtomicBool::new(false),
             fail_next_rename: AtomicBool::new(false),
+            fail_next_remove_file: AtomicBool::new(false),
             write_atomic_budget: AtomicI64::new(-1),
             fail_next_create_dir: AtomicBool::new(false),
             fail_next_symlink: AtomicBool::new(false),
@@ -889,6 +897,7 @@ impl FailingFs {
             fsops_rename_calls: AtomicU64::new(0),
             fail_read_dir_for: Mutex::new(None),
             fail_read_prefix_for: Mutex::new(None),
+            fail_symlink_metadata_for: Mutex::new(None),
         }
     }
 
@@ -913,6 +922,14 @@ impl FailingFs {
     /// example park's link removal landing before the directory rename.
     pub fn fail_next_rename(&self) {
         self.fail_next_rename.store(true, Ordering::SeqCst);
+    }
+
+    /// The next `remove_file` call returns an error instead of reaching
+    /// `inner`; later calls delegate normally again. Lets a test crash a
+    /// harness-link removal step after the write it follows already landed,
+    /// for example `remove`'s own tree-then-links order (round 2, N2).
+    pub fn fail_next_remove_file(&self) {
+        self.fail_next_remove_file.store(true, Ordering::SeqCst);
     }
 
     /// The next `fsops_create_dir` call returns an error instead of
@@ -1036,6 +1053,19 @@ impl FailingFs {
             .lock()
             .expect("fail_read_prefix_for lock") = Some(path);
     }
+
+    /// The next `symlink_metadata` call for exactly `path` returns
+    /// `PermissionDenied` instead of reaching `inner`; a call for any other
+    /// path delegates normally, and once consumed `path` itself succeeds
+    /// again. Lets a test simulate a link whose parent directory this
+    /// cannot read, without the `NotFound` a genuinely absent link would
+    /// report.
+    pub fn fail_symlink_metadata_for(&self, path: PathBuf) {
+        *self
+            .fail_symlink_metadata_for
+            .lock()
+            .expect("fail_symlink_metadata_for lock") = Some(path);
+    }
 }
 
 impl ScopeFs for FailingFs {
@@ -1043,6 +1073,18 @@ impl ScopeFs for FailingFs {
         self.inner.canonicalize(path)
     }
     fn symlink_metadata(&self, path: &Path) -> std::io::Result<FileFacts> {
+        let mut target = self
+            .fail_symlink_metadata_for
+            .lock()
+            .expect("fail_symlink_metadata_for lock");
+        if target.as_deref() == Some(path) {
+            *target = None;
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::PermissionDenied,
+                "FailingFs: injected symlink_metadata failure",
+            ));
+        }
+        drop(target);
         self.inner.symlink_metadata(path)
     }
     fn read_link(&self, path: &Path) -> std::io::Result<PathBuf> {
@@ -1121,6 +1163,11 @@ impl ScopeFs for FailingFs {
         self.inner.rename(guard, from, to)
     }
     fn remove_file(&self, guard: &ExclusiveGuard, path: &ScopedPath) -> std::io::Result<()> {
+        if self.fail_next_remove_file.swap(false, Ordering::SeqCst) {
+            return Err(std::io::Error::other(
+                "FailingFs: injected remove_file failure",
+            ));
+        }
         self.inner.remove_file(guard, path)
     }
     fn create_dir_all(&self, guard: &ExclusiveGuard, path: &ScopedPath) -> std::io::Result<()> {

@@ -69,6 +69,10 @@ pub fn build_runtime_write_at(home: &Path, data_root: &Path) -> Result<Runtime, 
     let mut ports = skill_studio_host::default_ports_with_history(lease_root, catalog, db_path);
     ports.discovery = Some(Arc::new(skill_studio_host::HostProjectDiscovery::new()));
     ports.tools = Some(Arc::new(skill_studio_host::PathToolLookup::new()));
+    // `ops::install`'s `Dotagents`/`SkillsSh` methods shell out through this
+    // port (`ops_install_cli::install_via_cli`), and `ops::install_preferences`
+    // checks it to detect `npx` on `PATH` - neither worked from the desktop
+    // until this was added here, alongside `build_runtime_detect`'s own copy.
     ports.spawner = Some(Arc::new(skill_studio_host::RealProcessSpawner::new()));
     Runtime::new(&scope, ports).map_err(|err| err.message)
 }

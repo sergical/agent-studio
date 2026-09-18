@@ -48,6 +48,7 @@ pub mod opencode_config;
 pub mod ops;
 mod ops_install;
 mod ops_install_cli;
+mod ops_remove;
 mod ops_update;
 mod ownership;
 pub mod ports;

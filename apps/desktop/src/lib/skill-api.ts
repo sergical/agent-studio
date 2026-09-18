@@ -18,7 +18,9 @@ import type {
   CommandHealth,
   DiscoverySourceSetting,
   ImportResult,
+  InstallPreferences,
   InstallResult,
+  InstallScope,
   FixSkillOutcome,
   ForkRecord,
   FrontmatterRepairApplyMode,
@@ -526,6 +528,19 @@ export async function listGithubSkills(
  */
 export async function getAddMethodDefaults(): Promise<AddMethodDefaults> {
   return callCommand("get_add_method_defaults");
+}
+
+/**
+ * The saved method/harnesses for `scope` (falling back to the environment
+ * default when nothing has been saved yet), so the Add Skill sheet can
+ * pre-fill a second install the way `getAddMethodDefaults` pre-fills the
+ * first.
+ */
+export async function installPreferences(
+  scope: InstallScope,
+  projectPath?: string,
+): Promise<InstallPreferences> {
+  return callCommand("install_preferences", { scope, projectPath });
 }
 
 /**

@@ -25,7 +25,7 @@
       "description": "Harness, when harness-scoped.",
       "anyOf": [
         {
-          "$ref": "#/$defs/AgentId"
+          "$ref": "#/$defs/AgentIdentity"
         },
         {
           "type": "null"
@@ -84,7 +84,7 @@
       "description": "Lexical skill name: the directory name that holds `SKILL.md`.\n\nInvariant: two deployments with the same `SkillName` are the same skill,\neven when their bytes differ. A symlink alias with another name is another\nskill.",
       "type": "string"
     },
-    "AgentId": {
+    "AgentIdentity": {
       "description": "Kebab-case harness identifier, for example `claude-code` or `open-code`.\n\nInvariant: the string is the serde wire name used by the desktop app\ntoday. `open-code` is canonical; `opencode` is only a CLI binary name and\nis never stored in an `AgentId`.",
       "type": "string"
     },

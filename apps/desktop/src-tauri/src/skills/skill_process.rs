@@ -424,29 +424,10 @@ fn run_controlled_command_io(
     outcome
 }
 
-/// `npx` entry used by Add Skill. Stdin is always null.
-pub fn run_controlled_npx(
-    args: &[String],
-    cwd: Option<&Path>,
-    cancel: &AtomicBool,
-    timeout: Duration,
-) -> Result<(), ControlledProcessError> {
-    run_controlled_command("npx", args, cwd, cancel, timeout, MAX_PROCESS_OUTPUT_BYTES)
-}
-
-/// `npx` entry that consumes the remaining time from one Add operation.
-pub fn run_controlled_npx_with_control(
-    args: &[String],
-    cwd: Option<&Path>,
-    control: &AddOperationControl,
-) -> Result<(), ControlledProcessError> {
-    run_controlled_program_with_control("npx", args, cwd, control)
-}
-
-/// Same as [`run_controlled_npx_with_control`], for any program - used by
-/// [`super::skill_add::CommandRunner::run`] so lifecycle actions other than
-/// Add Skill (e.g. the `claude` plugin CLI) share the same timeout/cancel
-/// and bounded-output handling.
+/// Same as `run_controlled_command`, for a caller that already holds an
+/// [`AddOperationControl`] - used by [`CommandRunner::run`] so lifecycle
+/// actions other than Add Skill (e.g. the `claude` plugin CLI) share the
+/// same timeout/cancel and bounded-output handling.
 pub fn run_controlled_program_with_control(
     program: &str,
     args: &[String],
@@ -462,6 +443,75 @@ pub fn run_controlled_program_with_control(
         timeout,
         MAX_PROCESS_OUTPUT_BYTES,
     )
+}
+
+// ============================================================================
+// CommandRunner - moved from `skill_add.rs` (unit 3.5c): the trait every
+// npx-shelling lifecycle path (`skill_pack`, `skill_plugin_lifecycle`,
+// `skill_trial`, `commands`) takes so it stays testable with a fake, without
+// depending on the (now-deleted) Add Skill module for a plain process runner.
+// ============================================================================
+
+/// Runs an external CLI (`npx ...`), optionally in `cwd`. The real
+/// implementation always runs `npx`, since both `dotagents` and `skills.sh`
+/// are invoked through it. Implementations may honour `is_cancelled` so a
+/// background Add Skill operation can stop between batch items.
+pub trait CommandRunner {
+    /// Runs `program args`, optionally in `cwd`.
+    fn run(&self, program: &str, args: &[String], cwd: Option<&Path>) -> Result<(), String>;
+
+    /// `run("npx", ...)` - the CLI both `dotagents` and `skills.sh` use.
+    fn run_npx(&self, args: &[String], cwd: Option<&Path>) -> Result<(), String> {
+        self.run("npx", args, cwd)
+    }
+
+    /// True when the owning Add Skill operation has been cancelled.
+    fn is_cancelled(&self) -> bool {
+        false
+    }
+
+    /// Shared Add operation cancellation and deadline. Legacy runners receive
+    /// a finite default context.
+    fn operation_control(&self) -> AddOperationControl {
+        AddOperationControl::bounded_default()
+    }
+}
+
+/// Real `npx` runner used by Add Skill. Stdin is null; output is bounded;
+/// cancel and timeout kill the process group.
+pub struct RealCommandRunner {
+    control: AddOperationControl,
+}
+
+impl RealCommandRunner {
+    /// Uncancellable runner for install/remove/import paths that are not an
+    /// Add Skill operation.
+    pub fn new() -> Self {
+        Self::default()
+    }
+}
+
+impl Default for RealCommandRunner {
+    fn default() -> Self {
+        Self {
+            control: AddOperationControl::bounded_default(),
+        }
+    }
+}
+
+impl CommandRunner for RealCommandRunner {
+    fn run(&self, program: &str, args: &[String], cwd: Option<&Path>) -> Result<(), String> {
+        run_controlled_program_with_control(program, args, cwd, &self.control)
+            .map_err(ControlledProcessError::into_message)
+    }
+
+    fn is_cancelled(&self) -> bool {
+        self.control.check().is_err()
+    }
+
+    fn operation_control(&self) -> AddOperationControl {
+        self.control.clone()
+    }
 }
 
 #[cfg(test)]
