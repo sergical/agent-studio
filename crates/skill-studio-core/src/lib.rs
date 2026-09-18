@@ -41,6 +41,7 @@ pub mod harness;
 mod harness_switch;
 pub mod health;
 pub mod identity;
+pub mod journal;
 pub mod lock_file;
 pub mod ops;
 mod ownership;
