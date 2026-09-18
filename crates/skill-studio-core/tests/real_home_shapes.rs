@@ -102,19 +102,18 @@ fn rows_named(inventory: &Inventory, name: &str) -> usize {
         .count()
 }
 
-/// A synced bucket carries no `SKILL.md` at its own level, so it is not a
-/// skill folder (<https://agentskills.io/specification>), and the folder
-/// name `synced` is reserved by the vendor inside a skills root
+/// `synced` is reserved by the vendor inside its skills root
 /// (`docs/action-map/harnesses/claude-code.md`: "`synced` under
-/// `~/.claude/skills` is reserved; the scanner must skip it"). The skills
-/// the bucket feeds into the root itself are ordinary rows, one each, even
-/// though the bucket holds a second copy of their bytes.
+/// `~/.claude/skills` is reserved; the scanner must skip it"), so it is
+/// skipped by name: the fixture plants a `SKILL.md` at the reserved folder
+/// itself, which makes it a skill folder by the spec's shape test
+/// (<https://agentskills.io/specification>) and leaves the reserved-name
+/// rule as the only thing that can keep it out. The skills the bucket feeds
+/// into the roots are ordinary rows, one each, even though the bucket holds
+/// a second copy of their bytes.
 #[test]
 fn scan_reports_synced_bucket_skills_once_and_not_the_bucket_root_or_names_the_extra_row() {
-    let mut builder = FixtureBuilder::new();
-    builder = shapes::with_synced_bucket(builder, ".agents/skills");
-    builder = shapes::with_synced_bucket(builder, shapes::CLAUDE_ROOT_RELATIVE);
-    let inventory = scan_shape(builder);
+    let inventory = scan_shape(shapes::with_synced_bucket(FixtureBuilder::new()));
 
     for name in shapes::SYNCED_BUCKET_SKILLS {
         assert_eq!(
@@ -133,7 +132,8 @@ fn scan_reports_synced_bucket_skills_once_and_not_the_bucket_root_or_names_the_e
     assert_eq!(
         rows_named(&inventory, shapes::SYNCED_DIR_NAME),
         0,
-        "`{}` holds no SKILL.md and is a reserved folder name, so it must not be a row",
+        "`{}` is the vendor's own folder, so it must be skipped by name even with a \
+         SKILL.md in it",
         shapes::SYNCED_DIR_NAME
     );
     assert_eq!(
@@ -153,16 +153,28 @@ fn scan_reports_synced_bucket_skills_once_and_not_the_bucket_root_or_names_the_e
     );
 }
 
-/// The skills Codex bundles with itself sit behind a dot-prefixed `.system`
-/// folder and a dot-prefixed marker file. `docs/action-map/harnesses/codex.md`
-/// lists them as "bundled skills", separate from the roots a user deploys
-/// into, and the core's harness facts record that every reader skips hidden
-/// entries. A bundled skill Skill Studio can neither move nor remove must
-/// therefore not appear as a deployment at all.
+/// A dot-prefixed entry is hidden from every documented reader
+/// (`docs/agent-skill-conventions.md`, Discovery paths), so a skills root
+/// contributes nothing from one - not Codex's bundled `.system` tree
+/// (`docs/action-map/harnesses/codex.md` lists those as the harness's own,
+/// separate from the roots a user deploys into), and not a dot-prefixed
+/// folder that holds a valid `SKILL.md` of its own.
 #[test]
-fn scan_skips_codex_system_skills_or_marks_them_not_removable_or_names_the_row() {
+fn scan_skips_dot_prefixed_entries_in_a_skills_root_or_names_the_row() {
     let inventory = scan_shape(shapes::with_codex_system_skills(FixtureBuilder::new()));
 
+    assert_eq!(
+        rows_named(&inventory, shapes::CODEX_HIDDEN_SKILL_NAME),
+        0,
+        "`{}/{}` is a skill folder by shape, and only its leading dot keeps it out; rows: {:?}",
+        shapes::CODEX_ROOT_RELATIVE,
+        shapes::CODEX_HIDDEN_SKILL_DIR_NAME,
+        inventory
+            .skills
+            .iter()
+            .map(|s| s.name.0.clone())
+            .collect::<Vec<_>>()
+    );
     for name in shapes::CODEX_SYSTEM_SKILLS {
         assert_eq!(
             rows_named(&inventory, name),
@@ -180,7 +192,10 @@ fn scan_skips_codex_system_skills_or_marks_them_not_removable_or_names_the_row()
     }
     let hidden: Vec<String> = deployment_paths(&inventory)
         .into_iter()
-        .filter(|path| path.contains(shapes::CODEX_SYSTEM_DIR_NAME))
+        .filter(|path| {
+            path.contains(shapes::CODEX_SYSTEM_DIR_NAME)
+                || path.contains(shapes::CODEX_HIDDEN_SKILL_DIR_NAME)
+        })
         .collect();
     assert!(
         hidden.is_empty(),
@@ -242,23 +257,28 @@ fn scan_dedupes_a_pi_relative_link_onto_its_shared_deployment_or_names_the_dupli
 /// Doctor invariant 1 is "every link resolves inside its root". A relative
 /// link whose target does resolve is not a violation; reporting one would
 /// send the user to repair the deployment shape `npx skills` writes by
-/// default (`docs/action-map/harnesses/shared-root.md`).
+/// default (`docs/action-map/harnesses/shared-root.md`). A link whose
+/// target is missing is the violation the invariant exists for, so the same
+/// home carries one of each and the check must name only the dangling one.
 #[test]
 fn doctor_link_check_resolves_relative_links_inside_the_root_or_names_the_false_violation() {
-    let diagnosis = diagnose_shape(shapes::with_pi_links_to_shared(
+    let dangling = format!("{}/dangling-skill", shapes::PI_ROOT_RELATIVE);
+    let builder = shapes::with_pi_links_to_shared(
         FixtureBuilder::new(),
         &["linked-skill-1", "linked-skill-2"],
-    ));
+    )
+    .alias(&dangling, "../../../.agents/skills/does-not-exist");
+    let diagnosis = diagnose_shape(builder);
 
-    let violations = check_link_resolves_in_root(&diagnosis);
-    assert!(
-        violations.is_empty(),
-        "a relative link into the shared root resolves, so invariant 1 must report nothing; \
-         got: {:?}",
-        violations
-            .iter()
-            .map(|v| (v.path.display().to_string(), v.message.clone()))
-            .collect::<Vec<_>>()
+    let named: Vec<String> = check_link_resolves_in_root(&diagnosis)
+        .iter()
+        .map(|v| v.path.display().to_string())
+        .collect();
+    assert_eq!(
+        named,
+        vec![PathBuf::from(HOME).join(&dangling).display().to_string()],
+        "only the link with no target may be a violation; the two links that resolve into \
+         the shared root are the shape `npx skills` writes"
     );
 }
 
@@ -338,10 +358,10 @@ fn scan_never_descends_into_node_modules_inside_a_plugin_cache_or_names_the_path
 /// are therefore one live plugin, so one skill row with one deployment -
 /// not the same skill counted once per stale copy.
 #[test]
-#[ignore = "follow-up: enumerate_plugin_skills reports every cached version folder, and \
-            no doc names which one is live (plugins.md leaves the Codex cache layout open \
-            and gives Claude only the ~14-day orphan prune), so the dedupe needs a \
-            liveness source rather than a version-string compare (issue-2.7-followup-a.md)"]
+#[ignore = "follow-up #273 section 1: enumerate_plugin_skills reports every cached version \
+            folder, and no doc names which one is live (plugins.md leaves the Codex cache \
+            layout open and gives Claude only the ~14-day orphan prune), so the dedupe \
+            needs a liveness source rather than a version-string compare"]
 fn scan_picks_one_version_per_cached_plugin_or_names_the_duplicate() {
     let inventory = scan_shape(shapes::with_plugin_cache_nesting(FixtureBuilder::new()));
 
@@ -371,11 +391,11 @@ fn scan_picks_one_version_per_cached_plugin_or_names_the_duplicate() {
 /// it does not model, for the reason the sibling registry keeps a flatten
 /// catch-all: an older build must never drop a newer build's keys.
 #[test]
-#[ignore = "follow-up: InstalledSkillEntry has no flatten catch-all, so `dismissed` and \
-            `lastSelectedAgents` are dropped on parse; adding one changes a struct the \
-            desktop crate builds by literal (issue-2.7-followup-a.md)"]
 fn lockfile_v3_with_unknown_agents_parses_and_keeps_unknown_fields_or_names_the_field() {
-    let builder = shapes::with_lock_file_v3_unknown_agents(FixtureBuilder::new());
+    let builder = FixtureBuilder::new().file(
+        shapes::LOCK_FILE_RELATIVE,
+        shapes::LOCK_FILE_V3_UNKNOWN_AGENTS,
+    );
     let fs = builder.rooted_at(HOME).dir(HOME).build_fs();
     let lock = read_lock_file(
         &fs,

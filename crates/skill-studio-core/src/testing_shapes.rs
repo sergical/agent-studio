@@ -14,6 +14,7 @@
 //! scan and diagnose paths are exercised against.
 
 use crate::identity::{PARKED_ROOT_RELATIVE, UNIVERSAL_ROOT_RELATIVE};
+use crate::testing::fixtures::{skill, skill_md};
 use crate::testing::FixtureBuilder;
 
 /// Claude Code's global skills root, relative to the home.
@@ -32,6 +33,11 @@ pub const SYNCED_BUCKET_ID: &str = "bucket-1";
 pub const SYNCED_BUCKET_SKILLS: [&str; 2] = ["skill-a", "skill-b"];
 /// Codex's own bundled skills live behind this dot-prefixed folder.
 pub const CODEX_SYSTEM_DIR_NAME: &str = ".system";
+/// A dot-prefixed folder that carries a `SKILL.md` of its own, so the
+/// hidden-entry rule is the only thing keeping it out of the inventory.
+pub const CODEX_HIDDEN_SKILL_DIR_NAME: &str = ".hidden-skill";
+/// Frontmatter name inside [`CODEX_HIDDEN_SKILL_DIR_NAME`].
+pub const CODEX_HIDDEN_SKILL_NAME: &str = "hidden-skill";
 /// The six bundled skills [`with_codex_system_skills`] ships.
 pub const CODEX_SYSTEM_SKILLS: [&str; 6] = [
     "system-skill-1",
@@ -55,24 +61,6 @@ pub const PROJECT_ROOT_SKILL_NAME: &str = "root-level-skill";
 /// documented project root.
 pub const CURSOR_SKILL_NAME: &str = "cursor-skill";
 
-/// A minimal spec-valid `SKILL.md`: frontmatter `name` matches `name` and
-/// `description` is a non-empty sentence well under the 1024-char cap
-/// (<https://agentskills.io/specification>).
-fn skill_md(name: &str) -> String {
-    format!("---\nname: {name}\ndescription: Stands in for a real skill named {name} in a home-shape fixture.\n---\nBody text for {name}.\n")
-}
-
-/// Declares one skill directory and its `SKILL.md`.
-///
-/// The directory is declared, not just implied by the file, for the reason
-/// `testing::fixtures::skill` gives: `FixtureFs::read_dir` lists only the
-/// direct children it was told about.
-fn skill(builder: FixtureBuilder, dir: &str, name: &str) -> FixtureBuilder {
-    builder
-        .dir(dir)
-        .file(&format!("{dir}/SKILL.md"), skill_md(name).as_bytes())
-}
-
 /// Every skills root a real home keeps a `.DS_Store` in.
 fn roots_with_ds_store() -> [&'static str; 4] {
     [
@@ -83,18 +71,20 @@ fn roots_with_ds_store() -> [&'static str; 4] {
     ]
 }
 
-/// Shape 1: a `synced/` bucket root inside a skills root, plus the two
-/// skills the bucket feeds into that root.
+/// Shape 1: Claude Code's `synced/` bucket root inside its skills root,
+/// plus the two skills the bucket feeds - into that root and into the
+/// shared root beside it.
 ///
-/// On disk the bucket holds no `SKILL.md` of its own: an empty
-/// `.bucket-<uuid>` marker file, a sibling `<uuid>/` folder with a
-/// `manifest.json`, and the skills themselves three levels down at
-/// `synced/<uuid>/<name>/SKILL.md`.
-pub fn with_synced_bucket(builder: FixtureBuilder, root_relative: &str) -> FixtureBuilder {
-    let synced = format!("{root_relative}/{SYNCED_DIR_NAME}");
+/// On disk the bucket carries an empty `.bucket-<uuid>` marker file, a
+/// sibling `<uuid>/` folder with a `manifest.json`, and the skills
+/// themselves three levels down at `synced/<uuid>/<name>/SKILL.md`. The
+/// `SKILL.md` at `synced/` itself is the part no real home has: it makes
+/// the reserved folder pass the spec's shape test, so only the reserved-name
+/// rule can keep it out of the inventory.
+pub fn with_synced_bucket(builder: FixtureBuilder) -> FixtureBuilder {
+    let synced = format!("{CLAUDE_ROOT_RELATIVE}/{SYNCED_DIR_NAME}");
     let bucket = format!("{synced}/{SYNCED_BUCKET_ID}");
-    let mut b = builder
-        .dir(&synced)
+    let mut b = skill(builder, &synced, SYNCED_DIR_NAME)
         .file(&format!("{synced}/.bucket-{SYNCED_BUCKET_ID}"), b"")
         .dir(&bucket)
         .file(
@@ -103,13 +93,17 @@ pub fn with_synced_bucket(builder: FixtureBuilder, root_relative: &str) -> Fixtu
         );
     for name in SYNCED_BUCKET_SKILLS {
         b = skill(b, &format!("{bucket}/{name}"), name);
-        b = skill(b, &format!("{root_relative}/{name}"), name);
+        b = skill(b, &format!("{CLAUDE_ROOT_RELATIVE}/{name}"), name);
+        b = skill(b, &format!("{UNIVERSAL_ROOT_RELATIVE}/{name}"), name);
     }
     b
 }
 
 /// Shape 2: Codex's own bundled skills, in the dot-prefixed `.system`
-/// folder its `.codex-system-skills.marker` file marks.
+/// folder its `.codex-system-skills.marker` file marks, plus a dot-prefixed
+/// skill folder at the root's own level. The second one passes the spec's
+/// shape test - it holds a `SKILL.md` - so only the hidden-entry rule keeps
+/// it out of a reader's list.
 pub fn with_codex_system_skills(builder: FixtureBuilder) -> FixtureBuilder {
     let system = format!("{CODEX_ROOT_RELATIVE}/{CODEX_SYSTEM_DIR_NAME}");
     let mut b = builder
@@ -122,7 +116,11 @@ pub fn with_codex_system_skills(builder: FixtureBuilder) -> FixtureBuilder {
     for name in CODEX_SYSTEM_SKILLS {
         b = skill(b, &format!("{system}/{name}"), name);
     }
-    b
+    skill(
+        b,
+        &format!("{CODEX_ROOT_RELATIVE}/{CODEX_HIDDEN_SKILL_DIR_NAME}"),
+        CODEX_HIDDEN_SKILL_NAME,
+    )
 }
 
 /// Shape 3: every entry in pi's skills root is a relative symlink into the
@@ -221,12 +219,10 @@ fn with_one_cached_plugin(
 /// Shape 6: a version-3 lock file whose entries carry `skillPath`, keys the
 /// reader does not model (`dismissed`, `lastSelectedAgents`), agent ids the
 /// app has no harness for, and one entry whose folder is not on disk.
-pub fn with_lock_file_v3_unknown_agents(builder: FixtureBuilder) -> FixtureBuilder {
-    builder.file(".agents/.skill-lock.json", LOCK_FILE_V3_UNKNOWN_AGENTS)
-}
+/// Written with `builder.file(LOCK_FILE_RELATIVE, LOCK_FILE_V3_UNKNOWN_AGENTS)`.
+pub const LOCK_FILE_RELATIVE: &str = ".agents/.skill-lock.json";
 
-/// The bytes [`with_lock_file_v3_unknown_agents`] writes, so a test can
-/// parse them without rebuilding the fixture.
+/// The bytes shape 6 puts at [`LOCK_FILE_RELATIVE`].
 pub const LOCK_FILE_V3_UNKNOWN_AGENTS: &[u8] = br#"{
   "version": 3,
   "skills": {
@@ -370,22 +366,22 @@ pub fn with_scale(builder: FixtureBuilder, count: usize) -> FixtureBuilder {
 }
 
 /// How many skills [`largest_real_shape_home`] puts in each of the two
-/// large roots, matching the count the 2026-09-18 survey measured.
+/// large roots: about 160 per root on a heavy real install, measured
+/// 2026-09-18.
 pub const LARGEST_HOME_SKILLS_PER_ROOT: usize = 160;
 
 /// Every shape above in one home: the largest real layout the survey found,
-/// with both synced buckets, Codex's bundled skills, pi's links, `OpenCode`
+/// with the synced bucket, Codex's bundled skills, pi's links, `OpenCode`
 /// without a root, both plugin caches, the lock file, one project, the
 /// config files, and the full skill count.
 pub fn largest_real_shape_home() -> FixtureBuilder {
     let mut b = FixtureBuilder::new();
-    b = with_synced_bucket(b, UNIVERSAL_ROOT_RELATIVE);
-    b = with_synced_bucket(b, CLAUDE_ROOT_RELATIVE);
+    b = with_synced_bucket(b);
     b = with_codex_system_skills(b);
     b = with_pi_links_to_shared(b, &["linked-skill-1", "linked-skill-2"]);
     b = with_opencode_installed_without_skill_root(b);
     b = with_plugin_cache_nesting(b);
-    b = with_lock_file_v3_unknown_agents(b);
+    b = b.file(LOCK_FILE_RELATIVE, LOCK_FILE_V3_UNKNOWN_AGENTS);
     b = with_project_non_standard_roots(b, "src/project-1");
     b = with_config_files(b);
     with_scale(b, LARGEST_HOME_SKILLS_PER_ROOT)
