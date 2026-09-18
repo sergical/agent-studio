@@ -496,6 +496,25 @@ pub fn write_schemas(out: Option<PathBuf>) -> ExitCode {
         ("install_preferences", || {
             schemars::schema_for!(skill_studio_core::dto::InstallPreferences)
         }),
+        ("park_request", || {
+            schemars::schema_for!(skill_studio_core::dto::ParkRequest)
+        }),
+        ("park_outcome", || schemars::schema_for!(skill_studio_core::dto::ParkOutcome)),
+        ("unpark_request", || {
+            schemars::schema_for!(skill_studio_core::dto::UnparkRequest)
+        }),
+        ("unpark_outcome", || {
+            schemars::schema_for!(skill_studio_core::dto::UnparkOutcome)
+        }),
+        ("set_harness_enabled_request", || {
+            schemars::schema_for!(skill_studio_core::dto::SetHarnessEnabledRequest)
+        }),
+        ("set_harness_enabled_outcome", || {
+            schemars::schema_for!(skill_studio_core::dto::SetHarnessEnabledOutcome)
+        }),
+        ("outdated_result", || {
+            schemars::schema_for!(BTreeMap<String, Currency>)
+        }),
     ];
     for (name, build) in schemas {
         let schema = build();
