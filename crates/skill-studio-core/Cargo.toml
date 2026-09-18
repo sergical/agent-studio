@@ -24,11 +24,11 @@ chrono = { version = "0.4", default-features = false, features = ["clock", "serd
 ulid = { version = "1", features = ["serde"] }
 serde_yaml = "0.9"
 toml = "1"
+toml_edit = "0.23.10"
 similar = "2"
 tiktoken-rs = "0.12"
 sha2 = "0.11.0"
 sha1 = "0.11.0"
-toml_edit = "0.23.10"
 
 [dev-dependencies]
 skill-studio-host = { path = "../skill-studio-host" }

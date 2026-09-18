@@ -183,6 +183,17 @@ pub fn rewrite_invocation_frontmatter(
 
 /// `~/.../<skill>/agents/openai.yaml` - Codex's own invocation-policy
 /// sidecar, next to `SKILL.md`.
+///
+/// Note: `skill_studio_core::ops::set_codex_sidecar_implicit_invocation` now
+/// holds this same merge/rehome logic, ported onto `ScopeFs` for callers
+/// that have a `Runtime`. This call site stays on its own local `std::fs`
+/// version rather than that adapter because `set_skill_invocation_with`
+/// (and its whole call chain, including the Tauri command and every test
+/// below) has no `home`/`RuntimeScope` to confine the write to - the core
+/// adapter's `confine()` would reject any skill directory outside a real
+/// scope's home, which every test here uses a bare tempdir for. Threading a
+/// scope through `set_skill_invocation` is a larger refactor than this PR's
+/// happy path covers.
 fn codex_openai_yaml_path(skill_dir: &Path) -> PathBuf {
     skill_dir.join("agents").join("openai.yaml")
 }

@@ -38,7 +38,6 @@ use skill_studio_core::identity::{CorrelationId, SkillName};
 use skill_studio_core::ops::{self, Operation, ResultEnvelope};
 use skill_studio_core::ports::OpContext;
 
-use super::codex_skill_config;
 use super::event_commands::EventStoreState;
 use super::event_store::{fingerprint_path, EventDraft, EventStatus, InverseOp};
 use super::opencode_skill_permission;
@@ -539,12 +538,20 @@ fn restore_claude_link_at(link_path: &Path, target: &Path) -> Result<(), String>
 /// deployment path Codex can see the skill at - its own dir and any shared
 /// root) directly so it's testable without a Tauri `AppHandle`. `agent` is an
 /// `AgentId::cli_name()`, e.g. `"codex"`, `"opencode"`, `"claude-code"`.
+/// `data_root` is the lease/history root Codex's write shares with every
+/// other desktop mutation (`super::core_runtime::data_root()` in
+/// production); a test passes its own tempdir root for isolation. `guard`
+/// is the caller's already-held exclusive lease on `data_root` - the Codex
+/// arm reuses it rather than acquiring a second one, which would
+/// self-deadlock (advisory locks don't nest in-process).
 pub fn set_harness_enabled_with(
     home: &Path,
+    data_root: &Path,
     name: &str,
     agent: &str,
     enabled: bool,
     codex_skill_md_paths: &[PathBuf],
+    guard: &super::write_lease::WriteLeaseGuard,
 ) -> Result<(), String> {
     validate_skill_dir_name(name)?;
     match agent {
@@ -552,8 +559,22 @@ pub fn set_harness_enabled_with(
             if codex_skill_md_paths.is_empty() {
                 return Err(format!("No Codex-visible deployment found for \"{name}\""));
             }
+            let rt = super::core_runtime::build_runtime_write_at(
+                home.to_path_buf(),
+                data_root.to_path_buf(),
+            )?;
+            let ctx = skill_studio_core::ports::OpContext::uncancellable(
+                skill_studio_core::identity::CorrelationId(ulid::Ulid::new().to_string()),
+            );
             for path in codex_skill_md_paths {
-                codex_skill_config::set_skill_disabled(home, path, !enabled)?;
+                skill_studio_core::ops::set_codex_skill_disabled_with(
+                    &rt,
+                    &ctx,
+                    guard.as_exclusive_guard(),
+                    path,
+                    !enabled,
+                )
+                .map_err(|e| e.message)?;
             }
             Ok(())
         }
@@ -576,6 +597,7 @@ pub fn set_harness_enabled_with(
 pub fn set_new_universal_reader_enabled(
     guard: &super::write_lease::WriteLeaseGuard,
     home: &Path,
+    data_root: &Path,
     name: &str,
     target: &HarnessVisibilityTarget,
     enabled: bool,
@@ -598,7 +620,15 @@ pub fn set_new_universal_reader_enabled(
     if matches!(agent, "opencode" | "open-code") {
         guard_new_opencode_deployment(home, name, &target.deployment_id)?;
     }
-    set_harness_enabled_with(home, name, agent, enabled, codex_skill_md_paths)
+    set_harness_enabled_with(
+        home,
+        data_root,
+        name,
+        agent,
+        enabled,
+        codex_skill_md_paths,
+        guard,
+    )
 }
 
 fn move_copy_deployment_and_update_registry(
@@ -889,57 +919,204 @@ mod tests {
 
     use super::super::test_support::write_skill;
 
+    /// Reads every `path` a Codex `[[skills.config]] enabled = false` row
+    /// names, uncanonicalized - matches what `ops::set_codex_skill_disabled`
+    /// writes (the raw `skill_md_path` it was given), so a round-trip test
+    /// can compare against the path it passed in without going through the
+    /// filesystem again.
+    fn read_codex_disabled_skill_md_paths_for_test(home: &Path) -> Vec<PathBuf> {
+        let path = home.join(".codex").join("config.toml");
+        let Ok(content) = fs::read_to_string(&path) else {
+            return Vec::new();
+        };
+        let Ok(table) = content.parse::<toml::Table>() else {
+            return Vec::new();
+        };
+        toml::Value::Table(table)
+            .get("skills")
+            .and_then(|s| s.get("config"))
+            .and_then(|c| c.as_array())
+            .into_iter()
+            .flatten()
+            .filter(|row| row.get("enabled").and_then(toml::Value::as_bool) == Some(false))
+            .filter_map(|row| row.get("path").and_then(toml::Value::as_str))
+            .map(PathBuf::from)
+            .collect()
+    }
+
     #[test]
     fn codex_disable_and_reenable_round_trip() {
         let tmp = tempfile::tempdir().unwrap();
         let home = tmp.path();
+        let data_root = home.join(".skill-studio");
         let skill_md = home.join("skills/find-bugs/SKILL.md");
         write_skill(skill_md.parent().unwrap(), "find-bugs");
 
         set_harness_enabled_with(
             home,
+            &data_root,
             "find-bugs",
             "codex",
             false,
             std::slice::from_ref(&skill_md),
+            &test_guard(home),
         )
         .unwrap();
         assert_eq!(
-            codex_skill_config::read_disabled_skill_md_paths(home),
-            vec![fs::canonicalize(&skill_md).unwrap()]
+            read_codex_disabled_skill_md_paths_for_test(home),
+            vec![skill_md.clone()]
         );
 
         set_harness_enabled_with(
             home,
+            &data_root,
             "find-bugs",
             "codex",
             true,
             std::slice::from_ref(&skill_md),
+            &test_guard(home),
         )
         .unwrap();
-        assert!(codex_skill_config::read_disabled_skill_md_paths(home).is_empty());
+        assert!(read_codex_disabled_skill_md_paths_for_test(home).is_empty());
+    }
+
+    /// codex_disable_runs_under_the_shared_data_root_or_names_the_separate_lease_root:
+    /// a Codex disable's lease/journal artifacts land under the `data_root`
+    /// the caller gives it - not a second `home/.skill-studio` tree built
+    /// independently of `super::core_runtime::data_root()` - so Codex
+    /// disable shares one lock and event store with `park` and every other
+    /// desktop mutation. The guard passed in is built the same way the real
+    /// `set_harness_enabled` command builds it: rooted at the shared
+    /// `data_root`'s `leases` directory, not a lease root the op derives on
+    /// its own.
+    #[test]
+    fn codex_disable_runs_under_the_shared_data_root_or_names_the_separate_lease_root() {
+        let tmp = tempfile::tempdir().unwrap();
+        let home = tmp.path();
+        let shared_data_root = tmp.path().join("shared-data-root");
+        let skill_md = home.join("skills/find-bugs/SKILL.md");
+        write_skill(skill_md.parent().unwrap(), "find-bugs");
+
+        let guard =
+            super::super::write_lease::WriteLease::with_lease_root(shared_data_root.join("leases"))
+                .try_acquire(home)
+                .unwrap();
+        set_harness_enabled_with(
+            home,
+            &shared_data_root,
+            "find-bugs",
+            "codex",
+            false,
+            std::slice::from_ref(&skill_md),
+            &guard,
+        )
+        .unwrap();
+
+        assert!(
+            shared_data_root.join("leases").exists(),
+            "the lease root the caller gave it was never used: {}",
+            shared_data_root.display()
+        );
+        assert!(
+            !home.join(".skill-studio").exists(),
+            "a second, separate lease root was created under home/.skill-studio"
+        );
     }
 
     #[test]
     fn codex_disable_without_a_deployment_path_refuses() {
         let tmp = tempfile::tempdir().unwrap();
-        let err =
-            set_harness_enabled_with(tmp.path(), "find-bugs", "codex", false, &[]).unwrap_err();
+        let data_root = tmp.path().join(".skill-studio");
+        let err = set_harness_enabled_with(
+            tmp.path(),
+            &data_root,
+            "find-bugs",
+            "codex",
+            false,
+            &[],
+            &test_guard(tmp.path()),
+        )
+        .unwrap_err();
         assert!(err.contains("No Codex-visible deployment"));
+    }
+
+    /// codex_toggle_under_the_desktop_write_lease_succeeds_or_names_the_scope_busy_deadlock:
+    /// `set_harness_enabled`'s command already holds the root's `WriteLease`
+    /// before it reaches the Codex arm - see `set_harness_enabled_with`'s
+    /// `guard` parameter. Before the fix, the Codex arm acquired a second,
+    /// conflicting exclusive lease on the same root instead of reusing the
+    /// caller's, so the toggle waited out the lease timeout and failed with
+    /// `scope_busy`. Holding the lease here the same way the command does -
+    /// then calling through `set_harness_enabled_with` - reproduces that
+    /// self-deadlock if the fix regresses.
+    #[test]
+    fn codex_toggle_under_the_desktop_write_lease_succeeds_or_names_the_scope_busy_deadlock() {
+        let tmp = tempfile::tempdir().unwrap();
+        let home = tmp.path().join("home");
+        let data_root = tmp.path().join("data-root");
+        let skill_md = home.join("skills/find-bugs/SKILL.md");
+        write_skill(skill_md.parent().unwrap(), "find-bugs");
+
+        let write_lease =
+            super::super::write_lease::WriteLease::with_lease_root(data_root.join("leases"));
+        let guard = write_lease.try_acquire(&home).unwrap();
+
+        let result = set_harness_enabled_with(
+            &home,
+            &data_root,
+            "find-bugs",
+            "codex",
+            false,
+            std::slice::from_ref(&skill_md),
+            &guard,
+        );
+        assert!(
+            result.is_ok(),
+            "expected the disable to succeed while the caller holds the root's write \
+             lease, not to self-deadlock on a second acquire: {result:?}"
+        );
+
+        let disabled_paths = read_codex_disabled_skill_md_paths_for_test(&home);
+        assert_eq!(
+            disabled_paths,
+            vec![skill_md],
+            "expected one [[skills.config]] row with enabled = false for the fixture's \
+             SKILL.md path in {}",
+            home.join(".codex/config.toml").display()
+        );
     }
 
     #[test]
     fn opencode_disable_and_reenable_round_trip() {
         let tmp = tempfile::tempdir().unwrap();
         let home = tmp.path();
+        let data_root = home.join(".skill-studio");
 
-        set_harness_enabled_with(home, "find-bugs", "opencode", false, &[]).unwrap();
+        set_harness_enabled_with(
+            home,
+            &data_root,
+            "find-bugs",
+            "opencode",
+            false,
+            &[],
+            &test_guard(home),
+        )
+        .unwrap();
         assert_eq!(
             opencode_skill_permission::read_denied_patterns(home),
             vec!["find-bugs".to_string()]
         );
 
-        set_harness_enabled_with(home, "find-bugs", "opencode", true, &[]).unwrap();
+        set_harness_enabled_with(
+            home,
+            &data_root,
+            "find-bugs",
+            "opencode",
+            true,
+            &[],
+            &test_guard(home),
+        )
+        .unwrap();
         assert!(opencode_skill_permission::read_denied_patterns(home).is_empty());
     }
 
@@ -967,6 +1144,7 @@ mod tests {
         let error = set_new_universal_reader_enabled(
             &test_guard(&home),
             &home,
+            &home.join(".skill-studio"),
             "find-bugs",
             &target,
             false,
@@ -1263,7 +1441,17 @@ mod tests {
     fn pi_disable_without_a_confirmed_exclusion_format_still_returns_the_named_refusal_or_names_the_silent_no_op(
     ) {
         let tmp = tempfile::tempdir().unwrap();
-        let err = set_harness_enabled_with(tmp.path(), "find-bugs", "pi", false, &[]).unwrap_err();
+        let data_root = tmp.path().join(".skill-studio");
+        let err = set_harness_enabled_with(
+            tmp.path(),
+            &data_root,
+            "find-bugs",
+            "pi",
+            false,
+            &[],
+            &test_guard(tmp.path()),
+        )
+        .unwrap_err();
         assert!(
             err.contains("pi has no per-skill disable"),
             "expected the named refusal, not a silent no-op: {err}"
@@ -1273,9 +1461,18 @@ mod tests {
     #[test]
     fn pi_cursor_and_grok_build_refuse() {
         let tmp = tempfile::tempdir().unwrap();
+        let data_root = tmp.path().join(".skill-studio");
         for agent in ["pi", "cursor", "grok-build"] {
-            let err =
-                set_harness_enabled_with(tmp.path(), "find-bugs", agent, false, &[]).unwrap_err();
+            let err = set_harness_enabled_with(
+                tmp.path(),
+                &data_root,
+                "find-bugs",
+                agent,
+                false,
+                &[],
+                &test_guard(tmp.path()),
+            )
+            .unwrap_err();
             assert!(err.contains("no per-skill disable"), "{agent}: {err}");
         }
     }
