@@ -88,11 +88,41 @@
         "message": {
           "description": "Message for a person.",
           "type": "string"
+        },
+        "kind": {
+          "description": "Stable category a caller can branch on instead of `message`.",
+          "$ref": "#/$defs/UnrepairedIssueKind"
         }
       },
       "required": [
         "path",
-        "message"
+        "message",
+        "kind"
+      ]
+    },
+    "UnrepairedIssueKind": {
+      "description": "Stable category for [`UnrepairedIssue`] so a caller can branch on\nstructure instead of matching a substring of `message`.",
+      "oneOf": [
+        {
+          "description": "A dangling or unreadable symlink the detail page's own repair card\nknows how to fix.",
+          "type": "string",
+          "const": "link"
+        },
+        {
+          "description": "A frontmatter field or value `fix_skill` could not repair.",
+          "type": "string",
+          "const": "frontmatter"
+        },
+        {
+          "description": "Two deployments differ and need the user to reconcile them.",
+          "type": "string",
+          "const": "conflict"
+        },
+        {
+          "description": "Anything else (registry/lockfile drift, quarantine cap, and so on).",
+          "type": "string",
+          "const": "other"
+        }
       ]
     },
     "ConflictSummary": {

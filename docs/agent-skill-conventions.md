@@ -207,14 +207,15 @@ entries (`name = "*"`, no per-skill manifest row) are refused in v1 - forking
 one by name first requires adding a named row for it, which dotagents
 doesn't offer without a fresh `add`.
 
-"Pull upstream" three-way merges the skill's last-synced snapshot (`base`),
-its current on-disk copy (`mine`), and a freshly fetched upstream copy at the
-latest commit (`theirs`), file by file: unchanged-in-mine takes theirs;
-unchanged-in-theirs keeps mine; a text file that differs on all three sides
-runs through `git merge-file -p mine base theirs`, with its conflict markers
-kept in place for the user to resolve in the editor; a binary file that
-differs on all three sides keeps mine and is flagged. Files added or removed
-upstream are added or removed locally when the local copy hadn't diverged.
+"Pull upstream" never merges automatically: it compares the skill's
+last-synced snapshot (`base`), its current on-disk copy (`mine`), and a
+freshly fetched upstream copy at the latest commit (`theirs`), file by file:
+unchanged-in-mine takes theirs; unchanged-in-theirs keeps mine; a text file
+that differs on all three sides gets git-style conflict markers written into
+it, and the file is opened in the user's editor for manual resolution; a
+binary file that differs on all three sides keeps mine and is flagged. Files
+added or removed upstream are added or removed locally when the local copy
+hadn't diverged.
 The snapshot always advances to the new upstream commit afterward, even when
 there were conflicts, so the fork's `base_commit` stays a true "last pulled"
 marker. The upstream copy is fetched read-only via

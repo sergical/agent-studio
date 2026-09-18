@@ -1,0 +1,54 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "InstallPreferences",
+  "description": "The method and harnesses the last successful install saved, or the\nenvironment default when nothing has been saved yet.",
+  "type": "object",
+  "properties": {
+    "method": {
+      "description": "The saved or defaulted method.",
+      "$ref": "#/$defs/InstallMethod"
+    },
+    "harnesses": {
+      "description": "The saved or defaulted harnesses.",
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/AgentId"
+      }
+    },
+    "saved": {
+      "description": "`false` when `method`/`harnesses` are an environment default rather\nthan a saved preference (no install has completed on this scope\nyet).",
+      "type": "boolean"
+    }
+  },
+  "required": [
+    "method",
+    "harnesses",
+    "saved"
+  ],
+  "$defs": {
+    "InstallMethod": {
+      "description": "Which of the three ways `ops::install` can put a skill's bytes on disk.",
+      "oneOf": [
+        {
+          "description": "Fetches or copies bytes and stages/swaps them into place directly -\nno external CLI.",
+          "type": "string",
+          "const": "copy"
+        },
+        {
+          "description": "`npx -y @sentry/dotagents add <source>`.",
+          "type": "string",
+          "const": "dotagents"
+        },
+        {
+          "description": "`npx -y skills add <source>`.",
+          "type": "string",
+          "const": "skills_sh"
+        }
+      ]
+    },
+    "AgentId": {
+      "description": "Kebab-case harness identifier, for example `claude-code` or `open-code`.\n\nInvariant: the string is the serde wire name used by the desktop app\ntoday. `open-code` is canonical; `opencode` is only a CLI binary name and\nis never stored in an `AgentId`.",
+      "type": "string"
+    }
+  }
+}

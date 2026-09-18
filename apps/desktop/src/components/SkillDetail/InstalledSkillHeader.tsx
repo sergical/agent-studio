@@ -139,7 +139,7 @@ export function InstalledSkillHeader({
               variant="outline"
               onClick={frontmatterRepair ? onFixYaml : onEditManually}
             >
-              {frontmatterRepair ? "Fix YAML" : "Edit manually"}
+              {frontmatterRepair ? "Fix" : "Edit manually"}
             </Button>
           )}
         </div>

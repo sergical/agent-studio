@@ -3,10 +3,12 @@
 // Fork / Pull upstream / Un-fork for a dotagents- or skills.sh-managed skill:
 // "Fork" detaches it from its owning ledger (so `sync`/`update` can't
 // overwrite local edits) while keeping a snapshot of the last-synced copy;
-// "Pull upstream" three-way merges that snapshot against the skill's current
-// on-disk copy and a freshly fetched upstream copy; "Un-fork" discards local
-// edits and reinstalls from the recorded origin. The CLI-shelling and
-// GitHub-fetching bits are behind small traits so the merge/refusal logic is
+// "Pull upstream" compares that snapshot against the skill's current on-disk
+// copy and a freshly fetched upstream copy, never merging automatically: a
+// file that differs on all three sides gets conflict markers written into it
+// and is opened in the user's editor; "Un-fork" discards local edits and
+// reinstalls from the recorded origin. The CLI-shelling and GitHub-fetching
+// bits are behind small traits so the conflict-marker/refusal logic is
 // testable with fakes.
 // ============================================================================
 
@@ -1049,96 +1051,50 @@ pub struct PullResult {
     pub message: Option<String>,
 }
 
-/// True when `bytes` contains a NUL byte - `git merge-file` operates on
-/// text, so a file with a NUL is treated as binary regardless of whether the
-/// rest of it happens to be valid UTF-8.
+/// True when `bytes` contains a NUL byte - a binary file never gets
+/// git-style text markers written into it.
 fn is_binary(bytes: &[u8]) -> bool {
     bytes.contains(&0)
 }
 
-/// What a finished `git merge-file -p mine base theirs` run means, decided
-/// from its exit status alone. Pulled out of `three_way_merge_text` so it's
-/// unit-testable without spawning a process. Per `git merge-file`'s
-/// documented contract: exit 0 is a clean merge; a positive exit up to 127
-/// is that many conflicted hunks, with stdout holding the marked-up merge to
-/// keep either way; anything else - a signal, a status `>= 128`, or empty
-/// stdout despite non-empty inputs (the merge silently produced nothing) -
-/// means the result can't be trusted, and the caller must abort rather than
-/// write it anywhere.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum MergeExitClass {
-    Clean,
-    Conflicts(usize),
-    Error,
+/// Opens one or more paths in the user's editor. Real callers hand the user
+/// something to look at; tests hand a recorder so a conflict's editor-open
+/// can be asserted without actually launching an application.
+pub trait EditorOpener {
+    fn open_paths(&self, paths: &[PathBuf]) -> Result<(), String>;
 }
 
-fn classify_merge_exit(
-    code: Option<i32>,
-    stdout_len: usize,
-    inputs_nonempty: bool,
-) -> MergeExitClass {
-    if inputs_nonempty && stdout_len == 0 {
-        return MergeExitClass::Error;
-    }
-    match code {
-        Some(0) => MergeExitClass::Clean,
-        Some(n) if (1..=127).contains(&n) => MergeExitClass::Conflicts(n as usize),
-        _ => MergeExitClass::Error,
+/// The real opener: `pull_fork_upstream`'s only caller in production,
+/// delegating to `skill_editor`'s "Open in editor" choice.
+pub struct RealEditorOpener;
+
+impl EditorOpener for RealEditorOpener {
+    fn open_paths(&self, paths: &[PathBuf]) -> Result<(), String> {
+        let home = dirs::home_dir().ok_or("Could not find home directory")?;
+        super::skill_editor::open_paths_in_editor(&home, paths)
     }
 }
 
-/// A resolved `three_way_merge_text` run: the merged bytes plus whether it
-/// was clean or left conflict markers behind.
-enum MergeOutcome {
-    Clean(Vec<u8>),
-    Conflicts(Vec<u8>),
-}
-
-/// Runs `git merge-file -p mine base theirs` in a scratch dir. Returns
-/// `Err` (never writing `stdout` anywhere) when `classify_merge_exit` can't
-/// trust the result - see its doc comment - so a `pull_fork_upstream` that
-/// hits this aborts the whole pull instead of writing a bogus merge.
-fn three_way_merge_text(
-    mine: &[u8],
-    base: &[u8],
-    theirs: &[u8],
-    rel: &str,
-) -> Result<MergeOutcome, String> {
-    // `tempfile` is a dev-only dependency, so production code builds its own
-    // scratch dir under the system temp dir instead.
-    let scratch = std::env::temp_dir().join(format!(
-        "skill-studio-merge-{}-{}",
-        std::process::id(),
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map_or(0, |d| d.as_nanos())
-    ));
-    fs::create_dir_all(&scratch).map_err(|e| format!("Failed to create scratch dir: {e}"))?;
-    let _cleanup = TempCleanup {
-        paths: vec![scratch.clone()],
-    };
-    fs::write(scratch.join("mine"), mine)
-        .map_err(|e| format!("Failed to write scratch file: {e}"))?;
-    fs::write(scratch.join("base"), base)
-        .map_err(|e| format!("Failed to write scratch file: {e}"))?;
-    fs::write(scratch.join("theirs"), theirs)
-        .map_err(|e| format!("Failed to write scratch file: {e}"))?;
-
-    let output = Command::new("git")
-        .args(["merge-file", "-p", "mine", "base", "theirs"])
-        .current_dir(&scratch)
-        .output()
-        .map_err(|e| format!("Failed to run git merge-file on {rel}: {e}"))?;
-
-    let inputs_nonempty = !mine.is_empty() || !base.is_empty() || !theirs.is_empty();
-    match classify_merge_exit(output.status.code(), output.stdout.len(), inputs_nonempty) {
-        MergeExitClass::Clean => Ok(MergeOutcome::Clean(output.stdout)),
-        MergeExitClass::Conflicts(_) => Ok(MergeOutcome::Conflicts(output.stdout)),
-        MergeExitClass::Error => Err(format!(
-            "git merge-file on {rel} exited unexpectedly (status {:?}); aborting the pull",
-            output.status.code()
-        )),
+/// Writes `mine` and `theirs` side by side in one file with git-style
+/// conflict markers, the way `git merge-file` would report a conflicted
+/// hunk - but built in-process rather than shelled out to `git`, since a
+/// pull never merges automatically: any three-way divergence this deep
+/// (base, mine, and theirs all differ) always needs the user, so there is
+/// no "clean" case left to detect once we get here.
+fn write_conflict_markers(mine: &[u8], theirs: &[u8]) -> Vec<u8> {
+    let mut out = Vec::with_capacity(mine.len() + theirs.len() + 32);
+    out.extend_from_slice(b"<<<<<<< mine\n");
+    out.extend_from_slice(mine);
+    if !mine.is_empty() && !mine.ends_with(b"\n") {
+        out.push(b'\n');
     }
+    out.extend_from_slice(b"=======\n");
+    out.extend_from_slice(theirs);
+    if !theirs.is_empty() && !theirs.ends_with(b"\n") {
+        out.push(b'\n');
+    }
+    out.extend_from_slice(b">>>>>>> theirs\n");
+    out
 }
 
 /// Writes `bytes` at `root/rel`, creating parent directories as needed - the
@@ -1257,6 +1213,7 @@ pub fn pull_fork_upstream_with(
     name: &str,
     fetch: &dyn UpstreamFetch,
     lookup: &dyn CommitLookup,
+    editor: &dyn EditorOpener,
 ) -> Result<PullResult, String> {
     let mut registry = read_fork_registry(home)?;
     let record = registry
@@ -1379,20 +1336,16 @@ pub fn pull_fork_upstream_with(
                     let base_bytes = base.as_deref().unwrap_or(&[]);
                     if is_binary(&mine) || is_binary(base_bytes) || is_binary(&theirs) {
                         // Binary and all three differ: keep mine, flag it,
-                        // never hand it to `git merge-file`.
+                        // never try to write text markers into it.
                         write_staged(&staging_live, rel, &mine)?;
                         result.conflicts.push(rel.clone());
                     } else {
-                        match three_way_merge_text(&mine, base_bytes, &theirs, rel)? {
-                            MergeOutcome::Clean(merged) => {
-                                write_staged(&staging_live, rel, &merged)?;
-                                result.merged.push(rel.clone());
-                            }
-                            MergeOutcome::Conflicts(merged) => {
-                                write_staged(&staging_live, rel, &merged)?;
-                                result.conflicts.push(rel.clone());
-                            }
-                        }
+                        // Text, and base, mine, and theirs all differ from
+                        // each other: never merges - write git-style
+                        // conflict markers and let the caller open the
+                        // editor on it once it's swapped into place.
+                        write_staged(&staging_live, rel, &write_conflict_markers(&mine, &theirs))?;
+                        result.conflicts.push(rel.clone());
                     }
                 }
             }
@@ -1415,6 +1368,27 @@ pub fn pull_fork_upstream_with(
         &mut registry,
     )?;
     drop(cleanup_staging);
+
+    if !result.conflicts.is_empty() {
+        // The markers are already on disk under `mine_dir`, and
+        // `swap_in_pull_result` above already committed the registry and
+        // swapped the marker file in - the pull itself is done. A failed
+        // editor launch must not turn a completed pull into an `Err` (that
+        // would discard `result.conflicts`, the only place the caller
+        // learns markers are in SKILL.md); it's reported as a message on
+        // the still-`Ok` result instead.
+        let conflict_paths: Vec<PathBuf> = result
+            .conflicts
+            .iter()
+            .map(|rel| mine_dir.join(rel))
+            .collect();
+        if let Err(e) = editor.open_paths(&conflict_paths) {
+            let rel = &result.conflicts[0];
+            result.message = Some(format!(
+                "Conflict markers written to {rel}; could not open editor: {e}"
+            ));
+        }
+    }
 
     Ok(result)
 }
@@ -1448,8 +1422,15 @@ pub async fn pull_fork_upstream(
             "Pull upstream",
         )?;
         let (name, _) = resolve_recorded_fork_target(&resolved.snapshot, &target, &home)?;
-        let result =
-            pull_fork_upstream_with(&guard, &home, &app_data, &name, &fetch, lookup.as_ref());
+        let result = pull_fork_upstream_with(
+            &guard,
+            &home,
+            &app_data,
+            &name,
+            &fetch,
+            lookup.as_ref(),
+            &RealEditorOpener,
+        );
         skill_refresh::request_snapshot_rebuild(&app);
         result
     })
@@ -1624,6 +1605,39 @@ mod tests {
             _: Option<&str>,
         ) -> Result<Option<(String, String)>, String> {
             panic!("lookup should not have been called");
+        }
+    }
+
+    /// An `EditorOpener` for tests that don't exercise a conflict: asserts
+    /// it is never asked to open anything, the same guarantee
+    /// `NeverCalledLookup` gives the commit lookup port.
+    struct NoopEditorOpener;
+    impl EditorOpener for NoopEditorOpener {
+        fn open_paths(&self, paths: &[PathBuf]) -> Result<(), String> {
+            assert!(paths.is_empty(), "unexpected editor open: {paths:?}");
+            Ok(())
+        }
+    }
+
+    /// Records every call so a conflict test can assert the editor opened
+    /// on exactly the merged file's live path.
+    #[derive(Default)]
+    struct RecordingEditorOpener {
+        opened: std::sync::Mutex<Vec<Vec<PathBuf>>>,
+    }
+    impl EditorOpener for RecordingEditorOpener {
+        fn open_paths(&self, paths: &[PathBuf]) -> Result<(), String> {
+            self.opened.lock().unwrap().push(paths.to_vec());
+            Ok(())
+        }
+    }
+
+    /// An `EditorOpener` that always fails, for the F2 regression: a
+    /// failed editor launch must not turn a completed pull into an `Err`.
+    struct FailingEditorOpener;
+    impl EditorOpener for FailingEditorOpener {
+        fn open_paths(&self, _paths: &[PathBuf]) -> Result<(), String> {
+            Err("no editor configured".to_string())
         }
     }
 
@@ -1943,6 +1957,7 @@ mod tests {
         let fetch_at_pull = FakeFetch {
             files: vec![("SKILL.md", "line one\ntheirs edit\n")],
         };
+        let editor = RecordingEditorOpener::default();
         let result = pull_fork_upstream_with(
             &test_guard(&home),
             &home,
@@ -1950,9 +1965,77 @@ mod tests {
             "find-bugs",
             &fetch_at_pull,
             &NeverCalledLookup,
+            &editor,
         )
         .unwrap();
         assert_eq!(result.conflicts, vec!["SKILL.md".to_string()]);
+        assert!(
+            !editor.opened.lock().unwrap().is_empty(),
+            "expected the conflict to open the editor"
+        );
+    }
+
+    /// F2 (unit 3.7b review round 1): `swap_in_pull_result` already
+    /// committed the registry and swapped the marker file in by the time
+    /// the editor is asked to open - a failing opener must keep that
+    /// result and name it in `message`, not discard it as an `Err`.
+    #[test]
+    fn fork_pull_conflict_with_a_failing_editor_keeps_the_markers_and_names_them_or_names_the_lost_result(
+    ) {
+        let tmp = tempfile::tempdir().unwrap();
+        let home = tmp.path().join("home");
+        let app_data = tmp.path().join("data");
+        let base_commit = "a".repeat(40);
+        seed_dotagents_ledger(
+            &home,
+            "find-bugs",
+            "getsentry/find-bugs",
+            "skills/find-bugs",
+            &base_commit,
+        );
+        write_file(
+            &home.join(".agents/skills/find-bugs/SKILL.md"),
+            "line one\nmine edit\n",
+        );
+
+        let ledger = FakeLedger::default();
+        let fetch_at_fork = FakeFetch {
+            files: vec![("SKILL.md", "line one\nbase line\n")],
+        };
+        fork_skill_with(
+            &test_guard(&home),
+            &home,
+            &app_data,
+            "find-bugs",
+            &home.join(".agents/skills/find-bugs"),
+            &ledger,
+            &fetch_at_fork,
+            &NeverCalledLookup,
+        )
+        .unwrap();
+
+        seed_update_check_latest(&app_data, "find-bugs", &"b".repeat(40));
+        let fetch_at_pull = FakeFetch {
+            files: vec![("SKILL.md", "line one\ntheirs edit\n")],
+        };
+        let result = pull_fork_upstream_with(
+            &test_guard(&home),
+            &home,
+            &app_data,
+            "find-bugs",
+            &fetch_at_pull,
+            &NeverCalledLookup,
+            &FailingEditorOpener,
+        )
+        .expect("a failed editor open must not turn a completed pull into an Err");
+
+        assert_eq!(result.conflicts, vec!["SKILL.md".to_string()]);
+        let message = result.message.expect("failed editor open must be named");
+        assert!(message.contains("SKILL.md"), "{message}");
+        assert!(message.contains("no editor configured"), "{message}");
+        // The markers are on disk regardless of whether the editor opened.
+        let on_disk = fs::read_to_string(home.join(".agents/skills/find-bugs/SKILL.md")).unwrap();
+        assert!(on_disk.contains("<<<<<<<"), "{on_disk}");
     }
 
     /// Finding 7: forking a same-named copy that isn't the shared folder
@@ -2716,6 +2799,7 @@ mod tests {
             "find-bugs",
             &fetch,
             &NeverCalledLookup,
+            &NoopEditorOpener,
         )
         .unwrap();
         assert_eq!(result.message.as_deref(), Some("Already up to date"));
@@ -2746,6 +2830,7 @@ mod tests {
             "find-bugs",
             &fetch,
             &NeverCalledLookup,
+            &NoopEditorOpener,
         )
         .unwrap();
 
@@ -2760,38 +2845,60 @@ mod tests {
         );
     }
 
+    /// A conflicting pull writes git-style markers directly into the file -
+    /// no subprocess, never an automatic merge - and hands the caller's
+    /// editor opener the exact live path the markers landed at; a failure
+    /// here names the file that would have been merged silently under the
+    /// deleted `git merge-file` path instead.
     #[test]
-    fn classify_merge_exit_covers_clean_conflicts_and_untrustworthy_results() {
-        // Clean merge.
-        assert_eq!(
-            classify_merge_exit(Some(0), 10, true),
-            MergeExitClass::Clean
+    fn fork_pull_conflict_writes_markers_and_opens_the_editor_or_names_the_merged_file() {
+        let tmp = tempfile::tempdir().unwrap();
+        let home = tmp.path().join("home");
+        let app_data = tmp.path().join("data");
+        seed_registry(
+            &home,
+            &app_data,
+            "find-bugs",
+            &"a".repeat(40),
+            "line one\nbase line\n",
         );
-        // 1..=127 conflicted hunks, with a non-empty merge on stdout.
-        assert_eq!(
-            classify_merge_exit(Some(1), 10, true),
-            MergeExitClass::Conflicts(1)
+        write_file(
+            &home.join(".agents/skills/find-bugs/SKILL.md"),
+            "line one\nmine line\n",
         );
-        assert_eq!(
-            classify_merge_exit(Some(127), 10, true),
-            MergeExitClass::Conflicts(127)
+        seed_update_check_latest(&app_data, "find-bugs", &"b".repeat(40));
+
+        let fetch = FakeFetch {
+            files: vec![("SKILL.md", "line one\ntheirs line\n")],
+        };
+        let editor = RecordingEditorOpener::default();
+        let result = pull_fork_upstream_with(
+            &test_guard(&home),
+            &home,
+            &app_data,
+            "find-bugs",
+            &fetch,
+            &NeverCalledLookup,
+            &editor,
+        )
+        .unwrap();
+
+        assert_eq!(result.conflicts, vec!["SKILL.md".to_string()]);
+        let merged_path = home.join(".agents/skills/find-bugs/SKILL.md");
+        let mine = fs::read_to_string(&merged_path).unwrap();
+        assert!(
+            mine.contains("<<<<<<< mine")
+                && mine.contains("=======")
+                && mine.contains(">>>>>>> theirs"),
+            "expected conflict markers in {}: {mine}",
+            merged_path.display()
         );
-        // Signal-terminated / spawn-failure caller convention: no exit code.
-        assert_eq!(classify_merge_exit(None, 10, true), MergeExitClass::Error);
-        // Status >= 128 is untrustworthy, not "128 conflicts".
+        let opened = editor.opened.lock().unwrap();
         assert_eq!(
-            classify_merge_exit(Some(128), 10, true),
-            MergeExitClass::Error
-        );
-        // Empty stdout despite non-empty inputs means the merge produced
-        // nothing worth trusting, even for an exit code that would otherwise
-        // read as clean or conflicted.
-        assert_eq!(classify_merge_exit(Some(0), 0, true), MergeExitClass::Error);
-        assert_eq!(classify_merge_exit(Some(1), 0, true), MergeExitClass::Error);
-        // All-empty inputs legitimately produce empty stdout - not an error.
-        assert_eq!(
-            classify_merge_exit(Some(0), 0, false),
-            MergeExitClass::Clean
+            opened.as_slice(),
+            [vec![merged_path.clone()]],
+            "expected the editor to be opened once on {}: opened {opened:?}",
+            merged_path.display()
         );
     }
 
@@ -2817,6 +2924,7 @@ mod tests {
         let fetch = FakeFetch {
             files: vec![("SKILL.md", "line one\ntheirs line\n")],
         };
+        let editor = RecordingEditorOpener::default();
         let result = pull_fork_upstream_with(
             &test_guard(&home),
             &home,
@@ -2824,12 +2932,17 @@ mod tests {
             "find-bugs",
             &fetch,
             &NeverCalledLookup,
+            &editor,
         )
         .unwrap();
 
         assert_eq!(result.conflicts, vec!["SKILL.md".to_string()]);
         let mine = fs::read_to_string(home.join(".agents/skills/find-bugs/SKILL.md")).unwrap();
         assert!(mine.contains("<<<<<<<"));
+        assert!(
+            !editor.opened.lock().unwrap().is_empty(),
+            "expected the conflict to open the editor"
+        );
     }
 
     /// Restores a directory's permissions on drop, so a fault-injection test
@@ -2871,6 +2984,7 @@ mod tests {
             "find-bugs",
             &fetch,
             &NeverCalledLookup,
+            &NoopEditorOpener,
         )
         .unwrap_err();
         assert!(err.contains("Failed to back up the live tree"));
@@ -2909,6 +3023,7 @@ mod tests {
             "find-bugs",
             &fetch,
             &NeverCalledLookup,
+            &NoopEditorOpener,
         )
         .unwrap();
 
@@ -2939,6 +3054,7 @@ mod tests {
             "find-bugs",
             &fetch,
             &NeverCalledLookup,
+            &NoopEditorOpener,
         )
         .unwrap();
 
@@ -2962,6 +3078,7 @@ mod tests {
         let fetch = FakeFetch {
             files: vec![("SKILL.md", "body"), ("SHARED.md", "upstream changed it")],
         };
+        let editor = RecordingEditorOpener::default();
         let result = pull_fork_upstream_with(
             &test_guard(&home),
             &home,
@@ -2969,6 +3086,7 @@ mod tests {
             "find-bugs",
             &fetch,
             &NeverCalledLookup,
+            &editor,
         )
         .unwrap();
 
@@ -2976,6 +3094,10 @@ mod tests {
         assert_eq!(
             fs::read_to_string(home.join(".agents/skills/find-bugs/SHARED.md")).unwrap(),
             "upstream changed it"
+        );
+        assert!(
+            !editor.opened.lock().unwrap().is_empty(),
+            "expected the conflict to open the editor"
         );
     }
 
@@ -2998,6 +3120,7 @@ mod tests {
         let fetch = FakeFetch {
             files: vec![("SKILL.md", "body")], // SHARED.md removed upstream
         };
+        let editor = RecordingEditorOpener::default();
         let result = pull_fork_upstream_with(
             &test_guard(&home),
             &home,
@@ -3005,6 +3128,7 @@ mod tests {
             "find-bugs",
             &fetch,
             &NeverCalledLookup,
+            &editor,
         )
         .unwrap();
 
@@ -3012,6 +3136,10 @@ mod tests {
         assert_eq!(
             fs::read_to_string(home.join(".agents/skills/find-bugs/SHARED.md")).unwrap(),
             "my local edit"
+        );
+        assert!(
+            !editor.opened.lock().unwrap().is_empty(),
+            "expected the conflict to open the editor"
         );
     }
 
@@ -3037,6 +3165,7 @@ mod tests {
             "find-bugs",
             &fetch,
             &NeverCalledLookup,
+            &NoopEditorOpener,
         )
         .unwrap();
 

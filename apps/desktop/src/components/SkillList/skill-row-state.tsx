@@ -55,7 +55,7 @@ export function rowState(skill: InstalledSkill): RowState | null {
       level: "error",
       label: "Blocking spec violation",
       detail: blocking[0],
-      action: "Fix YAML",
+      action: "Fix",
     };
   }
 
@@ -67,7 +67,7 @@ export function rowState(skill: InstalledSkill): RowState | null {
       level: "error",
       label: first,
       detail: second ?? null,
-      action: "Repair",
+      action: "Fix",
     };
   }
   if (rollup.level === "warning") {
@@ -323,7 +323,7 @@ export function whereFacts(
 export function fixesFor(state: RowState): string[] {
   switch (state.kind) {
     case "violation":
-      return ["Fix YAML"];
+      return ["Fix"];
     case "rollup":
       return state.level === "error" ? ["Fix link"] : [state.action ?? "Compare", "Convert"];
     case "trial":

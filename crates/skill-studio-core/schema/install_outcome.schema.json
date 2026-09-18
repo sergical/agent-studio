@@ -1,0 +1,75 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "InstallOutcome",
+  "description": "Result of `install`.",
+  "oneOf": [
+    {
+      "description": "The skill was installed.",
+      "type": "object",
+      "properties": {
+        "event_id": {
+          "description": "The `install` event.",
+          "$ref": "#/$defs/EventId"
+        },
+        "skill": {
+          "description": "The skill that was installed.",
+          "$ref": "#/$defs/SkillName"
+        },
+        "deployment_path": {
+          "description": "Where its canonical folder now lives.",
+          "type": "string"
+        },
+        "linked_harnesses": {
+          "description": "Harnesses actually linked (a subset of the request's\n`harnesses` - only Claude Code gets a link this build).",
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/AgentId"
+          }
+        },
+        "kind": {
+          "type": "string",
+          "const": "installed"
+        }
+      },
+      "required": [
+        "kind",
+        "event_id",
+        "skill",
+        "deployment_path",
+        "linked_harnesses"
+      ]
+    },
+    {
+      "description": "`trust_identity` was set, is not yet trusted, and `trust_confirmed`\nwas `false`. Nothing was written; retry with `trust_confirmed: true`\nonce the user confirms.",
+      "type": "object",
+      "properties": {
+        "identity": {
+          "description": "The normalized identity that needs confirming.",
+          "type": "string"
+        },
+        "kind": {
+          "type": "string",
+          "const": "needs_trust"
+        }
+      },
+      "required": [
+        "kind",
+        "identity"
+      ]
+    }
+  ],
+  "$defs": {
+    "EventId": {
+      "description": "History event id (ULID string).\n\nInvariant: lexical order equals creation order inside one store.",
+      "type": "string"
+    },
+    "SkillName": {
+      "description": "Lexical skill name: the directory name that holds `SKILL.md`.\n\nInvariant: two deployments with the same `SkillName` are the same skill,\neven when their bytes differ. A symlink alias with another name is another\nskill.",
+      "type": "string"
+    },
+    "AgentId": {
+      "description": "Kebab-case harness identifier, for example `claude-code` or `open-code`.\n\nInvariant: the string is the serde wire name used by the desktop app\ntoday. `open-code` is canonical; `opencode` is only a CLI binary name and\nis never stored in an `AgentId`.",
+      "type": "string"
+    }
+  }
+}
