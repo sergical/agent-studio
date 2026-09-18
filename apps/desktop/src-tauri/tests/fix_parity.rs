@@ -125,7 +125,10 @@ fn workspace_root() -> PathBuf {
             }
         }
         if !dir.pop() {
-            panic!("no workspace Cargo.toml found above {}", env!("CARGO_MANIFEST_DIR"));
+            panic!(
+                "no workspace Cargo.toml found above {}",
+                env!("CARGO_MANIFEST_DIR")
+            );
         }
     }
 }
@@ -181,14 +184,15 @@ fn content_fingerprint(home: &Path) -> BTreeMap<PathBuf, Vec<u8>> {
 /// `home_desktop` for the whole test so it reads its own fixture rather
 /// than a real `~/.config/opencode` a CI runner might export.
 #[test]
-fn fix_names_and_hashes_agree_between_the_cli_binary_and_the_desktop_adapter_or_names_the_diverging_file()
-{
+fn fix_names_and_hashes_agree_between_the_cli_binary_and_the_desktop_adapter_or_names_the_diverging_file(
+) {
     let home_cli = unique_temp_dir("fix-parity-cli");
     let home_desktop = unique_temp_dir("fix-parity-desktop");
     write_fixture(&home_cli);
     write_fixture(&home_desktop);
 
-    let _opencode_home = skill_studio_lib::skills::test_support::OpencodeHomeGuard::new(&home_desktop);
+    let _opencode_home =
+        skill_studio_lib::skills::test_support::OpencodeHomeGuard::new(&home_desktop);
     let rt_desktop = desktop_runtime_at(&home_desktop);
 
     for skill in ["zeta-bad", "dup-skill"] {

@@ -91,8 +91,8 @@ mod tests {
     /// `home` so this reads its own fixture rather than a real
     /// `~/.config/opencode` a CI runner might export.
     #[test]
-    fn fix_skill_on_invalid_yaml_returns_a_repaired_outcome_through_the_desktop_adapter_or_names_the_unrepaired_path()
-     {
+    fn fix_skill_on_invalid_yaml_returns_a_repaired_outcome_through_the_desktop_adapter_or_names_the_unrepaired_path(
+    ) {
         let home = tempfile::tempdir().expect("temp home");
         let _opencode_home = crate::skills::test_support::OpencodeHomeGuard::new(home.path());
         let skills_dir = home.path().join(".claude/skills/bad-yaml");
