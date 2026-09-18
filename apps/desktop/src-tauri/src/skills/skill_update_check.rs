@@ -440,26 +440,47 @@ pub struct GhTreeLookup {
 impl TreeLookup for GhTreeLookup {
     fn tree_shas_at_head_uncached(&self, repo: &str) -> Result<HashMap<String, String>, String> {
         let api_path = format!("repos/{repo}/git/trees/HEAD?recursive=1");
-        let stdout_bytes = super::gh_cli::run_gh(
-            &self.gh_bin,
-            &[
-                "api",
-                &api_path,
-                "--jq",
-                r#".tree[] | select(.type == "tree") | [.path, .sha] | @tsv"#,
-            ],
-            None,
-        )
-        .map_err(|e| e.message())?;
-        let text = String::from_utf8_lossy(&stdout_bytes);
-        let mut shas = HashMap::new();
-        for line in text.lines() {
-            if let Some((path, sha)) = line.split_once('\t') {
-                shas.insert(path.to_string(), sha.to_string());
-            }
-        }
-        Ok(shas)
+        // No `--jq` filter here (unlike `GhCommitLookup`): the response must
+        // be inspected for `truncated` before its `tree` entries are
+        // trusted, and `--jq` would already have thrown that field away.
+        let stdout_bytes = super::gh_cli::run_gh(&self.gh_bin, &["api", &api_path], None)
+            .map_err(|e| e.message())?;
+        parse_tree_response(repo, &stdout_bytes)
     }
+}
+
+/// Parses a `gh api repos/<repo>/git/trees/HEAD?recursive=1` response body,
+/// the same shape `skill_studio_host::gh_currency::parse_tree_response`
+/// parses for the core stack's own tree lookup. A `truncated: true` response
+/// means GitHub's recursive listing stopped early - the caller cannot tell
+/// "not in the tree" from "not fetched yet" for the paths past the cutoff,
+/// so this is an error naming the repo rather than a partial (and silently
+/// misleading) map.
+fn parse_tree_response(repo: &str, stdout: &[u8]) -> Result<HashMap<String, String>, String> {
+    let value: serde_json::Value = serde_json::from_slice(stdout)
+        .map_err(|e| format!("{repo}: could not parse tree listing: {e}"))?;
+    if value.get("truncated").and_then(serde_json::Value::as_bool) == Some(true) {
+        return Err(format!("{repo}: tree listing truncated"));
+    }
+    let mut shas = HashMap::new();
+    for entry in value
+        .get("tree")
+        .and_then(serde_json::Value::as_array)
+        .into_iter()
+        .flatten()
+    {
+        if entry.get("type").and_then(serde_json::Value::as_str) != Some("tree") {
+            continue;
+        }
+        let (Some(path), Some(sha)) = (
+            entry.get("path").and_then(serde_json::Value::as_str),
+            entry.get("sha").and_then(serde_json::Value::as_str),
+        ) else {
+            continue;
+        };
+        shas.insert(path.to_string(), sha.to_string());
+    }
+    Ok(shas)
 }
 
 /// Resolve `gh` on `$PATH` via a login shell, the same way
@@ -1037,6 +1058,51 @@ mod tests {
     use std::fs;
     use std::sync::Mutex as StdMutex;
 
+    /// Flow: `GhTreeLookup`'s response parser sees `truncated: true` (a repo
+    /// with more subtrees than one recursive listing covers).
+    /// Expectation: `Err` naming the repo and "truncated", not an empty or
+    /// partial map that would read as "no skill folder here".
+    /// A failure here means the desktop tree lookup, unlike the host's
+    /// `GhSourceTreeLookup`, never saw `truncated` at all (the old `--jq`
+    /// program threw the field away before Rust ever read the response), so
+    /// a real skill folder past the cutoff would silently read as unknown
+    /// with no error on record, or names the wrong repo.
+    #[test]
+    fn truncated_tree_response_is_an_error_or_names_the_silent_truncation() {
+        let body = serde_json::json!({
+            "sha": "head-sha",
+            "truncated": true,
+            "tree": [{"path": "skills/a", "type": "tree", "sha": "sha-a"}]
+        });
+        let err = parse_tree_response("obra/write-tests", body.to_string().as_bytes()).unwrap_err();
+        assert!(err.contains("obra/write-tests"));
+        assert!(err.contains("truncated"));
+    }
+
+    /// Flow: the tree endpoint's real JSON shape, `tree[]` entries with a
+    /// mix of `"tree"` and `"blob"` types.
+    /// Expectation: every `"tree"`-typed entry is keyed by path, `"blob"`
+    /// entries are skipped - the same parse the dropped `--jq` filter used
+    /// to do, now done in Rust so `truncated` can be checked first.
+    /// A failure here means a blob (file) entry leaked into the map, or a
+    /// path/sha pair was dropped or swapped.
+    #[test]
+    fn tree_response_parses_tree_entries_by_path_or_names_the_dropped_entry() {
+        let body = serde_json::json!({
+            "sha": "head-sha",
+            "truncated": false,
+            "tree": [
+                {"path": "skills/a", "type": "tree", "sha": "sha-a"},
+                {"path": "skills/a/SKILL.md", "type": "blob", "sha": "sha-blob"},
+                {"path": "skills/b", "type": "tree", "sha": "sha-b"},
+            ]
+        });
+        let shas = parse_tree_response("obra/write-tests", body.to_string().as_bytes()).unwrap();
+        assert_eq!(shas.get("skills/a"), Some(&"sha-a".to_string()));
+        assert_eq!(shas.get("skills/b"), Some(&"sha-b".to_string()));
+        assert_eq!(shas.len(), 2);
+    }
+
     /// One scripted answer to a `CommitLookup::latest_commit` call: the sha
     /// and commit date on a hit, or the error message on a failure.
     type LookupAnswer = Result<Option<(String, String)>, String>;
@@ -1427,6 +1493,48 @@ resolved_commit = "{commit}"
         .unwrap();
 
         let tree_lookup = FakeTreeLookup::with_tree("obra/write-tests", HashMap::new());
+        run_update_check(&home, &app_data, &AlwaysErrorLookup, &tree_lookup);
+
+        assert_eq!(tree_lookup.call_count(), 1);
+    }
+
+    /// Two skills.sh skills whose `source` differs only by case must still
+    /// cost one tree lookup - a failure here means the desktop tree cache
+    /// keys by raw repo spelling, so "Obra/Write-Tests" and
+    /// "obra/write-tests" each pay for their own `gh api` call instead of
+    /// sharing the one this repo already fetched.
+    #[test]
+    fn skills_sh_tree_lookup_normalises_repo_case_or_names_the_extra_call() {
+        let tmp = tempfile::tempdir().unwrap();
+        let home = tmp.path().join("home");
+        let app_data = tmp.path().join("data");
+        fs::create_dir_all(home.join(".agents")).unwrap();
+        let json = serde_json::json!({
+            "version": 3,
+            "skills": {
+                "one": {
+                    "source": "Obra/Write-Tests", "sourceType": "github",
+                    "sourceUrl": "https://github.com/Obra/Write-Tests",
+                    "skillPath": "apps/skills/one/SKILL.md",
+                    "skillFolderHash": "hash-one",
+                    "installedAt": "2026-01-01T00:00:00Z", "updatedAt": "2026-01-01T00:00:00Z",
+                },
+                "two": {
+                    "source": "obra/write-tests", "sourceType": "github",
+                    "sourceUrl": "https://github.com/obra/write-tests",
+                    "skillPath": "apps/skills/two/SKILL.md",
+                    "skillFolderHash": "hash-two",
+                    "installedAt": "2026-01-01T00:00:00Z", "updatedAt": "2026-01-01T00:00:00Z",
+                }
+            }
+        });
+        fs::write(
+            home.join(".agents/.skill-lock.json"),
+            serde_json::to_string(&json).unwrap(),
+        )
+        .unwrap();
+
+        let tree_lookup = FakeTreeLookup::with_tree("Obra/Write-Tests", HashMap::new());
         run_update_check(&home, &app_data, &AlwaysErrorLookup, &tree_lookup);
 
         assert_eq!(tree_lookup.call_count(), 1);
