@@ -144,6 +144,7 @@ impl CoreError {
     }
 
     /// Attaches the lease holder for a [`ErrorCode::ScopeBusy`] error.
+    #[must_use]
     pub fn with_busy(mut self, busy: LeaseBusy) -> Self {
         self.busy = Some(busy);
         self
