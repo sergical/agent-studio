@@ -377,4 +377,80 @@ mod tests {
         assert!(error.contains("Refused to copy unsupported special file"));
         assert!(error.contains("special.socket"));
     }
+
+    // Review item 5: ported from the deleted `skill_add.rs` (unit 3.5c),
+    // unchanged apart from calling `maybe_claude_code_symlink`/
+    // `relative_path_between` directly instead of through `add_skill_with`.
+
+    #[test]
+    fn relative_path_between_walks_up_to_the_common_parent() {
+        assert_eq!(
+            relative_path_between(
+                Path::new("/h/.claude/skills"),
+                Path::new("/h/.agents/skills")
+            ),
+            std::path::PathBuf::from("../../.agents/skills")
+        );
+        assert_eq!(
+            relative_path_between(
+                Path::new("/p/.claude/skills"),
+                Path::new("/p/.agents/skills")
+            ),
+            std::path::PathBuf::from("../../.agents/skills")
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn claude_code_symlink_created_only_for_a_real_directory() {
+        let tmp = tempfile::tempdir().unwrap();
+        let home = tmp.path().to_path_buf();
+        let shared = home.join(".agents/skills");
+        let claude = home.join(".claude/skills");
+        fs::create_dir_all(&shared).unwrap();
+        fs::create_dir_all(&claude).unwrap();
+
+        let created = maybe_claude_code_symlink(
+            &claude,
+            &shared,
+            "find-bugs",
+            &[super::super::agents::AgentId::ClaudeCode],
+        )
+        .unwrap();
+
+        let link = claude.join("find-bugs");
+        assert_eq!(created, Some(link.to_string_lossy().to_string()));
+        assert!(fs::symlink_metadata(&link)
+            .unwrap()
+            .file_type()
+            .is_symlink());
+        assert_eq!(
+            fs::read_link(&link).unwrap(),
+            Path::new("../../.agents/skills/find-bugs")
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn claude_code_symlink_skipped_when_claude_skills_is_the_whole_dir_symlink() {
+        let tmp = tempfile::tempdir().unwrap();
+        let home = tmp.path().to_path_buf();
+        let shared = home.join(".agents/skills");
+        fs::create_dir_all(&shared).unwrap();
+        fs::create_dir_all(home.join(".claude")).unwrap();
+        let claude = home.join(".claude/skills");
+        symlink(&shared, &claude).unwrap();
+
+        let created = maybe_claude_code_symlink(
+            &claude,
+            &shared,
+            "find-bugs",
+            &[super::super::agents::AgentId::ClaudeCode],
+        )
+        .unwrap();
+
+        // No per-skill symlink created - the whole-dir symlink already covers it.
+        assert_eq!(created, None);
+        assert!(!claude.join("find-bugs").exists());
+    }
 }

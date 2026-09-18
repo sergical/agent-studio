@@ -192,6 +192,13 @@ impl AddSkillOperationState {
             .ok_or_else(|| format!("Add skill operation {operation_id} was not found"))
     }
 
+    /// Refuses a record whose phase is past `Queued` (review item 2): the
+    /// worker only ever reads `cancel` once, before the first phase past
+    /// `Queued` is published (`run_operation_body`'s own doc comment), so
+    /// setting it any later is a silent no-op rather than a real cancel.
+    /// `NeedsTrust` is the one exception - it is a paused, no-work-running
+    /// state (the "Close" action in `AddSkillSheet.tsx` reaches it through
+    /// this same command), not mid-flight work, so it still cancels.
     fn request_cancel(&self, operation_id: &str) -> Result<AddSkillOperationEvent, String> {
         let mut inner = self.lock()?;
         let record = inner
@@ -201,15 +208,24 @@ impl AddSkillOperationState {
         if record.event.phase.is_terminal() {
             return Ok(record.event.clone());
         }
-        record.cancel.store(true, Ordering::SeqCst);
         if record.event.phase == AddSkillOperationPhase::NeedsTrust {
+            record.cancel.store(true, Ordering::SeqCst);
             advance_locked(
                 record,
                 AddSkillOperationPhase::Cancelled,
                 "Add skill cancelled",
                 |_| {},
             );
+            return Ok(record.event.clone());
         }
+        if record.event.phase != AddSkillOperationPhase::Queued {
+            return Err(format!(
+                "Add skill operation {operation_id} cannot be cancelled once it has started \
+                 (phase: {:?})",
+                record.event.phase
+            ));
+        }
+        record.cancel.store(true, Ordering::SeqCst);
         Ok(record.event.clone())
     }
 
@@ -492,12 +508,14 @@ fn run_operation_body(
                 operation_id,
                 &affected_projects(&AddSkillOperationKind::Single(request)),
                 names,
-                phase,
-                message,
-                result,
-                None,
-                error,
-                untrusted_source,
+                OperationTerminal {
+                    phase,
+                    message,
+                    result,
+                    outcomes: None,
+                    error,
+                    untrusted_source,
+                },
             );
         }
         AddSkillOperationKind::Batch(request) => {
@@ -532,11 +550,12 @@ fn run_operation_body(
                     lookup,
                     snapshot.as_deref(),
                 );
-                let (_, _, result, error, untrusted_source) = terminal_for_result(outcome);
-                if untrusted_source.is_some() {
-                    // A per-entry NeedsTrust has no single retry target in a
-                    // batch; report it as this entry's failure and continue.
-                }
+                // A per-entry NeedsTrust has no single retry target in a
+                // batch, so `untrusted_source` (the operation-level phase
+                // event's own field) is discarded here; it is reported as
+                // this entry's `error` text below instead, and the loop
+                // continues to the next entry.
+                let (_, _, result, error, _untrusted_source) = terminal_for_result(outcome);
                 if let Some(result) = &result {
                     names.push(result.name.clone());
                 }
@@ -564,12 +583,14 @@ fn run_operation_body(
                 operation_id,
                 &affected_projects(&AddSkillOperationKind::Batch(request)),
                 names,
-                phase,
-                message,
-                None,
-                Some(outcomes),
-                None,
-                None,
+                OperationTerminal {
+                    phase,
+                    message,
+                    result: None,
+                    outcomes: Some(outcomes),
+                    error: None,
+                    untrusted_source: None,
+                },
             );
         }
     }
@@ -598,20 +619,35 @@ fn open_batch_snapshot(
     })
 }
 
-#[allow(clippy::too_many_arguments)]
-fn finish_operation(
-    app: Option<&AppHandle>,
-    state: &AddSkillOperationState,
-    operation_id: &str,
-    projects: &[PathBuf],
-    names: Vec<String>,
+/// The terminal fields `finish_operation` publishes, once for `Reconciling`
+/// and again for the run's real terminal phase - bundled (review item 8) so
+/// the function itself stays under clippy's argument-count lint without an
+/// `#[allow]`.
+struct OperationTerminal {
     phase: AddSkillOperationPhase,
     message: String,
     result: Option<AddSkillResult>,
     outcomes: Option<Vec<AddSkillOutcome>>,
     error: Option<String>,
     untrusted_source: Option<AddSkillUntrustedSource>,
+}
+
+fn finish_operation(
+    app: Option<&AppHandle>,
+    state: &AddSkillOperationState,
+    operation_id: &str,
+    projects: &[PathBuf],
+    names: Vec<String>,
+    terminal: OperationTerminal,
 ) {
+    let OperationTerminal {
+        phase,
+        message,
+        result,
+        outcomes,
+        error,
+        untrusted_source,
+    } = terminal;
     let _ = publish(
         app,
         state,
@@ -1226,6 +1262,46 @@ mod tests {
         );
     }
 
+    /// `cancel_after_start_is_refused_or_names_the_phase` (review item 2):
+    /// once a record has moved past `Queued`, the worker's `cancel` flag has
+    /// already been read (or is about to be, on another thread, before this
+    /// call could possibly still change its outcome) - `request_cancel` must
+    /// refuse rather than silently do nothing, and name the phase it refused
+    /// at. `advance` (not `run_operation_body`) drives the record to
+    /// `Validating` directly so the test doesn't race the real worker thread.
+    #[test]
+    fn cancel_after_start_is_refused_or_names_the_phase() {
+        let state = AddSkillOperationState::default();
+        state
+            .begin(
+                "op-started".to_string(),
+                AddSkillOperationKind::Single(single_request(
+                    "getsentry/skills",
+                    "find-bugs",
+                    AddMethod::Copy,
+                )),
+                None,
+            )
+            .unwrap();
+        state
+            .advance(
+                "op-started",
+                AddSkillOperationPhase::Validating,
+                "Checking source",
+                |_| {},
+            )
+            .unwrap();
+
+        let error = state.request_cancel("op-started").unwrap_err();
+
+        assert!(error.contains("Validating"), "unexpected error: {error}");
+        assert_eq!(
+            state.snapshot("op-started").unwrap().phase,
+            AddSkillOperationPhase::Validating,
+            "a refused cancel must not change the phase"
+        );
+    }
+
     struct CountingFetch {
         downloads: StdMutex<usize>,
     }
@@ -1290,6 +1366,15 @@ mod tests {
                 None,
             )
             .unwrap();
+        // Copy now carries a `trust_identity` derived from the source
+        // (review item 4), so a Copy-from-GitHub batch is gated the same
+        // way Dotagents is - trust it up front to exercise the rest of the
+        // batch flow this test is actually about.
+        crate::skills::skill_trust_policy::record_trusted_dotagents_source(
+            home,
+            "kentcdodds/kcd-skills",
+        )
+        .unwrap();
         let rt = test_runtime(home);
         run_operation_body(
             None,
