@@ -35,6 +35,7 @@ skill-studio-host = { path = "../skill-studio-host" }
 tempfile = "3"
 filetime = "0.2"
 criterion = "0.5.1"
+proptest = "1"
 
 [[bench]]
 name = "scan"

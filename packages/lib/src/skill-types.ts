@@ -68,6 +68,7 @@ export type {
   DiscoverySourceSetting,
   ProjectFolder,
   ProjectFolderSource,
+  CommandHealth,
 } from "./skill-types.generated";
 
 import type { Deployment, InstalledSkill, SkillSearchResult } from "./skill-types.generated";

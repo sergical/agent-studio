@@ -90,6 +90,20 @@ impl ScopeArgs {
     }
 }
 
+/// The desktop app's own `timing.jsonl`: `<dirs::data_dir()>/com.skillstudio.app/timing.jsonl`
+/// (`~/Library/Application Support/com.skillstudio.app/timing.jsonl` on
+/// macOS), matching Tauri's `app_data_dir()` resolution for the
+/// `identifier` in `apps/desktop/src-tauri/tauri.conf.json`. `health`'s
+/// default when `--timing-log` is not given; the CLI has no other notion of
+/// an app data dir, so this resolves it through `dirs` directly rather than
+/// adding one.
+pub fn default_timing_log_path() -> PathBuf {
+    dirs::data_dir()
+        .unwrap_or_else(|| PathBuf::from("/"))
+        .join("com.skillstudio.app")
+        .join("timing.jsonl")
+}
+
 /// `$XDG_DATA_HOME/skill-studio`, or `~/.local/share/skill-studio` when
 /// `XDG_DATA_HOME` is unset, matching the XDG base directory spec.
 fn data_root() -> PathBuf {

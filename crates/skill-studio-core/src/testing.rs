@@ -154,11 +154,12 @@ impl FixtureBuilder {
             }
         }
         self.dirs.extend(ancestors);
-        FixtureFs {
+        FixtureFs::from_state(FixtureState {
             dirs: self.dirs,
             files: self.files,
             aliases: self.aliases,
-        }
+            ..Default::default()
+        })
     }
 
     /// Like [`Self::build_fs`], but first substitutes [`FIXTURE_HOME_TOKEN`]
@@ -269,18 +270,169 @@ fn symlink(_target: &Path, _link: &Path) -> std::io::Result<()> {
     ))
 }
 
-/// In-memory [`ScopeFs`]. Aliases resolve lexically, component by component.
-#[derive(Debug, Clone)]
-pub struct FixtureFs {
+/// The state a [`FixtureFs`] shares across its clones.
+///
+/// Interior-mutable (behind `FixtureFs`'s `Mutex`) so the `fsops_*` methods,
+/// the only ones that mutate, can take `&self`, matching every other
+/// [`ScopeFs`] method's signature. The original read-side methods
+/// (`write_atomic`, `rename`, `remove_file`, `create_dir_all`, `symlink`)
+/// stay stubbed as read-only errors; only `fsops.rs`'s primitives write
+/// through this fixture.
+#[derive(Debug, Clone, Default)]
+struct FixtureState {
     dirs: Vec<PathBuf>,
     files: BTreeMap<PathBuf, Vec<u8>>,
     aliases: BTreeMap<PathBuf, PathBuf>,
+    /// A per-path stand-in for a real inode number, so `fsops_device_inode`
+    /// can tell "the same on-disk object, looked up twice" apart from "a
+    /// different object that now happens to sit at this path" the way a
+    /// real filesystem's inode number does. Moved with its path by
+    /// `extract_subtree`/`insert_subtree`, so a rename or an exchange
+    /// carries the identity along rather than minting a new one.
+    identities: BTreeMap<PathBuf, u64>,
+    next_identity: u64,
+}
+
+/// One path and everything under it, lifted out of a [`FixtureState`] so it
+/// can be reinserted under a different path. Used by [`FixtureFs::fsops_rename`]
+/// and [`FixtureFs::fsops_exchange`], the only two `ScopeFs` calls that move
+/// a whole directory (which may hold nested files and directories) rather
+/// than one leaf.
+struct Subtree {
+    dirs: Vec<PathBuf>,
+    files: BTreeMap<PathBuf, Vec<u8>>,
+    aliases: BTreeMap<PathBuf, PathBuf>,
+    identities: BTreeMap<PathBuf, u64>,
+}
+
+fn rebase(path: &Path, old_root: &Path, new_root: &Path) -> PathBuf {
+    if path == old_root {
+        return new_root.to_path_buf();
+    }
+    match path.strip_prefix(old_root) {
+        Ok(rest) => new_root.join(rest),
+        Err(_) => path.to_path_buf(),
+    }
+}
+
+fn in_subtree(path: &Path, root: &Path) -> bool {
+    path == root || path.starts_with(root)
+}
+
+impl FixtureState {
+    /// Existence at exactly `path` (not "has a descendant"), matching what
+    /// `create_dir`/`open(O_EXCL)`/`remove` check on a real filesystem.
+    fn exact_exists(&self, path: &Path) -> bool {
+        self.dirs.iter().any(|d| d == path)
+            || self.files.contains_key(path)
+            || self.aliases.contains_key(path)
+    }
+
+    fn fresh_identity(&mut self, path: &Path) {
+        let id = self.next_identity;
+        self.next_identity += 1;
+        self.identities.insert(path.to_path_buf(), id);
+    }
+
+    /// Removes every entry at or under `root` and returns it.
+    fn extract_subtree(&mut self, root: &Path) -> Subtree {
+        let mut dirs = Vec::new();
+        self.dirs.retain(|d| {
+            if in_subtree(d, root) {
+                dirs.push(d.clone());
+                false
+            } else {
+                true
+            }
+        });
+        Subtree {
+            dirs,
+            files: extract_map(&mut self.files, root),
+            aliases: extract_map(&mut self.aliases, root),
+            identities: extract_map(&mut self.identities, root),
+        }
+    }
+
+    /// Reinserts a `Subtree` extracted from `old_root`, rebasing every path
+    /// onto `new_root`.
+    fn insert_subtree(&mut self, subtree: Subtree, old_root: &Path, new_root: &Path) {
+        for d in subtree.dirs {
+            self.dirs.push(rebase(&d, old_root, new_root));
+        }
+        insert_map(&mut self.files, subtree.files, old_root, new_root);
+        insert_map(&mut self.aliases, subtree.aliases, old_root, new_root);
+        insert_map(&mut self.identities, subtree.identities, old_root, new_root);
+    }
+}
+
+/// Removes every `(path, value)` at or under `root` from `map` and returns
+/// them, shared by [`FixtureState::extract_subtree`] across its three maps
+/// (`files`, `aliases`, `identities`) which otherwise repeat the same
+/// collect-then-remove loop.
+fn extract_map<V>(map: &mut BTreeMap<PathBuf, V>, root: &Path) -> BTreeMap<PathBuf, V> {
+    let keys: Vec<PathBuf> = map
+        .keys()
+        .filter(|p| in_subtree(p, root))
+        .cloned()
+        .collect();
+    keys.into_iter()
+        .map(|path| {
+            let value = map.remove(&path).unwrap();
+            (path, value)
+        })
+        .collect()
+}
+
+/// Inserts every `(path, value)` from `source` into `map`, rebased from
+/// `old_root` onto `new_root`; the map counterpart of the plain `Vec` loop
+/// [`FixtureState::insert_subtree`] uses for `dirs`.
+fn insert_map<V>(
+    map: &mut BTreeMap<PathBuf, V>,
+    source: BTreeMap<PathBuf, V>,
+    old_root: &Path,
+    new_root: &Path,
+) {
+    for (path, value) in source {
+        map.insert(rebase(&path, old_root, new_root), value);
+    }
+}
+
+/// In-memory [`ScopeFs`]. Aliases resolve lexically, component by component.
+///
+/// Clones share the same underlying state (an `Arc<Mutex<..>>`): a write one
+/// clone makes through an `fsops_*` method is visible through every other
+/// clone and through the original, the same way two `RealFs` handles share
+/// one real directory.
+#[derive(Debug, Clone)]
+pub struct FixtureFs {
+    state: Arc<Mutex<FixtureState>>,
 }
 
 impl FixtureFs {
+    fn from_state(mut state: FixtureState) -> Self {
+        let paths: Vec<PathBuf> = state
+            .dirs
+            .iter()
+            .cloned()
+            .chain(state.files.keys().cloned())
+            .chain(state.aliases.keys().cloned())
+            .collect();
+        for path in paths {
+            state.fresh_identity(&path);
+        }
+        FixtureFs {
+            state: Arc::new(Mutex::new(state)),
+        }
+    }
+
+    fn lock(&self) -> std::sync::MutexGuard<'_, FixtureState> {
+        self.state.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
     fn exists(&self, path: &Path) -> bool {
-        self.dirs.iter().any(|d| d == path || d.starts_with(path))
-            || self.files.keys().any(|f| f == path || f.starts_with(path))
+        let state = self.lock();
+        state.dirs.iter().any(|d| d == path || d.starts_with(path))
+            || state.files.keys().any(|f| f == path || f.starts_with(path))
     }
 
     /// Walks `path` one component at a time. An alias may be registered on
@@ -292,17 +444,18 @@ impl FixtureFs {
     /// target or the substitution introduces are collapsed lexically, the
     /// same normalization `std::fs::canonicalize` performs on real disk.
     fn resolve(&self, path: &Path) -> Option<PathBuf> {
+        let state = self.lock();
         let mut lexical = PathBuf::new();
         let mut out = PathBuf::new();
         for component in path.components() {
             lexical.push(component);
             let parent = out.clone();
             out.push(component);
-            if let Some(target) = self.aliases.get(&lexical) {
+            if let Some(target) = state.aliases.get(&lexical) {
                 out = Self::join_normalized(&parent, target);
             }
             let mut hops = 0;
-            while let Some(target) = self.aliases.get(&out) {
+            while let Some(target) = state.aliases.get(&out) {
                 hops += 1;
                 if hops > 32 {
                     return None;
@@ -370,18 +523,25 @@ impl ScopeFs for FixtureFs {
 
     fn symlink_metadata(&self, path: &Path) -> std::io::Result<FileFacts> {
         let path = &self.resolve_leaf(path);
-        let kind = if self.aliases.contains_key(path) {
-            FileKind::Symlink
-        } else if self.files.contains_key(path) {
-            FileKind::File
-        } else if self.exists(path) {
-            FileKind::Dir
-        } else {
-            return Err(Self::not_found(path));
+        let kind = {
+            let state = self.lock();
+            if state.aliases.contains_key(path) {
+                Some(FileKind::Symlink)
+            } else if state.files.contains_key(path) {
+                Some(FileKind::File)
+            } else {
+                None
+            }
         };
+        let kind = match kind {
+            Some(kind) => kind,
+            None if self.exists(path) => FileKind::Dir,
+            None => return Err(Self::not_found(path)),
+        };
+        let state = self.lock();
         Ok(FileFacts {
             kind,
-            len: self.files.get(path).map(|b| b.len() as u64).unwrap_or(0),
+            len: state.files.get(path).map(|b| b.len() as u64).unwrap_or(0),
             modified: None,
             mode: None,
         })
@@ -389,7 +549,8 @@ impl ScopeFs for FixtureFs {
 
     fn read_link(&self, path: &Path) -> std::io::Result<PathBuf> {
         let path = self.resolve_leaf(path);
-        self.aliases
+        self.lock()
+            .aliases
             .get(&path)
             .cloned()
             .ok_or_else(|| Self::not_found(&path))
@@ -401,18 +562,19 @@ impl ScopeFs for FixtureFs {
 
     fn read_dir(&self, path: &Path) -> std::io::Result<Vec<DirEntryFacts>> {
         let dir = self.canonicalize(path)?;
+        let state = self.lock();
         let mut names: BTreeMap<String, FileKind> = BTreeMap::new();
-        for d in &self.dirs {
+        for d in &state.dirs {
             if d.parent() == Some(&dir) {
                 names.insert(crate::identity::leaf_name(d), FileKind::Dir);
             }
         }
-        for f in self.files.keys() {
+        for f in state.files.keys() {
             if f.parent() == Some(&dir) {
                 names.insert(crate::identity::leaf_name(f), FileKind::File);
             }
         }
-        for a in self.aliases.keys() {
+        for a in state.aliases.keys() {
             if a.parent() == Some(&dir) {
                 names.insert(crate::identity::leaf_name(a), FileKind::Symlink);
             }
@@ -425,7 +587,8 @@ impl ScopeFs for FixtureFs {
 
     fn read_capped(&self, path: &Path, max_bytes: u64) -> std::io::Result<Vec<u8>> {
         let resolved = self.canonicalize(path)?;
-        let bytes = self
+        let state = self.lock();
+        let bytes = state
             .files
             .get(&resolved)
             .ok_or_else(|| Self::not_found(path))?;
@@ -444,7 +607,8 @@ impl ScopeFs for FixtureFs {
 
     fn read_prefix(&self, path: &Path, limit: u64) -> std::io::Result<(Vec<u8>, bool)> {
         let resolved = self.canonicalize(path)?;
-        let bytes = self
+        let state = self.lock();
+        let bytes = state
             .files
             .get(&resolved)
             .ok_or_else(|| Self::not_found(path))?;
@@ -476,6 +640,160 @@ impl ScopeFs for FixtureFs {
     fn symlink(&self, _: &ExclusiveGuard, _: &ScopedPath, _: &ScopedPath) -> std::io::Result<()> {
         Err(std::io::Error::other("FixtureFs is read-only"))
     }
+
+    fn fsops_device_inode(&self, path: &Path) -> std::io::Result<(u64, u64)> {
+        let resolved = self.resolve_leaf(path);
+        let state = self.lock();
+        state
+            .identities
+            .get(&resolved)
+            .map(|id| (0, *id))
+            .ok_or_else(|| Self::not_found(&resolved))
+    }
+
+    fn fsops_fsync_file(&self, path: &Path) -> std::io::Result<()> {
+        let path = self.resolve_leaf(path);
+        if self.lock().files.contains_key(&path) {
+            Ok(())
+        } else {
+            Err(Self::not_found(&path))
+        }
+    }
+
+    fn fsops_fsync_dir(&self, path: &Path) -> std::io::Result<()> {
+        let path = self.resolve_leaf(path);
+        if self.lock().dirs.iter().any(|d| d == &path) {
+            Ok(())
+        } else {
+            Err(Self::not_found(&path))
+        }
+    }
+
+    fn fsops_create_dir(&self, path: &Path) -> std::io::Result<()> {
+        let path = &self.resolve_leaf(path);
+        let mut state = self.lock();
+        let parent_ok = match path.parent() {
+            Some(parent) if !parent.as_os_str().is_empty() => {
+                state.dirs.iter().any(|d| d == parent)
+            }
+            _ => true,
+        };
+        if !parent_ok {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::NotFound,
+                format!("{}: parent does not exist", path.display()),
+            ));
+        }
+        if state.exact_exists(path) {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::AlreadyExists,
+                path.display().to_string(),
+            ));
+        }
+        state.dirs.push(path.to_path_buf());
+        state.fresh_identity(path);
+        Ok(())
+    }
+
+    fn fsops_write_new_file(&self, path: &Path, bytes: &[u8]) -> std::io::Result<()> {
+        let path = &self.resolve_leaf(path);
+        let mut state = self.lock();
+        if state.exact_exists(path) {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::AlreadyExists,
+                path.display().to_string(),
+            ));
+        }
+        state.files.insert(path.to_path_buf(), bytes.to_vec());
+        state.fresh_identity(path);
+        Ok(())
+    }
+
+    fn fsops_rename(&self, from: &Path, to: &Path) -> std::io::Result<()> {
+        let from = &self.resolve_leaf(from);
+        let to = &self.resolve_leaf(to);
+        let mut state = self.lock();
+        if !state.exact_exists(from) {
+            return Err(Self::not_found(from));
+        }
+        if state.exact_exists(to) {
+            let has_children = state.dirs.iter().any(|d| d != to && d.starts_with(to))
+                || state.files.keys().any(|f| f != to && f.starts_with(to))
+                || state.aliases.keys().any(|a| a != to && a.starts_with(to));
+            if has_children {
+                return Err(std::io::Error::other(format!(
+                    "{}: destination is not empty",
+                    to.display()
+                )));
+            }
+            state.dirs.retain(|d| d != to);
+            state.files.remove(to);
+            state.aliases.remove(to);
+            state.identities.remove(to);
+        }
+        let subtree = state.extract_subtree(from);
+        state.insert_subtree(subtree, from, to);
+        Ok(())
+    }
+
+    fn fsops_symlink(&self, target: &Path, link: &Path) -> std::io::Result<()> {
+        let mut state = self.lock();
+        if state.exact_exists(link) {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::AlreadyExists,
+                link.display().to_string(),
+            ));
+        }
+        state
+            .aliases
+            .insert(link.to_path_buf(), target.to_path_buf());
+        state.fresh_identity(link);
+        Ok(())
+    }
+
+    fn fsops_remove_dir(&self, path: &Path) -> std::io::Result<()> {
+        let mut state = self.lock();
+        if !state.dirs.iter().any(|d| d == path) {
+            return Err(Self::not_found(path));
+        }
+        let has_children = state.dirs.iter().any(|d| d != path && d.starts_with(path))
+            || state.files.keys().any(|f| f.starts_with(path))
+            || state.aliases.keys().any(|a| a.starts_with(path));
+        if has_children {
+            return Err(std::io::Error::other(format!(
+                "{}: directory not empty",
+                path.display()
+            )));
+        }
+        state.dirs.retain(|d| d != path);
+        state.identities.remove(path);
+        Ok(())
+    }
+
+    fn fsops_remove_file(&self, path: &Path) -> std::io::Result<()> {
+        let mut state = self.lock();
+        if state.files.remove(path).is_some() || state.aliases.remove(path).is_some() {
+            state.identities.remove(path);
+            Ok(())
+        } else {
+            Err(Self::not_found(path))
+        }
+    }
+
+    fn fsops_exchange(&self, a: &Path, b: &Path) -> std::io::Result<()> {
+        let mut state = self.lock();
+        if !state.exact_exists(a) {
+            return Err(Self::not_found(a));
+        }
+        if !state.exact_exists(b) {
+            return Err(Self::not_found(b));
+        }
+        let sub_a = state.extract_subtree(a);
+        let sub_b = state.extract_subtree(b);
+        state.insert_subtree(sub_a, a, b);
+        state.insert_subtree(sub_b, b, a);
+        Ok(())
+    }
 }
 
 /// Wraps another [`ScopeFs`], failing exactly one `write_atomic` call and
@@ -485,6 +803,7 @@ pub struct FailingFs {
     inner: Arc<dyn ScopeFs>,
     fail_next_write_atomic: AtomicBool,
     fail_next_rename: AtomicBool,
+    fail_next_create_dir: AtomicBool,
 }
 
 impl FailingFs {
@@ -494,6 +813,7 @@ impl FailingFs {
             inner,
             fail_next_write_atomic: AtomicBool::new(false),
             fail_next_rename: AtomicBool::new(false),
+            fail_next_create_dir: AtomicBool::new(false),
         }
     }
 
@@ -509,6 +829,14 @@ impl FailingFs {
     /// example park's link removal landing before the directory rename.
     pub fn fail_next_rename(&self) {
         self.fail_next_rename.store(true, Ordering::SeqCst);
+    }
+
+    /// The next `fsops_create_dir` call returns an error instead of
+    /// reaching `inner`; later calls delegate normally again. Lets a test
+    /// simulate a quarantine directory that fails to create, before an
+    /// `fsops::swap` reaches its crash-critical exchange.
+    pub fn fail_next_create_dir(&self) {
+        self.fail_next_create_dir.store(true, Ordering::SeqCst);
     }
 }
 
@@ -571,6 +899,41 @@ impl ScopeFs for FailingFs {
         link: &ScopedPath,
     ) -> std::io::Result<()> {
         self.inner.symlink(guard, target, link)
+    }
+    fn fsops_device_inode(&self, path: &Path) -> std::io::Result<(u64, u64)> {
+        self.inner.fsops_device_inode(path)
+    }
+    fn fsops_fsync_file(&self, path: &Path) -> std::io::Result<()> {
+        self.inner.fsops_fsync_file(path)
+    }
+    fn fsops_fsync_dir(&self, path: &Path) -> std::io::Result<()> {
+        self.inner.fsops_fsync_dir(path)
+    }
+    fn fsops_create_dir(&self, path: &Path) -> std::io::Result<()> {
+        if self.fail_next_create_dir.swap(false, Ordering::SeqCst) {
+            return Err(std::io::Error::other(
+                "FailingFs: injected fsops_create_dir failure",
+            ));
+        }
+        self.inner.fsops_create_dir(path)
+    }
+    fn fsops_write_new_file(&self, path: &Path, bytes: &[u8]) -> std::io::Result<()> {
+        self.inner.fsops_write_new_file(path, bytes)
+    }
+    fn fsops_rename(&self, from: &Path, to: &Path) -> std::io::Result<()> {
+        self.inner.fsops_rename(from, to)
+    }
+    fn fsops_symlink(&self, target: &Path, link: &Path) -> std::io::Result<()> {
+        self.inner.fsops_symlink(target, link)
+    }
+    fn fsops_remove_dir(&self, path: &Path) -> std::io::Result<()> {
+        self.inner.fsops_remove_dir(path)
+    }
+    fn fsops_remove_file(&self, path: &Path) -> std::io::Result<()> {
+        self.inner.fsops_remove_file(path)
+    }
+    fn fsops_exchange(&self, a: &Path, b: &Path) -> std::io::Result<()> {
+        self.inner.fsops_exchange(a, b)
     }
 }
 
@@ -1239,5 +1602,50 @@ mod tests {
         );
 
         std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    /// Given a directory alias inside the fixture, when an `fsops_*` write
+    /// method is called through it (rather than through its resolved
+    /// target), then the write lands where reads (`symlink_metadata`,
+    /// `read_capped`, `fsops_device_inode`) already resolve the alias to,
+    /// not under a lexical key those reads never see - matching `RealFs`,
+    /// where the kernel resolves an intermediate symlink for every syscall.
+    #[test]
+    fn fixture_writes_through_a_directory_alias_are_visible_to_reads_or_names_the_lexical_key() {
+        let fs = FixtureBuilder::new()
+            .dir("/root")
+            .dir("/root/real")
+            .alias("/root/link", "/root/real")
+            .build_fs();
+
+        fs.fsops_create_dir(Path::new("/root/link/sub"))
+            .expect("create a dir written through the alias");
+        fs.fsops_write_new_file(Path::new("/root/link/sub/file.txt"), b"hello")
+            .expect("write a file written through the alias");
+
+        assert_eq!(
+            fs.read_capped(Path::new("/root/real/sub/file.txt"), u64::MAX)
+                .expect("the write must be visible under the alias's resolved path"),
+            b"hello",
+            "a write through the alias must not be stuck at a lexical key reads never see"
+        );
+        assert!(
+            fs.symlink_metadata(Path::new("/root/link/sub/file.txt"))
+                .is_ok(),
+            "the write must also be visible through the alias itself"
+        );
+
+        fs.fsops_rename(Path::new("/root/link/sub"), Path::new("/root/link/renamed"))
+            .expect("rename a dir written through the alias");
+        assert!(
+            fs.symlink_metadata(Path::new("/root/real/renamed/file.txt"))
+                .is_ok(),
+            "a rename through the alias must land under the resolved path too"
+        );
+
+        fs.fsops_fsync_dir(Path::new("/root/link/renamed"))
+            .expect("fsync a dir reached through the alias");
+        fs.fsops_fsync_file(Path::new("/root/link/renamed/file.txt"))
+            .expect("fsync a file reached through the alias");
     }
 }
