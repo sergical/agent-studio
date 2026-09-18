@@ -449,6 +449,7 @@ mod tests {
             opencode_config_kind: None,
             scan_partial: false,
             scan_observations: Vec::new(),
+            unread_roots: Vec::new(),
         }
     }
 
