@@ -17,6 +17,7 @@ import {
 import {
   confirmStoreInstallTrust,
   declineStoreInstallTrust,
+  parentProgressForPhase,
   startStoreInstall,
 } from "./store-install-flow";
 import {
@@ -56,6 +57,7 @@ interface SkillStoreInstallFlowProps {
   skill: SkillWithStatus;
   resolvedTopSource: string | null;
   onInstallStart: (skillName: string) => void;
+  onInstallPaused: () => void;
   onInstallComplete: (result: SkillInstallCompletion) => void;
 }
 
@@ -64,6 +66,7 @@ export function SkillStoreInstallFlow({
   skill,
   resolvedTopSource,
   onInstallStart,
+  onInstallPaused,
   onInstallComplete,
 }: SkillStoreInstallFlowProps) {
   const [readers, setReaders] = useState<AgentId[]>([]);
@@ -142,6 +145,10 @@ export function SkillStoreInstallFlow({
     const trackedId = operationIdRef.current;
     setOperation((current) => applyAddSkillOperationEvent(current, incoming, trackedId));
     if (incoming.operation_id !== trackedId) return;
+    // Review round 3 (B1): `needs-trust` hands control to `TrustConfirmFooter` in
+    // this drawer, so the parent's `InstallProgressModal` must stop showing - else
+    // the trust prompt sits hidden under an endless "Installing…" spinner.
+    if (parentProgressForPhase(incoming.phase) === "clear") onInstallPaused();
     if (!shouldConsumeAddSkillOperation(incoming, consumedIdRef.current)) return;
     consumedIdRef.current = incoming.operation_id;
     finishOperation(incoming);
@@ -254,6 +261,7 @@ export function SkillStoreInstallFlow({
     operationIdRef.current = undefined;
     setOperation(undefined);
     setIsInstalling(false);
+    onInstallPaused();
     if (!operationId) return;
     try {
       await declineStoreInstallTrust(operationId, cancelAddSkillOperation);
@@ -271,14 +279,22 @@ export function SkillStoreInstallFlow({
     const identity = operation?.untrusted_source?.identity;
     if (!operationId || !identity || trustBusy) return;
     setTrustBusy(true);
+    // The parent's `InstallProgressModal` was cleared for `needs-trust`
+    // (`applyOperationEvent`); show it again so the retry has the same
+    // "Installing…" feedback the initial attempt had.
+    onInstallStart(skill.name);
     try {
       const retryOperationId = crypto.randomUUID();
+      // The retry id is client-generated, so it is tracked before the await
+      // below, not after: a terminal event for the retry op delivered while
+      // this call is in flight would otherwise be dropped by the id filter
+      // in `applyOperationEvent` (review round 3, N1).
+      operationIdRef.current = retryOperationId;
+      consumedIdRef.current = undefined;
       const settled = await confirmStoreInstallTrust(operationId, retryOperationId, identity, {
         confirmTrust: confirmAddSkillTrust,
         getOperation: getAddSkillOperation,
       });
-      operationIdRef.current = settled.operation_id;
-      consumedIdRef.current = undefined;
       applyOperationEvent(settled);
     } catch (error) {
       setIsInstalling(false);

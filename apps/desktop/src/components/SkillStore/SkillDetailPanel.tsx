@@ -15,6 +15,7 @@ interface SkillDetailPanelProps {
   skill: SkillWithStatus;
   onClose: () => void;
   onInstallStart: (skillName: string) => void;
+  onInstallPaused: () => void;
   onInstallComplete: (result: {
     success: boolean;
     error?: string;
@@ -28,6 +29,7 @@ export function SkillDetailPanel({
   skill,
   onClose,
   onInstallStart,
+  onInstallPaused,
   onInstallComplete,
   onRemoveComplete,
 }: SkillDetailPanelProps) {
@@ -91,6 +93,7 @@ export function SkillDetailPanel({
         skill={skill}
         resolvedTopSource={resolvedTopSource}
         onInstallStart={onInstallStart}
+        onInstallPaused={onInstallPaused}
         onInstallComplete={onInstallComplete}
         onRemoveComplete={onRemoveComplete}
       />

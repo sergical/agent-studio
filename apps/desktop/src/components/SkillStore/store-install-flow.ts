@@ -6,7 +6,11 @@
 // the project rule that only `*-api.ts` names a Tauri command.
 // ============================================================================
 
-import type { AddSkillOperationEvent, AddSkillRequest } from "@skill-studio/lib";
+import type {
+  AddSkillOperationEvent,
+  AddSkillOperationPhase,
+  AddSkillRequest,
+} from "@skill-studio/lib";
 
 interface StoreInstallStartApi {
   start: (operationId: string, request: AddSkillRequest) => Promise<AddSkillOperationEvent>;
@@ -56,4 +60,14 @@ export async function declineStoreInstallTrust(
   cancel: (operationId: string) => Promise<AddSkillOperationEvent>,
 ): Promise<AddSkillOperationEvent> {
   return cancel(operationId);
+}
+
+/** Whether the parent's `InstallProgressModal` should keep tracking this component's
+ * install (review round 3, B1). `needs-trust` hands control to the drawer's own
+ * `TrustConfirmFooter`, and a decline settles on `cancelled` - both must clear the
+ * parent's modal or the trust prompt sits hidden under an endless "Installing…"
+ * spinner. Every other phase keeps the modal as the caller already has it. */
+export function parentProgressForPhase(phase: AddSkillOperationPhase): "show" | "clear" | "keep" {
+  if (phase === "needs-trust" || phase === "cancelled") return "clear";
+  return "keep";
 }

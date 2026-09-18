@@ -313,6 +313,13 @@ export function SkillStore({ compact = false }: SkillStoreProps = {}) {
     });
   };
 
+  // Review round 3 (B1): clears the modal for `needs-trust` and for a decline at the
+  // trust prompt, so the drawer's own trust prompt is not hidden under an endless
+  // "Installing…" spinner (`InstallProgressModal` is a fixed, full-screen `Dialog`).
+  const handleInstallPaused = () => {
+    setInstallProgress(null);
+  };
+
   const handleInstallComplete = (result: {
     success: boolean;
     error?: string;
@@ -480,6 +487,7 @@ export function SkillStore({ compact = false }: SkillStoreProps = {}) {
             skill={selectedSkill}
             onClose={() => setSelectedSkillName(null)}
             onInstallStart={handleInstallStart}
+            onInstallPaused={handleInstallPaused}
             onInstallComplete={handleInstallComplete}
             onRemoveComplete={handleRemoveComplete}
           />
