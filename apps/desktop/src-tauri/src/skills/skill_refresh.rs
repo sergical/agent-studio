@@ -1264,7 +1264,13 @@ fn read_codex_allow_implicit_invocation(skill_dir: &Path) -> Option<bool> {
         .as_bool()
 }
 
-fn snapshot_owner_ids(skills: &[InstalledSkill]) -> Vec<String> {
+/// Every owner id any deployment in `skills` carries - the one definition of
+/// "current owner ids" `commands.rs` and this module both feed into
+/// `skill_update_check::state_for_owner`/`clear_owner_after_update`'s
+/// sole-Global-owner fallback, so the read and write predicates cannot
+/// drift out of sync with each other. `pub(super)` rather than private so
+/// `commands.rs` (the sibling module under `skills/`) can call it too.
+pub(super) fn snapshot_owner_ids(skills: &[InstalledSkill]) -> Vec<String> {
     skills
         .iter()
         .flat_map(|skill| skill.deployments.iter())

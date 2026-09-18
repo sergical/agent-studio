@@ -1354,6 +1354,12 @@ mod tests {
             unread_roots: Vec::new(),
         };
         let refresh_state = skill_refresh::SkillRefreshState::fixture(snapshot);
+        // Both owners, the way `update_skill`/`update_all_skills` pass the
+        // fresh snapshot's own owner ids rather than re-reading `refresh_state`.
+        let current_owner_ids = vec![
+            "skills-sh/global".to_string(),
+            "dotagents/global".to_string(),
+        ];
 
         // Seed the on-disk store the way the background loop's last check
         // would have left it before `update_skill` ran: both owners outdated.
@@ -1393,10 +1399,15 @@ mod tests {
         std::fs::create_dir_all(update_check_path.parent().unwrap()).unwrap();
         std::fs::write(&update_check_path, serde_json::to_string(&store).unwrap()).unwrap();
 
-        let built =
-            clear_outdated_state(&app_data, &refresh_state, "alpha", Some("skills-sh/global"))
-                .unwrap()
-                .expect("a snapshot existed to patch");
+        let built = clear_outdated_state(
+            &app_data,
+            &refresh_state,
+            "alpha",
+            Some("skills-sh/global"),
+            &current_owner_ids,
+        )
+        .unwrap()
+        .expect("a snapshot existed to patch");
         assert_eq!(
             built.skills[0].update_owner_ids,
             vec!["dotagents/global".to_string()]
@@ -1415,10 +1426,15 @@ mod tests {
             "a second still-outdated owner must keep the badge on"
         );
 
-        let built =
-            clear_outdated_state(&app_data, &refresh_state, "alpha", Some("dotagents/global"))
-                .unwrap()
-                .expect("a snapshot existed to patch");
+        let built = clear_outdated_state(
+            &app_data,
+            &refresh_state,
+            "alpha",
+            Some("dotagents/global"),
+            &current_owner_ids,
+        )
+        .unwrap()
+        .expect("a snapshot existed to patch");
         assert!(built.skills[0].update_owner_ids.is_empty());
         assert!(
             !built.skills[0].has_update,
@@ -1493,6 +1509,9 @@ mod tests {
             unread_roots: Vec::new(),
         };
         let refresh_state = skill_refresh::SkillRefreshState::fixture(snapshot);
+        // The sole owner, the way `update_skill`/`update_all_skills` pass the
+        // fresh snapshot's own owner ids rather than re-reading `refresh_state`.
+        let current_owner_ids = vec![owner_id.to_string()];
 
         // A genuine migrated v1 store on disk: no top-level `"owners"` key,
         // only the legacy name-keyed pair - the same shape
@@ -1523,9 +1542,15 @@ mod tests {
         )
         .unwrap();
 
-        let built = clear_outdated_state(&app_data, &refresh_state, "alpha", Some(owner_id))
-            .unwrap()
-            .expect("a snapshot existed to patch");
+        let built = clear_outdated_state(
+            &app_data,
+            &refresh_state,
+            "alpha",
+            Some(owner_id),
+            &current_owner_ids,
+        )
+        .unwrap()
+        .expect("a snapshot existed to patch");
         assert!(!built.skills[0].has_update);
 
         // Rebuild overlays straight from the store, the way the next full
@@ -1931,22 +1956,32 @@ mod tests {
     /// `update_all_clears_both_owners_of_a_skill_installed_twice_or_names_the_owner_left_outdated`
     /// (B1, review round 2): `skillUpdateOwnerTargets` sends one target per
     /// outdated owner, so a skill outdated for two owners (e.g. a
-    /// skills.sh-owned copy and a dotagents-owned copy of the same name)
-    /// produces two requests sharing one `SkillName`, and `ops::update_all`
-    /// returns two `UpdateAllItem`s with that same shared name. A
-    /// name-keyed lookup map collapses those two owners to one entry, so
-    /// the first owner's badge never clears; matching each item to its
-    /// owner by `deployment_path` (B1, review round 3) keeps them apart
-    /// since each owner's deployment lives at its own path.
+    /// Global copy and a Project copy of the same name) produces two
+    /// requests sharing one `SkillName`, and `ops::update_all` returns two
+    /// `UpdateAllItem`s with that same shared name. A name-keyed lookup map
+    /// collapses those two owners to one entry, so the first owner's badge
+    /// never clears; matching each item to its owner by `deployment_path`
+    /// (B1, review round 3) keeps them apart since each owner's deployment
+    /// lives at its own path. The two owners are a Global one and a Project
+    /// one, each with its own `.agents/skills` root - real owner ids
+    /// (`owner:v1/<scope>/[project/]<name>`, round 4 post-verdict fix) can't
+    /// express two *Global* owners of one name, since scope plus name is
+    /// the whole id there.
     #[test]
     fn update_all_clears_both_owners_of_a_skill_installed_twice_or_names_the_owner_left_outdated() {
         use skill_studio_core::dto::{UpdateAllItem, UpdateAllOutcome, UpdateOutcome};
         use skill_studio_core::identity::SkillName;
 
-        let outcome_for = |suffix: &str| UpdateOutcome {
+        let project_path = "/home/project-two";
+        let project_owner_id = format!(
+            "owner:v1/project/{}/alpha",
+            super::super::skill_deployment::encode_id_path(project_path)
+        );
+
+        let outcome_for = |suffix: &str, deployment_path: &str| UpdateOutcome {
             event_id: skill_studio_core::identity::EventId(format!("evt-{suffix}")),
             skill: SkillName("alpha".to_string()),
-            deployment_path: PathBuf::from(format!("/home/.agents/skills/alpha-{suffix}")),
+            deployment_path: PathBuf::from(deployment_path),
             tree_hash_before: "aaa".to_string(),
             tree_hash_after: "bbb".to_string(),
         };
@@ -1954,11 +1989,14 @@ mod tests {
             items: vec![
                 UpdateAllItem {
                     skill: SkillName("alpha".to_string()),
-                    outcome: Some(outcome_for("skills-sh")),
+                    outcome: Some(outcome_for("global", "/home/.agents/skills/alpha")),
                 },
                 UpdateAllItem {
                     skill: SkillName("alpha".to_string()),
-                    outcome: Some(outcome_for("dotagents")),
+                    outcome: Some(outcome_for(
+                        "project",
+                        "/home/project-two/.agents/skills/alpha",
+                    )),
                 },
             ],
             errors: std::collections::BTreeMap::new(),
@@ -1966,13 +2004,13 @@ mod tests {
         let owners = vec![
             (
                 "alpha".to_string(),
-                Some("skills-sh/global/alpha".to_string()),
-                PathBuf::from("/home/.agents/skills/alpha-skills-sh"),
+                Some("owner:v1/global/alpha".to_string()),
+                PathBuf::from("/home/.agents/skills/alpha"),
             ),
             (
                 "alpha".to_string(),
-                Some("dotagents/global/alpha".to_string()),
-                PathBuf::from("/home/.agents/skills/alpha-dotagents"),
+                Some(project_owner_id.clone()),
+                PathBuf::from("/home/project-two/.agents/skills/alpha"),
             ),
         ];
 
@@ -1983,12 +2021,9 @@ mod tests {
             vec![
                 (
                     "alpha".to_string(),
-                    Some("skills-sh/global/alpha".to_string())
+                    Some("owner:v1/global/alpha".to_string())
                 ),
-                (
-                    "alpha".to_string(),
-                    Some("dotagents/global/alpha".to_string())
-                ),
+                ("alpha".to_string(), Some(project_owner_id)),
             ],
             "both owners of the twice-installed skill must clear: {cleared:?}"
         );
@@ -3085,12 +3120,7 @@ fn build_update_request(
                 let owner_id = deployment.owner_id.as_deref().ok_or(
                     "Update is not available: the selected deployment has no owner identity",
                 )?;
-                let current_owner_ids: Vec<String> = snapshot
-                    .skills
-                    .iter()
-                    .flat_map(|skill| skill.deployments.iter())
-                    .filter_map(|deployment| deployment.owner_id.clone())
-                    .collect();
+                let current_owner_ids = skill_refresh::snapshot_owner_ids(&snapshot.skills);
                 let latest =
                     skill_update_check::state_for_owner(&store, owner_id, &current_owner_ids)
                         .and_then(|state| state.latest_commit.clone());
@@ -3158,32 +3188,26 @@ fn clear_update_flag(skill: &mut InstalledSkill, owner_id: Option<&str>) {
 /// `AppHandle` so a test can drive it without a running Tauri app; returns
 /// the snapshot `patch_snapshot` built (`None` when there was no snapshot
 /// yet to patch) so a caller with an `AppHandle` can still emit it.
+///
+/// `current_owner_ids` is the caller's already-in-hand set (both
+/// `update_skill` and `update_all_skills` hold the fresh snapshot
+/// `rebuild_fresh_lifecycle_snapshot` just returned) rather than a second
+/// `refresh_state.snapshot` lock acquisition here - re-locking would also
+/// silently fall back to an empty set (disabling the legacy fallback below)
+/// whenever the fresh snapshot hadn't been published to `refresh_state` yet.
 fn clear_outdated_state(
     app_data: &Path,
     refresh_state: &SkillRefreshState,
     skill_name: &str,
     owner_id: Option<&str>,
+    current_owner_ids: &[String],
 ) -> Result<Option<skill_refresh::SkillSnapshot>, String> {
     if let Some(owner_id) = owner_id {
         // `legacy_fallback_name` (inside `clear_owner_after_update`) needs
         // every currently-known owner id to tell a sole Global owner from
         // a name shared by more than one - the same set `state_for_owner`
         // checks against on the read side.
-        let current_owner_ids: Vec<String> = refresh_state
-            .snapshot
-            .read()
-            .map_err(|e| format!("snapshot lock poisoned: {e}"))?
-            .as_ref()
-            .map(|snapshot| {
-                snapshot
-                    .skills
-                    .iter()
-                    .flat_map(|skill| skill.deployments.iter())
-                    .filter_map(|deployment| deployment.owner_id.clone())
-                    .collect()
-            })
-            .unwrap_or_default();
-        skill_update_check::clear_owner_after_update(app_data, owner_id, &current_owner_ids)?;
+        skill_update_check::clear_owner_after_update(app_data, owner_id, current_owner_ids)?;
     }
     skill_refresh::patch_snapshot(refresh_state, |snapshot| {
         if let Some(entry) = snapshot.skills.iter_mut().find(|s| s.name == skill_name) {
@@ -3200,6 +3224,7 @@ fn clear_outdated_state_and_emit(
     refresh_state: &SkillRefreshState,
     skill_name: &str,
     owner_id: Option<&str>,
+    current_owner_ids: &[String],
 ) {
     let app_data = match app.path().app_data_dir() {
         Ok(app_data) => app_data,
@@ -3208,7 +3233,13 @@ fn clear_outdated_state_and_emit(
             return;
         }
     };
-    match clear_outdated_state(&app_data, refresh_state, skill_name, owner_id) {
+    match clear_outdated_state(
+        &app_data,
+        refresh_state,
+        skill_name,
+        owner_id,
+        current_owner_ids,
+    ) {
         Ok(Some(built)) => {
             if let Err(e) = tauri::Emitter::emit(app, skill_refresh::SNAPSHOT_EVENT, &built) {
                 eprintln!("[update] snapshot emit failed: {e}");
@@ -3261,6 +3292,7 @@ pub async fn update_skill(
             &refresh_state,
             &skill.name,
             deployment.owner_id.as_deref(),
+            &skill_refresh::snapshot_owner_ids(&snapshot.skills),
         );
         Ok(outcome)
     })
@@ -3412,8 +3444,15 @@ pub async fn update_all_skills(
             |_, _| {},
         )?;
 
+        let current_owner_ids = skill_refresh::snapshot_owner_ids(&snapshot.skills);
         for (skill_name, owner_id) in owners_to_clear(&outcome, &owners) {
-            clear_outdated_state_and_emit(&app, &refresh_state, &skill_name, owner_id.as_deref());
+            clear_outdated_state_and_emit(
+                &app,
+                &refresh_state,
+                &skill_name,
+                owner_id.as_deref(),
+                &current_owner_ids,
+            );
         }
         Ok(outcome)
     })
