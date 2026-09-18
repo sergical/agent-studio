@@ -366,6 +366,18 @@ mod tests {
     use skill_studio_core::skill_uses::InvocationHeatmap;
     use std::collections::BTreeMap;
 
+    #[test]
+    fn skills_sh_remove_args_selects_global_flag() {
+        assert_eq!(
+            skills_sh_remove_args_for_scope("foo", InstallScope::Global),
+            vec!["skills", "remove", "foo", "--yes", "--global"]
+        );
+        assert_eq!(
+            skills_sh_remove_args_for_scope("foo", InstallScope::Project),
+            vec!["skills", "remove", "foo", "--yes"]
+        );
+    }
+
     fn dep(id: &str, name: &str, path: &str, scope: &str, dest: SkillDestination) -> Deployment {
         Deployment {
             id: id.to_string(),

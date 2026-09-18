@@ -143,7 +143,6 @@ pub async fn get_installed_skills(app: tauri::AppHandle) -> Result<Vec<Installed
 #[cfg(test)]
 mod tests {
     use super::super::skill_add::CommandRunner;
-    use super::super::skill_lifecycle::skills_sh_remove_args_for_scope;
     use super::super::skill_md_write::write_skill_md;
     use super::*;
     use std::sync::atomic::Ordering;
@@ -356,18 +355,6 @@ mod tests {
 
         assert!(error.contains("read-only"));
         assert_eq!(runner.0.load(Ordering::SeqCst), 0);
-    }
-
-    #[test]
-    fn skills_sh_remove_args_selects_global_flag() {
-        assert_eq!(
-            skills_sh_remove_args_for_scope("foo", InstallScope::Global),
-            vec!["skills", "remove", "foo", "--yes", "--global"]
-        );
-        assert_eq!(
-            skills_sh_remove_args_for_scope("foo", InstallScope::Project),
-            vec!["skills", "remove", "foo", "--yes"]
-        );
     }
 
     #[test]
