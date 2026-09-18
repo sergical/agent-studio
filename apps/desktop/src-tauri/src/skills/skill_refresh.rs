@@ -1477,9 +1477,13 @@ fn apply_skill_snapshot_overlays(
 /// `default_ports`) means the history store is never touched either.
 ///
 /// A scan failure (a lease held by another instance, an unreadable root)
-/// falls back to an empty list, marked `Partial` with the error as the
-/// single observation - there is no local classifier to fall back to
-/// anymore, so an empty snapshot is the only option.
+/// returns whatever `ops::scan` managed to read before the error, marked
+/// `Partial` with the error as an observation; a total failure (`Runtime`
+/// construction itself erroring) has nothing to fall back to but an empty
+/// list, also marked `Partial`. Either way, `store_skill_snapshot` folds a
+/// `Partial` result into the previously published snapshot rather than
+/// publishing it as-is, so an empty or short list here never overwrites a
+/// good one.
 pub(crate) struct CoreScanResult {
     pub skills: Vec<skill_studio_core::dto::InstalledSkillDto>,
     pub completeness: skill_studio_core::dto::Completeness,
@@ -3265,6 +3269,68 @@ mod tests {
 
         assert_eq!(first.revision, 1);
         assert_eq!(second.revision, 2);
+    }
+
+    /// Unit 3.3's crash test, desktop half: `ops::scan`'s own partial-root
+    /// behaviour (every skill found on a root that read successfully stays
+    /// in the result - see `crates/skill-studio-core/tests/
+    /// scan_partial_keeps_found_skills.rs` for that half) is only useful to
+    /// a user if the desktop layer doesn't then throw it away. A good
+    /// snapshot publishes "alpha"; the next rebuild hits a mid-scan error
+    /// and only finds "beta" before giving up, so `build_snapshot` marks it
+    /// `scan_partial`. `store_skill_snapshot` must publish both - not drop
+    /// "alpha" just because this run's scan didn't reach it again, and not
+    /// drop "beta" either, since that is a skill this run genuinely found.
+    #[test]
+    fn a_scan_error_sets_scan_partial_and_scan_observations_without_dropping_a_single_installed_skill(
+    ) {
+        let state = fixture_state();
+        let mut good = fixture_snapshot(Path::new("/alpha"));
+        good.skills[0].name = "alpha".to_string();
+        store_skill_snapshot(&state, good).unwrap();
+
+        let mut partial = fixture_snapshot(Path::new("/beta"));
+        partial.skills[0].name = "beta".to_string();
+        partial.scan_partial = true;
+        partial.scan_observations = vec!["global claude-code root: could not read root".into()];
+        let published = store_skill_snapshot(&state, partial).unwrap();
+
+        let names: Vec<&str> = published.skills.iter().map(|s| s.name.as_str()).collect();
+        assert!(
+            names.contains(&"alpha"),
+            "the last good snapshot's skill must survive a partial rescan: {names:?}"
+        );
+        assert!(
+            names.contains(&"beta"),
+            "a skill this run did find must still publish: {names:?}"
+        );
+        assert!(published.scan_partial);
+        assert_eq!(
+            published.scan_observations,
+            vec!["global claude-code root: could not read root".to_string()]
+        );
+    }
+
+    /// A freshly re-read skill's row (a frontmatter edit picked up before the
+    /// error hit a different root) must win over the stale one from the last
+    /// good snapshot, not the other way around.
+    #[test]
+    fn a_partial_rescan_that_still_finds_a_known_skill_publishes_its_fresh_row_not_the_stale_one() {
+        let state = fixture_state();
+        let mut good = fixture_snapshot(Path::new("/old-path"));
+        good.skills[0].name = "alpha".to_string();
+        store_skill_snapshot(&state, good).unwrap();
+
+        let mut partial = fixture_snapshot(Path::new("/new-path"));
+        partial.skills[0].name = "alpha".to_string();
+        partial.scan_partial = true;
+        let published = store_skill_snapshot(&state, partial).unwrap();
+
+        assert_eq!(published.skills.len(), 1);
+        assert_eq!(
+            published.skills[0].deployments[0].path,
+            Path::new("/new-path").to_string_lossy()
+        );
     }
 
     #[test]
