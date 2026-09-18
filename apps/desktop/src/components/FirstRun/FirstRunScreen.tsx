@@ -13,7 +13,7 @@
 import { useEffect } from "react";
 import { Button, Checkbox, Switch } from "@skill-studio/ui";
 import type { HarnessDetection } from "@skill-studio/lib";
-import { useFirstRunGate, useFirstRunScreen } from "../../hooks/useFirstRun";
+import { continueIsBlocked, useFirstRunGate, useFirstRunScreen } from "../../hooks/useFirstRun";
 
 interface FirstRunScreenProps {
   onComplete: () => void;
@@ -95,7 +95,11 @@ function FirstRunScreenBody({ onComplete }: FirstRunScreenProps) {
           <Switch checked={searchProjectFolders} onCheckedChange={setSearchProjectFolders} />
         </label>
 
-        <Button onClick={onContinue} disabled={rows == null || saving} className="w-full">
+        <Button
+          onClick={onContinue}
+          disabled={continueIsBlocked({ rows, error, saving })}
+          className="w-full"
+        >
           {saving ? "Saving..." : "Continue"}
         </Button>
       </div>

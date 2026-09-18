@@ -54,6 +54,19 @@ interface FirstRunScreenState {
   continue: () => void;
 }
 
+/** Continue waits only for detection still in flight or a save in
+ * progress. A detection error does not block it: the user continues with
+ * an empty choice, and the next launch re-detects in the background, so a
+ * failed probe can never trap them on this screen. */
+export function continueIsBlocked(state: {
+  rows: HarnessDetection[] | null;
+  error: string | null;
+  saving: boolean;
+}): boolean {
+  const detecting = state.rows == null && state.error == null;
+  return detecting || state.saving;
+}
+
 /** Detects harnesses once on mount, tracks which rows the user keeps
  * (defaulting every non-"not_found" row to kept once detection resolves),
  * and exposes `continue` to persist the choice through
