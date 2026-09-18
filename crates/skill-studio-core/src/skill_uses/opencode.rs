@@ -1,4 +1,4 @@
-//! Pure parsing of OpenCode's own session history rows into
+//! Pure parsing of `OpenCode`'s own session history rows into
 //! [`SkillInvocation`]s. No I/O: the host reads the rows (from either the
 //! `session_message`/v2 or the `part`/v1 schema) and hands them here.
 
@@ -8,7 +8,7 @@ use serde_json::Value;
 use crate::identity::AgentId;
 use crate::skill_uses::{skill_name_from_skill_md_path, SkillInvocation, SkillTrigger};
 
-/// One `session_message` row (OpenCode v2), as read by the host.
+/// One `session_message` row (`OpenCode` v2), as read by the host.
 pub struct OpenCodeMessageRow<'a> {
     /// The owning session, used for [`SkillInvocation::session`].
     pub session_id: &'a str,
@@ -22,7 +22,7 @@ pub struct OpenCodeMessageRow<'a> {
     pub directory: Option<&'a str>,
 }
 
-/// One `part` row (OpenCode v1 schema), as read by the host.
+/// One `part` row (`OpenCode` v1 schema), as read by the host.
 pub struct OpenCodePartRow<'a> {
     /// The owning session, used for [`SkillInvocation::session`].
     pub session_id: &'a str,
@@ -43,7 +43,9 @@ fn string_field<'a>(value: &'a Value, key: &str) -> Option<&'a str> {
 /// `directory`, trimmed of the "no directory recorded" case (an empty
 /// string is treated the same as absent).
 fn project_path(directory: Option<&str>) -> Option<String> {
-    directory.filter(|s| !s.is_empty()).map(|s| s.to_string())
+    directory
+        .filter(|s| !s.is_empty())
+        .map(std::string::ToString::to_string)
 }
 
 /// `ms` as a UTC timestamp, or `None` when it's out of range for
@@ -59,7 +61,7 @@ fn item_at(item: &Value, row_time_created: i64) -> Option<DateTime<Utc>> {
     match item
         .get("time")
         .and_then(|t| t.get("created"))
-        .and_then(|v| v.as_i64())
+        .and_then(serde_json::Value::as_i64)
     {
         Some(ms) => timestamp(ms),
         None => timestamp(row_time_created),
@@ -157,7 +159,7 @@ pub fn parse_opencode_message(row: &OpenCodeMessageRow) -> Vec<SkillInvocation> 
     }
 }
 
-/// Parses one `part` row (OpenCode v1) into zero or one use: a `read` tool
+/// Parses one `part` row (`OpenCode` v1) into zero or one use: a `read` tool
 /// on a known `SKILL.md` path gives a `FileRead`, a `skill` tool gives an
 /// `Agent` use. Never panics.
 pub fn parse_opencode_part(row: &OpenCodePartRow) -> Vec<SkillInvocation> {

@@ -56,7 +56,7 @@ pub enum EditorLaunch {
 
 /// The editors worth offering, in the order the picker lists them. The first
 /// field is the `.app` bundle name; the second is its display label, which
-/// differs for VS Code (bundle "Visual Studio Code") and the JetBrains IDEs.
+/// differs for VS Code (bundle "Visual Studio Code") and the `JetBrains` IDEs.
 const KNOWN_EDITORS: &[(&str, &str)] = &[
     ("Cursor", "Cursor"),
     ("Visual Studio Code", "VS Code"),
@@ -105,30 +105,37 @@ fn installed_editors_in(dirs: &[PathBuf]) -> Vec<EditorOption> {
 fn app_path_stem(path: &str) -> String {
     Path::new(path)
         .file_stem()
-        .map(|s| s.to_string_lossy().to_string())
-        .unwrap_or_else(|| path.to_string())
+        .map_or_else(|| path.to_string(), |s| s.to_string_lossy().to_string())
 }
 
 /// The basename of a terminal editor command's first word:
 /// `nvim` -> `nvim`, `code --wait` -> `code`, `/opt/homebrew/bin/nvim -p` -> `nvim`.
 fn command_label(command: &str) -> String {
     let first_word = command.split_whitespace().next().unwrap_or(command);
-    Path::new(first_word)
-        .file_name()
-        .map(|f| f.to_string_lossy().to_string())
-        .unwrap_or_else(|| first_word.to_string())
+    Path::new(first_word).file_name().map_or_else(
+        || first_word.to_string(),
+        |f| f.to_string_lossy().to_string(),
+    )
+}
+
+/// Whether `value` names a `.app` bundle, case-insensitively - macOS's
+/// default filesystem doesn't distinguish `.app`/`.App`/`.APP`.
+fn has_app_extension(value: &str) -> bool {
+    Path::new(value)
+        .extension()
+        .is_some_and(|ext| ext.eq_ignore_ascii_case("app"))
 }
 
 /// Whether `value` is a `.app` bundle path that currently exists.
 fn is_existing_app_path(value: &str) -> bool {
-    value.ends_with(".app") && Path::new(value).is_dir()
+    has_app_extension(value) && Path::new(value).is_dir()
 }
 
 /// Whether a saved value is still something "Open in editor" can act on.
 fn is_selected_usable(value: &str, installed: &[EditorOption], terminal: Option<&str>) -> bool {
     if value == "$EDITOR" {
         terminal.is_some()
-    } else if value.ends_with(".app") {
+    } else if has_app_extension(value) {
         is_existing_app_path(value)
     } else {
         installed.iter().any(|e| e.app_name == value)
@@ -151,7 +158,7 @@ fn set_preferred_editor_in(
             }
             Some(v)
         }
-        Some(v) if v.ends_with(".app") => {
+        Some(v) if has_app_extension(&v) => {
             let path = Path::new(&v);
             if !path.is_absolute() {
                 return Err(format!("{v} must be an absolute path."));
@@ -165,8 +172,7 @@ fn set_preferred_editor_in(
             let stem = app_path_stem(&v);
             let in_known_apps_dir = path
                 .parent()
-                .map(|parent| dirs.iter().any(|dir| dir.as_path() == parent))
-                .unwrap_or(false);
+                .is_some_and(|parent| dirs.iter().any(|dir| dir.as_path() == parent));
             if in_known_apps_dir && KNOWN_EDITORS.iter().any(|(name, _)| *name == stem) {
                 Some(stem)
             } else {
@@ -279,7 +285,7 @@ fn run_with_timeout(mut command: Command, end_marker: &str, timeout: Duration) -
         loop {
             line.clear();
             match reader.read_line(&mut line) {
-                Ok(0) => break,
+                Ok(0) | Err(_) => break,
                 Ok(_) => {
                     let is_end_line = line.contains(&end_marker);
                     collected.push_str(&line);
@@ -287,7 +293,6 @@ fn run_with_timeout(mut command: Command, end_marker: &str, timeout: Duration) -
                         break;
                     }
                 }
-                Err(_) => break,
             }
         }
         let _ = tx.send(collected);
@@ -379,7 +384,7 @@ pub fn editor_choices(home: &Path) -> EditorChoices {
 
 /// The launch decision for a saved choice (or its fallback): the first
 /// installed known editor, else no `-a` flag at all so macOS picks per file
-/// type. `-t` is deliberately not used - it means TextEdit on a stock machine
+/// type. `-t` is deliberately not used - it means `TextEdit` on a stock machine
 /// and refuses folders outright.
 ///
 /// `terminal_editor` is a closure rather than an already-read value: it
@@ -434,12 +439,10 @@ fn terminal_launch_target(path: &Path) -> (PathBuf, String) {
     } else {
         let dir = path
             .parent()
-            .map(Path::to_path_buf)
-            .unwrap_or_else(|| PathBuf::from("."));
+            .map_or_else(|| PathBuf::from("."), Path::to_path_buf);
         let name = path
             .file_name()
-            .map(|f| f.to_string_lossy().to_string())
-            .unwrap_or_else(|| ".".to_string());
+            .map_or_else(|| ".".to_string(), |f| f.to_string_lossy().to_string());
         (dir, name)
     }
 }
@@ -470,8 +473,7 @@ pub fn write_terminal_launch_script(path: &Path, command: &str) -> Result<PathBu
     let pid = std::process::id();
     let nanos = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_nanos())
-        .unwrap_or(0);
+        .map_or(0, |d| d.as_nanos());
     let path = std::env::temp_dir().join(format!("skill-studio-edit-{pid}-{nanos}.command"));
     std::fs::write(&path, script).map_err(|e| format!("Failed to write launch script: {e}"))?;
     #[cfg(unix)]

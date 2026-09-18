@@ -1,3 +1,7 @@
+// unwrap/expect/panic are fine in test code; production code must use ?
+// or an explicit error.
+#![cfg_attr(test, allow(clippy::unwrap_used, clippy::expect_used, clippy::panic))]
+
 //! Skill Studio core.
 //!
 //! This crate holds the rules that every Skill Studio surface shares: the
@@ -20,6 +24,9 @@
 //! See `docs/spec-core-primitives.md` for the design and the migration order.
 
 #![deny(missing_docs)]
+// Core stays adapter-free (see above): no FFI, no raw pointers, nothing
+// that needs `unsafe`. Unlike the host crate this has no exception to carve
+// out.
 #![forbid(unsafe_code)]
 
 pub mod discovery_sources;

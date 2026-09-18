@@ -7,6 +7,10 @@
 //! Park and install-plan benches belong in this same file, alongside scan,
 //! once units 3.1 and 3.5 add those ops to the core.
 
+// A bench harness has no caller to return an error to; a setup failure here
+// should stop the run immediately with the panic message, same as a test.
+#![allow(clippy::unwrap_used, clippy::expect_used)]
+
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;

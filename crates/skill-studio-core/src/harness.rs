@@ -152,7 +152,7 @@ pub enum DisableMechanism {
 pub enum DisabledBy {
     /// Codex `[[skills.config]] enabled = false`.
     CodexConfig,
-    /// OpenCode `permission.skill` deny.
+    /// `OpenCode` `permission.skill` deny.
     OpencodePermission,
     /// The Claude Code per-skill link was removed.
     ClaudeLinkRemoved,
@@ -384,8 +384,7 @@ impl CapabilityReport {
         let native = facts
             .native_disable
             .as_ref()
-            .map(|d| d.writable.clone())
-            .unwrap_or(Support::Unknown);
+            .map_or(Support::Unknown, |d| d.writable.clone());
         let operations = vec![
             OperationSupport {
                 operation: "set_harness_enabled".into(),
@@ -1053,7 +1052,7 @@ pub trait HarnessAdapter: Send + Sync {
         let executable = self
             .binary_name()
             .and_then(|bin| ports.tools.and_then(|lookup| lookup.find_binary(bin)));
-        let (version, install_method) = probe_version(self, &executable, ports);
+        let (version, install_method) = probe_version(self, executable.as_ref(), ports);
         let configured = self
             .config_relative_path()
             .is_some_and(|rel| ports.fs.symlink_metadata(&ports.home.join(rel)).is_ok());
@@ -1092,7 +1091,7 @@ pub trait HarnessAdapter: Send + Sync {
 /// this function: a probe that fails to spawn simply reports `Unknown`.
 fn probe_version(
     adapter: &(impl HarnessAdapter + ?Sized),
-    executable: &Option<PathBuf>,
+    executable: Option<&PathBuf>,
     ports: &DetectionPorts<'_>,
 ) -> (DetectedString, DetectedString) {
     let Some(path) = executable else {
@@ -1146,7 +1145,7 @@ fn probe_version(
 /// marker is read here - Claude Code's own `~/.claude.json` `installMethod`
 /// field is a documented but unread signal, a follow-up - so every row uses
 /// the same "inferred from path" heuristic `harness-detection.md` describes
-/// for Codex, OpenCode, and pi.
+/// for Codex, `OpenCode`, and pi.
 fn infer_install_method(path: &Path) -> DetectedString {
     let text = path.to_string_lossy();
     let method = if text.contains("Cellar") || text.contains("homebrew") {
@@ -1211,7 +1210,7 @@ impl HarnessAdapter for CodexAdapter {
     }
 }
 
-/// OpenCode.
+/// `OpenCode`.
 pub struct OpenCodeAdapter;
 
 impl HarnessAdapter for OpenCodeAdapter {
@@ -1359,7 +1358,7 @@ pub fn claude_code_skill_entries(
 }
 
 /// How `~/.claude/skills/<name>` is deployed, per the desktop's
-/// `ClaudeLinkState` (skill_harness_disable.rs:292): a whole-folder link to
+/// `ClaudeLinkState` (`skill_harness_disable.rs:292`): a whole-folder link to
 /// the universal root, a per-skill link, or nothing.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ClaudeLinkState {
@@ -1485,20 +1484,18 @@ pub fn write_claude_skill_overrides(
 ) -> Result<(), crate::error::CoreError> {
     use crate::error::CoreError;
     let path = claude_code_config_dir(home, config_dir_override).join("settings.json");
-    let mut doc = match fs.read_capped(&path, 1024 * 1024) {
+    let mut map = match fs.read_capped(&path, 1024 * 1024) {
         Ok(bytes) => serde_json::from_slice::<serde_json::Value>(&bytes)
-            .unwrap_or_else(|_| serde_json::Value::Object(serde_json::Map::new())),
-        Err(_) => serde_json::Value::Object(serde_json::Map::new()),
+            .ok()
+            .and_then(|v| v.as_object().cloned())
+            .unwrap_or_default(),
+        Err(_) => serde_json::Map::new(),
     };
-    if !doc.is_object() {
-        doc = serde_json::Value::Object(serde_json::Map::new());
-    }
-    doc.as_object_mut()
-        .expect("just normalized to an object")
-        .insert(
-            "skillOverrides".to_string(),
-            serde_json::Value::Object(overrides),
-        );
+    map.insert(
+        "skillOverrides".to_string(),
+        serde_json::Value::Object(overrides),
+    );
+    let doc = serde_json::Value::Object(map);
     let bytes = serde_json::to_vec_pretty(&doc)
         .map_err(|e| CoreError::new(crate::error::ErrorCode::Io, e.to_string()).at(&path))?;
     let scoped = crate::ports::confine(scope, fs, &path)?;
@@ -1554,10 +1551,10 @@ mod tests {
         assert_eq!(pi.skips_hidden_entries, Support::Unknown);
     }
 
-    /// codex_skills_root_is_never_offered_as_a_default_install_target_or_names_the_offered_path:
+    /// `codex_skills_root_is_never_offered_as_a_default_install_target_or_names_the_offered_path`:
     /// `.codex/skills` is still a discovery root (Codex reads skills
     /// installed there), but the catalog only has it from a GitHub issue
-    /// thread, not from OpenAI's own docs - an install picker offering it as
+    /// thread, not from `OpenAI`'s own docs - an install picker offering it as
     /// a destination would be guessing where Codex actually looks.
     #[test]
     fn codex_skills_root_is_never_offered_as_a_default_install_target_or_names_the_offered_path() {

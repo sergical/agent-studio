@@ -1,3 +1,8 @@
+// Integration test binaries aren't covered by the lib crate's
+// `cfg_attr(test, allow(...))`: this file compiles as its own crate, so
+// the same allow needs to be declared here too.
+#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+
 //! Unit 1.1: the four `fsops` tests that live on the in-memory `FixtureFs`,
 //! a model test comparing random sequences of primitives against a plain
 //! reference map, a root-confinement test, a swap/symlink-race test, and a
@@ -64,7 +69,7 @@ proptest! {
                     let bytes = CONTENTS[content].to_vec();
                     let staged = fsops::stage(&root, &[(PathBuf::from("SKILL.md"), bytes.clone())])
                         .unwrap_or_else(|e| panic!("step {i} (Create {name:?}): stage failed: {e}"));
-                    fsops::swap(&root, Path::new(name), staged, Path::new(".trash"))
+                    fsops::swap(&root, Path::new(name), &staged, Path::new(".trash"))
                         .unwrap_or_else(|e| panic!("step {i} (Create {name:?}): swap failed: {e}"));
                     model.insert(name, bytes);
                 }
@@ -93,20 +98,18 @@ proptest! {
                                  step, but reading it failed: {e}"
                             )
                         });
-                        if &actual != expected {
-                            panic!(
-                                "step {i} ({op:?}): {name}/SKILL.md content diverged from the \
-                                 reference model (got {actual:?}, want {expected:?})"
-                            );
-                        }
+                        assert!(
+                            &actual == expected,
+                            "step {i} ({op:?}): {name}/SKILL.md content diverged from the \
+                             reference model (got {actual:?}, want {expected:?})"
+                        );
                     }
                     None => {
-                        if fs.symlink_metadata(&path).is_ok() {
-                            panic!(
-                                "step {i} ({op:?}): {name}/SKILL.md exists on the fixture but the \
-                                 reference model has no entry for {name}"
-                            );
-                        }
+                        assert!(
+                            fs.symlink_metadata(&path).is_err(),
+                            "step {i} ({op:?}): {name}/SKILL.md exists on the fixture but the \
+                             reference model has no entry for {name}"
+                        );
                     }
                 }
             }
@@ -144,7 +147,7 @@ fn swap_refuses_a_directory_replaced_by_a_symlink_between_stage_and_swap_or_name
     fs.fsops_symlink(Path::new("/elsewhere"), Path::new("/root/gamma"))
         .expect("plant a symlink where the directory used to be");
 
-    let err = fsops::swap(&root, Path::new("gamma"), staged, Path::new(".trash"))
+    let err = fsops::swap(&root, Path::new("gamma"), &staged, Path::new(".trash"))
         .expect_err("swap must refuse a target that is no longer a directory");
     match err {
         fsops::FsOpsError::ReplacedBySymlink { path } => {
@@ -277,7 +280,7 @@ fn swap_prepares_the_quarantine_before_the_exchange_or_names_the_half_committed_
     let staged_path = staged.path().to_path_buf();
 
     failing.fail_next_create_dir();
-    let err = fsops::swap(&root, Path::new("gamma"), staged, Path::new(".trash"))
+    let err = fsops::swap(&root, Path::new("gamma"), &staged, Path::new(".trash"))
         .expect_err("swap must refuse when the quarantine directory fails to create");
     assert!(
         matches!(err, fsops::FsOpsError::Io { .. }),
@@ -323,7 +326,7 @@ fn swap_refuses_a_quarantine_dir_that_is_a_symlink_out_of_the_root_or_names_the_
     .expect("stage");
     let staged_path = staged.path().to_path_buf();
 
-    let err = fsops::swap(&root, Path::new("gamma"), staged, Path::new(".trash"))
+    let err = fsops::swap(&root, Path::new("gamma"), &staged, Path::new(".trash"))
         .expect_err("swap must refuse a quarantine dir that is a symlink out of the root");
     assert!(
         matches!(err, fsops::FsOpsError::ReplacedBySymlink { .. }),

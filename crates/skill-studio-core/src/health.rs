@@ -216,9 +216,14 @@ mod tests {
         let rows: Vec<TimingRow> = rows
             .into_iter()
             .enumerate()
-            .map(|(i, r)| TimingRow {
-                ts: now - chrono::Duration::days(29 + i as i64),
-                ..r
+            .map(|(i, r)| {
+                // `i` never exceeds `rows.len()` (3 here), nowhere near i64::MAX.
+                #[allow(clippy::cast_possible_wrap)]
+                let age_days = 29 + i as i64;
+                TimingRow {
+                    ts: now - chrono::Duration::days(age_days),
+                    ..r
+                }
             })
             .collect();
 
@@ -269,11 +274,16 @@ mod tests {
 
         let start = std::time::Instant::now();
         let got = health_rollup(&rows, now, Duration::from_secs(7 * 24 * 3600));
-        eprintln!(
-            "health_rollup of {} rows: {} ms",
-            ROW_COUNT,
-            start.elapsed().as_millis()
-        );
+        // For a human running this test with `--nocapture`; not asserted (see
+        // the doc comment above) so a loaded CI box can't make it flaky.
+        #[allow(clippy::print_stderr)]
+        {
+            eprintln!(
+                "health_rollup of {} rows: {} ms",
+                ROW_COUNT,
+                start.elapsed().as_millis()
+            );
+        }
 
         // Derive each command's expected (elapsed_ms, is_error) list from the
         // same formula the fixture above was built from.

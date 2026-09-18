@@ -4059,7 +4059,6 @@ dependencies = [
  "chrono",
  "dirs 5.0.1",
  "libc",
- "notify",
  "notify-debouncer-mini",
  "reqwest 0.12.28",
  "rusqlite",
@@ -4078,7 +4077,6 @@ dependencies = [
  "tiktoken-rs",
  "tokio",
  "toml 1.1.4+spec-1.1.0",
- "toml_edit 0.23.10+spec-1.0.0",
  "ulid",
  "urlencoding",
 ]
@@ -4150,7 +4148,6 @@ dependencies = [
  "anyhow",
  "dirs 5.0.1",
  "rmcp",
- "schemars 1.2.2",
  "serde",
  "serde_json",
  "skill-studio-core",

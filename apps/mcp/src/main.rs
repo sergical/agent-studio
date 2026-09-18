@@ -1,3 +1,11 @@
+#![forbid(unsafe_code)]
+// stdio is the MCP transport itself: responses go to stdout, diagnostics to
+// stderr.
+#![allow(clippy::print_stdout, clippy::print_stderr)]
+// unwrap/expect are fine in test code; production code must use ?
+// or an explicit error.
+#![cfg_attr(test, allow(clippy::unwrap_used, clippy::expect_used))]
+
 //! `skill-studio-mcp`: the stateless local MCP server over the Skill Studio
 //! core, stdio transport.
 //!

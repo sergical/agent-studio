@@ -7,7 +7,7 @@
 // ============================================================================
 
 use std::io::Read;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::process::{Command, Stdio};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
@@ -111,6 +111,9 @@ fn push_bounded(buffer: &mut Vec<u8>, chunk: &[u8], max: usize) {
     }
 }
 
+// `sink` must be owned: every call site moves it into a `thread::spawn`
+// closure, which needs a `'static` capture.
+#[allow(clippy::needless_pass_by_value)]
 fn drain_pipe_bounded<R: Read>(mut reader: R, sink: Arc<Mutex<Vec<u8>>>, max: usize) {
     let mut chunk = [0u8; 4096];
     loop {
@@ -129,8 +132,9 @@ fn drain_pipe_bounded<R: Read>(mut reader: R, sink: Arc<Mutex<Vec<u8>>>, max: us
 fn signal_process_group(pid: u32, signal: i32) {
     // SAFETY: `pid` is the leader created by `process_group(0)`. A negative
     // pid addresses that whole process group. An absent group is harmless.
+    #[allow(unsafe_code)]
     unsafe {
-        libc::kill(-(pid as i32), signal);
+        libc::kill(-(pid.cast_signed()), signal);
     }
 }
 
@@ -138,7 +142,8 @@ fn signal_process_group(pid: u32, signal: i32) {
 fn process_group_exists(pid: u32) -> bool {
     // SAFETY: signal 0 changes no process state. It only tests whether the
     // process group exists or cannot be inspected due to permissions.
-    let result = unsafe { libc::kill(-(pid as i32), 0) };
+    #[allow(unsafe_code)]
+    let result = unsafe { libc::kill(-(pid.cast_signed()), 0) };
     result == 0 || std::io::Error::last_os_error().raw_os_error() == Some(libc::EPERM)
 }
 
@@ -306,7 +311,7 @@ pub fn run_controlled_command_to_file(
         cwd,
         control,
         max_output_bytes,
-        Some(output_path.to_path_buf()),
+        Some(output_path),
     )
     .map(|_| ())
 }
@@ -317,7 +322,7 @@ fn run_controlled_command_io(
     cwd: Option<&Path>,
     control: &AddOperationControl,
     max_output_bytes: usize,
-    output_path: Option<PathBuf>,
+    output_path: Option<&Path>,
 ) -> Result<Vec<u8>, ControlledProcessError> {
     control.check()?;
     let mut command = Command::new(program);
@@ -325,7 +330,7 @@ fn run_controlled_command_io(
         .args(args)
         .stdin(Stdio::null())
         .stderr(Stdio::piped());
-    if let Some(path) = &output_path {
+    if let Some(path) = output_path {
         let file = std::fs::File::create(path).map_err(|error| {
             ControlledProcessError::Failed(format!(
                 "Failed to create command output {}: {error}",
@@ -526,6 +531,9 @@ mod tests {
             .trim()
             .parse()
             .unwrap();
+        // SAFETY: signal 0 to a single pid only probes liveness; it sends
+        // nothing and mutates no process state.
+        #[allow(unsafe_code)]
         let alive = unsafe { libc::kill(descendant_pid, 0) } == 0;
         assert!(
             !alive,
@@ -572,7 +580,7 @@ mod tests {
         .unwrap_err();
         match error {
             ControlledProcessError::Failed(message) => {
-                assert!(message.len() <= 64, "{}", message.len())
+                assert!(message.len() <= 64, "{}", message.len());
             }
             other => panic!("expected Failed, got {other:?}"),
         }

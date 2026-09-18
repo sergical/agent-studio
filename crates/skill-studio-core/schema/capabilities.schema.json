@@ -159,7 +159,7 @@
           "const": "codex-config"
         },
         {
-          "description": "OpenCode `permission.skill` deny.",
+          "description": "`OpenCode` `permission.skill` deny.",
           "type": "string",
           "const": "opencode-permission"
         },

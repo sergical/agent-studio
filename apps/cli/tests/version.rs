@@ -1,3 +1,8 @@
+// Integration test binaries aren't covered by the lib crate's
+// `cfg_attr(test, allow(...))`: this file compiles as its own crate, so
+// the same allow needs to be declared here too.
+#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+
 //! `skill-studio --version` prints the crate version and the build commit
 //! hash on one line, so a bug report can quote a single line.
 

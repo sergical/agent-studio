@@ -6,5 +6,5 @@ fn main() {
     println!("cargo:rustc-env=SKILL_STUDIO_COMMIT={commit}");
     println!("cargo:rerun-if-env-changed=SKILL_STUDIO_COMMIT");
 
-    tauri_build::build()
+    tauri_build::build();
 }

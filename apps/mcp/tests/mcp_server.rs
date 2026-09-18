@@ -1,3 +1,8 @@
+// Integration test binaries aren't covered by the lib crate's
+// `cfg_attr(test, allow(...))`: this file compiles as its own crate, so
+// the same allow needs to be declared here too.
+#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+
 //! End-to-end tests: spawns the built `skill-studio-mcp` binary as a real
 //! child process over stdio (the same transport a real MCP client uses) and
 //! calls tools through `rmcp`'s client. Covers the PR 6 acceptance list:
@@ -561,7 +566,7 @@ async fn tools_that_need_no_input_accept_an_empty_argument_object() {
             .input_schema;
         let required = schema.get("required").and_then(|r| r.as_array());
         assert!(
-            required.is_none_or(|r| r.is_empty()),
+            required.is_none_or(std::vec::Vec::is_empty),
             "{name} publishes required fields {required:?}, so a caller cannot omit them"
         );
 

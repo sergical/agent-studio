@@ -344,7 +344,7 @@ pub fn skill_heatmap<'a>(
     days: u32,
     now: DateTime<Utc>,
 ) -> InvocationHeatmap {
-    let cutoff = now - chrono::Duration::days(days as i64);
+    let cutoff = now - chrono::Duration::days(i64::from(days));
     let mut result = BTreeMap::new();
     for use_ in counted_uses(uses, filter) {
         if use_.at < cutoff {
@@ -517,7 +517,10 @@ mod tests {
     use chrono::Timelike;
 
     fn known(skills: &[&str]) -> BTreeSet<String> {
-        skills.iter().map(|s| s.to_string()).collect()
+        skills
+            .iter()
+            .map(std::string::ToString::to_string)
+            .collect()
     }
 
     #[test]
@@ -693,7 +696,7 @@ mod tests {
             trigger: SkillTrigger::Agent,
             at,
             project_path: None,
-            session: session.map(|s| s.to_string()),
+            session: session.map(std::string::ToString::to_string),
         }
     }
 
@@ -704,7 +707,7 @@ mod tests {
             trigger: SkillTrigger::FileRead,
             at,
             project_path: None,
-            session: session.map(|s| s.to_string()),
+            session: session.map(std::string::ToString::to_string),
         }
     }
 
@@ -835,7 +838,7 @@ mod tests {
         let known_skills = known(&["write-tests"]);
         let sources = DiscoverySources::default();
         let now = Utc::now();
-        let hour_start = now - chrono::Duration::minutes(now.minute() as i64);
+        let hour_start = now - chrono::Duration::minutes(i64::from(now.minute()));
 
         let mut same_hour_second = agent_use(
             "write-tests",

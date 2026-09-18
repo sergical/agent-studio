@@ -71,7 +71,13 @@ impl QueuedReportSink {
     /// Stops and reports the first transport error rather than losing the
     /// rest of the queue silently; the caller decides whether to retry.
     pub fn flush(&self) -> Result<(), String> {
-        let mut queue = self.queue.lock().expect("report queue poisoned");
+        // A poisoned queue still holds every envelope queued so far; losing
+        // them because one other caller panicked would defeat the point of
+        // a bounded queue.
+        let mut queue = self
+            .queue
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         while let Some(envelope) = queue.pop_front() {
             let bytes = serde_json::to_vec(&envelope)
                 .map_err(|e| format!("failed to serialize a report envelope: {e}"))?;
@@ -83,7 +89,10 @@ impl QueuedReportSink {
 
 impl ReportSink for QueuedReportSink {
     fn report(&self, envelope: SanitizedEnvelope) {
-        let mut queue = self.queue.lock().expect("report queue poisoned");
+        let mut queue = self
+            .queue
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         if queue.len() >= QUEUE_CAPACITY {
             queue.pop_front();
         }

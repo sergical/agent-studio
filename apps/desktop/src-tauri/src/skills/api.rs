@@ -167,7 +167,7 @@ fn status_error(status: reqwest::StatusCode) -> String {
     if status == reqwest::StatusCode::UNAUTHORIZED {
         "skills.sh API key is invalid or expired".to_string()
     } else {
-        format!("Skills API returned status: {}", status)
+        format!("Skills API returned status: {status}")
     }
 }
 
@@ -192,7 +192,7 @@ fn client_for(
 /// response that did come back but wasn't a success. `Server` mode names the
 /// local server explicitly, since "connection refused" otherwise reads like a
 /// skills.sh outage.
-fn connection_error(access: &SkillsShAccess, e: reqwest::Error) -> String {
+fn connection_error(access: &SkillsShAccess, e: &reqwest::Error) -> String {
     match access {
         SkillsShAccess::Server { .. } => format!(
             "Skill Studio server not reachable at {}. Start it with `npm run dev:server`.",
@@ -226,7 +226,7 @@ pub async fn search_skills(
         .header("User-Agent", "AgentStudio/0.1.0")
         .send()
         .await
-        .map_err(|e| connection_error(access, e))?;
+        .map_err(|e| connection_error(access, &e))?;
 
     if !response.status().is_success() {
         return Err(status_error(response.status()));
@@ -235,7 +235,7 @@ pub async fn search_skills(
     let data: SkillsSearchResponse = response
         .json()
         .await
-        .map_err(|e| format!("Failed to parse skills response: {}", e))?;
+        .map_err(|e| format!("Failed to parse skills response: {e}"))?;
 
     Ok(PaginatedSkillsResponse {
         skills: data.data.into_iter().map(SkillSearchResult::from).collect(),
@@ -265,7 +265,7 @@ pub async fn get_popular_skills(
         .header("User-Agent", "AgentStudio/0.1.0")
         .send()
         .await
-        .map_err(|e| connection_error(access, e))?;
+        .map_err(|e| connection_error(access, &e))?;
 
     if !response.status().is_success() {
         return Err(status_error(response.status()));
@@ -274,7 +274,7 @@ pub async fn get_popular_skills(
     let data: SkillsListResponse = response
         .json()
         .await
-        .map_err(|e| format!("Failed to parse skills response: {}", e))?;
+        .map_err(|e| format!("Failed to parse skills response: {e}"))?;
 
     Ok(PaginatedSkillsResponse {
         skills: data.data.into_iter().map(SkillSearchResult::from).collect(),
@@ -308,7 +308,7 @@ pub async fn get_skill_details(
         .header("User-Agent", "AgentStudio/0.1.0")
         .send()
         .await
-        .map_err(|e| connection_error(access, e))?;
+        .map_err(|e| connection_error(access, &e))?;
 
     if !response.status().is_success() {
         return Err(status_error(response.status()));
@@ -317,7 +317,7 @@ pub async fn get_skill_details(
     let data: SkillDetailsResponse = response
         .json()
         .await
-        .map_err(|e| format!("Failed to parse skill details: {}", e))?;
+        .map_err(|e| format!("Failed to parse skill details: {e}"))?;
 
     Ok(SkillDetails {
         id: data.id,

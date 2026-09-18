@@ -1,3 +1,8 @@
+// Integration test binaries aren't covered by the lib crate's
+// `cfg_attr(test, allow(...))`: this file compiles as its own crate, so
+// the same allow needs to be declared here too.
+#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+
 //! Pins core `ops::scan`'s deployment classification (owner kind, ambiguity
 //! carve-outs, destination/backing/mutability derivation) to concrete
 //! expected values, run over every fixture in
@@ -126,7 +131,7 @@ fn desktop_backing_str(
     }
 }
 
-fn core_backing_str(backing: &skill_studio_core::identity::BackingRelationship) -> &'static str {
+fn core_backing_str(backing: skill_studio_core::identity::BackingRelationship) -> &'static str {
     use skill_studio_core::identity::BackingRelationship as B;
     match backing {
         B::Canonical => "canonical",
@@ -212,7 +217,7 @@ fn project_core(
                     "is_link": d.link_target.is_some(),
                     "broken": broken,
                     "destination": serde_json::to_value(d.destination).unwrap(),
-                    "backing": core_backing_str(&d.backing),
+                    "backing": core_backing_str(d.backing),
                     "mutability": serde_json::to_value(d.mutability).unwrap(),
                     "owner_kind": serde_json::to_value(d.owner_kind).unwrap(),
                     "owner_id": d.owner_id.as_ref().map(|o| o.as_str().to_string()),
@@ -267,11 +272,16 @@ fn run_desktop(name: &str, home: &Path) -> BTreeMap<String, Vec<Value>> {
     let paths = BuildPaths::new(&cache_path, &runs_root, &update_check_path);
 
     let previous_home = std::env::var("HOME").ok();
+    // SAFETY: `home_env_lock` above serializes every test in this file that
+    // touches `HOME`, so nothing else reads or writes it concurrently here.
+    #[allow(unsafe_code)]
     unsafe {
         std::env::set_var("HOME", home);
     }
     let (snapshot, _report) =
         build_snapshot(home, &mut invocation_index, paths, chrono::Utc::now());
+    // SAFETY: same as above - still under `home_env_lock`.
+    #[allow(unsafe_code)]
     unsafe {
         match &previous_home {
             Some(v) => std::env::set_var("HOME", v),
@@ -1181,7 +1191,9 @@ fn named_dotagents_row_is_mutable_dotagents() {
     assert_eq!(row.owner_kind, LifecycleOwnerKind::Dotagents);
     assert_eq!(row.source_kind, SourceKind::Dotagents);
     assert_eq!(
-        row.owner_id.as_ref().map(|o| o.as_str()),
+        row.owner_id
+            .as_ref()
+            .map(skill_studio_core::identity::OwnerId::as_str),
         Some("owner:v1/global/find-bugs")
     );
     assert_eq!(row.mutability, DeploymentMutability::Mutable);

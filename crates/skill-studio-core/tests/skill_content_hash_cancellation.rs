@@ -1,3 +1,8 @@
+// Integration test binaries aren't covered by the lib crate's
+// `cfg_attr(test, allow(...))`: this file compiles as its own crate, so
+// the same allow needs to be declared here too.
+#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+
 //! Proves `ops::skill_content_hash` is interruptible mid-walk, not just at
 //! its entry checkpoint: an already-cancelled [`OpContext`] must fail the
 //! call outright rather than return a hash computed over a partial walk.

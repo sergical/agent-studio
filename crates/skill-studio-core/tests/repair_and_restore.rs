@@ -1,3 +1,8 @@
+// Integration test binaries aren't covered by the lib crate's
+// `cfg_attr(test, allow(...))`: this file compiles as its own crate, so
+// the same allow needs to be declared here too.
+#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+
 //! Real-disk integration tests for Phase 2's mutation path: frontmatter
 //! repair, event listing with drift, restore, and crash recovery.
 //!
@@ -13,7 +18,7 @@ use std::sync::Arc;
 
 use skill_studio_core::dto::{
     DriftState, ListEventsRequest, RepairApplyMode, RepairApplyRequest, RepairPreviewRequest,
-    RestoreRequest,
+    RestoreRequest, ScanRequest,
 };
 use skill_studio_core::harness::HarnessCatalog;
 use skill_studio_core::ops;
@@ -81,7 +86,7 @@ fn apply_then_restore_round_trips_the_original_bytes() {
         .join("SKILL.md");
     let original_bytes = std::fs::read(&skill_md).unwrap();
 
-    let inventory = ops::scan(&rt, &ctx(), &Default::default()).unwrap();
+    let inventory = ops::scan(&rt, &ctx(), &ScanRequest::default()).unwrap();
     let deployment = &inventory.skills[0].deployments[0];
     // `Manual`-owned deployments are `ReadOnly` (see
     // `MANUAL_SKILL_ROOT_RELATIVE`'s doc comment); the repair gate's
@@ -116,7 +121,9 @@ fn apply_then_restore_round_trips_the_original_bytes() {
     .unwrap();
     let repair_event_id = match apply_outcome {
         skill_studio_core::dto::RepairOutcome::Applied { event_id, .. } => event_id,
-        other => panic!("expected Applied, got {other:?}"),
+        other @ skill_studio_core::dto::RepairOutcome::AlreadyApplied { .. } => {
+            panic!("expected Applied, got {other:?}")
+        }
     };
     let repaired_bytes = std::fs::read(&skill_md).unwrap();
     assert_ne!(repaired_bytes, original_bytes);
@@ -212,7 +219,7 @@ fn restore_refuses_a_drifted_file_without_force() {
         .join("zeta-bad")
         .join("SKILL.md");
 
-    let inventory = ops::scan(&rt, &ctx(), &Default::default()).unwrap();
+    let inventory = ops::scan(&rt, &ctx(), &ScanRequest::default()).unwrap();
     let deployment = &inventory.skills[0].deployments[0];
     let preview = ops::preview_frontmatter_repair(
         &rt,
@@ -233,7 +240,9 @@ fn restore_refuses_a_drifted_file_without_force() {
     .unwrap();
     let repair_event_id = match apply_outcome {
         skill_studio_core::dto::RepairOutcome::Applied { event_id, .. } => event_id,
-        other => panic!("expected Applied, got {other:?}"),
+        other @ skill_studio_core::dto::RepairOutcome::AlreadyApplied { .. } => {
+            panic!("expected Applied, got {other:?}")
+        }
     };
 
     // Drift the file by hand, bypassing the core.
@@ -498,7 +507,7 @@ fn a_restore_whose_write_fails_releases_the_claim_for_a_later_retry() {
         .join("SKILL.md");
     let original_bytes = std::fs::read(&skill_md).unwrap();
 
-    let inventory = ops::scan(&rt, &ctx(), &Default::default()).unwrap();
+    let inventory = ops::scan(&rt, &ctx(), &ScanRequest::default()).unwrap();
     let deployment = &inventory.skills[0].deployments[0];
     let preview = ops::preview_frontmatter_repair(
         &rt,
@@ -519,7 +528,9 @@ fn a_restore_whose_write_fails_releases_the_claim_for_a_later_retry() {
     .unwrap();
     let repair_event_id = match apply_outcome {
         skill_studio_core::dto::RepairOutcome::Applied { event_id, .. } => event_id,
-        other => panic!("expected Applied, got {other:?}"),
+        other @ skill_studio_core::dto::RepairOutcome::AlreadyApplied { .. } => {
+            panic!("expected Applied, got {other:?}")
+        }
     };
     let repaired_bytes = std::fs::read(&skill_md).unwrap();
 
@@ -668,7 +679,7 @@ fn the_envelope_carries_the_event_id_a_mutating_call_recorded() {
     repairable_home(&home);
     let rt = runtime_for(&home);
 
-    let inventory = ops::scan(&rt, &ctx(), &Default::default()).unwrap();
+    let inventory = ops::scan(&rt, &ctx(), &ScanRequest::default()).unwrap();
     let deployment_id = inventory.skills[0].deployments[0].id.clone();
     let preview =
         ops::preview_frontmatter_repair(&rt, &ctx(), &RepairPreviewRequest { deployment_id })
@@ -690,7 +701,9 @@ fn the_envelope_carries_the_event_id_a_mutating_call_recorded() {
         skill_studio_core::dto::RepairOutcome::Applied { event_id, .. } => {
             assert_eq!(*event_id, repair_event_id);
         }
-        other => panic!("expected Applied, got {other:?}"),
+        other @ skill_studio_core::dto::RepairOutcome::AlreadyApplied { .. } => {
+            panic!("expected Applied, got {other:?}")
+        }
     }
 
     // The second apply writes nothing, so it names no event.
