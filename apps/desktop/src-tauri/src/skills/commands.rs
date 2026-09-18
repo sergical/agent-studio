@@ -1428,6 +1428,111 @@ mod tests {
         );
     }
 
+    /// `update_on_a_migrated_v1_store_keeps_the_badge_off_or_names_the_resurrected_owner`
+    /// (B2, review round 2): round 1's `clear_owner_after_update` removed the
+    /// `owners` entry, which did nothing when a migrated v1 store's
+    /// background loop hadn't run against this owner yet - the only record
+    /// was `legacy_skills["alpha"]`, still holding the pre-update pair, and
+    /// `state_for_owner`'s sole-Global-owner fallback kept serving it. Seeds
+    /// exactly that: an empty `owners` map and a `legacy_skills` entry for
+    /// the sole Global owner. Without B2's fix (falling back to the legacy
+    /// record and writing it into `owners[owner_id]` with
+    /// `installed_commit = latest_commit`), the rebuilt overlay below
+    /// recomputes `has_update = true` from the untouched legacy pair and
+    /// this is the assertion that fails.
+    #[test]
+    fn update_on_a_migrated_v1_store_keeps_the_badge_off_or_names_the_resurrected_owner() {
+        let tmp = tempfile::tempdir().unwrap();
+        let app_data = tmp.path().join("app-data");
+        std::fs::create_dir_all(&app_data).unwrap();
+
+        // A real `owner:v1/...` id, not the shorthand the sibling test
+        // above uses - `state_for_owner`'s legacy fallback only fires for
+        // an id `parse_owner_id` can actually parse.
+        let owner_id = "owner:v1/global/alpha";
+        let mut skill = installed_skill_fixture("alpha");
+        skill.deployments = vec![super::super::skill_dto::Deployment {
+            owner_id: Some(owner_id.to_string()),
+            agent: "shared".to_string(),
+            scope: "global".to_string(),
+            path: tmp.path().join("alpha").to_string_lossy().to_string(),
+            ..Default::default()
+        }];
+        // Fixture's default is two owners - trim to the sole owner this
+        // test's single deployment actually has.
+        skill.update_owner_ids = vec![owner_id.to_string()];
+        skill
+            .update_owners
+            .retain(|update| update.owner_id == owner_id);
+        let snapshot = skill_refresh::SkillSnapshot {
+            revision: 0,
+            skills: vec![skill],
+            projects: Vec::new(),
+            invocations: Vec::new(),
+            heatmap: Default::default(),
+            scanned_at: chrono::Utc::now().to_rfc3339(),
+            last_test_by_skill: Default::default(),
+            update_check: Default::default(),
+            opencode_config_kind: None,
+            scan_partial: false,
+            scan_observations: Vec::new(),
+            unread_roots: Vec::new(),
+        };
+        let refresh_state = skill_refresh::SkillRefreshState::fixture(snapshot);
+
+        // A genuine migrated v1 store on disk: no top-level `"owners"` key,
+        // only the legacy name-keyed pair - the same shape
+        // `read_update_check_store_at` detects and migrates into
+        // `legacy_skills`. Building this via `UpdateCheckStore` and
+        // `serde_json::to_string` would not do, since `legacy_skills` is
+        // `#[serde(skip)]` and would round-trip empty.
+        let update_check_path = skill_update_check::update_check_path(&app_data);
+        std::fs::create_dir_all(update_check_path.parent().unwrap()).unwrap();
+        std::fs::write(
+            &update_check_path,
+            serde_json::json!({
+                "checked_at": "2026-01-01T00:00:00Z",
+                "gh_status": {"kind": "ok"},
+                "skills": {
+                    "alpha": {
+                        "repo": "obra/write-tests",
+                        "path": "skills/alpha",
+                        "installed_commit": "old-a",
+                        "latest_commit": "new-a",
+                        "latest_commit_at": null,
+                        "checked_at": "2026-01-01T00:00:00Z",
+                        "error": null
+                    }
+                }
+            })
+            .to_string(),
+        )
+        .unwrap();
+
+        let built = clear_outdated_state(&app_data, &refresh_state, "alpha", Some(owner_id))
+            .unwrap()
+            .expect("a snapshot existed to patch");
+        assert!(!built.skills[0].has_update);
+
+        // Rebuild overlays straight from the store, the way the next full
+        // `get_installed_skills` would - the sole-Global-owner fallback
+        // `state_for_owner` runs needs the owner id present in
+        // `current_owner_ids` to count it as the only matching owner.
+        let refreshed_store = skill_update_check::read_update_check_store(&app_data);
+        let mut skills = built.skills.clone();
+        skill_refresh::apply_skill_snapshot_overlays(
+            tmp.path(),
+            &mut skills,
+            &super::super::skill_fork_registry::ForkRegistry::default(),
+            &refreshed_store,
+            &[owner_id.to_string()],
+        );
+        assert!(
+            !skills[0].has_update,
+            "the pre-update legacy pair must not resurrect the badge on the next full rebuild"
+        );
+    }
+
     #[test]
     fn build_update_request_refuses_the_three_desktop_preconditions_or_names_the_accepted_owner() {
         let tmp = tempfile::tempdir().unwrap();
@@ -1728,15 +1833,15 @@ mod tests {
                 "update failed".to_string(),
             )]),
         };
-        let owner_by_skill = std::collections::HashMap::from([
+        let owners = vec![
             (
                 "alpha".to_string(),
                 Some("owner:v1/global/alpha".to_string()),
             ),
             ("beta".to_string(), Some("owner:v1/global/beta".to_string())),
-        ]);
+        ];
 
-        let cleared = owners_to_clear(&outcome, &owner_by_skill);
+        let cleared = owners_to_clear(&outcome, &owners);
 
         assert_eq!(
             cleared,
@@ -1745,6 +1850,69 @@ mod tests {
                 Some("owner:v1/global/alpha".to_string())
             )],
             "beta's failed item must not clear its badge: {cleared:?}"
+        );
+    }
+
+    /// `update_all_clears_both_owners_of_a_skill_installed_twice_or_names_the_owner_left_outdated`
+    /// (B1, review round 2): `skillUpdateOwnerTargets` sends one target per
+    /// outdated owner, so a skill outdated for two owners (e.g. a
+    /// skills.sh-owned copy and a dotagents-owned copy of the same name)
+    /// produces two requests sharing one `SkillName`, and `ops::update_all`
+    /// returns two `UpdateAllItem`s with that same shared name. A
+    /// name-keyed lookup map collapses those two owners to one entry, so
+    /// the first owner's badge never clears; zipping `outcome.items` with
+    /// `owners` by index (both in request order) keeps them apart.
+    #[test]
+    fn update_all_clears_both_owners_of_a_skill_installed_twice_or_names_the_owner_left_outdated() {
+        use skill_studio_core::dto::{UpdateAllItem, UpdateAllOutcome, UpdateOutcome};
+        use skill_studio_core::identity::SkillName;
+
+        let outcome_for = |suffix: &str| UpdateOutcome {
+            event_id: skill_studio_core::identity::EventId(format!("evt-{suffix}")),
+            skill: SkillName("alpha".to_string()),
+            deployment_path: PathBuf::from(format!("/home/.agents/skills/alpha-{suffix}")),
+            tree_hash_before: "aaa".to_string(),
+            tree_hash_after: "bbb".to_string(),
+        };
+        let outcome = UpdateAllOutcome {
+            items: vec![
+                UpdateAllItem {
+                    skill: SkillName("alpha".to_string()),
+                    outcome: Some(outcome_for("skills-sh")),
+                },
+                UpdateAllItem {
+                    skill: SkillName("alpha".to_string()),
+                    outcome: Some(outcome_for("dotagents")),
+                },
+            ],
+            errors: std::collections::BTreeMap::new(),
+        };
+        let owners = vec![
+            (
+                "alpha".to_string(),
+                Some("skills-sh/global/alpha".to_string()),
+            ),
+            (
+                "alpha".to_string(),
+                Some("dotagents/global/alpha".to_string()),
+            ),
+        ];
+
+        let cleared = owners_to_clear(&outcome, &owners);
+
+        assert_eq!(
+            cleared,
+            vec![
+                (
+                    "alpha".to_string(),
+                    Some("skills-sh/global/alpha".to_string())
+                ),
+                (
+                    "alpha".to_string(),
+                    Some("dotagents/global/alpha".to_string())
+                ),
+            ],
+            "both owners of the twice-installed skill must clear: {cleared:?}"
         );
     }
 }
@@ -2835,10 +3003,11 @@ fn clear_update_flag(skill: &mut InstalledSkill, owner_id: Option<&str>) {
 }
 
 /// The post-`ops::update` housekeeping one successfully updated owner needs:
-/// drop its persisted update-check state (`skill_update_check::
-/// clear_owner_after_update` - review round 1's B1 fix, so the next full
-/// rebuild's `apply_skill_snapshot_overlays` doesn't recompute `has_update`
-/// from the store's still-stale `installed_commit` and bring the badge
+/// write the just-updated commit into its persisted update-check state
+/// (`skill_update_check::clear_owner_after_update` - review round 1's B1
+/// fix, sharpened in round 2's B2 to write the commit rather than remove
+/// the entry, so the next full rebuild's `apply_skill_snapshot_overlays`
+/// doesn't recompute `has_update` from a stale pair and bring the badge
 /// back), then patch the same owner's badge off the in-memory snapshot.
 /// Takes a bare `app_data` path and `SkillRefreshState` rather than an
 /// `AppHandle` so a test can drive it without a running Tauri app; returns
@@ -2851,7 +3020,7 @@ fn clear_outdated_state(
     owner_id: Option<&str>,
 ) -> Result<Option<skill_refresh::SkillSnapshot>, String> {
     if let Some(owner_id) = owner_id {
-        skill_update_check::clear_owner_after_update(app_data, owner_id)?;
+        skill_update_check::clear_owner_after_update(app_data, owner_id, skill_name)?;
     }
     skill_refresh::patch_snapshot(refresh_state, |snapshot| {
         if let Some(entry) = snapshot.skills.iter_mut().find(|s| s.name == skill_name) {
@@ -2938,12 +3107,14 @@ pub async fn update_skill(
 /// Test-only: the batch write itself, isolated from target resolution and
 /// `app.state()` so the thread-recording test below can pin it to
 /// `spawn_blocking` without a real `tauri::AppHandle` - the same split
-/// `harness_first_run.rs`'s `detect_with_runtime` uses. Production
-/// (`update_all_skills`) resolves targets and calls `ops::update_all`
-/// directly inside its own `time_command_blocking` closure instead (N2:
-/// the review round 1 fix), since it always has a real `app.state()` to
-/// resolve against; this helper exists only so a unit test can drive the
-/// same op call without one. `on_outcome` is threaded straight through to
+/// `harness_first_run.rs`'s `detect_with_runtime` uses. The sync body
+/// (`build_runtime` then `ops::update_all`) is [`run_update_all_sync`],
+/// shared with production `update_all_skills` (N1, review round 2) so the
+/// ten-fixture thread-recording test below still proves something about the
+/// exact call production makes, not a parallel copy of it - the earlier
+/// split (production called `ops::update_all` directly inside its own
+/// `time_command_blocking` closure) let that closure's body drift from this
+/// one with nothing to notice. `on_outcome` is threaded straight through to
 /// `ops::update_all` (B3: the review round 1 fix) rather than hardcoded to
 /// a no-op here, so the thread-recording test can observe every one of the
 /// batch's per-skill calls landing on this `spawn_blocking` closure's own
@@ -2952,26 +3123,46 @@ pub async fn update_skill(
 async fn update_all_with_runtime(
     requests: Vec<skill_studio_core::dto::UpdateRequest>,
     build_runtime: impl FnOnce() -> Result<skill_studio_core::ports::Runtime, String> + Send + 'static,
-    mut on_outcome: impl FnMut(
+    on_outcome: impl FnMut(
             &skill_studio_core::identity::SkillName,
             &Result<skill_studio_core::dto::UpdateOutcome, skill_studio_core::error::CoreError>,
         ) + Send
         + 'static,
 ) -> Result<skill_studio_core::dto::UpdateAllOutcome, String> {
     let joined = tauri::async_runtime::spawn_blocking(move || {
-        let rt = build_runtime()?;
-        let ctx = skill_studio_core::ports::OpContext::uncancellable(
-            skill_studio_core::identity::CorrelationId(ulid::Ulid::new().to_string()),
-        );
-        Ok(skill_studio_core::ops::update_all(
-            &rt,
-            &ctx,
-            &requests,
-            &mut on_outcome,
-        ))
+        run_update_all_sync(&requests, build_runtime, on_outcome)
     })
     .await;
     crate::timing_log::join_result_to_err("update_all_skills", joined)
+}
+
+/// The sync body a `spawn_blocking` closure runs for one update-all batch:
+/// build the `Runtime`, then run every request through `ops::update_all`.
+/// Shared by `update_all_with_runtime` (test-only, wraps this in its own
+/// `spawn_blocking` since a unit test builds a bare `Runtime` fixture
+/// without an `AppHandle`) and production `update_all_skills` (already
+/// inside the `spawn_blocking` closure `time_command_blocking` provides, so
+/// it calls this directly rather than nesting a second one) - one body, so
+/// a change to either caller's shape can't drift the two apart (N1, review
+/// round 2).
+fn run_update_all_sync(
+    requests: &[skill_studio_core::dto::UpdateRequest],
+    build_runtime: impl FnOnce() -> Result<skill_studio_core::ports::Runtime, String>,
+    mut on_outcome: impl FnMut(
+        &skill_studio_core::identity::SkillName,
+        &Result<skill_studio_core::dto::UpdateOutcome, skill_studio_core::error::CoreError>,
+    ),
+) -> Result<skill_studio_core::dto::UpdateAllOutcome, String> {
+    let rt = build_runtime()?;
+    let ctx = skill_studio_core::ports::OpContext::uncancellable(
+        skill_studio_core::identity::CorrelationId(ulid::Ulid::new().to_string()),
+    );
+    Ok(skill_studio_core::ops::update_all(
+        &rt,
+        &ctx,
+        requests,
+        &mut on_outcome,
+    ))
 }
 
 /// Which owners a batch's succeeded items should clear (N1: the review
@@ -2979,30 +3170,38 @@ async fn update_all_with_runtime(
 /// on so the row still reads as outdated, so this drops it rather than
 /// clearing it alongside the succeeded ones. Split out of `update_all_skills`
 /// so a test can drive the filter without a real `tauri::AppHandle`.
+///
+/// Takes `owners` as a `Vec<(name, owner)>` in request order and zips it
+/// with `outcome.items` by index (B1, review round 2), rather than keying
+/// a lookup map by skill name: `skillUpdateOwnerTargets` sends one target
+/// per outdated owner, so a skill outdated for two owners produces two
+/// requests sharing one name - a name-keyed map collapses them to one
+/// entry, and the last-written owner wins for both. `ops::update_all`
+/// pushes exactly one `UpdateAllItem` per request in the same order it
+/// received them (`ops_update.rs`'s `update_all`), so the index alignment
+/// holds.
 fn owners_to_clear(
     outcome: &skill_studio_core::dto::UpdateAllOutcome,
-    owner_by_skill: &std::collections::HashMap<String, Option<String>>,
+    owners: &[(String, Option<String>)],
 ) -> Vec<(String, Option<String>)> {
     outcome
         .items
         .iter()
-        .filter(|item| item.outcome.is_some())
-        .map(|item| {
-            (
-                item.skill.0.clone(),
-                owner_by_skill.get(&item.skill.0).and_then(Clone::clone),
-            )
-        })
+        .zip(owners)
+        .filter(|(item, _)| item.outcome.is_some())
+        .map(|(_, (name, owner))| (name.clone(), owner.clone()))
         .collect()
 }
 
 /// "Update all": resolves every target, then runs `ops::update_all` over all
-/// of them in the one `spawn_blocking` task `time_command_blocking` wraps
-/// the whole body in (N2: the review round 1 fix - resolving targets reads
-/// ledgers off disk, which no longer runs untimed on the Tokio worker) -
-/// each skill still gets its own journal row (`ops::update_all`'s own
-/// per-request loop), but no part of resolving targets, reading ledgers, or
-/// writing skills touches the UI task. `on_outcome` is a no-op here: the
+/// of them via `run_update_all_sync` (shared with the test-only
+/// `update_all_with_runtime`, N1 review round 2) in the one `spawn_blocking`
+/// task `time_command_blocking` wraps the whole body in (N2: the review
+/// round 1 fix - resolving targets reads ledgers off disk, which no longer
+/// runs untimed on the Tokio worker) - each skill still gets its own
+/// journal row (`ops::update_all`'s own per-request loop), but no part of
+/// resolving targets, reading ledgers, or writing skills touches the UI
+/// task. `on_outcome` is a no-op here: the
 /// frontend's existing "Updated N of M" toast reads the returned
 /// `UpdateAllOutcome` once the whole batch finishes rather than a per-skill
 /// progress event, matching the shared brief's "no new component". Only a
@@ -3022,7 +3221,7 @@ pub async fn update_all_skills(
             .app_data_dir()
             .unwrap_or_else(|_| PathBuf::from("."));
         let mut requests = Vec::with_capacity(targets.len());
-        let mut owner_by_skill = std::collections::HashMap::with_capacity(targets.len());
+        let mut owners = Vec::with_capacity(targets.len());
         for target in &targets {
             let (skill, deployment) = resolve_lifecycle_target(&snapshot, target, "Update")?;
             requests.push(build_update_request(
@@ -3031,16 +3230,16 @@ pub async fn update_all_skills(
                 &skill,
                 &deployment,
             )?);
-            owner_by_skill.insert(skill.name.clone(), deployment.owner_id.clone());
+            owners.push((skill.name.clone(), deployment.owner_id.clone()));
         }
 
-        let rt = super::core_runtime::build_runtime_write()?;
-        let ctx = skill_studio_core::ports::OpContext::uncancellable(
-            skill_studio_core::identity::CorrelationId(ulid::Ulid::new().to_string()),
-        );
-        let outcome = skill_studio_core::ops::update_all(&rt, &ctx, &requests, |_, _| {});
+        let outcome = run_update_all_sync(
+            &requests,
+            super::core_runtime::build_runtime_write,
+            |_, _| {},
+        )?;
 
-        for (skill_name, owner_id) in owners_to_clear(&outcome, &owner_by_skill) {
+        for (skill_name, owner_id) in owners_to_clear(&outcome, &owners) {
             clear_outdated_state_and_emit(&app, &refresh_state, &skill_name, owner_id.as_deref());
         }
         Ok(outcome)

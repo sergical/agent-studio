@@ -108,7 +108,7 @@ describe("updateAllOutdatedSkills", () => {
     expect(tally).toEqual({ attempted: 3, succeeded: 3, failures: 0 });
   });
 
-  it("pulls a fork upstream separately from the batched owner call", async () => {
+  it("update_all_pulls_a_fork_upstream_separately_from_the_batched_owner_call_or_names_the_extra_call", async () => {
     const owner = ownerSkill("alpha", "owner:v1/global/alpha");
 
     let pullForkCalls = 0;
@@ -140,7 +140,7 @@ describe("updateAllOutdatedSkills", () => {
     expect(tally).toEqual({ attempted: 2, succeeded: 2, failures: 0 });
   });
 
-  it("counts every owner update_all_skills reports as failed", async () => {
+  it("update_all_counts_every_owner_update_all_skills_reports_as_failed_or_names_the_uncounted_owner", async () => {
     const skills = [
       ownerSkill("alpha", "owner:v1/global/alpha"),
       ownerSkill("beta", "owner:v1/global/beta"),

@@ -989,18 +989,39 @@ pub fn check_now(
     Ok(summarize(&store))
 }
 
-/// Drop `owner_id`'s persisted update-check state right after a successful
-/// `ops::update` (B1 - the review round 1 fix that replaced the old
-/// `check_now_for_owner` re-check): without this, the store still holds the
-/// pre-update `installed_commit`, so the next full rebuild's
-/// `apply_skill_snapshot_overlays` recomputes `has_update` from the stale
-/// pair and the badge reappears before the background loop's own 6 h check
-/// reconciles it. A no-op (not an error) when the owner has no persisted
-/// state to drop.
-pub fn clear_owner_after_update(app_data: &Path, owner_id: &str) -> Result<(), String> {
+/// Write the just-updated commit into `owner_id`'s persisted update-check
+/// state right after a successful `ops::update` (B1 - the review round 1
+/// fix that replaced the old `check_now_for_owner` re-check; B2 - review
+/// round 2's fix, which stopped removing the entry outright). Removing the
+/// entry (the round-1 shape) exposed `state_for_owner`'s legacy-name
+/// fallback: on a migrated v1 store whose background loop hasn't run
+/// against this owner yet, there is no `owners` entry to remove, so the
+/// fallback to `legacy_skills[skill_name]` kept serving the pre-update
+/// commit pair and the badge came back. Reads the existing state from
+/// `owners`, falling back to `legacy_skills[skill_name]` the same way
+/// `state_for_owner` does for a sole Global owner, sets `installed_commit`
+/// to the already-recorded `latest_commit` (the value `has_update`
+/// compares it against, for both a Dotagents commit and a skills.sh tree
+/// hash) and writes it into `owners[owner_id]` - migrating a legacy record
+/// forward so the next lookup finds it directly and the fallback never
+/// gets a chance to re-serve the stale pair. A no-op (not an error) when
+/// neither map has a record for this owner to update.
+pub fn clear_owner_after_update(
+    app_data: &Path,
+    owner_id: &str,
+    skill_name: &str,
+) -> Result<(), String> {
     let path = update_check_path(app_data);
     let mut store = read_update_check_store_at(&path);
-    if store.owners.remove(owner_id).is_some() {
+    let existing = store
+        .owners
+        .get(owner_id)
+        .cloned()
+        .or_else(|| store.legacy_skills.get(skill_name).cloned());
+    if let Some(mut state) = existing {
+        state.installed_commit.clone_from(&state.latest_commit);
+        state.checked_at = Utc::now().to_rfc3339();
+        store.owners.insert(owner_id.to_string(), state);
         write_store(app_data, &store)?;
     }
     Ok(())
