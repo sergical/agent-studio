@@ -1258,10 +1258,17 @@ mod tests {
         drop(plan);
 
         let before_reconcile = tree_snapshot(&fixture, &root_path);
+        let staged_path = staged.path().to_path_buf();
+        assert!(
+            failing.symlink_metadata(&staged_path).is_ok(),
+            "the staged folder must still be on disk before reconciliation runs"
+        );
 
-        // Simulates EACCES/EIO on the very probe reconciliation uses to
-        // decide whether the exchange landed - not the path being absent.
-        failing.fail_next_fsops_device_inode();
+        // `reverse_steps` opens `Root` (one `fsops_device_inode` call) before
+        // it ever reaches the `Swap` step's own probe (the second call): arm
+        // the second call so the failure lands on the probe under test
+        // rather than being consumed by `Root::open`.
+        failing.fail_nth_fsops_device_inode(2);
         let report = reconcile(&journal, &g, &failing).expect("reconciliation must run");
         let interrupted = report
             .interrupted
@@ -1280,6 +1287,10 @@ mod tests {
         assert_eq!(
             after, before_reconcile,
             "an I/O error while probing must not delete or change anything, or names the old folder it deleted"
+        );
+        assert!(
+            failing.symlink_metadata(&staged_path).is_ok(),
+            "the Swap step's own probe must interrupt the plan before the paired Stage step's reversal runs, or names the staged folder it deleted"
         );
     }
 

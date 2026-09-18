@@ -823,6 +823,12 @@ pub struct FailingFs {
     fail_next_fsops_exchange: AtomicBool,
     fail_next_fsops_fsync_dir: AtomicBool,
     fail_next_fsops_device_inode: AtomicBool,
+    /// 1-based call index to fail, or 0 when disarmed. Distinct from
+    /// `fail_next_fsops_device_inode` so a test can target a call that is
+    /// not the next one - e.g. the second `fsops_device_inode` call in a
+    /// `reverse_steps` run, skipping past `Root::open`'s own probe.
+    fail_nth_fsops_device_inode: AtomicU64,
+    fsops_device_inode_calls: AtomicU64,
 }
 
 impl FailingFs {
@@ -837,6 +843,8 @@ impl FailingFs {
             fail_next_fsops_exchange: AtomicBool::new(false),
             fail_next_fsops_fsync_dir: AtomicBool::new(false),
             fail_next_fsops_device_inode: AtomicBool::new(false),
+            fail_nth_fsops_device_inode: AtomicU64::new(0),
+            fsops_device_inode_calls: AtomicU64::new(0),
         }
     }
 
@@ -900,6 +908,17 @@ impl FailingFs {
     pub fn fail_next_fsops_device_inode(&self) {
         self.fail_next_fsops_device_inode
             .store(true, Ordering::SeqCst);
+    }
+
+    /// The `n`-th `fsops_device_inode` call (1-based, counting every call
+    /// from this point on) returns a non-`NotFound` error instead of
+    /// reaching `inner`; every other call delegates normally. Lets a test
+    /// land a failure on a specific probe - e.g. `reverse_steps`'s `Swap`
+    /// step probe - without it being consumed by an earlier probe such as
+    /// `Root::open`'s.
+    pub fn fail_nth_fsops_device_inode(&self, n: u64) {
+        self.fsops_device_inode_calls.store(0, Ordering::SeqCst);
+        self.fail_nth_fsops_device_inode.store(n, Ordering::SeqCst);
     }
 }
 
@@ -968,6 +987,14 @@ impl ScopeFs for FailingFs {
             .fail_next_fsops_device_inode
             .swap(false, Ordering::SeqCst)
         {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::PermissionDenied,
+                "FailingFs: injected fsops_device_inode failure",
+            ));
+        }
+        let call = self.fsops_device_inode_calls.fetch_add(1, Ordering::SeqCst) + 1;
+        if self.fail_nth_fsops_device_inode.load(Ordering::SeqCst) == call {
+            self.fail_nth_fsops_device_inode.store(0, Ordering::SeqCst);
             return Err(std::io::Error::new(
                 std::io::ErrorKind::PermissionDenied,
                 "FailingFs: injected fsops_device_inode failure",
