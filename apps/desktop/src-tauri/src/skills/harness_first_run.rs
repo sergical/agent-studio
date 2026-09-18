@@ -75,7 +75,12 @@ pub async fn get_harnesses_choice(
     .await
 }
 
-/// Saves the first-run screen's choice, so the next launch skips it.
+/// Saves the first-run screen's choice, so the next launch skips it. Takes
+/// `home`'s `WriteLease` before reading the registry, not just before
+/// writing it, so this read-modify-write can't lose a concurrent writer's
+/// change the way an unguarded read followed by a locked write could -
+/// matching every other registry mutation in this module family (see
+/// `skill_trial.rs`, `skill_harness_disable.rs`).
 #[tauri::command]
 pub async fn save_harnesses_choice(
     choice: HarnessesChoice,
@@ -83,9 +88,11 @@ pub async fn save_harnesses_choice(
 ) -> Result<(), String> {
     crate::timing_log::time_command_blocking(&app, "save_harnesses_choice", move || {
         let home = dirs::home_dir().ok_or("Could not find home directory")?;
+        let write_lease = super::write_lease::WriteLease::default();
+        let guard = write_lease.try_acquire(&home)?;
         let mut registry = super::skill_fork_registry::read_fork_registry(&home)?;
         registry.harnesses = Some(choice);
-        super::skill_fork_registry::write_fork_registry(&home, &registry)
+        super::skill_fork_registry::write_fork_registry_locked(&guard, &home, &registry)
     })
     .await
 }
