@@ -43,6 +43,16 @@ use crate::ports::{
 /// file; a journal file this large is corrupt, not merely large.
 const MAX_JOURNAL_JSON_BYTES: u64 = 16 * 1024 * 1024;
 
+/// Caps how many bytes [`FsJournal::read_backup`] will read back for one
+/// `write_file` backup. `fsops::write_file` reads the pre-write bytes it
+/// hands to [`Journal::write_backup`] with `u64::MAX` - a user's file is
+/// not a journal-corruption signal the way an oversized plan/manifest JSON
+/// file is - so readback matches that instead of reusing
+/// `MAX_JOURNAL_JSON_BYTES`: a backup larger than that cap must still be
+/// restorable, not leave the plan `Interrupted` with the post-write bytes
+/// stuck in place.
+const MAX_BACKUP_BYTES: u64 = u64::MAX;
+
 /// A [`Journal`] implementation built only on [`ScopeFs`], so both the core's
 /// own tests and a host adapter can use it directly.
 ///
@@ -253,7 +263,7 @@ impl Journal for FsJournal {
     fn read_backup(&self, id: &PlanId, relative: &str) -> Result<Vec<u8>, CoreError> {
         let path = self.backup_path(id, relative);
         self.fs
-            .read_capped(&path, MAX_JOURNAL_JSON_BYTES)
+            .read_capped(&path, MAX_BACKUP_BYTES)
             .map_err(|e| CoreError::io(path, e))
     }
 }
@@ -652,10 +662,7 @@ fn reverse_steps(
                         // or already absent - both retried above) rather
                         // than losing the link entirely.
                         let parent = path.parent().unwrap_or(Path::new("/")).to_path_buf();
-                        let leaf = path
-                            .file_name()
-                            .and_then(|s| s.to_str())
-                            .unwrap_or("link");
+                        let leaf = path.file_name().and_then(|s| s.to_str()).unwrap_or("link");
                         let tmp_path = parent.join(format!(".{leaf}-{}", unique_temp_suffix()));
                         fs.fsops_symlink(previous_target, &tmp_path)?;
                         fs.fsops_rename(&tmp_path, path)?;
@@ -1249,7 +1256,9 @@ mod tests {
             .interrupted
             .iter()
             .find(|p| p.id == id)
-            .unwrap_or_else(|| panic!("a probe error other than NotFound must interrupt the plan, not {report:?}"));
+            .unwrap_or_else(|| {
+                panic!("a probe error other than NotFound must interrupt the plan, not {report:?}")
+            });
         assert!(
             interrupted.error.contains("fsops_device_inode"),
             "the report must name the error the probe hit, got: {}",
@@ -1316,6 +1325,64 @@ mod tests {
         assert_eq!(
             after, before,
             "reconciliation must restore the previous bytes, or name the lost backup"
+        );
+    }
+
+    /// Given an existing file one byte larger than `MAX_JOURNAL_JSON_BYTES`
+    /// (the cap `read_backup` used to reuse from plan/manifest JSON
+    /// readback), when `write_file` backs it up (with no cap, matching how
+    /// it read the pre-write bytes) and then crashes before `finish`, then
+    /// startup reconciliation still reads that backup back and restores it
+    /// byte-for-byte; on failure the panic names the cap that blocked it
+    /// (the post-write bytes left in place, plan `Interrupted`).
+    #[test]
+    fn a_backup_larger_than_the_journal_json_cap_still_restores_or_names_the_cap_that_blocked_it() {
+        let big = vec![b'A'; (16 * 1024 * 1024) + 1];
+        let fixture = FixtureBuilder::new()
+            .dir("/journal")
+            .dir("/root")
+            .file("/root/file.txt", &big)
+            .build_fs();
+        let root_path = PathBuf::from("/root");
+        let before = tree_snapshot(&fixture, &root_path);
+
+        let failing = FailingFs::wrap(Arc::new(fixture.clone()));
+        let root = Root::open(&failing, root_path.clone()).expect("open root");
+        let journal = journal_over(Arc::new(fixture.clone()));
+        let lease = FakeLease::default();
+        let g = guard(&lease);
+
+        let id = PlanId("01PLANBIGBACKUP0000000001".into());
+        let plan = PlanWriter::begin(
+            &journal,
+            &g,
+            id.clone(),
+            Utc::now(),
+            "write over a file whose backup exceeds the journal JSON cap",
+            root_path.clone(),
+            Vec::new(),
+        )
+        .expect("begin");
+
+        let target = root_path.join("file.txt");
+        let stamp = fsops::read_stamp(&failing, &target).expect("read the stamp");
+        // Same window as the write_file crash test above: the rename lands,
+        // the fsync right after it fails.
+        failing.fail_next_fsops_fsync_dir();
+        fsops::write_file(&root, &plan, Path::new("file.txt"), b"new bytes", &stamp)
+            .expect_err("the fsync after the rename must fail, or this test proves nothing about the window after it");
+        drop(plan);
+
+        let report = reconcile(&journal, &g, &fixture).expect("reconciliation must run");
+        assert!(
+            report.reversed.contains(&id),
+            "a write_file step whose backup exceeds MAX_JOURNAL_JSON_BYTES must still be reversible, not {report:?}"
+        );
+
+        let after = tree_snapshot(&fixture, &root_path);
+        assert_eq!(
+            after, before,
+            "reconciliation must restore the oversized backup byte-for-byte, or names the cap that blocked it"
         );
     }
 
@@ -1462,8 +1529,13 @@ mod tests {
             Vec::new(),
         )
         .expect("begin");
-        fsops::link(&root, &plan, Path::new("skill-current"), Path::new("new.txt"))
-            .expect("link");
+        fsops::link(
+            &root,
+            &plan,
+            Path::new("skill-current"),
+            Path::new("new.txt"),
+        )
+        .expect("link");
         drop(plan);
 
         // Simulates the reversal itself crashing partway through its own
@@ -1644,8 +1716,8 @@ mod tests {
     /// generation `skill` was left at (oldest-first strands `old0` in A's
     /// own quarantine folder and leaves `skill` at `new1` instead).
     #[test]
-    fn stacked_pending_plans_reverse_newest_first_or_names_the_folder_left_at_the_wrong_generation(
-    ) {
+    fn stacked_pending_plans_reverse_newest_first_or_names_the_folder_left_at_the_wrong_generation()
+    {
         let fixture = FixtureBuilder::new()
             .dir("/journal")
             .dir("/root")
@@ -1671,14 +1743,16 @@ mod tests {
             Vec::new(),
         )
         .expect("begin A");
-        let staged_a = fsops::stage(
+        let staged_a = fsops::stage(&root, &a, &[(PathBuf::from("SKILL.md"), b"new1".to_vec())])
+            .expect("stage A");
+        fsops::swap(
             &root,
             &a,
-            &[(PathBuf::from("SKILL.md"), b"new1".to_vec())],
+            Path::new("skill"),
+            &staged_a,
+            Path::new(".trash-a"),
         )
-        .expect("stage A");
-        fsops::swap(&root, &a, Path::new("skill"), &staged_a, Path::new(".trash-a"))
-            .expect("swap A over the pre-plan folder");
+        .expect("swap A over the pre-plan folder");
         drop(a);
 
         let plan_b = PlanId("01PLANSTACKB0000000000002".into());
@@ -1692,14 +1766,16 @@ mod tests {
             Vec::new(),
         )
         .expect("begin B");
-        let staged_b = fsops::stage(
+        let staged_b = fsops::stage(&root, &b, &[(PathBuf::from("SKILL.md"), b"new2".to_vec())])
+            .expect("stage B");
+        fsops::swap(
             &root,
             &b,
-            &[(PathBuf::from("SKILL.md"), b"new2".to_vec())],
+            Path::new("skill"),
+            &staged_b,
+            Path::new(".trash-b"),
         )
-        .expect("stage B");
-        fsops::swap(&root, &b, Path::new("skill"), &staged_b, Path::new(".trash-b"))
-            .expect("swap B over plan A's result");
+        .expect("swap B over plan A's result");
         drop(b);
 
         let report = reconcile(&journal, &g, &fixture).expect("reconciliation must run");
