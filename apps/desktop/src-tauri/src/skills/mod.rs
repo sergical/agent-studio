@@ -7,7 +7,6 @@ pub mod add_method_defaults;
 pub mod agents;
 pub mod api;
 pub mod app_version;
-pub mod codex_skill_config;
 pub mod commands;
 pub mod core_content_hash;
 pub mod core_runtime;
@@ -49,6 +48,7 @@ pub mod skill_trust_policy;
 pub mod skill_update_check;
 #[cfg(test)]
 mod test_support;
+pub mod write_lease;
 
 pub use agents::*;
 pub use commands::*;

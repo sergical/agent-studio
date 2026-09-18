@@ -40,7 +40,8 @@ mod tools;
 pub use builder::{default_ports, default_ports_with_discovery, default_ports_with_history};
 pub use clock::SystemClock;
 pub use discovery::{
-    discover_skill_projects, discovery_harnesses, opencode_config_dir, HostProjectDiscovery,
+    codex_home, discover_skill_projects, discovery_harnesses, opencode_config_dir,
+    HostProjectDiscovery,
 };
 pub use fs::RealFs;
 pub use harness_detect::RealProcessSpawner;

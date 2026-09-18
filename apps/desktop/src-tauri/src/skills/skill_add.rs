@@ -29,7 +29,7 @@ use super::skill_dto::{
     AddSkillOutcome, AddSkillRequest, AddSkillResult, AddSkillsRequest, InstallScope,
     ParsedSkillSource, ParsedSkillSourceKind,
 };
-use super::skill_fork::{ForkMutationLock, RealUpstreamFetch, RepoSnapshot, UpstreamFetch};
+use super::skill_fork::{RealUpstreamFetch, RepoSnapshot, UpstreamFetch};
 use super::skill_fork_registry::{AddMethod, CopyDeploymentRecord, TrialScope};
 #[cfg(test)]
 use super::skill_fs::copy_dir_all;
@@ -315,6 +315,7 @@ fn dotagents_source_arg(source: &ParsedSkillSource) -> Result<String, String> {
 /// already succeeded, so this is reported to the caller, not turned into an
 /// error that would make a successful install look failed.
 fn maybe_record_trials(
+    guard: &super::write_lease::WriteLeaseGuard,
     home: &Path,
     request: &AddSkillRequest,
     installs: &[(String, PathBuf, Option<PathBuf>, String)],
@@ -330,6 +331,7 @@ fn maybe_record_trials(
     let mut failures = Vec::new();
     for (name, skill_dir, claude_link, deployment_id) in installs {
         if let Err(e) = skill_trial::record_trial(
+            guard,
             home,
             deployment_id,
             scope,
@@ -373,6 +375,7 @@ fn installed_deployment_id(
 }
 
 fn add_via_dotagents(
+    guard: &super::write_lease::WriteLeaseGuard,
     home: &Path,
     request: &AddSkillRequest,
     runner: &dyn CommandRunner,
@@ -442,7 +445,7 @@ fn add_via_dotagents(
             installed_deployment_id(request, name, &skill_dir, "universal"),
         ));
     }
-    let warning = maybe_record_trials(home, request, &installs);
+    let warning = maybe_record_trials(guard, home, request, &installs);
 
     Ok(AddSkillResult {
         name: new_names.join(", "),
@@ -454,6 +457,7 @@ fn add_via_dotagents(
 }
 
 fn add_via_skills_sh(
+    guard: &super::write_lease::WriteLeaseGuard,
     home: &Path,
     request: &AddSkillRequest,
     runner: &dyn CommandRunner,
@@ -500,6 +504,7 @@ fn add_via_skills_sh(
         });
     let warning = deployment_dirs.first().and_then(|dir| {
         maybe_record_trials(
+            guard,
             home,
             request,
             &[{
@@ -760,6 +765,7 @@ where
 }
 
 fn add_via_copy(
+    guard: &super::write_lease::WriteLeaseGuard,
     home: &Path,
     request: &AddSkillRequest,
     fetch: &dyn UpstreamFetch,
@@ -956,7 +962,9 @@ fn add_via_copy(
     }
     registry.version = super::skill_fork_registry::CURRENT_REGISTRY_VERSION;
     control.check_message()?;
-    if let Err(error) = super::skill_fork_registry::write_fork_registry(home, &registry) {
+    if let Err(error) =
+        super::skill_fork_registry::write_fork_registry_locked(guard, home, &registry)
+    {
         if let Some(link) = &claude_link {
             let _ = fs::remove_file(link);
         }
@@ -988,7 +996,7 @@ fn add_via_copy(
             })
             .collect()
     };
-    let warning = maybe_record_trials(home, request, &trial_installs);
+    let warning = maybe_record_trials(guard, home, request, &trial_installs);
 
     Ok(AddSkillResult {
         name,
@@ -1077,7 +1085,12 @@ fn codex_visible_skill_mds(
 /// avoid reaching, since every method writes the shared folder they all
 /// read. A failure folds into `result.warning`: the skill is on disk and
 /// usable, so it must not be reported as a failed install.
-fn apply_disabled_harnesses(home: &Path, request: &AddSkillRequest, result: &mut AddSkillResult) {
+fn apply_disabled_harnesses(
+    guard: &super::write_lease::WriteLeaseGuard,
+    home: &Path,
+    request: &AddSkillRequest,
+    result: &mut AddSkillResult,
+) {
     if request.disabled_harnesses.is_empty() {
         return;
     }
@@ -1101,7 +1114,9 @@ fn apply_disabled_harnesses(home: &Path, request: &AddSkillRequest, result: &mut
                 reader_agent: *agent,
             };
             if let Err(e) = set_new_universal_reader_enabled(
+                guard,
                 home,
+                &home.join(".skill-studio"),
                 name,
                 &target,
                 false,
@@ -1129,6 +1144,7 @@ fn apply_disabled_harnesses(home: &Path, request: &AddSkillRequest, result: &mut
 /// `add_skill`'s logic, taking `home`/traits directly so it's testable
 /// without a Tauri `AppHandle` or a network call.
 pub fn add_skill_with(
+    guard: &super::write_lease::WriteLeaseGuard,
     home: &Path,
     request: &AddSkillRequest,
     runner: &dyn CommandRunner,
@@ -1150,12 +1166,12 @@ pub fn add_skill_with(
             if request.destination != SkillDestination::Universal {
                 return Err("dotagents installs require the Universal destination".to_string());
             }
-            add_via_dotagents(home, request, runner)
+            add_via_dotagents(guard, home, request, runner)
         }
-        AddMethod::SkillsSh => add_via_skills_sh(home, request, runner),
-        AddMethod::Copy => add_via_copy(home, request, fetch, lookup, None, &control),
+        AddMethod::SkillsSh => add_via_skills_sh(guard, home, request, runner),
+        AddMethod::Copy => add_via_copy(guard, home, request, fetch, lookup, None, &control),
     }?;
-    apply_disabled_harnesses(home, request, &mut result);
+    apply_disabled_harnesses(guard, home, request, &mut result);
     Ok(result)
 }
 
@@ -1188,19 +1204,21 @@ fn request_for_entry(batch: &AddSkillsRequest, entry: &GithubSkillEntry) -> AddS
 /// method downloads the repo once up front and extracts every selected
 /// folder out of that one snapshot.
 pub fn add_skills_with(
+    guard: &super::write_lease::WriteLeaseGuard,
     home: &Path,
     request: &AddSkillsRequest,
     runner: &dyn CommandRunner,
     fetch: &dyn UpstreamFetch,
     lookup: &dyn CommitLookup,
 ) -> Result<Vec<AddSkillOutcome>, String> {
-    add_skills_with_progress(home, request, runner, fetch, lookup, |_, _, _| {})
+    add_skills_with_progress(guard, home, request, runner, fetch, lookup, |_, _, _| {})
 }
 
 /// `add_skills_with`, plus a per-item progress hook the background Add Skill
 /// operation uses for "2 of 5" status. The hook must not change install
 /// behaviour.
 pub fn add_skills_with_progress(
+    guard: &super::write_lease::WriteLeaseGuard,
     home: &Path,
     request: &AddSkillsRequest,
     runner: &dyn CommandRunner,
@@ -1252,16 +1270,22 @@ pub fn add_skills_with_progress(
         let single = request_for_entry(request, entry);
         let mut result = match validate_parsed_source(&single.source) {
             Ok(()) => match request.method {
-                AddMethod::Dotagents => add_via_dotagents(home, &single, runner),
-                AddMethod::SkillsSh => add_via_skills_sh(home, &single, runner),
-                AddMethod::Copy => {
-                    add_via_copy(home, &single, fetch, lookup, snapshot.as_deref(), &control)
-                }
+                AddMethod::Dotagents => add_via_dotagents(guard, home, &single, runner),
+                AddMethod::SkillsSh => add_via_skills_sh(guard, home, &single, runner),
+                AddMethod::Copy => add_via_copy(
+                    guard,
+                    home,
+                    &single,
+                    fetch,
+                    lookup,
+                    snapshot.as_deref(),
+                    &control,
+                ),
             },
             Err(e) => Err(e),
         };
         if let Ok(result) = &mut result {
-            apply_disabled_harnesses(home, &single, result);
+            apply_disabled_harnesses(guard, home, &single, result);
         }
         outcomes.push(match result {
             Ok(result) => AddSkillOutcome {
@@ -1340,9 +1364,9 @@ pub async fn add_skill(
 ) -> Result<AddSkillResult, String> {
     let timing_app = app.clone();
     crate::timing_log::time_command_blocking(&timing_app, "add_skill", move || {
-        let fork_lock = app.state::<ForkMutationLock>();
-        let _guard = fork_lock.try_acquire()?;
         let home = dirs::home_dir().ok_or("Could not find home directory")?;
+        let write_lease = super::write_lease::WriteLease::default();
+        let guard = write_lease.try_acquire(&home)?;
         let runner = RealCommandRunner::new();
         let (fetch, lookup) = resolve_fetch_and_lookup(&app)?;
 
@@ -1350,7 +1374,14 @@ pub async fn add_skill(
         // exact per-skill directories only they know), and surfaces as
         // `AddSkillResult.warning` rather than an error - the install already
         // succeeded by the time it runs.
-        let result = add_skill_with(&home, &request, &runner, fetch.as_ref(), lookup.as_ref());
+        let result = add_skill_with(
+            &guard,
+            &home,
+            &request,
+            &runner,
+            fetch.as_ref(),
+            lookup.as_ref(),
+        );
         skill_refresh::request_snapshot_rebuild(&app);
         result
     })
@@ -1365,6 +1396,12 @@ pub async fn add_skill(
 mod tests {
     use super::*;
     use std::sync::Mutex;
+
+    fn test_guard(home: &Path) -> super::super::write_lease::WriteLeaseGuard {
+        super::super::write_lease::WriteLease::default()
+            .try_acquire(home)
+            .unwrap()
+    }
 
     /// `(program, args, cwd)` for one recorded `FakeRunner::run` call.
     type RunCall = (String, Vec<String>, Option<PathBuf>);
@@ -1469,6 +1506,7 @@ mod tests {
         let runner = FakeRunner::default();
 
         let error = add_skill_with(
+            &test_guard(home),
             home,
             &request,
             &runner,
@@ -1497,6 +1535,7 @@ mod tests {
         let runner = FakeRunner::default();
 
         let error = add_skills_with(
+            &test_guard(home),
             home,
             &request,
             &runner,
@@ -1522,6 +1561,7 @@ mod tests {
         request.trial = true;
 
         let error = add_skill_with(
+            &test_guard(&home),
             &home,
             &request,
             &FakeRunner::default(),
@@ -1548,6 +1588,7 @@ mod tests {
         request.trial = true;
 
         let error = add_skills_with(
+            &test_guard(&home),
             &home,
             &request,
             &FakeRunner::default(),
@@ -1578,6 +1619,7 @@ mod tests {
             ..Default::default()
         };
         let result = add_skill_with(
+            &test_guard(&home),
             &home,
             &request,
             &runner,
@@ -1624,6 +1666,7 @@ mod tests {
             ..Default::default()
         };
         add_skill_with(
+            &test_guard(&home),
             &home,
             &request,
             &runner,
@@ -1653,6 +1696,7 @@ mod tests {
             ..Default::default()
         };
         let result = add_skill_with(
+            &test_guard(&home),
             &home,
             &request,
             &runner,
@@ -1673,6 +1717,7 @@ mod tests {
 
         let runner = FakeRunner::default();
         let result = add_skill_with(
+            &test_guard(&home),
             &home,
             &request,
             &runner,
@@ -1728,6 +1773,7 @@ mod tests {
         }
 
         let result = add_skill_with(
+            &test_guard(&home),
             &home,
             &request,
             &FakeRunner::default(),
@@ -1762,6 +1808,7 @@ mod tests {
         let request = base_request(source, AddMethod::Copy);
 
         let err = add_skill_with(
+            &test_guard(&home),
             &home,
             &request,
             &FakeRunner::default(),
@@ -1901,6 +1948,7 @@ mod tests {
         };
         let request = base_request(source, AddMethod::Copy);
         let result = add_skill_with(
+            &test_guard(&home),
             &home,
             &request,
             &FakeRunner::default(),
@@ -1924,6 +1972,7 @@ mod tests {
             request.agents = vec![AgentId::ClaudeCode];
 
             let error = add_skill_with(
+                &test_guard(&home),
                 &home,
                 &request,
                 &FakeRunner::default(),
@@ -1953,6 +2002,7 @@ mod tests {
             request.agents = vec![AgentId::ClaudeCode];
 
             let error = add_skill_with(
+                &test_guard(&home),
                 &home,
                 &request,
                 &FakeRunner::default(),
@@ -1979,6 +2029,7 @@ mod tests {
         let request = base_request(local_source(&source_link, "nested-copy"), AddMethod::Copy);
 
         let error = add_skill_with(
+            &test_guard(&home),
             &home,
             &request,
             &FakeRunner::default(),
@@ -2005,6 +2056,7 @@ mod tests {
         let request = base_request(local_source(&source, "nested-copy"), AddMethod::Copy);
 
         let error = add_skill_with(
+            &test_guard(&home),
             &home,
             &request,
             &FakeRunner::default(),
@@ -2028,6 +2080,7 @@ mod tests {
         let request = base_request(local_source(&source, "existing"), AddMethod::Copy);
 
         let error = add_skill_with(
+            &test_guard(&home),
             &home,
             &request,
             &FakeRunner::default(),
@@ -2069,6 +2122,7 @@ mod tests {
         ];
 
         add_skill_with(
+            &test_guard(&home),
             &home,
             &request,
             &FakeRunner::default(),
@@ -2110,6 +2164,7 @@ mod tests {
         let request = base_request(source, AddMethod::Copy);
 
         assert!(add_skill_with(
+            &test_guard(&home),
             &home,
             &request,
             &FakeRunner::default(),
@@ -2137,6 +2192,7 @@ mod tests {
             ..Default::default()
         };
         let result = add_skill_with(
+            &test_guard(&home),
             &home,
             &request,
             &runner,
@@ -2201,6 +2257,7 @@ mod tests {
             ..Default::default()
         };
         let result = add_skill_with(
+            &test_guard(&home),
             &home,
             &request,
             &runner,
@@ -2229,6 +2286,7 @@ mod tests {
         request.agents = vec![AgentId::ClaudeCode];
 
         let result = add_skill_with(
+            &test_guard(&home),
             &home,
             &request,
             &FakeRunner::default(),
@@ -2271,6 +2329,7 @@ mod tests {
         request.trial = true;
 
         add_skill_with(
+            &test_guard(&home),
             &home,
             &request,
             &SkillsShLinkRunner { home: home.clone() },
@@ -2304,6 +2363,7 @@ mod tests {
         let request = base_request(source, AddMethod::Copy);
 
         let err = add_skill_with(
+            &test_guard(&home),
             &home,
             &request,
             &FakeRunner::default(),
@@ -2327,6 +2387,7 @@ mod tests {
         let request = base_request(source, AddMethod::Copy);
 
         let err = add_skill_with(
+            &test_guard(&home),
             &home,
             &request,
             &FakeRunner::default(),
@@ -2358,6 +2419,7 @@ mod tests {
         let request = base_request(source, AddMethod::Copy);
 
         let err = add_skill_with(
+            &test_guard(&home),
             &home,
             &request,
             &FakeRunner::default(),
@@ -2393,6 +2455,7 @@ mod tests {
         request.trial = true;
 
         let result = add_skill_with(
+            &test_guard(&home),
             &home,
             &request,
             &FakeRunner::default(),
@@ -2432,6 +2495,7 @@ mod tests {
             ..Default::default()
         };
         let result = add_skill_with(
+            &test_guard(&home),
             &home,
             &request,
             &runner,
@@ -2520,6 +2584,7 @@ mod tests {
         );
         let fetch = CountingFetch::default();
         let outcomes = add_skills_with(
+            &test_guard(&home),
             &home,
             &request,
             &FakeRunner::default(),
@@ -2551,6 +2616,7 @@ mod tests {
         );
 
         let outcomes = add_skills_with(
+            &test_guard(&home),
             &home,
             &request,
             &FakeRunner::default(),
@@ -2589,6 +2655,7 @@ mod tests {
             ..Default::default()
         };
         let outcomes = add_skills_with(
+            &test_guard(&home),
             &home,
             &request,
             &runner,
@@ -2619,6 +2686,7 @@ mod tests {
 
         let runner = FakeRunner::default();
         add_skills_with(
+            &test_guard(&home),
             &home,
             &request,
             &runner,
@@ -2654,6 +2722,7 @@ mod tests {
             ..Default::default()
         };
         let result = add_skill_with(
+            &test_guard(&home),
             &home,
             &request,
             &runner,
@@ -2685,6 +2754,7 @@ mod tests {
         let request = base_request(source, AddMethod::Copy);
 
         let error = add_skill_with(
+            &test_guard(&home),
             &home,
             &request,
             &FakeRunner::default(),
@@ -2720,6 +2790,7 @@ mod tests {
             ..Default::default()
         };
         add_skill_with(
+            &test_guard(home),
             home,
             &request,
             &runner,
@@ -2737,10 +2808,14 @@ mod tests {
         let result = add_with_disabled(home, vec![AgentId::Codex]);
 
         assert!(result.warning.is_none());
-        assert_eq!(
-            super::super::codex_skill_config::read_disabled_skill_md_paths(home),
-            vec![home.join(".agents/skills/find-bugs/SKILL.md")]
-        );
+        let content = fs::read_to_string(home.join(".codex").join("config.toml")).unwrap();
+        assert!(content.contains(
+            &home
+                .join(".agents/skills/find-bugs/SKILL.md")
+                .to_string_lossy()
+                .to_string()
+        ));
+        assert!(content.contains("enabled = false"));
     }
 
     #[test]

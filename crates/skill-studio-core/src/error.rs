@@ -5,6 +5,7 @@
 //! golden envelope snapshots.
 
 use std::path::PathBuf;
+use std::time::Duration;
 
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
@@ -89,6 +90,19 @@ impl ErrorCode {
     }
 }
 
+/// Who holds a lease a [`ErrorCode::ScopeBusy`] error bounced off.
+///
+/// A [`LeaseProvider`](crate::ports::LeaseProvider) fills this in when it
+/// finds the lease already held; a caller decides whether to retry or
+/// surface the holder to a person.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct LeaseBusy {
+    /// Process id of the current holder.
+    pub pid: u32,
+    /// How long the holder has held the lease so far.
+    pub age: Duration,
+}
+
 /// Error raised by a core operation.
 ///
 /// Invariant: `message` is written for a person and never contains secrets.
@@ -106,6 +120,8 @@ pub struct CoreError {
     /// Underlying I/O cause, kept for logs only.
     #[source]
     pub source: Option<std::io::Error>,
+    /// Who holds the lease, set only on [`ErrorCode::ScopeBusy`].
+    pub busy: Option<LeaseBusy>,
 }
 
 impl CoreError {
@@ -116,12 +132,19 @@ impl CoreError {
             message: message.into(),
             path: None,
             source: None,
+            busy: None,
         }
     }
 
     /// Attaches the path the error refers to.
     pub fn at(mut self, path: impl Into<PathBuf>) -> Self {
         self.path = Some(path.into());
+        self
+    }
+
+    /// Attaches the lease holder for a [`ErrorCode::ScopeBusy`] error.
+    pub fn with_busy(mut self, busy: LeaseBusy) -> Self {
+        self.busy = Some(busy);
         self
     }
 
@@ -133,6 +156,7 @@ impl CoreError {
             message: source.to_string(),
             path: Some(path),
             source: Some(source),
+            busy: None,
         }
     }
 

@@ -6,7 +6,7 @@
 // `[[skills]]` row for provenance on the ones dotagents, skills.sh, or a
 // fork manages (fork = both a row for the origin and a bundled copy of the
 // edits), plus a generated `README.md`. `create`/`update`/`publish`/`delete`
-// all take `ForkMutationLock` and write the registry
+// all take a per-root write lease and write the registry
 // (`~/.agents/skill-studio.json`) last, temp+rename via
 // `skill_fork_registry::write_fork_registry`. `import_skill_pack` is the
 // read side: given "owner/repo", it resolves one commit, reads that commit's
@@ -45,12 +45,11 @@ use super::skill_add::{maybe_claude_code_symlink, CommandRunner, RealCommandRunn
 use super::skill_agent_runner::validate_skill_dir_name;
 use super::skill_deployment::SkillDestination;
 use super::skill_dto::InstallScope;
-use super::skill_fork::ForkMutationLock;
 use super::skill_fork_registry::{self, PackMember, PackRecord};
 use super::skill_fs::{copy_dir_all, copy_dir_preserving_symlinks};
 use super::skill_refresh;
 use super::skill_trust_policy::{
-    normalize_confirmation_identity, record_trusted_dotagents_sources,
+    normalize_confirmation_identity, record_trusted_dotagents_sources_locked,
     require_trusted_dotagents_identity,
 };
 use super::skill_update_check;
@@ -684,6 +683,7 @@ impl PublishConfirm for RealPublishConfirm<'_> {
 /// `publish_skill_pack` adds one later), then records the pack in the
 /// registry last.
 pub(crate) fn create_skill_pack_with(
+    guard: &super::write_lease::WriteLeaseGuard,
     home: &Path,
     app_data: &Path,
     name: &str,
@@ -717,7 +717,7 @@ pub(crate) fn create_skill_pack_with(
         skills: Vec::new(),
     };
     registry.packs.insert(name.to_string(), record.clone());
-    skill_fork_registry::write_fork_registry(home, &registry)?;
+    skill_fork_registry::write_fork_registry_locked(guard, home, &registry)?;
 
     Ok(PackInfo::from_record(home, name, &record))
 }
@@ -762,7 +762,9 @@ pub(crate) fn update_skill_pack_with(
 /// `gh`/`git` call. Creates the GitHub repo (and pushes) the first time,
 /// records `repo` only once `gh repo create` actually succeeds; a later call
 /// just pushes.
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn publish_skill_pack_with(
+    guard: &super::write_lease::WriteLeaseGuard,
     home: &Path,
     name: &str,
     visibility: &str,
@@ -804,14 +806,18 @@ pub(crate) fn publish_skill_pack_with(
     let mut updated = record;
     updated.repo = Some(owner_repo);
     registry.packs.insert(name.to_string(), updated.clone());
-    skill_fork_registry::write_fork_registry(home, &registry)?;
+    skill_fork_registry::write_fork_registry_locked(guard, home, &registry)?;
 
     Ok(PackInfo::from_record(home, name, &updated))
 }
 
 /// `delete_skill_pack`'s core - local only, never touches GitHub even when
 /// `repo` is set.
-pub(crate) fn delete_skill_pack_with(home: &Path, name: &str) -> Result<(), String> {
+pub(crate) fn delete_skill_pack_with(
+    guard: &super::write_lease::WriteLeaseGuard,
+    home: &Path,
+    name: &str,
+) -> Result<(), String> {
     validate_pack_name(name)?;
     let mut registry = skill_fork_registry::read_fork_registry(home)?;
     let record = registry
@@ -827,7 +833,7 @@ pub(crate) fn delete_skill_pack_with(home: &Path, name: &str) -> Result<(), Stri
             .map_err(|e| format!("Failed to remove {}: {e}", record.dir.display()))?;
     }
     registry.packs.remove(name);
-    skill_fork_registry::write_fork_registry(home, &registry)
+    skill_fork_registry::write_fork_registry_locked(guard, home, &registry)
 }
 
 /// One `agents.toml` `[[skills]]` row, as read back from an imported repo -
@@ -1404,7 +1410,7 @@ fn preflight_pack_import_with(
     gh: &dyn GhContentsFetch,
     runner: &dyn CommandRunner,
     state: &PackImportTrustState,
-    fork_lock: &ForkMutationLock,
+    write_lease: &super::write_lease::WriteLease,
 ) -> Result<PackImportPreflightResult, String> {
     validate_pack_import_request(&request)?;
     let mut prepared = prepare_pack_import(home, &request.source, gh, None)?;
@@ -1416,7 +1422,7 @@ fn preflight_pack_import_with(
         }
     };
     if all_trusted {
-        let _guard = match fork_lock.try_acquire() {
+        let _guard = match write_lease.try_acquire(home) {
             Ok(guard) => guard,
             Err(error) => {
                 cleanup_prepared_pack_import(home, &prepared);
@@ -1557,7 +1563,7 @@ fn confirm_pack_import_trust_with(
     gh: &dyn GhContentsFetch,
     runner: &dyn CommandRunner,
     state: &PackImportTrustState,
-    fork_lock: &ForkMutationLock,
+    write_lease: &super::write_lease::WriteLease,
 ) -> Result<ImportResult, String> {
     validate_pack_import_request(&request)?;
     let pending = {
@@ -1578,7 +1584,7 @@ fn confirm_pack_import_trust_with(
             .expect("matching pack trust token remains while token state is locked")
     };
 
-    let _guard = match fork_lock.try_acquire() {
+    let guard = match write_lease.try_acquire(home) {
         Ok(guard) => guard,
         Err(error) => {
             cleanup_prepared_pack_import(home, &pending.prepared);
@@ -1591,7 +1597,9 @@ fn confirm_pack_import_trust_with(
         cleanup_prepared_pack_import(home, &pending.prepared);
         return Err(error);
     }
-    if let Err(error) = record_trusted_dotagents_sources(home, &pending.prepared.identities) {
+    if let Err(error) =
+        record_trusted_dotagents_sources_locked(&guard, home, &pending.prepared.identities)
+    {
         cleanup_prepared_pack_import(home, &pending.prepared);
         return Err(error);
     }
@@ -1616,14 +1624,14 @@ pub async fn create_skill_pack(
 ) -> Result<PackInfo, String> {
     let timing_app = app.clone();
     crate::timing_log::time_command_blocking(&timing_app, "create_skill_pack", move || {
-        let fork_lock = app.state::<ForkMutationLock>();
-        let _guard = fork_lock.try_acquire()?;
         let home = dirs::home_dir().ok_or("Could not find home directory")?;
+        let write_lease = super::write_lease::WriteLease::default();
+        let guard = write_lease.try_acquire(&home)?;
         let app_data = app
             .path()
             .app_data_dir()
             .map_err(|e| format!("Could not resolve app data dir: {e}"))?;
-        create_skill_pack_with(&home, &app_data, &name, &members, &RealGitRunner)
+        create_skill_pack_with(&guard, &home, &app_data, &name, &members, &RealGitRunner)
     })
     .await
 }
@@ -1635,9 +1643,9 @@ pub async fn update_skill_pack(
 ) -> Result<UpdatePackResult, String> {
     let timing_app = app.clone();
     crate::timing_log::time_command_blocking(&timing_app, "update_skill_pack", move || {
-        let fork_lock = app.state::<ForkMutationLock>();
-        let _guard = fork_lock.try_acquire()?;
         let home = dirs::home_dir().ok_or("Could not find home directory")?;
+        let write_lease = super::write_lease::WriteLease::default();
+        let _guard = write_lease.try_acquire(&home)?;
         let app_data = app
             .path()
             .app_data_dir()
@@ -1655,12 +1663,13 @@ pub async fn publish_skill_pack(
 ) -> Result<PackInfo, String> {
     let timing_app = app.clone();
     crate::timing_log::time_command_blocking(&timing_app, "publish_skill_pack", move || {
-        let fork_lock = app.state::<ForkMutationLock>();
-        let _guard = fork_lock.try_acquire()?;
         let home = dirs::home_dir().ok_or("Could not find home directory")?;
+        let write_lease = super::write_lease::WriteLease::default();
+        let guard = write_lease.try_acquire(&home)?;
         let gh_bin = skill_update_check::resolve_gh_binary()
             .ok_or_else(|| "gh is not installed".to_string())?;
         publish_skill_pack_with(
+            &guard,
             &home,
             &name,
             &visibility,
@@ -1676,10 +1685,10 @@ pub async fn publish_skill_pack(
 pub async fn delete_skill_pack(name: String, app: tauri::AppHandle) -> Result<(), String> {
     let timing_app = app.clone();
     crate::timing_log::time_command_blocking(&timing_app, "delete_skill_pack", move || {
-        let fork_lock = app.state::<ForkMutationLock>();
-        let _guard = fork_lock.try_acquire()?;
         let home = dirs::home_dir().ok_or("Could not find home directory")?;
-        delete_skill_pack_with(&home, &name)
+        let write_lease = super::write_lease::WriteLease::default();
+        let guard = write_lease.try_acquire(&home)?;
+        delete_skill_pack_with(&guard, &home, &name)
     })
     .await
 }
@@ -1692,8 +1701,8 @@ pub async fn import_skill_pack(
     let timing_app = app.clone();
     crate::timing_log::time_command_blocking(&timing_app, "import_skill_pack", move || {
         let trust_state = app.state::<PackImportTrustState>();
-        let fork_lock = app.state::<ForkMutationLock>();
         let home = dirs::home_dir().ok_or("Could not find home directory")?;
+        let write_lease = super::write_lease::WriteLease::default();
         let gh_bin = if validate_pack_manifest_source(&request.source).is_ok() {
             skill_update_check::resolve_gh_binary()
                 .ok_or_else(|| "gh is not installed".to_string())?
@@ -1706,7 +1715,7 @@ pub async fn import_skill_pack(
             &RealGhContentsFetch { gh_bin },
             &RealCommandRunner::new(),
             &trust_state,
-            &fork_lock,
+            &write_lease,
         )?;
         if matches!(result, PackImportPreflightResult::Imported { .. }) {
             skill_refresh::request_snapshot_rebuild(&app);
@@ -1727,8 +1736,8 @@ pub async fn confirm_skill_pack_trust(
     let timing_app = app.clone();
     crate::timing_log::time_command_blocking(&timing_app, "confirm_skill_pack_trust", move || {
         let trust_state = app.state::<PackImportTrustState>();
-        let fork_lock = app.state::<ForkMutationLock>();
         let home = dirs::home_dir().ok_or("Could not find home directory")?;
+        let write_lease = super::write_lease::WriteLease::default();
         let gh_bin = if validate_pack_manifest_source(&request.source).is_ok() {
             skill_update_check::resolve_gh_binary()
                 .ok_or_else(|| "gh is not installed".to_string())?
@@ -1742,7 +1751,7 @@ pub async fn confirm_skill_pack_trust(
             &RealGhContentsFetch { gh_bin },
             &RealCommandRunner::new(),
             &trust_state,
-            &fork_lock,
+            &write_lease,
         )?;
         skill_refresh::request_snapshot_rebuild(&app);
         Ok(result)
@@ -1790,6 +1799,12 @@ mod tests {
         let dir = shared_skills_dir(home).join(name);
         fs::create_dir_all(&dir).unwrap();
         fs::write(dir.join("SKILL.md"), format!("# {name}\n")).unwrap();
+    }
+
+    fn test_guard(home: &Path) -> super::super::write_lease::WriteLeaseGuard {
+        super::super::write_lease::WriteLease::default()
+            .try_acquire(home)
+            .unwrap()
     }
 
     /// A member pointing at that name's own copy under the shared skills
@@ -2091,6 +2106,7 @@ ref = "1111111111111111111111111111111111aaaa"
 
         let git = FakeGit::new("");
         let info = create_skill_pack_with(
+            &test_guard(home),
             home,
             &tmp.path().join("app-data"),
             "my-skills",
@@ -2136,6 +2152,7 @@ path = "skills/find-bugs"
 
         let git = FakeGit::new("");
         let info = create_skill_pack_with(
+            &test_guard(home),
             home,
             &tmp.path().join("app-data"),
             "my-skills",
@@ -2167,6 +2184,7 @@ resolved_commit = "3333333333333333333333333333333333cccc"
 
         let git = FakeGit::new("");
         let info = create_skill_pack_with(
+            &test_guard(home),
             home,
             &tmp.path().join("app-data"),
             "my-skills",
@@ -2236,6 +2254,7 @@ resolved_commit = "3333333333333333333333333333333333cccc"
 
         let git = FakeGit::new("");
         let info = create_skill_pack_with(
+            &test_guard(home),
             home,
             &app_data,
             "my-skills",
@@ -2276,6 +2295,7 @@ resolved_commit = "3333333333333333333333333333333333cccc"
 
         let git = FakeGit::new("");
         let info = create_skill_pack_with(
+            &test_guard(home),
             home,
             &tmp.path().join("app-data"),
             "my-skills",
@@ -2313,6 +2333,7 @@ resolved_commit = "3333333333333333333333333333333333cccc"
 
         let git = FakeGit::new("");
         let info = create_skill_pack_with(
+            &test_guard(home),
             home,
             &tmp.path().join("app-data"),
             "my-skills",
@@ -2336,6 +2357,7 @@ resolved_commit = "3333333333333333333333333333333333cccc"
 
         let git = FakeGit::new("");
         let info = create_skill_pack_with(
+            &test_guard(home),
             home,
             &tmp.path().join("app-data"),
             "my-skills",
@@ -2360,6 +2382,7 @@ resolved_commit = "3333333333333333333333333333333333cccc"
 
         let git = FakeGit::new("");
         let err = create_skill_pack_with(
+            &test_guard(home),
             home,
             &tmp.path().join("app-data"),
             "my-skills",
@@ -2381,6 +2404,7 @@ resolved_commit = "3333333333333333333333333333333333cccc"
         write_shared_skill(home, "some-skill");
         let app_data = tmp.path().join("app-data");
         create_skill_pack_with(
+            &test_guard(home),
             home,
             &app_data,
             "my-skills",
@@ -2401,6 +2425,7 @@ resolved_commit = "3333333333333333333333333333333333cccc"
         write_shared_skill(home, "some-skill");
         let app_data = tmp.path().join("app-data");
         create_skill_pack_with(
+            &test_guard(home),
             home,
             &app_data,
             "my-skills",
@@ -2424,6 +2449,7 @@ resolved_commit = "3333333333333333333333333333333333cccc"
         let home = tmp.path();
         write_shared_skill(home, "some-skill");
         create_skill_pack_with(
+            &test_guard(home),
             home,
             &tmp.path().join("app-data"),
             "my-skills",
@@ -2435,6 +2461,7 @@ resolved_commit = "3333333333333333333333333333333333cccc"
         let gh = FakeGhRepoCreate::new(Err(GhError::NotLoggedIn));
         let confirm = FakeConfirm { result: true };
         let err = publish_skill_pack_with(
+            &test_guard(home),
             home,
             "my-skills",
             "private",
@@ -2455,6 +2482,7 @@ resolved_commit = "3333333333333333333333333333333333cccc"
         let home = tmp.path();
         write_shared_skill(home, "some-skill");
         create_skill_pack_with(
+            &test_guard(home),
             home,
             &tmp.path().join("app-data"),
             "my-skills",
@@ -2466,6 +2494,7 @@ resolved_commit = "3333333333333333333333333333333333cccc"
         let gh = FakeGhRepoCreate::new(Ok("someone/my-skills".to_string()));
         let confirm = FakeConfirm { result: true };
         let info = publish_skill_pack_with(
+            &test_guard(home),
             home,
             "my-skills",
             "private",
@@ -2484,7 +2513,16 @@ resolved_commit = "3333333333333333333333333333333333cccc"
 
         // A second publish, now that `repo` is set, only pushes.
         let git = FakeGit::new("");
-        publish_skill_pack_with(home, "my-skills", "private", &git, &gh, &confirm).unwrap();
+        publish_skill_pack_with(
+            &test_guard(home),
+            home,
+            "my-skills",
+            "private",
+            &git,
+            &gh,
+            &confirm,
+        )
+        .unwrap();
         assert!(git
             .calls
             .lock()
@@ -2503,6 +2541,7 @@ resolved_commit = "3333333333333333333333333333333333cccc"
         let home = tmp.path();
         write_shared_skill(home, "some-skill");
         let info = create_skill_pack_with(
+            &test_guard(home),
             home,
             &tmp.path().join("app-data"),
             "my-skills",
@@ -2511,7 +2550,7 @@ resolved_commit = "3333333333333333333333333333333333cccc"
         )
         .unwrap();
 
-        delete_skill_pack_with(home, "my-skills").unwrap();
+        delete_skill_pack_with(&test_guard(home), home, "my-skills").unwrap();
 
         assert!(!Path::new(&info.dir).exists());
         let registry = skill_fork_registry::read_fork_registry(home).unwrap();
@@ -2553,7 +2592,7 @@ source = "someone/repo"
                 &gh,
                 &runner,
                 &state,
-                &ForkMutationLock::default(),
+                &super::super::write_lease::WriteLease::with_lease_root(tmp.path().join("leases")),
             )
             .unwrap(),
         );
@@ -2575,7 +2614,8 @@ source = "someone/repo"
             toml: Some("[[skills]]\nname = \"child\"\nsource = \"someone/child\"\n".to_string()),
         };
         let state = PackImportTrustState::default();
-        let lock = ForkMutationLock::default();
+        let lock =
+            super::super::write_lease::WriteLease::with_lease_root(tmp.path().join("leases"));
         let request = pack_import_request("someone/repo");
         let (_, token) = trust_token(
             preflight_pack_import_with(tmp.path(), request.clone(), &gh, &runner, &state, &lock)
@@ -2610,7 +2650,8 @@ source = "someone/repo"
             fail_sources: vec![],
         };
         let state = PackImportTrustState::default();
-        let lock = ForkMutationLock::default();
+        let lock =
+            super::super::write_lease::WriteLease::with_lease_root(tmp.path().join("leases"));
         let request = pack_import_request("someone/repo");
         let (_, token) = trust_token(
             preflight_pack_import_with(tmp.path(), request.clone(), &gh, &runner, &state, &lock)
@@ -2647,7 +2688,8 @@ source = "someone/repo"
             fail_sources: vec![],
         };
         let state = PackImportTrustState::default();
-        let lock = ForkMutationLock::default();
+        let lock =
+            super::super::write_lease::WriteLease::with_lease_root(tmp.path().join("leases"));
         let request = pack_import_request("someone/repo");
         let (_, token) = trust_token(
             preflight_pack_import_with(tmp.path(), request.clone(), &gh, &runner, &state, &lock)
@@ -2684,7 +2726,8 @@ source = "someone/repo"
             installed_skill: Mutex::new(None),
         };
         let state = PackImportTrustState::default();
-        let lock = ForkMutationLock::default();
+        let lock =
+            super::super::write_lease::WriteLease::with_lease_root(tmp.path().join("leases"));
         let request = pack_import_request(&local_pack.to_string_lossy());
         let (_, token) = trust_token(
             preflight_pack_import_with(
@@ -2800,7 +2843,8 @@ source = "someone/repo"
         )
         .unwrap();
         let state = PackImportTrustState::default();
-        let lock = ForkMutationLock::default();
+        let lock =
+            super::super::write_lease::WriteLease::with_lease_root(tmp.path().join("leases"));
         let request = pack_import_request(&local_pack.to_string_lossy());
         let runner = FakeRunner {
             calls: Mutex::new(Vec::new()),
@@ -2888,7 +2932,7 @@ source = "someone/repo"
                 &FakeGhContents { toml: None },
                 &runner,
                 &state,
-                &ForkMutationLock::default(),
+                &super::super::write_lease::WriteLease::with_lease_root(tmp.path().join("leases")),
             )
             .unwrap(),
         );
@@ -2929,7 +2973,8 @@ source = "someone/repo"
         )
         .unwrap();
         let state = PackImportTrustState::default();
-        let lock = ForkMutationLock::default();
+        let lock =
+            super::super::write_lease::WriteLease::with_lease_root(tmp.path().join("leases"));
         let runner = FakeRunner {
             calls: Mutex::new(Vec::new()),
             home: tmp.path().to_path_buf(),
@@ -2999,7 +3044,7 @@ source = "someone/repo"
                 &FakeGhContents { toml: None },
                 &runner,
                 &state,
-                &ForkMutationLock::default(),
+                &super::super::write_lease::WriteLease::with_lease_root(tmp.path().join("leases")),
             )
             .unwrap(),
         );
@@ -3071,7 +3116,7 @@ source = "someone/repo"
                 &FakeGhContents { toml: None },
                 &runner,
                 &state,
-                &ForkMutationLock::default(),
+                &super::super::write_lease::WriteLease::with_lease_root(tmp.path().join("leases")),
             )
             .unwrap(),
         );
@@ -3126,7 +3171,8 @@ source = "someone/repo"
             toml: Mutex::new(vec![Some(original.to_string()), Some(changed.to_string())]),
         };
         let state = PackImportTrustState::default();
-        let lock = ForkMutationLock::default();
+        let lock =
+            super::super::write_lease::WriteLease::with_lease_root(tmp.path().join("leases"));
         let request = pack_import_request("someone/repo");
         let (_, token) = trust_token(
             preflight_pack_import_with(tmp.path(), request.clone(), &gh, &runner, &state, &lock)
@@ -3181,7 +3227,8 @@ source = "someone/repo"
         };
         let gh = FakeGhContents { toml: None };
         let state = PackImportTrustState::default();
-        let lock = ForkMutationLock::default();
+        let lock =
+            super::super::write_lease::WriteLease::with_lease_root(tmp.path().join("leases"));
         let request = pack_import_request("someone/repo");
         let (_, token) = trust_token(
             preflight_pack_import_with(tmp.path(), request.clone(), &gh, &runner, &state, &lock)
@@ -3211,7 +3258,8 @@ source = "someone/repo"
         };
         let gh = FakeGhContents { toml: None };
         let state = PackImportTrustState::default();
-        let lock = ForkMutationLock::default();
+        let lock =
+            super::super::write_lease::WriteLease::with_lease_root(tmp.path().join("leases"));
         let request = pack_import_request("someone/repo");
         let (_, token) = trust_token(
             preflight_pack_import_with(tmp.path(), request.clone(), &gh, &runner, &state, &lock)
@@ -3259,7 +3307,9 @@ source = "someone/repo"
                     &gh,
                     &runner,
                     &PackImportTrustState::default(),
-                    &ForkMutationLock::default(),
+                    &super::super::write_lease::WriteLease::with_lease_root(
+                        tmp.path().join("leases")
+                    ),
                 )
                 .unwrap(),
                 PackImportPreflightResult::Imported { .. }
@@ -3571,7 +3621,7 @@ path = "../escape"
         fs::write(outside.path().join("marker.txt"), "x").unwrap();
         write_pack_record_outside_packs_root(home, outside.path());
 
-        let err = delete_skill_pack_with(home, "my-skills").unwrap_err();
+        let err = delete_skill_pack_with(&test_guard(home), home, "my-skills").unwrap_err();
         assert!(err.contains("points outside"));
         assert!(outside.path().join("marker.txt").exists());
     }
@@ -3606,6 +3656,7 @@ path = "../escape"
         let gh = FakeGhRepoCreate::new(Ok("someone/my-skills".to_string()));
         let confirm = FakeConfirm { result: true };
         let err = publish_skill_pack_with(
+            &test_guard(home),
             home,
             "my-skills",
             "private",
@@ -3628,6 +3679,7 @@ path = "../escape"
         let tmp = tempfile::tempdir().unwrap();
         let home = tmp.path();
         create_skill_pack_with(
+            &test_guard(home),
             home,
             &tmp.path().join("app-data"),
             "my-skills",
@@ -3639,6 +3691,7 @@ path = "../escape"
         let gh = FakeGhRepoCreate::new(Ok("someone/my-skills".to_string()));
         let confirm = FakeConfirm { result: false };
         let err = publish_skill_pack_with(
+            &test_guard(home),
             home,
             "my-skills",
             "private",
@@ -3672,6 +3725,7 @@ path = "../escape"
             path: project_skill_dir.to_string_lossy().to_string(),
         };
         let info = create_skill_pack_with(
+            &test_guard(home),
             home,
             &tmp.path().join("app-data"),
             "my-skills",
@@ -3703,6 +3757,7 @@ path = "../escape"
                 .to_string(),
         };
         let err = create_skill_pack_with(
+            &test_guard(home),
             home,
             &tmp.path().join("app-data"),
             "my-skills",
@@ -3731,6 +3786,7 @@ path = "../escape"
             },
         ];
         let err = create_skill_pack_with(
+            &test_guard(home),
             home,
             &tmp.path().join("app-data"),
             "my-skills",
@@ -3796,9 +3852,15 @@ ref = "1111111111111111111111111111111111aaaa"
             shared_member(home, "find-bugs"),
             shared_member(home, "cool-skill"),
         ];
-        let info =
-            create_skill_pack_with(home, &app_data, "my-skills", &members, &FakeGit::new(""))
-                .unwrap();
+        let info = create_skill_pack_with(
+            &test_guard(home),
+            home,
+            &app_data,
+            "my-skills",
+            &members,
+            &FakeGit::new(""),
+        )
+        .unwrap();
 
         assert!(Path::new(&info.dir)
             .join("skills/find-bugs/SKILL.md")

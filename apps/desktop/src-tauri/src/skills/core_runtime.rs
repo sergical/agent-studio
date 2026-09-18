@@ -18,6 +18,10 @@ use skill_studio_core::{OpStatus, RuntimeScope};
 /// `$XDG_DATA_HOME/skill-studio`, or `~/.local/share/skill-studio` when
 /// `XDG_DATA_HOME` is unset, matching the CLI's default so the CLI, MCP, and
 /// desktop read and write the same history database and lease file.
+///
+/// `pub(crate)` so `write_lease.rs` can root every desktop write's lease
+/// under the same `leases` directory `build_runtime_write` uses for park
+/// and unpark, instead of a second, unrelated location.
 pub(crate) fn data_root() -> PathBuf {
     if let Ok(xdg) = std::env::var("XDG_DATA_HOME") {
         if !xdg.is_empty() {
@@ -36,9 +40,20 @@ pub(crate) fn data_root() -> PathBuf {
 /// takes its `Runtime` from here.
 pub fn build_runtime_write() -> Result<Runtime, String> {
     let home = dirs::home_dir().ok_or("Could not find home directory")?;
-    let data_root = data_root();
+    build_runtime_write_at(home, data_root())
+}
+
+/// [`build_runtime_write`], but rooted at `home` and `data_root` given
+/// directly rather than read from the host. `set_harness_enabled_with`
+/// (Codex's `[[skills.config]]` write) takes this so it stays testable
+/// against a tempdir `home`, the way it was before that write moved onto
+/// `ops::set_codex_skill_disabled` - the real command still calls
+/// `build_runtime_write` above, which resolves `home` and `data_root` from
+/// the host exactly as it did before this function existed.
+pub(crate) fn build_runtime_write_at(home: PathBuf, data_root: PathBuf) -> Result<Runtime, String> {
     let history_root = data_root.join("history");
-    let mut scope = RuntimeScope::live(home.clone(), history_root);
+    let codex_home = skill_studio_host::codex_home(&home);
+    let mut scope = RuntimeScope::live(home.clone(), history_root).with_codex_home(codex_home);
     scope.opencode_config_root = Some(skill_studio_host::opencode_config_dir(&home));
     let catalog = Arc::new(HarnessCatalog::builtin());
     let lease_root = data_root.join("leases");

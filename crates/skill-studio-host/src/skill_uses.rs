@@ -411,15 +411,20 @@ fn opencode_root(home: &Path) -> PathBuf {
     crate::opencode_db::opencode_data_dir(home)
 }
 
-/// Codex keeps its own directory, not shared with OpenCode's.
-const CODEX_ROOT: &str = ".codex";
-/// Codex's live rollouts.
+/// Codex's live rollouts under the default `<home>/.codex`; also used
+/// (stripped of its `.codex/` prefix) as the sub-path under an overridden
+/// [`codex_root`].
 const CODEX_SESSIONS_DIR: &str = ".codex/sessions";
-/// Rollouts Codex has moved aside (still readable, never appended to again).
+/// Rollouts Codex has moved aside (still readable, never appended to again),
+/// under the default `<home>/.codex`; see [`CODEX_SESSIONS_DIR`].
 const CODEX_ARCHIVED_SESSIONS_DIR: &str = ".codex/archived_sessions";
 
+/// Codex's own directory: `$CODEX_HOME`, or `<home>/.codex` when unset (see
+/// [`crate::discovery::codex_home`]). [`SourceWatch`] entries still watch
+/// the default `.codex/sessions` and `.codex/archived_sessions` under
+/// `home` - watching a `CODEX_HOME` override too is a follow-up.
 fn codex_root(home: &Path) -> PathBuf {
-    home.join(CODEX_ROOT)
+    crate::discovery::codex_home(home)
 }
 
 fn codex_sessions_watch_dir(home: &Path) -> PathBuf {
@@ -431,14 +436,14 @@ fn codex_archived_sessions_watch_dir(home: &Path) -> PathBuf {
 }
 
 /// How many directory levels [`list_codex_rollouts`] descends below each of
-/// `.codex/sessions` and `.codex/archived_sessions`: enough for the dated
-/// `YYYY/MM/DD` layout with room to spare, without walking the rest of
-/// `.codex` (plugin caches, logs, state databases - all churn constantly and
-/// hold no skill-use signal) should a rollout ever nest deeper than expected.
+/// `sessions` and `archived_sessions`: enough for the dated `YYYY/MM/DD`
+/// layout with room to spare, without walking the rest of [`codex_root`]
+/// (plugin caches, logs, state databases - all churn constantly and hold no
+/// skill-use signal) should a rollout ever nest deeper than expected.
 const CODEX_WALK_DEPTH: u32 = 4;
 
-/// Lists Codex's rollout transcripts: `<home>/.codex/sessions/**/*.jsonl`
-/// and `<home>/.codex/archived_sessions/**/*.jsonl`, walked to
+/// Lists Codex's rollout transcripts: `<codex_root>/sessions/**/*.jsonl` and
+/// `<codex_root>/archived_sessions/**/*.jsonl`, walked to
 /// [`CODEX_WALK_DEPTH`] levels below each. A missing top dir is normal
 /// (Codex was never installed, or has archived nothing yet); any other
 /// failure to list a directory marks the listing incomplete.
@@ -447,9 +452,10 @@ fn list_codex_rollouts(home: &Path) -> SourceListing {
     let mut listed_dirs = BTreeSet::new();
     let mut incomplete = false;
 
-    for top in [CODEX_SESSIONS_DIR, CODEX_ARCHIVED_SESSIONS_DIR] {
+    let root = codex_root(home);
+    for top in ["sessions", "archived_sessions"] {
         walk_jsonl_files(
-            &home.join(top),
+            &root.join(top),
             CODEX_WALK_DEPTH,
             &mut files,
             &mut listed_dirs,
@@ -2029,6 +2035,99 @@ mod tests {
         assert_eq!(stats[0].skill, "lint-code");
     }
 
+    /// Flow: a Claude Code transcript is refreshed once, appended to, and
+    /// refreshed again (resume); then it is truncated and rewritten with
+    /// different content at the same size and refreshed a third time
+    /// (rewrite).
+    /// Expectation: the append is picked up without reparsing the first
+    /// line (`files_reparsed` stays `0` on the append pass, since the
+    /// resumed read only consumes the new bytes), and the rewrite is
+    /// detected and fully reparsed, so only the rewrite's skill remains in
+    /// the index.
+    /// Failure here (an appended use going missing, or a rewrite's stale
+    /// use surviving alongside the new one) would mean Activity shows a
+    /// Claude Code use that never happened, or drops one that did.
+    #[test]
+    fn claude_code_transcript_reader_resumes_from_a_byte_offset_and_detects_a_rewrite_or_names_the_missed_use(
+    ) {
+        let tmp = tempfile::tempdir().unwrap();
+        let home = tmp.path();
+        let session_dir = home.join(CLAUDE_PROJECTS_ROOT).join("-my-project");
+        let path = write_transcript(
+            &session_dir,
+            "session.jsonl",
+            "write-tests",
+            "2026-08-01T12:00:00Z",
+            "/my-project",
+        );
+
+        let mut index = SkillInvocationIndex::default();
+        let known_skills = known(&["write-tests", "lint-code", "run-tests"]);
+        let sources = DiscoverySources::default();
+        let first = index.refresh(home, &sources);
+        assert_eq!(first.files_reparsed, 1);
+        assert_eq!(
+            stats(&index, &known_skills, &sources)[0].skill,
+            "write-tests"
+        );
+
+        // Append: the resumed read only sees the new line, not a reparse.
+        let size_before_append = fs::metadata(&path).unwrap().len();
+        let mut file = fs::OpenOptions::new().append(true).open(&path).unwrap();
+        use std::io::Write;
+        writeln!(
+            file,
+            "{}",
+            skill_line("lint-code", "2026-08-02T12:00:00Z", "/my-project")
+        )
+        .unwrap();
+        drop(file);
+        let appended_len = fs::metadata(&path).unwrap().len() - size_before_append;
+        let appended = index.refresh(home, &sources);
+        assert_eq!(
+            appended.bytes_read, appended_len,
+            "an append must be resumed from the byte offset, not reparsed from 0"
+        );
+        let after_append: Vec<_> = stats(&index, &known_skills, &sources)
+            .into_iter()
+            .map(|s| s.skill)
+            .collect();
+        assert_eq!(
+            after_append.len(),
+            2,
+            "the appended use was missed: {after_append:?}"
+        );
+        assert!(after_append.contains(&"write-tests".to_string()));
+        assert!(after_append.contains(&"lint-code".to_string()));
+
+        // Rewrite: same byte length as the file above, different content.
+        let before_rewrite_size = fs::metadata(&path).unwrap().len();
+        let rewritten = format!(
+            "{}\n",
+            skill_line("run-tests", "2026-08-03T12:00:00Z", "/my-project")
+        );
+        let padded = format!("{:1$}", rewritten, before_rewrite_size as usize);
+        assert_eq!(padded.len() as u64, before_rewrite_size);
+        fs::write(&path, &padded).unwrap();
+        let bumped_mtime =
+            fs::metadata(&path).unwrap().modified().unwrap() + Duration::from_secs(1);
+        fs::OpenOptions::new()
+            .write(true)
+            .open(&path)
+            .unwrap()
+            .set_modified(bumped_mtime)
+            .unwrap();
+
+        index.refresh(home, &sources);
+        let after_rewrite = stats(&index, &known_skills, &sources);
+        assert_eq!(
+            after_rewrite.len(),
+            1,
+            "a rewrite must clear the stale uses from before it: {after_rewrite:?}"
+        );
+        assert_eq!(after_rewrite[0].skill, "run-tests");
+    }
+
     #[test]
     fn corrupt_cache_yields_empty_index_and_leaves_a_corrupt_file() {
         let tmp = tempfile::tempdir().unwrap();
@@ -2518,6 +2617,53 @@ mod tests {
             assert_eq!(stats(&index, &known_skills, &enabled).len(), 1);
         }
 
+        /// codex_rollout_reader_resumes_from_a_byte_offset_across_archived_sessions_or_names_the_missed_use:
+        /// an archived rollout gets the same resume treatment as a live one -
+        /// a second refresh after new lines are appended reads only the new
+        /// bytes and counts only the new use, not the whole file again.
+        #[test]
+        fn codex_rollout_reader_resumes_from_a_byte_offset_across_archived_sessions_or_names_the_missed_use(
+        ) {
+            let tmp = tempfile::tempdir().unwrap();
+            let home = tmp.path();
+            let path = write_rollout(
+                &home.join(CODEX_ARCHIVED_SESSIONS_DIR),
+                "old.jsonl",
+                &[
+                    session_meta_line("sess-a", "/proj-a"),
+                    skill_block_line("2026-09-16T12:00:00Z", "foo"),
+                ],
+            );
+
+            let mut index = SkillInvocationIndex::default();
+            let known_skills = known(&["foo"]);
+            let sources = DiscoverySources::default();
+            let first = index.refresh(home, &sources);
+            assert_eq!(stats(&index, &known_skills, &sources)[0].total, 1);
+
+            let mut content = fs::read_to_string(&path).unwrap();
+            content.push_str(&skill_block_line("2026-09-16T12:05:00Z", "foo"));
+            content.push('\n');
+            let appended_len = content.len() as u64 - fs::metadata(&path).unwrap().len();
+            fs::write(&path, &content).unwrap();
+
+            let second = index.refresh(home, &sources);
+            assert_eq!(
+                second.bytes_read, appended_len,
+                "the missed use: a full reparse (or no read at all) instead of a byte-offset resume"
+            );
+            assert_ne!(
+                first.bytes_read, 0,
+                "sanity: the first pass must have read something"
+            );
+            let stats = stats(&index, &known_skills, &sources);
+            assert_eq!(stats.len(), 1);
+            assert_eq!(
+                stats[0].total, 2,
+                "the missed use: the appended skill use was not counted"
+            );
+        }
+
         #[test]
         fn no_codex_and_no_claude_projects_is_not_incomplete() {
             let tmp = tempfile::tempdir().unwrap();
@@ -2628,6 +2774,48 @@ mod tests {
             assert_eq!(by_skill["bar"].total, 1);
             assert_eq!(by_skill["bar"].by_trigger_30_days.file_read, 1);
             assert_eq!(by_skill["bar"].by_project_30_days.get("/proj-a"), Some(&1));
+        }
+
+        #[test]
+        fn pi_session_reader_resumes_by_offset_and_reads_the_header_once_or_names_the_reparsed_header(
+        ) {
+            let tmp = tempfile::tempdir().unwrap();
+            let home = tmp.path();
+            let path = write_session(
+                &home.join(PI_SESSIONS_ROOT).join("d"),
+                "a.jsonl",
+                &[header_line("sess-a", "/proj-a")],
+            );
+
+            let mut index = SkillInvocationIndex::default();
+            let known_skills = known(&["foo"]);
+            let sources = DiscoverySources::default();
+            index.refresh(home, &sources);
+
+            let mut content = fs::read_to_string(&path).unwrap();
+            content.push_str(&user_skill_line(
+                "2026-09-16T12:05:00Z",
+                "foo",
+                "/x/skills/foo/SKILL.md",
+            ));
+            content.push('\n');
+            let appended_len = content.len() as u64 - fs::metadata(&path).unwrap().len();
+            fs::write(&path, &content).unwrap();
+
+            let report = index.refresh(home, &sources);
+            assert_eq!(
+                report.bytes_read, appended_len,
+                "the second refresh must resume from the first refresh's offset, not reparse \
+                 the header line from 0"
+            );
+            let stats = stats(&index, &known_skills, &sources);
+            assert_eq!(stats.len(), 1);
+            assert_eq!(
+                stats[0].by_project_30_days.get("/proj-a"),
+                Some(&1),
+                "the project must come from the header the first refresh already read, since \
+                 the second refresh never sees that line again"
+            );
         }
 
         #[test]

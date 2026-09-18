@@ -32,6 +32,13 @@
       "description": "Answer to the `capabilities` operation for one harness.",
       "type": "object",
       "properties": {
+        "default_install_destinations": {
+          "description": "Roots an install picker may offer as a destination: the universal\nroot, plus a harness's own root only when the catalog has it\nverified from the vendor's own documentation ([`Confidence::VerifiedFromDocs`]).\nAn [`RootRole::Own`] root the catalog only infers (Codex's\n`.codex/skills`: `docs/action-map/harnesses/codex.md`, \"Resolved by\nthe docs on 2026-09-16\") is excluded - installing there would be a\nguess about where Codex actually looks.",
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/RootSpec"
+          }
+        },
         "discovery": {
           "description": "Roots the scanner will visit for this harness.",
           "type": "array",
@@ -83,6 +90,7 @@
       "required": [
         "harness",
         "discovery",
+        "default_install_destinations",
         "operations",
         "runtime_notes"
       ]
