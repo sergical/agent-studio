@@ -82,36 +82,29 @@ impl FsJournal {
         }
     }
 
-    /// Writes `bytes` to `path` through a temp file, fsync, and rename, so
-    /// `path` only ever shows a complete write - the same durability
+    /// Writes `bytes` to `path` through `tmp`, fsync, and rename, so `path`
+    /// only ever shows a complete write - the same durability
     /// `fsops::write_file` gives a caller's own files.
-    fn write_json(&self, path: &Path, bytes: &[u8]) -> std::io::Result<()> {
+    fn write_through_tmp(&self, path: &Path, tmp: &Path, bytes: &[u8]) -> std::io::Result<()> {
         let parent = path.parent().unwrap_or(path);
         self.ensure_dir(parent)?;
-        let tmp = path.with_extension("json.tmp");
-        if self.fs.symlink_metadata(&tmp).is_ok() {
-            self.fs.fsops_remove_file(&tmp)?;
+        if self.fs.symlink_metadata(tmp).is_ok() {
+            self.fs.fsops_remove_file(tmp)?;
         }
-        self.fs.fsops_write_new_file(&tmp, bytes)?;
-        self.fs.fsops_fsync_file(&tmp)?;
-        self.fs.fsops_rename(&tmp, path)?;
+        self.fs.fsops_write_new_file(tmp, bytes)?;
+        self.fs.fsops_fsync_file(tmp)?;
+        self.fs.fsops_rename(tmp, path)?;
         self.fs.fsops_fsync_dir(parent)
     }
 
-    /// Writes raw `bytes` to `path` through a temp file, fsync, and rename -
-    /// the same durability [`Self::write_json`] gives its own files, minus
-    /// the JSON encoding.
+    /// Writes JSON `bytes` to `path` durably - see [`Self::write_through_tmp`].
+    fn write_json(&self, path: &Path, bytes: &[u8]) -> std::io::Result<()> {
+        self.write_through_tmp(path, &path.with_extension("json.tmp"), bytes)
+    }
+
+    /// Writes raw `bytes` to `path` durably - see [`Self::write_through_tmp`].
     fn write_bytes(&self, path: &Path, bytes: &[u8]) -> std::io::Result<()> {
-        let parent = path.parent().unwrap_or(path);
-        self.ensure_dir(parent)?;
-        let tmp = path.with_extension("tmp");
-        if self.fs.symlink_metadata(&tmp).is_ok() {
-            self.fs.fsops_remove_file(&tmp)?;
-        }
-        self.fs.fsops_write_new_file(&tmp, bytes)?;
-        self.fs.fsops_fsync_file(&tmp)?;
-        self.fs.fsops_rename(&tmp, path)?;
-        self.fs.fsops_fsync_dir(parent)
+        self.write_through_tmp(path, &path.with_extension("tmp"), bytes)
     }
 
     fn read_json<T: serde::de::DeserializeOwned>(&self, path: &Path) -> Result<T, CoreError> {
