@@ -1566,8 +1566,9 @@ pub(crate) struct CoreScanResult {
     pub observations: Vec<skill_studio_core::dto::Observation>,
     /// Roots this run could not read - see `Inventory::unread_roots`. On the
     /// total-failure branch below (the `Runtime` itself failed to build, so
-    /// `ops::scan` never ran), every root under `home` or a tracked project
-    /// counts as unread, since nothing was scanned at all.
+    /// `ops::scan` never ran), every root under `home`, a tracked project,
+    /// `CODEX_HOME`, or the `OpenCode` config root counts as unread, since
+    /// nothing was scanned at all.
     pub unread_roots: Vec<PathBuf>,
 }
 
@@ -1598,7 +1599,7 @@ pub(crate) fn core_scan_installed_skills(
     scope.projects = skill_studio_core::scope::ProjectSelection::Explicit {
         paths: project_paths.to_vec(),
     };
-    scope.opencode_config_root = Some(opencode_config_root_path);
+    scope.opencode_config_root = Some(opencode_config_root_path.clone());
     // The 2s default guards stateless CLI/MCP calls; the desktop refresh
     // runs in the background and must reach every root even on a home with
     // many projects and plugin caches.
@@ -1632,6 +1633,12 @@ pub(crate) fn core_scan_installed_skills(
             eprintln!("skill refresh: core scan failed: {e}");
             let mut unread_roots = vec![home.to_path_buf()];
             unread_roots.extend(project_paths.iter().cloned());
+            // The scan itself also reaches `CODEX_HOME` and the OpenCode
+            // config root, both of which can live outside `home` - a
+            // carry-over that stops at `home` would drop every previous
+            // deployment under either when the whole scan errors.
+            unread_roots.push(scope.codex_home_or_default());
+            unread_roots.push(opencode_config_root_path.clone());
             CoreScanResult {
                 skills: Vec::new(),
                 completeness: skill_studio_core::dto::Completeness::Partial,
@@ -3359,21 +3366,13 @@ mod tests {
         assert_eq!(second.revision, 2);
     }
 
-    /// Unit 3.3's crash test, desktop half: `ops::scan`'s own partial-root
-    /// behaviour (every skill found on a root that read successfully stays
-    /// in the result - see `crates/skill-studio-core/tests/
-    /// scan_partial_keeps_found_skills.rs` for that half) is only useful to
-    /// a user if the desktop layer doesn't then throw it away. A good
-    /// snapshot publishes "alpha", deployed under a root this run cannot
-    /// read; the next rebuild hits a mid-scan error on exactly that root and
-    /// only finds "beta" (under a root it could read) before giving up, so
-    /// `build_snapshot` marks it `scan_partial`. `merge_partial_scan_skills`
-    /// must keep both - not drop "alpha" just because this run's scan
-    /// couldn't reach its root again, and not drop "beta" either, since that
-    /// is a skill this run genuinely found.
+    /// `merge_partial_scan_skills`: a previous skill under a root this run
+    /// couldn't reach, and a fresh skill under a root it could, must both
+    /// survive one merge. Fails if the merge drops "alpha" (the carried-over
+    /// row from the unread root) or "beta" (the row this run genuinely
+    /// found).
     #[test]
-    fn a_scan_error_sets_scan_partial_and_scan_observations_without_dropping_a_single_installed_skill(
-    ) {
+    fn merge_keeps_every_installed_skill_when_the_whole_scan_errored() {
         let unread_root = PathBuf::from("/roots/unread");
         let mut good = fixture_snapshot(&unread_root.join("alpha"));
         good.skills[0].name = "alpha".to_string();
@@ -3393,6 +3392,66 @@ mod tests {
         assert!(
             names.contains(&"beta"),
             "a skill this run did find must still publish: {names:?}"
+        );
+    }
+
+    /// Serializes every test in this module that sets `CODEX_HOME`, mirroring
+    /// `test_support::OpencodeHomeGuard`'s lock for `XDG_CONFIG_HOME`.
+    fn codex_home_env_lock() -> &'static std::sync::Mutex<()> {
+        static LOCK: std::sync::OnceLock<std::sync::Mutex<()>> = std::sync::OnceLock::new();
+        LOCK.get_or_init(|| std::sync::Mutex::new(()))
+    }
+
+    /// N2 fix: `core_scan_installed_skills`'s total-failure branch (the
+    /// `Runtime` itself failed to build) must carry over `CODEX_HOME` too,
+    /// not just `home` and tracked projects - `CODEX_HOME` can live outside
+    /// `home`. Fails if `unread_roots` omits it, which would make the
+    /// merge in `merge_partial_scan_skills` drop every previous deployment
+    /// under it.
+    #[test]
+    fn a_scan_level_error_carries_over_codex_home_even_when_it_is_outside_home() {
+        let _guard = codex_home_env_lock()
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let tmp = tempfile::tempdir().unwrap();
+        // `home` is never created, so `Runtime::new`'s `physical()` call on
+        // it fails to canonicalize and the total-failure branch runs.
+        let home = tmp.path().join("home");
+        let codex_home = tmp.path().join("codex-home-outside-home");
+        fs::create_dir_all(&codex_home).unwrap();
+        let prev_codex_home = std::env::var_os("CODEX_HOME");
+        // SAFETY: `codex_home_env_lock` above serializes every test in this
+        // module that touches `CODEX_HOME`.
+        #[allow(unsafe_code)]
+        unsafe {
+            std::env::set_var("CODEX_HOME", &codex_home);
+        }
+        let result =
+            core_scan_installed_skills(&home, &[], &tmp.path().join("update-check.json"), &[]);
+        // SAFETY: same as above - still under `codex_home_env_lock`.
+        #[allow(unsafe_code)]
+        unsafe {
+            match prev_codex_home {
+                Some(v) => std::env::set_var("CODEX_HOME", v),
+                None => std::env::remove_var("CODEX_HOME"),
+            }
+        }
+
+        assert!(
+            result.unread_roots.contains(&codex_home),
+            "CODEX_HOME must be scoped as unread on a scan-level error: {:?}",
+            result.unread_roots
+        );
+
+        // The previous deployment under it must survive a merge against
+        // this run's carry-over.
+        let mut good = fixture_snapshot(&codex_home.join("codex-skill"));
+        good.skills[0].name = "codex-skill".to_string();
+        let merged = merge_partial_scan_skills(Vec::new(), &good.skills, &result.unread_roots);
+        let names: Vec<&str> = merged.iter().map(|s| s.name.as_str()).collect();
+        assert!(
+            names.contains(&"codex-skill"),
+            "a deployment under CODEX_HOME must survive a scan-level error: {names:?}"
         );
     }
 

@@ -5927,9 +5927,7 @@ mod tests {
                 .file("/h/.claude/skills/broken-skill/SKILL.md", b"---\n---\n")
                 .build_fs();
             let failing = FailingFs::wrap(Arc::new(fs));
-            failing.fail_read_prefix_for(PathBuf::from(
-                "/h/.claude/skills/broken-skill/SKILL.md",
-            ));
+            failing.fail_read_prefix_for(PathBuf::from("/h/.claude/skills/broken-skill/SKILL.md"));
             let ports = Ports {
                 fs: Arc::new(failing),
                 clock: Arc::new(FakeClock::at(0)),
