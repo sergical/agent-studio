@@ -4623,7 +4623,14 @@ fn set_claude_code_switch(
         kind,
         skill: skill.name.clone(),
         harness: Some(AgentId::from(AgentId::CLAUDE_CODE)),
-        scope: Some(if project_path.is_some() { "project" } else { "global" }.to_string()),
+        scope: Some(
+            if project_path.is_some() {
+                "project"
+            } else {
+                "global"
+            }
+            .to_string(),
+        ),
         project_path: project_path.map(Path::to_path_buf),
         payload: serde_json::json!({ "skill": skill.name.0, "harness": AgentId::CLAUDE_CODE }),
         inverse,
@@ -4741,16 +4748,17 @@ fn set_codex_switch(
         let scoped_config = crate::ports::confine(&rt.scope, fs, &config_path)?;
         let mut toggled: u32 = 0;
         for path in &paths {
-            let existing = match fs.read_capped(
-                &config_path,
-                crate::harness_switch::HARNESS_CONFIG_MAX_BYTES,
-            ) {
-                Ok(bytes) => Some(String::from_utf8(bytes).map_err(|e| {
-                    CoreError::new(ErrorCode::Io, e.to_string()).at(&config_path)
-                })?),
-                Err(e) if e.kind() == std::io::ErrorKind::NotFound => None,
-                Err(e) => return Err(CoreError::io(&config_path, e)),
-            };
+            let existing =
+                match fs.read_capped(
+                    &config_path,
+                    crate::harness_switch::HARNESS_CONFIG_MAX_BYTES,
+                ) {
+                    Ok(bytes) => Some(String::from_utf8(bytes).map_err(|e| {
+                        CoreError::new(ErrorCode::Io, e.to_string()).at(&config_path)
+                    })?),
+                    Err(e) if e.kind() == std::io::ErrorKind::NotFound => None,
+                    Err(e) => return Err(CoreError::io(&config_path, e)),
+                };
             let new_text =
                 crate::harness_switch::codex_toggle_row(existing.as_deref(), path, !enabled)?;
             fs.write_atomic(&session.guard, &scoped_config, new_text.as_bytes())
@@ -4781,9 +4789,10 @@ fn set_codex_switch(
             Ok((toggled, total))
         }
         Err(e) => {
-            let _ = session
-                .store
-                .finish(&session.guard, id, crate::events::EventStatus::Failed, None);
+            let _ =
+                session
+                    .store
+                    .finish(&session.guard, id, crate::events::EventStatus::Failed, None);
             Err(e)
         }
     }
@@ -4920,9 +4929,10 @@ fn set_opencode_switch(
             Ok((1, 1))
         }
         Err(e) => {
-            let _ = session
-                .store
-                .finish(&session.guard, id, crate::events::EventStatus::Failed, None);
+            let _ =
+                session
+                    .store
+                    .finish(&session.guard, id, crate::events::EventStatus::Failed, None);
             Err(e)
         }
     }
@@ -5000,9 +5010,10 @@ fn set_pi_switch(
             Ok((1, 1))
         }
         Err(e) => {
-            let _ = session
-                .store
-                .finish(&session.guard, id, crate::events::EventStatus::Failed, None);
+            let _ =
+                session
+                    .store
+                    .finish(&session.guard, id, crate::events::EventStatus::Failed, None);
             Err(e)
         }
     }
