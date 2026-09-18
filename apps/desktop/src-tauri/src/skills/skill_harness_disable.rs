@@ -38,10 +38,11 @@ use skill_studio_core::ops::{self, Operation, ResultEnvelope};
 use skill_studio_core::ports::OpContext;
 
 use super::skill_agent_runner::validate_skill_dir_name;
-use super::skill_dto::{DisabledBy, HarnessVisibilityTarget, LifecycleTarget};
+use super::skill_dto::{Deployment, DisabledBy, HarnessVisibilityTarget, LifecycleTarget};
 use super::skill_fork_registry::{
     read_fork_registry, write_fork_registry_locked, ClaudeLinkRemoved, ForkRegistry,
 };
+use super::skill_ownership::LifecycleOwnerKind;
 use super::skill_refresh::{self, SkillRefreshState};
 
 /// Name of the holding directory the universal move-aside disable renames a
@@ -610,6 +611,23 @@ pub async fn set_harness_enabled(
 /// a one-shot migration that retires `.skill-studio-disabled/` entirely,
 /// after which this command goes too. See
 /// `docs/action-map/enable-and-links.md`.
+/// A Copy-owned row also has an entry in the fork registry's `copies` map,
+/// tracking its own path and `disabled` flag. Restoring the folder here
+/// would leave that entry stale (still pointing at `.skill-studio-disabled/`,
+/// still `disabled: true`) since `restore_moved_deployment` only patches the
+/// scan snapshot, not the registry - see `issue-4.4-followup-a.md`'s
+/// one-shot migration note.
+fn refuse_registry_copy_restore(deployment: &Deployment) -> Result<(), String> {
+    if deployment.owner_kind == LifecycleOwnerKind::Copy {
+        return Err(format!(
+            "\"{}\" is tracked by the fork registry; restore it by hand or wait for the \
+             .skill-studio-disabled/ migration",
+            deployment.path
+        ));
+    }
+    Ok(())
+}
+
 #[tauri::command]
 pub async fn restore_moved_deployment(
     target: LifecycleTarget,
@@ -635,6 +653,7 @@ pub async fn restore_moved_deployment(
                 deployment.path
             ));
         }
+        refuse_registry_copy_restore(&deployment)?;
         let path_buf = PathBuf::from(&deployment.path);
         let new_path = restore_deployment_at(&path_buf)?;
         let parsed = super::skill_deployment::parse_deployment_id(&deployment_id)
@@ -661,7 +680,7 @@ pub async fn restore_moved_deployment(
                 return;
             };
             deployment.path = new_path.to_string_lossy().to_string();
-            deployment.id.clone_from(&new_id);
+            deployment.id = new_id;
             deployment.disabled = false;
             deployment.disabled_by = None;
         }) {
@@ -1464,5 +1483,24 @@ mod tests {
             err.contains(STUDIO_DISABLED_DIR_NAME),
             "expected the named refusal for a path outside the holding directory: {err}"
         );
+    }
+
+    #[test]
+    fn restore_moved_deployment_refuses_a_registry_copy_or_names_the_path() {
+        let copy = Deployment {
+            owner_kind: LifecycleOwnerKind::Copy,
+            path: "/home/.claude/skills/find-bugs".to_string(),
+            ..Default::default()
+        };
+        let err = refuse_registry_copy_restore(&copy).unwrap_err();
+        assert!(err.contains("/home/.claude/skills/find-bugs"), "{err}");
+        assert!(err.contains("fork registry"), "{err}");
+
+        let manual = Deployment {
+            owner_kind: LifecycleOwnerKind::Manual,
+            path: "/home/.claude/skills/find-bugs".to_string(),
+            ..Default::default()
+        };
+        assert!(refuse_registry_copy_restore(&manual).is_ok());
     }
 }
