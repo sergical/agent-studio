@@ -85,7 +85,7 @@
       "type": "string"
     },
     "AgentIdentity": {
-      "description": "Kebab-case harness identifier, for example `claude-code` or `open-code`.\n\nInvariant: the string is the serde wire name used by the desktop app\ntoday. `open-code` is canonical; `opencode` is only a CLI binary name and\nis never stored in an `AgentId`.\n\n`#[schemars(rename)]`: the desktop's own `agents::AgentId` (a closed\nkebab-string enum) is a structurally different type with the same short\nname - reachable from the same generated schema document via\n`InstallPreferences.harnesses`. Without a stable name here, `schemars`\npicks whichever type it walks to first and silently suffixes the other\n(`AgentId2`), which flips based on unrelated edits (review round 1, item\n10).",
+      "description": "Kebab-case harness identifier, for example `claude-code` or `open-code`.\n\nInvariant: the string is the serde wire name used by the desktop app\ntoday. `open-code` is canonical; `opencode` is only a CLI binary name and\nis never stored in an `AgentId`.",
       "type": "string"
     },
     "RestoreCapability": {
