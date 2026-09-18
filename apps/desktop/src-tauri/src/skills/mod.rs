@@ -16,6 +16,7 @@ pub mod event_store;
 pub mod frontmatter;
 pub mod gh_cli;
 pub mod github_skill_listing;
+pub mod harness_first_run;
 pub mod skill_add;
 pub mod skill_add_operation;
 pub mod skill_agent_runner;

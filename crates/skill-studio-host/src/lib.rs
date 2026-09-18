@@ -66,4 +66,4 @@ pub use skill_uses::{
     skill_use_watch_paths_with_databases, SkillInvocationIndex, SkillUseRefreshReport,
     SkillUseWatchPath,
 };
-pub use tools::PathToolLookup;
+pub use tools::{LoginShellToolLookup, PathToolLookup};
