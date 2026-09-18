@@ -33,7 +33,7 @@ use std::time::Duration;
 use chrono::{DateTime, Utc};
 
 use crate::error::{CoreError, ErrorCode};
-use crate::fsops::Root;
+use crate::fsops::{self, Root};
 use crate::identity::PlanId;
 use crate::ports::{
     ExclusiveGuard, FileKind, Journal, PlanBackupEntry, PlanRecord, PlanStatus, PlanStep, ScopeFs,
@@ -410,14 +410,6 @@ impl<'a> PlanWriter<'a> {
 /// `relative` under the plan's own backup directory - the leaf name plus a
 /// counter, so two `write_file` steps against files with the same leaf
 /// name never collide.
-/// A counter-based suffix unique within this process, for a reversal step's
-/// own temp filenames - the same purpose `fsops`'s private `unique_suffix`
-/// serves for its primitives, kept separate since that one is not `pub`.
-fn unique_temp_suffix() -> u64 {
-    static COUNTER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
-    COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
-}
-
 fn backup_relative_name(path: &Path) -> String {
     static COUNTER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
     let n = COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
@@ -663,7 +655,26 @@ fn reverse_steps(
                         // than losing the link entirely.
                         let parent = path.parent().unwrap_or(Path::new("/")).to_path_buf();
                         let leaf = path.file_name().and_then(|s| s.to_str()).unwrap_or("link");
-                        let tmp_path = parent.join(format!(".{leaf}-{}", unique_temp_suffix()));
+                        let temp_prefix = format!(".{leaf}-");
+                        // A crashed earlier restore attempt (this process or
+                        // a previous one) may have left its own temp
+                        // symlink under this same prefix behind - minted
+                        // then never consumed because the crash landed
+                        // before the rename below. Clear every such entry
+                        // first so a retry always converges instead of
+                        // accumulating orphaned temp links across retries.
+                        for entry in fs.read_dir(&parent)? {
+                            if !entry.name.starts_with(&temp_prefix) {
+                                continue;
+                            }
+                            let stale = parent.join(&entry.name);
+                            match fs.fsops_remove_file(&stale) {
+                                Ok(()) => {}
+                                Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+                                Err(e) => return Err(e),
+                            }
+                        }
+                        let tmp_path = parent.join(format!("{temp_prefix}{}", fsops::unique_suffix()));
                         fs.fsops_symlink(previous_target, &tmp_path)?;
                         fs.fsops_rename(&tmp_path, path)?;
                     }
@@ -1576,6 +1587,114 @@ mod tests {
             restored,
             PathBuf::from("old.txt"),
             "reconciliation must restore the previous target, or name the target it lost"
+        );
+    }
+
+    /// Given a link restore left mid-flight by a process that crashed
+    /// between minting its temp symlink and renaming it over `path` - the
+    /// same window as the test above - when a *fresh* process retries
+    /// reconciliation, seeded with the exact leaked temp entry a crashed
+    /// first mint (this process's own `.<leaf>-0`, or another process
+    /// reusing the same leaf) would have left, then the retry still
+    /// converges: it clears every stale entry under that leaf's temp prefix
+    /// before minting its own, rather than failing `AlreadyExists` and
+    /// leaving `path` stuck on the plan's new target; on failure the panic
+    /// names the temp link it collided with.
+    #[test]
+    fn a_link_restore_retried_by_a_fresh_process_converges_or_names_the_temp_link_it_collided_with(
+    ) {
+        let fixture = FixtureBuilder::new()
+            .dir("/journal")
+            .dir("/root")
+            .file("/root/old.txt", b"old")
+            .file("/root/new.txt", b"new")
+            .build_fs();
+        let root_path = PathBuf::from("/root");
+        let journal = journal_over(Arc::new(fixture.clone()));
+        let lease = FakeLease::default();
+        let g = guard(&lease);
+
+        // Seed an existing link pointing at `old.txt`, fully committed.
+        let seed_root = Root::open(&fixture, root_path.clone()).expect("open root");
+        let seed_id = PlanId("01PLANLINKCOLLSEED0000001".into());
+        let seed_plan = PlanWriter::begin(
+            &journal,
+            &g,
+            seed_id,
+            Utc::now(),
+            "seed the existing link",
+            root_path.clone(),
+            Vec::new(),
+        )
+        .expect("begin seed plan");
+        fsops::link(
+            &seed_root,
+            &seed_plan,
+            Path::new("skill-current"),
+            Path::new("old.txt"),
+        )
+        .expect("seed link");
+        seed_plan
+            .finish(PlanStatus::Done)
+            .expect("finish seed plan");
+
+        let pristine = tree_snapshot(&fixture, &root_path);
+
+        // A second plan replaces the link with one pointing at `new.txt`,
+        // fully landing, then is left `Pending` - the plan a fresh process
+        // finds and retries reversing on.
+        let root = Root::open(&fixture, root_path.clone()).expect("open root");
+        let id = PlanId("01PLANLINKCOLL0000000001".into());
+        let plan = PlanWriter::begin(
+            &journal,
+            &g,
+            id.clone(),
+            Utc::now(),
+            "replace the link, then crash before finish",
+            root_path.clone(),
+            Vec::new(),
+        )
+        .expect("begin");
+        fsops::link(
+            &root,
+            &plan,
+            Path::new("skill-current"),
+            Path::new("new.txt"),
+        )
+        .expect("link");
+        drop(plan);
+
+        // Simulates the leaked temp symlink a first reversal attempt left
+        // behind after minting it but before the rename that would have
+        // consumed it: the exact name a fresh process's first mint of this
+        // formula (`fsops::unique_suffix`, pid-then-counter) would produce -
+        // this test's own throwaway call names the value only to keep the
+        // fixture path visibly derived from that same formula, not to
+        // predict what the retry below will itself mint.
+        let leaked_temp = root_path.join(format!(".skill-current-{}", fsops::unique_suffix()));
+        fixture
+            .fsops_symlink(Path::new("old.txt"), &leaked_temp)
+            .expect("seed the leaked temp symlink a crashed first attempt left behind");
+
+        let report = reconcile(&journal, &g, &fixture).expect("reconciliation must run");
+        assert!(
+            report.reversed.contains(&id),
+            "a fresh process's retried reversal must still converge despite the name collision, not {report:?}"
+        );
+
+        let restored = fixture
+            .read_link(Path::new("/root/skill-current"))
+            .expect("read the restored link");
+        assert_eq!(
+            restored,
+            PathBuf::from("old.txt"),
+            "reconciliation must restore the previous target despite the collision, or name the temp link it collided with"
+        );
+
+        let after = tree_snapshot(&fixture, &root_path);
+        assert_eq!(
+            after, pristine,
+            "a converged retry must leave no leaked temp entry behind, or name the temp link it collided with"
         );
     }
 

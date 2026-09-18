@@ -121,7 +121,7 @@ impl<T> IoResultExt<T> for std::io::Result<T> {
 /// the same process never collide even when they land in the same second.
 static UNIQUE_COUNTER: AtomicU64 = AtomicU64::new(0);
 
-fn unique_suffix() -> String {
+pub(crate) fn unique_suffix() -> String {
     let n = UNIQUE_COUNTER.fetch_add(1, Ordering::Relaxed);
     format!("{}-{n}", std::process::id())
 }
