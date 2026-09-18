@@ -478,13 +478,17 @@ fn claude_code() -> HarnessFacts {
                 ev(),
             ),
             // Nested `<subdir>/.claude/skills` folders are discovered up to
-            // the repo root (see `CLAUDE_SKILLS_DOC_2026_09_16`), so the
-            // project root is recursive, unlike the global one.
+            // the repo root (see `CLAUDE_SKILLS_DOC_2026_09_16`), but that is
+            // a host discovery job that finds more `.claude/skills` roots
+            // elsewhere in the repo (the same shape as the pi nested-project
+            // walk in `crates/skill-studio-host/src/discovery.rs`), not a
+            // reader that walks inside this one root. `recursive` stays
+            // `false`.
             root(
                 ScopeLevel::Project,
                 ".claude/skills",
                 RootRole::Own,
-                true,
+                false,
                 Evidence::verified(CLAUDE_SKILLS_DOC_2026_09_16),
             ),
             root(
@@ -1521,8 +1525,9 @@ mod tests {
             .find(|r| r.level == ScopeLevel::Project && r.role == RootRole::Own)
             .expect("Claude Code has a project-level Own root");
         assert!(
-            project_root.recursive,
-            "nested `.claude/skills` discovery is documented; the project root must be recursive"
+            !project_root.recursive,
+            "nested `.claude/skills` discovery is a host job, not a recursive root; \
+             the project root must not be recursive"
         );
         let report = CapabilityReport::from_facts(claude, None);
         assert!(
