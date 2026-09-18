@@ -1792,18 +1792,22 @@ pub fn set_codex_skill_disabled(
     let guard = acquire_exclusive(rt.ports.leases.as_ref(), &rt.scope)?;
     let codex_home = &rt.scope.codex_home;
     let mut doc = read_codex_config_document(fs, codex_home)?;
-    codex_write_disabled_row(&mut doc, skill_md_path, disabled);
+    codex_write_disabled_row(&mut doc, skill_md_path, disabled)
+        .map_err(|e| e.at(&codex_config_path(codex_home)))?;
     codex_write_config_document(rt, fs, &guard, codex_home, &doc)
 }
 
 /// The in-memory half of [`set_codex_skill_disabled`], split out so
 /// [`codex_rewrite_skill_path`] can reuse the row lookup and decor-rehoming
-/// without re-deriving them.
+/// without re-deriving them. Errors rather than panics when `skills` or
+/// `skills.config` already exists in `config.toml` under a type the user
+/// wrote there themselves - a string, an inline table, and so on - that a
+/// disable row can't be inserted into.
 fn codex_write_disabled_row(
     doc: &mut toml_edit::DocumentMut,
     skill_md_path: &Path,
     disabled: bool,
-) {
+) -> Result<(), CoreError> {
     let existing = codex_find_row_index(doc, skill_md_path);
 
     if !disabled {
@@ -1849,16 +1853,26 @@ fn codex_write_disabled_row(
             codex_rehome_table_decor_blocks(doc, orphaned_decor);
         }
     } else if existing.is_none() {
-        let skills_table = doc
+        let skills_item = doc
             .entry("skills")
-            .or_insert_with(|| toml_edit::Item::Table(toml_edit::Table::new()))
-            .as_table_mut()
-            .expect("skills was just inserted as a table");
-        let config_array = skills_table
+            .or_insert_with(|| toml_edit::Item::Table(toml_edit::Table::new()));
+        let skills_type = skills_item.type_name();
+        let skills_table = skills_item.as_table_mut().ok_or_else(|| {
+            CoreError::new(
+                ErrorCode::InvalidRequest,
+                format!("skills in config.toml is a {skills_type}, not a table"),
+            )
+        })?;
+        let config_item = skills_table
             .entry("config")
-            .or_insert_with(|| toml_edit::Item::ArrayOfTables(Default::default()))
-            .as_array_of_tables_mut()
-            .expect("config was just inserted as an array of tables");
+            .or_insert_with(|| toml_edit::Item::ArrayOfTables(Default::default()));
+        let config_type = config_item.type_name();
+        let config_array = config_item.as_array_of_tables_mut().ok_or_else(|| {
+            CoreError::new(
+                ErrorCode::InvalidRequest,
+                format!("skills.config in config.toml is a {config_type}, not an array of tables"),
+            )
+        })?;
         let mut row = toml_edit::Table::new();
         row["path"] = toml_edit::value(skill_md_path.to_string_lossy().to_string());
         row["enabled"] = toml_edit::value(false);
@@ -1866,6 +1880,7 @@ fn codex_write_disabled_row(
     }
     // `existing.is_some() && disabled`: already disabled, nothing to do -
     // idempotent by construction.
+    Ok(())
 }
 
 /// Rewrites an existing `[[skills.config]]` row's `path` from

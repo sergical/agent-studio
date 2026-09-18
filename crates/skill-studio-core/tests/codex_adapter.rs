@@ -88,6 +88,39 @@ fn codex_disable_writes_the_skills_config_row_and_keeps_other_tables_and_comment
     std::fs::remove_dir_all(&home).ok();
 }
 
+/// codex_disable_refuses_a_mistyped_skills_key_or_names_the_panic: a
+/// `config.toml` with `skills` already bound to a string, not a table,
+/// makes disable return an error naming `skills` rather than panic on an
+/// `.expect()` that assumed the user's own document.
+#[test]
+fn codex_disable_refuses_a_mistyped_skills_key_or_names_the_panic() {
+    let home = unique_temp_dir("codex_disable_mistyped");
+    let codex_home = home.join(".codex");
+    std::fs::create_dir_all(&codex_home).unwrap();
+    let original = "skills = \"oops\"\n";
+    std::fs::write(codex_home.join("config.toml"), original).unwrap();
+    let rt = runtime_for(&home, None);
+    let skill_md = home
+        .join(UNIVERSAL_ROOT_RELATIVE)
+        .join("gamma")
+        .join("SKILL.md");
+
+    let err = ops::set_codex_skill_disabled(&rt, &ctx(), &skill_md, true).unwrap_err();
+    assert!(
+        err.message.contains("skills"),
+        "the error did not name the mistyped key: {}",
+        err.message
+    );
+
+    let unchanged = std::fs::read_to_string(codex_home.join("config.toml")).unwrap();
+    assert_eq!(
+        unchanged, original,
+        "config.toml was written to despite the error"
+    );
+
+    std::fs::remove_dir_all(&home).ok();
+}
+
 /// codex_park_updates_the_skills_config_row_path_or_names_the_stale_row: a
 /// skill disabled through Codex's config, then parked, keeps its disabled
 /// row pointing at the directory it actually lives in now - not the one
