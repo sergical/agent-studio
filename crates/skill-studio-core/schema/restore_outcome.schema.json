@@ -8,16 +8,16 @@
       "description": "The new `restore` event.",
       "$ref": "#/$defs/EventId"
     },
+    "reverted_event_id": {
+      "description": "The event that was reverted.",
+      "$ref": "#/$defs/EventId"
+    },
     "restored_paths": {
       "description": "Paths put back.",
       "type": "array",
       "items": {
         "type": "string"
       }
-    },
-    "reverted_event_id": {
-      "description": "The event that was reverted.",
-      "$ref": "#/$defs/EventId"
     }
   },
   "required": [

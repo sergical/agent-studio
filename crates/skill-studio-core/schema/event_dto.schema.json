@@ -4,16 +4,22 @@
   "description": "History row projected for display.",
   "type": "object",
   "properties": {
-    "backup_dir": {
-      "description": "Relative backup directory, when bytes were preserved.",
-      "type": [
-        "string",
-        "null"
-      ]
+    "id": {
+      "description": "Id.",
+      "$ref": "#/$defs/EventId"
     },
-    "drift": {
-      "description": "Whether the touched files still match the recorded fingerprints.",
-      "$ref": "#/$defs/DriftState"
+    "ts": {
+      "description": "Time.",
+      "type": "string",
+      "format": "date-time"
+    },
+    "kind": {
+      "description": "Kind, verbatim from the row.",
+      "type": "string"
+    },
+    "skill": {
+      "description": "Skill.",
+      "$ref": "#/$defs/SkillName"
     },
     "harness": {
       "description": "Harness, when harness-scoped.",
@@ -26,13 +32,12 @@
         }
       ]
     },
-    "id": {
-      "description": "Id.",
-      "$ref": "#/$defs/EventId"
-    },
-    "kind": {
-      "description": "Kind, verbatim from the row.",
-      "type": "string"
+    "scope": {
+      "description": "`global` or `project`.",
+      "type": [
+        "string",
+        "null"
+      ]
     },
     "project_path": {
       "description": "Project path, when project-scoped.",
@@ -41,29 +46,24 @@
         "null"
       ]
     },
-    "restore": {
-      "description": "Whether restore is possible.",
-      "$ref": "#/$defs/RestoreCapability"
-    },
-    "scope": {
-      "description": "`global` or `project`.",
-      "type": [
-        "string",
-        "null"
-      ]
-    },
-    "skill": {
-      "description": "Skill.",
-      "$ref": "#/$defs/SkillName"
-    },
     "status": {
       "description": "`pending`, `done`, `failed`, or `interrupted`.",
       "type": "string"
     },
-    "ts": {
-      "description": "Time.",
-      "type": "string",
-      "format": "date-time"
+    "restore": {
+      "description": "Whether restore is possible.",
+      "$ref": "#/$defs/RestoreCapability"
+    },
+    "drift": {
+      "description": "Whether the touched files still match the recorded fingerprints.",
+      "$ref": "#/$defs/DriftState"
+    },
+    "backup_dir": {
+      "description": "Relative backup directory, when bytes were preserved.",
+      "type": [
+        "string",
+        "null"
+      ]
     }
   },
   "required": [
@@ -76,32 +76,16 @@
     "drift"
   ],
   "$defs": {
-    "AgentId": {
-      "description": "Kebab-case harness identifier, for example `claude-code` or `open-code`.\n\nInvariant: the string is the serde wire name used by the desktop app\ntoday. `open-code` is canonical; `opencode` is only a CLI binary name and\nis never stored in an `AgentId`.",
-      "type": "string"
-    },
-    "DriftState": {
-      "description": "Whether the files an event touched still hold the bytes it recorded.",
-      "oneOf": [
-        {
-          "description": "`list_events` did not compare fingerprints (the row has no inverse,\nor the caller did not ask).",
-          "type": "string",
-          "const": "unchecked"
-        },
-        {
-          "description": "Live fingerprints match the recorded post-mutation fingerprints.",
-          "type": "string",
-          "const": "clean"
-        },
-        {
-          "description": "At least one path changed since the event; restore needs `force`.",
-          "type": "string",
-          "const": "drifted"
-        }
-      ]
-    },
     "EventId": {
       "description": "History event id (ULID string).\n\nInvariant: lexical order equals creation order inside one store.",
+      "type": "string"
+    },
+    "SkillName": {
+      "description": "Lexical skill name: the directory name that holds `SKILL.md`.\n\nInvariant: two deployments with the same `SkillName` are the same skill,\neven when their bytes differ. A symlink alias with another name is another\nskill.",
+      "type": "string"
+    },
+    "AgentId": {
+      "description": "Kebab-case harness identifier, for example `claude-code` or `open-code`.\n\nInvariant: the string is the serde wire name used by the desktop app\ntoday. `open-code` is canonical; `opencode` is only a CLI binary name and\nis never stored in an `AgentId`.",
       "type": "string"
     },
     "RestoreCapability": {
@@ -166,9 +150,25 @@
         }
       ]
     },
-    "SkillName": {
-      "description": "Lexical skill name: the directory name that holds `SKILL.md`.\n\nInvariant: two deployments with the same `SkillName` are the same skill,\neven when their bytes differ. A symlink alias with another name is another\nskill.",
-      "type": "string"
+    "DriftState": {
+      "description": "Whether the files an event touched still hold the bytes it recorded.",
+      "oneOf": [
+        {
+          "description": "`list_events` did not compare fingerprints (the row has no inverse,\nor the caller did not ask).",
+          "type": "string",
+          "const": "unchecked"
+        },
+        {
+          "description": "Live fingerprints match the recorded post-mutation fingerprints.",
+          "type": "string",
+          "const": "clean"
+        },
+        {
+          "description": "At least one path changed since the event; restore needs `force`.",
+          "type": "string",
+          "const": "drifted"
+        }
+      ]
     }
   }
 }

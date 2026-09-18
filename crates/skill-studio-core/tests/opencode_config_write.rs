@@ -195,6 +195,40 @@ fn opencode_disable_under_a_held_home_lease_writes_or_names_the_lease_it_deadloc
     assert!(rules.is_denied("epsilon"), "the write did not land");
 }
 
+/// Flow: `set_skill_denied(true)` on `zeta` starting from
+/// `{"a*": "deny", "*": "allow"}`.
+/// Expectation: the write appends `zeta`'s new deny rule last and leaves
+/// `a*` and `*` in their original document order - `shift_remove` before
+/// insert (`zeta` is new here, so the `shift_remove` is a no-op, but the
+/// same code path also handles re-disabling an already-present key) rather
+/// than `Map::remove`'s `swap_remove`, which would reorder the two
+/// surviving keys.
+/// Failure: the raw file's key order isn't `a*`, `*`, `zeta` - either
+/// because the write sorted the keys, or because it moved `a*`/`*`.
+#[test]
+fn disabling_a_skill_appends_its_deny_rule_last_and_keeps_the_other_keys_in_document_order_or_names_the_key_it_moved(
+) {
+    let tmp = tempfile::tempdir().unwrap();
+    let config_dir = tmp.path();
+    std::fs::write(
+        opencode_json_path(config_dir),
+        r#"{"permission": {"skill": {"a*": "deny", "*": "allow"}}}"#,
+    )
+    .unwrap();
+
+    deny(config_dir, "zeta", true);
+
+    let content = std::fs::read_to_string(opencode_json_path(config_dir)).unwrap();
+    let value: serde_json::Value = serde_json::from_str(&content).unwrap();
+    let skill = value["permission"]["skill"].as_object().unwrap();
+    let keys: Vec<&str> = skill.keys().map(String::as_str).collect();
+    assert_eq!(
+        keys,
+        vec!["a*", "*", "zeta"],
+        "expected a*, *, zeta in that document order; got {keys:?}"
+    );
+}
+
 /// Flow: only `opencode.jsonc` exists in the config directory (no `.json`
 /// sibling).
 /// Expectation: the write refuses rather than creating a `.json` file

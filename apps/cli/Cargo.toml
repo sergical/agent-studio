@@ -18,7 +18,7 @@ skill-studio-core = { path = "../../crates/skill-studio-core" }
 skill-studio-host = { path = "../../crates/skill-studio-host" }
 clap = { version = "4", features = ["derive"] }
 serde = "1"
-serde_json = "1"
+serde_json = { workspace = true }
 schemars = { version = "1", features = ["chrono04"] }
 chrono = { version = "0.4", default-features = false, features = ["clock", "serde"] }
 ulid = { version = "1", features = ["serde"] }

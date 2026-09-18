@@ -4,13 +4,13 @@
   "description": "Request for `apply_frontmatter_repair`.",
   "type": "object",
   "properties": {
-    "mode": {
-      "description": "Chosen mode; must be in `preview.allowed_apply_modes`.",
-      "$ref": "#/$defs/RepairApplyMode"
-    },
     "preview": {
       "description": "The preview to apply, unchanged.",
       "$ref": "#/$defs/FrontmatterRepairPreview"
+    },
+    "mode": {
+      "description": "Chosen mode; must be in `preview.allowed_apply_modes`.",
+      "$ref": "#/$defs/RepairApplyMode"
     }
   },
   "required": [
@@ -18,46 +18,28 @@
     "mode"
   ],
   "$defs": {
-    "DeploymentId": {
-      "description": "Opaque deployment id.\n\nInvariant: the string starts with `dep:v1/`. Its internal layout is a core\ndetail; adapters and the UI compare it as a string and never split it.",
-      "type": "string"
-    },
-    "Fingerprint": {
-      "description": "Content fingerprint in the `sha256:<hex>` form.\n\nInvariant: the hex is lowercase and 64 characters long. One scheme covers\nfiles, trees, and proposals; the old untyped hex form is parsed on read.",
-      "type": "string"
-    },
     "FrontmatterRepairPreview": {
       "description": "A proposed frontmatter repair.\n\nInvariant: `apply_frontmatter_repair` refuses the proposal when the file\nno longer matches `expected_fingerprint` or the owner changed. The repair\nis deterministic: apply recomputes the proposal from the bytes on disk\nand compares `proposal_id`, so the caller's `proposed_content` is shown,\nnever written.",
       "type": "object",
       "properties": {
-        "allowed_apply_modes": {
-          "description": "Modes the caller may choose from.",
-          "type": "array",
-          "items": {
-            "$ref": "#/$defs/RepairApplyMode"
-          }
+        "proposal_id": {
+          "description": "Proposal id.",
+          "$ref": "#/$defs/ProposalId"
         },
         "deployment_id": {
           "description": "Target deployment.",
           "$ref": "#/$defs/DeploymentId"
         },
-        "diff": {
-          "description": "Unified diff for a person.",
+        "path": {
+          "description": "Absolute path of `SKILL.md`.",
           "type": "string"
         },
-        "expected_fingerprint": {
-          "description": "Fingerprint of the current `SKILL.md` bytes.",
-          "$ref": "#/$defs/Fingerprint"
+        "scope": {
+          "description": "Scope of the deployment's root.",
+          "$ref": "#/$defs/RootScope"
         },
-        "managed_update_warning": {
-          "description": "Warning shown for [`RepairApplyMode::FixInstalledCopy`]: the next\nmanaged update overwrites the fix.",
-          "type": [
-            "string",
-            "null"
-          ]
-        },
-        "original_content": {
-          "description": "Current `SKILL.md` text, for a side-by-side view.",
+        "reason": {
+          "description": "Why the repair is proposed, for a person (the spec rule that fails).",
           "type": "string"
         },
         "owner_id": {
@@ -75,29 +57,39 @@
           "description": "Owner kind at preview time.",
           "$ref": "#/$defs/LifecycleOwnerKind"
         },
-        "path": {
-          "description": "Absolute path of `SKILL.md`.",
-          "type": "string"
-        },
-        "proposal_id": {
-          "description": "Proposal id.",
-          "$ref": "#/$defs/ProposalId"
-        },
-        "proposed_content": {
-          "description": "Proposed `SKILL.md` text, for a side-by-side view.",
-          "type": "string"
+        "expected_fingerprint": {
+          "description": "Fingerprint of the current `SKILL.md` bytes.",
+          "$ref": "#/$defs/Fingerprint"
         },
         "proposed_fingerprint": {
           "description": "Fingerprint of the proposed bytes.",
           "$ref": "#/$defs/Fingerprint"
         },
-        "reason": {
-          "description": "Why the repair is proposed, for a person (the spec rule that fails).",
+        "original_content": {
+          "description": "Current `SKILL.md` text, for a side-by-side view.",
           "type": "string"
         },
-        "scope": {
-          "description": "Scope of the deployment's root.",
-          "$ref": "#/$defs/RootScope"
+        "proposed_content": {
+          "description": "Proposed `SKILL.md` text, for a side-by-side view.",
+          "type": "string"
+        },
+        "diff": {
+          "description": "Unified diff for a person.",
+          "type": "string"
+        },
+        "allowed_apply_modes": {
+          "description": "Modes the caller may choose from.",
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/RepairApplyMode"
+          }
+        },
+        "managed_update_warning": {
+          "description": "Warning shown for [`RepairApplyMode::FixInstalledCopy`]: the next\nmanaged update overwrites the fix.",
+          "type": [
+            "string",
+            "null"
+          ]
         }
       },
       "required": [
@@ -114,6 +106,57 @@
         "diff",
         "allowed_apply_modes"
       ]
+    },
+    "ProposalId": {
+      "description": "Id of a frontmatter repair proposal.\n\nInvariant: sha256 over deployment id, path, owner id, owner kind, the\nexpected fingerprint, and the proposed text. Any change makes a new id.",
+      "type": "string"
+    },
+    "DeploymentId": {
+      "description": "Opaque deployment id.\n\nInvariant: the string starts with `dep:v1/`. Its internal layout is a core\ndetail; adapters and the UI compare it as a string and never split it.",
+      "type": "string"
+    },
+    "RootScope": {
+      "description": "Where a root lives.",
+      "oneOf": [
+        {
+          "description": "Under the scope home.",
+          "type": "object",
+          "properties": {
+            "scope": {
+              "type": "string",
+              "const": "global"
+            }
+          },
+          "required": [
+            "scope"
+          ]
+        },
+        {
+          "description": "Under one tracked project.",
+          "type": "object",
+          "properties": {
+            "scope": {
+              "type": "string",
+              "const": "project"
+            },
+            "project": {
+              "$ref": "#/$defs/ProjectRef"
+            }
+          },
+          "required": [
+            "scope",
+            "project"
+          ]
+        }
+      ]
+    },
+    "ProjectRef": {
+      "description": "Absolute path of a tracked project directory.\n\nInvariant: the path is canonical inside a [`crate::scope::NormalizedScope`].\nWire values are the lexical path the caller gave.",
+      "type": "string"
+    },
+    "OwnerId": {
+      "description": "Opaque lifecycle owner id.\n\nInvariant: the string starts with `owner:v1/`. It names the ledger entry\nthat installed the skill, not a path.",
+      "type": "string"
     },
     "LifecycleOwnerKind": {
       "description": "Which ledger owns a deployment's lifecycle.",
@@ -165,16 +208,8 @@
         }
       ]
     },
-    "OwnerId": {
-      "description": "Opaque lifecycle owner id.\n\nInvariant: the string starts with `owner:v1/`. It names the ledger entry\nthat installed the skill, not a path.",
-      "type": "string"
-    },
-    "ProjectRef": {
-      "description": "Absolute path of a tracked project directory.\n\nInvariant: the path is canonical inside a [`crate::scope::NormalizedScope`].\nWire values are the lexical path the caller gave.",
-      "type": "string"
-    },
-    "ProposalId": {
-      "description": "Id of a frontmatter repair proposal.\n\nInvariant: sha256 over deployment id, path, owner id, owner kind, the\nexpected fingerprint, and the proposed text. Any change makes a new id.",
+    "Fingerprint": {
+      "description": "Content fingerprint in the `sha256:<hex>` form.\n\nInvariant: the hex is lowercase and 64 characters long. One scheme covers\nfiles, trees, and proposals; the old untyped hex form is parsed on read.",
       "type": "string"
     },
     "RepairApplyMode": {
@@ -194,41 +229,6 @@
           "description": "Fork first, then rewrite the fork.",
           "type": "string",
           "const": "fork-and-fix"
-        }
-      ]
-    },
-    "RootScope": {
-      "description": "Where a root lives.",
-      "oneOf": [
-        {
-          "description": "Under the scope home.",
-          "type": "object",
-          "properties": {
-            "scope": {
-              "type": "string",
-              "const": "global"
-            }
-          },
-          "required": [
-            "scope"
-          ]
-        },
-        {
-          "description": "Under one tracked project.",
-          "type": "object",
-          "properties": {
-            "project": {
-              "$ref": "#/$defs/ProjectRef"
-            },
-            "scope": {
-              "type": "string",
-              "const": "project"
-            }
-          },
-          "required": [
-            "scope",
-            "project"
-          ]
         }
       ]
     }

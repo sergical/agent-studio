@@ -24,20 +24,13 @@
     "tools"
   ],
   "$defs": {
-    "AgentId": {
-      "description": "Kebab-case harness identifier, for example `claude-code` or `open-code`.\n\nInvariant: the string is the serde wire name used by the desktop app\ntoday. `open-code` is canonical; `opencode` is only a CLI binary name and\nis never stored in an `AgentId`.",
-      "type": "string"
-    },
     "CapabilityReport": {
       "description": "Answer to the `capabilities` operation for one harness.",
       "type": "object",
       "properties": {
-        "default_install_destinations": {
-          "description": "Roots an install picker may offer as a destination: the universal\nroot, plus a harness's own root only when the catalog has it\nverified from the vendor's own documentation ([`Confidence::VerifiedFromDocs`]).\nAn [`RootRole::Own`] root the catalog only infers (Codex's\n`.codex/skills`: `docs/action-map/harnesses/codex.md`, \"Resolved by\nthe docs on 2026-09-16\") is excluded - installing there would be a\nguess about where Codex actually looks.",
-          "type": "array",
-          "items": {
-            "$ref": "#/$defs/RootSpec"
-          }
+        "harness": {
+          "description": "Harness.",
+          "$ref": "#/$defs/AgentId"
         },
         "discovery": {
           "description": "Roots the scanner will visit for this harness.",
@@ -46,9 +39,19 @@
             "$ref": "#/$defs/RootSpec"
           }
         },
-        "harness": {
-          "description": "Harness.",
-          "$ref": "#/$defs/AgentId"
+        "default_install_destinations": {
+          "description": "Roots an install picker may offer as a destination: the universal\nroot, plus a harness's own root only when the catalog has it\nverified from the vendor's own documentation ([`Confidence::VerifiedFromDocs`]).\nAn [`RootRole::Own`] root the catalog only infers (Codex's\n`.codex/skills`: `docs/action-map/harnesses/codex.md`, \"Resolved by\nthe docs on 2026-09-16\") is excluded - installing there would be a\nguess about where Codex actually looks.",
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/RootSpec"
+          }
+        },
+        "operations": {
+          "description": "Per-operation support derived from the facts.",
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/OperationSupport"
+          }
         },
         "native_disable": {
           "description": "Native disable facts.",
@@ -72,13 +75,6 @@
             }
           ]
         },
-        "operations": {
-          "description": "Per-operation support derived from the facts.",
-          "type": "array",
-          "items": {
-            "$ref": "#/$defs/OperationSupport"
-          }
-        },
         "runtime_notes": {
           "description": "Notes for a person (unverified rows, open issues).",
           "type": "array",
@@ -93,6 +89,106 @@
         "default_install_destinations",
         "operations",
         "runtime_notes"
+      ]
+    },
+    "AgentId": {
+      "description": "Kebab-case harness identifier, for example `claude-code` or `open-code`.\n\nInvariant: the string is the serde wire name used by the desktop app\ntoday. `open-code` is canonical; `opencode` is only a CLI binary name and\nis never stored in an `AgentId`.",
+      "type": "string"
+    },
+    "RootSpec": {
+      "description": "One root a harness reads.",
+      "type": "object",
+      "properties": {
+        "level": {
+          "description": "Global or project.",
+          "$ref": "#/$defs/ScopeLevel"
+        },
+        "relative_path": {
+          "description": "Path relative to the home or the project.",
+          "type": "string"
+        },
+        "role": {
+          "description": "Role.",
+          "$ref": "#/$defs/RootRole"
+        },
+        "recursive": {
+          "description": "True when the harness walks subdirectories for `SKILL.md`.",
+          "type": "boolean"
+        },
+        "evidence": {
+          "description": "Evidence.",
+          "$ref": "#/$defs/Evidence"
+        }
+      },
+      "required": [
+        "level",
+        "relative_path",
+        "role",
+        "recursive",
+        "evidence"
+      ]
+    },
+    "ScopeLevel": {
+      "description": "Global (`~`) or project scope level.",
+      "oneOf": [
+        {
+          "description": "Under the home root.",
+          "type": "string",
+          "const": "global"
+        },
+        {
+          "description": "Under a project root.",
+          "type": "string",
+          "const": "project"
+        }
+      ]
+    },
+    "RootRole": {
+      "description": "Role of a root the harness reads.",
+      "oneOf": [
+        {
+          "description": "The harness's own skills directory.",
+          "type": "string",
+          "const": "own"
+        },
+        {
+          "description": "The shared `.agents/skills` root.",
+          "type": "string",
+          "const": "universal"
+        },
+        {
+          "description": "A legacy directory still read for compatibility.",
+          "type": "string",
+          "const": "legacy"
+        },
+        {
+          "description": "A plugin cache that ships skills.",
+          "type": "string",
+          "const": "plugin_cache"
+        },
+        {
+          "description": "A root another harness owns that this harness also reads.",
+          "type": "string",
+          "const": "cross_harness"
+        }
+      ]
+    },
+    "Evidence": {
+      "description": "Where a fact comes from.",
+      "type": "object",
+      "properties": {
+        "source": {
+          "description": "URL or document reference.",
+          "type": "string"
+        },
+        "confidence": {
+          "description": "Confidence level.",
+          "$ref": "#/$defs/Confidence"
+        }
+      },
+      "required": [
+        "source",
+        "confidence"
       ]
     },
     "Confidence": {
@@ -113,6 +209,129 @@
           "type": "string",
           "const": "unknown"
         }
+      ]
+    },
+    "OperationSupport": {
+      "description": "Support for one core operation on one harness.",
+      "type": "object",
+      "properties": {
+        "operation": {
+          "description": "Operation name, as used in the envelope.",
+          "type": "string"
+        },
+        "support": {
+          "description": "Support.",
+          "$ref": "#/$defs/Support"
+        }
+      },
+      "required": [
+        "operation",
+        "support"
+      ]
+    },
+    "Support": {
+      "description": "Whether a harness supports one capability.\n\nInvariant: `Unknown` carries no evidence and is never treated as `No`.\nAn operation that needs a `Yes` refuses on `Unknown` with\n[`crate::error::ErrorCode::Unsupported`] and names the missing evidence.",
+      "oneOf": [
+        {
+          "description": "Supported.",
+          "type": "object",
+          "properties": {
+            "support": {
+              "type": "string",
+              "const": "yes"
+            },
+            "evidence": {
+              "$ref": "#/$defs/Evidence"
+            }
+          },
+          "required": [
+            "support",
+            "evidence"
+          ]
+        },
+        {
+          "description": "Not supported.",
+          "type": "object",
+          "properties": {
+            "support": {
+              "type": "string",
+              "const": "no"
+            },
+            "evidence": {
+              "$ref": "#/$defs/Evidence"
+            }
+          },
+          "required": [
+            "support",
+            "evidence"
+          ]
+        },
+        {
+          "description": "Supported with limits described in the evidence source.",
+          "type": "object",
+          "properties": {
+            "support": {
+              "type": "string",
+              "const": "partial"
+            },
+            "evidence": {
+              "$ref": "#/$defs/Evidence"
+            }
+          },
+          "required": [
+            "support",
+            "evidence"
+          ]
+        },
+        {
+          "description": "No primary source found.",
+          "type": "object",
+          "properties": {
+            "support": {
+              "type": "string",
+              "const": "unknown"
+            }
+          },
+          "required": [
+            "support"
+          ]
+        }
+      ]
+    },
+    "NativeDisableSpec": {
+      "description": "Native disable facts for one harness.",
+      "type": "object",
+      "properties": {
+        "mechanism": {
+          "description": "The switch.",
+          "$ref": "#/$defs/DisableMechanism"
+        },
+        "scopes": {
+          "description": "Scope levels the switch works at.",
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/ScopeLevel"
+          }
+        },
+        "writable": {
+          "description": "Whether Skill Studio can write the switch safely.",
+          "$ref": "#/$defs/Support"
+        },
+        "disabled_by": {
+          "description": "Value reported on a disabled deployment.",
+          "$ref": "#/$defs/DisabledBy"
+        },
+        "evidence": {
+          "description": "Evidence for the mechanism.",
+          "$ref": "#/$defs/Evidence"
+        }
+      },
+      "required": [
+        "mechanism",
+        "scopes",
+        "writable",
+        "disabled_by",
+        "evidence"
       ]
     },
     "DisableMechanism": {
@@ -185,24 +404,6 @@
         }
       ]
     },
-    "Evidence": {
-      "description": "Where a fact comes from.",
-      "type": "object",
-      "properties": {
-        "confidence": {
-          "description": "Confidence level.",
-          "$ref": "#/$defs/Confidence"
-        },
-        "source": {
-          "description": "URL or document reference.",
-          "type": "string"
-        }
-      },
-      "required": [
-        "source",
-        "confidence"
-      ]
-    },
     "HarnessObserved": {
       "description": "Facts observed on this machine, as opposed to documented facts.",
       "type": "object",
@@ -226,207 +427,6 @@
       "required": [
         "config_present",
         "config_writable"
-      ]
-    },
-    "NativeDisableSpec": {
-      "description": "Native disable facts for one harness.",
-      "type": "object",
-      "properties": {
-        "disabled_by": {
-          "description": "Value reported on a disabled deployment.",
-          "$ref": "#/$defs/DisabledBy"
-        },
-        "evidence": {
-          "description": "Evidence for the mechanism.",
-          "$ref": "#/$defs/Evidence"
-        },
-        "mechanism": {
-          "description": "The switch.",
-          "$ref": "#/$defs/DisableMechanism"
-        },
-        "scopes": {
-          "description": "Scope levels the switch works at.",
-          "type": "array",
-          "items": {
-            "$ref": "#/$defs/ScopeLevel"
-          }
-        },
-        "writable": {
-          "description": "Whether Skill Studio can write the switch safely.",
-          "$ref": "#/$defs/Support"
-        }
-      },
-      "required": [
-        "mechanism",
-        "scopes",
-        "writable",
-        "disabled_by",
-        "evidence"
-      ]
-    },
-    "OperationSupport": {
-      "description": "Support for one core operation on one harness.",
-      "type": "object",
-      "properties": {
-        "operation": {
-          "description": "Operation name, as used in the envelope.",
-          "type": "string"
-        },
-        "support": {
-          "description": "Support.",
-          "$ref": "#/$defs/Support"
-        }
-      },
-      "required": [
-        "operation",
-        "support"
-      ]
-    },
-    "RootRole": {
-      "description": "Role of a root the harness reads.",
-      "oneOf": [
-        {
-          "description": "The harness's own skills directory.",
-          "type": "string",
-          "const": "own"
-        },
-        {
-          "description": "The shared `.agents/skills` root.",
-          "type": "string",
-          "const": "universal"
-        },
-        {
-          "description": "A legacy directory still read for compatibility.",
-          "type": "string",
-          "const": "legacy"
-        },
-        {
-          "description": "A plugin cache that ships skills.",
-          "type": "string",
-          "const": "plugin_cache"
-        },
-        {
-          "description": "A root another harness owns that this harness also reads.",
-          "type": "string",
-          "const": "cross_harness"
-        }
-      ]
-    },
-    "RootSpec": {
-      "description": "One root a harness reads.",
-      "type": "object",
-      "properties": {
-        "evidence": {
-          "description": "Evidence.",
-          "$ref": "#/$defs/Evidence"
-        },
-        "level": {
-          "description": "Global or project.",
-          "$ref": "#/$defs/ScopeLevel"
-        },
-        "recursive": {
-          "description": "True when the harness walks subdirectories for `SKILL.md`.",
-          "type": "boolean"
-        },
-        "relative_path": {
-          "description": "Path relative to the home or the project.",
-          "type": "string"
-        },
-        "role": {
-          "description": "Role.",
-          "$ref": "#/$defs/RootRole"
-        }
-      },
-      "required": [
-        "level",
-        "relative_path",
-        "role",
-        "recursive",
-        "evidence"
-      ]
-    },
-    "ScopeLevel": {
-      "description": "Global (`~`) or project scope level.",
-      "oneOf": [
-        {
-          "description": "Under the home root.",
-          "type": "string",
-          "const": "global"
-        },
-        {
-          "description": "Under a project root.",
-          "type": "string",
-          "const": "project"
-        }
-      ]
-    },
-    "Support": {
-      "description": "Whether a harness supports one capability.\n\nInvariant: `Unknown` carries no evidence and is never treated as `No`.\nAn operation that needs a `Yes` refuses on `Unknown` with\n[`crate::error::ErrorCode::Unsupported`] and names the missing evidence.",
-      "oneOf": [
-        {
-          "description": "Supported.",
-          "type": "object",
-          "properties": {
-            "evidence": {
-              "$ref": "#/$defs/Evidence"
-            },
-            "support": {
-              "type": "string",
-              "const": "yes"
-            }
-          },
-          "required": [
-            "support",
-            "evidence"
-          ]
-        },
-        {
-          "description": "Not supported.",
-          "type": "object",
-          "properties": {
-            "evidence": {
-              "$ref": "#/$defs/Evidence"
-            },
-            "support": {
-              "type": "string",
-              "const": "no"
-            }
-          },
-          "required": [
-            "support",
-            "evidence"
-          ]
-        },
-        {
-          "description": "Supported with limits described in the evidence source.",
-          "type": "object",
-          "properties": {
-            "evidence": {
-              "$ref": "#/$defs/Evidence"
-            },
-            "support": {
-              "type": "string",
-              "const": "partial"
-            }
-          },
-          "required": [
-            "support",
-            "evidence"
-          ]
-        },
-        {
-          "description": "No primary source found.",
-          "type": "object",
-          "properties": {
-            "support": {
-              "type": "string",
-              "const": "unknown"
-            }
-          },
-          "required": [
-            "support"
-          ]
-        }
       ]
     },
     "ToolAvailability": {

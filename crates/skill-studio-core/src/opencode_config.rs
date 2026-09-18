@@ -401,9 +401,21 @@ pub fn set_skill_denied_with(
     };
 
     if denied {
+        // `Map::insert` on an existing key updates its value in place,
+        // keeping its old position - so a skill re-disabled after being
+        // moved earlier in the file (e.g. by a hand-edit) would still lose
+        // to a later `allow`/`deny` rule for an overlapping pattern.
+        // `shift_remove` then `insert` puts it back at the end, so this
+        // module's own deny rule is always the document's last (and so
+        // last-match-wins) rule for `name`.
+        skill.shift_remove(name);
         skill.insert(name.to_string(), Value::String(DENY.to_string()));
     } else {
-        skill.remove(name);
+        // `Map::remove` is `swap_remove` under `preserve_order` (moves the
+        // map's last entry into the removed slot), which would reorder
+        // every rule after `name` in the user's file. `shift_remove` keeps
+        // every other rule's document order.
+        skill.shift_remove(name);
         if skill.is_empty() {
             permission.remove("skill");
         }
@@ -585,27 +597,58 @@ mod tests {
         );
     }
 
-    /// Flow: `{"*": "deny", "foo": "allow"}` - a wildcard deny with a later,
-    /// more specific allow.
-    /// Expectation: `foo` reads as allowed (the later, more specific rule
-    /// wins) while `bar` still reads as denied by the wildcard.
-    /// Failure: `foo` reported denied because the reader only checked
-    /// "is any rule for me `deny`" instead of the last matching rule.
+    /// Flow: `{"zzz": "deny", "*": "allow"}` - key order (`zzz` then `*`) is
+    /// deliberately the *opposite* of sorted key order (`*` sorts before
+    /// `zzz`), so a reader that iterates a `serde_json::Map` in sorted
+    /// order (the default without `preserve_order`) would evaluate `*` as
+    /// if it came first and `zzz`'s `deny` as the last, document-order
+    /// match.
+    /// Expectation: `zzz` reads as allowed - the wildcard `allow` written
+    /// *after* it in the document is the real last match - and `bar`
+    /// (caught only by the wildcard) reads as allowed too.
+    /// Failure: `zzz` reported denied because the reader used sorted, not
+    /// document, key order.
     #[test]
-    fn read_denied_patterns_honours_a_later_allow_or_names_the_skill_it_reported_denied_by_mistake()
-    {
+    fn read_skill_rules_honours_document_key_order_not_sorted_order_or_names_the_skill_it_reported_denied_by_mistake(
+    ) {
         let fs = FixtureBuilder::new()
             .dir("/home/.config/opencode")
             .file(
                 "/home/.config/opencode/opencode.json",
-                br#"{"permission": {"skill": {"*": "deny", "foo": "allow"}}}"#,
+                br#"{"permission": {"skill": {"zzz": "deny", "*": "allow"}}}"#,
             )
             .build_fs();
         let rules = read_skill_rules(&fs, Path::new("/home/.config/opencode"));
         assert!(
-            !rules.is_denied("foo"),
-            "foo reported denied despite the later \"allow\" entry"
+            !rules.is_denied("zzz"),
+            "zzz reported denied despite the later \"*\": \"allow\" entry"
         );
-        assert!(rules.is_denied("bar"), "bar not caught by the \"*\" deny");
+        assert!(
+            !rules.is_denied("bar"),
+            "bar reported denied despite the \"*\": \"allow\" entry"
+        );
+    }
+
+    /// Flow: `{"foo": "allow", "*": "deny"}` - a specific allow written
+    /// before a wildcard deny.
+    /// Expectation: `foo` reads as denied - the wildcard `deny` is the
+    /// later, document-order rule, and last-match-wins ignores which rule
+    /// is more specific.
+    /// Failure: `foo` reported allowed (or the ignored rule named) because
+    /// the reader picked the specific `allow` over the later `deny`.
+    #[test]
+    fn a_v1_deny_rule_written_after_an_allow_rule_wins_or_names_the_rule_order_it_ignored() {
+        let fs = FixtureBuilder::new()
+            .dir("/home/.config/opencode")
+            .file(
+                "/home/.config/opencode/opencode.json",
+                br#"{"permission": {"skill": {"foo": "allow", "*": "deny"}}}"#,
+            )
+            .build_fs();
+        let rules = read_skill_rules(&fs, Path::new("/home/.config/opencode"));
+        assert!(
+            rules.is_denied("foo"),
+            "foo reported allowed despite the later \"*\": \"deny\" entry"
+        );
     }
 }
