@@ -331,8 +331,10 @@ mod tests {
     /// `current_thread` runtime the test task's own thread is the runtime's
     /// only async worker, so a probe that lands anywhere else must have run
     /// on `spawn_blocking`'s pool - a deterministic fact, not a timing
-    /// measurement. Fails if `detect_with_runtime` calls `ops::harnesses`
-    /// on the calling task instead of through `spawn_blocking`.
+    /// measurement. The runtime builder closure records its thread the same
+    /// way. Fails if `detect_with_runtime` builds the runtime or calls
+    /// `ops::harnesses` on the calling task instead of through
+    /// `spawn_blocking`.
     #[tokio::test(flavor = "current_thread")]
     async fn detect_runs_the_probes_on_a_blocking_thread_not_the_ui_task_or_names_the_task_it_blocks(
     ) {
@@ -367,8 +369,25 @@ mod tests {
         let rt = Runtime::new(&scope, ports).unwrap();
 
         let test_task_thread = std::thread::current().id();
+        let runtime_built_on = Arc::new(std::sync::Mutex::new(None));
+        let record_build_thread = runtime_built_on.clone();
 
-        let result = detect_with_runtime(move || Ok(rt)).await.unwrap();
+        let result = detect_with_runtime(move || {
+            *record_build_thread.lock().unwrap() = Some(std::thread::current().id());
+            Ok(rt)
+        })
+        .await
+        .unwrap();
+
+        let build_thread = runtime_built_on
+            .lock()
+            .unwrap()
+            .expect("the runtime builder never ran");
+        assert_ne!(
+            build_thread, test_task_thread,
+            "the runtime (project discovery over harness transcripts) was built on the test \
+             task's own thread ({test_task_thread:?}) instead of a spawn_blocking pool thread"
+        );
 
         assert!(
             result

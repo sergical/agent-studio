@@ -1082,11 +1082,11 @@ pub trait HarnessAdapter: Send + Sync {
 
 /// Runs `<bin> --version` when both a binary and a spawner exist, and
 /// infers the install method from the resolved path. Any missing
-/// precondition (no binary, no spawner, a non-zero exit, a spawn error)
-/// reports `Unknown` with the reason as evidence rather than guessing. The
-/// probe timeout and the by-path/size/mtime cache described in
-/// `docs/action-map/harnesses/harness-detection.md` are follow-up work, not
-/// this function: a probe that fails to spawn simply reports `Unknown`.
+/// precondition (no binary, no spawner, a non-zero exit, a spawn error, a
+/// probe that outlives `timeout_ms`) reports `Unknown` with the reason as
+/// evidence rather than guessing. The by-path/size/mtime cache described in
+/// `docs/action-map/harnesses/harness-detection.md` is follow-up work, not
+/// this function.
 fn probe_version(
     adapter: &(impl HarnessAdapter + ?Sized),
     executable: Option<&PathBuf>,
