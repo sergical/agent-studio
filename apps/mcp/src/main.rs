@@ -287,6 +287,32 @@ impl SkillStudioServer {
         .await
     }
 
+    #[tool(description = "Refresh one already-installed skill in place.")]
+    async fn update(
+        &self,
+        Parameters(req): Parameters<UpdateRequest>,
+        context: RequestContext<RoleServer>,
+    ) -> CallToolResult {
+        run_op(Operation::Update, true, &context, |rt, ctx| {
+            ops::update(rt, ctx, &req)
+        })
+        .await
+    }
+
+    #[tool(
+        description = "Refresh a batch of already-installed skills in place, each its own journal entry."
+    )]
+    async fn update_all(
+        &self,
+        Parameters(req): Parameters<UpdateAllRequest>,
+        context: RequestContext<RoleServer>,
+    ) -> CallToolResult {
+        run_op(Operation::UpdateAll, true, &context, |rt, ctx| {
+            Ok(ops::update_all(rt, ctx, &req.requests, |_, _| {}))
+        })
+        .await
+    }
+
     #[tool(
         description = "Take a mutable deployment off disk. Copy/Fork land intact in quarantine; Dotagents/SkillsSh are removed by their own CLI."
     )]

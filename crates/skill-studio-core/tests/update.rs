@@ -250,7 +250,7 @@ fn update_writes_a_journal_row_and_quarantines_the_old_tree_before_the_swap_or_n
         .join(UNIVERSAL_ROOT_RELATIVE)
         .join(".skill-studio-quarantine");
     let entries: Vec<_> = std::fs::read_dir(&quarantine)
-        .unwrap()
+        .unwrap_or_else(|e| panic!("expected a quarantine directory at {quarantine:?}: {e}"))
         .filter_map(Result::ok)
         .collect();
     assert_eq!(entries.len(), 1, "exactly one quarantined old tree");
@@ -395,6 +395,7 @@ fn update_crash_after_each_step_leaves_disk_in_the_before_or_after_state_or_name
         ("rename-3", |fs: &FailingFs| fs.fail_nth_fsops_rename(3)),
         ("rename-4", |fs: &FailingFs| fs.fail_nth_fsops_rename(4)),
         ("rename-5", |fs: &FailingFs| fs.fail_nth_fsops_rename(5)),
+        ("rename-6", |fs: &FailingFs| fs.fail_nth_fsops_rename(6)),
         ("exchange", |fs: &FailingFs| fs.fail_next_fsops_exchange()),
     ];
     for (label, apply_failure) in cases {
@@ -410,6 +411,7 @@ fn update_crash_after_each_step_leaves_disk_in_the_before_or_after_state_or_name
         apply_failure(failing_fs.as_ref());
 
         let result = ops::update(&rt, &ctx(), &copy_request_two_files("gamma", "v2"));
+        let e = result.expect_err(&format!("{label}: injected failure did not fire"));
 
         let destination = home.join(UNIVERSAL_ROOT_RELATIVE).join("gamma");
         assert!(
@@ -424,38 +426,35 @@ fn update_crash_after_each_step_leaves_disk_in_the_before_or_after_state_or_name
              nor the after ({hash_after}) state - a crash at this step left a half-swapped tree"
         );
 
-        if let Err(e) = result {
-            let events = ops::list_events(&rt, &ctx(), &ListEventsRequest::default()).unwrap();
-            assert_eq!(
-                events.len(),
-                1,
-                "{label}: a crashed update left exactly one row, got error {e}"
-            );
-            assert_eq!(
-                events[0].status, "failed",
-                "{label}: a crash must mark the row failed, not leave it pending"
-            );
+        let events = ops::list_events(&rt, &ctx(), &ListEventsRequest::default()).unwrap();
+        assert_eq!(
+            events.len(),
+            1,
+            "{label}: a crashed update left exactly one row, got error {e}"
+        );
+        assert_eq!(
+            events[0].status, "failed",
+            "{label}: a crash must mark the row failed, not leave it pending"
+        );
 
-            // Recovery: the next mutation session reconciles the
-            // interrupted plan, sweeping any stray
-            // `.skill-studio-stage-*` folder, and a retry (with the
-            // filesystem working again) completes the update the crash
-            // could not.
-            let session = MutationSession::begin(&rt, &ctx()).unwrap();
-            session.finish(&rt, &ctx());
-            let retry = ops::update(&rt, &ctx(), &copy_request_two_files("gamma", "v2")).unwrap();
-            let bytes = std::fs::read_to_string(retry.deployment_path.join("SKILL.md")).unwrap();
-            assert!(
-                bytes.contains("Body at v2"),
-                "{label}: the retry must land the fresh bytes: {bytes}"
-            );
-        }
+        // Recovery: the next mutation session reconciles the interrupted
+        // plan, sweeping any stray `.skill-studio-stage-*` folder, and a
+        // retry (with the filesystem working again) completes the update
+        // the crash could not.
+        let session = MutationSession::begin(&rt, &ctx()).unwrap();
+        session.finish(&rt, &ctx());
+        let retry = ops::update(&rt, &ctx(), &copy_request_two_files("gamma", "v2")).unwrap();
+        let bytes = std::fs::read_to_string(retry.deployment_path.join("SKILL.md")).unwrap();
+        assert!(
+            bytes.contains("Body at v2"),
+            "{label}: the retry must land the fresh bytes: {bytes}"
+        );
 
         std::fs::remove_dir_all(&home).ok();
     }
 }
 
-/// `cli_update_matches_the_npx_skills_update_trace_byte_for_byte_apart_from_timestamps_or_names_the_diverging_file`
+/// `cli_update_spawns_the_npx_skills_update_argv_and_lands_the_new_revision_or_names_the_diverging_arg`
 /// (the CLI parity test, per `definition-of-done.md` check 4): replays a
 /// hand-built (not a checked-in fixture file, and not recorded from a real
 /// `npx` run - unit 5.4 owns recording one) trace of `npx skills update
@@ -467,7 +466,7 @@ fn update_crash_after_each_step_leaves_disk_in_the_before_or_after_state_or_name
 /// recorded trace, which check 4 in full would need a real `npx` capture
 /// for (5.4's job).
 #[test]
-fn cli_update_matches_the_npx_skills_update_trace_byte_for_byte_apart_from_timestamps_or_names_the_diverging_file(
+fn cli_update_spawns_the_npx_skills_update_argv_and_lands_the_new_revision_or_names_the_diverging_arg(
 ) {
     for (label, method, expected_args) in [
         (
@@ -565,8 +564,10 @@ fn update_with_an_unreadable_registry_fails_before_the_first_write_or_names_the_
 /// `update_without_a_source_records_no_journal_row_or_names_the_stray_row`
 /// (round 1, U5): a `Dotagents` update with no `source` must fail before
 /// `backup_paths` records anything - `validate_cli_request` runs ahead of
-/// the journal row, so this leaves no `update` event at all, not a
-/// `Failed` one.
+/// the journal row, so this leaves no `update` event at all. Without this
+/// ordering, the stray row `backup_paths` would have already recorded
+/// stays `pending` forever (nothing ever calls `finish` on it), not
+/// `failed`.
 #[test]
 fn update_without_a_source_records_no_journal_row_or_names_the_stray_row() {
     let home = unique_temp_dir("update_missing_source");
@@ -582,7 +583,7 @@ fn update_without_a_source_records_no_journal_row_or_names_the_stray_row() {
     let events = ops::list_events(&rt, &ctx(), &ListEventsRequest::default()).unwrap();
     assert!(
         events.is_empty(),
-        "a missing source must leave no journal row, not a Failed one: {events:?}"
+        "a missing source must leave no journal row, not a stray pending one: {events:?}"
     );
 
     std::fs::remove_dir_all(&home).ok();
