@@ -4637,14 +4637,16 @@ pub fn restore_event(
     // succeeded. See `extra_plans`' own comment above.
     for (other_path, other_plan) in &extra_plans {
         if let Ok(other_scoped) = crate::ports::confine(&rt.scope, fs, other_path) {
+            // `extra_plans` only ever receives `Write`/`WriteDir` (see the
+            // loop that builds it above, in the `RestorePlan::WriteDir` arm)
+            // - a secondary manifest entry is always a backed-up path, never
+            // one recorded as absent, so `RemoveIfPresent` has no case here
+            // to match (round 3, N7).
             let result: Result<(), CoreError> = match other_plan {
                 RestorePlan::RemoveIfPresent => {
-                    if fs.symlink_metadata(other_path).is_ok() {
-                        fs.remove_file(&session.guard, &other_scoped)
-                            .map_err(|e| CoreError::io(other_path, e))
-                    } else {
-                        Ok(())
-                    }
+                    unreachable!(
+                        "extra_plans never carries RemoveIfPresent - see the comment above"
+                    )
                 }
                 RestorePlan::Write(bytes) => fs
                     .write_atomic(&session.guard, &other_scoped, bytes)

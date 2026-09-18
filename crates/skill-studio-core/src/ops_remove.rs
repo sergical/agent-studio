@@ -526,10 +526,11 @@ pub fn remove(
 /// every harness's link. The tree op runs first, not last as an earlier
 /// revision had it, so a failed link removal never leaves the tree gone but
 /// the journal row (and its `restore_backup` inverse) pointing at a path
-/// whose links were already dropped out from under it - and so a failure
-/// partway through link cleanup, after the tree op already succeeded, still
-/// leaves `remove` free to mark the row `Done`: the deployment itself is
-/// gone either way, which is what the row records.
+/// whose links were already dropped out from under it - and any `Err` this
+/// returns, including one from partway through link cleanup after the tree
+/// op already succeeded, makes the caller (`remove`, above) mark the row
+/// `Failed` rather than `Done`: an unremoved link is not a state the row
+/// should report as complete.
 fn remove_and_link(
     rt: &Runtime,
     ctx: &OpContext,
