@@ -185,29 +185,41 @@ fn default_fallback_dirs() -> Vec<PathBuf> {
     dirs
 }
 
-/// Cached for the process lifetime: the login shell is spawned at most once
-/// per launch, however many harnesses `detect_harnesses` resolves against
-/// it (`harness-detection.md`: "one shell spawn per app start, cached").
-static LOGIN_SHELL_PATH: OnceLock<Vec<PathBuf>> = OnceLock::new();
-
 /// `ToolLookup` that resolves against the user's login-shell `PATH`
 /// instead of the process's own (minimal, under `launchd`) `PATH`. Intended
 /// for the desktop app; the CLI and MCP server keep using
 /// [`PathToolLookup`], whose process `PATH` already comes from a shell.
+///
+/// Caches the probed `PATH` in a per-instance `OnceLock` rather than a
+/// process-wide `static`: the shell still spawns at most once per launch,
+/// because `core_runtime::build_runtime_detect` builds exactly one
+/// `LoginShellToolLookup` and every harness resolves against that same
+/// instance (`harness-detection.md`: "one shell spawn per app start,
+/// cached") - but a `static` cache also leaked across tests that construct
+/// their own instance, and made the probe itself impossible to fake.
 pub struct LoginShellToolLookup {
-    inner: PathToolLookup,
+    search_dirs: OnceLock<Vec<PathBuf>>,
+    probe: Box<dyn Fn() -> Vec<PathBuf> + Send + Sync>,
 }
 
 impl LoginShellToolLookup {
-    /// Builds a lookup over the cached login-shell `PATH`, spawning the
-    /// shell on the first call only.
+    /// Builds a lookup that probes the real login shell on first use.
     pub fn new() -> Self {
-        let dirs = LOGIN_SHELL_PATH
-            .get_or_init(|| read_login_shell_path(&default_fallback_dirs()))
-            .clone();
+        Self::with_probe(|| read_login_shell_path(&default_fallback_dirs()))
+    }
+
+    /// As [`LoginShellToolLookup::new`], with `probe` standing in for the
+    /// real login-shell spawn. Not `pub`: only `new` and this module's
+    /// tests construct a lookup with a chosen probe.
+    fn with_probe(probe: impl Fn() -> Vec<PathBuf> + Send + Sync + 'static) -> Self {
         LoginShellToolLookup {
-            inner: PathToolLookup::with_search_dirs(dirs),
+            search_dirs: OnceLock::new(),
+            probe: Box::new(probe),
         }
+    }
+
+    fn search_dirs(&self) -> &[PathBuf] {
+        self.search_dirs.get_or_init(|| (self.probe)())
     }
 }
 
@@ -219,7 +231,7 @@ impl Default for LoginShellToolLookup {
 
 impl ToolLookup for LoginShellToolLookup {
     fn find_binary(&self, name: &str) -> Option<PathBuf> {
-        self.inner.find_binary(name)
+        PathToolLookup::with_search_dirs(self.search_dirs().to_vec()).find_binary(name)
     }
 }
 
@@ -302,65 +314,29 @@ mod tests {
         );
     }
 
-    /// Serializes the one test below that sets `$SHELL`, so a parallel test
-    /// run never lets two tests race on the same process-wide env var.
-    fn shell_env_lock() -> std::sync::MutexGuard<'static, ()> {
-        static LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
-        LOCK.lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-    }
-
     /// `the_shell_probe_for_path_runs_once_per_launch_not_once_per_harness`:
-    /// a fake `$SHELL` counts its own invocations to a file; three
-    /// `LoginShellToolLookup::new()` calls (one per fictional harness) must
-    /// still add up to exactly one spawn, because `LOGIN_SHELL_PATH` is a
-    /// process-wide `OnceLock`. Fails if a caller resolves the shell PATH
-    /// per binary instead of caching it in `LoginShellToolLookup::new`.
+    /// one `LoginShellToolLookup` resolving three different binaries (one
+    /// per fictional harness) must run its probe exactly once, since
+    /// `core_runtime::build_runtime_detect` builds exactly one instance and
+    /// shares it across every harness. Fails if `find_binary` re-probes
+    /// instead of reading the instance's cached `search_dirs`.
     #[test]
     fn the_shell_probe_for_path_runs_once_per_launch_not_once_per_harness() {
-        let _guard = shell_env_lock();
-        let tmp = tempfile::tempdir().unwrap();
-        let counter = tmp.path().join("calls.txt");
-        let fake_shell = tmp.path().join("fake-login-shell.sh");
-        fs::write(
-            &fake_shell,
-            format!(
-                "#!/bin/sh\necho call >> \"{}\"\necho {PATH_MARKER_START}\necho \"{}\"\necho {PATH_MARKER_END}\n",
-                counter.display(),
-                tmp.path().display(),
-            ),
-        )
-        .unwrap();
-        let mut perms = fs::metadata(&fake_shell).unwrap().permissions();
-        perms.set_mode(0o755);
-        fs::set_permissions(&fake_shell, perms).unwrap();
+        let calls = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let calls_in_probe = calls.clone();
+        let lookup = LoginShellToolLookup::with_probe(move || {
+            calls_in_probe.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            Vec::new()
+        });
 
-        let previous_shell = std::env::var("SHELL").ok();
-        // SAFETY: `shell_env_lock` above serializes every test that touches
-        // `$SHELL` in this process; no other thread reads it concurrently.
-        #[allow(unsafe_code)]
-        unsafe {
-            std::env::set_var("SHELL", &fake_shell);
-        }
+        lookup.find_binary("claude");
+        lookup.find_binary("codex");
+        lookup.find_binary("pi");
 
-        let _first = LoginShellToolLookup::new();
-        let _second = LoginShellToolLookup::new();
-        let _third = LoginShellToolLookup::new();
-
-        // SAFETY: same as above - still under `shell_env_lock`.
-        #[allow(unsafe_code)]
-        unsafe {
-            match &previous_shell {
-                Some(v) => std::env::set_var("SHELL", v),
-                None => std::env::remove_var("SHELL"),
-            }
-        }
-
-        let calls = fs::read_to_string(&counter).unwrap_or_default();
         assert_eq!(
-            calls.lines().count(),
+            calls.load(std::sync::atomic::Ordering::SeqCst),
             1,
-            "expected exactly one login-shell spawn across three lookups, got: {calls:?}"
+            "expected exactly one probe run across three find_binary calls on the same lookup"
         );
     }
 }
