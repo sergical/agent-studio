@@ -189,7 +189,7 @@ impl std::error::Error for MigrationError {
 /// the seam exists so a test can substitute a table where every step - not
 /// just `migrate_v0_to_v1` - performs a write of its own, which
 /// `fail_write_after` needs to land mid-loop rather than always hitting the
-/// marker write (B1, review round 1).
+/// marker write.
 fn migrate_with(
     steps: &[MigrationStep],
     fs: &dyn Fs,
@@ -253,6 +253,26 @@ mod tests {
     use super::*;
     use std::collections::HashMap;
     use std::sync::Mutex;
+
+    /// Extracts every run of ASCII digits in `text`, in order, as `u32`s -
+    /// used to assert on the version numbers a message names without
+    /// matching a digit that's really part of a larger number.
+    fn digit_runs(text: &str) -> Vec<u32> {
+        let mut numbers = Vec::new();
+        let mut digits = String::new();
+        for ch in text.chars() {
+            if ch.is_ascii_digit() {
+                digits.push(ch);
+            } else if !digits.is_empty() {
+                numbers.push(digits.parse().expect("digit run parses as u32"));
+                digits.clear();
+            }
+        }
+        if !digits.is_empty() {
+            numbers.push(digits.parse().expect("digit run parses as u32"));
+        }
+        numbers
+    }
 
     /// In-memory [`Fs`] fixture. `fail_write_after` counts down across
     /// every [`Fs::write_durable`] call the fixture sees (steps' own
@@ -437,7 +457,7 @@ mod tests {
 
     /// `migrate_with` skips every step whose `from` is below the folder's
     /// current version - fails production code that runs every step in the
-    /// table regardless of `from` (N10a, review round 1).
+    /// table regardless of `from`.
     #[test]
     fn migrate_with_test_steps_skips_steps_before_from_or_names_the_extra_step_that_ran() {
         let fs = fixture_at_version(1);
@@ -469,10 +489,14 @@ mod tests {
         assert_eq!(mismatch.app_version, CURRENT_DATA_VERSION);
 
         let message = newer_data_folder_message(mismatch);
-        let folder_version_at = message.find(&(CURRENT_DATA_VERSION + 1).to_string());
-        let app_version_at = message.find(&CURRENT_DATA_VERSION.to_string());
-        assert!(
-            matches!((folder_version_at, app_version_at), (Some(f), Some(a)) if f < a),
+        // Parse out the numbers the message contains, in order, rather than
+        // searching for the version numbers as substrings: a `.find()` on
+        // e.g. "1" would also match inside "10", so a version pair like
+        // (10, 1) could pass this assertion for the wrong reason.
+        let numbers = digit_runs(&message);
+        assert_eq!(
+            numbers,
+            vec![CURRENT_DATA_VERSION + 1, CURRENT_DATA_VERSION],
             "message should name the folder version ({}) before the app version ({}), got: {message}",
             CURRENT_DATA_VERSION + 1,
             CURRENT_DATA_VERSION
