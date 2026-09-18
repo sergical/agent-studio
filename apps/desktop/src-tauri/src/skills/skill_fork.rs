@@ -46,8 +46,9 @@ use skill_studio_core::lock_file;
 
 /// Removes a skill from its owning ledger, or reinstalls it from its
 /// recorded origin. The real implementation shells out to the same argv
-/// `remove_skill` / `add_skill` / `dotagents_update_args` already build
-/// (see the command and install-plan arg builders).
+/// `remove_skill` / `add_skill` build (see the command and install-plan arg
+/// builders) - `ops::update`'s own dotagents argv now lives in
+/// `ops_update::update_cli_args_and_cwd` instead.
 pub trait LedgerTool {
     fn remove(&self, tool: OriginTool, name: &str) -> Result<(), String>;
     fn reinstall(&self, rec: &ForkRecord, name: &str) -> Result<(), String>;

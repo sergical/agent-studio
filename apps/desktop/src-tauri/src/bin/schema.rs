@@ -9,7 +9,9 @@
 //! walk - it is never constructed and is filtered out of the generated output.
 use schemars::generate::SchemaSettings;
 use schemars::JsonSchema;
-use skill_studio_core::dto::{CommandHealth, FixSkillOutcome, InstallPreferences};
+use skill_studio_core::dto::{
+    CommandHealth, FixSkillOutcome, InstallPreferences, UpdateAllOutcome, UpdateOutcome,
+};
 use skill_studio_core::harness::HarnessReport;
 use skill_studio_core::skill_uses::{InvocationHeatmap, SkillInvocation, SkillTrigger};
 use skill_studio_core::tracked_projects::TrackedProjects;
@@ -70,6 +72,8 @@ struct WireTypes {
     harness_report: HarnessReport,
     harnesses_choice: HarnessesChoice,
     fix_skill_outcome: FixSkillOutcome,
+    update_outcome: UpdateOutcome,
+    update_all_outcome: UpdateAllOutcome,
 }
 
 // This bin's entire job is writing the generated schema JSON to stdout for
