@@ -970,7 +970,7 @@ impl UpdateCheckState {
 /// (returning the last-known summary) when a check is already in flight, or
 /// when `data_folder_writable` reports a blocking message - a newer data
 /// folder `check_and_migrate` already refused to open must never receive a
-/// stray write from the background update-check loop (N2, review round 1).
+/// stray write from the background update-check loop.
 pub fn check_now(
     app: &AppHandle,
     state: &UpdateCheckState,
