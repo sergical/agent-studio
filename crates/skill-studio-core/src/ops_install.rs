@@ -58,9 +58,9 @@ use crate::events::{EventDraft, EventKind, EventStatus};
 use crate::fsops::{self, Root};
 use crate::identity::{AgentId, RootScope, SkillName, UNIVERSAL_ROOT_RELATIVE};
 use crate::journal::{FsJournal, PlanWriter};
+use crate::ops_install_cli::install_via_cli;
 use crate::ports::{
-    self, ExclusiveGuard, FileKind, MutationSession, OpContext, PlanStatus, ProcessSpec, Runtime,
-    ScopeFs,
+    self, ExclusiveGuard, FileKind, MutationSession, OpContext, PlanStatus, Runtime, ScopeFs,
 };
 use crate::registry;
 
@@ -258,25 +258,6 @@ fn method_from_wire_name(name: &str) -> Option<InstallMethod> {
         "skills_sh" => Some(InstallMethod::SkillsSh),
         _ => None,
     }
-}
-
-/// The `npx` package an [`InstallMethod`] shells out to, or `None` for
-/// `Copy` (which never calls `npx`). A plain lookup rather than an
-/// `unreachable!` arm, so a caller that mismatches method and code path
-/// gets a typed error instead of a panic.
-fn cli_package(method: InstallMethod) -> Option<&'static str> {
-    match method {
-        InstallMethod::Dotagents => Some("@sentry/dotagents"),
-        InstallMethod::SkillsSh => Some("skills"),
-        InstallMethod::Copy => None,
-    }
-}
-
-/// Percent-encode `/` and `%` so a project path can sit in a single
-/// deployment-id slot - mirrors the desktop's
-/// `skill_deployment::encode_id_path`.
-fn encode_id_path_segment(path: &str) -> String {
-    path.replace('%', "%25").replace('/', "%2F")
 }
 
 /// Builds the same `dep:v1/{scope}/{slot}/{destination}/{name}/{project}/
@@ -546,6 +527,13 @@ fn install_and_link(
         scope: mut document,
         home: mut home_document,
     } = documents;
+    // Compared against after every mutation below, so an install that never
+    // touches `document` itself (no `save_as_preference`, and either not a
+    // `Copy` or a `Copy` whose `copies` entry lands in `home_document`
+    // instead) skips the scope write entirely, rather than creating
+    // `<scope>/.agents/skill-studio.json` holding nothing but a bumped
+    // `write_version`.
+    let original_document = document.clone();
     crate::ops::ensure_dir_all(rt, session, fs, targets.universal_root)?;
 
     match req.method {
@@ -610,14 +598,14 @@ fn install_and_link(
             );
         }
     }
-    write_registry_document(&session.guard, fs, targets.root, document)?;
+    if document != original_document {
+        write_registry_document(&session.guard, fs, targets.root, document)?;
+    }
     if let Some(home_doc) = home_document {
-        // A project-scope install never otherwise touches the home root, so
-        // `<home>/.agents` may not exist yet - unlike `targets.root`, whose
-        // `.agents` parent was already brought up by the `ensure_dir_all`
-        // call above (`targets.universal_root` sits under it for `Copy`) or
-        // by `install_via_cli`'s own directory creation for the CLI methods.
-        crate::ops::ensure_dir_all(rt, session, fs, &rt.scope.home.lexical.join(".agents"))?;
+        // A project-scope install never otherwise touches the home root, but
+        // `write_registry_document_locked` already creates
+        // `<home>/.agents` itself before writing the file into it, so this
+        // needs no `ensure_dir_all` call of its own.
         write_registry_document(&session.guard, fs, &rt.scope.home.lexical, home_doc)?;
     }
 
@@ -642,17 +630,9 @@ fn install_copy(
     // never under the op's own target root - so for a project-scope install,
     // `<home>/.agents` was never brought up by the caller's own
     // `ensure_dir_all(targets.universal_root)`, which only reaches the
-    // *project's* `.agents`. `confine`'s own canonicalize needs its
-    // immediate parent to already exist, so this brings up `<home>/.agents`
-    // first, one level at a time, before confining the journal root itself.
-    let home_agents_dir = rt.scope.home.lexical.join(".agents");
-    let scoped_home_agents_dir = ports::confine(&rt.scope, fs.as_ref(), &home_agents_dir)?;
-    fs.create_dir_all(guard, &scoped_home_agents_dir)
-        .map_err(|e| CoreError::io(&home_agents_dir, e))?;
+    // *project's* `.agents`.
+    ensure_journal_root(rt, guard, fs.as_ref())?;
     let journal_root = journal_root(&rt.scope.home.lexical);
-    let scoped_journal_root = ports::confine(&rt.scope, fs.as_ref(), &journal_root)?;
-    fs.create_dir_all(guard, &scoped_journal_root)
-        .map_err(|e| CoreError::io(&journal_root, e))?;
     let journal = FsJournal::new(journal_root, fs.clone());
 
     let root = Root::open(fs.as_ref(), universal_root.to_path_buf())
