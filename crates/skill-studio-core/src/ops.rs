@@ -2965,18 +2965,7 @@ pub fn outdated(
     let targets: Vec<crate::skill_update_check::OutdatedTarget> = inventory
         .skills
         .iter()
-        .filter_map(|skill| {
-            let deployment = skill.deployments.first()?;
-            let plugin = deployment
-                .plugin
-                .as_ref()
-                .map(|p| (p.marketplace.clone(), p.plugin.clone(), p.version.clone()));
-            Some(crate::skill_update_check::OutdatedTarget {
-                name: skill.name.0.clone(),
-                source_kind: deployment.source_kind,
-                plugin,
-            })
-        })
+        .filter_map(outdated_target)
         .collect();
     Ok(crate::skill_update_check::outdated(
         rt.ports.fs.as_ref(),
@@ -2986,6 +2975,28 @@ pub fn outdated(
         commit_lookup,
         plugin_lookup,
     ))
+}
+
+/// Picks the deployment that decides `skill`'s currency rule, and builds the
+/// `OutdatedTarget` for it. A skill deployed by more than one install method
+/// is classified by provenance precedence (dotagents beats plugin beats
+/// skills-sh beats in-repo beats manual, via `SourceKind`'s derived `Ord`),
+/// not by whichever deployment `scan` happened to list first - matching
+/// `apps/desktop`'s `provenance::classify_source_kind` precedence.
+fn outdated_target(skill: &InstalledSkillDto) -> Option<crate::skill_update_check::OutdatedTarget> {
+    let deployment = skill
+        .deployments
+        .iter()
+        .min_by_key(|deployment| deployment.source_kind)?;
+    let plugin = deployment
+        .plugin
+        .as_ref()
+        .map(|p| (p.marketplace.clone(), p.plugin.clone(), p.version.clone()));
+    Some(crate::skill_update_check::OutdatedTarget {
+        name: skill.name.0.clone(),
+        source_kind: deployment.source_kind,
+        plugin,
+    })
 }
 
 /// Pure(ish) issue derivation over an [`Inventory`]; see [`diagnose`] for the
@@ -5528,6 +5539,68 @@ mod tests {
                 "fingerprint_files is missing {name}, only has {fingerprint_names:?}"
             );
         }
+    }
+
+    /// Minimal `DeploymentDto` for `outdated_target` precedence tests - only
+    /// `source_kind` and `plugin` matter to that function; every other field
+    /// takes a placeholder value no test here reads.
+    fn minimal_deployment(source_kind: SourceKind, plugin: Option<PluginSourceDto>) -> DeploymentDto {
+        DeploymentDto {
+            id: DeploymentId::parse("dep:v1/g/-/universal/-/x").unwrap(),
+            root: RootRef::new(RootScope::Global, RootKind::Universal).unwrap(),
+            harness: None,
+            path: PathBuf::from("/h/.agents/skills/x"),
+            destination: SkillDestination::Universal,
+            backing: BackingRelationship::Independent,
+            mutability: DeploymentMutability::ReadOnly,
+            link_target: None,
+            shared_via_whole_dir_link: false,
+            is_symlink: false,
+            resolved_path: None,
+            symlink_is_broken: false,
+            symlink_error: None,
+            owner_kind: LifecycleOwnerKind::Copy,
+            owner_id: None,
+            content_fingerprint: None,
+            disabled_by: None,
+            disabled_readers: Vec::new(),
+            spec_violations: Vec::new(),
+            plugin,
+            frontmatter: None,
+            frontmatter_fields: BTreeMap::new(),
+            has_spec: false,
+            folder_bytes: 0,
+            file_count: 0,
+            skill_md_tokens: 0,
+            description_tokens: 0,
+            content_hash: "hash".to_string(),
+            modified_at: None,
+            folder_truncated: false,
+            in_git_repo: false,
+            studio_disabled: false,
+            source_kind,
+        }
+    }
+
+    /// Flow: a skill deployed by both skills-sh and dotagents (the plan's
+    /// scan order does not put dotagents first).
+    /// Expectation: `outdated_target` classifies it as `SourceKind::Dotagents`,
+    /// the higher-precedence method, not whichever deployment is first in
+    /// `skill.deployments`.
+    /// A failure here means precedence reverted to `deployments.first()`, or
+    /// names the wrong method it picked instead.
+    #[test]
+    fn a_skill_deployed_by_two_methods_is_classified_by_precedence_not_deployment_order() {
+        let skill = InstalledSkillDto {
+            name: SkillName("write-tests".to_string()),
+            description: None,
+            deployments: vec![
+                minimal_deployment(SourceKind::SkillsSh, None),
+                minimal_deployment(SourceKind::Dotagents, None),
+            ],
+        };
+        let target = outdated_target(&skill).expect("a deployed skill always yields a target");
+        assert_eq!(target.source_kind, SourceKind::Dotagents);
     }
 
     mod scan_tests {

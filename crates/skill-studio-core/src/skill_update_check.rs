@@ -126,6 +126,17 @@ pub fn outdated(
     results
 }
 
+/// Normalizes a repo slug so two spellings of the same source (a
+/// `github.com/` prefix, a trailing `.git`, or a different case) share one
+/// `tree_cache` entry and one [`SourceTreeLookup`] call, instead of one each.
+fn normalize_repo_key(repo: &str) -> String {
+    let lower = repo.to_ascii_lowercase();
+    let stripped = lower
+        .strip_prefix("github.com/")
+        .unwrap_or(lower.as_str());
+    stripped.strip_suffix(".git").unwrap_or(stripped).to_string()
+}
+
 fn skills_sh_currency(
     name: &str,
     lock: &Result<SkillLockFile, CoreError>,
@@ -141,6 +152,7 @@ fn skills_sh_currency(
     let Some(repo) = dotagents_ledger::github_repo_from_source(&entry.source) else {
         return Currency::Unknown;
     };
+    let repo = normalize_repo_key(&repo);
     let Some(skill_path) = entry.skill_path.as_deref() else {
         return Currency::Unknown;
     };
@@ -388,6 +400,71 @@ mod tests {
                 plugin: None,
             })
             .collect();
+        outdated(
+            &fs,
+            Path::new("/home"),
+            &targets,
+            &tree_lookup,
+            &NoCommits,
+            &NoPlugins,
+        );
+        assert_eq!(*tree_lookup.calls.lock().unwrap(), vec!["obra/write-tests"]);
+    }
+
+    /// Flow: two skills.sh skills whose lock entries name the same GitHub
+    /// repo with different spellings (`owner/repo` and
+    /// `https://github.com/Owner/Repo.git`, via `git:` sources).
+    /// Expectation: exactly one `tree_shas_at_head` call, for the normalized
+    /// key.
+    /// A failure here means the two spellings landed in different
+    /// `tree_cache` entries and the check cost a second network call, or
+    /// names the extra repo key it called.
+    #[test]
+    fn two_spellings_of_one_repo_cost_one_tree_call_or_names_the_second_call() {
+        let json = serde_json::json!({
+            "version": 3,
+            "skills": {
+                "a": {
+                    "source": "obra/write-tests",
+                    "sourceType": "github",
+                    "sourceUrl": "https://github.com/obra/write-tests",
+                    "skillPath": "skills/a/SKILL.md",
+                    "skillFolderHash": "hash",
+                    "installedAt": "2026-01-01T00:00:00Z",
+                    "updatedAt": "2026-01-01T00:00:00Z",
+                },
+                "b": {
+                    "source": "git:https://github.com/Obra/Write-Tests.git",
+                    "sourceType": "github",
+                    "sourceUrl": "https://github.com/Obra/Write-Tests",
+                    "skillPath": "skills/b/SKILL.md",
+                    "skillFolderHash": "hash",
+                    "installedAt": "2026-01-01T00:00:00Z",
+                    "updatedAt": "2026-01-01T00:00:00Z",
+                }
+            }
+        });
+        let fs = FixtureBuilder::new()
+            .dir("/home/.agents")
+            .file(
+                "/home/.agents/.skill-lock.json",
+                &serde_json::to_string(&json).unwrap().into_bytes(),
+            )
+            .build_fs();
+
+        let tree_lookup = FakeTreeLookup::default();
+        let targets = vec![
+            OutdatedTarget {
+                name: "a".to_string(),
+                source_kind: SourceKind::SkillsSh,
+                plugin: None,
+            },
+            OutdatedTarget {
+                name: "b".to_string(),
+                source_kind: SourceKind::SkillsSh,
+                plugin: None,
+            },
+        ];
         outdated(
             &fs,
             Path::new("/home"),
