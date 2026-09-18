@@ -675,6 +675,13 @@ fn fork_record_owns_the_fork() {
     std::fs::remove_dir_all(&dir).ok();
 }
 
+/// `OpencodeHomeGuard` sets `SKILL_STUDIO_FIXTURE`, which routes the
+/// desktop side's `core_scan_installed_skills` through
+/// `RuntimeScope::fixture(home)` (`skill_refresh.rs:1481-1486`) rather than
+/// `RuntimeScope::live(...)`. This test's parity check therefore only
+/// covers the `fixture(...)` branch; `live(...)` (real `XDG_CONFIG_HOME`,
+/// Codex home resolution, the 2s vs. 60s read timeout split) is not
+/// exercised here.
 #[test]
 fn desktop_assembly_matches_core_scan_for_every_fixture() {
     for (name, builder) in fixtures::all() {
