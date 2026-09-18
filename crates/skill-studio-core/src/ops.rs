@@ -3454,6 +3454,15 @@ pub fn restore_event(
                 "this event cannot be restored",
             ))
         }
+        crate::dto::RestoreCapability::NotCompleted { status } => {
+            return Err(CoreError::new(
+                ErrorCode::InvalidRequest,
+                format!(
+                    "event {} did not complete (status: {status}); its inverse never moved what it describes",
+                    req.event_id.0
+                ),
+            ))
+        }
         crate::dto::RestoreCapability::Yes => {}
     }
     let inverse = target

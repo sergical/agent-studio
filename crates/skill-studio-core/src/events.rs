@@ -212,7 +212,16 @@ impl EventRecord {
     }
 
     /// Whether a restore may target this row.
+    ///
+    /// A row that did not complete never moved what its inverse describes,
+    /// so applying the inverse would act on live state it does not own;
+    /// that check runs before any other arm.
     pub fn restore_capability(&self) -> RestoreCapability {
+        if self.status != EventStatus::Done {
+            return RestoreCapability::NotCompleted {
+                status: self.status.as_str().to_string(),
+            };
+        }
         match (
             &self.reverted_by,
             self.restorable,
@@ -538,5 +547,37 @@ mod tests {
             restorable: false,
         };
         assert_eq!(row.restore_capability(), RestoreCapability::NoInverse);
+    }
+
+    #[test]
+    fn pending_and_failed_rows_are_not_restorable_or_names_the_status_that_leaked_through() {
+        for status in [
+            EventStatus::Pending,
+            EventStatus::Failed,
+            EventStatus::Interrupted,
+        ] {
+            let row = EventRecord {
+                id: EventId("01J".into()),
+                ts: Utc::now(),
+                kind: EventKind::HarnessDisable.as_str().to_string(),
+                skill: SkillName("x".into()),
+                harness: None,
+                scope: None,
+                project_path: None,
+                payload: serde_json::json!({}),
+                inverse: Some(serde_json::json!({})),
+                backup_dir: None,
+                status,
+                reverted_by: None,
+                restorable: true,
+            };
+            assert_eq!(
+                row.restore_capability(),
+                RestoreCapability::NotCompleted {
+                    status: status.as_str().to_string()
+                },
+                "a {status:?} row must name its own status, not fall through to Yes"
+            );
+        }
     }
 }

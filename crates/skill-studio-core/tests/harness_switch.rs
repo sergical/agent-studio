@@ -650,3 +650,110 @@ fn claude_code_disable_refuses_a_real_directory_or_whole_dir_link_or_names_the_r
         std::fs::remove_dir_all(&home).ok();
     }
 }
+
+/// undo_of_a_failed_recreate_restore_is_refused_or_names_the_live_link_it_would_remove:
+/// disabling Claude Code removes the link and journals a `Recreate` inverse
+/// on `E1`. A real directory occupies the link's slot before the undo runs,
+/// so the undo's `fs.symlink` call fails: `E1` must stay restorable (its
+/// claim was released, not consumed) and its own restore row `R` must finish
+/// `failed`. `restore_event` on `R` must then be refused, naming `R`'s
+/// status - `RestoreCapability::NotCompleted` is what makes that refusal
+/// possible; without it, undoing `R` would apply `R`'s `remove_symlink`
+/// inverse to the occupant directory, deleting state `R` never touched.
+#[test]
+fn undo_of_a_failed_recreate_restore_is_refused_or_names_the_live_link_it_would_remove() {
+    let home = unique_temp_dir("claude_undo_failed_recreate");
+    install_universal_skill(&home, "gamma");
+    install_claude_link(&home, "gamma");
+    let rt = runtime_for(&home);
+    let link = home.join(CLAUDE_ROOT_RELATIVE).join("gamma");
+
+    let disable = ops::set_harness_enabled(
+        &rt,
+        &ctx(),
+        &SetHarnessEnabledRequest {
+            skill: SkillName("gamma".into()),
+            harness: AgentId::from(AgentId::CLAUDE_CODE),
+            enabled: false,
+        },
+    )
+    .unwrap();
+    assert!(
+        std::fs::symlink_metadata(&link).is_err(),
+        "disable should remove {}",
+        link.display()
+    );
+
+    // The occupant: a real directory sits where the undo's `Recreate`
+    // inverse wants to put the link back.
+    std::fs::create_dir_all(&link).unwrap();
+    std::fs::write(link.join("SKILL.md"), "---\nname: gamma\n---\n").unwrap();
+
+    let undo_err = ops::restore_event(
+        &rt,
+        &ctx(),
+        &RestoreRequest {
+            event_id: disable.event_id.clone(),
+            force: false,
+        },
+    )
+    .unwrap_err();
+    assert_eq!(undo_err.code, skill_studio_core::ErrorCode::Io);
+    assert!(
+        std::fs::metadata(&link).is_ok_and(|m| m.is_dir()),
+        "the occupant directory at {} must survive the failed undo",
+        link.display()
+    );
+
+    let store = rt
+        .ports
+        .history
+        .open(&rt.scope, HistoryAccess::ReadIfExists)
+        .unwrap()
+        .expect("the store exists after the writes above");
+    let disable_row = store.get(&disable.event_id).unwrap().unwrap();
+    assert_eq!(
+        disable_row.restore_capability(),
+        skill_studio_core::dto::RestoreCapability::Yes,
+        "the failed undo must release its claim, leaving E1 restorable again"
+    );
+
+    let events = ops::list_events(
+        &rt,
+        &ctx(),
+        &skill_studio_core::dto::ListEventsRequest::default(),
+    )
+    .unwrap();
+    let failed_restore = events
+        .iter()
+        .find(|e| e.kind == "restore" && e.status == "failed")
+        .expect("the undo's own restore row R must be recorded and finished failed");
+    let restore_row = store.get(&failed_restore.id).unwrap().unwrap();
+    assert_eq!(
+        restore_row.status,
+        skill_studio_core::events::EventStatus::Failed
+    );
+
+    let redo_err = ops::restore_event(
+        &rt,
+        &ctx(),
+        &RestoreRequest {
+            event_id: failed_restore.id.clone(),
+            force: false,
+        },
+    )
+    .unwrap_err();
+    assert_eq!(redo_err.code, skill_studio_core::ErrorCode::InvalidRequest);
+    assert!(
+        redo_err.message.contains("failed"),
+        "expected the refusal to name R's status (failed), got: {}",
+        redo_err.message
+    );
+    assert!(
+        std::fs::metadata(&link).is_ok_and(|m| m.is_dir()),
+        "undoing R must still be refused, so the occupant directory at {} must remain",
+        link.display()
+    );
+
+    std::fs::remove_dir_all(&home).ok();
+}

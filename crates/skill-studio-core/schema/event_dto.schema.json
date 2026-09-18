@@ -163,6 +163,24 @@
           "required": [
             "restorable"
           ]
+        },
+        {
+          "description": "The row never finished (`pending`, `failed`, or `interrupted`), so\nits inverse never moved what it describes; applying it would act on\nlive state the row does not own.",
+          "type": "object",
+          "properties": {
+            "restorable": {
+              "type": "string",
+              "const": "not_completed"
+            },
+            "status": {
+              "description": "The row's status, so a caller can explain the refusal.",
+              "type": "string"
+            }
+          },
+          "required": [
+            "restorable",
+            "status"
+          ]
         }
       ]
     },
