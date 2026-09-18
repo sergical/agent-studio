@@ -111,21 +111,28 @@ mod tests {
     }
 
     /// `a_hung_version_probe_times_out_and_is_killed_or_names_the_probe_that_hangs`:
-    /// a real `sh -c 'sleep 30'` child - a mock spawner can't prove a real
-    /// OS process gets killed, so this test pays for a real spawn - given a
-    /// 50 ms deadline must report `timed_out` rather than block the caller
-    /// for anywhere near 30 seconds. Only the outcome is asserted, never an
-    /// elapsed-time bound: the test would still be correct on a much slower
-    /// CI runner.
+    /// a real child that records its pid and then `exec`s `sleep 30` - a
+    /// mock spawner can't prove a real OS process gets killed, so this test
+    /// pays for a real spawn - must come back as `timed_out`, and the pid it
+    /// recorded must be gone once `run` returns (`kill -0` fails), which
+    /// proves the child was killed and reaped rather than left running.
+    /// The deadline is generous so the shell has time to write its pid;
+    /// nothing asserts an elapsed-time bound, so a slow CI runner still
+    /// gets a correct verdict.
     #[test]
     fn a_hung_version_probe_times_out_and_is_killed_or_names_the_probe_that_hangs() {
+        let tmp = tempfile::tempdir().unwrap();
+        let pid_file = tmp.path().join("pid");
         let spawner = RealProcessSpawner::new();
         let spec = ProcessSpec {
             program: "sh".into(),
-            args: vec!["-c".into(), "sleep 30".into()],
+            args: vec![
+                "-c".into(),
+                format!("echo $$ > '{}'; exec sleep 30", pid_file.display()),
+            ],
             cwd: None,
             env: Vec::new(),
-            timeout_ms: 50,
+            timeout_ms: 1_000,
         };
 
         let output = spawner.run(&spec, &NeverCancel).unwrap();
@@ -133,6 +140,21 @@ mod tests {
         assert!(
             output.timed_out,
             "a probe past its deadline must report timed_out, got {output:?}"
+        );
+        let pid = std::fs::read_to_string(&pid_file).unwrap();
+        let pid = pid.trim();
+        assert!(
+            !pid.is_empty(),
+            "the child never recorded its pid, so the kill cannot be checked"
+        );
+        let still_alive = std::process::Command::new("kill")
+            .args(["-0", pid])
+            .status()
+            .unwrap()
+            .success();
+        assert!(
+            !still_alive,
+            "the hung probe (pid {pid}) is still running after run() returned - it was abandoned, not killed"
         );
     }
 

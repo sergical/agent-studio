@@ -382,13 +382,20 @@ mod tests {
         );
     }
 
-    /// A missing `~/.nvm/versions/node` (no nvm installed) must yield no
-    /// fallback dirs rather than an error.
+    /// `no_nvm_install_yields_no_fallback_dirs_or_names_the_dirs_it_invented`:
+    /// a missing `~/.nvm/versions/node` (no nvm installed) must yield no
+    /// fallback dirs. Fails if the lookup manufactures candidate dirs for a
+    /// tree that does not exist.
     #[test]
-    fn no_nvm_install_yields_no_fallback_dirs_or_names_the_error_it_raised_instead() {
+    fn no_nvm_install_yields_no_fallback_dirs_or_names_the_dirs_it_invented() {
         let tmp = tempfile::tempdir().unwrap();
         let versions = tmp.path().join("versions/node");
 
-        assert!(nvm_node_bin_dirs(&versions).is_empty());
+        let dirs = nvm_node_bin_dirs(&versions);
+
+        assert!(
+            dirs.is_empty(),
+            "no nvm tree exists, yet the lookup returned {dirs:?}"
+        );
     }
 }

@@ -1125,6 +1125,17 @@ fn probe_version(
             );
         }
     };
+    if output.timed_out {
+        let reason = format!(
+            "{} --version did not finish within {} ms",
+            path.display(),
+            spec.timeout_ms
+        );
+        return (
+            DetectedString::unknown(reason.clone()),
+            DetectedString::unknown(reason),
+        );
+    }
     if output.status != Some(0) {
         let reason = format!("{} --version exited {:?}", path.display(), output.status);
         return (
@@ -1517,6 +1528,53 @@ pub fn builtin_adapters() -> Vec<Box<dyn HarnessAdapter>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::error::CoreError;
+    use crate::ports::{CancelToken, ProcessOutput};
+    use crate::testing::FixtureBuilder;
+
+    /// A spawner whose every probe outlives its deadline.
+    struct TimedOutSpawner;
+
+    impl ProcessSpawner for TimedOutSpawner {
+        fn run(&self, _: &ProcessSpec, _: &dyn CancelToken) -> Result<ProcessOutput, CoreError> {
+            Ok(ProcessOutput {
+                status: None,
+                stdout: String::new(),
+                stderr: String::new(),
+                timed_out: true,
+            })
+        }
+    }
+
+    /// `a_hung_version_probe_reads_unknown_with_the_timeout_named_or_names_the_reason_it_gave`:
+    /// a `--version` probe that the spawner reports as timed out must leave
+    /// the version `Unknown` with a reason that states the timeout, so the
+    /// first-run screen can say why. Fails if the reason is the generic
+    /// "exited None" that hides the timeout.
+    #[test]
+    fn a_hung_version_probe_reads_unknown_with_the_timeout_named_or_names_the_reason_it_gave() {
+        let fs = FixtureBuilder::default().build_fs();
+        let home = PathBuf::from("/home");
+        let ports = DetectionPorts {
+            fs: &fs,
+            home: &home,
+            tools: None,
+            spawner: Some(&TimedOutSpawner),
+        };
+        let executable = PathBuf::from("/usr/local/bin/claude");
+
+        let (version, _) = probe_version(&ClaudeCodeAdapter, Some(&executable), &ports);
+
+        assert!(
+            version.value.is_none(),
+            "a timed-out probe must not yield a version"
+        );
+        let reason = version.evidence.source;
+        assert!(
+            reason.contains("did not finish within 2000 ms"),
+            "the reason must name the timeout, got: {reason:?}"
+        );
+    }
 
     #[test]
     fn builtin_catalog_separates_discovery_from_operations() {

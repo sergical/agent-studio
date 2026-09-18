@@ -52,20 +52,24 @@ pub struct HarnessesChoice {
 /// Runs `ops::harnesses` off the UI thread, for the first-run screen.
 #[tauri::command]
 pub async fn detect_harnesses(app: tauri::AppHandle) -> Result<HarnessReport, String> {
-    crate::timing_log::time_command_async(&app, "detect_harnesses", async {
-        let rt = super::core_runtime::build_runtime_detect()?;
-        detect_with_runtime(rt).await
-    })
+    crate::timing_log::time_command_async(
+        &app,
+        "detect_harnesses",
+        detect_with_runtime(super::core_runtime::build_runtime_detect),
+    )
     .await
 }
 
-/// The command body after the runtime is built, kept apart so the test that
-/// pins the probes to `spawn_blocking` can run it without a
-/// `tauri::AppHandle`.
+/// The command body, kept apart so the test that pins the probes to
+/// `spawn_blocking` can run it without a `tauri::AppHandle`. The runtime is
+/// built inside the blocking closure too: `Runtime::new` runs project
+/// discovery, which reads harness transcripts and must not sit on an async
+/// worker.
 pub(crate) async fn detect_with_runtime(
-    rt: skill_studio_core::ports::Runtime,
+    build_runtime: impl FnOnce() -> Result<skill_studio_core::ports::Runtime, String> + Send + 'static,
 ) -> Result<HarnessReport, String> {
     let joined = tauri::async_runtime::spawn_blocking(move || {
+        let rt = build_runtime()?;
         let ctx = OpContext::uncancellable(CorrelationId(ulid::Ulid::new().to_string()));
         let result = ops::harnesses(&rt, &ctx, &HarnessesRequest {});
         let envelope = ResultEnvelope::from_result(Operation::Harnesses, &rt.scope, &ctx, result);
@@ -364,7 +368,7 @@ mod tests {
 
         let test_task_thread = std::thread::current().id();
 
-        let result = detect_with_runtime(rt).await.unwrap();
+        let result = detect_with_runtime(move || Ok(rt)).await.unwrap();
 
         assert!(
             result
