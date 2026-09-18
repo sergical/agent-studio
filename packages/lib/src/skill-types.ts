@@ -42,6 +42,7 @@ export type {
   HarnessVisibilityTarget,
   ImportResult,
   InstallResult,
+  InstallPreferences,
   InvocationHeatmap,
   PackImportRequest,
   PackInfo,
