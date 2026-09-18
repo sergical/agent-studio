@@ -26,6 +26,13 @@ const ALLOWED_FILES: &[&str] = &["testing.rs", "bench_estate.rs", "lib.rs"];
 /// mixes it into a temp-name suffix purely so two names never collide.
 const ALLOWED_CALLS: &[&str] = &["std::process::id()"];
 
+fn workspace_root() -> PathBuf {
+    Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../..")
+        .canonicalize()
+        .expect("canonicalize workspace root")
+}
+
 fn collect_rs_files(dir: &Path, out: &mut Vec<PathBuf>) {
     for entry in fs::read_dir(dir).expect("read_dir") {
         let entry = entry.expect("dir entry");
@@ -118,11 +125,7 @@ fn core_crate_cargo_toml_has_no_tauri_rusqlite_tokio_or_reqwest_dependency_or_na
 #[test]
 fn workspace_lints_deny_unwrap_expect_panic_todo_unimplemented_dbg_print_in_core_or_names_the_call_site(
 ) {
-    let workspace_root = Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("../..")
-        .canonicalize()
-        .expect("canonicalize workspace root");
-    let manifest_path = workspace_root.join("Cargo.toml");
+    let manifest_path = workspace_root().join("Cargo.toml");
     let manifest = fs::read_to_string(&manifest_path).expect("read root Cargo.toml");
     let parsed: toml::Value = toml::from_str(&manifest).expect("parse root Cargo.toml");
 
@@ -170,10 +173,7 @@ fn workspace_lints_deny_unwrap_expect_panic_todo_unimplemented_dbg_print_in_core
 /// `rust.yml` fails here by naming the missing step.
 #[test]
 fn cargo_machete_and_cargo_deny_run_in_ci_with_zero_findings_or_name_the_finding() {
-    let workspace_root = Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("../..")
-        .canonicalize()
-        .expect("canonicalize workspace root");
+    let workspace_root = workspace_root();
     let workflow_path = workspace_root.join(".github/workflows/rust.yml");
     let workflow = fs::read_to_string(&workflow_path).expect("read .github/workflows/rust.yml");
 
