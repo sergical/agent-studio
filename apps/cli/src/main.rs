@@ -213,6 +213,17 @@ enum Command {
         #[arg(long)]
         json: bool,
     },
+    /// Take a mutable deployment off disk. `Copy`/`Fork` land intact in
+    /// quarantine; `Dotagents`/`SkillsSh` are removed by their own CLI.
+    Remove {
+        #[command(flatten)]
+        scope: ScopeArgs,
+        /// Deployment to remove, as printed by `scan`.
+        #[arg(long)]
+        deployment_id: String,
+        #[arg(long)]
+        json: bool,
+    },
     /// Write one JSON Schema file per request/result DTO.
     Schema {
         /// Directory to write schema files into.
@@ -305,6 +316,11 @@ fn main() -> ExitCode {
         } => run_set_harness_enabled(&scope, skill, &harness, enabled, project_path, json, time),
         Command::Fix { scope, skill, json } => run_fix(&scope, &skill, json, time),
         Command::Conflicts { scope, json } => run_diagnose_conflict(&scope, json, time),
+        Command::Remove {
+            scope,
+            deployment_id,
+            json,
+        } => run_remove(&scope, &deployment_id, json, time),
         Command::Schema { out } => output::write_schemas(out),
         Command::Health { timing_log, json } => run_health(timing_log, json),
         Command::Watch { scope, since, json } => run_watch(&scope, since, json, time),
@@ -870,6 +886,35 @@ fn run_set_harness_enabled(
         time,
         output::print_set_harness_enabled_outcome_table,
     )
+}
+
+/// Takes a mutable deployment off disk, via `ops::remove`.
+fn run_remove(scope: &ScopeArgs, deployment_id: &str, json: bool, time: bool) -> ExitCode {
+    let rt = match build_runtime_write::<skill_studio_core::dto::RemoveOutcome>(
+        scope,
+        Operation::Remove,
+        json,
+    ) {
+        Ok(rt) => rt,
+        Err(code) => return code,
+    };
+    let ctx = OpContext::uncancellable(CorrelationId(ulid::Ulid::new().to_string()));
+    let deployment_id = match DeploymentId::parse(deployment_id) {
+        Ok(id) => id,
+        Err(err) => {
+            let envelope = ResultEnvelope::<skill_studio_core::dto::RemoveOutcome>::from_result(
+                Operation::Remove,
+                &rt.scope,
+                &ctx,
+                Err(err),
+            );
+            return finish(&envelope, json, time, output::print_remove_outcome_table);
+        }
+    };
+    let req = skill_studio_core::dto::RemoveRequest { deployment_id };
+    let result = ops::remove(&rt, &ctx, &req);
+    let envelope = ResultEnvelope::from_result(Operation::Remove, &rt.scope, &ctx, result);
+    finish(&envelope, json, time, output::print_remove_outcome_table)
 }
 
 /// One `timing.jsonl` line, as written by the desktop's `timing_log`
