@@ -967,7 +967,10 @@ impl UpdateCheckState {
 
 /// Run the check now, on the calling thread, then ask `skill_refresh` to
 /// rebuild the snapshot so `has_update` reflects the result. Skips the run
-/// (returning the last-known summary) when a check is already in flight.
+/// (returning the last-known summary) when a check is already in flight, or
+/// when `data_folder_writable` reports a blocking message - a newer data
+/// folder `check_and_migrate` already refused to open must never receive a
+/// stray write from the background update-check loop.
 pub fn check_now(
     app: &AppHandle,
     state: &UpdateCheckState,
@@ -979,6 +982,9 @@ pub fn check_now(
         .app_data_dir()
         .map_err(|e| format!("Could not resolve app data dir: {e}"))?;
 
+    if !crate::skills::data_folder_status::data_folder_writable(app) {
+        return Ok(summarize(&read_update_check_store(&app_data)));
+    }
     if !state.try_begin() {
         return Ok(summarize(&read_update_check_store(&app_data)));
     }
