@@ -28,8 +28,8 @@ use rmcp::service::RequestContext;
 use rmcp::transport::stdio;
 use rmcp::{tool, tool_handler, tool_router, RoleServer, ServerHandler, ServiceExt};
 use skill_studio_core::dto::{
-    CapabilitiesRequest, HarnessesRequest, ListEventsRequest, RepairApplyRequest,
-    RepairPreviewRequest, RestoreRequest, ScanRequest,
+    CapabilitiesRequest, DiagnoseConflictRequest, FixSkillRequest, HarnessesRequest,
+    ListEventsRequest, RepairApplyRequest, RepairPreviewRequest, RestoreRequest, ScanRequest,
 };
 use skill_studio_core::harness::HarnessCatalog;
 use skill_studio_core::identity::CorrelationId;
@@ -256,6 +256,32 @@ impl SkillStudioServer {
     ) -> CallToolResult {
         run_op(Operation::RestoreEvent, true, &context, |rt, ctx| {
             ops::restore_event(rt, ctx, &req)
+        })
+        .await
+    }
+
+    #[tool(
+        description = "Run the doctor invariants for one skill and repair whatever it can; anything it cannot repair is named with its path."
+    )]
+    async fn fix(
+        &self,
+        Parameters(req): Parameters<FixSkillRequest>,
+        context: RequestContext<RoleServer>,
+    ) -> CallToolResult {
+        run_op(Operation::FixSkill, true, &context, |rt, ctx| {
+            ops::fix_skill(rt, ctx, &req)
+        })
+        .await
+    }
+
+    #[tool(description = "Find differing copies of a skill without merging them; writes nothing.")]
+    async fn diagnose_conflict(
+        &self,
+        Parameters(req): Parameters<DiagnoseConflictRequest>,
+        context: RequestContext<RoleServer>,
+    ) -> CallToolResult {
+        run_op(Operation::DiagnoseConflict, false, &context, |rt, ctx| {
+            ops::diagnose_conflict(rt, ctx, &req)
         })
         .await
     }
