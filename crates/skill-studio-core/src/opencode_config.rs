@@ -432,10 +432,10 @@ pub fn set_skill_denied_with(
         }
 
         if skill.is_empty() {
-            permission.remove("skill");
+            permission.shift_remove("skill");
         }
         if permission.is_empty() {
-            root.remove("permission");
+            root.shift_remove("permission");
         }
     }
 

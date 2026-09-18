@@ -104,6 +104,50 @@ fn clearing_the_last_denied_skill_removes_the_permission_key() {
     assert!(value.get("permission").is_none());
 }
 
+/// Flow: enabling the last denied skill (`x`), which empties
+/// `permission.skill` and then empties `permission` itself, against a
+/// fixture with sibling keys before and after `permission` at both levels
+/// (`$schema` before, `theme`/`model` after; `bash`/`edit` alongside
+/// `skill`).
+/// Expectation: `Map::remove` is `swap_remove` under `preserve_order` - it
+/// moves the map's last entry into the removed slot instead of shifting
+/// everything after it down. `shift_remove` avoids that, so `permission`'s
+/// surviving keys stay `["bash", "edit"]` in their original order and
+/// root's keys stay `["$schema", "permission", "theme", "model"]`.
+/// Failure: either object's surviving keys come out reordered (or
+/// `permission`'s slot lands somewhere other than where it started), which
+/// means a `swap_remove` crept back in.
+#[test]
+fn enabling_the_last_denied_skill_keeps_sibling_keys_in_document_order_or_names_the_key_it_moved()
+{
+    let tmp = tempfile::tempdir().unwrap();
+    let config_dir = tmp.path();
+    std::fs::write(
+        opencode_json_path(config_dir),
+        r#"{"$schema":"x","permission":{"skill":{"x":"deny"},"bash":"ask","edit":"allow"},"theme":"t","model":"m"}"#,
+    )
+    .unwrap();
+
+    deny(config_dir, "x", false);
+
+    let content = std::fs::read_to_string(opencode_json_path(config_dir)).unwrap();
+    let value: serde_json::Value = serde_json::from_str(&content).unwrap();
+    let root = value.as_object().unwrap();
+    let root_keys: Vec<&str> = root.keys().map(String::as_str).collect();
+    assert_eq!(
+        root_keys,
+        vec!["$schema", "permission", "theme", "model"],
+        "root keys came out reordered: {root_keys:?}"
+    );
+    let permission = root.get("permission").unwrap().as_object().unwrap();
+    let permission_keys: Vec<&str> = permission.keys().map(String::as_str).collect();
+    assert_eq!(
+        permission_keys,
+        vec!["bash", "edit"],
+        "permission's surviving keys came out reordered: {permission_keys:?}"
+    );
+}
+
 /// Flow: `~/.config/opencode` is itself a symlink to `~/dotfiles/opencode`
 /// (a dotfiles layout), and no `opencode.json` exists yet under either path.
 /// Expectation: the deny write succeeds and lands in the symlink's real
