@@ -135,16 +135,6 @@ pub struct EventStore {
     journal: skill_studio_core::journal::FsJournal,
 }
 
-// SAFETY: `skill_studio_core::ports::Journal` requires `Send + Sync`, but
-// `rusqlite::Connection`'s internal statement cache is a `RefCell`, so
-// `EventStore` is not auto-`Sync`. It is sound anyway: `EventStore` is
-// always reached through `EventStoreState`'s
-// `std::sync::Mutex<Option<EventStore>>` (see `event_commands.rs`), so no
-// two threads ever call a `&self` method on the same `EventStore`
-// concurrently - the same invariant the pre-existing `&self` methods on
-// `conn` already relied on before this `Journal` impl added the bound.
-unsafe impl Sync for EventStore {}
-
 impl EventStore {
     /// Opens `<app_data>/events.sqlite3`, creating `app_data` if needed.
     pub fn open(app_data: &Path) -> Result<Self, String> {
@@ -934,7 +924,11 @@ impl EventStore {
 
 /// `EventStore` is the host implementation of `skill-studio-core`'s
 /// `Journal` port; every method just forwards to the `FsJournal` it already
-/// owns (see the doc comment on the struct for why).
+/// owns (see the doc comment on the struct for why) and never touches
+/// `self.conn` - the `rusqlite::Connection` this struct also owns is
+/// untouched by this impl, which is why `Journal`'s `Send`-only bound (no
+/// `Sync`) costs this struct nothing despite `Connection` itself being
+/// `!Sync`.
 impl skill_studio_core::ports::Journal for EventStore {
     fn begin(
         &self,

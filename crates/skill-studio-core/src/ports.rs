@@ -681,7 +681,12 @@ pub struct PlanRecord {
 /// successful `begin` can be an unrecorded "first step". [`Self::all`]
 /// never filters or deletes a row; reconciliation and backup trimming both
 /// read every plan the journal has ever begun.
-pub trait Journal: Send + Sync {
+///
+/// Only `Send`, not `Sync`: nothing in this workspace stores a `dyn Journal`
+/// behind an `Arc` or sends `&dyn Journal` across a thread boundary - a plan
+/// is always begun, stepped, and finished from the single thread that holds
+/// the `ExclusiveGuard` for its lease.
+pub trait Journal: Send {
     /// Durably records `plan` (`status` must be [`PlanStatus::Pending`])
     /// before the caller's first `fsops` step runs.
     fn begin(&self, guard: &ExclusiveGuard, plan: &PlanRecord) -> Result<(), CoreError>;
