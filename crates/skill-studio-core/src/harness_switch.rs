@@ -54,12 +54,17 @@ pub(crate) fn codex_toggle_row(
         if let Some(idx) = existing_index {
             let array = doc["skills"]["config"]
                 .as_array_of_tables_mut()
-                .expect("existing_index only set when this is an array of tables");
+                .ok_or_else(|| {
+                    CoreError::new(
+                        ErrorCode::Io,
+                        "config.toml's skills.config is not an array of tables",
+                    )
+                })?;
             array.remove(idx);
             let array_is_empty = array.is_empty();
-            let skills_table = doc["skills"]
-                .as_table_mut()
-                .expect("skills is a table when config was");
+            let skills_table = doc["skills"].as_table_mut().ok_or_else(|| {
+                CoreError::new(ErrorCode::Io, "config.toml's skills key is not a table")
+            })?;
             if array_is_empty {
                 skills_table.remove("config");
             }
@@ -100,7 +105,7 @@ pub(crate) fn codex_toggle_row(
 
 /// `true` when only `opencode.jsonc` exists: Skill Studio never parses that
 /// format, so writing `permission.skill` would either create a `.json`
-/// sibling OpenCode must then merge, or silently drop the user's comments.
+/// sibling `OpenCode` must then merge, or silently drop the user's comments.
 pub(crate) fn opencode_refuses_jsonc(
     json_exists: bool,
     jsonc_exists: bool,

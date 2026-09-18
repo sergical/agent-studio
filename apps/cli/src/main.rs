@@ -174,7 +174,7 @@ enum Command {
         json: bool,
     },
     /// Turn a skill's native per-harness switch on or off (Claude Code,
-    /// Codex, OpenCode; pi has no native switch).
+    /// Codex, `OpenCode`; pi has no native switch).
     SetHarnessEnabled {
         #[command(flatten)]
         scope: ScopeArgs,
@@ -275,7 +275,7 @@ fn main() -> ExitCode {
             force,
             json,
         } => run_restore(&scope, event_id, force, json, time),
-        Command::Undo { scope, force, json } => run_undo(scope, force, json, time),
+        Command::Undo { scope, force, json } => run_undo(&scope, force, json, time),
         Command::SetHarnessEnabled {
             scope,
             skill,
@@ -283,7 +283,7 @@ fn main() -> ExitCode {
             enabled,
             project_path,
             json,
-        } => run_set_harness_enabled(scope, skill, harness, enabled, project_path, json, time),
+        } => run_set_harness_enabled(&scope, skill, &harness, enabled, project_path, json, time),
         Command::Schema { out } => output::write_schemas(out),
         Command::Health { timing_log, json } => run_health(timing_log, json),
         Command::Watch { scope, since, json } => run_watch(&scope, since, json, time),
@@ -689,9 +689,9 @@ fn run_restore(
 /// (`skill_studio_core::dto::RestoreCapability::Yes`), across every skill and
 /// write kind - `list_events` is already newest-first, so the first
 /// restorable row is the last journal entry standing.
-fn run_undo(scope: ScopeArgs, force: bool, json: bool, time: bool) -> ExitCode {
+fn run_undo(scope: &ScopeArgs, force: bool, json: bool, time: bool) -> ExitCode {
     let rt = match build_runtime_write::<skill_studio_core::dto::RestoreOutcome>(
-        &scope,
+        scope,
         Operation::RestoreEvent,
         json,
     ) {
@@ -722,7 +722,7 @@ fn run_undo(scope: ScopeArgs, force: bool, json: bool, time: bool) -> ExitCode {
                 &ctx,
                 Err(err),
             );
-            return finish(envelope, json, time, output::print_restore_outcome_table);
+            return finish(&envelope, json, time, output::print_restore_outcome_table);
         }
     };
     let Some(event_id) = event_id else {
@@ -736,28 +736,28 @@ fn run_undo(scope: ScopeArgs, force: bool, json: bool, time: bool) -> ExitCode {
             &ctx,
             Err(err),
         );
-        return finish(envelope, json, time, output::print_restore_outcome_table);
+        return finish(&envelope, json, time, output::print_restore_outcome_table);
     };
     let req = RestoreRequest { event_id, force };
     let result = ops::restore_event(&rt, &ctx, &req);
     let envelope = ResultEnvelope::from_result(Operation::RestoreEvent, &rt.scope, &ctx, result);
-    finish(envelope, json, time, output::print_restore_outcome_table)
+    finish(&envelope, json, time, output::print_restore_outcome_table)
 }
 
 /// Turns a skill's native per-harness switch on or off, via
 /// `ops::set_harness_enabled` (Claude Code link, Codex `config.toml` rows,
-/// OpenCode `permission.skill`).
+/// `OpenCode` `permission.skill`).
 fn run_set_harness_enabled(
-    scope: ScopeArgs,
+    scope: &ScopeArgs,
     skill: String,
-    harness: String,
+    harness: &str,
     enabled: bool,
     project_path: Option<PathBuf>,
     json: bool,
     time: bool,
 ) -> ExitCode {
     let rt = match build_runtime_write::<skill_studio_core::dto::SetHarnessEnabledOutcome>(
-        &scope,
+        scope,
         Operation::SetHarnessEnabled,
         json,
     ) {
@@ -765,7 +765,7 @@ fn run_set_harness_enabled(
         Err(code) => return code,
     };
     let ctx = OpContext::uncancellable(CorrelationId(ulid::Ulid::new().to_string()));
-    let harness = match AgentId::parse_harness(&harness) {
+    let harness = match AgentId::parse_harness(harness) {
         Ok(harness) => harness,
         Err(err) => {
             let envelope =
@@ -776,7 +776,7 @@ fn run_set_harness_enabled(
                     Err(err),
                 );
             return finish(
-                envelope,
+                &envelope,
                 json,
                 time,
                 output::print_set_harness_enabled_outcome_table,
@@ -793,7 +793,7 @@ fn run_set_harness_enabled(
     let envelope =
         ResultEnvelope::from_result(Operation::SetHarnessEnabled, &rt.scope, &ctx, result);
     finish(
-        envelope,
+        &envelope,
         json,
         time,
         output::print_set_harness_enabled_outcome_table,

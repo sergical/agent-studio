@@ -3747,7 +3747,7 @@ fn restore_symlink_event(
     ctx: &OpContext,
     mut session: crate::ports::MutationSession,
     target: &crate::events::EventRecord,
-    inverse: crate::events::SymlinkInverse,
+    inverse: &crate::events::SymlinkInverse,
     op_start: Duration,
     begin_step: crate::timing::StepTiming,
 ) -> Result<RestoreOutcome, CoreError> {
@@ -3755,9 +3755,9 @@ fn restore_symlink_event(
     let step_start = clock.monotonic();
     let fs = rt.ports.fs.as_ref();
 
-    let path = match &inverse {
-        crate::events::SymlinkInverse::Recreate { path, .. } => path.clone(),
-        crate::events::SymlinkInverse::Remove { path } => path.clone(),
+    let path = match inverse {
+        crate::events::SymlinkInverse::Recreate { path, .. }
+        | crate::events::SymlinkInverse::Remove { path } => path.clone(),
     };
 
     let restore_id = rt.ports.ids.next_event_id();
@@ -3766,7 +3766,7 @@ fn restore_symlink_event(
     // puts a link at `path` (so undoing that restore must remove it), and
     // applying `Remove` takes a link away (so undoing that restore must
     // recreate it, at whatever it currently points to).
-    let restore_inverse = match &inverse {
+    let restore_inverse = match inverse {
         crate::events::SymlinkInverse::Recreate { path, .. } => {
             crate::events::remove_symlink_inverse(path)
         }
@@ -3803,7 +3803,7 @@ fn restore_symlink_event(
         ));
     }
 
-    let mutation_result = match &inverse {
+    let mutation_result = match inverse {
         crate::events::SymlinkInverse::Recreate { path, target } => {
             let scoped_target = crate::ports::confine(&rt.scope, fs, target)?;
             let scoped_link = crate::ports::confine(&rt.scope, fs, path)?;
@@ -3924,7 +3924,7 @@ pub fn restore_event(
             ctx,
             session,
             &target,
-            symlink_inverse,
+            &symlink_inverse,
             op_start,
             begin_step,
         );
@@ -4391,7 +4391,7 @@ pub fn unpark(
 ///
 /// Preconditions: exclusive lease; the skill must resolve to exactly one
 /// entry in a fresh inventory (an ambiguous name - two entries sharing
-/// `req.skill` - is refused before any write, since OpenCode's switch is
+/// `req.skill` - is refused before any write, since `OpenCode`'s switch is
 /// keyed by name alone and a Codex/Claude Code write under an ambiguous name
 /// would silently pick one).
 ///
@@ -4817,7 +4817,7 @@ fn set_codex_switch(
     }
 }
 
-/// True when `kind` is a root OpenCode reads: the shared universal root, or
+/// True when `kind` is a root `OpenCode` reads: the shared universal root, or
 /// its own harness/legacy root.
 fn is_opencode_visible_root(kind: &RootKind) -> bool {
     match kind {
@@ -4827,7 +4827,7 @@ fn is_opencode_visible_root(kind: &RootKind) -> bool {
     }
 }
 
-/// Refuses an OpenCode toggle when `skill.name` resolves to more than one
+/// Refuses an `OpenCode` toggle when `skill.name` resolves to more than one
 /// OpenCode-visible location - global plus a project, or two different
 /// projects. `set_opencode_switch` writes one name-keyed
 /// `permission.skill.<name>` entry in the global `opencode.json`; scan folds

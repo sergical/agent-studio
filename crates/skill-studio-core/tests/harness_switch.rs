@@ -1,3 +1,8 @@
+// Integration test binaries aren't covered by the lib crate's
+// `cfg_attr(test, allow(...))`: this file compiles as its own crate, so
+// the same allow needs to be declared here too.
+#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+
 //! Real-disk integration tests for `ops::set_harness_enabled`.
 //!
 //! Like `park_and_unpark.rs`, these use `skill-studio-host`'s real adapters:
@@ -68,7 +73,7 @@ fn install_claude_link(home: &Path, name: &str) {
     std::os::unix::fs::symlink(&target, claude_skills.join(name)).unwrap();
 }
 
-/// each_of_the_four_harness_switch_tests_passes_against_its_fixture_home_or_names_the_wrong_file:
+/// `each_of_the_four_harness_switch_tests_passes_against_its_fixture_home_or_names_the_wrong_file`:
 /// one case per harness, each asserting the exact file `enable-and-links.md`
 /// names for that harness.
 #[test]
@@ -217,7 +222,7 @@ fn each_of_the_four_harness_switch_tests_passes_against_its_fixture_home_or_name
     }
 }
 
-/// set_harness_enabled_writes_a_journal_row_before_the_first_path_toggles_or_names_the_missing_step:
+/// `set_harness_enabled_writes_a_journal_row_before_the_first_path_toggles_or_names_the_missing_step`:
 /// a failure on pi's single write still leaves a durable journal row - the
 /// row was recorded before the write, not after.
 #[test]
@@ -256,7 +261,7 @@ fn set_harness_enabled_writes_a_journal_row_before_the_first_path_toggles_or_nam
     assert_eq!(events[0].kind, "harness_disable");
 }
 
-/// any_error_after_the_event_is_recorded_marks_it_failed_or_names_the_row_left_pending:
+/// `any_error_after_the_event_is_recorded_marks_it_failed_or_names_the_row_left_pending`:
 /// pi's `ensure_dir_all`, called after the journal row is recorded to create
 /// `~/.pi/agent` on a fresh home but before `write_atomic`, fails. That row
 /// must finish `failed`, not stay `pending` - `recover_interrupted` would
@@ -298,7 +303,7 @@ fn any_error_after_the_event_is_recorded_marks_it_failed_or_names_the_row_left_p
     std::fs::remove_dir_all(&home).ok();
 }
 
-/// a_crash_mid_codex_loop_reports_n_of_m_paths_toggled_instead_of_failing_silently:
+/// `a_crash_mid_codex_loop_reports_n_of_m_paths_toggled_instead_of_failing_silently`:
 /// five projects each own a `.codex/skills/epsilon` copy; the fourth
 /// `write_atomic` call fails, so the loop stops having toggled 3 of 5.
 #[test]
@@ -341,7 +346,7 @@ fn a_crash_mid_codex_loop_reports_n_of_m_paths_toggled_instead_of_failing_silent
     );
 }
 
-/// codex_disable_writes_rows_only_for_paths_codex_reads_or_names_the_foreign_path_it_wrote:
+/// `codex_disable_writes_rows_only_for_paths_codex_reads_or_names_the_foreign_path_it_wrote`:
 /// `gamma` has a canonical universal copy plus an independent (not linked)
 /// Claude Code copy - Codex never reads `.claude/skills`, so a Codex disable
 /// must write exactly one `[[skills.config]]` row, for the universal path,
@@ -398,7 +403,7 @@ fn install_project_universal_skill(project: &Path, name: &str) {
     .unwrap();
 }
 
-/// set_harness_enabled_accepts_opencode_and_open_code_spellings_or_names_the_rejected_id:
+/// `set_harness_enabled_accepts_opencode_and_open_code_spellings_or_names_the_rejected_id`:
 /// `AgentId::parse_harness` must fold `opencode`, `open-code`, and
 /// `open_code` (any case) onto the same wire id `set_harness_enabled`
 /// matches on, and still reject a spelling that names no harness at all.
@@ -455,7 +460,7 @@ fn set_harness_enabled_accepts_opencode_and_open_code_spellings_or_names_the_rej
     std::fs::remove_dir_all(&home).ok();
 }
 
-/// claude_code_undo_of_undo_removes_the_recreated_link_or_names_the_stale_inverse:
+/// `claude_code_undo_of_undo_removes_the_recreated_link_or_names_the_stale_inverse`:
 /// disable removes the link and journals `recreate_symlink` as its inverse;
 /// undoing that disable recreates the link and must journal `remove_symlink`
 /// as its own inverse (not another `recreate_symlink`), so undoing the undo
@@ -551,7 +556,7 @@ fn claude_code_undo_of_undo_removes_the_recreated_link_or_names_the_stale_invers
     std::fs::remove_dir_all(&home).ok();
 }
 
-/// claude_code_enable_creates_the_skills_dir_on_a_fresh_home_or_names_the_confine_error:
+/// `claude_code_enable_creates_the_skills_dir_on_a_fresh_home_or_names_the_confine_error`:
 /// a home with no `.claude` directory at all must still let the first
 /// enable succeed - `confine` needs the link's parent to exist, and nothing
 /// else in this build creates `~/.claude/skills` first.
@@ -588,7 +593,7 @@ fn claude_code_enable_creates_the_skills_dir_on_a_fresh_home_or_names_the_confin
     std::fs::remove_dir_all(&home).ok();
 }
 
-/// project_scoped_claude_code_disable_removes_the_project_link_or_names_the_global_link_it_touched_instead:
+/// `project_scoped_claude_code_disable_removes_the_project_link_or_names_the_global_link_it_touched_instead`:
 /// `gamma` is installed both globally and inside one project, each with its
 /// own Claude Code link. A disable scoped to the project must remove only
 /// `<project>/.claude/skills/gamma`, leaving the unrelated global link at
@@ -640,7 +645,7 @@ fn project_scoped_claude_code_disable_removes_the_project_link_or_names_the_glob
     std::fs::remove_dir_all(&home).ok();
 }
 
-/// disabling_an_already_disabled_claude_code_skill_records_no_undo_or_names_the_link_the_undo_would_delete:
+/// `disabling_an_already_disabled_claude_code_skill_records_no_undo_or_names_the_link_the_undo_would_delete`:
 /// `gamma` starts with no Claude Code link at all; disabling it again is a
 /// no-op on disk, so its journal row must carry no inverse. Restoring that
 /// row must be refused rather than removing a link the no-op never created.
@@ -694,7 +699,7 @@ fn disabling_an_already_disabled_claude_code_skill_records_no_undo_or_names_the_
     std::fs::remove_dir_all(&home).ok();
 }
 
-/// opencode_toggle_refuses_a_skill_name_installed_in_two_locations_or_names_the_global_deny_leak:
+/// `opencode_toggle_refuses_a_skill_name_installed_in_two_locations_or_names_the_global_deny_leak`:
 /// `gamma` sits both at the global universal root and inside one project's
 /// universal root; `permission.skill.gamma` is written once, globally, so a
 /// project-scoped toggle must be refused rather than silently also denying
@@ -738,7 +743,7 @@ fn opencode_toggle_refuses_a_skill_name_installed_in_two_locations_or_names_the_
     std::fs::remove_dir_all(&home).ok();
 }
 
-/// claude_code_toggle_marks_the_event_failed_when_the_link_write_fails_or_names_the_pending_row:
+/// `claude_code_toggle_marks_the_event_failed_when_the_link_write_fails_or_names_the_pending_row`:
 /// the journal row for a Claude Code enable is written before the symlink
 /// call; when that call fails, the row must be finished `failed`, not left
 /// `pending` (which `recover_interrupted` would later flip to `interrupted`
@@ -779,7 +784,7 @@ fn claude_code_toggle_marks_the_event_failed_when_the_link_write_fails_or_names_
     std::fs::remove_dir_all(&home).ok();
 }
 
-/// claude_code_disable_refuses_a_real_directory_or_whole_dir_link_or_names_the_removed_directory:
+/// `claude_code_disable_refuses_a_real_directory_or_whole_dir_link_or_names_the_removed_directory`:
 /// presence at `~/.claude/skills/<name>` only means "already linked" when it
 /// is a symlink. A real directory there (a plain copy) or a whole-directory
 /// link at `~/.claude/skills` itself must be refused, not torn down by
@@ -860,7 +865,7 @@ fn claude_code_disable_refuses_a_real_directory_or_whole_dir_link_or_names_the_r
     }
 }
 
-/// undo_of_a_failed_recreate_restore_is_refused_or_names_the_live_link_it_would_remove:
+/// `undo_of_a_failed_recreate_restore_is_refused_or_names_the_live_link_it_would_remove`:
 /// disabling Claude Code removes the link and journals a `Recreate` inverse
 /// on `E1`. A real directory occupies the link's slot before the undo runs,
 /// so the undo's `fs.symlink` call fails: `E1` must stay restorable (its
