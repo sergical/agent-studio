@@ -5593,7 +5593,8 @@ mod tests {
     /// A failure here means precedence reverted to `deployments.first()`, or
     /// names the wrong method it picked instead.
     #[test]
-    fn a_skill_deployed_by_two_methods_is_classified_by_precedence_not_deployment_order() {
+    fn a_skill_deployed_by_two_methods_is_classified_by_precedence_not_deployment_order_or_names_the_method_it_picked(
+    ) {
         let skill = InstalledSkillDto {
             name: SkillName("write-tests".to_string()),
             description: None,
