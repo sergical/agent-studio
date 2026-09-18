@@ -744,7 +744,7 @@ pub fn reconcile_materialized_root(store: &EventStore, root: &Path) -> Result<()
     let shared_skills: Vec<String> = fs::read_dir(&shared_root)
         .map_err(|e| format!("Failed to read {}: {e}", shared_root.display()))?
         .filter_map(std::result::Result::ok)
-        .filter(|e| e.metadata().map(|m| m.is_dir()).unwrap_or(false))
+        .filter(|e| e.metadata().is_ok_and(|m| m.is_dir()))
         .map(|e| e.file_name().to_string_lossy().into_owned())
         .collect();
 

@@ -134,14 +134,12 @@ impl Default for DatabaseStamp {
 }
 
 fn file_size_and_mtime(path: &Path) -> (u64, SystemTime) {
-    fs::metadata(path)
-        .map(|meta| {
-            (
-                meta.len(),
-                meta.modified().unwrap_or(SystemTime::UNIX_EPOCH),
-            )
-        })
-        .unwrap_or((0, SystemTime::UNIX_EPOCH))
+    fs::metadata(path).map_or((0, SystemTime::UNIX_EPOCH), |meta| {
+        (
+            meta.len(),
+            meta.modified().unwrap_or(SystemTime::UNIX_EPOCH),
+        )
+    })
 }
 
 fn database_stamp(path: &Path) -> DatabaseStamp {

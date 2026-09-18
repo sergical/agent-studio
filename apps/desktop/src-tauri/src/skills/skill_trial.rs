@@ -138,8 +138,7 @@ fn count_entries(dir: &Path) -> usize {
         count += 1;
         let is_real_dir = entry
             .file_type()
-            .map(|t| t.is_dir() && !t.is_symlink())
-            .unwrap_or(false);
+            .is_ok_and(|t| t.is_dir() && !t.is_symlink());
         if is_real_dir {
             count += count_entries(&entry.path());
         }
@@ -204,9 +203,8 @@ fn validate_trial_deployment<'a>(
             .ok_or("Legacy trial has no Claude link identity; keeping it for manual review")?;
         let metadata = fs::symlink_metadata(link)
             .map_err(|error| format!("Trial Claude link cannot be verified: {error}"))?;
-        let raw_target_matches = fs::read_link(link)
-            .map(|target| target == expected_raw_target)
-            .unwrap_or(false);
+        let raw_target_matches =
+            fs::read_link(link).is_ok_and(|target| target == expected_raw_target);
         if !metadata.file_type().is_symlink() || !raw_target_matches {
             return Err(
                 "Trial Claude link was replaced or repointed; no files were removed".to_string(),
@@ -636,8 +634,7 @@ fn run_trial_expiry_pass_with_controls(
             trial.status == TrialStatus::Expiring
                 || (trial.status == TrialStatus::Active
                     && DateTime::parse_from_rfc3339(&trial.expires_at)
-                        .map(|expires_at| expires_at.with_timezone(&Utc) <= now)
-                        .unwrap_or(false))
+                        .is_ok_and(|expires_at| expires_at.with_timezone(&Utc) <= now))
         })
         .map(|(key, _)| key.clone())
         .collect();

@@ -513,8 +513,7 @@ fn existed_at_head(project: &Path, path: &str) -> bool {
         .args(["cat-file", "-e", &format!("HEAD:{path}")])
         .current_dir(project)
         .output()
-        .map(|o| o.status.success())
-        .unwrap_or(false)
+        .is_ok_and(|o| o.status.success())
 }
 
 /// Undoes whatever a failed `git apply --3way <patch>` left behind in
@@ -778,8 +777,7 @@ mod tests {
         Command::new("git")
             .arg("--version")
             .output()
-            .map(|o| o.status.success())
-            .unwrap_or(false)
+            .is_ok_and(|o| o.status.success())
     }
 
     fn init_repo(dir: &Path) {

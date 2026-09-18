@@ -356,9 +356,7 @@ fn classify_member(home: &Path, app_data: &Path, member: &PackMember) -> MemberK
     // symlinked `$TMPDIR` (common in tests, and on macOS's `/tmp` ->
     // `/private/tmp`) makes every shared member look like a project one.
     let shared_path = shared_skills_dir(home).join(&member.name);
-    let is_shared = fs::canonicalize(&shared_path)
-        .map(|canonical| canonical == member.path)
-        .unwrap_or(false);
+    let is_shared = fs::canonicalize(&shared_path).is_ok_and(|canonical| canonical == member.path);
     if !is_shared {
         return MemberKind::Manual;
     }

@@ -2092,9 +2092,7 @@ pub(crate) fn canonicalize_skill_md(
     }
     let canonical =
         std::fs::canonicalize(path_buf).map_err(|e| format!("Failed to open {path}: {e}"))?;
-    let is_file = std::fs::symlink_metadata(&canonical)
-        .map(|m| m.is_file())
-        .unwrap_or(false);
+    let is_file = std::fs::symlink_metadata(&canonical).is_ok_and(|m| m.is_file());
     if !is_file {
         return Err(format!("Path is not an installed skill: {path}"));
     }

@@ -147,8 +147,7 @@ fn atomic_replace_skill_md_unlocked(path: &Path, bytes: &[u8]) -> Result<(), Str
     let counter = ATOMIC_WRITE_COUNTER.fetch_add(1, Ordering::Relaxed);
     let nanos = SystemTime::now()
         .duration_since(SystemTime::UNIX_EPOCH)
-        .map(|duration| duration.as_nanos())
-        .unwrap_or(0);
+        .map_or(0, |duration| duration.as_nanos());
     let temp = parent.join(format!(
         ".SKILL.md.tmp-{}-{counter}-{nanos}",
         std::process::id()

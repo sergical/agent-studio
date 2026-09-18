@@ -498,9 +498,7 @@ fn add_via_skills_sh(
         .get(1)
         .map(|dir| dir.join(&result_name))
         .filter(|path| {
-            fs::symlink_metadata(path)
-                .map(|metadata| metadata.file_type().is_symlink())
-                .unwrap_or(false)
+            fs::symlink_metadata(path).is_ok_and(|metadata| metadata.file_type().is_symlink())
         });
     let warning = deployment_dirs.first().and_then(|dir| {
         maybe_record_trials(

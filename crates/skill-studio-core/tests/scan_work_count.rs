@@ -242,8 +242,7 @@ fn expected_dirs(home: &Path, project_dirs: &[PathBuf]) -> BTreeSet<PathBuf> {
         for entry in entries.flatten() {
             let is_dir = entry
                 .file_type()
-                .map(|t| t.is_dir() || t.is_symlink())
-                .unwrap_or(false);
+                .is_ok_and(|t| t.is_dir() || t.is_symlink());
             if !is_dir {
                 continue;
             }

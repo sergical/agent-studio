@@ -1111,8 +1111,7 @@ fn three_way_merge_text(
         std::process::id(),
         std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
-            .map(|d| d.as_nanos())
-            .unwrap_or(0)
+            .map_or(0, |d| d.as_nanos())
     ));
     fs::create_dir_all(&scratch).map_err(|e| format!("Failed to create scratch dir: {e}"))?;
     let _cleanup = TempCleanup {

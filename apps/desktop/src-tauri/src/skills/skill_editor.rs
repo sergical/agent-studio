@@ -473,8 +473,7 @@ pub fn write_terminal_launch_script(path: &Path, command: &str) -> Result<PathBu
     let pid = std::process::id();
     let nanos = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_nanos())
-        .unwrap_or(0);
+        .map_or(0, |d| d.as_nanos());
     let path = std::env::temp_dir().join(format!("skill-studio-edit-{pid}-{nanos}.command"));
     std::fs::write(&path, script).map_err(|e| format!("Failed to write launch script: {e}"))?;
     #[cfg(unix)]

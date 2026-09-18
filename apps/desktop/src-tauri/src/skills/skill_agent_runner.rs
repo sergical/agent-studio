@@ -800,7 +800,7 @@ pub(crate) fn is_executable_file(path: &Path) -> bool {
     }
     #[cfg(not(unix))]
     {
-        fs::metadata(path).map(|m| m.is_file()).unwrap_or(false)
+        fs::metadata(path).is_ok_and(|m| m.is_file())
     }
 }
 

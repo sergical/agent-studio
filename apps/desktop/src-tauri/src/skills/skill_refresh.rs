@@ -161,8 +161,7 @@ impl SkillRefreshState {
     fn is_hour_stale(&self, now: DateTime<Utc>) -> bool {
         self.last_built_hour
             .lock()
-            .map(|guard| *guard != Some(hour_key(now)))
-            .unwrap_or(true)
+            .map_or(true, |guard| *guard != Some(hour_key(now)))
     }
 }
 
