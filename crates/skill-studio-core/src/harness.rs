@@ -350,6 +350,14 @@ pub struct CapabilityReport {
     pub harness: AgentId,
     /// Roots the scanner will visit for this harness.
     pub discovery: Vec<RootSpec>,
+    /// Roots an install picker may offer as a destination: the universal
+    /// root, plus a harness's own root only when the catalog has it
+    /// verified from the vendor's own documentation ([`Confidence::VerifiedFromDocs`]).
+    /// An [`RootRole::Own`] root the catalog only infers (Codex's
+    /// `.codex/skills`: `docs/action-map/harnesses/codex.md`, "Resolved by
+    /// the docs on 2026-09-16") is excluded - installing there would be a
+    /// guess about where Codex actually looks.
+    pub default_install_destinations: Vec<RootSpec>,
     /// Per-operation support derived from the facts.
     pub operations: Vec<OperationSupport>,
     /// Native disable facts.
@@ -411,9 +419,20 @@ impl CapabilityReport {
         .into_iter()
         .flatten()
         .collect();
+        let default_install_destinations = facts
+            .roots
+            .iter()
+            .filter(|root| {
+                root.role == RootRole::Universal
+                    || (root.role == RootRole::Own
+                        && root.evidence.confidence == Confidence::VerifiedFromDocs)
+            })
+            .cloned()
+            .collect();
         CapabilityReport {
             harness: facts.id.clone(),
             discovery: facts.roots.clone(),
+            default_install_destinations,
             operations,
             native_disable: facts.native_disable.clone(),
             observed,
@@ -1515,6 +1534,34 @@ mod tests {
         assert!(op("set_invocation_policy").is_some_and(|s| s.is_yes()));
         let pi = catalog.get(&AgentId::from(AgentId::PI)).unwrap();
         assert_eq!(pi.skips_hidden_entries, Support::Unknown);
+    }
+
+    /// codex_skills_root_is_never_offered_as_a_default_install_target_or_names_the_offered_path:
+    /// `.codex/skills` is still a discovery root (Codex reads skills
+    /// installed there), but the catalog only has it from a GitHub issue
+    /// thread, not from OpenAI's own docs - an install picker offering it as
+    /// a destination would be guessing where Codex actually looks.
+    #[test]
+    fn codex_skills_root_is_never_offered_as_a_default_install_target_or_names_the_offered_path() {
+        let catalog = HarnessCatalog::builtin();
+        let codex = catalog.get(&AgentId::from(AgentId::CODEX)).unwrap();
+        let report = CapabilityReport::from_facts(codex, None);
+
+        let offered_own_codex_path = report
+            .default_install_destinations
+            .iter()
+            .find(|root| root.role == RootRole::Own && root.relative_path.contains(".codex"));
+        assert!(
+            offered_own_codex_path.is_none(),
+            "codex's own unverified root was offered as a default install target: {offered_own_codex_path:?}"
+        );
+        assert!(
+            report
+                .default_install_destinations
+                .iter()
+                .any(|root| root.role == RootRole::Universal),
+            "the universal root should still be offered"
+        );
     }
 
     #[test]
