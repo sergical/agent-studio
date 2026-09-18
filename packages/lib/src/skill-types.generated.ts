@@ -122,6 +122,14 @@ export type SkillTrigger = "user" | "agent" | "file_read";
  */
 export type ProjectFolderSource = "discovered" | "added";
 /**
+ * Kebab-case harness identifier, for example `claude-code` or `open-code`.
+ *
+ * Invariant: the string is the serde wire name used by the desktop app
+ * today. `open-code` is canonical; `opencode` is only a CLI binary name and
+ * is never stored in an `AgentId`.
+ */
+export type AgentIdentity = string;
+/**
  * One repair `fix_skill` applied.
  */
 export type FixApplied = {
@@ -1106,6 +1114,26 @@ export interface CommandHealth {
   last_error: string | null;
 }
 /**
+ * The method and harnesses the last successful install saved, or the
+ * environment default when nothing has been saved yet.
+ */
+export interface InstallPreferences {
+  /**
+   * The saved or defaulted method.
+   */
+  method: "copy" | "dotagents" | "skills_sh";
+  /**
+   * The saved or defaulted harnesses.
+   */
+  harnesses: AgentIdentity[];
+  /**
+   * `false` when `method`/`harnesses` are an environment default rather
+   * than a saved preference (no install has completed on this scope
+   * yet).
+   */
+  saved: boolean;
+}
+/**
  * Result of the `harnesses` operation: one detection row per first-class
  * harness.
  */
@@ -1120,7 +1148,11 @@ export interface HarnessReport {
  */
 export interface HarnessDetection {
   /**
-   * Catalog id.
+   * Kebab-case harness identifier, for example `claude-code` or `open-code`.
+   *
+   * Invariant: the string is the serde wire name used by the desktop app
+   * today. `open-code` is canonical; `opencode` is only a CLI binary name and
+   * is never stored in an `AgentId`.
    */
   id: string;
   /**

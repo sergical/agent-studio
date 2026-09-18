@@ -138,6 +138,74 @@ fn create_symlink(target: &Path, link: &Path) -> Result<(), String> {
     }
 }
 
+// ============================================================================
+// Claude Code symlink rule - moved from `skill_add.rs` (unit 3.5c).
+// `ops::install` now creates this link itself for every method it owns, but
+// `skill_pack`'s import and `skill_trial`'s trash/restore still call this
+// directly for their own, unrelated writes.
+// ============================================================================
+
+/// `~/.claude/skills/<name>` -> `../../.agents/skills/<name>`, relative -
+/// only when Claude Code is one of `agents`, `shared_skills_dir`'s sibling
+/// `claude_skills_dir` exists as a *real* directory (not the whole-dir
+/// symlink some setups use instead), and no entry named `name` is already
+/// there. Returns the created symlink's path, or `None` when nothing was
+/// created (Claude Code not selected, or the whole-dir symlink already
+/// covers it).
+pub(crate) fn maybe_claude_code_symlink(
+    claude_skills_dir: &Path,
+    shared_skills_dir: &Path,
+    name: &str,
+    agents: &[super::agents::AgentId],
+) -> Result<Option<String>, String> {
+    if !agents.contains(&super::agents::AgentId::ClaudeCode) {
+        return Ok(None);
+    }
+    if let Ok(meta) = fs::symlink_metadata(claude_skills_dir) {
+        if meta.file_type().is_symlink() {
+            // The whole-dir symlink to the shared root already covers it.
+            return Ok(None);
+        }
+    } else {
+        fs::create_dir_all(claude_skills_dir)
+            .map_err(|e| format!("Failed to create {}: {e}", claude_skills_dir.display()))?;
+    }
+
+    let link_path = claude_skills_dir.join(name);
+    if fs::symlink_metadata(&link_path).is_ok() {
+        return Ok(None);
+    }
+    let target = relative_path_between(claude_skills_dir, shared_skills_dir).join(name);
+    #[cfg(unix)]
+    std::os::unix::fs::symlink(&target, &link_path)
+        .map_err(|e| format!("Failed to symlink {}: {e}", link_path.display()))?;
+    #[cfg(not(unix))]
+    return Err("Symlinking is only supported on Unix".to_string());
+    Ok(Some(link_path.to_string_lossy().to_string()))
+}
+
+/// A relative path that leads from inside `from` to `to`: one `..` per
+/// component of `from` below the common prefix, then the rest of `to`.
+/// For `~/.claude/skills` and `~/.agents/skills` that is
+/// `../../.agents/skills`.
+fn relative_path_between(from: &Path, to: &Path) -> std::path::PathBuf {
+    let from_parts: Vec<_> = from.components().collect();
+    let to_parts: Vec<_> = to.components().collect();
+    let common = from_parts
+        .iter()
+        .zip(&to_parts)
+        .take_while(|(a, b)| a == b)
+        .count();
+    let mut rel = std::path::PathBuf::new();
+    for _ in common..from_parts.len() {
+        rel.push("..");
+    }
+    for part in &to_parts[common..] {
+        rel.push(part);
+    }
+    rel
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -308,5 +376,82 @@ mod tests {
 
         assert!(error.contains("Refused to copy unsupported special file"));
         assert!(error.contains("special.socket"));
+    }
+
+    // Review item 5: ported from the deleted `skill_add.rs` (unit 3.5c),
+    // unchanged apart from calling `maybe_claude_code_symlink`/
+    // `relative_path_between` directly instead of through `add_skill_with`.
+
+    #[test]
+    fn relative_path_between_walks_up_to_the_common_parent_or_names_the_wrong_relative_path() {
+        assert_eq!(
+            relative_path_between(
+                Path::new("/h/.claude/skills"),
+                Path::new("/h/.agents/skills")
+            ),
+            std::path::PathBuf::from("../../.agents/skills")
+        );
+        assert_eq!(
+            relative_path_between(
+                Path::new("/p/.claude/skills"),
+                Path::new("/p/.agents/skills")
+            ),
+            std::path::PathBuf::from("../../.agents/skills")
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn claude_code_symlink_created_only_for_a_real_directory_or_names_the_missing_link() {
+        let tmp = tempfile::tempdir().unwrap();
+        let home = tmp.path().to_path_buf();
+        let shared = home.join(".agents/skills");
+        let claude = home.join(".claude/skills");
+        fs::create_dir_all(&shared).unwrap();
+        fs::create_dir_all(&claude).unwrap();
+
+        let created = maybe_claude_code_symlink(
+            &claude,
+            &shared,
+            "find-bugs",
+            &[super::super::agents::AgentId::ClaudeCode],
+        )
+        .unwrap();
+
+        let link = claude.join("find-bugs");
+        assert_eq!(created, Some(link.to_string_lossy().to_string()));
+        assert!(fs::symlink_metadata(&link)
+            .unwrap()
+            .file_type()
+            .is_symlink());
+        assert_eq!(
+            fs::read_link(&link).unwrap(),
+            Path::new("../../.agents/skills/find-bugs")
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn claude_code_symlink_skipped_when_claude_skills_is_the_whole_dir_symlink_or_names_the_created_link(
+    ) {
+        let tmp = tempfile::tempdir().unwrap();
+        let home = tmp.path().to_path_buf();
+        let shared = home.join(".agents/skills");
+        fs::create_dir_all(&shared).unwrap();
+        fs::create_dir_all(home.join(".claude")).unwrap();
+        let claude = home.join(".claude/skills");
+        symlink(&shared, &claude).unwrap();
+
+        let created = maybe_claude_code_symlink(
+            &claude,
+            &shared,
+            "find-bugs",
+            &[super::super::agents::AgentId::ClaudeCode],
+        )
+        .unwrap();
+
+        // No per-skill symlink created - the whole-dir symlink already covers it.
+        assert_eq!(created, None);
+        assert!(!claude.join("find-bugs").exists());
     }
 }

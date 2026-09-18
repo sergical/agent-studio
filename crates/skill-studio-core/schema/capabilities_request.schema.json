@@ -8,7 +8,7 @@
       "description": "Restrict to these harnesses; empty means all. A name without a\ncatalog row is `invalid_request`.",
       "type": "array",
       "items": {
-        "$ref": "#/$defs/AgentId"
+        "$ref": "#/$defs/AgentIdentity"
       },
       "default": []
     },
@@ -27,7 +27,7 @@
     }
   },
   "$defs": {
-    "AgentId": {
+    "AgentIdentity": {
       "description": "Kebab-case harness identifier, for example `claude-code` or `open-code`.\n\nInvariant: the string is the serde wire name used by the desktop app\ntoday. `open-code` is canonical; `opencode` is only a CLI binary name and\nis never stored in an `AgentId`.",
       "type": "string"
     }
