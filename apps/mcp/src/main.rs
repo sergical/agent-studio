@@ -28,9 +28,9 @@ use rmcp::service::RequestContext;
 use rmcp::transport::stdio;
 use rmcp::{tool, tool_handler, tool_router, RoleServer, ServerHandler, ServiceExt};
 use skill_studio_core::dto::{
-    CapabilitiesRequest, DiagnoseConflictRequest, FixSkillRequest, HarnessesRequest,
-    InstallRequest, ListEventsRequest, RemoveRequest, RepairApplyRequest, RepairPreviewRequest,
-    RestoreRequest, ScanRequest, UpdateAllRequest, UpdateRequest,
+    CapabilitiesRequest, DiagnoseConflictRequest, DoctorRequest, FixSkillRequest,
+    HarnessesRequest, InstallRequest, ListEventsRequest, RemoveRequest, RepairApplyRequest,
+    RepairPreviewRequest, RestoreRequest, ScanRequest, UpdateAllRequest, UpdateRequest,
 };
 use skill_studio_core::harness::HarnessCatalog;
 use skill_studio_core::identity::CorrelationId;
@@ -283,6 +283,20 @@ impl SkillStudioServer {
     ) -> CallToolResult {
         run_op(Operation::DiagnoseConflict, false, &context, |rt, ctx| {
             ops::diagnose_conflict(rt, ctx, &req)
+        })
+        .await
+    }
+
+    #[tool(
+        description = "Run every lifecycle invariant over the whole scope; writes nothing. Empty violations means a healthy scope."
+    )]
+    async fn doctor(
+        &self,
+        Parameters(req): Parameters<DoctorRequest>,
+        context: RequestContext<RoleServer>,
+    ) -> CallToolResult {
+        run_op(Operation::Doctor, false, &context, |rt, ctx| {
+            ops::doctor(rt, ctx, &req)
         })
         .await
     }
