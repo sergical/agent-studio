@@ -3396,6 +3396,33 @@ mod tests {
         );
     }
 
+    /// N1 fix: a `SKILL.md` that is unreadable under an otherwise-readable
+    /// root puts only that skill's own directory in `unread_roots` (see
+    /// `unreadable_skill_md_under_a_readable_root_scopes_unread_roots_to_that_skill_dir`
+    /// in `skill-studio-core::ops`), not the whole root. The merge must
+    /// still retain that skill's previous row under the narrower path.
+    /// Fails if the merge only ever retains a previous deployment scoped to
+    /// a whole unread root, dropping one scoped to a single skill
+    /// directory.
+    #[test]
+    fn an_unreadable_skill_mds_own_directory_in_unread_roots_keeps_that_skills_previous_row() {
+        let unreadable_skill_dir = PathBuf::from("/roots/read/epsilon");
+        let mut good = fixture_snapshot(&unreadable_skill_dir);
+        good.skills[0].name = "epsilon".to_string();
+
+        let mut partial = fixture_snapshot(Path::new("/roots/read/other"));
+        partial.skills[0].name = "other".to_string();
+        partial.scan_partial = true;
+        partial.unread_roots = vec![unreadable_skill_dir];
+        let merged = merge_partial_scan_skills(partial.skills, &good.skills, &partial.unread_roots);
+
+        let names: Vec<&str> = merged.iter().map(|s| s.name.as_str()).collect();
+        assert!(
+            names.contains(&"epsilon"),
+            "the previous row for a skill whose SKILL.md was unreadable must survive: {names:?}"
+        );
+    }
+
     /// A freshly re-read skill's row (a frontmatter edit picked up under a
     /// root this run *could* read) must win over the stale one from the last
     /// good snapshot, not the other way around - the old deployment is gone

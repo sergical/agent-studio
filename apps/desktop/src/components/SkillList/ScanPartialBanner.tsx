@@ -10,9 +10,12 @@ import { Button } from "@skill-studio/ui";
 
 interface ScanPartialBannerProps {
   observations: string[];
+  /** `snapshot.unread_roots.length` - a whole root or a single unreadable
+   * skill directory, so "locations" rather than "roots". */
+  unreadLocationCount: number;
 }
 
-export function ScanPartialBanner({ observations }: ScanPartialBannerProps) {
+export function ScanPartialBanner({ observations, unreadLocationCount }: ScanPartialBannerProps) {
   const [dismissed, setDismissed] = useState(false);
   if (dismissed) return null;
 
@@ -23,8 +26,8 @@ export function ScanPartialBanner({ observations }: ScanPartialBannerProps) {
     >
       <div className="flex-1">
         <p className="select-text">
-          Scan incomplete: {observations.length} roots were not read. Showing the last complete
-          result for those roots.
+          Scan incomplete: {unreadLocationCount} locations were not read. Showing the last
+          complete result for those locations.
         </p>
         {observations.length > 0 && (
           <details className="mt-1 text-text-secondary">

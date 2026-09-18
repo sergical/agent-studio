@@ -833,6 +833,10 @@ fn scan_one_plugin_target(
                     .ok(),
                     message,
                 });
+                // The root itself was read fine; only this one skill
+                // directory was unreadable, so scope the carry-over to it
+                // rather than the whole plugin cache root.
+                accum.unread_roots.push(plugin_skill.skill_dir.clone());
             }
             SkillMdRead::NotASkill => {}
         }
@@ -1039,6 +1043,10 @@ fn process_entries(
                         root: RootRef::new(cx.target.scope.clone(), cx.target.kind.clone()).ok(),
                         message,
                     });
+                    // The root itself was read fine; only this one skill
+                    // directory was unreadable, so scope the carry-over to
+                    // it rather than the whole root.
+                    accum.unread_roots.push(skill_dir.clone());
                     continue;
                 }
             }
@@ -5896,6 +5904,58 @@ mod tests {
             let inv = scan(&rt, &ctx(), &req).unwrap();
             assert_eq!(inv.timings.len(), 1);
             assert_eq!(inv.timings[0].phase, "scan");
+        }
+
+        /// A scan under a readable root whose one skill has an unreadable
+        /// `SKILL.md` puts that skill's own directory in `unread_roots`,
+        /// not the whole root. Fails if `unread_roots` stays empty (the
+        /// desktop merge in `skill_refresh.rs` would then drop that
+        /// skill's previous row instead of carrying it over) or if it
+        /// contains the root instead of the narrower skill directory
+        /// (which would carry over every sibling skill too).
+        #[test]
+        fn unreadable_skill_md_under_a_readable_root_scopes_unread_roots_to_that_skill_dir() {
+            use crate::testing::FailingFs;
+
+            let fs = FixtureBuilder::new()
+                .dir("/h/.claude/skills/good-skill")
+                .file(
+                    "/h/.claude/skills/good-skill/SKILL.md",
+                    b"---\nname: good-skill\ndescription: Fine.\n---\n",
+                )
+                .dir("/h/.claude/skills/broken-skill")
+                .file("/h/.claude/skills/broken-skill/SKILL.md", b"---\n---\n")
+                .build_fs();
+            let failing = FailingFs::wrap(Arc::new(fs));
+            failing.fail_read_prefix_for(PathBuf::from(
+                "/h/.claude/skills/broken-skill/SKILL.md",
+            ));
+            let ports = Ports {
+                fs: Arc::new(failing),
+                clock: Arc::new(FakeClock::at(0)),
+                ids: Arc::new(FakeIds::default()),
+                leases: Arc::new(FakeLease::default()),
+                history: Arc::new(NoHistory),
+                sink: Arc::new(RecordingSink::default()),
+                spawner: None,
+                discovery: None,
+                tools: None,
+                catalog: Arc::new(HarnessCatalog::builtin()),
+            };
+            let rt = Runtime::new(&RuntimeScope::fixture("/h"), ports).unwrap();
+            let inv = scan(&rt, &ctx(), &ScanRequest::default()).unwrap();
+
+            assert_eq!(inv.completeness, Completeness::Partial);
+            assert_eq!(
+                inv.unread_roots,
+                vec![PathBuf::from("/h/.claude/skills/broken-skill")]
+            );
+            assert_eq!(
+                inv.skills.len(),
+                1,
+                "the readable skill must still be found"
+            );
+            assert_eq!(inv.skills[0].name.0, "good-skill");
         }
     }
 }

@@ -852,6 +852,10 @@ pub struct FailingFs {
     /// before reaching any one target of interest, so a test names the
     /// root it wants to fail instead of counting calls.
     fail_read_dir_for: Mutex<Option<PathBuf>>,
+    /// The one `read_prefix` call this path should fail, or `None`. Keyed by
+    /// path for the same reason as `fail_read_dir_for`: a scan reads many
+    /// skills' `SKILL.md` before reaching the one a test wants unreadable.
+    fail_read_prefix_for: Mutex<Option<PathBuf>>,
 }
 
 impl FailingFs {
@@ -873,6 +877,7 @@ impl FailingFs {
             fail_nth_fsops_device_inode: AtomicU64::new(0),
             fsops_device_inode_calls: AtomicU64::new(0),
             fail_read_dir_for: Mutex::new(None),
+            fail_read_prefix_for: Mutex::new(None),
         }
     }
 
@@ -995,6 +1000,19 @@ impl FailingFs {
             .lock()
             .expect("fail_read_dir_for lock") = Some(path);
     }
+
+    /// The next `read_prefix` call for exactly `path` returns an error
+    /// instead of reaching `inner`; a `read_prefix` for any other path
+    /// delegates normally, and once consumed `path` itself succeeds again.
+    /// Lets a test simulate one unreadable `SKILL.md` under an otherwise
+    /// readable root (`ops::scan`'s `SkillMdRead::Unreadable` arm) without
+    /// disturbing any other skill the same walk reads.
+    pub fn fail_read_prefix_for(&self, path: PathBuf) {
+        *self
+            .fail_read_prefix_for
+            .lock()
+            .expect("fail_read_prefix_for lock") = Some(path);
+    }
 }
 
 impl ScopeFs for FailingFs {
@@ -1033,6 +1051,17 @@ impl ScopeFs for FailingFs {
         self.inner.read_capped(path, max_bytes)
     }
     fn read_prefix(&self, path: &Path, limit: u64) -> std::io::Result<(Vec<u8>, bool)> {
+        let mut target = self
+            .fail_read_prefix_for
+            .lock()
+            .expect("fail_read_prefix_for lock");
+        if target.as_deref() == Some(path) {
+            *target = None;
+            return Err(std::io::Error::other(
+                "FailingFs: injected read_prefix failure",
+            ));
+        }
+        drop(target);
         self.inner.read_prefix(path, limit)
     }
     fn write_atomic(
