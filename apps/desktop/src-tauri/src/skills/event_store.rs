@@ -115,9 +115,25 @@ pub fn open(db_path: &Path) -> Result<Connection, String> {
 
 /// Owns the event store connection plus the app data dir its backups live
 /// under (`<app_data>/backups/<event-id>/`).
+///
+/// `journal` is `skill-studio-core`'s reference [`Journal`] implementation
+/// (unit 1.2), rooted at `<app_data>/journal`: this struct is the host
+/// implementation of that port, in place of a separate desktop-only
+/// concept - see the `impl Journal for EventStore` below, which delegates
+/// every method straight to `self.journal` rather than reimplementing
+/// plan/step/backup storage on `SQLite`. `FsJournal` already gets the
+/// manifest-before-plan durability order right and is exercised by
+/// `skill-studio-core`'s own journal tests; a second, SQLite-backed
+/// implementation here would only duplicate that logic, untested. Nothing
+/// here reroutes the five-phase `events` table write path above through it
+/// yet - that adoption is a later slice (see
+/// `docs/action-map/events-and-history.md`) - but `lib.rs`'s startup
+/// reconciliation now calls `skill_studio_core::journal::reconcile`
+/// against this store directly.
 pub struct EventStore {
     pub conn: Connection,
     pub app_data: PathBuf,
+    journal: skill_studio_core::journal::FsJournal,
 }
 
 impl EventStore {
@@ -126,9 +142,14 @@ impl EventStore {
         fs::create_dir_all(app_data)
             .map_err(|e| format!("Failed to create {}: {e}", app_data.display()))?;
         let conn = open(&app_data.join("events.sqlite3"))?;
+        let journal = skill_studio_core::journal::FsJournal::new(
+            app_data.join("journal"),
+            std::sync::Arc::new(skill_studio_host::RealFs::new()),
+        );
         Ok(Self {
             conn,
             app_data: app_data.to_path_buf(),
+            journal,
         })
     }
 
@@ -905,6 +926,82 @@ impl EventStore {
     }
 }
 
+/// `EventStore` is the host implementation of `skill-studio-core`'s
+/// `Journal` port; every method just forwards to the `FsJournal` it already
+/// owns (see the doc comment on the struct for why) and never touches
+/// `self.conn` - the `rusqlite::Connection` this struct also owns is
+/// untouched by this impl, which is why `Journal`'s `Send`-only bound (no
+/// `Sync`) costs this struct nothing despite `Connection` itself being
+/// `!Sync`.
+impl skill_studio_core::ports::Journal for EventStore {
+    fn begin(
+        &self,
+        guard: &skill_studio_core::ports::ExclusiveGuard,
+        plan: &skill_studio_core::ports::PlanRecord,
+    ) -> Result<(), skill_studio_core::error::CoreError> {
+        skill_studio_core::ports::Journal::begin(&self.journal, guard, plan)
+    }
+
+    fn record_step(
+        &self,
+        guard: &skill_studio_core::ports::ExclusiveGuard,
+        id: &skill_studio_core::identity::PlanId,
+        step: skill_studio_core::ports::PlanStep,
+    ) -> Result<(), skill_studio_core::error::CoreError> {
+        skill_studio_core::ports::Journal::record_step(&self.journal, guard, id, step)
+    }
+
+    fn finish(
+        &self,
+        guard: &skill_studio_core::ports::ExclusiveGuard,
+        id: &skill_studio_core::identity::PlanId,
+        status: skill_studio_core::ports::PlanStatus,
+    ) -> Result<(), skill_studio_core::error::CoreError> {
+        skill_studio_core::ports::Journal::finish(&self.journal, guard, id, status)
+    }
+
+    fn all(
+        &self,
+    ) -> Result<Vec<skill_studio_core::ports::PlanRecord>, skill_studio_core::error::CoreError>
+    {
+        skill_studio_core::ports::Journal::all(&self.journal)
+    }
+
+    fn pending(
+        &self,
+    ) -> Result<Vec<skill_studio_core::ports::PlanRecord>, skill_studio_core::error::CoreError>
+    {
+        skill_studio_core::ports::Journal::pending(&self.journal)
+    }
+
+    fn remove_backup(
+        &self,
+        guard: &skill_studio_core::ports::ExclusiveGuard,
+        id: &skill_studio_core::identity::PlanId,
+        relative: &str,
+    ) -> Result<(), skill_studio_core::error::CoreError> {
+        skill_studio_core::ports::Journal::remove_backup(&self.journal, guard, id, relative)
+    }
+
+    fn write_backup(
+        &self,
+        guard: &skill_studio_core::ports::ExclusiveGuard,
+        id: &skill_studio_core::identity::PlanId,
+        relative: &str,
+        bytes: &[u8],
+    ) -> Result<(), skill_studio_core::error::CoreError> {
+        skill_studio_core::ports::Journal::write_backup(&self.journal, guard, id, relative, bytes)
+    }
+
+    fn read_backup(
+        &self,
+        id: &skill_studio_core::identity::PlanId,
+        relative: &str,
+    ) -> Result<Vec<u8>, skill_studio_core::error::CoreError> {
+        skill_studio_core::ports::Journal::read_backup(&self.journal, id, relative)
+    }
+}
+
 fn row_from(row: &rusqlite::Row) -> rusqlite::Result<EventRow> {
     let payload_str: String = row.get("payload")?;
     let inverse_str: Option<String> = row.get("inverse")?;
@@ -1256,6 +1353,72 @@ mod tests {
             backup_dir,
             restorable: true,
         }
+    }
+
+    /// Given a plan recorded through `EventStore`'s `Journal` impl and left
+    /// `Pending` (a simulated crash - the plan writer is dropped without
+    /// `finish`), when `skill_studio_core::journal::reconcile` runs against
+    /// `&store`, then the plan's row is left `Reversed`, not deleted; on
+    /// failure the panic names the plan left open.
+    #[test]
+    fn desktop_event_store_reverses_a_pending_core_plan_at_startup_or_names_the_plan_left_open() {
+        let tmp = tempfile::tempdir().unwrap();
+        let store = store(tmp.path());
+
+        let root_path = tmp.path().join("skills_root");
+        fs::create_dir_all(&root_path).unwrap();
+        fs::write(root_path.join("target.txt"), b"hi").unwrap();
+        let fs_port: std::sync::Arc<dyn skill_studio_core::ports::ScopeFs> =
+            std::sync::Arc::new(skill_studio_host::RealFs::new());
+        let root = skill_studio_core::fsops::Root::open(fs_port.as_ref(), root_path.clone())
+            .expect("open root");
+
+        let lease_dir = tmp.path().join("lease");
+        fs::create_dir_all(&lease_dir).unwrap();
+        let lease = skill_studio_host::FileLease::new(lease_dir);
+        let handle = skill_studio_core::ports::LeaseProvider::acquire(
+            &lease,
+            &[],
+            skill_studio_core::ports::LeaseMode::Exclusive,
+            std::time::Duration::from_secs(5),
+        )
+        .expect("acquire exclusive lease");
+        let guard = skill_studio_core::ports::ExclusiveGuard::from_handle(handle);
+
+        let plan = skill_studio_core::journal::PlanWriter::begin(
+            &store,
+            &guard,
+            skill_studio_core::identity::PlanId("01PLANDESKTOPTEST000000001".into()),
+            Utc::now(),
+            "desktop reconcile test",
+            root_path.clone(),
+            Vec::new(),
+        )
+        .expect("begin plan");
+
+        skill_studio_core::fsops::link(&root, &plan, Path::new("link"), Path::new("target.txt"))
+            .expect("link");
+
+        let id = plan.id().clone();
+        drop(plan); // simulated crash: never call finish
+
+        let report = skill_studio_core::journal::reconcile(&store, &guard, fs_port.as_ref())
+            .expect("reconcile");
+        assert!(
+            report.reversed.contains(&id),
+            "plan {id:?} must be reversed by startup reconciliation; report was {report:?}"
+        );
+
+        let record = skill_studio_core::ports::Journal::all(&store)
+            .expect("read plans back")
+            .into_iter()
+            .find(|p| p.id == id)
+            .expect("the plan begun above must still exist as a row, never deleted");
+        assert_eq!(
+            record.status,
+            skill_studio_core::ports::PlanStatus::Reversed,
+            "row must be left Reversed, naming the plan otherwise left open"
+        );
     }
 
     #[test]

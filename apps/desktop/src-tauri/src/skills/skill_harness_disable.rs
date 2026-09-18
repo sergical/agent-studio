@@ -9,9 +9,7 @@
 //     `OPENCODE_CONFIG_DIR` override) `permission.skill.<name> = "deny"`,
 //     via `skill_studio_core::opencode_config`.
 //   - Claude Code: no native per-skill switch, so this removes/recreates the
-//     per-skill symlink under `~/.claude/skills/<name>` and records the fact
-//     in the registry's `harness_disabled` bucket (skill_park.rs's
-//     `take_claude_link`/`restore_claude_link`, shared with parking).
+//     per-skill symlink under `~/.claude/skills/<name>`.
 //   - Every other deployment (plain directory copies, project-scope
 //     symlinks, pi/Cursor/Grok Build): `disable_deployment_at`/
 //     `restore_deployment_at` rename the deployment's directory into a
@@ -21,6 +19,15 @@
 //     `ops::scan` walks the holding directory the same way so the UI still
 //     shows it (as disabled). Shared-root and plugin-cache deployments
 //     refuse this - see `set_deployment_enabled`.
+//
+// `set_harness_enabled` (the native per-skill switch above) is a thin
+// adapter over `skill_studio_core::ops::set_harness_enabled` (unit 3.8):
+// the write path - journal-before-first-write, `SymlinkInverse` undo for
+// Claude Code, "N of M" Codex partial-toggle reporting - lives in the core
+// now. `set_deployment_enabled` (the move-aside fallback) and
+// `set_new_universal_reader_enabled` (the post-install switch, called from
+// `skill_add.rs`) still hold their own write logic pending a future unit;
+// see issue #166's follow-ups.
 // ============================================================================
 
 use std::fs;
@@ -28,10 +35,14 @@ use std::path::{Path, PathBuf};
 
 use tauri::Manager;
 
+use skill_studio_core::dto::SetHarnessEnabledRequest;
+use skill_studio_core::identity::{CorrelationId, SkillName};
+use skill_studio_core::ops::{self, Operation, ResultEnvelope};
+use skill_studio_core::ports::OpContext;
+
 use super::event_commands::EventStoreState;
 use super::event_store::{fingerprint_path, EventDraft, EventStatus, InverseOp};
 use super::skill_agent_runner::validate_skill_dir_name;
-use super::skill_deployment::{BackingRelationship, SkillDestination};
 use super::skill_dto::{DisabledBy, HarnessVisibilityTarget, LifecycleTarget};
 use super::skill_fork_registry::{
     read_fork_registry, write_fork_registry_locked, ClaudeLinkRemoved, CopyDeploymentRecord,
@@ -49,83 +60,6 @@ enum ClaudeLinkState {
     PerSkill,
     WholeDir,
     None,
-}
-
-fn resolve_native_harness_target<'a>(
-    snapshot: &'a super::skill_refresh::SkillSnapshot,
-    target: &HarnessVisibilityTarget,
-) -> Result<
-    (
-        &'a super::skill_dto::InstalledSkill,
-        &'a super::skill_dto::Deployment,
-        PathBuf,
-    ),
-    String,
-> {
-    let deployment_id = &target.deployment_id;
-    let (skill, deployment) = super::skill_lifecycle::find_deployment(snapshot, deployment_id)?;
-    super::skill_lifecycle::revalidate_deployment(deployment, deployment_id)?;
-    super::skill_lifecycle::require_direct_deployment_mutable(deployment, "Harness disable")?;
-    let agent = target.reader_agent.cli_name();
-    let expected_agent = match agent {
-        "codex" => "Codex",
-        "opencode" | "open-code" => "OpenCode",
-        "claude-code" => "Claude Code",
-        other => return Err(format!("{other} has no native per-skill disable")),
-    };
-    let is_universal = deployment.destination == SkillDestination::Universal
-        && matches!(deployment.backing, BackingRelationship::Canonical);
-    if is_universal && !matches!(deployment.scope.as_str(), "global" | "project") {
-        return Err(format!(
-            "{expected_agent} cannot read a Universal deployment in {} scope",
-            deployment.scope
-        ));
-    }
-    if is_universal && deployment.scope == "project" && deployment.project_path.is_none() {
-        return Err(format!(
-            "{expected_agent} cannot verify the selected Universal project scope"
-        ));
-    }
-    if !is_universal && deployment.agent != expected_agent {
-        return Err(format!(
-            "Deployment {deployment_id} belongs to {}, not {expected_agent}",
-            deployment.agent
-        ));
-    }
-    let same_visibility_scope = |candidate: &super::skill_dto::Deployment| {
-        candidate.scope == deployment.scope && candidate.project_path == deployment.project_path
-    };
-    if expected_agent == "OpenCode" {
-        refuse_opencode_name_collision(
-            &deployment.scope,
-            deployment.project_path.as_deref(),
-            skill.deployments.iter().filter_map(|candidate| {
-                (candidate.agent == "OpenCode"
-                    || (candidate.destination == SkillDestination::Universal
-                        && matches!(candidate.backing, BackingRelationship::Canonical)))
-                .then_some((candidate.scope.as_str(), candidate.project_path.as_deref()))
-            }),
-        )?;
-    }
-    let adapter_path = if expected_agent == "Claude Code" && is_universal {
-        skill
-            .deployments
-            .iter()
-            .find(|candidate| {
-                candidate.agent == "Claude Code"
-                    && same_visibility_scope(candidate)
-                    && matches!(
-                        &candidate.backing,
-                        BackingRelationship::LinkedTo { deployment_id: backing_id }
-                            if backing_id == deployment_id
-                    )
-            })
-            .map(|candidate| PathBuf::from(&candidate.path))
-            .ok_or("Claude Code cannot read the selected Universal deployment in this scope")?
-    } else {
-        PathBuf::from(&deployment.path)
-    };
-    Ok((skill, deployment, adapter_path))
 }
 
 fn refuse_opencode_name_collision<'a>(
@@ -827,6 +761,14 @@ fn move_copy_deployment_and_update_registry(
     Ok(new_path)
 }
 
+/// Thin adapter over `skill_studio_core::ops::set_harness_enabled`: the
+/// write path (journal-before-first-write, one step per Codex path, the
+/// `SymlinkInverse` undo for Claude Code) lives in the core now, the same
+/// function the CLI's `set-harness-enabled` subcommand calls. The skill name
+/// the core op keys on is read out of `target.deployment_id`'s own encoding
+/// (`skill_deployment::parse_deployment_id`) - a pure string parse, not a
+/// snapshot rebuild - so this command takes no lock of its own; the core
+/// op's `MutationSession` lease is the only one that matters.
 #[tauri::command]
 pub async fn set_harness_enabled(
     target: HarnessVisibilityTarget,
@@ -836,70 +778,48 @@ pub async fn set_harness_enabled(
     let timing_app = app.clone();
     crate::timing_log::time_command_blocking(&timing_app, "set_harness_enabled", move || {
         let refresh_state = app.state::<SkillRefreshState>();
-        let home = dirs::home_dir().ok_or("Could not find home directory")?;
-        let write_lease = super::write_lease::WriteLease::default();
-        let guard = write_lease.try_acquire(&home)?;
-        let snapshot =
-            super::skill_lifecycle::rebuild_fresh_lifecycle_snapshot(&app, &refresh_state)?;
-        let agent = target.reader_agent.cli_name();
-        let (skill, deployment, adapter_path) = resolve_native_harness_target(&snapshot, &target)?;
-        let deployment_id = deployment.id.as_str();
-        let expected_agent = match agent {
-            "codex" => "Codex",
-            "opencode" | "open-code" => "OpenCode",
-            "claude-code" => "Claude Code",
-            other => return Err(format!("{other} has no native per-skill disable")),
-        };
-        let codex_skill_md_paths = if expected_agent == "Codex" {
-            vec![adapter_path.join("SKILL.md")]
-        } else {
-            Vec::new()
-        };
-        let result = if expected_agent == "Claude Code" {
-            set_claude_code_enabled(
-                &guard,
-                &home,
-                &skill.name,
-                deployment_id,
-                &adapter_path,
-                Path::new(&deployment.path),
+        let parsed = super::skill_deployment::parse_deployment_id(&target.deployment_id)
+            .ok_or_else(|| format!("Not a deployment id: {}", target.deployment_id))?;
+        let harness =
+            skill_studio_core::identity::AgentId::parse_harness(target.reader_agent.cli_name())
+                .map_err(|e| e.message)?;
+        let rt = super::core_runtime::build_runtime_write()?;
+        let ctx = OpContext::uncancellable(CorrelationId(ulid::Ulid::new().to_string()));
+        let result = ops::set_harness_enabled(
+            &rt,
+            &ctx,
+            &SetHarnessEnabledRequest {
+                skill: SkillName(parsed.name),
+                harness,
                 enabled,
-            )
-        } else {
-            set_harness_enabled_with(
-                &home,
-                &super::core_runtime::data_root(),
-                &skill.name,
-                agent,
-                enabled,
-                &codex_skill_md_paths,
-                &guard,
-            )
-        };
-        if result.is_ok() {
-            // Surgical: mark the harness's deployments right away; the background
-            // loop's full rebuild (skills_dirty) re-derives the true state - which
-            // mechanism disabled it, and the symlink Claude Code's removal took.
-            if let Err(e) =
-                skill_refresh::patch_snapshot_and_emit(&app, &refresh_state, |snapshot| {
-                    let Some(deployment) = snapshot
-                        .skills
-                        .iter_mut()
-                        .flat_map(|skill| skill.deployments.iter_mut())
-                        .find(|deployment| deployment.id == deployment_id)
-                    else {
-                        return;
-                    };
-                    deployment.disabled = !enabled;
-                    if enabled {
-                        deployment.disabled_by = None;
-                    }
-                })
-            {
-                eprintln!("[set_harness_enabled] snapshot patch failed: {e}");
+                project_path: parsed.project_path.map(std::path::PathBuf::from),
+            },
+        );
+        let envelope =
+            ResultEnvelope::from_result(Operation::SetHarnessEnabled, &rt.scope, &ctx, result);
+        let _outcome = super::core_runtime::to_command_result(envelope)?;
+
+        // Surgical: mark the harness's deployments right away; the background
+        // loop's full rebuild (skills_dirty) re-derives the true state - which
+        // mechanism disabled it, and the symlink Claude Code's removal took.
+        let deployment_id = target.deployment_id.clone();
+        if let Err(e) = skill_refresh::patch_snapshot_and_emit(&app, &refresh_state, |snapshot| {
+            let Some(deployment) = snapshot
+                .skills
+                .iter_mut()
+                .flat_map(|skill| skill.deployments.iter_mut())
+                .find(|deployment| deployment.id == deployment_id)
+            else {
+                return;
+            };
+            deployment.disabled = !enabled;
+            if enabled {
+                deployment.disabled_by = None;
             }
+        }) {
+            eprintln!("[set_harness_enabled] snapshot patch failed: {e}");
         }
-        result
+        Ok(())
     })
     .await
 }
@@ -1035,7 +955,6 @@ pub async fn set_deployment_enabled(
 mod tests {
     use super::super::skill_fork_registry::write_fork_registry;
     use super::*;
-    use crate::skills::frontmatter::InvocationPolicy;
 
     fn test_guard(home: &Path) -> super::super::write_lease::WriteLeaseGuard {
         super::super::write_lease::WriteLease::default()
@@ -1045,12 +964,8 @@ mod tests {
     use crate::skills::skill_deployment::{
         deployment_id, BackingRelationship, DeploymentMutability, SkillDestination,
     };
-    use crate::skills::skill_dto::{Deployment, InstalledSkill};
+    use crate::skills::skill_dto::Deployment;
     use crate::skills::skill_ownership::LifecycleOwnerKind;
-    use crate::skills::skill_refresh::SkillSnapshot;
-    use crate::skills::SourceKind;
-    use skill_studio_core::skill_uses::InvocationHeatmap;
-    use std::collections::BTreeMap;
     use std::fs;
 
     use super::super::test_support::{pin_opencode_env, write_skill, OpencodeHomeGuard};
@@ -1088,225 +1003,6 @@ mod tests {
             .filter_map(|row| row.get("path").and_then(toml::Value::as_str))
             .map(PathBuf::from)
             .collect()
-    }
-
-    fn native_snapshot(agent: &str, entries: &[(&str, &str, Option<&str>)]) -> SkillSnapshot {
-        let deployments = entries
-            .iter()
-            .map(|(scope, path, project)| {
-                let slot = if agent == "Codex" {
-                    "codex"
-                } else {
-                    "opencode"
-                };
-                Deployment {
-                    id: deployment_id(
-                        "find-bugs",
-                        scope,
-                        SkillDestination::PerHarness,
-                        slot,
-                        *project,
-                        Path::new(path),
-                    ),
-                    destination: SkillDestination::PerHarness,
-                    owner_kind: LifecycleOwnerKind::Copy,
-                    owner_id: None,
-                    mutability: DeploymentMutability::Mutable,
-                    backing: BackingRelationship::Independent,
-                    agent: agent.to_string(),
-                    scope: scope.to_string(),
-                    path: path.to_string(),
-                    project_path: project.map(str::to_string),
-                    invocation: InvocationPolicy::Both,
-                    ..Default::default()
-                }
-            })
-            .collect();
-        SkillSnapshot {
-            revision: 0,
-            skills: vec![InstalledSkill {
-                name: "find-bugs".to_string(),
-                source: "copy".to_string(),
-                source_type: "copy".to_string(),
-                source_url: None,
-                skill_path: None,
-                installed_at: chrono::Utc::now().to_rfc3339(),
-                updated_at: None,
-                has_update: false,
-                update_owner_ids: Vec::new(),
-                update_owners: Vec::new(),
-                update_commit: None,
-                update_commit_at: None,
-                source_kind: SourceKind::Manual,
-                deployments,
-                has_spec: false,
-                description: None,
-                spec_violations: Vec::new(),
-                skill_md_tokens: 0,
-                description_tokens: 0,
-                folder_bytes: 0,
-                file_count: 0,
-                content_hash: String::new(),
-                content_hashes: Vec::new(),
-                modified_at: None,
-                frontmatter_fields: BTreeMap::new(),
-                folder_truncated: false,
-                fork: None,
-                trial: None,
-                trials: Vec::new(),
-                parked: false,
-                parked_at: None,
-                invocation: InvocationPolicy::Both,
-            }],
-            projects: Vec::new(),
-            invocations: Vec::new(),
-            heatmap: InvocationHeatmap::default(),
-            scanned_at: chrono::Utc::now().to_rfc3339(),
-            last_test_by_skill: Default::default(),
-            update_check: Default::default(),
-            opencode_config_kind: None,
-            scan_partial: false,
-            scan_observations: Vec::new(),
-        }
-    }
-
-    #[test]
-    fn codex_target_resolves_only_the_selected_project_deployment() {
-        let snapshot = native_snapshot(
-            "Codex",
-            &[
-                ("global", "/home/.codex/skills/find-bugs", None),
-                (
-                    "project",
-                    "/work/app/.codex/skills/find-bugs",
-                    Some("/work/app"),
-                ),
-            ],
-        );
-        let selected = &snapshot.skills[0].deployments[1];
-        let target = HarnessVisibilityTarget {
-            deployment_id: selected.id.clone(),
-            reader_agent: crate::skills::agents::AgentId::Codex,
-        };
-        let (_, resolved, adapter_path) =
-            resolve_native_harness_target(&snapshot, &target).unwrap();
-        assert_eq!(resolved.path, "/work/app/.codex/skills/find-bugs");
-        assert_eq!(adapter_path, Path::new("/work/app/.codex/skills/find-bugs"));
-    }
-
-    #[test]
-    fn native_harness_mutation_refuses_target_missing_from_fresh_snapshot() {
-        let cached = native_snapshot(
-            "Codex",
-            &[("global", "/home/.codex/skills/find-bugs", None)],
-        );
-        let target = HarnessVisibilityTarget {
-            deployment_id: cached.skills[0].deployments[0].id.clone(),
-            reader_agent: crate::skills::agents::AgentId::Codex,
-        };
-        assert!(resolve_native_harness_target(&cached, &target).is_ok());
-
-        let mut fresh = cached;
-        fresh.skills[0].deployments.clear();
-        assert!(resolve_native_harness_target(&fresh, &target).is_err());
-    }
-
-    #[test]
-    fn synthesized_codex_reader_targets_exact_universal_deployment() {
-        let mut snapshot = native_snapshot(
-            "Codex",
-            &[(
-                "project",
-                "/work/app/.agents/skills/find-bugs",
-                Some("/work/app"),
-            )],
-        );
-        let deployment = &mut snapshot.skills[0].deployments[0];
-        deployment.id = deployment_id(
-            "find-bugs",
-            "project",
-            SkillDestination::Universal,
-            "universal",
-            Some("/work/app"),
-            Path::new("/work/app/.agents/skills/find-bugs"),
-        );
-        deployment.destination = SkillDestination::Universal;
-        deployment.backing = BackingRelationship::Canonical;
-        deployment.agent = "shared".to_string();
-        let target = HarnessVisibilityTarget {
-            deployment_id: deployment.id.clone(),
-            reader_agent: crate::skills::agents::AgentId::Codex,
-        };
-
-        let (_, resolved, adapter_path) =
-            resolve_native_harness_target(&snapshot, &target).unwrap();
-
-        assert_eq!(resolved.id, target.deployment_id);
-        assert_eq!(
-            adapter_path,
-            Path::new("/work/app/.agents/skills/find-bugs")
-        );
-    }
-
-    #[test]
-    fn synthesized_opencode_reader_accepts_one_universal_scope() {
-        let mut snapshot = native_snapshot(
-            "OpenCode",
-            &[(
-                "project",
-                "/work/app/.agents/skills/find-bugs",
-                Some("/work/app"),
-            )],
-        );
-        let deployment = &mut snapshot.skills[0].deployments[0];
-        deployment.id = deployment_id(
-            "find-bugs",
-            "project",
-            SkillDestination::Universal,
-            "universal",
-            Some("/work/app"),
-            Path::new("/work/app/.agents/skills/find-bugs"),
-        );
-        deployment.destination = SkillDestination::Universal;
-        deployment.backing = BackingRelationship::Canonical;
-        deployment.agent = "shared".to_string();
-        let target = HarnessVisibilityTarget {
-            deployment_id: deployment.id.clone(),
-            reader_agent: crate::skills::agents::AgentId::OpenCode,
-        };
-
-        let (_, resolved, adapter_path) =
-            resolve_native_harness_target(&snapshot, &target).unwrap();
-
-        assert_eq!(resolved.id, target.deployment_id);
-        assert_eq!(
-            adapter_path,
-            Path::new("/work/app/.agents/skills/find-bugs")
-        );
-    }
-
-    #[test]
-    fn opencode_name_switch_refuses_same_name_scope_collision() {
-        let snapshot = native_snapshot(
-            "OpenCode",
-            &[
-                ("global", "/home/.config/opencode/skills/find-bugs", None),
-                (
-                    "project",
-                    "/work/app/.opencode/skills/find-bugs",
-                    Some("/work/app"),
-                ),
-            ],
-        );
-        let target = HarnessVisibilityTarget {
-            deployment_id: snapshot.skills[0].deployments[0].id.clone(),
-            reader_agent: crate::skills::agents::AgentId::OpenCode,
-        };
-        let error = resolve_native_harness_target(&snapshot, &target).unwrap_err();
-        assert!(
-            error.contains("more than one OpenCode deployment"),
-            "{error}"
-        );
     }
 
     #[test]

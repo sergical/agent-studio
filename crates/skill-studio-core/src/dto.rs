@@ -403,6 +403,14 @@ pub enum RestoreCapability {
     NoInverse,
     /// The row's kind is not known to this version of the core.
     UnknownKind,
+    /// `pending`, or `failed`/`interrupted` without a `restore_backup`
+    /// inverse and a `backup_dir`: the row's inverse never moved what it
+    /// describes, or there is no backup for a drift-checked restore to
+    /// apply, so applying it would act on live state the row does not own.
+    NotCompleted {
+        /// The row's status, so a caller can explain the refusal.
+        status: String,
+    },
 }
 
 /// Whether the files an event touched still hold the bytes it recorded.
@@ -537,4 +545,38 @@ pub struct UnparkOutcome {
     pub deployment_id: DeploymentId,
     /// Where the directory now lives, under the universal root.
     pub restored_path: PathBuf,
+}
+
+/// Request to turn a skill's per-harness native switch on or off.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct SetHarnessEnabledRequest {
+    /// The skill to toggle.
+    pub skill: SkillName,
+    /// The harness whose native switch to flip.
+    pub harness: AgentId,
+    /// `true` enables the skill for this harness; `false` disables it.
+    pub enabled: bool,
+    /// The project the targeted row is scoped to; `None` for the global row.
+    /// Claude Code's switch is a per-scope symlink slot
+    /// (`<project>/.claude/skills/<name>` vs `<home>/.claude/skills/<name>`),
+    /// so this picks which slot a project-scoped skill's toggle touches.
+    /// Every other harness's switch is keyed by name alone and ignores it.
+    #[serde(default)]
+    pub project_path: Option<PathBuf>,
+}
+
+/// Result of `set_harness_enabled`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct SetHarnessEnabledOutcome {
+    /// The `set_harness_enabled` event.
+    pub event_id: EventId,
+    /// The skill that was toggled.
+    pub skill: SkillName,
+    /// The harness whose switch was flipped.
+    pub harness: AgentId,
+    /// How many of the harness's paths for this skill were toggled before
+    /// either finishing or hitting a failure.
+    pub toggled: u32,
+    /// How many paths the harness's switch needed to touch in total.
+    pub total: u32,
 }

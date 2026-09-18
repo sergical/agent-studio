@@ -182,6 +182,7 @@ fn core_wire_shape(dto: &skill_studio_core::dto::EventDto) -> WireShape {
         RestoreCapability::Reverted { .. } => "reverted",
         RestoreCapability::NoInverse => "no_inverse",
         RestoreCapability::UnknownKind => "unknown_kind",
+        RestoreCapability::NotCompleted { .. } => "not_completed",
     };
     WireShape {
         kind: dto.kind.clone(),

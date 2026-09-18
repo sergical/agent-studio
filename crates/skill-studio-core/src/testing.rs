@@ -14,7 +14,7 @@
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicI64, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -564,11 +564,22 @@ impl ScopeFs for FixtureFs {
 
     fn read_link(&self, path: &Path) -> std::io::Result<PathBuf> {
         let path = self.resolve_leaf(path);
-        self.lock()
-            .aliases
-            .get(&path)
-            .cloned()
-            .ok_or_else(|| Self::not_found(&path))
+        let state = self.lock();
+        if let Some(target) = state.aliases.get(&path) {
+            return Ok(target.clone());
+        }
+        // A regular file (or a directory) at `path` is a real entry, just
+        // not a symlink - `RealFs::read_link` reports that as `EINVAL`, not
+        // `NotFound`. Diverging here would let reversal's "absent means
+        // never landed" probe (journal.rs) misread a regular file sitting
+        // at a link's path as an absent link and replace it.
+        if state.files.contains_key(&path) || state.dirs.contains(&path) {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                "not a symlink",
+            ));
+        }
+        Err(Self::not_found(&path))
     }
 
     fn ancestor_holds(&self, start: &Path, name: &str) -> std::io::Result<bool> {
@@ -818,7 +829,24 @@ pub struct FailingFs {
     inner: Arc<dyn ScopeFs>,
     fail_next_write_atomic: AtomicBool,
     fail_next_rename: AtomicBool,
+    /// `-1` means unlimited. Otherwise the number of `write_atomic` calls
+    /// still allowed to succeed before every later call fails; see
+    /// [`Self::fail_write_atomic_after`].
+    write_atomic_budget: AtomicI64,
     fail_next_create_dir: AtomicBool,
+    fail_next_symlink: AtomicBool,
+    fail_next_create_dir_all: AtomicBool,
+    fail_next_read_capped: AtomicBool,
+    fail_next_fsops_rename: AtomicBool,
+    fail_next_fsops_exchange: AtomicBool,
+    fail_next_fsops_fsync_dir: AtomicBool,
+    fail_next_fsops_device_inode: AtomicBool,
+    /// 1-based call index to fail, or 0 when disarmed. Distinct from
+    /// `fail_next_fsops_device_inode` so a test can target a call that is
+    /// not the next one - e.g. the second `fsops_device_inode` call in a
+    /// `reverse_steps` run, skipping past `Root::open`'s own probe.
+    fail_nth_fsops_device_inode: AtomicU64,
+    fsops_device_inode_calls: AtomicU64,
 }
 
 impl FailingFs {
@@ -828,7 +856,17 @@ impl FailingFs {
             inner,
             fail_next_write_atomic: AtomicBool::new(false),
             fail_next_rename: AtomicBool::new(false),
+            write_atomic_budget: AtomicI64::new(-1),
             fail_next_create_dir: AtomicBool::new(false),
+            fail_next_symlink: AtomicBool::new(false),
+            fail_next_create_dir_all: AtomicBool::new(false),
+            fail_next_read_capped: AtomicBool::new(false),
+            fail_next_fsops_rename: AtomicBool::new(false),
+            fail_next_fsops_exchange: AtomicBool::new(false),
+            fail_next_fsops_fsync_dir: AtomicBool::new(false),
+            fail_next_fsops_device_inode: AtomicBool::new(false),
+            fail_nth_fsops_device_inode: AtomicU64::new(0),
+            fsops_device_inode_calls: AtomicU64::new(0),
         }
     }
 
@@ -836,6 +874,15 @@ impl FailingFs {
     /// `inner`; later calls delegate normally again.
     pub fn fail_next_write_atomic(&self) {
         self.fail_next_write_atomic.store(true, Ordering::SeqCst);
+    }
+
+    /// The next `successes` calls to `write_atomic` reach `inner` normally;
+    /// every call after that fails, permanently. Models a multi-step write
+    /// loop (one `write_atomic` per step) that crashes partway through, so a
+    /// test can assert exactly how many steps landed before the failure.
+    pub fn fail_write_atomic_after(&self, successes: u32) {
+        self.write_atomic_budget
+            .store(i64::from(successes), Ordering::SeqCst);
     }
 
     /// The next `rename` call returns an error instead of reaching `inner`;
@@ -852,6 +899,82 @@ impl FailingFs {
     /// `fsops::swap` reaches its crash-critical exchange.
     pub fn fail_next_create_dir(&self) {
         self.fail_next_create_dir.store(true, Ordering::SeqCst);
+    }
+
+    /// The next `symlink` call returns an error instead of reaching `inner`;
+    /// later calls delegate normally again. Lets a test drive a harness
+    /// switch's link write into failure without touching the filesystem
+    /// permissions the real adapter would need to fail for real.
+    pub fn fail_next_symlink(&self) {
+        self.fail_next_symlink.store(true, Ordering::SeqCst);
+    }
+
+    /// The next `create_dir_all` call returns an error instead of reaching
+    /// `inner`; later calls delegate normally again. Distinct from
+    /// [`Self::fail_next_create_dir`], which targets `fsops_create_dir` (the
+    /// `fsops::swap` quarantine step) rather than the `ensure_dir_all` helper
+    /// a harness switch calls to create its config file's parent directory.
+    pub fn fail_next_create_dir_all(&self) {
+        self.fail_next_create_dir_all.store(true, Ordering::SeqCst);
+    }
+
+    /// The next `read_capped` call returns an error instead of reaching
+    /// `inner`; later calls delegate normally again. Lets a test simulate a
+    /// harness switch's read of its own config file failing after the
+    /// journal row for the toggle has already been recorded.
+    pub fn fail_next_read_capped(&self) {
+        self.fail_next_read_capped.store(true, Ordering::SeqCst);
+    }
+
+    /// The next `fsops_rename` call returns an error instead of reaching
+    /// `inner`; later calls delegate normally again. Every `fsops`
+    /// primitive's crash-critical mutation is a rename or an exchange; this
+    /// lets a test crash a primitive after it has recorded its step but
+    /// before that rename lands, so reversal must treat the step as never
+    /// having landed.
+    pub fn fail_next_fsops_rename(&self) {
+        self.fail_next_fsops_rename.store(true, Ordering::SeqCst);
+    }
+
+    /// The next `fsops_exchange` call returns an error instead of reaching
+    /// `inner`; later calls delegate normally again. Lets a test crash
+    /// `fsops::swap` before its exchange lands, symmetric to
+    /// [`Self::fail_next_fsops_rename`] for the rest of the primitives.
+    pub fn fail_next_fsops_exchange(&self) {
+        self.fail_next_fsops_exchange.store(true, Ordering::SeqCst);
+    }
+
+    /// The next `fsops_fsync_dir` call returns an error instead of reaching
+    /// `inner`; later calls delegate normally again. Every primitive's
+    /// crash-critical rename or exchange is immediately followed by
+    /// `fsync_up_to_root`, whose first call is always `fsops_fsync_dir` on
+    /// the mutated path's parent; failing it lets a test simulate a crash
+    /// *after* the mutation landed but before the primitive call returns,
+    /// so the step is already durably recorded (it was recorded before the
+    /// mutation) while the caller never sees `Ok`.
+    pub fn fail_next_fsops_fsync_dir(&self) {
+        self.fail_next_fsops_fsync_dir.store(true, Ordering::SeqCst);
+    }
+
+    /// The next `fsops_device_inode` call returns a non-`NotFound` error
+    /// instead of reaching `inner`; later calls delegate normally again.
+    /// Lets a test simulate a probe that fails for a reason other than "the
+    /// path is absent" - e.g. EACCES or EIO - during reversal's landed
+    /// check, which must not be read as "the mutation never landed".
+    pub fn fail_next_fsops_device_inode(&self) {
+        self.fail_next_fsops_device_inode
+            .store(true, Ordering::SeqCst);
+    }
+
+    /// The `n`-th `fsops_device_inode` call (1-based, counting every call
+    /// from this point on) returns a non-`NotFound` error instead of
+    /// reaching `inner`; every other call delegates normally. Lets a test
+    /// land a failure on a specific probe - e.g. `reverse_steps`'s `Swap`
+    /// step probe - without it being consumed by an earlier probe such as
+    /// `Root::open`'s.
+    pub fn fail_nth_fsops_device_inode(&self, n: u64) {
+        self.fsops_device_inode_calls.store(0, Ordering::SeqCst);
+        self.fail_nth_fsops_device_inode.store(n, Ordering::SeqCst);
     }
 }
 
@@ -872,6 +995,11 @@ impl ScopeFs for FailingFs {
         self.inner.read_dir(path)
     }
     fn read_capped(&self, path: &Path, max_bytes: u64) -> std::io::Result<Vec<u8>> {
+        if self.fail_next_read_capped.swap(false, Ordering::SeqCst) {
+            return Err(std::io::Error::other(
+                "FailingFs: injected read_capped failure",
+            ));
+        }
         self.inner.read_capped(path, max_bytes)
     }
     fn read_prefix(&self, path: &Path, limit: u64) -> std::io::Result<(Vec<u8>, bool)> {
@@ -887,6 +1015,15 @@ impl ScopeFs for FailingFs {
             return Err(std::io::Error::other(
                 "FailingFs: injected write_atomic failure",
             ));
+        }
+        let budget = self.write_atomic_budget.load(Ordering::SeqCst);
+        if budget >= 0 {
+            if budget == 0 {
+                return Err(std::io::Error::other(
+                    "FailingFs: injected write_atomic failure (budget exhausted)",
+                ));
+            }
+            self.write_atomic_budget.fetch_sub(1, Ordering::SeqCst);
         }
         self.inner.write_atomic(guard, path, bytes)
     }
@@ -905,6 +1042,11 @@ impl ScopeFs for FailingFs {
         self.inner.remove_file(guard, path)
     }
     fn create_dir_all(&self, guard: &ExclusiveGuard, path: &ScopedPath) -> std::io::Result<()> {
+        if self.fail_next_create_dir_all.swap(false, Ordering::SeqCst) {
+            return Err(std::io::Error::other(
+                "FailingFs: injected create_dir_all failure",
+            ));
+        }
         self.inner.create_dir_all(guard, path)
     }
     fn symlink(
@@ -913,15 +1055,40 @@ impl ScopeFs for FailingFs {
         target: &ScopedPath,
         link: &ScopedPath,
     ) -> std::io::Result<()> {
+        if self.fail_next_symlink.swap(false, Ordering::SeqCst) {
+            return Err(std::io::Error::other("FailingFs: injected symlink failure"));
+        }
         self.inner.symlink(guard, target, link)
     }
     fn fsops_device_inode(&self, path: &Path) -> std::io::Result<(u64, u64)> {
+        if self
+            .fail_next_fsops_device_inode
+            .swap(false, Ordering::SeqCst)
+        {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::PermissionDenied,
+                "FailingFs: injected fsops_device_inode failure",
+            ));
+        }
+        let call = self.fsops_device_inode_calls.fetch_add(1, Ordering::SeqCst) + 1;
+        if self.fail_nth_fsops_device_inode.load(Ordering::SeqCst) == call {
+            self.fail_nth_fsops_device_inode.store(0, Ordering::SeqCst);
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::PermissionDenied,
+                "FailingFs: injected fsops_device_inode failure",
+            ));
+        }
         self.inner.fsops_device_inode(path)
     }
     fn fsops_fsync_file(&self, path: &Path) -> std::io::Result<()> {
         self.inner.fsops_fsync_file(path)
     }
     fn fsops_fsync_dir(&self, path: &Path) -> std::io::Result<()> {
+        if self.fail_next_fsops_fsync_dir.swap(false, Ordering::SeqCst) {
+            return Err(std::io::Error::other(
+                "FailingFs: injected fsops_fsync_dir failure",
+            ));
+        }
         self.inner.fsops_fsync_dir(path)
     }
     fn fsops_create_dir(&self, path: &Path) -> std::io::Result<()> {
@@ -936,6 +1103,11 @@ impl ScopeFs for FailingFs {
         self.inner.fsops_write_new_file(path, bytes)
     }
     fn fsops_rename(&self, from: &Path, to: &Path) -> std::io::Result<()> {
+        if self.fail_next_fsops_rename.swap(false, Ordering::SeqCst) {
+            return Err(std::io::Error::other(
+                "FailingFs: injected fsops_rename failure",
+            ));
+        }
         self.inner.fsops_rename(from, to)
     }
     fn fsops_symlink(&self, target: &Path, link: &Path) -> std::io::Result<()> {
@@ -948,6 +1120,11 @@ impl ScopeFs for FailingFs {
         self.inner.fsops_remove_file(path)
     }
     fn fsops_exchange(&self, a: &Path, b: &Path) -> std::io::Result<()> {
+        if self.fail_next_fsops_exchange.swap(false, Ordering::SeqCst) {
+            return Err(std::io::Error::other(
+                "FailingFs: injected fsops_exchange failure",
+            ));
+        }
         self.inner.fsops_exchange(a, b)
     }
 }

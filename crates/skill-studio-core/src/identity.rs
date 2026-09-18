@@ -60,6 +60,39 @@ impl AgentId {
     pub fn as_str(&self) -> &str {
         &self.0
     }
+
+    /// Parses a harness id from a caller-facing spelling (a CLI flag or a
+    /// desktop `AgentId::cli_name()`), accepting hyphen, underscore, and
+    /// no-separator variants of every first-class harness's wire name,
+    /// case-insensitively - `opencode`, `open_code`, and `Open-Code` all
+    /// resolve to the same [`Self::OPEN_CODE`]. Every caller that turns a
+    /// harness spelling into an `AgentId` for [`crate::dto::SetHarnessEnabledRequest`]
+    /// must go through this, not [`Self::parse`], so `open-code` and
+    /// `opencode` (the CLI binary name) never diverge again.
+    pub fn parse_harness(raw: &str) -> Result<Self, CoreError> {
+        let squashed: String = raw
+            .to_ascii_lowercase()
+            .chars()
+            .filter(|c| *c != '-' && *c != '_')
+            .collect();
+        for canonical in [
+            Self::CLAUDE_CODE,
+            Self::CODEX,
+            Self::OPEN_CODE,
+            Self::PI,
+            Self::CURSOR,
+            Self::GROK_BUILD,
+        ] {
+            let canonical_squashed: String = canonical
+                .chars()
+                .filter(|c| *c != '-' && *c != '_')
+                .collect();
+            if squashed == canonical_squashed {
+                return Ok(AgentId(canonical.to_string()));
+            }
+        }
+        Self::parse(raw)
+    }
 }
 
 impl fmt::Display for AgentId {
@@ -462,6 +495,22 @@ impl EventId {
     /// Wraps a freshly generated ULID.
     pub fn from_ulid(id: ulid::Ulid) -> Self {
         EventId(id.to_string())
+    }
+}
+
+/// Journal plan id (ULID string).
+///
+/// Invariant: lexical order equals creation order inside one journal.
+#[derive(
+    Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize, JsonSchema,
+)]
+#[serde(transparent)]
+pub struct PlanId(pub String);
+
+impl PlanId {
+    /// Wraps a freshly generated ULID.
+    pub fn from_ulid(id: ulid::Ulid) -> Self {
+        PlanId(id.to_string())
     }
 }
 

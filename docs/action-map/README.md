@@ -86,7 +86,7 @@ Each file has the same five sections.
 | ---------------------------------------- | ----- |
 | Tauri commands                           | 62    |
 | Commands that write                      | 46    |
-| Writes that record a journal event       | 8     |
+| Writes that record a journal event       | 9     |
 | Commands with no direct test             | 23    |
 | Commands with a named partial-state risk | 35    |
 | Commands with no frontend caller         | 2     |

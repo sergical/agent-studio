@@ -13,11 +13,44 @@
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
+use std::time::Duration;
 
+use chrono::Utc;
 use proptest::prelude::*;
 use skill_studio_core::fsops::{self, read_stamp, Root};
-use skill_studio_core::ports::ScopeFs;
-use skill_studio_core::testing::{FailingFs, FixtureBuilder};
+use skill_studio_core::identity::PlanId;
+use skill_studio_core::journal::{FsJournal, PlanWriter};
+use skill_studio_core::ports::{ExclusiveGuard, LeaseMode, LeaseProvider, ScopeFs};
+use skill_studio_core::testing::{FailingFs, FakeLease, FixtureBuilder};
+
+/// Every fsops call in these tests now records its step through a plan,
+/// per unit 1.2 Section B. The journal itself is not under test here (see
+/// `skill_studio_core::journal`'s own tests and `tests/journal.rs`), so
+/// these tests just need a plan writer backed by a scratch journal
+/// directory that never collides with the fixture under test.
+fn begin_test_plan<'a>(
+    journal: &'a FsJournal,
+    guard: &'a ExclusiveGuard,
+    root_path: PathBuf,
+) -> PlanWriter<'a> {
+    PlanWriter::begin(
+        journal,
+        guard,
+        PlanId("01PLANFSOPSTEST0000000001".into()),
+        Utc::now(),
+        "fsops test",
+        root_path,
+        Vec::new(),
+    )
+    .expect("begin plan")
+}
+
+fn test_guard(lease: &FakeLease) -> ExclusiveGuard {
+    let handle = lease
+        .acquire(&[], LeaseMode::Exclusive, Duration::from_secs(0))
+        .expect("acquire exclusive lease");
+    ExclusiveGuard::from_handle(handle)
+}
 
 const SKILL_NAMES: [&str; 2] = ["alpha", "beta"];
 const CONTENTS: [&[u8]; 3] = [b"one", b"two", b"three"];
@@ -57,8 +90,12 @@ proptest! {
         ops in proptest::collection::vec(op_strategy(), 1..12)
     ) {
         let root_path = PathBuf::from("/root");
-        let fs = FixtureBuilder::new().dir("/root").build_fs();
+        let fs = FixtureBuilder::new().dir("/root").dir("/journal").build_fs();
         let root = Root::open(&fs, root_path.clone()).expect("open root");
+        let journal = FsJournal::new(PathBuf::from("/journal"), Arc::new(fs.clone()));
+        let lease = FakeLease::default();
+        let g = test_guard(&lease);
+        let plan = begin_test_plan(&journal, &g, root_path.clone());
 
         let mut model: BTreeMap<&str, Vec<u8>> = BTreeMap::new();
 
@@ -67,9 +104,9 @@ proptest! {
                 Op::Create { skill, content } => {
                     let name = SKILL_NAMES[skill];
                     let bytes = CONTENTS[content].to_vec();
-                    let staged = fsops::stage(&root, &[(PathBuf::from("SKILL.md"), bytes.clone())])
+                    let staged = fsops::stage(&root, &plan, &[(PathBuf::from("SKILL.md"), bytes.clone())])
                         .unwrap_or_else(|e| panic!("step {i} (Create {name:?}): stage failed: {e}"));
-                    fsops::swap(&root, Path::new(name), &staged, Path::new(".trash"))
+                    fsops::swap(&root, &plan, Path::new(name), &staged, Path::new(".trash"))
                         .unwrap_or_else(|e| panic!("step {i} (Create {name:?}): swap failed: {e}"));
                     model.insert(name, bytes);
                 }
@@ -82,7 +119,7 @@ proptest! {
                     let target = skill_md(&root_path, name);
                     let stamp = read_stamp(&fs, &target)
                         .unwrap_or_else(|e| panic!("step {i} (Update {name:?}): read_stamp failed: {e}"));
-                    fsops::write_file(&root, &PathBuf::from(name).join("SKILL.md"), &bytes, &stamp)
+                    fsops::write_file(&root, &plan, &PathBuf::from(name).join("SKILL.md"), &bytes, &stamp)
                         .unwrap_or_else(|e| panic!("step {i} (Update {name:?}): write_file failed: {e}"));
                     model.insert(name, bytes);
                 }
@@ -130,11 +167,17 @@ fn swap_refuses_a_directory_replaced_by_a_symlink_between_stage_and_swap_or_name
     let fs = FixtureBuilder::new()
         .dir("/root")
         .dir("/root/gamma")
+        .dir("/journal")
         .build_fs();
     let root = Root::open(&fs, root_path.clone()).expect("open root");
+    let journal = FsJournal::new(PathBuf::from("/journal"), Arc::new(fs.clone()));
+    let lease = FakeLease::default();
+    let g = test_guard(&lease);
+    let plan = begin_test_plan(&journal, &g, root_path.clone());
 
     let staged = fsops::stage(
         &root,
+        &plan,
         &[(PathBuf::from("SKILL.md"), b"new content".to_vec())],
     )
     .expect("stage");
@@ -147,8 +190,14 @@ fn swap_refuses_a_directory_replaced_by_a_symlink_between_stage_and_swap_or_name
     fs.fsops_symlink(Path::new("/elsewhere"), Path::new("/root/gamma"))
         .expect("plant a symlink where the directory used to be");
 
-    let err = fsops::swap(&root, Path::new("gamma"), &staged, Path::new(".trash"))
-        .expect_err("swap must refuse a target that is no longer a directory");
+    let err = fsops::swap(
+        &root,
+        &plan,
+        Path::new("gamma"),
+        &staged,
+        Path::new(".trash"),
+    )
+    .expect_err("swap must refuse a target that is no longer a directory");
     match err {
         fsops::FsOpsError::ReplacedBySymlink { path } => {
             assert_eq!(
@@ -170,6 +219,52 @@ fn swap_refuses_a_directory_replaced_by_a_symlink_between_stage_and_swap_or_name
         fs.read_capped(&staged_path.join("SKILL.md"), u64::MAX)
             .expect("staged content untouched"),
         b"new content"
+    );
+}
+
+/// Given a root with an existing regular file at the link's target name,
+/// when `link` is asked to point that name at something else, then it
+/// refuses with `WouldReplaceFile` naming the file, and leaves that file's
+/// bytes exactly as they were rather than silently losing them under a new
+/// symlink.
+#[test]
+fn link_over_a_regular_file_is_refused_or_names_the_file_it_replaced() {
+    let root_path = PathBuf::from("/root");
+    let fs = FixtureBuilder::new()
+        .dir("/root")
+        .file("/root/skill-current", b"not a symlink, a real file")
+        .file("/root/new.txt", b"new")
+        .dir("/journal")
+        .build_fs();
+    let root = Root::open(&fs, root_path.clone()).expect("open root");
+    let journal = FsJournal::new(PathBuf::from("/journal"), Arc::new(fs.clone()));
+    let lease = FakeLease::default();
+    let g = test_guard(&lease);
+    let plan = begin_test_plan(&journal, &g, root_path.clone());
+
+    let err = fsops::link(
+        &root,
+        &plan,
+        Path::new("skill-current"),
+        Path::new("new.txt"),
+    )
+    .expect_err("link must refuse an existing non-symlink target");
+    match err {
+        fsops::FsOpsError::WouldReplaceFile { path } => {
+            assert_eq!(
+                path,
+                root_path.join("skill-current"),
+                "must name the file it would have replaced"
+            );
+        }
+        other => panic!("expected WouldReplaceFile, got {other}"),
+    }
+
+    assert_eq!(
+        fs.read_capped(&root_path.join("skill-current"), u64::MAX)
+            .expect("the original file must still be there"),
+        b"not a symlink, a real file",
+        "link must not touch the file it refused to replace"
     );
 }
 
@@ -268,20 +363,32 @@ fn swap_prepares_the_quarantine_before_the_exchange_or_names_the_half_committed_
         .dir("/root")
         .dir("/root/gamma")
         .file("/root/gamma/SKILL.md", b"old content")
+        .dir("/journal")
         .build_fs();
     let failing = FailingFs::wrap(Arc::new(fixture.clone()));
     let root = Root::open(&failing, PathBuf::from("/root")).expect("open root");
+    let journal = FsJournal::new(PathBuf::from("/journal"), Arc::new(fixture.clone()));
+    let lease = FakeLease::default();
+    let g = test_guard(&lease);
+    let plan = begin_test_plan(&journal, &g, PathBuf::from("/root"));
 
     let staged = fsops::stage(
         &root,
+        &plan,
         &[(PathBuf::from("SKILL.md"), b"new content".to_vec())],
     )
     .expect("stage");
     let staged_path = staged.path().to_path_buf();
 
     failing.fail_next_create_dir();
-    let err = fsops::swap(&root, Path::new("gamma"), &staged, Path::new(".trash"))
-        .expect_err("swap must refuse when the quarantine directory fails to create");
+    let err = fsops::swap(
+        &root,
+        &plan,
+        Path::new("gamma"),
+        &staged,
+        Path::new(".trash"),
+    )
+    .expect_err("swap must refuse when the quarantine directory fails to create");
     assert!(
         matches!(err, fsops::FsOpsError::Io { .. }),
         "expected Io, got {err}"
@@ -316,18 +423,30 @@ fn swap_refuses_a_quarantine_dir_that_is_a_symlink_out_of_the_root_or_names_the_
         .file("/root/gamma/SKILL.md", b"old content")
         .dir("/outside")
         .alias("/root/.trash", "/outside")
+        .dir("/journal")
         .build_fs();
     let root = Root::open(&fs, PathBuf::from("/root")).expect("open root");
+    let journal = FsJournal::new(PathBuf::from("/journal"), Arc::new(fs.clone()));
+    let lease = FakeLease::default();
+    let g = test_guard(&lease);
+    let plan = begin_test_plan(&journal, &g, PathBuf::from("/root"));
 
     let staged = fsops::stage(
         &root,
+        &plan,
         &[(PathBuf::from("SKILL.md"), b"new content".to_vec())],
     )
     .expect("stage");
     let staged_path = staged.path().to_path_buf();
 
-    let err = fsops::swap(&root, Path::new("gamma"), &staged, Path::new(".trash"))
-        .expect_err("swap must refuse a quarantine dir that is a symlink out of the root");
+    let err = fsops::swap(
+        &root,
+        &plan,
+        Path::new("gamma"),
+        &staged,
+        Path::new(".trash"),
+    )
+    .expect_err("swap must refuse a quarantine dir that is a symlink out of the root");
     assert!(
         matches!(err, fsops::FsOpsError::ReplacedBySymlink { .. }),
         "expected ReplacedBySymlink, got {err}"
@@ -358,8 +477,13 @@ fn writefile_refuses_a_stale_read_and_leaves_the_original_content_or_names_the_o
     let fs = FixtureBuilder::new()
         .dir("/root")
         .file("/root/SKILL.md", b"original")
+        .dir("/journal")
         .build_fs();
     let root = Root::open(&fs, root_path.clone()).expect("open root");
+    let journal = FsJournal::new(PathBuf::from("/journal"), Arc::new(fs.clone()));
+    let lease = FakeLease::default();
+    let g = test_guard(&lease);
+    let plan = begin_test_plan(&journal, &g, root_path.clone());
 
     let target = root_path.join("SKILL.md");
     let stamp = read_stamp(&fs, &target).expect("read the stamp before the race");
@@ -368,14 +492,21 @@ fn writefile_refuses_a_stale_read_and_leaves_the_original_content_or_names_the_o
     let racer_stamp = read_stamp(&fs, &target).expect("racer read");
     fsops::write_file(
         &root,
+        &plan,
         Path::new("SKILL.md"),
         b"raced in first",
         &racer_stamp,
     )
     .expect("the concurrent writer's own write succeeds");
 
-    let err = fsops::write_file(&root, Path::new("SKILL.md"), b"caller's bytes", &stamp)
-        .expect_err("write_file must refuse the stale stamp");
+    let err = fsops::write_file(
+        &root,
+        &plan,
+        Path::new("SKILL.md"),
+        b"caller's bytes",
+        &stamp,
+    )
+    .expect_err("write_file must refuse the stale stamp");
     match err {
         fsops::FsOpsError::StaleRead { path } => {
             assert_eq!(path, target, "must name the overwritten file");

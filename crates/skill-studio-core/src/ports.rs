@@ -16,7 +16,7 @@ pub use crate::error::LeaseBusy;
 use crate::error::{CoreError, ErrorCode};
 use crate::events::{EventDraft, EventFilter, EventRecord, EventStatus};
 use crate::harness::HarnessCatalog;
-use crate::identity::{CorrelationId, DeploymentId, EventId, Fingerprint, SkillName};
+use crate::identity::{CorrelationId, DeploymentId, EventId, Fingerprint, PlanId, SkillName};
 use crate::scope::{NormalizedScope, RuntimeScope};
 use crate::snapshot::Revision;
 
@@ -552,6 +552,201 @@ pub trait HistoryStore: Send {
     /// a present [`crate::events::BackupEntry::relative`] from
     /// [`Self::read_manifest`]. Never called for an absent entry.
     fn read_backup_bytes(&self, backup_dir: &str, relative: &str) -> Result<Vec<u8>, CoreError>;
+}
+
+/// Lifecycle state of one journal plan.
+///
+/// Invariant: a row starts `Pending` (written before the plan's first step)
+/// and ends `Done`, `Failed`, or `Reversed`; `Interrupted` and `Reversed`
+/// are the only states [`crate::journal::reconcile`] ever writes, and only
+/// for a row it found still `Pending` at startup - `Reversed` when it
+/// could undo every recorded step, `Interrupted` when undoing one failed.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum PlanStatus {
+    /// The manifest and plan are durable; steps have not all run yet.
+    Pending,
+    /// Every step ran; the mutation is durable.
+    Done,
+    /// A step failed; earlier steps may have run.
+    Failed,
+    /// Found `Pending` at startup and every recorded step was undone, in
+    /// reverse order, through [`ScopeFs`].
+    Reversed,
+    /// Found `Pending` at startup - the process died mid-plan - and
+    /// undoing at least one recorded step hit an I/O error, so the plan's
+    /// on-disk state cannot be trusted as either the pre-plan or the
+    /// post-plan shape.
+    Interrupted,
+}
+
+/// One `fsops` primitive call recorded against a plan, in the order it ran,
+/// carrying whatever [`crate::journal::reconcile`] needs to undo it.
+///
+/// Every path here is absolute (already resolved by [`crate::fsops::Root`]),
+/// not relative to the plan's root, so reversal never has to re-derive it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(tag = "primitive", rename_all = "snake_case")]
+pub enum PlanStep {
+    /// [`crate::fsops::stage`] built a folder under a temp name that
+    /// nothing else can see yet. Reverse: remove it - nothing else has
+    /// touched it.
+    Stage {
+        /// The staged folder's temp path.
+        staged: PathBuf,
+    },
+    /// [`crate::fsops::swap`] is about to make `path` show the staged
+    /// folder. Recorded before the exchange runs, so every field here is
+    /// chosen up front rather than discovered after the fact.
+    Swap {
+        /// The path that is being swapped into place.
+        path: PathBuf,
+        /// The staged folder's temp path (the other side of the exchange).
+        /// Reversal compares `path`'s current device/inode against
+        /// `staged_binding` to tell whether the exchange itself landed,
+        /// since a rename/exchange preserves a directory's identity across
+        /// a name change.
+        staged: PathBuf,
+        /// `staged`'s device and inode, captured right before the exchange
+        /// - the identity `path` will carry once the exchange lands.
+        staged_binding: (u64, u64),
+        /// Where `swap` intends to move the folder that sits at `path`
+        /// before the exchange, when one is there - `swap` never deletes
+        /// it, only relocates it inside the root, so reversal restores from
+        /// here rather than a byte-level journal backup. `None` when `path`
+        /// does not exist yet (`swap` will create it fresh); reversal then
+        /// removes what is at `path` once the exchange has landed.
+        quarantined: Option<PathBuf>,
+    },
+    /// [`crate::fsops::link`] is about to create or replace a symlink at
+    /// `path`. Recorded before the rename that makes it visible.
+    Link {
+        /// The link's path.
+        path: PathBuf,
+        /// The target the new symlink will point at once the rename lands.
+        /// Reversal compares the live link against this to tell whether
+        /// the rename landed.
+        target: PathBuf,
+        /// What `path` pointed at before this step, when it already
+        /// existed as a symlink. `None` when nothing was there.
+        previous_target: Option<PathBuf>,
+    },
+    /// [`crate::fsops::write_file`] wrote `path`.
+    WriteFile {
+        /// The written path.
+        path: PathBuf,
+        /// The journal-held backup of `path`'s pre-write bytes, when
+        /// something was there before this step - written via
+        /// [`Journal::write_backup`], read back via [`Journal::read_backup`].
+        /// `None` when the file was newly created; reversal then removes
+        /// it.
+        backup: Option<PlanBackupEntry>,
+    },
+}
+
+impl PlanStep {
+    /// The `fsops` primitive's name, for logs and test assertions.
+    pub fn primitive_name(&self) -> &'static str {
+        match self {
+            PlanStep::Stage { .. } => "stage",
+            PlanStep::Swap { .. } => "swap",
+            PlanStep::Link { .. } => "link",
+            PlanStep::WriteFile { .. } => "write_file",
+        }
+    }
+}
+
+/// One path a plan backed up before mutating it, so trimming can reclaim
+/// the bytes without touching the plan row itself.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct PlanBackupEntry {
+    /// Original absolute path the backup preserves.
+    pub original: PathBuf,
+    /// Path of the backed-up bytes, relative to the plan's backup directory.
+    pub relative: String,
+    /// Size of the backed-up bytes, for quota accounting.
+    pub bytes: u64,
+}
+
+/// A plan the journal tracks from before its first step to its last.
+///
+/// Invariant: `steps` only ever grows by append, in the order the steps
+/// ran; nothing removes an entry once recorded.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct PlanRecord {
+    /// Id, sorting in creation order.
+    pub id: PlanId,
+    /// When the plan was begun.
+    pub created_at: DateTime<Utc>,
+    /// Short label naming the operation the plan belongs to, for a person
+    /// reading the interrupted list.
+    pub label: String,
+    /// The `fsops` root the plan's steps run under.
+    pub root: PathBuf,
+    /// Paths backed up before the plan's mutation, oldest first.
+    pub backups: Vec<PlanBackupEntry>,
+    /// Steps recorded so far, in the order they ran.
+    pub steps: Vec<PlanStep>,
+    /// Current status.
+    pub status: PlanStatus,
+}
+
+/// The crash-safety journal every `fsops` primitive call records against.
+///
+/// Invariant: [`Self::begin`] writes the backup manifest, then the plan
+/// itself, both fsynced, before returning - nothing a caller does after a
+/// successful `begin` can be an unrecorded "first step". [`Self::all`]
+/// never filters or deletes a row; reconciliation and backup trimming both
+/// read every plan the journal has ever begun.
+///
+/// Only `Send`, not `Sync`: nothing in this workspace stores a `dyn Journal`
+/// behind an `Arc` or sends `&dyn Journal` across a thread boundary - a plan
+/// is always begun, stepped, and finished from the single thread that holds
+/// the `ExclusiveGuard` for its lease.
+pub trait Journal: Send {
+    /// Durably records `plan` (`status` must be [`PlanStatus::Pending`])
+    /// before the caller's first `fsops` step runs.
+    fn begin(&self, guard: &ExclusiveGuard, plan: &PlanRecord) -> Result<(), CoreError>;
+    /// Appends one step to a plan [`Self::begin`] already recorded.
+    fn record_step(
+        &self,
+        guard: &ExclusiveGuard,
+        id: &PlanId,
+        step: PlanStep,
+    ) -> Result<(), CoreError>;
+    /// Sets a plan's final status. Never called with [`PlanStatus::Pending`].
+    fn finish(
+        &self,
+        guard: &ExclusiveGuard,
+        id: &PlanId,
+        status: PlanStatus,
+    ) -> Result<(), CoreError>;
+    /// Every plan the journal holds, oldest first. Never filtered.
+    fn all(&self) -> Result<Vec<PlanRecord>, CoreError>;
+    /// Rows still [`PlanStatus::Pending`], oldest first.
+    fn pending(&self) -> Result<Vec<PlanRecord>, CoreError>;
+    /// Removes one backup's bytes from disk. Never touches the plan row;
+    /// used only by [`crate::journal::trim_backups`].
+    fn remove_backup(
+        &self,
+        guard: &ExclusiveGuard,
+        id: &PlanId,
+        relative: &str,
+    ) -> Result<(), CoreError>;
+    /// Durably stores `bytes` as plan `id`'s backup named `relative`, for a
+    /// [`PlanStep::WriteFile`] step to point [`PlanBackupEntry::relative`]
+    /// at. Written before the mutation it backs up.
+    fn write_backup(
+        &self,
+        guard: &ExclusiveGuard,
+        id: &PlanId,
+        relative: &str,
+        bytes: &[u8],
+    ) -> Result<(), CoreError>;
+    /// Reads back the bytes a prior [`Self::write_backup`] call stored for
+    /// plan `id`'s backup named `relative`. Used by
+    /// [`crate::journal::reconcile`] to undo a [`PlanStep::WriteFile`] step.
+    fn read_backup(&self, id: &PlanId, relative: &str) -> Result<Vec<u8>, CoreError>;
 }
 
 /// Lifecycle state of one operation, reported through the sink.
