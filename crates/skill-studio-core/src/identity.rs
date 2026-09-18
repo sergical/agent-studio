@@ -449,6 +449,22 @@ impl EventId {
     }
 }
 
+/// Journal plan id (ULID string).
+///
+/// Invariant: lexical order equals creation order inside one journal.
+#[derive(
+    Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize, JsonSchema,
+)]
+#[serde(transparent)]
+pub struct PlanId(pub String);
+
+impl PlanId {
+    /// Wraps a freshly generated ULID.
+    pub fn from_ulid(id: ulid::Ulid) -> Self {
+        PlanId(id.to_string())
+    }
+}
+
 /// Correlation id an adapter attaches to one request.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize, JsonSchema)]
 #[serde(transparent)]

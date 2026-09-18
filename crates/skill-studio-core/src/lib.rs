@@ -33,6 +33,7 @@ pub mod fsops;
 pub mod harness;
 pub mod health;
 pub mod identity;
+pub mod journal;
 pub mod lock_file;
 pub mod ops;
 mod ownership;

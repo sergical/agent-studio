@@ -16,7 +16,7 @@ pub use crate::error::LeaseBusy;
 use crate::error::{CoreError, ErrorCode};
 use crate::events::{EventDraft, EventFilter, EventRecord, EventStatus};
 use crate::harness::HarnessCatalog;
-use crate::identity::{CorrelationId, DeploymentId, EventId, Fingerprint, SkillName};
+use crate::identity::{CorrelationId, DeploymentId, EventId, Fingerprint, PlanId, SkillName};
 use crate::scope::{NormalizedScope, RuntimeScope};
 use crate::snapshot::Revision;
 
@@ -552,6 +552,108 @@ pub trait HistoryStore: Send {
     /// a present [`crate::events::BackupEntry::relative`] from
     /// [`Self::read_manifest`]. Never called for an absent entry.
     fn read_backup_bytes(&self, backup_dir: &str, relative: &str) -> Result<Vec<u8>, CoreError>;
+}
+
+/// Lifecycle state of one journal plan.
+///
+/// Invariant: a row starts `Pending` (written before the plan's first step)
+/// and ends `Done` or `Failed`; `Interrupted` is the only state
+/// [`crate::journal::reconcile`] ever writes, and only for a row it found
+/// still `Pending` at startup.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum PlanStatus {
+    /// The manifest and plan are durable; steps have not all run yet.
+    Pending,
+    /// Every step ran; the mutation is durable.
+    Done,
+    /// A step failed; earlier steps may have run.
+    Failed,
+    /// Found `Pending` at startup - the process died mid-plan.
+    Interrupted,
+}
+
+/// One `fsops` primitive call recorded against a plan, in the order it ran.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct PlanStep {
+    /// The `fsops` primitive's name (`stage`, `swap`, `link`, `write_file`).
+    pub name: String,
+    /// The path the step acted on, relative to the plan's root.
+    pub path: PathBuf,
+}
+
+/// One path a plan backed up before mutating it, so trimming can reclaim
+/// the bytes without touching the plan row itself.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct PlanBackupEntry {
+    /// Original absolute path the backup preserves.
+    pub original: PathBuf,
+    /// Path of the backed-up bytes, relative to the plan's backup directory.
+    pub relative: String,
+    /// Size of the backed-up bytes, for quota accounting.
+    pub bytes: u64,
+}
+
+/// A plan the journal tracks from before its first step to its last.
+///
+/// Invariant: `steps` only ever grows by append, in the order the steps
+/// ran; nothing removes an entry once recorded.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct PlanRecord {
+    /// Id, sorting in creation order.
+    pub id: PlanId,
+    /// When the plan was begun.
+    pub created_at: DateTime<Utc>,
+    /// Short label naming the operation the plan belongs to, for a person
+    /// reading the interrupted list.
+    pub label: String,
+    /// The `fsops` root the plan's steps run under.
+    pub root: PathBuf,
+    /// Paths backed up before the plan's mutation, oldest first.
+    pub backups: Vec<PlanBackupEntry>,
+    /// Steps recorded so far, in the order they ran.
+    pub steps: Vec<PlanStep>,
+    /// Current status.
+    pub status: PlanStatus,
+}
+
+/// The crash-safety journal every `fsops` primitive call records against.
+///
+/// Invariant: [`Self::begin`] writes the backup manifest, then the plan
+/// itself, both fsynced, before returning - nothing a caller does after a
+/// successful `begin` can be an unrecorded "first step". [`Self::all`]
+/// never filters or deletes a row; reconciliation and backup trimming both
+/// read every plan the journal has ever begun.
+pub trait Journal: Send + Sync {
+    /// Durably records `plan` (`status` must be [`PlanStatus::Pending`])
+    /// before the caller's first `fsops` step runs.
+    fn begin(&self, guard: &ExclusiveGuard, plan: &PlanRecord) -> Result<(), CoreError>;
+    /// Appends one step to a plan [`Self::begin`] already recorded.
+    fn record_step(
+        &self,
+        guard: &ExclusiveGuard,
+        id: &PlanId,
+        step: PlanStep,
+    ) -> Result<(), CoreError>;
+    /// Sets a plan's final status. Never called with [`PlanStatus::Pending`].
+    fn finish(
+        &self,
+        guard: &ExclusiveGuard,
+        id: &PlanId,
+        status: PlanStatus,
+    ) -> Result<(), CoreError>;
+    /// Every plan the journal holds, oldest first. Never filtered.
+    fn all(&self) -> Result<Vec<PlanRecord>, CoreError>;
+    /// Rows still [`PlanStatus::Pending`], oldest first.
+    fn pending(&self) -> Result<Vec<PlanRecord>, CoreError>;
+    /// Removes one backup's bytes from disk. Never touches the plan row;
+    /// used only by [`crate::journal::trim_backups`].
+    fn remove_backup(
+        &self,
+        guard: &ExclusiveGuard,
+        id: &PlanId,
+        relative: &str,
+    ) -> Result<(), CoreError>;
 }
 
 /// Lifecycle state of one operation, reported through the sink.
