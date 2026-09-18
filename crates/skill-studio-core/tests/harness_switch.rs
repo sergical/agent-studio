@@ -551,6 +551,60 @@ fn project_scoped_claude_code_disable_removes_the_project_link_or_names_the_glob
     std::fs::remove_dir_all(&home).ok();
 }
 
+/// disabling_an_already_disabled_claude_code_skill_records_no_undo_or_names_the_link_the_undo_would_delete:
+/// `gamma` starts with no Claude Code link at all; disabling it again is a
+/// no-op on disk, so its journal row must carry no inverse. Restoring that
+/// row must be refused rather than removing a link the no-op never created.
+#[test]
+fn disabling_an_already_disabled_claude_code_skill_records_no_undo_or_names_the_link_the_undo_would_delete(
+) {
+    let home = unique_temp_dir("claude_noop_disable");
+    install_universal_skill(&home, "gamma");
+    let rt = runtime_for(&home);
+    let link = home.join(CLAUDE_ROOT_RELATIVE).join("gamma");
+    assert!(
+        std::fs::symlink_metadata(&link).is_err(),
+        "fixture setup: {} should start unlinked",
+        link.display()
+    );
+
+    let disable = ops::set_harness_enabled(
+        &rt,
+        &ctx(),
+        &SetHarnessEnabledRequest {
+            skill: SkillName("gamma".into()),
+            harness: AgentId::from(AgentId::CLAUDE_CODE),
+            enabled: false,
+            project_path: None,
+        },
+    )
+    .unwrap();
+    assert!(
+        std::fs::symlink_metadata(&link).is_err(),
+        "a no-op disable must not create {}",
+        link.display()
+    );
+
+    let store = rt
+        .ports
+        .history
+        .open(&rt.scope, HistoryAccess::ReadIfExists)
+        .unwrap()
+        .expect("the store exists after the write above");
+    let row = store.get(&disable.event_id).unwrap().unwrap();
+    assert_eq!(
+        row.inverse, None,
+        "a no-op toggle must record no inverse, not one that would delete a link it never created"
+    );
+    assert_eq!(
+        row.restore_capability(),
+        skill_studio_core::dto::RestoreCapability::NoInverse,
+        "with no inverse, the row must refuse restore rather than name the link an undo would delete"
+    );
+
+    std::fs::remove_dir_all(&home).ok();
+}
+
 /// opencode_toggle_refuses_a_skill_name_installed_in_two_locations_or_names_the_global_deny_leak:
 /// `gamma` sits both at the global universal root and inside one project's
 /// universal root; `permission.skill.gamma` is written once, globally, so a

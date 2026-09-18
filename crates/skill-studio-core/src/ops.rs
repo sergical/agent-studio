@@ -4603,10 +4603,21 @@ fn set_claude_code_switch(
     }
     let already_linked = link_kind == Some(FileKind::Symlink);
 
-    let inverse = if enabled {
-        crate::events::remove_symlink_inverse(&link_path)
+    // A no-op toggle (enable when already linked, disable when already
+    // absent) touches no bytes, so it must carry no inverse: an inverse here
+    // would undo a mutation that never happened, deleting a link the
+    // *previous* state left in place or recreating one that was never
+    // removed.
+    let no_op = enabled == already_linked;
+    let inverse = if no_op {
+        None
+    } else if enabled {
+        Some(crate::events::remove_symlink_inverse(&link_path))
     } else {
-        crate::events::recreate_symlink_inverse(&link_path, &canonical_dir)
+        Some(crate::events::recreate_symlink_inverse(
+            &link_path,
+            &canonical_dir,
+        ))
     };
     let draft = crate::events::EventDraft {
         kind,
@@ -4615,7 +4626,7 @@ fn set_claude_code_switch(
         scope: Some(if project_path.is_some() { "project" } else { "global" }.to_string()),
         project_path: project_path.map(Path::to_path_buf),
         payload: serde_json::json!({ "skill": skill.name.0, "harness": AgentId::CLAUDE_CODE }),
-        inverse: Some(inverse),
+        inverse,
         backup_dir: None,
     };
     session.store.record(&session.guard, id, &draft)?;
