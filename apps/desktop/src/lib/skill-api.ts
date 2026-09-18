@@ -630,6 +630,16 @@ export async function setHarnessEnabled(
 }
 
 /**
+ * Restore a deployment the old (unit-4.4-removed) move-aside disable left
+ * under `.skill-studio-disabled/` - the scanner still reports those rows as
+ * `disabled_by: "studio-moved"`. Refused for a target that was not moved
+ * aside by Skill Studio.
+ */
+export async function restoreMovedDeployment(target: LifecycleTarget): Promise<void> {
+  return callCommand("restore_moved_deployment", { target });
+}
+
+/**
  * Rewrite `disable-model-invocation`/`user-invocable` in `path`'s SKILL.md
  * frontmatter to match `policy`, byte-identical otherwise. Also
  * writes/patches `agents/openai.yaml`'s `policy.allow_implicit_invocation`

@@ -549,6 +549,19 @@ export function installMockTauri(initial: SkillSnapshot): HarnessControl {
           }));
           return undefined;
         }
+        case "restore_moved_deployment": {
+          const { deployment_id, owner_id } = z
+            .object({ deployment_id: z.string().nullish(), owner_id: z.string().nullish() })
+            .parse(payload.target);
+          const name = skillNameForTarget({ deployment_id, owner_id });
+          await updateSkill(name, (item) => ({
+            ...item,
+            deployments: item.deployments.map((entry) =>
+              entry.id === deployment_id ? { ...entry, disabled: false, disabled_by: null } : entry,
+            ),
+          }));
+          return undefined;
+        }
         case "set_skill_invocation": {
           const name = z.string().parse(payload.name);
           const path = z.string().parse(payload.path);

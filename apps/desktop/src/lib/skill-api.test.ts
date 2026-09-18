@@ -103,7 +103,7 @@ const EXPECTED_WRAPPER_COMMANDS = {
     registeredInLibRs: true,
   },
   // Deferred from the shell's own UI (no Project Folders "Import" affordance calls it yet), but
-  // the command is fully wired - see unit 4.4's five-name allowlist test below.
+  // the command is fully wired - see unit 4.4's four-name allowlist test below.
   importTrackedProjects: {
     kind: "command",
     command: "import_tracked_projects",
@@ -193,7 +193,7 @@ const EXPECTED_WRAPPER_COMMANDS = {
     command: "install_preferences",
     registeredInLibRs: true,
   },
-  // Trial is a deferred feature (see issue-4.4-followup-a.md); kept per unit 4.4's five-name
+  // Trial is a deferred feature (see issue-4.4-followup-a.md); kept per unit 4.4's four-name
   // allowlist test below.
   keepSkillTrial: { kind: "command", command: "keep_skill_trial", registeredInLibRs: true },
   restoreTrashedSkill: {
@@ -205,6 +205,11 @@ const EXPECTED_WRAPPER_COMMANDS = {
   parkSkill: { kind: "command", command: "park_skill", registeredInLibRs: true },
   unparkSkill: { kind: "command", command: "unpark_skill", registeredInLibRs: true },
   setHarnessEnabled: { kind: "command", command: "set_harness_enabled", registeredInLibRs: true },
+  restoreMovedDeployment: {
+    kind: "command",
+    command: "restore_moved_deployment",
+    registeredInLibRs: true,
+  },
   setSkillInvocation: {
     kind: "command",
     command: "set_skill_invocation",
@@ -287,10 +292,16 @@ function deriveWrapperEntry(body: string, fullSource: string): WrapperEntry {
  * Rust path per line; takes the segment after the last `::`. */
 function registeredCommandNames(libRs: string): Set<string> {
   const start = libRs.indexOf("generate_handler![");
-  const end = libRs.indexOf("\n        ])", start);
-  if (start < 0 || end < 0) {
+  if (start < 0) {
     throw new Error("registeredCommandNames: could not find generate_handler![...] in lib.rs");
   }
+  // A `]\s*\)` close, not a literal indentation string - rustfmt reformatting the
+  // block's indentation must not break this parse.
+  const closeMatch = /\]\s*\)/.exec(libRs.slice(start));
+  if (!closeMatch) {
+    throw new Error("registeredCommandNames: could not find generate_handler![...] in lib.rs");
+  }
+  const end = start + closeMatch.index;
   const body = libRs.slice(start, end);
   const names = new Set<string>();
   for (const line of body.split("\n")) {
