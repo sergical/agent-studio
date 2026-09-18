@@ -396,6 +396,83 @@ pub enum RepairOutcome {
     },
 }
 
+/// Request for `fix_skill`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct FixSkillRequest {
+    /// Skill to run the doctor checks and repairs for.
+    pub skill: SkillName,
+}
+
+/// One repair `fix_skill` applied.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case", tag = "kind")]
+pub enum FixApplied {
+    /// A frontmatter repair was written, the same write
+    /// `apply_frontmatter_repair` performs.
+    FrontmatterRepair {
+        /// Deployment written.
+        deployment_id: DeploymentId,
+        /// History event.
+        event_id: EventId,
+    },
+    /// Excess quarantine entries beyond the retention cap were removed.
+    QuarantinePruned {
+        /// How many entries were removed.
+        removed: u32,
+    },
+}
+
+/// One issue `fix_skill` found but could not repair, named with its path so
+/// the caller can show it rather than a generic toast.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct UnrepairedIssue {
+    /// Path of the offending file or folder, when the issue names one.
+    pub path: PathBuf,
+    /// Message for a person.
+    pub message: String,
+}
+
+/// One pair of differing copies: never merged, named for the caller to open
+/// side by side in the user's editor.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct ConflictSummary {
+    /// Skill the conflict belongs to.
+    pub skill: SkillName,
+    /// One-line summary for a person.
+    pub message: String,
+    /// First copy's path.
+    pub path_a: PathBuf,
+    /// Second copy's path.
+    pub path_b: PathBuf,
+}
+
+/// Result of `fix_skill`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct FixSkillOutcome {
+    /// Skill the fix ran for.
+    pub skill: SkillName,
+    /// Repairs written.
+    pub applied: Vec<FixApplied>,
+    /// Issues named but not repaired, with their paths.
+    pub unrepaired: Vec<UnrepairedIssue>,
+    /// Conflicts found; the app opens both paths in the user's editor.
+    pub conflicts: Vec<ConflictSummary>,
+}
+
+/// Request for `diagnose_conflict`. Empty: a conflict is a relationship
+/// between two deployments of one skill, found by scanning the whole
+/// inventory rather than named one deployment at a time.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(default)]
+pub struct DiagnoseConflictRequest {}
+
+/// Result of `diagnose_conflict`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct ConflictReport {
+    /// Every conflict found. Read-only: nothing is written.
+    pub conflicts: Vec<ConflictSummary>,
+}
+
 /// Whether a history event can be restored.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "snake_case", tag = "restorable")]
