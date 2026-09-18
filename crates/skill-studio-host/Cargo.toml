@@ -10,8 +10,40 @@ publish = false
 name = "skill_studio_host"
 path = "src/lib.rs"
 
-[lints]
-workspace = true
+# This crate's fs.rs holds one genuine FFI unsafe block (the macOS atomic
+# rename swap `fsops::swap` needs). Cargo won't let a package override a
+# single lint while also inheriting the rest via `workspace = true` (`cannot
+# override workspace.lints in lints`), so this table restates the
+# workspace's [workspace.lints.clippy]/[workspace.lints.rust] verbatim with
+# only `unsafe_code` downgraded from `forbid` (never locally overridable) to
+# `deny` (overridable call-site by call-site with a SAFETY comment). Keep
+# this in sync with the root Cargo.toml by hand.
+[lints.rust]
+unsafe_code = "deny"
+
+[lints.clippy]
+all = { level = "warn", priority = -1 }
+pedantic = { level = "warn", priority = -1 }
+unwrap_used = "deny"
+expect_used = "deny"
+panic = "deny"
+todo = "deny"
+unimplemented = "deny"
+dbg_macro = "deny"
+print_stdout = "deny"
+print_stderr = "deny"
+module_name_repetitions = "allow"
+missing_errors_doc = "allow"
+missing_panics_doc = "allow"
+must_use_candidate = "allow"
+too_many_lines = "allow"
+struct_excessive_bools = "allow"
+similar_names = "allow"
+cast_possible_truncation = "allow"
+cast_sign_loss = "allow"
+cast_precision_loss = "allow"
+default_trait_access = "allow"
+items_after_statements = "allow"
 
 [dependencies]
 skill-studio-core = { path = "../skill-studio-core" }

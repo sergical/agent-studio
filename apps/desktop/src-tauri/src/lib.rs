@@ -4,6 +4,12 @@
 // unwrap/expect/panic are fine in test code; production code must use ?
 // or an explicit error.
 #![cfg_attr(test, allow(clippy::unwrap_used, clippy::expect_used, clippy::panic))]
+// This crate's Cargo.toml downgrades `unsafe_code` from the workspace's
+// `forbid` to `deny` for the same reason as skill-studio-host: a handful of
+// genuine FFI blocks (POSIX process signaling, an atomic rename, a
+// pre-startup HOME override) have no safe `std` wrapper. Each is a narrow,
+// locally-`#[allow(unsafe_code)]`'d block with its own justification.
+#![deny(unsafe_code)]
 
 // ============================================================================
 // Skill Studio - Rust Backend

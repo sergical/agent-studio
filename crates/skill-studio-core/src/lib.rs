@@ -24,6 +24,9 @@
 //! See `docs/spec-core-primitives.md` for the design and the migration order.
 
 #![deny(missing_docs)]
+// Core stays adapter-free (see above): no FFI, no raw pointers, nothing
+// that needs `unsafe`. Unlike the host crate this has no exception to carve
+// out.
 #![forbid(unsafe_code)]
 
 pub mod discovery_sources;
