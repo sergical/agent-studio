@@ -499,7 +499,9 @@ pub fn write_schemas(out: Option<PathBuf>) -> ExitCode {
         ("park_request", || {
             schemars::schema_for!(skill_studio_core::dto::ParkRequest)
         }),
-        ("park_outcome", || schemars::schema_for!(skill_studio_core::dto::ParkOutcome)),
+        ("park_outcome", || {
+            schemars::schema_for!(skill_studio_core::dto::ParkOutcome)
+        }),
         ("unpark_request", || {
             schemars::schema_for!(skill_studio_core::dto::UnparkRequest)
         }),
@@ -512,9 +514,10 @@ pub fn write_schemas(out: Option<PathBuf>) -> ExitCode {
         ("set_harness_enabled_outcome", || {
             schemars::schema_for!(skill_studio_core::dto::SetHarnessEnabledOutcome)
         }),
-        ("outdated_result", || {
-            schemars::schema_for!(BTreeMap<String, Currency>)
-        }),
+        (
+            "outdated_result",
+            || schemars::schema_for!(BTreeMap<String, Currency>),
+        ),
     ];
     for (name, build) in schemas {
         let schema = build();
