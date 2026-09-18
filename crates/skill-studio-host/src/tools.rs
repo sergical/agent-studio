@@ -1,7 +1,11 @@
 //! [`ToolLookup`] over the real `PATH`.
 
+use std::io::{BufRead, BufReader};
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
+use std::process::{Command, Stdio};
+use std::sync::{mpsc, OnceLock};
+use std::time::Duration;
 
 use skill_studio_core::ports::ToolLookup;
 
@@ -55,6 +59,145 @@ impl ToolLookup for PathToolLookup {
             is_executable_file(&candidate)
                 .then(|| std::fs::canonicalize(&candidate).unwrap_or(candidate))
         })
+    }
+}
+
+/// Marker the login-shell probe script prints after `PATH`, so the reader
+/// thread can stop without waiting for the shell to exit; see
+/// `run_with_timeout`'s doc comment for why a plain `read_to_string` would
+/// hang on some machines (an rc file that leaves a background process
+/// holding the pipe open).
+const PATH_MARKER_END: &str = "__skill_studio_path_end__";
+
+/// Deadline for the login-shell `PATH` probe, matching the `$EDITOR` probe
+/// this mirrors (`apps/desktop/src-tauri/src/skills/skill_editor.rs`).
+const SHELL_PROBE_TIMEOUT: Duration = Duration::from_millis(1500);
+
+/// Reads stdout on a helper thread so a login shell's rc files can't hang
+/// this forever; see `PATH_MARKER_END`'s doc comment. Mirrors
+/// `skill_editor.rs`'s `run_with_timeout`.
+fn run_with_timeout(mut command: Command, end_marker: &str, timeout: Duration) -> Option<String> {
+    let mut child = command
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+        .ok()?;
+
+    let stdout = child.stdout.take()?;
+    let (tx, rx) = mpsc::channel();
+    let end_marker = end_marker.to_string();
+    std::thread::spawn(move || {
+        let mut reader = BufReader::new(stdout);
+        let mut collected = String::new();
+        let mut line = String::new();
+        loop {
+            line.clear();
+            match reader.read_line(&mut line) {
+                Ok(0) | Err(_) => break,
+                Ok(_) => {
+                    let is_end_line = line.contains(&end_marker);
+                    collected.push_str(&line);
+                    if is_end_line {
+                        break;
+                    }
+                }
+            }
+        }
+        let _ = tx.send(collected);
+    });
+
+    let result = rx.recv_timeout(timeout).ok();
+    let _ = child.kill();
+    let _ = child.wait();
+    result
+}
+
+/// The login shell command that prints `$PATH`, per
+/// `docs/action-map/harnesses/harness-detection.md`'s "PATH resolution":
+/// macOS launches a desktop app with the minimal `launchd` PATH, so this
+/// asks the user's own login shell instead.
+fn login_shell_path_probe(shell: &str) -> Command {
+    let mut command = Command::new(shell);
+    command
+        .arg("-lic")
+        .arg(format!("echo \"$PATH\"; echo {PATH_MARKER_END}"));
+    command
+}
+
+/// Runs the login shell once to read `$PATH`. Returns the fallback
+/// directories from harness-detection.md's "PATH resolution" when the probe
+/// fails or times out, rather than an empty path, so detection still finds
+/// binaries a version-manager shim installs outside the process's own
+/// minimal `PATH`.
+fn read_login_shell_path(fallback_dirs: &[PathBuf]) -> Vec<PathBuf> {
+    let shell = std::env::var("SHELL").unwrap_or_else(|_| "/bin/zsh".to_string());
+    let probed = run_with_timeout(
+        login_shell_path_probe(&shell),
+        PATH_MARKER_END,
+        SHELL_PROBE_TIMEOUT,
+    )
+    .and_then(|output| output.lines().next().map(str::to_string))
+    .map(|line| std::env::split_paths(&line).collect::<Vec<_>>())
+    .filter(|dirs| !dirs.is_empty());
+    match probed {
+        Some(dirs) => dirs,
+        None => fallback_dirs.to_vec(),
+    }
+}
+
+/// Fallback directories checked when the login-shell `PATH` probe fails,
+/// per harness-detection.md's "PATH resolution".
+fn default_fallback_dirs() -> Vec<PathBuf> {
+    let home = std::env::var_os("HOME").map(PathBuf::from);
+    let mut dirs: Vec<PathBuf> = vec![
+        PathBuf::from("/opt/homebrew/bin"),
+        PathBuf::from("/usr/local/bin"),
+    ];
+    if let Some(home) = home {
+        dirs.push(home.join(".local/bin"));
+        dirs.push(home.join(".npm-global/bin"));
+        dirs.push(home.join(".volta/bin"));
+        dirs.push(home.join(".bun/bin"));
+    }
+    dirs
+}
+
+/// Cached for the process lifetime: the login shell is spawned at most once
+/// per launch, however many harnesses `detect_harnesses` resolves against
+/// it (`harness-detection.md`: "one shell spawn per app start, cached").
+static LOGIN_SHELL_PATH: OnceLock<Vec<PathBuf>> = OnceLock::new();
+
+/// `ToolLookup` that resolves against the user's login-shell `PATH`
+/// instead of the process's own (minimal, under `launchd`) `PATH`. Intended
+/// for the desktop app; the CLI and MCP server keep using
+/// [`PathToolLookup`], whose process `PATH` already comes from a shell.
+pub struct LoginShellToolLookup {
+    inner: PathToolLookup,
+}
+
+impl LoginShellToolLookup {
+    /// Builds a lookup over the cached login-shell `PATH`, spawning the
+    /// shell on the first call only.
+    pub fn new() -> Self {
+        let dirs = LOGIN_SHELL_PATH
+            .get_or_init(|| read_login_shell_path(&default_fallback_dirs()))
+            .clone();
+        LoginShellToolLookup {
+            inner: PathToolLookup::with_search_dirs(dirs),
+        }
+    }
+}
+
+impl Default for LoginShellToolLookup {
+    fn default() -> Self {
+        LoginShellToolLookup::new()
+    }
+}
+
+impl ToolLookup for LoginShellToolLookup {
+    fn find_binary(&self, name: &str) -> Option<PathBuf> {
+        self.inner.find_binary(name)
     }
 }
 
@@ -114,5 +257,67 @@ mod tests {
         ]);
         let found = lookup.find_binary("tool").unwrap();
         assert_eq!(found, fs::canonicalize(first.path().join("tool")).unwrap());
+    }
+
+    /// Serializes the one test below that sets `$SHELL`, so a parallel test
+    /// run never lets two tests race on the same process-wide env var.
+    fn shell_env_lock() -> std::sync::MutexGuard<'static, ()> {
+        static LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+        LOCK.lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+
+    /// `the_shell_probe_for_path_runs_once_per_launch_not_once_per_harness`:
+    /// a fake `$SHELL` counts its own invocations to a file; three
+    /// `LoginShellToolLookup::new()` calls (one per fictional harness) must
+    /// still add up to exactly one spawn, because `LOGIN_SHELL_PATH` is a
+    /// process-wide `OnceLock`. Fails if a caller resolves the shell PATH
+    /// per binary instead of caching it in `LoginShellToolLookup::new`.
+    #[test]
+    fn the_shell_probe_for_path_runs_once_per_launch_not_once_per_harness() {
+        let _guard = shell_env_lock();
+        let tmp = tempfile::tempdir().unwrap();
+        let counter = tmp.path().join("calls.txt");
+        let fake_shell = tmp.path().join("fake-login-shell.sh");
+        fs::write(
+            &fake_shell,
+            format!(
+                "#!/bin/sh\necho call >> \"{}\"\necho \"{}\"\necho {PATH_MARKER_END}\n",
+                counter.display(),
+                tmp.path().display(),
+            ),
+        )
+        .unwrap();
+        let mut perms = fs::metadata(&fake_shell).unwrap().permissions();
+        perms.set_mode(0o755);
+        fs::set_permissions(&fake_shell, perms).unwrap();
+
+        let previous_shell = std::env::var("SHELL").ok();
+        // SAFETY: `shell_env_lock` above serializes every test that touches
+        // `$SHELL` in this process; no other thread reads it concurrently.
+        #[allow(unsafe_code)]
+        unsafe {
+            std::env::set_var("SHELL", &fake_shell);
+        }
+
+        let _first = LoginShellToolLookup::new();
+        let _second = LoginShellToolLookup::new();
+        let _third = LoginShellToolLookup::new();
+
+        // SAFETY: same as above - still under `shell_env_lock`.
+        #[allow(unsafe_code)]
+        unsafe {
+            match &previous_shell {
+                Some(v) => std::env::set_var("SHELL", v),
+                None => std::env::remove_var("SHELL"),
+            }
+        }
+
+        let calls = fs::read_to_string(&counter).unwrap_or_default();
+        assert_eq!(
+            calls.lines().count(),
+            1,
+            "expected exactly one login-shell spawn across three lookups, got: {calls:?}"
+        );
     }
 }
