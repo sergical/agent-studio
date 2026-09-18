@@ -26,8 +26,8 @@ export function ScanPartialBanner({ observations, unreadLocationCount }: ScanPar
     >
       <div className="flex-1">
         <p className="select-text">
-          Scan incomplete: {unreadLocationCount} locations were not read. Showing the last
-          complete result for those locations.
+          Scan incomplete: {unreadLocationCount} locations were not read. Showing the last complete
+          result for those locations.
         </p>
         {observations.length > 0 && (
           <details className="mt-1 text-text-secondary">
