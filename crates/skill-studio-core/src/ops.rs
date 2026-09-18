@@ -3738,10 +3738,10 @@ enum RestorePlan {
 /// path below: a symlink toggle has no bytes to diff, only "present at this
 /// target" vs "absent", so the restore's own undo comes from
 /// [`ScopeFs::read_link`]/[`ScopeFs::symlink_metadata`] rather than a
-/// fingerprinted byte backup. No drift check: this build does not compare
-/// the live link target against what the original event recorded before
-/// restoring, unlike the `restore_backup` path's fingerprint guard - a
-/// narrower undo than that path's, in scope for a follow-up.
+/// fingerprinted byte backup. Two drift branches, each with a `force`
+/// bypass: the Recreate arm refuses when the recorded target no longer
+/// exists; the Remove arm refuses when the live link's resolved target
+/// differs from the recorded one, or when no target was recorded.
 fn restore_symlink_event(
     rt: &Runtime,
     ctx: &OpContext,
@@ -3774,7 +3774,10 @@ fn restore_symlink_event(
             crate::events::remove_symlink_inverse(path, Some(target))
         }
         crate::events::SymlinkInverse::Remove { path, target } => match fs.read_link(path).ok() {
-            Some(current_target) => crate::events::recreate_symlink_inverse(path, &current_target),
+            Some(current_target) => crate::events::recreate_symlink_inverse(
+                path,
+                &crate::fsops::join_lexical(path.parent().unwrap_or(path), &current_target),
+            ),
             None => crate::events::remove_symlink_inverse(path, target.as_deref()),
         },
     };

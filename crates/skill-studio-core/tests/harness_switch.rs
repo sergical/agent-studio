@@ -1888,3 +1888,100 @@ fn a_no_op_codex_toggle_records_no_undo_or_names_the_bytes_undo_would_rewrite() 
 
     std::fs::remove_dir_all(&home).ok();
 }
+
+/// `undo_of_a_remove_row_against_a_relative_live_link_records_a_resolved_inverse_or_names_the_target_it_recorded`:
+/// undoing a hand-recorded `remove_symlink` row against a relative live
+/// link must itself record a resolved (absolute) `recreate_symlink`
+/// inverse, not the raw `read_link` text - otherwise undoing *that* restore
+/// hits `confine`'s "path must be absolute without .." refusal instead of
+/// recreating the link.
+#[test]
+fn undo_of_a_remove_row_against_a_relative_live_link_records_a_resolved_inverse_or_names_the_target_it_recorded(
+) {
+    let home = unique_temp_dir("remove_row_relative_live_link");
+    install_universal_skill(&home, "zeta");
+    let canonical_dir = home.join(UNIVERSAL_ROOT_RELATIVE).join("zeta");
+
+    let claude_skills = home.join(CLAUDE_ROOT_RELATIVE);
+    std::fs::create_dir_all(&claude_skills).unwrap();
+    let link = claude_skills.join("zeta");
+    #[cfg(unix)]
+    std::os::unix::fs::symlink(Path::new("../../.agents/skills/zeta"), &link).unwrap();
+
+    let rt = runtime_for(&home);
+
+    // Hand-record a `remove_symlink` inverse whose `target` is the
+    // resolved absolute path, the shape `set_claude_code_switch` writes
+    // (mirrors the two relative-link tests above).
+    let id = rt.ports.ids.next_event_id();
+    let mut session = skill_studio_core::ports::MutationSession::begin(&rt, &ctx()).unwrap();
+    let inverse = serde_json::json!({
+        "op": "remove_symlink",
+        "path": &link,
+        "target": &canonical_dir,
+    });
+    let draft = skill_studio_core::events::EventDraft {
+        kind: skill_studio_core::events::EventKind::HarnessEnable,
+        skill: SkillName("zeta".into()),
+        harness: Some(AgentId::from(AgentId::CLAUDE_CODE)),
+        scope: Some("global".to_string()),
+        project_path: None,
+        payload: serde_json::json!({}),
+        inverse: Some(inverse),
+        backup_dir: None,
+    };
+    session.store.record(&session.guard, &id, &draft).unwrap();
+    session
+        .store
+        .finish(
+            &session.guard,
+            &id,
+            skill_studio_core::events::EventStatus::Done,
+            None,
+        )
+        .unwrap();
+    drop(session);
+
+    // Restoring the hand-recorded row must succeed without force: the
+    // drift compare resolves the relative live link to the same absolute
+    // path as the recorded target.
+    let first_undo = ops::restore_event(
+        &rt,
+        &ctx(),
+        &RestoreRequest {
+            event_id: id.clone(),
+            force: false,
+        },
+    )
+    .unwrap_or_else(|e| {
+        panic!("restoring the hand-recorded remove_symlink row must succeed, got: {e}")
+    });
+    assert!(
+        std::fs::symlink_metadata(&link).is_err(),
+        "the restore should remove {}",
+        link.display()
+    );
+
+    // Restoring the restore row's own inverse (a recreate) must succeed and
+    // recreate the link, not fail with DriftConflict or "path must be
+    // absolute without ..".
+    let second_undo = ops::restore_event(
+        &rt,
+        &ctx(),
+        &RestoreRequest {
+            event_id: first_undo.restore_event_id.clone(),
+            force: false,
+        },
+    )
+    .unwrap_or_else(|e| {
+        panic!("restoring the first restore's own inverse must recreate the link, got: {e}")
+    });
+    assert_eq!(second_undo.reverted_event_id, first_undo.restore_event_id);
+    assert!(
+        std::fs::symlink_metadata(&link).is_ok(),
+        "the second restore should recreate {}",
+        link.display()
+    );
+
+    std::fs::remove_dir_all(&home).ok();
+}

@@ -502,9 +502,10 @@ pub(crate) fn recreate_symlink_inverse(path: &Path, target: &Path) -> serde_json
     serde_json::json!({ "op": "recreate_symlink", "path": path, "target": target })
 }
 
-/// `target` is `None` only for a row this build never writes (every current
-/// writer records the link's target); kept optional so a pre-existing row
-/// without one still parses instead of losing its `restore_capability`.
+/// `target` is `None` when a target-less remove row (written before this
+/// field existed) is restored against an already-absent link; a restore of
+/// such a row needs `--force`. Kept optional so a pre-existing row without
+/// one still parses instead of losing its `restore_capability`.
 pub(crate) fn remove_symlink_inverse(path: &Path, target: Option<&Path>) -> serde_json::Value {
     match target {
         Some(target) => {
