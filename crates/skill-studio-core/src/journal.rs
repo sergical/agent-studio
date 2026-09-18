@@ -33,6 +33,7 @@ use std::time::Duration;
 use chrono::{DateTime, Utc};
 
 use crate::error::{CoreError, ErrorCode};
+use crate::fsops::Root;
 use crate::identity::PlanId;
 use crate::ports::{
     ExclusiveGuard, FileKind, Journal, PlanBackupEntry, PlanRecord, PlanStatus, PlanStep, ScopeFs,
@@ -472,6 +473,48 @@ pub fn reconcile(
     Ok(report)
 }
 
+/// Every path inside `step` that reversal would write to - what
+/// [`reverse_steps`] confines under the plan's root before touching
+/// anything for that step.
+fn step_paths(step: &PlanStep) -> Vec<&Path> {
+    match step {
+        PlanStep::Stage { staged } => vec![staged],
+        PlanStep::Swap {
+            path,
+            staged,
+            quarantined,
+            ..
+        } => {
+            let mut paths = vec![path.as_path(), staged.as_path()];
+            if let Some(quarantined) = quarantined {
+                paths.push(quarantined);
+            }
+            paths
+        }
+        PlanStep::Link { path, .. } => vec![path],
+        PlanStep::WriteFile { path, .. } => vec![path],
+    }
+}
+
+/// Confines `path` under `plan_root` via [`Root::confine`], so a corrupt or
+/// hand-edited plan row can never make reversal touch something outside the
+/// plan's own root. `path` is already absolute (every `fsops` primitive
+/// resolves it through `Root::confine` before recording it), so this is a
+/// prefix strip followed by the same ancestor-symlink check `fsops` itself
+/// runs, not a second, weaker check.
+fn confine_to_root(root: &Root, plan_root: &Path, path: &Path) -> std::io::Result<()> {
+    let relative = path.strip_prefix(plan_root).map_err(|_| {
+        std::io::Error::other(format!(
+            "{}: escapes the plan root {}",
+            path.display(),
+            plan_root.display()
+        ))
+    })?;
+    root.confine(relative).map(|_| ()).map_err(|e| {
+        std::io::Error::other(format!("{}: escapes the plan root ({e})", path.display()))
+    })
+}
+
 /// Undoes `plan`'s recorded steps in reverse order. Stops at the first
 /// step whose undo fails; steps already undone stay undone (there is no
 /// partial-undo rollback - a step's own undo is the smallest unit this
@@ -492,12 +535,21 @@ pub fn reconcile(
 /// - `WriteFile`: landed iff the live bytes at `path` no longer match the
 ///   backup (the backup was fsynced durable before the rename that would
 ///   have changed them).
+///
+/// Every path a step names is confined under `plan.root` first (via
+/// [`confine_to_root`]); a step naming a path outside it aborts reversal
+/// immediately, naming the escaped path, without touching anything.
 fn reverse_steps(
     journal: &dyn Journal,
     plan: &PlanRecord,
     fs: &dyn ScopeFs,
 ) -> std::io::Result<()> {
+    let root =
+        Root::open(fs, plan.root.clone()).map_err(|e| std::io::Error::other(e.to_string()))?;
     for step in plan.steps.iter().rev() {
+        for path in step_paths(step) {
+            confine_to_root(&root, &plan.root, path)?;
+        }
         match step {
             PlanStep::Stage { staged } => remove_tree(fs, staged)?,
             PlanStep::Swap {
@@ -1261,6 +1313,67 @@ mod tests {
         assert_eq!(
             after, before,
             "reversing a step whose mutation never landed must be a no-op, or name the step it undid twice"
+        );
+    }
+
+    /// Given a plan row whose one recorded step names a path outside the
+    /// plan's own root - the shape a corrupt or hand-edited `plan.json`
+    /// would take - when reconciliation runs, then it never touches that
+    /// path, marks the plan `Interrupted`, and names the escaped path in
+    /// the report; on failure the panic names whichever assertion the
+    /// escape slipped past.
+    #[test]
+    fn reconcile_never_touches_a_path_outside_the_plan_root_or_names_the_escaped_path() {
+        let fixture = FixtureBuilder::new()
+            .dir("/journal")
+            .dir("/root")
+            .dir("/outside")
+            .file("/outside/real.txt", b"do not touch")
+            .build_fs();
+        let root_path = PathBuf::from("/root");
+        let journal = journal_over(Arc::new(fixture.clone()));
+        let lease = FakeLease::default();
+        let g = guard(&lease);
+
+        let escaped = PathBuf::from("/outside/real.txt");
+        let id = PlanId("01PLANESCAPE000000000001".into());
+        let plan = PlanWriter::begin(
+            &journal,
+            &g,
+            id.clone(),
+            Utc::now(),
+            "hand-edited row naming a path outside the root",
+            root_path,
+            Vec::new(),
+        )
+        .expect("begin");
+        // Bypasses `fsops::stage`'s own confinement on purpose: this
+        // simulates a plan row a crash or a bug left pointing outside its
+        // root, not a step `fsops` itself would ever record.
+        plan.record_stage(&escaped)
+            .expect("record the escaping step");
+        drop(plan);
+
+        let report = reconcile(&journal, &g, &fixture).expect("reconciliation must run");
+        let interrupted = report
+            .interrupted
+            .iter()
+            .find(|p| p.id == id)
+            .unwrap_or_else(|| panic!("plan {} must be Interrupted, not {report:?}", id.0));
+        assert!(
+            interrupted
+                .error
+                .contains(&escaped.to_string_lossy().into_owned()),
+            "the report must name the escaped path, got: {}",
+            interrupted.error
+        );
+
+        assert_eq!(
+            fixture
+                .read_capped(&escaped, u64::MAX)
+                .expect("the file outside the root must be untouched"),
+            b"do not touch",
+            "reconciliation must never touch a path outside the plan root"
         );
     }
 
