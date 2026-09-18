@@ -24,10 +24,23 @@ use skill_studio_core::tracked_projects::SKILL_DIR_MARKERS;
 use crate::fs::RealFs;
 use crate::opencode_db::{open_opencode_database, opencode_databases, OPENCODE_DATA_ROOT};
 
+/// Codex's own directory: `$CODEX_HOME` when set to a non-empty value, else
+/// `<home>/.codex`. This is the one place allowed to read `CODEX_HOME` - the
+/// core crate never does (`docs/action-map/harnesses/codex.md`, "Resolved by
+/// the docs on 2026-09-16": "`CODEX_HOME` overrides `~/.codex` for config,
+/// sessions, and the SQLite state; every Codex path in the app must honour
+/// it").
+pub fn codex_home(home: &Path) -> PathBuf {
+    match std::env::var_os("CODEX_HOME") {
+        Some(value) if !value.is_empty() => PathBuf::from(value),
+        _ => home.join(".codex"),
+    }
+}
+
 /// Project paths recorded in Codex's `[projects."/abs/path"]` config
-/// sections (`~/.codex/config.toml`).
+/// sections (`~/.codex/config.toml`, or `$CODEX_HOME/config.toml`).
 fn codex_project_paths(home: &Path) -> Vec<PathBuf> {
-    let Ok(content) = fs::read_to_string(home.join(".codex/config.toml")) else {
+    let Ok(content) = fs::read_to_string(codex_home(home).join("config.toml")) else {
         return Vec::new();
     };
     let Ok(value) = content.parse::<toml::Table>() else {
