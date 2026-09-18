@@ -3184,7 +3184,11 @@ pub fn fix_skill(
 
 /// Resolves `issue`'s own deployment to its path via `diagnosis`'s
 /// inventory, so an unrepaired issue names a real file instead of an empty
-/// path.
+/// path. `IssueKind::Duplicate` (from `duplicate_issues`) carries no
+/// `deployment_id`, since the issue is about the skill having two
+/// deployments rather than one of them; fall back to the skill's first
+/// `Canonical` or `Independent` deployment (never `LinkedTo`, which just
+/// points back at one of the others) so the path still names a real file.
 fn issue_path(diagnosis: &Diagnosis, issue: &Issue) -> PathBuf {
     issue
         .deployment_id
@@ -3196,6 +3200,21 @@ fn issue_path(diagnosis: &Diagnosis, issue: &Issue) -> PathBuf {
                 .iter()
                 .flat_map(|skill| &skill.deployments)
                 .find(|deployment| &deployment.id == id)
+        })
+        .or_else(|| {
+            diagnosis
+                .inventory
+                .skills
+                .iter()
+                .find(|skill| skill.name == issue.skill)
+                .and_then(|skill| {
+                    skill.deployments.iter().find(|deployment| {
+                        matches!(
+                            deployment.backing,
+                            BackingRelationship::Canonical | BackingRelationship::Independent
+                        )
+                    })
+                })
         })
         .map(|deployment| deployment.path.clone())
         .unwrap_or_default()

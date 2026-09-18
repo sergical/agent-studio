@@ -111,7 +111,10 @@ fn diagnose_conflict_names_both_paths_and_writes_nothing_or_names_the_path_it_ch
 
 /// A per-skill Claude Code symlink whose target doesn't exist (same shape
 /// as `testing::fixtures::broken_link`), plus a skill whose only issue -
-/// an uppercase name - has no automatic repair.
+/// an uppercase name - has no automatic repair, plus a skill installed
+/// twice under `OpenCode`'s global scope: the v2 canonical `skills` root and
+/// the v1 legacy `skill` root (`harness.rs`'s dual-root compatibility
+/// shape), so `duplicate_issues` reports it with `deployment_id: None`.
 fn unrepairable_home() -> impl ScopeFs {
     FixtureBuilder::new()
         .alias(
@@ -122,22 +125,34 @@ fn unrepairable_home() -> impl ScopeFs {
             &format!("{HOME}/.claude/skills/UpperCase/SKILL.md"),
             b"---\nname: UpperCase\ndescription: Has an uppercase name, which the spec forbids.\n---\nBody.\n",
         )
+        .file(
+            &format!("{HOME}/.config/opencode/skills/dup-skill/SKILL.md"),
+            b"---\nname: dup-skill\ndescription: Installed under the v2 root.\n---\nBody.\n",
+        )
+        .file(
+            &format!("{HOME}/.config/opencode/skill/dup-skill/SKILL.md"),
+            b"---\nname: dup-skill\ndescription: Installed under the v1 legacy root too.\n---\nBody.\n",
+        )
         .build_fs()
 }
 
-/// Given a home with a broken per-skill link and a skill whose only issue
-/// has no automatic repair, when `fix_skill` runs for each, then every
+/// Given a home with a broken per-skill link, a skill whose only issue has
+/// no automatic repair, and a skill installed twice in the same
+/// (harness, scope) group, when `fix_skill` runs for each, then every
 /// `unrepaired` entry names a real path, never the empty `PathBuf` the CLI
-/// used to print as `could not repair : <msg>`.
-/// Failure here (an empty path in `unrepaired`) names which fixture -
-/// `ghost` (invariant 1, `check_link_resolves_in_root`) or `UpperCase`
-/// (the generic "no `PreviewRepair`" branch) - regressed.
+/// used to print as `could not repair : <msg>`; the broken-link entry
+/// names a path under the link's own directory, not some other deployment.
+/// Failure here (an empty path, or a `ghost` path outside
+/// `.claude/skills/ghost`) names which fixture - `ghost` (invariant 1,
+/// `check_link_resolves_in_root`), `UpperCase` (the generic "no
+/// `PreviewRepair`" branch), or `dup-skill` (`IssueKind::Duplicate`, which
+/// carries no `deployment_id`) - regressed.
 #[test]
 fn fix_names_the_file_path_for_anything_it_cannot_repair_or_shows_a_generic_toast() {
     let fs: Arc<dyn ScopeFs> = Arc::new(unrepairable_home());
     let rt = runtime(fs);
 
-    for skill in ["ghost", "UpperCase"] {
+    for skill in ["ghost", "UpperCase", "dup-skill"] {
         let outcome = ops::fix_skill(
             &rt,
             &ctx(),
@@ -156,6 +171,14 @@ fn fix_names_the_file_path_for_anything_it_cannot_repair_or_shows_a_generic_toas
                 Path::new(""),
                 "{skill}: unrepaired issue had an empty path: {issue:?}"
             );
+            if skill == "ghost" {
+                assert!(
+                    issue
+                        .path
+                        .starts_with(Path::new(&format!("{HOME}/.claude/skills/ghost"))),
+                    "ghost: unrepaired issue did not name the link's own path: {issue:?}"
+                );
+            }
         }
     }
 }
