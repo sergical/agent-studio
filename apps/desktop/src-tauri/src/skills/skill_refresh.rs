@@ -3582,7 +3582,9 @@ mod tests {
     /// `store_skill_snapshot` re-merged a partial snapshot against the very
     /// state that clone came from, an edit that removed a row would come
     /// straight back - `store_skill_snapshot` must publish exactly what it is
-    /// given.
+    /// given. `unread_roots` is set to the removed skill's own parent so the
+    /// old by-name merge (which ignores `unread_roots` and would restore any
+    /// removed skill regardless of scope) cannot pass this test by accident.
     #[test]
     fn a_patch_that_removes_a_skill_from_a_partial_snapshot_keeps_it_removed_or_names_the_row_that_came_back(
     ) {
@@ -3590,6 +3592,10 @@ mod tests {
         let mut initial = fixture_snapshot(Path::new("/alpha"));
         initial.skills[0].name = "alpha".to_string();
         initial.scan_partial = true;
+        initial.unread_roots = vec![Path::new("/alpha")
+            .parent()
+            .expect("/alpha has a parent")
+            .to_path_buf()];
         let published = store_skill_snapshot(&state, initial).unwrap();
 
         let mut patched = published.clone();
