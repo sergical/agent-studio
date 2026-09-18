@@ -87,9 +87,10 @@ pub struct SkillSnapshot {
     /// prefixed by a display of the root it is about.
     #[serde(default)]
     pub scan_observations: Vec<String>,
-    /// Roots this run could not read - the scope `rebuild_snapshot_now` folds
-    /// a partial scan's carried-over deployments against. Not otherwise read
-    /// by the frontend.
+    /// Path prefixes this run could not read: whole roots, or single skill
+    /// directories whose SKILL.md was unreadable. `rebuild_snapshot_now`
+    /// folds a partial scan's carried-over deployments against them, and the
+    /// partial-scan banner counts them as locations.
     #[serde(default)]
     pub unread_roots: Vec<PathBuf>,
 }
@@ -1636,9 +1637,17 @@ pub(crate) fn core_scan_installed_skills(
             // The scan itself also reaches `CODEX_HOME` and the OpenCode
             // config root, both of which can live outside `home` - a
             // carry-over that stops at `home` would drop every previous
-            // deployment under either when the whole scan errors.
-            unread_roots.push(scope.codex_home_or_default());
-            unread_roots.push(opencode_config_root_path.clone());
+            // deployment under either when the whole scan errors. A root
+            // already under a listed one is skipped so the banner counts
+            // each unread location once.
+            for extra in [
+                scope.codex_home_or_default(),
+                opencode_config_root_path.clone(),
+            ] {
+                if !unread_roots.iter().any(|root| extra.starts_with(root)) {
+                    unread_roots.push(extra);
+                }
+            }
             CoreScanResult {
                 skills: Vec::new(),
                 completeness: skill_studio_core::dto::Completeness::Partial,
@@ -3370,7 +3379,7 @@ mod tests {
     /// row from the unread root) or "beta" (the row this run genuinely
     /// found).
     #[test]
-    fn merge_keeps_every_installed_skill_when_the_whole_scan_errored() {
+    fn merge_keeps_the_carried_over_skill_and_the_freshly_found_skill_or_names_the_dropped_row() {
         let unread_root = PathBuf::from("/roots/unread");
         let mut good = fixture_snapshot(&unread_root.join("alpha"));
         good.skills[0].name = "alpha".to_string();
@@ -3452,6 +3461,64 @@ mod tests {
         assert!(
             names.contains(&"codex-skill"),
             "a deployment under CODEX_HOME must survive a scan-level error: {names:?}"
+        );
+    }
+
+    /// `core_scan_installed_skills`'s total-failure branch with `CODEX_HOME`
+    /// under `home` (the default layout) lists `home` once and no root nested
+    /// under it, so the partial-scan banner reports one unread location, not
+    /// three. Fails if `unread_roots` holds an entry that starts with another
+    /// entry. Same lock and env handling as the test above.
+    #[test]
+    fn a_scan_level_error_lists_each_unread_location_once_or_names_the_nested_duplicate() {
+        let _guard = super::super::test_support::opencode_env_lock()
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let tmp = tempfile::tempdir().unwrap();
+        let home = tmp.path().join("home");
+        let codex_home = home.join(".codex");
+        let prev_codex_home = std::env::var_os("CODEX_HOME");
+        let prev_skill_studio_fixture = std::env::var_os("SKILL_STUDIO_FIXTURE");
+        // SAFETY: `opencode_env_lock` above serializes every test in this
+        // process that touches `CODEX_HOME`/`SKILL_STUDIO_FIXTURE`.
+        #[allow(unsafe_code)]
+        unsafe {
+            std::env::set_var("CODEX_HOME", &codex_home);
+            std::env::remove_var("SKILL_STUDIO_FIXTURE");
+        }
+        let result =
+            core_scan_installed_skills(&home, &[], &tmp.path().join("update-check.json"), &[]);
+        // SAFETY: same as above - still under `opencode_env_lock`.
+        #[allow(unsafe_code)]
+        unsafe {
+            match prev_codex_home {
+                Some(v) => std::env::set_var("CODEX_HOME", v),
+                None => std::env::remove_var("CODEX_HOME"),
+            }
+            match prev_skill_studio_fixture {
+                Some(v) => std::env::set_var("SKILL_STUDIO_FIXTURE", v),
+                None => std::env::remove_var("SKILL_STUDIO_FIXTURE"),
+            }
+        }
+
+        assert!(
+            result.unread_roots.contains(&home),
+            "home must be scoped as unread on a scan-level error: {:?}",
+            result.unread_roots
+        );
+        let nested: Vec<&PathBuf> = result
+            .unread_roots
+            .iter()
+            .filter(|root| {
+                result
+                    .unread_roots
+                    .iter()
+                    .any(|other| other != *root && root.starts_with(other))
+            })
+            .collect();
+        assert!(
+            nested.is_empty(),
+            "an unread root nested under another listed root is counted twice by the banner: {nested:?}"
         );
     }
 

@@ -165,9 +165,10 @@ export interface SkillSnapshot {
    */
   scan_observations: string[];
   /**
-   * Roots this run could not read - the scope `rebuild_snapshot_now` folds
-   * a partial scan's carried-over deployments against. Not otherwise read
-   * by the frontend.
+   * Path prefixes this run could not read: whole roots, or single skill
+   * directories whose SKILL.md was unreadable. `rebuild_snapshot_now`
+   * folds a partial scan's carried-over deployments against them, and the
+   * partial-scan banner counts them as locations.
    */
   unread_roots: string[];
 }
