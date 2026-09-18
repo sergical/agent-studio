@@ -1779,7 +1779,12 @@ pub fn classify_watch_event(
     home: &Path,
     claude_projects_dir: &Path,
 ) -> WatchEventKind {
-    if skill_studio_host::skill_use_watch_paths(home)
+    // Computed once and shared below: `skill_use_watch_paths` and
+    // `is_skill_use_change` each derive an OpenCode database list from
+    // `home`, and this function calls both per classified path.
+    let opencode_databases = skill_studio_host::opencode_databases(home);
+
+    if skill_studio_host::skill_use_watch_paths_with_databases(home, &opencode_databases)
         .iter()
         .any(|watch| watch.path == path)
     {
@@ -1794,7 +1799,7 @@ pub fn classify_watch_event(
         };
     }
 
-    if skill_studio_host::is_skill_use_change(home, path) {
+    if skill_studio_host::is_skill_use_change_with_databases(home, path, &opencode_databases) {
         return WatchEventKind::Invocations;
     }
 

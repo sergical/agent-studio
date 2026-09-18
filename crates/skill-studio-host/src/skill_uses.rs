@@ -942,9 +942,12 @@ pub struct SkillUseWatchPath {
 /// `OPENCODE_DB` override that points outside the data dir is watched as
 /// well. One source of truth ([`crate::opencode_db::opencode_databases`])
 /// for "which databases count", shared with [`is_opencode_skill_use_change`].
-fn opencode_watch_dirs(home: &Path) -> Vec<PathBuf> {
+/// Takes `databases` rather than calling `opencode_databases(home)` itself
+/// so a caller classifying several paths in one batch (`classify_watch_event`)
+/// computes the list once and shares it with [`is_opencode_skill_use_change`].
+fn opencode_watch_dirs(home: &Path, databases: &[PathBuf]) -> Vec<PathBuf> {
     let mut dirs = vec![opencode_root(home)];
-    for db in opencode_databases(home) {
+    for db in databases {
         if let Some(parent) = db.parent() {
             if !dirs.iter().any(|dir| dir == parent) {
                 dirs.push(parent.to_path_buf());
@@ -974,20 +977,35 @@ fn is_opencode_database_path_or_wal(databases: &[PathBuf], path: &Path) -> bool 
 /// sidecar) is exactly one of the paths `opencode_databases` currently
 /// returns - the same list [`opencode_watch_dirs`] derives its watch set
 /// from, so an `OPENCODE_DB` override outside the data dir counts too.
-fn is_opencode_skill_use_change(home: &Path, path: &Path) -> bool {
+/// Takes `databases` rather than calling `opencode_databases(home)` itself;
+/// see [`opencode_watch_dirs`].
+fn is_opencode_skill_use_change(home: &Path, path: &Path, databases: &[PathBuf]) -> bool {
     let data_dir = opencode_root(home);
     let in_data_dir = path.parent() == Some(data_dir.as_path())
         && path
             .file_name()
             .and_then(|name| name.to_str())
             .is_some_and(|name| is_opencode_database_or_wal(Path::new(name)));
-    in_data_dir || is_opencode_database_path_or_wal(&opencode_databases(home), path)
+    in_data_dir || is_opencode_database_path_or_wal(databases, path)
 }
 
 /// Every directory to watch for skill-use changes, for every source
 /// (switched-off harnesses included: a refresh skips them anyway, and the
 /// watch set then doesn't depend on settings).
 pub fn skill_use_watch_paths(home: &Path) -> Vec<SkillUseWatchPath> {
+    skill_use_watch_paths_with_databases(home, &opencode_databases(home))
+}
+
+/// Same as [`skill_use_watch_paths`], but takes an already-computed
+/// `OpenCode` database list rather than calling `opencode_databases(home)`
+/// itself. A caller classifying a batch of paths in one pass
+/// (`classify_watch_event`) computes the list once and shares it with
+/// [`is_skill_use_change_with_databases`], instead of each call
+/// re-reading the data dir.
+pub fn skill_use_watch_paths_with_databases(
+    home: &Path,
+    databases: &[PathBuf],
+) -> Vec<SkillUseWatchPath> {
     SOURCES
         .iter()
         .flat_map(|source| source.watch)
@@ -996,7 +1014,7 @@ pub fn skill_use_watch_paths(home: &Path) -> Vec<SkillUseWatchPath> {
             recursive: watch.recursive,
         })
         .chain(
-            opencode_watch_dirs(home)
+            opencode_watch_dirs(home, databases)
                 .into_iter()
                 .map(|path| SkillUseWatchPath {
                     path,
@@ -1011,6 +1029,13 @@ pub fn skill_use_watch_paths(home: &Path) -> Vec<SkillUseWatchPath> {
 /// path relative to that dir passes the watch's `accepts`; or `path` is an
 /// `OpenCode` skill-use change per [`is_opencode_skill_use_change`].
 pub fn is_skill_use_change(home: &Path, path: &Path) -> bool {
+    is_skill_use_change_with_databases(home, path, &opencode_databases(home))
+}
+
+/// Same as [`is_skill_use_change`], but takes an already-computed `OpenCode`
+/// database list rather than calling `opencode_databases(home)` itself; see
+/// [`skill_use_watch_paths_with_databases`].
+pub fn is_skill_use_change_with_databases(home: &Path, path: &Path, databases: &[PathBuf]) -> bool {
     SOURCES.iter().flat_map(|source| source.watch).any(|watch| {
         let dir = (watch.dir)(home);
         let Ok(rel) = path.strip_prefix(&dir) else {
@@ -1020,7 +1045,7 @@ pub fn is_skill_use_change(home: &Path, path: &Path) -> bool {
             return false;
         }
         (watch.accepts)(rel)
-    }) || is_opencode_skill_use_change(home, path)
+    }) || is_opencode_skill_use_change(home, path, databases)
 }
 
 /// Index of skill uses parsed from local harness session history, cached per

@@ -1677,10 +1677,8 @@ mod tests {
             .contains(&"epsilon".to_string()),
             "the deny write did not land under the fixture home"
         );
-        let real_denied = skill_studio_core::opencode_config::read_denied_patterns(
-            &fs_port,
-            &real_opencode_dir,
-        );
+        let real_denied =
+            skill_studio_core::opencode_config::read_denied_patterns(&fs_port, &real_opencode_dir);
         assert_eq!(
             real_denied,
             vec!["real-file-marker".to_string()],

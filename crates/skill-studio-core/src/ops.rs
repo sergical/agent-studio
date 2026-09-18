@@ -1543,7 +1543,7 @@ struct DisableSources {
     /// `permission.skill` (v1) and `permissions[]` (v2) skill rules
     /// `opencode.json` holds, from [`crate::opencode_config::read_skill_rules`]
     /// - the same read the write path and every adapter use, so a scan and
-    /// a deny write always agree on what "denied" means.
+    ///   a deny write always agree on what "denied" means.
     opencode_skill_rules: crate::opencode_config::OpencodeSkillRules,
     /// Claude Code `settings.json` `enabledPlugins["<plugin>@<marketplace>"]`,
     /// keyed by that same `<plugin>@<marketplace>` id.

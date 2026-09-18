@@ -56,7 +56,7 @@ pub(crate) fn opencode_data_dir(home: &Path) -> PathBuf {
 /// files only, sorted, capped at `MAX_OPENCODE_DATABASES`. Source:
 /// `packages/core/src/database/database.ts` `path()`, same commit as
 /// [`opencode_data_dir`].
-pub(crate) fn opencode_databases(home: &Path) -> Vec<PathBuf> {
+pub fn opencode_databases(home: &Path) -> Vec<PathBuf> {
     let data_dir = opencode_data_dir(home);
     if let Some(over) = std::env::var_os("OPENCODE_DB") {
         if over.is_empty() || over == ":memory:" {

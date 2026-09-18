@@ -133,8 +133,7 @@ pub struct OpencodeSkillRules {
 fn rules_deny(rules: &[SkillRule], name: &str) -> bool {
     rules
         .iter()
-        .filter(|rule| pattern_matches(&rule.pattern, name))
-        .next_back()
+        .rfind(|rule| pattern_matches(&rule.pattern, name))
         .is_some_and(|rule| rule.effect == DENY)
 }
 
@@ -373,8 +372,7 @@ pub fn set_skill_denied_with(
         .then(|| v2_skill_rules(&root))
         .into_iter()
         .flatten()
-        .filter(|rule| pattern_matches(&rule.pattern, name))
-        .next_back()
+        .rfind(|rule| pattern_matches(&rule.pattern, name))
         .filter(|rule| rule.effect == DENY);
     if let Some(rule) = blocking_v2_rule {
         return Err(CoreError::new(
@@ -416,14 +414,14 @@ pub fn set_skill_denied_with(
 
     if let Some(parent) = path.parent() {
         let scoped_parent = confine(&scope, fs, parent)?;
-        fs.create_dir_all(&guard, &scoped_parent)
+        fs.create_dir_all(guard, &scoped_parent)
             .map_err(|e| CoreError::io(parent, e))?;
     }
     let bytes = serde_json::to_vec_pretty(&Value::Object(root)).map_err(|e| {
         CoreError::new(ErrorCode::Io, format!("failed to serialize: {e}")).at(&path)
     })?;
     let scoped = confine(&scope, fs, &path)?;
-    fs.write_atomic(&guard, &scoped, &bytes)
+    fs.write_atomic(guard, &scoped, &bytes)
         .map_err(|e| CoreError::io(&path, e))
 }
 
@@ -594,8 +592,8 @@ mod tests {
     /// Failure: `foo` reported denied because the reader only checked
     /// "is any rule for me `deny`" instead of the last matching rule.
     #[test]
-    fn read_denied_patterns_honours_a_later_allow_or_names_the_skill_it_reported_denied_by_mistake(
-    ) {
+    fn read_denied_patterns_honours_a_later_allow_or_names_the_skill_it_reported_denied_by_mistake()
+    {
         let fs = FixtureBuilder::new()
             .dir("/home/.config/opencode")
             .file(

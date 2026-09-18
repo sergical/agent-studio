@@ -327,11 +327,10 @@ fn core_scan(
     };
     let mut scope = RuntimeScope::fixture(home);
     scope.read_timeout_ms = 10_000;
-    scope.opencode_config_root = Some(
-        opencode_config_root
-            .map(Path::to_path_buf)
-            .unwrap_or_else(|| skill_studio_host::opencode_config_dir_under(home)),
-    );
+    scope.opencode_config_root = Some(opencode_config_root.map_or_else(
+        || skill_studio_host::opencode_config_dir_under(home),
+        Path::to_path_buf,
+    ));
     if !projects.is_empty() {
         scope.projects = ProjectSelection::Explicit {
             paths: projects.to_vec(),
@@ -359,10 +358,7 @@ fn run_core_with_opencode_root(
     } else {
         Vec::new()
     };
-    project_core(
-        &core_scan(home, &projects, opencode_config_root),
-        home,
-    )
+    project_core(&core_scan(home, &projects, opencode_config_root), home)
 }
 
 /// A minimal spec-valid `SKILL.md`, matching

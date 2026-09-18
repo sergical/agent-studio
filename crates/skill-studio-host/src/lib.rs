@@ -55,11 +55,13 @@ pub use harness_detect::RealProcessSpawner;
 pub use history::{hash_entry, NoHistoryOpener, SqliteHistoryOpener};
 pub use ids::UlidIds;
 pub use lease::FileLease;
+pub use opencode_db::opencode_databases;
 #[cfg(feature = "error-reporting")]
 pub use sink::HttpReportTransport;
 pub use sink::{NoopSink, QueuedReportSink, ReportTransport, StderrSink, REPORT_ENDPOINT_ENV};
 pub use skill_uses::{
-    is_skill_use_change, skill_use_watch_paths, SkillInvocationIndex, SkillUseRefreshReport,
+    is_skill_use_change, is_skill_use_change_with_databases, skill_use_watch_paths,
+    skill_use_watch_paths_with_databases, SkillInvocationIndex, SkillUseRefreshReport,
     SkillUseWatchPath,
 };
 pub use tools::PathToolLookup;
