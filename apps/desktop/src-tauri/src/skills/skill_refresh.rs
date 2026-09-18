@@ -1081,10 +1081,21 @@ fn run_refresh_loop(app: AppHandle, state: SkillRefreshState) {
         &desired_watch_paths(&home, &initial_projects),
     );
 
-    if let Err(e) = rebuild_snapshot_now(&app, &state) {
-        eprintln!("skill refresh: initial rebuild failed: {e}");
-    }
-    reconcile_watchers_from_snapshot(&home, &state, &mut debouncer, &mut watched);
+    // Unit 3.9b: the sweep runs once, right after the first scan, on this
+    // loop's own background thread (never the UI task) - `ops::remove`'s own
+    // prune only fires as a side effect of removing a skill, so quarantine
+    // needs a schedule of its own (`issue-3.9a-followup-a.md` item 3).
+    // Routed through `first_scan_then_sweep` so a test can pin both the
+    // order and the thread without re-implementing this loop's scaffold.
+    first_scan_then_sweep(
+        &mut || {
+            if let Err(e) = rebuild_snapshot_now(&app, &state) {
+                eprintln!("skill refresh: initial rebuild failed: {e}");
+            }
+            reconcile_watchers_from_snapshot(&home, &state, &mut debouncer, &mut watched);
+        },
+        super::core_runtime::build_runtime_write,
+    );
 
     let mut last_invocations_rebuild = Instant::now();
 
@@ -1158,6 +1169,63 @@ fn run_refresh_loop(app: AppHandle, state: SkillRefreshState) {
             }
             last_invocations_rebuild = Instant::now();
         }
+    }
+}
+
+/// Runs `run_refresh_loop`'s first-iteration sequence - the initial
+/// snapshot rebuild, then the startup quarantine sweep, in that order, both
+/// on whichever thread the caller runs on. `rebuild` (`&mut dyn FnMut()` -
+/// the production call site also reconciles the filesystem watcher, which
+/// needs `&mut` access to its own locals) is the only injected
+/// seam: it stands in for `rebuild_snapshot_now`, which needs a real Tauri
+/// `AppHandle` a test can't construct (`tauri::test::mock_app` builds an
+/// `App<MockRuntime>`, not the `App<Wry>` this crate's `AppHandle` alias
+/// requires, and making every function on this call path generic over
+/// `Runtime` is out of scope here). The sweep call is deliberately *not*
+/// injected - it's hard-wired to `run_startup_quarantine_sweep` right here,
+/// so a test that deletes or reorders it exercises this production body
+/// directly, rather than a test-owned closure that would stay green under
+/// that mutation. Only `build_runtime` - the sweep's own seam, already used
+/// without a real `AppHandle` - is passed through.
+fn first_scan_then_sweep(
+    rebuild: &mut dyn FnMut(),
+    build_runtime: impl FnOnce() -> Result<skill_studio_core::ports::Runtime, String>,
+) {
+    rebuild();
+    run_startup_quarantine_sweep(build_runtime);
+}
+
+/// The startup quarantine sweep unit 3.9b's `run_refresh_loop` runs once,
+/// right after the first scan: `ops::sweep_quarantine`'s own doc explains
+/// why the schedule needs a call of its own, separate from `ops::remove`'s
+/// per-removal prune. `build_runtime` is injectable, the same shape
+/// `harness_first_run.rs`'s `detect_with_runtime` uses, so a test can record
+/// which thread it ran on without a real `tauri::AppHandle`. Global scope
+/// only - a project's own `.agents/skills` quarantine directory is swept the
+/// next time that project's own `remove` runs; sweeping every tracked
+/// project here as well is a follow-up, not part of the happy path.
+fn run_startup_quarantine_sweep(
+    build_runtime: impl FnOnce() -> Result<skill_studio_core::ports::Runtime, String>,
+) {
+    let rt = match build_runtime() {
+        Ok(rt) => rt,
+        Err(e) => {
+            eprintln!("skill refresh: startup quarantine sweep could not build a runtime: {e}");
+            return;
+        }
+    };
+    let ctx = skill_studio_core::ports::OpContext::uncancellable(
+        skill_studio_core::identity::CorrelationId(ulid::Ulid::new().to_string()),
+    );
+    if let Err(e) = skill_studio_core::ops::sweep_quarantine(
+        &rt,
+        &ctx,
+        &skill_studio_core::identity::RootScope::Global,
+    ) {
+        eprintln!(
+            "skill refresh: startup quarantine sweep failed: {}",
+            e.message
+        );
     }
 }
 
@@ -4025,6 +4093,85 @@ mod tests {
         assert_eq!(
             on_disk.unknown.get("from_the_future"),
             Some(&serde_json::json!(42))
+        );
+    }
+
+    /// `startup_prune_runs_after_the_first_scan_off_the_ui_thread_or_names_the_missing_run`:
+    /// calls `first_scan_then_sweep` - the exact function `run_refresh_loop`'s
+    /// first iteration calls - with a test-owned `rebuild` closure but the
+    /// production `sweep` step: `first_scan_then_sweep` hard-wires the sweep
+    /// call to `run_startup_quarantine_sweep` itself rather than accepting it
+    /// as a parameter, so this test can't pass its own stand-in for the
+    /// sweep the way an earlier version of this test passed its own stand-in
+    /// for both steps - that version stayed green under three mutations a
+    /// reviewer found by hand: swapping `rebuild`/`sweep` at the production
+    /// call site, deleting the sweep call, and reordering it. Only
+    /// `build_runtime` - `run_startup_quarantine_sweep`'s own seam - is
+    /// injected here, so a deleted or reordered sweep call inside
+    /// `first_scan_then_sweep` shows up as a missing or misordered `"sweep"`
+    /// entry in `recorded`, not just in a scaffold this test owns.
+    ///
+    /// Not covered: the thread hop in `skill_refresh::init` (its
+    /// `std::thread::spawn(move || run_refresh_loop(...))`), and the call
+    /// site inside `run_refresh_loop` that reaches `first_scan_then_sweep` in
+    /// the first place - both need `rebuild_snapshot_now`'s real
+    /// `tauri::AppHandle`. `tauri::test::mock_app` only builds an
+    /// `App<MockRuntime>`, not the `App<Wry>` this crate's `AppHandle` alias
+    /// requires, and making every function on that call path generic over
+    /// `Runtime` is out of scope for this fix. A reviewer restoring the old
+    /// call site with `rebuild_snapshot_now(&app, &state)` inlined - dropping
+    /// the sweep entirely - must therefore verify that by reading
+    /// `run_refresh_loop`, not by running this test.
+    #[test]
+    fn startup_prune_runs_after_the_first_scan_off_the_ui_thread_or_names_the_missing_run() {
+        use std::sync::{Arc as StdArc, Mutex as StdMutex};
+
+        let calling_thread = std::thread::current().id();
+        let log: StdArc<StdMutex<Vec<(&'static str, std::thread::ThreadId)>>> =
+            StdArc::new(StdMutex::new(Vec::new()));
+        let scan_log = StdArc::clone(&log);
+        let build_runtime_log = StdArc::clone(&log);
+
+        let handle = std::thread::spawn(move || {
+            first_scan_then_sweep(
+                &mut || {
+                    scan_log
+                        .lock()
+                        .unwrap()
+                        .push(("scan", std::thread::current().id()));
+                },
+                move || {
+                    // `run_startup_quarantine_sweep` calls `build_runtime` as
+                    // its first step, before touching `ops::sweep_quarantine`,
+                    // so recording here - before returning the `Err` that
+                    // makes it stop - still observes the sweep step itself,
+                    // not just this test's stand-in for it.
+                    build_runtime_log
+                        .lock()
+                        .unwrap()
+                        .push(("sweep", std::thread::current().id()));
+                    Err("no runtime in this test".to_string())
+                },
+            );
+        });
+        handle.join().unwrap();
+
+        let recorded = log.lock().unwrap().clone();
+        let sweep_thread = recorded
+            .iter()
+            .find(|(step, _)| *step == "sweep")
+            .map(|(_, t)| *t)
+            .expect("the sweep never ran");
+        assert_eq!(
+            recorded,
+            vec![("scan", sweep_thread), ("sweep", sweep_thread)],
+            "first_scan_then_sweep must run the scan then the sweep, in that order and on \
+             the same thread"
+        );
+        assert_ne!(
+            sweep_thread, calling_thread,
+            "first_scan_then_sweep ran on the calling thread ({calling_thread:?}) instead of \
+             the thread the test drove it from"
         );
     }
 }

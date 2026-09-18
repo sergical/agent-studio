@@ -56,8 +56,7 @@ export function RemoveDeploymentsDialog({
     if (!removalAvailability.available) return;
     setIsRemoving(true);
     removeSkill(removalAvailability.preview.target)
-      .then((result) => {
-        if (!result.success) throw new Error(result.error ?? "The removal did not complete.");
+      .then(() => {
         onClose();
       })
       .catch((err) => {

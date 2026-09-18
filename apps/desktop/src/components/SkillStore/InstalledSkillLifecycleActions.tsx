@@ -109,8 +109,13 @@ function useSkillLifecycleMutations(
       return Promise.resolve();
     }
     return removeSkill(removalPreview.target)
-      .then((result) => {
-        if (result.success) onRemoveComplete();
+      .then(() => {
+        onRemoveComplete();
+      })
+      .catch(() => {
+        // Swallowed here too: this row has nowhere to show a remove error
+        // (no toast wiring), matching the old `InstallResult.success` check
+        // that also left a failed removal silent.
       })
       .finally(() => {
         setIsRemoving(false);

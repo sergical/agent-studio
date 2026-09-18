@@ -4773,7 +4773,7 @@ pub(crate) fn find_all_links<'a>(
 }
 
 pub use crate::ops_install::{install, install_preferences};
-pub use crate::ops_remove::remove;
+pub use crate::ops_remove::{remove, sweep_quarantine};
 pub use crate::ops_update::{update, update_all};
 
 /// Moves a universal deployment's directory into the parked root.
