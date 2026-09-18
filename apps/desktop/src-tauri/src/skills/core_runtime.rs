@@ -51,7 +51,7 @@ pub fn build_runtime_write() -> Result<Runtime, String> {
 /// directly rather than read from the host. `set_harness_enabled_with`
 /// (Codex's `[[skills.config]]` write) takes this so it stays testable
 /// against a tempdir `home`, the way it was before that write moved onto
-/// `ops::set_codex_skill_disabled` - the real command still calls
+/// `ops::set_codex_skill_disabled_with` - the real command still calls
 /// `build_runtime_write` above, which resolves `home` and `data_root` from
 /// the host exactly as it did before this function existed. `pub` (not
 /// `pub(crate)`) so `tests/fix_parity.rs` can build the desktop side of its

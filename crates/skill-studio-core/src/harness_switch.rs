@@ -11,7 +11,7 @@
 //!
 //! Codex has no transform here: `crate::ops::set_codex_switch` shares
 //! `crate::ops::codex_write_disabled_row`, the decor-preserving
-//! `[[skills.config]]` row writer, with `set_codex_skill_disabled` rather
+//! `[[skills.config]]` row writer, with `set_codex_skill_disabled_with` rather
 //! than duplicating it as a plain-string transform - a second writer for
 //! the same file only invites the two to drift.
 

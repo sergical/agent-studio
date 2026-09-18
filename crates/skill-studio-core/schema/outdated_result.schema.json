@@ -1,0 +1,35 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Map_of_Currency",
+  "type": "object",
+  "additionalProperties": {
+    "$ref": "#/$defs/Currency"
+  },
+  "$defs": {
+    "Currency": {
+      "description": "One skill's currency, keyed by name in [`outdated`]'s result. Wire-visible:\n`ops::outdated`'s CLI subcommand and MCP tool return this map directly.",
+      "oneOf": [
+        {
+          "description": "The installed side matches the newest side.",
+          "type": "string",
+          "const": "up_to_date"
+        },
+        {
+          "description": "The installed side is behind the newest side.",
+          "type": "string",
+          "const": "update_available"
+        },
+        {
+          "description": "No install method claims this skill: manual, in-repo, a fork, or an\nambiguous owner. Never shown as \"update available\".",
+          "type": "string",
+          "const": "not_tracked"
+        },
+        {
+          "description": "A method claims the skill but the check could not run: a missing\nlock/ledger entry, a malformed lock file, or a lookup failure.\nDistinct from `NotTracked` so the UI can tell \"we don't know\" from\n\"there is nothing to know\" - and, per the crash test below, a\nmalformed lock file must resolve every skills.sh skill to `Unknown`,\nnever silently to `UpToDate` or `UpdateAvailable`.",
+          "type": "string",
+          "const": "unknown"
+        }
+      ]
+    }
+  }
+}

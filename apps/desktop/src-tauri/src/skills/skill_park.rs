@@ -21,6 +21,8 @@
 // `skill_refresh.rs`'s `apply_skill_snapshot_overlays`).
 // ============================================================================
 
+use std::path::Path;
+
 use skill_studio_core::dto::{ParkOutcome, ParkRequest, UnparkOutcome, UnparkRequest};
 use skill_studio_core::identity::{CorrelationId, DeploymentId};
 use skill_studio_core::ops::{self, Operation, ResultEnvelope};
@@ -39,6 +41,23 @@ fn deployment_id_from_target(
     DeploymentId::parse(raw).map_err(|e| e.message)
 }
 
+/// Runs `ops::park` against a `Runtime` rooted at `home`/`data_root` given
+/// directly, rather than the host's own home directory. `park_skill` below
+/// (the real Tauri command) calls this with the host's paths; a test calls
+/// it with a tempdir so it can compare the desktop's write against the
+/// CLI's and MCP's for the same op, without a `tauri::AppHandle`.
+pub fn park_with_runtime(
+    home: &Path,
+    data_root: &Path,
+    deployment_id: DeploymentId,
+) -> Result<ParkOutcome, String> {
+    let rt = super::core_runtime::build_runtime_write_at(home, data_root)?;
+    let ctx = OpContext::uncancellable(CorrelationId(ulid::Ulid::new().to_string()));
+    let result = ops::park(&rt, &ctx, &ParkRequest { deployment_id });
+    let envelope = ResultEnvelope::from_result(Operation::Park, &rt.scope, &ctx, result);
+    super::core_runtime::to_command_result(envelope)
+}
+
 #[tauri::command]
 pub async fn park_skill(
     target: LifecycleTarget,
@@ -46,11 +65,8 @@ pub async fn park_skill(
 ) -> Result<ParkOutcome, String> {
     crate::timing_log::time_command_blocking(&app, "park_skill", move || {
         let deployment_id = deployment_id_from_target(&target, "Park")?;
-        let rt = super::core_runtime::build_runtime_write()?;
-        let ctx = OpContext::uncancellable(CorrelationId(ulid::Ulid::new().to_string()));
-        let result = ops::park(&rt, &ctx, &ParkRequest { deployment_id });
-        let envelope = ResultEnvelope::from_result(Operation::Park, &rt.scope, &ctx, result);
-        super::core_runtime::to_command_result(envelope)
+        let home = dirs::home_dir().ok_or("Could not find home directory")?;
+        park_with_runtime(&home, &super::core_runtime::data_root(), deployment_id)
     })
     .await
 }

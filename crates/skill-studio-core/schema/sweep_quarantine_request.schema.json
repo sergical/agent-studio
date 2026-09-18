@@ -1,0 +1,6 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "SweepQuarantineRequest",
+  "description": "Request for `sweep_quarantine`. Empty: the op only ever sweeps the\nglobal root (see `ops::sweep_quarantine`'s own doc), so there is nothing\nfor a caller to choose yet.",
+  "type": "object"
+}

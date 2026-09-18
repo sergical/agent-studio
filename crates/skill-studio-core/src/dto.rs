@@ -310,6 +310,13 @@ pub struct CapabilitiesRequest {
 #[serde(default)]
 pub struct HarnessesRequest {}
 
+/// Request for `sweep_quarantine`. Empty: the op only ever sweeps the
+/// global root (see `ops::sweep_quarantine`'s own doc), so there is nothing
+/// for a caller to choose yet.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(default)]
+pub struct SweepQuarantineRequest {}
+
 /// Ways a frontmatter repair may be applied.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "kebab-case")]
@@ -799,6 +806,25 @@ pub struct RemoveOutcome {
     /// the bytes directly, the same as it does for every other build's
     /// remove today.
     pub quarantine_path: Option<PathBuf>,
+}
+
+/// Request for `install_preferences`: which scope's saved preference to
+/// read. Defaults to the global root, so a caller that only ever installs
+/// globally sends nothing.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(default)]
+pub struct InstallPreferencesRequest {
+    /// `Global` reads the scope home's preference; `Project` reads one
+    /// project's.
+    pub scope: RootScope,
+}
+
+impl Default for InstallPreferencesRequest {
+    fn default() -> Self {
+        Self {
+            scope: RootScope::Global,
+        }
+    }
 }
 
 /// The method and harnesses the last successful install saved, or the

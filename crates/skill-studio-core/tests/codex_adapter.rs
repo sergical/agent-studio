@@ -13,10 +13,11 @@ use std::sync::{Arc, Mutex};
 
 use skill_studio_core::discovery_sources::DiscoverySources;
 use skill_studio_core::dto::{ParkRequest, UnparkRequest};
+use skill_studio_core::error::CoreError;
 use skill_studio_core::harness::HarnessCatalog;
 use skill_studio_core::identity::RootKind;
 use skill_studio_core::ops;
-use skill_studio_core::ports::{Ports, Runtime};
+use skill_studio_core::ports::{acquire_exclusive, Ports, Runtime};
 use skill_studio_core::scope::RuntimeScope;
 use skill_studio_core::testing::golden::{ctx, unique_temp_dir};
 use skill_studio_core::testing::{FakeClock, FakeIds, RecordingSink};
@@ -53,10 +54,23 @@ fn runtime_for(home: &Path, codex_home: Option<&Path>) -> Runtime {
     Runtime::new(&scope, ports).unwrap()
 }
 
+/// `ops::set_codex_skill_disabled_with` takes the exclusive lease from its
+/// caller, because the desktop command that drives it already holds one and
+/// advisory locks do not nest in-process. These tests hold none, so this
+/// acquires the lease the same way that command does before handing it over.
+fn set_codex_skill_disabled(
+    rt: &Runtime,
+    skill_md_path: &Path,
+    disabled: bool,
+) -> Result<(), CoreError> {
+    let guard = acquire_exclusive(rt.ports.leases.as_ref(), &rt.scope)?;
+    ops::set_codex_skill_disabled_with(rt, &ctx(), &guard, skill_md_path, disabled)
+}
+
 /// `codex_disable_writes_the_skills_config_row_and_keeps_other_tables_and_comments_or_names_the_dropped_content`:
 /// disabling a skill adds a `[[skills.config]]` row, but every other byte of
 /// an existing `config.toml` - an unrelated table, and the comment above it -
-/// survives untouched, since `set_codex_skill_disabled` edits the parsed
+/// survives untouched, since `set_codex_skill_disabled_with` edits the parsed
 /// document in place rather than re-serializing a plain value.
 #[test]
 fn codex_disable_writes_the_skills_config_row_and_keeps_other_tables_and_comments_or_names_the_dropped_content(
@@ -73,7 +87,7 @@ fn codex_disable_writes_the_skills_config_row_and_keeps_other_tables_and_comment
         .join("gamma")
         .join("SKILL.md");
 
-    ops::set_codex_skill_disabled(&rt, &ctx(), &skill_md, true).unwrap();
+    set_codex_skill_disabled(&rt, &skill_md, true).unwrap();
 
     let written = std::fs::read_to_string(codex_home.join("config.toml")).unwrap();
     assert!(
@@ -110,7 +124,7 @@ fn codex_disable_refuses_a_mistyped_skills_key_or_names_the_panic() {
         .join("gamma")
         .join("SKILL.md");
 
-    let err = ops::set_codex_skill_disabled(&rt, &ctx(), &skill_md, true).unwrap_err();
+    let err = set_codex_skill_disabled(&rt, &skill_md, true).unwrap_err();
     assert!(
         err.message.contains("skills"),
         "the error did not name the mistyped key: {}",
@@ -142,7 +156,7 @@ fn codex_park_updates_the_skills_config_row_path_or_names_the_stale_row() {
     .unwrap();
     let rt = runtime_for(&home, None);
     let old_skill_md = dir.join("SKILL.md");
-    ops::set_codex_skill_disabled(&rt, &ctx(), &old_skill_md, true).unwrap();
+    set_codex_skill_disabled(&rt, &old_skill_md, true).unwrap();
 
     let inventory = ops::scan(&rt, &ctx(), &Default::default()).unwrap();
     let deployment_id = inventory
@@ -196,7 +210,7 @@ fn codex_unpark_rewrites_the_disable_row_back_to_the_live_path_or_names_the_stal
     .unwrap();
     let rt = runtime_for(&home, None);
     let live_skill_md = dir.join("SKILL.md");
-    ops::set_codex_skill_disabled(&rt, &ctx(), &live_skill_md, true).unwrap();
+    set_codex_skill_disabled(&rt, &live_skill_md, true).unwrap();
 
     let inventory = ops::scan(&rt, &ctx(), &Default::default()).unwrap();
     let deployment_id = inventory
@@ -280,7 +294,7 @@ fn codex_honours_codex_home_for_config_and_rollouts_or_names_the_path_read_from_
         .join(UNIVERSAL_ROOT_RELATIVE)
         .join("gamma")
         .join("SKILL.md");
-    ops::set_codex_skill_disabled(&rt, &ctx(), &skill_md, true).unwrap();
+    set_codex_skill_disabled(&rt, &skill_md, true).unwrap();
     assert!(
         custom_codex_home.join("config.toml").exists(),
         "the path read from the default: config.toml was not written under CODEX_HOME"

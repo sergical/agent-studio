@@ -1,0 +1,53 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "SetHarnessEnabledOutcome",
+  "description": "Result of `set_harness_enabled`.",
+  "type": "object",
+  "properties": {
+    "event_id": {
+      "description": "The `set_harness_enabled` event.",
+      "$ref": "#/$defs/EventId"
+    },
+    "skill": {
+      "description": "The skill that was toggled.",
+      "$ref": "#/$defs/SkillName"
+    },
+    "harness": {
+      "description": "The harness whose switch was flipped.",
+      "$ref": "#/$defs/AgentIdentity"
+    },
+    "toggled": {
+      "description": "How many of the harness's paths for this skill were toggled before\neither finishing or hitting a failure.",
+      "type": "integer",
+      "format": "uint32",
+      "minimum": 0
+    },
+    "total": {
+      "description": "How many paths the harness's switch needed to touch in total.",
+      "type": "integer",
+      "format": "uint32",
+      "minimum": 0
+    }
+  },
+  "required": [
+    "event_id",
+    "skill",
+    "harness",
+    "toggled",
+    "total"
+  ],
+  "$defs": {
+    "EventId": {
+      "description": "History event id (ULID string).\n\nInvariant: lexical order equals creation order inside one store.",
+      "type": "string"
+    },
+    "SkillName": {
+      "description": "Lexical skill name: the directory name that holds `SKILL.md`.\n\nInvariant: two deployments with the same `SkillName` are the same skill,\neven when their bytes differ. A symlink alias with another name is another\nskill.",
+      "type": "string"
+    },
+    "AgentIdentity": {
+      "description": "Kebab-case harness identifier, for example `claude-code` or `open-code`.\n\nInvariant: the string is the serde wire name used by the desktop app\ntoday. `open-code` is canonical; `opencode` is only a CLI binary name and\nis never stored in an `AgentId`.",
+      "type": "string"
+    }
+  }
+}

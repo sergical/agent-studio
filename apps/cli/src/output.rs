@@ -6,11 +6,14 @@ use std::process::ExitCode;
 use serde::Serialize;
 use skill_studio_core::dto::{
     CommandHealth, ConflictReport, Diagnosis, EventDto, FixApplied, FixSkillOutcome,
-    FrontmatterRepairPreview, InstallOutcome, Inventory, RemoveOutcome, RepairOutcome,
-    RestoreOutcome, ScanRequest, SetHarnessEnabledOutcome, UpdateAllOutcome, UpdateOutcome,
+    FrontmatterRepairPreview, InstallOutcome, InstallPreferences, Inventory, ParkOutcome,
+    RemoveOutcome, RepairOutcome, RestoreOutcome, ScanRequest, SetHarnessEnabledOutcome,
+    UnparkOutcome, UpdateAllOutcome, UpdateOutcome,
 };
 use skill_studio_core::harness::{Capabilities, HarnessReport};
 use skill_studio_core::ops::ResultEnvelope;
+use skill_studio_core::skill_update_check::Currency;
+use std::collections::BTreeMap;
 
 /// Prints one envelope as a single JSON document with a trailing newline.
 /// `println!` supplies the newline; the document itself is compact, so a
@@ -257,6 +260,36 @@ pub fn print_install_outcome_table(envelope: &ResultEnvelope<InstallOutcome>) {
     }
 }
 
+/// Prints `install-preferences`'s table: the method and harnesses the next
+/// `add` pre-selects, and whether they were saved by an earlier install or
+/// derived from the environment.
+pub fn print_install_preferences_table(envelope: &ResultEnvelope<InstallPreferences>) {
+    print_errors(envelope);
+    let Some(preferences) = &envelope.data else {
+        return;
+    };
+    let harnesses = preferences
+        .harnesses
+        .iter()
+        .map(skill_studio_core::identity::AgentId::as_str)
+        .collect::<Vec<_>>()
+        .join(", ");
+    println!(
+        "method={:?}  harnesses={}  source={}",
+        preferences.method,
+        if harnesses.is_empty() {
+            "-"
+        } else {
+            &harnesses
+        },
+        if preferences.saved {
+            "saved"
+        } else {
+            "default"
+        },
+    );
+}
+
 /// Prints `events`'s table: one line per event, newest first.
 pub fn print_events_table(envelope: &ResultEnvelope<Vec<EventDto>>) {
     print_errors(envelope);
@@ -360,6 +393,60 @@ pub fn print_remove_outcome_table(envelope: &ResultEnvelope<RemoveOutcome>) {
     }
 }
 
+/// Prints `park`'s table: the deployment and where its directory now lives.
+pub fn print_park_outcome_table(envelope: &ResultEnvelope<ParkOutcome>) {
+    print_errors(envelope);
+    let Some(outcome) = &envelope.data else {
+        return;
+    };
+    println!(
+        "{} parked -> {}",
+        outcome.deployment_id.as_str(),
+        outcome.parked_path.display()
+    );
+}
+
+/// Prints `unpark`'s table: the deployment and where its directory now lives.
+pub fn print_unpark_outcome_table(envelope: &ResultEnvelope<UnparkOutcome>) {
+    print_errors(envelope);
+    let Some(outcome) = &envelope.data else {
+        return;
+    };
+    println!(
+        "{} restored -> {}",
+        outcome.deployment_id.as_str(),
+        outcome.restored_path.display()
+    );
+}
+
+/// Prints `outdated`'s table: one `NAME CURRENCY` row per skill, sorted by
+/// name (`outdated`'s result is already a `BTreeMap`, so this is free).
+pub fn print_outdated_table(envelope: &ResultEnvelope<BTreeMap<String, Currency>>) {
+    print_errors(envelope);
+    let Some(outcome) = &envelope.data else {
+        return;
+    };
+    for (name, currency) in outcome {
+        let label = match currency {
+            Currency::UpToDate => "up_to_date",
+            Currency::UpdateAvailable => "update_available",
+            Currency::NotTracked => "not_tracked",
+            Currency::Unknown => "unknown",
+        };
+        println!("{name}\t{label}");
+    }
+}
+
+/// Prints `sweep_quarantine`'s table: it has no outcome payload, so a
+/// success just confirms the sweep ran; errors already went to stderr via
+/// `print_errors`.
+pub fn print_sweep_quarantine_table(envelope: &ResultEnvelope<()>) {
+    print_errors(envelope);
+    if envelope.data.is_some() {
+        println!("quarantine swept");
+    }
+}
+
 /// Prints `health`'s table: `COMMAND COUNT FAILURES P50_MS P95_MS
 /// LAST_ERROR`, one row per command, in the rollup's own (command-name)
 /// order.
@@ -446,8 +533,36 @@ pub fn write_schemas(out: Option<PathBuf>) -> ExitCode {
             schemars::schema_for!(skill_studio_core::dto::InstallRequest)
         }),
         ("install_outcome", || schemars::schema_for!(InstallOutcome)),
+        ("install_preferences_request", || {
+            schemars::schema_for!(skill_studio_core::dto::InstallPreferencesRequest)
+        }),
         ("install_preferences", || {
             schemars::schema_for!(skill_studio_core::dto::InstallPreferences)
+        }),
+        ("park_request", || {
+            schemars::schema_for!(skill_studio_core::dto::ParkRequest)
+        }),
+        ("park_outcome", || {
+            schemars::schema_for!(skill_studio_core::dto::ParkOutcome)
+        }),
+        ("unpark_request", || {
+            schemars::schema_for!(skill_studio_core::dto::UnparkRequest)
+        }),
+        ("unpark_outcome", || {
+            schemars::schema_for!(skill_studio_core::dto::UnparkOutcome)
+        }),
+        ("set_harness_enabled_request", || {
+            schemars::schema_for!(skill_studio_core::dto::SetHarnessEnabledRequest)
+        }),
+        ("set_harness_enabled_outcome", || {
+            schemars::schema_for!(skill_studio_core::dto::SetHarnessEnabledOutcome)
+        }),
+        (
+            "outdated_result",
+            || schemars::schema_for!(BTreeMap<String, Currency>),
+        ),
+        ("sweep_quarantine_request", || {
+            schemars::schema_for!(skill_studio_core::dto::SweepQuarantineRequest)
         }),
     ];
     for (name, build) in schemas {
