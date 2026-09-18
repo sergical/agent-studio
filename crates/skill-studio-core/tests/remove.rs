@@ -1108,6 +1108,42 @@ fn quarantine_stays_within_the_retention_cap_and_prunes_the_oldest_entries_or_na
     );
 }
 
+/// `sweep_quarantine_prunes_the_cap_without_a_remove_call_or_names_the_stray_entry`:
+/// unit 3.9b's desktop startup sweep calls `ops::sweep_quarantine` directly,
+/// with no accompanying `remove` - a quarantine directory already over the
+/// cap (seeded by hand, the way `quarantine_stays_within_the_retention_cap...`
+/// above seeds it) must still come back down to the cap.
+#[test]
+fn sweep_quarantine_prunes_the_cap_without_a_remove_call_or_names_the_stray_entry() {
+    let home = unique_temp_dir("remove_sweep_quarantine_cap");
+    std::fs::create_dir_all(&home).unwrap();
+    let quarantine_dir = home.join(UNIVERSAL_ROOT_RELATIVE).join(QUARANTINE_DIR_NAME);
+    std::fs::create_dir_all(&quarantine_dir).unwrap();
+    let cap = skill_studio_core::doctor::QUARANTINE_RETENTION_CAP;
+    for i in 0..=cap {
+        let dir = quarantine_dir.join(format!("old-{i:04}"));
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("SKILL.md"), b"---\nname: old\n---\n").unwrap();
+    }
+    let rt = runtime_for(&home);
+
+    ops::sweep_quarantine(&rt, &ctx(), &RootScope::Global).unwrap();
+
+    let remaining: Vec<String> = std::fs::read_dir(&quarantine_dir)
+        .unwrap()
+        .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+        .collect();
+    assert_eq!(
+        remaining.len(),
+        cap,
+        "sweep_quarantine must prune back to the cap with no remove call: {remaining:?}"
+    );
+    assert!(
+        !remaining.contains(&"old-0000".to_string()),
+        "the oldest pre-existing entry must be the one pruned: {remaining:?}"
+    );
+}
+
 /// `quarantine_prune_drops_entries_older_than_the_age_cap_or_names_the_kept_entry`
 /// (round 2, N4): an entry past `QUARANTINE_AGE_CAP` is pruned even while
 /// the directory is well under `QUARANTINE_RETENTION_CAP`, so an idle

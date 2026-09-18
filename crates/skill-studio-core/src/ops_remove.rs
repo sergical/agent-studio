@@ -520,6 +520,27 @@ pub fn remove(
     })
 }
 
+/// A quarantine sweep with no accompanying `remove` call: `remove`'s own
+/// prune (above) only fires as a side effect of removing a skill, so
+/// quarantine never shrinks for a user who simply stops calling `remove`
+/// (`issue-3.9a-followup-a.md` item 3). The desktop host runs this once at
+/// startup, after its first scan, off the UI thread (unit 3.9b); other
+/// hosts may schedule it too. Same exclusive lease and [`prune_quarantine`]
+/// call `remove` uses; the triggering-skill field on the resulting journal
+/// row is a fixed sentinel since no one skill triggered this sweep.
+pub fn sweep_quarantine(rt: &Runtime, ctx: &OpContext, scope: &RootScope) -> Result<(), CoreError> {
+    ctx.checkpoint()?;
+    let mut session = MutationSession::begin(rt, ctx)?;
+    let fs = rt.ports.fs.as_ref();
+    let universal_root =
+        crate::ops_install::scope_root(rt, scope).join(crate::identity::UNIVERSAL_ROOT_RELATIVE);
+    let quarantine_dir = universal_root.join(crate::doctor::QUARANTINE_DIR_NAME);
+    let sentinel = crate::identity::SkillName("quarantine-sweep".to_string());
+    prune_quarantine(rt, &mut session, fs, &quarantine_dir, &sentinel);
+    session.finish(rt, ctx);
+    Ok(())
+}
+
 /// The write-and-link step every `remove` call shares, once its journal row
 /// is already recorded: renames the tree into quarantine (`Copy`/`Fork`) or
 /// runs the CLI's own `remove` (`Dotagents`/`SkillsSh`) FIRST, then removes
