@@ -14,3 +14,16 @@ function isDriftRefusal(message: string): boolean {
 export function shouldOfferForceRestore(event: SkillEvent, message: string): boolean {
   return event.force_restorable && isDriftRefusal(message);
 }
+
+/** "unlink harness" from "unlink_harness", for kinds with no friendlier label. */
+export function kindLabel(kind: string): string {
+  switch (kind) {
+    // `ops::sweep_quarantine`'s own journal row (unit 3.9b) - the generic
+    // underscore-to-space fallback would read "quarantine prune", which
+    // reads as an imperative instruction rather than a thing that happened.
+    case "quarantine_prune":
+      return "Quarantine pruned";
+    default:
+      return kind.replace(/_/g, " ");
+  }
+}

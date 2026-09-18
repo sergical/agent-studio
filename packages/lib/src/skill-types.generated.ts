@@ -1297,6 +1297,35 @@ export interface ConflictSummary {
   path_b: string;
 }
 /**
+ * Result of `remove`.
+ */
+export interface RemoveOutcome {
+  /**
+   * The `remove` event.
+   */
+  event_id: string;
+  /**
+   * The deployment that was removed.
+   */
+  deployment_id: string;
+  /**
+   * The skill that was removed.
+   */
+  skill: string;
+  /**
+   * The removed folder's `TreeHash`, taken before the first write.
+   */
+  tree_hash_before: string;
+  /**
+   * Where the folder now lives under quarantine, for `Copy`/`Fork`
+   * (never deleted - see `docs/action-map/primitives-and-call-stack.md`'s
+   * Remove row). `None` for `Dotagents`/`SkillsSh`, whose own CLI deletes
+   * the bytes directly, the same as it does for every other build's
+   * remove today.
+   */
+  quarantine_path: string | null;
+}
+/**
  * Result of `update`.
  */
 export interface UpdateOutcome {
