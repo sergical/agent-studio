@@ -4,7 +4,7 @@
 // everywhere by moving its shared folder aside). Three native mechanisms,
 // one per harness that has one, plus a universal fallback for the rest:
 //   - Codex: `~/.codex/config.toml` `[[skills.config]] enabled = false`,
-//     written through `skill_studio_core::ops::set_codex_skill_disabled`.
+//     written through `skill_studio_core::ops::set_codex_skill_disabled_with`.
 //   - OpenCode: `~/.config/opencode/opencode.json` (or its `XDG_CONFIG_HOME`/
 //     `OPENCODE_CONFIG_DIR` override) `permission.skill.<name> = "deny"`,
 //     via `skill_studio_core::opencode_config`.
@@ -981,7 +981,7 @@ mod tests {
     }
 
     /// Reads every `path` a Codex `[[skills.config]] enabled = false` row
-    /// names, uncanonicalized - matches what `ops::set_codex_skill_disabled`
+    /// names, uncanonicalized - matches what `ops::set_codex_skill_disabled_with`
     /// writes (the raw `skill_md_path` it was given), so a round-trip test
     /// can compare against the path it passed in without going through the
     /// filesystem again.

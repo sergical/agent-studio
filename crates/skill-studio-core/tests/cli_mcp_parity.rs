@@ -28,17 +28,9 @@ const EXCLUSIONS: &[Exclusion] = &[
         reason: "a hashing helper `scan`/`diagnose` call internally, not a request/outcome op",
     },
     Exclusion {
-        name: "set_codex_skill_disabled",
-        reason: "superseded by set_codex_skill_disabled_with; only this crate's own tests call it",
-    },
-    Exclusion {
         name: "set_codex_skill_disabled_with",
         reason: "an implementation detail behind the set_harness_enabled surface \
                   (desktop's skill_harness_disable.rs calls it directly for the Codex arm)",
-    },
-    Exclusion {
-        name: "set_codex_sidecar_implicit_invocation",
-        reason: "unadopted: desktop's codex_openai_yaml path bypasses it (see skill_invocation.rs)",
     },
 ];
 
