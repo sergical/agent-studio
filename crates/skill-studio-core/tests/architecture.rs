@@ -20,6 +20,12 @@ use std::path::{Path, PathBuf};
 /// source files as text.
 const ALLOWED_FILES: &[&str] = &["testing.rs", "bench_estate.rs", "lib.rs"];
 
+/// `std::process::id()` reads the running process's own PID - it does no
+/// I/O, spawns nothing, and has no `Ports` method to route through (unlike
+/// a `Clock` or `ScopeFs` call, mocking it buys no test coverage). `fsops`
+/// mixes it into a temp-name suffix purely so two names never collide.
+const ALLOWED_CALLS: &[&str] = &["std::process::id()"];
+
 fn collect_rs_files(dir: &Path, out: &mut Vec<PathBuf>) {
     for entry in fs::read_dir(dir).expect("read_dir") {
         let entry = entry.expect("dir entry");
@@ -54,7 +60,9 @@ fn core_crate_has_no_std_fs_or_std_process_or_names_the_call_site() {
             if code.starts_with("//") {
                 continue; // doc comments may mention std::fs/std::process in prose
             }
-            if line.contains("std::fs::") || line.contains("std::process::") {
+            let has_violation = (line.contains("std::fs::") || line.contains("std::process::"))
+                && !ALLOWED_CALLS.iter().any(|call| line.contains(call));
+            if has_violation {
                 violations.push(format!(
                     "{}:{}: {}",
                     path.display(),
@@ -99,4 +107,86 @@ fn core_crate_cargo_toml_has_no_tauri_rusqlite_tokio_or_reqwest_dependency_or_na
          skill-studio-host or an app crate instead:\n{}",
         found.join("\n")
     );
+}
+
+/// The runtime proof that this deny list is live: add `let _ = Some(1).unwrap();`
+/// to `lib.rs`, run `cargo clippy -p skill-studio-core --all-targets`, watch it
+/// go red on `clippy::unwrap_used`, then revert the line before merging. This
+/// test is the durable form of that one-time proof - it pins the deny list
+/// itself in the root `Cargo.toml`, so a future edit that loosens it fails
+/// here instead of silently letting `.unwrap()` back into core.
+#[test]
+fn workspace_lints_deny_unwrap_expect_panic_todo_unimplemented_dbg_print_in_core_or_names_the_call_site(
+) {
+    let workspace_root = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../..")
+        .canonicalize()
+        .expect("canonicalize workspace root");
+    let manifest_path = workspace_root.join("Cargo.toml");
+    let manifest = fs::read_to_string(&manifest_path).expect("read root Cargo.toml");
+    let parsed: toml::Value = toml::from_str(&manifest).expect("parse root Cargo.toml");
+
+    let clippy_lints = parsed
+        .get("workspace")
+        .and_then(|w| w.get("lints"))
+        .and_then(|l| l.get("clippy"))
+        .and_then(|c| c.as_table())
+        .expect("root Cargo.toml has no [workspace.lints.clippy] table");
+
+    let required_deny = [
+        "unwrap_used",
+        "expect_used",
+        "panic",
+        "todo",
+        "unimplemented",
+        "dbg_macro",
+        "print_stdout",
+        "print_stderr",
+    ];
+    let mut missing = Vec::new();
+    for lint in required_deny {
+        let level = clippy_lints
+            .get(lint)
+            .and_then(toml::Value::as_str)
+            .unwrap_or("");
+        if level != "deny" {
+            missing.push(format!("clippy::{lint} is {level:?}, expected \"deny\""));
+        }
+    }
+
+    assert!(
+        missing.is_empty(),
+        "[workspace.lints.clippy] in the root Cargo.toml must deny every lint core \
+         depends on to stay panic-free:\n{}",
+        missing.join("\n")
+    );
+}
+
+/// `cargo machete` and `cargo deny check` are the two supply-chain checks
+/// plan.md section 7 asks for; both must run in CI with zero findings.
+/// A findings failure surfaces the offending crate directly in that job's
+/// output, so this test only pins that the steps exist and that `deny.toml`
+/// (the policy `cargo deny check` reads) is in place - dropping either from
+/// `rust.yml` fails here by naming the missing step.
+#[test]
+fn cargo_machete_and_cargo_deny_run_in_ci_with_zero_findings_or_name_the_finding() {
+    let workspace_root = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../..")
+        .canonicalize()
+        .expect("canonicalize workspace root");
+    let workflow_path = workspace_root.join(".github/workflows/rust.yml");
+    let workflow = fs::read_to_string(&workflow_path).expect("read .github/workflows/rust.yml");
+
+    let mut missing = Vec::new();
+    if !workflow.contains("cargo machete") {
+        missing.push("rust.yml has no `cargo machete` step".to_string());
+    }
+    if !workflow.contains("cargo deny check") {
+        missing.push("rust.yml has no `cargo deny check` step".to_string());
+    }
+    if !workspace_root.join("deny.toml").exists() {
+        missing.push("deny.toml (the policy cargo deny check reads) is missing".to_string());
+    }
+
+    assert!(missing.is_empty(), "{}", missing.join("\n"));
 }
