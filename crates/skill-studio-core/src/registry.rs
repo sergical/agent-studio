@@ -54,6 +54,7 @@ fn home_only_scope(home: &Path, fs: &dyn ScopeFs) -> Result<NormalizedScope, Cor
         history_binding: HistoryBinding::Default,
         cache_root: None,
         data_root: None,
+        codex_home: None,
         read_timeout_ms: DEFAULT_READ_TIMEOUT_MS,
         write_timeout_ms: DEFAULT_WRITE_TIMEOUT_MS,
     };

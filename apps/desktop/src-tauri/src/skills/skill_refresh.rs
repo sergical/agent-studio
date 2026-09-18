@@ -1111,6 +1111,35 @@ fn snapshot_owner_ids(skills: &[InstalledSkill]) -> Vec<String> {
         .collect()
 }
 
+/// Every canonical `SKILL.md` path Codex's own config disables, read from
+/// `<codex_home>/config.toml` `[[skills.config]]` rows with `enabled =
+/// false`. Honors `CODEX_HOME` like every other Codex path
+/// (`skill_studio_host::codex_home`). A missing or unparsable file yields an
+/// empty set - this overlay must not fail a refresh over a config Codex
+/// itself would presumably also reject. Once `skill_refresh` reads its
+/// snapshot from `ops::scan` directly rather than this legacy assembly
+/// path, this duplicate read goes away in favor of `ops::scan`'s own
+/// `DisabledBy::CodexConfig` (`docs/action-map/harnesses/codex.md`).
+fn read_codex_disabled_skill_md_paths(home: &Path) -> Vec<PathBuf> {
+    let path = skill_studio_host::codex_home(home).join("config.toml");
+    let Ok(content) = std::fs::read_to_string(&path) else {
+        return Vec::new();
+    };
+    let Ok(table) = content.parse::<toml::Table>() else {
+        return Vec::new();
+    };
+    toml::Value::Table(table)
+        .get("skills")
+        .and_then(|s| s.get("config"))
+        .and_then(|c| c.as_array())
+        .into_iter()
+        .flatten()
+        .filter(|row| row.get("enabled").and_then(toml::Value::as_bool) == Some(false))
+        .filter_map(|row| row.get("path").and_then(toml::Value::as_str))
+        .map(|p| std::fs::canonicalize(p).unwrap_or_else(|_| PathBuf::from(p)))
+        .collect()
+}
+
 /// Recompute registry, update, disable, and invocation fields on freshly
 /// assembled skills. Both full and targeted discovery use this same path.
 fn apply_skill_snapshot_overlays(
@@ -1300,10 +1329,9 @@ fn apply_skill_snapshot_overlays(
     // Per-harness disable: Codex and OpenCode read their own config, Claude
     // Code has no native switch so it's tracked in the registry instead -
     // see `skill_harness_disable`.
-    let codex_disabled_paths: BTreeSet<PathBuf> =
-        super::codex_skill_config::read_disabled_skill_md_paths(home)
-            .into_iter()
-            .collect();
+    let codex_disabled_paths: BTreeSet<PathBuf> = read_codex_disabled_skill_md_paths(home)
+        .into_iter()
+        .collect();
     let opencode_denied: BTreeSet<String> =
         super::opencode_skill_permission::read_denied_patterns(home)
             .into_iter()
@@ -1420,7 +1448,8 @@ pub(crate) fn core_scan_installed_skills(
     let mut scope = if std::env::var_os("SKILL_STUDIO_FIXTURE").is_some() {
         skill_studio_core::scope::RuntimeScope::fixture(home)
     } else {
-        skill_studio_core::scope::RuntimeScope::live(home, history_root)
+        let codex_home = skill_studio_host::codex_home(home);
+        skill_studio_core::scope::RuntimeScope::live(home, history_root).with_codex_home(codex_home)
     };
     scope.projects = skill_studio_core::scope::ProjectSelection::Explicit {
         paths: project_paths.to_vec(),
