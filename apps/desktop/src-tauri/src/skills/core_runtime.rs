@@ -18,7 +18,7 @@ use skill_studio_core::{OpStatus, RuntimeScope};
 /// `$XDG_DATA_HOME/skill-studio`, or `~/.local/share/skill-studio` when
 /// `XDG_DATA_HOME` is unset, matching the CLI's default so the CLI, MCP, and
 /// desktop read and write the same history database and lease file.
-fn data_root() -> PathBuf {
+pub(crate) fn data_root() -> PathBuf {
     if let Ok(xdg) = std::env::var("XDG_DATA_HOME") {
         if !xdg.is_empty() {
             return PathBuf::from(xdg).join("skill-studio");

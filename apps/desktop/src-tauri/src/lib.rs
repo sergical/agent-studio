@@ -190,9 +190,17 @@ pub fn run() {
             app.manage(skills::event_commands::EventStoreState(
                 std::sync::Mutex::new(event_store),
             ));
+
+            // Trims timing.jsonl to its 30-day retention once per process
+            // start (unit 6.5); off the main thread, since it's a full read
+            // and rewrite of the log.
+            let timing_app = app.handle().clone();
+            tauri::async_runtime::spawn_blocking(move || timing_log::trim_on_open(&timing_app));
+
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
+            skills::app_version::app_version,
             skills::add_method_defaults::get_add_method_defaults,
             // Skills.sh integration
             skills::commands::search_skills,
@@ -208,6 +216,7 @@ pub fn run() {
             skills::commands::open_skill_path,
             skills::commands::get_editor_choices,
             skills::commands::set_preferred_editor,
+            skills::commands::command_health,
             skills::error_reporting::get_error_reporting_enabled,
             skills::error_reporting::set_error_reporting_enabled,
             // Fork / Pull upstream / Un-fork

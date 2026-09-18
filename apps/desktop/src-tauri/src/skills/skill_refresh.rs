@@ -27,13 +27,13 @@ use skill_studio_host::{SkillInvocationIndex, SkillUseRefreshReport};
 use tauri::{AppHandle, Emitter, Manager};
 
 use super::agents;
-use super::lock_file;
 use super::skill_assembly;
 use super::skill_dto::{Deployment, InstalledSkill};
 use super::skill_fork_registry::{ForkRegistry, TrialScope};
 use super::skill_harness_disable;
 use super::skill_run_history::{self, SkillRunSummary};
 use super::skill_update_check::{self, UpdateCheckSummary};
+use skill_studio_core::lock_file;
 
 /// Event emitted on the main window whenever the snapshot is (re)built.
 pub const SNAPSHOT_EVENT: &str = "skills://snapshot";
@@ -711,10 +711,13 @@ pub fn reconcile_skill_names_and_emit(
             .flat_map(|skill| skill.deployments.iter())
             .map(|deployment| deployment.path.clone()),
     );
-    let lock = lock_file::read_lock_file().map_err(|error| {
-        state.mark_skills_dirty();
-        format!("Targeted skill reconciliation could not read lock file: {error}")
-    })?;
+    let lock_fs = skill_studio_host::RealFs::new();
+    let lock = lock_file::read_lock_file(&lock_fs, &lock_file::lock_file_path(&home)).map_err(
+        |error| {
+            state.mark_skills_dirty();
+            format!("Targeted skill reconciliation could not read lock file: {error}")
+        },
+    )?;
     let fork_registry = super::skill_fork_registry::read_fork_registry(&home).map_err(|error| {
         state.mark_skills_dirty();
         format!("Targeted skill reconciliation could not read lifecycle registry: {error}")
@@ -1568,13 +1571,15 @@ pub fn build_snapshot(
     }
     let core_skills = core_result.skills;
 
-    let lock = lock_file::read_lock_file().unwrap_or_else(|e| {
-        eprintln!("skill refresh: failed to read lock file: {e}");
-        lock_file::SkillLockFile {
-            version: 3,
-            skills: std::collections::HashMap::new(),
-        }
-    });
+    let lock_fs = skill_studio_host::RealFs::new();
+    let lock = lock_file::read_lock_file(&lock_fs, &lock_file::lock_file_path(home))
+        .unwrap_or_else(|e| {
+            eprintln!("skill refresh: failed to read lock file: {e}");
+            lock_file::SkillLockFile {
+                version: 3,
+                skills: std::collections::HashMap::new(),
+            }
+        });
     let fork_registry = super::skill_fork_registry::read_fork_registry_or_default(home);
     let assembly_start = Instant::now();
     let mut skills = skill_assembly::assemble_installed_skills(&core_skills, &lock);
@@ -1683,7 +1688,7 @@ fn is_config_file_name(name: &std::ffi::OsStr, home: &Path) -> bool {
     let fork_registry_name = super::skill_fork_registry::fork_registry_path(home)
         .file_name()
         .map(std::borrow::ToOwned::to_owned);
-    name == ".skill-lock.json"
+    name == lock_file::LOCK_FILE_NAME
         || name == "config.toml"
         || name == "opencode.json"
         || name == "opencode.jsonc"

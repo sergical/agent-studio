@@ -12,7 +12,7 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
 use super::agents::AgentId;
-use super::lock_file;
+use skill_studio_core::lock_file;
 
 /// The binary every dotagents command in `commands.rs`/`skill_add.rs`
 /// actually shells out to - `npx -y @sentry/dotagents ...`, same as the

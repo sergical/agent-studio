@@ -206,6 +206,36 @@ impl ScopeFs for ScopedReads<'_> {
     ) -> std::io::Result<()> {
         self.inner.symlink(guard, target, link)
     }
+    fn fsops_device_inode(&self, path: &Path) -> std::io::Result<(u64, u64)> {
+        self.inner.fsops_device_inode(path)
+    }
+    fn fsops_fsync_file(&self, path: &Path) -> std::io::Result<()> {
+        self.inner.fsops_fsync_file(path)
+    }
+    fn fsops_fsync_dir(&self, path: &Path) -> std::io::Result<()> {
+        self.inner.fsops_fsync_dir(path)
+    }
+    fn fsops_create_dir(&self, path: &Path) -> std::io::Result<()> {
+        self.inner.fsops_create_dir(path)
+    }
+    fn fsops_write_new_file(&self, path: &Path, bytes: &[u8]) -> std::io::Result<()> {
+        self.inner.fsops_write_new_file(path, bytes)
+    }
+    fn fsops_rename(&self, from: &Path, to: &Path) -> std::io::Result<()> {
+        self.inner.fsops_rename(from, to)
+    }
+    fn fsops_symlink(&self, target: &Path, link: &Path) -> std::io::Result<()> {
+        self.inner.fsops_symlink(target, link)
+    }
+    fn fsops_remove_dir(&self, path: &Path) -> std::io::Result<()> {
+        self.inner.fsops_remove_dir(path)
+    }
+    fn fsops_remove_file(&self, path: &Path) -> std::io::Result<()> {
+        self.inner.fsops_remove_file(path)
+    }
+    fn fsops_exchange(&self, a: &Path, b: &Path) -> std::io::Result<()> {
+        self.inner.fsops_exchange(a, b)
+    }
 }
 
 /// Filesystem access. Read calls take plain paths; write calls take a
@@ -257,6 +287,42 @@ pub trait ScopeFs: Send + Sync {
         target: &ScopedPath,
         link: &ScopedPath,
     ) -> std::io::Result<()>;
+
+    /// Device and inode of the entry at `path`, without following a final
+    /// symlink. [`crate::fsops::Root`] rereads this before and after every
+    /// step to prove the root it opened was not swapped for something else.
+    fn fsops_device_inode(&self, path: &Path) -> std::io::Result<(u64, u64)>;
+    /// Flushes a file's contents to durable storage.
+    fn fsops_fsync_file(&self, path: &Path) -> std::io::Result<()>;
+    /// Flushes a directory's own entry (its listing), so a create, rename,
+    /// or removal inside it is durable, not only the thing it named.
+    fn fsops_fsync_dir(&self, path: &Path) -> std::io::Result<()>;
+    /// Creates one directory. Fails when the parent does not already exist,
+    /// unlike [`Self::create_dir_all`].
+    fn fsops_create_dir(&self, path: &Path) -> std::io::Result<()>;
+    /// Writes a brand-new file (fails if one already exists at `path`).
+    /// [`crate::fsops::stage`] uses this to populate a staged folder that
+    /// nothing else can see yet; the visible write path is
+    /// [`crate::fsops::write_file`], which goes through a temp name and a
+    /// rename instead.
+    fn fsops_write_new_file(&self, path: &Path, bytes: &[u8]) -> std::io::Result<()>;
+    /// Renames within one filesystem, confined by the caller's own
+    /// [`crate::fsops::Root`] rather than a [`ScopedPath`].
+    fn fsops_rename(&self, from: &Path, to: &Path) -> std::io::Result<()>;
+    /// Creates a symlink at `link` pointing at `target`, confined by the
+    /// caller's own [`crate::fsops::Root`] rather than a [`ScopedPath`].
+    fn fsops_symlink(&self, target: &Path, link: &Path) -> std::io::Result<()>;
+    /// Removes an empty directory.
+    fn fsops_remove_dir(&self, path: &Path) -> std::io::Result<()>;
+    /// Removes a file or a symlink, never a directory.
+    fn fsops_remove_file(&self, path: &Path) -> std::io::Result<()>;
+    /// Atomically exchanges the entries at `a` and `b`: after this call,
+    /// `a` holds what `b` held and `b` holds what `a` held. Both must
+    /// already exist. [`crate::fsops::swap`] uses this as its one
+    /// crash-critical step, so a process that dies mid-swap leaves the
+    /// filesystem showing either the pre-swap or the post-swap pairing,
+    /// never a folder that exists at neither or both names.
+    fn fsops_exchange(&self, a: &Path, b: &Path) -> std::io::Result<()>;
 }
 
 /// Finds the projects a scope covers under [`ProjectSelection::Discover`].

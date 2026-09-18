@@ -21,7 +21,10 @@
 //! `PATH` lookup sets those fields on the returned `Ports` itself.
 
 #![deny(missing_docs)]
-#![forbid(unsafe_code)]
+#![deny(unsafe_code)]
+// `fs::macos_exchange` is the one exception: `renamex_np` (atomic path
+// exchange) has no safe `std` wrapper. See its module doc for why the
+// primitive needs it and what the `unsafe` block promises.
 
 mod builder;
 mod clock;

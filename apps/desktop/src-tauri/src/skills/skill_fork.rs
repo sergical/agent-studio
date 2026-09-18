@@ -20,8 +20,6 @@ use serde::{Deserialize, Serialize};
 use tauri::Manager;
 
 use super::commands::{dotagents_add_args, dotagents_remove_args};
-use super::dotagents_ledger;
-use super::lock_file;
 use super::skill_deployment::SkillDestination;
 use super::skill_dto::InstallScope;
 use super::skill_fork_registry::{
@@ -37,6 +35,8 @@ use super::skill_process::{
 };
 use super::skill_refresh::{self, SkillRefreshState};
 use super::skill_update_check::{self, CommitLookup, GhCommitLookup};
+use skill_studio_core::dotagents_ledger;
+use skill_studio_core::lock_file;
 
 // ============================================================================
 // Traits - real implementations shell out / hit the network; tests use fakes.
@@ -451,7 +451,9 @@ fn resolve_fork_origin(
     name: &str,
     lookup: &dyn CommitLookup,
 ) -> Result<ForkOrigin, String> {
-    let dotagents_skills = dotagents_ledger::read_dotagents_ledger(agents_dir)?;
+    let fs = skill_studio_host::RealFs::new();
+    let dotagents_skills =
+        dotagents_ledger::read_dotagents_ledger(&fs, agents_dir).map_err(|e| e.to_string())?;
     if let Some(entry) = dotagents_skills.into_iter().find(|s| s.name == name) {
         if !entry.has_manifest_row {
             return Err(format!(
@@ -478,7 +480,8 @@ fn resolve_fork_origin(
         });
     }
 
-    let lock = lock_file::read_lock_file_at(&agents_dir.join(".skill-lock.json"))?;
+    let lock = lock_file::read_lock_file(&fs, &lock_file::lock_file_path_in(agents_dir))
+        .map_err(|e| e.to_string())?;
     if let Some(entry) = lock.skills.get(name) {
         if entry.source_type != "github" {
             return Err(format!(
@@ -1701,6 +1704,19 @@ mod tests {
         }
     }
 
+    /// Compares two serialized `ForkRegistry` files ignoring `write_version`,
+    /// which `write_fork_registry` bumps on every write - including a
+    /// rollback that restores otherwise-identical content, per
+    /// `skill_studio_core::registry::write_registry_document`.
+    fn assert_registry_content_unchanged(after: &[u8], before: &[u8]) {
+        let strip_write_version = |bytes: &[u8]| {
+            let mut value: serde_json::Value = serde_json::from_slice(bytes).unwrap();
+            value.as_object_mut().unwrap().remove("write_version");
+            value
+        };
+        assert_eq!(strip_write_version(after), strip_write_version(before));
+    }
+
     fn write_file(path: &Path, content: &str) {
         fs::create_dir_all(path.parent().unwrap()).unwrap();
         fs::write(path, content).unwrap();
@@ -2396,7 +2412,7 @@ mod tests {
         .unwrap_err();
 
         assert!(error.contains("injected live snapshot failure"), "{error}");
-        assert_eq!(fs::read(&registry_path).unwrap(), registry_before);
+        assert_registry_content_unchanged(&fs::read(&registry_path).unwrap(), &registry_before);
         assert_eq!(fs::read_to_string(skill_md).unwrap(), "live body");
         assert_eq!(ledger.remove_calls.lock().unwrap().len(), 0);
         assert_eq!(
@@ -2464,7 +2480,7 @@ mod tests {
             error.contains(&quarantine_dir.display().to_string()),
             "{error}"
         );
-        assert_eq!(fs::read(&registry_path).unwrap(), registry_before);
+        assert_registry_content_unchanged(&fs::read(&registry_path).unwrap(), &registry_before);
         assert_eq!(fs::read_to_string(skill_md).unwrap(), "live body");
         assert_eq!(ledger.remove_calls.lock().unwrap().len(), 0);
         assert_eq!(

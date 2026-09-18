@@ -8,12 +8,16 @@
 // ============================================================================
 
 use std::fs::OpenOptions;
-use std::io::Write;
+use std::io::{BufRead, Write};
 use std::path::Path;
 
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
+use skill_studio_core::health::{Outcome, TimingRow};
 use skill_studio_core::timing::StepTiming;
 use tauri::{AppHandle, Manager};
+
+use crate::skills::agents::AgentTarget;
+use crate::skills::skill_refresh::SkillSnapshot;
 
 /// File size, in bytes, past which [`record_command`] rotates
 /// `timing.jsonl` before appending. `record_command` itself always passes
@@ -22,46 +26,115 @@ use tauri::{AppHandle, Manager};
 pub const ROTATE_AT_BYTES: u64 = 5 * 1024 * 1024;
 
 /// One `timing.jsonl` line.
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, Deserialize)]
 struct TimingRecord<'a> {
     ts: String,
-    command: &'a str,
+    #[serde(borrow)]
+    command: std::borrow::Cow<'a, str>,
     elapsed_ms: u64,
-    steps: &'a [StepTiming],
-    thread: &'a str,
+    #[serde(default)]
+    steps: Vec<StepTiming>,
+    #[serde(borrow)]
+    thread: std::borrow::Cow<'a, str>,
+    /// `"ok"` or `"error"` - see [`CommandOutcome`]. Missing on lines written
+    /// before this unit added the field, so it defaults to `"ok"` - the same
+    /// default the CLI's `TimingLine` uses, so the two agree on old logs.
+    #[serde(borrow, default = "default_outcome")]
+    outcome: std::borrow::Cow<'a, str>,
+    /// The error's first line, capped at 120 chars, when `outcome` is `"error"`.
+    #[serde(default)]
+    error: Option<String>,
+}
+
+fn default_outcome<'a>() -> std::borrow::Cow<'a, str> {
+    std::borrow::Cow::Borrowed("ok")
+}
+
+/// How a `#[tauri::command]` body finished, for the `outcome`/`error`
+/// fields [`record_command`] writes. `Result<T, E>` reports its own
+/// `Ok`/`Err`; the handful of commands with no failure path (a bare `Vec`,
+/// `Option`, or `()` return) are always `"ok"` - listed explicitly here
+/// rather than as a blanket `impl<T> CommandOutcome for T`, so a future
+/// command that starts returning a type with a real failure path doesn't
+/// silently inherit an "always ok" impl instead of using `Result`.
+pub trait CommandOutcome {
+    /// `("ok", None)`, or `("error", Some(first line of the error, capped
+    /// at 120 chars))`.
+    fn outcome(&self) -> (&'static str, Option<String>);
+}
+
+impl<T, E: std::fmt::Display> CommandOutcome for Result<T, E> {
+    fn outcome(&self) -> (&'static str, Option<String>) {
+        match self {
+            Ok(_) => ("ok", None),
+            Err(error) => ("error", Some(first_line_capped(&error.to_string()))),
+        }
+    }
+}
+
+impl CommandOutcome for Vec<AgentTarget> {
+    fn outcome(&self) -> (&'static str, Option<String>) {
+        ("ok", None)
+    }
+}
+
+impl CommandOutcome for Option<SkillSnapshot> {
+    fn outcome(&self) -> (&'static str, Option<String>) {
+        ("ok", None)
+    }
+}
+
+impl CommandOutcome for () {
+    fn outcome(&self) -> (&'static str, Option<String>) {
+        ("ok", None)
+    }
+}
+
+/// The first line of `text`, capped at 120 `char`s - `timing.jsonl` is one
+/// JSON object per line, so a multi-line error (a stack trace, a long
+/// diagnostic) would otherwise break that invariant.
+fn first_line_capped(text: &str) -> String {
+    let first_line = text.lines().next().unwrap_or("");
+    first_line.chars().take(120).collect()
 }
 
 /// Times a synchronous `#[tauri::command]` body and appends one record for
 /// it, whether `f` returns `Ok` or `Err` - a slow error path is exactly the
 /// kind of thing this log exists to surface.
-pub fn time_command<T>(app: &AppHandle, command: &str, f: impl FnOnce() -> T) -> T {
+pub fn time_command<T: CommandOutcome>(app: &AppHandle, command: &str, f: impl FnOnce() -> T) -> T {
     let start = std::time::Instant::now();
     let result = f();
+    let (outcome, error) = result.outcome();
     record_command(
         app,
         command,
         start.elapsed().as_millis() as u64,
         &[],
         "main",
+        outcome,
+        error,
     );
     result
 }
 
 /// As [`time_command`], for an async `#[tauri::command]` body: `fut` runs on
 /// Tauri's async runtime, off the main thread, so this records `"worker"`.
-pub async fn time_command_async<T>(
+pub async fn time_command_async<T: CommandOutcome>(
     app: &AppHandle,
     command: &str,
     fut: impl std::future::Future<Output = T>,
 ) -> T {
     let start = std::time::Instant::now();
     let result = fut.await;
+    let (outcome, error) = result.outcome();
     record_command(
         app,
         command,
         start.elapsed().as_millis() as u64,
         &[],
         "worker",
+        outcome,
+        error,
     );
     result
 }
@@ -81,12 +154,15 @@ pub async fn time_command_blocking<T: Send + 'static>(
 ) -> Result<T, String> {
     let start = std::time::Instant::now();
     let result = join_result_to_err(command, tauri::async_runtime::spawn_blocking(f).await);
+    let (outcome, error) = result.outcome();
     record_command(
         app,
         command,
         start.elapsed().as_millis() as u64,
         &[],
         "worker",
+        outcome,
+        error,
     );
     result
 }
@@ -114,31 +190,38 @@ pub fn record_command(
     elapsed_ms: u64,
     steps: &[StepTiming],
     thread: &str,
+    outcome: &str,
+    error: Option<String>,
 ) {
     let Ok(app_data) = app.path().app_data_dir() else {
         return;
     };
-    if let Err(error) = append_record(
+    if let Err(io_error) = append_record(
         &app_data,
         command,
         elapsed_ms,
         steps,
         thread,
+        outcome,
+        error,
         ROTATE_AT_BYTES,
     ) {
-        eprintln!("[timing_log] failed to record {command}: {error}");
+        eprintln!("[timing_log] failed to record {command}: {io_error}");
     }
 }
 
 /// The rotation/append logic [`record_command`] drives, with the app data
 /// dir and rotation threshold as plain parameters so tests can point it at
 /// a temp dir and a small threshold.
+#[allow(clippy::too_many_arguments)]
 fn append_record(
     app_data: &Path,
     command: &str,
     elapsed_ms: u64,
     steps: &[StepTiming],
     thread: &str,
+    outcome: &str,
+    error: Option<String>,
     rotate_at_bytes: u64,
 ) -> std::io::Result<()> {
     std::fs::create_dir_all(app_data)?;
@@ -147,10 +230,12 @@ fn append_record(
 
     let record = TimingRecord {
         ts: chrono::Utc::now().to_rfc3339(),
-        command,
+        command: command.into(),
         elapsed_ms,
-        steps,
-        thread,
+        steps: steps.to_vec(),
+        thread: thread.into(),
+        outcome: outcome.into(),
+        error,
     };
     let line = serde_json::to_string(&record).unwrap_or_default();
 
@@ -184,6 +269,107 @@ fn rotate_if_needed(log_path: &Path, app_data: &Path, rotate_at_bytes: u64) -> s
     }
 }
 
+/// Rows older than this are dropped from `timing.jsonl` on each process
+/// start ([`trim_on_open`]) - matches unit 6.5's 30-day retention.
+const RETAIN: std::time::Duration = std::time::Duration::from_secs(30 * 24 * 3600);
+
+/// Reads every parsable line of `<app_data_dir>/timing.jsonl` into a
+/// [`TimingRow`], for [`skill_studio_core::health::health_rollup`]. A line
+/// that fails to parse (a partial write, corrupt JSON) is skipped rather
+/// than aborting the whole read - `command_health` should never fail just
+/// because one old line is unreadable. A line from before this unit added
+/// `outcome`/`error` still parses; the missing fields default to `"ok"`/
+/// `None`.
+pub fn read_rows(app: &AppHandle) -> Vec<TimingRow> {
+    let Ok(app_data) = app.path().app_data_dir() else {
+        return Vec::new();
+    };
+    read_rows_from(&app_data.join("timing.jsonl"))
+}
+
+fn read_rows_from(log_path: &Path) -> Vec<TimingRow> {
+    let Ok(file) = std::fs::File::open(log_path) else {
+        return Vec::new();
+    };
+    std::io::BufReader::new(file)
+        .lines()
+        .map_while(Result::ok)
+        .filter_map(|line| record_to_row(&line))
+        .collect()
+}
+
+fn record_to_row(line: &str) -> Option<TimingRow> {
+    let record: TimingRecord = serde_json::from_str(line).ok()?;
+    let ts = chrono::DateTime::parse_from_rfc3339(&record.ts)
+        .ok()?
+        .with_timezone(&chrono::Utc);
+    let outcome = if record.outcome.as_ref() == "error" {
+        Outcome::Error
+    } else {
+        Outcome::Ok
+    };
+    Some(TimingRow {
+        ts,
+        command: record.command.into_owned(),
+        elapsed_ms: record.elapsed_ms,
+        outcome,
+        error: record.error,
+    })
+}
+
+/// Rewrites `timing.jsonl` with rows older than [`RETAIN`] dropped, via
+/// [`skill_studio_core::health::trim_rows`], so the log stays bounded across
+/// a long-running install. Called once from `setup()` (see `lib.rs`), off
+/// the main thread. A line that doesn't parse into a [`TimingRow`] is kept
+/// unconditionally - there's no dated row to hand `trim_rows` a decision
+/// about, so it's left for a future line to overwrite through the normal
+/// [`ROTATE_AT_BYTES`] rotation instead of guessed away here.
+pub fn trim_on_open(app: &AppHandle) {
+    let Ok(app_data) = app.path().app_data_dir() else {
+        return;
+    };
+    if let Err(error) = trim_log_file(&app_data.join("timing.jsonl"), chrono::Utc::now(), RETAIN) {
+        eprintln!("[timing_log] failed to trim: {error}");
+    }
+}
+
+fn trim_log_file(
+    log_path: &Path,
+    now: chrono::DateTime<chrono::Utc>,
+    retain: std::time::Duration,
+) -> std::io::Result<()> {
+    let text = match std::fs::read_to_string(log_path) {
+        Ok(text) => text,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        Err(error) => return Err(error),
+    };
+    let lines: Vec<&str> = text.lines().collect();
+    // One-row-at-a-time so the same `trim_rows` a caller passes a whole log
+    // to decides each line's fate individually, while this rewrite keeps
+    // every field of the original line (`steps`, `thread`) that `TimingRow`
+    // itself doesn't carry.
+    let kept: Vec<&str> = lines
+        .iter()
+        .filter(|line| match record_to_row(line) {
+            Some(row) => !skill_studio_core::health::trim_rows(vec![row], now, retain).is_empty(),
+            None => true,
+        })
+        .copied()
+        .collect();
+    if kept.len() == lines.len() {
+        return Ok(()); // nothing dated old enough to drop
+    }
+    let mut file = OpenOptions::new()
+        .create(true)
+        .write(true)
+        .truncate(true)
+        .open(log_path)?;
+    for line in kept {
+        writeln!(file, "{line}")?;
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -214,7 +400,17 @@ mod tests {
     #[test]
     fn writes_and_reads_back_two_records() {
         let temp = tempfile::tempdir().unwrap();
-        append_record(temp.path(), "scan", 12, &[], "main", ROTATE_AT_BYTES).unwrap();
+        append_record(
+            temp.path(),
+            "scan",
+            12,
+            &[],
+            "main",
+            "ok",
+            None,
+            ROTATE_AT_BYTES,
+        )
+        .unwrap();
         append_record(
             temp.path(),
             "add_skill",
@@ -224,6 +420,8 @@ mod tests {
                 elapsed_ms: 20,
             }],
             "worker",
+            "error",
+            Some("disk full".to_string()),
             ROTATE_AT_BYTES,
         )
         .unwrap();
@@ -233,9 +431,13 @@ mod tests {
         assert_eq!(rows[0]["command"], "scan");
         assert_eq!(rows[0]["elapsed_ms"], 12);
         assert_eq!(rows[0]["thread"], "main");
+        assert_eq!(rows[0]["outcome"], "ok");
+        assert!(rows[0]["error"].is_null());
         assert!(rows[0]["steps"].as_array().unwrap().is_empty());
         assert_eq!(rows[1]["command"], "add_skill");
         assert_eq!(rows[1]["steps"][0]["name"], "write");
+        assert_eq!(rows[1]["outcome"], "error");
+        assert_eq!(rows[1]["error"], "disk full");
         assert!(rows[0]["ts"].as_str().unwrap().contains('T'));
     }
 
@@ -246,7 +448,7 @@ mod tests {
         // the *second* append (rotation runs before the write, so the
         // first record establishes the file that then rotates away).
         let threshold = 10;
-        append_record(temp.path(), "one", 1, &[], "main", threshold).unwrap();
+        append_record(temp.path(), "one", 1, &[], "main", "ok", None, threshold).unwrap();
         let first_size = std::fs::metadata(temp.path().join("timing.jsonl"))
             .unwrap()
             .len();
@@ -255,7 +457,7 @@ mod tests {
             "fixture record must trip the threshold"
         );
 
-        append_record(temp.path(), "two", 2, &[], "main", threshold).unwrap();
+        append_record(temp.path(), "two", 2, &[], "main", "ok", None, threshold).unwrap();
 
         let prev_path = temp.path().join("timing.prev.jsonl");
         let current_path = temp.path().join("timing.jsonl");
@@ -271,7 +473,7 @@ mod tests {
         assert_eq!(current_rows[0]["command"], "two");
 
         // A second rotation must not pile up more than one previous file.
-        append_record(temp.path(), "three", 3, &[], "main", threshold).unwrap();
+        append_record(temp.path(), "three", 3, &[], "main", "ok", None, threshold).unwrap();
         let prev_rows = read_lines(&prev_path);
         assert_eq!(prev_rows.len(), 1);
         assert_eq!(prev_rows[0]["command"], "two");
@@ -280,6 +482,7 @@ mod tests {
     /// Names allowed to stay a sync `pub fn` command, with the reason each
     /// one never blocks the main thread for long.
     const SYNC_ALLOWLIST: &[(&str, &str)] = &[
+        ("app_version", "in-memory state only"),
         ("get_skill_snapshot", "in-memory state only"),
         ("request_skill_rescan", "in-memory state only"),
         ("get_agent_targets", "in-memory state only"),
@@ -372,5 +575,119 @@ mod tests {
             }
         }
         assert!(failures.is_empty(), "{}", failures.join("\n"));
+    }
+
+    #[test]
+    fn command_outcome_reports_ok_for_ok_and_the_capped_first_error_line_for_err() {
+        let ok: Result<u32, String> = Ok(7);
+        assert_eq!(ok.outcome(), ("ok", None));
+
+        let multi_line_err: Result<u32, String> = Err("boom\nstack trace line two".to_string());
+        assert_eq!(
+            multi_line_err.outcome(),
+            ("error", Some("boom".to_string()))
+        );
+
+        let long = "x".repeat(200);
+        let long_err: Result<u32, String> = Err(long.clone());
+        let (outcome, error) = long_err.outcome();
+        assert_eq!(outcome, "error");
+        assert_eq!(error.unwrap().chars().count(), 120);
+
+        assert_eq!(Vec::<AgentTarget>::new().outcome(), ("ok", None));
+        assert_eq!(None::<SkillSnapshot>.outcome(), ("ok", None));
+        assert_eq!(().outcome(), ("ok", None));
+    }
+
+    #[test]
+    fn read_rows_skips_unparsable_lines_and_carries_outcome_and_error_through() {
+        let temp = tempfile::tempdir().unwrap();
+        let log_path = temp.path().join("timing.jsonl");
+        append_record(
+            temp.path(),
+            "scan",
+            12,
+            &[],
+            "main",
+            "ok",
+            None,
+            ROTATE_AT_BYTES,
+        )
+        .unwrap();
+        append_record(
+            temp.path(),
+            "add_skill",
+            34,
+            &[],
+            "worker",
+            "error",
+            Some("disk full".to_string()),
+            ROTATE_AT_BYTES,
+        )
+        .unwrap();
+        // A line that isn't even JSON, as a partial write would leave.
+        let mut file = OpenOptions::new().append(true).open(&log_path).unwrap();
+        writeln!(file, "not json").unwrap();
+
+        let rows = read_rows_from(&log_path);
+        assert_eq!(rows.len(), 2, "the unparsable third line is skipped");
+        assert_eq!(rows[0].command, "scan");
+        assert_eq!(rows[0].outcome, Outcome::Ok);
+        assert_eq!(rows[0].error, None);
+        assert_eq!(rows[1].command, "add_skill");
+        assert_eq!(rows[1].outcome, Outcome::Error);
+        assert_eq!(rows[1].error, Some("disk full".to_string()));
+    }
+
+    #[test]
+    fn a_pre_upgrade_timing_row_without_an_outcome_parses_as_ok_or_names_the_dropped_row() {
+        let temp = tempfile::tempdir().unwrap();
+        let log_path = temp.path().join("timing.jsonl");
+        // A line written before this unit added `outcome`/`error` - the
+        // schema `append_record` wrote when the log had only these fields.
+        std::fs::write(
+            &log_path,
+            "{\"ts\":\"2024-01-01T00:00:00Z\",\"command\":\"scan\",\"elapsed_ms\":12,\"steps\":[],\"thread\":\"main\"}\n",
+        )
+        .unwrap();
+
+        let rows = read_rows_from(&log_path);
+        assert_eq!(
+            rows.len(),
+            1,
+            "the pre-upgrade row was dropped, not defaulted to ok"
+        );
+        assert_eq!(rows[0].outcome, Outcome::Ok);
+        assert_eq!(rows[0].error, None);
+    }
+
+    #[test]
+    fn trim_log_file_drops_rows_older_than_thirty_days_and_keeps_the_rest_and_the_unparsable_line()
+    {
+        let temp = tempfile::tempdir().unwrap();
+        let log_path = temp.path().join("timing.jsonl");
+        let now = chrono::Utc::now();
+        let old_ts = (now - chrono::Duration::days(45)).to_rfc3339();
+        let recent_ts = (now - chrono::Duration::days(1)).to_rfc3339();
+        std::fs::write(
+            &log_path,
+            format!(
+                "{{\"ts\":\"{old_ts}\",\"command\":\"scan\",\"elapsed_ms\":1,\"steps\":[],\"thread\":\"main\",\"outcome\":\"ok\",\"error\":null}}\n\
+                 {{\"ts\":\"{recent_ts}\",\"command\":\"scan\",\"elapsed_ms\":2,\"steps\":[],\"thread\":\"main\",\"outcome\":\"ok\",\"error\":null}}\n\
+                 not json\n"
+            ),
+        )
+        .unwrap();
+
+        trim_log_file(&log_path, now, RETAIN).unwrap();
+
+        let text = std::fs::read_to_string(&log_path).unwrap();
+        let lines: Vec<&str> = text.lines().collect();
+        assert_eq!(lines.len(), 2, "the 45-day-old row is dropped");
+        assert!(lines[0].contains(&recent_ts));
+        assert_eq!(
+            lines[1], "not json",
+            "an unparsable line survives - there's no dated row to judge it by"
+        );
     }
 }

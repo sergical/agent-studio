@@ -5,8 +5,8 @@ use std::process::ExitCode;
 
 use serde::Serialize;
 use skill_studio_core::dto::{
-    Diagnosis, EventDto, FrontmatterRepairPreview, Inventory, RepairOutcome, RestoreOutcome,
-    ScanRequest,
+    CommandHealth, Diagnosis, EventDto, FrontmatterRepairPreview, Inventory, RepairOutcome,
+    RestoreOutcome, ScanRequest,
 };
 use skill_studio_core::harness::{Capabilities, HarnessReport};
 use skill_studio_core::ops::ResultEnvelope;
@@ -199,6 +199,28 @@ pub fn print_restore_outcome_table(envelope: &ResultEnvelope<RestoreOutcome>) {
     );
     for path in &outcome.restored_paths {
         println!("  - {}", path.display());
+    }
+}
+
+/// Prints `health`'s table: `COMMAND COUNT FAILURES P50_MS P95_MS
+/// LAST_ERROR`, one row per command, in the rollup's own (command-name)
+/// order.
+pub fn print_health_table(rows: &[CommandHealth]) {
+    if rows.is_empty() {
+        println!("No commands recorded in the last 7 days.");
+        return;
+    }
+    println!("COMMAND COUNT FAILURES P50_MS P95_MS LAST_ERROR");
+    for row in rows {
+        println!(
+            "{} {} {} {} {} {}",
+            row.command,
+            row.count,
+            row.failures,
+            row.p50_ms,
+            row.p95_ms,
+            row.last_error.as_deref().unwrap_or("-"),
+        );
     }
 }
 
