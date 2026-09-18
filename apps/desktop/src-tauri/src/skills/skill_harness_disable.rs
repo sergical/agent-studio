@@ -873,7 +873,6 @@ pub async fn set_deployment_enabled(
 mod tests {
     use super::super::skill_fork_registry::write_fork_registry;
     use super::*;
-    use crate::skills::frontmatter::InvocationPolicy;
 
     fn test_guard(home: &Path) -> super::super::write_lease::WriteLeaseGuard {
         super::super::write_lease::WriteLease::default()
