@@ -873,8 +873,10 @@ export interface ForkRecord {
    */
   declared_ref: string | null;
   /**
-   * The commit the local copy was last synced from - the "base" of the
-   * three-way merge `pull_fork_upstream` runs.
+   * The commit the local copy was last synced from - the "base"
+   * `pull_fork_upstream` diffs against to tell an edited file from an
+   * untouched one, writing conflict markers (never merging) where both
+   * sides changed.
    */
   base_commit: string;
 }

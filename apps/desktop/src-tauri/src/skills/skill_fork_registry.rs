@@ -153,8 +153,10 @@ pub struct ForkRecord {
     /// The `ref` dotagents had declared for this skill, if any. `None` for
     /// skills.sh forks and unpinned dotagents forks.
     pub declared_ref: Option<String>,
-    /// The commit the local copy was last synced from - the "base" of the
-    /// three-way merge `pull_fork_upstream` runs.
+    /// The commit the local copy was last synced from - the "base"
+    /// `pull_fork_upstream` diffs against to tell an edited file from an
+    /// untouched one, writing conflict markers (never merging) where both
+    /// sides changed.
     pub base_commit: String,
 }
 
@@ -377,8 +379,8 @@ pub fn fork_registry_path(home: &Path) -> PathBuf {
 }
 
 /// `<app data>/skill-studio/forks/<name>/base` - the last-synced snapshot of
-/// a forked skill, used as the "base" side of `pull_fork_upstream`'s
-/// three-way merge.
+/// a forked skill, used as the "base" `pull_fork_upstream` diffs against to
+/// find files both sides changed and write conflict markers into.
 pub fn fork_snapshot_dir(app_data: &Path, name: &str) -> PathBuf {
     app_data
         .join("skill-studio")

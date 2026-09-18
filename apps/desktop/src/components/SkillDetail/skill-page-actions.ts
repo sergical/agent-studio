@@ -231,8 +231,11 @@ export function useSkillPageActions(
           message: result.conflicts.join(", "),
         });
       } else {
-        const mergedCount = result.merged.length + result.added.length + result.removed.length;
-        addToast({ type: "success", title: `Merged ${mergedCount} files` });
+        // No conflicts on this path: every file here was a clean pull from
+        // upstream (nothing merged - a file both sides changed would have
+        // landed in `result.conflicts` instead, with markers).
+        const updatedCount = result.merged.length + result.added.length + result.removed.length;
+        addToast({ type: "success", title: `Updated ${updatedCount} files` });
       }
     });
 

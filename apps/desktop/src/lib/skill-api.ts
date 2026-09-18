@@ -368,9 +368,10 @@ export async function forkSkill(target: LifecycleTarget): Promise<ForkRecord> {
 }
 
 /**
- * Three-way merge a forked skill's snapshot against its current on-disk
- * copy and a freshly fetched upstream copy, then advance the snapshot to
- * the new upstream commit.
+ * Diff a forked skill's snapshot against its current on-disk copy and a
+ * freshly fetched upstream copy, writing conflict markers (never merging)
+ * into any file both sides changed and opening it in the editor, then
+ * advance the snapshot to the new upstream commit.
  */
 export async function pullForkUpstream(target: LifecycleTarget): Promise<PullResult> {
   return callCommand("pull_fork_upstream", { target });
