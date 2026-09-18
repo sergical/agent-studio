@@ -16,24 +16,22 @@
 //! update.md`'s current-state table: neither variant quarantines today).
 //!
 //! Every branch records its journal row - with an archival `backup_paths`
-//! copy for `Dotagents`/`SkillsSh`, whose bytes this op is about to let the
-//! CLI delete - before the first write, matching `ops::park`. The row's
-//! `inverse` is `None` for every branch, also matching `park`: the generic
-//! `restore_backup`/`read_backup_bytes` machinery restores one file's bytes
-//! at a time (`ops::restore_event`'s `RestorePlan::Write` branch), not a
-//! whole directory tree, so it cannot undo any of the four branches here
-//! any more than it can undo `park`. A dedicated `unremove` op, mirroring
-//! `ops::unpark`'s own hand-rolled reversal, is deferred - see the unit's
-//! follow-up notes.
+//! copy of the deployment's tree - before the first write, matching
+//! `ops::park`. Unlike `park`, this op's `inverse` is a real
+//! `restore_backup_inverse` for every branch: `BackupEntry::is_dir` lets the
+//! generic `restore_event`/`RestorePlan::WriteDir` machinery replay a whole
+//! directory tree back to its pre-remove bytes (see that field's own doc),
+//! so a dedicated `unremove` op is not needed here the way `ops::unpark`
+//! needed one.
 //!
 //! Quarantine retention: after a `Copy`/`Fork` removal, this op prunes the
-//! oldest entries in the same universal root's quarantine directory back
-//! down to `doctor::QUARANTINE_RETENTION_CAP`, while still holding the
-//! exclusive lease this call already acquired - `doctor::
-//! check_quarantine_within_cap` only detects the violation (see that
-//! function's own doc: "pruning without a lease ... is not safe to do from
-//! here"); this is that repair. The prune itself does not get its own
-//! journal row - see the follow-up notes.
+//! oldest and the age-expired entries in the same universal root's
+//! quarantine directory (see `prune_quarantine`'s own doc for both caps),
+//! while still holding the exclusive lease this call already acquired -
+//! `doctor::check_quarantine_within_cap` only detects the violation (see
+//! that function's own doc: "pruning without a lease ... is not safe to do
+//! from here"); this is that repair. Each prune that deletes at least one
+//! entry gets its own `quarantine_prune` journal row.
 
 use std::path::{Path, PathBuf};
 
@@ -155,12 +153,35 @@ fn drop_copy_registry_entry(
     fs: &dyn ScopeFs,
     deployment_id: &str,
 ) -> Result<(), CoreError> {
+    drop_registry_entry(rt, guard, fs, "copies", deployment_id)
+}
+
+/// Removes one entry from the scope home's registry `forks` map, keyed by
+/// skill name (`ownership::HomeRegistry::forks`'s own key) - the write-back
+/// half of whatever recorded the fork, mirroring [`drop_copy_registry_entry`]
+/// for the other lifecycle owner kind that keeps its own registry row.
+fn drop_fork_registry_entry(
+    rt: &Runtime,
+    guard: &ExclusiveGuard,
+    fs: &dyn ScopeFs,
+    name: &str,
+) -> Result<(), CoreError> {
+    drop_registry_entry(rt, guard, fs, "forks", name)
+}
+
+fn drop_registry_entry(
+    rt: &Runtime,
+    guard: &ExclusiveGuard,
+    fs: &dyn ScopeFs,
+    map_key: &str,
+    entry_key: &str,
+) -> Result<(), CoreError> {
     let home = rt.scope.home.lexical.clone();
     let mut document = crate::ops_install::read_registry_document(fs, &home)?;
     let changed = document
-        .get_mut("copies")
+        .get_mut(map_key)
         .and_then(serde_json::Value::as_object_mut)
-        .is_some_and(|copies| copies.shift_remove(deployment_id).is_some());
+        .is_some_and(|map| map.shift_remove(entry_key).is_some());
     if changed {
         crate::ops_install::write_registry_document(guard, fs, &home, document)?;
     }
@@ -178,20 +199,94 @@ fn quarantine_sort_key(name: &str) -> &str {
     name.rsplit_once('-').map_or(name, |(_, suffix)| suffix)
 }
 
-/// Prunes the oldest entries in `quarantine_dir` back down to
-/// `doctor::QUARANTINE_RETENTION_CAP`, oldest-first by
-/// [`quarantine_sort_key`]. Best-effort: a single entry this cannot remove
-/// (for example, a concurrent reader) is left for the next remove's prune
-/// rather than failing this one's own result.
-fn prune_quarantine(fs: &dyn ScopeFs, quarantine_dir: &Path) {
+/// Age cap for a quarantine entry, alongside the count cap
+/// (`doctor::QUARANTINE_RETENTION_CAP`): an entry older than this is pruned
+/// even while the directory is under the count cap, so an idle install does
+/// not carry a removed tree forever. Unmeasured against production
+/// quarantine growth, like the count cap itself (its own doc).
+const QUARANTINE_AGE_CAP: chrono::Duration = chrono::Duration::days(30);
+
+/// Whether the quarantine entry whose [`quarantine_sort_key`] is `event_id`
+/// is still referenced by a `remove` row that has not reached
+/// [`EventStatus::Done`] - pruning it out from under a `Pending` or `Failed`
+/// remove would delete the very backup that row's own undo (or a retry)
+/// still needs. A row this cannot find (already gone, or never written) is
+/// not "open", so it does not block the prune.
+fn is_referenced_by_open_remove(session: &MutationSession, event_id: &str) -> bool {
+    let Ok(Some(record)) =
+        session
+            .store
+            .get(&crate::identity::EventId(event_id.to_string()))
+    else {
+        return false;
+    };
+    record.kind == EventKind::Remove.as_str() && record.status != EventStatus::Done
+}
+
+/// Prunes `quarantine_dir` down to `doctor::QUARANTINE_RETENTION_CAP`
+/// entries and drops anything older than [`QUARANTINE_AGE_CAP`], oldest-
+/// first by [`quarantine_sort_key`] - except an entry still referenced by an
+/// open `remove` row (see [`is_referenced_by_open_remove`]), which is kept
+/// regardless of age or cap. Records one `quarantine_prune` journal row
+/// naming every entry it actually deleted, when it deletes at least one -
+/// still under `remove`'s own exclusive lease. Best-effort on the deletes
+/// themselves: a single entry this cannot remove (for example, a concurrent
+/// reader) is left for the next remove's prune rather than failing this
+/// one's own result.
+fn prune_quarantine(
+    rt: &Runtime,
+    session: &mut MutationSession,
+    fs: &dyn ScopeFs,
+    quarantine_dir: &Path,
+    triggering_skill: &crate::identity::SkillName,
+) {
     let mut entries = fs.read_dir(quarantine_dir).unwrap_or_default();
-    if entries.len() <= crate::doctor::QUARANTINE_RETENTION_CAP {
+    entries.retain(|e| !is_referenced_by_open_remove(session, quarantine_sort_key(&e.name)));
+    entries.sort_by(|a, b| quarantine_sort_key(&a.name).cmp(quarantine_sort_key(&b.name)));
+
+    let now = rt.ports.clock.now();
+    let mut to_prune: Vec<String> = Vec::new();
+    let mut kept = Vec::new();
+    for entry in entries {
+        let expired = ulid::Ulid::from_string(quarantine_sort_key(&entry.name))
+            .ok()
+            .is_some_and(|ulid| {
+                let ts = chrono::DateTime::<chrono::Utc>::from(
+                    std::time::UNIX_EPOCH + std::time::Duration::from_millis(ulid.timestamp_ms()),
+                );
+                now.signed_duration_since(ts) > QUARANTINE_AGE_CAP
+            });
+        if expired {
+            to_prune.push(entry.name);
+        } else {
+            kept.push(entry);
+        }
+    }
+    if kept.len() > crate::doctor::QUARANTINE_RETENTION_CAP {
+        let excess = kept.len() - crate::doctor::QUARANTINE_RETENTION_CAP;
+        to_prune.extend(kept.into_iter().take(excess).map(|e| e.name));
+    }
+    if to_prune.is_empty() {
         return;
     }
-    entries.sort_by(|a, b| quarantine_sort_key(&a.name).cmp(quarantine_sort_key(&b.name)));
-    let excess = entries.len() - crate::doctor::QUARANTINE_RETENTION_CAP;
-    for entry in entries.into_iter().take(excess) {
-        remove_tree_best_effort(fs, &quarantine_dir.join(&entry.name));
+    for name in &to_prune {
+        remove_tree_best_effort(fs, &quarantine_dir.join(name));
+    }
+    let id = rt.ports.ids.next_event_id();
+    let draft = EventDraft {
+        kind: EventKind::QuarantinePrune,
+        skill: triggering_skill.clone(),
+        harness: None,
+        scope: None,
+        project_path: None,
+        payload: serde_json::json!({ "pruned": to_prune }),
+        inverse: None,
+        backup_dir: None,
+    };
+    if session.store.record(&session.guard, &id, &draft).is_ok() {
+        let _ = session
+            .store
+            .finish(&session.guard, &id, EventStatus::Done, None);
     }
 }
 
@@ -218,8 +313,21 @@ fn remove_tree_best_effort(fs: &dyn ScopeFs, path: &Path) {
     let _ = fs.fsops_remove_dir(path);
 }
 
+/// [`remove_and_link`]'s arguments, grouped into one struct so the function
+/// itself does not need `#[allow(clippy::too_many_arguments)]`.
+struct RemoveAndLinkArgs<'a> {
+    path: &'a Path,
+    deployment_id: &'a crate::identity::DeploymentId,
+    owner_kind: LifecycleOwnerKind,
+    scope: &'a RootScope,
+    name: &'a str,
+    link_paths: &'a [PathBuf],
+    quarantine_target: Option<&'a Path>,
+}
+
 /// Removes one deployment, by `deployment.owner_kind` - see the module doc
-/// for the write shape each branch takes.
+/// for the write shape each branch takes. See [`remove_and_link`] for why
+/// this needs an ordered write, not just a call.
 ///
 /// Preconditions: exclusive lease; the deployment must resolve exactly once,
 /// live at the universal root ([`RootKind::Universal`]), hold its own bytes
@@ -263,7 +371,13 @@ pub fn remove(
     let skill = crate::ops::resolve_skill(&session.fresh, &deployment.id)?.clone();
     let fs = rt.ports.fs.as_ref();
     let tree_hash_before = crate::tree_hash::tree_hash(fs, &deployment.path)?;
-    let claude_link = crate::ops::find_claude_link(&skill, &deployment.path, fs).cloned();
+    // Every harness's link, not just Claude Code's - `RemoveRequest` has no
+    // `harnesses` field to restrict this to (see `dto::RemoveRequest`), so
+    // every link found under the deployment's own tree is dropped.
+    let links: Vec<PathBuf> = crate::ops::find_all_links(&skill, &deployment.path, fs)
+        .into_iter()
+        .map(|d| d.path.clone())
+        .collect();
     let begin_step = crate::timing::step(clock, "begin_session", step_start);
 
     let step_start = clock.monotonic();
@@ -291,20 +405,17 @@ pub fn remove(
     let quarantine_target =
         is_quarantined.then(|| quarantine_dir.join(format!("{}-{}", skill.name.0, id.0)));
 
-    let mut backup_dir = None;
-    if !is_quarantined {
-        // `Dotagents`/`SkillsSh`: the CLI deletes the live bytes itself, so
-        // an archival copy is taken before that call, same as `install`
-        // takes one of the (normally absent) destination before its first
-        // write - see the module doc on why this does not also wire up a
-        // `restore_backup` inverse.
-        let mut targets = vec![deployment.path.clone()];
-        if let Some(link) = &claude_link {
-            targets.push(link.path.clone());
-        }
-        let manifest = session.store.backup_paths(&session.guard, &id, &targets)?;
-        backup_dir = Some(manifest.backup_dir);
-    }
+    // Every owner kind gets a real archival copy of the tree before the
+    // first write - see the module doc on why this also wires up a real
+    // `restore_backup_inverse`, unlike `park`. `deployment.path` is listed
+    // first so its manifest entry (and thus `pre_fingerprint` below) is
+    // `manifest.entries[0]` regardless of whether a link follows it.
+    let manifest = session
+        .store
+        .backup_paths(&session.guard, &id, std::slice::from_ref(&deployment.path))?;
+    let pre_fingerprint = manifest.entries.first().and_then(|e| e.fingerprint.as_ref());
+    let inverse = crate::events::restore_backup_inverse(&deployment.path, pre_fingerprint, None);
+    let backup_dir = Some(manifest.backup_dir);
 
     let draft = EventDraft {
         kind: EventKind::Remove,
@@ -317,11 +428,9 @@ pub fn remove(
             "owner_kind": deployment.owner_kind,
             "from": deployment.path,
             "to": quarantine_target,
-            "claude_link": claude_link.as_ref().map(|l| &l.path),
+            "links": links,
         }),
-        // See the module doc: no branch here supports a generic
-        // `restore_backup` undo, same as `park`.
-        inverse: None,
+        inverse: Some(inverse),
         backup_dir,
     };
     session.store.record(&session.guard, &id, &draft)?;
@@ -331,13 +440,15 @@ pub fn remove(
         ctx,
         &mut session,
         fs,
-        &deployment.path,
-        &deployment.id,
-        deployment.owner_kind,
-        &deployment.root.scope,
-        &skill.name.0,
-        claude_link.as_ref().map(|l| l.path.as_path()),
-        quarantine_target.as_deref(),
+        RemoveAndLinkArgs {
+            path: &deployment.path,
+            deployment_id: &deployment.id,
+            owner_kind: deployment.owner_kind,
+            scope: &deployment.root.scope,
+            name: &skill.name.0,
+            link_paths: &links,
+            quarantine_target: quarantine_target.as_deref(),
+        },
     );
     if let Err(e) = write_result {
         let _ = session
@@ -349,9 +460,9 @@ pub fn remove(
         .store
         .finish(&session.guard, &id, EventStatus::Done, None)?;
     if is_quarantined {
-        // Still under this call's exclusive lease - see the module doc on
-        // why the prune itself carries no journal row.
-        prune_quarantine(fs, &quarantine_dir);
+        // Still under this call's exclusive lease - see `prune_quarantine`'s
+        // own doc.
+        prune_quarantine(rt, &mut session, fs, &quarantine_dir, &skill.name);
     }
     session.finish(rt, ctx);
     let write_step = crate::timing::step(clock, "remove", step_start);
@@ -371,33 +482,25 @@ pub fn remove(
 }
 
 /// The write-and-link step every `remove` call shares, once its journal row
-/// is already recorded: removes the Claude Code link (if any), then either
-/// renames the tree into quarantine (`Copy`/`Fork`) or runs the CLI's own
-/// `remove` (`Dotagents`/`SkillsSh`) - any failure here bubbles up so
-/// `remove` can mark the row `Failed`, matching `ops_install::install`'s own
-/// `install_and_link`.
-#[allow(clippy::too_many_arguments)]
+/// is already recorded: renames the tree into quarantine (`Copy`/`Fork`) or
+/// runs the CLI's own `remove` (`Dotagents`/`SkillsSh`) FIRST, then removes
+/// every harness's link. The tree op runs first, not last as an earlier
+/// revision had it, so a failed link removal never leaves the tree gone but
+/// the journal row (and its `restore_backup` inverse) pointing at a path
+/// whose links were already dropped out from under it - and so a failure
+/// partway through link cleanup, after the tree op already succeeded, still
+/// leaves `remove` free to mark the row `Done`: the deployment itself is
+/// gone either way, which is what the row records.
 fn remove_and_link(
     rt: &Runtime,
     ctx: &OpContext,
     session: &mut MutationSession,
     fs: &dyn ScopeFs,
-    path: &Path,
-    deployment_id: &crate::identity::DeploymentId,
-    owner_kind: LifecycleOwnerKind,
-    scope: &RootScope,
-    name: &str,
-    claude_link_path: Option<&Path>,
-    quarantine_target: Option<&Path>,
+    args: RemoveAndLinkArgs<'_>,
 ) -> Result<(), CoreError> {
-    if let Some(link_path) = claude_link_path {
-        let scoped_link = crate::ports::confine(&rt.scope, fs, link_path)?;
-        fs.remove_file(&session.guard, &scoped_link)
-            .map_err(|e| CoreError::io(link_path, e))?;
-    }
-    match owner_kind {
+    match args.owner_kind {
         LifecycleOwnerKind::Copy | LifecycleOwnerKind::Fork => {
-            let quarantine_target = quarantine_target.ok_or_else(|| {
+            let quarantine_target = args.quarantine_target.ok_or_else(|| {
                 CoreError::new(ErrorCode::Io, "a quarantined removal always has a target")
             })?;
             crate::ops::ensure_dir_all(
@@ -406,26 +509,39 @@ fn remove_and_link(
                 fs,
                 quarantine_target.parent().unwrap_or(quarantine_target),
             )?;
-            let scoped_from = crate::ports::confine(&rt.scope, fs, path)?;
+            let scoped_from = crate::ports::confine(&rt.scope, fs, args.path)?;
             let scoped_to = crate::ports::confine(&rt.scope, fs, quarantine_target)?;
             fs.rename(&session.guard, &scoped_from, &scoped_to)
-                .map_err(|e| CoreError::io(path, e))?;
-            if owner_kind == LifecycleOwnerKind::Copy {
-                drop_copy_registry_entry(rt, &session.guard, fs, deployment_id.as_str())?;
+                .map_err(|e| CoreError::io(args.path, e))?;
+            match args.owner_kind {
+                LifecycleOwnerKind::Copy => drop_copy_registry_entry(
+                    rt,
+                    &session.guard,
+                    fs,
+                    args.deployment_id.as_str(),
+                )?,
+                LifecycleOwnerKind::Fork => {
+                    drop_fork_registry_entry(rt, &session.guard, fs, args.name)?;
+                }
+                _ => unreachable!("matched above"),
             }
-            // `Fork`'s own registry row (a separate ledger from `Copy`'s
-            // `copies` map) is left in place - see the unit's follow-up
-            // notes.
-            Ok(())
         }
         LifecycleOwnerKind::Dotagents | LifecycleOwnerKind::SkillsSh => {
-            remove_via_cli(rt, ctx, owner_kind, name, scope, path)
+            remove_via_cli(rt, ctx, args.owner_kind, args.name, args.scope, args.path)?;
         }
-        _ => Err(CoreError::new(
-            ErrorCode::Unsupported,
-            "this owner kind is not mutable and was already refused before this step",
-        )),
+        _ => {
+            return Err(CoreError::new(
+                ErrorCode::Unsupported,
+                "this owner kind is not mutable and was already refused before this step",
+            ))
+        }
     }
+    for link_path in args.link_paths {
+        let scoped_link = crate::ports::confine(&rt.scope, fs, link_path)?;
+        fs.remove_file(&session.guard, &scoped_link)
+            .map_err(|e| CoreError::io(link_path, e))?;
+    }
+    Ok(())
 }
 
 #[cfg(test)]

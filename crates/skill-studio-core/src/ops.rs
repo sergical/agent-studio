@@ -4428,14 +4428,6 @@ pub fn restore_event(
     let live = live_fingerprint
         .as_ref()
         .map_or("absent", super::identity::Fingerprint::bare_hex);
-    // Captured before any mutation below: a directory's backup was copied
-    // recursively (`HistoryStore::backup_paths`), so a directory's restore
-    // reads it back the same way, through `WriteDir` below, instead of
-    // `ScopeFs::write_atomic`'s single-file write.
-    let live_is_dir = matches!(
-        fs.symlink_metadata(&path).map(|m| m.kind),
-        Ok(FileKind::Dir)
-    );
     if live != expected && !req.force {
         return Err(CoreError::new(
             ErrorCode::DriftConflict,
@@ -4498,7 +4490,12 @@ pub fn restore_event(
                     )
                     .at(&path)
                 })?;
-            if live_is_dir {
+            // Read from the backup entry itself (see `BackupEntry::is_dir`'s
+            // own doc), not the live path's current type: after a `remove`
+            // the live path is absent, which would otherwise always look
+            // like "not a directory" and send a directory's restore through
+            // the single-file `Write` branch below.
+            if entry.is_dir {
                 let files = session
                     .store
                     .read_backup_files(backup_dir, &entry.relative)?;
@@ -4612,12 +4609,32 @@ pub(crate) fn find_claude_link<'a>(
     target_path: &Path,
     fs: &dyn ScopeFs,
 ) -> Option<&'a DeploymentDto> {
-    let canonical_target = fs.canonicalize(target_path).ok()?;
-    skill.deployments.iter().find(|d| {
-        d.harness.as_ref().map(AgentId::as_str) == Some(AgentId::CLAUDE_CODE)
-            && d.backing == BackingRelationship::LinkedTo
-            && d.link_target.as_deref() == Some(canonical_target.as_path())
-    })
+    find_all_links(skill, target_path, fs)
+        .into_iter()
+        .find(|d| d.harness.as_ref().map(AgentId::as_str) == Some(AgentId::CLAUDE_CODE))
+}
+
+/// Finds every per-harness link deployment pointing at `target_path`, among
+/// `skill`'s other deployments - the same canonicalized comparison
+/// [`find_claude_link`] uses, generalized to every harness rather than just
+/// Claude Code, for `ops::remove`'s own link cleanup (every harness a skill
+/// was ever linked into must lose that link, not just Claude Code's).
+pub(crate) fn find_all_links<'a>(
+    skill: &'a InstalledSkillDto,
+    target_path: &Path,
+    fs: &dyn ScopeFs,
+) -> Vec<&'a DeploymentDto> {
+    let Ok(canonical_target) = fs.canonicalize(target_path) else {
+        return Vec::new();
+    };
+    skill
+        .deployments
+        .iter()
+        .filter(|d| {
+            d.backing == BackingRelationship::LinkedTo
+                && d.link_target.as_deref() == Some(canonical_target.as_path())
+        })
+        .collect()
 }
 
 pub use crate::ops_install::{install, install_preferences};

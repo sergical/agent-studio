@@ -64,11 +64,14 @@ pub enum EventKind {
     RepairSkillFrontmatter,
     /// Undo of another event; `payload.target_event` names it.
     Restore,
+    /// `ops::remove`'s own quarantine prune; `payload.pruned` names every
+    /// entry it deleted.
+    QuarantinePrune,
 }
 
 impl EventKind {
     /// Every kind, in declaration order.
-    pub const ALL: [EventKind; 21] = [
+    pub const ALL: [EventKind; 22] = [
         EventKind::Install,
         EventKind::Remove,
         EventKind::Update,
@@ -90,6 +93,7 @@ impl EventKind {
         EventKind::MakeIndependentCopy,
         EventKind::RepairSkillFrontmatter,
         EventKind::Restore,
+        EventKind::QuarantinePrune,
     ];
 
     /// The literal stored in the `kind` column.
@@ -116,6 +120,7 @@ impl EventKind {
             EventKind::MakeIndependentCopy => "make_independent_copy",
             EventKind::RepairSkillFrontmatter => "repair_skill_frontmatter",
             EventKind::Restore => "restore",
+            EventKind::QuarantinePrune => "quarantine_prune",
         }
     }
 
@@ -320,6 +325,13 @@ pub struct BackupEntry {
     /// Fingerprint of the preserved bytes, or `None` for a path that did not
     /// exist when it was backed up.
     pub fingerprint: Option<Fingerprint>,
+    /// Whether the backed-up copy is a directory tree rather than one file -
+    /// read from the shape of the copy itself, never stored in
+    /// `manifest.json`, so `restore_event` can choose its directory restore
+    /// path from what was actually backed up rather than from the live
+    /// path's current type, which after a `remove` is absent and would
+    /// otherwise always read as "not a directory".
+    pub is_dir: bool,
 }
 
 /// `manifest.json` inside a backup directory.
