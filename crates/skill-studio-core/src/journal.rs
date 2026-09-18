@@ -535,6 +535,13 @@ fn confine_to_root(root: &Root, plan_root: &Path, path: &Path) -> std::io::Resul
 ///   backup (the backup was fsynced durable before the rename that would
 ///   have changed them).
 ///
+/// Each of these probes disk state through a fallible call (`read_link`,
+/// `fsops_device_inode`, `read_capped`); only a `NotFound` error means "the
+/// mutation never landed" - any other I/O error (permissions, EIO, ...)
+/// leaves that unknown and is propagated, so the step's undo fails and the
+/// plan resolves `Interrupted` instead of guessing "not landed" and
+/// deleting or overwriting something that is, in fact, still live.
+///
 /// Every path a step names is confined under `plan.root` first (via
 /// [`confine_to_root`]); a step naming a path outside it aborts reversal
 /// immediately, naming the escaped path, without touching anything.
@@ -557,7 +564,16 @@ fn reverse_steps(
                 staged_binding,
                 quarantined,
             } => {
-                let landed = fs.fsops_device_inode(path).ok() == Some(*staged_binding);
+                let landed = match fs.fsops_device_inode(path) {
+                    Ok(inode) => inode == *staged_binding,
+                    // Only a missing path means the exchange never ran -
+                    // any other error (EACCES, EIO, ...) leaves whether it
+                    // landed unknown, and guessing "no" here is what lets
+                    // the paired Stage step's reversal delete a folder that
+                    // is in fact still live at `path`.
+                    Err(e) if e.kind() == std::io::ErrorKind::NotFound => false,
+                    Err(e) => return Err(e),
+                };
                 if !landed {
                     // The exchange never ran; `path` still shows whatever
                     // was there before this plan. Nothing to undo here -
@@ -589,7 +605,13 @@ fn reverse_steps(
                 target,
                 previous_target,
             } => {
-                let landed = fs.read_link(path).ok().as_deref() == Some(target.as_path());
+                let landed = match fs.read_link(path) {
+                    Ok(current) => current == *target,
+                    // Only a missing path means the rename never landed -
+                    // any other error leaves whether it landed unknown.
+                    Err(e) if e.kind() == std::io::ErrorKind::NotFound => false,
+                    Err(e) => return Err(e),
+                };
                 if !landed {
                     continue;
                 }
@@ -603,8 +625,14 @@ fn reverse_steps(
                     let backup_bytes = journal
                         .read_backup(&plan.id, &entry.relative)
                         .map_err(|e| std::io::Error::other(e.to_string()))?;
-                    let live = fs.read_capped(path, u64::MAX).ok();
-                    let landed = live.as_deref() != Some(backup_bytes.as_slice());
+                    let landed = match fs.read_capped(path, u64::MAX) {
+                        Ok(live) => live != backup_bytes,
+                        // Only a missing path means the write never landed
+                        // (the rename always leaves a file at `path`) - any
+                        // other error leaves whether it landed unknown.
+                        Err(e) if e.kind() == std::io::ErrorKind::NotFound => false,
+                        Err(e) => return Err(e),
+                    };
                     if landed {
                         if fs.symlink_metadata(path).is_ok() {
                             fs.fsops_remove_file(path)?;
@@ -1109,6 +1137,86 @@ mod tests {
         assert_eq!(
             after, before,
             "reconciliation must restore the old folder byte-for-byte, or name the folder it deleted"
+        );
+    }
+
+    /// Given a swap plan whose exchange landed but the process died before
+    /// the follow-up move into quarantine (the same window as the test
+    /// above), when reconciliation's probe of the swapped path's identity
+    /// then hits a non-`NotFound` I/O error - EACCES, EIO, or similar,
+    /// rather than the path simply being absent - it must not read that as
+    /// "the exchange never landed": doing so would let the paired `Stage`
+    /// step's reversal delete the folder that is, in fact, still live at
+    /// `path`. The plan resolves `Interrupted` and the error is named in
+    /// the report; on failure the panic names the folder it deleted anyway.
+    #[test]
+    fn an_io_error_while_probing_a_swapped_path_interrupts_the_plan_or_names_the_old_folder_it_deleted(
+    ) {
+        let fixture = FixtureBuilder::new()
+            .dir("/journal")
+            .dir("/root")
+            .dir("/root/skill")
+            .file("/root/skill/SKILL.md", b"old content")
+            .build_fs();
+        let root_path = PathBuf::from("/root");
+
+        let failing = FailingFs::wrap(Arc::new(fixture.clone()));
+        let root = Root::open(&failing, root_path.clone()).expect("open root");
+        let journal = journal_over(Arc::new(fixture.clone()));
+        let lease = FakeLease::default();
+        let g = guard(&lease);
+
+        let id = PlanId("01PLANIOPROBE0000000000001".into());
+        let plan = PlanWriter::begin(
+            &journal,
+            &g,
+            id.clone(),
+            Utc::now(),
+            "crash between exchange and quarantine move, then a probe I/O error",
+            root_path.clone(),
+            Vec::new(),
+        )
+        .expect("begin");
+
+        let staged = fsops::stage(
+            &root,
+            &plan,
+            &[(PathBuf::from("SKILL.md"), b"new content".to_vec())],
+        )
+        .expect("stage");
+        failing.fail_next_fsops_rename();
+        fsops::swap(
+            &root,
+            &plan,
+            Path::new("skill"),
+            &staged,
+            Path::new(".trash"),
+        )
+        .expect_err("the quarantine move must fail, or this test proves nothing about the window between it and the exchange");
+        // The process dies here: `plan` is dropped, never finished.
+        drop(plan);
+
+        let before_reconcile = tree_snapshot(&fixture, &root_path);
+
+        // Simulates EACCES/EIO on the very probe reconciliation uses to
+        // decide whether the exchange landed - not the path being absent.
+        failing.fail_next_fsops_device_inode();
+        let report = reconcile(&journal, &g, &failing).expect("reconciliation must run");
+        let interrupted = report
+            .interrupted
+            .iter()
+            .find(|p| p.id == id)
+            .unwrap_or_else(|| panic!("a probe error other than NotFound must interrupt the plan, not {report:?}"));
+        assert!(
+            interrupted.error.contains("fsops_device_inode"),
+            "the report must name the error the probe hit, got: {}",
+            interrupted.error
+        );
+
+        let after = tree_snapshot(&fixture, &root_path);
+        assert_eq!(
+            after, before_reconcile,
+            "an I/O error while probing must not delete or change anything, or names the old folder it deleted"
         );
     }
 

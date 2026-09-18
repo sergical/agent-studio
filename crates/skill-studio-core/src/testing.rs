@@ -822,6 +822,7 @@ pub struct FailingFs {
     fail_next_fsops_rename: AtomicBool,
     fail_next_fsops_exchange: AtomicBool,
     fail_next_fsops_fsync_dir: AtomicBool,
+    fail_next_fsops_device_inode: AtomicBool,
 }
 
 impl FailingFs {
@@ -835,6 +836,7 @@ impl FailingFs {
             fail_next_fsops_rename: AtomicBool::new(false),
             fail_next_fsops_exchange: AtomicBool::new(false),
             fail_next_fsops_fsync_dir: AtomicBool::new(false),
+            fail_next_fsops_device_inode: AtomicBool::new(false),
         }
     }
 
@@ -888,6 +890,16 @@ impl FailingFs {
     /// mutation) while the caller never sees `Ok`.
     pub fn fail_next_fsops_fsync_dir(&self) {
         self.fail_next_fsops_fsync_dir.store(true, Ordering::SeqCst);
+    }
+
+    /// The next `fsops_device_inode` call returns a non-`NotFound` error
+    /// instead of reaching `inner`; later calls delegate normally again.
+    /// Lets a test simulate a probe that fails for a reason other than "the
+    /// path is absent" - e.g. EACCES or EIO - during reversal's landed
+    /// check, which must not be read as "the mutation never landed".
+    pub fn fail_next_fsops_device_inode(&self) {
+        self.fail_next_fsops_device_inode
+            .store(true, Ordering::SeqCst);
     }
 }
 
@@ -952,6 +964,15 @@ impl ScopeFs for FailingFs {
         self.inner.symlink(guard, target, link)
     }
     fn fsops_device_inode(&self, path: &Path) -> std::io::Result<(u64, u64)> {
+        if self
+            .fail_next_fsops_device_inode
+            .swap(false, Ordering::SeqCst)
+        {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::PermissionDenied,
+                "FailingFs: injected fsops_device_inode failure",
+            ));
+        }
         self.inner.fsops_device_inode(path)
     }
     fn fsops_fsync_file(&self, path: &Path) -> std::io::Result<()> {
