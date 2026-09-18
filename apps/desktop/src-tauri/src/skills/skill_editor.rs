@@ -592,9 +592,11 @@ mod tests {
     /// the editor, and it must write to neither. Fakes `open` on `PATH`
     /// with a script that records its argv, rather than depending on the
     /// real macOS `open` (absent on the Linux CI runner) or on GUI
-    /// automation.
+    /// automation. `PathGuard` (review round 2, G4) holds the crate's
+    /// shared env lock and restores `PATH` in `Drop`, so a panic mid-test
+    /// still restores it and a parallel test never observes the fake `open`.
     #[test]
-    fn two_fixture_copies_that_differ_open_in_the_chosen_editor_with_both_paths_and_the_file_on_disk_is_unchanged(
+    fn two_fixture_copies_that_differ_open_in_the_chosen_editor_with_both_paths_or_names_the_missing_editor_argv(
     ) {
         let home = tempfile::tempdir().expect("temp home");
         let path_a = home.path().join("a/SKILL.md");
@@ -624,27 +626,8 @@ mod tests {
                 .expect("chmod fake open");
         }
 
-        let prev_path = std::env::var_os("PATH");
-        let new_path = match &prev_path {
-            Some(p) => format!("{}:{}", bin_dir.path().display(), p.to_string_lossy()),
-            None => bin_dir.path().display().to_string(),
-        };
-        // SAFETY: no other test in this crate reads or writes `PATH`, so
-        // nothing else can observe it between the set below and the
-        // restore right after `open_paths_in_editor` returns.
-        #[allow(unsafe_code)]
-        unsafe {
-            std::env::set_var("PATH", new_path);
-        }
+        let _path_guard = super::super::test_support::PathGuard::new(bin_dir.path());
         let result = open_paths_in_editor(home.path(), &[path_a.clone(), path_b.clone()]);
-        // SAFETY: restoring exactly what this test itself overrode above.
-        #[allow(unsafe_code)]
-        unsafe {
-            match prev_path {
-                Some(p) => std::env::set_var("PATH", p),
-                None => std::env::remove_var("PATH"),
-            }
-        }
 
         assert!(result.is_ok(), "{result:?}");
         let recorded = std::fs::read_to_string(&recording).expect("read recording");

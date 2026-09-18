@@ -200,3 +200,56 @@ impl Drop for OpencodeHomeGuard {
         }
     }
 }
+
+/// Prepends `dir` to `PATH` for the guarded test's whole body (RAII, so a
+/// panic mid-test still restores it), holding the same shared
+/// [`opencode_env_lock`] every other process-wide env mutation in this
+/// crate's tests serializes on - `PATH` and the OpenCode env vars are
+/// disjoint, but a shared lock is simpler than a second one and process
+/// env mutation is inherently crate-wide regardless of which vars a test
+/// touches.
+pub struct PathGuard {
+    _lock: std::sync::MutexGuard<'static, ()>,
+    prev_path: Option<std::ffi::OsString>,
+}
+
+impl PathGuard {
+    /// Prepends `dir` to the current `PATH`.
+    pub fn new(dir: &Path) -> Self {
+        let lock = opencode_env_lock()
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let prev_path = std::env::var_os("PATH");
+        let new_path = match &prev_path {
+            Some(p) => {
+                let mut joined = std::ffi::OsString::from(dir);
+                joined.push(":");
+                joined.push(p);
+                joined
+            }
+            None => dir.as_os_str().to_owned(),
+        };
+        // SAFETY: `lock` above serializes every test that touches `PATH`.
+        #[allow(unsafe_code)]
+        unsafe {
+            std::env::set_var("PATH", new_path);
+        }
+        Self {
+            _lock: lock,
+            prev_path,
+        }
+    }
+}
+
+impl Drop for PathGuard {
+    fn drop(&mut self) {
+        // SAFETY: `self._lock` is still held for the whole body of `drop`.
+        #[allow(unsafe_code)]
+        unsafe {
+            match self.prev_path.take() {
+                Some(v) => std::env::set_var("PATH", v),
+                None => std::env::remove_var("PATH"),
+            }
+        }
+    }
+}
