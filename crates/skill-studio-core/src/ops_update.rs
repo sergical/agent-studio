@@ -169,8 +169,8 @@ fn update_via_cli(
 
 /// `Copy`: stages `files` under [`ops_install::journal_root`], then swaps it
 /// into `<universal_root>/<skill>`, quarantining whatever already sat there
-/// - see the module doc for why `.skill-studio-update-quarantine`, not the
-///   desktop's `skills-trash`.
+/// - see the module doc for why `QUARANTINE_DIR_NAME`, not the desktop's
+///   `skills-trash`.
 fn update_copy(
     rt: &Runtime,
     guard: &ExclusiveGuard,
