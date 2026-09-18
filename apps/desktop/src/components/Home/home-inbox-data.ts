@@ -111,7 +111,11 @@ export async function updateAllOutdatedSkills(
     attempted += ownerTargets.length;
     try {
       const outcome = await updateAllOwners(ownerTargets);
-      const failedCount = Object.keys(outcome.errors).length;
+      // `errors` is keyed by skill name, so two failing owners of one
+      // twice-installed skill collapse to one entry there; `items` carries
+      // one entry per owner regardless, so count failures from `items`
+      // instead (N1, review round 3).
+      const failedCount = outcome.items.filter((item) => item.outcome === null).length;
       succeeded += outcome.items.length - failedCount;
       failures += failedCount;
     } catch {

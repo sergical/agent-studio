@@ -156,4 +156,30 @@ describe("updateAllOutdatedSkills", () => {
 
     expect(tally).toEqual({ attempted: 2, succeeded: 0, failures: 2 });
   });
+
+  it("update_all_summary_counts_each_failed_owner_or_names_the_overcounted_success", async () => {
+    // "alpha" is installed twice (two owners, e.g. a skills-sh copy and a
+    // dotagents copy) and both updates fail. `errors` is keyed by skill
+    // name, so it collapses the two failures to one key - counting
+    // failures from `Object.keys(errors).length` reports 1 failure and
+    // credits the other owner as succeeded even though neither did.
+    const skills = [
+      ownerSkill("alpha", "owner:v1/global/alpha-skills-sh"),
+      ownerSkill("alpha", "owner:v1/global/alpha-dotagents"),
+    ];
+
+    const tally = await updateAllOutdatedSkills(
+      skills,
+      async () => {
+        throw new Error("no forks in this batch");
+      },
+      // The real backend resolves each target's skill name server-side;
+      // both owners here are "alpha", so `failAll`'s `errors` (keyed by
+      // name) collapses to one key while `items` keeps both entries -
+      // same as production.
+      async (targets) => failAll(targets.map(() => "alpha")),
+    );
+
+    expect(tally).toEqual({ attempted: 2, succeeded: 0, failures: 2 });
+  });
 });
