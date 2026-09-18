@@ -31,10 +31,12 @@ fn deny(config_dir: &Path, name: &str, denied: bool) {
 /// Flow: `opencode.json` already on disk carries a `theme` key and a
 /// `$schema` the app never wrote, plus its own deny rule; a caller adds a
 /// second skill's deny through the lease-guarded write path.
-/// Expectation: `theme`, `$schema`, and the first skill's deny rule survive
-/// byte-identical; only the new skill's rule is added.
-/// Failure here (either key silently dropped) would mean the write path
-/// clobbers config a person or another tool wrote.
+/// Expectation: unrelated keys keep their values and document order
+/// (`$schema`, `theme`, `permission`, unchanged from what was on disk), and
+/// the first skill's deny rule survives; only the new skill's rule is added.
+/// Failure here (either key silently dropped, or the surviving keys
+/// reordered) would mean the write path clobbers config a person or another
+/// tool wrote.
 #[test]
 fn opencode_config_write_round_trips_unrelated_keys_and_keeps_schema_or_names_the_dropped_key() {
     let tmp = tempfile::tempdir().unwrap();
@@ -52,6 +54,17 @@ fn opencode_config_write_round_trips_unrelated_keys_and_keeps_schema_or_names_th
     let value: serde_json::Value = serde_json::from_str(&content).unwrap();
     assert_eq!(value["theme"], "dark");
     assert_eq!(value["$schema"], "https://opencode.ai/config.json");
+    let keys: Vec<&str> = value
+        .as_object()
+        .unwrap()
+        .keys()
+        .map(String::as_str)
+        .collect();
+    assert_eq!(
+        keys,
+        vec!["$schema", "theme", "permission"],
+        "expected $schema, theme, permission in that document order; got {keys:?}"
+    );
     let rules = read_skill_rules(&fs, config_dir);
     assert!(rules.is_denied("find-bugs"));
     assert!(rules.is_denied("write-tests"));
