@@ -38,7 +38,10 @@
 //! `preferred_harnesses` in `<scope>/.agents/skill-studio.json`, merged in
 //! alongside whatever other top-level keys that document already carries -
 //! `serde_json`'s `preserve_order` feature and `Map::shift_remove` (never
-//! `Map::remove`) keep an untouched key's position stable across a write.
+//! `Map::remove`) keep every other untouched key's own position stable
+//! across a write - `write_version` itself always moves to the front, since
+//! [`write_registry_document`] pulls it out of the map and back into
+//! [`RawRegistryDocument`]'s own leading field.
 //! The write itself goes through [`registry::write_registry_document_locked`]
 //! via [`RawRegistryDocument`], the same lease-guarded, write-version-bumping
 //! path the desktop's own `ForkRegistry` uses - `install` just doesn't know
@@ -74,6 +77,27 @@ use crate::registry;
 /// of which scope - home or a project - the op in progress targets.
 pub(crate) fn journal_root(home: &Path) -> PathBuf {
     home.join(".agents").join("skill-studio-journal")
+}
+
+/// Brings up `<home>/.agents` and [`journal_root`] - always rooted at the
+/// scope home (see `journal_root`'s own doc), so a project-scope install
+/// must create this even though its own `targets.universal_root` never
+/// reaches the home tree. `confine`'s own canonicalize needs its immediate
+/// parent to already exist, so this brings `<home>/.agents` up first, one
+/// level at a time, before confining the journal root itself.
+fn ensure_journal_root(
+    rt: &Runtime,
+    guard: &ExclusiveGuard,
+    fs: &dyn ScopeFs,
+) -> Result<(), CoreError> {
+    let home_agents_dir = rt.scope.home.lexical.join(".agents");
+    let scoped_home_agents_dir = ports::confine(&rt.scope, fs, &home_agents_dir)?;
+    fs.create_dir_all(guard, &scoped_home_agents_dir)
+        .map_err(|e| CoreError::io(&home_agents_dir, e))?;
+    let root = journal_root(&rt.scope.home.lexical);
+    let scoped_journal_root = ports::confine(&rt.scope, fs, &root)?;
+    fs.create_dir_all(guard, &scoped_journal_root)
+        .map_err(|e| CoreError::io(&root, e))
 }
 
 /// `<scope>/.agents/skill-studio.json` - the registry document `install`
