@@ -12,16 +12,30 @@ jobs:
       - uses: actions/checkout@v4
       # The desktop crate links against GTK and WebKitGTK through Tauri.
       - run: sudo apt-get update && sudo apt-get install -y libwebkit2gtk-4.1-dev libgtk-3-dev libayatana-appindicator3-dev librsvg2-dev libxdo-dev libssl-dev
-      - uses: dtolnay/rust-toolchain@stable
+      # Pinned to the toolchain developers run locally. `clippy -D warnings`
+      # with `pedantic = warn` turns every lint a newer release adds into a
+      # failure nobody can reproduce before pushing (and some originate in
+      # dependency macros, where no code edit can satisfy them). Bump this
+      # and the local toolchain together.
+      - uses: dtolnay/rust-toolchain@1.92.0
         with:
           components: rustfmt, clippy
       - uses: Swatinem/rust-cache@v2
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-machete,cargo-deny
       # tauri-build refuses to compile when frontendDist is missing; the Rust
       # tests do not read the bundle, so an empty folder is enough.
       - run: mkdir -p apps/desktop/dist
       - run: cargo fmt --all --check
       - run: cargo clippy --workspace --all-targets -- -D warnings
       - run: cargo test --workspace
+      # Unused dependencies (plan.md section 7): fails the build on any
+      # Cargo.toml entry nothing in the workspace actually imports.
+      - run: cargo machete
+      # Advisory/license/source policy (plan.md section 7), driven by the
+      # root deny.toml.
+      - run: cargo deny check
       # The generated TypeScript wire types come from the `schema` Rust binary,
       # so the drift check lives here, next to the toolchain that builds it.
       - uses: actions/setup-node@v4

@@ -79,7 +79,7 @@ CREATE TABLE IF NOT EXISTS materialized_disabled (
 );
 ";
 
-/// Opens the SQLite event log at a fixed path.
+/// Opens the `SQLite` event log at a fixed path.
 ///
 /// [`HistoryAccess::ReadIfExists`] never creates `db_path`; it returns
 /// `None` when the file is absent. [`HistoryAccess::ReadWrite`] creates the
@@ -118,7 +118,7 @@ impl HistoryOpener for SqliteHistoryOpener {
     }
 }
 
-/// The real event log: SQLite via `rusqlite`, plus byte backups on disk
+/// The real event log: `SQLite` via `rusqlite`, plus byte backups on disk
 /// under `<db_path's directory>/backups/<event-id>/`.
 pub struct SqliteHistoryStore {
     conn: Connection,
@@ -176,8 +176,11 @@ impl HistoryStore for SqliteHistoryStore {
         if let Some(after) = &filter.after {
             owned_params.push(Box::new(after.0.clone()));
         }
-        owned_params.push(Box::new(filter.limit as i64));
-        let bound: Vec<&dyn rusqlite::ToSql> = owned_params.iter().map(|b| b.as_ref()).collect();
+        owned_params.push(Box::new(i64::from(filter.limit)));
+        let bound: Vec<&dyn rusqlite::ToSql> = owned_params
+            .iter()
+            .map(std::convert::AsRef::as_ref)
+            .collect();
 
         let mut stmt = self.conn.prepare(&sql).map_err(sql_err)?;
         let rows = stmt
@@ -234,8 +237,7 @@ impl HistoryStore for SqliteHistoryStore {
             }
             let basename = path
                 .file_name()
-                .map(|n| n.to_string_lossy().into_owned())
-                .unwrap_or_else(|| format!("path-{i}"));
+                .map_or_else(|| format!("path-{i}"), |n| n.to_string_lossy().into_owned());
             let relative_path = format!("{i}-{basename}");
             copy_recursive(path, &dir.join(&relative_path)).map_err(|e| CoreError::io(path, e))?;
             let hex = hash_entry(path).map_err(|e| CoreError::io(path, e))?;
@@ -246,12 +248,17 @@ impl HistoryStore for SqliteHistoryStore {
                     fingerprint: hex.clone(),
                 },
             );
+            let fingerprint = Fingerprint::parse(&hex).map_err(|_| {
+                CoreError::new(
+                    ErrorCode::ExecutionFailed,
+                    "hash_entry did not return 64 lowercase hex chars",
+                )
+                .at(path)
+            })?;
             entries.push(BackupEntry {
                 original: path.clone(),
                 relative: relative_path,
-                fingerprint: Some(
-                    Fingerprint::parse(&hex).expect("hash_entry returns 64 lowercase hex chars"),
-                ),
+                fingerprint: Some(fingerprint),
             });
         }
 
@@ -299,7 +306,7 @@ impl HistoryStore for SqliteHistoryStore {
                     ts,
                     draft.kind.as_str(),
                     draft.skill.0,
-                    draft.harness.as_ref().map(|a| a.as_str()),
+                    draft.harness.as_ref().map(skill_studio_core::identity::AgentId::as_str),
                     draft.scope,
                     project_path,
                     payload_json,
@@ -523,10 +530,15 @@ fn row_from(row: &rusqlite::Row) -> rusqlite::Result<EventRecord> {
     })
 }
 
+// Taken by value so both convert directly as `.map_err(sql_err)` /
+// `.map_err(json_err)` function pointers at every call site instead of a
+// closure that reborrows; that is the only reason the error isn't consumed.
+#[allow(clippy::needless_pass_by_value)]
 fn sql_err(e: rusqlite::Error) -> CoreError {
     CoreError::new(ErrorCode::Io, format!("sqlite error: {e}"))
 }
 
+#[allow(clippy::needless_pass_by_value)]
 fn json_err(e: serde_json::Error) -> CoreError {
     CoreError::new(ErrorCode::Io, format!("json error: {e}"))
 }
@@ -546,7 +558,7 @@ pub fn hash_entry(path: &Path) -> std::io::Result<String> {
         Ok(sha256_hex(&buf))
     } else if file_type.is_dir() {
         let mut entries: Vec<_> = fs::read_dir(path)?.collect::<Result<_, _>>()?;
-        entries.sort_by_key(|e| e.file_name());
+        entries.sort_by_key(std::fs::DirEntry::file_name);
         let mut buf = vec![b'D'];
         for entry in entries {
             let name = entry

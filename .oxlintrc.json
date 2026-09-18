@@ -54,6 +54,75 @@
     {
       "files": ["packages/ui/**", "apps/tui/**", "packages/marketing/**"],
       "rules": { "anti-slop/no-raw-form-elements": "off" }
+    },
+    {
+      // Layering rule (plan.md section 7): components go through the store,
+      // not straight to the IPC layer. The excludeFiles list is every
+      // component that already imported skill-api.ts directly on main as
+      // of unit 5.1; they're excluded so the rule doesn't block CI on
+      // pre-existing code. Tracked in the unit 5.1 report for a follow-up
+      // issue to move them onto the store.
+      "files": ["apps/desktop/src/components/**"],
+      "excludeFiles": [
+        "apps/desktop/src/components/Activity/ActivityFilters.tsx",
+        "apps/desktop/src/components/Activity/SkillHistorySection.tsx",
+        "apps/desktop/src/components/AddSkill/AddSkillSheet.tsx",
+        "apps/desktop/src/components/Home/HomeInboxGroups.tsx",
+        "apps/desktop/src/components/Settings/AppVersionCard.tsx",
+        "apps/desktop/src/components/Settings/CommandHealthCard.tsx",
+        "apps/desktop/src/components/Settings/EditorCard.tsx",
+        "apps/desktop/src/components/Settings/ErrorReportingCard.tsx",
+        "apps/desktop/src/components/Settings/ProjectFoldersCard.tsx",
+        "apps/desktop/src/components/SkillDetail/MakeIndependentCopyDialog.tsx",
+        "apps/desktop/src/components/SkillDetail/RemoveDeploymentsDialog.tsx",
+        "apps/desktop/src/components/SkillDetail/skill-location-actions.ts",
+        "apps/desktop/src/components/SkillDetail/skill-page-actions.ts",
+        "apps/desktop/src/components/SkillDetail/SkillCompareDialog.tsx",
+        "apps/desktop/src/components/SkillDetail/SkillFrontmatterRepairDialog.tsx",
+        "apps/desktop/src/components/SkillDetail/SkillPage.tsx",
+        "apps/desktop/src/components/SkillDetail/SkillPropertiesRail.tsx",
+        "apps/desktop/src/components/SkillDetail/SkillProposedEdits.tsx",
+        "apps/desktop/src/components/SkillDetail/SkillRepairCard.tsx",
+        "apps/desktop/src/components/SkillDetail/UninstallPluginDialog.tsx",
+        "apps/desktop/src/components/SkillDetail/useSkillFrontmatterRepair.ts",
+        "apps/desktop/src/components/SkillList/useSkillListAct.ts",
+        "apps/desktop/src/components/SkillStore/InstalledSkillLifecycleActions.tsx",
+        "apps/desktop/src/components/SkillStore/SkillDetailPanel.tsx",
+        "apps/desktop/src/components/SkillStore/SkillStore.tsx",
+        "apps/desktop/src/components/SkillStore/SkillStoreInstallFlow.tsx",
+        "apps/desktop/src/components/ui/MaterializeRootDialog.tsx"
+      ],
+      "rules": {
+        "no-restricted-imports": [
+          "warn",
+          {
+            "patterns": [
+              {
+                "group": ["**/lib/skill-api", "@/lib/skill-api"],
+                "message": "Components read and write skills through the store, not skill-api.ts directly. Add or use a store action instead."
+              }
+            ]
+          }
+        ]
+      }
+    },
+    {
+      // Layering rule (plan.md section 7): the store never imports back
+      // into components.
+      "files": ["apps/desktop/src/store/**"],
+      "rules": {
+        "no-restricted-imports": [
+          "warn",
+          {
+            "patterns": [
+              {
+                "group": ["**/components/**"],
+                "message": "The store must not import from components; components depend on the store, not the other way around."
+              }
+            ]
+          }
+        ]
+      }
     }
   ]
 }

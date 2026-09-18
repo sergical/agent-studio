@@ -100,7 +100,8 @@ fn copy_file_with_check(
         .map_err(|error| format!("Failed to open {}: {error}", source.display()))?;
     let mut output = fs::File::create(destination)
         .map_err(|error| format!("Failed to create {}: {error}", destination.display()))?;
-    let mut buffer = [0_u8; 64 * 1024];
+    // Heap-allocated: a 64 KiB stack array is flagged as an oversized local.
+    let mut buffer = vec![0_u8; 64 * 1024];
     loop {
         check()?;
         let count = input

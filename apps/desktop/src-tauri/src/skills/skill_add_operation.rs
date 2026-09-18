@@ -364,7 +364,7 @@ fn install_roots_for_batch(home: &Path, request: &AddSkillsRequest) -> Vec<PathB
     let project = request.project_path.as_deref().map(Path::new);
     match request.destination {
         SkillDestination::Universal => {
-            vec![universal_skills_dir(home, request.scope.clone(), project)]
+            vec![universal_skills_dir(home, request.scope, project)]
         }
         SkillDestination::PerHarness => request
             .agents
@@ -496,6 +496,11 @@ impl CommandRunner for OperationCommandRunner<'_> {
     }
 }
 
+// Four independently-named bools, each read once at the one call site;
+// bundling them into a struct would add a type used nowhere else for no
+// readability gain (workspace already allows this on structs via
+// `struct_excessive_bools`).
+#[allow(clippy::fn_params_excessive_bools)]
 fn terminal_from_interrupt(
     cancel: bool,
     timed_out: bool,
@@ -716,9 +721,9 @@ fn run_operation_body(
         AddSkillOperationPhase::Reconciling,
         "Updating skill list",
         |event| {
-            event.result = result.clone();
-            event.outcomes = outcomes.clone();
-            event.error = error.clone();
+            event.result.clone_from(&result);
+            event.outcomes.clone_from(&outcomes);
+            event.error.clone_from(&error);
         },
     );
     if let Err(reconcile_error) = reconcile_affected(app, names, &affected_projects(&kind)) {
@@ -795,21 +800,18 @@ fn run_operation_body(
 
 fn spawn_operation(app: AppHandle, state: AddSkillOperationState, operation_id: String) {
     tauri::async_runtime::spawn_blocking(move || {
-        let home = match dirs::home_dir() {
-            Some(home) => home,
-            None => {
-                let _ = publish(
-                    Some(&app),
-                    &state,
-                    &operation_id,
-                    AddSkillOperationPhase::Failed,
-                    "Could not find home directory",
-                    |event| {
-                        event.error = Some("Could not find home directory".to_string());
-                    },
-                );
-                return;
-            }
+        let Some(home) = dirs::home_dir() else {
+            let _ = publish(
+                Some(&app),
+                &state,
+                &operation_id,
+                AddSkillOperationPhase::Failed,
+                "Could not find home directory",
+                |event| {
+                    event.error = Some("Could not find home directory".to_string());
+                },
+            );
+            return;
         };
         let control = match state.operation_control(&operation_id) {
             Ok(control) => control,
@@ -920,6 +922,9 @@ pub fn start_add_skills_operation(
 
 /// Catch-up read for a listener that subscribed after start, or remounted.
 #[tauri::command]
+// Tauri commands deserialize their arguments fresh per invocation, so `app`
+// can't be borrowed from the caller - it must be owned.
+#[allow(clippy::needless_pass_by_value)]
 pub fn get_add_skill_operation(
     operation_id: String,
     state: tauri::State<AddSkillOperationState>,
@@ -951,25 +956,24 @@ pub fn cancel_add_skill_operation(
 /// must be a fresh frontend-generated id.
 fn confirm_add_skill_trust_with(
     home: &Path,
-    operation_id: String,
-    retry_operation_id: String,
-    identity: String,
+    operation_id: &str,
+    retry_operation_id: &str,
+    identity: &str,
     state: &AddSkillOperationState,
     write_lease: &super::write_lease::WriteLease,
 ) -> Result<(AddSkillOperationEvent, AddSkillOperationEvent), String> {
-    validate_run_id(&retry_operation_id)
-        .map_err(|error| error.replace("Run id", "Operation id"))?;
+    validate_run_id(retry_operation_id).map_err(|error| error.replace("Run id", "Operation id"))?;
     let expected = {
         let mut inner = state.lock()?;
         prune_locked(&mut inner, Instant::now());
-        if inner.records.contains_key(&retry_operation_id) {
+        if inner.records.contains_key(retry_operation_id) {
             return Err(format!(
                 "Add skill operation {retry_operation_id} already exists"
             ));
         }
         let record = inner
             .records
-            .get(&operation_id)
+            .get(operation_id)
             .ok_or_else(|| format!("Add skill operation {operation_id} was not found"))?;
         if record.event.phase != AddSkillOperationPhase::NeedsTrust || record.trust_confirmed {
             return Err("Trust confirmation does not match this operation".to_string());
@@ -982,7 +986,7 @@ fn confirm_add_skill_trust_with(
             .ok_or_else(|| "Trust confirmation does not match this operation".to_string())?;
         expected
     };
-    let normalized = normalize_confirmation_identity(&identity)?;
+    let normalized = normalize_confirmation_identity(identity)?;
     if normalized != expected {
         return Err("Trust confirmation does not match this operation".to_string());
     }
@@ -992,7 +996,7 @@ fn confirm_add_skill_trust_with(
     let guard = write_lease.try_acquire(home)?;
     let (parent_event, queued) = {
         let mut inner = state.lock()?;
-        if inner.records.contains_key(&retry_operation_id) {
+        if inner.records.contains_key(retry_operation_id) {
             return Err(format!(
                 "Add skill operation {retry_operation_id} already exists"
             ));
@@ -1001,7 +1005,7 @@ fn confirm_add_skill_trust_with(
         let kind = {
             let parent = inner
                 .records
-                .get_mut(&operation_id)
+                .get_mut(operation_id)
                 .ok_or_else(|| format!("Add skill operation {operation_id} was not found"))?;
             if parent.event.phase != AddSkillOperationPhase::NeedsTrust || parent.trust_confirmed {
                 return Err("Trust confirmation does not match this operation".to_string());
@@ -1021,21 +1025,21 @@ fn confirm_add_skill_trust_with(
         let parent_event = {
             let parent = inner
                 .records
-                .get_mut(&operation_id)
-                .expect("parent operation remains present while the operation-state lock is held");
+                .get_mut(operation_id)
+                .ok_or_else(|| format!("Add skill operation {operation_id} was not found"))?;
             parent.trust_confirmed = true;
             advance_locked(
                 parent,
                 AddSkillOperationPhase::NeedsTrust,
                 "Trusted repository; retrying",
                 |event| {
-                    event.retry_of = Some(retry_operation_id.clone());
+                    event.retry_of = Some(retry_operation_id.to_string());
                 },
             );
             parent.event.clone()
         };
         let queued = AddSkillOperationEvent {
-            operation_id: retry_operation_id.clone(),
+            operation_id: retry_operation_id.to_string(),
             sequence: 1,
             phase: AddSkillOperationPhase::Queued,
             message: "Waiting to add skill".to_string(),
@@ -1044,10 +1048,10 @@ fn confirm_add_skill_trust_with(
             outcomes: None,
             error: None,
             untrusted_source: None,
-            retry_of: Some(operation_id.clone()),
+            retry_of: Some(operation_id.to_string()),
         };
         inner.records.insert(
-            retry_operation_id.clone(),
+            retry_operation_id.to_string(),
             AddSkillOperationRecord {
                 event: queued.clone(),
                 kind,
@@ -1057,7 +1061,7 @@ fn confirm_add_skill_trust_with(
                 trust_confirmed: false,
             },
         );
-        inner.order.push_back(retry_operation_id.clone());
+        inner.order.push_back(retry_operation_id.to_string());
         (parent_event, queued)
     };
     Ok((parent_event, queued))
@@ -1077,9 +1081,9 @@ pub async fn confirm_add_skill_trust(
         let home = dirs::home_dir().ok_or("Could not find home directory")?;
         let (parent_event, queued) = confirm_add_skill_trust_with(
             &home,
-            operation_id,
-            retry_operation_id.clone(),
-            identity,
+            &operation_id,
+            &retry_operation_id,
+            &identity,
             state.inner(),
             &write_lease,
         )?;
@@ -1348,9 +1352,9 @@ mod tests {
             super::super::write_lease::WriteLease::with_lease_root(tmp.path().join("leases"));
         let mismatch = confirm_add_skill_trust_with(
             tmp.path(),
-            "op-replay".to_string(),
-            "op-retry".to_string(),
-            "evil/repo".to_string(),
+            "op-replay",
+            "op-retry",
+            "evil/repo",
             &state,
             &lock,
         )
@@ -1365,9 +1369,9 @@ mod tests {
 
         let (_, queued) = confirm_add_skill_trust_with(
             tmp.path(),
-            "op-replay".to_string(),
-            "op-retry".to_string(),
-            "kentcdodds/kcd-skills".to_string(),
+            "op-replay",
+            "op-retry",
+            "kentcdodds/kcd-skills",
             &state,
             &lock,
         )
@@ -1376,9 +1380,9 @@ mod tests {
 
         let replay = confirm_add_skill_trust_with(
             tmp.path(),
-            "op-replay".to_string(),
-            "op-retry-2".to_string(),
-            "kentcdodds/kcd-skills".to_string(),
+            "op-replay",
+            "op-retry-2",
+            "kentcdodds/kcd-skills",
             &state,
             &lock,
         )
@@ -1442,9 +1446,9 @@ mod tests {
 
         let busy = confirm_add_skill_trust_with(
             &home,
-            "op-concurrent".to_string(),
-            "op-concurrent-retry".to_string(),
-            "kentcdodds/kcd-skills".to_string(),
+            "op-concurrent",
+            "op-concurrent-retry",
+            "kentcdodds/kcd-skills",
             &state,
             &lock,
         )
@@ -1458,9 +1462,9 @@ mod tests {
 
         confirm_add_skill_trust_with(
             &home,
-            "op-concurrent".to_string(),
-            "op-concurrent-retry".to_string(),
-            "kentcdodds/kcd-skills".to_string(),
+            "op-concurrent",
+            "op-concurrent-retry",
+            "kentcdodds/kcd-skills",
             &state,
             &lock,
         )
@@ -1633,7 +1637,9 @@ mod tests {
             .records
             .get_mut("op-stored-timeout")
             .unwrap()
-            .deadline = Instant::now() - Duration::from_millis(1);
+            .deadline = Instant::now()
+            .checked_sub(Duration::from_millis(1))
+            .unwrap();
 
         run_operation_body(
             &test_guard(tmp.path()),
@@ -1952,7 +1958,11 @@ mod tests {
             .records
             .get_mut("op-expired-trust")
             .unwrap()
-            .updated_at = Instant::now() - OPERATION_TTL - Duration::from_secs(1);
+            .updated_at = Instant::now()
+            .checked_sub(OPERATION_TTL)
+            .unwrap()
+            .checked_sub(Duration::from_secs(1))
+            .unwrap();
 
         assert!(state
             .snapshot("op-expired-trust")
@@ -2084,9 +2094,9 @@ mod tests {
             .unwrap();
         let (_, retry) = confirm_add_skill_trust_with(
             tmp.path(),
-            "trust-parent".to_string(),
-            "trust-retry".to_string(),
-            "kentcdodds/kcd-skills".to_string(),
+            "trust-parent",
+            "trust-retry",
+            "kentcdodds/kcd-skills",
             &state,
             &super::super::write_lease::WriteLease::with_lease_root(tmp.path().join("leases")),
         )

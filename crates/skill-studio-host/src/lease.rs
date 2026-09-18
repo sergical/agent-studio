@@ -158,7 +158,7 @@ impl LeaseProvider for FileLease {
                     }
                     Ok(false) => {
                         let holder = read_holder(&path);
-                        let holder_alive = holder.map(|(pid, _)| pid_alive(pid)).unwrap_or(true);
+                        let holder_alive = holder.is_none_or(|(pid, _)| pid_alive(pid));
                         if !holder_alive && Instant::now() < stale_deadline {
                             // The recorded holder is dead; the OS releases
                             // its advisory lock as part of exiting, usually

@@ -98,7 +98,7 @@ export type ProjectFolderSource = "discovered" | "added";
  */
 export type HarnessId = "claude-code" | "codex" | "open-code" | "pi";
 /**
- * Which OpenCode config format is present, so the frontend can tell the user
+ * Which `OpenCode` config format is present, so the frontend can tell the user
  * to hand-edit a `.jsonc` file rather than silently showing no disables.
  */
 export type OpencodeConfigKind = "json" | "jsonc";
@@ -578,8 +578,8 @@ export interface SkillSnapshot {
     [k: string]: SkillRunSummary;
   };
   /**
-   * Which OpenCode config format is present, if any - `None` when
-   * OpenCode isn't configured, `Some(Jsonc)` when Skill Studio can only
+   * Which `OpenCode` config format is present, if any - `None` when
+   * `OpenCode` isn't configured, `Some(Jsonc)` when Skill Studio can only
    * read (not write) its per-skill disables. See
    * `opencode_skill_permission::detect_config_kind`.
    */
@@ -795,7 +795,7 @@ export interface InstalledSkill {
    */
   parked_at: string | null;
   /**
-   * Token count of SKILL.md's text (cl100k_base), from the first deployment.
+   * Token count of SKILL.md's text (`cl100k_base`), from the first deployment.
    */
   skill_md_tokens: number;
   skill_path: string | null;
@@ -897,7 +897,7 @@ export interface Deployment {
   /**
    * For a shared-root deployment (`agent == "shared"`) only: agent ids among
    * the native shared-root readers whose own mechanism disables this skill
-   * (Codex config / OpenCode permission deny) - `"codex"`, `"open-code"`.
+   * (Codex config / `OpenCode` permission deny) - `"codex"`, `"open-code"`.
    * Always empty for other deployments.
    */
   disabled_readers?: string[];

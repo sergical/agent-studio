@@ -1,3 +1,8 @@
+// Integration test binaries aren't covered by the lib crate's
+// `cfg_attr(test, allow(...))`: this file compiles as its own crate, so
+// the same allow needs to be declared here too.
+#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+
 //! Restore parity between the desktop's own `EventStore`
 //! (`apps/desktop/src-tauri/src/skills/event_store.rs`) and the shared
 //! core's `ops::{preview_frontmatter_repair, apply_frontmatter_repair,
@@ -220,7 +225,7 @@ fn desktop_apply_repair(store: &EventStore, skill_md: &Path, skill: &str) -> Str
     store
         .record(
             &event_id,
-            DesktopEventDraft {
+            &DesktopEventDraft {
                 kind: "repair_skill_frontmatter".to_string(),
                 skill: skill.to_string(),
                 // `REPAIRABLE_SKILL_RELATIVE` lives under `.claude/skills`,
@@ -298,7 +303,9 @@ fn core_apply_repair(rt: &Runtime) -> skill_studio_core::identity::EventId {
     .unwrap();
     match outcome {
         skill_studio_core::dto::RepairOutcome::Applied { event_id, .. } => event_id,
-        other => panic!("expected Applied, got {other:?}"),
+        other @ skill_studio_core::dto::RepairOutcome::AlreadyApplied { .. } => {
+            panic!("expected Applied, got {other:?}")
+        }
     }
 }
 
@@ -406,7 +413,7 @@ fn restore_of_an_absent_path_backup_removes_it_on_both() {
     store_a
         .record(
             &id_a,
-            DesktopEventDraft {
+            &DesktopEventDraft {
                 kind: "repair_skill_frontmatter".to_string(),
                 skill: "never-existed".to_string(),
                 harness: None,

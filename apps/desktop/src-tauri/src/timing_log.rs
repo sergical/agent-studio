@@ -140,7 +140,7 @@ pub async fn time_command_async<T: CommandOutcome>(
 }
 
 /// As [`time_command`], for a sync command body that does file, process,
-/// network, or SQLite work: runs `f` on a blocking-pool thread via
+/// network, or `SQLite` work: runs `f` on a blocking-pool thread via
 /// `tauri::async_runtime::spawn_blocking` so it never stalls the main thread
 /// or a Tokio worker, and records `"worker"`. `f` returns `Result<T, String>`
 /// (the convention every command already follows) so a panic inside the
@@ -153,8 +153,7 @@ pub async fn time_command_blocking<T: Send + 'static>(
     f: impl FnOnce() -> Result<T, String> + Send + 'static,
 ) -> Result<T, String> {
     let start = std::time::Instant::now();
-    let command_owned = command.to_string();
-    let result = join_result_to_err(command_owned, tauri::async_runtime::spawn_blocking(f).await);
+    let result = join_result_to_err(command, tauri::async_runtime::spawn_blocking(f).await);
     let (outcome, error) = result.outcome();
     record_command(
         app,
@@ -174,7 +173,7 @@ pub async fn time_command_blocking<T: Send + 'static>(
 /// carrying the panic message instead of a `spawn_blocking(..).await.unwrap()`
 /// that would itself panic on the calling thread.
 fn join_result_to_err<T>(
-    command: String,
+    command: &str,
     joined: Result<Result<T, String>, tauri::Error>,
 ) -> Result<T, String> {
     joined.unwrap_or_else(|join_error| Err(format!("{command} panicked: {join_error}")))
@@ -389,7 +388,7 @@ mod tests {
     async fn join_result_to_err_converts_a_panic_join_error_into_err_carrying_the_panic_message() {
         let joined: Result<Result<(), String>, tauri::Error> =
             tauri::async_runtime::spawn_blocking(|| -> Result<(), String> { panic!("boom") }).await;
-        let result = join_result_to_err("cmd".to_string(), joined);
+        let result = join_result_to_err("cmd", joined);
         let error = result.unwrap_err();
         assert!(error.contains("cmd panicked"));
         assert!(

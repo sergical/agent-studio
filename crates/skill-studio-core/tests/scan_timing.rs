@@ -1,3 +1,8 @@
+// Integration test binaries aren't covered by the lib crate's
+// `cfg_attr(test, allow(...))`: this file compiles as its own crate, so
+// the same allow needs to be declared here too.
+#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+
 //! `scan`'s `OpTiming`: named steps, and the invariant that each step's
 //! `elapsed_ms` never exceeds the whole call's `elapsed_ms`.
 

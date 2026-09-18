@@ -1,3 +1,12 @@
+// This whole module is test support (gated on `cfg(any(test, feature =
+// "testing"))`, never compiled into a shipping binary), so unwrap/expect and
+// PanicOnSpawn's deliberate panic! stay allowed the way the crate's
+// `#[cfg(test)]` unit tests are.
+#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+// FakeClock's millisecond counter only ever holds test-fixture timestamps
+// well under i64::MAX; the wrap this lint warns about cannot happen here.
+#![allow(clippy::cast_possible_wrap)]
+
 //! Fixture builder and fakes for adapter and core tests.
 //!
 //! Enabled with the `testing` feature or under `cfg(test)`. Nothing here
@@ -108,18 +117,21 @@ impl FixtureBuilder {
     }
 
     /// Adds a directory and its parents.
+    #[must_use]
     pub fn dir(mut self, path: &str) -> Self {
         self.dirs.push(PathBuf::from(path));
         self
     }
 
     /// Adds a file with bytes; parents are implied.
+    #[must_use]
     pub fn file(mut self, path: &str, bytes: &[u8]) -> Self {
         self.files.insert(PathBuf::from(path), bytes.to_vec());
         self
     }
 
     /// Adds a symlink `link -> target`.
+    #[must_use]
     pub fn alias(mut self, link: &str, target: &str) -> Self {
         self.aliases
             .insert(PathBuf::from(link), PathBuf::from(target));
@@ -191,6 +203,7 @@ impl FixtureBuilder {
     /// [`Self::materialize`]) be scanned in memory too, where
     /// [`Self::build_fs`] has no directory of its own to join against and a
     /// [`crate::scope::RuntimeScope`] needs an absolute home.
+    #[must_use]
     pub fn rooted_at(self, root: &str) -> Self {
         let root = Path::new(root);
         FixtureBuilder {
@@ -426,7 +439,9 @@ impl FixtureFs {
     }
 
     fn lock(&self) -> std::sync::MutexGuard<'_, FixtureState> {
-        self.state.lock().unwrap_or_else(|e| e.into_inner())
+        self.state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
     }
 
     fn exists(&self, path: &Path) -> bool {
@@ -541,7 +556,7 @@ impl ScopeFs for FixtureFs {
         let state = self.lock();
         Ok(FileFacts {
             kind,
-            len: state.files.get(path).map(|b| b.len() as u64).unwrap_or(0),
+            len: state.files.get(path).map_or(0, |b| b.len() as u64),
             modified: None,
             mode: None,
         })
@@ -690,7 +705,7 @@ impl ScopeFs for FixtureFs {
                 path.display().to_string(),
             ));
         }
-        state.dirs.push(path.to_path_buf());
+        state.dirs.push(path.clone());
         state.fresh_identity(path);
         Ok(())
     }
@@ -704,7 +719,7 @@ impl ScopeFs for FixtureFs {
                 path.display().to_string(),
             ));
         }
-        state.files.insert(path.to_path_buf(), bytes.to_vec());
+        state.files.insert(path.clone(), bytes.to_vec());
         state.fresh_identity(path);
         Ok(())
     }
@@ -1061,7 +1076,7 @@ impl FakeLease {
     pub fn hold_exclusive(&self, keys: &[LeaseKey]) {
         self.held_exclusive
             .lock()
-            .unwrap_or_else(|e| e.into_inner())
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
             .extend_from_slice(keys);
     }
 
@@ -1069,7 +1084,7 @@ impl FakeLease {
     pub fn release_all(&self) {
         self.held_exclusive
             .lock()
-            .unwrap_or_else(|e| e.into_inner())
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
             .clear();
     }
 }
@@ -1099,7 +1114,7 @@ impl LeaseProvider for FakeLease {
         let held = self
             .held_exclusive
             .lock()
-            .unwrap_or_else(|e| e.into_inner());
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         if let Some(busy) = keys.iter().find(|k| held.contains(k)) {
             return Err(
                 CoreError::new(ErrorCode::ScopeBusy, "another process holds the lease")
@@ -1159,7 +1174,7 @@ impl RecordingSink {
     pub fn notices(&self) -> Vec<CoreNotice> {
         self.notices
             .lock()
-            .unwrap_or_else(|e| e.into_inner())
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
             .clone()
     }
 }
@@ -1168,7 +1183,7 @@ impl EventSink for RecordingSink {
     fn notify(&self, notice: CoreNotice) {
         self.notices
             .lock()
-            .unwrap_or_else(|e| e.into_inner())
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
             .push(notice);
     }
 }
@@ -1184,6 +1199,7 @@ pub struct Normalizer {
 
 impl Normalizer {
     /// Replaces `root` with `token` in every string value.
+    #[must_use]
     pub fn root(mut self, root: &str, token: &str) -> Self {
         self.roots.push((PathBuf::from(root), token.to_string()));
         self
@@ -1201,8 +1217,16 @@ impl Normalizer {
                     }
                 }
             }
-            serde_json::Value::Array(items) => items.iter_mut().for_each(|v| self.apply(v)),
-            serde_json::Value::Object(map) => map.values_mut().for_each(|v| self.apply(v)),
+            serde_json::Value::Array(items) => {
+                for v in items.iter_mut() {
+                    self.apply(v);
+                }
+            }
+            serde_json::Value::Object(map) => {
+                for v in map.values_mut() {
+                    self.apply(v);
+                }
+            }
             _ => {}
         }
     }
@@ -1302,7 +1326,7 @@ pub mod fixtures {
         )
     }
 
-    /// `legacy_opencode`: OpenCode's older singular `skill/` root
+    /// `legacy_opencode`: `OpenCode`'s older singular `skill/` root
     /// alongside its current `skills/` root.
     fn legacy_opencode() -> FixtureBuilder {
         let mut b = FixtureBuilder::new();
@@ -1341,7 +1365,7 @@ pub mod fixtures {
 
     /// `project`: a registered project with a `.git` marker and three
     /// roots: Claude Code, the project's shared `.agents/skills`, and
-    /// OpenCode's legacy `skill/` root.
+    /// `OpenCode`'s legacy `skill/` root.
     fn project() -> FixtureBuilder {
         let mut b = FixtureBuilder::new().dir("proj/.git");
         b = skill(b, "proj/.claude/skills/eta", "eta");
@@ -1351,7 +1375,7 @@ pub mod fixtures {
 
     /// `disabled`: every disable mechanism the core knows about: Codex's
     /// own `config.toml` row (keyed by `beta`'s canonical `SKILL.md` path,
-    /// filled in at materialize time), OpenCode's `permission.skill` deny,
+    /// filled in at materialize time), `OpenCode`'s `permission.skill` deny,
     /// and Skill Studio's own move-aside directory.
     fn disabled() -> FixtureBuilder {
         let mut b = FixtureBuilder::new();
@@ -1504,12 +1528,16 @@ pub mod golden {
                     *s = s.replace(from, to);
                 }
             }
-            serde_json::Value::Array(items) => items
-                .iter_mut()
-                .for_each(|v| replace_everywhere(v, from, to)),
-            serde_json::Value::Object(map) => map
-                .values_mut()
-                .for_each(|v| replace_everywhere(v, from, to)),
+            serde_json::Value::Array(items) => {
+                for v in items.iter_mut() {
+                    replace_everywhere(v, from, to);
+                }
+            }
+            serde_json::Value::Object(map) => {
+                for v in map.values_mut() {
+                    replace_everywhere(v, from, to);
+                }
+            }
             _ => {}
         }
     }
@@ -1529,7 +1557,9 @@ pub mod golden {
                 }
             }
             serde_json::Value::Array(items) => {
-                items.iter_mut().for_each(|v| blank_field(v, key));
+                for v in items.iter_mut() {
+                    blank_field(v, key);
+                }
             }
             _ => {}
         }

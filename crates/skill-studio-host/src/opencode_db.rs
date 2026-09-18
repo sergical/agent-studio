@@ -1,5 +1,5 @@
-//! Shared read-only opener for OpenCode's SQLite databases, used by project
-//! discovery (`discovery.rs`) and by the OpenCode skill-uses reader
+//! Shared read-only opener for `OpenCode`'s `SQLite` databases, used by project
+//! discovery (`discovery.rs`) and by the `OpenCode` skill-uses reader
 //! (`skill_uses/opencode.rs`) so both follow the same "never write next to
 //! the user's database" rule.
 
@@ -9,10 +9,10 @@ use std::time::Duration;
 
 use rusqlite::{Connection, OpenFlags, OptionalExtension};
 
-/// OpenCode's data dir at its default `$XDG_DATA_HOME` location.
+/// `OpenCode`'s data dir at its default `$XDG_DATA_HOME` location.
 pub(crate) const OPENCODE_DATA_ROOT: &str = ".local/share/opencode";
 
-/// OpenCode's database is `opencode.db` on the latest, beta, and prod
+/// `OpenCode`'s database is `opencode.db` on the latest, beta, and prod
 /// channels and `opencode-<channel>.db` on every other channel (`next` for
 /// the v2 beta, `local` for source builds), so one machine can hold several.
 const MAX_OPENCODE_DATABASES: usize = 16;
@@ -23,10 +23,11 @@ fn is_regular_file(path: &Path) -> bool {
     fs::symlink_metadata(path).is_ok_and(|m| m.file_type().is_file())
 }
 
-/// True when `name` is one of OpenCode's own database file names:
+/// True when `name` is one of `OpenCode`'s own database file names:
 /// `opencode.db`, or `opencode-<channel>.db` for a non-default channel.
 pub(crate) fn is_opencode_database_name(name: &str) -> bool {
-    name == "opencode.db" || (name.starts_with("opencode-") && name.ends_with(".db"))
+    name == "opencode.db"
+        || (name.starts_with("opencode-") && Path::new(name).extension() == Some("db".as_ref()))
 }
 
 /// Lists `<home>/.local/share/opencode/opencode.db` and
@@ -54,10 +55,10 @@ pub(crate) fn opencode_databases(home: &Path) -> Vec<PathBuf> {
 }
 
 /// Opens `database` read-only without ever creating or changing a sidecar
-/// file next to it. OpenCode keeps its database in WAL mode, and a plain
+/// file next to it. `OpenCode` keeps its database in WAL mode, and a plain
 /// read-only open creates the `-wal` and `-shm` files when they are missing.
 /// So the database is opened as immutable unless both files already exist,
-/// which is the case while OpenCode runs and rows that are only in the WAL
+/// which is the case while `OpenCode` runs and rows that are only in the WAL
 /// must still be seen. `None` when the path can't be turned into a file URI
 /// or the database can't be opened.
 pub(crate) fn open_opencode_database(database: &Path) -> Option<Connection> {
@@ -84,7 +85,7 @@ pub(crate) fn open_opencode_database(database: &Path) -> Option<Connection> {
 }
 
 /// Whether `table` exists in `conn`, checked against `sqlite_master`. A busy
-/// or corrupt database is an `Err`, not "no such table": SQLite only checks
+/// or corrupt database is an `Err`, not "no such table": `SQLite` only checks
 /// the file header on the first query, so this is where a bad file shows up.
 pub(crate) fn table_exists(conn: &Connection, table: &str) -> rusqlite::Result<bool> {
     conn.query_row(

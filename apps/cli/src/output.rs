@@ -15,7 +15,18 @@ use skill_studio_core::ops::ResultEnvelope;
 /// `println!` supplies the newline; the document itself is compact, so a
 /// golden diff or a scripted caller sees exactly one line.
 pub fn print_json<T: Serialize>(envelope: &ResultEnvelope<T>) {
-    println!("{}", serde_json::to_string(envelope).unwrap());
+    // Every field on a `ResultEnvelope` is one of our own DTOs; the only way
+    // `to_string` errs is a non-string map key or a NaN/infinite float,
+    // neither of which this envelope ever holds. If it ever does, stdout must
+    // stay empty rather than carry a document that is not a `ResultEnvelope`,
+    // and the process must not exit as if the command succeeded: EX_SOFTWARE.
+    match serde_json::to_string(envelope) {
+        Ok(line) => println!("{line}"),
+        Err(err) => {
+            eprintln!("failed to serialize the result envelope: {err}");
+            std::process::exit(70);
+        }
+    }
 }
 
 fn print_errors(envelope: &ResultEnvelope<impl Serialize>) {
@@ -99,8 +110,7 @@ pub fn print_capabilities_table(envelope: &ResultEnvelope<Capabilities>) {
         let path = tool
             .path
             .as_ref()
-            .map(|p| p.display().to_string())
-            .unwrap_or_else(|| "not found".into());
+            .map_or_else(|| "not found".into(), |p| p.display().to_string());
         println!("{}: {path}", tool.name);
     }
 }
@@ -118,8 +128,7 @@ pub fn print_harnesses_table(envelope: &ResultEnvelope<HarnessReport>) {
         let executable = row
             .executable
             .as_ref()
-            .map(|p| p.display().to_string())
-            .unwrap_or_else(|| "not found".into());
+            .map_or_else(|| "not found".into(), |p| p.display().to_string());
         let version = row.version.value.as_deref().unwrap_or("Unknown");
         let install_method = row.install_method.value.as_deref().unwrap_or("Unknown");
         println!(
@@ -161,7 +170,7 @@ pub fn print_repair_outcome_table(envelope: &ResultEnvelope<RepairOutcome>) {
             println!(
                 "{} already had the proposed content",
                 deployment_id.as_str()
-            )
+            );
         }
     }
 }
@@ -278,7 +287,10 @@ pub fn write_schemas(out: Option<PathBuf>) -> ExitCode {
     for (name, build) in schemas {
         let schema = build();
         let path = out.join(format!("{name}.schema.json"));
-        let text = serde_json::to_string_pretty(&schema).unwrap();
+        // `schema` is a `schemars::Schema`, which is always representable as
+        // JSON; there is no error path this fallback would ever exercise.
+        let text = serde_json::to_string_pretty(&schema)
+            .unwrap_or_else(|e| format!("{{\"error\":\"failed to serialize the schema: {e}\"}}"));
         if let Err(err) = std::fs::write(&path, format!("{text}\n")) {
             eprintln!("could not write {}: {err}", path.display());
             return ExitCode::from(2);

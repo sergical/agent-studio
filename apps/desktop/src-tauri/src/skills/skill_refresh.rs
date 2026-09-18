@@ -72,8 +72,8 @@ pub struct SkillSnapshot {
     /// The latest background update-check result - see `skill_update_check`.
     #[serde(default)]
     pub update_check: UpdateCheckSummary,
-    /// Which OpenCode config format is present, if any - `None` when
-    /// OpenCode isn't configured, `Some(Jsonc)` when Skill Studio can only
+    /// Which `OpenCode` config format is present, if any - `None` when
+    /// `OpenCode` isn't configured, `Some(Jsonc)` when Skill Studio can only
     /// read (not write) its per-skill disables. See
     /// `opencode_skill_permission::detect_config_kind`.
     #[serde(default)]
@@ -117,7 +117,7 @@ pub struct SkillRefreshState {
     /// The (UTC date, hour) of the last snapshot rebuild - full or
     /// invocations-only. The refresh loop compares this against the current
     /// hour on every tick so the wall-clock-dependent invocation windows in
-    /// `SkillInvocationIndex::stats_at` (24h/7d/14d/30d, by_day) get rebuilt on
+    /// `SkillInvocationIndex::stats_at` (24h/7d/14d/30d, `by_day`) get rebuilt on
     /// an hour boundary even when nothing on disk changed.
     last_built_hour: Arc<Mutex<Option<(NaiveDate, u32)>>>,
     cache_path: PathBuf,
@@ -161,8 +161,7 @@ impl SkillRefreshState {
     fn is_hour_stale(&self, now: DateTime<Utc>) -> bool {
         self.last_built_hour
             .lock()
-            .map(|guard| *guard != Some(hour_key(now)))
-            .unwrap_or(true)
+            .map_or(true, |guard| *guard != Some(hour_key(now)))
     }
 }
 
@@ -212,6 +211,9 @@ pub fn init(app: &AppHandle) -> SkillRefreshState {
 
 /// Instant read of the current snapshot from managed state.
 #[tauri::command]
+// Tauri commands deserialize their arguments fresh per invocation, so `app`
+// can't be borrowed from the caller - it must be owned.
+#[allow(clippy::needless_pass_by_value)]
 pub fn get_skill_snapshot(
     state: tauri::State<SkillRefreshState>,
     app: tauri::AppHandle,
@@ -224,10 +226,13 @@ pub fn get_skill_snapshot(
 /// Ask the background thread to rebuild the snapshot. Returns immediately;
 /// the rebuild happens asynchronously and a fresh `SNAPSHOT_EVENT` follows.
 #[tauri::command]
+// Tauri commands deserialize their arguments fresh per invocation, so `app`
+// can't be borrowed from the caller - it must be owned.
+#[allow(clippy::needless_pass_by_value)]
 pub fn request_skill_rescan(state: tauri::State<SkillRefreshState>, app: tauri::AppHandle) {
     crate::timing_log::time_command(&app, "request_skill_rescan", move || {
         state.skills_dirty.store(true, Ordering::SeqCst);
-    })
+    });
 }
 
 /// Mark the next rebuild as full, from a caller (`skill_update_check`) that
@@ -716,7 +721,7 @@ pub fn reconcile_skill_names_and_emit(
         state.mark_skills_dirty();
         format!("Targeted skill reconciliation could not read lifecycle registry: {error}")
     })?;
-    let mut replacements = skill_assembly::assemble_installed_skills(core_skills, &lock);
+    let mut replacements = skill_assembly::assemble_installed_skills(&core_skills, &lock);
     let current_owner_ids: Vec<String> = current
         .skills
         .iter()
@@ -906,6 +911,9 @@ fn invocation_cache_path(app: &AppHandle) -> PathBuf {
 /// or on an explicit rescan request. Every error is logged with `eprintln!`
 /// and never panics the thread; a failed rebuild simply keeps the previous
 /// snapshot in place.
+// `app` and `state` must be owned: the sole caller moves both into a
+// `thread::spawn` closure, which needs a `'static` capture.
+#[allow(clippy::needless_pass_by_value)]
 fn run_refresh_loop(app: AppHandle, state: SkillRefreshState) {
     let Some(home) = dirs::home_dir() else {
         eprintln!("skill refresh: could not find home directory, giving up");
@@ -955,7 +963,7 @@ fn run_refresh_loop(app: AppHandle, state: SkillRefreshState) {
                             }
                         }
                         WatchEventKind::Invocations => {
-                            state.invocations_dirty.store(true, Ordering::SeqCst)
+                            state.invocations_dirty.store(true, Ordering::SeqCst);
                         }
                         WatchEventKind::Ignored => {}
                     }
@@ -1071,6 +1079,7 @@ fn reconcile_watchers(
 /// `pub` (rather than the crate-private visibility every other type here
 /// needs) so `apps/desktop/src-tauri/tests/core_scan_parity.rs` can build one
 /// for a fixture home; see that file's header for why.
+#[derive(Clone, Copy)]
 pub struct BuildPaths<'a> {
     cache_path: &'a Path,
     runs_root: &'a Path,
@@ -1440,8 +1449,7 @@ pub(crate) fn core_scan_installed_skills(
 ) -> CoreScanResult {
     let data_dir = update_check_path
         .parent()
-        .map(Path::to_path_buf)
-        .unwrap_or_else(|| home.to_path_buf());
+        .map_or_else(|| home.to_path_buf(), Path::to_path_buf);
     let lease_root = data_dir.join("core-leases");
     let history_root = data_dir.join("core-history");
 
@@ -1602,7 +1610,7 @@ pub fn build_snapshot(
         });
     let fork_registry = super::skill_fork_registry::read_fork_registry_or_default(home);
     let assembly_start = Instant::now();
-    let mut skills = skill_assembly::assemble_installed_skills(core_skills, &lock);
+    let mut skills = skill_assembly::assemble_installed_skills(&core_skills, &lock);
     let assembly_ms = assembly_start.elapsed().as_millis();
 
     let update_store = skill_update_check::read_update_check_store_at(update_check_path);
@@ -1707,7 +1715,7 @@ const HARNESS_DIR_NAMES: [&str; 7] = [
 fn is_config_file_name(name: &std::ffi::OsStr, home: &Path) -> bool {
     let fork_registry_name = super::skill_fork_registry::fork_registry_path(home)
         .file_name()
-        .map(|n| n.to_owned());
+        .map(std::borrow::ToOwned::to_owned);
     name == lock_file::LOCK_FILE_NAME
         || name == "config.toml"
         || name == "opencode.json"
@@ -1742,7 +1750,7 @@ fn is_under_plugin_cache(path: &Path, home: &Path) -> bool {
 /// budget and can return a slightly different set on each run, so comparing
 /// project sets is not a usable signal. A change under any other harness's
 /// session-history directory named by `skill_studio_host::is_skill_use_change`
-/// (OpenCode's database, so far) is likewise invocations-only. Outside
+/// (`OpenCode`'s database, so far) is likewise invocations-only. Outside
 /// `claude_projects_dir`, only paths that can actually change
 /// `snapshot.skills` - a skill directory, a native plugin cache, a known
 /// config/lock file, or a harness directory being created/removed - trigger
@@ -1794,10 +1802,10 @@ pub fn classify_watch_event(
 /// cache and its parent, the lock file's and Codex config's containing
 /// directories, every harness's session-history directory named by
 /// `skill_studio_host::skill_use_watch_paths` (Claude Code's transcripts
-/// recursively, OpenCode's database directory non-recursively) and each of
+/// recursively, `OpenCode`'s database directory non-recursively) and each of
 /// their parents, and for each project, only its skill roots:
 /// `<project>/<sub>/skills` (recursive, plus `<project>/.opencode/skill` for
-/// OpenCode's legacy singular dir), `<project>/<sub>` itself (non-recursive,
+/// `OpenCode`'s legacy singular dir), `<project>/<sub>` itself (non-recursive,
 /// so a `skills` dir created later is still seen), and the project root
 /// (non-recursive, so a `.claude` etc. created later is still seen).
 /// Watching only the skill roots - rather than each `<project>/<sub>`
@@ -2704,8 +2712,10 @@ mod tests {
             .filter_map(|deployment| deployment.owner_id.clone())
             .collect();
         assert_eq!(owner_ids.len(), 2);
-        let owners = serde_json::Map::from_iter(owner_ids.iter().enumerate().map(
-            |(index, owner_id)| {
+        let owners: serde_json::Map<_, _> = owner_ids
+            .iter()
+            .enumerate()
+            .map(|(index, owner_id)| {
                 (
                     owner_id.clone(),
                     serde_json::json!({
@@ -2717,8 +2727,8 @@ mod tests {
                         "lock_updated_at": null
                     }),
                 )
-            },
-        ));
+            })
+            .collect();
         fs::write(
             &update_check_path,
             serde_json::json!({
@@ -2952,7 +2962,7 @@ mod tests {
         .unwrap();
 
         update_tracked_projects(&home, |tracked| {
-            tracked.track([PathBuf::from("/tmp/a-project")])
+            tracked.track([PathBuf::from("/tmp/a-project")]);
         })
         .unwrap();
 

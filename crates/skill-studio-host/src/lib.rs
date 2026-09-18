@@ -1,3 +1,10 @@
+// unwrap/expect are fine in test code; production code must use ?
+// or an explicit error.
+#![cfg_attr(test, allow(clippy::unwrap_used, clippy::expect_used))]
+// StderrSink (sink.rs) is the CLI's and debug builds' plain-JSON notice
+// transport; printing to stderr is its whole job.
+#![allow(clippy::print_stdout, clippy::print_stderr)]
+
 //! Real-world adapters for `skill-studio-core`.
 //!
 //! This crate holds no policy. Every type here implements one port trait

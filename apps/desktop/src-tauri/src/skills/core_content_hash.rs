@@ -66,9 +66,14 @@ pub fn live_skill_content_hash_controlled(
     };
     skill_content_hash(&fs, &ctx, skill_dir).map_err(|err| {
         if err.code == skill_studio_core::error::ErrorCode::Cancelled {
+            // Core only reports `Cancelled` because it observed `control`
+            // reject the operation, so `control` itself should report the
+            // same rejection here; fall back to core's own message in the
+            // unexpected case that it doesn't, rather than panic.
             control
                 .check_message()
-                .expect_err("core reported Cancelled, so control must report it too")
+                .err()
+                .unwrap_or_else(|| err.to_string())
         } else {
             missing_skill_md_message(skill_dir)
         }
@@ -104,7 +109,7 @@ mod tests {
 
         let control = AddOperationControl::with_deadline(
             Arc::new(AtomicBool::new(false)),
-            Instant::now() - Duration::from_secs(1),
+            Instant::now().checked_sub(Duration::from_secs(1)).unwrap(),
         );
 
         let err = live_skill_content_hash_controlled(&skill_dir, &control).unwrap_err();

@@ -137,12 +137,14 @@ impl CoreError {
     }
 
     /// Attaches the path the error refers to.
+    #[must_use]
     pub fn at(mut self, path: impl Into<PathBuf>) -> Self {
         self.path = Some(path.into());
         self
     }
 
     /// Attaches the lease holder for a [`ErrorCode::ScopeBusy`] error.
+    #[must_use]
     pub fn with_busy(mut self, busy: LeaseBusy) -> Self {
         self.busy = Some(busy);
         self

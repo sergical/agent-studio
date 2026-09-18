@@ -169,18 +169,10 @@ fn trim_run_history(
     }
     let mut records: Vec<(std::time::SystemTime, PathBuf)> = fs::read_dir(dir)
         .map_err(|e| format!("Could not list run history: {e}"))?
-        .filter_map(|entry| entry.ok())
+        .filter_map(std::result::Result::ok)
         .filter(|entry| {
-            entry
-                .path()
-                .extension()
-                .map(|ext| ext == "json")
-                .unwrap_or(false)
-                && entry
-                    .path()
-                    .file_stem()
-                    .map(|s| s != "last")
-                    .unwrap_or(true)
+            entry.path().extension().is_some_and(|ext| ext == "json")
+                && entry.path().file_stem().is_none_or(|s| s != "last")
         })
         .filter_map(|entry| {
             let modified = entry.metadata().ok()?.modified().ok()?;
@@ -196,11 +188,7 @@ fn trim_run_history(
     let remove_count = records.len().saturating_sub(keep);
     for (_, path) in records
         .iter()
-        .filter(|(_, path)| {
-            path.file_stem()
-                .map(|stem| stem != protected_run_id)
-                .unwrap_or(true)
-        })
+        .filter(|(_, path)| path.file_stem().is_none_or(|stem| stem != protected_run_id))
         .take(remove_count)
     {
         let _ = fs::remove_file(path);
@@ -237,18 +225,10 @@ fn list_runs_at(root: &Path, skill_name: &str) -> Result<Vec<SkillRunRecord>, St
     }
     let mut records: Vec<SkillRunRecord> = fs::read_dir(&dir)
         .map_err(|e| format!("Could not list run history: {e}"))?
-        .filter_map(|entry| entry.ok())
+        .filter_map(std::result::Result::ok)
         .filter(|entry| {
-            entry
-                .path()
-                .extension()
-                .map(|ext| ext == "json")
-                .unwrap_or(false)
-                && entry
-                    .path()
-                    .file_stem()
-                    .map(|s| s != "last")
-                    .unwrap_or(true)
+            entry.path().extension().is_some_and(|ext| ext == "json")
+                && entry.path().file_stem().is_none_or(|s| s != "last")
         })
         .filter_map(|entry| fs::read(entry.path()).ok())
         .filter_map(|bytes| serde_json::from_slice::<SkillRunRecord>(&bytes).ok())
@@ -350,8 +330,8 @@ mod tests {
 
         let remaining: Vec<_> = fs::read_dir(dir.path())
             .unwrap()
-            .filter_map(|e| e.ok())
-            .filter(|e| e.path().extension().map(|x| x == "json").unwrap_or(false))
+            .filter_map(std::result::Result::ok)
+            .filter(|e| e.path().extension().is_some_and(|x| x == "json"))
             .collect();
         assert_eq!(remaining.len(), 2);
     }
@@ -396,7 +376,7 @@ mod tests {
         assert!(dir.path().join("eligible-newest.json").is_file());
         let remaining_records = fs::read_dir(dir.path())
             .unwrap()
-            .filter_map(|entry| entry.ok())
+            .filter_map(std::result::Result::ok)
             .filter(|entry| entry.path().extension().is_some_and(|ext| ext == "json"))
             .count();
         assert_eq!(remaining_records, 2);

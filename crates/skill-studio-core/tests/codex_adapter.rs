@@ -1,3 +1,8 @@
+// Integration test binaries aren't covered by the lib crate's
+// `cfg_attr(test, allow(...))`: this file compiles as its own crate, so
+// the same allow needs to be declared here too.
+#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+
 //! Real-disk integration tests for the Codex adapter: the `[[skills.config]]`
 //! disable row, `ops::park`'s fix for the stale-row bug it leaves behind, and
 //! `CODEX_HOME` support. Like `park_and_unpark.rs`, these run against
@@ -48,7 +53,7 @@ fn runtime_for(home: &Path, codex_home: Option<&Path>) -> Runtime {
     Runtime::new(&scope, ports).unwrap()
 }
 
-/// codex_disable_writes_the_skills_config_row_and_keeps_other_tables_and_comments_or_names_the_dropped_content:
+/// `codex_disable_writes_the_skills_config_row_and_keeps_other_tables_and_comments_or_names_the_dropped_content`:
 /// disabling a skill adds a `[[skills.config]]` row, but every other byte of
 /// an existing `config.toml` - an unrelated table, and the comment above it -
 /// survives untouched, since `set_codex_skill_disabled` edits the parsed
@@ -88,7 +93,7 @@ fn codex_disable_writes_the_skills_config_row_and_keeps_other_tables_and_comment
     std::fs::remove_dir_all(&home).ok();
 }
 
-/// codex_disable_refuses_a_mistyped_skills_key_or_names_the_panic: a
+/// `codex_disable_refuses_a_mistyped_skills_key_or_names_the_panic`: a
 /// `config.toml` with `skills` already bound to a string, not a table,
 /// makes disable return an error naming `skills` rather than panic on an
 /// `.expect()` that assumed the user's own document.
@@ -121,7 +126,7 @@ fn codex_disable_refuses_a_mistyped_skills_key_or_names_the_panic() {
     std::fs::remove_dir_all(&home).ok();
 }
 
-/// codex_park_updates_the_skills_config_row_path_or_names_the_stale_row: a
+/// `codex_park_updates_the_skills_config_row_path_or_names_the_stale_row`: a
 /// skill disabled through Codex's config, then parked, keeps its disabled
 /// row pointing at the directory it actually lives in now - not the one
 /// `park` just moved it out of (`docs/action-map/harnesses/codex.md`).
@@ -174,7 +179,7 @@ fn codex_park_updates_the_skills_config_row_path_or_names_the_stale_row() {
     std::fs::remove_dir_all(&home).ok();
 }
 
-/// codex_unpark_rewrites_the_disable_row_back_to_the_live_path_or_names_the_stale_parked_path:
+/// `codex_unpark_rewrites_the_disable_row_back_to_the_live_path_or_names_the_stale_parked_path`:
 /// disable, park, then unpark - the row `park` rewrote to the parked
 /// `SKILL.md` path must come back to naming the live path, or Codex still
 /// treats the restored skill as disabled at a directory that no longer
@@ -251,7 +256,7 @@ fn codex_unpark_rewrites_the_disable_row_back_to_the_live_path_or_names_the_stal
     std::fs::remove_dir_all(&home).ok();
 }
 
-/// codex_honours_codex_home_for_config_and_rollouts_or_names_the_path_read_from_the_default:
+/// `codex_honours_codex_home_for_config_and_rollouts_or_names_the_path_read_from_the_default`:
 /// with `CODEX_HOME` pointed somewhere other than `<home>/.codex`, both the
 /// disable-config writer and the rollout reader follow it - neither one
 /// falls back to reading or writing under the default path.
