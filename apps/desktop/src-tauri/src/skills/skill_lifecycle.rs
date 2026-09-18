@@ -1,19 +1,19 @@
 // ============================================================================
 // Skills Module - skill_lifecycle
 // Resolves a deployment or owner id from a current snapshot, revalidates
-// path/owner, and previews owner-wide mutations. Commands acquire
-// ForkMutationLock before calling into this module.
+// path/owner, and previews owner-wide mutations. Commands acquire the
+// per-root write lease (write_lease.rs) before calling into this module.
 // ============================================================================
 
 use std::path::{Path, PathBuf};
 
-use super::dotagents_ledger::DotagentsSkill;
 use super::skill_deployment::{
     parse_deployment_id, BackingRelationship, DeploymentMutability, SkillDestination,
 };
 use super::skill_dto::{Deployment, InstallScope, InstalledSkill, LifecycleTarget};
 use super::skill_ownership::{parse_owner_id, LifecycleOwnerKind, OwnershipLedgers};
 use super::skill_refresh::{self, SkillRefreshState, SkillSnapshot};
+use skill_studio_core::dotagents_ledger::DotagentsSkill;
 
 /// A lifecycle target resolved from disk and ledgers while the caller holds
 /// the mutation lock. The snapshot is retained because owner adapters need
@@ -102,7 +102,7 @@ fn revalidate_deployment_fingerprint(deployment: &Deployment, action: &str) -> R
 }
 
 /// Resolve one deployment or owner group against a newly rebuilt snapshot.
-/// Callers must acquire `ForkMutationLock` first. The rebuild lock is only
+/// Callers must acquire the per-root write lease first. The rebuild lock is only
 /// held while reading filesystem state, so watcher refreshes cannot overlap
 /// assembly and no refresh lock remains held during the mutation.
 pub fn resolve_fresh_lifecycle_target(

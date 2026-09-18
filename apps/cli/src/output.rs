@@ -5,8 +5,8 @@ use std::process::ExitCode;
 
 use serde::Serialize;
 use skill_studio_core::dto::{
-    Diagnosis, EventDto, FrontmatterRepairPreview, Inventory, RepairOutcome, RestoreOutcome,
-    ScanRequest, SetHarnessEnabledOutcome,
+    CommandHealth, Diagnosis, EventDto, FrontmatterRepairPreview, Inventory, RepairOutcome,
+    RestoreOutcome, ScanRequest, SetHarnessEnabledOutcome,
 };
 use skill_studio_core::harness::{Capabilities, HarnessReport};
 use skill_studio_core::ops::ResultEnvelope;
@@ -214,6 +214,28 @@ pub fn print_set_harness_enabled_outcome_table(
         outcome.toggled,
         outcome.total,
     );
+}
+
+/// Prints `health`'s table: `COMMAND COUNT FAILURES P50_MS P95_MS
+/// LAST_ERROR`, one row per command, in the rollup's own (command-name)
+/// order.
+pub fn print_health_table(rows: &[CommandHealth]) {
+    if rows.is_empty() {
+        println!("No commands recorded in the last 7 days.");
+        return;
+    }
+    println!("COMMAND COUNT FAILURES P50_MS P95_MS LAST_ERROR");
+    for row in rows {
+        println!(
+            "{} {} {} {} {} {}",
+            row.command,
+            row.count,
+            row.failures,
+            row.p50_ms,
+            row.p95_ms,
+            row.last_error.as_deref().unwrap_or("-"),
+        );
+    }
 }
 
 /// Writes one JSON Schema file per request/result DTO the CLI's implemented

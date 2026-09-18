@@ -68,6 +68,7 @@ export type {
   DiscoverySourceSetting,
   ProjectFolder,
   ProjectFolderSource,
+  CommandHealth,
 } from "./skill-types.generated";
 
 import type { Deployment, InstalledSkill, SkillSearchResult } from "./skill-types.generated";
@@ -176,4 +177,15 @@ export interface InstallProgressState {
   message: string;
   percent?: number;
   error?: string;
+}
+
+/**
+ * The running app's own version, build commit, and release notes for
+ * Settings' "Version" row and "What's new" panel - see the Rust
+ * `app_version` command.
+ */
+export interface AppVersion {
+  version: string;
+  commit: string;
+  notes: string | null;
 }

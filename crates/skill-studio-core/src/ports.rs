@@ -12,6 +12,7 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
 use crate::dto::{DeploymentDto, Inventory};
+pub use crate::error::LeaseBusy;
 use crate::error::{CoreError, ErrorCode};
 use crate::events::{EventDraft, EventFilter, EventRecord, EventStatus};
 use crate::harness::HarnessCatalog;
@@ -53,6 +54,14 @@ pub struct DirEntryFacts {
     pub name: String,
     /// Kind without following links.
     pub kind: FileKind,
+}
+
+/// Whether a directory entry can be a skill folder: a directory or a
+/// symlink (never a plain file), and not dot-prefixed. Shared by every root
+/// reader (`ops::read_root_entries`, `harness::claude_code_skill_entries`)
+/// so "what counts as a skill-shaped entry" has one definition.
+pub(crate) fn is_skill_shaped_entry(entry: &DirEntryFacts) -> bool {
+    matches!(entry.kind, FileKind::Dir | FileKind::Symlink) && !entry.name.starts_with('.')
 }
 
 /// A path proven to lie inside the scope.
@@ -206,6 +215,36 @@ impl ScopeFs for ScopedReads<'_> {
     ) -> std::io::Result<()> {
         self.inner.symlink(guard, target, link)
     }
+    fn fsops_device_inode(&self, path: &Path) -> std::io::Result<(u64, u64)> {
+        self.inner.fsops_device_inode(path)
+    }
+    fn fsops_fsync_file(&self, path: &Path) -> std::io::Result<()> {
+        self.inner.fsops_fsync_file(path)
+    }
+    fn fsops_fsync_dir(&self, path: &Path) -> std::io::Result<()> {
+        self.inner.fsops_fsync_dir(path)
+    }
+    fn fsops_create_dir(&self, path: &Path) -> std::io::Result<()> {
+        self.inner.fsops_create_dir(path)
+    }
+    fn fsops_write_new_file(&self, path: &Path, bytes: &[u8]) -> std::io::Result<()> {
+        self.inner.fsops_write_new_file(path, bytes)
+    }
+    fn fsops_rename(&self, from: &Path, to: &Path) -> std::io::Result<()> {
+        self.inner.fsops_rename(from, to)
+    }
+    fn fsops_symlink(&self, target: &Path, link: &Path) -> std::io::Result<()> {
+        self.inner.fsops_symlink(target, link)
+    }
+    fn fsops_remove_dir(&self, path: &Path) -> std::io::Result<()> {
+        self.inner.fsops_remove_dir(path)
+    }
+    fn fsops_remove_file(&self, path: &Path) -> std::io::Result<()> {
+        self.inner.fsops_remove_file(path)
+    }
+    fn fsops_exchange(&self, a: &Path, b: &Path) -> std::io::Result<()> {
+        self.inner.fsops_exchange(a, b)
+    }
 }
 
 /// Filesystem access. Read calls take plain paths; write calls take a
@@ -257,6 +296,42 @@ pub trait ScopeFs: Send + Sync {
         target: &ScopedPath,
         link: &ScopedPath,
     ) -> std::io::Result<()>;
+
+    /// Device and inode of the entry at `path`, without following a final
+    /// symlink. [`crate::fsops::Root`] rereads this before and after every
+    /// step to prove the root it opened was not swapped for something else.
+    fn fsops_device_inode(&self, path: &Path) -> std::io::Result<(u64, u64)>;
+    /// Flushes a file's contents to durable storage.
+    fn fsops_fsync_file(&self, path: &Path) -> std::io::Result<()>;
+    /// Flushes a directory's own entry (its listing), so a create, rename,
+    /// or removal inside it is durable, not only the thing it named.
+    fn fsops_fsync_dir(&self, path: &Path) -> std::io::Result<()>;
+    /// Creates one directory. Fails when the parent does not already exist,
+    /// unlike [`Self::create_dir_all`].
+    fn fsops_create_dir(&self, path: &Path) -> std::io::Result<()>;
+    /// Writes a brand-new file (fails if one already exists at `path`).
+    /// [`crate::fsops::stage`] uses this to populate a staged folder that
+    /// nothing else can see yet; the visible write path is
+    /// [`crate::fsops::write_file`], which goes through a temp name and a
+    /// rename instead.
+    fn fsops_write_new_file(&self, path: &Path, bytes: &[u8]) -> std::io::Result<()>;
+    /// Renames within one filesystem, confined by the caller's own
+    /// [`crate::fsops::Root`] rather than a [`ScopedPath`].
+    fn fsops_rename(&self, from: &Path, to: &Path) -> std::io::Result<()>;
+    /// Creates a symlink at `link` pointing at `target`, confined by the
+    /// caller's own [`crate::fsops::Root`] rather than a [`ScopedPath`].
+    fn fsops_symlink(&self, target: &Path, link: &Path) -> std::io::Result<()>;
+    /// Removes an empty directory.
+    fn fsops_remove_dir(&self, path: &Path) -> std::io::Result<()>;
+    /// Removes a file or a symlink, never a directory.
+    fn fsops_remove_file(&self, path: &Path) -> std::io::Result<()>;
+    /// Atomically exchanges the entries at `a` and `b`: after this call,
+    /// `a` holds what `b` held and `b` holds what `a` held. Both must
+    /// already exist. [`crate::fsops::swap`] uses this as its one
+    /// crash-critical step, so a process that dies mid-swap leaves the
+    /// filesystem showing either the pre-swap or the post-swap pairing,
+    /// never a folder that exists at neither or both names.
+    fn fsops_exchange(&self, a: &Path, b: &Path) -> std::io::Result<()>;
 }
 
 /// Finds the projects a scope covers under [`ProjectSelection::Discover`].
@@ -349,12 +424,25 @@ impl ExclusiveGuard {
     pub fn keys(&self) -> &[LeaseKey] {
         self.0.keys()
     }
+
+    /// Wraps an already-held exclusive [`LeaseHandle`] as proof-of-lease,
+    /// without acquiring a new one. For a caller that took its own exclusive
+    /// lease over a root through a different entry point (e.g. the desktop's
+    /// `WriteLease`) and then needs to call a core write helper that expects
+    /// this type - advisory locks don't nest within one process, so a second
+    /// `acquire` on the same root would report the caller's own lease as
+    /// busy.
+    pub fn from_handle(handle: Box<dyn LeaseHandle>) -> Self {
+        ExclusiveGuard(handle)
+    }
 }
 
 /// Acquires and releases leases.
 pub trait LeaseProvider: Send + Sync {
     /// Acquires `keys` in the given order, waiting at most `wait`.
-    /// Fails with [`ErrorCode::ScopeBusy`] when the budget runs out.
+    /// Fails with [`ErrorCode::ScopeBusy`] when the budget runs out, with
+    /// [`LeaseBusy`] attached through [`CoreError::with_busy`] naming the
+    /// current holder's pid and how long it has held the lease.
     fn acquire(
         &self,
         keys: &[LeaseKey],

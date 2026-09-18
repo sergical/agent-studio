@@ -168,6 +168,123 @@ impl ScopeFs for RealFs {
         // the scope by `confine` before this call was made.
         std::os::unix::fs::symlink(target.as_path(), link.as_path())
     }
+
+    fn fsops_device_inode(&self, path: &Path) -> io::Result<(u64, u64)> {
+        let meta = fs::symlink_metadata(path)?;
+        Ok((meta.dev(), meta.ino()))
+    }
+
+    fn fsops_fsync_file(&self, path: &Path) -> io::Result<()> {
+        fs::File::open(path)?.sync_all()
+    }
+
+    fn fsops_fsync_dir(&self, path: &Path) -> io::Result<()> {
+        // A directory can be opened read-only and fsynced on Unix, which is
+        // how a rename or a create inside it is made durable: the file's
+        // own fsync only guarantees its contents, not that its name is
+        // findable in the parent after a crash.
+        fs::File::open(path)?.sync_all()
+    }
+
+    fn fsops_create_dir(&self, path: &Path) -> io::Result<()> {
+        fs::create_dir(path)
+    }
+
+    fn fsops_write_new_file(&self, path: &Path, bytes: &[u8]) -> io::Result<()> {
+        let mut file = fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(path)?;
+        use std::io::Write;
+        file.write_all(bytes)
+    }
+
+    fn fsops_rename(&self, from: &Path, to: &Path) -> io::Result<()> {
+        fs::rename(from, to)
+    }
+
+    fn fsops_symlink(&self, target: &Path, link: &Path) -> io::Result<()> {
+        std::os::unix::fs::symlink(target, link)
+    }
+
+    fn fsops_remove_dir(&self, path: &Path) -> io::Result<()> {
+        fs::remove_dir(path)
+    }
+
+    fn fsops_remove_file(&self, path: &Path) -> io::Result<()> {
+        fs::remove_file(path)
+    }
+
+    fn fsops_exchange(&self, a: &Path, b: &Path) -> io::Result<()> {
+        macos_exchange::exchange(a, b)
+    }
+}
+
+/// Atomically exchanges two paths on the real filesystem: [`crate::fs`]'s
+/// only `unsafe` code, kept to this one FFI call so [`fsops::swap`]
+/// (`skill_studio_core::fsops`) has one crash-critical step instead of the
+/// two ordinary renames a "move old aside, then move new in" sequence would
+/// need - a process killed between those two renames would leave neither
+/// the old nor the new folder at the final name.
+///
+/// [`fsops::swap`]: skill_studio_core::fsops::swap
+#[cfg(target_os = "macos")]
+#[allow(unsafe_code)]
+mod macos_exchange {
+    use std::ffi::CString;
+    use std::io;
+    use std::os::raw::{c_char, c_int, c_uint};
+    use std::os::unix::ffi::OsStrExt;
+    use std::path::Path;
+
+    /// From `<sys/fcntl.h>`: swap the two paths' directory entries.
+    const RENAME_SWAP: c_uint = 0x0000_0002;
+
+    extern "C" {
+        // macOS-only libc entry point (10.12+); not part of the `std`
+        // surface, so it is declared by hand instead of pulling in `libc`
+        // for one function.
+        fn renamex_np(from: *const c_char, to: *const c_char, flags: c_uint) -> c_int;
+    }
+
+    fn to_cstring(path: &Path) -> io::Result<CString> {
+        CString::new(path.as_os_str().as_bytes())
+            .map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "path contains a NUL byte"))
+    }
+
+    pub(super) fn exchange(a: &Path, b: &Path) -> io::Result<()> {
+        let a = to_cstring(a)?;
+        let b = to_cstring(b)?;
+        // SAFETY: `a` and `b` are NUL-terminated `CString`s kept alive for
+        // the duration of the call; `renamex_np` only reads them and
+        // returns a plain `c_int` status, matching the C prototype above.
+        let rc = unsafe { renamex_np(a.as_ptr(), b.as_ptr(), RENAME_SWAP) };
+        if rc == 0 {
+            Ok(())
+        } else {
+            Err(io::Error::last_os_error())
+        }
+    }
+}
+
+#[cfg(not(target_os = "macos"))]
+mod macos_exchange {
+    use std::io;
+    use std::path::Path;
+
+    /// Non-atomic fallback for platforms without `renamex_np`. Skill Studio
+    /// ships macOS only (see the crate doc comment); this exists so the
+    /// crate still builds elsewhere, not to give the same crash guarantee.
+    pub(super) fn exchange(a: &Path, b: &Path) -> io::Result<()> {
+        let tmp = a.with_file_name(format!(
+            ".exchange-{}-{}",
+            std::process::id(),
+            super::TMP_COUNTER.fetch_add(1, super::Ordering::Relaxed)
+        ));
+        std::fs::rename(a, &tmp)?;
+        std::fs::rename(b, a)?;
+        std::fs::rename(&tmp, b)
+    }
 }
 
 #[cfg(test)]

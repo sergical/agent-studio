@@ -363,6 +363,7 @@ pub(crate) fn scan_inner(
         // `propagate_verified_linked_owners` once every root has been
         // walked.
         resolved_paths: HashMap::new(),
+        content_cache: HashMap::new(),
     };
 
     // Global roots (and their plugin caches) go first so a scan that runs
@@ -414,6 +415,7 @@ pub(crate) fn scan_inner(
         observations,
         completeness,
         resolved_paths,
+        content_cache: _,
     } = accum;
 
     // Every root has been walked, so every canonical universal deployment
@@ -526,6 +528,25 @@ struct ScanAccum {
     /// and consumed by `propagate_verified_linked_owners` once every root
     /// has been walked.
     resolved_paths: HashMap<DeploymentId, PathBuf>,
+    /// Canonical skill directory -> its already-read `SKILL.md` facts,
+    /// filled in and consumed by `process_entries` across every target: a
+    /// universal skill is listed once under the shared root (its canonical
+    /// entry) and once more under the one harness root it's linked from,
+    /// and both listings resolve to the same canonical directory. Without
+    /// this, the second listing would read the same `SKILL.md` again.
+    content_cache: HashMap<PathBuf, CachedSkillRead>,
+}
+
+/// One canonical skill directory's already-computed `SKILL.md` read,
+/// cached by [`process_entries`] so a second directory entry resolving to
+/// the same canonical path (a per-skill symlink into the universal root)
+/// reuses it instead of reading and walking the folder again.
+#[derive(Clone)]
+struct CachedSkillRead {
+    description: Option<String>,
+    violations: Vec<String>,
+    truncated: bool,
+    facts: ContentFacts,
 }
 
 /// Reads one [`ScanTarget`] (and its [`MOVE_ASIDE_DIR_NAME`] holding
@@ -554,43 +575,79 @@ fn scan_one_target(
         Ok(FileKind::Symlink)
     );
 
-    match timed_read_root_entries(sc, &target.path) {
-        Ok(names) => process_entries(
-            &EntryContext {
-                fs: sc.fs,
-                ctx: sc.ctx,
-                clock: sc.rt.ports.clock.as_ref(),
-                scope: &sc.rt.scope,
-                home: sc.home,
-                disable_sources: sc.disable_sources,
-                scope_ledgers: sc.scope_ledgers,
-                home_registry: sc.home_registry,
-                target: &target,
-                base_dir: &target.path,
-                whole_dir_link,
-                forced_disabled_by: None,
-                timings: sc.timings,
-            },
-            &names,
-            sc.req,
-            &mut accum.skills,
-            &mut accum.observations,
-            &mut accum.completeness,
-            &mut accum.resolved_paths,
-        )?,
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
-        Err(e) => {
-            accum.completeness = Completeness::Partial;
-            accum.observations.push(Observation {
-                root: RootRef::new(target.scope.clone(), target.kind.clone()).ok(),
-                message: format!("could not read root: {e}"),
-            });
+    // A cheap existence check before `read_dir`: the catalog names far more
+    // roots (every harness's global and project root, fanned across every
+    // tracked project) than a given home actually has on disk, so most
+    // targets - and almost every `MOVE_ASIDE_DIR_NAME` holding directory -
+    // don't exist. `symlink_metadata` isn't bounded by the scan's
+    // `read_dir`-per-directory budget the way `read_dir` itself is, so
+    // ruling out a missing root this way, rather than by calling `read_dir`
+    // and matching its `NotFound`, is a real directory listing saved, not
+    // just the same cost moved elsewhere.
+    if !root_dir_missing(sc.fs, &target.path) {
+        match timed_read_root_entries(sc, &target.path) {
+            Ok(names) => process_entries(
+                &EntryContext {
+                    fs: sc.fs,
+                    ctx: sc.ctx,
+                    clock: sc.rt.ports.clock.as_ref(),
+                    scope: &sc.rt.scope,
+                    home: sc.home,
+                    disable_sources: sc.disable_sources,
+                    scope_ledgers: sc.scope_ledgers,
+                    home_registry: sc.home_registry,
+                    target: &target,
+                    base_dir: &target.path,
+                    whole_dir_link,
+                    forced_disabled_by: None,
+                    timings: sc.timings,
+                },
+                &names,
+                sc.req,
+                accum,
+            )?,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+            Err(e) => {
+                accum.completeness = Completeness::Partial;
+                accum.observations.push(Observation {
+                    root: RootRef::new(target.scope.clone(), target.kind.clone()).ok(),
+                    message: format!("could not read root: {e}"),
+                });
+            }
         }
     }
 
-    // Skills Skill Studio moved aside stay deployments (so the UI can
-    // still show and un-park them), just disabled.
+    scan_move_aside_dir(sc, &target, whole_dir_link, accum)
+}
+
+/// True when `path` cannot be listed because nothing is there:
+/// [`ScopeFs::symlink_metadata`] reports [`std::io::ErrorKind::NotFound`].
+/// Any other outcome (it exists, or some other error) defers to the real
+/// `read_dir` call so that call's own error handling still applies.
+fn root_dir_missing(fs: &dyn ScopeFs, path: &Path) -> bool {
+    matches!(
+        fs.symlink_metadata(path),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound
+    )
+}
+
+/// Reads `target.path`'s [`MOVE_ASIDE_DIR_NAME`] holding directory into
+/// `accum`, when it exists. Skills Skill Studio moved aside stay
+/// deployments (so the UI can still show and un-park them), just disabled.
+/// Split out of [`scan_one_target`] so the caller can skip it too, via the
+/// same [`root_dir_missing`] check, when the target root itself doesn't
+/// exist - a root that isn't there never holds a move-aside directory
+/// either.
+fn scan_move_aside_dir(
+    sc: &ScanCtx,
+    target: &ScanTarget,
+    whole_dir_link: bool,
+    accum: &mut ScanAccum,
+) -> Result<(), CoreError> {
     let move_aside_dir = target.path.join(MOVE_ASIDE_DIR_NAME);
+    if root_dir_missing(sc.fs, &move_aside_dir) {
+        return Ok(());
+    }
     if let Ok(names) = timed_read_root_entries(sc, &move_aside_dir) {
         process_entries(
             &EntryContext {
@@ -602,7 +659,7 @@ fn scan_one_target(
                 disable_sources: sc.disable_sources,
                 scope_ledgers: sc.scope_ledgers,
                 home_registry: sc.home_registry,
-                target: &target,
+                target,
                 base_dir: &move_aside_dir,
                 whole_dir_link,
                 forced_disabled_by: Some(DisabledBy::StudioMoved),
@@ -610,10 +667,7 @@ fn scan_one_target(
             },
             &names,
             sc.req,
-            &mut accum.skills,
-            &mut accum.observations,
-            &mut accum.completeness,
-            &mut accum.resolved_paths,
+            accum,
         )?;
     }
     Ok(())
@@ -638,6 +692,13 @@ fn scan_one_plugin_target(
             .ok(),
             message: "read budget exceeded before this root could be scanned".to_string(),
         });
+        return Ok(());
+    }
+    // Same existence pre-check as `scan_one_target`: most plugin cache
+    // roots the catalog names don't exist on a given home, and skipping
+    // straight to `enumerate_plugin_skills`'s `read_dir` would otherwise
+    // spend it on a directory nothing is in.
+    if root_dir_missing(sc.fs, &target.path) {
         return Ok(());
     }
     let walk_start = sc.rt.ports.clock.monotonic();
@@ -673,7 +734,7 @@ fn scan_one_plugin_target(
                         accum.observations.push(observation);
                     }
                 }
-                let content_fingerprint = Some(content_fingerprint(sc.fs, &plugin_skill.skill_dir));
+                let content_fingerprint = Some(facts.content_fingerprint.clone());
                 // Matches the desktop's plugin-cache loop: `is_symlink`
                 // is checked, but a plugin skill is never resolved
                 // through it, so the link facts otherwise stay at their
@@ -789,8 +850,7 @@ fn read_root_entries(fs: &dyn ScopeFs, dir: &Path) -> std::io::Result<Vec<DirEnt
     let entries = fs.read_dir(dir)?;
     let mut names: Vec<_> = entries
         .into_iter()
-        .filter(|e| matches!(e.kind, FileKind::Dir | FileKind::Symlink))
-        .filter(|e| !e.name.starts_with('.'))
+        .filter(crate::ports::is_skill_shaped_entry)
         .collect();
     names.sort_by(|a, b| a.name.cmp(&b.name));
     Ok(names)
@@ -840,10 +900,7 @@ fn process_entries(
     cx: &EntryContext,
     names: &[DirEntryFacts],
     req: &ScanRequest,
-    skills: &mut BTreeMap<String, InstalledSkillDto>,
-    observations: &mut Vec<Observation>,
-    completeness: &mut Completeness,
-    resolved_paths: &mut HashMap<DeploymentId, PathBuf>,
+    accum: &mut ScanAccum,
 ) -> Result<(), CoreError> {
     for entry in names {
         cx.ctx.checkpoint()?;
@@ -891,8 +948,45 @@ fn process_entries(
             None
         };
 
+        // A non-link entry's own canonicalized path, computed once and
+        // reused below for `canonical_key`, `resolved_path`, and
+        // `dto_resolved_path` instead of canonicalizing `skill_dir` again
+        // for each.
+        let own_canonical = (!is_link)
+            .then(|| cx.fs.canonicalize(&skill_dir).ok())
+            .flatten();
+        // A per-skill symlink into the universal root and its canonical
+        // universal entry are two directory listings of the one real
+        // folder: keyed by canonical path so the second listing reuses the
+        // first's `SKILL.md` read and folder walk instead of repeating
+        // them.
+        let canonical_key = if is_link {
+            canonical.clone()
+        } else {
+            own_canonical.clone()
+        };
+
         let (description, violations, content_fingerprint, facts) = if unresolved_link {
             (None, Vec::new(), None, Box::new(ContentFacts::default()))
+        } else if let Some(cached) = canonical_key
+            .as_ref()
+            .and_then(|key| accum.content_cache.get(key))
+        {
+            if cached.truncated {
+                if let Some(observation) = truncated_skill_md_observation(
+                    cx.target.scope.clone(),
+                    cx.target.kind.clone(),
+                    &entry.name,
+                ) {
+                    accum.observations.push(observation);
+                }
+            }
+            (
+                cached.description.clone(),
+                cached.violations.clone(),
+                Some(cached.facts.content_fingerprint.clone()),
+                Box::new(cached.facts.clone()),
+            )
         } else {
             match read_skill_md(cx.fs, cx.ctx, cx.clock, &skill_dir, &entry.name, cx.timings)? {
                 SkillMdRead::Found {
@@ -907,20 +1001,31 @@ fn process_entries(
                             cx.target.kind.clone(),
                             &entry.name,
                         ) {
-                            observations.push(observation);
+                            accum.observations.push(observation);
                         }
+                    }
+                    if let Some(key) = canonical_key.clone() {
+                        accum.content_cache.insert(
+                            key,
+                            CachedSkillRead {
+                                description: description.clone(),
+                                violations: violations.clone(),
+                                truncated,
+                                facts: (*facts).clone(),
+                            },
+                        );
                     }
                     (
                         description,
                         violations,
-                        Some(content_fingerprint(cx.fs, &skill_dir)),
+                        Some(facts.content_fingerprint.clone()),
                         facts,
                     )
                 }
                 SkillMdRead::NotASkill => continue,
                 SkillMdRead::Unreadable(message) => {
-                    *completeness = Completeness::Partial;
-                    observations.push(Observation {
+                    accum.completeness = Completeness::Partial;
+                    accum.observations.push(Observation {
                         root: RootRef::new(cx.target.scope.clone(), cx.target.kind.clone()).ok(),
                         message,
                     });
@@ -969,14 +1074,10 @@ fn process_entries(
         let resolved_path = if is_link {
             canonical.clone()
         } else {
-            Some(
-                cx.fs
-                    .canonicalize(&skill_dir)
-                    .unwrap_or_else(|_| skill_dir.clone()),
-            )
+            Some(own_canonical.clone().unwrap_or_else(|| skill_dir.clone()))
         };
         if let Some(resolved_path) = resolved_path {
-            resolved_paths.insert(id.clone(), resolved_path);
+            accum.resolved_paths.insert(id.clone(), resolved_path);
         }
         // The DTO's `resolved_path` (not the internal `resolved_path` above,
         // which serves owner propagation and differs on purpose): for a
@@ -987,10 +1088,7 @@ fn process_entries(
         let dto_resolved_path = if is_link {
             canonical.clone()
         } else {
-            cx.fs
-                .canonicalize(&skill_dir)
-                .ok()
-                .filter(|c| c != &skill_dir)
+            own_canonical.clone().filter(|c| c != &skill_dir)
         };
         let in_git_repo = in_git_repo(cx.fs, cx.scope, &skill_dir);
         // Matches the variant, not merely "forced": the field means the
@@ -1064,7 +1162,7 @@ fn process_entries(
             source_kind,
         };
 
-        insert_deployment(skills, &entry.name, description, deployment);
+        insert_deployment(&mut accum.skills, &entry.name, description, deployment);
     }
     Ok(())
 }
@@ -1872,11 +1970,19 @@ fn owner_id(scope_label: &str, project_path: Option<&str>, skill_name: &str) -> 
 /// truncation edge case (a file so large only part of it fits the
 /// remaining byte budget) degrades to "read nothing further", since
 /// [`ScopeFs::read_capped`] has no partial-read primitive.
-fn content_fingerprint(fs: &dyn ScopeFs, dir: &Path) -> Fingerprint {
-    let mut files = Vec::new();
-    let mut total_bytes = 0u64;
-    let mut file_count = 0usize;
-    walk_content_files(fs, dir, dir, &mut files, &mut total_bytes, &mut file_count);
+///
+/// Consumes `files` as already gathered by [`walk_folder_for_facts`]'s single
+/// pass, rather than walking the tree again: the fingerprint's own file set
+/// is a byproduct of that one walk, not a second `read_dir` per directory.
+/// `skill_md` reuses the bytes [`read_skill_md`] already read for the file at
+/// `skill_md.path` when that read covered the whole file, so `SKILL.md`
+/// itself is never read a second time here.
+fn content_fingerprint(
+    fs: &dyn ScopeFs,
+    files: &[(PathBuf, PathBuf, u64)],
+    skill_md: &SkillMdBytes,
+) -> Fingerprint {
+    let mut files: Vec<_> = files.to_vec();
     files.sort_by(|a, b| a.0.cmp(&b.0));
 
     let mut buf = Vec::new();
@@ -1889,7 +1995,7 @@ fn content_fingerprint(fs: &dyn ScopeFs, dir: &Path) -> Fingerprint {
         if remaining == 0 {
             continue;
         }
-        match fs.read_capped(abs_path, remaining.min(*len)) {
+        match skill_md.read_capped(fs, abs_path, remaining.min(*len)) {
             Ok(bytes) => {
                 remaining = remaining.saturating_sub(bytes.len() as u64);
                 buf.extend_from_slice(&bytes);
@@ -1900,50 +2006,25 @@ fn content_fingerprint(fs: &dyn ScopeFs, dir: &Path) -> Fingerprint {
     Fingerprint::of_bytes(&buf)
 }
 
-/// Recursively collects `(relative path, absolute path, len)` for every
-/// regular file under `dir`, stopping once [`MAX_FOLDER_FILES`] or
-/// [`MAX_FOLDER_BYTES`] is reached. Never follows a symlinked directory or
-/// reads a symlinked file.
-fn walk_content_files(
-    fs: &dyn ScopeFs,
-    root: &Path,
-    dir: &Path,
-    files: &mut Vec<(PathBuf, PathBuf, u64)>,
-    total_bytes: &mut u64,
-    file_count: &mut usize,
-) {
-    if *file_count >= MAX_FOLDER_FILES || *total_bytes >= MAX_FOLDER_BYTES {
-        return;
-    }
-    let Ok(entries) = fs.read_dir(dir) else {
-        return;
-    };
-    let mut names: Vec<_> = entries;
-    names.sort_by(|a, b| a.name.cmp(&b.name));
-    for entry in names {
-        if *file_count >= MAX_FOLDER_FILES || *total_bytes >= MAX_FOLDER_BYTES {
-            return;
+/// The already-read bytes of `<skill_dir>/SKILL.md`, so a folder walk that
+/// re-encounters that same file (both hash schemes walk the whole folder,
+/// `SKILL.md` included) can reuse them instead of reading the file again.
+/// Only usable when the caller's read was not truncated and covered exactly
+/// the bytes now wanted; [`SkillMdBytes::read_capped`] falls back to a real
+/// read otherwise, so a truncated or oversized `SKILL.md` is still handled
+/// correctly, just not from cache.
+struct SkillMdBytes<'a> {
+    path: &'a Path,
+    bytes: &'a [u8],
+    truncated: bool,
+}
+
+impl SkillMdBytes<'_> {
+    fn read_capped(&self, fs: &dyn ScopeFs, path: &Path, want: u64) -> std::io::Result<Vec<u8>> {
+        if !self.truncated && path == self.path && want == self.bytes.len() as u64 {
+            return Ok(self.bytes.to_vec());
         }
-        let path = dir.join(&entry.name);
-        match entry.kind {
-            FileKind::Dir => walk_content_files(fs, root, &path, files, total_bytes, file_count),
-            FileKind::File => {
-                let Ok(meta) = fs.symlink_metadata(&path) else {
-                    continue;
-                };
-                let remaining = MAX_FOLDER_BYTES.saturating_sub(*total_bytes);
-                if meta.len > remaining {
-                    *total_bytes = MAX_FOLDER_BYTES;
-                    continue;
-                }
-                *total_bytes += meta.len;
-                *file_count += 1;
-                if let Ok(rel) = path.strip_prefix(root) {
-                    files.push((rel.to_path_buf(), path.clone(), meta.len));
-                }
-            }
-            FileKind::Symlink | FileKind::Other => {}
-        }
+        fs.read_capped(path, want)
     }
 }
 
@@ -2017,15 +2098,44 @@ struct FactsWalk {
     file_count: u32,
     newest: Option<DateTime<Utc>>,
     truncated: bool,
+    /// The same regular files as `hashable`, gathered under
+    /// [`content_fingerprint`]'s own unreduced [`MAX_FOLDER_BYTES`]/
+    /// [`MAX_FOLDER_FILES`] budget rather than `hashable`'s (which has
+    /// `skill_md_bytes.len()` deducted up front): the two schemes' file
+    /// sets only diverge right at the byte cap, which real skill folders
+    /// never approach, so this second budget only matters there.
+    fingerprint_files: Vec<(PathBuf, PathBuf, u64)>,
+    fingerprint_total_bytes: u64,
+    fingerprint_file_count: usize,
 }
 
-/// Walks `dir` recursively into `walk`, gathering byte/file counts and the
-/// newest mtime, stopping once [`MAX_FOLDER_FILES`]/`max_bytes` is reached.
-/// Never follows a symlinked directory; a symlinked file counts toward
-/// `file_count` but is never opened, hashed, or sized into `total_bytes`.
+impl FactsWalk {
+    /// Whether the fingerprint side has spent its own, unreduced
+    /// `MAX_FOLDER_FILES`/`MAX_FOLDER_BYTES` budget - the walk may stop only
+    /// once this and `truncated` (the hash side's budget) are both true,
+    /// since the two run independently and the hash side commonly hits its
+    /// smaller/reduced budget first.
+    fn fingerprint_done(&self) -> bool {
+        self.fingerprint_file_count >= MAX_FOLDER_FILES
+            || self.fingerprint_total_bytes >= MAX_FOLDER_BYTES
+    }
+}
+
+/// Walks `dir` once into `walk`, gathering both [`content_hash`] facts
+/// (byte/file counts, the newest mtime) and the file list
+/// [`content_fingerprint`] hashes, stopping each independently once its own
+/// [`MAX_FOLDER_FILES`]/byte budget is reached - the walk itself only ends
+/// once both budgets are spent, so an entry past the hash side's (often
+/// smaller, reduced) budget still reaches the fingerprint side's own gate.
+/// One `read_dir` and one
+/// `symlink_metadata` per entry serves both; before this merge each ran its
+/// own recursive walk over the same tree. Never follows a symlinked
+/// directory; a symlinked file counts toward `hashable`'s `file_count` but
+/// is never opened, hashed, sized into `total_bytes`, or added to
+/// `fingerprint_files` (`content_fingerprint` has never counted symlinks).
 /// Unreadable entries are skipped rather than failing the whole walk. A
 /// per-directory-entry [`OpContext::checkpoint`] means a cancellation here
-/// must fail the whole walk (and so the caller's digest) rather than return
+/// must fail the whole walk (and so the caller's digests) rather than return
 /// whatever partial `walk` was accumulated so far, since a short walk would
 /// silently produce a plausible-but-wrong content hash.
 fn walk_folder_for_facts(
@@ -2036,7 +2146,7 @@ fn walk_folder_for_facts(
     max_bytes: u64,
     walk: &mut FactsWalk,
 ) -> Result<(), CoreError> {
-    if walk.truncated {
+    if walk.truncated && walk.fingerprint_done() {
         return Ok(());
     }
     let Ok(mut entries) = fs.read_dir(dir) else {
@@ -2045,7 +2155,7 @@ fn walk_folder_for_facts(
     entries.sort_by(|a, b| a.name.cmp(&b.name));
     for entry in entries {
         ctx.checkpoint()?;
-        if walk.truncated {
+        if walk.truncated && walk.fingerprint_done() {
             return Ok(());
         }
         let path = dir.join(&entry.name);
@@ -2056,7 +2166,7 @@ fn walk_folder_for_facts(
                     .ok()
                     .and_then(|target| fs.symlink_metadata(&target).ok())
                     .is_some_and(|m| m.kind == FileKind::File);
-                if is_file {
+                if is_file && !walk.truncated {
                     walk.file_count += 1;
                     if walk.file_count as usize >= MAX_FOLDER_FILES {
                         walk.truncated = true;
@@ -2070,31 +2180,58 @@ fn walk_folder_for_facts(
                 let Ok(meta) = fs.symlink_metadata(&path) else {
                     continue;
                 };
-                // Enforce the remaining byte budget before queuing the file,
-                // not after: a single oversized file must never be added to
-                // the hash queue, only counted as the reason the walk
-                // stopped.
-                let remaining = max_bytes.saturating_sub(walk.total_bytes);
-                if meta.len > remaining {
-                    walk.truncated = true;
-                    continue;
-                }
-                walk.total_bytes += meta.len;
-                walk.file_count += 1;
-                if let Some(modified) = meta.modified {
-                    if walk.newest.is_none_or(|n| modified > n) {
-                        walk.newest = Some(modified);
+                if !walk.truncated {
+                    // Enforce the remaining byte budget before queuing the
+                    // file, not after: a single oversized file must never be
+                    // added to the hash queue, only counted as the reason
+                    // the hash side stopped. It still falls through to the
+                    // fingerprint gate below, which runs on its own budget.
+                    let remaining = max_bytes.saturating_sub(walk.total_bytes);
+                    if meta.len > remaining {
+                        walk.truncated = true;
+                    } else {
+                        walk.total_bytes += meta.len;
+                        walk.file_count += 1;
+                        if let Some(modified) = meta.modified {
+                            if walk.newest.is_none_or(|n| modified > n) {
+                                walk.newest = Some(modified);
+                            }
+                        }
+                        if let Ok(rel) = path.strip_prefix(root) {
+                            walk.hashable.push(HashableFile {
+                                rel_path: rel.to_path_buf(),
+                                abs_path: path.clone(),
+                                len: meta.len,
+                            });
+                        }
+                        if walk.file_count as usize >= MAX_FOLDER_FILES
+                            || walk.total_bytes >= max_bytes
+                        {
+                            walk.truncated = true;
+                        }
                     }
                 }
-                if let Ok(rel) = path.strip_prefix(root) {
-                    walk.hashable.push(HashableFile {
-                        rel_path: rel.to_path_buf(),
-                        abs_path: path.clone(),
-                        len: meta.len,
-                    });
-                }
-                if walk.file_count as usize >= MAX_FOLDER_FILES || walk.total_bytes >= max_bytes {
-                    walk.truncated = true;
+
+                // `content_fingerprint`'s own, unreduced budget: mirrors
+                // the old standalone `walk_content_files`'s per-entry gate.
+                if walk.fingerprint_file_count < MAX_FOLDER_FILES
+                    && walk.fingerprint_total_bytes < MAX_FOLDER_BYTES
+                {
+                    let fp_remaining =
+                        MAX_FOLDER_BYTES.saturating_sub(walk.fingerprint_total_bytes);
+                    if meta.len > fp_remaining {
+                        walk.fingerprint_total_bytes = MAX_FOLDER_BYTES;
+                    } else {
+                        walk.fingerprint_total_bytes += meta.len;
+                        walk.fingerprint_file_count += 1;
+                        if let Ok(rel) = path.strip_prefix(root) {
+                            walk.fingerprint_files.push((
+                                rel.to_path_buf(),
+                                path.clone(),
+                                meta.len,
+                            ));
+                        }
+                    }
                 }
             }
             FileKind::Other => {}
@@ -2121,6 +2258,7 @@ fn content_hash_from_walk(
     fs: &dyn ScopeFs,
     ctx: &OpContext,
     max_bytes: u64,
+    skill_md: &SkillMdBytes,
 ) -> Result<String, CoreError> {
     files.sort_by(|a, b| a.rel_path.cmp(&b.rel_path));
     let mut hasher = Sha256::new();
@@ -2134,7 +2272,7 @@ fn content_hash_from_walk(
         if remaining == 0 {
             continue;
         }
-        match fs.read_capped(&file.abs_path, remaining.min(file.len)) {
+        match skill_md.read_capped(fs, &file.abs_path, remaining.min(file.len)) {
             Ok(bytes) => {
                 remaining = remaining.saturating_sub(bytes.len() as u64);
                 hasher.update(&bytes);
@@ -2151,7 +2289,7 @@ fn content_hash_from_walk(
 
 /// Every content fact about a skill folder that [`DeploymentDto`] carries,
 /// gathered from one `SKILL.md` read and one folder walk.
-#[derive(Default)]
+#[derive(Debug, Clone)]
 struct ContentFacts {
     frontmatter: Option<frontmatter::SkillFrontmatter>,
     frontmatter_fields: BTreeMap<String, String>,
@@ -2161,16 +2299,45 @@ struct ContentFacts {
     skill_md_tokens: u32,
     description_tokens: u32,
     content_hash: String,
+    /// Content fingerprint over the whole directory tree - a different,
+    /// whole-folder scheme from `content_hash`, kept for parity with the
+    /// desktop's `SkillCandidate`. Computed from the same [`FactsWalk`] that
+    /// derives `content_hash`, not a second folder walk.
+    content_fingerprint: Fingerprint,
     modified_at: Option<DateTime<Utc>>,
     folder_truncated: bool,
 }
 
-/// Walks `skill_dir` and derives every [`ContentFacts`] field from the
-/// already-read `skill_md_bytes`/`parsed` (so the caller's own `SKILL.md`
-/// read and parse, already needed for `description`/`spec_violations`, is
-/// never repeated here). `skill_md_bytes`' own length is deducted from the
-/// folder walk's byte budget first, since the walk re-reads/hashes
-/// `SKILL.md` as part of the folder.
+impl Default for ContentFacts {
+    /// Used only for an unresolved link, whose caller always sets its own
+    /// `content_fingerprint: None` rather than reading this field - the
+    /// empty-bytes fingerprint here is a placeholder, never surfaced.
+    fn default() -> Self {
+        ContentFacts {
+            frontmatter: None,
+            frontmatter_fields: BTreeMap::new(),
+            has_spec: false,
+            folder_bytes: 0,
+            file_count: 0,
+            skill_md_tokens: 0,
+            description_tokens: 0,
+            content_hash: String::new(),
+            content_fingerprint: Fingerprint::of_bytes(&[]),
+            modified_at: None,
+            folder_truncated: false,
+        }
+    }
+}
+
+/// Walks `skill_dir` once and derives every [`ContentFacts`] field from that
+/// walk plus the already-read `skill_md_bytes`/`parsed` (so the caller's own
+/// `SKILL.md` read and parse, already needed for `description`/
+/// `spec_violations`, is never repeated here, and the walk's own encounter
+/// with `SKILL.md` as a folder entry reuses those same bytes rather than
+/// reading the file again). `skill_md_bytes`' own length is deducted from
+/// the `content_hash` walk's byte budget first, since that walk re-hashes
+/// `SKILL.md` as part of the folder; `content_fingerprint` keeps its own
+/// unreduced budget, unchanged from before this merge.
 fn compute_content_facts(
     fs: &dyn ScopeFs,
     ctx: &OpContext,
@@ -2200,6 +2367,12 @@ fn compute_content_facts(
         &mut walk,
     )?;
 
+    let skill_md_path = skill_dir.join("SKILL.md");
+    let skill_md = SkillMdBytes {
+        path: &skill_md_path,
+        bytes: skill_md_bytes,
+        truncated: skill_md_truncated,
+    };
     let tok = tokenizer();
     Ok(ContentFacts {
         frontmatter_fields: frontmatter::frontmatter_fields(&content),
@@ -2211,7 +2384,8 @@ fn compute_content_facts(
             &format!("{name_for_tokens}: {description_for_tokens}"),
             tok,
         ),
-        content_hash: content_hash_from_walk(walk.hashable, fs, ctx, MAX_FOLDER_BYTES)?,
+        content_fingerprint: content_fingerprint(fs, &walk.fingerprint_files, &skill_md),
+        content_hash: content_hash_from_walk(walk.hashable, fs, ctx, MAX_FOLDER_BYTES, &skill_md)?,
         modified_at: walk.newest,
         folder_truncated: walk.truncated || skill_md_truncated,
         frontmatter,
@@ -2284,10 +2458,10 @@ pub fn skill_content_hash(
     // rather than making the caller choose between a digest and a
     // cancellable one.
     ctx.checkpoint()?;
-    let skill_md = skill_dir.join("SKILL.md");
-    let (bytes, _truncated) = fs
-        .read_prefix(&skill_md, SKILL_MD_MAX_BYTES)
-        .map_err(|e| CoreError::io(skill_md.clone(), e))?;
+    let skill_md_path = skill_dir.join("SKILL.md");
+    let (bytes, truncated) = fs
+        .read_prefix(&skill_md_path, SKILL_MD_MAX_BYTES)
+        .map_err(|e| CoreError::io(skill_md_path.clone(), e))?;
     let mut walk = FactsWalk::default();
     walk_folder_for_facts(
         fs,
@@ -2297,7 +2471,12 @@ pub fn skill_content_hash(
         MAX_FOLDER_BYTES.saturating_sub(bytes.len() as u64),
         &mut walk,
     )?;
-    content_hash_from_walk(walk.hashable, fs, ctx, MAX_FOLDER_BYTES)
+    let skill_md = SkillMdBytes {
+        path: &skill_md_path,
+        bytes: &bytes,
+        truncated,
+    };
+    content_hash_from_walk(walk.hashable, fs, ctx, MAX_FOLDER_BYTES, &skill_md)
 }
 
 /// Runs `scan` and derives issues from the inventory.
@@ -4430,6 +4609,48 @@ mod tests {
         );
         assert_eq!(env.exit_status(), 3);
         assert!(env.data.is_none());
+    }
+
+    #[test]
+    fn a_hash_budget_stop_does_not_shorten_the_fingerprint_file_list_or_names_the_missing_file() {
+        // b.md is bigger than what's left of `max_bytes` after `a.md`, so
+        // the hash side truncates there; `c.md` is small again, but must
+        // never be reached by the hash side once truncated. The fingerprint
+        // side runs on its own MAX_FOLDER_BYTES budget (unaffected by this
+        // small `max_bytes`) and so must see all three files regardless.
+        let fs = FixtureBuilder::new()
+            .dir("/h/skill")
+            .file("/h/skill/a.md", &[b'a'; 10])
+            .file("/h/skill/b.md", &[b'b'; 20])
+            .file("/h/skill/c.md", &[b'c'; 10])
+            .build_fs();
+        let root = Path::new("/h/skill");
+        let mut walk = FactsWalk::default();
+        walk_folder_for_facts(
+            &fs,
+            &OpContext::uncancellable(CorrelationId("facts-walk-test".into())),
+            root,
+            root,
+            25,
+            &mut walk,
+        )
+        .unwrap();
+
+        let hashable: Vec<_> = walk.hashable.iter().map(|f| f.rel_path.clone()).collect();
+        assert_eq!(hashable, vec![Path::new("a.md")]);
+        assert!(walk.truncated, "hash side must stop once b.md overflows");
+
+        let fingerprint_names: Vec<_> = walk
+            .fingerprint_files
+            .iter()
+            .map(|(rel, _, _)| rel.clone())
+            .collect();
+        for name in ["a.md", "b.md", "c.md"] {
+            assert!(
+                fingerprint_names.contains(&PathBuf::from(name)),
+                "fingerprint_files is missing {name}, only has {fingerprint_names:?}"
+            );
+        }
     }
 
     mod scan_tests {

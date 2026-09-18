@@ -23,18 +23,22 @@
 #![forbid(unsafe_code)]
 
 pub mod discovery_sources;
+pub mod dotagents_ledger;
 pub mod dto;
 pub mod error;
 pub mod events;
 pub mod frontmatter;
 pub mod frontmatter_repair;
+pub mod fsops;
 pub mod harness;
 mod harness_switch;
+pub mod health;
 pub mod identity;
 pub mod lock_file;
 pub mod ops;
 mod ownership;
 pub mod ports;
+pub mod registry;
 pub mod report_sanitizer;
 pub mod scope;
 pub mod skill_uses;

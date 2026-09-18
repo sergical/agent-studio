@@ -14,6 +14,8 @@ import type {
   AddSkillResult,
   AddSkillsRequest,
   AgentId,
+  AppVersion,
+  CommandHealth,
   DiscoverySourceSetting,
   ImportResult,
   InstallResult,
@@ -289,6 +291,11 @@ export async function getEditorChoices(): Promise<EditorChoices> {
 /** `null` restores the system default. A value that isn't usable is refused. */
 export async function setPreferredEditor(value: string | null): Promise<void> {
   return callCommand("set_preferred_editor", { appName: value });
+}
+
+/** The Settings "Command health" card's rollup: one row per command, folded from `timing.jsonl`. */
+export async function commandHealth(): Promise<CommandHealth[]> {
+  return callCommand("command_health");
 }
 
 /** The saved "Error reporting" switch (Settings), off unless the user turned it on. */
@@ -677,4 +684,16 @@ export function onSkillSnapshot(cb: (snapshot: SkillSnapshot) => void): Promise<
   return listen<SkillSnapshot>("skills://snapshot", (event) => {
     cb(event.payload);
   });
+}
+
+// ============================================================================
+// App Version API
+// ============================================================================
+
+/**
+ * The running app's version, build commit, and the current version's
+ * changelog notes, for Settings' "Version" row and "What's new" panel.
+ */
+export async function appVersion(): Promise<AppVersion> {
+  return callCommand("app_version");
 }
