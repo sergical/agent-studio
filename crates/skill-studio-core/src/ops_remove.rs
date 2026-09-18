@@ -213,10 +213,9 @@ const QUARANTINE_AGE_CAP: chrono::Duration = chrono::Duration::days(30);
 /// still needs. A row this cannot find (already gone, or never written) is
 /// not "open", so it does not block the prune.
 fn is_referenced_by_open_remove(session: &MutationSession, event_id: &str) -> bool {
-    let Ok(Some(record)) =
-        session
-            .store
-            .get(&crate::identity::EventId(event_id.to_string()))
+    let Ok(Some(record)) = session
+        .store
+        .get(&crate::identity::EventId(event_id.to_string()))
     else {
         return false;
     };
@@ -410,10 +409,14 @@ pub fn remove(
     // `restore_backup_inverse`, unlike `park`. `deployment.path` is listed
     // first so its manifest entry (and thus `pre_fingerprint` below) is
     // `manifest.entries[0]` regardless of whether a link follows it.
-    let manifest = session
-        .store
-        .backup_paths(&session.guard, &id, std::slice::from_ref(&deployment.path))?;
-    let pre_fingerprint = manifest.entries.first().and_then(|e| e.fingerprint.as_ref());
+    let manifest =
+        session
+            .store
+            .backup_paths(&session.guard, &id, std::slice::from_ref(&deployment.path))?;
+    let pre_fingerprint = manifest
+        .entries
+        .first()
+        .and_then(|e| e.fingerprint.as_ref());
     let inverse = crate::events::restore_backup_inverse(&deployment.path, pre_fingerprint, None);
     let backup_dir = Some(manifest.backup_dir);
 
@@ -440,7 +443,7 @@ pub fn remove(
         ctx,
         &mut session,
         fs,
-        RemoveAndLinkArgs {
+        &RemoveAndLinkArgs {
             path: &deployment.path,
             deployment_id: &deployment.id,
             owner_kind: deployment.owner_kind,
@@ -496,7 +499,7 @@ fn remove_and_link(
     ctx: &OpContext,
     session: &mut MutationSession,
     fs: &dyn ScopeFs,
-    args: RemoveAndLinkArgs<'_>,
+    args: &RemoveAndLinkArgs<'_>,
 ) -> Result<(), CoreError> {
     match args.owner_kind {
         LifecycleOwnerKind::Copy | LifecycleOwnerKind::Fork => {
@@ -514,12 +517,9 @@ fn remove_and_link(
             fs.rename(&session.guard, &scoped_from, &scoped_to)
                 .map_err(|e| CoreError::io(args.path, e))?;
             match args.owner_kind {
-                LifecycleOwnerKind::Copy => drop_copy_registry_entry(
-                    rt,
-                    &session.guard,
-                    fs,
-                    args.deployment_id.as_str(),
-                )?,
+                LifecycleOwnerKind::Copy => {
+                    drop_copy_registry_entry(rt, &session.guard, fs, args.deployment_id.as_str())?;
+                }
                 LifecycleOwnerKind::Fork => {
                     drop_fork_registry_entry(rt, &session.guard, fs, args.name)?;
                 }
