@@ -296,6 +296,27 @@ impl SkillStudioServer {
         context: RequestContext<RoleServer>,
     ) -> CallToolResult {
         run_op(Operation::Install, true, &context, |rt, ctx| {
+            if let Some(unknown) = req
+                .harnesses
+                .iter()
+                .find(|h| rt.ports.catalog.get(h).is_none())
+            {
+                let accepted = rt
+                    .ports
+                    .catalog
+                    .facts
+                    .iter()
+                    .map(|f| f.id.as_str())
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                return Err(CoreError::new(
+                    skill_studio_core::ErrorCode::InvalidRequest,
+                    format!(
+                        "`{unknown}` is not a known harness; accepted values: {accepted}",
+                        unknown = unknown.as_str()
+                    ),
+                ));
+            }
             ops::install(rt, ctx, &req)
         })
         .await
