@@ -403,9 +403,10 @@ pub enum RestoreCapability {
     NoInverse,
     /// The row's kind is not known to this version of the core.
     UnknownKind,
-    /// The row never finished (`pending`, `failed`, or `interrupted`), so
-    /// its inverse never moved what it describes; applying it would act on
-    /// live state the row does not own.
+    /// `pending`, or `failed`/`interrupted` without a `restore_backup`
+    /// inverse and a `backup_dir`: the row's inverse never moved what it
+    /// describes, or there is no backup for a drift-checked restore to
+    /// apply, so applying it would act on live state the row does not own.
     NotCompleted {
         /// The row's status, so a caller can explain the refusal.
         status: String,

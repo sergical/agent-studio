@@ -213,11 +213,30 @@ impl EventRecord {
 
     /// Whether a restore may target this row.
     ///
-    /// A row that did not complete never moved what its inverse describes,
-    /// so applying the inverse would act on live state it does not own;
-    /// that check runs before any other arm.
+    /// A `pending` row never moved what its inverse describes, so applying
+    /// the inverse would act on live state it does not own - that status
+    /// is never restorable. A `failed`/`interrupted` row left a
+    /// `restore_backup` inverse with a `backup_dir` mid-loop (a crash, or
+    /// the desktop's own partial-write path): the backup is a real
+    /// snapshot of what was on disk before the write that failed, so
+    /// `restore_event`'s ordinary drift-checked path can still apply it
+    /// (`force` required unless the live bytes still match `post`). A
+    /// `failed`/`interrupted` row missing either - a symlink toggle whose
+    /// write never reached the filesystem, say - has nothing a restore can
+    /// apply and stays `NotCompleted`.
     pub fn restore_capability(&self) -> RestoreCapability {
-        if self.status != EventStatus::Done {
+        let completed = match self.status {
+            EventStatus::Done => true,
+            EventStatus::Failed | EventStatus::Interrupted => {
+                self.backup_dir.is_some()
+                    && self
+                        .inverse
+                        .as_ref()
+                        .is_some_and(|inverse| parse_restore_backup_inverse(inverse).is_some())
+            }
+            EventStatus::Pending => false,
+        };
+        if !completed {
             return RestoreCapability::NotCompleted {
                 status: self.status.as_str().to_string(),
             };

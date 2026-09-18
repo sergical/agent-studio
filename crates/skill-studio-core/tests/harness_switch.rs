@@ -368,6 +368,188 @@ fn a_crash_mid_codex_loop_reports_n_of_m_paths_toggled_instead_of_failing_silent
     );
 }
 
+/// `a_failed_codex_toggle_with_a_backup_restores_with_force_or_names_the_row_it_refused`:
+/// the same `fail_write_atomic_after(3)` crash as the test above leaves a
+/// `Failed` event whose `restore_backup` inverse and `backup_dir` still
+/// name a real pre-toggle snapshot of `config.toml`. `restore_capability`
+/// must let that row through to the ordinary drift-checked `restore_backup`
+/// path: refused without `force` (the three written rows are live, not
+/// `pre`), applied with `force`.
+#[test]
+fn a_failed_codex_toggle_with_a_backup_restores_with_force_or_names_the_row_it_refused() {
+    let home = unique_temp_dir("switch_codex_crash_restore");
+    let mut projects = Vec::new();
+    for n in 0..5 {
+        let project = home.join(format!("project-{n}"));
+        let dir = project.join(CODEX_ROOT_RELATIVE).join("epsilon");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(
+            dir.join("SKILL.md"),
+            "---\nname: epsilon\ndescription: a five-path codex skill\n---\nBody.\n",
+        )
+        .unwrap();
+        projects.push(project);
+    }
+    let config_path = home.join(".codex/config.toml");
+    std::fs::create_dir_all(config_path.parent().unwrap()).unwrap();
+    let pre_bytes =
+        b"[[skills.config]]\npath = \"/pre-existing/SKILL.md\"\nenabled = false\n".to_vec();
+    std::fs::write(&config_path, &pre_bytes).unwrap();
+
+    let failing_fs = Arc::new(FailingFs::wrap(Arc::new(RealFs::new())));
+    let rt = runtime_with(&home, projects, failing_fs.clone());
+    failing_fs.fail_write_atomic_after(3);
+    ops::set_harness_enabled(
+        &rt,
+        &ctx(),
+        &SetHarnessEnabledRequest {
+            skill: SkillName("epsilon".into()),
+            harness: AgentId::from(AgentId::CODEX),
+            enabled: false,
+            project_path: None,
+        },
+    )
+    .unwrap_err();
+
+    let events = ops::list_events(
+        &rt,
+        &ctx(),
+        &skill_studio_core::dto::ListEventsRequest::default(),
+    )
+    .unwrap();
+    let failed = events
+        .iter()
+        .find(|e| e.kind == "harness_disable" && e.status == "failed")
+        .expect("the crashed disable must be recorded failed with its backup intact");
+
+    // The budget from `fail_write_atomic_after(3)` above is exhausted, so
+    // every later `write_atomic` call - including the restore's own -
+    // would otherwise keep failing; the crash is over, so lift it.
+    failing_fs.fail_write_atomic_after(u32::MAX);
+
+    let no_force_err = ops::restore_event(
+        &rt,
+        &ctx(),
+        &RestoreRequest {
+            event_id: failed.id.clone(),
+            force: false,
+        },
+    )
+    .unwrap_err();
+    assert_eq!(
+        no_force_err.code,
+        skill_studio_core::ErrorCode::DriftConflict
+    );
+
+    let outcome = ops::restore_event(
+        &rt,
+        &ctx(),
+        &RestoreRequest {
+            event_id: failed.id.clone(),
+            force: true,
+        },
+    )
+    .unwrap();
+    assert_eq!(outcome.reverted_event_id, failed.id);
+
+    let restored = std::fs::read(&config_path).unwrap();
+    assert_eq!(
+        restored, pre_bytes,
+        "force restore must put back exactly the bytes config.toml held before the toggle"
+    );
+
+    let events_after = ops::list_events(
+        &rt,
+        &ctx(),
+        &skill_studio_core::dto::ListEventsRequest::default(),
+    )
+    .unwrap();
+    assert!(
+        events_after
+            .iter()
+            .any(|e| e.kind == "restore" && e.id == outcome.restore_event_id),
+        "the restore itself must be recorded as its own event"
+    );
+
+    std::fs::remove_dir_all(&home).ok();
+}
+
+/// `a_pending_row_stays_unrestorable_or_names_the_crash_it_pretended_finished`:
+/// a hand-recorded `pending` row with a `restore_backup` inverse and a
+/// `backup_dir` - what a process death between `record` and `finish` leaves
+/// behind - must stay `NotCompleted`: `pending` never proves the write it
+/// describes ever ran, so the backup drift check below it has nothing
+/// trustworthy to compare against. Reads the row back and calls
+/// `restore_capability()` directly rather than through `ops::restore_event`:
+/// that op always opens a `MutationSession`, whose `recover_interrupted`
+/// step would first promote this stale `pending` row to `interrupted`
+/// (crash recovery's own job, exercised elsewhere), masking the check this
+/// test is for.
+#[test]
+fn a_pending_row_stays_unrestorable_or_names_the_crash_it_pretended_finished() {
+    let home = unique_temp_dir("switch_pending_row");
+    std::fs::create_dir_all(&home).unwrap();
+    let rt = runtime_for(&home);
+    let file_path = home.join("pending-target.txt");
+    std::fs::write(&file_path, b"before").unwrap();
+
+    let id = rt.ports.ids.next_event_id();
+    let mut session = skill_studio_core::ports::MutationSession::begin(&rt, &ctx()).unwrap();
+    let manifest = session
+        .store
+        .backup_paths(&session.guard, &id, std::slice::from_ref(&file_path))
+        .unwrap();
+    let pre_fingerprint = manifest.entries.first().and_then(|e| e.fingerprint.clone());
+    // Mirrors `events::restore_backup_inverse`'s payload shape (that
+    // function is crate-private; this integration test only has the
+    // public API), so `parse_restore_backup_inverse` reads it the same way
+    // a real `restore_backup` row would.
+    let inverse = serde_json::json!({
+        "op": "restore_backup",
+        "path": &file_path,
+        "pre_fingerprint": pre_fingerprint
+            .as_ref()
+            .map_or_else(|| "absent".to_string(), |f| f.bare_hex().to_string()),
+        "post_fingerprint": "absent",
+    });
+    let draft = skill_studio_core::events::EventDraft {
+        kind: skill_studio_core::events::EventKind::HarnessDisable,
+        skill: SkillName("pending-skill".into()),
+        harness: Some(AgentId::from(AgentId::CODEX)),
+        scope: Some("global".to_string()),
+        project_path: None,
+        payload: serde_json::json!({}),
+        inverse: Some(inverse),
+        backup_dir: Some(manifest.backup_dir.clone()),
+    };
+    session.store.record(&session.guard, &id, &draft).unwrap();
+    drop(session);
+
+    let store = rt
+        .ports
+        .history
+        .open(&rt.scope, HistoryAccess::ReadIfExists)
+        .unwrap()
+        .expect("the hand-recorded row's store exists after the write above");
+    let row = store.get(&id).unwrap().unwrap();
+    assert_eq!(
+        row.status,
+        skill_studio_core::events::EventStatus::Pending,
+        "the row must still read back pending: nothing here ever called finish()"
+    );
+    match row.restore_capability() {
+        skill_studio_core::dto::RestoreCapability::NotCompleted { status } => {
+            assert_eq!(status, "pending");
+        }
+        other => panic!(
+            "expected NotCompleted naming pending despite a backup_dir and a restore_backup \
+             inverse, got: {other:?}"
+        ),
+    }
+
+    std::fs::remove_dir_all(&home).ok();
+}
+
 /// `codex_disable_writes_rows_only_for_paths_codex_reads_or_names_the_foreign_path_it_wrote`:
 /// `gamma` has a canonical universal copy plus an independent (not linked)
 /// Claude Code copy - Codex never reads `.claude/skills`, so a Codex disable
