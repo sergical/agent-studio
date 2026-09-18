@@ -127,8 +127,16 @@ export type ProjectFolderSource = "discovered" | "added";
  * Invariant: the string is the serde wire name used by the desktop app
  * today. `open-code` is canonical; `opencode` is only a CLI binary name and
  * is never stored in an `AgentId`.
+ *
+ * `#[schemars(rename)]`: the desktop's own `agents::AgentId` (a closed
+ * kebab-string enum) is a structurally different type with the same short
+ * name - reachable from the same generated schema document via
+ * `InstallPreferences.harnesses`. Without a stable name here, `schemars`
+ * picks whichever type it walks to first and silently suffixes the other
+ * (`AgentId2`), which flips based on unrelated edits (review round 1, item
+ * 10).
  */
-export type AgentId2 = string;
+export type AgentIdentity = string;
 /**
  * One repair `fix_skill` applied.
  */
@@ -1125,7 +1133,7 @@ export interface InstallPreferences {
   /**
    * The saved or defaulted harnesses.
    */
-  harnesses: AgentId2[];
+  harnesses: AgentIdentity[];
   /**
    * `false` when `method`/`harnesses` are an environment default rather
    * than a saved preference (no install has completed on this scope
@@ -1153,6 +1161,14 @@ export interface HarnessDetection {
    * Invariant: the string is the serde wire name used by the desktop app
    * today. `open-code` is canonical; `opencode` is only a CLI binary name and
    * is never stored in an `AgentId`.
+   *
+   * `#[schemars(rename)]`: the desktop's own `agents::AgentId` (a closed
+   * kebab-string enum) is a structurally different type with the same short
+   * name - reachable from the same generated schema document via
+   * `InstallPreferences.harnesses`. Without a stable name here, `schemars`
+   * picks whichever type it walks to first and silently suffixes the other
+   * (`AgentId2`), which flips based on unrelated edits (review round 1, item
+   * 10).
    */
   id: string;
   /**

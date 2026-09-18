@@ -122,7 +122,7 @@
           "description": "Harness that owns the root, when it is a harness root.",
           "anyOf": [
             {
-              "$ref": "#/$defs/AgentId"
+              "$ref": "#/$defs/AgentIdentity"
             },
             {
               "type": "null"
@@ -219,7 +219,7 @@
           "description": "Readers of a universal deployment that have it disabled.",
           "type": "array",
           "items": {
-            "$ref": "#/$defs/AgentId"
+            "$ref": "#/$defs/AgentIdentity"
           }
         },
         "spec_violations": {
@@ -414,7 +414,7 @@
               "const": "harness"
             },
             "harness": {
-              "$ref": "#/$defs/AgentId"
+              "$ref": "#/$defs/AgentIdentity"
             }
           },
           "required": [
@@ -457,7 +457,7 @@
               "const": "legacy"
             },
             "harness": {
-              "$ref": "#/$defs/AgentId"
+              "$ref": "#/$defs/AgentIdentity"
             }
           },
           "required": [
@@ -474,7 +474,7 @@
               "const": "plugin_cache"
             },
             "harness": {
-              "$ref": "#/$defs/AgentId"
+              "$ref": "#/$defs/AgentIdentity"
             }
           },
           "required": [
@@ -484,8 +484,8 @@
         }
       ]
     },
-    "AgentId": {
-      "description": "Kebab-case harness identifier, for example `claude-code` or `open-code`.\n\nInvariant: the string is the serde wire name used by the desktop app\ntoday. `open-code` is canonical; `opencode` is only a CLI binary name and\nis never stored in an `AgentId`.",
+    "AgentIdentity": {
+      "description": "Kebab-case harness identifier, for example `claude-code` or `open-code`.\n\nInvariant: the string is the serde wire name used by the desktop app\ntoday. `open-code` is canonical; `opencode` is only a CLI binary name and\nis never stored in an `AgentId`.\n\n`#[schemars(rename)]`: the desktop's own `agents::AgentId` (a closed\nkebab-string enum) is a structurally different type with the same short\nname - reachable from the same generated schema document via\n`InstallPreferences.harnesses`. Without a stable name here, `schemars`\npicks whichever type it walks to first and silently suffixes the other\n(`AgentId2`), which flips based on unrelated edits (review round 1, item\n10).",
       "type": "string"
     },
     "SkillDestination": {
