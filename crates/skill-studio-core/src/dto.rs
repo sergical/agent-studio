@@ -768,3 +768,78 @@ pub struct InstallPreferences {
     /// yet).
     pub saved: bool,
 }
+
+/// Request to refresh one already-installed skill in place, via
+/// `ops::update`. Reuses [`InstallMethod`]: `Copy` re-stages fresh `files`
+/// and swaps them in, quarantining the previous tree; `Dotagents`/`SkillsSh`
+/// re-run the same CLI `install` shelled out to, in place over the existing
+/// destination.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct UpdateRequest {
+    /// The already-installed skill's folder name.
+    pub skill: SkillName,
+    /// Which method wrote the deployment being refreshed.
+    pub method: InstallMethod,
+    /// `Global` updates the scope home; `Project` updates one project.
+    pub scope: RootScope,
+    /// `Copy` only: the fresh files to stage and swap in.
+    #[serde(default)]
+    pub files: Vec<InstallFile>,
+    /// `Dotagents`/`SkillsSh` only: the source argument the CLI's `add`
+    /// command needs to re-fetch (`skills update` itself only takes the
+    /// name; `dotagents`' argv still needs the original source).
+    #[serde(default)]
+    pub source: Option<String>,
+    /// `Dotagents` only: an already-resolved commit for a pinned
+    /// (`declared_ref`) ledger entry - the caller's own concern, not
+    /// re-derived here (see `ops_update`'s module doc).
+    #[serde(default)]
+    pub ref_pin: Option<String>,
+}
+
+/// Result of `update`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct UpdateOutcome {
+    /// The `update` event.
+    pub event_id: EventId,
+    /// The skill that was updated.
+    pub skill: SkillName,
+    /// Where its canonical folder lives.
+    pub deployment_path: PathBuf,
+    /// The tree's git tree SHA before this update.
+    pub tree_hash_before: String,
+    /// The tree's git tree SHA after this update.
+    pub tree_hash_after: String,
+}
+
+/// One skill's result inside an `update_all` batch.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct UpdateAllItem {
+    /// The skill this result is for.
+    pub skill: SkillName,
+    /// `Some` on success, `None` when this skill's update failed - the
+    /// failure's message is the matching entry in
+    /// [`UpdateAllOutcome::errors`].
+    pub outcome: Option<UpdateOutcome>,
+}
+
+/// Result of `update_all`: one [`UpdateAllItem`] per requested skill, in the
+/// order each one finished (not the order requested), plus the message for
+/// any that failed.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct UpdateAllOutcome {
+    /// One entry per skill `update_all` was asked to refresh.
+    pub items: Vec<UpdateAllItem>,
+    /// `skill.0` -> error message, for every item whose `outcome` is `None`.
+    #[serde(default)]
+    pub errors: std::collections::BTreeMap<String, String>,
+}
+
+/// Request wrapper for `ops::update_all` - the op itself takes a plain
+/// `&[UpdateRequest]`; this only exists so an MCP tool has one schema to
+/// declare instead of an array-of-objects root schema.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct UpdateAllRequest {
+    /// One request per skill to refresh, each its own journal entry.
+    pub requests: Vec<UpdateRequest>,
+}
