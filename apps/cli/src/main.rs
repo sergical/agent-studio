@@ -697,7 +697,11 @@ fn run_health(timing_log: Option<PathBuf>, json: bool) -> ExitCode {
     let now = chrono::Utc::now();
     let report = health::health_rollup(&rows, now, HEALTH_WINDOW);
     if json {
-        println!("{}", serde_json::to_string(&report).unwrap());
+        // `HealthReport` borrows only our own DTOs; nothing in it can produce
+        // a non-string map key or a non-finite float, the only ways this errs.
+        let text = serde_json::to_string(&report)
+            .unwrap_or_else(|e| format!(r#"{{"error":"failed to serialize the report: {e}"}}"#));
+        println!("{text}");
     } else {
         output::print_health_table(&report);
     }

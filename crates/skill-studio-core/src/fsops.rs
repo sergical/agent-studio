@@ -343,7 +343,7 @@ pub fn stage(root: &Root, contents: &[(PathBuf, Vec<u8>)]) -> Result<Staged, FsO
 pub fn swap(
     root: &Root,
     final_name: &Path,
-    staged: Staged,
+    staged: &Staged,
     quarantine_dir: &Path,
 ) -> Result<(), FsOpsError> {
     root.revalidate()?;

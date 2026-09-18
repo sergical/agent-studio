@@ -585,7 +585,7 @@ fn scan_one_target(
                     disable_sources: sc.disable_sources,
                     scope_ledgers: sc.scope_ledgers,
                     home_registry: sc.home_registry,
-                    target: &target,
+                    target,
                     base_dir: &target.path,
                     whole_dir_link,
                     forced_disabled_by: None,
@@ -606,7 +606,7 @@ fn scan_one_target(
         }
     }
 
-    scan_move_aside_dir(sc, &target, whole_dir_link, accum)
+    scan_move_aside_dir(sc, target, whole_dir_link, accum)
 }
 
 /// True when `path` cannot be listed because nothing is there:

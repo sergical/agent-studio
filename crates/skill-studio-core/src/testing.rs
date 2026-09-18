@@ -439,7 +439,9 @@ impl FixtureFs {
     }
 
     fn lock(&self) -> std::sync::MutexGuard<'_, FixtureState> {
-        self.state.lock().unwrap_or_else(|e| e.into_inner())
+        self.state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
     }
 
     fn exists(&self, path: &Path) -> bool {
@@ -703,7 +705,7 @@ impl ScopeFs for FixtureFs {
                 path.display().to_string(),
             ));
         }
-        state.dirs.push(path.to_path_buf());
+        state.dirs.push(path.clone());
         state.fresh_identity(path);
         Ok(())
     }
@@ -717,7 +719,7 @@ impl ScopeFs for FixtureFs {
                 path.display().to_string(),
             ));
         }
-        state.files.insert(path.to_path_buf(), bytes.to_vec());
+        state.files.insert(path.clone(), bytes.to_vec());
         state.fresh_identity(path);
         Ok(())
     }
