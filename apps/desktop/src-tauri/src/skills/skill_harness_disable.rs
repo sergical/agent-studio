@@ -1059,10 +1059,10 @@ mod tests {
     /// resolves the config directory the same way `set_harness_enabled_with`
     /// now does, so a test still reads back the file the "opencode" branch
     /// just wrote.
-    fn read_opencode_denied_patterns(home: &Path) -> Vec<String> {
+    fn opencode_denies(home: &Path, name: &str) -> bool {
         let fs = skill_studio_host::RealFs::new();
         let config_dir = skill_studio_host::opencode_config_dir(home);
-        skill_studio_core::opencode_config::read_denied_patterns(&fs, &config_dir)
+        skill_studio_core::opencode_config::read_skill_rules(&fs, &config_dir).is_denied(name)
     }
 
     /// Reads every `path` a Codex `[[skills.config]] enabled = false` row
@@ -1468,10 +1468,7 @@ mod tests {
             &test_guard(home),
         )
         .unwrap();
-        assert_eq!(
-            read_opencode_denied_patterns(home),
-            vec!["find-bugs".to_string()]
-        );
+        assert!(opencode_denies(home, "find-bugs"));
 
         set_harness_enabled_with(
             home,
@@ -1483,7 +1480,7 @@ mod tests {
             &test_guard(home),
         )
         .unwrap();
-        assert!(read_opencode_denied_patterns(home).is_empty());
+        assert!(!opencode_denies(home, "find-bugs"));
     }
 
     /// Flow: the default layout - `XDG_CONFIG_HOME` pinned under `home` by
@@ -1592,7 +1589,7 @@ mod tests {
             error.contains("more than one OpenCode deployment"),
             "{error}"
         );
-        assert!(read_opencode_denied_patterns(&home).is_empty());
+        assert!(!opencode_denies(&home, "find-bugs"));
         assert!(home.join(".agents/skills/find-bugs/SKILL.md").is_file());
     }
 
@@ -1691,19 +1688,22 @@ mod tests {
         .unwrap();
 
         assert!(
-            skill_studio_core::opencode_config::read_denied_patterns(
+            skill_studio_core::opencode_config::read_skill_rules(
                 &fs_port,
                 &home.join(".config/opencode")
             )
-            .contains(&"epsilon".to_string()),
+            .is_denied("epsilon"),
             "the deny write did not land under the fixture home"
         );
-        let real_denied =
-            skill_studio_core::opencode_config::read_denied_patterns(&fs_port, &real_opencode_dir);
-        assert_eq!(
-            real_denied,
-            vec!["real-file-marker".to_string()],
-            "the real, unrelated opencode.json under XDG_CONFIG_HOME was touched: {real_denied:?}"
+        let real_rules =
+            skill_studio_core::opencode_config::read_skill_rules(&fs_port, &real_opencode_dir);
+        assert!(
+            real_rules.is_denied("real-file-marker"),
+            "the real, unrelated opencode.json under XDG_CONFIG_HOME lost its own rule"
+        );
+        assert!(
+            !real_rules.is_denied("epsilon"),
+            "the real, unrelated opencode.json under XDG_CONFIG_HOME was touched"
         );
     }
 

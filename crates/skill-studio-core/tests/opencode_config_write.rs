@@ -14,8 +14,8 @@ use std::path::Path;
 use std::sync::Arc;
 
 use skill_studio_core::opencode_config::{
-    detect_config_kind, opencode_json_path, read_denied_patterns, read_skill_rules,
-    set_skill_denied, set_skill_denied_with, OpencodeConfigKind,
+    detect_config_kind, opencode_json_path, read_skill_rules, set_skill_denied,
+    set_skill_denied_with, OpencodeConfigKind,
 };
 use skill_studio_core::ports::{acquire_exclusive, Ports, Runtime};
 use skill_studio_core::scope::RuntimeScope;
@@ -52,12 +52,9 @@ fn opencode_config_write_round_trips_unrelated_keys_and_keeps_schema_or_names_th
     let value: serde_json::Value = serde_json::from_str(&content).unwrap();
     assert_eq!(value["theme"], "dark");
     assert_eq!(value["$schema"], "https://opencode.ai/config.json");
-    let mut denied = read_denied_patterns(&fs, config_dir);
-    denied.sort();
-    assert_eq!(
-        denied,
-        vec!["find-bugs".to_string(), "write-tests".to_string()]
-    );
+    let rules = read_skill_rules(&fs, config_dir);
+    assert!(rules.is_denied("find-bugs"));
+    assert!(rules.is_denied("write-tests"));
 }
 
 /// Flow: no `opencode.json` exists yet.
@@ -122,7 +119,7 @@ fn opencode_deny_write_follows_a_symlinked_config_dir_or_names_the_refused_write
 
 /// Flow: `set_skill_denied` writes a fresh deny for `epsilon`, and the same
 /// module's own reader reads the file back.
-/// Expectation: `read_denied_patterns` reports exactly `["epsilon"]`, and
+/// Expectation: `read_skill_rules(..).is_denied("epsilon")` reports true, and
 /// the on-disk JSON actually holds the `permission.skill.epsilon` key the
 /// write claims to have made - the reader's answer is checked against the
 /// reader itself deriving from the write, not against a hand-typed shape
@@ -130,7 +127,7 @@ fn opencode_deny_write_follows_a_symlinked_config_dir_or_names_the_refused_write
 /// Failure here (a mismatch, or the JSON pointer missing) would mean the
 /// write and the read have silently drifted apart.
 #[test]
-fn set_skill_denied_writes_the_shape_read_denied_patterns_reads_back_or_names_the_key_it_wrote() {
+fn set_skill_denied_writes_the_shape_read_skill_rules_reads_back_or_names_the_key_it_wrote() {
     let tmp = tempfile::tempdir().unwrap();
     let config_dir = tmp.path();
 
@@ -145,10 +142,7 @@ fn set_skill_denied_writes_the_shape_read_denied_patterns_reads_back_or_names_th
     );
 
     let fs = RealFs::new();
-    assert_eq!(
-        read_denied_patterns(&fs, config_dir),
-        vec!["epsilon".to_string()]
-    );
+    assert!(read_skill_rules(&fs, config_dir).is_denied("epsilon"));
 }
 
 /// Flow: the caller already holds the exclusive lease on `config_dir`'s

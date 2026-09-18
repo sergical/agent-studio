@@ -207,20 +207,6 @@ pub fn read_skill_rules(fs: &dyn ScopeFs, config_dir: &Path) -> OpencodeSkillRul
     OpencodeSkillRules { v1, v2 }
 }
 
-/// Every skill name in `pattern`'s and the rule set's terms would deny - the
-/// old glob-over-patterns callers used before [`read_skill_rules`] replaced
-/// them. Kept only for the reader-side compatibility the module tests need;
-/// every real caller now calls [`OpencodeSkillRules::is_denied`] instead so
-/// there is one evaluator.
-pub fn read_denied_patterns(fs: &dyn ScopeFs, config_dir: &Path) -> Vec<String> {
-    read_skill_rules(fs, config_dir)
-        .v1
-        .into_iter()
-        .filter(|rule| rule.effect == DENY)
-        .map(|rule| rule.pattern)
-        .collect()
-}
-
 /// A `permission.skill` pattern matches `name` either exactly, or as a glob
 /// with `*` as the only wildcard (e.g. `internal-*` matches `internal-foo`).
 pub fn pattern_matches(pattern: &str, name: &str) -> bool {
@@ -488,7 +474,8 @@ mod tests {
     #[test]
     fn missing_config_dir_has_no_denied_patterns() {
         let fs = FixtureBuilder::new().dir("/home").build_fs();
-        assert!(read_denied_patterns(&fs, Path::new("/home/.config/opencode")).is_empty());
+        let rules = read_skill_rules(&fs, Path::new("/home/.config/opencode"));
+        assert!(!rules.is_denied("anything"));
     }
 
     #[test]
@@ -500,10 +487,9 @@ mod tests {
                 br#"{"permission": {"skill": {"find-bugs": "deny", "write-tests": "allow"}}}"#,
             )
             .build_fs();
-        assert_eq!(
-            read_denied_patterns(&fs, Path::new("/home/.config/opencode")),
-            vec!["find-bugs".to_string()]
-        );
+        let rules = read_skill_rules(&fs, Path::new("/home/.config/opencode"));
+        assert!(rules.is_denied("find-bugs"));
+        assert!(!rules.is_denied("write-tests"));
     }
 
     #[test]
@@ -516,7 +502,8 @@ mod tests {
             detect_config_kind(&fs, Path::new("/home/.config/opencode")),
             Some(OpencodeConfigKind::Jsonc)
         );
-        assert!(read_denied_patterns(&fs, Path::new("/home/.config/opencode")).is_empty());
+        let rules = read_skill_rules(&fs, Path::new("/home/.config/opencode"));
+        assert!(!rules.is_denied("anything"));
     }
 
     /// Flow: a v2 `permissions[]` deny rule for a skill.
