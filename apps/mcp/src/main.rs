@@ -29,7 +29,8 @@ use rmcp::transport::stdio;
 use rmcp::{tool, tool_handler, tool_router, RoleServer, ServerHandler, ServiceExt};
 use skill_studio_core::dto::{
     CapabilitiesRequest, DiagnoseConflictRequest, FixSkillRequest, HarnessesRequest,
-    ListEventsRequest, RepairApplyRequest, RepairPreviewRequest, RestoreRequest, ScanRequest,
+    InstallRequest, ListEventsRequest, RepairApplyRequest, RepairPreviewRequest, RestoreRequest,
+    ScanRequest,
 };
 use skill_studio_core::harness::HarnessCatalog;
 use skill_studio_core::identity::CorrelationId;
@@ -282,6 +283,20 @@ impl SkillStudioServer {
     ) -> CallToolResult {
         run_op(Operation::DiagnoseConflict, false, &context, |rt, ctx| {
             ops::diagnose_conflict(rt, ctx, &req)
+        })
+        .await
+    }
+
+    #[tool(
+        description = "Install one skill by copy, dotagents, or skills.sh. Returns NeedsTrust, not an error, when an untrusted dotagents source needs trust_confirmed on a retry."
+    )]
+    async fn add(
+        &self,
+        Parameters(req): Parameters<InstallRequest>,
+        context: RequestContext<RoleServer>,
+    ) -> CallToolResult {
+        run_op(Operation::Install, true, &context, |rt, ctx| {
+            ops::install(rt, ctx, &req)
         })
         .await
     }
