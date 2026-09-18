@@ -13,6 +13,9 @@ use skill_studio_core::dto::{FixSkillOutcome, FixSkillRequest};
 use skill_studio_core::identity::{CorrelationId, SkillName};
 use skill_studio_core::ops::{self, Operation, ResultEnvelope};
 use skill_studio_core::ports::OpContext;
+use tauri::Manager;
+
+use super::skill_refresh::{self, SkillRefreshState, SkillSnapshot};
 
 #[tauri::command]
 pub async fn fix_skill(skill: String, app: tauri::AppHandle) -> Result<FixSkillOutcome, String> {
@@ -32,15 +35,41 @@ pub async fn fix_skill(skill: String, app: tauri::AppHandle) -> Result<FixSkillO
     .await
 }
 
+/// The check `open_conflict_paths` applies to each path before asking the
+/// editor to open it - the same containment `require_snapshot_owns_path`
+/// (`commands.rs`) wraps around a live `tauri::State`, pulled out here as a
+/// plain function of a snapshot so it's testable without one.
+fn require_conflict_path_is_owned(
+    snapshot: Option<&SkillSnapshot>,
+    path: &std::path::Path,
+) -> Result<(), String> {
+    match snapshot {
+        Some(snapshot) if skill_refresh::snapshot_owns_path(snapshot, path) => Ok(()),
+        _ => Err(format!(
+            "Path is not an installed skill: {}",
+            path.display()
+        )),
+    }
+}
+
 /// Opens a conflict's two differing paths side by side in the user's chosen
 /// editor. Writes nothing to either path itself; the caller already has both
-/// paths from a `ConflictSummary` in a `FixSkillOutcome`.
+/// paths from a `ConflictSummary` in a `FixSkillOutcome`. Each path must
+/// belong to an installed skill in the current snapshot - the same guard
+/// `open_skill_path` (`commands.rs`) applies - so the webview can't send an
+/// arbitrary path for us to open.
 #[tauri::command]
 pub async fn open_conflict_paths(paths: Vec<String>, app: tauri::AppHandle) -> Result<(), String> {
-    crate::timing_log::time_command_blocking(&app, "open_conflict_paths", move || {
-        let home = dirs::home_dir().ok_or("Could not find home directory")?;
+    let timing_app = app.clone();
+    crate::timing_log::time_command_blocking(&timing_app, "open_conflict_paths", move || {
+        let refresh_state = app.state::<SkillRefreshState>();
+        let snapshot = refresh_state.snapshot.read().ok().and_then(|g| g.clone());
         let paths: Vec<std::path::PathBuf> =
             paths.into_iter().map(std::path::PathBuf::from).collect();
+        for path in &paths {
+            require_conflict_path_is_owned(snapshot.as_ref(), path)?;
+        }
+        let home = dirs::home_dir().ok_or("Could not find home directory")?;
         super::skill_editor::open_paths_in_editor(&home, &paths)
     })
     .await
@@ -89,5 +118,24 @@ mod tests {
         assert_eq!(outcome.applied.len(), 1, "{outcome:?}");
         let repaired = std::fs::read_to_string(skills_dir.join("SKILL.md")).expect("read back");
         assert!(repaired.contains("description: |-"), "{repaired}");
+    }
+
+    /// Row F5 (unit 3.7b review round 1): `open_conflict_paths` must not open
+    /// whatever path the webview sends - only a path inside an installed
+    /// skill's own snapshot, the same containment `open_skill_path`
+    /// (`commands.rs`) applies. Proves the refusal at the pure-helper level
+    /// `open_conflict_paths` itself delegates to.
+    #[test]
+    fn open_conflict_paths_refuses_a_path_outside_the_snapshot() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let dep_dir = tmp.path().join("foo");
+        std::fs::create_dir_all(&dep_dir).expect("dep dir");
+        let outside = tmp.path().join("outside.md");
+        std::fs::write(&outside, "body").expect("write outside");
+
+        let snapshot = crate::skills::test_support::fixture_snapshot_owning(&dep_dir);
+
+        assert!(require_conflict_path_is_owned(Some(&snapshot), &outside).is_err());
+        assert!(require_conflict_path_is_owned(None, &outside).is_err());
     }
 }
