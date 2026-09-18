@@ -1,0 +1,33 @@
+{
+  "$schema": "https://unpkg.com/knip@5/schema.json",
+  "workspaces": {
+    ".": {
+      "entry": [
+        "doctor.config.ts",
+        ".cursor/skills/verify-skill-studio/playwright.config.ts",
+        "tools/oxlint/anti-slop/index.ts",
+        "tools/oxlint/anti-slop/shared/*.integration.test.ts"
+      ],
+      "project": ["tools/oxlint/anti-slop/**/*.ts", "*.ts"]
+    },
+    "apps/desktop": {
+      "project": ["src/**/*.{ts,tsx}"]
+    },
+    "apps/server": {
+      "project": ["src/**/*.ts"]
+    },
+    "apps/tui": {
+      "project": ["src/**/*.{ts,tsx}"]
+    },
+    "packages/lib": {
+      "project": ["src/**/*.{ts,tsx}"]
+    },
+    "packages/ui": {
+      "project": ["src/**/*.{ts,tsx}"]
+    },
+    "packages/marketing": {
+      "entry": ["src/remotion/Root.tsx"],
+      "project": ["src/**/*.{ts,tsx}"]
+    }
+  }
+}
