@@ -1540,11 +1540,11 @@ struct DisableSources {
     /// false` rows name. Mirrors `codex_skill_config.rs`
     /// `read_disabled_skill_md_paths`.
     codex_disabled_skill_md: Vec<PathBuf>,
-    /// `permission.skill` patterns `opencode.json` denies, from
-    /// [`crate::opencode_config::read_denied_patterns`] - the same read the
-    /// write path and every adapter use, so a scan and a deny write always
-    /// agree on what "denied" means.
-    opencode_denied_skills: Vec<String>,
+    /// `permission.skill` (v1) and `permissions[]` (v2) skill rules
+    /// `opencode.json` holds, from [`crate::opencode_config::read_skill_rules`]
+    /// - the same read the write path and every adapter use, so a scan and
+    /// a deny write always agree on what "denied" means.
+    opencode_skill_rules: crate::opencode_config::OpencodeSkillRules,
     /// Claude Code `settings.json` `enabledPlugins["<plugin>@<marketplace>"]`,
     /// keyed by that same `<plugin>@<marketplace>` id.
     claude_enabled_plugins: HashMap<String, bool>,
@@ -1561,7 +1561,7 @@ impl DisableSources {
             .map_or_else(|| home.join(".config").join("opencode"), Path::to_path_buf);
         DisableSources {
             codex_disabled_skill_md: read_codex_disabled_skill_md_paths(fs, codex_home),
-            opencode_denied_skills: crate::opencode_config::read_denied_patterns(
+            opencode_skill_rules: crate::opencode_config::read_skill_rules(
                 fs,
                 &opencode_config_dir,
             ),
@@ -2096,9 +2096,8 @@ fn native_disabled_by(
             .then_some(DisabledBy::CodexConfig),
         RootKind::Harness(id) | RootKind::Legacy(id) if id.as_str() == AgentId::OPEN_CODE => {
             sources
-                .opencode_denied_skills
-                .iter()
-                .any(|pattern| crate::opencode_config::pattern_matches(pattern, name))
+                .opencode_skill_rules
+                .is_denied(name)
                 .then_some(DisabledBy::OpencodePermission)
         }
         _ => None,

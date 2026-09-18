@@ -125,14 +125,11 @@ pub enum DisableMechanism {
     ClaudeSkillOverrides,
     /// Codex `config.toml` `[[skills.config]]`.
     CodexSkillsConfig,
-    /// `OpenCode` `opencode.json` `permission.skill.<name> = "deny"`. The v2
-    /// skills doc page describes deny as `{ action, resource, effect }`, but
-    /// that shape is the runtime ask/approve protocol
-    /// (`packages/schema/src/permission.ts`, `PermissionV2.Rule`), not what
-    /// `opencode.json` holds; the config-file schema
-    /// (`packages/core/src/v1/config/permission.ts`) still decodes a bare
-    /// `Action` string per skill, confirmed in `opencode_config.rs`'s module
-    /// doc comment. `opencode.jsonc` is detected but never written.
+    /// `OpenCode` reads V1 `permission.skill` and V2 `permissions[]` skill
+    /// rules; Skill Studio writes the V1 `permission.skill.<name> = "deny"`
+    /// key (`opencode_config.rs`'s module doc comment has the source
+    /// citation for both shapes). `opencode.jsonc` is detected but never
+    /// written.
     OpencodePermission,
     /// pi `settings.json` `skills` exclusions (`!pattern`, `-path`), also
     /// written by `pi config`.
@@ -710,10 +707,11 @@ fn open_code() -> HarnessFacts {
         native_disable: Some(NativeDisableSpec {
             mechanism: DisableMechanism::OpencodePermission,
             scopes: vec![ScopeLevel::Global, ScopeLevel::Project],
-            // `opencode_config::set_skill_denied` writes `opencode.json`
-            // directly; it refuses (rather than silently no-oping) when
-            // only `opencode.jsonc` exists, so writable stays `Partial`
-            // until the jsonc case has its own handling
+            // `opencode_config` reads V1 `permission.skill` and V2
+            // `permissions[]` skill rules; it writes the V1 key.
+            // `set_skill_denied` refuses (rather than silently no-oping)
+            // when only `opencode.jsonc` exists, so writable stays
+            // `Partial` until the jsonc case has its own handling
             // (`opencode_jsonc_sibling_is_reported_not_silently_ignored_or_names_the_swallowed_write`,
             // a follow-up).
             writable: Support::Partial(Evidence::inferred(OPENCODE_CONFIG_WRITER)),

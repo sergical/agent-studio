@@ -1343,13 +1343,8 @@ fn apply_skill_snapshot_overlays(
         .collect();
     let opencode_fs = skill_studio_host::RealFs::new();
     let opencode_config_dir = skill_studio_host::opencode_config_dir(home);
-    let opencode_denied: BTreeSet<String> =
-        skill_studio_core::opencode_config::read_denied_patterns(
-            &opencode_fs,
-            &opencode_config_dir,
-        )
-        .into_iter()
-        .collect();
+    let opencode_rules =
+        skill_studio_core::opencode_config::read_skill_rules(&opencode_fs, &opencode_config_dir);
     for skill in skills.iter_mut() {
         let open_code_deployment_count = skill
             .deployments
@@ -1372,11 +1367,7 @@ fn apply_skill_snapshot_overlays(
                 deployment.codex_implicit_invocation =
                     read_codex_allow_implicit_invocation(&PathBuf::from(&deployment.path));
             } else if deployment.agent == "OpenCode" {
-                if open_code_deployment_count == 1
-                    && opencode_denied.iter().any(|pattern| {
-                        skill_studio_core::opencode_config::pattern_matches(pattern, &skill.name)
-                    })
-                {
+                if open_code_deployment_count == 1 && opencode_rules.is_denied(&skill.name) {
                     deployment.disabled = true;
                     deployment.disabled_by = Some(super::skill_dto::DisabledBy::OpencodePermission);
                 }
@@ -1398,9 +1389,7 @@ fn apply_skill_snapshot_overlays(
                 if codex_disabled_paths.contains(&canonical) {
                     deployment.disabled_readers.push("codex".to_string());
                 }
-                if opencode_denied.iter().any(|pattern| {
-                    skill_studio_core::opencode_config::pattern_matches(pattern, &skill.name)
-                }) {
+                if opencode_rules.is_denied(&skill.name) {
                     deployment.disabled_readers.push("open-code".to_string());
                 }
             }

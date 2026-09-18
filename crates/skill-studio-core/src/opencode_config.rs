@@ -95,28 +95,130 @@ pub fn detect_config_kind(fs: &dyn ScopeFs, config_dir: &Path) -> Option<Opencod
 /// unreadable rather than silently truncated.
 pub const OPENCODE_CONFIG_MAX_BYTES: u64 = 8 * 1024 * 1024;
 
-/// Every `permission.skill` pattern mapped to `"deny"`, or an empty set when
-/// the file is missing, isn't JSON, or only a `.jsonc` sibling exists.
-pub fn read_denied_patterns(fs: &dyn ScopeFs, config_dir: &Path) -> Vec<String> {
+/// One `permission.skill` (v1) or `permissions[]` (v2) rule: a pattern (or
+/// `resource` glob) paired with the effect it applies.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SkillRule {
+    /// The pattern (v1 key, or v2 `resource`) matched against a skill name.
+    pub pattern: String,
+    /// The rule's `Action`/`effect`: `"ask"`, `"allow"`, or `"deny"`.
+    pub effect: String,
+}
+
+/// Every skill-permission rule `opencode.json` holds, split by the config
+/// generation that produced it. `OpenCode` reads both generations on `dev`
+/// (the v1→v2 migration doc says v1 syntax is still accepted), so a config
+/// file can hold either shape, or - in principle - both at once.
+///
+/// Cross-shape precedence (what happens when both `permission.skill` and a
+/// `permissions[]` skill rule name the same skill with different effects) is
+/// not verified against the `OpenCode` source; [`is_denied`] treats the two
+/// lists as independent gates - deny in either one denies the skill - as an
+/// assumption pending that follow-up.
+///
+/// [`is_denied`]: OpencodeSkillRules::is_denied
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct OpencodeSkillRules {
+    /// From `permission.skill`: a bare string becomes one rule for `*`;
+    /// an object's entries become one rule per key, in document order.
+    pub v1: Vec<SkillRule>,
+    /// From top-level `permissions[]`, every entry whose `action == "skill"`,
+    /// in document order (`resource` becomes the pattern).
+    pub v2: Vec<SkillRule>,
+}
+
+/// Last-match-wins evaluation of `rules` against `name`, defaulting to
+/// `false` (not denied) when nothing matches - `OpenCode`'s own default is
+/// `ask`, and this module only distinguishes "denied" from "not denied".
+fn rules_deny(rules: &[SkillRule], name: &str) -> bool {
+    rules
+        .iter()
+        .filter(|rule| pattern_matches(&rule.pattern, name))
+        .next_back()
+        .is_some_and(|rule| rule.effect == DENY)
+}
+
+impl OpencodeSkillRules {
+    /// `name` is denied when either shape's last matching rule is `deny`.
+    pub fn is_denied(&self, name: &str) -> bool {
+        rules_deny(&self.v1, name) || rules_deny(&self.v2, name)
+    }
+}
+
+/// One `permission.skill` value (`ConfigPermissionV1.Rule`: a bare `Action`
+/// string, applying to every skill, or an object mapping a pattern to an
+/// `Action`) turned into ordered [`SkillRule`]s.
+fn v1_skill_rules(skill: &Value) -> Vec<SkillRule> {
+    match skill {
+        Value::String(effect) => vec![SkillRule {
+            pattern: "*".to_string(),
+            effect: effect.clone(),
+        }],
+        Value::Object(map) => map
+            .iter()
+            .filter_map(|(pattern, effect)| {
+                effect.as_str().map(|effect| SkillRule {
+                    pattern: pattern.clone(),
+                    effect: effect.to_string(),
+                })
+            })
+            .collect(),
+        _ => Vec::new(),
+    }
+}
+
+/// Every v2 `permissions[]` entry whose `action == "skill"`, in document
+/// order.
+fn v2_skill_rules(root: &Map<String, Value>) -> Vec<SkillRule> {
+    let Some(Value::Array(entries)) = root.get("permissions") else {
+        return Vec::new();
+    };
+    entries
+        .iter()
+        .filter_map(|entry| {
+            let entry = entry.as_object()?;
+            if entry.get("action").and_then(Value::as_str) != Some("skill") {
+                return None;
+            }
+            let pattern = entry.get("resource").and_then(Value::as_str)?.to_string();
+            let effect = entry.get("effect").and_then(Value::as_str)?.to_string();
+            Some(SkillRule { pattern, effect })
+        })
+        .collect()
+}
+
+/// Reads `<config_dir>/opencode.json`'s `permission.skill` (v1) and
+/// `permissions[]` skill rules (v2), or two empty lists when the file is
+/// missing, isn't JSON, or only a `.jsonc` sibling exists.
+pub fn read_skill_rules(fs: &dyn ScopeFs, config_dir: &Path) -> OpencodeSkillRules {
     let Ok(bytes) = fs.read_capped(&opencode_json_path(config_dir), OPENCODE_CONFIG_MAX_BYTES)
     else {
-        return Vec::new();
+        return OpencodeSkillRules::default();
     };
     let Ok(Value::Object(root)) = serde_json::from_slice::<Value>(&bytes) else {
-        return Vec::new();
+        return OpencodeSkillRules::default();
     };
-    let Some(Value::Object(skill)) = root
+    let v1 = root
         .get("permission")
-        .and_then(|p| p.as_object())
+        .and_then(Value::as_object)
         .and_then(|p| p.get("skill"))
-        .cloned()
-    else {
-        return Vec::new();
-    };
-    skill
+        .map(v1_skill_rules)
+        .unwrap_or_default();
+    let v2 = v2_skill_rules(&root);
+    OpencodeSkillRules { v1, v2 }
+}
+
+/// Every skill name in `pattern`'s and the rule set's terms would deny - the
+/// old glob-over-patterns callers used before [`read_skill_rules`] replaced
+/// them. Kept only for the reader-side compatibility the module tests need;
+/// every real caller now calls [`OpencodeSkillRules::is_denied`] instead so
+/// there is one evaluator.
+pub fn read_denied_patterns(fs: &dyn ScopeFs, config_dir: &Path) -> Vec<String> {
+    read_skill_rules(fs, config_dir)
+        .v1
         .into_iter()
-        .filter(|(_, v)| v.as_str() == Some(DENY))
-        .map(|(k, _)| k)
+        .filter(|rule| rule.effect == DENY)
+        .map(|rule| rule.pattern)
         .collect()
 }
 
@@ -231,6 +333,30 @@ pub fn set_skill_denied(
         );
     }
 
+    // Computed before the mutable borrows below: clearing the v1 key
+    // doesn't help when a v2 `permissions[]` rule still denies `name` -
+    // reporting success here would show the skill enabled while `OpenCode`
+    // keeps refusing it. Name the matching v2 rule's `resource` so the UI
+    // can point at what still needs editing, and leave the array untouched
+    // (this module never writes v2).
+    let blocking_v2_rule = (!denied)
+        .then(|| v2_skill_rules(&root))
+        .into_iter()
+        .flatten()
+        .filter(|rule| pattern_matches(&rule.pattern, name))
+        .next_back()
+        .filter(|rule| rule.effect == DENY);
+    if let Some(rule) = blocking_v2_rule {
+        return Err(CoreError::new(
+            ErrorCode::Unsupported,
+            format!(
+                "still denied by permissions[] rule for \"{}\"; edit opencode.json by hand",
+                rule.pattern
+            ),
+        )
+        .at(&path));
+    }
+
     let permission = root
         .entry("permission")
         .or_insert_with(|| Value::Object(Map::new()));
@@ -322,6 +448,137 @@ mod tests {
             Some(OpencodeConfigKind::Jsonc)
         );
         assert!(read_denied_patterns(&fs, Path::new("/home/.config/opencode")).is_empty());
+    }
+
+    /// Flow: a v2 `permissions[]` deny rule for a skill.
+    /// Expectation: `is_denied` denies the matching skill and leaves an
+    /// unmatched one enabled.
+    /// Failure: a skill either shown enabled despite the rule, or the rule
+    /// wrongly matching a skill outside its pattern.
+    #[test]
+    fn a_v2_permissions_array_deny_rule_disables_the_skill_or_names_the_skill_shown_enabled() {
+        let fs = FixtureBuilder::new()
+            .dir("/home/.config/opencode")
+            .file(
+                "/home/.config/opencode/opencode.json",
+                br#"{"permissions":[{"action":"skill","resource":"eps*","effect":"deny"}]}"#,
+            )
+            .build_fs();
+        let rules = read_skill_rules(&fs, Path::new("/home/.config/opencode"));
+        assert!(
+            rules.is_denied("epsilon"),
+            "epsilon (matching \"eps*\") reported enabled"
+        );
+        assert!(
+            !rules.is_denied("alpha"),
+            "alpha (not matching \"eps*\") reported denied"
+        );
+    }
+
+    /// Flow: two v2 rules for the same skill in opposite orders.
+    /// Expectation: the later rule wins either way.
+    /// Failure: the earlier rule wins instead, i.e. rule order is ignored.
+    #[test]
+    fn a_later_v2_rule_overrides_an_earlier_one_or_names_the_rule_it_ignored() {
+        let fs = FixtureBuilder::new()
+            .dir("/home/.config/opencode")
+            .file(
+                "/home/.config/opencode/opencode.json",
+                br#"{"permissions":[{"action":"skill","resource":"*","effect":"deny"},{"action":"skill","resource":"epsilon","effect":"allow"}]}"#,
+            )
+            .build_fs();
+        let rules = read_skill_rules(&fs, Path::new("/home/.config/opencode"));
+        assert!(
+            !rules.is_denied("epsilon"),
+            "later \"allow epsilon\" rule was ignored"
+        );
+
+        let fs = FixtureBuilder::new()
+            .dir("/home/.config/opencode")
+            .file(
+                "/home/.config/opencode/opencode.json",
+                br#"{"permissions":[{"action":"skill","resource":"epsilon","effect":"allow"},{"action":"skill","resource":"*","effect":"deny"}]}"#,
+            )
+            .build_fs();
+        let rules = read_skill_rules(&fs, Path::new("/home/.config/opencode"));
+        assert!(
+            rules.is_denied("epsilon"),
+            "later \"deny *\" rule was ignored"
+        );
+    }
+
+    /// Flow: `set_skill_denied(false)` on a skill a v2 `permissions[]` rule
+    /// still denies.
+    /// Expectation: the call is refused and names the rule, rather than
+    /// reporting success while `OpenCode` keeps refusing the skill.
+    /// Failure: `Ok(())` returned while the skill stays denied.
+    #[test]
+    fn enabling_a_skill_denied_by_a_v2_rule_is_refused_and_names_the_rule_or_names_the_skill_it_reported_enabled(
+    ) {
+        let fs = FixtureBuilder::new()
+            .dir("/home/.config/opencode")
+            .file(
+                "/home/.config/opencode/opencode.json",
+                br#"{"permission":{"skill":{"epsilon":"deny"}},"permissions":[{"action":"skill","resource":"eps*","effect":"deny"}]}"#,
+            )
+            .build_fs();
+        let leases = crate::testing::FakeLease::default();
+        let err = set_skill_denied(
+            &leases,
+            &fs,
+            Path::new("/home/.config/opencode"),
+            "epsilon",
+            false,
+        )
+        .expect_err("epsilon reported enabled despite the surviving \"eps*\" v2 rule");
+        assert!(
+            err.to_string().contains("eps*"),
+            "error {err} doesn't name the blocking rule"
+        );
+    }
+
+    /// Flow: `permission.skill = "deny"` (a bare string, not an object).
+    /// Expectation: every skill is denied, matching `ConfigPermissionV1.Rule
+    /// = Action | Object` - a bare `Action` applies to every skill.
+    /// Failure: the bare string silently yields no denied skills.
+    #[test]
+    fn a_bare_skill_deny_string_denies_every_skill_or_names_the_skill_it_let_through() {
+        let fs = FixtureBuilder::new()
+            .dir("/home/.config/opencode")
+            .file(
+                "/home/.config/opencode/opencode.json",
+                br#"{"permission": {"skill": "deny"}}"#,
+            )
+            .build_fs();
+        let rules = read_skill_rules(&fs, Path::new("/home/.config/opencode"));
+        assert!(
+            rules.is_denied("anything"),
+            "a bare \"deny\" string let \"anything\" through"
+        );
+    }
+
+    /// Flow: `{"*": "deny", "foo": "allow"}` - a wildcard deny with a later,
+    /// more specific allow.
+    /// Expectation: `foo` reads as allowed (the later, more specific rule
+    /// wins) while `bar` still reads as denied by the wildcard.
+    /// Failure: `foo` reported denied because the reader only checked
+    /// "is any rule for me `deny`" instead of the last matching rule.
+    #[test]
+    fn read_denied_patterns_honours_a_later_allow_or_names_the_skill_it_reported_denied_by_mistake(
+    ) {
+        let fs = FixtureBuilder::new()
+            .dir("/home/.config/opencode")
+            .file(
+                "/home/.config/opencode/opencode.json",
+                br#"{"permission": {"skill": {"*": "deny", "foo": "allow"}}}"#,
+            )
+            .build_fs();
+        let rules = read_skill_rules(&fs, Path::new("/home/.config/opencode"));
+        assert!(
+            !rules.is_denied("foo"),
+            "foo reported denied despite the later \"allow\" entry"
+        );
+        assert!(rules.is_denied("bar"), "bar not caught by the \"*\" deny");
     }
 
     /// Fixture: the config-schema declaration of `permission.skill`,
