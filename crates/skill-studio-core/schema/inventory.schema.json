@@ -101,7 +101,7 @@
           "description": "Harness that owns the root, when it is a harness root.",
           "anyOf": [
             {
-              "$ref": "#/$defs/AgentId"
+              "$ref": "#/$defs/AgentIdentity"
             },
             {
               "type": "null"
@@ -198,7 +198,7 @@
           "description": "Readers of a universal deployment that have it disabled.",
           "type": "array",
           "items": {
-            "$ref": "#/$defs/AgentId"
+            "$ref": "#/$defs/AgentIdentity"
           }
         },
         "spec_violations": {
@@ -393,7 +393,7 @@
               "const": "harness"
             },
             "harness": {
-              "$ref": "#/$defs/AgentId"
+              "$ref": "#/$defs/AgentIdentity"
             }
           },
           "required": [
@@ -436,7 +436,7 @@
               "const": "legacy"
             },
             "harness": {
-              "$ref": "#/$defs/AgentId"
+              "$ref": "#/$defs/AgentIdentity"
             }
           },
           "required": [
@@ -453,7 +453,7 @@
               "const": "plugin_cache"
             },
             "harness": {
-              "$ref": "#/$defs/AgentId"
+              "$ref": "#/$defs/AgentIdentity"
             }
           },
           "required": [
@@ -463,7 +463,7 @@
         }
       ]
     },
-    "AgentId": {
+    "AgentIdentity": {
       "description": "Kebab-case harness identifier, for example `claude-code` or `open-code`.\n\nInvariant: the string is the serde wire name used by the desktop app\ntoday. `open-code` is canonical; `opencode` is only a CLI binary name and\nis never stored in an `AgentId`.",
       "type": "string"
     },

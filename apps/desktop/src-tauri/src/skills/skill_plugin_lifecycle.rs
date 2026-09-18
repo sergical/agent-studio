@@ -9,7 +9,7 @@
 
 use std::path::Path;
 
-use super::skill_add::CommandRunner;
+use super::skill_process::CommandRunner;
 
 const CLAUDE_CLI: &str = "claude";
 

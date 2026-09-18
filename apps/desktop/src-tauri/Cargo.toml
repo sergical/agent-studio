@@ -91,9 +91,9 @@ ulid = "1"
 skill-studio-core = { path = "../../../crates/skill-studio-core" }
 skill-studio-host = { path = "../../../crates/skill-studio-host", features = ["error-reporting"] }
 schemars = { version = "1", features = ["chrono04"] }
+tempfile = "3"
 
 [dev-dependencies]
-tempfile = "3"
 skill-studio-core = { path = "../../../crates/skill-studio-core", features = ["testing"] }
 skill-studio = { path = ".", features = ["testing"] }
 similar = "2"

@@ -9,7 +9,6 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 
 use super::api;
-use super::skill_add::RealCommandRunner;
 use super::skill_dto::{
     InstallResult, InstallScope, InstalledSkill, LifecycleTarget, PaginatedSkillsResponse,
     SkillDetails,
@@ -20,6 +19,7 @@ use super::skill_lifecycle::{
     resolve_lifecycle_target, skills_sh_update_args,
 };
 use super::skill_md_write::write_skill_md_compare_and_swap;
+use super::skill_process::RealCommandRunner;
 use super::skill_refresh::{self, SkillRefreshState};
 use super::skill_update_check;
 use skill_studio_core::dto::{RemoveOutcome, RemoveRequest};
@@ -142,8 +142,8 @@ pub async fn get_installed_skills(app: tauri::AppHandle) -> Result<Vec<Installed
 
 #[cfg(test)]
 mod tests {
-    use super::super::skill_add::CommandRunner;
     use super::super::skill_md_write::write_skill_md;
+    use super::super::skill_process::CommandRunner;
     use super::*;
     use std::sync::atomic::Ordering;
 

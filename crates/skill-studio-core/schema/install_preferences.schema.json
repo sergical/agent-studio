@@ -12,7 +12,7 @@
       "description": "The saved or defaulted harnesses.",
       "type": "array",
       "items": {
-        "$ref": "#/$defs/AgentId"
+        "$ref": "#/$defs/AgentIdentity"
       }
     },
     "saved": {
@@ -46,7 +46,7 @@
         }
       ]
     },
-    "AgentId": {
+    "AgentIdentity": {
       "description": "Kebab-case harness identifier, for example `claude-code` or `open-code`.\n\nInvariant: the string is the serde wire name used by the desktop app\ntoday. `open-code` is canonical; `opencode` is only a CLI binary name and\nis never stored in an `AgentId`.",
       "type": "string"
     }

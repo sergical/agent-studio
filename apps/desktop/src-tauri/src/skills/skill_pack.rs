@@ -42,12 +42,13 @@ use skill_studio_core::lock_file;
 use super::agents::AgentId;
 use super::commands::dotagents_add_args;
 use super::gh_cli::{run_gh, GhError};
-use super::skill_add::{maybe_claude_code_symlink, CommandRunner, RealCommandRunner};
 use super::skill_agent_runner::validate_skill_dir_name;
 use super::skill_deployment::SkillDestination;
 use super::skill_dto::InstallScope;
 use super::skill_fork_registry::{self, PackMember, PackRecord};
+use super::skill_fs::maybe_claude_code_symlink;
 use super::skill_fs::{copy_dir_all, copy_dir_preserving_symlinks};
+use super::skill_process::{CommandRunner, RealCommandRunner};
 use super::skill_refresh;
 use super::skill_trust_policy::{
     normalize_confirmation_identity, record_trusted_dotagents_sources_locked,
