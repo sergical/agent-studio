@@ -808,6 +808,7 @@ pub struct FailingFs {
     /// [`Self::fail_write_atomic_after`].
     write_atomic_budget: AtomicI64,
     fail_next_create_dir: AtomicBool,
+    fail_next_symlink: AtomicBool,
 }
 
 impl FailingFs {
@@ -819,6 +820,7 @@ impl FailingFs {
             fail_next_rename: AtomicBool::new(false),
             write_atomic_budget: AtomicI64::new(-1),
             fail_next_create_dir: AtomicBool::new(false),
+            fail_next_symlink: AtomicBool::new(false),
         }
     }
 
@@ -851,6 +853,14 @@ impl FailingFs {
     /// `fsops::swap` reaches its crash-critical exchange.
     pub fn fail_next_create_dir(&self) {
         self.fail_next_create_dir.store(true, Ordering::SeqCst);
+    }
+
+    /// The next `symlink` call returns an error instead of reaching `inner`;
+    /// later calls delegate normally again. Lets a test drive a harness
+    /// switch's link write into failure without touching the filesystem
+    /// permissions the real adapter would need to fail for real.
+    pub fn fail_next_symlink(&self) {
+        self.fail_next_symlink.store(true, Ordering::SeqCst);
     }
 }
 
@@ -921,6 +931,9 @@ impl ScopeFs for FailingFs {
         target: &ScopedPath,
         link: &ScopedPath,
     ) -> std::io::Result<()> {
+        if self.fail_next_symlink.swap(false, Ordering::SeqCst) {
+            return Err(std::io::Error::other("FailingFs: injected symlink failure"));
+        }
         self.inner.symlink(guard, target, link)
     }
     fn fsops_device_inode(&self, path: &Path) -> std::io::Result<(u64, u64)> {

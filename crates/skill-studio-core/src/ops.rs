@@ -3315,9 +3315,14 @@ fn restore_symlink_event(
     };
 
     let restore_id = rt.ports.ids.next_event_id();
+    // The restore's own inverse is the opposite of what the restore is about
+    // to do, not a copy of the inverse it is applying: applying `Recreate`
+    // puts a link at `path` (so undoing that restore must remove it), and
+    // applying `Remove` takes a link away (so undoing that restore must
+    // recreate it, at whatever it currently points to).
     let restore_inverse = match &inverse {
-        crate::events::SymlinkInverse::Recreate { path, target } => {
-            crate::events::recreate_symlink_inverse(path, target)
+        crate::events::SymlinkInverse::Recreate { path, .. } => {
+            crate::events::remove_symlink_inverse(path)
         }
         crate::events::SymlinkInverse::Remove { path } => match fs.read_link(path).ok() {
             Some(current_target) => crate::events::recreate_symlink_inverse(path, &current_target),
@@ -4059,7 +4064,46 @@ fn set_claude_code_switch(
                 "no universal deployment to link Claude Code to",
             )
         })?;
-    let link_path = home.join(".claude/skills").join(&skill.name.0);
+    let claude_skills_dir = home.join(".claude/skills");
+    let link_path = claude_skills_dir.join(&skill.name.0);
+
+    // `~/.claude/skills` itself can be a whole-directory symlink into the
+    // shared root; that covers every skill at once and has no per-skill slot
+    // to toggle. And the per-skill slot can be a real directory (a plain
+    // copy) rather than a link. `symlink_metadata` succeeds on both, so only
+    // `FileKind::Symlink` counts as "already linked" - anything else at that
+    // path is refused rather than torn down by `remove_file`.
+    if fs
+        .symlink_metadata(&claude_skills_dir)
+        .is_ok_and(|f| f.kind == FileKind::Symlink)
+    {
+        return Err(CoreError::new(
+            ErrorCode::InvalidRequest,
+            format!(
+                "{} is a whole-directory link; Claude Code reads every skill through it, so \"{}\" has no per-skill switch",
+                claude_skills_dir.display(),
+                skill.name
+            ),
+        )
+        .at(&claude_skills_dir));
+    }
+    let link_kind = fs.symlink_metadata(&link_path).ok().map(|f| f.kind);
+    if let Some(kind @ (FileKind::Dir | FileKind::File | FileKind::Other)) = link_kind {
+        let kind_name = match kind {
+            FileKind::Dir => "a real directory",
+            FileKind::File => "a plain file",
+            _ => "not a symlink",
+        };
+        return Err(CoreError::new(
+            ErrorCode::InvalidRequest,
+            format!(
+                "{} is {kind_name}, not a per-skill link; removing it would delete Claude Code's copy",
+                link_path.display()
+            ),
+        )
+        .at(&link_path));
+    }
+    let already_linked = link_kind == Some(FileKind::Symlink);
 
     let inverse = if enabled {
         crate::events::remove_symlink_inverse(&link_path)
@@ -4078,16 +4122,26 @@ fn set_claude_code_switch(
     };
     session.store.record(&session.guard, id, &draft)?;
 
-    let already_linked = fs.symlink_metadata(&link_path).is_ok();
     if enabled && !already_linked {
+        ensure_dir_all(rt, session, fs, &claude_skills_dir)?;
         let scoped_target = crate::ports::confine(&rt.scope, fs, &canonical_dir)?;
         let scoped_link = crate::ports::confine(&rt.scope, fs, &link_path)?;
-        fs.symlink(&session.guard, &scoped_target, &scoped_link)
-            .map_err(|e| CoreError::io(&link_path, e))?;
+        if let Err(e) = fs.symlink(&session.guard, &scoped_target, &scoped_link) {
+            let _ =
+                session
+                    .store
+                    .finish(&session.guard, id, crate::events::EventStatus::Failed, None);
+            return Err(CoreError::io(&link_path, e));
+        }
     } else if !enabled && already_linked {
         let scoped_link = crate::ports::confine(&rt.scope, fs, &link_path)?;
-        fs.remove_file(&session.guard, &scoped_link)
-            .map_err(|e| CoreError::io(&link_path, e))?;
+        if let Err(e) = fs.remove_file(&session.guard, &scoped_link) {
+            let _ =
+                session
+                    .store
+                    .finish(&session.guard, id, crate::events::EventStatus::Failed, None);
+            return Err(CoreError::io(&link_path, e));
+        }
     }
     session
         .store
@@ -4205,8 +4259,63 @@ fn set_codex_switch(
     Ok((toggled, total))
 }
 
+/// True when `kind` is a root OpenCode reads: the shared universal root, or
+/// its own harness/legacy root.
+fn is_opencode_visible_root(kind: &RootKind) -> bool {
+    match kind {
+        RootKind::Universal => true,
+        RootKind::Harness(id) | RootKind::Legacy(id) => id.as_str() == AgentId::OPEN_CODE,
+        RootKind::Parked | RootKind::PluginCache(_) => false,
+    }
+}
+
+/// Refuses an OpenCode toggle when `skill.name` resolves to more than one
+/// OpenCode-visible location - global plus a project, or two different
+/// projects. `set_opencode_switch` writes one name-keyed
+/// `permission.skill.<name>` entry in the global `opencode.json`; scan folds
+/// same-named deployments across scopes into this one `InstalledSkillDto`,
+/// so without this guard a toggle aimed at one project's copy would also
+/// silently deny (or allow) an unrelated global copy sharing the name. Named
+/// after the desktop's pre-core `refuse_opencode_name_collision`
+/// (`apps/desktop/src-tauri/src/skills/skill_harness_disable.rs`), ported
+/// here since scan no longer gives the caller distinct deployments to check
+/// against.
+fn refuse_opencode_name_collision(skill: &InstalledSkillDto) -> Result<(), CoreError> {
+    let mut by_scope: std::collections::BTreeMap<String, PathBuf> =
+        std::collections::BTreeMap::new();
+    for deployment in &skill.deployments {
+        if !is_opencode_visible_root(&deployment.root.kind) {
+            continue;
+        }
+        let key = match &deployment.root.scope {
+            RootScope::Global => "global".to_string(),
+            RootScope::Project(project) => format!("project:{}", project.0.display()),
+        };
+        by_scope
+            .entry(key)
+            .or_insert_with(|| deployment.path.clone());
+    }
+    if by_scope.len() > 1 {
+        let paths = by_scope
+            .values()
+            .map(|p| p.display().to_string())
+            .collect::<Vec<_>>()
+            .join(", ");
+        return Err(CoreError::new(
+            ErrorCode::InvalidRequest,
+            format!(
+                "\"{}\" names more than one OpenCode-visible location; toggling one would also change the other: {paths}",
+                skill.name
+            ),
+        ));
+    }
+    Ok(())
+}
+
 /// Sets or clears `permission.skill.<name>` in `~/.config/opencode/
-/// opencode.json`. Refuses when only `opencode.jsonc` exists.
+/// opencode.json`. Refuses when only `opencode.jsonc` exists, or when the
+/// skill name resolves to more than one OpenCode-visible location
+/// ([`refuse_opencode_name_collision`]).
 #[allow(clippy::too_many_arguments)]
 fn set_opencode_switch(
     rt: &Runtime,
@@ -4218,6 +4327,7 @@ fn set_opencode_switch(
     kind: crate::events::EventKind,
     enabled: bool,
 ) -> Result<(u32, u32), CoreError> {
+    refuse_opencode_name_collision(skill)?;
     let config_path = home.join(".config/opencode/opencode.json");
     let jsonc_path = home.join(".config/opencode/opencode.jsonc");
     crate::harness_switch::opencode_refuses_jsonc(

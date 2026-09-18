@@ -7,11 +7,11 @@
 use std::path::Path;
 use std::sync::Arc;
 
-use skill_studio_core::dto::SetHarnessEnabledRequest;
+use skill_studio_core::dto::{RestoreRequest, SetHarnessEnabledRequest};
 use skill_studio_core::harness::HarnessCatalog;
 use skill_studio_core::identity::{AgentId, SkillName};
 use skill_studio_core::ops;
-use skill_studio_core::ports::{Ports, Runtime};
+use skill_studio_core::ports::{HistoryAccess, Ports, Runtime};
 use skill_studio_core::scope::{ProjectSelection, RuntimeScope};
 use skill_studio_core::testing::golden::{ctx, unique_temp_dir};
 use skill_studio_core::testing::{FailingFs, FakeClock, FakeIds, RecordingSink};
@@ -290,4 +290,363 @@ fn a_crash_mid_codex_loop_reports_n_of_m_paths_toggled_instead_of_failing_silent
         "expected the error to name how many of the five Codex paths toggled, got: {}",
         err.message
     );
+}
+
+fn install_project_universal_skill(project: &Path, name: &str) {
+    let dir = project.join(UNIVERSAL_ROOT_RELATIVE).join(name);
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(
+        dir.join("SKILL.md"),
+        format!("---\nname: {name}\ndescription: a project-scoped switchable skill\n---\nBody.\n"),
+    )
+    .unwrap();
+}
+
+/// set_harness_enabled_accepts_opencode_and_open_code_spellings_or_names_the_rejected_id:
+/// `AgentId::parse_harness` must fold `opencode`, `open-code`, and
+/// `open_code` (any case) onto the same wire id `set_harness_enabled`
+/// matches on, and still reject a spelling that names no harness at all.
+#[test]
+fn set_harness_enabled_accepts_opencode_and_open_code_spellings_or_names_the_rejected_id() {
+    let home = unique_temp_dir("opencode_spellings");
+    install_universal_skill(&home, "gamma");
+    let rt = runtime_for(&home);
+    let config_path = home.join(".config/opencode/opencode.json");
+
+    for (n, spelling) in ["opencode", "open-code", "open_code", "OpenCode"]
+        .into_iter()
+        .enumerate()
+    {
+        let harness = AgentId::parse_harness(spelling)
+            .unwrap_or_else(|e| panic!("{spelling} should parse as a harness id: {}", e.message));
+        assert_eq!(harness.as_str(), AgentId::OPEN_CODE, "spelling: {spelling}");
+
+        // Alternate disable/enable so each iteration writes a real toggle.
+        let enabled = n % 2 == 1;
+        ops::set_harness_enabled(
+            &rt,
+            &ctx(),
+            &SetHarnessEnabledRequest {
+                skill: SkillName("gamma".into()),
+                harness,
+                enabled,
+            },
+        )
+        .unwrap_or_else(|e| panic!("{spelling} should toggle OpenCode: {}", e.message));
+        let text = std::fs::read_to_string(&config_path).unwrap();
+        let value: serde_json::Value = serde_json::from_str(&text).unwrap();
+        if enabled {
+            assert!(
+                value["permission"]["skill"]["gamma"].is_null(),
+                "spelling {spelling} should have cleared permission.skill.gamma on enable, got: {text}"
+            );
+        } else {
+            assert_eq!(
+                value["permission"]["skill"]["gamma"], "deny",
+                "spelling {spelling} should have written permission.skill.gamma = deny"
+            );
+        }
+    }
+
+    let rejected = AgentId::parse_harness("not a harness!").unwrap_err();
+    assert!(
+        rejected.message.contains("not a harness!"),
+        "expected the rejected id in the error, got: {}",
+        rejected.message
+    );
+
+    std::fs::remove_dir_all(&home).ok();
+}
+
+/// claude_code_undo_of_undo_removes_the_recreated_link_or_names_the_stale_inverse:
+/// disable removes the link and journals `recreate_symlink` as its inverse;
+/// undoing that disable recreates the link and must journal `remove_symlink`
+/// as its own inverse (not another `recreate_symlink`), so undoing the undo
+/// removes the link again instead of trying to recreate an already-present
+/// one.
+#[test]
+fn claude_code_undo_of_undo_removes_the_recreated_link_or_names_the_stale_inverse() {
+    let home = unique_temp_dir("claude_undo_of_undo");
+    install_universal_skill(&home, "gamma");
+    install_claude_link(&home, "gamma");
+    let rt = runtime_for(&home);
+    let link = home.join(CLAUDE_ROOT_RELATIVE).join("gamma");
+
+    let disable = ops::set_harness_enabled(
+        &rt,
+        &ctx(),
+        &SetHarnessEnabledRequest {
+            skill: SkillName("gamma".into()),
+            harness: AgentId::from(AgentId::CLAUDE_CODE),
+            enabled: false,
+        },
+    )
+    .unwrap();
+    assert!(
+        std::fs::symlink_metadata(&link).is_err(),
+        "disable should remove {}",
+        link.display()
+    );
+
+    let undo = ops::restore_event(
+        &rt,
+        &ctx(),
+        &RestoreRequest {
+            event_id: disable.event_id.clone(),
+            force: false,
+        },
+    )
+    .unwrap();
+    assert!(
+        std::fs::symlink_metadata(&link).is_ok(),
+        "undoing the disable should recreate {}",
+        link.display()
+    );
+
+    let undo_of_undo = ops::restore_event(
+        &rt,
+        &ctx(),
+        &RestoreRequest {
+            event_id: undo.restore_event_id.clone(),
+            force: false,
+        },
+    )
+    .unwrap();
+    assert!(
+        std::fs::symlink_metadata(&link).is_err(),
+        "undoing the undo should remove the recreated link at {} again",
+        link.display()
+    );
+
+    let store = rt
+        .ports
+        .history
+        .open(&rt.scope, HistoryAccess::ReadIfExists)
+        .unwrap()
+        .expect("the store exists after the writes above");
+    let disable_row = store.get(&disable.event_id).unwrap().unwrap();
+    let undo_row = store.get(&undo.restore_event_id).unwrap().unwrap();
+    let undo_of_undo_row = store.get(&undo_of_undo.restore_event_id).unwrap().unwrap();
+    let inverse_op = |row: &skill_studio_core::events::EventRecord| {
+        row.inverse
+            .as_ref()
+            .and_then(|v| v.get("op"))
+            .and_then(|v| v.as_str())
+            .map(str::to_string)
+    };
+    assert_eq!(
+        inverse_op(&disable_row).as_deref(),
+        Some("recreate_symlink"),
+        "the disable's own inverse should recreate the link"
+    );
+    assert_eq!(
+        inverse_op(&undo_row).as_deref(),
+        Some("remove_symlink"),
+        "undoing the disable recreated the link, so its inverse must remove it, not recreate it again"
+    );
+    assert_eq!(
+        inverse_op(&undo_of_undo_row).as_deref(),
+        Some("recreate_symlink"),
+        "undoing the undo removed the link, so its inverse must recreate it"
+    );
+
+    std::fs::remove_dir_all(&home).ok();
+}
+
+/// claude_code_enable_creates_the_skills_dir_on_a_fresh_home_or_names_the_confine_error:
+/// a home with no `.claude` directory at all must still let the first
+/// enable succeed - `confine` needs the link's parent to exist, and nothing
+/// else in this build creates `~/.claude/skills` first.
+#[test]
+fn claude_code_enable_creates_the_skills_dir_on_a_fresh_home_or_names_the_confine_error() {
+    let home = unique_temp_dir("claude_enable_fresh_home");
+    install_universal_skill(&home, "gamma");
+    let rt = runtime_for(&home);
+    let claude_skills_dir = home.join(CLAUDE_ROOT_RELATIVE);
+    assert!(
+        std::fs::symlink_metadata(&claude_skills_dir).is_err(),
+        "fixture setup: {} should not exist yet",
+        claude_skills_dir.display()
+    );
+
+    ops::set_harness_enabled(
+        &rt,
+        &ctx(),
+        &SetHarnessEnabledRequest {
+            skill: SkillName("gamma".into()),
+            harness: AgentId::from(AgentId::CLAUDE_CODE),
+            enabled: true,
+        },
+    )
+    .unwrap_or_else(|e| panic!("enable on a fresh home should succeed: {}", e.message));
+    let link = claude_skills_dir.join("gamma");
+    assert!(
+        std::fs::symlink_metadata(&link).is_ok(),
+        "enable should have created {}",
+        link.display()
+    );
+
+    std::fs::remove_dir_all(&home).ok();
+}
+
+/// opencode_toggle_refuses_a_skill_name_installed_in_two_locations_or_names_the_global_deny_leak:
+/// `gamma` sits both at the global universal root and inside one project's
+/// universal root; `permission.skill.gamma` is written once, globally, so a
+/// project-scoped toggle must be refused rather than silently also denying
+/// the unrelated global copy.
+#[test]
+fn opencode_toggle_refuses_a_skill_name_installed_in_two_locations_or_names_the_global_deny_leak() {
+    let home = unique_temp_dir("opencode_collision");
+    install_universal_skill(&home, "gamma");
+    let project = home.join("proj");
+    install_project_universal_skill(&project, "gamma");
+    let rt = runtime_with(&home, vec![project.clone()], Arc::new(RealFs::new()));
+
+    let err = ops::set_harness_enabled(
+        &rt,
+        &ctx(),
+        &SetHarnessEnabledRequest {
+            skill: SkillName("gamma".into()),
+            harness: AgentId::from(AgentId::OPEN_CODE),
+            enabled: false,
+        },
+    )
+    .unwrap_err();
+    assert_eq!(err.code, skill_studio_core::ErrorCode::InvalidRequest);
+    let global_dir = home.join(UNIVERSAL_ROOT_RELATIVE).join("gamma");
+    let project_dir = project.join(UNIVERSAL_ROOT_RELATIVE).join("gamma");
+    assert!(
+        err.message.contains(&global_dir.display().to_string())
+            && err.message.contains(&project_dir.display().to_string()),
+        "expected the error to name both {} and {}, got: {}",
+        global_dir.display(),
+        project_dir.display(),
+        err.message
+    );
+    let config_path = home.join(".config/opencode/opencode.json");
+    assert!(
+        std::fs::symlink_metadata(&config_path).is_err(),
+        "a refused toggle must not touch opencode.json at all"
+    );
+
+    std::fs::remove_dir_all(&home).ok();
+}
+
+/// claude_code_toggle_marks_the_event_failed_when_the_link_write_fails_or_names_the_pending_row:
+/// the journal row for a Claude Code enable is written before the symlink
+/// call; when that call fails, the row must be finished `failed`, not left
+/// `pending` (which `recover_interrupted` would later flip to `interrupted`
+/// rather than a plain, retryable failure).
+#[test]
+fn claude_code_toggle_marks_the_event_failed_when_the_link_write_fails_or_names_the_pending_row() {
+    let home = unique_temp_dir("claude_toggle_write_fails");
+    install_universal_skill(&home, "gamma");
+    let failing_fs = Arc::new(FailingFs::wrap(Arc::new(RealFs::new())));
+    let rt = runtime_with(&home, Vec::new(), failing_fs.clone());
+
+    failing_fs.fail_next_symlink();
+    let err = ops::set_harness_enabled(
+        &rt,
+        &ctx(),
+        &SetHarnessEnabledRequest {
+            skill: SkillName("gamma".into()),
+            harness: AgentId::from(AgentId::CLAUDE_CODE),
+            enabled: true,
+        },
+    )
+    .unwrap_err();
+    assert_eq!(err.code, skill_studio_core::ErrorCode::Io);
+
+    let events = ops::list_events(
+        &rt,
+        &ctx(),
+        &skill_studio_core::dto::ListEventsRequest::default(),
+    )
+    .unwrap();
+    assert_eq!(events.len(), 1);
+    assert_eq!(
+        events[0].status, "failed",
+        "a failed link write must leave the row failed, not pending"
+    );
+
+    std::fs::remove_dir_all(&home).ok();
+}
+
+/// claude_code_disable_refuses_a_real_directory_or_whole_dir_link_or_names_the_removed_directory:
+/// presence at `~/.claude/skills/<name>` only means "already linked" when it
+/// is a symlink. A real directory there (a plain copy) or a whole-directory
+/// link at `~/.claude/skills` itself must be refused, not torn down by
+/// `remove_file`.
+#[test]
+fn claude_code_disable_refuses_a_real_directory_or_whole_dir_link_or_names_the_removed_directory() {
+    // A real directory sits at the per-skill slot.
+    {
+        let home = unique_temp_dir("claude_disable_real_dir");
+        install_universal_skill(&home, "gamma");
+        let rt = runtime_for(&home);
+        let link = home.join(CLAUDE_ROOT_RELATIVE).join("gamma");
+        std::fs::create_dir_all(&link).unwrap();
+        std::fs::write(link.join("SKILL.md"), "---\nname: gamma\n---\n").unwrap();
+
+        let err = ops::set_harness_enabled(
+            &rt,
+            &ctx(),
+            &SetHarnessEnabledRequest {
+                skill: SkillName("gamma".into()),
+                harness: AgentId::from(AgentId::CLAUDE_CODE),
+                enabled: false,
+            },
+        )
+        .unwrap_err();
+        assert_eq!(err.code, skill_studio_core::ErrorCode::InvalidRequest);
+        assert!(
+            err.message.contains(&link.display().to_string()),
+            "expected the error to name {}, got: {}",
+            link.display(),
+            err.message
+        );
+        assert!(
+            std::fs::metadata(&link).is_ok_and(|m| m.is_dir()),
+            "the real directory at {} must not be removed",
+            link.display()
+        );
+        std::fs::remove_dir_all(&home).ok();
+    }
+
+    // `~/.claude/skills` itself is a whole-directory link into the shared root.
+    {
+        let home = unique_temp_dir("claude_disable_whole_dir_link");
+        install_universal_skill(&home, "gamma");
+        let claude_skills_dir = home.join(CLAUDE_ROOT_RELATIVE);
+        let universal_dir = home.join(UNIVERSAL_ROOT_RELATIVE);
+        std::fs::create_dir_all(claude_skills_dir.parent().unwrap()).unwrap();
+        #[cfg(unix)]
+        std::os::unix::fs::symlink(&universal_dir, &claude_skills_dir).unwrap();
+        let rt = runtime_for(&home);
+
+        let err = ops::set_harness_enabled(
+            &rt,
+            &ctx(),
+            &SetHarnessEnabledRequest {
+                skill: SkillName("gamma".into()),
+                harness: AgentId::from(AgentId::CLAUDE_CODE),
+                enabled: false,
+            },
+        )
+        .unwrap_err();
+        assert_eq!(err.code, skill_studio_core::ErrorCode::InvalidRequest);
+        assert!(
+            err.message
+                .contains(&claude_skills_dir.display().to_string()),
+            "expected the error to name {}, got: {}",
+            claude_skills_dir.display(),
+            err.message
+        );
+        assert!(
+            std::fs::symlink_metadata(&claude_skills_dir).is_ok_and(|m| m.file_type().is_symlink()),
+            "the whole-directory link at {} must not be removed",
+            claude_skills_dir.display()
+        );
+        std::fs::remove_dir_all(&home).ok();
+    }
 }

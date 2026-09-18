@@ -700,8 +700,9 @@ pub async fn set_harness_enabled(
         let refresh_state = app.state::<SkillRefreshState>();
         let parsed = super::skill_deployment::parse_deployment_id(&target.deployment_id)
             .ok_or_else(|| format!("Not a deployment id: {}", target.deployment_id))?;
-        let harness = skill_studio_core::identity::AgentId::parse(target.reader_agent.cli_name())
-            .map_err(|e| e.message)?;
+        let harness =
+            skill_studio_core::identity::AgentId::parse_harness(target.reader_agent.cli_name())
+                .map_err(|e| e.message)?;
         let rt = super::core_runtime::build_runtime_write()?;
         let ctx = OpContext::uncancellable(CorrelationId(ulid::Ulid::new().to_string()));
         let result = ops::set_harness_enabled(

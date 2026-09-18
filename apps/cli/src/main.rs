@@ -749,7 +749,7 @@ fn run_set_harness_enabled(
         Err(code) => return code,
     };
     let ctx = OpContext::uncancellable(CorrelationId(ulid::Ulid::new().to_string()));
-    let harness = match AgentId::parse(&harness) {
+    let harness = match AgentId::parse_harness(&harness) {
         Ok(harness) => harness,
         Err(err) => {
             let envelope =
