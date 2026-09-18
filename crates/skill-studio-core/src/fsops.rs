@@ -10,10 +10,19 @@
 //! filesystem - `skill_studio_host::fs::RealFs` and
 //! `crate::testing::FixtureFs` are the two implementations, real disk and
 //! in-memory.
+//!
+//! [`stage`], [`swap`], [`link`], and [`write_file`] each take a
+//! [`crate::journal::PlanWriter`] and record their own step against it right
+//! after the mutation lands - see `docs/action-map/plan.md` unit 1.2 - so a
+//! caller cannot run one of these four without a plan step landing for it.
+//! `crates/skill-studio-core/tests/architecture.rs` pins that these four
+//! names are only ever called from this module, `journal.rs`, and tests.
 
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 
+use crate::error::CoreError;
+use crate::journal::PlanWriter;
 use crate::ports::{FileKind, ScopeFs};
 
 /// What went wrong running an fsops primitive.
@@ -58,6 +67,11 @@ pub enum FsOpsError {
         #[source]
         source: std::io::Error,
     },
+    /// The primitive's mutation itself succeeded, but recording the step
+    /// against the plan afterward failed - the mutation is real, but
+    /// unjournaled.
+    #[error("ran but was not journaled: {0}")]
+    Journal(#[source] CoreError),
 }
 
 impl FsOpsError {
@@ -269,7 +283,11 @@ impl Staged {
 /// folder itself, then up to the root - before returning. Nothing outside
 /// this call sees the folder yet: it sits under a name a scan never
 /// matches.
-pub fn stage(root: &Root, contents: &[(PathBuf, Vec<u8>)]) -> Result<Staged, FsOpsError> {
+pub fn stage(
+    root: &Root,
+    plan: &PlanWriter<'_>,
+    contents: &[(PathBuf, Vec<u8>)],
+) -> Result<Staged, FsOpsError> {
     root.revalidate()?;
     let tmp_name = PathBuf::from(format!(".skill-studio-stage-{}", unique_suffix()));
     let tmp_path = root.confine(&tmp_name)?;
@@ -309,6 +327,7 @@ pub fn stage(root: &Root, contents: &[(PathBuf, Vec<u8>)]) -> Result<Staged, FsO
     }
     fsync_up_to_root(root, tmp_path.clone())?;
     root.revalidate()?;
+    plan.record_stage(&tmp_path).map_err(FsOpsError::Journal)?;
     Ok(Staged { path: tmp_path })
 }
 
@@ -342,6 +361,7 @@ pub fn stage(root: &Root, contents: &[(PathBuf, Vec<u8>)]) -> Result<Staged, FsO
 /// otherwise catch: it does not follow a name's own leaf).
 pub fn swap(
     root: &Root,
+    plan: &PlanWriter<'_>,
     final_name: &Path,
     staged: Staged,
     quarantine_dir: &Path,
@@ -349,6 +369,7 @@ pub fn swap(
     root.revalidate()?;
     let final_path = root.confine(final_name)?;
     let old_facts = root.fs.symlink_metadata(&final_path).ok();
+    let mut quarantined = None;
 
     match old_facts {
         None => {
@@ -392,6 +413,7 @@ pub fn swap(
             root.fs
                 .fsops_rename(&staged.path, &quarantine_target)
                 .fs_err(&quarantine_target)?;
+            quarantined = Some(quarantine_target);
         }
         Some(_) => {
             return Err(FsOpsError::ReplacedBySymlink { path: final_path });
@@ -401,15 +423,28 @@ pub fn swap(
     let parent = final_path.parent().unwrap_or(root.path()).to_path_buf();
     fsync_up_to_root(root, parent)?;
     root.revalidate()?;
+    plan.record_swap(&final_path, quarantined)
+        .map_err(FsOpsError::Journal)?;
     Ok(())
 }
 
 /// Creates a symlink at `name` pointing at `target`, under a temp name
 /// first and then renamed into place, so the link only ever appears fully
 /// formed.
-pub fn link(root: &Root, name: &Path, target: &Path) -> Result<(), FsOpsError> {
+pub fn link(
+    root: &Root,
+    plan: &PlanWriter<'_>,
+    name: &Path,
+    target: &Path,
+) -> Result<(), FsOpsError> {
     root.revalidate()?;
     let link_path = root.confine(name)?;
+    let previous_target = match root.fs.symlink_metadata(&link_path) {
+        Ok(facts) if facts.kind == FileKind::Symlink => {
+            Some(root.fs.read_link(&link_path).fs_err(&link_path)?)
+        }
+        _ => None,
+    };
     let parent = link_path.parent().unwrap_or(root.path()).to_path_buf();
     let leaf = link_path
         .file_name()
@@ -423,6 +458,8 @@ pub fn link(root: &Root, name: &Path, target: &Path) -> Result<(), FsOpsError> {
         .fs_err(&link_path)?;
     fsync_up_to_root(root, parent)?;
     root.revalidate()?;
+    plan.record_link(&link_path, previous_target)
+        .map_err(FsOpsError::Journal)?;
     Ok(())
 }
 
@@ -467,13 +504,25 @@ fn sha256(bytes: &[u8]) -> [u8; 32] {
 /// what `bytes` should be.
 pub fn write_file(
     root: &Root,
+    plan: &PlanWriter<'_>,
     name: &Path,
     bytes: &[u8],
     expected: &ReadStamp,
 ) -> Result<(), FsOpsError> {
     root.revalidate()?;
     let target = root.confine(name)?;
-    let current = read_stamp(root.fs, &target)?;
+    // Captured once, up front: both this call's stale-read check and the
+    // journal backup below need the target's pre-write bytes, and reading
+    // twice would widen the race `expected` exists to catch.
+    let previous = if root.fs.symlink_metadata(&target).is_ok() {
+        Some(root.fs.read_capped(&target, u64::MAX).fs_err(&target)?)
+    } else {
+        None
+    };
+    let current = match &previous {
+        Some(bytes) => ReadStamp::Present(sha256(bytes)),
+        None => ReadStamp::Absent,
+    };
     if &current != expected {
         return Err(FsOpsError::StaleRead { path: target });
     }
@@ -492,5 +541,7 @@ pub fn write_file(
     root.fs.fsops_rename(&tmp_path, &target).fs_err(&target)?;
     fsync_up_to_root(root, parent)?;
     root.revalidate()?;
+    plan.record_write_file(&target, previous.as_deref())
+        .map_err(FsOpsError::Journal)?;
     Ok(())
 }

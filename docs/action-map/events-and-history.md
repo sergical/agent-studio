@@ -75,20 +75,20 @@ The fix reads all history, not just the newest 200 rows, off the UI thread, and 
 `skill-studio-core` now has a second, lower-level write-safety primitive alongside the SQLite event store above: the `Journal` port (`crates/skill-studio-core/src/ports.rs:627`) and its reference filesystem implementation, `FsJournal` (`crates/skill-studio-core/src/journal.rs:42`).
 It journals `fsops`'s primitives (Stage, Swap, Link, WriteFile) directly, one row per `PlanRecord` (`ports.rs:602`) rather than per Tauri command, so a future `ops` function can compose several `fsops` calls into one plan and still get one journal row for the whole plan.
 
-A plan is `Pending`, `Done`, `Failed`, or `Interrupted` (`PlanStatus`, `ports.rs:565`).
+A plan is `Pending`, `Done`, `Failed`, `Reversed`, or `Interrupted` (`PlanStatus`, `ports.rs`).
 `FsJournal::begin` writes the backup manifest, then the plan file, both through `ScopeFs` with an fsync-then-rename each, before the caller's first mutating step; the row starts `Pending`.
-Each `fsops` call goes through a `journaled_*` wrapper (`journal.rs`: `journaled_stage`, `journaled_swap`, `journaled_link`, `journaled_write_file`) that runs the primitive and then appends a `PlanStep` naming it, via `PlanWriter::step` (`journal.rs:215`).
+Each of `fsops`'s four primitives (`stage`, `swap`, `link`, `write_file`) now takes the open plan (a `&PlanWriter`) directly and records its own step as it runs — there is no separate `journaled_*` wrapper to call instead; a caller cannot run a primitive without a step landing for it (`crates/skill-studio-core/tests/architecture.rs` pins this).
 The caller finishes the plan `Done` or `Failed` after the last step.
 
-`reconcile` (`journal.rs:359`) is the startup pass: every plan still `Pending` is resolved.
-A pending plan with no recorded steps means nothing was mutated yet, so it resolves `Failed`; a pending plan with at least one recorded step means the process died mid-plan, and a generic primitive cannot safely replay or undo an application-specific multi-step plan, so it resolves `Interrupted` and is listed for the caller to act on.
+`reconcile` (`journal.rs`) is the startup pass: every plan still `Pending` is resolved.
+A pending plan with no recorded steps means nothing was mutated yet, so it resolves `Failed`.
+A pending plan with at least one recorded step means the process died mid-plan; `reconcile` now actually reverses that plan's steps, in reverse order, through the same `ScopeFs` — stage undoes by removing the staged tree, swap by exchanging the quarantined tree back and removing the quarantine, link by restoring (or removing) the previous symlink target, and write_file by restoring the previous bytes from the plan's own backup store (or deleting the file if there was none) — and resolves `Reversed`. If reversal itself hits an I/O error (for example, its backup bytes are gone), the plan resolves `Interrupted` and is listed with that error for the caller to act on.
 No plan is ever deleted.
 
-`trim_backups` (`journal.rs:399`) enforces a `BackupQuota` (`journal.rs:378`, max total bytes and max age) by trimming the oldest backups first — age violations before size violations — using each plan's `created_at` as its backups' age, since a backup has no timestamp of its own.
+`trim_backups` (`journal.rs`) enforces a `BackupQuota` (max total bytes and max age) by trimming the oldest backups first — age violations before size violations — using each plan's `created_at` as its backups' age, since a backup has no timestamp of its own.
 
-The desktop's `EventStore` (`apps/desktop/src-tauri/src/skills/event_store.rs:125`) is the host implementation of this port: `EventStore::open` (`event_store.rs:133`) constructs an `FsJournal` rooted at `<app_data>/journal` over `skill_studio_host::RealFs`, exposed through `EventStore::journal()`.
-This is additive: the SQLite five-phase write path described above is untouched, and no existing command has been rerouted through the new `Journal` yet — that is a later slice, once `ops` functions exist to call `journaled_*` from.
-Startup reconciliation for this new journal runs from `reconcile_event_store_at_startup` (`lib.rs:37`), called inside `tauri::async_runtime::spawn_blocking` from `run()`'s `.setup()` so it never blocks the UI thread.
+The desktop's `EventStore` (`apps/desktop/src-tauri/src/skills/event_store.rs`) is now the host implementation of this port directly: `impl Journal for EventStore` delegates every method to the `FsJournal` it already owns (rooted at `<app_data>/journal` over `skill_studio_host::RealFs`), rather than reimplementing plan storage on SQLite — the `EventStore::journal()` getter this used to be exposed through is gone. `run()`'s startup `spawn_blocking` now calls `skill_studio_core::journal::reconcile` against `&store` too, right after the SQLite five-phase reconciliation (`reconcile_core_journal_at_startup`, `lib.rs`), holding the same root `WriteLease` every other mutating command takes.
+This is still additive: the SQLite five-phase write path described above is untouched, and no existing command has been rerouted through this `Journal` yet — that adoption is a later slice, once `ops` functions exist to call `fsops`'s primitives from. Today's startup reconcile against it is a no-op in practice for that reason; it exists so a crash mid-write is already covered on the day a command does route through it.
 
 ## Desired state
 

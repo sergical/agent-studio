@@ -121,6 +121,51 @@ fn reconcile_event_store_at_startup(store: &skills::event_store::EventStore) {
     }
 }
 
+/// Resolves and reverses every `skill-studio-core` plan a crash left
+/// `Pending` in `store`'s journal (unit 1.2's `journal::reconcile`, Section
+/// C: `EventStore` is now that journal's host implementation). Takes the
+/// same root write lease every other mutating command takes, so this
+/// startup pass can't race a concurrent write; skips reconciliation rather
+/// than blocking startup if that lease is already held. No command routes
+/// its writes through this journal yet (see
+/// `docs/action-map/events-and-history.md`), so today this is a no-op in
+/// practice - it exists so the day one does, a crash mid-write is already
+/// covered.
+fn reconcile_core_journal_at_startup(store: &skills::event_store::EventStore) {
+    let Some(home) = dirs::home_dir() else {
+        eprintln!("[event_store] could not resolve home dir for core journal reconcile");
+        return;
+    };
+    let write_lease = skills::write_lease::WriteLease::default();
+    let guard = match write_lease.try_acquire(&home) {
+        Ok(guard) => guard,
+        Err(e) => {
+            eprintln!("[event_store] skipped core journal reconcile: {e}");
+            return;
+        }
+    };
+    let fs = skill_studio_host::RealFs::new();
+    match skill_studio_core::journal::reconcile(store, guard.as_exclusive_guard(), &fs) {
+        Ok(report) => {
+            for id in &report.reversed {
+                eprintln!(
+                    "[event_store] core journal plan {id:?} was pending at startup - reversed"
+                );
+            }
+            for interrupted in &report.interrupted {
+                eprintln!(
+                    "[event_store] core journal plan {:?} could not be reversed: {}",
+                    interrupted.id, interrupted.error
+                );
+            }
+            for id in &report.resolved_without_steps {
+                eprintln!("[event_store] core journal plan {id:?} had no steps - marked failed");
+            }
+        }
+        Err(e) => eprintln!("[event_store] core journal reconcile failed: {e}"),
+    }
+}
+
 /// When `SKILL_STUDIO_FIXTURE` names a directory, points every `HOME`
 /// resolution in the app - `dirs::home_dir()` throughout the desktop crate,
 /// and `RuntimeScope::live` vs. `RuntimeScope::fixture` in
@@ -194,6 +239,7 @@ pub fn run() {
                 if let Ok(guard) = lock {
                     if let Some(store) = guard.as_ref() {
                         reconcile_event_store_at_startup(store);
+                        reconcile_core_journal_at_startup(store);
                     }
                 }
             });

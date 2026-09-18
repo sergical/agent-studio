@@ -1,18 +1,17 @@
 //! Unit 1.2: the integration test proving every one of `fsops`'s four
-//! primitives, called through `journal::journaled_*`, records a journal
-//! entry. The five lower-level journal tests live inline in
-//! `skill_studio_core::journal`'s own test module.
+//! primitives records a journal entry itself, since Section B moved the
+//! recording into the primitives (no more `journaled_*` wrappers). The five
+//! lower-level journal tests live inline in `skill_studio_core::journal`'s
+//! own test module.
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
 
 use chrono::Utc;
-use skill_studio_core::fsops::{read_stamp, Root};
+use skill_studio_core::fsops::{self, read_stamp, Root};
 use skill_studio_core::identity::PlanId;
-use skill_studio_core::journal::{
-    journaled_link, journaled_stage, journaled_swap, journaled_write_file, FsJournal, PlanWriter,
-};
+use skill_studio_core::journal::{FsJournal, PlanWriter};
 use skill_studio_core::ports::{
     ExclusiveGuard, Journal, LeaseMode, LeaseProvider, PlanStatus, ScopeFs,
 };
@@ -25,10 +24,9 @@ fn guard(lease: &FakeLease) -> ExclusiveGuard {
     ExclusiveGuard::from_handle(handle)
 }
 
-/// Given a plan, when each of `fsops`'s four primitives is called through
-/// its `journaled_*` wrapper, then the plan's recorded steps name all four
-/// in the order they ran; on failure the panic names whichever primitive's
-/// call left no matching step.
+/// Given a plan, when each of `fsops`'s four primitives is called, then the
+/// plan's recorded steps name all four, in the order they ran; on failure the
+/// panic names whichever primitive's call left no matching step.
 #[test]
 fn every_fsops_call_records_a_journal_entry_or_names_the_unjournaled_write() {
     let fs: Arc<dyn ScopeFs> = Arc::new(
@@ -54,32 +52,31 @@ fn every_fsops_call_records_a_journal_entry_or_names_the_unjournaled_write() {
     )
     .expect("begin");
 
-    let staged = journaled_stage(
-        &plan,
+    let staged = fsops::stage(
         &root,
+        &plan,
         &[(PathBuf::from("SKILL.md"), b"hello".to_vec())],
     )
-    .expect("journaled_stage");
-    journaled_swap(
-        &plan,
+    .expect("stage");
+    fsops::swap(
         &root,
+        &plan,
         Path::new("alpha"),
         staged,
         Path::new(".trash"),
     )
-    .expect("journaled_swap");
-    journaled_link(&plan, &root, Path::new("alpha-link"), Path::new("alpha"))
-        .expect("journaled_link");
+    .expect("swap");
+    fsops::link(&root, &plan, Path::new("alpha-link"), Path::new("alpha")).expect("link");
     let target = root_path.join("alpha").join("SKILL.md");
     let stamp = read_stamp(fs.as_ref(), &target).expect("read stamp");
-    journaled_write_file(
-        &plan,
+    fsops::write_file(
         &root,
+        &plan,
         Path::new("alpha/SKILL.md"),
         b"updated",
         &stamp,
     )
-    .expect("journaled_write_file");
+    .expect("write_file");
 
     let id = plan.id().clone();
     plan.finish(PlanStatus::Done).expect("finish");
@@ -91,7 +88,7 @@ fn every_fsops_call_records_a_journal_entry_or_names_the_unjournaled_write() {
         .find(|p| p.id == id)
         .expect("the plan begun above");
 
-    let names: Vec<&str> = record.steps.iter().map(|s| s.name.as_str()).collect();
+    let names: Vec<&str> = record.steps.iter().map(|s| s.primitive_name()).collect();
     for expected in ["stage", "swap", "link", "write_file"] {
         assert!(
             names.contains(&expected),

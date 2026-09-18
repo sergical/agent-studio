@@ -5,16 +5,15 @@
 //! `docs/action-map/plan.md` unit 1.2. [`FsJournal`] is the reference
 //! [`Journal`] implementation, built only on [`ScopeFs`] so a host can reuse
 //! it verbatim rather than reimplementing the write order. [`reconcile`]
-//! resolves every plan a crash left `Pending`, and [`trim_backups`] enforces
-//! a size-and-age quota on the backups plans keep for undo. Neither one ever
-//! deletes a plan row.
+//! resolves every plan a crash left `Pending` by undoing its recorded steps
+//! in reverse - or, for a plan with none, marking it `Failed` since nothing
+//! mutated anything yet. [`trim_backups`] enforces a size-and-age quota on
+//! the backups plans keep for undo. Neither one ever deletes a plan row.
 //!
-//! [`journaled_stage`], [`journaled_swap`], [`journaled_link`], and
-//! [`journaled_write_file`] wrap [`crate::fsops`]'s four primitives so a
-//! caller that goes through them cannot call a primitive without also
-//! recording the step that ran.
+//! [`PlanWriter`]'s `record_*` methods are how `crate::fsops`'s four
+//! primitives themselves record the step that ran - see that module - so a
+//! caller cannot call a primitive without a plan step landing for it.
 
-use std::fmt;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
@@ -22,7 +21,6 @@ use std::time::Duration;
 use chrono::{DateTime, Utc};
 
 use crate::error::{CoreError, ErrorCode};
-use crate::fsops::{self, FsOpsError, ReadStamp, Root, Staged};
 use crate::identity::PlanId;
 use crate::ports::{
     ExclusiveGuard, FileKind, Journal, PlanBackupEntry, PlanRecord, PlanStatus, PlanStep, ScopeFs,
@@ -100,6 +98,22 @@ impl FsJournal {
         self.fs.fsops_fsync_dir(parent)
     }
 
+    /// Writes raw `bytes` to `path` through a temp file, fsync, and rename -
+    /// the same durability [`Self::write_json`] gives its own files, minus
+    /// the JSON encoding.
+    fn write_bytes(&self, path: &Path, bytes: &[u8]) -> std::io::Result<()> {
+        let parent = path.parent().unwrap_or(path);
+        self.ensure_dir(parent)?;
+        let tmp = path.with_extension("tmp");
+        if self.fs.symlink_metadata(&tmp).is_ok() {
+            self.fs.fsops_remove_file(&tmp)?;
+        }
+        self.fs.fsops_write_new_file(&tmp, bytes)?;
+        self.fs.fsops_fsync_file(&tmp)?;
+        self.fs.fsops_rename(&tmp, path)?;
+        self.fs.fsops_fsync_dir(parent)
+    }
+
     fn read_json<T: serde::de::DeserializeOwned>(&self, path: &Path) -> Result<T, CoreError> {
         let bytes = self
             .fs
@@ -145,6 +159,17 @@ impl Journal for FsJournal {
         step: PlanStep,
     ) -> Result<(), CoreError> {
         let mut record: PlanRecord = self.read_json(&self.plan_path(id))?;
+        // A `WriteFile` step's backup was written by `write_backup` before
+        // this call, but the manifest `begin` fsynced only knows the
+        // backups the caller had at the plan's start; append it here too so
+        // `trim_backups` and a later `all()` both see it.
+        if let PlanStep::WriteFile {
+            backup: Some(entry),
+            ..
+        } = &step
+        {
+            record.backups.push(entry.clone());
+        }
         record.steps.push(step);
         self.write_record(&record)
     }
@@ -206,6 +231,25 @@ impl Journal for FsJournal {
             Err(e) => Err(CoreError::io(path, e)),
         }
     }
+
+    fn write_backup(
+        &self,
+        _guard: &ExclusiveGuard,
+        id: &PlanId,
+        relative: &str,
+        bytes: &[u8],
+    ) -> Result<(), CoreError> {
+        let path = self.backup_path(id, relative);
+        self.write_bytes(&path, bytes)
+            .map_err(|e| CoreError::io(path, e))
+    }
+
+    fn read_backup(&self, id: &PlanId, relative: &str) -> Result<Vec<u8>, CoreError> {
+        let path = self.backup_path(id, relative);
+        self.fs
+            .read_capped(&path, MAX_JOURNAL_JSON_BYTES)
+            .map_err(|e| CoreError::io(path, e))
+    }
 }
 
 /// A plan begun through [`Journal::begin`], held open while its steps run.
@@ -250,14 +294,74 @@ impl<'a> PlanWriter<'a> {
         &self.id
     }
 
-    /// Records that one `fsops` primitive ran against `path`.
-    pub fn step(&self, name: &str, path: &Path) -> Result<(), CoreError> {
+    /// Records that [`crate::fsops::stage`] built `staged` (its temp path).
+    /// Reversal removes it - nothing else has touched it.
+    pub fn record_stage(&self, staged: &Path) -> Result<(), CoreError> {
         self.journal.record_step(
             self.guard,
             &self.id,
-            PlanStep {
-                name: name.to_string(),
+            PlanStep::Stage {
+                staged: staged.to_path_buf(),
+            },
+        )
+    }
+
+    /// Records that [`crate::fsops::swap`] put a folder at `path`.
+    /// `quarantined` is where the folder that sat at `path` before was
+    /// relocated to, when one did - `None` when `path` was created fresh.
+    pub fn record_swap(&self, path: &Path, quarantined: Option<PathBuf>) -> Result<(), CoreError> {
+        self.journal.record_step(
+            self.guard,
+            &self.id,
+            PlanStep::Swap {
                 path: path.to_path_buf(),
+                quarantined,
+            },
+        )
+    }
+
+    /// Records that [`crate::fsops::link`] set `path`. `previous_target` is
+    /// what `path` pointed at before, when it already existed as a symlink.
+    pub fn record_link(
+        &self,
+        path: &Path,
+        previous_target: Option<PathBuf>,
+    ) -> Result<(), CoreError> {
+        self.journal.record_step(
+            self.guard,
+            &self.id,
+            PlanStep::Link {
+                path: path.to_path_buf(),
+                previous_target,
+            },
+        )
+    }
+
+    /// Records that [`crate::fsops::write_file`] wrote `path`. When
+    /// `previous` holds the file's pre-write bytes, writes them durably
+    /// into this plan's own backup store first (via
+    /// [`Journal::write_backup`]) and points the recorded step at that
+    /// backup, so reversal can read them back.
+    pub fn record_write_file(&self, path: &Path, previous: Option<&[u8]>) -> Result<(), CoreError> {
+        let backup = match previous {
+            Some(bytes) => {
+                let relative = backup_relative_name(path);
+                self.journal
+                    .write_backup(self.guard, &self.id, &relative, bytes)?;
+                Some(PlanBackupEntry {
+                    original: path.to_path_buf(),
+                    relative,
+                    bytes: bytes.len() as u64,
+                })
+            }
+            None => None,
+        };
+        self.journal.record_step(
+            self.guard,
+            &self.id,
+            PlanStep::WriteFile {
+                path: path.to_path_buf(),
+                backup,
             },
         )
     }
@@ -268,84 +372,41 @@ impl<'a> PlanWriter<'a> {
     }
 }
 
-/// Either an `fsops` primitive failed, or the journal call recording it did.
-#[derive(Debug)]
-pub enum JournalOpsError {
-    /// The `fsops` primitive itself failed; nothing was journaled.
-    FsOps(FsOpsError),
-    /// The primitive ran but the journal step could not be recorded.
-    Journal(CoreError),
+/// Turns an absolute path into a name unique enough to use as a backup's
+/// `relative` under the plan's own backup directory - the leaf name plus a
+/// counter, so two `write_file` steps against files with the same leaf
+/// name never collide.
+fn backup_relative_name(path: &Path) -> String {
+    static COUNTER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    let n = COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let leaf = path
+        .file_name()
+        .and_then(|s| s.to_str())
+        .unwrap_or("backup");
+    format!("{n}-{leaf}")
 }
 
-impl fmt::Display for JournalOpsError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            JournalOpsError::FsOps(e) => write!(f, "{e}"),
-            JournalOpsError::Journal(e) => write!(f, "ran but was not journaled: {e}"),
-        }
-    }
-}
-
-impl std::error::Error for JournalOpsError {}
-
-/// Runs [`fsops::stage`], then records the step. See the module doc for why
-/// callers that need every step journaled use this instead of calling
-/// `fsops::stage` directly.
-pub fn journaled_stage(
-    plan: &PlanWriter<'_>,
-    root: &Root<'_>,
-    contents: &[(PathBuf, Vec<u8>)],
-) -> Result<Staged, JournalOpsError> {
-    let staged = fsops::stage(root, contents).map_err(JournalOpsError::FsOps)?;
-    plan.step("stage", staged.path())
-        .map_err(JournalOpsError::Journal)?;
-    Ok(staged)
-}
-
-/// Runs [`fsops::swap`], then records the step.
-pub fn journaled_swap(
-    plan: &PlanWriter<'_>,
-    root: &Root<'_>,
-    final_name: &Path,
-    staged: Staged,
-    quarantine_dir: &Path,
-) -> Result<(), JournalOpsError> {
-    fsops::swap(root, final_name, staged, quarantine_dir).map_err(JournalOpsError::FsOps)?;
-    plan.step("swap", final_name)
-        .map_err(JournalOpsError::Journal)
-}
-
-/// Runs [`fsops::link`], then records the step.
-pub fn journaled_link(
-    plan: &PlanWriter<'_>,
-    root: &Root<'_>,
-    name: &Path,
-    target: &Path,
-) -> Result<(), JournalOpsError> {
-    fsops::link(root, name, target).map_err(JournalOpsError::FsOps)?;
-    plan.step("link", name).map_err(JournalOpsError::Journal)
-}
-
-/// Runs [`fsops::write_file`], then records the step.
-pub fn journaled_write_file(
-    plan: &PlanWriter<'_>,
-    root: &Root<'_>,
-    name: &Path,
-    bytes: &[u8],
-    expected: &ReadStamp,
-) -> Result<(), JournalOpsError> {
-    fsops::write_file(root, name, bytes, expected).map_err(JournalOpsError::FsOps)?;
-    plan.step("write_file", name)
-        .map_err(JournalOpsError::Journal)
+/// A plan [`reconcile`] found still `Pending` and could not undo, listed
+/// with the I/O error reversal hit.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct InterruptedPlan {
+    /// The plan's id.
+    pub id: PlanId,
+    /// What went wrong undoing it.
+    pub error: String,
 }
 
 /// What startup reconciliation did to every plan it found `Pending`.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Reconciliation {
-    /// Plans that recorded at least one step before the crash: marked
-    /// `Interrupted` and listed, since only the caller who began the plan
-    /// knows how to finish or undo its partial work.
-    pub interrupted: Vec<PlanId>,
+    /// Plans that recorded at least one step and were fully undone, in
+    /// reverse order, through [`ScopeFs`]: marked `Reversed`.
+    pub reversed: Vec<PlanId>,
+    /// Plans that recorded at least one step but undoing one hit an I/O
+    /// error: marked `Interrupted` and listed with that error, since the
+    /// on-disk state can no longer be trusted as either the pre-plan or the
+    /// post-plan shape.
+    pub interrupted: Vec<InterruptedPlan>,
     /// Plans that recorded no step at all: nothing had mutated anything
     /// yet, so the plan is resolved by marking it `Failed`, the same
     /// terminal state a plan that failed its own first step would reach.
@@ -353,25 +414,104 @@ pub struct Reconciliation {
 }
 
 /// Resolves every plan [`Journal::pending`] still reports, never deleting a
-/// row: a plan with recorded steps becomes `Interrupted` (listed for a
-/// caller to inspect or restore), a plan with none becomes `Failed` (nothing
-/// on disk needed undoing). Idempotent - a second call finds nothing left
-/// `Pending`.
+/// row: a plan with recorded steps has each one undone, in reverse order,
+/// through `fs` - `Reversed` on success, `Interrupted` (listed with the
+/// error) the moment one step's undo fails. A plan with no recorded steps
+/// becomes `Failed` (nothing on disk needed undoing). Idempotent - a second
+/// call finds nothing left `Pending` (a `Reversed` or `Interrupted` plan is
+/// terminal either way).
 pub fn reconcile(
     journal: &dyn Journal,
     guard: &ExclusiveGuard,
+    fs: &dyn ScopeFs,
 ) -> Result<Reconciliation, CoreError> {
     let mut report = Reconciliation::default();
     for plan in journal.pending()? {
         if plan.steps.is_empty() {
             journal.finish(guard, &plan.id, PlanStatus::Failed)?;
             report.resolved_without_steps.push(plan.id);
-        } else {
-            journal.finish(guard, &plan.id, PlanStatus::Interrupted)?;
-            report.interrupted.push(plan.id);
+            continue;
+        }
+        match reverse_steps(journal, &plan, fs) {
+            Ok(()) => {
+                journal.finish(guard, &plan.id, PlanStatus::Reversed)?;
+                report.reversed.push(plan.id);
+            }
+            Err(error) => {
+                journal.finish(guard, &plan.id, PlanStatus::Interrupted)?;
+                report.interrupted.push(InterruptedPlan {
+                    id: plan.id,
+                    error: error.to_string(),
+                });
+            }
         }
     }
     Ok(report)
+}
+
+/// Undoes `plan`'s recorded steps in reverse order. Stops at the first
+/// step whose undo fails; steps already undone stay undone (there is no
+/// partial-undo rollback - a step's own undo is the smallest unit this
+/// resolves).
+fn reverse_steps(
+    journal: &dyn Journal,
+    plan: &PlanRecord,
+    fs: &dyn ScopeFs,
+) -> std::io::Result<()> {
+    for step in plan.steps.iter().rev() {
+        match step {
+            PlanStep::Stage { staged } => remove_tree(fs, staged)?,
+            PlanStep::Swap { path, quarantined } => match quarantined {
+                Some(quarantined) => {
+                    fs.fsops_exchange(quarantined, path)?;
+                    remove_tree(fs, quarantined)?;
+                }
+                None => remove_tree(fs, path)?,
+            },
+            PlanStep::Link {
+                path,
+                previous_target,
+            } => {
+                if fs.symlink_metadata(path).is_ok() {
+                    fs.fsops_remove_file(path)?;
+                }
+                if let Some(target) = previous_target {
+                    fs.fsops_symlink(target, path)?;
+                }
+            }
+            PlanStep::WriteFile { path, backup } => {
+                if fs.symlink_metadata(path).is_ok() {
+                    fs.fsops_remove_file(path)?;
+                }
+                if let Some(entry) = backup {
+                    let bytes = journal
+                        .read_backup(&plan.id, &entry.relative)
+                        .map_err(|e| std::io::Error::other(e.to_string()))?;
+                    fs.fsops_write_new_file(path, &bytes)?;
+                    fs.fsops_fsync_file(path)?;
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
+/// Removes `path` and everything under it, deepest first, using only the
+/// per-entry primitives [`ScopeFs`] offers (there is no recursive remove on
+/// the port itself). A no-op when nothing is at `path`.
+fn remove_tree(fs: &dyn ScopeFs, path: &Path) -> std::io::Result<()> {
+    let facts = match fs.symlink_metadata(path) {
+        Ok(facts) => facts,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        Err(e) => return Err(e),
+    };
+    if facts.kind != FileKind::Dir {
+        return fs.fsops_remove_file(path);
+    }
+    for entry in fs.read_dir(path)? {
+        remove_tree(fs, &path.join(&entry.name))?;
+    }
+    fs.fsops_remove_dir(path)
 }
 
 /// Size-and-age limit on the backups plans keep for undo.
@@ -449,6 +589,7 @@ pub fn trim_backups(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::fsops::{self, Root};
     use crate::ports::{LeaseMode, LeaseProvider};
     use crate::testing::{FakeLease, FixtureBuilder};
 
@@ -556,7 +697,7 @@ mod tests {
             after_begin.status
         );
 
-        plan.step("write_file", Path::new("/root/skill/SKILL.md"))
+        plan.record_write_file(Path::new("/root/skill/SKILL.md"), None)
             .expect("record the last step");
         journal
             .finish(&g, &id, PlanStatus::Done)
@@ -576,18 +717,32 @@ mod tests {
         );
     }
 
-    /// Given a plan begun and left with one recorded step (a simulated
-    /// crash after a mid-plan step, before `finish` ran), when startup
-    /// reconciliation runs, then the plan no longer reads `Pending` - it is
-    /// resolved as `Interrupted`, not left open; on failure the panic names
-    /// the plan still `Pending`.
+    /// Given a fixture with an existing `skill` folder, when a plan runs two
+    /// of its three intended steps (`stage`+`swap` replacing `skill`, then
+    /// `link` pointing `skill-current` at it) and the process dies before
+    /// its third step and before `finish`, then startup reconciliation
+    /// undoes both recorded steps in reverse and the tree under `/root`
+    /// reads back byte-for-byte identical to the snapshot taken before the
+    /// plan ran; on failure the panic names the diverging path or the plan
+    /// left open.
     #[test]
     fn startup_reconciliation_after_a_simulated_crash_completes_or_reverses_every_pending_plan_or_names_the_plan_left_open(
     ) {
-        let fs: Arc<dyn ScopeFs> = Arc::new(FixtureBuilder::new().dir("/journal").build_fs());
-        let journal = journal_over(fs);
+        let fs: Arc<dyn ScopeFs> = Arc::new(
+            FixtureBuilder::new()
+                .dir("/journal")
+                .dir("/root")
+                .dir("/root/skill")
+                .file("/root/skill/SKILL.md", b"pre-plan content")
+                .build_fs(),
+        );
+        let root_path = PathBuf::from("/root");
+        let before = tree_snapshot(fs.as_ref(), &root_path);
+
+        let journal = journal_over(fs.clone());
         let lease = FakeLease::default();
         let g = guard(&lease);
+        let root = Root::open(fs.as_ref(), root_path.clone()).expect("open root");
 
         let id = PlanId("01PLAN0000000000000000002".into());
         let plan = PlanWriter::begin(
@@ -595,21 +750,48 @@ mod tests {
             &g,
             id.clone(),
             Utc::now(),
-            "crashes mid-plan",
-            PathBuf::from("/root"),
+            "crashes after two of three steps",
+            root_path.clone(),
             Vec::new(),
         )
         .expect("begin");
-        plan.step("stage", Path::new("/root/.stage-tmp"))
-            .expect("record the one step that ran before the crash");
-        // The process dies here: `finish` never runs, and `plan` (the
-        // `PlanWriter`) is simply dropped rather than resolved.
+
+        let staged = fsops::stage(
+            &root,
+            &plan,
+            &[(PathBuf::from("SKILL.md"), b"new content".to_vec())],
+        )
+        .expect("stage");
+        fsops::swap(
+            &root,
+            &plan,
+            Path::new("skill"),
+            staged,
+            Path::new(".trash"),
+        )
+        .expect("swap over the existing skill folder");
+        fsops::link(&root, &plan, Path::new("skill-current"), Path::new("skill")).expect("link");
+        // The plan's third step (e.g. a write_file into the new folder)
+        // never runs: the process dies here, before `finish`, and `plan`
+        // is simply dropped rather than resolved.
         drop(plan);
 
-        let report = reconcile(&journal, &g).expect("reconciliation must run");
+        let after_crash = tree_snapshot(fs.as_ref(), &root_path);
+        assert_ne!(
+            after_crash, before,
+            "the swap and link above must actually have changed the tree, or this test proves nothing"
+        );
+
+        let report = reconcile(&journal, &g, fs.as_ref()).expect("reconciliation must run");
         assert!(
-            report.interrupted.contains(&id),
-            "a plan with a recorded step must resolve as Interrupted, not stay open"
+            report.reversed.contains(&id),
+            "a plan whose recorded steps could all be undone must resolve as Reversed, not {report:?}"
+        );
+
+        let after_reconcile = tree_snapshot(fs.as_ref(), &root_path);
+        assert_eq!(
+            after_reconcile, before,
+            "reconciliation must put the tree back exactly as the pre-plan snapshot"
         );
 
         let after = journal
@@ -618,25 +800,37 @@ mod tests {
             .into_iter()
             .find(|p| p.id == id)
             .unwrap_or_else(|| panic!("plan {} must still exist after reconciliation", id.0));
-        assert_ne!(
+        assert_eq!(
             after.status,
-            PlanStatus::Pending,
-            "plan {} was left open (still Pending) after reconciliation",
-            id.0
+            PlanStatus::Reversed,
+            "plan {} was left open (still Pending) or not resolved as Reversed, was {:?}",
+            id.0,
+            after.status
         );
     }
 
-    /// Given two plans left `Pending` by a crash, one with a recorded step
-    /// and one with none, when reconciliation runs, then both rows still
-    /// exist afterward and both appear in the reconciliation report; on
-    /// failure the panic names whichever row went missing.
+    /// Given two plans left `Pending` by a crash - one with a `link` step
+    /// reconciliation can cleanly undo, and one whose `write_file` step's
+    /// backup bytes were deleted from disk before reconciliation runs (so
+    /// undoing it cannot proceed) - when reconciliation runs, then both rows
+    /// still exist afterward, the first is `Reversed`, and the second is
+    /// `Interrupted` and named in the report; on failure the panic names
+    /// whichever row went missing or was not listed.
     #[test]
     fn startup_reconciliation_never_deletes_a_row_and_lists_every_interrupted_plan_or_names_the_missing_row(
     ) {
-        let fs: Arc<dyn ScopeFs> = Arc::new(FixtureBuilder::new().dir("/journal").build_fs());
-        let journal = journal_over(fs);
+        let fs: Arc<dyn ScopeFs> = Arc::new(
+            FixtureBuilder::new()
+                .dir("/journal")
+                .dir("/root")
+                .file("/root/file.txt", b"original")
+                .build_fs(),
+        );
+        let root_path = PathBuf::from("/root");
+        let journal = journal_over(fs.clone());
         let lease = FakeLease::default();
         let g = guard(&lease);
+        let root = Root::open(fs.as_ref(), root_path.clone()).expect("open root");
 
         let with_step = PlanId("01PLAN0000000000000000003".into());
         let plan = PlanWriter::begin(
@@ -644,45 +838,113 @@ mod tests {
             &g,
             with_step.clone(),
             Utc::now(),
-            "with a step",
-            PathBuf::from("/root"),
+            "with a cleanly reversible step",
+            root_path.clone(),
             Vec::new(),
         )
         .expect("begin");
-        plan.step("link", Path::new("/root/link")).expect("step");
+        fsops::link(&root, &plan, Path::new("skill-link"), Path::new("file.txt")).expect("link");
         drop(plan);
 
-        let without_step = PlanId("01PLAN0000000000000000004".into());
-        drop(
-            PlanWriter::begin(
-                &journal,
-                &g,
-                without_step.clone(),
-                Utc::now(),
-                "with no step",
-                PathBuf::from("/root"),
-                Vec::new(),
-            )
-            .expect("begin"),
-        );
+        let unresolvable = PlanId("01PLAN0000000000000000004".into());
+        let plan = PlanWriter::begin(
+            &journal,
+            &g,
+            unresolvable.clone(),
+            Utc::now(),
+            "its backup is deleted before reconciliation",
+            root_path.clone(),
+            Vec::new(),
+        )
+        .expect("begin");
+        let target = root_path.join("file.txt");
+        let stamp = fsops::read_stamp(fs.as_ref(), &target).expect("read the stamp");
+        fsops::write_file(&root, &plan, Path::new("file.txt"), b"changed", &stamp)
+            .expect("write_file");
+        drop(plan);
 
-        let report = reconcile(&journal, &g).expect("reconciliation must run");
+        let record = journal
+            .all()
+            .expect("read")
+            .into_iter()
+            .find(|p| p.id == unresolvable)
+            .expect("the plan begun above");
+        let backup_relative = record
+            .backups
+            .first()
+            .expect("write_file over an existing file must have recorded a backup")
+            .relative
+            .clone();
+        fs.fsops_remove_file(&PathBuf::from(format!(
+            "/journal/plans/{}/backups/{backup_relative}",
+            unresolvable.0
+        )))
+        .expect("delete the backup bytes so reversal cannot proceed");
+
+        let report = reconcile(&journal, &g, fs.as_ref()).expect("reconciliation must run");
         assert!(
-            report.interrupted.contains(&with_step),
-            "the plan with a recorded step must be listed as interrupted"
+            report.reversed.contains(&with_step),
+            "the plan with a cleanly reversible step must be listed as reversed"
         );
         assert!(
-            report.resolved_without_steps.contains(&without_step),
-            "the plan with no recorded step must still be listed, resolved as Failed"
+            report.interrupted.iter().any(|p| p.id == unresolvable),
+            "the plan whose backup was deleted must be listed as interrupted, naming the plan: {report:?}"
         );
 
         let after = journal.all().expect("read every row back");
-        for id in [&with_step, &without_step] {
+        for id in [&with_step, &unresolvable] {
             assert!(
                 after.iter().any(|p| &p.id == id),
                 "row {} went missing after reconciliation",
                 id.0
             );
+        }
+        let after_unresolvable = after
+            .iter()
+            .find(|p| p.id == unresolvable)
+            .expect("row still exists");
+        assert_eq!(
+            after_unresolvable.status,
+            PlanStatus::Interrupted,
+            "plan {} must be Interrupted since its backup could not be read back, was {:?}",
+            unresolvable.0,
+            after_unresolvable.status
+        );
+    }
+
+    /// Recursively reads every file's and symlink's content under `root`,
+    /// keyed by path, so a test can compare a tree before and after some
+    /// operation without typing literal paths into the assertion.
+    fn tree_snapshot(
+        fs: &dyn ScopeFs,
+        root: &Path,
+    ) -> std::collections::BTreeMap<PathBuf, Vec<u8>> {
+        let mut out = std::collections::BTreeMap::new();
+        collect_tree(fs, root, &mut out);
+        out
+    }
+
+    fn collect_tree(
+        fs: &dyn ScopeFs,
+        dir: &Path,
+        out: &mut std::collections::BTreeMap<PathBuf, Vec<u8>>,
+    ) {
+        let mut entries = fs.read_dir(dir).expect("read_dir");
+        entries.sort_by(|a, b| a.name.cmp(&b.name));
+        for entry in entries {
+            let path = dir.join(&entry.name);
+            match entry.kind {
+                FileKind::Dir => collect_tree(fs, &path, out),
+                FileKind::File => {
+                    let bytes = fs.read_capped(&path, u64::MAX).expect("read file");
+                    out.insert(path, bytes);
+                }
+                FileKind::Symlink => {
+                    let target = fs.read_link(&path).expect("read_link");
+                    out.insert(path, target.to_string_lossy().into_owned().into_bytes());
+                }
+                FileKind::Other => {}
+            }
         }
     }
 
