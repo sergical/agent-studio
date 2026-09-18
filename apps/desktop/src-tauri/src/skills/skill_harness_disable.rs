@@ -986,6 +986,60 @@ mod tests {
         skill_studio_core::opencode_config::read_denied_patterns(&fs, &config_dir)
     }
 
+    /// Serializes and confines every test in this module that reads or
+    /// writes OpenCode config through `skill_studio_host::opencode_config_dir`.
+    /// That resolver checks the process-global `XDG_CONFIG_HOME`/
+    /// `OPENCODE_CONFIG_DIR` env vars before falling back to `home` -
+    /// unset on a developer machine, but GitHub's `ubuntu-latest` runners
+    /// export a real `XDG_CONFIG_HOME` (`/home/runner/.config`), so without
+    /// this guard every OpenCode-writing test here read and wrote that one
+    /// real shared directory instead of its own fixture `home`, racing
+    /// every other such test running in parallel. Held for the guarded
+    /// test's whole body (RAII, so a panic mid-test still restores the
+    /// previous values) and serialized on a shared lock, mirroring the host
+    /// crate's `opencode_db::xdg_env_lock`.
+    struct OpencodeHomeGuard {
+        _lock: std::sync::MutexGuard<'static, ()>,
+        prev_xdg_config_home: Option<std::ffi::OsString>,
+        prev_opencode_config_dir: Option<std::ffi::OsString>,
+    }
+
+    impl OpencodeHomeGuard {
+        fn new(home: &Path) -> Self {
+            static LOCK: std::sync::OnceLock<std::sync::Mutex<()>> = std::sync::OnceLock::new();
+            let lock = LOCK
+                .get_or_init(|| std::sync::Mutex::new(()))
+                .lock()
+                .unwrap_or_else(|p| p.into_inner());
+            let prev_xdg_config_home = std::env::var_os("XDG_CONFIG_HOME");
+            let prev_opencode_config_dir = std::env::var_os("OPENCODE_CONFIG_DIR");
+            unsafe {
+                std::env::set_var("XDG_CONFIG_HOME", home.join(".config"));
+                std::env::remove_var("OPENCODE_CONFIG_DIR");
+            }
+            Self {
+                _lock: lock,
+                prev_xdg_config_home,
+                prev_opencode_config_dir,
+            }
+        }
+    }
+
+    impl Drop for OpencodeHomeGuard {
+        fn drop(&mut self) {
+            unsafe {
+                match self.prev_xdg_config_home.take() {
+                    Some(v) => std::env::set_var("XDG_CONFIG_HOME", v),
+                    None => std::env::remove_var("XDG_CONFIG_HOME"),
+                }
+                match self.prev_opencode_config_dir.take() {
+                    Some(v) => std::env::set_var("OPENCODE_CONFIG_DIR", v),
+                    None => std::env::remove_var("OPENCODE_CONFIG_DIR"),
+                }
+            }
+        }
+    }
+
     fn native_snapshot(agent: &str, entries: &[(&str, &str, Option<&str>)]) -> SkillSnapshot {
         let deployments = entries
             .iter()
@@ -1248,6 +1302,7 @@ mod tests {
     fn opencode_disable_and_reenable_round_trip() {
         let tmp = tempfile::tempdir().unwrap();
         let home = tmp.path();
+        let _guard = OpencodeHomeGuard::new(home);
 
         set_harness_enabled_with(home, "find-bugs", "opencode", false, &[]).unwrap();
         assert_eq!(
@@ -1263,6 +1318,7 @@ mod tests {
     fn new_project_opencode_disable_refuses_a_global_same_name_deployment() {
         let tmp = tempfile::tempdir().unwrap();
         let home = tmp.path().join("home");
+        let _guard = OpencodeHomeGuard::new(&home);
         let project = tmp.path().join("project");
         write_skill(&home.join(".agents/skills/find-bugs"), "find-bugs");
         let project_skill = project.join(".agents/skills/find-bugs");
@@ -1297,6 +1353,48 @@ mod tests {
         );
         assert!(read_opencode_denied_patterns(&home).is_empty());
         assert!(home.join(".agents/skills/find-bugs/SKILL.md").is_file());
+    }
+
+    /// Flow: `XDG_CONFIG_HOME` is already set to an unrelated real directory
+    /// (simulating GitHub's `ubuntu-latest` runner, which exports
+    /// `XDG_CONFIG_HOME=/home/runner/.config`) before `OpencodeHomeGuard`
+    /// runs.
+    /// Expectation: the guard overrides it, so `opencode_config_dir(home)`
+    /// resolves under the fixture `home`, not the unrelated directory.
+    /// Failure here would mean every OpenCode-writing test in this module
+    /// reads and writes that one shared real directory on CI instead of its
+    /// own fixture, racing every other such test.
+    #[test]
+    fn opencode_desktop_tests_read_the_temp_home_config_under_xdg_config_home_or_names_the_shared_real_directory(
+    ) {
+        let tmp = tempfile::tempdir().unwrap();
+        let home = tmp.path().join("home");
+        fs::create_dir_all(&home).unwrap();
+        let unrelated = tmp.path().join("unrelated-xdg-config");
+
+        let prev = std::env::var_os("XDG_CONFIG_HOME");
+        unsafe {
+            std::env::set_var("XDG_CONFIG_HOME", &unrelated);
+        }
+
+        let resolved = {
+            let _guard = OpencodeHomeGuard::new(&home);
+            skill_studio_host::opencode_config_dir(&home)
+        };
+
+        unsafe {
+            match prev {
+                Some(v) => std::env::set_var("XDG_CONFIG_HOME", v),
+                None => std::env::remove_var("XDG_CONFIG_HOME"),
+            }
+        }
+
+        assert_eq!(
+            resolved,
+            home.join(".config/opencode"),
+            "opencode_config_dir resolved the ambient XDG_CONFIG_HOME ({}) instead of the guarded home",
+            unrelated.display()
+        );
     }
 
     #[test]
