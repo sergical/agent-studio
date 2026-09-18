@@ -111,10 +111,18 @@ fn cli_park(home: &Path, deployment_id: &DeploymentId) {
         .args(["--deployment-id", deployment_id.as_str(), "--json"])
         .output()
         .expect("spawn skill-studio-cli park");
-    assert!(
-        !output.stdout.is_empty(),
-        "skill-studio park produced no output: {}",
-        String::from_utf8_lossy(&output.stderr)
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let envelope: serde_json::Value = serde_json::from_str(stdout.trim()).unwrap_or_else(|e| {
+        panic!(
+            "skill-studio park printed no envelope ({e}): {stdout}{}",
+            String::from_utf8_lossy(&output.stderr)
+        )
+    });
+    assert_eq!(
+        envelope["status"],
+        "ok",
+        "cli park at {}: {envelope:?}",
+        home.display()
     );
 }
 
@@ -326,7 +334,7 @@ fn walkdir(dir: &Path) -> Vec<PathBuf> {
 /// surface, and the Claude Code link is gone on every surface, or the test
 /// names which surface diverged.
 #[test]
-fn cli_and_mcp_and_desktop_write_the_same_disk_state_for_each_op_or_names_the_diverging_surface() {
+fn cli_and_mcp_and_desktop_write_the_same_disk_state_for_park_or_names_the_diverging_surface() {
     // TempDir, not a plain path: it removes the tree when it drops, so a
     // failing assertion below does not leave three fixture homes behind.
     let cli_dir = temp_home("park-parity-cli");
