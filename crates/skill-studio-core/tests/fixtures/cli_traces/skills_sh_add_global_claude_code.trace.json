@@ -1,5 +1,5 @@
 {
-  "_comment": "Hand-built, not recorded from a real `npx skills add` run - unit 5.4 owns recording the real trace and replacing this file. Shape: `npx skills add <source> --yes --global --skill <name> --agent universal --agent claude-code`, matching `cli_args_and_cwd`'s SkillsSh branch (apps/cli's `add --method skills-sh --global --harness claude-code`).",
+  "_comment": "Hand-built, not recorded from a real `npx skills add` run - unit 5.4 owns recording the real trace and replacing this file. Shape: `npx skills add <source> --yes --global --skill <name> --agent universal --agent claude-code`, matching `cli_args_and_cwd`'s SkillsSh branch (apps/cli's `add --method skills-sh --global --harness claude-code`). `files` names every file that run leaves under `.agents/skills/<skill>`, relative to that folder.",
   "program": "npx",
   "args": [
     "skills",
@@ -14,5 +14,11 @@
     "--agent",
     "claude-code"
   ],
-  "cwd": null
+  "cwd": null,
+  "files": [
+    {
+      "relative_path": "SKILL.md",
+      "content": "---\nname: owner-repo-skill\ndescription: a skill installed by npx skills add\n---\nBody.\n"
+    }
+  ]
 }

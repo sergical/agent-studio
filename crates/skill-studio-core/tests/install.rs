@@ -48,9 +48,16 @@ const UNIVERSAL_ROOT_RELATIVE: &str = ".agents/skills";
 /// R5: records every call's argv and cwd (`recorded`), so a test can assert
 /// the exact shape `cli_args_and_cwd` built without duplicating its own
 /// logic to predict it.
+///
+/// R3 (round 1): `trace_files`, when set, replaces the single hardcoded
+/// `SKILL.md` with exactly the files a recorded (or hand-built) CLI trace
+/// names, each written verbatim under the skill's universal-root directory -
+/// lets a trace-parity test assert the resulting tree byte for byte instead
+/// of only the argv the fake never actually exercises against disk.
 struct FakeNpxSpawner {
     home: PathBuf,
     recorded: Mutex<Vec<(Vec<String>, Option<PathBuf>)>>,
+    trace_files: Option<Vec<(PathBuf, String)>>,
 }
 
 impl FakeNpxSpawner {
@@ -58,6 +65,15 @@ impl FakeNpxSpawner {
         FakeNpxSpawner {
             home,
             recorded: Mutex::new(Vec::new()),
+            trace_files: None,
+        }
+    }
+
+    fn with_trace_files(home: PathBuf, trace_files: Vec<(PathBuf, String)>) -> Self {
+        FakeNpxSpawner {
+            home,
+            recorded: Mutex::new(Vec::new()),
+            trace_files: Some(trace_files),
         }
     }
 }
@@ -83,11 +99,21 @@ impl ProcessSpawner for FakeNpxSpawner {
         let cwd = spec.cwd.clone().unwrap_or_else(|| self.home.clone());
         let dir = cwd.join(UNIVERSAL_ROOT_RELATIVE).join(&skill);
         std::fs::create_dir_all(&dir).unwrap();
-        std::fs::write(
-            dir.join("SKILL.md"),
-            format!("---\nname: {skill}\ndescription: installed by a fake CLI\n---\nBody.\n"),
-        )
-        .unwrap();
+        if let Some(trace_files) = &self.trace_files {
+            for (relative_path, content) in trace_files {
+                let path = dir.join(relative_path);
+                if let Some(parent) = path.parent() {
+                    std::fs::create_dir_all(parent).unwrap();
+                }
+                std::fs::write(&path, content).unwrap();
+            }
+        } else {
+            std::fs::write(
+                dir.join("SKILL.md"),
+                format!("---\nname: {skill}\ndescription: installed by a fake CLI\n---\nBody.\n"),
+            )
+            .unwrap();
+        }
         let has_claude_code_agent = spec
             .args
             .windows(2)
@@ -651,37 +677,85 @@ fn install_over_a_non_object_registry_document_fails_before_any_write_or_names_t
     std::fs::remove_dir_all(&home).ok();
 }
 
-/// One recorded (here, hand-built) `npx` call's shape:
+/// One recorded (here, hand-built) `npx` call's shape, plus the files it
+/// leaves on disk:
 /// `crates/skill-studio-core/tests/fixtures/cli_traces/*.trace.json`.
 #[derive(serde::Deserialize)]
 struct CliTrace {
     program: String,
     args: Vec<String>,
     cwd: Option<PathBuf>,
+    files: Vec<CliTraceFile>,
 }
 
-/// `install_via_cli_matches_the_hand_built_skills_sh_trace_or_names_the_differing_argv`:
-/// `docs/action-map/definition-of-done.md` check 4's parity test (nine
-/// recorded CLI traces, diffed against our own result tree) is unit 5.4's -
-/// recording a real `npx skills add` run needs a real `npx`, which this
-/// worktree cannot do. This is its narrower stand-in for `install_via_cli`
-/// alone: `cli_args_and_cwd`'s SkillsSh/global/Claude-Code-harness argv,
-/// checked against a fixture built by hand from the skills CLI source facts
-/// rather than a recording, same caveat `direct_ops_call_leaves_the_disk_state_every_surface_shares`
-/// already named for 3.5a. Follow-up: swap the hand-built fixture for a
-/// recorded one once 5.4 exists.
+/// One file the trace's CLI call wrote, relative to the skill's own folder
+/// (`.agents/skills/<skill>/`, or `.claude/skills/<skill>/` for the file
+/// `link_claude_code` reaches through its symlink).
+#[derive(serde::Deserialize)]
+struct CliTraceFile {
+    relative_path: PathBuf,
+    content: String,
+}
+
+/// Walks `root` (already known to exist), returning every regular file's
+/// path relative to `root` and its bytes, sorted by path so two trees
+/// compare deterministically regardless of read-dir order.
+fn walk_files_relative(root: &std::path::Path) -> Vec<(PathBuf, Vec<u8>)> {
+    fn walk(root: &std::path::Path, dir: &std::path::Path, out: &mut Vec<(PathBuf, Vec<u8>)>) {
+        for entry in std::fs::read_dir(dir).unwrap() {
+            let entry = entry.unwrap();
+            let path = entry.path();
+            // `symlink_metadata` (not `metadata`) so the `.claude` link
+            // itself is never mistaken for a directory to recurse into -
+            // its target is a file already counted under `.agents/skills`.
+            if entry.file_type().unwrap().is_dir() {
+                walk(root, &path, out);
+            } else {
+                let contents = std::fs::read(&path).unwrap();
+                out.push((path.strip_prefix(root).unwrap().to_path_buf(), contents));
+            }
+        }
+    }
+    let mut out = Vec::new();
+    walk(root, root, &mut out);
+    out.sort_by(|a, b| a.0.cmp(&b.0));
+    out
+}
+
+/// `cli_add_matches_the_npx_skills_add_trace_byte_for_byte_apart_from_timestamps_or_names_the_diverging_file`
+/// (issue #163's parity checkbox): `docs/action-map/definition-of-done.md`
+/// check 4's parity test (nine recorded CLI traces, diffed against our own
+/// result tree) is unit 5.4's - recording a real `npx skills add` run needs
+/// a real `npx`, which this worktree cannot do. This is its narrower stand-in
+/// for `install_via_cli` alone: the fixture names every file a `skills.sh`
+/// global-scope, Claude-Code-harness `add` call leaves under
+/// `.agents/skills/<skill>` and `.claude/skills/<skill>`, `FakeNpxSpawner`
+/// writes those exact bytes (not its own hardcoded `SKILL.md`), and this
+/// test diffs the resulting tree against the fixture byte for byte - not
+/// just the argv the table test in `ops_install_cli.rs` already covers.
+/// Follow-up: swap the hand-built fixture for a recorded one once 5.4 exists.
 #[test]
-fn install_via_cli_matches_the_hand_built_skills_sh_trace_or_names_the_differing_argv() {
+fn cli_add_matches_the_npx_skills_add_trace_byte_for_byte_apart_from_timestamps_or_names_the_diverging_file(
+) {
     let fixture_bytes = std::fs::read(concat!(
         env!("CARGO_MANIFEST_DIR"),
         "/tests/fixtures/cli_traces/skills_sh_add_global_claude_code.trace.json"
     ))
     .unwrap();
     let trace: CliTrace = serde_json::from_slice(&fixture_bytes).unwrap();
+    assert_eq!(
+        trace.program, "npx",
+        "the fixture's own program must be npx"
+    );
 
     let home = unique_temp_dir("install_cli_trace_parity");
     std::fs::create_dir_all(&home).unwrap();
-    let spawner = Arc::new(FakeNpxSpawner::new(home.clone()));
+    let trace_files: Vec<(PathBuf, String)> = trace
+        .files
+        .iter()
+        .map(|f| (f.relative_path.clone(), f.content.clone()))
+        .collect();
+    let spawner = Arc::new(FakeNpxSpawner::with_trace_files(home.clone(), trace_files));
     let rt = runtime_with(&home, Arc::new(RealFs::new()), Some(spawner.clone()));
     let mut req = cli_request("owner-repo-skill", InstallMethod::SkillsSh);
     req.source = Some("owner/repo".to_string());
@@ -697,16 +771,44 @@ fn install_via_cli_matches_the_hand_built_skills_sh_trace_or_names_the_differing
     );
     let (args, cwd) = &recorded[0];
     assert_eq!(
-        trace.program, "npx",
-        "the fixture's own program must be npx"
-    );
-    assert_eq!(
         args, &trace.args,
         "install_via_cli's argv drifted from the recorded skills.sh trace"
     );
     assert_eq!(
         cwd, &trace.cwd,
         "install_via_cli's cwd drifted from the recorded skills.sh trace"
+    );
+
+    // The universal root's tree must match the trace's files byte for byte.
+    let universal_dir = home.join(UNIVERSAL_ROOT_RELATIVE).join("owner-repo-skill");
+    let actual = walk_files_relative(&universal_dir);
+    let mut expected: Vec<(PathBuf, Vec<u8>)> = trace
+        .files
+        .iter()
+        .map(|f| (f.relative_path.clone(), f.content.clone().into_bytes()))
+        .collect();
+    expected.sort_by(|a, b| a.0.cmp(&b.0));
+    for (path, expected_bytes) in &expected {
+        let actual_bytes = actual.iter().find(|(p, _)| p == path).map(|(_, b)| b);
+        assert_eq!(
+            actual_bytes,
+            Some(expected_bytes),
+            "{} diverged from the recorded skills.sh trace",
+            universal_dir.join(path).display()
+        );
+    }
+    assert_eq!(
+        actual.len(),
+        expected.len(),
+        "install_via_cli wrote a file the trace does not name: {actual:?} vs {expected:?}"
+    );
+
+    // `link_claude_code`'s symlink must reach the same bytes.
+    let claude_dir = home.join(".claude").join("skills").join("owner-repo-skill");
+    let claude_actual = walk_files_relative(&claude_dir);
+    assert_eq!(
+        claude_actual, actual,
+        "the .claude link's tree diverged from the universal root's trace-matched tree"
     );
 
     std::fs::remove_dir_all(&home).ok();
