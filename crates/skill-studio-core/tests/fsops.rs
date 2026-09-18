@@ -219,6 +219,52 @@ fn swap_refuses_a_directory_replaced_by_a_symlink_between_stage_and_swap_or_name
     );
 }
 
+/// Given a root with an existing regular file at the link's target name,
+/// when `link` is asked to point that name at something else, then it
+/// refuses with `WouldReplaceFile` naming the file, and leaves that file's
+/// bytes exactly as they were rather than silently losing them under a new
+/// symlink.
+#[test]
+fn link_over_a_regular_file_is_refused_or_names_the_file_it_replaced() {
+    let root_path = PathBuf::from("/root");
+    let fs = FixtureBuilder::new()
+        .dir("/root")
+        .file("/root/skill-current", b"not a symlink, a real file")
+        .file("/root/new.txt", b"new")
+        .dir("/journal")
+        .build_fs();
+    let root = Root::open(&fs, root_path.clone()).expect("open root");
+    let journal = FsJournal::new(PathBuf::from("/journal"), Arc::new(fs.clone()));
+    let lease = FakeLease::default();
+    let g = test_guard(&lease);
+    let plan = begin_test_plan(&journal, &g, root_path.clone());
+
+    let err = fsops::link(
+        &root,
+        &plan,
+        Path::new("skill-current"),
+        Path::new("new.txt"),
+    )
+    .expect_err("link must refuse an existing non-symlink target");
+    match err {
+        fsops::FsOpsError::WouldReplaceFile { path } => {
+            assert_eq!(
+                path,
+                root_path.join("skill-current"),
+                "must name the file it would have replaced"
+            );
+        }
+        other => panic!("expected WouldReplaceFile, got {other}"),
+    }
+
+    assert_eq!(
+        fs.read_capped(&root_path.join("skill-current"), u64::MAX)
+            .expect("the original file must still be there"),
+        b"not a symlink, a real file",
+        "link must not touch the file it refused to replace"
+    );
+}
+
 /// Given a root, when a name is confined that would escape it via a `..`
 /// segment, an absolute path, or a symlink among its ancestors that points
 /// outside, then `confine` (and every primitive built on it) refuses

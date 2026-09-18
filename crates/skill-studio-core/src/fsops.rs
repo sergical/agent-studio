@@ -52,6 +52,15 @@ pub enum FsOpsError {
         /// The path that changed kind between `stage` and `swap`.
         path: PathBuf,
     },
+    /// [`link`] found something other than a symlink already at the target
+    /// path - a plain rename would silently replace and lose it, and
+    /// reversal only ever restores a previous link target, never a file's
+    /// bytes.
+    #[error("{path}: exists and is not a symlink; refusing to replace it")]
+    WouldReplaceFile {
+        /// The path `link` refused to write over.
+        path: PathBuf,
+    },
     /// [`write_file`] found the target had changed since the caller's
     /// [`read_stamp`].
     #[error("{path}: changed since it was read; the write was refused")]
@@ -466,7 +475,12 @@ pub fn link(
         Ok(facts) if facts.kind == FileKind::Symlink => {
             Some(root.fs.read_link(&link_path).fs_err(&link_path)?)
         }
-        _ => None,
+        // A regular file (or anything else that isn't a symlink) at
+        // `link_path` would be silently replaced by the rename below and
+        // lost for good - reversal only ever restores a previous *link*
+        // target, never a file's bytes. Refuse instead of renaming over it.
+        Ok(_) => return Err(FsOpsError::WouldReplaceFile { path: link_path }),
+        Err(_) => None,
     };
     let parent = link_path.parent().unwrap_or(root.path()).to_path_buf();
     let leaf = link_path
