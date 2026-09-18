@@ -5,7 +5,7 @@
 import { describe, expect, it } from "vitest";
 import type { PullResult } from "@skill-studio/lib";
 
-import { pullUpstreamToast } from "./skill-page-actions";
+import { pullUpstreamToast, removeSuccessToast } from "./skill-page-actions";
 
 function fixtureResult(overrides: Partial<PullResult> = {}): PullResult {
   return {
@@ -59,5 +59,15 @@ describe("pullUpstreamToast", () => {
     const toast = pullUpstreamToast(result);
 
     expect(toast).toEqual({ type: "success", title: "Updated 3 files" });
+  });
+});
+
+describe("removeSuccessToast", () => {
+  it("the_remove_success_toast_reads_removed_not_updated_n_deployments", () => {
+    const toast = removeSuccessToast("find-bugs");
+
+    expect(toast).toEqual({ type: "success", title: "Removed", message: "find-bugs" });
+    expect(toast.title).not.toMatch(/updated/i);
+    expect(toast.title).not.toMatch(/deployments/i);
   });
 });
