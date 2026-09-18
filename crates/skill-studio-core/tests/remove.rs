@@ -207,7 +207,8 @@ fn remove_writes_a_journal_row_before_the_first_write_or_names_the_missing_step(
 /// `.skill-studio-quarantine`, and the registry's `copies` entry for it is
 /// gone.
 #[test]
-fn copy_remove_moves_the_tree_into_quarantine_with_the_same_tree_hash_or_names_the_diverging_file() {
+fn copy_remove_moves_the_tree_into_quarantine_with_the_same_tree_hash_or_names_the_diverging_file()
+{
     let home = unique_temp_dir("remove_quarantine");
     std::fs::create_dir_all(&home).unwrap();
     let rt = runtime_for(&home);
@@ -327,7 +328,10 @@ fn remove_crash_mid_rename_leaves_disk_in_the_before_or_after_state_or_names_the
         .iter()
         .find(|e| e.kind == "remove")
         .expect("the crashed remove must still have written its own row");
-    assert_eq!(remove_row.status, "failed", "a crashed rename must mark the row failed");
+    assert_eq!(
+        remove_row.status, "failed",
+        "a crashed rename must mark the row failed"
+    );
     assert!(
         remove_row.backup_dir.is_some(),
         "a failed remove must still have an archival backup_dir"

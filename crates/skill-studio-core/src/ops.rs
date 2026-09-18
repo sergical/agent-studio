@@ -4181,7 +4181,10 @@ fn restore_write_dir(
 
     let staged = fsops::stage(&root, &plan, files)
         .map_err(|e| CoreError::new(ErrorCode::Io, e.to_string()).at(universal_root))?;
-    let quarantine_dir = Path::new(".skill-studio-restore-quarantine");
+    // Same directory the doctor prune and check sweep, not a
+    // restore-specific name - see `ops_update`'s module doc for the same
+    // fix applied there.
+    let quarantine_dir = Path::new(crate::doctor::QUARANTINE_DIR_NAME);
     fsops::swap(&root, &plan, Path::new(final_name), &staged, quarantine_dir)
         .map_err(|e| CoreError::new(ErrorCode::Io, e.to_string()).at(universal_root))?;
     plan.finish(PlanStatus::Done)

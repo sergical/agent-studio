@@ -20,11 +20,11 @@
 //! in through [`crate::fsops::swap`], which - since a folder already sits at
 //! `final_name` this time - takes its own "exchange, then move the old one
 //! into `quarantine_dir`" path, so the previous tree lands in
-//! `.skill-studio-update-quarantine` (mirroring `ops_install::install_copy`'s
-//! own `.skill-studio-install-quarantine`) rather than being deleted.
-//! [`crate::fsops::swap`]'s `quarantine_dir` is confined under the same
-//! [`crate::fsops::Root`] as `stage`/`final_name` (see that function's own
-//! doc), so it cannot resolve to the desktop's separate
+//! [`crate::doctor::QUARANTINE_DIR_NAME`] - the same folder the doctor
+//! prune and check sweep, not an update-specific name - rather than being
+//! deleted. [`crate::fsops::swap`]'s `quarantine_dir` is confined under the
+//! same [`crate::fsops::Root`] as `stage`/`final_name` (see that function's
+//! own doc), so it cannot resolve to the desktop's separate
 //! `<home>/.agents/skills-trash` without changing that primitive's contract
 //! - the brief for this unit named `skills-trash` as the model location, but
 //!   this reuses `fsops::swap`'s own quarantine convention instead of
@@ -43,7 +43,7 @@ use std::path::{Path, PathBuf};
 
 use crate::dto::{InstallMethod, UpdateAllItem, UpdateAllOutcome, UpdateOutcome, UpdateRequest};
 use crate::error::{CoreError, ErrorCode};
-use crate::events::{EventDraft, EventKind, EventStatus};
+use crate::events::{fingerprint_path, EventDraft, EventKind, EventStatus};
 use crate::fsops::{self, Root};
 use crate::identity::{PlanId, RootScope, SkillName, UNIVERSAL_ROOT_RELATIVE};
 use crate::journal::{FsJournal, PlanWriter};
@@ -97,21 +97,40 @@ fn update_cli_args_and_cwd(
     }
 }
 
-/// `Dotagents`/`SkillsSh`: runs `req.method`'s argv (see
-/// [`update_cli_args_and_cwd`]) through the process-spawner port and checks
-/// the destination still exists afterward.
-fn update_via_cli(
-    rt: &Runtime,
-    ctx: &OpContext,
-    req: &UpdateRequest,
-    destination: &Path,
-) -> Result<(), CoreError> {
+/// `Dotagents`/`SkillsSh` preconditions (U5): a missing source or a host
+/// build with no process spawner - `update` calls this before `backup_paths`
+/// records anything, so either failure leaves no journal row, matching
+/// `ops_install`'s own validation order.
+fn validate_cli_request(rt: &Runtime, req: &UpdateRequest) -> Result<(), CoreError> {
     if req.method == InstallMethod::Dotagents && req.source.is_none() {
         return Err(CoreError::new(
             ErrorCode::InvalidRequest,
             "a dotagents update needs a source",
         ));
     }
+    if matches!(
+        req.method,
+        InstallMethod::Dotagents | InstallMethod::SkillsSh
+    ) && rt.ports.spawner.is_none()
+    {
+        return Err(CoreError::new(
+            ErrorCode::Unsupported,
+            "this host build has no process spawner; dotagents/skills.sh updates are not available",
+        ));
+    }
+    Ok(())
+}
+
+/// `Dotagents`/`SkillsSh`: runs `req.method`'s argv (see
+/// [`update_cli_args_and_cwd`]) through the process-spawner port and checks
+/// the destination still exists afterward. Assumes [`validate_cli_request`]
+/// already ran (`update` calls it before the first write).
+fn update_via_cli(
+    rt: &Runtime,
+    ctx: &OpContext,
+    req: &UpdateRequest,
+    destination: &Path,
+) -> Result<(), CoreError> {
     let spawner = rt.ports.spawner.as_ref().ok_or_else(|| {
         CoreError::new(
             ErrorCode::Unsupported,
@@ -185,7 +204,10 @@ fn update_copy(
     let staged = fsops::stage(&root, &plan, &contents)
         .map_err(|e| CoreError::new(ErrorCode::Io, e.to_string()).at(universal_root))?;
     let final_name = Path::new(&skill.0);
-    let quarantine_dir = Path::new(".skill-studio-update-quarantine");
+    // Same directory the doctor prune and check sweep, not a
+    // update-specific name: a quarantine folder the prune never sees would
+    // grow unbounded.
+    let quarantine_dir = Path::new(crate::doctor::QUARANTINE_DIR_NAME);
     fsops::swap(&root, &plan, final_name, &staged, quarantine_dir)
         .map_err(|e| CoreError::new(ErrorCode::Io, e.to_string()).at(universal_root))?;
     plan.finish(PlanStatus::Done)
@@ -193,59 +215,97 @@ fn update_copy(
     Ok(())
 }
 
-/// `Copy` only: refreshes the `copies` registry entry's `content_hash` after
-/// `update_copy` lands, the same key `ops_install::install_and_link` writes
-/// on first install (R1/R2 there) - read after the swap rather than before
-/// it (unlike install's own registry read, which runs before the first
-/// write); tracked as a follow-up to match install's stricter ordering.
-fn refresh_copy_registry(
+/// `Copy` only: both registry documents `write_copy_registry` will later
+/// mutate, read up front - `update` calls this before `backup_paths` (U4),
+/// so an unreadable registry fails before the first write, the same
+/// ordering `ops_install::install`'s own registry read already uses,
+/// instead of after `update_copy` has already swapped the new tree in.
+struct CopyRegistryRead {
+    root: PathBuf,
+    document: serde_json::Map<String, serde_json::Value>,
+    home_document: Option<serde_json::Map<String, serde_json::Value>>,
+}
+
+fn read_copy_registry(
     rt: &Runtime,
-    ctx: &OpContext,
-    session: &mut MutationSession,
     fs: &dyn ScopeFs,
-    req: &UpdateRequest,
-    destination: &Path,
-) -> Result<(), CoreError> {
-    let content_hash = crate::ops::skill_content_hash(fs, ctx, destination)?;
-    let root = ops_install::scope_root(rt, &req.scope);
+    scope: &RootScope,
+) -> Result<CopyRegistryRead, CoreError> {
+    let root = ops_install::scope_root(rt, scope);
     let home_root = rt.scope.home.lexical.clone();
-    let mut document = ops_install::read_registry_document(fs, &root)?;
-    let mut home_document = if root == home_root {
+    let document = ops_install::read_registry_document(fs, &root)?;
+    let home_document = if root == home_root {
         None
     } else {
         Some(ops_install::read_registry_document(fs, &home_root)?)
     };
+    Ok(CopyRegistryRead {
+        root,
+        document,
+        home_document,
+    })
+}
+
+/// `Copy` only: writes the `content_hash` `update_copy` produced (the same
+/// key `ops_install::install_and_link` writes on first install, R1/R2
+/// there) into the documents `read_copy_registry` already pulled before the
+/// first write - only this write itself has to wait for the swap, since the
+/// hash it records depends on the bytes the swap just landed.
+fn write_copy_registry(
+    session: &mut MutationSession,
+    fs: &dyn ScopeFs,
+    rt: &Runtime,
+    req: &UpdateRequest,
+    destination: &Path,
+    mut read: CopyRegistryRead,
+    content_hash: String,
+) -> Result<(), CoreError> {
     let deployment_id = ops_install::copy_deployment_id(&req.scope, &req.skill, destination);
-    let home_doc = home_document.as_mut().unwrap_or(&mut document);
+    let home_doc = read.home_document.as_mut().unwrap_or(&mut read.document);
     if let Some(serde_json::Value::Object(copies)) = home_doc.get_mut("copies") {
         if let Some(entry) = copies.get_mut(&deployment_id) {
             entry["content_hash"] = serde_json::Value::String(content_hash);
         }
     }
-    if let Some(home_doc) = home_document {
-        ops_install::write_registry_document(&session.guard, fs, &rt.scope.home.lexical, home_doc)
+    if let Some(home_document) = read.home_document {
+        ops_install::write_registry_document(
+            &session.guard,
+            fs,
+            &rt.scope.home.lexical,
+            home_document,
+        )
     } else {
-        ops_install::write_registry_document(&session.guard, fs, &root, document)
+        ops_install::write_registry_document(&session.guard, fs, &read.root, read.document)
     }
 }
 
 /// The write step every `update` call shares, once its journal row is
 /// already recorded: writes `req.method`'s fresh bytes over the existing
 /// destination. Any failure here bubbles up so `update` can mark the row
-/// `Failed`, matching `ops_install`'s F9.
+/// `Failed`, matching `ops_install`'s F9. `copy_registry` is `Some` only for
+/// `Copy` - `update` reads it before the first write (U4) and hands it here
+/// to be written back once the swap has landed.
 fn update_write(
     rt: &Runtime,
     ctx: &OpContext,
     session: &mut MutationSession,
-    fs: &dyn ScopeFs,
     req: &UpdateRequest,
     universal_root: &Path,
     destination: &Path,
+    copy_registry: Option<CopyRegistryRead>,
 ) -> Result<(), CoreError> {
+    let fs = rt.ports.fs.as_ref();
     match req.method {
         InstallMethod::Copy => {
             update_copy(rt, &session.guard, universal_root, &req.skill, &req.files)?;
-            refresh_copy_registry(rt, ctx, session, fs, req, destination)
+            let content_hash = crate::ops::skill_content_hash(fs, ctx, destination)?;
+            let read = copy_registry.ok_or_else(|| {
+                CoreError::new(
+                    ErrorCode::Io,
+                    "a copy update reached its write step with no pre-read registry documents",
+                )
+            })?;
+            write_copy_registry(session, fs, rt, req, destination, read, content_hash)
         }
         InstallMethod::Dotagents | InstallMethod::SkillsSh => {
             update_via_cli(rt, ctx, req, destination)
@@ -282,6 +342,17 @@ pub fn update(
         .at(&destination));
     }
     let tree_hash_before = crate::tree_hash::tree_hash(fs, &destination)?;
+
+    // U5: both checks run before `backup_paths`, so a missing source or a
+    // spawner-less host build leaves no journal row.
+    validate_cli_request(rt, req)?;
+    // U4: `Copy`'s registry documents are read here too, before the first
+    // write, so an unreadable registry fails the same way - see
+    // `read_copy_registry`'s own doc.
+    let copy_registry = match req.method {
+        InstallMethod::Copy => Some(read_copy_registry(rt, fs, &req.scope)?),
+        InstallMethod::Dotagents | InstallMethod::SkillsSh => None,
+    };
 
     let step_start = clock.monotonic();
     let id = rt.ports.ids.next_event_id();
@@ -327,10 +398,10 @@ pub fn update(
         rt,
         ctx,
         &mut session,
-        fs,
         req,
         &universal_root,
         &destination,
+        copy_registry,
     ) {
         let _ = session
             .store
@@ -338,9 +409,15 @@ pub fn update(
         return Err(e);
     }
     let tree_hash_after = crate::tree_hash::tree_hash(fs, &destination)?;
+    // The post-fingerprint the row records, not `None`: `restore_event`
+    // compares the live tree against this on undo (`expected =
+    // post.unwrap_or("absent")`), so leaving it `None` would tell undo the
+    // path was absent after this event and turn a plain restore into
+    // `DriftConflict` against the tree `update` just wrote.
+    let post_fingerprint = fingerprint_path(fs, &destination)?;
     session
         .store
-        .finish(&session.guard, &id, EventStatus::Done, None)?;
+        .finish(&session.guard, &id, EventStatus::Done, post_fingerprint)?;
     session.finish(rt, ctx);
     let write_step = crate::timing::step(clock, "write", step_start);
     ctx.record_timing(crate::timing::op_timing(
