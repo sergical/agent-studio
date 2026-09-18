@@ -1,0 +1,93 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "UpdateAllOutcome",
+  "description": "Result of `update_all`: one [`UpdateAllItem`] per requested skill, in the\norder each one finished (not the order requested), plus the message for\nany that failed.",
+  "type": "object",
+  "properties": {
+    "items": {
+      "description": "One entry per skill `update_all` was asked to refresh.",
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/UpdateAllItem"
+      }
+    },
+    "errors": {
+      "description": "`skill.0` -> error message, for every item whose `outcome` is `None`.",
+      "type": "object",
+      "additionalProperties": {
+        "type": "string"
+      },
+      "default": {}
+    }
+  },
+  "required": [
+    "items"
+  ],
+  "$defs": {
+    "UpdateAllItem": {
+      "description": "One skill's result inside an `update_all` batch.",
+      "type": "object",
+      "properties": {
+        "skill": {
+          "description": "The skill this result is for.",
+          "$ref": "#/$defs/SkillName"
+        },
+        "outcome": {
+          "description": "`Some` on success, `None` when this skill's update failed - the\nfailure's message is the matching entry in\n[`UpdateAllOutcome::errors`].",
+          "anyOf": [
+            {
+              "$ref": "#/$defs/UpdateOutcome"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "required": [
+        "skill"
+      ]
+    },
+    "SkillName": {
+      "description": "Lexical skill name: the directory name that holds `SKILL.md`.\n\nInvariant: two deployments with the same `SkillName` are the same skill,\neven when their bytes differ. A symlink alias with another name is another\nskill.",
+      "type": "string"
+    },
+    "UpdateOutcome": {
+      "description": "Result of `update`.",
+      "type": "object",
+      "properties": {
+        "event_id": {
+          "description": "The `update` event.",
+          "$ref": "#/$defs/EventId"
+        },
+        "skill": {
+          "description": "The skill that was updated.",
+          "$ref": "#/$defs/SkillName"
+        },
+        "deployment_path": {
+          "description": "Where its canonical folder lives.",
+          "type": "string"
+        },
+        "tree_hash_before": {
+          "description": "The tree's git tree SHA before this update.",
+          "type": "string"
+        },
+        "tree_hash_after": {
+          "description": "The tree's git tree SHA after this update.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "event_id",
+        "skill",
+        "deployment_path",
+        "tree_hash_before",
+        "tree_hash_after"
+      ]
+    },
+    "EventId": {
+      "description": "History event id (ULID string).\n\nInvariant: lexical order equals creation order inside one store.",
+      "type": "string"
+    }
+  }
+}

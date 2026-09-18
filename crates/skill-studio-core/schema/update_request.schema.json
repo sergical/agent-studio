@@ -1,0 +1,138 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "UpdateRequest",
+  "description": "Request to refresh one already-installed skill in place, via\n`ops::update`. Reuses [`InstallMethod`]: `Copy` re-stages fresh `files`\nand swaps them in, quarantining the previous tree; `Dotagents`/`SkillsSh`\nre-run the same CLI `install` shelled out to, in place over the existing\ndestination.",
+  "type": "object",
+  "properties": {
+    "skill": {
+      "description": "The already-installed skill's folder name.",
+      "$ref": "#/$defs/SkillName"
+    },
+    "method": {
+      "description": "Which method wrote the deployment being refreshed.",
+      "$ref": "#/$defs/InstallMethod"
+    },
+    "scope": {
+      "description": "`Global` updates the scope home; `Project` updates one project.",
+      "$ref": "#/$defs/RootScope"
+    },
+    "files": {
+      "description": "`Copy` only: the fresh files to stage and swap in.",
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/InstallFile"
+      },
+      "default": []
+    },
+    "source": {
+      "description": "`Dotagents`/`SkillsSh` only: the source argument the CLI's `add`\ncommand needs to re-fetch (`skills update` itself only takes the\nname; `dotagents`' argv still needs the original source).",
+      "type": [
+        "string",
+        "null"
+      ],
+      "default": null
+    },
+    "ref_pin": {
+      "description": "`Dotagents` only: an already-resolved commit for a pinned\n(`declared_ref`) ledger entry - the caller's own concern, not\nre-derived here (see `ops_update`'s module doc).",
+      "type": [
+        "string",
+        "null"
+      ],
+      "default": null
+    }
+  },
+  "required": [
+    "skill",
+    "method",
+    "scope"
+  ],
+  "$defs": {
+    "SkillName": {
+      "description": "Lexical skill name: the directory name that holds `SKILL.md`.\n\nInvariant: two deployments with the same `SkillName` are the same skill,\neven when their bytes differ. A symlink alias with another name is another\nskill.",
+      "type": "string"
+    },
+    "InstallMethod": {
+      "description": "Which of the three ways `ops::install` can put a skill's bytes on disk.",
+      "oneOf": [
+        {
+          "description": "Fetches or copies bytes and stages/swaps them into place directly -\nno external CLI.",
+          "type": "string",
+          "const": "copy"
+        },
+        {
+          "description": "`npx -y @sentry/dotagents add <source>`.",
+          "type": "string",
+          "const": "dotagents"
+        },
+        {
+          "description": "`npx -y skills add <source>`.",
+          "type": "string",
+          "const": "skills_sh"
+        }
+      ]
+    },
+    "RootScope": {
+      "description": "Where a root lives.",
+      "oneOf": [
+        {
+          "description": "Under the scope home.",
+          "type": "object",
+          "properties": {
+            "scope": {
+              "type": "string",
+              "const": "global"
+            }
+          },
+          "required": [
+            "scope"
+          ]
+        },
+        {
+          "description": "Under one tracked project.",
+          "type": "object",
+          "properties": {
+            "scope": {
+              "type": "string",
+              "const": "project"
+            },
+            "project": {
+              "$ref": "#/$defs/ProjectRef"
+            }
+          },
+          "required": [
+            "scope",
+            "project"
+          ]
+        }
+      ]
+    },
+    "ProjectRef": {
+      "description": "Absolute path of a tracked project directory.\n\nInvariant: the path is canonical inside a [`crate::scope::NormalizedScope`].\nWire values are the lexical path the caller gave.",
+      "type": "string"
+    },
+    "InstallFile": {
+      "description": "One file `InstallMethod::Copy` stages into the new skill's folder, path\nrelative to the folder root (for example `SKILL.md` or\n`scripts/run.sh`).",
+      "type": "object",
+      "properties": {
+        "relative_path": {
+          "description": "Path relative to the skill folder's own root.",
+          "type": "string"
+        },
+        "contents": {
+          "description": "The file's bytes.",
+          "type": "array",
+          "items": {
+            "type": "integer",
+            "format": "uint8",
+            "minimum": 0,
+            "maximum": 255
+          }
+        }
+      },
+      "required": [
+        "relative_path",
+        "contents"
+      ]
+    }
+  }
+}

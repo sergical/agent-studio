@@ -552,6 +552,18 @@ pub trait HistoryStore: Send {
     /// a present [`crate::events::BackupEntry::relative`] from
     /// [`Self::read_manifest`]. Never called for an absent entry.
     fn read_backup_bytes(&self, backup_dir: &str, relative: &str) -> Result<Vec<u8>, CoreError>;
+    /// Lists every regular file under `relative` inside `backup_dir`
+    /// (recursively, paths relative to `relative` itself) with its bytes.
+    /// Used only when [`Self::read_manifest`] names a directory entry: a
+    /// restore of a directory reads the whole subtree this way and replays
+    /// it with [`crate::fsops::stage`]. A symlink inside the backed-up tree
+    /// is an [`crate::error::ErrorCode::Unsupported`] error; nothing writes
+    /// one into a skill folder today.
+    fn read_backup_files(
+        &self,
+        backup_dir: &str,
+        relative: &str,
+    ) -> Result<Vec<(PathBuf, Vec<u8>)>, CoreError>;
 }
 
 /// Lifecycle state of one journal plan.
