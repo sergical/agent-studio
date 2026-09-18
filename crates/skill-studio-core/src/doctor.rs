@@ -1,8 +1,8 @@
 //! The six doctor invariants named in `docs/action-map/lifecycle-states.md`'s
 //! Invariants section, checked independently of any single command's own
 //! rollback logic so a violation left by an old bug or a manual edit
-//! surfaces even when no command is running. [`ops::fix_skill`] runs every
-//! check and applies whichever repair exists; anything it cannot repair is
+//! surfaces even when no command is running. [`ops::fix_skill`] runs checks
+//! 1-5 and applies whichever repair exists; anything it cannot repair is
 //! returned as a [`DoctorViolation`] naming the path.
 //!
 //! Invariant 6 ([`JournalHasNoOpenPlan`](DoctorInvariant::JournalHasNoOpenPlan))
@@ -24,7 +24,7 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
 use crate::dto::{Diagnosis, Inventory, IssueKind};
-use crate::identity::{DeploymentId, RootKind, SkillName};
+use crate::identity::{BackingRelationship, DeploymentId, RootKind, SkillName};
 use crate::lock_file::{lock_file_path, read_lock_file, SkillLockFile};
 use crate::ownership::read_home_registry;
 use crate::ports::{Journal, ScopeFs};
@@ -167,10 +167,19 @@ pub fn check_lockfile_entry_has_folder(
     lock.skills
         .into_keys()
         .filter(|name| {
-            !inventory
-                .skills
-                .iter()
-                .any(|skill| skill.name.0 == *name && !skill.deployments.is_empty())
+            // A `LinkedTo` deployment is a link back to a `Canonical`/
+            // `Independent` one; a dangling link's target is gone, so
+            // counting it as "has a folder" would hide a stale lockfile
+            // row behind the very link that no longer resolves.
+            !inventory.skills.iter().any(|skill| {
+                skill.name.0 == *name
+                    && skill.deployments.iter().any(|deployment| {
+                        matches!(
+                            deployment.backing,
+                            BackingRelationship::Canonical | BackingRelationship::Independent
+                        )
+                    })
+            })
         })
         .map(|name| {
             let path = home.join(UNIVERSAL_SKILLS_RELATIVE).join(&name);
@@ -409,6 +418,43 @@ mod tests {
         assert!(
             check_lockfile_entry_has_folder(fs.as_ref(), &home(), &inventory_for(&fs)).is_empty()
         );
+    }
+
+    /// A lockfile entry whose only deployment is a dangling per-harness
+    /// link (the alias's target is never created, same shape as
+    /// `testing::fixtures::broken_link`): the link's own `LinkedTo`
+    /// deployment must not count as "has a folder", or the stale lockfile
+    /// row hides behind a link that resolves nowhere.
+    #[test]
+    fn lockfile_entry_whose_only_deployment_is_a_dangling_link_is_flagged_or_names_the_hidden_row()
+    {
+        let fs: Arc<dyn ScopeFs> = Arc::new(
+            FixtureBuilder::new()
+                .dir(&format!("{HOME}/{UNIVERSAL_SKILLS_RELATIVE}"))
+                .alias(
+                    &format!("{HOME}/.claude/skills/ghost"),
+                    &format!("../../{UNIVERSAL_SKILLS_RELATIVE}/missing"),
+                )
+                .file(
+                    &format!("{HOME}/.agents/.skill-lock.json"),
+                    br#"{"version":3,"skills":{
+                        "ghost":{"source":"o/r","sourceType":"github","sourceUrl":"https://example.com","skillFolderHash":"abc","installedAt":"2024-01-01T00:00:00Z","updatedAt":"2024-01-01T00:00:00Z"}
+                    }}"#,
+                )
+                .build_fs(),
+        );
+
+        let violations = check_lockfile_entry_has_folder(fs.as_ref(), &home(), &inventory_for(&fs));
+        assert_eq!(
+            violations.len(),
+            1,
+            "a dangling link must not hide the stale lockfile row: {violations:?}"
+        );
+        assert_eq!(
+            violations[0].invariant,
+            DoctorInvariant::LockfileEntryHasFolder
+        );
+        assert_eq!(violations[0].skill, Some(SkillName("ghost".into())));
     }
 
     #[test]
