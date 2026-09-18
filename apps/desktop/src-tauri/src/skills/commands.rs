@@ -19,8 +19,8 @@ use super::skill_dto::{
 use super::skill_editor;
 use super::skill_fork_registry;
 use super::skill_lifecycle::{
-    dotagents_update_args, ledger_matching_deployment, rebuild_fresh_lifecycle_snapshot,
-    resolve_lifecycle_target, skills_sh_remove_args_for_scope, skills_sh_update_args,
+    ledger_matching_deployment, rebuild_fresh_lifecycle_snapshot, resolve_lifecycle_target,
+    skills_sh_remove_args_for_scope,
 };
 use super::skill_md_write::write_skill_md_compare_and_swap;
 use super::skill_refresh::{self, SkillRefreshState};
@@ -480,80 +480,6 @@ mod tests {
         assert_eq!(
             std::fs::read_to_string(skill_md.as_ref()).unwrap(),
             "first write"
-        );
-    }
-
-    fn dotagents_skill(
-        name: &str,
-        declared_ref: Option<&str>,
-        has_manifest_row: bool,
-    ) -> skill_studio_core::dotagents_ledger::DotagentsSkill {
-        skill_studio_core::dotagents_ledger::DotagentsSkill {
-            name: name.to_string(),
-            source: format!("getsentry/{name}"),
-            github_repo: Some(format!("getsentry/{name}")),
-            path: format!("skills/{name}"),
-            installed_commit: Some("a".repeat(40)),
-            declared_ref: declared_ref.map(str::to_string),
-            has_manifest_row,
-        }
-    }
-
-    #[test]
-    fn dotagents_update_args_rejects_skill_with_no_matching_ledger_entry() {
-        let err = dotagents_update_args("manual-in-shared-root", None, None, InstallScope::Global)
-            .unwrap_err();
-        assert_eq!(
-            err,
-            "Update is not available: manual-in-shared-root is not in the matching agents.lock"
-        );
-    }
-
-    #[test]
-    fn dotagents_update_args_rejects_wildcard_read_only_entry() {
-        let entry = dotagents_skill("find-bugs", None, false);
-        let err = dotagents_update_args("find-bugs", Some(&entry), None, InstallScope::Global)
-            .unwrap_err();
-        assert_eq!(
-            err,
-            "Update is not available: find-bugs is a wildcard dotagents entry"
-        );
-    }
-
-    #[test]
-    fn dotagents_update_args_named_unpinned_entry_uses_add_without_ref() {
-        let entry = dotagents_skill("find-bugs", None, true);
-        let args =
-            dotagents_update_args("find-bugs", Some(&entry), None, InstallScope::Global).unwrap();
-        assert_eq!(
-            args,
-            vec![
-                "-y",
-                "@sentry/dotagents",
-                "add",
-                "getsentry/find-bugs",
-                "--name",
-                "find-bugs"
-            ]
-        );
-    }
-
-    #[test]
-    fn dotagents_update_args_selects_project_mode() {
-        let entry = dotagents_skill("find-bugs", None, true);
-        let args =
-            dotagents_update_args("find-bugs", Some(&entry), None, InstallScope::Project).unwrap();
-        assert_eq!(
-            args,
-            vec![
-                "-y",
-                "@sentry/dotagents",
-                "--project",
-                "add",
-                "getsentry/find-bugs",
-                "--name",
-                "find-bugs"
-            ]
         );
     }
 
@@ -1320,37 +1246,221 @@ mod tests {
         );
     }
 
-    #[test]
-    fn dotagents_update_args_pinned_entry_needs_latest_commit() {
-        let entry = dotagents_skill("find-bugs", Some("aaaa"), true);
-        let err = dotagents_update_args("find-bugs", Some(&entry), None, InstallScope::Global)
-            .unwrap_err();
-        assert!(err.contains("Check now"));
+    fn installed_skill_fixture(name: &str) -> super::super::skill_dto::InstalledSkill {
+        use super::super::SourceKind;
+        use chrono::Utc;
+
+        super::super::skill_dto::InstalledSkill {
+            name: name.to_string(),
+            source: "manual".to_string(),
+            source_type: "manual".to_string(),
+            source_url: None,
+            skill_path: None,
+            installed_at: Utc::now().to_rfc3339(),
+            updated_at: None,
+            has_update: true,
+            update_owner_ids: vec![
+                "skills-sh/global".to_string(),
+                "dotagents/global".to_string(),
+            ],
+            update_owners: vec![
+                super::super::skill_dto::OwnerUpdateInfo {
+                    owner_id: "skills-sh/global".to_string(),
+                    latest_commit: Some("aaa1111".to_string()),
+                    latest_commit_at: None,
+                },
+                super::super::skill_dto::OwnerUpdateInfo {
+                    owner_id: "dotagents/global".to_string(),
+                    latest_commit: Some("bbb2222".to_string()),
+                    latest_commit_at: None,
+                },
+            ],
+            update_commit: Some("aaa1111".to_string()),
+            update_commit_at: None,
+            source_kind: SourceKind::Manual,
+            deployments: Vec::new(),
+            has_spec: false,
+            description: None,
+            spec_violations: Vec::new(),
+            skill_md_tokens: 0,
+            description_tokens: 0,
+            folder_bytes: 0,
+            file_count: 0,
+            content_hash: String::new(),
+            content_hashes: Vec::new(),
+            modified_at: None,
+            frontmatter_fields: Default::default(),
+            folder_truncated: false,
+            fork: None,
+            trial: None,
+            trials: Vec::new(),
+            parked: false,
+            parked_at: None,
+            invocation: super::super::frontmatter::InvocationPolicy::Both,
+        }
     }
 
+    /// `update_from_the_desktop_clears_the_outdated_flag_without_a_full_rescan_or_names_the_stale_row`:
+    /// pure-function test of `clear_update_flag`, the helper `update_skill`/
+    /// `update_all_skills` call through `patch_snapshot_and_emit` instead of
+    /// the old `check_now_for_owner` + `request_snapshot_rebuild` pair - no
+    /// `tauri::AppHandle` needed since the patch itself is plain data
+    /// mutation, not IPC. Removing only the just-updated owner's entry (not
+    /// every entry) proves the row isn't renamed to "no update" wholesale
+    /// when a second owner is still outdated.
     #[test]
-    fn dotagents_update_args_pinned_entry_re_pins_to_latest_commit() {
-        let entry = dotagents_skill("find-bugs", Some("aaaa"), true);
-        let latest = "b".repeat(40);
-        let args = dotagents_update_args(
-            "find-bugs",
-            Some(&entry),
-            Some(&latest),
-            InstallScope::Global,
-        )
+    fn update_from_the_desktop_clears_the_outdated_flag_without_a_full_rescan_or_names_the_stale_row(
+    ) {
+        let mut skill = installed_skill_fixture("alpha");
+        assert!(skill.has_update);
+
+        clear_update_flag(&mut skill, Some("skills-sh/global"));
+
+        assert_eq!(skill.update_owner_ids, vec!["dotagents/global".to_string()]);
+        assert_eq!(skill.update_owners.len(), 1, "{:?}", skill.update_owners);
+        assert_eq!(skill.update_owners[0].owner_id, "dotagents/global");
+        assert!(
+            skill.has_update,
+            "a second still-outdated owner must keep the badge on"
+        );
+
+        clear_update_flag(&mut skill, Some("dotagents/global"));
+        assert!(skill.update_owner_ids.is_empty());
+        assert!(skill.update_owners.is_empty());
+        assert!(
+            !skill.has_update,
+            "clearing the last outdated owner must drop the badge"
+        );
+        assert!(skill.update_commit.is_none());
+        assert!(skill.update_commit_at.is_none());
+    }
+
+    /// A `ProcessSpawner`/runtime-builder pair for the thread-recording
+    /// test below - mirrors `harness_first_run.rs`'s
+    /// `ThreadRecordingSpawner`/`detect_with_runtime` test, adapted to
+    /// `update_all_with_runtime`'s runtime-builder closure: `Copy` needs no
+    /// spawner, so the closure itself is what records the pool thread.
+    fn copy_update_request(
+        skill: &str,
+        scope: skill_studio_core::identity::RootScope,
+        body: &[u8],
+    ) -> skill_studio_core::dto::UpdateRequest {
+        skill_studio_core::dto::UpdateRequest {
+            skill: skill_studio_core::identity::SkillName(skill.to_string()),
+            method: skill_studio_core::dto::InstallMethod::Copy,
+            scope,
+            files: vec![skill_studio_core::dto::InstallFile {
+                relative_path: PathBuf::from("SKILL.md"),
+                contents: body.to_vec(),
+            }],
+            source: None,
+            ref_pin: None,
+        }
+    }
+
+    /// `update_all_on_ten_outdated_fixtures_ends_with_ten_journal_entries_and_zero_main_thread_calls_over_one_frame`:
+    /// installs ten `Copy` skills for real (so `update_all_with_runtime` has
+    /// an existing deployment per skill to swap over), then updates all ten
+    /// in the one `spawn_blocking` task `update_all_with_runtime` wraps its
+    /// `ops::update_all` call in. Under a `current_thread` runtime the test
+    /// task's own thread is the only async worker, so the runtime-builder
+    /// closure recording a different thread proves the write ran off the
+    /// UI/test task - a deterministic fact, not a timing measurement. The
+    /// ten resulting `update` journal rows are counted straight from the
+    /// events store, independent of the returned `UpdateAllOutcome`.
+    #[tokio::test(flavor = "current_thread")]
+    async fn update_all_on_ten_outdated_fixtures_ends_with_ten_journal_entries_and_zero_main_thread_calls_over_one_frame(
+    ) {
+        use skill_studio_core::dto::{InstallFile, InstallMethod, InstallRequest};
+        use skill_studio_core::identity::{RootScope, SkillName};
+        use skill_studio_core::ops::{self, Operation, ResultEnvelope};
+        use skill_studio_core::ports::OpContext;
+
+        let tmp = tempfile::tempdir().unwrap();
+        let home = tmp.path().join("home");
+        let data_root = tmp.path().join("data");
+        std::fs::create_dir_all(&home).unwrap();
+
+        let rt = super::super::core_runtime::build_runtime_write_at(&home, &data_root).unwrap();
+        let ctx = OpContext::uncancellable(skill_studio_core::identity::CorrelationId(
+            ulid::Ulid::new().to_string(),
+        ));
+        for i in 0..10 {
+            let req = InstallRequest {
+                skill: SkillName(format!("fixture-{i}")),
+                method: InstallMethod::Copy,
+                scope: RootScope::Global,
+                harnesses: Vec::new(),
+                files: vec![InstallFile {
+                    relative_path: PathBuf::from("SKILL.md"),
+                    contents: b"original".to_vec(),
+                }],
+                source: None,
+                trust_identity: None,
+                trust_confirmed: false,
+                save_as_preference: false,
+            };
+            let result = ops::install(&rt, &ctx, &req);
+            let envelope = ResultEnvelope::from_result(Operation::Install, &rt.scope, &ctx, result);
+            super::super::core_runtime::to_command_result(envelope)
+                .unwrap_or_else(|e| panic!("fixture install {i} failed: {e}"));
+        }
+
+        let requests: Vec<_> = (0..10)
+            .map(|i| copy_update_request(&format!("fixture-{i}"), RootScope::Global, b"updated"))
+            .collect();
+
+        let test_task_thread = std::thread::current().id();
+        let runtime_built_on = std::sync::Arc::new(std::sync::Mutex::new(None));
+        let record_build_thread = runtime_built_on.clone();
+        let home_for_closure = home.clone();
+        let data_root_for_closure = data_root.clone();
+
+        let outcome = update_all_with_runtime(requests, move || {
+            *record_build_thread.lock().unwrap() = Some(std::thread::current().id());
+            super::super::core_runtime::build_runtime_write_at(
+                &home_for_closure,
+                &data_root_for_closure,
+            )
+        })
+        .await
         .unwrap();
+
+        assert_eq!(outcome.items.len(), 10);
+        assert!(outcome.errors.is_empty(), "{:?}", outcome.errors);
+
+        let built_on = runtime_built_on.lock().unwrap().expect("runtime was built");
+        assert_ne!(
+            built_on, test_task_thread,
+            "update_all_with_runtime must build the runtime and run ops::update_all \
+             on a spawn_blocking pool thread, not the calling task"
+        );
+
+        let history = rt
+            .ports
+            .history
+            .open(
+                &rt.scope,
+                skill_studio_core::ports::HistoryAccess::ReadIfExists,
+            )
+            .unwrap()
+            .expect("history store exists after the fixture installs");
+        let rows = history
+            .list(&skill_studio_core::events::EventFilter {
+                skill: None,
+                limit: 100,
+                after: None,
+            })
+            .unwrap();
+        let update_rows = rows
+            .iter()
+            .filter(|row| row.kind == skill_studio_core::events::EventKind::Update.as_str())
+            .count();
         assert_eq!(
-            args,
-            vec![
-                "-y",
-                "@sentry/dotagents",
-                "add",
-                "getsentry/find-bugs",
-                "--name",
-                "find-bugs",
-                "--ref",
-                &latest,
-            ]
+            update_rows,
+            10,
+            "{:?}",
+            rows.iter().map(|r| &r.kind).collect::<Vec<_>>()
         );
     }
 }
@@ -2315,125 +2425,242 @@ pub fn set_preferred_editor(app_name: Option<String>) -> Result<(), String> {
     skill_editor::set_preferred_editor(&home, app_name)
 }
 
-/// Update a skill, using whichever CLI owns it: `dotagents` for a
-/// named dotagents-managed skill (`add` re-pins it to the latest commit), `npx
-/// skills update` for a skills.sh skill. Manual/plugin skills have no owning
-/// CLI to update through, and wildcard dotagents entries are read-only, so
-/// they are rejected up front.
+/// Resolves one target's deployment into the `UpdateRequest`
+/// `skill_studio_core::ops::update` needs: `method`/`scope` from the
+/// deployment, and - `Dotagents` only - `source`/`ref_pin` from the
+/// matching ownership ledger entry. `ops::update`'s own argv builder
+/// (`ops_update::update_cli_args_and_cwd`) takes an already-resolved
+/// `ref_pin`; resolving a `declared_ref` ledger entry to a commit stays the
+/// caller's job (see `ops_update`'s module doc), the same lookup the old
+/// `update_skill` body ran before shelling out itself.
+fn build_update_request(
+    app: &tauri::AppHandle,
+    snapshot: &skill_refresh::SkillSnapshot,
+    skill: &InstalledSkill,
+    deployment: &super::skill_dto::Deployment,
+) -> Result<skill_studio_core::dto::UpdateRequest, String> {
+    use skill_studio_core::dto::{InstallMethod, UpdateRequest};
+    use skill_studio_core::identity::{ProjectRef, RootScope, SkillName};
+
+    let scope = match (deployment.scope.as_str(), &deployment.project_path) {
+        ("global", _) => RootScope::Global,
+        ("project", Some(project_path)) => {
+            RootScope::Project(ProjectRef(PathBuf::from(project_path)))
+        }
+        _ => {
+            return Err(format!(
+                "Update is not available for {} scope",
+                deployment.scope
+            ))
+        }
+    };
+    let skill_name = SkillName(skill.name.clone());
+
+    match deployment.owner_kind {
+        super::skill_ownership::LifecycleOwnerKind::Dotagents => {
+            let home = dirs::home_dir().ok_or("Could not find home directory")?;
+            let project_paths: Vec<PathBuf> = snapshot.projects.iter().map(Into::into).collect();
+            let ledgers = super::skill_ownership::load_ownership_ledgers(&home, &project_paths);
+            let ledger = ledger_matching_deployment(&ledgers, deployment)
+                .ok_or("Update is not available: the matching ownership ledger is missing")?;
+            let entry = ledger
+                .dotagents
+                .iter()
+                .find(|entry| entry.name == skill.name)
+                .ok_or_else(|| {
+                    format!(
+                        "Update is not available: {} is not in the matching agents.lock",
+                        skill.name
+                    )
+                })?;
+            if !entry.has_manifest_row {
+                return Err(format!(
+                    "Update is not available: {} is a wildcard dotagents entry",
+                    skill.name
+                ));
+            }
+            let ref_pin = if entry.declared_ref.is_some() {
+                let app_data = app
+                    .path()
+                    .app_data_dir()
+                    .unwrap_or_else(|_| PathBuf::from("."));
+                let store = skill_update_check::read_update_check_store(&app_data);
+                let owner_id = deployment.owner_id.as_deref().ok_or(
+                    "Update is not available: the selected deployment has no owner identity",
+                )?;
+                let current_owner_ids: Vec<String> = snapshot
+                    .skills
+                    .iter()
+                    .flat_map(|skill| skill.deployments.iter())
+                    .filter_map(|deployment| deployment.owner_id.clone())
+                    .collect();
+                let latest =
+                    skill_update_check::state_for_owner(&store, owner_id, &current_owner_ids)
+                        .and_then(|state| state.latest_commit.clone());
+                Some(latest.ok_or_else(|| {
+                    format!(
+                        "Update is not available yet: run \"Check now\" to find {}'s latest commit first",
+                        skill.name
+                    )
+                })?)
+            } else {
+                None
+            };
+            Ok(UpdateRequest {
+                skill: skill_name,
+                method: InstallMethod::Dotagents,
+                scope,
+                files: Vec::new(),
+                source: Some(entry.source.clone()),
+                ref_pin,
+            })
+        }
+        super::skill_ownership::LifecycleOwnerKind::SkillsSh => Ok(UpdateRequest {
+            skill: skill_name,
+            method: InstallMethod::SkillsSh,
+            scope,
+            files: Vec::new(),
+            source: None,
+            ref_pin: None,
+        }),
+        super::skill_ownership::LifecycleOwnerKind::Fork => {
+            Err("Forked skills update with Pull upstream".to_string())
+        }
+        _ => Err("Update is not available for this deployment owner".to_string()),
+    }
+}
+
+/// Clears `skill`'s outdated badge for one owner right away, instead of the
+/// `check_now_for_owner` full rescan (`gh api` calls plus a snapshot
+/// rebuild) the old `update_skill` body ran after every successful update -
+/// the background loop's own 6h currency check (unit 3.4) reconciles the
+/// rest. `owner_id: None` (an owner-less deployment, which `Update`'s own
+/// preconditions never actually allow through) leaves the badge alone
+/// rather than guessing which entry to drop.
+fn clear_update_flag(skill: &mut InstalledSkill, owner_id: Option<&str>) {
+    let Some(owner_id) = owner_id else { return };
+    skill.update_owner_ids.retain(|id| id != owner_id);
+    skill
+        .update_owners
+        .retain(|update| update.owner_id != owner_id);
+    skill.has_update = !skill.update_owner_ids.is_empty();
+    if skill.update_owner_ids.is_empty() {
+        skill.update_commit = None;
+        skill.update_commit_at = None;
+    }
+}
+
+/// Thin adapter over `skill_studio_core::ops::update`: resolves the target
+/// deployment, then hands its `Dotagents`/`SkillsSh` write to the core op
+/// (Lease, journal row with a backup and inverse, `npx` through the
+/// spawner port) - the same function the CLI's `update` subcommand and the
+/// MCP server's `update` tool call. Old path deleted: `update_skill` no
+/// longer shells out to `npx` itself, and `skill_lifecycle.rs`'s
+/// `skills_sh_update_args`/`dotagents_update_args` argv builders are gone -
+/// `ops_update::update_cli_args_and_cwd` owns that argv now.
 #[tauri::command]
 pub async fn update_skill(
     target: LifecycleTarget,
     app: tauri::AppHandle,
-) -> Result<InstallResult, String> {
+) -> Result<skill_studio_core::dto::UpdateOutcome, String> {
     let timing_app = app.clone();
     crate::timing_log::time_command_blocking(&timing_app, "update_skill", move || {
         let refresh_state = app.state::<SkillRefreshState>();
-        let update_check_state = app.state::<skill_update_check::UpdateCheckState>();
-        let home = dirs::home_dir().ok_or("Could not find home directory")?;
-        let write_lease = super::write_lease::WriteLease::default();
-        let _guard = write_lease.try_acquire(&home)?;
         let snapshot = rebuild_fresh_lifecycle_snapshot(&app, &refresh_state)?;
         let (skill, deployment) = resolve_lifecycle_target(&snapshot, &target, "Update")?;
-        let skill_name = skill.name;
-        let scope = if deployment.scope == "global" {
-            super::skill_dto::InstallScope::Global
-        } else if deployment.scope == "project" {
-            super::skill_dto::InstallScope::Project
-        } else {
-            return Err(format!(
-                "Update is not available for {} scope",
-                deployment.scope
-            ));
-        };
-        let project_paths: Vec<std::path::PathBuf> =
-            snapshot.projects.iter().map(Into::into).collect();
-        let ledgers = super::skill_ownership::load_ownership_ledgers(&home, &project_paths);
+        let req = build_update_request(&app, &snapshot, &skill, &deployment)?;
 
-        let (tool, args): (&str, Vec<String>) = match deployment.owner_kind {
-            super::skill_ownership::LifecycleOwnerKind::Dotagents => {
-                let ledger = ledger_matching_deployment(&ledgers, &deployment)
-                    .ok_or("Update is not available: the matching ownership ledger is missing")?;
-                let entry = ledger
-                    .dotagents
-                    .iter()
-                    .find(|entry| entry.name == skill_name);
-                let latest_commit = if entry.is_some_and(|e| e.declared_ref.is_some()) {
-                    let app_data = app
-                        .path()
-                        .app_data_dir()
-                        .unwrap_or_else(|_| std::path::PathBuf::from("."));
-                    let store = skill_update_check::read_update_check_store(&app_data);
-                    let owner_id = deployment.owner_id.as_deref().ok_or(
-                        "Update is not available: the selected deployment has no owner identity",
-                    )?;
-                    let current_owner_ids: Vec<String> = snapshot
-                        .skills
-                        .iter()
-                        .flat_map(|skill| skill.deployments.iter())
-                        .filter_map(|deployment| deployment.owner_id.clone())
-                        .collect();
-                    skill_update_check::state_for_owner(&store, owner_id, &current_owner_ids)
-                        .and_then(|state| state.latest_commit.clone())
-                } else {
-                    None
-                };
-                let args =
-                    dotagents_update_args(&skill_name, entry, latest_commit.as_deref(), scope)?;
-                ("dotagents", args)
-            }
-            super::skill_ownership::LifecycleOwnerKind::SkillsSh => {
-                ("skills-sh", skills_sh_update_args(&skill_name, scope))
-            }
-            super::skill_ownership::LifecycleOwnerKind::Fork => {
-                return Err("Forked skills update with Pull upstream".to_string())
-            }
-            _ => return Err("Update is not available for this deployment owner".to_string()),
-        };
+        let rt = super::core_runtime::build_runtime_write()?;
+        let ctx = skill_studio_core::ports::OpContext::uncancellable(
+            skill_studio_core::identity::CorrelationId(ulid::Ulid::new().to_string()),
+        );
+        let result = skill_studio_core::ops::update(&rt, &ctx, &req);
+        let envelope = skill_studio_core::ops::ResultEnvelope::from_result(
+            skill_studio_core::ops::Operation::Update,
+            &rt.scope,
+            &ctx,
+            result,
+        );
+        let outcome = super::core_runtime::to_command_result(envelope)?;
 
-        let npx_command = format!("npx {}", args.join(" "));
-        let mut command = Command::new("npx");
-        command.args(&args);
-        if let Some(project_path) = &deployment.project_path {
-            command.current_dir(project_path);
+        let owner_id = deployment.owner_id.clone();
+        let skill_name = skill.name.clone();
+        if let Err(e) = skill_refresh::patch_snapshot_and_emit(&app, &refresh_state, |snapshot| {
+            if let Some(entry) = snapshot.skills.iter_mut().find(|s| s.name == skill_name) {
+                clear_update_flag(entry, owner_id.as_deref());
+            }
+        }) {
+            eprintln!("[update_skill] snapshot patch failed: {e}");
         }
-        let output = command
-            .output()
-            .map_err(|e| format!("Failed to execute npx: {e}"))?;
-
-        let stderr = String::from_utf8_lossy(&output.stderr).to_string();
-
-        if output.status.success() {
-            let owner_id = deployment
-                .owner_id
-                .as_deref()
-                .ok_or("Update is not available: the selected deployment has no owner identity")?;
-            skill_update_check::check_now_for_owner(
-                &app,
-                &update_check_state,
-                owner_id,
-                &project_paths,
-            );
-            skill_refresh::request_snapshot_rebuild(&app);
-            Ok(InstallResult {
-                success: true,
-                skill_name,
-                installed_path: None,
-                error: None,
-                tool: Some(tool.to_string()),
-                command: Some(npx_command),
-            })
-        } else {
-            Ok(InstallResult {
-                success: false,
-                skill_name,
-                installed_path: None,
-                error: Some(stderr),
-                tool: Some(tool.to_string()),
-                command: Some(npx_command),
-            })
-        }
+        Ok(outcome)
     })
     .await
+}
+
+/// The batch write itself, kept apart from `update_all_skills` so the
+/// thread-recording test can pin it to `spawn_blocking` without a real
+/// `tauri::AppHandle` - the same split `harness_first_run.rs`'s
+/// `detect_with_runtime` uses. `requests` is built ahead of time (target
+/// resolution needs the snapshot and `app.state()`, neither available to a
+/// unit test); this is the part that opens the `MutationSession` and writes
+/// journal rows, one call to `ops::update_all` covering every request.
+async fn update_all_with_runtime(
+    requests: Vec<skill_studio_core::dto::UpdateRequest>,
+    build_runtime: impl FnOnce() -> Result<skill_studio_core::ports::Runtime, String> + Send + 'static,
+) -> Result<skill_studio_core::dto::UpdateAllOutcome, String> {
+    let joined = tauri::async_runtime::spawn_blocking(move || {
+        let rt = build_runtime()?;
+        let ctx = skill_studio_core::ports::OpContext::uncancellable(
+            skill_studio_core::identity::CorrelationId(ulid::Ulid::new().to_string()),
+        );
+        Ok(skill_studio_core::ops::update_all(
+            &rt,
+            &ctx,
+            &requests,
+            |_, _| {},
+        ))
+    })
+    .await;
+    crate::timing_log::join_result_to_err("update_all_skills", joined)
+}
+
+/// "Update all": resolves every target, then runs `ops::update_all` over all
+/// of them in the one `spawn_blocking` task `update_all_with_runtime` wraps
+/// its op call in - each skill still gets its own journal row
+/// (`ops::update_all`'s own per-request loop), but no part of resolving
+/// targets, reading ledgers, or writing skills touches the UI task.
+/// `on_outcome` is a no-op inside `update_all_with_runtime`: the frontend's
+/// existing "Updated N of M" toast reads the returned `UpdateAllOutcome`
+/// once the whole batch finishes rather than a per-skill progress event,
+/// matching the shared brief's "no new component".
+#[tauri::command]
+pub async fn update_all_skills(
+    targets: Vec<LifecycleTarget>,
+    app: tauri::AppHandle,
+) -> Result<skill_studio_core::dto::UpdateAllOutcome, String> {
+    let refresh_state = app.state::<SkillRefreshState>();
+    let snapshot = rebuild_fresh_lifecycle_snapshot(&app, &refresh_state)?;
+    let mut requests = Vec::with_capacity(targets.len());
+    let mut owners = Vec::with_capacity(targets.len());
+    for target in &targets {
+        let (skill, deployment) = resolve_lifecycle_target(&snapshot, target, "Update")?;
+        requests.push(build_update_request(&app, &snapshot, &skill, &deployment)?);
+        owners.push((skill.name.clone(), deployment.owner_id.clone()));
+    }
+
+    let outcome =
+        update_all_with_runtime(requests, super::core_runtime::build_runtime_write).await?;
+
+    for (skill_name, owner_id) in owners {
+        if let Err(e) = skill_refresh::patch_snapshot_and_emit(&app, &refresh_state, |snapshot| {
+            if let Some(entry) = snapshot.skills.iter_mut().find(|s| s.name == skill_name) {
+                clear_update_flag(entry, owner_id.as_deref());
+            }
+        }) {
+            eprintln!("[update_all_skills] snapshot patch failed: {e}");
+        }
+    }
+    Ok(outcome)
 }
 
 /// Runs one Claude-Code-only plugin lifecycle action: checks `harness`,

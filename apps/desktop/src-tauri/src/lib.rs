@@ -284,6 +284,7 @@ pub fn run() {
             skills::commands::get_installed_skills,
             skills::commands::remove_skill,
             skills::commands::update_skill,
+            skills::commands::update_all_skills,
             skills::commands::read_installed_skill_md,
             skills::commands::write_installed_skill_md_if_unchanged,
             skills::skill_frontmatter_repair::preview_skill_frontmatter_repair,
