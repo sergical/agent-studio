@@ -929,9 +929,13 @@ function useAddSkillSubmit(input: {
     setTrustBusy(true);
     try {
       const retryOperationId = crypto.randomUUID();
-      const retry = await confirmAddSkillTrust(operationId, retryOperationId, identity);
-      operationIdRef.current = retry.operation_id;
+      // The retry id is client-generated, so it is tracked before the await
+      // below, not after: a terminal event for the retry op delivered while
+      // this call is in flight would otherwise be dropped by the id filter
+      // in the listener's `onEvent` (review round 3, N1).
+      operationIdRef.current = retryOperationId;
       consumedIdRef.current = undefined;
+      const retry = await confirmAddSkillTrust(operationId, retryOperationId, identity);
       setOperation(retry);
       const snapshot = await getAddSkillOperation(retry.operation_id);
       setOperation((current) => applyAddSkillOperationEvent(current, snapshot, retry.operation_id));
