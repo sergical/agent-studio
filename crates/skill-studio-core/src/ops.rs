@@ -4671,16 +4671,35 @@ fn set_claude_code_switch(
     Ok((1, 1))
 }
 
+/// True when `kind` is a root Codex reads: the shared universal root, or its
+/// own harness root, at either scope. Mirrors [`is_opencode_visible_root`]
+/// (Codex has no legacy root of its own to add).
+fn is_codex_visible_root(kind: &RootKind) -> bool {
+    match kind {
+        RootKind::Universal => true,
+        RootKind::Harness(id) => id.as_str() == AgentId::CODEX,
+        RootKind::Legacy(_) | RootKind::Parked | RootKind::PluginCache(_) => false,
+    }
+}
+
 /// Every canonical `SKILL.md` path Codex sees for `skill`, sorted for a
 /// deterministic write order.
 fn codex_skill_md_paths(skill: &InstalledSkillDto) -> Vec<PathBuf> {
     // `LinkedTo` deployments point at another deployment's bytes and have no
     // `SKILL.md` of their own to toggle; `Canonical` and `Independent` both
-    // hold real bytes on disk, so both need their own row.
+    // hold real bytes on disk, so both need their own row. `scan` groups
+    // every harness's copy of a skill under one `InstalledSkillDto`, so
+    // without the `is_codex_visible_root` filter this also picked up
+    // deployments at roots Codex never reads - a Claude Code copy, a parked
+    // root, and so on - writing a `[[skills.config]]` row for a path Codex
+    // never resolves, one a later enable would remove as if it were Codex's
+    // own.
     let mut paths: Vec<PathBuf> = skill
         .deployments
         .iter()
-        .filter(|d| d.backing != BackingRelationship::LinkedTo)
+        .filter(|d| {
+            d.backing != BackingRelationship::LinkedTo && is_codex_visible_root(&d.root.kind)
+        })
         .map(|d| d.path.join("SKILL.md"))
         .collect();
     paths.sort();

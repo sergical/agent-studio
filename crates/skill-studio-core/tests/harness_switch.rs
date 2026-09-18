@@ -341,6 +341,53 @@ fn a_crash_mid_codex_loop_reports_n_of_m_paths_toggled_instead_of_failing_silent
     );
 }
 
+/// codex_disable_writes_rows_only_for_paths_codex_reads_or_names_the_foreign_path_it_wrote:
+/// `gamma` has a canonical universal copy plus an independent (not linked)
+/// Claude Code copy - Codex never reads `.claude/skills`, so a Codex disable
+/// must write exactly one `[[skills.config]]` row, for the universal path,
+/// and none naming the Claude Code copy.
+#[test]
+fn codex_disable_writes_rows_only_for_paths_codex_reads_or_names_the_foreign_path_it_wrote() {
+    let home = unique_temp_dir("switch_codex_visible_root");
+    install_universal_skill(&home, "gamma");
+    let claude_dir = home.join(CLAUDE_ROOT_RELATIVE).join("gamma");
+    std::fs::create_dir_all(&claude_dir).unwrap();
+    std::fs::write(
+        claude_dir.join("SKILL.md"),
+        "---\nname: gamma\ndescription: an independent claude code copy\n---\nBody.\n",
+    )
+    .unwrap();
+    let rt = runtime_for(&home);
+
+    ops::set_harness_enabled(
+        &rt,
+        &ctx(),
+        &SetHarnessEnabledRequest {
+            skill: SkillName("gamma".into()),
+            harness: AgentId::from(AgentId::CODEX),
+            enabled: false,
+            project_path: None,
+        },
+    )
+    .unwrap();
+
+    let config_path = home.join(".codex/config.toml");
+    let text = std::fs::read_to_string(&config_path).unwrap();
+    let claude_skill_md = claude_dir.join("SKILL.md");
+    assert!(
+        !text.contains(&claude_skill_md.display().to_string()),
+        "expected no row naming the Claude Code copy at {}, got:\n{text}",
+        claude_skill_md.display()
+    );
+    let rows = text.matches("[[skills.config]]").count();
+    assert_eq!(
+        rows, 1,
+        "expected exactly one row, for the universal path Codex actually reads, got {rows} in:\n{text}"
+    );
+
+    std::fs::remove_dir_all(&home).ok();
+}
+
 fn install_project_universal_skill(project: &Path, name: &str) {
     let dir = project.join(UNIVERSAL_ROOT_RELATIVE).join(name);
     std::fs::create_dir_all(&dir).unwrap();
