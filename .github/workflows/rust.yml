@@ -16,12 +16,21 @@ jobs:
         with:
           components: rustfmt, clippy
       - uses: Swatinem/rust-cache@v2
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-machete,cargo-deny
       # tauri-build refuses to compile when frontendDist is missing; the Rust
       # tests do not read the bundle, so an empty folder is enough.
       - run: mkdir -p apps/desktop/dist
       - run: cargo fmt --all --check
       - run: cargo clippy --workspace --all-targets -- -D warnings
       - run: cargo test --workspace
+      # Unused dependencies (plan.md section 7): fails the build on any
+      # Cargo.toml entry nothing in the workspace actually imports.
+      - run: cargo machete
+      # Advisory/license/source policy (plan.md section 7), driven by the
+      # root deny.toml.
+      - run: cargo deny check
       # The generated TypeScript wire types come from the `schema` Rust binary,
       # so the drift check lives here, next to the toolchain that builds it.
       - uses: actions/setup-node@v4

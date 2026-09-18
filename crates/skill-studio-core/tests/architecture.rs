@@ -33,7 +33,7 @@ fn collect_rs_files(dir: &Path, out: &mut Vec<PathBuf>) {
 }
 
 #[test]
-fn no_direct_fs_or_process_access_outside_the_allowlist() {
+fn core_crate_has_no_std_fs_or_std_process_or_names_the_call_site() {
     let src_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
     let mut files = Vec::new();
     collect_rs_files(&src_dir, &mut files);
@@ -75,7 +75,7 @@ fn no_direct_fs_or_process_access_outside_the_allowlist() {
 }
 
 #[test]
-fn cargo_toml_has_no_adapter_runtime_dependency() {
+fn core_crate_cargo_toml_has_no_tauri_rusqlite_tokio_or_reqwest_dependency_or_names_the_offender() {
     let manifest_path = Path::new(env!("CARGO_MANIFEST_DIR")).join("Cargo.toml");
     let manifest = fs::read_to_string(&manifest_path).expect("read Cargo.toml");
     let parsed: toml::Value = toml::from_str(&manifest).expect("parse Cargo.toml");
