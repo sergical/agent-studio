@@ -177,6 +177,22 @@ describe("canOfferHarnessSwitch", () => {
       invocation: null,
     };
     expect(harnessSwitchOffTitle(row)).toBe(REGISTRY_COPY_NO_SWITCH_TITLE);
+
+    // `canToggleHarness` alone would read a disabled claude-code/codex/open-code
+    // row as switchable regardless of ownership, so the Copy-owned guard must
+    // run ahead of that branch too, not just the studio-moved fallback.
+    const registryCopyOnClaudeCode = sharedDeployment({
+      id: "dep:v1/project/claude-code/find-bugs",
+      agent: "Claude Code",
+      scope: "project",
+      project_path: "/repo",
+      path: "/repo/.claude/skills/find-bugs",
+      owner_kind: "copy",
+      backing: { kind: "independent" },
+      disabled: true,
+      disabled_by: "studio-moved",
+    });
+    expect(canOfferHarnessSwitch(registryCopyOnClaudeCode)).toBe(false);
   });
 });
 

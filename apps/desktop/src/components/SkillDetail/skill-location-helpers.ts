@@ -60,14 +60,15 @@ export function canToggleHarness(deployment: Deployment): boolean {
  * `restore_moved_deployment` itself refuses those
  * (`refuse_registry_copy_restore` in `skill_harness_disable.rs`) to avoid
  * restoring the folder while leaving the fork registry's `copies` entry
- * stale. Every other row with no native per-harness disable has no off
- * switch at all, and the caller must disable the control instead of
- * offering it.
+ * stale. Checked first, ahead of `canToggleHarness`, since a disabled Copy
+ * row on claude-code/codex/open-code would otherwise still read as
+ * switchable through that branch's `deployment.disabled` case. Every other
+ * row with no native per-harness disable has no off switch at all, and the
+ * caller must disable the control instead of offering it.
  */
 export function canOfferHarnessSwitch(deployment: Deployment): boolean {
-  const canRestoreMoved =
-    deployment.disabled_by === "studio-moved" && deployment.owner_kind !== "copy";
-  return canRestoreMoved || canToggleHarness(deployment);
+  if (deployment.disabled_by === "studio-moved" && deployment.owner_kind === "copy") return false;
+  return deployment.disabled_by === "studio-moved" || canToggleHarness(deployment);
 }
 
 /**
