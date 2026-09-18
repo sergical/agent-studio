@@ -130,6 +130,7 @@ const EXPECTED_WRAPPER_COMMANDS = {
     registeredInLibRs: true,
   },
   commandHealth: { kind: "command", command: "command_health", registeredInLibRs: true },
+  dataFolderStatus: { kind: "command", command: "data_folder_status", registeredInLibRs: true },
   getErrorReportingEnabled: {
     kind: "command",
     command: "get_error_reporting_enabled",
