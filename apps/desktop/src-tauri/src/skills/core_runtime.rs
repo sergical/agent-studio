@@ -34,10 +34,14 @@ pub(crate) fn data_root() -> PathBuf {
 }
 
 /// Builds a `Runtime` wired for a mutation: the real filesystem, a real
-/// file lease, and a writable `SQLite` history store, rooted at the host's
-/// home directory. Every desktop command that calls a core `ops` function
-/// that opens a `MutationSession` (park, unpark, and every write to come)
-/// takes its `Runtime` from here.
+/// file lease, a writable `SQLite` history store, and a real process
+/// spawner, rooted at the host's home directory. Every desktop command that
+/// calls a core `ops` function that opens a `MutationSession` (park, unpark,
+/// update, and every write to come) takes its `Runtime` from here. The
+/// spawner (unused by park/unpark/`set_harness_enabled`) is what lets
+/// `ops::update`'s `Dotagents`/`SkillsSh` methods shell out to `npx` - the
+/// same `RealProcessSpawner` the CLI's own `build_runtime_write` wires in
+/// `apps/cli/src/main.rs`.
 pub fn build_runtime_write() -> Result<Runtime, String> {
     let home = dirs::home_dir().ok_or("Could not find home directory")?;
     build_runtime_write_at(&home, &data_root())
@@ -65,6 +69,7 @@ pub fn build_runtime_write_at(home: &Path, data_root: &Path) -> Result<Runtime, 
     let mut ports = skill_studio_host::default_ports_with_history(lease_root, catalog, db_path);
     ports.discovery = Some(Arc::new(skill_studio_host::HostProjectDiscovery::new()));
     ports.tools = Some(Arc::new(skill_studio_host::PathToolLookup::new()));
+    ports.spawner = Some(Arc::new(skill_studio_host::RealProcessSpawner::new()));
     Runtime::new(&scope, ports).map_err(|err| err.message)
 }
 
