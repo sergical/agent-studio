@@ -491,8 +491,7 @@ fn step_paths(step: &PlanStep) -> Vec<&Path> {
             }
             paths
         }
-        PlanStep::Link { path, .. } => vec![path],
-        PlanStep::WriteFile { path, .. } => vec![path],
+        PlanStep::Link { path, .. } | PlanStep::WriteFile { path, .. } => vec![path],
     }
 }
 
@@ -895,7 +894,7 @@ mod tests {
             &root,
             &plan,
             Path::new("skill"),
-            staged,
+            &staged,
             Path::new(".trash"),
         )
         .expect("swap over the existing skill folder");
@@ -1093,7 +1092,7 @@ mod tests {
             &root,
             &plan,
             Path::new("skill"),
-            staged,
+            &staged,
             Path::new(".trash"),
         )
         .expect_err("the quarantine move must fail, or this test proves nothing about the window between it and the exchange");
@@ -1298,7 +1297,7 @@ mod tests {
         )
         .expect("stage");
         failing.fail_next_fsops_rename();
-        fsops::swap(&root, &plan, Path::new("newskill"), staged, Path::new(".trash"))
+        fsops::swap(&root, &plan, Path::new("newskill"), &staged, Path::new(".trash"))
             .expect_err("the rename must fail, or this test proves nothing about a step whose mutation never lands");
         drop(plan);
 

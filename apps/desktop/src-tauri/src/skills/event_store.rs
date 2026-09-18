@@ -121,7 +121,7 @@ pub fn open(db_path: &Path) -> Result<Connection, String> {
 /// implementation of that port, in place of a separate desktop-only
 /// concept - see the `impl Journal for EventStore` below, which delegates
 /// every method straight to `self.journal` rather than reimplementing
-/// plan/step/backup storage on SQLite. `FsJournal` already gets the
+/// plan/step/backup storage on `SQLite`. `FsJournal` already gets the
 /// manifest-before-plan durability order right and is exercised by
 /// `skill-studio-core`'s own journal tests; a second, SQLite-backed
 /// implementation here would only duplicate that logic, untested. Nothing

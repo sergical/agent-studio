@@ -1,3 +1,8 @@
+// Integration test binaries aren't covered by the lib crate's
+// `cfg_attr(test, allow(...))`: this file compiles as its own crate, so
+// the same allow needs to be declared here too.
+#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+
 //! Unit 1.2: the integration test proving every one of `fsops`'s four
 //! primitives records a journal entry itself, since Section B moved the
 //! recording into the primitives (no more `journaled_*` wrappers). The five
@@ -13,7 +18,7 @@ use skill_studio_core::fsops::{self, read_stamp, Root};
 use skill_studio_core::identity::PlanId;
 use skill_studio_core::journal::{FsJournal, PlanWriter};
 use skill_studio_core::ports::{
-    ExclusiveGuard, Journal, LeaseMode, LeaseProvider, PlanStatus, ScopeFs,
+    ExclusiveGuard, Journal, LeaseMode, LeaseProvider, PlanStatus, PlanStep, ScopeFs,
 };
 use skill_studio_core::testing::{FakeLease, FixtureBuilder};
 
@@ -62,7 +67,7 @@ fn every_fsops_call_records_a_journal_entry_or_names_the_unjournaled_write() {
         &root,
         &plan,
         Path::new("alpha"),
-        staged,
+        &staged,
         Path::new(".trash"),
     )
     .expect("swap");
@@ -88,7 +93,7 @@ fn every_fsops_call_records_a_journal_entry_or_names_the_unjournaled_write() {
         .find(|p| p.id == id)
         .expect("the plan begun above");
 
-    let names: Vec<&str> = record.steps.iter().map(|s| s.primitive_name()).collect();
+    let names: Vec<&str> = record.steps.iter().map(PlanStep::primitive_name).collect();
     for expected in ["stage", "swap", "link", "write_file"] {
         assert!(
             names.contains(&expected),
