@@ -442,6 +442,51 @@ impl HistoryStore for SqliteHistoryStore {
         let path = self.root.join(backup_dir).join(relative);
         fs::read(&path).map_err(|e| CoreError::io(&path, e))
     }
+
+    fn read_backup_files(
+        &self,
+        backup_dir: &str,
+        relative: &str,
+    ) -> Result<Vec<(PathBuf, Vec<u8>)>, CoreError> {
+        let root = self.root.join(backup_dir).join(relative);
+        let mut out = Vec::new();
+        read_backup_files_into(&root, &root, &mut out)?;
+        Ok(out)
+    }
+}
+
+/// Recursion for [`SqliteHistoryStore::read_backup_files`]: walks `dir`
+/// (under `root`) and appends `(path relative to root, bytes)` for every
+/// regular file. A symlink is an error - see the trait method's own doc.
+fn read_backup_files_into(
+    root: &Path,
+    dir: &Path,
+    out: &mut Vec<(PathBuf, Vec<u8>)>,
+) -> Result<(), CoreError> {
+    let mut entries: Vec<_> = fs::read_dir(dir)
+        .map_err(|e| CoreError::io(dir, e))?
+        .collect::<Result<_, _>>()
+        .map_err(|e| CoreError::io(dir, e))?;
+    entries.sort_by_key(std::fs::DirEntry::file_name);
+    for entry in entries {
+        let path = entry.path();
+        let meta = fs::symlink_metadata(&path).map_err(|e| CoreError::io(&path, e))?;
+        let file_type = meta.file_type();
+        if file_type.is_dir() {
+            read_backup_files_into(root, &path, out)?;
+        } else if file_type.is_symlink() {
+            return Err(CoreError::new(
+                ErrorCode::Unsupported,
+                "read_backup_files does not support a symlink inside a backed-up directory",
+            )
+            .at(&path));
+        } else {
+            let bytes = fs::read(&path).map_err(|e| CoreError::io(&path, e))?;
+            let relative = path.strip_prefix(root).unwrap_or(&path).to_path_buf();
+            out.push((relative, bytes));
+        }
+    }
+    Ok(())
 }
 
 /// On-disk `manifest.json` shape, byte-for-byte the desktop's

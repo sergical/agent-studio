@@ -29,21 +29,24 @@ use crate::error::{CoreError, ErrorCode, ErrorEntry};
 use crate::events::EventFilter;
 use crate::frontmatter;
 use crate::frontmatter_repair::propose_colon_scalar_repair;
+use crate::fsops;
 use crate::harness::{
     builtin_adapters, Capabilities, CapabilityReport, DetectionPorts, DisabledBy, HarnessFacts,
     HarnessObserved, HarnessReport, RootRole, ScopeLevel, Support, ToolAvailability,
 };
 use crate::identity::{
     AgentId, BackingRelationship, CorrelationId, DeploymentId, DeploymentMutability, EventId,
-    Fingerprint, LifecycleOwnerKind, OwnerId, ProjectRef, RootKind, RootRef, RootScope,
+    Fingerprint, LifecycleOwnerKind, OwnerId, PlanId, ProjectRef, RootKind, RootRef, RootScope,
     SkillDestination, SkillName, SourceKind, MOVE_ASIDE_DIR_NAME, PARKED_ROOT_RELATIVE,
     UNIVERSAL_ROOT_RELATIVE,
 };
+use crate::journal::{FsJournal, PlanWriter};
 use crate::lock_file;
+use crate::ops_install;
 use crate::ownership;
 use crate::ports::{
     acquire_exclusive, acquire_shared, Clock, DirEntryFacts, ExclusiveGuard, FileKind,
-    HistoryAccess, OpContext, Runtime, ScopeFs, ScopedReads,
+    HistoryAccess, OpContext, PlanStatus, Runtime, ScopeFs, ScopedReads,
 };
 use crate::scope::{EffectiveScope, NormalizedScope};
 use crate::SCHEMA_VERSION;
@@ -102,6 +105,10 @@ pub enum Operation {
     FixSkill,
     /// Group 3: find differing copies of a skill without merging them.
     DiagnoseConflict,
+    /// Group 3: refresh one already-installed skill in place.
+    Update,
+    /// Group 3: refresh a batch of already-installed skills in place.
+    UpdateAll,
     /// Group 3: put one skill on disk by `Copy`, `Dotagents`, or `SkillsSh`.
     Install,
     /// Group 3: read the saved or defaulted install method/harnesses.
@@ -221,6 +228,26 @@ impl Outcome for crate::dto::FixSkillOutcome {
 impl Outcome for crate::dto::ConflictReport {
     fn found_issues(&self) -> bool {
         !self.conflicts.is_empty()
+    }
+}
+impl Outcome for crate::dto::UpdateOutcome {
+    fn event_id(&self) -> Option<EventId> {
+        Some(self.event_id.clone())
+    }
+}
+impl Outcome for crate::dto::UpdateAllOutcome {
+    fn status(&self) -> OpStatus {
+        if self.errors.is_empty() {
+            OpStatus::Ok
+        } else if self.items.iter().any(|i| i.outcome.is_some()) {
+            OpStatus::Partial
+        } else {
+            OpStatus::Error
+        }
+    }
+
+    fn found_issues(&self) -> bool {
+        !self.errors.is_empty()
     }
 }
 impl Outcome for crate::dto::InstallOutcome {
@@ -3106,6 +3133,7 @@ pub fn fix_skill(
             unrepaired.push(UnrepairedIssue {
                 path: issue_path(&diagnosis, issue),
                 message: issue.message.clone(),
+                kind: unrepaired_issue_kind(issue.kind),
             });
             continue;
         };
@@ -3123,6 +3151,7 @@ pub fn fix_skill(
                 unrepaired.push(UnrepairedIssue {
                     path: issue_path(&diagnosis, issue),
                     message: error.message,
+                    kind: crate::dto::UnrepairedIssueKind::Frontmatter,
                 });
                 continue;
             }
@@ -3148,6 +3177,7 @@ pub fn fix_skill(
             Err(error) => unrepaired.push(UnrepairedIssue {
                 path: preview.path.clone(),
                 message: error.message,
+                kind: crate::dto::UnrepairedIssueKind::Frontmatter,
             }),
         }
     }
@@ -3169,6 +3199,7 @@ pub fn fix_skill(
         .filter(|violation| violation.skill.as_ref() == Some(&req.skill))
     {
         unrepaired.push(UnrepairedIssue {
+            kind: unrepaired_issue_kind_for_invariant(violation.invariant),
             path: violation.path,
             message: violation.message,
         });
@@ -3180,6 +3211,7 @@ pub fn fix_skill(
         .next()
     {
         unrepaired.push(UnrepairedIssue {
+            kind: unrepaired_issue_kind_for_invariant(violation.invariant),
             path: violation.path,
             message: violation.message,
         });
@@ -3194,6 +3226,32 @@ pub fn fix_skill(
         unrepaired,
         conflicts,
     })
+}
+
+/// Maps a diagnosed [`IssueKind`] to the coarser [`UnrepairedIssueKind`] a
+/// caller branches on. `RepairableFrontmatter` issues never reach here
+/// unrepaired at this kind (see the two call sites below that classify
+/// their own repair-attempt failures), so any unmatched kind falls back to
+/// `Other` rather than claiming a category the caller can't act on.
+fn unrepaired_issue_kind(kind: IssueKind) -> crate::dto::UnrepairedIssueKind {
+    match kind {
+        IssueKind::UnreadableLink => crate::dto::UnrepairedIssueKind::Link,
+        IssueKind::SpecViolation | IssueKind::RepairableFrontmatter => {
+            crate::dto::UnrepairedIssueKind::Frontmatter
+        }
+        _ => crate::dto::UnrepairedIssueKind::Other,
+    }
+}
+
+/// Maps a [`DoctorInvariant`] to the coarser [`UnrepairedIssueKind`] a
+/// caller branches on.
+fn unrepaired_issue_kind_for_invariant(
+    invariant: crate::doctor::DoctorInvariant,
+) -> crate::dto::UnrepairedIssueKind {
+    match invariant {
+        crate::doctor::DoctorInvariant::LinkResolvesInRoot => crate::dto::UnrepairedIssueKind::Link,
+        _ => crate::dto::UnrepairedIssueKind::Other,
+    }
 }
 
 /// Resolves `issue`'s own deployment to its path via `diagnosis`'s
@@ -4068,6 +4126,63 @@ enum RestorePlan {
     RemoveIfPresent,
     /// The bytes to write back, read from the original event's backup.
     Write(Vec<u8>),
+    /// A directory's files to write back, read from the original event's
+    /// backup, paths relative to the directory itself. Applied through
+    /// [`fsops::stage`]/[`fsops::swap`] (see [`restore_event`]'s mutation
+    /// step) rather than [`ScopeFs::write_atomic`], which only ever writes
+    /// one file.
+    WriteDir(Vec<(PathBuf, Vec<u8>)>),
+}
+
+/// [`RestorePlan::WriteDir`]'s mutation step: stages `files` beside `path`
+/// under its own journal root (the same lease/journal primitives
+/// `ops::update`'s own `Copy` method uses) and swaps the staged folder into
+/// `path`, which - since a folder already sits there - quarantines the
+/// pre-restore tree the same way an update's own swap quarantines the
+/// pre-update tree. That quarantined copy is not itself wired to a further
+/// undo; restoring a restore is out of this op's scope.
+fn restore_write_dir(
+    rt: &Runtime,
+    guard: &ExclusiveGuard,
+    path: &Path,
+    files: &[(PathBuf, Vec<u8>)],
+) -> Result<(), CoreError> {
+    let universal_root = path.parent().ok_or_else(|| {
+        CoreError::new(ErrorCode::Io, "restore target has no parent directory").at(path)
+    })?;
+    let final_name = path
+        .file_name()
+        .ok_or_else(|| CoreError::new(ErrorCode::Io, "restore target has no file name").at(path))?;
+    let fs = rt.ports.fs.as_ref();
+    ops_install::ensure_journal_root(rt, guard, fs)?;
+    let journal_root = ops_install::journal_root(&rt.scope.home.lexical);
+    let journal = FsJournal::new(journal_root, rt.ports.fs.clone());
+
+    let root = fsops::Root::open(fs, universal_root.to_path_buf())
+        .map_err(|e| CoreError::new(ErrorCode::Io, e.to_string()).at(universal_root))?;
+    let plan_id = PlanId(rt.ports.ids.next_event_id().0);
+    let plan = PlanWriter::begin(
+        &journal,
+        guard,
+        plan_id,
+        rt.ports.clock.now(),
+        format!("restore {}", path.display()),
+        universal_root.to_path_buf(),
+        Vec::new(),
+    )
+    .map_err(|e| CoreError::new(ErrorCode::Io, e.to_string()))?;
+
+    let staged = fsops::stage(&root, &plan, files)
+        .map_err(|e| CoreError::new(ErrorCode::Io, e.to_string()).at(universal_root))?;
+    // Same directory the doctor prune and check sweep, not a
+    // restore-specific name - see `ops_update`'s module doc for the same
+    // fix applied there.
+    let quarantine_dir = Path::new(crate::doctor::QUARANTINE_DIR_NAME);
+    fsops::swap(&root, &plan, Path::new(final_name), &staged, quarantine_dir)
+        .map_err(|e| CoreError::new(ErrorCode::Io, e.to_string()).at(universal_root))?;
+    plan.finish(PlanStatus::Done)
+        .map_err(|e| CoreError::new(ErrorCode::Io, e.to_string()))?;
+    Ok(())
 }
 
 /// Reverts one event.
@@ -4354,6 +4469,14 @@ pub fn restore_event(
     let live = live_fingerprint
         .as_ref()
         .map_or("absent", super::identity::Fingerprint::bare_hex);
+    // Captured before any mutation below: a directory's backup was copied
+    // recursively (`HistoryStore::backup_paths`), so a directory's restore
+    // reads it back the same way, through `WriteDir` below, instead of
+    // `ScopeFs::write_atomic`'s single-file write.
+    let live_is_dir = matches!(
+        fs.symlink_metadata(&path).map(|m| m.kind),
+        Ok(FileKind::Dir)
+    );
     if live != expected && !req.force {
         return Err(CoreError::new(
             ErrorCode::DriftConflict,
@@ -4416,10 +4539,17 @@ pub fn restore_event(
                     )
                     .at(&path)
                 })?;
-            let bytes = session
-                .store
-                .read_backup_bytes(backup_dir, &entry.relative)?;
-            RestorePlan::Write(bytes)
+            if live_is_dir {
+                let files = session
+                    .store
+                    .read_backup_files(backup_dir, &entry.relative)?;
+                RestorePlan::WriteDir(files)
+            } else {
+                let bytes = session
+                    .store
+                    .read_backup_bytes(backup_dir, &entry.relative)?;
+                RestorePlan::Write(bytes)
+            }
         }
     };
 
@@ -4451,6 +4581,7 @@ pub fn restore_event(
         RestorePlan::Write(bytes) => fs
             .write_atomic(&session.guard, &scoped, bytes)
             .map_err(|e| CoreError::io(&path, e)),
+        RestorePlan::WriteDir(files) => restore_write_dir(rt, &session.guard, &path, files),
     };
     if let Err(err) = mutation_result {
         // The claim was already made durable, but nothing actually moved:
@@ -4531,6 +4662,7 @@ fn find_claude_link<'a>(
 }
 
 pub use crate::ops_install::{install, install_preferences};
+pub use crate::ops_update::{update, update_all};
 
 /// Moves a universal deployment's directory into the parked root.
 ///

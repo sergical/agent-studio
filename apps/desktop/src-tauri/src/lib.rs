@@ -288,6 +288,8 @@ pub fn run() {
             skills::commands::write_installed_skill_md_if_unchanged,
             skills::skill_frontmatter_repair::preview_skill_frontmatter_repair,
             skills::skill_frontmatter_repair::apply_skill_frontmatter_repair,
+            skills::skill_fix::fix_skill,
+            skills::skill_fix::open_conflict_paths,
             skills::commands::open_skill_path,
             skills::commands::get_editor_choices,
             skills::commands::set_preferred_editor,

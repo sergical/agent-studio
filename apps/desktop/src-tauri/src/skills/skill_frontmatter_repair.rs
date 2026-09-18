@@ -17,7 +17,6 @@ use super::event_commands::EventStoreState;
 use super::event_store::{
     allocate_id, fingerprint_path, EventDraft, EventRow, EventStatus, EventStore, InverseOp,
 };
-use super::frontmatter::{parse_frontmatter, FrontmatterParseResult};
 use super::skill_deployment::{BackingRelationship, DeploymentMutability, SkillDestination};
 use super::skill_dto::{Deployment, LifecycleTarget};
 use super::skill_md_write::{begin_skill_md_write_transaction, SkillMdWriteTransaction};
@@ -92,99 +91,13 @@ fn proposal_id(deployment: &Deployment, fingerprint: &str, proposed: &str) -> St
     content_fingerprint(identity.as_bytes())
 }
 
-fn frontmatter_end(lines: &[&str]) -> Option<usize> {
-    if lines.first().map(|line| line.trim_end_matches('\r').trim()) != Some("---") {
-        return None;
-    }
-    lines
-        .iter()
-        .enumerate()
-        .skip(1)
-        .find(|(_, line)| line.trim_end_matches('\r').trim() == "---")
-        .map(|(index, _)| index)
-}
-
-/// Produces an exact-byte proposal only when one top-level plain scalar is the
-/// unique likely source of the YAML parser error.
-pub fn propose_colon_scalar_repair(content: &str) -> Result<(String, String), String> {
-    let parse_error = match parse_frontmatter(content) {
-        FrontmatterParseResult::Invalid(error) => error,
-        FrontmatterParseResult::Absent | FrontmatterParseResult::Valid(_) => {
-            return Err("SKILL.md does not have a malformed YAML frontmatter block".to_string())
-        }
-    };
-    let separator = if content.contains("\r\n") {
-        "\r\n"
-    } else {
-        "\n"
-    };
-    if separator == "\r\n" && content.replace("\r\n", "").contains('\n') {
-        return Err("Mixed line endings make the scalar boundary ambiguous".to_string());
-    }
-    let had_final_newline = content.ends_with(separator);
-    let lines: Vec<&str> = content.split(separator).collect();
-    let end = frontmatter_end(&lines).ok_or("Frontmatter is missing or unterminated")?;
-    let mut candidates = Vec::new();
-    for (index, line) in lines.iter().enumerate().take(end).skip(1) {
-        if line.starts_with(char::is_whitespace) {
-            continue;
-        }
-        let Some((key, value)) = line.split_once(": ") else {
-            continue;
-        };
-        if !matches!(key, "name" | "description") || !value.contains(": ") {
-            continue;
-        }
-        if value.starts_with(['\'', '"', '|', '>', '[', '{'])
-            || value.ends_with(':')
-            || value.contains(" #")
-        {
-            continue;
-        }
-        candidates.push((index, key, value));
-    }
-    let [(index, key, value)] = candidates.as_slice() else {
-        return Err("No unique top-level name or description scalar can be repaired safely".into());
-    };
-    if parse_error.line != index + 1 || !parse_error.message.contains("mapping values") {
-        return Err("The YAML error is not caused by the candidate scalar".to_string());
-    }
-
-    let replacement = if *key == "description" {
-        format!("description: |-{separator}  {value}")
-    } else {
-        let quoted = serde_yaml::to_string(value)
-            .map_err(|error| format!("Could not quote name: {error}"))?
-            .trim_end()
-            .to_string();
-        if quoted.contains('\n') {
-            return Err("Name repair would not remain single-line".to_string());
-        }
-        format!("name: {quoted}")
-    };
-    let mut proposed_lines: Vec<String> = lines.iter().map(|line| (*line).to_string()).collect();
-    proposed_lines[*index] = replacement;
-    let mut proposed = proposed_lines.join(separator);
-    if had_final_newline && !proposed.ends_with(separator) {
-        proposed.push_str(separator);
-    }
-
-    let FrontmatterParseResult::Valid(parsed) = parse_frontmatter(&proposed) else {
-        return Err("The proposed repair does not parse successfully".to_string());
-    };
-    let repaired_value = if *key == "description" {
-        parsed.description.as_deref()
-    } else {
-        parsed.name.as_deref()
-    };
-    if repaired_value != Some(*value) {
-        return Err("The proposed repair changes the scalar value".to_string());
-    }
-    Ok((
-        proposed,
-        format!("Encode the top-level {key} value so its `: ` is text, not YAML syntax."),
-    ))
-}
+// `propose_colon_scalar_repair` now lives in `skill_studio_core::
+// frontmatter_repair`, ported byte-for-byte from what was here; this module
+// is a thin adapter that re-imports it below rather than keeping its own
+// copy. The apply-mode/fork/journaling machinery below it (`FixInstalledCopy`
+// and `ForkAndFix`) stays desktop-only: core's own `preview_frontmatter_repair`
+// doc comment says it supports only `ApplyFix` today.
+pub use skill_studio_core::frontmatter_repair::propose_colon_scalar_repair;
 
 fn apply_modes(deployment: &Deployment) -> Vec<FrontmatterRepairApplyMode> {
     if deployment.plugin.is_some()
@@ -582,6 +495,7 @@ pub async fn apply_skill_frontmatter_repair(
 
 #[cfg(test)]
 mod tests {
+    use super::super::frontmatter::{parse_frontmatter, FrontmatterParseResult};
     use super::super::skill_fork_registry::{
         write_fork_registry, ForkRecord, ForkRegistry, OriginTool,
     };

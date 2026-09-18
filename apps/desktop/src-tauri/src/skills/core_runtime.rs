@@ -49,8 +49,11 @@ pub fn build_runtime_write() -> Result<Runtime, String> {
 /// against a tempdir `home`, the way it was before that write moved onto
 /// `ops::set_codex_skill_disabled` - the real command still calls
 /// `build_runtime_write` above, which resolves `home` and `data_root` from
-/// the host exactly as it did before this function existed.
-pub(crate) fn build_runtime_write_at(home: &Path, data_root: &Path) -> Result<Runtime, String> {
+/// the host exactly as it did before this function existed. `pub` (not
+/// `pub(crate)`) so `tests/fix_parity.rs` can build the desktop side of its
+/// parity check with the desktop adapter's own runtime constructor instead
+/// of a hand-mirrored copy of it.
+pub fn build_runtime_write_at(home: &Path, data_root: &Path) -> Result<Runtime, String> {
     let history_root = data_root.join("history");
     let codex_home = skill_studio_host::codex_home(home);
     let mut scope =

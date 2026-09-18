@@ -209,6 +209,7 @@ const BLOCKING_SPEC_VIOLATION_PREFIXES = [
   "missing required frontmatter field: name",
   "missing required frontmatter field: description",
   'name "', // covers both the invalid-name-format and name/dir-mismatch messages
+  "invalid YAML frontmatter", // repairable by ops::fix_skill - must route to Fix, not stay a warning
 ] as const;
 
 /** True when `violation` is one of `BLOCKING_SPEC_VIOLATION_PREFIXES` - see there for why. */

@@ -10,6 +10,22 @@
 
 use std::path::Path;
 
+// Only `fixture_snapshot_owning` below uses these; gated the same way it is
+// (see the module doc) so a non-test build of this always-`pub` module
+// doesn't warn about them as unused.
+#[cfg(test)]
+use std::collections::BTreeMap;
+
+#[cfg(test)]
+use chrono::Utc;
+
+#[cfg(test)]
+use super::frontmatter::InvocationPolicy;
+#[cfg(test)]
+use super::skill_dto::{Deployment, InstalledSkill};
+#[cfg(test)]
+use super::{SkillSnapshot, SourceKind};
+
 /// Writes a minimal spec-valid `SKILL.md` at `dir/SKILL.md`, named `name`.
 #[cfg(test)]
 pub(crate) fn write_skill(dir: &Path, name: &str) {
@@ -19,6 +35,73 @@ pub(crate) fn write_skill(dir: &Path, name: &str) {
         format!("---\nname: {name}\ndescription: test\n---\nBody."),
     )
     .unwrap();
+}
+
+/// A minimal `SkillSnapshot` owning one deployment at `dep_dir`, for tests of
+/// a guard that checks a path against the current snapshot
+/// (`skill_refresh::snapshot_owns_path` and its callers) without a running
+/// Tauri app. Mirrors `skill_refresh`'s own private `fixture_snapshot` test
+/// helper; kept here (rather than shared with it) because that one is
+/// `#[cfg(test)]`-private to its own module and this crate has no
+/// `pub(crate)` re-export path into another module's `mod tests`.
+#[cfg(test)]
+pub(crate) fn fixture_snapshot_owning(dep_dir: &Path) -> SkillSnapshot {
+    use skill_studio_core::skill_uses::InvocationHeatmap;
+
+    SkillSnapshot {
+        revision: 0,
+        skills: vec![InstalledSkill {
+            name: "foo".to_string(),
+            source: "manual".to_string(),
+            source_type: "manual".to_string(),
+            source_url: None,
+            skill_path: None,
+            installed_at: Utc::now().to_rfc3339(),
+            updated_at: None,
+            has_update: false,
+            update_owner_ids: Vec::new(),
+            update_owners: Vec::new(),
+            update_commit: None,
+            update_commit_at: None,
+            source_kind: SourceKind::Manual,
+            deployments: vec![Deployment {
+                agent: "Claude Code".to_string(),
+                scope: "project".to_string(),
+                path: dep_dir.to_string_lossy().to_string(),
+                is_symlink: false,
+                plugin: None,
+                ..Default::default()
+            }],
+            has_spec: false,
+            description: None,
+            spec_violations: Vec::new(),
+            skill_md_tokens: 0,
+            description_tokens: 0,
+            folder_bytes: 0,
+            file_count: 0,
+            content_hash: String::new(),
+            content_hashes: Vec::new(),
+            modified_at: None,
+            frontmatter_fields: BTreeMap::new(),
+            folder_truncated: false,
+            fork: None,
+            trial: None,
+            trials: Vec::new(),
+            parked: false,
+            parked_at: None,
+            invocation: InvocationPolicy::Both,
+        }],
+        projects: Vec::new(),
+        invocations: Vec::new(),
+        heatmap: InvocationHeatmap::default(),
+        scanned_at: Utc::now().to_rfc3339(),
+        last_test_by_skill: Default::default(),
+        update_check: Default::default(),
+        opencode_config_kind: None,
+        scan_partial: false,
+        scan_observations: Vec::new(),
+        unread_roots: Vec::new(),
+    }
 }
 
 /// Serializes and confines every test that reads or writes `OpenCode`
@@ -113,6 +196,59 @@ impl Drop for OpencodeHomeGuard {
             match self.prev_skill_studio_fixture.take() {
                 Some(v) => std::env::set_var("SKILL_STUDIO_FIXTURE", v),
                 None => std::env::remove_var("SKILL_STUDIO_FIXTURE"),
+            }
+        }
+    }
+}
+
+/// Prepends `dir` to `PATH` for the guarded test's whole body (RAII, so a
+/// panic mid-test still restores it), holding the same shared
+/// [`opencode_env_lock`] every other process-wide env mutation in this
+/// crate's tests serializes on - `PATH` and the `OpenCode` env vars are
+/// disjoint, but a shared lock is simpler than a second one and process
+/// env mutation is inherently crate-wide regardless of which vars a test
+/// touches.
+pub struct PathGuard {
+    _lock: std::sync::MutexGuard<'static, ()>,
+    prev_path: Option<std::ffi::OsString>,
+}
+
+impl PathGuard {
+    /// Prepends `dir` to the current `PATH`.
+    pub fn new(dir: &Path) -> Self {
+        let lock = opencode_env_lock()
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let prev_path = std::env::var_os("PATH");
+        let new_path = match &prev_path {
+            Some(p) => {
+                let mut joined = std::ffi::OsString::from(dir);
+                joined.push(":");
+                joined.push(p);
+                joined
+            }
+            None => dir.as_os_str().to_owned(),
+        };
+        // SAFETY: `lock` above serializes every test that touches `PATH`.
+        #[allow(unsafe_code)]
+        unsafe {
+            std::env::set_var("PATH", new_path);
+        }
+        Self {
+            _lock: lock,
+            prev_path,
+        }
+    }
+}
+
+impl Drop for PathGuard {
+    fn drop(&mut self) {
+        // SAFETY: `self._lock` is still held for the whole body of `drop`.
+        #[allow(unsafe_code)]
+        unsafe {
+            match self.prev_path.take() {
+                Some(v) => std::env::set_var("PATH", v),
+                None => std::env::remove_var("PATH"),
             }
         }
     }
