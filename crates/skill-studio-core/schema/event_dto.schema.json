@@ -165,7 +165,7 @@
           ]
         },
         {
-          "description": "The row never finished (`pending`, `failed`, or `interrupted`), so\nits inverse never moved what it describes; applying it would act on\nlive state the row does not own.",
+          "description": "`pending`, or `failed`/`interrupted` without a `restore_backup`\ninverse and a `backup_dir`: the row's inverse never moved what it\ndescribes, or there is no backup for a drift-checked restore to\napply, so applying it would act on live state the row does not own.",
           "type": "object",
           "properties": {
             "restorable": {
