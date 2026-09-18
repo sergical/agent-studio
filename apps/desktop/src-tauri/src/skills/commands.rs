@@ -1837,8 +1837,13 @@ mod tests {
             (
                 "alpha".to_string(),
                 Some("owner:v1/global/alpha".to_string()),
+                PathBuf::from("/home/.agents/skills/alpha"),
             ),
-            ("beta".to_string(), Some("owner:v1/global/beta".to_string())),
+            (
+                "beta".to_string(),
+                Some("owner:v1/global/beta".to_string()),
+                PathBuf::from("/home/.agents/skills/beta"),
+            ),
         ];
 
         let cleared = owners_to_clear(&outcome, &owners);
@@ -1860,8 +1865,9 @@ mod tests {
     /// produces two requests sharing one `SkillName`, and `ops::update_all`
     /// returns two `UpdateAllItem`s with that same shared name. A
     /// name-keyed lookup map collapses those two owners to one entry, so
-    /// the first owner's badge never clears; zipping `outcome.items` with
-    /// `owners` by index (both in request order) keeps them apart.
+    /// the first owner's badge never clears; matching each item to its
+    /// owner by `deployment_path` (B1, review round 3) keeps them apart
+    /// since each owner's deployment lives at its own path.
     #[test]
     fn update_all_clears_both_owners_of_a_skill_installed_twice_or_names_the_owner_left_outdated() {
         use skill_studio_core::dto::{UpdateAllItem, UpdateAllOutcome, UpdateOutcome};
@@ -1891,10 +1897,12 @@ mod tests {
             (
                 "alpha".to_string(),
                 Some("skills-sh/global/alpha".to_string()),
+                PathBuf::from("/home/.agents/skills/alpha-skills-sh"),
             ),
             (
                 "alpha".to_string(),
                 Some("dotagents/global/alpha".to_string()),
+                PathBuf::from("/home/.agents/skills/alpha-dotagents"),
             ),
         ];
 
@@ -1913,6 +1921,73 @@ mod tests {
                 ),
             ],
             "both owners of the twice-installed skill must clear: {cleared:?}"
+        );
+    }
+
+    /// `update_all_clears_the_right_owner_when_items_finish_out_of_request_order_or_names_the_owner_left_outdated`
+    /// (B1, review round 3): `dto.rs` documents `UpdateAllOutcome.items` as
+    /// "in the order each one finished (not the order requested)". This
+    /// hand-builds an outcome whose items are reversed relative to the
+    /// request order to prove `owners_to_clear` still names the right owner
+    /// - matching by `deployment_path` rather than zipping by index.
+    #[test]
+    fn update_all_clears_the_right_owner_when_items_finish_out_of_request_order_or_names_the_owner_left_outdated(
+    ) {
+        use skill_studio_core::dto::{UpdateAllItem, UpdateAllOutcome, UpdateOutcome};
+        use skill_studio_core::identity::SkillName;
+
+        let outcome_for = |name: &str, path: &str| UpdateOutcome {
+            event_id: skill_studio_core::identity::EventId(format!("evt-{name}")),
+            skill: SkillName(name.to_string()),
+            deployment_path: PathBuf::from(path),
+            tree_hash_before: "aaa".to_string(),
+            tree_hash_after: "bbb".to_string(),
+        };
+        // Requested in order alpha, beta - `beta`'s update fails and
+        // `alpha`'s succeeds, but `beta`'s (failed) item finishes first, so
+        // `outcome.items` arrives reversed relative to the request. An
+        // index zip would pair `beta`'s failed item with `alpha`'s request
+        // (dropping it) and `alpha`'s succeeded item with `beta`'s request
+        // (wrongly clearing `beta`'s badge instead of `alpha`'s).
+        let outcome = UpdateAllOutcome {
+            items: vec![
+                UpdateAllItem {
+                    skill: SkillName("beta".to_string()),
+                    outcome: None,
+                },
+                UpdateAllItem {
+                    skill: SkillName("alpha".to_string()),
+                    outcome: Some(outcome_for("alpha", "/home/.agents/skills/alpha")),
+                },
+            ],
+            errors: std::collections::BTreeMap::from([(
+                "beta".to_string(),
+                "update failed".to_string(),
+            )]),
+        };
+        let owners = vec![
+            (
+                "alpha".to_string(),
+                Some("owner:v1/global/alpha".to_string()),
+                PathBuf::from("/home/.agents/skills/alpha"),
+            ),
+            (
+                "beta".to_string(),
+                Some("owner:v1/global/beta".to_string()),
+                PathBuf::from("/home/.agents/skills/beta"),
+            ),
+        ];
+
+        let cleared = owners_to_clear(&outcome, &owners);
+
+        assert_eq!(
+            cleared,
+            vec![(
+                "alpha".to_string(),
+                Some("owner:v1/global/alpha".to_string())
+            )],
+            "beta's badge must stay on (its update failed); an index zip \
+             clears beta's badge instead of alpha's: {cleared:?}"
         );
     }
 }
@@ -3171,25 +3246,31 @@ fn run_update_all_sync(
 /// clearing it alongside the succeeded ones. Split out of `update_all_skills`
 /// so a test can drive the filter without a real `tauri::AppHandle`.
 ///
-/// Takes `owners` as a `Vec<(name, owner)>` in request order and zips it
-/// with `outcome.items` by index (B1, review round 2), rather than keying
-/// a lookup map by skill name: `skillUpdateOwnerTargets` sends one target
-/// per outdated owner, so a skill outdated for two owners produces two
-/// requests sharing one name - a name-keyed map collapses them to one
-/// entry, and the last-written owner wins for both. `ops::update_all`
-/// pushes exactly one `UpdateAllItem` per request in the same order it
-/// received them (`ops_update.rs`'s `update_all`), so the index alignment
-/// holds.
+/// Takes `owners` as a `Vec<(name, owner, deployment_path)>` and matches
+/// each succeeded item to its owner by `deployment_path` (B1, review round
+/// 3) rather than by request-order index: `dto.rs` documents
+/// `UpdateAllOutcome.items` as "in the order each one finished (not the
+/// order requested)", so zipping by index clears the wrong owner's badge
+/// the moment `update_all` stops finishing requests strictly in order.
+/// Matching by name alone doesn't work either - `skillUpdateOwnerTargets`
+/// sends one target per outdated owner, so a skill outdated for two owners
+/// produces two requests sharing one name - but each owner's deployment
+/// lives at its own path, so the path is unique per request even when the
+/// name is not.
 fn owners_to_clear(
     outcome: &skill_studio_core::dto::UpdateAllOutcome,
-    owners: &[(String, Option<String>)],
+    owners: &[(String, Option<String>, PathBuf)],
 ) -> Vec<(String, Option<String>)> {
+    let by_path: std::collections::HashMap<&Path, (&str, Option<&str>)> = owners
+        .iter()
+        .map(|(name, owner, path)| (path.as_path(), (name.as_str(), owner.as_deref())))
+        .collect();
     outcome
         .items
         .iter()
-        .zip(owners)
-        .filter(|(item, _)| item.outcome.is_some())
-        .map(|(_, (name, owner))| (name.clone(), owner.clone()))
+        .filter_map(|item| item.outcome.as_ref())
+        .filter_map(|update_outcome| by_path.get(update_outcome.deployment_path.as_path()))
+        .map(|(name, owner)| ((*name).to_string(), owner.map(str::to_string)))
         .collect()
 }
 
@@ -3230,7 +3311,11 @@ pub async fn update_all_skills(
                 &skill,
                 &deployment,
             )?);
-            owners.push((skill.name.clone(), deployment.owner_id.clone()));
+            owners.push((
+                skill.name.clone(),
+                deployment.owner_id.clone(),
+                PathBuf::from(&deployment.path),
+            ));
         }
 
         let outcome = run_update_all_sync(
