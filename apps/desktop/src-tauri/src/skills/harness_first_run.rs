@@ -279,20 +279,20 @@ mod tests {
         );
     }
 
-    /// A `ProcessSpawner` that sleeps before returning, standing in for a
-    /// slow `--version` probe so the test below can tell whether the
-    /// calling task was blocked for that whole duration.
-    struct SleepySpawner {
-        sleep_for: std::time::Duration,
+    /// A `ProcessSpawner` that records the OS thread it ran on, standing in
+    /// for a `--version` probe so the test below can prove where the probe
+    /// ran without depending on wall-clock timing or a tick count.
+    struct ThreadRecordingSpawner {
+        ran_on: std::sync::Mutex<Option<std::thread::ThreadId>>,
     }
 
-    impl skill_studio_core::ports::ProcessSpawner for SleepySpawner {
+    impl skill_studio_core::ports::ProcessSpawner for ThreadRecordingSpawner {
         fn run(
             &self,
             _spec: &skill_studio_core::ports::ProcessSpec,
             _cancel: &dyn skill_studio_core::ports::CancelToken,
         ) -> Result<skill_studio_core::ports::ProcessOutput, skill_studio_core::CoreError> {
-            std::thread::sleep(self.sleep_for);
+            *self.ran_on.lock().unwrap() = Some(std::thread::current().id());
             Ok(skill_studio_core::ports::ProcessOutput {
                 status: Some(0),
                 stdout: "1.0.0\n".to_string(),
@@ -302,19 +302,22 @@ mod tests {
         }
     }
 
-    /// `detect_runs_off_the_ui_thread_and_never_blocks_over_one_frame`: the
-    /// desktop command runs `ops::harnesses` through
+    /// `detect_runs_the_probes_on_a_blocking_thread_not_the_ui_task_or_names_the_task_it_blocks`:
+    /// `detect_harnesses` runs `ops::harnesses` through
     /// `crate::timing_log::time_command_blocking`, which is
-    /// `tauri::async_runtime::spawn_blocking` under an `.await` (see that
-    /// function's body). A slow `--version` probe (100 ms, well over one
-    /// 16 ms frame) must not stall a concurrent async task ticking on the
-    /// same runtime - proof that the probe runs on the blocking pool, not
-    /// on the thread driving the async task tree the UI event loop shares.
-    /// Fails if `detect_harnesses` (or a future edit to it) calls
-    /// `ops::harnesses` directly on the calling task instead of through
-    /// `spawn_blocking`.
-    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-    async fn detect_runs_off_the_ui_thread_and_never_blocks_over_one_frame() {
+    /// `tauri::async_runtime::spawn_blocking(f).await` (see that function's
+    /// body) - the same call this test makes directly around
+    /// `ops::harnesses`, since the command itself needs a real
+    /// `tauri::AppHandle` that a unit test cannot construct. Run under a
+    /// `current_thread` runtime, the test task's own thread IS the
+    /// runtime's only async worker, so a probe that lands anywhere else
+    /// must have run on `spawn_blocking`'s separate pool - a deterministic
+    /// fact, not a timing measurement. Fails if `detect_harnesses` (or a
+    /// future edit to it) calls `ops::harnesses` directly on the calling
+    /// task instead of through `spawn_blocking`.
+    #[tokio::test(flavor = "current_thread")]
+    async fn detect_runs_the_probes_on_a_blocking_thread_not_the_ui_task_or_names_the_task_it_blocks(
+    ) {
         let tmp = tempfile::tempdir().unwrap();
         let home = tmp.path().join("home");
         let bin_dir = tmp.path().join("bin");
@@ -339,40 +342,36 @@ mod tests {
         ports.tools = Some(Arc::new(
             skill_studio_host::PathToolLookup::with_search_dirs(vec![bin_dir]),
         ));
-        ports.spawner = Some(Arc::new(SleepySpawner {
-            sleep_for: std::time::Duration::from_millis(100),
-        }));
+        let spawner = Arc::new(ThreadRecordingSpawner {
+            ran_on: std::sync::Mutex::new(None),
+        });
+        ports.spawner = Some(spawner.clone());
         let rt = Runtime::new(&scope, ports).unwrap();
         let ctx = OpContext::uncancellable(CorrelationId("test".into()));
 
-        // A "UI thread" proxy: a tight async loop that only makes progress
-        // if the runtime keeps scheduling it while the slow probe runs.
-        let ticks = Arc::new(std::sync::atomic::AtomicU32::new(0));
-        let ticks_task = ticks.clone();
-        let ticker = tokio::spawn(async move {
-            for _ in 0..20 {
-                tokio::time::sleep(std::time::Duration::from_millis(5)).await;
-                ticks_task.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-            }
-        });
+        let test_task_thread = std::thread::current().id();
 
         let detect = tauri::async_runtime::spawn_blocking(move || {
             ops::harnesses(&rt, &ctx, &HarnessesRequest {})
         });
         let result = detect.await.unwrap().unwrap();
-        ticker.await.unwrap();
 
         assert!(
             result
                 .harnesses
                 .iter()
                 .any(|d| d.id.as_str() == "claude-code" && d.version.value.is_some()),
-            "the slow probe should still have produced a version"
+            "the probe should still have produced a version"
         );
-        assert!(
-            ticks.load(std::sync::atomic::Ordering::SeqCst) >= 15,
-            "the UI-thread proxy task barely ticked while the probe ran ({} ticks), meaning the probe blocked the runtime instead of running on spawn_blocking's pool",
-            ticks.load(std::sync::atomic::Ordering::SeqCst)
+        let probe_thread = spawner
+            .ran_on
+            .lock()
+            .unwrap()
+            .expect("the spawner never ran");
+        assert_ne!(
+            probe_thread, test_task_thread,
+            "the version probe ran on the test task's own thread ({test_task_thread:?}) \
+             instead of a spawn_blocking pool thread - detect_harnesses would block the UI task"
         );
     }
 }
