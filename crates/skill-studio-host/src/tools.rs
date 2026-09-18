@@ -74,9 +74,10 @@ impl ToolLookup for PathToolLookup {
 const PATH_MARKER_START: &str = "__skill_studio_path_start__";
 const PATH_MARKER_END: &str = "__skill_studio_path_end__";
 
-/// Deadline for the login-shell `PATH` probe, matching the `$EDITOR` probe
-/// this mirrors (`apps/desktop/src-tauri/src/skills/skill_editor.rs`).
-const SHELL_PROBE_TIMEOUT: Duration = Duration::from_millis(1500);
+/// Deadline for the login-shell `PATH` probe, per
+/// `docs/action-map/harnesses/harness-detection.md`'s "two-second timeout
+/// per process".
+const SHELL_PROBE_TIMEOUT: Duration = Duration::from_millis(2000);
 
 /// Reads stdout on a helper thread so a login shell's rc files can't hang
 /// this forever; see `PATH_MARKER_END`'s doc comment. Mirrors
@@ -181,8 +182,25 @@ fn default_fallback_dirs() -> Vec<PathBuf> {
         dirs.push(home.join(".npm-global/bin"));
         dirs.push(home.join(".volta/bin"));
         dirs.push(home.join(".bun/bin"));
+        dirs.extend(nvm_node_bin_dirs(&home.join(".nvm/versions/node")));
     }
     dirs
+}
+
+/// `<nvm_node_versions>/*/bin` for every version directory that exists,
+/// per harness-detection.md's fallback list: nvm has no single "current"
+/// symlink guaranteed to exist, so every installed version's `bin` is a
+/// candidate. Returns nothing when `nvm_node_versions` itself doesn't
+/// exist (no nvm installed).
+fn nvm_node_bin_dirs(nvm_node_versions: &Path) -> Vec<PathBuf> {
+    let Ok(entries) = std::fs::read_dir(nvm_node_versions) else {
+        return Vec::new();
+    };
+    entries
+        .filter_map(Result::ok)
+        .filter(|entry| entry.path().is_dir())
+        .map(|entry| entry.path().join("bin"))
+        .collect()
 }
 
 /// `ToolLookup` that resolves against the user's login-shell `PATH`
@@ -338,5 +356,39 @@ mod tests {
             1,
             "expected exactly one probe run across three find_binary calls on the same lookup"
         );
+    }
+
+    /// `every_installed_nvm_node_version_gets_its_own_fallback_bin_dir_or_names_the_version_missed`:
+    /// nvm has no single "current" symlink guaranteed to exist, so every
+    /// installed version's `bin` directory must be a fallback candidate,
+    /// not just one. Fails if only the first or last version directory is
+    /// returned.
+    #[test]
+    fn every_installed_nvm_node_version_gets_its_own_fallback_bin_dir_or_names_the_version_missed()
+    {
+        let tmp = tempfile::tempdir().unwrap();
+        let versions = tmp.path().join("versions/node");
+        fs::create_dir_all(versions.join("v18.20.4/bin")).unwrap();
+        fs::create_dir_all(versions.join("v20.11.0/bin")).unwrap();
+        fs::write(versions.join("not-a-version-dir"), "").unwrap();
+
+        let mut dirs = nvm_node_bin_dirs(&versions);
+        dirs.sort();
+
+        assert_eq!(
+            dirs,
+            vec![versions.join("v18.20.4/bin"), versions.join("v20.11.0/bin")],
+            "expected one bin dir per installed version, got {dirs:?}"
+        );
+    }
+
+    /// A missing `~/.nvm/versions/node` (no nvm installed) must yield no
+    /// fallback dirs rather than an error.
+    #[test]
+    fn no_nvm_install_yields_no_fallback_dirs_or_names_the_error_it_raised_instead() {
+        let tmp = tempfile::tempdir().unwrap();
+        let versions = tmp.path().join("versions/node");
+
+        assert!(nvm_node_bin_dirs(&versions).is_empty());
     }
 }
