@@ -23,12 +23,15 @@ use std::sync::Arc;
 
 use clap::{Parser, Subcommand};
 use skill_studio_core::dto::{
-    CapabilitiesRequest, HarnessesRequest, Inventory, ListEventsRequest, RepairApplyMode,
-    RepairApplyRequest, RepairPreviewRequest, RestoreRequest, ScanRequest,
+    CapabilitiesRequest, HarnessesRequest, InstallFile, InstallMethod, Inventory,
+    ListEventsRequest, RepairApplyMode, RepairApplyRequest, RepairPreviewRequest, RestoreRequest,
+    ScanRequest, UpdateRequest,
 };
 use skill_studio_core::harness::HarnessCatalog;
 use skill_studio_core::health::{self, Outcome, TimingRow};
-use skill_studio_core::identity::{AgentId, CorrelationId, DeploymentId, EventId, SkillName};
+use skill_studio_core::identity::{
+    AgentId, CorrelationId, DeploymentId, EventId, ProjectRef, RootScope, SkillName,
+};
 use skill_studio_core::ops::{self, Operation, ResultEnvelope};
 use skill_studio_core::ports::{OpContext, Runtime};
 use skill_studio_core::snapshot::SnapshotCell;
@@ -213,6 +216,35 @@ enum Command {
         #[arg(long)]
         json: bool,
     },
+    /// Refresh one or more already-installed skills in place.
+    Update {
+        #[command(flatten)]
+        scope: ScopeArgs,
+        /// Skill to refresh. Repeat the flag to refresh several in one
+        /// batch; each one gets its own journal row via `ops::update_all`.
+        #[arg(long = "skill", required = true)]
+        skills: Vec<String>,
+        /// Which method wrote the deployment being refreshed.
+        #[arg(long, value_parser = ["copy", "dotagents", "skills-sh"])]
+        method: String,
+        /// Project the targeted deployment lives under; omit for the
+        /// global (`.agents/skills`) deployment.
+        #[arg(long)]
+        project_path: Option<PathBuf>,
+        /// `Copy` only: directory to read fresh files from, recursively.
+        #[arg(long)]
+        source_dir: Option<PathBuf>,
+        /// `Dotagents`/`SkillsSh` only: the source argument the CLI's
+        /// `add` command needs to re-fetch.
+        #[arg(long)]
+        source: Option<String>,
+        /// `Dotagents` only: an already-resolved commit for a pinned
+        /// (`declared_ref`) ledger entry.
+        #[arg(long)]
+        ref_pin: Option<String>,
+        #[arg(long)]
+        json: bool,
+    },
     /// Write one JSON Schema file per request/result DTO.
     Schema {
         /// Directory to write schema files into.
@@ -305,6 +337,26 @@ fn main() -> ExitCode {
         } => run_set_harness_enabled(&scope, skill, &harness, enabled, project_path, json, time),
         Command::Fix { scope, skill, json } => run_fix(&scope, &skill, json, time),
         Command::Conflicts { scope, json } => run_diagnose_conflict(&scope, json, time),
+        Command::Update {
+            scope,
+            skills,
+            method,
+            project_path,
+            source_dir,
+            source,
+            ref_pin,
+            json,
+        } => run_update(
+            &scope,
+            skills,
+            &method,
+            project_path.as_ref(),
+            source_dir.as_ref(),
+            source.as_ref(),
+            ref_pin.as_ref(),
+            json,
+            time,
+        ),
         Command::Schema { out } => output::write_schemas(out),
         Command::Health { timing_log, json } => run_health(timing_log, json),
         Command::Watch { scope, since, json } => run_watch(&scope, since, json, time),
@@ -685,6 +737,149 @@ fn run_diagnose_conflict(scope: &ScopeArgs, json: bool, time: bool) -> ExitCode 
     let envelope =
         ResultEnvelope::from_result(Operation::DiagnoseConflict, &rt.scope, &ctx, result);
     finish(&envelope, json, time, output::print_conflict_report_table)
+}
+
+/// Reads every regular file under `dir` (recursively) into an
+/// [`InstallFile`] list with paths relative to `dir`, sorted by path so a
+/// re-run stages the same bytes in the same order. Used only for `--method
+/// copy`'s `--source-dir`; `dotagents`/`skills-sh` re-fetch through their
+/// own CLI and never call this.
+fn read_install_files(
+    dir: &std::path::Path,
+) -> Result<Vec<InstallFile>, skill_studio_core::CoreError> {
+    fn walk(
+        root: &std::path::Path,
+        dir: &std::path::Path,
+        out: &mut Vec<InstallFile>,
+    ) -> Result<(), skill_studio_core::CoreError> {
+        let entries =
+            std::fs::read_dir(dir).map_err(|e| skill_studio_core::CoreError::io(dir, e))?;
+        let mut names: Vec<PathBuf> = entries.filter_map(|e| e.ok().map(|e| e.path())).collect();
+        names.sort();
+        for path in names {
+            let meta = std::fs::symlink_metadata(&path)
+                .map_err(|e| skill_studio_core::CoreError::io(&path, e))?;
+            if meta.is_dir() {
+                walk(root, &path, out)?;
+            } else if meta.is_file() {
+                let contents =
+                    std::fs::read(&path).map_err(|e| skill_studio_core::CoreError::io(&path, e))?;
+                let relative_path = path.strip_prefix(root).unwrap_or(&path).to_path_buf();
+                out.push(InstallFile {
+                    relative_path,
+                    contents,
+                });
+            }
+        }
+        Ok(())
+    }
+    let mut out = Vec::new();
+    walk(dir, dir, &mut out)?;
+    Ok(out)
+}
+
+/// Parses `--method`. `clap`'s `value_parser` already restricts the raw
+/// string to the three names below, so this never sees anything else.
+fn parse_install_method(method: &str) -> InstallMethod {
+    match method {
+        "copy" => InstallMethod::Copy,
+        "dotagents" => InstallMethod::Dotagents,
+        _ => InstallMethod::SkillsSh,
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn run_update(
+    scope: &ScopeArgs,
+    skills: Vec<String>,
+    method: &str,
+    project_path: Option<&PathBuf>,
+    source_dir: Option<&PathBuf>,
+    source: Option<&String>,
+    ref_pin: Option<&String>,
+    json: bool,
+    time: bool,
+) -> ExitCode {
+    let operation = if skills.len() > 1 {
+        Operation::UpdateAll
+    } else {
+        Operation::Update
+    };
+    let rt = match build_runtime_write::<skill_studio_core::dto::UpdateAllOutcome>(
+        scope, operation, json,
+    ) {
+        Ok(rt) => rt,
+        Err(code) => return code,
+    };
+    let ctx = OpContext::uncancellable(CorrelationId(ulid::Ulid::new().to_string()));
+    let method = parse_install_method(method);
+    let files = match (method, source_dir) {
+        (InstallMethod::Copy, Some(dir)) => match read_install_files(dir) {
+            Ok(files) => files,
+            Err(err) => {
+                let envelope =
+                    ResultEnvelope::<skill_studio_core::dto::UpdateAllOutcome>::from_result(
+                        operation,
+                        &rt.scope,
+                        &ctx,
+                        Err(err),
+                    );
+                return finish(
+                    &envelope,
+                    json,
+                    time,
+                    output::print_update_all_outcome_table,
+                );
+            }
+        },
+        (InstallMethod::Copy, None) => {
+            let err = skill_studio_core::CoreError::new(
+                skill_studio_core::ErrorCode::InvalidRequest,
+                "update --method copy needs --source-dir",
+            );
+            let envelope = ResultEnvelope::<skill_studio_core::dto::UpdateAllOutcome>::from_result(
+                operation,
+                &rt.scope,
+                &ctx,
+                Err(err),
+            );
+            return finish(
+                &envelope,
+                json,
+                time,
+                output::print_update_all_outcome_table,
+            );
+        }
+        _ => Vec::new(),
+    };
+    let scope_field = match project_path {
+        Some(path) => RootScope::Project(ProjectRef(path.clone())),
+        None => RootScope::Global,
+    };
+    let requests: Vec<UpdateRequest> = skills
+        .into_iter()
+        .map(|skill| UpdateRequest {
+            skill: SkillName(skill),
+            method,
+            scope: scope_field.clone(),
+            files: files.clone(),
+            source: source.cloned(),
+            ref_pin: ref_pin.cloned(),
+        })
+        .collect();
+    if requests.len() == 1 {
+        let result = ops::update(&rt, &ctx, &requests[0]);
+        let envelope = ResultEnvelope::from_result(Operation::Update, &rt.scope, &ctx, result);
+        return finish(&envelope, json, time, output::print_update_outcome_table);
+    }
+    let outcome = ops::update_all(&rt, &ctx, &requests, |_, _| {});
+    let envelope = ResultEnvelope::from_result(Operation::UpdateAll, &rt.scope, &ctx, Ok(outcome));
+    finish(
+        &envelope,
+        json,
+        time,
+        output::print_update_all_outcome_table,
+    )
 }
 
 fn run_events(
