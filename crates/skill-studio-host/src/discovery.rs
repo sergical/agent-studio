@@ -79,9 +79,10 @@ const PI_TRANSCRIPT_ROOT: &str = ".pi/agent/sessions";
 /// realistic nesting depth.
 const PI_NESTED_ROOT_WALK_DEPTH: u32 = 6;
 
-/// Directories [`walk_for_pi_roots`] may read below one pi `cwd` before it
-/// gives up on that `cwd`, bounding worst-case I/O against a monorepo with
-/// enormous fan-out even before [`PI_NESTED_ROOT_WALK_DEPTH`] is reached.
+/// Directory entries [`walk_for_pi_roots`] may examine below one pi `cwd`
+/// before it gives up on that `cwd`, bounding worst-case I/O against a
+/// monorepo with enormous fan-out at any depth, including the last one
+/// [`PI_NESTED_ROOT_WALK_DEPTH`] allows.
 const PI_NESTED_ROOT_WALK_BUDGET: usize = 2_000;
 
 /// High-fanout folder names skipped in addition to hidden ones, so the walk
@@ -138,11 +139,7 @@ fn walk_for_pi_roots(
     let Ok(entries) = fs::read_dir(dir) else {
         return;
     };
-    *remaining_budget -= 1;
     for entry in entries.flatten() {
-        if *remaining_budget == 0 {
-            break;
-        }
         let Ok(file_type) = entry.file_type() else {
             continue;
         };
@@ -154,6 +151,10 @@ fn walk_for_pi_roots(
         if name.starts_with('.') || PI_NESTED_ROOT_WALK_SKIP_NAMES.contains(&name.as_ref()) {
             continue;
         }
+        if *remaining_budget == 0 {
+            break;
+        }
+        *remaining_budget -= 1;
         let path = entry.path();
         let has_pi_skills = path.join(".pi/skills").exists();
         walk_for_pi_roots(&path, depth_remaining - 1, found, remaining_budget);
@@ -1131,6 +1132,25 @@ mod tests {
             found.len() <= budget,
             "a budget of {budget} directories must bound how many nested roots a 20-way \
              fan-out tree yields, got {}",
+            found.len()
+        );
+    }
+
+    #[test]
+    fn pi_nested_walk_budget_bounds_the_last_depth_fan_out_or_names_the_unbounded_scan() {
+        let tmp = tempfile::tempdir().unwrap();
+        let home = tmp.path();
+        let deepest = home.join("a/b/c/d/e");
+        for i in 0..20 {
+            fs::create_dir_all(deepest.join(format!("child-{i}/.pi/skills"))).unwrap();
+        }
+
+        let budget = 8;
+        let found = nested_pi_project_roots_with_budget(home, &home.join("a"), budget);
+        assert!(
+            found.len() <= budget,
+            "a budget of {budget} directory entries must bound a 20-way fan-out at the last \
+             allowed depth, got {}",
             found.len()
         );
     }
