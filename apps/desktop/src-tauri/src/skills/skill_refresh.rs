@@ -1120,6 +1120,20 @@ fn snapshot_owner_ids(skills: &[InstalledSkill]) -> Vec<String> {
         .collect()
 }
 
+/// `OpenCode`'s config directory, resolved the same way for every reader
+/// and writer in the desktop app - the deny overlay, `detect_config_kind`,
+/// the core-scan arm, and the disable command's write - so fixture runs
+/// (`SKILL_STUDIO_FIXTURE` set) never leak a read or write to the real
+/// user's `~/.config/opencode` just because one call site forgot the
+/// fixture check. Mirrors `core_scan_installed_skills`'s own branch below.
+pub(crate) fn opencode_config_root(home: &Path) -> PathBuf {
+    if std::env::var_os("SKILL_STUDIO_FIXTURE").is_some() {
+        skill_studio_host::opencode_config_dir_under(home)
+    } else {
+        skill_studio_host::opencode_config_dir(home)
+    }
+}
+
 /// Every canonical `SKILL.md` path Codex's own config disables, read from
 /// `<codex_home>/config.toml` `[[skills.config]]` rows with `enabled =
 /// false`. Honors `CODEX_HOME` like every other Codex path
@@ -1342,7 +1356,7 @@ fn apply_skill_snapshot_overlays(
         .into_iter()
         .collect();
     let opencode_fs = skill_studio_host::RealFs::new();
-    let opencode_config_dir = skill_studio_host::opencode_config_dir(home);
+    let opencode_config_dir = opencode_config_root(home);
     let opencode_rules =
         skill_studio_core::opencode_config::read_skill_rules(&opencode_fs, &opencode_config_dir);
     for skill in skills.iter_mut() {
@@ -1447,28 +1461,22 @@ pub(crate) fn core_scan_installed_skills(
     let lease_root = data_dir.join("core-leases");
     let history_root = data_dir.join("core-history");
 
-    let (mut scope, opencode_config_root) = if std::env::var_os("SKILL_STUDIO_FIXTURE").is_some() {
-        // Fixture mode: `home` is the fixture root (see
-        // `apply_fixture_home_override`), so the config root must stay under
-        // it even when the ambient `XDG_CONFIG_HOME`/`OPENCODE_CONFIG_DIR`
-        // point somewhere else, or a checklist run silently reads/writes the
-        // real user's OpenCode config.
-        (
-            skill_studio_core::scope::RuntimeScope::fixture(home),
-            skill_studio_host::opencode_config_dir_under(home),
-        )
+    // Fixture mode: `home` is the fixture root (see
+    // `apply_fixture_home_override`), so the config root must stay under it
+    // even when the ambient `XDG_CONFIG_HOME`/`OPENCODE_CONFIG_DIR` point
+    // somewhere else, or a checklist run silently reads/writes the real
+    // user's OpenCode config - see `opencode_config_root`.
+    let opencode_config_root_path = opencode_config_root(home);
+    let mut scope = if std::env::var_os("SKILL_STUDIO_FIXTURE").is_some() {
+        skill_studio_core::scope::RuntimeScope::fixture(home)
     } else {
         let codex_home = skill_studio_host::codex_home(home);
-        (
-            skill_studio_core::scope::RuntimeScope::live(home, history_root)
-                .with_codex_home(codex_home),
-            skill_studio_host::opencode_config_dir(home),
-        )
+        skill_studio_core::scope::RuntimeScope::live(home, history_root).with_codex_home(codex_home)
     };
     scope.projects = skill_studio_core::scope::ProjectSelection::Explicit {
         paths: project_paths.to_vec(),
     };
-    scope.opencode_config_root = Some(opencode_config_root);
+    scope.opencode_config_root = Some(opencode_config_root_path);
     // The 2s default guards stateless CLI/MCP calls; the desktop refresh
     // runs in the background and must reach every root even on a home with
     // many projects and plugin caches.
@@ -1669,7 +1677,7 @@ pub fn build_snapshot(
         update_check,
         opencode_config_kind: skill_studio_core::opencode_config::detect_config_kind(
             &skill_studio_host::RealFs::new(),
-            &skill_studio_host::opencode_config_dir(home),
+            &opencode_config_root(home),
         ),
         scan_partial,
         scan_observations,

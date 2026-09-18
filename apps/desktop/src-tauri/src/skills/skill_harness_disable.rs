@@ -644,7 +644,7 @@ pub fn set_harness_enabled_with(
         }
         // The frontend's AgentId spells it "open-code"; the CLI name is "opencode".
         "opencode" | "open-code" => {
-            let config_dir = skill_studio_host::opencode_config_dir(home);
+            let config_dir = skill_refresh::opencode_config_root(home);
             // Core's scope normalization canonicalizes the write's home
             // (`config_dir`'s parent), which requires it to already exist -
             // same bootstrapping gap `write_fork_registry` has for a
@@ -1601,6 +1601,90 @@ mod tests {
             home.join(".config/opencode"),
             "opencode_config_dir resolved the ambient XDG_CONFIG_HOME ({}) instead of the guarded home",
             unrelated.display()
+        );
+    }
+
+    /// Flow: `SKILL_STUDIO_FIXTURE` is set (a checklist/fixture run) and
+    /// `XDG_CONFIG_HOME` points at a real, unrelated `opencode.json` that
+    /// already denies `real-file-marker` - the same shape a developer's own
+    /// `~/.config/opencode/opencode.json` could take. A skill is then denied
+    /// through `skill_refresh::opencode_config_root(home)`.
+    /// Expectation: the write lands under the fixture `home`
+    /// (`home/.config/opencode/opencode.json`), and the real, unrelated file
+    /// under `XDG_CONFIG_HOME` is never read or written - it still denies
+    /// only `real-file-marker`, not the skill this test disabled.
+    /// Failure: either the write lands under the real `XDG_CONFIG_HOME`
+    /// directory instead of the fixture, or the real file's own deny rule
+    /// changes - either would mean a fixture/checklist run can touch a
+    /// developer's real `OpenCode` config.
+    #[test]
+    fn fixture_mode_reads_and_writes_opencode_config_under_the_fixture_or_names_the_real_file_it_touched(
+    ) {
+        let tmp = tempfile::tempdir().unwrap();
+        let home = tmp.path().join("home");
+        fs::create_dir_all(home.join(".config")).unwrap();
+        let real_xdg_config_home = tmp.path().join("real-xdg-config");
+        let real_opencode_dir = real_xdg_config_home.join("opencode");
+        fs::create_dir_all(&real_opencode_dir).unwrap();
+        fs::write(
+            real_opencode_dir.join("opencode.json"),
+            r#"{"permission": {"skill": {"real-file-marker": "deny"}}}"#,
+        )
+        .unwrap();
+
+        let _guard = OpencodeHomeGuard::new(&home);
+        let prev_fixture = std::env::var_os("SKILL_STUDIO_FIXTURE");
+        // SAFETY: `_guard` holds `OpencodeHomeGuard`'s lock, serializing
+        // every test in this module that touches these vars; this test adds
+        // `SKILL_STUDIO_FIXTURE` under the same lock.
+        #[allow(unsafe_code)]
+        unsafe {
+            std::env::set_var("XDG_CONFIG_HOME", &real_xdg_config_home);
+            std::env::set_var("SKILL_STUDIO_FIXTURE", "1");
+        }
+
+        let config_dir = skill_refresh::opencode_config_root(&home);
+        assert_eq!(
+            config_dir,
+            skill_studio_host::opencode_config_dir_under(&home),
+            "fixture mode resolved a config dir outside the fixture home"
+        );
+        let fs_port = skill_studio_host::RealFs::new();
+        let leases = skill_studio_host::FileLease::new(home.join(".leases"));
+        skill_studio_core::opencode_config::set_skill_denied(
+            &leases,
+            &fs_port,
+            &config_dir,
+            "epsilon",
+            true,
+        )
+        .unwrap();
+
+        // SAFETY: same as above - still under `_guard`'s lock.
+        #[allow(unsafe_code)]
+        unsafe {
+            match prev_fixture {
+                Some(v) => std::env::set_var("SKILL_STUDIO_FIXTURE", v),
+                None => std::env::remove_var("SKILL_STUDIO_FIXTURE"),
+            }
+        }
+
+        assert!(
+            skill_studio_core::opencode_config::read_denied_patterns(
+                &fs_port,
+                &home.join(".config/opencode")
+            )
+            .contains(&"epsilon".to_string()),
+            "the deny write did not land under the fixture home"
+        );
+        let real_denied = skill_studio_core::opencode_config::read_denied_patterns(
+            &fs_port,
+            &real_opencode_dir,
+        );
+        assert_eq!(
+            real_denied,
+            vec!["real-file-marker".to_string()],
+            "the real, unrelated opencode.json under XDG_CONFIG_HOME was touched: {real_denied:?}"
         );
     }
 
