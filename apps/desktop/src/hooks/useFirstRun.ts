@@ -20,9 +20,17 @@ interface FirstRunGateState {
   showScreen: boolean | null;
 }
 
-/** Checks the registry for a saved choice once on mount. An unreadable
- * registry fails open to the screen rather than trap the user behind a
- * first run that can never complete. */
+type ChoiceRead = { ok: true; choice: HarnessesChoice | null } | { ok: false };
+
+/** An unreadable registry (`ok: false`) skips the screen: the main app
+ * already runs on a corrupt registry via `read_fork_registry_or_default`,
+ * so a first-run screen whose Continue can never save would trap the user
+ * instead of protecting them. */
+export function showScreenForChoiceRead(read: ChoiceRead): boolean {
+  return read.ok && read.choice === null;
+}
+
+/** Checks the registry for a saved choice once on mount. */
 export function useFirstRunGate(): FirstRunGateState {
   const [showScreen, setShowScreen] = useState<boolean | null>(null);
 
@@ -30,10 +38,10 @@ export function useFirstRunGate(): FirstRunGateState {
     let cancelled = false;
     getHarnessesChoice()
       .then((choice) => {
-        if (!cancelled) setShowScreen(choice === null);
+        if (!cancelled) setShowScreen(showScreenForChoiceRead({ ok: true, choice }));
       })
       .catch(() => {
-        if (!cancelled) setShowScreen(true);
+        if (!cancelled) setShowScreen(showScreenForChoiceRead({ ok: false }));
       });
     return () => {
       cancelled = true;
@@ -55,9 +63,10 @@ interface FirstRunScreenState {
 }
 
 /** Continue waits only for detection still in flight or a save in
- * progress. A detection error does not block it: the user continues with
- * an empty choice, and the next launch re-detects in the background, so a
- * failed probe can never trap them on this screen. */
+ * progress. Neither a detection error nor a save error blocks it: the
+ * user continues with an empty or partial choice rather than being
+ * trapped on a screen a failed probe or a failed write can never let
+ * them leave. */
 export function continueIsBlocked(state: {
   rows: HarnessDetection[] | null;
   error: string | null;
@@ -115,8 +124,9 @@ export function useFirstRunScreen(onSaved: () => void): FirstRunScreenState {
     saveHarnessesChoice(choice)
       .then(onSaved)
       .catch((cause: unknown) => {
-        setError(invokeErrorMessage(cause));
-        setSaving(false);
+        // eslint-disable-next-line no-console
+        console.error(invokeErrorMessage(cause));
+        onSaved();
       });
   }
 

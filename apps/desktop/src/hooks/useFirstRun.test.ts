@@ -1,5 +1,21 @@
 import { describe, expect, it } from "vitest";
-import { continueIsBlocked } from "./useFirstRun";
+import { continueIsBlocked, showScreenForChoiceRead } from "./useFirstRun";
+
+describe("showScreenForChoiceRead", () => {
+  it("an unreadable registry opens the app instead of trapping the user on the first-run screen", () => {
+    expect(showScreenForChoiceRead({ ok: false })).toBe(false);
+  });
+
+  it("no saved choice shows the screen and a saved choice skips it", () => {
+    expect(showScreenForChoiceRead({ ok: true, choice: null })).toBe(true);
+    expect(
+      showScreenForChoiceRead({
+        ok: true,
+        choice: { kept: [], search_project_folders: true, saved_at: "2026-01-01T00:00:00.000Z" },
+      }),
+    ).toBe(false);
+  });
+});
 
 describe("continueIsBlocked", () => {
   it("a detection error still lets the user continue with an empty choice or names the screen that traps them", () => {
