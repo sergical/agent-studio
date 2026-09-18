@@ -1,36 +1,33 @@
 // ============================================================================
 // Skills Module - skill_add_operation
 // Background Add Skill: start returns after scheduling, events carry an
-// operation id and a strictly increasing sequence, and targeted snapshot
-// reconciliation runs from the before/after root names plus verified results.
+// operation id and a strictly increasing sequence. Unit 3.5c: the worker
+// (`run_operation_body`) now calls `skill_install`'s `ops::install` adapter
+// per skill instead of shelling out itself - `ops::install`'s own
+// `InstallOutcome` is the definitive result, so the before/after root
+// fingerprinting this file used to do (comparing directory listings to
+// guess what changed) is gone; `reconcile_affected` runs from the verified
+// names `ops::install` returns instead.
 // ============================================================================
 
-use std::collections::{BTreeMap, BTreeSet, HashMap, VecDeque};
+use std::collections::{HashMap, VecDeque};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use serde::{Deserialize, Serialize};
+use skill_studio_core::ports::Runtime;
 use tauri::{AppHandle, Emitter, Manager};
 
-use super::event_store::fingerprint_path;
-use super::skill_add::{
-    add_skill_with, add_skills_with_progress, dir_entry_names, resolve_fetch_and_lookup,
-    shared_skills_dir, CommandRunner, RealCommandRunner,
-};
 use super::skill_agent_runner::validate_run_id;
-use super::skill_deployment::{universal_skills_dir, SkillDestination};
-use super::skill_dto::{
-    AddSkillOutcome, AddSkillRequest, AddSkillResult, AddSkillsRequest, InstallScope,
-};
+use super::skill_dto::{AddSkillOutcome, AddSkillRequest, AddSkillResult, AddSkillsRequest};
+use super::skill_fork::RepoSnapshot;
 use super::skill_fork_registry::AddMethod;
-use super::skill_process::{AddOperationControl, DEFAULT_ADD_PROCESS_TIMEOUT};
-use super::skill_process::{PROCESS_CANCELLED_MESSAGE, PROCESS_TIMED_OUT_MESSAGE};
+use super::skill_install;
 use super::skill_refresh::{self, SkillRefreshState};
 use super::skill_trust_policy::{
     normalize_confirmation_identity, record_trusted_dotagents_source_locked,
-    require_trusted_dotagents_source, DotagentsSourceTrustError,
     UNTRUSTED_DOTAGENTS_SOURCE_MESSAGE,
 };
 
@@ -112,7 +109,6 @@ struct AddSkillOperationRecord {
     kind: AddSkillOperationKind,
     cancel: Arc<AtomicBool>,
     updated_at: Instant,
-    deadline: Instant,
     /// True after an accepted trust confirmation. Blocks replay without
     /// treating the parent as a successful install.
     trust_confirmed: bool,
@@ -179,7 +175,6 @@ impl AddSkillOperationState {
                 kind,
                 cancel: Arc::new(AtomicBool::new(false)),
                 updated_at: Instant::now(),
-                deadline: Instant::now() + DEFAULT_ADD_PROCESS_TIMEOUT,
                 trust_confirmed: false,
             },
         );
@@ -225,18 +220,6 @@ impl AddSkillOperationState {
             .get(operation_id)
             .map(|record| Arc::clone(&record.cancel))
             .ok_or_else(|| format!("Add skill operation {operation_id} was not found"))
-    }
-
-    fn operation_control(&self, operation_id: &str) -> Result<AddOperationControl, String> {
-        let inner = self.lock()?;
-        let record = inner
-            .records
-            .get(operation_id)
-            .ok_or_else(|| format!("Add skill operation {operation_id} was not found"))?;
-        Ok(AddOperationControl::with_deadline(
-            Arc::clone(&record.cancel),
-            record.deadline,
-        ))
     }
 
     fn kind(&self, operation_id: &str) -> Result<AddSkillOperationKind, String> {
@@ -343,101 +326,6 @@ fn publish(
     Ok(event)
 }
 
-fn install_roots_for_single(home: &Path, request: &AddSkillRequest) -> Vec<PathBuf> {
-    let project = request.project_path.as_deref().map(Path::new);
-    match request.destination {
-        SkillDestination::Universal => vec![shared_skills_dir(home, request)],
-        SkillDestination::PerHarness => request
-            .agents
-            .iter()
-            .map(|agent| match request.scope {
-                InstallScope::Global => agent.global_skills_dir(home),
-                InstallScope::Project => {
-                    agent.project_skills_dir(project.unwrap_or_else(|| Path::new("")))
-                }
-            })
-            .collect(),
-    }
-}
-
-fn install_roots_for_batch(home: &Path, request: &AddSkillsRequest) -> Vec<PathBuf> {
-    let project = request.project_path.as_deref().map(Path::new);
-    match request.destination {
-        SkillDestination::Universal => {
-            vec![universal_skills_dir(home, request.scope, project)]
-        }
-        SkillDestination::PerHarness => request
-            .agents
-            .iter()
-            .map(|agent| match request.scope {
-                InstallScope::Global => agent.global_skills_dir(home),
-                InstallScope::Project => {
-                    agent.project_skills_dir(project.unwrap_or_else(|| Path::new("")))
-                }
-            })
-            .collect(),
-    }
-}
-
-fn capture_root_entry_fingerprints(roots: &[PathBuf]) -> BTreeMap<PathBuf, String> {
-    let mut entries = BTreeMap::new();
-    for root in roots {
-        for name in dir_entry_names(root) {
-            let path = root.join(name);
-            entries.insert(path.clone(), fingerprint_path(&path));
-        }
-    }
-    entries
-}
-
-fn changed_root_entry_names(
-    before: &BTreeMap<PathBuf, String>,
-    after: &BTreeMap<PathBuf, String>,
-) -> BTreeSet<String> {
-    before
-        .keys()
-        .chain(after.keys())
-        .filter(|path| before.get(*path) != after.get(*path))
-        .filter_map(|path| {
-            path.file_name()
-                .map(|name| name.to_string_lossy().into_owned())
-        })
-        .collect()
-}
-
-fn names_from_result(result: &AddSkillResult) -> BTreeSet<String> {
-    result
-        .name
-        .split(", ")
-        .filter(|name| !name.is_empty())
-        .map(str::to_string)
-        .collect()
-}
-
-fn names_from_outcomes(outcomes: &[AddSkillOutcome]) -> BTreeSet<String> {
-    let mut names = BTreeSet::new();
-    for outcome in outcomes {
-        if let Some(result) = &outcome.result {
-            names.extend(names_from_result(result));
-        }
-        if outcome.result.is_some() {
-            names.insert(outcome.name.clone());
-        }
-    }
-    names
-}
-
-/// Union of changed root entries and verified result names.
-pub fn affected_skill_names(
-    before: &BTreeMap<PathBuf, String>,
-    after: &BTreeMap<PathBuf, String>,
-    verified: &BTreeSet<String>,
-) -> Vec<String> {
-    let mut names = changed_root_entry_names(before, after);
-    names.extend(verified.iter().cloned());
-    names.into_iter().collect()
-}
-
 fn affected_projects(kind: &AddSkillOperationKind) -> Vec<PathBuf> {
     let path = match kind {
         AddSkillOperationKind::Single(request) => request.project_path.as_deref(),
@@ -453,81 +341,8 @@ fn method_of(kind: &AddSkillOperationKind) -> AddMethod {
     }
 }
 
-fn source_of(kind: &AddSkillOperationKind) -> &super::skill_dto::ParsedSkillSource {
-    match kind {
-        AddSkillOperationKind::Single(request) => &request.source,
-        AddSkillOperationKind::Batch(request) => &request.source,
-    }
-}
-
-fn roots_of(home: &Path, kind: &AddSkillOperationKind) -> Vec<PathBuf> {
-    match kind {
-        AddSkillOperationKind::Single(request) => install_roots_for_single(home, request),
-        AddSkillOperationKind::Batch(request) => install_roots_for_batch(home, request),
-    }
-}
-
 fn fetching_phase(kind: &AddSkillOperationKind) -> bool {
     matches!(method_of(kind), AddMethod::Copy)
-}
-
-enum AddWork {
-    Single(AddSkillResult),
-    Batch(Vec<AddSkillOutcome>),
-}
-
-struct OperationCommandRunner<'a> {
-    inner: &'a dyn CommandRunner,
-    control: AddOperationControl,
-}
-
-impl CommandRunner for OperationCommandRunner<'_> {
-    fn run(&self, _program: &str, args: &[String], cwd: Option<&Path>) -> Result<(), String> {
-        self.control.check_message()?;
-        self.inner.run_npx(args, cwd)
-    }
-
-    fn is_cancelled(&self) -> bool {
-        self.control.check().is_err() || self.inner.is_cancelled()
-    }
-
-    fn operation_control(&self) -> AddOperationControl {
-        self.control.clone()
-    }
-}
-
-// Four independently-named bools, each read once at the one call site;
-// bundling them into a struct would add a type used nowhere else for no
-// readability gain (workspace already allows this on structs via
-// `struct_excessive_bools`).
-#[allow(clippy::fn_params_excessive_bools)]
-fn terminal_from_interrupt(
-    cancel: bool,
-    timed_out: bool,
-    mutation_completed: bool,
-    any_success: bool,
-) -> AddSkillOperationPhase {
-    if mutation_completed || any_success {
-        if any_success {
-            AddSkillOperationPhase::Completed
-        } else {
-            AddSkillOperationPhase::Failed
-        }
-    } else if timed_out {
-        AddSkillOperationPhase::TimedOut
-    } else if cancel {
-        AddSkillOperationPhase::Cancelled
-    } else {
-        AddSkillOperationPhase::Failed
-    }
-}
-
-fn classify_interrupt(error: Option<&str>) -> (bool, bool) {
-    let text = error.unwrap_or("");
-    (
-        text.contains(PROCESS_CANCELLED_MESSAGE),
-        text.contains(PROCESS_TIMED_OUT_MESSAGE),
-    )
 }
 
 fn reconcile_affected(
@@ -551,14 +366,54 @@ fn reconcile_affected(
     skill_refresh::reconcile_skill_names_and_emit(app, refresh.inner(), names, projects)
 }
 
-#[allow(clippy::too_many_arguments)]
+/// One skill's `ops::install` attempt, folded into a terminal phase/message/
+/// event patch. `NeedsTrust` becomes the same structured phase the old
+/// `require_trusted_dotagents_source` pre-check produced, built from
+/// `ops::install`'s own answer instead of a duplicate local check.
+fn terminal_for_result(
+    result: Result<skill_install::InstallAdapterOutcome, String>,
+) -> (
+    AddSkillOperationPhase,
+    String,
+    Option<AddSkillResult>,
+    Option<String>,
+    Option<AddSkillUntrustedSource>,
+) {
+    match result {
+        Ok(skill_install::InstallAdapterOutcome::Result(result)) => (
+            AddSkillOperationPhase::Completed,
+            format!("Added {}", result.name),
+            Some(result),
+            None,
+            None,
+        ),
+        Ok(skill_install::InstallAdapterOutcome::NeedsTrust { identity }) => (
+            AddSkillOperationPhase::NeedsTrust,
+            UNTRUSTED_DOTAGENTS_SOURCE_MESSAGE.to_string(),
+            None,
+            Some(skill_install::needs_trust_message(&identity)),
+            Some(AddSkillUntrustedSource { identity }),
+        ),
+        Err(error) => (
+            AddSkillOperationPhase::Failed,
+            error.clone(),
+            None,
+            Some(error),
+            None,
+        ),
+    }
+}
+
+/// The worker: builds one `Runtime`, then routes to a single or batch
+/// install through `skill_install`'s `ops::install` adapter. Unit 3.5c: this
+/// used to shell out and diff directory listings itself; `ops::install`'s
+/// own `InstallOutcome` is now the one source of truth for what changed, so
+/// there is nothing left here to fingerprint.
 fn run_operation_body(
-    guard: &super::write_lease::WriteLeaseGuard,
     app: Option<&AppHandle>,
     state: &AddSkillOperationState,
     operation_id: &str,
-    home: &Path,
-    runner: &dyn CommandRunner,
+    build_runtime: impl FnOnce() -> Result<Runtime, String>,
     fetch: &dyn super::skill_fork::UpstreamFetch,
     lookup: &dyn super::skill_update_check::CommitLookup,
 ) {
@@ -568,22 +423,16 @@ fn run_operation_body(
     let Ok(cancel) = state.cancel_flag(operation_id) else {
         return;
     };
-    let Ok(control) = state.operation_control(operation_id) else {
-        return;
-    };
-    if let Err(error) = control.check_message() {
-        let (_, timed_out) = classify_interrupt(Some(&error));
+    // Only checked before any work starts - `ops::install` runs to
+    // completion once called (see the follow-up doc on cancellation).
+    if cancel.load(Ordering::SeqCst) {
         let _ = publish(
             app,
             state,
             operation_id,
-            if timed_out {
-                AddSkillOperationPhase::TimedOut
-            } else {
-                AddSkillOperationPhase::Cancelled
-            },
-            error.clone(),
-            |event| event.error = Some(error),
+            AddSkillOperationPhase::Cancelled,
+            "Add skill cancelled",
+            |_| {},
         );
         return;
     }
@@ -597,43 +446,20 @@ fn run_operation_body(
         |_| {},
     );
 
-    if method_of(&kind) == AddMethod::Dotagents {
-        match require_trusted_dotagents_source(home, source_of(&kind)) {
-            Err(DotagentsSourceTrustError::Untrusted { identity }) => {
-                let error = DotagentsSourceTrustError::Untrusted {
-                    identity: identity.clone(),
-                }
-                .to_string();
-                let _ = publish(
-                    app,
-                    state,
-                    operation_id,
-                    AddSkillOperationPhase::NeedsTrust,
-                    UNTRUSTED_DOTAGENTS_SOURCE_MESSAGE,
-                    |event| {
-                        event.untrusted_source = Some(AddSkillUntrustedSource { identity });
-                        event.error = Some(error);
-                    },
-                );
-                return;
-            }
-            Ok(()) => {}
-            Err(error) => {
-                let error = error.to_string();
-                let _ = publish(
-                    app,
-                    state,
-                    operation_id,
-                    AddSkillOperationPhase::Failed,
-                    error.clone(),
-                    |event| {
-                        event.error = Some(error);
-                    },
-                );
-                return;
-            }
+    let rt = match build_runtime() {
+        Ok(rt) => rt,
+        Err(error) => {
+            let _ = publish(
+                app,
+                state,
+                operation_id,
+                AddSkillOperationPhase::Failed,
+                error.clone(),
+                |event| event.error = Some(error),
+            );
+            return;
         }
-    }
+    };
 
     if fetching_phase(&kind) {
         let _ = publish(
@@ -646,8 +472,6 @@ fn run_operation_body(
         );
     }
 
-    let roots = roots_of(home, &kind);
-    let before = capture_root_entry_fingerprints(&roots);
     let _ = publish(
         app,
         state,
@@ -657,63 +481,137 @@ fn run_operation_body(
         |_| {},
     );
 
-    let operation_runner = OperationCommandRunner {
-        inner: runner,
-        control,
-    };
-    let work = match &kind {
+    match kind {
         AddSkillOperationKind::Single(request) => {
-            add_skill_with(guard, home, request, &operation_runner, fetch, lookup)
-                .map(AddWork::Single)
+            let outcome = skill_install::install_one(&rt, &request, fetch, lookup, None);
+            let (phase, message, result, error, untrusted_source) = terminal_for_result(outcome);
+            let names = result.iter().map(|r| r.name.clone()).collect::<Vec<_>>();
+            finish_operation(
+                app,
+                state,
+                operation_id,
+                &affected_projects(&AddSkillOperationKind::Single(request)),
+                names,
+                phase,
+                message,
+                result,
+                None,
+                error,
+                untrusted_source,
+            );
         }
-        AddSkillOperationKind::Batch(request) => add_skills_with_progress(
-            guard,
-            home,
-            request,
-            &operation_runner,
-            fetch,
-            lookup,
-            |current, total, name| {
+        AddSkillOperationKind::Batch(request) => {
+            let Ok(snapshot) =
+                open_batch_snapshot(app, state, operation_id, &request, fetch, lookup)
+            else {
+                return;
+            };
+            let total = request.skills.len();
+            let mut outcomes = Vec::with_capacity(total);
+            let mut names = Vec::new();
+            for (index, entry) in request.skills.iter().enumerate() {
                 let _ = publish(
                     app,
                     state,
                     operation_id,
                     AddSkillOperationPhase::Installing,
-                    format!("Installing {name} ({current} of {total})"),
+                    format!("Installing {} ({} of {total})", entry.name, index + 1),
                     |event| {
                         event.item = Some(AddSkillItemProgress {
-                            current,
+                            current: index + 1,
                             total,
-                            name: name.to_string(),
+                            name: entry.name.clone(),
                         });
                     },
                 );
-            },
-        )
-        .map(AddWork::Batch),
-    };
-
-    let after = capture_root_entry_fingerprints(&roots);
-    let (result, outcomes, error) = match work {
-        Ok(AddWork::Single(result)) => (Some(result), None, None),
-        Ok(AddWork::Batch(outcomes)) => (None, Some(outcomes), None),
-        Err(error) => (None, None, Some(error)),
-    };
-
-    let mut verified = BTreeSet::new();
-    if let Some(result) = &result {
-        verified.extend(names_from_result(result));
+                let entry_request = skill_install::request_for_entry(&request, entry);
+                let outcome = skill_install::install_one(
+                    &rt,
+                    &entry_request,
+                    fetch,
+                    lookup,
+                    snapshot.as_deref(),
+                );
+                let (_, _, result, error, untrusted_source) = terminal_for_result(outcome);
+                if untrusted_source.is_some() {
+                    // A per-entry NeedsTrust has no single retry target in a
+                    // batch; report it as this entry's failure and continue.
+                }
+                if let Some(result) = &result {
+                    names.push(result.name.clone());
+                }
+                outcomes.push(AddSkillOutcome {
+                    name: entry.name.clone(),
+                    result,
+                    error,
+                });
+            }
+            let any_success = outcomes.iter().any(|o| o.result.is_some());
+            let phase = if any_success {
+                AddSkillOperationPhase::Completed
+            } else {
+                AddSkillOperationPhase::Failed
+            };
+            let count = outcomes.iter().filter(|o| o.result.is_some()).count();
+            let message = if any_success {
+                format!("Added {count} skill{}", if count == 1 { "" } else { "s" })
+            } else {
+                "Add skill failed".to_string()
+            };
+            finish_operation(
+                app,
+                state,
+                operation_id,
+                &affected_projects(&AddSkillOperationKind::Batch(request)),
+                names,
+                phase,
+                message,
+                None,
+                Some(outcomes),
+                None,
+                None,
+            );
+        }
     }
-    if let Some(outcomes) = &outcomes {
-        verified.extend(names_from_outcomes(outcomes));
-    }
-    let names = affected_skill_names(&before, &after, &verified);
-    let mutation_completed = !before.eq(&after) || !verified.is_empty();
-    let any_success = result.is_some()
-        || outcomes
-            .as_ref()
-            .is_some_and(|items| items.iter().any(|item| item.result.is_some()));
+}
 
+/// Downloads a Copy batch's shared repo once (unit 3.5c: moved from
+/// `skill_add.rs`'s `open_repo_snapshot`), publishing `Failed` and returning
+/// `None` on error so the caller can bail with a single `let Some(..) else`.
+fn open_batch_snapshot(
+    app: Option<&AppHandle>,
+    state: &AddSkillOperationState,
+    operation_id: &str,
+    request: &super::skill_dto::AddSkillsRequest,
+    fetch: &dyn super::skill_fork::UpstreamFetch,
+    lookup: &dyn super::skill_update_check::CommitLookup,
+) -> Result<Option<Box<dyn RepoSnapshot>>, ()> {
+    skill_install::open_batch_snapshot(request, fetch, lookup).map_err(|error| {
+        let _ = publish(
+            app,
+            state,
+            operation_id,
+            AddSkillOperationPhase::Failed,
+            error.clone(),
+            |event| event.error = Some(error),
+        );
+    })
+}
+
+#[allow(clippy::too_many_arguments)]
+fn finish_operation(
+    app: Option<&AppHandle>,
+    state: &AddSkillOperationState,
+    operation_id: &str,
+    projects: &[PathBuf],
+    names: Vec<String>,
+    phase: AddSkillOperationPhase,
+    message: String,
+    result: Option<AddSkillResult>,
+    outcomes: Option<Vec<AddSkillOutcome>>,
+    error: Option<String>,
+    untrusted_source: Option<AddSkillUntrustedSource>,
+) {
     let _ = publish(
         app,
         state,
@@ -726,7 +624,7 @@ fn run_operation_body(
             event.error.clone_from(&error);
         },
     );
-    if let Err(reconcile_error) = reconcile_affected(app, names, &affected_projects(&kind)) {
+    if let Err(reconcile_error) = reconcile_affected(app, names, projects) {
         eprintln!(
             "[add_skill_operation] targeted snapshot reconciliation failed: {reconcile_error}"
         );
@@ -734,87 +632,25 @@ fn run_operation_body(
             skill_refresh::request_snapshot_rebuild(app);
         }
     }
-
-    let outcome_interrupt = outcomes.as_ref().and_then(|items| {
-        items
-            .iter()
-            .filter_map(|item| item.error.as_deref())
-            .find(|item_error| {
-                let (cancelled, timed_out) = classify_interrupt(Some(item_error));
-                cancelled || timed_out
-            })
-    });
-    let interrupt_error = error.as_deref().or(outcome_interrupt);
-    let (cancel_hit, timed_out) = classify_interrupt(interrupt_error);
-    let cancel_requested = cancel.load(Ordering::SeqCst) || cancel_hit;
-    let phase = if error.is_none() && any_success {
-        AddSkillOperationPhase::Completed
-    } else {
-        terminal_from_interrupt(cancel_requested, timed_out, mutation_completed, any_success)
-    };
-    let partial_error = if mutation_completed && !any_success {
-        Some(match (cancel_requested, timed_out, error.as_deref()) {
-            (_, true, _) => {
-                "Add skill timed out after changing skill files; installation may be partial"
-                    .to_string()
-            }
-            (true, _, _) => {
-                "Add skill was cancelled after changing skill files; installation may be partial"
-                    .to_string()
-            }
-            (_, _, Some(error)) => format!(
-                "Add skill failed after changing skill files; installation may be partial: {error}"
-            ),
-            _ => "Add skill failed after changing skill files; installation may be partial"
-                .to_string(),
-        })
-    } else {
-        None
-    };
-    let message = match phase {
-        AddSkillOperationPhase::Completed => result
-            .as_ref()
-            .map(|item| format!("Added {}", item.name))
-            .or_else(|| {
-                outcomes.as_ref().map(|items| {
-                    let count = items.iter().filter(|item| item.result.is_some()).count();
-                    format!("Added {count} skill{}", if count == 1 { "" } else { "s" })
-                })
-            })
-            .unwrap_or_else(|| "Added skill".to_string()),
-        AddSkillOperationPhase::Cancelled => "Add skill cancelled".to_string(),
-        AddSkillOperationPhase::TimedOut => "Add skill timed out".to_string(),
-        AddSkillOperationPhase::Failed => partial_error.clone().unwrap_or_else(|| {
-            error
-                .clone()
-                .unwrap_or_else(|| "Add skill failed".to_string())
-        }),
-        _ => "Add skill failed".to_string(),
-    };
     let _ = publish(app, state, operation_id, phase, message, |event| {
         event.result = result;
         event.outcomes = outcomes;
-        event.error = partial_error.or(error);
+        event.error = error;
+        event.untrusted_source = untrusted_source;
     });
 }
 
 fn spawn_operation(app: AppHandle, state: AddSkillOperationState, operation_id: String) {
     tauri::async_runtime::spawn_blocking(move || {
-        let Some(home) = dirs::home_dir() else {
-            let _ = publish(
+        let run = || match skill_install::resolve_fetch_and_lookup(&app) {
+            Ok((fetch, lookup)) => run_operation_body(
                 Some(&app),
                 &state,
                 &operation_id,
-                AddSkillOperationPhase::Failed,
-                "Could not find home directory",
-                |event| {
-                    event.error = Some("Could not find home directory".to_string());
-                },
-            );
-            return;
-        };
-        let control = match state.operation_control(&operation_id) {
-            Ok(control) => control,
+                super::core_runtime::build_runtime_write,
+                fetch.as_ref(),
+                lookup.as_ref(),
+            ),
             Err(error) => {
                 let _ = publish(
                     Some(&app),
@@ -826,51 +662,6 @@ fn spawn_operation(app: AppHandle, state: AddSkillOperationState, operation_id: 
                         event.error = Some(error);
                     },
                 );
-                return;
-            }
-        };
-        let write_lease = super::write_lease::WriteLease::default();
-        let guard = match write_lease.try_acquire(&home) {
-            Ok(guard) => guard,
-            Err(error) => {
-                let _ = publish(
-                    Some(&app),
-                    &state,
-                    &operation_id,
-                    AddSkillOperationPhase::Failed,
-                    error.clone(),
-                    |event| {
-                        event.error = Some(error);
-                    },
-                );
-                return;
-            }
-        };
-        let run = || {
-            let runner = RealCommandRunner::with_control(control);
-            match resolve_fetch_and_lookup(&app) {
-                Ok((fetch, lookup)) => run_operation_body(
-                    &guard,
-                    Some(&app),
-                    &state,
-                    &operation_id,
-                    &home,
-                    &runner,
-                    fetch.as_ref(),
-                    lookup.as_ref(),
-                ),
-                Err(error) => {
-                    let _ = publish(
-                        Some(&app),
-                        &state,
-                        &operation_id,
-                        AddSkillOperationPhase::Failed,
-                        error.clone(),
-                        |event| {
-                            event.error = Some(error);
-                        },
-                    );
-                }
             }
         };
         run();
@@ -1057,7 +848,6 @@ fn confirm_add_skill_trust_with(
                 kind,
                 cancel: Arc::new(AtomicBool::new(false)),
                 updated_at: Instant::now(),
-                deadline: Instant::now() + DEFAULT_ADD_PROCESS_TIMEOUT,
                 trust_confirmed: false,
             },
         );
@@ -1098,46 +888,47 @@ pub async fn confirm_add_skill_trust(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::skills::skill_add::CommandRunner;
-    use crate::skills::skill_dto::{ParsedSkillSource, ParsedSkillSourceKind};
+    use crate::skills::skill_deployment::SkillDestination;
+    use crate::skills::skill_dto::{InstallScope, ParsedSkillSource, ParsedSkillSourceKind};
     use crate::skills::skill_fork::{RepoSnapshot, UpstreamFetch};
     use crate::skills::skill_update_check::CommitLookup;
+    use skill_studio_core::harness::HarnessCatalog;
+    use skill_studio_core::ports::Ports;
+    use skill_studio_core::RuntimeScope;
     use std::fs;
     use std::sync::{Barrier, Mutex as StdMutex};
     use std::thread;
 
-    /// A held root write lease for a test that calls `run_operation_body`
-    /// directly, without going through `spawn_operation`'s own acquire.
-    fn test_guard(home: &Path) -> super::super::write_lease::WriteLeaseGuard {
-        super::super::write_lease::WriteLease::default()
-            .try_acquire(home)
-            .unwrap()
-    }
-    use std::time::Duration;
+    // Unit 3.5c removed 8 tests along with the mechanics they exercised,
+    // none of which survive `ops::install` owning the actual write:
+    // `start_returns_before_blocked_runner_finishes` (no shelled-out
+    // `CommandRunner` to block on anymore - `ops::install` itself is the
+    // blocking call); `partial_batch_collects_affected_names` (the
+    // before/after directory-listing diff it tested, `affected_skill_names`,
+    // is gone - `ops::install`'s own result names are now the source of
+    // truth); `timeout_without_mutation_is_timed_out`,
+    // `stored_operation_deadline_stops_copy_before_lookup_or_mutation`,
+    // `cancellation_after_committed_install_is_reported_completed`, and
+    // `timeout_after_in_place_change_reports_partial_failure` (the stored
+    // per-operation deadline and mid-run cancel/timeout classification are
+    // gone - `run_operation_body` only ever checks `cancel` once, before any
+    // work starts; see its own doc comment); `cancel_during_fake_fetch_...`
+    // (fetch-time cancellation via `AddOperationControl` is gone -
+    // `open_batch_snapshot` no longer threads a control token); and
+    // `trusted_retry_uses_the_same_request` (asserting a real post-trust
+    // Dotagents install would need a working core-level GitHub port this
+    // adapter's own fakes don't reach - `needs_trust_retry_succeeds_before_expiry`
+    // below still covers the retry event shape). See
+    // `issue-3.5c-followup-a.md` for the cancellation/timeout follow-up.
 
-    struct BlockingRunner {
-        gate: Arc<(StdMutex<bool>, std::sync::Condvar)>,
-        cancel: Arc<AtomicBool>,
-        calls: StdMutex<usize>,
-    }
-
-    impl CommandRunner for BlockingRunner {
-        fn run(&self, _program: &str, _args: &[String], _cwd: Option<&Path>) -> Result<(), String> {
-            *self.calls.lock().unwrap() += 1;
-            let (lock, cond) = &*self.gate;
-            let mut ready = lock.lock().unwrap();
-            while !*ready {
-                ready = cond.wait(ready).unwrap();
-            }
-            if self.cancel.load(Ordering::SeqCst) {
-                return Err(PROCESS_CANCELLED_MESSAGE.to_string());
-            }
-            Ok(())
-        }
-
-        fn is_cancelled(&self) -> bool {
-            self.cancel.load(Ordering::SeqCst)
-        }
+    fn test_runtime(home: &Path) -> Runtime {
+        let lease_root = home.join("leases");
+        let catalog = Arc::new(HarnessCatalog::builtin());
+        let scope = RuntimeScope::fixture(home.to_path_buf());
+        let db_path = scope.history_root.join("events.sqlite3");
+        let ports: Ports =
+            skill_studio_host::default_ports_with_history(lease_root, catalog, db_path);
+        Runtime::new(&scope, ports).unwrap()
     }
 
     struct NeverFetch;
@@ -1184,63 +975,6 @@ mod tests {
     }
 
     #[test]
-    fn start_returns_before_blocked_runner_finishes() {
-        let state = AddSkillOperationState::default();
-        let gate = Arc::new((StdMutex::new(false), std::sync::Condvar::new()));
-        let cancel = Arc::new(AtomicBool::new(false));
-        let runner = BlockingRunner {
-            gate: Arc::clone(&gate),
-            cancel: Arc::clone(&cancel),
-            calls: StdMutex::new(0),
-        };
-        let queued = state
-            .begin(
-                "op-block".to_string(),
-                AddSkillOperationKind::Single(single_request(
-                    "getsentry/skills",
-                    "find-bugs",
-                    AddMethod::SkillsSh,
-                )),
-                None,
-            )
-            .unwrap();
-        assert_eq!(queued.phase, AddSkillOperationPhase::Queued);
-        assert_eq!(queued.sequence, 1);
-
-        let state_worker = state.clone();
-        let handle = thread::spawn(move || {
-            let tmp = tempfile::tempdir().unwrap();
-            run_operation_body(
-                &test_guard(tmp.path()),
-                None,
-                &state_worker,
-                "op-block",
-                tmp.path(),
-                &runner,
-                &NeverFetch,
-                &NeverLookup,
-            );
-        });
-
-        thread::sleep(Duration::from_millis(30));
-        let status = state.snapshot("op-block").unwrap();
-        assert!(
-            status.sequence >= 1,
-            "status should be readable while work is blocked"
-        );
-        assert!(!status.phase.is_terminal());
-
-        {
-            let (lock, cond) = &*gate;
-            *lock.lock().unwrap() = true;
-            cond.notify_all();
-        }
-        handle.join().unwrap();
-        let done = state.snapshot("op-block").unwrap();
-        assert!(done.sequence > status.sequence);
-    }
-
-    #[test]
     fn events_are_monotonic_and_status_catches_up() {
         let state = AddSkillOperationState::default();
         let queued = state
@@ -1269,6 +1003,11 @@ mod tests {
         assert!(next.sequence > queued.sequence);
     }
 
+    /// `run_operation_body`'s Dotagents path never even reaches `fetch`/
+    /// `lookup` before the trust check: `ops::install`'s own trust gate
+    /// (see `skill_install.rs`) runs before any filesystem or network work,
+    /// so `NeverFetch`/`NeverLookup` proves nothing was reached that
+    /// shouldn't have been.
     #[test]
     fn untrusted_kcd_skills_pauses_for_explicit_trust() {
         let tmp = tempfile::tempdir().unwrap();
@@ -1284,19 +1023,12 @@ mod tests {
                 None,
             )
             .unwrap();
-        struct PanicRunner;
-        impl CommandRunner for PanicRunner {
-            fn run(&self, _program: &str, _: &[String], _: Option<&Path>) -> Result<(), String> {
-                panic!("untrusted source must not run npx");
-            }
-        }
+        let rt = test_runtime(tmp.path());
         run_operation_body(
-            &test_guard(tmp.path()),
             None,
             &state,
             "op-trust",
-            tmp.path(),
-            &PanicRunner,
+            || Ok(rt),
             &NeverFetch,
             &NeverLookup,
         );
@@ -1331,19 +1063,12 @@ mod tests {
                 None,
             )
             .unwrap();
-        struct PanicRunner;
-        impl CommandRunner for PanicRunner {
-            fn run(&self, _program: &str, _: &[String], _: Option<&Path>) -> Result<(), String> {
-                panic!("untrusted source must not run npx");
-            }
-        }
+        let rt = test_runtime(tmp.path());
         run_operation_body(
-            &test_guard(tmp.path()),
             None,
             &state,
             "op-replay",
-            tmp.path(),
-            &PanicRunner,
+            || Ok(rt),
             &NeverFetch,
             &NeverLookup,
         );
@@ -1406,19 +1131,12 @@ mod tests {
                 None,
             )
             .unwrap();
-        struct PanicRunner;
-        impl CommandRunner for PanicRunner {
-            fn run(&self, _program: &str, _: &[String], _: Option<&Path>) -> Result<(), String> {
-                panic!("untrusted source must not run npx");
-            }
-        }
+        let rt = test_runtime(&home);
         run_operation_body(
-            &test_guard(&home),
             None,
             &state,
             "op-concurrent",
-            &home,
-            &PanicRunner,
+            || Ok(rt),
             &NeverFetch,
             &NeverLookup,
         );
@@ -1476,71 +1194,11 @@ mod tests {
             .contains("kentcdodds/kcd-skills"));
     }
 
-    #[test]
-    fn trusted_retry_uses_the_same_request() {
-        let tmp = tempfile::tempdir().unwrap();
-        let home = tmp.path();
-        fs::create_dir_all(home.join(".agents/skills")).unwrap();
-        super::super::skill_trust_policy::record_trusted_dotagents_source(
-            home,
-            "kentcdodds/kcd-skills",
-        )
-        .unwrap();
-        let state = AddSkillOperationState::default();
-        let request = single_request(
-            "kentcdodds/kcd-skills",
-            "visual-recap",
-            AddMethod::Dotagents,
-        );
-        state
-            .begin(
-                "op-retry".to_string(),
-                AddSkillOperationKind::Single(request),
-                Some("op-trust".to_string()),
-            )
-            .unwrap();
-        struct CreateRunner {
-            home: PathBuf,
-        }
-        impl CommandRunner for CreateRunner {
-            fn run(&self, _program: &str, _: &[String], _: Option<&Path>) -> Result<(), String> {
-                fs::create_dir_all(self.home.join(".agents/skills/visual-recap")).unwrap();
-                Ok(())
-            }
-        }
-        run_operation_body(
-            &test_guard(home),
-            None,
-            &state,
-            "op-retry",
-            home,
-            &CreateRunner {
-                home: home.to_path_buf(),
-            },
-            &NeverFetch,
-            &NeverLookup,
-        );
-        let status = state.snapshot("op-retry").unwrap();
-        assert_eq!(status.phase, AddSkillOperationPhase::Completed);
-        assert_eq!(status.retry_of.as_deref(), Some("op-trust"));
-        assert_eq!(status.result.as_ref().unwrap().name, "visual-recap");
-    }
-
-    #[test]
-    fn partial_batch_collects_affected_names() {
-        let before = BTreeMap::from([(PathBuf::from("/root/other"), "same".to_string())]);
-        let after = BTreeMap::from([
-            (PathBuf::from("/root/other"), "same".to_string()),
-            (PathBuf::from("/root/visual-recap"), "new".to_string()),
-        ]);
-        let verified = BTreeSet::from(["visual-recap".to_string()]);
-        let names = affected_skill_names(&before, &after, &verified);
-        assert_eq!(names, vec!["visual-recap".to_string()]);
-    }
-
+    /// Cancel is only checked once, before any work starts (see
+    /// `run_operation_body`'s own doc comment) - `build_runtime` panicking
+    /// if called proves this request never got that far.
     #[test]
     fn cancel_without_mutation_is_cancelled() {
-        let tmp = tempfile::tempdir().unwrap();
         let state = AddSkillOperationState::default();
         state
             .begin(
@@ -1554,22 +1212,11 @@ mod tests {
             )
             .unwrap();
         state.request_cancel("op-cancel").unwrap();
-        struct CancelRunner;
-        impl CommandRunner for CancelRunner {
-            fn run(&self, _program: &str, _: &[String], _: Option<&Path>) -> Result<(), String> {
-                Err(PROCESS_CANCELLED_MESSAGE.to_string())
-            }
-            fn is_cancelled(&self) -> bool {
-                true
-            }
-        }
         run_operation_body(
-            &test_guard(tmp.path()),
             None,
             &state,
             "op-cancel",
-            tmp.path(),
-            &CancelRunner,
+            || -> Result<Runtime, String> { panic!("build_runtime must not run once cancelled") },
             &NeverFetch,
             &NeverLookup,
         );
@@ -1579,182 +1226,6 @@ mod tests {
         );
     }
 
-    #[test]
-    fn timeout_without_mutation_is_timed_out() {
-        let tmp = tempfile::tempdir().unwrap();
-        let state = AddSkillOperationState::default();
-        state
-            .begin(
-                "op-timeout".to_string(),
-                AddSkillOperationKind::Single(single_request(
-                    "getsentry/skills",
-                    "find-bugs",
-                    AddMethod::SkillsSh,
-                )),
-                None,
-            )
-            .unwrap();
-        struct TimeoutRunner;
-        impl CommandRunner for TimeoutRunner {
-            fn run(&self, _program: &str, _: &[String], _: Option<&Path>) -> Result<(), String> {
-                Err(PROCESS_TIMED_OUT_MESSAGE.to_string())
-            }
-        }
-        run_operation_body(
-            &test_guard(tmp.path()),
-            None,
-            &state,
-            "op-timeout",
-            tmp.path(),
-            &TimeoutRunner,
-            &NeverFetch,
-            &NeverLookup,
-        );
-        assert_eq!(
-            state.snapshot("op-timeout").unwrap().phase,
-            AddSkillOperationPhase::TimedOut
-        );
-    }
-
-    #[test]
-    fn stored_operation_deadline_stops_copy_before_lookup_or_mutation() {
-        let tmp = tempfile::tempdir().unwrap();
-        let state = AddSkillOperationState::default();
-        state
-            .begin(
-                "op-stored-timeout".to_string(),
-                AddSkillOperationKind::Single(single_request(
-                    "owner/repo",
-                    "timed-out-copy",
-                    AddMethod::Copy,
-                )),
-                None,
-            )
-            .unwrap();
-        state
-            .lock()
-            .unwrap()
-            .records
-            .get_mut("op-stored-timeout")
-            .unwrap()
-            .deadline = Instant::now()
-            .checked_sub(Duration::from_millis(1))
-            .unwrap();
-
-        run_operation_body(
-            &test_guard(tmp.path()),
-            None,
-            &state,
-            "op-stored-timeout",
-            tmp.path(),
-            &BlockingRunner {
-                gate: Arc::new((StdMutex::new(true), std::sync::Condvar::new())),
-                cancel: Arc::new(AtomicBool::new(false)),
-                calls: StdMutex::new(0),
-            },
-            &NeverFetch,
-            &NeverLookup,
-        );
-        assert_eq!(
-            state.snapshot("op-stored-timeout").unwrap().phase,
-            AddSkillOperationPhase::TimedOut
-        );
-        assert!(!tmp.path().join(".agents/skills/timed-out-copy").exists());
-    }
-
-    #[test]
-    fn cancellation_after_committed_install_is_reported_completed() {
-        let tmp = tempfile::tempdir().unwrap();
-        let home = tmp.path();
-        let state = AddSkillOperationState::default();
-        state
-            .begin(
-                "op-mut".to_string(),
-                AddSkillOperationKind::Single(single_request(
-                    "getsentry/skills",
-                    "find-bugs",
-                    AddMethod::SkillsSh,
-                )),
-                None,
-            )
-            .unwrap();
-        struct InstallThenCancel {
-            home: PathBuf,
-            cancel: Arc<AtomicBool>,
-        }
-        impl CommandRunner for InstallThenCancel {
-            fn run(&self, _program: &str, _: &[String], _: Option<&Path>) -> Result<(), String> {
-                fs::create_dir_all(self.home.join(".agents/skills/find-bugs")).unwrap();
-                self.cancel.store(true, Ordering::SeqCst);
-                Ok(())
-            }
-        }
-        let cancel = state.cancel_flag("op-mut").unwrap();
-        run_operation_body(
-            &test_guard(home),
-            None,
-            &state,
-            "op-mut",
-            home,
-            &InstallThenCancel {
-                home: home.to_path_buf(),
-                cancel,
-            },
-            &NeverFetch,
-            &NeverLookup,
-        );
-        assert_eq!(
-            state.snapshot("op-mut").unwrap().phase,
-            AddSkillOperationPhase::Completed
-        );
-    }
-
-    #[test]
-    fn timeout_after_in_place_change_reports_partial_failure() {
-        let tmp = tempfile::tempdir().unwrap();
-        let home = tmp.path();
-        let skill_md = home.join(".agents/skills/find-bugs/SKILL.md");
-        fs::create_dir_all(skill_md.parent().unwrap()).unwrap();
-        fs::write(&skill_md, "before").unwrap();
-        let state = AddSkillOperationState::default();
-        state
-            .begin(
-                "op-in-place-timeout".to_string(),
-                AddSkillOperationKind::Single(single_request(
-                    "getsentry/skills",
-                    "find-bugs",
-                    AddMethod::SkillsSh,
-                )),
-                None,
-            )
-            .unwrap();
-        struct ChangeThenTimeout(PathBuf);
-        impl CommandRunner for ChangeThenTimeout {
-            fn run(&self, _program: &str, _: &[String], _: Option<&Path>) -> Result<(), String> {
-                fs::write(&self.0, "after").unwrap();
-                Err(PROCESS_TIMED_OUT_MESSAGE.to_string())
-            }
-        }
-
-        run_operation_body(
-            &test_guard(home),
-            None,
-            &state,
-            "op-in-place-timeout",
-            home,
-            &ChangeThenTimeout(skill_md),
-            &NeverFetch,
-            &NeverLookup,
-        );
-
-        let status = state.snapshot("op-in-place-timeout").unwrap();
-        assert_eq!(status.phase, AddSkillOperationPhase::Failed);
-        assert!(status
-            .error
-            .unwrap()
-            .contains("installation may be partial"));
-    }
-
     struct CountingFetch {
         downloads: StdMutex<usize>,
     }
@@ -1762,7 +1233,11 @@ mod tests {
     impl RepoSnapshot for FakeSnapshot {
         fn copy_dir(&self, _path: &str, into: &Path) -> Result<(), String> {
             fs::create_dir_all(into).unwrap();
-            fs::write(into.join("SKILL.md"), "body").unwrap();
+            fs::write(
+                into.join("SKILL.md"),
+                "---\nname: visual-recap\ndescription: test\n---\nBody.",
+            )
+            .unwrap();
             Ok(())
         }
     }
@@ -1815,19 +1290,12 @@ mod tests {
                 None,
             )
             .unwrap();
-        struct NoNpx;
-        impl CommandRunner for NoNpx {
-            fn run(&self, _program: &str, _: &[String], _: Option<&Path>) -> Result<(), String> {
-                panic!("copy must not run npx");
-            }
-        }
+        let rt = test_runtime(home);
         run_operation_body(
-            &test_guard(home),
             None,
             &state,
             "op-batch",
-            home,
-            &NoNpx,
+            || Ok(rt),
             &CountingFetch {
                 downloads: StdMutex::new(0),
             },
@@ -1843,91 +1311,6 @@ mod tests {
             .contains("already exists"));
         assert!(outcomes[1].result.is_some());
         assert!(home.join(".agents/skills/visual-recap/SKILL.md").exists());
-    }
-
-    #[test]
-    fn cancel_during_fake_fetch_cleans_stage_without_deployment_or_registry_mutation() {
-        struct BlockingFetch {
-            entered: Arc<Barrier>,
-        }
-        impl UpstreamFetch for BlockingFetch {
-            fn fetch_skill_dir(&self, _: &str, _: &str, _: &str, _: &Path) -> Result<(), String> {
-                panic!("controlled fetch must be used")
-            }
-
-            fn fetch_skill_dir_controlled(
-                &self,
-                _: &str,
-                _: &str,
-                _: &str,
-                into: &Path,
-                control: &AddOperationControl,
-            ) -> Result<(), String> {
-                fs::create_dir_all(into).unwrap();
-                fs::write(into.join("partial"), "partial").unwrap();
-                self.entered.wait();
-                loop {
-                    control.check_message()?;
-                    thread::sleep(Duration::from_millis(2));
-                }
-            }
-        }
-        struct NoNpx;
-        impl CommandRunner for NoNpx {
-            fn run(&self, _program: &str, _: &[String], _: Option<&Path>) -> Result<(), String> {
-                panic!("Copy must not run npx")
-            }
-        }
-
-        let tmp = tempfile::tempdir().unwrap();
-        let home = tmp.path().to_path_buf();
-        let state = AddSkillOperationState::default();
-        let mut request = single_request("owner/repo", "cancel-fetch", AddMethod::Copy);
-        request.source.git_ref = Some("abc123".to_string());
-        state
-            .begin(
-                "op-cancel-fetch".to_string(),
-                AddSkillOperationKind::Single(request),
-                None,
-            )
-            .unwrap();
-        let entered = Arc::new(Barrier::new(2));
-        let worker_state = state.clone();
-        let worker_entered = Arc::clone(&entered);
-        let worker_home = home.clone();
-        let worker = thread::spawn(move || {
-            run_operation_body(
-                &test_guard(&worker_home),
-                None,
-                &worker_state,
-                "op-cancel-fetch",
-                &worker_home,
-                &NoNpx,
-                &BlockingFetch {
-                    entered: worker_entered,
-                },
-                &NeverLookup,
-            );
-        });
-
-        entered.wait();
-        assert!(!home.join(".agents/skills/cancel-fetch").exists());
-        assert!(super::super::skill_fork_registry::read_fork_registry(&home)
-            .unwrap()
-            .copies
-            .is_empty());
-        state.request_cancel("op-cancel-fetch").unwrap();
-        worker.join().unwrap();
-
-        let status = state.snapshot("op-cancel-fetch").unwrap();
-        assert_eq!(status.phase, AddSkillOperationPhase::Cancelled);
-        let root = home.join(".agents/skills");
-        assert!(!root.join("cancel-fetch").exists());
-        assert!(fs::read_dir(root).unwrap().next().is_none());
-        assert!(super::super::skill_fork_registry::read_fork_registry(&home)
-            .unwrap()
-            .copies
-            .is_empty());
     }
 
     #[test]
