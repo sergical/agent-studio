@@ -10,10 +10,24 @@
 //! filesystem - `skill_studio_host::fs::RealFs` and
 //! `crate::testing::FixtureFs` are the two implementations, real disk and
 //! in-memory.
+//!
+//! [`stage`], [`swap`], [`link`], and [`write_file`] each take a
+//! [`crate::journal::PlanWriter`] and record their own step against it
+//! *before* their mutation runs, with the reversal data (the staged path's
+//! identity, the previous link target, the fsynced backup) computed and
+//! made durable first - see `docs/action-map/plan.md` unit 1.2. The
+//! `&PlanWriter` parameter is itself the guarantee that a caller cannot run
+//! one of these four without a plan step landing for it: there is no way to
+//! call `stage`, `swap`, `link`, or `write_file` without one in scope, and
+//! getting one in scope means a plan is already open. That is a
+//! compile-time property, not something a test needs to re-check by
+//! grepping call sites.
 
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 
+use crate::error::CoreError;
+use crate::journal::PlanWriter;
 use crate::ports::{FileKind, ScopeFs};
 
 /// What went wrong running an fsops primitive.
@@ -42,6 +56,15 @@ pub enum FsOpsError {
         /// The path that changed kind between `stage` and `swap`.
         path: PathBuf,
     },
+    /// [`link`] found something other than a symlink already at the target
+    /// path - a plain rename would silently replace and lose it, and
+    /// reversal only ever restores a previous link target, never a file's
+    /// bytes.
+    #[error("{path}: exists and is not a symlink; refusing to replace it")]
+    WouldReplaceFile {
+        /// The path `link` refused to write over.
+        path: PathBuf,
+    },
     /// [`write_file`] found the target had changed since the caller's
     /// [`read_stamp`].
     #[error("{path}: changed since it was read; the write was refused")]
@@ -58,6 +81,11 @@ pub enum FsOpsError {
         #[source]
         source: std::io::Error,
     },
+    /// The primitive's mutation itself succeeded, but recording the step
+    /// against the plan afterward failed - the mutation is real, but
+    /// unjournaled.
+    #[error("ran but was not journaled: {0}")]
+    Journal(#[source] CoreError),
 }
 
 impl FsOpsError {
@@ -93,7 +121,11 @@ impl<T> IoResultExt<T> for std::io::Result<T> {
 /// the same process never collide even when they land in the same second.
 static UNIQUE_COUNTER: AtomicU64 = AtomicU64::new(0);
 
-fn unique_suffix() -> String {
+/// Mints `<pid>-<counter>`. `journal.rs`'s `is_link_restore_temp_name`
+/// parses exactly this shape to recognise temp links a crashed restore left
+/// behind; change the format there too, or the sweep silently stops
+/// matching (its tests go red on a mismatch).
+pub(crate) fn unique_suffix() -> String {
     let n = UNIQUE_COUNTER.fetch_add(1, Ordering::Relaxed);
     format!("{}-{n}", std::process::id())
 }
@@ -269,10 +301,18 @@ impl Staged {
 /// folder itself, then up to the root - before returning. Nothing outside
 /// this call sees the folder yet: it sits under a name a scan never
 /// matches.
-pub fn stage(root: &Root, contents: &[(PathBuf, Vec<u8>)]) -> Result<Staged, FsOpsError> {
+pub fn stage(
+    root: &Root,
+    plan: &PlanWriter<'_>,
+    contents: &[(PathBuf, Vec<u8>)],
+) -> Result<Staged, FsOpsError> {
     root.revalidate()?;
     let tmp_name = PathBuf::from(format!(".skill-studio-stage-{}", unique_suffix()));
     let tmp_path = root.confine(&tmp_name)?;
+    // Recorded before anything is created: a crash here leaves nothing at
+    // `tmp_path` for reversal's `remove_tree` to remove, which is already
+    // its no-op case.
+    plan.record_stage(&tmp_path).map_err(FsOpsError::Journal)?;
     root.fs.fsops_create_dir(&tmp_path).fs_err(&tmp_path)?;
 
     let mut created_dirs = vec![tmp_path.clone()];
@@ -342,6 +382,7 @@ pub fn stage(root: &Root, contents: &[(PathBuf, Vec<u8>)]) -> Result<Staged, FsO
 /// otherwise catch: it does not follow a name's own leaf).
 pub fn swap(
     root: &Root,
+    plan: &PlanWriter<'_>,
     final_name: &Path,
     staged: &Staged,
     quarantine_dir: &Path,
@@ -349,9 +390,21 @@ pub fn swap(
     root.revalidate()?;
     let final_path = root.confine(final_name)?;
     let old_facts = root.fs.symlink_metadata(&final_path).ok();
+    // The identity the exchange will give `final_path` once it lands -
+    // captured now, before anything moves, so reversal can later tell
+    // whether the exchange landed without needing a second fake filesystem
+    // snapshot: a rename/exchange carries a directory's identity across the
+    // name change, so `final_path`'s device/inode equals this afterward iff
+    // the exchange ran.
+    let staged_binding = root
+        .fs
+        .fsops_device_inode(&staged.path)
+        .fs_err(&staged.path)?;
 
     match old_facts {
         None => {
+            plan.record_swap(&final_path, &staged.path, staged_binding, None)
+                .map_err(FsOpsError::Journal)?;
             root.fs
                 .fsops_rename(&staged.path, &final_path)
                 .fs_err(&final_path)?;
@@ -381,6 +434,17 @@ pub fn swap(
                 .unwrap_or("quarantined");
             let quarantine_target = quarantine_root.join(format!("{leaf}-{}", unique_suffix()));
 
+            // The quarantine path is chosen and recorded before the
+            // exchange runs: a crash between the exchange and the
+            // follow-up move into quarantine still leaves reversal knowing
+            // exactly where the old folder must have gone.
+            plan.record_swap(
+                &final_path,
+                &staged.path,
+                staged_binding,
+                Some(quarantine_target.clone()),
+            )
+            .map_err(FsOpsError::Journal)?;
             root.fs
                 .fsops_exchange(&staged.path, &final_path)
                 .fs_err(&final_path)?;
@@ -407,9 +471,25 @@ pub fn swap(
 /// Creates a symlink at `name` pointing at `target`, under a temp name
 /// first and then renamed into place, so the link only ever appears fully
 /// formed.
-pub fn link(root: &Root, name: &Path, target: &Path) -> Result<(), FsOpsError> {
+pub fn link(
+    root: &Root,
+    plan: &PlanWriter<'_>,
+    name: &Path,
+    target: &Path,
+) -> Result<(), FsOpsError> {
     root.revalidate()?;
     let link_path = root.confine(name)?;
+    let previous_target = match root.fs.symlink_metadata(&link_path) {
+        Ok(facts) if facts.kind == FileKind::Symlink => {
+            Some(root.fs.read_link(&link_path).fs_err(&link_path)?)
+        }
+        // A regular file (or anything else that isn't a symlink) at
+        // `link_path` would be silently replaced by the rename below and
+        // lost for good - reversal only ever restores a previous *link*
+        // target, never a file's bytes. Refuse instead of renaming over it.
+        Ok(_) => return Err(FsOpsError::WouldReplaceFile { path: link_path }),
+        Err(_) => None,
+    };
     let parent = link_path.parent().unwrap_or(root.path()).to_path_buf();
     let leaf = link_path
         .file_name()
@@ -417,6 +497,11 @@ pub fn link(root: &Root, name: &Path, target: &Path) -> Result<(), FsOpsError> {
         .unwrap_or("link");
     let tmp_path = parent.join(format!(".{leaf}-{}", unique_suffix()));
 
+    // Recorded before the rename that makes the new link visible, with the
+    // target it will point at so reversal can later tell whether that
+    // rename landed.
+    plan.record_link(&link_path, target, previous_target)
+        .map_err(FsOpsError::Journal)?;
     root.fs.fsops_symlink(target, &tmp_path).fs_err(&tmp_path)?;
     root.fs
         .fsops_rename(&tmp_path, &link_path)
@@ -467,13 +552,25 @@ fn sha256(bytes: &[u8]) -> [u8; 32] {
 /// what `bytes` should be.
 pub fn write_file(
     root: &Root,
+    plan: &PlanWriter<'_>,
     name: &Path,
     bytes: &[u8],
     expected: &ReadStamp,
 ) -> Result<(), FsOpsError> {
     root.revalidate()?;
     let target = root.confine(name)?;
-    let current = read_stamp(root.fs, &target)?;
+    // Captured once, up front: both this call's stale-read check and the
+    // journal backup below need the target's pre-write bytes, and reading
+    // twice would widen the race `expected` exists to catch.
+    let previous = if root.fs.symlink_metadata(&target).is_ok() {
+        Some(root.fs.read_capped(&target, u64::MAX).fs_err(&target)?)
+    } else {
+        None
+    };
+    let current = match &previous {
+        Some(bytes) => ReadStamp::Present(sha256(bytes)),
+        None => ReadStamp::Absent,
+    };
     if &current != expected {
         return Err(FsOpsError::StaleRead { path: target });
     }
@@ -485,6 +582,12 @@ pub fn write_file(
         .unwrap_or("write");
     let tmp_path = parent.join(format!(".{leaf}-{}.tmp", unique_suffix()));
 
+    // Recorded before the rename that puts the new bytes in place: when
+    // `previous` is `Some`, this fsyncs it into the plan's own backup store
+    // first, so a crash right after the rename below still has somewhere
+    // durable to restore from.
+    plan.record_write_file(&target, previous.as_deref())
+        .map_err(FsOpsError::Journal)?;
     root.fs
         .fsops_write_new_file(&tmp_path, bytes)
         .fs_err(&tmp_path)?;
