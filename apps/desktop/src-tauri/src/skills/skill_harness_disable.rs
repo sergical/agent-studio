@@ -1647,7 +1647,9 @@ mod tests {
     fn pi_disable_without_a_confirmed_exclusion_format_still_returns_the_named_refusal_or_names_the_silent_no_op(
     ) {
         let tmp = tempfile::tempdir().unwrap();
-        let err = set_harness_enabled_with(tmp.path(), "find-bugs", "pi", false, &[]).unwrap_err();
+        let data_root = tmp.path().join(".skill-studio");
+        let err = set_harness_enabled_with(tmp.path(), &data_root, "find-bugs", "pi", false, &[])
+            .unwrap_err();
         assert!(
             err.contains("pi has no per-skill disable"),
             "expected the named refusal, not a silent no-op: {err}"
