@@ -9,7 +9,7 @@ import type { CSSProperties, KeyboardEvent as ReactKeyboardEvent, ReactNode } fr
 import { Button, Collapsible, CollapsiblePanel } from "@skill-studio/ui";
 import { formatRelativeTime, formatTokens, shortSha } from "@skill-studio/lib";
 import type { HealthIssue, InstalledSkill, RecentlyUsedSkill } from "@skill-studio/lib";
-import { parkSkill, pullForkUpstream, updateSkill } from "../../lib/skill-api";
+import { parkSkill, pullForkUpstream, updateAllSkills, updateSkill } from "../../lib/skill-api";
 import { lifecycleTargetForPark, updateSkillOwners } from "../../lib/skill-lifecycle-target";
 import { useAppStore } from "../../store/appStore";
 import { GroupHead } from "../SkillList/GroupHead";
@@ -18,7 +18,14 @@ import { HarnessStack } from "../SkillList/HarnessStack";
 import { ROW_CLASS, RowGlyph, SkillNameCell } from "../SkillList/SkillRowCells";
 import { SkillLocationCell } from "../SkillList/SkillLocationCell";
 import { RichTooltipScope } from "../ui/RichTooltip";
-import { issueActionLabel, issueKey, MAX_ROWS_PER_GROUP, rowAt, skillKey } from "./home-inbox-data";
+import {
+  issueActionLabel,
+  issueKey,
+  MAX_ROWS_PER_GROUP,
+  rowAt,
+  skillKey,
+  updateAllOutdatedSkills,
+} from "./home-inbox-data";
 import type { GroupId, HomeFilter, HomeGroups, HomeRowPlan } from "./home-inbox-data";
 
 /** Home's row's glyph hit box - the same size Skills uses, so the two lists line up. */
@@ -527,33 +534,21 @@ function UpdatesGroup({
 
   const handleUpdateAll = async () => {
     setIsUpdatingAll(true);
-    let failures = 0;
-    let attempted = 0;
-    let succeeded = 0;
-    for (const skill of updates) {
-      try {
-        if (skill.source_kind === "fork") {
-          // react-doctor-disable-next-line react-doctor/async-await-in-loop -- update-all runs sequentially on purpose; concurrent `npx skills update` calls race on ~/.agents/.skill-lock.json
-          await pullForkUpstream(lifecycleTargetForPark(skill));
-          attempted += 1;
-          succeeded += 1;
-        } else {
-          // react-doctor-disable-next-line react-doctor/async-await-in-loop -- update-all runs sequentially on purpose; concurrent `npx skills update` calls race on ~/.agents/.skill-lock.json
-          const summary = await updateSkillOwners(skill, updateSkill);
-          attempted += summary.attempted;
-          succeeded += summary.succeeded;
-          failures += summary.failures.length;
-        }
-      } catch {
-        attempted += skill.source_kind === "fork" ? 1 : skill.update_owner_ids.length;
-        failures += 1;
-      }
-    }
+    // `updateAllOutdatedSkills` catches every `pullFork`/`updateAllOwners`
+    // rejection itself and folds it into `failures`, so this await never
+    // throws - a plain (React Compiler-friendly) sequence needs no
+    // try/finally to still always clear the loading flag.
+    const { attempted, succeeded, failures } = await updateAllOutdatedSkills(
+      updates,
+      pullForkUpstream,
+      updateAllSkills,
+    );
     addToast({
       type: failures > 0 ? "warning" : "success",
       title: `Updated ${succeeded} of ${attempted} deployment${attempted === 1 ? "" : "s"}`,
       message: failures > 0 ? `${failures} failed` : undefined,
     });
+    // react-doctor-disable-next-line react-doctor/no-loading-flag-reset-outside-finally -- the React Compiler rejects try/finally here (react-hooks-js/todo); `updateAllOutdatedSkills` never rejects, so this always runs
     setIsUpdatingAll(false);
   };
 

@@ -14,8 +14,9 @@
 //
 // The 6 h background loop (`spawn_update_check_loop`) is the only trigger for
 // a full check; there is no `check_skill_updates_now` command exposed to the
-// frontend. `check_now_for_owner` re-checks one skill after `update_skill`
-// succeeds, sharing the same "in progress" guard.
+// frontend. `update_skill`/`update_all_skills` instead call
+// `clear_owner_after_update` right after a successful `ops::update`, which
+// drops the owner's persisted state directly rather than re-running `gh api`.
 // ============================================================================
 
 use std::collections::{BTreeMap, HashMap, VecDeque};
@@ -217,6 +218,25 @@ pub fn has_update(state: &SkillUpdateState) -> bool {
     }
 }
 
+/// The legacy skill name `owner_id`'s name-keyed fallback would read from
+/// `legacy_skills`, or `None` when the fallback doesn't apply: accepted only
+/// for the sole matching Global owner, since Project owners never inherit
+/// records the old Global-only checker wrote. Shared by `state_for_owner`
+/// and `clear_owner_after_update` (N2, review round 3) so the write side
+/// can't rewrite an entry the read side would never have served.
+fn legacy_fallback_name(owner_id: &str, current_owner_ids: &[String]) -> Option<String> {
+    let parsed = super::skill_ownership::parse_owner_id(owner_id)?;
+    if parsed.scope != InstallScope::Global {
+        return None;
+    }
+    let matching = current_owner_ids
+        .iter()
+        .filter_map(|id| super::skill_ownership::parse_owner_id(id))
+        .filter(|candidate| candidate.name == parsed.name)
+        .count();
+    (matching == 1).then_some(parsed.name)
+}
+
 /// Resolve update state for one exact lifecycle owner. A legacy name-keyed
 /// state is accepted only for the sole matching Global owner; Project owners
 /// never inherit records written by the old Global-only checker.
@@ -228,18 +248,8 @@ pub fn state_for_owner<'a>(
     if let Some(state) = store.owners.get(owner_id) {
         return Some(state);
     }
-    let parsed = super::skill_ownership::parse_owner_id(owner_id)?;
-    if parsed.scope != InstallScope::Global {
-        return None;
-    }
-    let matching = current_owner_ids
-        .iter()
-        .filter_map(|id| super::skill_ownership::parse_owner_id(id))
-        .filter(|candidate| candidate.name == parsed.name)
-        .count();
-    (matching == 1)
-        .then(|| store.legacy_skills.get(&parsed.name))
-        .flatten()
+    let name = legacy_fallback_name(owner_id, current_owner_ids)?;
+    store.legacy_skills.get(&name)
 }
 
 /// Flatten `store` into the DTO the frontend reads off `SkillSnapshot`.
@@ -890,9 +900,9 @@ pub fn run_update_check_for_owners(
 }
 
 /// Resolve `gh`, then run the check for real - the production entry point
-/// both `spawn_update_check_loop` and `check_now_for_owner` call. When
-/// `gh` isn't installed, writes `gh_status: Missing` without doing any
-/// lookups (and without touching previously recorded skill states).
+/// `spawn_update_check_loop`'s `check_now` call reaches. When `gh` isn't
+/// installed, writes `gh_status: Missing` without doing any lookups (and
+/// without touching previously recorded skill states).
 fn run_update_check_now(
     home: &Path,
     project_paths: &[PathBuf],
@@ -924,8 +934,8 @@ fn run_update_check_now(
     }
 }
 
-/// Shared "a check is already running" guard, so the background loop and a
-/// per-owner `check_now_for_owner` call never run `gh api` concurrently.
+/// Shared "a check is already running" guard for the background loop's
+/// `check_now` call.
 #[derive(Clone, Default)]
 pub struct UpdateCheckState {
     in_progress: std::sync::Arc<Mutex<bool>>,
@@ -988,55 +998,49 @@ pub fn check_now(
     Ok(summarize(&store))
 }
 
-/// Re-check a single skill (after a successful `update_skill`) and request a
-/// rebuild. Best-effort: errors are logged, never propagated, since this
-/// runs after the update itself already succeeded. Shares `state`'s
-/// "in progress" guard with the background loop's `check_now`: if a full
-/// check is already running, this skips its own `gh api` calls entirely
-/// (rather than queuing behind it) and just requests a rebuild, since the
-/// full check it's yielding to will cover this skill anyway.
-pub fn check_now_for_owner(
-    app: &AppHandle,
-    state: &UpdateCheckState,
+/// Write the just-updated commit into `owner_id`'s persisted update-check
+/// state right after a successful `ops::update` (B1 - the review round 1
+/// fix that replaced the old `check_now_for_owner` re-check; B2 - review
+/// round 2's fix, which stopped removing the entry outright). Removing the
+/// entry (the round-1 shape) exposed `state_for_owner`'s legacy-name
+/// fallback: on a migrated v1 store whose background loop hasn't run
+/// against this owner yet, there is no `owners` entry to remove, so the
+/// fallback to `legacy_skills[skill_name]` kept serving the pre-update
+/// commit pair and the badge came back. Reads the existing state from
+/// `owners`, falling back to `legacy_skills` only when `legacy_fallback_name`
+/// says `state_for_owner` would have used it too (N2, review round 3 - the
+/// round-2 shape fell back on `skill_name` alone, so a Project owner with
+/// no `owners` entry could read a Global-scoped legacy record it never
+/// wrote), sets `installed_commit` to the already-recorded `latest_commit`
+/// (the value `has_update` compares it against, for both a Dotagents
+/// commit and a skills.sh tree hash), clears `error` (stale now that the
+/// update succeeded), and writes it into `owners[owner_id]` - migrating a
+/// legacy record forward so the next lookup finds it directly and the
+/// fallback never gets a chance to re-serve the stale pair. A no-op (not
+/// an error) when neither map has a record for this owner to update.
+pub fn clear_owner_after_update(
+    app_data: &Path,
     owner_id: &str,
-    project_paths: &[PathBuf],
-) {
-    if !state.try_begin() {
-        skill_refresh::request_snapshot_rebuild(app);
-        return;
+    current_owner_ids: &[String],
+) -> Result<(), String> {
+    let path = update_check_path(app_data);
+    let mut store = read_update_check_store_at(&path);
+    let existing = store.owners.get(owner_id).cloned().or_else(|| {
+        legacy_fallback_name(owner_id, current_owner_ids)
+            .and_then(|name| store.legacy_skills.get(&name).cloned())
+    });
+    if let Some(mut state) = existing {
+        state.installed_commit.clone_from(&state.latest_commit);
+        state.checked_at = Utc::now().to_rfc3339();
+        state.error = None;
+        store.owners.insert(owner_id.to_string(), state);
+        write_store(app_data, &store)?;
     }
-
-    let Some(home) = dirs::home_dir() else {
-        eprintln!("skill update check: could not find home directory");
-        state.end();
-        return;
-    };
-    let Ok(app_data) = app.path().app_data_dir() else {
-        eprintln!("skill update check: could not resolve app data dir");
-        state.end();
-        return;
-    };
-    let owner_ids = [owner_id.to_string()];
-    if let Some(gh_bin) = resolve_gh_binary() {
-        run_update_check_for_owners(
-            &home,
-            project_paths,
-            &app_data,
-            &GhCommitLookup {
-                gh_bin: gh_bin.clone(),
-            },
-            &GhTreeLookup { gh_bin },
-            &owner_ids,
-        );
-    } // else: gh_status stays whatever it already was; nothing to re-check
-    state.end();
-    skill_refresh::request_snapshot_rebuild(app);
+    Ok(())
 }
 
 /// Start the background loop on its own thread: waits `INITIAL_DELAY`, checks,
-/// sleeps `UPDATE_CHECK_INTERVAL`, repeats for the app's lifetime. Registers
-/// its `UpdateCheckState` as managed state so `check_now_for_owner` shares
-/// the same "in progress" guard.
+/// sleeps `UPDATE_CHECK_INTERVAL`, repeats for the app's lifetime.
 pub fn spawn_update_check_loop(app: AppHandle) {
     let state = UpdateCheckState::default();
     app.manage(state.clone());

@@ -13,7 +13,6 @@ use super::skill_deployment::{
 use super::skill_dto::{Deployment, InstallScope, InstalledSkill, LifecycleTarget};
 use super::skill_ownership::{parse_owner_id, LifecycleOwnerKind, OwnershipLedgers};
 use super::skill_refresh::{self, SkillRefreshState, SkillSnapshot};
-use skill_studio_core::dotagents_ledger::DotagentsSkill;
 
 /// A lifecycle target resolved from disk and ledgers while the caller holds
 /// the mutation lock. The snapshot is retained because owner adapters need
@@ -257,14 +256,6 @@ pub fn preview_owner_deployments(
     Ok(out)
 }
 
-pub fn skills_sh_update_args(name: &str, scope: InstallScope) -> Vec<String> {
-    let mut args = vec!["skills".to_string(), "update".to_string(), name.to_string()];
-    if scope == InstallScope::Global {
-        args.push("--global".to_string());
-    }
-    args
-}
-
 pub fn skills_sh_remove_args_for_scope(name: &str, scope: InstallScope) -> Vec<String> {
     let mut args = vec![
         "skills".to_string(),
@@ -276,48 +267,6 @@ pub fn skills_sh_remove_args_for_scope(name: &str, scope: InstallScope) -> Vec<S
         args.push("--global".to_string());
     }
     args
-}
-
-pub fn dotagents_update_args(
-    skill_name: &str,
-    entry: Option<&DotagentsSkill>,
-    latest_commit: Option<&str>,
-    scope: InstallScope,
-) -> Result<Vec<String>, String> {
-    let Some(entry) = entry else {
-        return Err(format!(
-            "Update is not available: {skill_name} is not in the matching agents.lock"
-        ));
-    };
-    if !entry.has_manifest_row {
-        return Err(format!(
-            "Update is not available: {skill_name} is a wildcard dotagents entry"
-        ));
-    }
-    let mut args = vec!["-y".to_string(), "@sentry/dotagents".to_string()];
-    if scope == InstallScope::Project {
-        args.push("--project".to_string());
-    }
-    args.extend([
-        "add".to_string(),
-        entry.source.clone(),
-        "--name".to_string(),
-        skill_name.to_string(),
-    ]);
-    if entry.declared_ref.is_some() {
-        match latest_commit {
-            Some(latest) => {
-                args.push("--ref".to_string());
-                args.push(latest.to_string());
-            }
-            None => {
-                return Err(format!(
-                    "Update is not available yet: run \"Check now\" to find {skill_name}'s latest commit first"
-                ));
-            }
-        }
-    }
-    Ok(args)
 }
 
 pub fn ledger_matching_deployment<'a>(
@@ -544,16 +493,6 @@ mod tests {
         d.owner_kind = LifecycleOwnerKind::SkillsSh;
         let err = require_direct_deployment_mutable(&d, "Update").unwrap_err();
         assert!(err.contains("read-only"));
-    }
-
-    #[test]
-    fn skills_sh_update_args_global_flag() {
-        assert!(
-            skills_sh_update_args("foo", InstallScope::Global).contains(&"--global".to_string())
-        );
-        assert!(
-            !skills_sh_update_args("foo", InstallScope::Project).contains(&"--global".to_string())
-        );
     }
 
     #[test]

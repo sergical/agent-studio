@@ -19,7 +19,6 @@ import type {
   DiscoverySourceSetting,
   ImportResult,
   InstallPreferences,
-  InstallResult,
   InstallScope,
   FixSkillOutcome,
   ForkRecord,
@@ -42,6 +41,8 @@ import type {
   SkillEvent,
   SkillSnapshot,
   TrackedProjects,
+  UpdateAllOutcome,
+  UpdateOutcome,
 } from "@skill-studio/lib";
 
 let ipcCallSeq = 0;
@@ -283,11 +284,32 @@ export async function removeSkill(target: LifecycleTarget): Promise<RemoveOutcom
 }
 
 /**
- * Update a skill through whichever CLI owns it (dotagents or skills.sh).
- * `result.tool`/`result.command` say what actually ran.
+ * Update a skill through whichever method owns it (dotagents or skills.sh -
+ * `build_update_request` routes every other owner, including Copy, to
+ * "Update is not available") - `skill_studio_core::ops::update` under the
+ * hood, off the UI thread. `updateSkillOwners` (skill-lifecycle-target.ts)
+ * reads only
+ * `success`/`error`; a thrown rejection (an `Err` from the command) is
+ * caught there too, so a `success: true` literal on the happy path is
+ * enough - no caller reads `UpdateOutcome`'s own fields.
  */
-export async function updateSkill(target: LifecycleTarget): Promise<InstallResult> {
-  return callCommand("update_skill", { target });
+export async function updateSkill(
+  target: LifecycleTarget,
+): Promise<{ success: boolean; error?: string | null }> {
+  await callCommand<UpdateOutcome>("update_skill", { target });
+  return { success: true };
+}
+
+/**
+ * Update every given owner in one backend call
+ * (`skill_studio_core::ops::update_all`, one `spawn_blocking` task for the
+ * whole batch) - one IPC round trip for the whole batch instead of one
+ * `updateSkill` call per owner. `HomeInboxGroups`'s "Update all" uses this
+ * for every non-fork owner target; forks still pull upstream one at a time
+ * through `pullForkUpstream`, since that CLI call has no batched form.
+ */
+export async function updateAllSkills(targets: LifecycleTarget[]): Promise<UpdateAllOutcome> {
+  return callCommand("update_all_skills", { targets });
 }
 
 /**

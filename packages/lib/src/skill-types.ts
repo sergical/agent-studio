@@ -78,6 +78,9 @@ export type {
   ProjectFolder,
   ProjectFolderSource,
   CommandHealth,
+  UpdateOutcome,
+  UpdateAllOutcome,
+  UpdateAllItem,
 } from "./skill-types.generated";
 
 import type { Deployment, InstalledSkill, SkillSearchResult } from "./skill-types.generated";

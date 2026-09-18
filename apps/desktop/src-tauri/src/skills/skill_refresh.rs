@@ -171,6 +171,27 @@ impl SkillRefreshState {
     }
 }
 
+#[cfg(test)]
+impl SkillRefreshState {
+    /// A state seeded with `snapshot` and otherwise-empty fields, for a test
+    /// that drives `patch_snapshot`/`patch_snapshot_and_emit` without a
+    /// running Tauri app - `init` needs a real `AppHandle` to resolve
+    /// `app_data_dir`, which a plain unit test doesn't have.
+    pub(crate) fn fixture(snapshot: SkillSnapshot) -> Self {
+        Self {
+            snapshot: Arc::new(RwLock::new(Some(snapshot))),
+            rebuild_lock: Arc::new(Mutex::new(())),
+            skills_dirty: Arc::new(AtomicBool::new(false)),
+            invocations_dirty: Arc::new(AtomicBool::new(false)),
+            invocation_index: Arc::new(Mutex::new(SkillInvocationIndex::default())),
+            last_built_hour: Arc::new(Mutex::new(None)),
+            cache_path: PathBuf::new(),
+            runs_root: PathBuf::new(),
+            update_check_path: PathBuf::new(),
+        }
+    }
+}
+
 /// The (UTC date, hour) `now` falls in, used to detect an hour boundary
 /// crossing between refresh-loop ticks.
 fn hour_key(now: DateTime<Utc>) -> (NaiveDate, u32) {
@@ -701,17 +722,15 @@ fn store_skill_snapshot(
     Ok(built)
 }
 
-/// Apply a surgical edit to the in-memory snapshot, emit it, and mark skills
-/// dirty so the background loop reconciles with disk within its next poll.
-/// Mutation commands whose disk change is small (one frontmatter rewrite, one
-/// symlink) use this instead of an inline `rebuild_snapshot_now`, which
-/// rescans every skill directory on the command thread and freezes the UI
-/// for however long that takes.
-pub fn patch_snapshot_and_emit(
-    app: &AppHandle,
+/// The locking-and-mutating half of `patch_snapshot_and_emit`, split out so a
+/// caller with no `AppHandle` (a background-thread post-op step, or a test)
+/// can drive the same in-memory edit and inspect the result before deciding
+/// whether to emit it. Returns `Ok(None)` when there was no snapshot yet to
+/// patch (the pending full build will pick up the change instead).
+pub fn patch_snapshot(
     state: &SkillRefreshState,
     patch: impl FnOnce(&mut SkillSnapshot),
-) -> Result<(), String> {
+) -> Result<Option<SkillSnapshot>, String> {
     let _guard = state
         .rebuild_lock
         .lock()
@@ -724,14 +743,33 @@ pub fn patch_snapshot_and_emit(
         let Some(snapshot) = guard.as_ref() else {
             // No snapshot yet - the pending full build will pick up the change.
             state.skills_dirty.store(true, Ordering::SeqCst);
-            return Ok(());
+            return Ok(None);
         };
         let mut built = snapshot.clone();
         patch(&mut built);
         built
     };
     state.skills_dirty.store(true, Ordering::SeqCst);
-    publish_skill_snapshot(app, state, built).map(|_| ())
+    store_skill_snapshot(state, built).map(Some)
+}
+
+/// Apply a surgical edit to the in-memory snapshot, emit it, and mark skills
+/// dirty so the background loop reconciles with disk within its next poll.
+/// Mutation commands whose disk change is small (one frontmatter rewrite, one
+/// symlink) use this instead of an inline `rebuild_snapshot_now`, which
+/// rescans every skill directory on the command thread and freezes the UI
+/// for however long that takes.
+pub fn patch_snapshot_and_emit(
+    app: &AppHandle,
+    state: &SkillRefreshState,
+    patch: impl FnOnce(&mut SkillSnapshot),
+) -> Result<(), String> {
+    let Some(built) = patch_snapshot(state, patch)? else {
+        return Ok(());
+    };
+    app.emit(SNAPSHOT_EVENT, &built)
+        .map_err(|e| format!("failed to emit {SNAPSHOT_EVENT}: {e}"))?;
+    Ok(())
 }
 
 /// Reconcile named skills at all configured global and project roots, replace
@@ -1282,7 +1320,13 @@ fn read_codex_allow_implicit_invocation(skill_dir: &Path) -> Option<bool> {
         .as_bool()
 }
 
-fn snapshot_owner_ids(skills: &[InstalledSkill]) -> Vec<String> {
+/// Every owner id any deployment in `skills` carries - the one definition of
+/// "current owner ids" `commands.rs` and this module both feed into
+/// `skill_update_check::state_for_owner`/`clear_owner_after_update`'s
+/// sole-Global-owner fallback, so the read and write predicates cannot
+/// drift out of sync with each other. `pub(super)` rather than private so
+/// `commands.rs` (the sibling module under `skills/`) can call it too.
+pub(super) fn snapshot_owner_ids(skills: &[InstalledSkill]) -> Vec<String> {
     skills
         .iter()
         .flat_map(|skill| skill.deployments.iter())
@@ -1335,7 +1379,11 @@ fn read_codex_disabled_skill_md_paths(home: &Path) -> Vec<PathBuf> {
 
 /// Recompute registry, update, disable, and invocation fields on freshly
 /// assembled skills. Both full and targeted discovery use this same path.
-fn apply_skill_snapshot_overlays(
+/// `pub(crate)` (rather than private) so a `commands.rs` test can rebuild
+/// overlays from a fixture `UpdateCheckStore` and assert `has_update` stays
+/// off after `clear_outdated_state` - B2's "stays off after a full rebuild"
+/// half, without spinning up a real scan.
+pub(crate) fn apply_skill_snapshot_overlays(
     home: &Path,
     skills: &mut [InstalledSkill],
     fork_registry: &super::skill_fork_registry::ForkRegistry,

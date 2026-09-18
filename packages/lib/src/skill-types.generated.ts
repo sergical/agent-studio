@@ -1325,3 +1325,60 @@ export interface RemoveOutcome {
    */
   quarantine_path: string | null;
 }
+/**
+ * Result of `update`.
+ */
+export interface UpdateOutcome {
+  /**
+   * The `update` event.
+   */
+  event_id: string;
+  /**
+   * The skill that was updated.
+   */
+  skill: string;
+  /**
+   * Where its canonical folder lives.
+   */
+  deployment_path: string;
+  /**
+   * The tree's git tree SHA before this update.
+   */
+  tree_hash_before: string;
+  /**
+   * The tree's git tree SHA after this update.
+   */
+  tree_hash_after: string;
+}
+/**
+ * Result of `update_all`: one [`UpdateAllItem`] per requested skill, in the
+ * order each one finished (not the order requested), plus the message for
+ * any that failed.
+ */
+export interface UpdateAllOutcome {
+  /**
+   * One entry per skill `update_all` was asked to refresh.
+   */
+  items: UpdateAllItem[];
+  /**
+   * `skill.0` -> error message, for every item whose `outcome` is `None`.
+   */
+  errors: {
+    [k: string]: string;
+  };
+}
+/**
+ * One skill's result inside an `update_all` batch.
+ */
+export interface UpdateAllItem {
+  /**
+   * The skill this result is for.
+   */
+  skill: string;
+  /**
+   * `Some` on success, `None` when this skill's update failed - the
+   * failure's message is the matching entry in
+   * [`UpdateAllOutcome::errors`].
+   */
+  outcome: UpdateOutcome | null;
+}
