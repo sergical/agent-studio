@@ -97,6 +97,11 @@ pub enum Operation {
     Unpark,
     /// Phase 3: flip a skill's native per-harness switch.
     SetHarnessEnabled,
+    /// Group 3: run the doctor invariants for one skill and repair whatever
+    /// it can.
+    FixSkill,
+    /// Group 3: find differing copies of a skill without merging them.
+    DiagnoseConflict,
 }
 
 /// Outcome status of one call.
@@ -192,6 +197,26 @@ impl Outcome for UnparkOutcome {
 impl Outcome for SetHarnessEnabledOutcome {
     fn event_id(&self) -> Option<EventId> {
         Some(self.event_id.clone())
+    }
+}
+impl Outcome for crate::dto::FixSkillOutcome {
+    fn found_issues(&self) -> bool {
+        !self.unrepaired.is_empty() || !self.conflicts.is_empty()
+    }
+
+    fn event_id(&self) -> Option<EventId> {
+        // A fix can apply several repairs, each its own event; the envelope
+        // names only the last one it wrote, matching the "what this call
+        // itself created" convention every other outcome follows.
+        self.applied.iter().rev().find_map(|applied| match applied {
+            crate::dto::FixApplied::FrontmatterRepair { event_id, .. } => Some(event_id.clone()),
+            crate::dto::FixApplied::QuarantinePruned { .. } => None,
+        })
+    }
+}
+impl Outcome for crate::dto::ConflictReport {
+    fn found_issues(&self) -> bool {
+        !self.conflicts.is_empty()
     }
 }
 
@@ -2955,6 +2980,195 @@ pub fn diagnose(rt: &Runtime, ctx: &OpContext, req: &ScanRequest) -> Result<Diag
         vec![scan_step, derive_step],
     ));
     Ok(Diagnosis { inventory, issues })
+}
+
+/// Reuses [`diagnose`] to find every skill with more than one `Canonical` or
+/// `Independent` deployment whose `content_hash` differs from another's:
+/// two copies of one skill that hold different bytes. Never merges and
+/// writes nothing - the caller opens both paths in the user's editor side
+/// by side, the same way `git` opens a merge conflict.
+///
+/// Preconditions: shared lease (through [`diagnose`]'s [`scan`]).
+pub fn diagnose_conflict(
+    rt: &Runtime,
+    ctx: &OpContext,
+    _req: &crate::dto::DiagnoseConflictRequest,
+) -> Result<crate::dto::ConflictReport, CoreError> {
+    let diagnosis = diagnose(rt, ctx, &ScanRequest::default())?;
+    let mut conflicts = Vec::new();
+    for skill in &diagnosis.inventory.skills {
+        let copies: Vec<&DeploymentDto> = skill
+            .deployments
+            .iter()
+            .filter(|d| {
+                matches!(
+                    d.backing,
+                    BackingRelationship::Canonical | BackingRelationship::Independent
+                )
+            })
+            .collect();
+        for i in 0..copies.len() {
+            for j in (i + 1)..copies.len() {
+                let (a, b) = (copies[i], copies[j]);
+                if a.content_hash != b.content_hash {
+                    conflicts.push(crate::dto::ConflictSummary {
+                        skill: skill.name.clone(),
+                        message: format!(
+                            "{} and {} hold different bytes for `{}`",
+                            a.path.display(),
+                            b.path.display(),
+                            skill.name.0
+                        ),
+                        path_a: a.path.clone(),
+                        path_b: b.path.clone(),
+                    });
+                }
+            }
+        }
+    }
+    Ok(crate::dto::ConflictReport { conflicts })
+}
+
+/// Runs the doctor invariants from `docs/action-map/lifecycle-states.md`
+/// for one skill and applies whichever repair exists.
+///
+/// A [`IssueKind::RepairableFrontmatter`] issue is repaired the same way
+/// [`preview_frontmatter_repair`]/[`apply_frontmatter_repair`] would (this
+/// is the dispatch those two entry points gain, per the migration
+/// mapping); a quarantine-over-cap violation ([`crate::doctor`] invariant
+/// 5) is pruned. Every other issue - a dangling link
+/// ([`IssueKind::BrokenLink`], repaired by the desktop's journaled
+/// `repair_skill_link`, not duplicated here), a stale registry or lockfile
+/// entry (invariants 2 and 3, detect-only - see [`crate::doctor`]'s module
+/// doc comment for why), a folder in two states at once (invariant 4), or
+/// anything [`diagnose`] flags with no known repair - is returned unfixed,
+/// named with its path. Conflicts ([`diagnose_conflict`]) are reported
+/// alongside, never written.
+///
+/// Preconditions: none beyond what the sub-operations this composes need;
+/// each runs its own lease.
+pub fn fix_skill(
+    rt: &Runtime,
+    ctx: &OpContext,
+    req: &crate::dto::FixSkillRequest,
+) -> Result<crate::dto::FixSkillOutcome, CoreError> {
+    use crate::dto::{FixApplied, UnrepairedIssue};
+
+    ctx.checkpoint()?;
+    let diagnosis = diagnose(
+        rt,
+        ctx,
+        &ScanRequest {
+            skills: vec![req.skill.clone()],
+            timings: false,
+        },
+    );
+    ctx.take_timing();
+    let diagnosis = diagnosis?;
+
+    let mut applied = Vec::new();
+    let mut unrepaired = Vec::new();
+
+    for issue in diagnosis
+        .issues
+        .iter()
+        .filter(|issue| issue.skill == req.skill)
+    {
+        let NextAction::PreviewRepair { deployment_id } = &issue.next_action else {
+            unrepaired.push(UnrepairedIssue {
+                path: PathBuf::new(),
+                message: issue.message.clone(),
+            });
+            continue;
+        };
+        let preview = preview_frontmatter_repair(
+            rt,
+            ctx,
+            &RepairPreviewRequest {
+                deployment_id: deployment_id.clone(),
+            },
+        );
+        ctx.take_timing();
+        let preview = match preview {
+            Ok(preview) => preview,
+            Err(error) => {
+                unrepaired.push(UnrepairedIssue {
+                    path: PathBuf::new(),
+                    message: error.message,
+                });
+                continue;
+            }
+        };
+        let outcome = apply_frontmatter_repair(
+            rt,
+            ctx,
+            &RepairApplyRequest {
+                preview: preview.clone(),
+                mode: RepairApplyMode::ApplyFix,
+            },
+        );
+        ctx.take_timing();
+        match outcome {
+            Ok(RepairOutcome::Applied {
+                event_id,
+                deployment_id,
+            }) => applied.push(FixApplied::FrontmatterRepair {
+                deployment_id,
+                event_id,
+            }),
+            Ok(RepairOutcome::AlreadyApplied { .. }) => {}
+            Err(error) => unrepaired.push(UnrepairedIssue {
+                path: preview.path.clone(),
+                message: error.message,
+            }),
+        }
+    }
+
+    let fs = rt.ports.fs.as_ref();
+    let home = &rt.scope.home.lexical;
+    for violation in crate::doctor::check_registry_entry_has_folder(fs, home)
+        .into_iter()
+        .chain(crate::doctor::check_lockfile_entry_has_folder(fs, home))
+        .chain(crate::doctor::check_no_folder_in_two_states(
+            fs,
+            home,
+            std::slice::from_ref(&req.skill),
+        ))
+        .filter(|violation| violation.skill.as_ref() == Some(&req.skill))
+    {
+        unrepaired.push(UnrepairedIssue {
+            path: violation.path,
+            message: violation.message,
+        });
+    }
+    if let Some(violation) = crate::doctor::check_quarantine_within_cap(fs, home)
+        .into_iter()
+        .next()
+    {
+        match crate::doctor::repair_quarantine_within_cap(fs, home) {
+            Ok(removed) if removed > 0 => applied.push(FixApplied::QuarantinePruned {
+                removed: removed as u32,
+            }),
+            _ => unrepaired.push(UnrepairedIssue {
+                path: violation.path,
+                message: violation.message,
+            }),
+        }
+    }
+
+    let conflicts = diagnose_conflict(rt, ctx, &crate::dto::DiagnoseConflictRequest::default())?
+        .conflicts
+        .into_iter()
+        .filter(|conflict| conflict.skill == req.skill)
+        .collect();
+    ctx.take_timing();
+
+    Ok(crate::dto::FixSkillOutcome {
+        skill: req.skill.clone(),
+        applied,
+        unrepaired,
+        conflicts,
+    })
 }
 
 /// Runs `scan` and checks every deployment's currency against its install
