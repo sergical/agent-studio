@@ -7,7 +7,7 @@ use serde::Serialize;
 use skill_studio_core::dto::{
     CommandHealth, ConflictReport, Diagnosis, EventDto, FixApplied, FixSkillOutcome,
     FrontmatterRepairPreview, Inventory, RemoveOutcome, RepairOutcome, RestoreOutcome, ScanRequest,
-    SetHarnessEnabledOutcome,
+    SetHarnessEnabledOutcome, UpdateAllOutcome, UpdateOutcome,
 };
 use skill_studio_core::harness::{Capabilities, HarnessReport};
 use skill_studio_core::ops::ResultEnvelope;
@@ -265,6 +265,42 @@ pub fn print_restore_outcome_table(envelope: &ResultEnvelope<RestoreOutcome>) {
     }
 }
 
+/// Prints `update`'s table: the deployment refreshed and its tree hash
+/// before and after.
+pub fn print_update_outcome_table(envelope: &ResultEnvelope<UpdateOutcome>) {
+    print_errors(envelope);
+    let Some(outcome) = &envelope.data else {
+        return;
+    };
+    println!(
+        "updated {} (event {}): {} -> {}",
+        outcome.skill.0, outcome.event_id.0, outcome.tree_hash_before, outcome.tree_hash_after
+    );
+}
+
+/// Prints `update`'s batch table: one line per skill, `outcome` when it
+/// succeeded, the matching `errors` entry when it did not.
+pub fn print_update_all_outcome_table(envelope: &ResultEnvelope<UpdateAllOutcome>) {
+    print_errors(envelope);
+    let Some(outcome) = &envelope.data else {
+        return;
+    };
+    for item in &outcome.items {
+        if let Some(o) = &item.outcome {
+            println!(
+                "updated {} (event {}): {} -> {}",
+                item.skill.0, o.event_id.0, o.tree_hash_before, o.tree_hash_after
+            );
+        } else {
+            let message = outcome
+                .errors
+                .get(&item.skill.0)
+                .map_or("unknown error", String::as_str);
+            println!("failed to update {}: {}", item.skill.0, message);
+        }
+    }
+}
+
 /// Prints `set-harness-enabled`'s table: how many of the harness's paths
 /// for this skill were toggled, out of how many it needed to touch.
 pub fn print_set_harness_enabled_outcome_table(
@@ -372,6 +408,16 @@ pub fn write_schemas(out: Option<PathBuf>) -> ExitCode {
             schemars::schema_for!(skill_studio_core::dto::RemoveRequest)
         }),
         ("remove_outcome", || schemars::schema_for!(RemoveOutcome)),
+        ("update_request", || {
+            schemars::schema_for!(skill_studio_core::dto::UpdateRequest)
+        }),
+        ("update_outcome", || schemars::schema_for!(UpdateOutcome)),
+        ("update_all_request", || {
+            schemars::schema_for!(skill_studio_core::dto::UpdateAllRequest)
+        }),
+        ("update_all_outcome", || {
+            schemars::schema_for!(UpdateAllOutcome)
+        }),
     ];
     for (name, build) in schemas {
         let schema = build();

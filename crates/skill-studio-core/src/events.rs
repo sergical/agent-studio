@@ -10,7 +10,7 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
 use crate::dto::{DriftState, EventDto, RestoreCapability};
-use crate::error::{CoreError, ErrorCode};
+use crate::error::CoreError;
 use crate::identity::{AgentId, EventId, Fingerprint, SkillName};
 use crate::ports::{CoreNotice, EventSink, ExclusiveGuard, FileKind, HistoryStore, ScopeFs};
 
@@ -386,9 +386,12 @@ pub fn recover_interrupted(
 /// fingerprint computed by any of the three matches for identical content.
 /// Returns `None` for a path that does not exist.
 ///
-/// Only files and symlinks are handled: PR5's only writer
-/// (`apply_frontmatter_repair`) ever fingerprints `SKILL.md`, a regular
-/// file, so a directory is out of scope here.
+/// A directory recurses depth-first over [`ScopeFs::read_dir`], entries
+/// sorted by name, framed as `'D'` + a length-prefixed `(name, child hash)`
+/// pair per entry - the same recursive scheme as host's `hash_entry`, so a
+/// directory backed up there (`ops::update`'s `backup_paths` call) and one
+/// fingerprinted here for a live drift check produce the same hash for the
+/// same tree.
 pub(crate) fn fingerprint_path(
     fs: &dyn ScopeFs,
     path: &Path,
@@ -398,7 +401,18 @@ pub(crate) fn fingerprint_path(
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
         Err(e) => return Err(CoreError::io(path, e)),
     };
-    let buf = match meta.kind {
+    fingerprint_entry(fs, path, meta.kind).map(Some)
+}
+
+/// One entry of [`fingerprint_path`]'s recursion; `kind` is the caller's
+/// already-known [`FileKind`] so a directory's children are not re-stat'd
+/// beyond the [`ScopeFs::read_dir`] call that named them.
+fn fingerprint_entry(
+    fs: &dyn ScopeFs,
+    path: &Path,
+    kind: FileKind,
+) -> Result<Fingerprint, CoreError> {
+    let buf = match kind {
         FileKind::Symlink => {
             let target = fs.read_link(path).map_err(|e| CoreError::io(path, e))?;
             let mut buf = vec![b'L'];
@@ -406,11 +420,20 @@ pub(crate) fn fingerprint_path(
             buf
         }
         FileKind::Dir => {
-            return Err(CoreError::new(
-                ErrorCode::Unsupported,
-                "fingerprint_path does not support directories",
-            )
-            .at(path));
+            let mut entries = fs.read_dir(path).map_err(|e| CoreError::io(path, e))?;
+            entries.sort_by(|a, b| a.name.cmp(&b.name));
+            let mut buf = vec![b'D'];
+            for entry in entries {
+                let child_path = path.join(&entry.name);
+                let child = fingerprint_entry(fs, &child_path, entry.kind)?;
+                let name_bytes = entry.name.as_bytes();
+                buf.extend_from_slice(&(name_bytes.len() as u64).to_le_bytes());
+                buf.extend_from_slice(name_bytes);
+                let child_hex = child.bare_hex();
+                buf.extend_from_slice(&(child_hex.len() as u64).to_le_bytes());
+                buf.extend_from_slice(child_hex.as_bytes());
+            }
+            buf
         }
         FileKind::File | FileKind::Other => {
             let bytes = fs
@@ -423,7 +446,7 @@ pub(crate) fn fingerprint_path(
             buf
         }
     };
-    Ok(Some(Fingerprint::of_bytes(&buf)))
+    Ok(Fingerprint::of_bytes(&buf))
 }
 
 /// Builds the `restore_backup` inverse payload PR5's writer records:

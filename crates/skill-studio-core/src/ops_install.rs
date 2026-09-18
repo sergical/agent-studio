@@ -85,7 +85,7 @@ pub(crate) fn journal_root(home: &Path) -> PathBuf {
 /// reaches the home tree. `confine`'s own canonicalize needs its immediate
 /// parent to already exist, so this brings `<home>/.agents` up first, one
 /// level at a time, before confining the journal root itself.
-fn ensure_journal_root(
+pub(crate) fn ensure_journal_root(
     rt: &Runtime,
     guard: &ExclusiveGuard,
     fs: &dyn ScopeFs,
@@ -105,7 +105,7 @@ fn ensure_journal_root(
 /// `crate::ownership::skill_studio_json_path`, but only ever addressed
 /// relative to the scope this op targets (home or one project), never the
 /// scope home unconditionally the way ownership classification reads it.
-fn registry_path(scope_root: &Path) -> PathBuf {
+pub(crate) fn registry_path(scope_root: &Path) -> PathBuf {
     scope_root.join(".agents").join("skill-studio.json")
 }
 
@@ -243,7 +243,7 @@ fn record_trusted(document: &mut serde_json::Map<String, serde_json::Value>, ide
     );
 }
 
-fn method_wire_name(method: InstallMethod) -> &'static str {
+pub(crate) fn method_wire_name(method: InstallMethod) -> &'static str {
     match method {
         InstallMethod::Copy => "copy",
         InstallMethod::Dotagents => "dotagents",
@@ -265,7 +265,11 @@ fn method_from_wire_name(name: &str) -> Option<InstallMethod> {
 /// via `ops::deployment_id` - `slot` and `destination` are always `universal`
 /// for a `Copy` install, since this op only ever writes the shared universal
 /// root (see the module doc, "Linking").
-fn copy_deployment_id(scope: &RootScope, skill: &SkillName, destination: &Path) -> String {
+pub(crate) fn copy_deployment_id(
+    scope: &RootScope,
+    skill: &SkillName,
+    destination: &Path,
+) -> String {
     let scope_label = crate::ops::scope_label(scope);
     let project_path = match scope {
         RootScope::Global => None,

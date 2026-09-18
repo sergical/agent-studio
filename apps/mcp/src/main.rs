@@ -30,7 +30,7 @@ use rmcp::{tool, tool_handler, tool_router, RoleServer, ServerHandler, ServiceEx
 use skill_studio_core::dto::{
     CapabilitiesRequest, DiagnoseConflictRequest, FixSkillRequest, HarnessesRequest,
     ListEventsRequest, RemoveRequest, RepairApplyRequest, RepairPreviewRequest, RestoreRequest,
-    ScanRequest,
+    ScanRequest, UpdateAllRequest, UpdateRequest,
 };
 use skill_studio_core::harness::HarnessCatalog;
 use skill_studio_core::identity::CorrelationId;
@@ -297,6 +297,32 @@ impl SkillStudioServer {
     ) -> CallToolResult {
         run_op(Operation::Remove, true, &context, |rt, ctx| {
             ops::remove(rt, ctx, &req)
+        })
+        .await
+    }
+
+    #[tool(description = "Refresh one already-installed skill in place.")]
+    async fn update(
+        &self,
+        Parameters(req): Parameters<UpdateRequest>,
+        context: RequestContext<RoleServer>,
+    ) -> CallToolResult {
+        run_op(Operation::Update, true, &context, |rt, ctx| {
+            ops::update(rt, ctx, &req)
+        })
+        .await
+    }
+
+    #[tool(
+        description = "Refresh a batch of already-installed skills in place, each its own journal entry."
+    )]
+    async fn update_all(
+        &self,
+        Parameters(req): Parameters<UpdateAllRequest>,
+        context: RequestContext<RoleServer>,
+    ) -> CallToolResult {
+        run_op(Operation::UpdateAll, true, &context, |rt, ctx| {
+            Ok(ops::update_all(rt, ctx, &req.requests, |_, _| {}))
         })
         .await
     }
