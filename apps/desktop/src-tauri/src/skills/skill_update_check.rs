@@ -22,7 +22,7 @@ use std::collections::{BTreeMap, HashMap, VecDeque};
 use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex, OnceLock};
 use std::time::Duration;
 
 use chrono::Utc;
@@ -389,28 +389,34 @@ pub trait TreeLookup: Sync {
     fn tree_shas_at_head_uncached(&self, repo: &str) -> Result<HashMap<String, String>, String>;
 }
 
-/// Per-run cache of `TreeLookup` results, keyed by repo.
-type TreeCache = Mutex<HashMap<String, Result<HashMap<String, String>, String>>>;
+/// Per-run cache of `TreeLookup` results, keyed by repo. Each repo gets its
+/// own `OnceLock` so two different repos' `gh api` calls run in parallel;
+/// only two threads racing the *same* repo serialize, on that repo's cell.
+type TreeCache = Mutex<HashMap<String, Arc<OnceLock<Result<HashMap<String, String>, String>>>>>;
 
 /// Looks up `repo`'s tree, reusing an already-cached result (or error) for
-/// this run instead of calling `gh` again. Holds `cache`'s lock across the
-/// network call itself, not just the cache read: two worker threads racing
-/// the same uncached repo must not both call `gh api`, since that would
-/// defeat the "one call per repo" guarantee this function exists for.
+/// this run instead of calling `gh` again. The outer `cache` lock is held
+/// only long enough to fetch-or-create `repo`'s cell, not across the network
+/// call - so a worker checking a different repo never waits on this one's
+/// `gh api` round trip. Two worker threads racing the same uncached repo
+/// still make exactly one call: `OnceLock::get_or_init` blocks the second
+/// caller on the first's initialization instead of both running it.
 fn tree_shas_cached(
     tree_lookup: &dyn TreeLookup,
     cache: &TreeCache,
     repo: &str,
 ) -> Result<HashMap<String, String>, String> {
-    let mut guard = cache
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner);
-    if let Some(cached) = guard.get(repo) {
-        return cached.clone();
-    }
-    let result = tree_lookup.tree_shas_at_head_uncached(repo);
-    guard.insert(repo.to_string(), result.clone());
-    result
+    let cell = {
+        let mut guard = cache
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        guard
+            .entry(repo.to_string())
+            .or_insert_with(|| Arc::new(OnceLock::new()))
+            .clone()
+    };
+    cell.get_or_init(|| tree_lookup.tree_shas_at_head_uncached(repo))
+        .clone()
 }
 
 /// Real `TreeLookup` backed by the `gh` CLI, over the same
