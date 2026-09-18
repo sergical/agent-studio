@@ -32,9 +32,10 @@ use rmcp::service::RequestContext;
 use rmcp::{tool, tool_handler, tool_router, RoleServer, ServerHandler};
 use skill_studio_core::dto::{
     CapabilitiesRequest, DiagnoseConflictRequest, FixSkillRequest, HarnessesRequest,
-    InstallRequest, ListEventsRequest, ParkRequest, RemoveRequest, RepairApplyRequest,
-    RepairPreviewRequest, RestoreRequest, ScanRequest, SetHarnessEnabledRequest,
-    SweepQuarantineRequest, UnparkRequest, UpdateAllRequest, UpdateRequest,
+    InstallPreferencesRequest, InstallRequest, ListEventsRequest, ParkRequest, RemoveRequest,
+    RepairApplyRequest, RepairPreviewRequest, RestoreRequest, ScanRequest,
+    SetHarnessEnabledRequest, SweepQuarantineRequest, UnparkRequest, UpdateAllRequest,
+    UpdateRequest,
 };
 use skill_studio_core::harness::HarnessCatalog;
 use skill_studio_core::identity::CorrelationId;
@@ -416,6 +417,20 @@ impl SkillStudioServer {
                 ));
             }
             ops::install(rt, ctx, &req)
+        })
+        .await
+    }
+
+    #[tool(
+        description = "Report the install method and harnesses the next add pre-selects: the last install's saved preference for that scope, or the environment default when nothing has been saved yet."
+    )]
+    async fn install_preferences(
+        &self,
+        Parameters(req): Parameters<InstallPreferencesRequest>,
+        context: RequestContext<RoleServer>,
+    ) -> CallToolResult {
+        run_op(Operation::InstallPreferences, false, &context, |rt, ctx| {
+            ops::install_preferences(rt, ctx, &req.scope)
         })
         .await
     }

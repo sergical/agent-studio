@@ -23,9 +23,9 @@ use std::sync::Arc;
 
 use clap::{Parser, Subcommand};
 use skill_studio_core::dto::{
-    CapabilitiesRequest, HarnessesRequest, InstallFile, InstallMethod, InstallRequest, Inventory,
-    ListEventsRequest, ParkRequest, RepairApplyMode, RepairApplyRequest, RepairPreviewRequest,
-    RestoreRequest, ScanRequest, UnparkRequest, UpdateRequest,
+    CapabilitiesRequest, HarnessesRequest, InstallFile, InstallMethod, InstallPreferencesRequest,
+    InstallRequest, Inventory, ListEventsRequest, ParkRequest, RepairApplyMode, RepairApplyRequest,
+    RepairPreviewRequest, RestoreRequest, ScanRequest, UnparkRequest, UpdateRequest,
 };
 use skill_studio_core::harness::HarnessCatalog;
 use skill_studio_core::health::{self, Outcome, TimingRow};
@@ -266,6 +266,20 @@ enum Command {
         #[arg(long)]
         json: bool,
     },
+    /// Print the method and harnesses the next `add` pre-selects: the last
+    /// install's saved preference, or the environment default when nothing
+    /// has been saved for this scope yet.
+    InstallPreferences {
+        #[command(flatten)]
+        scope: ScopeArgs,
+        /// Project whose preference to read; omit for the scope home's.
+        /// Named `--project-path` for the same reason `add`'s flag is:
+        /// `ScopeArgs` already flattens a repeatable `--project`.
+        #[arg(long)]
+        project_path: Option<PathBuf>,
+        #[arg(long)]
+        json: bool,
+    },
     /// Find differing copies of a skill without merging them; writes
     /// nothing.
     Conflicts {
@@ -477,6 +491,11 @@ fn main() -> ExitCode {
             )
         }
         Command::Fix { scope, skill, json } => run_fix(&scope, &skill, json, time),
+        Command::InstallPreferences {
+            scope,
+            project_path,
+            json,
+        } => run_install_preferences(&scope, project_path, json, time),
         Command::Conflicts { scope, json } => run_diagnose_conflict(&scope, json, time),
         Command::Remove {
             scope,
@@ -1060,6 +1079,41 @@ fn run_fix(scope: &ScopeArgs, skill: &str, json: bool, time: bool) -> ExitCode {
     let result = ops::fix_skill(&rt, &ctx, &req);
     let envelope = ResultEnvelope::from_result(Operation::FixSkill, &rt.scope, &ctx, result);
     finish(&envelope, json, time, output::print_fix_outcome_table)
+}
+
+/// Reads one scope's saved install preference, via
+/// `ops::install_preferences`. A read: it never writes the preference back,
+/// which only a completed `add` does.
+fn run_install_preferences(
+    scope: &ScopeArgs,
+    project_path: Option<PathBuf>,
+    json: bool,
+    time: bool,
+) -> ExitCode {
+    let rt = match build_runtime::<skill_studio_core::dto::InstallPreferences>(
+        scope,
+        Operation::InstallPreferences,
+        json,
+    ) {
+        Ok(rt) => rt,
+        Err(code) => return code,
+    };
+    let ctx = OpContext::uncancellable(CorrelationId(ulid::Ulid::new().to_string()));
+    let req = InstallPreferencesRequest {
+        scope: match project_path {
+            Some(project) => RootScope::Project(ProjectRef(project)),
+            None => RootScope::Global,
+        },
+    };
+    let result = ops::install_preferences(&rt, &ctx, &req.scope);
+    let envelope =
+        ResultEnvelope::from_result(Operation::InstallPreferences, &rt.scope, &ctx, result);
+    finish(
+        &envelope,
+        json,
+        time,
+        output::print_install_preferences_table,
+    )
 }
 
 fn run_diagnose_conflict(scope: &ScopeArgs, json: bool, time: bool) -> ExitCode {

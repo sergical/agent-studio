@@ -40,11 +40,6 @@ const EXCLUSIONS: &[Exclusion] = &[
         name: "set_codex_sidecar_implicit_invocation",
         reason: "unadopted: desktop's codex_openai_yaml path bypasses it (see skill_invocation.rs)",
     },
-    Exclusion {
-        name: "install_preferences",
-        reason: "only desktop's skill_install.rs calls it, as a side effect of install, \
-                  not a standalone command",
-    },
 ];
 
 /// An `ops` function whose surface spells it differently: the op's name,
@@ -55,7 +50,7 @@ struct SurfaceName {
     surface: &'static str,
 }
 
-/// `Command` variants, snake_cased, that do not repeat their op's name.
+/// `Command` variants, in snake case, that do not repeat their op's name.
 const CLI_SUBCOMMANDS: &[SurfaceName] = &[
     SurfaceName {
         op: "preview_frontmatter_repair",
@@ -183,7 +178,7 @@ fn snake_case(variant: &str) -> String {
     out
 }
 
-/// Every variant of `apps/cli/src/main.rs`'s `Command` enum, snake_cased.
+/// Every variant of `apps/cli/src/main.rs`'s `Command` enum, in snake case.
 /// Variants sit at one level of indentation and start with an upper-case
 /// letter; their fields, attributes, and doc comments do not.
 fn cli_subcommand_names(cli_main: &str) -> Vec<String> {

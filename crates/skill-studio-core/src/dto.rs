@@ -808,6 +808,25 @@ pub struct RemoveOutcome {
     pub quarantine_path: Option<PathBuf>,
 }
 
+/// Request for `install_preferences`: which scope's saved preference to
+/// read. Defaults to the global root, so a caller that only ever installs
+/// globally sends nothing.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(default)]
+pub struct InstallPreferencesRequest {
+    /// `Global` reads the scope home's preference; `Project` reads one
+    /// project's.
+    pub scope: RootScope,
+}
+
+impl Default for InstallPreferencesRequest {
+    fn default() -> Self {
+        Self {
+            scope: RootScope::Global,
+        }
+    }
+}
+
 /// The method and harnesses the last successful install saved, or the
 /// environment default when nothing has been saved yet.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]

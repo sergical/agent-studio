@@ -6,9 +6,9 @@ use std::process::ExitCode;
 use serde::Serialize;
 use skill_studio_core::dto::{
     CommandHealth, ConflictReport, Diagnosis, EventDto, FixApplied, FixSkillOutcome,
-    FrontmatterRepairPreview, InstallOutcome, Inventory, ParkOutcome, RemoveOutcome, RepairOutcome,
-    RestoreOutcome, ScanRequest, SetHarnessEnabledOutcome, UnparkOutcome, UpdateAllOutcome,
-    UpdateOutcome,
+    FrontmatterRepairPreview, InstallOutcome, InstallPreferences, Inventory, ParkOutcome,
+    RemoveOutcome, RepairOutcome, RestoreOutcome, ScanRequest, SetHarnessEnabledOutcome,
+    UnparkOutcome, UpdateAllOutcome, UpdateOutcome,
 };
 use skill_studio_core::harness::{Capabilities, HarnessReport};
 use skill_studio_core::ops::ResultEnvelope;
@@ -260,6 +260,36 @@ pub fn print_install_outcome_table(envelope: &ResultEnvelope<InstallOutcome>) {
     }
 }
 
+/// Prints `install-preferences`'s table: the method and harnesses the next
+/// `add` pre-selects, and whether they were saved by an earlier install or
+/// derived from the environment.
+pub fn print_install_preferences_table(envelope: &ResultEnvelope<InstallPreferences>) {
+    print_errors(envelope);
+    let Some(preferences) = &envelope.data else {
+        return;
+    };
+    let harnesses = preferences
+        .harnesses
+        .iter()
+        .map(skill_studio_core::identity::AgentId::as_str)
+        .collect::<Vec<_>>()
+        .join(", ");
+    println!(
+        "method={:?}  harnesses={}  source={}",
+        preferences.method,
+        if harnesses.is_empty() {
+            "-"
+        } else {
+            &harnesses
+        },
+        if preferences.saved {
+            "saved"
+        } else {
+            "default"
+        },
+    );
+}
+
 /// Prints `events`'s table: one line per event, newest first.
 pub fn print_events_table(envelope: &ResultEnvelope<Vec<EventDto>>) {
     print_errors(envelope);
@@ -503,6 +533,9 @@ pub fn write_schemas(out: Option<PathBuf>) -> ExitCode {
             schemars::schema_for!(skill_studio_core::dto::InstallRequest)
         }),
         ("install_outcome", || schemars::schema_for!(InstallOutcome)),
+        ("install_preferences_request", || {
+            schemars::schema_for!(skill_studio_core::dto::InstallPreferencesRequest)
+        }),
         ("install_preferences", || {
             schemars::schema_for!(skill_studio_core::dto::InstallPreferences)
         }),
