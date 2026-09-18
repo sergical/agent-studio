@@ -1359,7 +1359,7 @@ mod tests {
     /// (the post-write bytes left in place, plan `Interrupted`).
     #[test]
     fn a_backup_larger_than_the_journal_json_cap_still_restores_or_names_the_cap_that_blocked_it() {
-        let big = vec![b'A'; (16 * 1024 * 1024) + 1];
+        let big = vec![b'A'; (MAX_JOURNAL_JSON_BYTES + 1) as usize];
         let fixture = FixtureBuilder::new()
             .dir("/journal")
             .dir("/root")
