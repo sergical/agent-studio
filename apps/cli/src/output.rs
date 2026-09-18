@@ -185,18 +185,11 @@ pub fn print_fix_outcome_table(envelope: &ResultEnvelope<FixSkillOutcome>) {
         return;
     };
     for applied in &outcome.applied {
-        match applied {
-            FixApplied::FrontmatterRepair {
-                deployment_id,
-                event_id,
-            } => println!("repaired {} (event {})", deployment_id.as_str(), event_id.0),
-            FixApplied::QuarantinePruned { removed } => {
-                println!(
-                    "pruned {removed} quarantine entr{}",
-                    if *removed == 1 { "y" } else { "ies" }
-                );
-            }
-        }
+        let FixApplied::FrontmatterRepair {
+            deployment_id,
+            event_id,
+        } = applied;
+        println!("repaired {} (event {})", deployment_id.as_str(), event_id.0);
     }
     for issue in &outcome.unrepaired {
         println!(

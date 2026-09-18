@@ -13,8 +13,9 @@ use std::collections::BTreeMap;
 use std::path::Path;
 use std::sync::Arc;
 
-use skill_studio_core::dto::DiagnoseConflictRequest;
+use skill_studio_core::dto::{DiagnoseConflictRequest, FixSkillRequest};
 use skill_studio_core::harness::HarnessCatalog;
+use skill_studio_core::identity::SkillName;
 use skill_studio_core::ops;
 use skill_studio_core::ports::{Ports, Runtime, ScopeFs};
 use skill_studio_core::testing::golden::{ctx, scope_for};
@@ -106,4 +107,55 @@ fn diagnose_conflict_names_both_paths_and_writes_nothing_or_names_the_path_it_ch
         before, after,
         "diagnose_conflict changed bytes under dup-skill's roots; it must only read"
     );
+}
+
+/// A per-skill Claude Code symlink whose target doesn't exist (same shape
+/// as `testing::fixtures::broken_link`), plus a skill whose only issue -
+/// an uppercase name - has no automatic repair.
+fn unrepairable_home() -> impl ScopeFs {
+    FixtureBuilder::new()
+        .alias(
+            &format!("{HOME}/.claude/skills/ghost"),
+            "../../.agents/skills/missing",
+        )
+        .file(
+            &format!("{HOME}/.claude/skills/UpperCase/SKILL.md"),
+            b"---\nname: UpperCase\ndescription: Has an uppercase name, which the spec forbids.\n---\nBody.\n",
+        )
+        .build_fs()
+}
+
+/// Given a home with a broken per-skill link and a skill whose only issue
+/// has no automatic repair, when `fix_skill` runs for each, then every
+/// `unrepaired` entry names a real path, never the empty `PathBuf` the CLI
+/// used to print as `could not repair : <msg>`.
+/// Failure here (an empty path in `unrepaired`) names which fixture -
+/// `ghost` (invariant 1, `check_link_resolves_in_root`) or `UpperCase`
+/// (the generic "no `PreviewRepair`" branch) - regressed.
+#[test]
+fn fix_names_the_file_path_for_anything_it_cannot_repair_or_shows_a_generic_toast() {
+    let fs: Arc<dyn ScopeFs> = Arc::new(unrepairable_home());
+    let rt = runtime(fs);
+
+    for skill in ["ghost", "UpperCase"] {
+        let outcome = ops::fix_skill(
+            &rt,
+            &ctx(),
+            &FixSkillRequest {
+                skill: SkillName(skill.to_string()),
+            },
+        )
+        .unwrap_or_else(|e| panic!("fix_skill for {skill}: {e:?}"));
+        assert!(
+            !outcome.unrepaired.is_empty(),
+            "{skill}: expected at least one unrepaired issue, got {outcome:?}"
+        );
+        for issue in &outcome.unrepaired {
+            assert_ne!(
+                issue.path,
+                Path::new(""),
+                "{skill}: unrepaired issue had an empty path: {issue:?}"
+            );
+        }
+    }
 }

@@ -5,12 +5,14 @@
 //! check and applies whichever repair exists; anything it cannot repair is
 //! returned as a [`DoctorViolation`] naming the path.
 //!
-//! Invariants 1 ([`link resolves inside its
-//! root`](DoctorInvariant::LinkResolvesInRoot)), 5
-//! ([`QuarantineWithinCap`](DoctorInvariant::QuarantineWithinCap)) and 6
-//! ([`JournalHasNoOpenPlan`](DoctorInvariant::JournalHasNoOpenPlan)) have a
-//! repair the core can run safely on its own. Invariants 2-4 are
-//! detect-only here: [`crate::ownership::HomeRegistry`] and
+//! Invariant 6 ([`JournalHasNoOpenPlan`](DoctorInvariant::JournalHasNoOpenPlan))
+//! has a repair the core can run safely on its own
+//! (`crate::journal::reconcile`, run at startup). Invariants 1-5 are
+//! detect-only here: invariant 1's repair is the desktop's journaled
+//! `repair_skill_link`, not duplicated in core; invariant 5's repair (prune
+//! quarantine to its retention cap) is unit 3.9's, which owns "quarantine
+//! with a retention cap" - pruning without a lease or a journal entry is not
+//! safe to do from here. [`crate::ownership::HomeRegistry`] and
 //! [`crate::lock_file::SkillLockFile`] are partial views of documents whose
 //! full shape (trials, parked records, packs, ...) core does not own -
 //! `crate::registry`'s own doc comment says as much - so writing either
@@ -21,19 +23,19 @@
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
-use crate::dto::{Diagnosis, IssueKind};
-use crate::identity::SkillName;
+use crate::dto::{Diagnosis, Inventory, IssueKind};
+use crate::identity::{DeploymentId, RootKind, SkillName};
 use crate::lock_file::{lock_file_path, read_lock_file, SkillLockFile};
 use crate::ownership::read_home_registry;
 use crate::ports::{Journal, ScopeFs};
 
 /// Relative path of the universal shared skills root under a scope home.
 const UNIVERSAL_SKILLS_RELATIVE: &str = ".agents/skills";
-/// Relative path of the parked holding directory under a scope home.
-const PARKED_RELATIVE: &str = ".agents/skills-parked";
 /// Quarantine holding directory under the universal root, per
 /// `docs/action-map/primitives-and-call-stack.md`'s `<root>/.skill-studio-quarantine/<id>` convention.
-const QUARANTINE_DIR_NAME: &str = ".skill-studio-quarantine";
+/// `pub(crate)`, not private: unit 3.9 owns the retention-cap repair and
+/// reaches for this same directory name rather than redefining it.
+pub(crate) const QUARANTINE_DIR_NAME: &str = ".skill-studio-quarantine";
 /// Retention cap for quarantine entries under the universal root. Chosen as
 /// a round number generous enough for normal use; not measured against
 /// production quarantine growth, so `ops::fix_skill`'s follow-up list names
@@ -72,6 +74,17 @@ pub struct DoctorViolation {
     pub message: String,
 }
 
+/// Resolves `deployment_id` to its path via `inventory`, so a check can
+/// name the real file instead of leaving `path` empty.
+fn deployment_path(inventory: &Inventory, deployment_id: &DeploymentId) -> Option<PathBuf> {
+    inventory
+        .skills
+        .iter()
+        .flat_map(|skill| &skill.deployments)
+        .find(|deployment| &deployment.id == deployment_id)
+        .map(|deployment| deployment.path.clone())
+}
+
 /// Invariant 1: every link resolves inside its root. Reuses `diagnose`'s
 /// own `BrokenLink` detection rather than re-deriving it, so this check and
 /// `diagnose`'s never disagree by construction.
@@ -83,7 +96,11 @@ pub fn check_link_resolves_in_root(diagnosis: &Diagnosis) -> Vec<DoctorViolation
         .map(|issue| DoctorViolation {
             invariant: DoctorInvariant::LinkResolvesInRoot,
             skill: Some(issue.skill.clone()),
-            path: PathBuf::new(),
+            path: issue
+                .deployment_id
+                .as_ref()
+                .and_then(|id| deployment_path(&diagnosis.inventory, id))
+                .unwrap_or_default(),
             message: issue.message.clone(),
         })
         .collect()
@@ -129,18 +146,35 @@ pub fn check_registry_entry_has_folder(fs: &dyn ScopeFs, home: &Path) -> Vec<Doc
     violations
 }
 
-/// Invariant 3: every `~/.agents/.skill-lock.json` entry has a folder under
-/// the universal skills root. Detect-only; see the module doc comment.
-pub fn check_lockfile_entry_has_folder(fs: &dyn ScopeFs, home: &Path) -> Vec<DoctorViolation> {
+/// Invariant 3: every `~/.agents/.skill-lock.json` entry has a folder
+/// somewhere `inventory` scanned. Detect-only; see the module doc comment.
+///
+/// Resolved through `inventory`'s own deployments rather than
+/// `fs.symlink_metadata(home.join(UNIVERSAL_SKILLS_RELATIVE).join(name))`
+/// directly: a lockfile entry deployed only into one harness root (for
+/// example `.claude/skills`, never linked into the universal root) is a
+/// real folder, not a violation, and `inventory` already knows every root a
+/// scan covered.
+pub fn check_lockfile_entry_has_folder(
+    fs: &dyn ScopeFs,
+    home: &Path,
+    inventory: &Inventory,
+) -> Vec<DoctorViolation> {
     let lock: SkillLockFile = read_lock_file(fs, &lock_file_path(home)).unwrap_or(SkillLockFile {
         version: 3,
         skills: HashMap::new(),
     });
     lock.skills
-        .keys()
-        .filter_map(|name| {
-            let path = home.join(UNIVERSAL_SKILLS_RELATIVE).join(name);
-            (fs.symlink_metadata(&path).is_err()).then(|| DoctorViolation {
+        .into_keys()
+        .filter(|name| {
+            !inventory
+                .skills
+                .iter()
+                .any(|skill| skill.name.0 == *name && !skill.deployments.is_empty())
+        })
+        .map(|name| {
+            let path = home.join(UNIVERSAL_SKILLS_RELATIVE).join(&name);
+            DoctorViolation {
                 invariant: DoctorInvariant::LockfileEntryHasFolder,
                 skill: Some(SkillName(name.clone())),
                 path: path.clone(),
@@ -148,7 +182,7 @@ pub fn check_lockfile_entry_has_folder(fs: &dyn ScopeFs, home: &Path) -> Vec<Doc
                     "lockfile entry `{name}` names {} but no folder is there",
                     path.display()
                 ),
-            })
+            }
         })
         .collect()
 }
@@ -157,27 +191,37 @@ pub fn check_lockfile_entry_has_folder(fs: &dyn ScopeFs, home: &Path) -> Vec<Doc
 /// parked simultaneously, which the lifecycle table (`park_skill`) says
 /// never happens once a park lands cleanly. Detect-only; there is no single
 /// safe automatic choice between the two states.
+///
+/// Resolved through `inventory`'s own deployments rather than
+/// `fs.symlink_metadata` on the universal and parked roots directly: a
+/// skill installed only via a per-harness canonical copy (no universal-root
+/// entry) plus a parked folder is the same violation, and comparing only
+/// the two fixed paths missed it.
 pub fn check_no_folder_in_two_states(
-    fs: &dyn ScopeFs,
-    home: &Path,
+    inventory: &Inventory,
     skill_names: &[SkillName],
 ) -> Vec<DoctorViolation> {
     skill_names
         .iter()
         .filter_map(|name| {
-            let installed = home.join(UNIVERSAL_SKILLS_RELATIVE).join(&name.0);
-            let parked = home.join(PARKED_RELATIVE).join(&name.0);
-            let both =
-                fs.symlink_metadata(&installed).is_ok() && fs.symlink_metadata(&parked).is_ok();
-            both.then(|| DoctorViolation {
+            let skill = inventory.skills.iter().find(|skill| &skill.name == name)?;
+            let parked = skill
+                .deployments
+                .iter()
+                .find(|deployment| matches!(deployment.root.kind, RootKind::Parked))?;
+            let installed = skill
+                .deployments
+                .iter()
+                .find(|deployment| !matches!(deployment.root.kind, RootKind::Parked))?;
+            Some(DoctorViolation {
                 invariant: DoctorInvariant::NoFolderInTwoStates,
                 skill: Some(name.clone()),
-                path: installed.clone(),
+                path: installed.path.clone(),
                 message: format!(
                     "`{}` exists both installed at {} and parked at {}",
                     name.0,
-                    installed.display(),
-                    parked.display()
+                    installed.path.display(),
+                    parked.path.display()
                 ),
             })
         })
@@ -211,22 +255,6 @@ pub fn check_quarantine_within_cap(fs: &dyn ScopeFs, home: &Path) -> Vec<DoctorV
     }
 }
 
-/// Repairs invariant 5 by removing the oldest entries (by name, which
-/// carries each entry's creation-order suffix) until the cap holds.
-/// Returns how many entries were removed.
-pub fn repair_quarantine_within_cap(fs: &dyn ScopeFs, home: &Path) -> std::io::Result<usize> {
-    let dir = quarantine_dir(home);
-    let mut entries = fs.read_dir(&dir)?;
-    entries.sort_by(|a, b| a.name.cmp(&b.name));
-    let mut removed = 0;
-    while entries.len() > QUARANTINE_RETENTION_CAP {
-        let victim = entries.remove(0);
-        fs.fsops_remove_dir(&dir.join(&victim.name))?;
-        removed += 1;
-    }
-    Ok(removed)
-}
-
 /// Invariant 6: the journal has no open plan at rest.
 pub fn check_journal_has_no_open_plan(journal: &dyn Journal) -> Vec<DoctorViolation> {
     journal
@@ -244,53 +272,124 @@ pub fn check_journal_has_no_open_plan(journal: &dyn Journal) -> Vec<DoctorViolat
 
 #[cfg(test)]
 mod tests {
+    use std::sync::Arc;
+
     use super::*;
-    use crate::testing::FixtureBuilder;
+    use crate::dto::ScanRequest;
+    use crate::harness::HarnessCatalog;
+    use crate::ops;
+    use crate::ports::{Ports, Runtime};
+    use crate::testing::golden::{ctx, scope_for};
+    use crate::testing::{FakeClock, FakeIds, FakeLease, FixtureBuilder, NoHistory, RecordingSink};
 
     const HOME: &str = "/home";
+    /// Relative path of the parked holding directory under a scope home;
+    /// only fixtures need it now that [`check_no_folder_in_two_states`]
+    /// reads the parked path off `inventory` instead of building it.
+    const PARKED_RELATIVE: &str = ".agents/skills-parked";
+    /// Minimal frontmatter `scan` needs to recognize a directory as a skill.
+    fn skill_md(name: &str) -> Vec<u8> {
+        format!("---\nname: {name}\ndescription: fixture skill.\n---\nBody.\n").into_bytes()
+    }
 
     fn home() -> PathBuf {
         PathBuf::from(HOME)
     }
 
-    #[test]
-    fn quarantine_over_cap_is_flagged_and_repair_trims_it_to_the_cap() {
-        let mut builder = FixtureBuilder::new().dir(&format!("{HOME}/{UNIVERSAL_SKILLS_RELATIVE}"));
-        for i in 0..(QUARANTINE_RETENTION_CAP + 3) {
-            builder = builder.dir(&format!(
-                "{HOME}/{UNIVERSAL_SKILLS_RELATIVE}/{QUARANTINE_DIR_NAME}/{i:04}-quarantined"
-            ));
-        }
-        let fs = builder.build_fs();
-
-        let violations = check_quarantine_within_cap(&fs, &home());
-        assert_eq!(violations.len(), 1);
-        assert_eq!(
-            violations[0].invariant,
-            DoctorInvariant::QuarantineWithinCap
-        );
-
-        let removed = repair_quarantine_within_cap(&fs, &home()).unwrap();
-        assert_eq!(removed, 3);
-        assert!(check_quarantine_within_cap(&fs, &home()).is_empty());
+    /// Scans `fs` from `HOME` so a test can assert a check against the same
+    /// `Inventory` `ops::fix_skill` would build, not a hand-rolled one.
+    fn inventory_for(fs: &Arc<dyn ScopeFs>) -> Inventory {
+        let ports = Ports {
+            fs: fs.clone(),
+            clock: Arc::new(FakeClock::at(0)),
+            ids: Arc::new(FakeIds::default()),
+            leases: Arc::new(FakeLease::default()),
+            history: Arc::new(NoHistory),
+            sink: Arc::new(RecordingSink::default()),
+            spawner: None,
+            discovery: None,
+            tools: None,
+            catalog: Arc::new(HarnessCatalog::builtin()),
+        };
+        let scope = scope_for("doctor", &home());
+        let rt = Runtime::new(&scope, ports).expect("runtime");
+        ops::scan(&rt, &ctx(), &ScanRequest::default()).expect("scan")
     }
 
     #[test]
-    fn lockfile_entry_with_no_folder_is_flagged_and_clears_once_the_folder_exists() {
-        let fs = FixtureBuilder::new()
-            .dir(&format!("{HOME}/{UNIVERSAL_SKILLS_RELATIVE}"))
-            .file(
-                &format!("{HOME}/.agents/.skill-lock.json"),
-                br#"{"version":3,"skills":{"ghost-skill":{"source":"o/r","sourceType":"github","sourceUrl":"https://example.com","skillFolderHash":"abc","installedAt":"2024-01-01T00:00:00Z","updatedAt":"2024-01-01T00:00:00Z"}}}"#,
-            )
-            .build_fs();
+    fn quarantine_over_cap_is_reported_with_its_path_and_count_or_names_the_missed_entry() {
+        let mut builder = FixtureBuilder::new().dir(&format!("{HOME}/{UNIVERSAL_SKILLS_RELATIVE}"));
+        let over_by = 3;
+        for i in 0..(QUARANTINE_RETENTION_CAP + over_by) {
+            builder = builder.file(
+                &format!(
+                    "{HOME}/{UNIVERSAL_SKILLS_RELATIVE}/{QUARANTINE_DIR_NAME}/{i:04}-quarantined/SKILL.md"
+                ),
+                &skill_md("quarantined"),
+            );
+        }
+        let fs = builder.build_fs();
+        let dir = home()
+            .join(UNIVERSAL_SKILLS_RELATIVE)
+            .join(QUARANTINE_DIR_NAME);
 
-        let violations = check_lockfile_entry_has_folder(&fs, &home());
-        assert_eq!(violations.len(), 1);
+        let violations = check_quarantine_within_cap(&fs, &home());
+        assert_eq!(
+            violations.len(),
+            1,
+            "expected exactly one violation, got {violations:?}"
+        );
+        let violation = &violations[0];
+        assert_eq!(violation.invariant, DoctorInvariant::QuarantineWithinCap);
+        assert_eq!(
+            violation.path, dir,
+            "violation did not name the quarantine path"
+        );
+        let total = QUARANTINE_RETENTION_CAP + over_by;
+        assert!(
+            violation.message.contains(&total.to_string()),
+            "message did not name the entry count {total}: {}",
+            violation.message
+        );
+        assert!(
+            violation
+                .message
+                .contains(&QUARANTINE_RETENTION_CAP.to_string()),
+            "message did not name the cap {QUARANTINE_RETENTION_CAP}: {}",
+            violation.message
+        );
+    }
+
+    #[test]
+    fn lockfile_entry_with_no_folder_anywhere_is_flagged_or_a_per_harness_copy_clears_it() {
+        let fs: Arc<dyn ScopeFs> = Arc::new(
+            FixtureBuilder::new()
+                .dir(&format!("{HOME}/{UNIVERSAL_SKILLS_RELATIVE}"))
+                .file(
+                    &format!("{HOME}/.claude/skills/harness-only/SKILL.md"),
+                    &skill_md("harness-only"),
+                )
+                .file(
+                    &format!("{HOME}/.agents/.skill-lock.json"),
+                    br#"{"version":3,"skills":{
+                        "ghost-skill":{"source":"o/r","sourceType":"github","sourceUrl":"https://example.com","skillFolderHash":"abc","installedAt":"2024-01-01T00:00:00Z","updatedAt":"2024-01-01T00:00:00Z"},
+                        "harness-only":{"source":"o/r","sourceType":"github","sourceUrl":"https://example.com","skillFolderHash":"abc","installedAt":"2024-01-01T00:00:00Z","updatedAt":"2024-01-01T00:00:00Z"}
+                    }}"#,
+                )
+                .build_fs(),
+        );
+
+        let violations = check_lockfile_entry_has_folder(fs.as_ref(), &home(), &inventory_for(&fs));
+        assert_eq!(
+            violations.len(),
+            1,
+            "harness-only must not be a false positive: {violations:?}"
+        );
         assert_eq!(
             violations[0].invariant,
             DoctorInvariant::LockfileEntryHasFolder
         );
+        assert_eq!(violations[0].skill, Some(SkillName("ghost-skill".into())));
 
         // The "repair" this invariant has today is naming the path so the
         // user (or a follow-up unit) can restore the folder or drop the
@@ -299,27 +398,52 @@ mod tests {
         // document itself (see the module doc comment).
         fs.fsops_create_dir(&home().join(UNIVERSAL_SKILLS_RELATIVE).join("ghost-skill"))
             .unwrap();
-        assert!(check_lockfile_entry_has_folder(&fs, &home()).is_empty());
+        fs.fsops_write_new_file(
+            &home()
+                .join(UNIVERSAL_SKILLS_RELATIVE)
+                .join("ghost-skill")
+                .join("SKILL.md"),
+            &skill_md("ghost-skill"),
+        )
+        .unwrap();
+        assert!(
+            check_lockfile_entry_has_folder(fs.as_ref(), &home(), &inventory_for(&fs)).is_empty()
+        );
     }
 
     #[test]
-    fn skill_parked_and_installed_at_once_is_flagged_and_clears_once_one_state_is_removed() {
+    fn skill_parked_and_installed_via_a_harness_copy_is_flagged_or_names_the_missed_root() {
         let name = SkillName("double-state".to_string());
-        let fs = FixtureBuilder::new()
-            .dir(&format!("{HOME}/{UNIVERSAL_SKILLS_RELATIVE}/double-state"))
-            .dir(&format!("{HOME}/{PARKED_RELATIVE}/double-state"))
-            .build_fs();
+        let fs: Arc<dyn ScopeFs> = Arc::new(
+            FixtureBuilder::new()
+                .dir(&format!("{HOME}/{UNIVERSAL_SKILLS_RELATIVE}"))
+                .file(
+                    &format!("{HOME}/.claude/skills/double-state/SKILL.md"),
+                    &skill_md("double-state"),
+                )
+                .file(
+                    &format!("{HOME}/{PARKED_RELATIVE}/double-state/SKILL.md"),
+                    &skill_md("double-state"),
+                )
+                .build_fs(),
+        );
 
-        let violations = check_no_folder_in_two_states(&fs, &home(), std::slice::from_ref(&name));
-        assert_eq!(violations.len(), 1);
+        let violations =
+            check_no_folder_in_two_states(&inventory_for(&fs), std::slice::from_ref(&name));
+        assert_eq!(
+            violations.len(),
+            1,
+            "a per-harness canonical copy plus a parked folder must be caught: {violations:?}"
+        );
         assert_eq!(
             violations[0].invariant,
             DoctorInvariant::NoFolderInTwoStates
         );
 
-        fs.fsops_remove_dir(&home().join(PARKED_RELATIVE).join(&name.0))
-            .unwrap();
-        assert!(check_no_folder_in_two_states(&fs, &home(), &[name]).is_empty());
+        let parked_dir = home().join(PARKED_RELATIVE).join(&name.0);
+        fs.fsops_remove_file(&parked_dir.join("SKILL.md")).unwrap();
+        fs.fsops_remove_dir(&parked_dir).unwrap();
+        assert!(check_no_folder_in_two_states(&inventory_for(&fs), &[name]).is_empty());
     }
 
     #[test]

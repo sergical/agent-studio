@@ -66,26 +66,6 @@
             "deployment_id",
             "event_id"
           ]
-        },
-        {
-          "description": "Excess quarantine entries beyond the retention cap were removed.",
-          "type": "object",
-          "properties": {
-            "removed": {
-              "description": "How many entries were removed.",
-              "type": "integer",
-              "format": "uint32",
-              "minimum": 0
-            },
-            "kind": {
-              "type": "string",
-              "const": "quarantine_pruned"
-            }
-          },
-          "required": [
-            "kind",
-            "removed"
-          ]
         }
       ]
     },

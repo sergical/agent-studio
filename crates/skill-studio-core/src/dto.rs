@@ -415,11 +415,6 @@ pub enum FixApplied {
         /// History event.
         event_id: EventId,
     },
-    /// Excess quarantine entries beyond the retention cap were removed.
-    QuarantinePruned {
-        /// How many entries were removed.
-        removed: u32,
-    },
 }
 
 /// One issue `fix_skill` found but could not repair, named with its path so
