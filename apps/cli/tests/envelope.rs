@@ -690,6 +690,92 @@ fn skill_studio_undo_reverses_the_last_journal_entry_for_every_write_kind_in_thi
     std::fs::remove_dir_all(&home).ok();
 }
 
+/// Builds the same `Runtime` `skill-studio --home <home>` would build for
+/// itself (matching `ScopeArgs::resolve`'s `--home` branch in
+/// `apps/cli/src/scope.rs`: history under `<home>/.skill-studio/history`,
+/// leases under `<home>/.skill-studio/leases`), so a test can seed history
+/// rows in-process - one direct call per row is far cheaper than spawning
+/// the CLI binary `DEFAULT_EVENT_LIMIT + 1` times - while still reading the
+/// same on-disk database the CLI subprocess opens for the `undo` under test.
+fn cli_runtime_for(home: &Path) -> skill_studio_core::ports::Runtime {
+    use skill_studio_core::harness::HarnessCatalog;
+    use skill_studio_core::scope::{ProjectSelection, RuntimeScope};
+    use std::sync::Arc;
+
+    let data_root = home.join(".skill-studio");
+    let history_root = data_root.join("history");
+    let db_path = history_root.join("events.sqlite3");
+    let mut scope = RuntimeScope::live(home.to_path_buf(), history_root);
+    // No projects in this fixture; explicit-empty skips the discovery port
+    // this bare runtime never wires up.
+    scope.projects = ProjectSelection::Explicit { paths: Vec::new() };
+    let catalog = Arc::new(HarnessCatalog::builtin());
+    let ports =
+        skill_studio_host::default_ports_with_history(data_root.join("leases"), catalog, db_path);
+    skill_studio_core::ports::Runtime::new(&scope, ports).unwrap()
+}
+
+/// `undo` pages past a default-sized page of unrestorable history to find
+/// the one restorable row underneath it: `DEFAULT_EVENT_LIMIT + 1` no-op
+/// Claude Code toggles (each recording no inverse, since the link is
+/// already in the state asked for) sit on top of the one real toggle that
+/// actually moved the link. A single-page read of `list_events` never sees
+/// that real toggle, so `undo` must keep paging with `after` until it does.
+#[test]
+fn undo_finds_the_last_restorable_event_past_the_default_page_or_names_the_event_it_missed() {
+    use skill_studio_core::dto::SetHarnessEnabledRequest;
+    use skill_studio_core::identity::{AgentId, SkillName};
+    use skill_studio_core::ops;
+    use skill_studio_core::testing::golden::ctx;
+
+    let home = tempfile::tempdir().unwrap().keep();
+    let home = home.canonicalize().unwrap();
+    let alpha_dir = home.join(".agents/skills/alpha");
+    std::fs::create_dir_all(&alpha_dir).unwrap();
+    std::fs::write(
+        alpha_dir.join("SKILL.md"),
+        b"---\nname: alpha\ndescription: A universal skill.\n---\nBody.\n",
+    )
+    .unwrap();
+    let claude_skills = home.join(".claude/skills");
+    std::fs::create_dir_all(&claude_skills).unwrap();
+    let link_path = claude_skills.join("alpha");
+    #[cfg(unix)]
+    std::os::unix::fs::symlink(&alpha_dir, &link_path).unwrap();
+
+    let rt = cli_runtime_for(&home);
+    let req = SetHarnessEnabledRequest {
+        skill: SkillName("alpha".into()),
+        harness: AgentId::from(AgentId::CLAUDE_CODE),
+        enabled: false,
+        project_path: None,
+    };
+
+    // The one restorable row: this toggle actually removes the link.
+    ops::set_harness_enabled(&rt, &ctx(), &req).unwrap();
+    assert!(
+        link_path.symlink_metadata().is_err(),
+        "fixture setup: the first disable should have removed the link"
+    );
+
+    // Bury it under `DEFAULT_EVENT_LIMIT + 1` no-op repeats: the link is
+    // already gone, so each of these records no inverse.
+    for _ in 0..=ops::DEFAULT_EVENT_LIMIT {
+        ops::set_harness_enabled(&rt, &ctx(), &req).unwrap();
+    }
+    drop(rt);
+
+    let undo = run(&["undo", "--home", home.to_str().unwrap(), "--json"]);
+    assert_eq!(undo.json["status"], "ok", "{:?}", undo.json);
+    assert!(
+        link_path.symlink_metadata().is_ok(),
+        "undo should have paged past the no-op rows and restored the buried link toggle, got {:?}",
+        undo.json
+    );
+
+    std::fs::remove_dir_all(&home).ok();
+}
+
 #[test]
 fn schema_regenerates_the_checked_in_snapshot() {
     let out = tempfile::tempdir().unwrap();

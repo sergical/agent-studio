@@ -699,31 +699,44 @@ fn run_undo(scope: &ScopeArgs, force: bool, json: bool, time: bool) -> ExitCode 
         Err(code) => return code,
     };
     let ctx = OpContext::uncancellable(CorrelationId(ulid::Ulid::new().to_string()));
-    let list_req = ListEventsRequest {
-        skill: None,
-        limit: ops::DEFAULT_EVENT_LIMIT,
-        after: None,
-        check_drift: false,
-    };
-    let event_id = match ops::list_events(&rt, &ctx, &list_req) {
-        Ok(events) => events
-            .into_iter()
-            .find(|event| {
-                matches!(
-                    event.restore,
-                    skill_studio_core::dto::RestoreCapability::Yes
-                )
-            })
-            .map(|event| event.id),
-        Err(err) => {
-            let envelope = ResultEnvelope::<skill_studio_core::dto::RestoreOutcome>::from_result(
-                Operation::RestoreEvent,
-                &rt.scope,
-                &ctx,
-                Err(err),
-            );
-            return finish(&envelope, json, time, output::print_restore_outcome_table);
+    // A page of all non-restorable rows must not read as "nothing to undo":
+    // page through `list_events` with `after` until a restorable row turns
+    // up or a page comes back short of the limit (the end of the history).
+    let mut after = None;
+    let event_id = loop {
+        let list_req = ListEventsRequest {
+            skill: None,
+            limit: ops::DEFAULT_EVENT_LIMIT,
+            after,
+            check_drift: false,
+        };
+        let events = match ops::list_events(&rt, &ctx, &list_req) {
+            Ok(events) => events,
+            Err(err) => {
+                let envelope =
+                    ResultEnvelope::<skill_studio_core::dto::RestoreOutcome>::from_result(
+                        Operation::RestoreEvent,
+                        &rt.scope,
+                        &ctx,
+                        Err(err),
+                    );
+                return finish(&envelope, json, time, output::print_restore_outcome_table);
+            }
+        };
+        let page_len = events.len();
+        let last_id = events.last().map(|event| event.id.clone());
+        if let Some(found) = events.into_iter().find(|event| {
+            matches!(
+                event.restore,
+                skill_studio_core::dto::RestoreCapability::Yes
+            )
+        }) {
+            break Some(found.id);
         }
+        if (page_len as u32) < ops::DEFAULT_EVENT_LIMIT {
+            break None;
+        }
+        after = last_id;
     };
     let Some(event_id) = event_id else {
         let err = skill_studio_core::CoreError::new(

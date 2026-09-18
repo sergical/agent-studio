@@ -4794,6 +4794,50 @@ fn set_codex_switch(
         ));
     }
     let config_path = codex_config_path(&rt.scope.codex_home);
+    let scope = Some(
+        if project_path.is_some() {
+            "project"
+        } else {
+            "global"
+        }
+        .to_string(),
+    );
+    let project_path_buf = project_path.map(Path::to_path_buf);
+    let payload = serde_json::json!({
+        "skill": skill.name.0,
+        "harness": AgentId::CODEX,
+        "total": total,
+    });
+
+    // A full no-op (every path already in the state this toggle would put
+    // it in) must carry no inverse, the same way `set_claude_code_switch`'s
+    // no-op branch does: recording a `restore_backup` inverse over bytes
+    // this call never wrote would let `undo` "revert" a mutation that never
+    // happened, consuming the claim on the real previous change underneath
+    // it instead of reaching that.
+    let already_matches = {
+        let doc = read_codex_config_document(fs, &rt.scope.codex_home)?;
+        paths
+            .iter()
+            .all(|path| codex_find_row_index(&doc, path).is_some() != enabled)
+    };
+    if already_matches {
+        let draft = crate::events::EventDraft {
+            kind,
+            skill: skill.name.clone(),
+            harness: Some(AgentId::from(AgentId::CODEX)),
+            scope,
+            project_path: project_path_buf,
+            payload,
+            inverse: None,
+            backup_dir: None,
+        };
+        session.store.record(&session.guard, id, &draft)?;
+        session
+            .store
+            .finish(&session.guard, id, crate::events::EventStatus::Done, None)?;
+        return Ok((total, total));
+    }
 
     let manifest =
         session
@@ -4806,20 +4850,9 @@ fn set_codex_switch(
         kind,
         skill: skill.name.clone(),
         harness: Some(AgentId::from(AgentId::CODEX)),
-        scope: Some(
-            if project_path.is_some() {
-                "project"
-            } else {
-                "global"
-            }
-            .to_string(),
-        ),
-        project_path: project_path.map(Path::to_path_buf),
-        payload: serde_json::json!({
-            "skill": skill.name.0,
-            "harness": AgentId::CODEX,
-            "total": total,
-        }),
+        scope,
+        project_path: project_path_buf,
+        payload,
         inverse: Some(inverse),
         backup_dir: Some(manifest.backup_dir.clone()),
     };

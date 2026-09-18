@@ -1548,3 +1548,103 @@ fn codex_toggle_event_names_the_project_scope_or_names_the_row_filed_as_global()
 
     std::fs::remove_dir_all(&home).ok();
 }
+
+/// `a_no_op_codex_toggle_records_no_undo_or_names_the_bytes_undo_would_rewrite`:
+/// disabling an already-disabled Codex skill touches no bytes, so its
+/// journal row must carry no inverse - like `set_claude_code_switch`'s
+/// no-op branch. A `restore_backup` inverse recorded over identical bytes
+/// would let `undo` "revert" a mutation that never happened, consuming the
+/// claim on the real previous change underneath it.
+#[test]
+fn a_no_op_codex_toggle_records_no_undo_or_names_the_bytes_undo_would_rewrite() {
+    let home = unique_temp_dir("codex_no_op_toggle");
+    install_universal_skill(&home, "gamma");
+    let rt = runtime_for(&home);
+    let config_path = home.join(".codex/config.toml");
+
+    let first = ops::set_harness_enabled(
+        &rt,
+        &ctx(),
+        &SetHarnessEnabledRequest {
+            skill: SkillName("gamma".into()),
+            harness: AgentId::from(AgentId::CODEX),
+            enabled: false,
+            project_path: None,
+        },
+    )
+    .unwrap();
+    let text_after_first = std::fs::read_to_string(&config_path).unwrap();
+    assert!(
+        text_after_first.contains("[[skills.config]]"),
+        "the first disable should write a row, got:\n{text_after_first}"
+    );
+
+    let second = ops::set_harness_enabled(
+        &rt,
+        &ctx(),
+        &SetHarnessEnabledRequest {
+            skill: SkillName("gamma".into()),
+            harness: AgentId::from(AgentId::CODEX),
+            enabled: false,
+            project_path: None,
+        },
+    )
+    .unwrap();
+    let text_after_second = std::fs::read_to_string(&config_path).unwrap();
+    assert_eq!(
+        text_after_second, text_after_first,
+        "disabling an already-disabled skill must not rewrite the file's bytes"
+    );
+
+    let store = rt
+        .ports
+        .history
+        .open(&rt.scope, HistoryAccess::ReadIfExists)
+        .unwrap()
+        .expect("the store exists after the writes above");
+    let second_row = store.get(&second.event_id).unwrap().unwrap();
+    assert!(
+        second_row.inverse.is_none(),
+        "the no-op toggle must record no inverse, got: {:?}",
+        second_row.inverse
+    );
+    assert_eq!(
+        second_row.restore_capability(),
+        skill_studio_core::dto::RestoreCapability::NoInverse
+    );
+
+    let second_undo_err = ops::restore_event(
+        &rt,
+        &ctx(),
+        &RestoreRequest {
+            event_id: second.event_id.clone(),
+            force: false,
+        },
+    )
+    .unwrap_err();
+    assert_eq!(
+        second_undo_err.code,
+        skill_studio_core::ErrorCode::Unsupported
+    );
+
+    // The no-op second event must not stand in the way of undoing the real
+    // change: restoring the first event - the last one that actually
+    // carries an inverse - must still succeed.
+    let undo = ops::restore_event(
+        &rt,
+        &ctx(),
+        &RestoreRequest {
+            event_id: first.event_id.clone(),
+            force: false,
+        },
+    )
+    .unwrap();
+    assert_eq!(undo.reverted_event_id, first.event_id);
+    let text_after_undo = std::fs::read_to_string(&config_path).unwrap_or_default();
+    assert!(
+        !text_after_undo.contains("[[skills.config]]"),
+        "undoing the first disable should remove its row, restoring the pre-disable (absent) config, got:\n{text_after_undo}"
+    );
+
+    std::fs::remove_dir_all(&home).ok();
+}
