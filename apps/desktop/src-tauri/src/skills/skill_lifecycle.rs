@@ -327,6 +327,20 @@ mod tests {
         );
     }
 
+    #[test]
+    fn dotagents_remove_args_selects_project_mode() {
+        use super::super::commands::dotagents_remove_args;
+
+        assert_eq!(
+            dotagents_remove_args("foo", InstallScope::Project),
+            vec!["-y", "@sentry/dotagents", "--project", "remove", "foo"]
+        );
+        assert_eq!(
+            dotagents_remove_args("foo", InstallScope::Global),
+            vec!["-y", "@sentry/dotagents", "remove", "foo"]
+        );
+    }
+
     fn dep(id: &str, name: &str, path: &str, scope: &str, dest: SkillDestination) -> Deployment {
         Deployment {
             id: id.to_string(),

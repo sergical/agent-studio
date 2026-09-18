@@ -430,18 +430,6 @@ mod tests {
     }
 
     #[test]
-    fn dotagents_remove_args_selects_project_mode() {
-        assert_eq!(
-            dotagents_remove_args("foo", InstallScope::Project),
-            vec!["-y", "@sentry/dotagents", "--project", "remove", "foo"]
-        );
-        assert_eq!(
-            dotagents_remove_args("foo", InstallScope::Global),
-            vec!["-y", "@sentry/dotagents", "remove", "foo"]
-        );
-    }
-
-    #[test]
     fn write_refused_for_plugin_deployment() {
         let tmp = tempfile::tempdir().unwrap();
         let dep_dir = tmp.path().join("foo");
