@@ -1,0 +1,6 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "DiagnoseConflictRequest",
+  "description": "Request for `diagnose_conflict`. Empty: a conflict is a relationship\nbetween two deployments of one skill, found by scanning the whole\ninventory rather than named one deployment at a time.",
+  "type": "object"
+}
