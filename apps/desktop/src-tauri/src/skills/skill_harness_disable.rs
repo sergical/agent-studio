@@ -1019,7 +1019,7 @@ mod tests {
     use std::collections::BTreeMap;
     use std::fs;
 
-    use super::super::test_support::write_skill;
+    use super::super::test_support::{pin_opencode_env, write_skill, OpencodeHomeGuard};
 
     /// Test-only stand-in for the old `opencode_skill_permission::read_denied_patterns(home)`:
     /// resolves the config directory the same way `set_harness_enabled_with`
@@ -1029,77 +1029,6 @@ mod tests {
         let fs = skill_studio_host::RealFs::new();
         let config_dir = skill_studio_host::opencode_config_dir(home);
         skill_studio_core::opencode_config::read_denied_patterns(&fs, &config_dir)
-    }
-
-    /// Serializes and confines every test in this module that reads or
-    /// writes `OpenCode` config through `skill_studio_host::opencode_config_dir`.
-    /// That resolver checks the process-global `XDG_CONFIG_HOME`/
-    /// `OPENCODE_CONFIG_DIR` env vars before falling back to `home` -
-    /// unset on a developer machine, but GitHub's `ubuntu-latest` runners
-    /// export a real `XDG_CONFIG_HOME` (`/home/runner/.config`), so without
-    /// this guard every OpenCode-writing test here read and wrote that one
-    /// real shared directory instead of its own fixture `home`, racing
-    /// every other such test running in parallel. Held for the guarded
-    /// test's whole body (RAII, so a panic mid-test still restores the
-    /// previous values) and serialized on a shared lock, mirroring the host
-    /// crate's `opencode_db::xdg_env_lock`.
-    struct OpencodeHomeGuard {
-        _lock: std::sync::MutexGuard<'static, ()>,
-        prev_xdg_config_home: Option<std::ffi::OsString>,
-        prev_opencode_config_dir: Option<std::ffi::OsString>,
-    }
-
-    /// Sets `XDG_CONFIG_HOME` to `<home>/.config` and clears
-    /// `OPENCODE_CONFIG_DIR`, without touching the lock or saving the
-    /// previous values. Split out of `OpencodeHomeGuard::new` so a test can
-    /// re-pin the env to `home` after deliberately overwriting it while
-    /// still holding the guard's lock, instead of racing another guarded
-    /// test between the overwrite and the guard's own pin.
-    fn pin_opencode_env(home: &Path) {
-        // SAFETY: every caller holds `OpencodeHomeGuard`'s lock, which
-        // serializes every test in this module that touches these vars.
-        #[allow(unsafe_code)]
-        unsafe {
-            std::env::set_var("XDG_CONFIG_HOME", home.join(".config"));
-            std::env::remove_var("OPENCODE_CONFIG_DIR");
-        }
-    }
-
-    impl OpencodeHomeGuard {
-        fn new(home: &Path) -> Self {
-            static LOCK: std::sync::OnceLock<std::sync::Mutex<()>> = std::sync::OnceLock::new();
-            let lock = LOCK
-                .get_or_init(|| std::sync::Mutex::new(()))
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner);
-            let prev_xdg_config_home = std::env::var_os("XDG_CONFIG_HOME");
-            let prev_opencode_config_dir = std::env::var_os("OPENCODE_CONFIG_DIR");
-            pin_opencode_env(home);
-            Self {
-                _lock: lock,
-                prev_xdg_config_home,
-                prev_opencode_config_dir,
-            }
-        }
-    }
-
-    impl Drop for OpencodeHomeGuard {
-        fn drop(&mut self) {
-            // SAFETY: `self._lock` is still held for the whole body of
-            // `drop`, serializing every test in this module that touches
-            // these vars.
-            #[allow(unsafe_code)]
-            unsafe {
-                match self.prev_xdg_config_home.take() {
-                    Some(v) => std::env::set_var("XDG_CONFIG_HOME", v),
-                    None => std::env::remove_var("XDG_CONFIG_HOME"),
-                }
-                match self.prev_opencode_config_dir.take() {
-                    Some(v) => std::env::set_var("OPENCODE_CONFIG_DIR", v),
-                    None => std::env::remove_var("OPENCODE_CONFIG_DIR"),
-                }
-            }
-        }
     }
 
     /// Reads every `path` a Codex `[[skills.config]] enabled = false` row

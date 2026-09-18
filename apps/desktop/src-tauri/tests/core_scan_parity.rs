@@ -689,6 +689,18 @@ fn desktop_assembly_matches_core_scan_for_every_fixture() {
             let _guard = home_env_lock()
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner);
+            // Pins the desktop side's `OpenCode` config resolution to this
+            // fixture `home` (`SKILL_STUDIO_FIXTURE`, `XDG_CONFIG_HOME`),
+            // matching `core_scan`'s own `None` default
+            // (`opencode_config_dir_under(home)`) below. Without this, a
+            // real `XDG_CONFIG_HOME`/`OPENCODE_CONFIG_DIR` in the ambient
+            // environment (set on every GitHub `ubuntu-latest` runner) made
+            // the desktop side read the real user's `opencode.json` while
+            // core read the fixture's, so the "disabled" fixture's
+            // `OpencodePermission` deny disagreed between the two sides on
+            // Linux CI even though both machines ran the identical fixture.
+            let _opencode_guard =
+                skill_studio_lib::skills::test_support::OpencodeHomeGuard::new(&home);
             run_desktop(name, &home)
         };
         let core = run_core(name, &home);
@@ -714,9 +726,16 @@ fn desktop_assembly_matches_core_scan_for_every_fixture() {
 /// macOS machine. Before `RuntimeScope::opencode_config_root` existed,
 /// `ops::scan` resolved `OpenCode`'s config at the hard-coded
 /// `home/.config/opencode` regardless of `XDG_CONFIG_HOME`, while the
-/// desktop's assembly overlay already resolved it through
-/// `skill_studio_host::opencode_config_dir` - the same override-aware rule
-/// this test pins for both sides.
+/// desktop's assembly overlay already resolved it through the
+/// override-aware `skill_studio_host::opencode_config_dir`. `core_scan`
+/// itself never reads `XDG_CONFIG_HOME` - this test pins `run_core`'s side
+/// to the same moved directory explicitly, via
+/// `run_core_with_opencode_root`'s `opencode_config_root` argument, rather
+/// than having `core` read the override itself. Unlike
+/// `desktop_assembly_matches_core_scan_for_every_fixture`, this test does
+/// not use `OpencodeHomeGuard`/`SKILL_STUDIO_FIXTURE`: it sets
+/// `XDG_CONFIG_HOME` directly and deliberately exercises the desktop's
+/// real, override-aware resolver.
 /// Expectation: `run_core` and `run_desktop` agree, and both see the skill
 /// disabled - neither silently misses the override and falls back to the
 /// (here, empty) default directory.
