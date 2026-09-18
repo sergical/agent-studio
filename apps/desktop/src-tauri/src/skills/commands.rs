@@ -1357,14 +1357,16 @@ mod tests {
 
         // Seed the on-disk store the way the background loop's last check
         // would have left it before `update_skill` ran: both owners outdated.
-        let store_state = |installed: &str, latest: &str| skill_update_check::SkillUpdateState {
-            repo: "obra/write-tests".to_string(),
-            path: "skills/alpha".to_string(),
-            installed_commit: Some(installed.to_string()),
-            latest_commit: Some(latest.to_string()),
-            latest_commit_at: None,
-            checked_at: chrono::Utc::now().to_rfc3339(),
-            error: None,
+        let store_state = |installed: &str, latest: &str, error: Option<&str>| {
+            skill_update_check::SkillUpdateState {
+                repo: "obra/write-tests".to_string(),
+                path: "skills/alpha".to_string(),
+                installed_commit: Some(installed.to_string()),
+                latest_commit: Some(latest.to_string()),
+                latest_commit_at: None,
+                checked_at: chrono::Utc::now().to_rfc3339(),
+                error: error.map(str::to_string),
+            }
         };
         let store = skill_update_check::UpdateCheckStore {
             version: 2,
@@ -1373,11 +1375,14 @@ mod tests {
             owners: [
                 (
                     "skills-sh/global".to_string(),
-                    store_state("old-a", "new-a"),
+                    // A stale error from a prior failed check, still on
+                    // this owner's record when the update that just
+                    // succeeded runs - N2 (review round 3) clears it.
+                    store_state("old-a", "new-a", Some("gh: rate limited")),
                 ),
                 (
                     "dotagents/global".to_string(),
-                    store_state("old-b", "new-b"),
+                    store_state("old-b", "new-b", None),
                 ),
             ]
             .into_iter()
@@ -1395,6 +1400,15 @@ mod tests {
         assert_eq!(
             built.skills[0].update_owner_ids,
             vec!["dotagents/global".to_string()]
+        );
+        let refreshed = skill_update_check::read_update_check_store(&app_data);
+        assert_eq!(
+            refreshed
+                .owners
+                .get("skills-sh/global")
+                .and_then(|s| s.error.as_deref()),
+            None,
+            "a successful update must clear the stale error on the rewritten entry"
         );
         assert!(
             built.skills[0].has_update,
@@ -1530,6 +1544,62 @@ mod tests {
         assert!(
             !skills[0].has_update,
             "the pre-update legacy pair must not resurrect the badge on the next full rebuild"
+        );
+    }
+
+    /// `update_for_a_project_owner_does_not_write_a_global_legacy_record_or_names_the_borrowed_state`
+    /// (N2, review round 3): the round-2 `clear_owner_after_update` fell
+    /// back to `legacy_skills[skill_name]` for *any* owner with no `owners`
+    /// entry, wider than `state_for_owner`'s read-side fallback (sole
+    /// matching Global owner only). Seeds a Project owner with no `owners`
+    /// entry and a `legacy_skills["alpha"]` record a pre-3.6b Global-only
+    /// checker wrote - a real shape, since the legacy store never
+    /// distinguished scope. Without N2's fix this owner would get that
+    /// Global-scoped commit pair written into `owners[owner_id]`, in effect
+    /// reading a Global check result for a Project deployment. Asserts the
+    /// call is a no-op instead: `owners` gains no entry for the Project id.
+    #[test]
+    fn update_for_a_project_owner_does_not_write_a_global_legacy_record_or_names_the_borrowed_state(
+    ) {
+        let tmp = tempfile::tempdir().unwrap();
+        let app_data = tmp.path().join("app-data");
+        std::fs::create_dir_all(&app_data).unwrap();
+
+        let owner_id = "owner:v1/project/-/alpha";
+        let update_check_path = skill_update_check::update_check_path(&app_data);
+        std::fs::create_dir_all(update_check_path.parent().unwrap()).unwrap();
+        // A genuine migrated v1 store: no `owners` entry for this Project
+        // owner, only the legacy name-keyed pair a Global-only checker left
+        // behind.
+        std::fs::write(
+            &update_check_path,
+            serde_json::json!({
+                "checked_at": "2026-01-01T00:00:00Z",
+                "gh_status": {"kind": "ok"},
+                "skills": {
+                    "alpha": {
+                        "repo": "obra/write-tests",
+                        "path": "skills/alpha",
+                        "installed_commit": "old-a",
+                        "latest_commit": "new-a",
+                        "latest_commit_at": null,
+                        "checked_at": "2026-01-01T00:00:00Z",
+                        "error": null
+                    }
+                }
+            })
+            .to_string(),
+        )
+        .unwrap();
+
+        skill_update_check::clear_owner_after_update(&app_data, owner_id, &[owner_id.to_string()])
+            .unwrap();
+
+        let store = skill_update_check::read_update_check_store(&app_data);
+        assert!(
+            !store.owners.contains_key(owner_id),
+            "a Project owner must not inherit a Global-scoped legacy record: {:?}",
+            store.owners
         );
     }
 
@@ -3095,7 +3165,25 @@ fn clear_outdated_state(
     owner_id: Option<&str>,
 ) -> Result<Option<skill_refresh::SkillSnapshot>, String> {
     if let Some(owner_id) = owner_id {
-        skill_update_check::clear_owner_after_update(app_data, owner_id, skill_name)?;
+        // `legacy_fallback_name` (inside `clear_owner_after_update`) needs
+        // every currently-known owner id to tell a sole Global owner from
+        // a name shared by more than one - the same set `state_for_owner`
+        // checks against on the read side.
+        let current_owner_ids: Vec<String> = refresh_state
+            .snapshot
+            .read()
+            .map_err(|e| format!("snapshot lock poisoned: {e}"))?
+            .as_ref()
+            .map(|snapshot| {
+                snapshot
+                    .skills
+                    .iter()
+                    .flat_map(|skill| skill.deployments.iter())
+                    .filter_map(|deployment| deployment.owner_id.clone())
+                    .collect()
+            })
+            .unwrap_or_default();
+        skill_update_check::clear_owner_after_update(app_data, owner_id, &current_owner_ids)?;
     }
     skill_refresh::patch_snapshot(refresh_state, |snapshot| {
         if let Some(entry) = snapshot.skills.iter_mut().find(|s| s.name == skill_name) {

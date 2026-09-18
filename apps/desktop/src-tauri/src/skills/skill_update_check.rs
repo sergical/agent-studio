@@ -218,6 +218,25 @@ pub fn has_update(state: &SkillUpdateState) -> bool {
     }
 }
 
+/// The legacy skill name `owner_id`'s name-keyed fallback would read from
+/// `legacy_skills`, or `None` when the fallback doesn't apply: accepted only
+/// for the sole matching Global owner, since Project owners never inherit
+/// records the old Global-only checker wrote. Shared by `state_for_owner`
+/// and `clear_owner_after_update` (N2, review round 3) so the write side
+/// can't rewrite an entry the read side would never have served.
+fn legacy_fallback_name(owner_id: &str, current_owner_ids: &[String]) -> Option<String> {
+    let parsed = super::skill_ownership::parse_owner_id(owner_id)?;
+    if parsed.scope != InstallScope::Global {
+        return None;
+    }
+    let matching = current_owner_ids
+        .iter()
+        .filter_map(|id| super::skill_ownership::parse_owner_id(id))
+        .filter(|candidate| candidate.name == parsed.name)
+        .count();
+    (matching == 1).then_some(parsed.name)
+}
+
 /// Resolve update state for one exact lifecycle owner. A legacy name-keyed
 /// state is accepted only for the sole matching Global owner; Project owners
 /// never inherit records written by the old Global-only checker.
@@ -229,18 +248,8 @@ pub fn state_for_owner<'a>(
     if let Some(state) = store.owners.get(owner_id) {
         return Some(state);
     }
-    let parsed = super::skill_ownership::parse_owner_id(owner_id)?;
-    if parsed.scope != InstallScope::Global {
-        return None;
-    }
-    let matching = current_owner_ids
-        .iter()
-        .filter_map(|id| super::skill_ownership::parse_owner_id(id))
-        .filter(|candidate| candidate.name == parsed.name)
-        .count();
-    (matching == 1)
-        .then(|| store.legacy_skills.get(&parsed.name))
-        .flatten()
+    let name = legacy_fallback_name(owner_id, current_owner_ids)?;
+    store.legacy_skills.get(&name)
 }
 
 /// Flatten `store` into the DTO the frontend reads off `SkillSnapshot`.
@@ -998,29 +1007,32 @@ pub fn check_now(
 /// against this owner yet, there is no `owners` entry to remove, so the
 /// fallback to `legacy_skills[skill_name]` kept serving the pre-update
 /// commit pair and the badge came back. Reads the existing state from
-/// `owners`, falling back to `legacy_skills[skill_name]` the same way
-/// `state_for_owner` does for a sole Global owner, sets `installed_commit`
-/// to the already-recorded `latest_commit` (the value `has_update`
-/// compares it against, for both a Dotagents commit and a skills.sh tree
-/// hash) and writes it into `owners[owner_id]` - migrating a legacy record
-/// forward so the next lookup finds it directly and the fallback never
-/// gets a chance to re-serve the stale pair. A no-op (not an error) when
-/// neither map has a record for this owner to update.
+/// `owners`, falling back to `legacy_skills` only when `legacy_fallback_name`
+/// says `state_for_owner` would have used it too (N2, review round 3 - the
+/// round-2 shape fell back on `skill_name` alone, so a Project owner with
+/// no `owners` entry could read a Global-scoped legacy record it never
+/// wrote), sets `installed_commit` to the already-recorded `latest_commit`
+/// (the value `has_update` compares it against, for both a Dotagents
+/// commit and a skills.sh tree hash), clears `error` (stale now that the
+/// update succeeded), and writes it into `owners[owner_id]` - migrating a
+/// legacy record forward so the next lookup finds it directly and the
+/// fallback never gets a chance to re-serve the stale pair. A no-op (not
+/// an error) when neither map has a record for this owner to update.
 pub fn clear_owner_after_update(
     app_data: &Path,
     owner_id: &str,
-    skill_name: &str,
+    current_owner_ids: &[String],
 ) -> Result<(), String> {
     let path = update_check_path(app_data);
     let mut store = read_update_check_store_at(&path);
-    let existing = store
-        .owners
-        .get(owner_id)
-        .cloned()
-        .or_else(|| store.legacy_skills.get(skill_name).cloned());
+    let existing = store.owners.get(owner_id).cloned().or_else(|| {
+        legacy_fallback_name(owner_id, current_owner_ids)
+            .and_then(|name| store.legacy_skills.get(&name).cloned())
+    });
     if let Some(mut state) = existing {
         state.installed_commit.clone_from(&state.latest_commit);
         state.checked_at = Utc::now().to_rfc3339();
+        state.error = None;
         store.owners.insert(owner_id.to_string(), state);
         write_store(app_data, &store)?;
     }
