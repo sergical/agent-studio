@@ -297,7 +297,22 @@ fn run_desktop(name: &str, home: &Path) -> BTreeMap<String, Vec<Value>> {
 /// assert on more than `owner_kind` (mutability, `source_kind`, `owner_id`,
 /// `id`) via [`deployment_at`], where the flattened JSON rows `run_core`
 /// produces don't carry every field.
-fn core_scan(home: &Path, projects: &[PathBuf]) -> skill_studio_core::dto::Inventory {
+/// `opencode_config_root` is normally left `None`, which resolves to
+/// `skill_studio_host::opencode_config_dir_under(home)` - deterministic,
+/// ignoring `XDG_CONFIG_HOME`/`OPENCODE_CONFIG_DIR` entirely. Reading those
+/// env vars here (the way `skill_studio_host::opencode_config_dir` does)
+/// would race every other test in this file that mutates them under
+/// [`home_env_lock`]: unlike `run_desktop`, this function is called by the
+/// parity loop test *outside* that lock, so a concurrent env mutation could
+/// leak into this scan. A caller that specifically wants to pin an
+/// `XDG_CONFIG_HOME`-relative directory (the one legitimate reason to read
+/// that override) passes it explicitly instead - see
+/// `opencode_config_dir_resolves_the_same_on_linux_and_macos_rules_or_names_the_diverging_scan`.
+fn core_scan(
+    home: &Path,
+    projects: &[PathBuf],
+    opencode_config_root: Option<&Path>,
+) -> skill_studio_core::dto::Inventory {
     let ports = Ports {
         fs: Arc::new(RealFs::new()),
         clock: Arc::new(FakeClock::at(0)),
@@ -312,7 +327,11 @@ fn core_scan(home: &Path, projects: &[PathBuf]) -> skill_studio_core::dto::Inven
     };
     let mut scope = RuntimeScope::fixture(home);
     scope.read_timeout_ms = 10_000;
-    scope.opencode_config_root = Some(skill_studio_host::opencode_config_dir(home));
+    scope.opencode_config_root = Some(
+        opencode_config_root
+            .map(Path::to_path_buf)
+            .unwrap_or_else(|| skill_studio_host::opencode_config_dir_under(home)),
+    );
     if !projects.is_empty() {
         scope.projects = ProjectSelection::Explicit {
             paths: projects.to_vec(),
@@ -324,12 +343,26 @@ fn core_scan(home: &Path, projects: &[PathBuf]) -> skill_studio_core::dto::Inven
 }
 
 fn run_core(name: &str, home: &Path) -> BTreeMap<String, Vec<Value>> {
+    run_core_with_opencode_root(name, home, None)
+}
+
+/// Same as [`run_core`], but with an explicit `opencode_config_root` - see
+/// [`core_scan`]'s doc for why the plain path can't just read the env
+/// override itself.
+fn run_core_with_opencode_root(
+    name: &str,
+    home: &Path,
+    opencode_config_root: Option<&Path>,
+) -> BTreeMap<String, Vec<Value>> {
     let projects: Vec<PathBuf> = if name == "project" {
         vec![home.join("proj")]
     } else {
         Vec::new()
     };
-    project_core(&core_scan(home, &projects), home)
+    project_core(
+        &core_scan(home, &projects, opencode_config_root),
+        home,
+    )
 }
 
 /// A minimal spec-valid `SKILL.md`, matching
@@ -465,7 +498,7 @@ path = "skills/docs-writer"
     )
     .unwrap();
 
-    let inventory = core_scan(&home, &[]);
+    let inventory = core_scan(&home, &[], None);
 
     let docs_row = deployment_at(&inventory, "docs-writer", &home, &docs_writer);
     assert_eq!(docs_row.owner_kind, LifecycleOwnerKind::Dotagents);
@@ -729,7 +762,7 @@ fn opencode_config_dir_resolves_the_same_on_linux_and_macos_rules_or_names_the_d
         std::env::set_var("XDG_CONFIG_HOME", &xdg_config_home);
     }
     let desktop = run_desktop("disabled", &home);
-    let core = run_core("disabled", &home);
+    let core = run_core_with_opencode_root("disabled", &home, Some(&xdg_opencode_dir));
     // SAFETY: same as above - still under `home_env_lock`.
     #[allow(unsafe_code)]
     unsafe {
@@ -897,7 +930,7 @@ fn skills_sh_lock_only_matches_same_agents_root() {
     let project_skill = write_universal_skill(&project, "find-bugs");
     write_skills_sh_lock(&home, "find-bugs");
 
-    let inventory = core_scan(&home, std::slice::from_ref(&project));
+    let inventory = core_scan(&home, std::slice::from_ref(&project), None);
 
     let global = deployment_at(&inventory, "find-bugs", &home, &global_skill);
     assert_eq!(global.owner_kind, LifecycleOwnerKind::SkillsSh);
@@ -929,7 +962,7 @@ fn exact_project_dual_ledger_owner_is_ambiguous_and_read_only() {
     write_dotagents_ledger(&project.join(".agents"), "find-bugs");
     write_skills_sh_lock(&project, "find-bugs");
 
-    let inventory = core_scan(&home, std::slice::from_ref(&project));
+    let inventory = core_scan(&home, std::slice::from_ref(&project), None);
     let row = deployment_at(&inventory, "find-bugs", &home, &skill_dir);
 
     assert_eq!(row.owner_kind, LifecycleOwnerKind::Ambiguous);
@@ -960,7 +993,7 @@ fn frontmatter_name_cannot_claim_a_skills_sh_owner() {
     .unwrap();
     write_skills_sh_lock(&home, "bar");
 
-    let inventory = core_scan(&home, &[]);
+    let inventory = core_scan(&home, &[], None);
     let row = deployment_at(&inventory, "foo", &home, &skill_dir);
 
     assert_eq!(row.owner_kind, LifecycleOwnerKind::Manual);
@@ -994,7 +1027,7 @@ fn frontmatter_name_cannot_claim_a_dotagents_owner() {
     .unwrap();
     write_dotagents_ledger(&home.join(".agents"), "bar");
 
-    let inventory = core_scan(&home, &[]);
+    let inventory = core_scan(&home, &[], None);
     let row = deployment_at(&inventory, "foo", &home, &skill_dir);
 
     assert_eq!(row.owner_kind, LifecycleOwnerKind::Ambiguous);
@@ -1029,7 +1062,7 @@ fn unrecorded_first_class_per_harness_folders_remain_manual_despite_universal_lo
         .map(|(label, root)| (*label, write_skill_at(&home.join(root), "find-bugs")))
         .collect();
 
-    let inventory = core_scan(&home, &[]);
+    let inventory = core_scan(&home, &[], None);
     for (label, skill_dir) in skill_dirs {
         let row = deployment_at(&inventory, "find-bugs", &home, &skill_dir);
         assert_eq!(row.owner_kind, LifecycleOwnerKind::Manual, "{label}");
@@ -1056,7 +1089,7 @@ fn copy_ownership_requires_an_exact_recorded_deployment_identity() {
     let skill_dir = home.join(".codex/skills/find-bugs");
     write_skill_content(&skill_dir, "original content");
 
-    let before = core_scan(&home, &[]);
+    let before = core_scan(&home, &[], None);
     let content_hash = bare_fingerprint(&before, "find-bugs", &home, &skill_dir);
 
     let deployment_id = skill_studio_lib::skill_deployment::deployment_id(
@@ -1080,7 +1113,7 @@ fn copy_ownership_requires_an_exact_recorded_deployment_identity() {
     );
     skill_studio_lib::skill_fork_registry::write_fork_registry(&home, &registry).unwrap();
 
-    let matched = core_scan(&home, &[]);
+    let matched = core_scan(&home, &[], None);
     assert_eq!(
         deployment_at(&matched, "find-bugs", &home, &skill_dir).owner_kind,
         LifecycleOwnerKind::Copy
@@ -1095,7 +1128,7 @@ fn copy_ownership_requires_an_exact_recorded_deployment_identity() {
     skill_studio_lib::skill_fork_registry::write_fork_registry(&home, &mismatched_registry)
         .unwrap();
 
-    let mismatched = core_scan(&home, &[]);
+    let mismatched = core_scan(&home, &[], None);
     assert_eq!(
         deployment_at(&mismatched, "find-bugs", &home, &skill_dir).owner_kind,
         LifecycleOwnerKind::Manual
@@ -1117,7 +1150,7 @@ fn copy_ownership_rejects_edited_content() {
     let skill_dir = home.join(".codex/skills/find-bugs");
     write_skill_content(&skill_dir, "original content");
 
-    let before = core_scan(&home, &[]);
+    let before = core_scan(&home, &[], None);
     let content_hash = bare_fingerprint(&before, "find-bugs", &home, &skill_dir);
     let deployment_id = skill_studio_lib::skill_deployment::deployment_id(
         "find-bugs",
@@ -1136,7 +1169,7 @@ fn copy_ownership_rejects_edited_content() {
 
     write_skill_content(&skill_dir, "edited content");
 
-    let after = core_scan(&home, &[]);
+    let after = core_scan(&home, &[], None);
     let row = deployment_at(&after, "find-bugs", &home, &skill_dir);
     assert_eq!(row.owner_kind, LifecycleOwnerKind::Manual);
     assert_eq!(row.mutability, DeploymentMutability::ReadOnly);
@@ -1173,7 +1206,7 @@ fn copy_ownership_rejects_an_empty_legacy_content_hash() {
     );
     skill_studio_lib::skill_fork_registry::write_fork_registry(&home, &registry).unwrap();
 
-    let inventory = core_scan(&home, &[]);
+    let inventory = core_scan(&home, &[], None);
     let row = deployment_at(&inventory, "find-bugs", &home, &skill_dir);
     assert_eq!(row.owner_kind, LifecycleOwnerKind::Manual);
     assert_eq!(row.mutability, DeploymentMutability::ReadOnly);
@@ -1194,7 +1227,7 @@ fn named_dotagents_row_is_mutable_dotagents() {
     let skill_dir = write_universal_skill(&home, "find-bugs");
     write_dotagents_ledger(&home.join(".agents"), "find-bugs");
 
-    let inventory = core_scan(&home, &[]);
+    let inventory = core_scan(&home, &[], None);
     let row = deployment_at(&inventory, "find-bugs", &home, &skill_dir);
 
     assert_eq!(row.owner_kind, LifecycleOwnerKind::Dotagents);
