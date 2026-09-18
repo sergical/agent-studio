@@ -14,8 +14,9 @@
 //
 // The 6 h background loop (`spawn_update_check_loop`) is the only trigger for
 // a full check; there is no `check_skill_updates_now` command exposed to the
-// frontend. `check_now_for_owner` re-checks one skill after `update_skill`
-// succeeds, sharing the same "in progress" guard.
+// frontend. `update_skill`/`update_all_skills` instead call
+// `clear_owner_after_update` right after a successful `ops::update`, which
+// drops the owner's persisted state directly rather than re-running `gh api`.
 // ============================================================================
 
 use std::collections::{BTreeMap, HashMap, VecDeque};
@@ -890,9 +891,9 @@ pub fn run_update_check_for_owners(
 }
 
 /// Resolve `gh`, then run the check for real - the production entry point
-/// both `spawn_update_check_loop` and `check_now_for_owner` call. When
-/// `gh` isn't installed, writes `gh_status: Missing` without doing any
-/// lookups (and without touching previously recorded skill states).
+/// `spawn_update_check_loop`'s `check_now` call reaches. When `gh` isn't
+/// installed, writes `gh_status: Missing` without doing any lookups (and
+/// without touching previously recorded skill states).
 fn run_update_check_now(
     home: &Path,
     project_paths: &[PathBuf],
@@ -924,8 +925,8 @@ fn run_update_check_now(
     }
 }
 
-/// Shared "a check is already running" guard, so the background loop and a
-/// per-owner `check_now_for_owner` call never run `gh api` concurrently.
+/// Shared "a check is already running" guard for the background loop's
+/// `check_now` call.
 #[derive(Clone, Default)]
 pub struct UpdateCheckState {
     in_progress: std::sync::Arc<Mutex<bool>>,
@@ -988,55 +989,25 @@ pub fn check_now(
     Ok(summarize(&store))
 }
 
-/// Re-check a single skill (after a successful `update_skill`) and request a
-/// rebuild. Best-effort: errors are logged, never propagated, since this
-/// runs after the update itself already succeeded. Shares `state`'s
-/// "in progress" guard with the background loop's `check_now`: if a full
-/// check is already running, this skips its own `gh api` calls entirely
-/// (rather than queuing behind it) and just requests a rebuild, since the
-/// full check it's yielding to will cover this skill anyway.
-pub fn check_now_for_owner(
-    app: &AppHandle,
-    state: &UpdateCheckState,
-    owner_id: &str,
-    project_paths: &[PathBuf],
-) {
-    if !state.try_begin() {
-        skill_refresh::request_snapshot_rebuild(app);
-        return;
+/// Drop `owner_id`'s persisted update-check state right after a successful
+/// `ops::update` (B1 - the review round 1 fix that replaced the old
+/// `check_now_for_owner` re-check): without this, the store still holds the
+/// pre-update `installed_commit`, so the next full rebuild's
+/// `apply_skill_snapshot_overlays` recomputes `has_update` from the stale
+/// pair and the badge reappears before the background loop's own 6 h check
+/// reconciles it. A no-op (not an error) when the owner has no persisted
+/// state to drop.
+pub fn clear_owner_after_update(app_data: &Path, owner_id: &str) -> Result<(), String> {
+    let path = update_check_path(app_data);
+    let mut store = read_update_check_store_at(&path);
+    if store.owners.remove(owner_id).is_some() {
+        write_store(app_data, &store)?;
     }
-
-    let Some(home) = dirs::home_dir() else {
-        eprintln!("skill update check: could not find home directory");
-        state.end();
-        return;
-    };
-    let Ok(app_data) = app.path().app_data_dir() else {
-        eprintln!("skill update check: could not resolve app data dir");
-        state.end();
-        return;
-    };
-    let owner_ids = [owner_id.to_string()];
-    if let Some(gh_bin) = resolve_gh_binary() {
-        run_update_check_for_owners(
-            &home,
-            project_paths,
-            &app_data,
-            &GhCommitLookup {
-                gh_bin: gh_bin.clone(),
-            },
-            &GhTreeLookup { gh_bin },
-            &owner_ids,
-        );
-    } // else: gh_status stays whatever it already was; nothing to re-check
-    state.end();
-    skill_refresh::request_snapshot_rebuild(app);
+    Ok(())
 }
 
 /// Start the background loop on its own thread: waits `INITIAL_DELAY`, checks,
-/// sleeps `UPDATE_CHECK_INTERVAL`, repeats for the app's lifetime. Registers
-/// its `UpdateCheckState` as managed state so `check_now_for_owner` shares
-/// the same "in progress" guard.
+/// sleeps `UPDATE_CHECK_INTERVAL`, repeats for the app's lifetime.
 pub fn spawn_update_check_loop(app: AppHandle) {
     let state = UpdateCheckState::default();
     app.manage(state.clone());

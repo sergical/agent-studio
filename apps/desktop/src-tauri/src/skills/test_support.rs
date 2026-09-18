@@ -253,3 +253,44 @@ impl Drop for PathGuard {
         }
     }
 }
+
+/// Pins `HOME` to `dir` for the guarded test's whole body (RAII), holding
+/// the same shared [`opencode_env_lock`] as `PathGuard` - a test that
+/// resolves `dirs::home_dir()` (e.g. `build_update_request`'s Dotagents
+/// branch) needs `HOME` pinned to its tempdir, and a shared lock is simpler
+/// than a second one.
+pub struct HomeGuard {
+    _lock: std::sync::MutexGuard<'static, ()>,
+    prev_home: Option<std::ffi::OsString>,
+}
+
+impl HomeGuard {
+    pub fn new(dir: &Path) -> Self {
+        let lock = opencode_env_lock()
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let prev_home = std::env::var_os("HOME");
+        // SAFETY: `lock` above serializes every test that touches `HOME`.
+        #[allow(unsafe_code)]
+        unsafe {
+            std::env::set_var("HOME", dir);
+        }
+        Self {
+            _lock: lock,
+            prev_home,
+        }
+    }
+}
+
+impl Drop for HomeGuard {
+    fn drop(&mut self) {
+        // SAFETY: `self._lock` is still held for the whole body of `drop`.
+        #[allow(unsafe_code)]
+        unsafe {
+            match self.prev_home.take() {
+                Some(v) => std::env::set_var("HOME", v),
+                None => std::env::remove_var("HOME"),
+            }
+        }
+    }
+}
