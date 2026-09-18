@@ -655,14 +655,48 @@ pub fn set_harness_enabled_with(
             fs::create_dir_all(&config_dir)
                 .map_err(|e| format!("Failed to create {}: {e}", config_dir.display()))?;
             let real_fs = skill_studio_host::RealFs::new();
-            skill_studio_core::opencode_config::set_skill_denied_with(
-                &real_fs,
-                guard.as_exclusive_guard(),
-                &config_dir,
-                name,
-                !enabled,
-            )
-            .map_err(|e| e.to_string())
+            // `set_skill_denied_with` trusts its caller to already hold the
+            // exclusive lease it needs - `config_dir`'s canonical parent -
+            // and `guard` here is keyed to `home` instead, which is the
+            // same root only when `OPENCODE_CONFIG_DIR`/`XDG_CONFIG_HOME`
+            // happens to point `config_dir` directly under `home`. Reuse
+            // `guard` only when its keys actually cover that root; fall
+            // back to `set_skill_denied`, which acquires its own
+            // correctly-scoped `FileLease`, otherwise.
+            let config_home = config_dir.parent().ok_or_else(|| {
+                format!(
+                    "{} has no parent to scope the write to",
+                    config_dir.display()
+                )
+            })?;
+            let canonical_config_home = config_home
+                .canonicalize()
+                .map_err(|e| format!("Failed to canonicalize {}: {e}", config_home.display()))?;
+            let covered_by_guard = guard
+                .as_exclusive_guard()
+                .keys()
+                .iter()
+                .any(|key| key.canonical_root == canonical_config_home);
+            if covered_by_guard {
+                skill_studio_core::opencode_config::set_skill_denied_with(
+                    &real_fs,
+                    guard.as_exclusive_guard(),
+                    &config_dir,
+                    name,
+                    !enabled,
+                )
+                .map_err(|e| e.to_string())
+            } else {
+                let leases = skill_studio_host::FileLease::new(config_home.join(".leases"));
+                skill_studio_core::opencode_config::set_skill_denied(
+                    &leases,
+                    &real_fs,
+                    &config_dir,
+                    name,
+                    !enabled,
+                )
+                .map_err(|e| e.to_string())
+            }
         }
         "claude-code" => Err("Claude Code visibility needs an exact deployment target".to_string()),
         "pi" | "cursor" | "grok-build" => Err(format!(
@@ -1450,6 +1484,73 @@ mod tests {
         )
         .unwrap();
         assert!(read_opencode_denied_patterns(home).is_empty());
+    }
+
+    /// Flow: the default layout - `XDG_CONFIG_HOME` pinned under `home` by
+    /// `OpencodeHomeGuard`, so `config_dir`'s parent (`home/.config`) is a
+    /// *different* root than `home` itself, the root the desktop's
+    /// `WriteLease` (`test_guard(home)`) is keyed to. Another writer (e.g. a
+    /// concurrent CLI run) already holds the exclusive lease scoped to that
+    /// exact root - the same root `set_skill_denied`'s own
+    /// `home_only_scope` acquires.
+    /// Expectation: `set_harness_enabled_with`'s `OpenCode` arm refuses
+    /// (busy) rather than writing, because it acquires its own lease on
+    /// `config_dir`'s parent instead of only trusting the caller's
+    /// `home`-rooted guard.
+    /// Failure: the write proceeds anyway - which would mean the desktop's
+    /// `home` guard was reused (or coverage skipped) for a root it doesn't
+    /// actually cover, racing the other writer.
+    #[test]
+    fn opencode_disable_refuses_a_writer_already_holding_the_config_dirs_own_lease_or_writes_past_it(
+    ) {
+        let tmp = tempfile::tempdir().unwrap();
+        let home = tmp.path();
+        let _opencode_guard = OpencodeHomeGuard::new(home);
+        let data_root = home.join(".skill-studio");
+        let config_dir = skill_studio_host::opencode_config_dir(home);
+        let config_home = config_dir.parent().unwrap();
+        std::fs::create_dir_all(config_home).unwrap();
+
+        let ports = skill_studio_core::ports::Ports {
+            fs: std::sync::Arc::new(skill_studio_host::RealFs::new()),
+            clock: std::sync::Arc::new(skill_studio_core::testing::FakeClock::at(0)),
+            ids: std::sync::Arc::new(skill_studio_core::testing::FakeIds::default()),
+            leases: std::sync::Arc::new(skill_studio_host::FileLease::new(
+                config_home.join(".leases"),
+            )),
+            history: std::sync::Arc::new(skill_studio_core::testing::NoHistory),
+            sink: std::sync::Arc::new(skill_studio_core::testing::RecordingSink::default()),
+            spawner: None,
+            discovery: None,
+            tools: None,
+            catalog: std::sync::Arc::new(skill_studio_core::harness::HarnessCatalog::builtin()),
+        };
+        let rt = skill_studio_core::ports::Runtime::new(
+            &skill_studio_core::scope::RuntimeScope::fixture(config_home),
+            ports,
+        )
+        .unwrap();
+        let other_guard =
+            skill_studio_core::ports::acquire_exclusive(rt.ports.leases.as_ref(), &rt.scope)
+                .unwrap();
+
+        let err = set_harness_enabled_with(
+            home,
+            &data_root,
+            "find-bugs",
+            "opencode",
+            false,
+            &[],
+            &test_guard(home),
+        )
+        .expect_err(
+            "the OpenCode write proceeded despite another writer already holding config_dir's own lease",
+        );
+        assert!(
+            err.contains("holds the lease") || err.contains("busy"),
+            "error {err} doesn't look like a lease refusal"
+        );
+        drop(other_guard);
     }
 
     #[test]

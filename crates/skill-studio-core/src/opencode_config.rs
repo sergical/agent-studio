@@ -311,13 +311,20 @@ pub fn set_skill_denied(
     set_skill_denied_with(fs, &guard, &config_dir, name, denied)
 }
 
-/// The lease-holding half of [`set_skill_denied`]. The caller already holds
-/// an exclusive lease on `config_dir`'s parent - the desktop command's
-/// `WriteLease`, or a second lease request from the same process - so this
-/// must not acquire a second one; advisory locks do not nest in-process, and
-/// `OPENCODE_CONFIG_DIR`/`XDG_CONFIG_HOME` pointing back under the held
-/// home's own lease root would otherwise self-deadlock the caller against
-/// itself.
+/// The lease-holding half of [`set_skill_denied`]. This trusts the caller to
+/// already hold an exclusive lease keyed to `config_dir`'s canonical parent -
+/// it does not verify coverage, and acquiring a second lease on that same
+/// root here would self-deadlock a caller whose held lease already covers
+/// it (advisory locks do not nest in-process).
+///
+/// A caller whose held lease is scoped to a different root - the desktop
+/// command's `WriteLease`, keyed to the app's `home`, does not cover
+/// `config_dir`'s parent unless `OPENCODE_CONFIG_DIR`/`XDG_CONFIG_HOME`
+/// happens to point `config_dir` directly under `home` - must check
+/// `guard.keys()` for that coverage itself before calling this rather than
+/// [`set_skill_denied`], and fall back to [`set_skill_denied`] (which
+/// acquires its own correctly-scoped lease) when it isn't covered; see
+/// `skill_harness_disable.rs`'s `OpenCode` arm.
 ///
 /// `config_dir` need not already be resolved - this re-resolves it itself
 /// (see [`resolve_config_dir`]; a no-op when it's already canonical), the
