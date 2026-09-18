@@ -1430,6 +1430,7 @@ pub(crate) fn core_scan_installed_skills(
     scope.projects = skill_studio_core::scope::ProjectSelection::Explicit {
         paths: project_paths.to_vec(),
     };
+    scope.opencode_config_root = Some(skill_studio_host::opencode_config_dir(home));
     // The 2s default guards stateless CLI/MCP calls; the desktop refresh
     // runs in the background and must reach every root even on a home with
     // many projects and plugin caches.

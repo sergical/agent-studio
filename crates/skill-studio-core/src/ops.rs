@@ -310,7 +310,8 @@ pub(crate) fn scan_inner(
     let home = &rt.scope.home.lexical;
 
     let step_start = clock.monotonic();
-    let disable_sources = DisableSources::read(fs, home);
+    let disable_sources =
+        DisableSources::read(fs, home, rt.scope.raw.opencode_config_root.as_deref());
 
     // Full ownership classification needs the dotagents and skills.sh
     // ledgers for every scope this scan covers (the home's `.agents` plus
@@ -1551,10 +1552,10 @@ struct DisableSources {
     /// false` rows name. Mirrors `codex_skill_config.rs`
     /// `read_disabled_skill_md_paths`.
     codex_disabled_skill_md: Vec<PathBuf>,
-    /// Skill names `permission.skill.<name> = "deny"` denies in
-    /// `opencode.json`. Mirrors `opencode_skill_permission.rs`
-    /// `read_denied_patterns`; the core matches names exactly and does not
-    /// implement that function's `*` glob support.
+    /// `permission.skill` patterns `opencode.json` denies, from
+    /// [`crate::opencode_config::read_denied_patterns`] - the same read the
+    /// write path and every adapter use, so a scan and a deny write always
+    /// agree on what "denied" means.
     opencode_denied_skills: Vec<String>,
     /// Claude Code `settings.json` `enabledPlugins["<plugin>@<marketplace>"]`,
     /// keyed by that same `<plugin>@<marketplace>` id.
@@ -1562,10 +1563,16 @@ struct DisableSources {
 }
 
 impl DisableSources {
-    fn read(fs: &dyn ScopeFs, home: &Path) -> Self {
+    fn read(fs: &dyn ScopeFs, home: &Path, opencode_config_root: Option<&Path>) -> Self {
+        let opencode_config_dir = opencode_config_root
+            .map(Path::to_path_buf)
+            .unwrap_or_else(|| home.join(".config").join("opencode"));
         DisableSources {
             codex_disabled_skill_md: read_codex_disabled_skill_md_paths(fs, home),
-            opencode_denied_skills: read_opencode_denied_skills(fs, home),
+            opencode_denied_skills: crate::opencode_config::read_denied_patterns(
+                fs,
+                &opencode_config_dir,
+            ),
             claude_enabled_plugins: read_claude_enabled_plugins(fs, home),
         }
     }
@@ -1594,28 +1601,6 @@ fn read_codex_disabled_skill_md_paths(fs: &dyn ScopeFs, home: &Path) -> Vec<Path
         .filter(|row| row.get("enabled").and_then(toml::Value::as_bool) == Some(false))
         .filter_map(|row| row.get("path").and_then(toml::Value::as_str))
         .map(PathBuf::from)
-        .collect()
-}
-
-fn read_opencode_denied_skills(fs: &dyn ScopeFs, home: &Path) -> Vec<String> {
-    let path = home.join(".config").join("opencode").join("opencode.json");
-    let Ok(bytes) = fs.read_capped(&path, SKILL_MD_MAX_BYTES) else {
-        return Vec::new();
-    };
-    let Ok(value) = serde_json::from_slice::<serde_json::Value>(&bytes) else {
-        return Vec::new();
-    };
-    let Some(skill) = value
-        .get("permission")
-        .and_then(|p| p.get("skill"))
-        .and_then(|s| s.as_object())
-    else {
-        return Vec::new();
-    };
-    skill
-        .iter()
-        .filter(|(_, v)| v.as_str() == Some("deny"))
-        .map(|(name, _)| name.clone())
         .collect()
 }
 
@@ -1670,7 +1655,7 @@ fn native_disabled_by(
             sources
                 .opencode_denied_skills
                 .iter()
-                .any(|n| n == name)
+                .any(|pattern| crate::opencode_config::pattern_matches(pattern, name))
                 .then_some(DisabledBy::OpencodePermission)
         }
         _ => None,

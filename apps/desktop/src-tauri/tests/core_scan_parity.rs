@@ -245,6 +245,12 @@ fn home_env_lock() -> &'static std::sync::Mutex<()> {
     LOCK.get_or_init(|| std::sync::Mutex::new(()))
 }
 
+/// Runs the desktop's assembly path. The caller must already hold
+/// [`home_env_lock`]: this swaps the process-global `HOME` var (see the
+/// lock's own doc), and the lock is not reentrant - a caller that also
+/// wants to set another process-global var (e.g. `XDG_CONFIG_HOME`) around
+/// this same call takes the one lock once, rather than this function
+/// taking it again itself.
 fn run_desktop(name: &str, home: &Path) -> BTreeMap<String, Vec<Value>> {
     if name == "project" {
         let mut registry = read_fork_registry(home).unwrap();
@@ -260,7 +266,6 @@ fn run_desktop(name: &str, home: &Path) -> BTreeMap<String, Vec<Value>> {
     let mut invocation_index = SkillInvocationIndex::default();
     let paths = BuildPaths::new(&cache_path, &runs_root, &update_check_path);
 
-    let _guard = home_env_lock().lock().unwrap_or_else(|p| p.into_inner());
     let previous_home = std::env::var("HOME").ok();
     unsafe {
         std::env::set_var("HOME", home);
@@ -297,6 +302,7 @@ fn core_scan(home: &Path, projects: &[PathBuf]) -> skill_studio_core::dto::Inven
     };
     let mut scope = RuntimeScope::fixture(home);
     scope.read_timeout_ms = 10_000;
+    scope.opencode_config_root = Some(skill_studio_host::opencode_config_dir(home));
     if !projects.is_empty() {
         scope.projects = ProjectSelection::Explicit {
             paths: projects.to_vec(),
@@ -640,7 +646,10 @@ fn desktop_assembly_matches_core_scan_for_every_fixture() {
             .materialize(&home)
             .unwrap_or_else(|e| panic!("materialize {name}: {e}"));
 
-        let desktop = run_desktop(name, &home);
+        let desktop = {
+            let _guard = home_env_lock().lock().unwrap_or_else(|p| p.into_inner());
+            run_desktop(name, &home)
+        };
         let core = run_core(name, &home);
 
         if desktop != core {
@@ -655,6 +664,73 @@ fn desktop_assembly_matches_core_scan_for_every_fixture() {
 
         std::fs::remove_dir_all(&dir).ok();
     }
+}
+
+/// Flow: `disabled`'s `opencode.json` deny rule lives under a custom
+/// `XDG_CONFIG_HOME`, not the plain `home/.config` default - the condition
+/// that moves OpenCode's config directory on a Linux desktop, where
+/// `XDG_CONFIG_HOME` is far more often already set than on a developer's
+/// macOS machine. Before `RuntimeScope::opencode_config_root` existed,
+/// `ops::scan` resolved OpenCode's config at the hard-coded
+/// `home/.config/opencode` regardless of `XDG_CONFIG_HOME`, while the
+/// desktop's assembly overlay already resolved it through
+/// `skill_studio_host::opencode_config_dir` - the same override-aware rule
+/// this test pins for both sides.
+/// Expectation: `run_core` and `run_desktop` agree, and both see the skill
+/// disabled - neither silently misses the override and falls back to the
+/// (here, empty) default directory.
+/// Failure here would mean one side finds the deny rule and the other
+/// doesn't, exactly the divergence `desktop_assembly_matches_core_scan_for_every_fixture`
+/// caught on Linux CI.
+#[test]
+fn opencode_config_dir_resolves_the_same_on_linux_and_macos_rules_or_names_the_diverging_scan() {
+    let dir = unique_temp_dir("opencode-xdg-config-home");
+    std::fs::create_dir_all(&dir).unwrap();
+    let home = dir.canonicalize().unwrap();
+    let (_, builder) = fixtures::all()
+        .into_iter()
+        .find(|(name, _)| *name == "disabled")
+        .expect("disabled fixture");
+    builder
+        .materialize(&home)
+        .unwrap_or_else(|e| panic!("materialize: {e}"));
+    // Move the fixture's own `opencode.json` out from under the default
+    // `home/.config/opencode` and into the `XDG_CONFIG_HOME` location, so a
+    // scan that ignores the override finds nothing there.
+    let xdg_config_home = dir.join("xdg-config");
+    let xdg_opencode_dir = xdg_config_home.join("opencode");
+    std::fs::create_dir_all(&xdg_opencode_dir).unwrap();
+    std::fs::rename(
+        home.join(".config/opencode/opencode.json"),
+        xdg_opencode_dir.join("opencode.json"),
+    )
+    .unwrap();
+
+    let _guard = home_env_lock().lock().unwrap_or_else(|p| p.into_inner());
+    let previous = std::env::var("XDG_CONFIG_HOME").ok();
+    unsafe {
+        std::env::set_var("XDG_CONFIG_HOME", &xdg_config_home);
+    }
+    let desktop = run_desktop("disabled", &home);
+    let core = run_core("disabled", &home);
+    unsafe {
+        match &previous {
+            Some(v) => std::env::set_var("XDG_CONFIG_HOME", v),
+            None => std::env::remove_var("XDG_CONFIG_HOME"),
+        }
+    }
+
+    assert_eq!(
+        desktop, core,
+        "desktop and core disagree once opencode.json moves under XDG_CONFIG_HOME"
+    );
+    let epsilon_deployment = &core["epsilon"][0];
+    assert_eq!(
+        epsilon_deployment["disabled_by"],
+        json!(["OpencodePermission"])
+    );
+
+    std::fs::remove_dir_all(&dir).ok();
 }
 
 /// Proves the first of the desktop's two `Ambiguous` carve-outs: a universal

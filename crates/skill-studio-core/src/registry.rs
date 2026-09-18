@@ -56,6 +56,7 @@ pub(crate) fn home_only_scope(home: &Path, fs: &dyn ScopeFs) -> Result<Normalize
         history_binding: HistoryBinding::Default,
         cache_root: None,
         data_root: None,
+        opencode_config_root: None,
         read_timeout_ms: DEFAULT_READ_TIMEOUT_MS,
         write_timeout_ms: DEFAULT_WRITE_TIMEOUT_MS,
     };

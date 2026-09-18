@@ -38,7 +38,8 @@ pub fn build_runtime_write() -> Result<Runtime, String> {
     let home = dirs::home_dir().ok_or("Could not find home directory")?;
     let data_root = data_root();
     let history_root = data_root.join("history");
-    let scope = RuntimeScope::live(home, history_root);
+    let mut scope = RuntimeScope::live(home.clone(), history_root);
+    scope.opencode_config_root = Some(skill_studio_host::opencode_config_dir(&home));
     let catalog = Arc::new(HarnessCatalog::builtin());
     let lease_root = data_root.join("leases");
     let db_path = scope.history_root.join("events.sqlite3");
