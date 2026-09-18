@@ -9,16 +9,13 @@
 //! strings and the core stays free of `std::fs` (see `docs/action-map/
 //! definition-of-done.md`'s primitive checklist).
 //!
-//! This build favors a correct, testable happy path over the desktop
-//! Codex writer's byte-for-byte comment preservation: a removed
-//! `[[skills.config]]` row here can leave its own comment orphaned in the
-//! document, where the desktop's `codex_skill_config.rs` rehomes it. Follow-up
-//! scope, not a difference in what gets toggled.
-
-use std::path::Path;
+//! Codex has no transform here: `crate::ops::set_codex_switch` shares
+//! `crate::ops::codex_write_disabled_row`, the decor-preserving
+//! `[[skills.config]]` row writer, with `set_codex_skill_disabled` rather
+//! than duplicating it as a plain-string transform - a second writer for
+//! the same file only invites the two to drift.
 
 use serde_json::{Map, Value};
-use toml_edit::{value, DocumentMut, Item, Table};
 
 use crate::error::{CoreError, ErrorCode};
 
@@ -26,82 +23,6 @@ use crate::error::{CoreError, ErrorCode};
 /// magnitude `crate::ops::SKILL_MD_MAX_BYTES` uses for `SKILL.md` - these
 /// are hand-maintained config files, not data dumps.
 pub(crate) const HARNESS_CONFIG_MAX_BYTES: u64 = 1_048_576;
-
-/// Adds or removes a `[[skills.config]]` row with `path = "<skill_md_path>"
-/// enabled = false` in a Codex `config.toml`, given its current text (`None`
-/// for a missing file). Ports `codex_skill_config.rs::set_skill_disabled`'s
-/// row logic onto a plain string.
-pub(crate) fn codex_toggle_row(
-    existing: Option<&str>,
-    skill_md_path: &Path,
-    disabled: bool,
-) -> Result<String, CoreError> {
-    let mut doc: DocumentMut = existing.unwrap_or("").parse().map_err(|e| {
-        CoreError::new(ErrorCode::Io, format!("config.toml is not valid TOML: {e}"))
-    })?;
-
-    let target = skill_md_path.to_string_lossy().into_owned();
-    let existing_index = doc
-        .get("skills")
-        .and_then(Item::as_table)
-        .and_then(|t| t.get("config"))
-        .and_then(Item::as_array_of_tables)
-        .into_iter()
-        .flatten()
-        .position(|row| row.get("path").and_then(Item::as_str) == Some(target.as_str()));
-
-    if !disabled {
-        if let Some(idx) = existing_index {
-            let array = doc["skills"]["config"]
-                .as_array_of_tables_mut()
-                .ok_or_else(|| {
-                    CoreError::new(
-                        ErrorCode::Io,
-                        "config.toml's skills.config is not an array of tables",
-                    )
-                })?;
-            array.remove(idx);
-            let array_is_empty = array.is_empty();
-            let skills_table = doc["skills"].as_table_mut().ok_or_else(|| {
-                CoreError::new(ErrorCode::Io, "config.toml's skills key is not a table")
-            })?;
-            if array_is_empty {
-                skills_table.remove("config");
-            }
-            if skills_table.is_empty() {
-                doc.as_table_mut().remove("skills");
-            }
-        }
-    } else if existing_index.is_none() {
-        let skills_table = doc
-            .entry("skills")
-            .or_insert_with(|| Item::Table(Table::new()))
-            .as_table_mut()
-            .ok_or_else(|| {
-                CoreError::new(
-                    ErrorCode::Io,
-                    "config.toml has a non-table top-level `skills` key",
-                )
-            })?;
-        let config_array = skills_table
-            .entry("config")
-            .or_insert_with(|| Item::ArrayOfTables(Default::default()))
-            .as_array_of_tables_mut()
-            .ok_or_else(|| {
-                CoreError::new(
-                    ErrorCode::Io,
-                    "config.toml has a non-array `skills.config` key",
-                )
-            })?;
-        let mut row = Table::new();
-        row["path"] = value(target);
-        row["enabled"] = value(false);
-        config_array.push(row);
-    }
-    // Already in the requested state: idempotent, nothing to change.
-
-    Ok(doc.to_string())
-}
 
 /// `true` when only `opencode.jsonc` exists: Skill Studio never parses that
 /// format, so writing `permission.skill` would either create a `.json`
@@ -246,30 +167,6 @@ pub(crate) fn pi_toggle(
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn codex_add_then_remove_round_trips() {
-        let path = Path::new("/home/skills/find-bugs/SKILL.md");
-        let disabled = codex_toggle_row(None, path, true).unwrap();
-        assert!(disabled.contains("[[skills.config]]"));
-        assert!(disabled.contains("find-bugs/SKILL.md"));
-        let enabled = codex_toggle_row(Some(&disabled), path, false).unwrap();
-        assert!(!enabled.contains("[[skills.config]]"));
-    }
-
-    #[test]
-    fn codex_disable_is_idempotent() {
-        let path = Path::new("/home/skills/find-bugs/SKILL.md");
-        let once = codex_toggle_row(None, path, true).unwrap();
-        let twice = codex_toggle_row(Some(&once), path, true).unwrap();
-        assert_eq!(once, twice);
-    }
-
-    #[test]
-    fn codex_refuses_invalid_toml() {
-        let err = codex_toggle_row(Some("not = [valid"), Path::new("/x"), true).unwrap_err();
-        assert_eq!(err.code, ErrorCode::Io);
-    }
 
     #[test]
     fn opencode_add_then_remove_round_trips() {

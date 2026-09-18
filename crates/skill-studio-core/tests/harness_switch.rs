@@ -12,7 +12,7 @@
 use std::path::Path;
 use std::sync::Arc;
 
-use skill_studio_core::dto::{RestoreRequest, SetHarnessEnabledRequest};
+use skill_studio_core::dto::{RestoreRequest, ScanRequest, SetHarnessEnabledRequest};
 use skill_studio_core::harness::HarnessCatalog;
 use skill_studio_core::identity::{AgentId, SkillName};
 use skill_studio_core::ops;
@@ -53,6 +53,28 @@ fn runtime_with(
 
 fn runtime_for(home: &Path) -> Runtime {
     runtime_with(home, Vec::new(), Arc::new(RealFs::new()))
+}
+
+/// Like [`runtime_with`], but with `RuntimeScope::codex_home` set to
+/// `codex_home` instead of defaulting to `home/.codex` - for asserting a
+/// Codex write follows `CODEX_HOME` rather than the general home directory.
+fn runtime_with_codex_home(home: &Path, codex_home: &Path) -> Runtime {
+    let history_root = home.join(".history");
+    let db_path = history_root.join("events.sqlite3");
+    let scope = RuntimeScope::fixture(home).with_codex_home(codex_home);
+    let ports = Ports {
+        fs: Arc::new(RealFs::new()),
+        clock: Arc::new(FakeClock::at(0)),
+        ids: Arc::new(FakeIds::default()),
+        leases: Arc::new(FileLease::new(home.join(".leases"))),
+        history: Arc::new(SqliteHistoryOpener::new(db_path)),
+        sink: Arc::new(RecordingSink::default()),
+        spawner: None,
+        discovery: None,
+        tools: None,
+        catalog: Arc::new(HarnessCatalog::builtin()),
+    };
+    Runtime::new(&scope, ports).unwrap()
 }
 
 fn install_universal_skill(home: &Path, name: &str) {
@@ -971,4 +993,78 @@ fn undo_of_a_failed_recreate_restore_is_refused_or_names_the_live_link_it_would_
     );
 
     std::fs::remove_dir_all(&home).ok();
+}
+
+/// `codex_switch_writes_the_config_under_codex_home_or_names_the_file_it_wrote_instead`:
+/// with `RuntimeScope::codex_home` pointed at a directory distinct from
+/// `home/.codex`, a Codex disable must write its `[[skills.config]]` row
+/// under that `codex_home`, not under the general home directory, and a
+/// fresh scan must see the deployment as disabled.
+#[test]
+fn codex_switch_writes_the_config_under_codex_home_or_names_the_file_it_wrote_instead() {
+    let home = unique_temp_dir("switch_codex_home");
+    let codex_home = unique_temp_dir("switch_codex_home_custom");
+    std::fs::create_dir_all(&codex_home).unwrap();
+    // `RuntimeScope::codex_home` has no canonical form and is checked
+    // lexically only (see its doc comment): canonicalize here so a
+    // symlinked temp dir (`/var/folders` -> `/private/var/folders` on
+    // macOS) still matches what `confine` resolves for the config file's
+    // parent.
+    let codex_home = codex_home.canonicalize().unwrap();
+    // Codex's own harness root, not the universal root: `native_disabled_by`
+    // only attributes `DisabledBy::CodexConfig` to a `RootKind::Harness`
+    // (Codex) deployment, so the scan assertion below needs one.
+    let codex_dir = home.join(CODEX_ROOT_RELATIVE).join("gamma");
+    std::fs::create_dir_all(&codex_dir).unwrap();
+    std::fs::write(
+        codex_dir.join("SKILL.md"),
+        "---\nname: gamma\ndescription: a codex-home-scoped skill\n---\nBody.\n",
+    )
+    .unwrap();
+    let rt = runtime_with_codex_home(&home, &codex_home);
+
+    ops::set_harness_enabled(
+        &rt,
+        &ctx(),
+        &SetHarnessEnabledRequest {
+            skill: SkillName("gamma".into()),
+            harness: AgentId::from(AgentId::CODEX),
+            enabled: false,
+            project_path: None,
+        },
+    )
+    .unwrap();
+
+    let default_config_path = home.join(".codex/config.toml");
+    assert!(
+        std::fs::metadata(&default_config_path).is_err(),
+        "expected no config.toml written under the general home's .codex at {}",
+        default_config_path.display()
+    );
+    let custom_config_path = codex_home.join("config.toml");
+    let text = std::fs::read_to_string(&custom_config_path).unwrap_or_else(|e| {
+        panic!(
+            "expected the row under CODEX_HOME at {}: {e}",
+            custom_config_path.display()
+        )
+    });
+    assert!(
+        text.contains("[[skills.config]]") && text.contains("gamma/SKILL.md"),
+        "expected a disabled row for gamma in {}, got:\n{text}",
+        custom_config_path.display()
+    );
+
+    let inventory = ops::scan(&rt, &ctx(), &ScanRequest::default()).unwrap();
+    let skill = inventory
+        .skills
+        .iter()
+        .find(|s| s.name.0 == "gamma")
+        .expect("gamma must still be in the inventory");
+    assert!(
+        skill.deployments.iter().any(|d| d.disabled_by.is_some()),
+        "expected a fresh scan to report gamma disabled after the CODEX_HOME-scoped write"
+    );
+
+    std::fs::remove_dir_all(&home).ok();
+    std::fs::remove_dir_all(&codex_home).ok();
 }

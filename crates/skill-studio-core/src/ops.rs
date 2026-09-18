@@ -4461,9 +4461,7 @@ pub fn set_harness_enabled(
             kind,
             req.enabled,
         )?,
-        AgentId::CODEX => {
-            set_codex_switch(rt, &mut session, fs, &home, &skill, &id, kind, req.enabled)?
-        }
+        AgentId::CODEX => set_codex_switch(rt, &mut session, fs, &skill, &id, kind, req.enabled)?,
         AgentId::OPEN_CODE => {
             set_opencode_switch(rt, &mut session, fs, &home, &skill, &id, kind, req.enabled)?
         }
@@ -4711,12 +4709,10 @@ fn codex_skill_md_paths(skill: &InstalledSkillDto) -> Vec<PathBuf> {
 /// path in `~/.codex/config.toml`. A crash partway through leaves the rows
 /// already written toggled and reports "N of M" rather than failing silent
 /// (`docs/action-map/enable-and-links.md`'s desired state).
-#[allow(clippy::too_many_arguments)]
 fn set_codex_switch(
     rt: &Runtime,
     session: &mut crate::ports::MutationSession,
     fs: &dyn ScopeFs,
-    home: &Path,
     skill: &InstalledSkillDto,
     id: &EventId,
     kind: crate::events::EventKind,
@@ -4730,7 +4726,7 @@ fn set_codex_switch(
             "no Codex-visible SKILL.md paths for this skill",
         ));
     }
-    let config_path = home.join(".codex/config.toml");
+    let config_path = codex_config_path(&rt.scope.codex_home);
 
     let manifest =
         session
@@ -4778,8 +4774,13 @@ fn set_codex_switch(
                     Err(e) if e.kind() == std::io::ErrorKind::NotFound => None,
                     Err(e) => return Err(CoreError::io(&config_path, e)),
                 };
-            let new_text =
-                crate::harness_switch::codex_toggle_row(existing.as_deref(), path, !enabled)?;
+            let mut doc: toml_edit::DocumentMut =
+                existing.unwrap_or_default().parse().map_err(|e| {
+                    CoreError::new(ErrorCode::Io, format!("config.toml is not valid TOML: {e}"))
+                        .at(&config_path)
+                })?;
+            codex_write_disabled_row(&mut doc, path, !enabled).map_err(|e| e.at(&config_path))?;
+            let new_text = doc.to_string();
             fs.write_atomic(&session.guard, &scoped_config, new_text.as_bytes())
                 .map_err(|e| {
                     CoreError::new(
