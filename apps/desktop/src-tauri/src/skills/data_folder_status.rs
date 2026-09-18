@@ -97,7 +97,7 @@ mod tests {
     /// a message naming the path and the read error, the same as a folder
     /// this build refuses as too new - `lib.rs::run` skips `open_event_store`
     /// whenever `check_and_migrate` returns `Some`, so this also stands in
-    /// for "never opens the event store" (N5, review round 1).
+    /// for "never opens the event store".
     #[test]
     fn corrupt_version_marker_blocks_startup_or_names_the_read_error() {
         let dir = tempfile::tempdir().expect("tempdir");
@@ -116,16 +116,35 @@ mod tests {
 
     /// A migration that fails partway through blocks startup with a message
     /// naming the path and the write error, rather than silently leaving
-    /// `check_and_migrate` reporting the folder as fine (N5, review round
-    /// 1). Pre-creating the marker path as a directory makes the marker
-    /// write's rename fail, standing in for a real disk-full or permission
-    /// error without needing to inject one into `RealFs`.
+    /// `check_and_migrate` reporting the folder as fine. A valid `0\n`
+    /// marker keeps the read step passing - a directory at the marker path
+    /// would fail the read step instead, exiting through the corrupt-marker
+    /// branch above without ever reaching `migrate`. A read-only folder then
+    /// makes the marker write's temp-file creation fail, standing in for a
+    /// real disk-full or permission error without needing to inject one into
+    /// `RealFs`.
+    #[cfg(unix)]
     #[test]
     fn migration_failure_blocks_startup_or_names_the_write_error() {
-        let dir = tempfile::tempdir().expect("tempdir");
-        std::fs::create_dir(dir.path().join("schema_version")).expect("mkdir marker path");
+        use std::os::unix::fs::PermissionsExt;
 
-        let message = check_and_migrate(dir.path()).expect("a failed migration must block startup");
+        let dir = tempfile::tempdir().expect("tempdir");
+        std::fs::write(dir.path().join("schema_version"), b"0\n").expect("write marker");
+        std::fs::set_permissions(dir.path(), std::fs::Permissions::from_mode(0o555))
+            .expect("make folder read-only");
+
+        let result = check_and_migrate(dir.path());
+
+        // Restore permissions so the tempdir can be cleaned up regardless of
+        // the assertion outcome.
+        std::fs::set_permissions(dir.path(), std::fs::Permissions::from_mode(0o755))
+            .expect("restore folder permissions");
+
+        let message = result.expect("a failed migration must block startup");
+        assert!(
+            message.contains("Migrating"),
+            "message should name the migration step, got: {message}"
+        );
         assert!(
             message.contains(&dir.path().display().to_string()),
             "message should name the folder path, got: {message}"
