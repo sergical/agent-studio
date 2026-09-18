@@ -781,3 +781,16 @@ export function onSkillSnapshot(cb: (snapshot: SkillSnapshot) => void): Promise<
 export async function appVersion(): Promise<AppVersion> {
   return callCommand("app_version");
 }
+
+// ============================================================================
+// Data Folder Version API
+// ============================================================================
+
+/**
+ * The blocking message unit 6.3's startup check set, if the app data
+ * folder is newer than this build understands. `null` means the data
+ * layer opened normally.
+ */
+export async function dataFolderStatus(): Promise<string | null> {
+  return callCommand("data_folder_status");
+}

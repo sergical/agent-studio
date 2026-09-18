@@ -22,6 +22,7 @@ import { useAppShortcuts } from "./hooks/useAppShortcuts";
 import { useNativeShell } from "./hooks/useNativeShell";
 import { useSkillSnapshot } from "./hooks/useSkillSnapshot";
 import {
+  dataFolderStatus,
   getTrackedProjects,
   importTrackedProjects,
   invokeErrorMessage,
@@ -45,6 +46,17 @@ function App() {
   useNativeShell();
   useAppShortcuts();
   const [firstRunDone, setFirstRunDone] = useState(false);
+  // Unit 6.3: the data layer never opened if the app data folder is newer
+  // than this build understands - checked once, before anything else that
+  // reads from it, and shown in place of the normal chrome (a toast is not
+  // enough: there is no snapshot, no settings, nothing behind it to toast
+  // over).
+  const [dataFolderBlockedMessage, setDataFolderBlockedMessage] = useState<string | null>(null);
+  useEffect(() => {
+    dataFolderStatus()
+      .then(setDataFolderBlockedMessage)
+      .catch(() => undefined);
+  }, []);
   const { snapshot, emittedSnapshotRevision, isLoading, requestRescan } = useSkillSnapshot();
   const resolvedTheme = useAppStore((state) => state.resolvedTheme);
   const activeView = useAppStore((state) => state.activeView);
@@ -187,6 +199,18 @@ function App() {
       main = originKind ? renderListLayer(originKind, activeView) : renderSkillPage(activeView);
       break;
     }
+  }
+
+  if (dataFolderBlockedMessage != null) {
+    return (
+      <TooltipProvider delay={400}>
+        <div className="flex h-screen w-screen items-center justify-center bg-bg-secondary p-8">
+          <p className="max-w-md text-center text-sm text-text-primary">
+            {dataFolderBlockedMessage}
+          </p>
+        </div>
+      </TooltipProvider>
+    );
   }
 
   if (!firstRunDone) {
