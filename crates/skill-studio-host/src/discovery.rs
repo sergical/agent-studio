@@ -79,43 +79,84 @@ const PI_TRANSCRIPT_ROOT: &str = ".pi/agent/sessions";
 /// realistic nesting depth.
 const PI_NESTED_ROOT_WALK_DEPTH: u32 = 6;
 
+/// Directories [`walk_for_pi_roots`] may read below one pi `cwd` before it
+/// gives up on that `cwd`, bounding worst-case I/O against a monorepo with
+/// enormous fan-out even before [`PI_NESTED_ROOT_WALK_DEPTH`] is reached.
+const PI_NESTED_ROOT_WALK_BUDGET: usize = 2_000;
+
+/// High-fanout folder names skipped in addition to hidden ones, so the walk
+/// does not spend its budget descending into dependency or build-output
+/// trees that never hold a nested pi project.
+const PI_NESTED_ROOT_WALK_SKIP_NAMES: &[&str] = &["node_modules", "target", "Library"];
+
 /// Every directory under `root` (not `root` itself) that holds a `.pi/skills`
-/// folder, found by walking down up to [`PI_NESTED_ROOT_WALK_DEPTH`] levels.
-/// Hidden directories (`.git`, `.pi`, ...) are never descended into, so a
-/// project's own `.pi/skills` is found by the marker check but never
-/// mistaken for a nested project root.
-fn nested_pi_project_roots(root: &Path) -> Vec<PathBuf> {
+/// folder, found by walking down up to [`PI_NESTED_ROOT_WALK_DEPTH`] levels
+/// and [`PI_NESTED_ROOT_WALK_BUDGET`] directories. Hidden directories
+/// (`.git`, `.pi`, ...) and [`PI_NESTED_ROOT_WALK_SKIP_NAMES`] are never
+/// descended into, so a project's own `.pi/skills` is found by the marker
+/// check but never mistaken for a nested project root.
+fn nested_pi_project_roots(home: &Path, root: &Path) -> Vec<PathBuf> {
+    nested_pi_project_roots_with_budget(home, root, PI_NESTED_ROOT_WALK_BUDGET)
+}
+
+/// [`nested_pi_project_roots`] with an explicit directory budget, so a test
+/// can bound the walk without building thousands of fixture directories.
+fn nested_pi_project_roots_with_budget(home: &Path, root: &Path, budget: usize) -> Vec<PathBuf> {
     // A `cwd` this shallow (e.g. `/`, pi's own sentinel for a session
-    // outside any project) is never a real project root; walking it would
-    // mean reading the whole filesystem.
-    if root.components().count() < 2 {
+    // outside any project), a filesystem root (also true of a Windows drive
+    // root like `C:\`, whose `parent()` is `None`), the home directory
+    // itself, or Skill Studio's own scratch root is never a real project
+    // root; walking any of these would mean reading a huge, unrelated part
+    // of the filesystem.
+    if root.components().count() < 2
+        || root.parent().is_none()
+        || is_home_root(home, root)
+        || is_studio_scratch_path(home, root)
+    {
         return Vec::new();
     }
     let mut found = Vec::new();
-    walk_for_pi_roots(root, PI_NESTED_ROOT_WALK_DEPTH, &mut found);
+    let mut remaining_budget = budget;
+    walk_for_pi_roots(
+        root,
+        PI_NESTED_ROOT_WALK_DEPTH,
+        &mut found,
+        &mut remaining_budget,
+    );
     found
 }
 
-fn walk_for_pi_roots(dir: &Path, depth_remaining: u32, found: &mut Vec<PathBuf>) {
-    if depth_remaining == 0 {
+fn walk_for_pi_roots(
+    dir: &Path,
+    depth_remaining: u32,
+    found: &mut Vec<PathBuf>,
+    remaining_budget: &mut usize,
+) {
+    if depth_remaining == 0 || *remaining_budget == 0 {
         return;
     }
     let Ok(entries) = fs::read_dir(dir) else {
         return;
     };
+    *remaining_budget -= 1;
     for entry in entries.flatten() {
+        if *remaining_budget == 0 {
+            break;
+        }
         let Ok(file_type) = entry.file_type() else {
             continue;
         };
         if !file_type.is_dir() {
             continue;
         }
-        if entry.file_name().to_string_lossy().starts_with('.') {
+        let name = entry.file_name();
+        let name = name.to_string_lossy();
+        if name.starts_with('.') || PI_NESTED_ROOT_WALK_SKIP_NAMES.contains(&name.as_ref()) {
             continue;
         }
         let path = entry.path();
         let has_pi_skills = path.join(".pi/skills").exists();
-        walk_for_pi_roots(&path, depth_remaining - 1, found);
+        walk_for_pi_roots(&path, depth_remaining - 1, found, remaining_budget);
         if has_pi_skills {
             found.push(path);
         }
@@ -510,7 +551,7 @@ fn discover_skill_projects_from(home: &Path, sources: &DiscoverySources) -> Vec<
         // root to walk.
         if *harness == AgentId::PI {
             for p in &discovered {
-                paths.extend(nested_pi_project_roots(p));
+                paths.extend(nested_pi_project_roots(home, p));
             }
         }
         paths.extend(discovered);
@@ -1072,6 +1113,63 @@ mod tests {
             found.contains(&nested),
             "expected the nested .pi/skills root {nested:?} among {found:?}: a one-level \
              reader would skip it since only the repo root appears in pi's session history"
+        );
+    }
+
+    #[test]
+    fn pi_nested_walk_stops_at_the_directory_budget_or_names_the_unbounded_scan() {
+        let tmp = tempfile::tempdir().unwrap();
+        let home = tmp.path();
+        let project = home.join("proj");
+        for i in 0..20 {
+            fs::create_dir_all(project.join(format!("child-{i}/.pi/skills"))).unwrap();
+        }
+
+        let budget = 5;
+        let found = nested_pi_project_roots_with_budget(home, &project, budget);
+        assert!(
+            found.len() <= budget,
+            "a budget of {budget} directories must bound how many nested roots a 20-way \
+             fan-out tree yields, got {}",
+            found.len()
+        );
+    }
+
+    #[test]
+    fn pi_nested_walk_refuses_a_home_or_root_cwd_or_names_the_walked_tree() {
+        let tmp = tempfile::tempdir().unwrap();
+        let home = tmp.path();
+        fs::create_dir_all(home.join("nested/.pi/skills")).unwrap();
+
+        assert!(
+            nested_pi_project_roots(home, home).is_empty(),
+            "a home cwd must not be walked even though it holds a nested .pi/skills folder"
+        );
+        assert!(
+            nested_pi_project_roots(home, Path::new("/")).is_empty(),
+            "a filesystem root cwd must not be walked"
+        );
+    }
+
+    #[test]
+    fn pi_nested_walk_skips_node_modules_and_target_or_names_the_descended_folder() {
+        let tmp = tempfile::tempdir().unwrap();
+        let home = tmp.path();
+        let project = home.join("proj");
+        fs::create_dir_all(project.join("node_modules/x/.pi/skills")).unwrap();
+        fs::create_dir_all(project.join("packages/x/.pi/skills")).unwrap();
+
+        let found = nested_pi_project_roots(home, &project);
+        assert!(
+            !found
+                .iter()
+                .any(|p| p.starts_with(project.join("node_modules"))),
+            "node_modules must never be descended into, even when it holds a .pi/skills \
+             folder: found {found:?}"
+        );
+        assert!(
+            found.contains(&project.join("packages/x")),
+            "a normal nested folder must still be discovered: found {found:?}"
         );
     }
 
