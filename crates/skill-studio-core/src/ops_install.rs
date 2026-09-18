@@ -109,7 +109,7 @@ fn registry_path(scope_root: &Path) -> PathBuf {
     scope_root.join(".agents").join("skill-studio.json")
 }
 
-fn scope_root(rt: &Runtime, scope: &RootScope) -> PathBuf {
+pub(crate) fn scope_root(rt: &Runtime, scope: &RootScope) -> PathBuf {
     match scope {
         RootScope::Global => rt.scope.home.lexical.clone(),
         RootScope::Project(project) => project.0.clone(),
@@ -148,7 +148,7 @@ impl registry::RegistryDocument for RawRegistryDocument {
 /// unreadable or not a JSON object is a different failure: the write-back
 /// this seeds would otherwise wipe `added_folders`, `forks`, and the trust
 /// list, so that case fails the install before any write instead (R7).
-fn read_registry_document(
+pub(crate) fn read_registry_document(
     fs: &dyn ScopeFs,
     scope_root: &Path,
 ) -> Result<serde_json::Map<String, serde_json::Value>, CoreError> {
@@ -174,7 +174,7 @@ fn read_registry_document(
 /// already-held exclusive lease - `write_version` is bumped there, not by
 /// this op, and every key besides the handful `install` itself touches
 /// round-trips untouched.
-fn write_registry_document(
+pub(crate) fn write_registry_document(
     guard: &ExclusiveGuard,
     fs: &dyn ScopeFs,
     scope_root: &Path,

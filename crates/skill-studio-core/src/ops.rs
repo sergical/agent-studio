@@ -102,6 +102,8 @@ pub enum Operation {
     FixSkill,
     /// Group 3: find differing copies of a skill without merging them.
     DiagnoseConflict,
+    /// Unit 3.9: take a mutable deployment off disk.
+    Remove,
 }
 
 /// Outcome status of one call.
@@ -217,6 +219,11 @@ impl Outcome for crate::dto::FixSkillOutcome {
 impl Outcome for crate::dto::ConflictReport {
     fn found_issues(&self) -> bool {
         !self.conflicts.is_empty()
+    }
+}
+impl Outcome for crate::dto::RemoveOutcome {
+    fn event_id(&self) -> Option<EventId> {
+        Some(self.event_id.clone())
     }
 }
 
@@ -4478,7 +4485,7 @@ pub fn restore_event(
 }
 
 /// Finds the skill entry that owns `deployment_id` in `inventory`.
-fn resolve_skill<'a>(
+pub(crate) fn resolve_skill<'a>(
     inventory: &'a Inventory,
     deployment_id: &DeploymentId,
 ) -> Result<&'a InstalledSkillDto, CoreError> {
@@ -4503,7 +4510,7 @@ fn resolve_skill<'a>(
 /// both sides go through the same filesystem, and not, for example, when
 /// `target_path`'s ancestry crosses a symlink the test host (or the user's
 /// `$HOME`) happens to have, like macOS's `/tmp` -> `/private/tmp`.
-fn find_claude_link<'a>(
+pub(crate) fn find_claude_link<'a>(
     skill: &'a InstalledSkillDto,
     target_path: &Path,
     fs: &dyn ScopeFs,
@@ -4517,6 +4524,7 @@ fn find_claude_link<'a>(
 }
 
 pub use crate::ops_install::{install, install_preferences};
+pub use crate::ops_remove::remove;
 
 /// Moves a universal deployment's directory into the parked root.
 ///
