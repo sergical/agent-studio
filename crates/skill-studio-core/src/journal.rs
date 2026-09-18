@@ -1642,8 +1642,9 @@ mod tests {
     /// Given a user's own entries next to a managed link that share the
     /// `.<leaf>-` temp prefix - a regular file with the prefix, a regular
     /// file with the exact `<pid>-<counter>` shape, a symlink with the
-    /// prefix, and a symlink with the exact shape pointing somewhere of the
-    /// user's own - when a crashed link replacement is reconciled, then the
+    /// prefix, a symlink with the exact shape pointing somewhere of the
+    /// user's own, and a symlink with non-digit suffix parts pointing at the
+    /// plan's own target - when a crashed link replacement is reconciled, then the
     /// pre-restore sweep removes none of them (it only removes symlinks of
     /// that shape that point at the plan's own targets); on failure the
     /// tree diff names the user entry it deleted.
@@ -1698,6 +1699,14 @@ mod tests {
                 Path::new("/root/.skill-current-2024-01"),
             )
             .expect("seed the user's own link that fits the temp-name shape");
+        // Two hyphen-separated parts that are not digits, pointing at the
+        // plan's own previous target: only the digit check keeps this one.
+        fixture
+            .fsops_symlink(
+                Path::new("old.txt"),
+                Path::new("/root/.skill-current-foo-bar"),
+            )
+            .expect("seed the user's own link with non-digit suffix parts");
 
         let pristine = tree_snapshot(&fixture, &root_path);
 
@@ -1734,6 +1743,11 @@ mod tests {
         );
     }
 
+    /// Given two temp symlinks a crashed reversal leaked next to a managed
+    /// link - one pointing at the step's previous target, one at its new
+    /// target - when a fresh process retries the reversal, then the sweep
+    /// clears both and the restored link points at the previous target; on
+    /// failure the tree diff names the leaked entry it left behind.
     #[test]
     fn a_leaked_temp_link_under_the_same_prefix_is_cleared_by_a_fresh_process_retry_or_names_the_entry_it_left(
     ) {
@@ -1809,6 +1823,14 @@ mod tests {
         fixture
             .fsops_symlink(Path::new("old.txt"), &leaked_temp)
             .expect("seed the leaked temp symlink a crashed first attempt left behind");
+        // A second leaked temp from an earlier attempt that pointed at the
+        // step's own `target` rather than its `previous_target`: the sweep
+        // must clear both.
+        let leaked_temp_at_target =
+            root_path.join(format!(".skill-current-{}", fsops::unique_suffix()));
+        fixture
+            .fsops_symlink(Path::new("new.txt"), &leaked_temp_at_target)
+            .expect("seed the leaked temp symlink that points at the new target");
 
         let report = reconcile(&journal, &g, &fixture).expect("reconciliation must run");
         assert!(
