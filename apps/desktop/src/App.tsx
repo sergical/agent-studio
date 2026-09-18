@@ -42,6 +42,12 @@ function isListViewKind(kind: ActiveView["kind"]): kind is ListViewKind {
   return kind === "home" || kind === "skills" || kind === "plugins" || kind === "activity";
 }
 
+/** Unit 6.3's `data_folder_status` answer, before and after it arrives. A
+ * discriminated union rather than a `"pending" | string | null` sentinel: a
+ * real blocking message can't be confused with the not-yet-answered state
+ * just because it happens to read `"pending"`. */
+type DataFolderStatusState = { kind: "pending" } | { kind: "ready"; message: string | null };
+
 function App() {
   useNativeShell();
   useAppShortcuts();
@@ -50,16 +56,18 @@ function App() {
   // than this build understands - checked once, before anything else that
   // reads from it, and shown in place of the normal chrome (a toast is not
   // enough: there is no snapshot, no settings, nothing behind it to toast
-  // over). Starts `"pending"` (not `null`) so the first-run gate below can't
+  // over). Starts in the `pending` kind so the first-run gate below can't
   // paint before the answer lands and then get replaced by the blocking
-  // screen once it does (N4, review round 1).
-  const [dataFolderStatusState, setDataFolderStatusState] = useState<"pending" | string | null>(
-    "pending",
-  );
+  // screen once it does; a discriminated union (rather than a `"pending"`
+  // string sentinel) keeps a real blocking message that happened to read
+  // "pending" from being mistaken for the not-yet-answered state.
+  const [dataFolderStatusState, setDataFolderStatusState] = useState<DataFolderStatusState>({
+    kind: "pending",
+  });
   useEffect(() => {
     dataFolderStatus()
-      .then(setDataFolderStatusState)
-      .catch(() => setDataFolderStatusState(null));
+      .then((message) => setDataFolderStatusState({ kind: "ready", message }))
+      .catch(() => setDataFolderStatusState({ kind: "ready", message: null }));
   }, []);
   const { snapshot, emittedSnapshotRevision, isLoading, requestRescan } = useSkillSnapshot();
   const resolvedTheme = useAppStore((state) => state.resolvedTheme);
@@ -205,18 +213,20 @@ function App() {
     }
   }
 
-  if (dataFolderStatusState === "pending") {
+  if (dataFolderStatusState.kind === "pending") {
     // Neither the blocking screen nor the first-run gate is correct yet -
     // render nothing rather than guess and get replaced once the answer
     // lands.
     return null;
   }
 
-  if (dataFolderStatusState != null) {
+  if (dataFolderStatusState.message != null) {
     return (
       <TooltipProvider delay={400}>
         <div className="flex h-screen w-screen items-center justify-center bg-bg-secondary p-8">
-          <p className="max-w-md text-center text-sm text-text-primary">{dataFolderStatusState}</p>
+          <p className="max-w-md text-center text-sm text-text-primary">
+            {dataFolderStatusState.message}
+          </p>
         </div>
       </TooltipProvider>
     );
