@@ -131,10 +131,11 @@ pub fn outdated(
 /// `tree_cache` entry and one [`SourceTreeLookup`] call, instead of one each.
 fn normalize_repo_key(repo: &str) -> String {
     let lower = repo.to_ascii_lowercase();
-    let stripped = lower
-        .strip_prefix("github.com/")
-        .unwrap_or(lower.as_str());
-    stripped.strip_suffix(".git").unwrap_or(stripped).to_string()
+    let stripped = lower.strip_prefix("github.com/").unwrap_or(lower.as_str());
+    stripped
+        .strip_suffix(".git")
+        .unwrap_or(stripped)
+        .to_string()
 }
 
 fn skills_sh_currency(

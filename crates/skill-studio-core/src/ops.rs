@@ -5544,7 +5544,10 @@ mod tests {
     /// Minimal `DeploymentDto` for `outdated_target` precedence tests - only
     /// `source_kind` and `plugin` matter to that function; every other field
     /// takes a placeholder value no test here reads.
-    fn minimal_deployment(source_kind: SourceKind, plugin: Option<PluginSourceDto>) -> DeploymentDto {
+    fn minimal_deployment(
+        source_kind: SourceKind,
+        plugin: Option<PluginSourceDto>,
+    ) -> DeploymentDto {
         DeploymentDto {
             id: DeploymentId::parse("dep:v1/g/-/universal/-/x").unwrap(),
             root: RootRef::new(RootScope::Global, RootKind::Universal).unwrap(),
