@@ -18,6 +18,10 @@ use skill_studio_core::{OpStatus, RuntimeScope};
 /// `$XDG_DATA_HOME/skill-studio`, or `~/.local/share/skill-studio` when
 /// `XDG_DATA_HOME` is unset, matching the CLI's default so the CLI, MCP, and
 /// desktop read and write the same history database and lease file.
+///
+/// `pub(crate)` so `write_lease.rs` can root every desktop write's lease
+/// under the same `leases` directory `build_runtime_write` uses for park
+/// and unpark, instead of a second, unrelated location.
 pub(crate) fn data_root() -> PathBuf {
     if let Ok(xdg) = std::env::var("XDG_DATA_HOME") {
         if !xdg.is_empty() {

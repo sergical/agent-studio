@@ -33,9 +33,9 @@ use super::opencode_skill_permission;
 use super::skill_agent_runner::validate_skill_dir_name;
 use super::skill_deployment::{BackingRelationship, SkillDestination};
 use super::skill_dto::{DisabledBy, HarnessVisibilityTarget, LifecycleTarget};
-use super::skill_fork::ForkMutationLock;
 use super::skill_fork_registry::{
-    read_fork_registry, write_fork_registry, ClaudeLinkRemoved, CopyDeploymentRecord, ForkRegistry,
+    read_fork_registry, write_fork_registry_locked, ClaudeLinkRemoved, CopyDeploymentRecord,
+    ForkRegistry,
 };
 use super::skill_refresh::{self, SkillRefreshState};
 
@@ -426,6 +426,7 @@ fn finish_move_aside_event(
 /// to the shared root, which covers every skill at once and can't be
 /// toggled per skill.
 fn set_claude_code_enabled(
+    guard: &super::write_lease::WriteLeaseGuard,
     home: &Path,
     name: &str,
     deployment_id: &str,
@@ -440,7 +441,7 @@ fn set_claude_code_enabled(
         link_path,
         expected_target,
         enabled,
-        |registry| write_fork_registry(home, registry),
+        |registry| write_fork_registry_locked(guard, home, registry),
     )
 }
 
@@ -651,6 +652,7 @@ pub fn set_harness_enabled_with(
 /// that the completed install selected.
 #[allow(clippy::too_many_arguments)]
 pub fn set_new_universal_reader_enabled(
+    guard: &super::write_lease::WriteLeaseGuard,
     home: &Path,
     data_root: &Path,
     name: &str,
@@ -663,6 +665,7 @@ pub fn set_new_universal_reader_enabled(
     let agent = target.reader_agent.cli_name();
     if agent == "claude-code" {
         return set_claude_code_enabled(
+            guard,
             home,
             name,
             &target.deployment_id,
@@ -766,9 +769,9 @@ pub async fn set_harness_enabled(
     let timing_app = app.clone();
     crate::timing_log::time_command_blocking(&timing_app, "set_harness_enabled", move || {
         let refresh_state = app.state::<SkillRefreshState>();
-        let fork_lock = app.state::<ForkMutationLock>();
-        let _guard = fork_lock.try_acquire()?;
         let home = dirs::home_dir().ok_or("Could not find home directory")?;
+        let write_lease = super::write_lease::WriteLease::default();
+        let guard = write_lease.try_acquire(&home)?;
         let snapshot =
             super::skill_lifecycle::rebuild_fresh_lifecycle_snapshot(&app, &refresh_state)?;
         let agent = target.reader_agent.cli_name();
@@ -787,6 +790,7 @@ pub async fn set_harness_enabled(
         };
         let result = if expected_agent == "Claude Code" {
             set_claude_code_enabled(
+                &guard,
                 &home,
                 &skill.name,
                 deployment_id,
@@ -849,9 +853,10 @@ pub async fn set_deployment_enabled(
     let timing_app = app.clone();
     crate::timing_log::time_command_blocking(&timing_app, "set_deployment_enabled", move || {
         let refresh_state = app.state::<SkillRefreshState>();
-        let fork_lock = app.state::<ForkMutationLock>();
         let event_store = app.state::<EventStoreState>();
-        let _guard = fork_lock.try_acquire()?;
+        let home = dirs::home_dir().ok_or("Could not find home directory")?;
+        let write_lease = super::write_lease::WriteLease::default();
+        let guard = write_lease.try_acquire(&home)?;
         let deployment_id = target
             .deployment_id
             .as_deref()
@@ -900,13 +905,12 @@ pub async fn set_deployment_enabled(
             .transpose()?;
 
         let result = if deployment.owner_kind == super::skill_ownership::LifecycleOwnerKind::Copy {
-            let home = dirs::home_dir().ok_or("Could not find home directory")?;
             let mut registry = read_fork_registry(&home)?;
             move_copy_deployment_and_update_registry(
                 &mut registry,
                 &deployment,
                 enabled,
-                |registry| write_fork_registry(&home, registry),
+                |registry| write_fork_registry_locked(&guard, &home, registry),
             )
         } else if enabled {
             restore_deployment_at(&path_buf)
@@ -961,8 +965,15 @@ pub async fn set_deployment_enabled(
 
 #[cfg(test)]
 mod tests {
+    use super::super::skill_fork_registry::write_fork_registry;
     use super::*;
     use crate::skills::frontmatter::InvocationPolicy;
+
+    fn test_guard(home: &Path) -> super::super::write_lease::WriteLeaseGuard {
+        super::super::write_lease::WriteLease::default()
+            .try_acquire(home)
+            .unwrap()
+    }
     use crate::skills::skill_deployment::{
         deployment_id, BackingRelationship, DeploymentMutability, SkillDestination,
     };
@@ -1337,6 +1348,7 @@ mod tests {
         };
 
         let error = set_new_universal_reader_enabled(
+            &test_guard(&home),
             &home,
             &home.join(".skill-studio"),
             "find-bugs",
@@ -1378,8 +1390,16 @@ mod tests {
             None,
             &universal,
         );
-        set_claude_code_enabled(home, "find-bugs", &deployment_id, &link, &universal, false)
-            .unwrap();
+        set_claude_code_enabled(
+            &test_guard(home),
+            home,
+            "find-bugs",
+            &deployment_id,
+            &link,
+            &universal,
+            false,
+        )
+        .unwrap();
         assert!(!home.join(".claude/skills/find-bugs").exists());
         let registry = read_fork_registry(home).unwrap();
         assert_eq!(
@@ -1388,8 +1408,16 @@ mod tests {
             std::path::PathBuf::from("../../.agents/skills/find-bugs")
         );
 
-        set_claude_code_enabled(home, "find-bugs", &deployment_id, &link, &universal, true)
-            .unwrap();
+        set_claude_code_enabled(
+            &test_guard(home),
+            home,
+            "find-bugs",
+            &deployment_id,
+            &link,
+            &universal,
+            true,
+        )
+        .unwrap();
         assert!(fs::symlink_metadata(home.join(".claude/skills/find-bugs"))
             .unwrap()
             .file_type()
@@ -1449,8 +1477,16 @@ mod tests {
             .harness_disabled
             .is_empty());
 
-        set_claude_code_enabled(home, "find-bugs", &deployment_id, &link, &universal, true)
-            .unwrap();
+        set_claude_code_enabled(
+            &test_guard(home),
+            home,
+            "find-bugs",
+            &deployment_id,
+            &link,
+            &universal,
+            true,
+        )
+        .unwrap();
         assert_eq!(
             fs::read_link(&link).unwrap(),
             Path::new("../../.agents/skills/find-bugs")
@@ -1508,15 +1544,29 @@ mod tests {
         fs::create_dir_all(home.join(".claude/skills")).unwrap();
         let link = home.join(".claude/skills/find-bugs");
 
-        let missing_error =
-            set_claude_code_enabled(home, "find-bugs", "deployment-id", &link, &universal, false)
-                .unwrap_err();
+        let missing_error = set_claude_code_enabled(
+            &test_guard(home),
+            home,
+            "find-bugs",
+            "deployment-id",
+            &link,
+            &universal,
+            false,
+        )
+        .unwrap_err();
         assert!(missing_error.contains("not deployed to Claude Code"));
 
         fs::write(&link, "user-owned file").unwrap();
-        let file_error =
-            set_claude_code_enabled(home, "find-bugs", "deployment-id", &link, &universal, false)
-                .unwrap_err();
+        let file_error = set_claude_code_enabled(
+            &test_guard(home),
+            home,
+            "find-bugs",
+            "deployment-id",
+            &link,
+            &universal,
+            false,
+        )
+        .unwrap_err();
         assert!(file_error.contains("not deployed to Claude Code"));
         assert_eq!(fs::read_to_string(&link).unwrap(), "user-owned file");
         assert!(read_fork_registry(home)
@@ -1535,6 +1585,7 @@ mod tests {
             .unwrap();
 
         let err = set_claude_code_enabled(
+            &test_guard(home),
             home,
             "find-bugs",
             "dep",
@@ -1571,6 +1622,7 @@ mod tests {
         );
 
         set_claude_code_enabled(
+            &test_guard(&home),
             &home,
             "find-bugs",
             &project_id,
@@ -1585,6 +1637,21 @@ mod tests {
             .file_type()
             .is_symlink());
         assert!(fs::symlink_metadata(project_link).is_err());
+    }
+
+    /// pi's `settings.json` `skills` exclusion entry format is undocumented
+    /// (docs/action-map/harnesses/pi.md, "How the app turns a skill off"),
+    /// so this stays the named refusal rather than a silent no-op that
+    /// looks like the skill was actually turned off for pi.
+    #[test]
+    fn pi_disable_without_a_confirmed_exclusion_format_still_returns_the_named_refusal_or_names_the_silent_no_op(
+    ) {
+        let tmp = tempfile::tempdir().unwrap();
+        let err = set_harness_enabled_with(tmp.path(), "find-bugs", "pi", false, &[]).unwrap_err();
+        assert!(
+            err.contains("pi has no per-skill disable"),
+            "expected the named refusal, not a silent no-op: {err}"
+        );
     }
 
     #[test]

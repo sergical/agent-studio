@@ -433,6 +433,32 @@ pub fn write_fork_registry(home: &Path, registry: &ForkRegistry) -> Result<(), S
         .map_err(|e| e.to_string())
 }
 
+/// `write_fork_registry`, for a caller that already holds `home`'s
+/// `WriteLease` - a command that took its lease before touching several
+/// lease-guarded things, for instance. Writes under that held lease instead
+/// of taking a second, conflicting one: advisory locks don't nest within
+/// one process, so a nested `write_fork_registry` would report the caller's
+/// own lease as busy instead of writing.
+pub fn write_fork_registry_locked(
+    guard: &super::write_lease::WriteLeaseGuard,
+    home: &Path,
+    registry: &ForkRegistry,
+) -> Result<(), String> {
+    std::fs::create_dir_all(home)
+        .map_err(|e| format!("Failed to create {}: {e}", home.display()))?;
+    let path = fork_registry_path(home);
+    let fs = skill_studio_host::RealFs::new();
+    let mut document = registry.clone();
+    skill_studio_core::registry::write_registry_document_locked(
+        guard.as_exclusive_guard(),
+        &fs,
+        home,
+        &path,
+        &mut document,
+    )
+    .map_err(|e| e.to_string())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

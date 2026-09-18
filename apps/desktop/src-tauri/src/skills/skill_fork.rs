@@ -23,8 +23,8 @@ use super::commands::{dotagents_add_args, dotagents_remove_args};
 use super::skill_deployment::SkillDestination;
 use super::skill_dto::InstallScope;
 use super::skill_fork_registry::{
-    deployment_trial_key, fork_snapshot_dir, read_fork_registry, trial_key, write_fork_registry,
-    ForkRecord, ForkRegistry, OriginTool, TrialScope,
+    deployment_trial_key, fork_snapshot_dir, read_fork_registry, trial_key,
+    write_fork_registry_locked, ForkRecord, ForkRegistry, OriginTool, TrialScope,
 };
 use super::skill_fs::copy_dir_all;
 use super::skill_install_plan::{skills_sh_universal_add_args, SkillInstallSpec};
@@ -205,6 +205,7 @@ fn resolve_lookup() -> Box<dyn CommitLookup> {
 /// Runs the same fork transaction as `fork_skill` after another command has
 /// already resolved and locked the exact Global Universal deployment.
 pub(crate) fn fork_resolved_deployment_with_real_services(
+    guard: &super::write_lease::WriteLeaseGuard,
     home: &Path,
     app_data: &Path,
     name: &str,
@@ -218,6 +219,7 @@ pub(crate) fn fork_resolved_deployment_with_real_services(
         cache_dir: app_data.join("skill-studio").join("cache"),
     };
     fork_skill_with(
+        guard,
         home,
         app_data,
         name,
@@ -559,7 +561,12 @@ trait ForkTransactionStorage {
     fn remove_dir_all(&self, path: &Path) -> std::io::Result<()>;
     fn snapshot_live_skill(&self, skill_dir: &Path, recovery_dir: &Path) -> Result<(), String>;
     fn read_registry(&self, home: &Path) -> Result<ForkRegistry, String>;
-    fn write_registry(&self, home: &Path, registry: &ForkRegistry) -> Result<(), String>;
+    fn write_registry(
+        &self,
+        guard: &super::write_lease::WriteLeaseGuard,
+        home: &Path,
+        registry: &ForkRegistry,
+    ) -> Result<(), String>;
 }
 
 struct FileForkTransactionStorage;
@@ -581,8 +588,13 @@ impl ForkTransactionStorage for FileForkTransactionStorage {
         read_fork_registry(home)
     }
 
-    fn write_registry(&self, home: &Path, registry: &ForkRegistry) -> Result<(), String> {
-        write_fork_registry(home, registry)
+    fn write_registry(
+        &self,
+        guard: &super::write_lease::WriteLeaseGuard,
+        home: &Path,
+        registry: &ForkRegistry,
+    ) -> Result<(), String> {
+        write_fork_registry_locked(guard, home, registry)
     }
 }
 
@@ -686,6 +698,7 @@ enum ForkRecoveryRollback {
 
 fn rollback_fork_before_detach(
     storage: &dyn ForkTransactionStorage,
+    guard: &super::write_lease::WriteLeaseGuard,
     primary_error: String,
     paths: &ForkPreDetachPaths<'_>,
     registry_before: Option<&ForkRegistry>,
@@ -693,7 +706,7 @@ fn rollback_fork_before_detach(
 ) -> String {
     let mut rollback_errors = Vec::new();
     if let Some(registry_before) = registry_before {
-        if let Err(error) = storage.write_registry(paths.home, registry_before) {
+        if let Err(error) = storage.write_registry(guard, paths.home, registry_before) {
             rollback_errors.push(format!("Failed to restore the fork registry: {error}"));
         }
     }
@@ -759,7 +772,9 @@ fn validate_fork_path(home: &Path, name: &str, path: &Path) -> Result<(), String
 /// before the ledger is touched, so a pre-detach failure keeps the skill
 /// attached and restores the earlier recovery. The replacement recovery stays
 /// available while ledger removal and live-tree restoration run.
+#[allow(clippy::too_many_arguments)]
 pub fn fork_skill_with(
+    guard: &super::write_lease::WriteLeaseGuard,
     home: &Path,
     app_data: &Path,
     name: &str,
@@ -769,6 +784,7 @@ pub fn fork_skill_with(
     lookup: &dyn CommitLookup,
 ) -> Result<ForkRecord, String> {
     fork_skill_with_storage(
+        guard,
         home,
         app_data,
         name,
@@ -782,6 +798,7 @@ pub fn fork_skill_with(
 
 #[allow(clippy::too_many_arguments)]
 fn fork_skill_with_storage(
+    guard: &super::write_lease::WriteLeaseGuard,
     home: &Path,
     app_data: &Path,
     name: &str,
@@ -814,6 +831,7 @@ fn fork_skill_with_storage(
     if let Err(error) = clear_fork_transaction_dir(storage, &base_dir) {
         return Err(rollback_fork_before_detach(
             storage,
+            guard,
             format!("Failed to clear the stale snapshot for {name}: {error}"),
             &rollback_paths,
             None,
@@ -825,6 +843,7 @@ fn fork_skill_with_storage(
     {
         return Err(rollback_fork_before_detach(
             storage,
+            guard,
             format!(
                 "Could not fetch {name}'s upstream copy at {}: {error}. Nothing was changed.",
                 origin.base_commit
@@ -860,6 +879,7 @@ fn fork_skill_with_storage(
         Err(error) => {
             return Err(rollback_fork_before_detach(
                 storage,
+                guard,
                 error,
                 &rollback_paths,
                 None,
@@ -877,9 +897,10 @@ fn fork_skill_with_storage(
     registry
         .trials
         .remove(&deployment_trial_key(&record.deployment_id));
-    if let Err(error) = storage.write_registry(home, &registry) {
+    if let Err(error) = storage.write_registry(guard, home, &registry) {
         return Err(rollback_fork_before_detach(
             storage,
+            guard,
             error,
             &rollback_paths,
             None,
@@ -892,6 +913,7 @@ fn fork_skill_with_storage(
     if let Err(error) = storage.snapshot_live_skill(&skill_dir, &recovery_dir) {
         return Err(rollback_fork_before_detach(
             storage,
+            guard,
             format!("Failed to snapshot {name} before forking: {error}"),
             &rollback_paths,
             Some(&registry_before),
@@ -903,6 +925,7 @@ fn fork_skill_with_storage(
         if let Err(error) = storage.remove_dir_all(quarantine_dir) {
             return Err(rollback_fork_before_detach(
                 storage,
+                guard,
                 format!(
                     "Failed to clear the previous recovery quarantine at {}: {error}",
                     quarantine_dir.display()
@@ -922,6 +945,7 @@ fn fork_skill_with_storage(
     if let Err(error) = ledger.remove(origin.tool, name) {
         return Err(rollback_fork_before_detach(
             storage,
+            guard,
             error,
             &detached_rollback_paths,
             Some(&registry_before),
@@ -945,21 +969,6 @@ fn fork_skill_with_storage(
     Ok(record)
 }
 
-/// Serializes fork/pull/unfork/remove-forked so two concurrent calls can't
-/// race on the registry, the snapshot, or the CLI. A single global lock (as
-/// opposed to per-skill) is fine: forking is a rare, user-initiated action.
-#[derive(Default)]
-pub struct ForkMutationLock(std::sync::Mutex<()>);
-
-impl ForkMutationLock {
-    /// `Err` when another fork operation already holds the lock.
-    pub fn try_acquire(&self) -> Result<std::sync::MutexGuard<'_, ()>, String> {
-        self.0
-            .try_lock()
-            .map_err(|_| "Another fork operation is in progress".to_string())
-    }
-}
-
 #[tauri::command]
 pub async fn fork_skill(
     target: super::skill_dto::LifecycleTarget,
@@ -968,9 +977,9 @@ pub async fn fork_skill(
     let timing_app = app.clone();
     crate::timing_log::time_command_blocking(&timing_app, "fork_skill", move || {
         let refresh_state = app.state::<SkillRefreshState>();
-        let fork_lock = app.state::<ForkMutationLock>();
-        let _guard = fork_lock.try_acquire()?;
         let home = dirs::home_dir().ok_or("Could not find home directory")?;
+        let write_lease = super::write_lease::WriteLease::default();
+        let guard = write_lease.try_acquire(&home)?;
         let app_data = app
             .path()
             .app_data_dir()
@@ -1006,6 +1015,7 @@ pub async fn fork_skill(
             .map_err(|_| "Fork is only available for the Global Universal folder.".to_string())?;
 
         let result = fork_skill_with(
+            &guard,
             &home,
             &app_data,
             &skill.name,
@@ -1162,6 +1172,7 @@ fn rename_or_copy(src: &Path, dst: &Path) -> Result<(), String> {
 /// beyond what's undone here.
 #[allow(clippy::too_many_arguments)]
 fn swap_in_pull_result(
+    guard: &super::write_lease::WriteLeaseGuard,
     home: &Path,
     app_data: &Path,
     name: &str,
@@ -1215,7 +1226,7 @@ fn swap_in_pull_result(
     if let Some(rec) = registry.forks.get_mut(name) {
         rec.base_commit = to_commit.to_string();
     }
-    if let Err(e) = write_fork_registry(home, registry) {
+    if let Err(e) = write_fork_registry_locked(guard, home, registry) {
         let _ = fs::remove_dir_all(base_dir);
         let _ = rename_or_copy(&old_base_backup, base_dir);
         let _ = fs::remove_dir_all(mine_dir);
@@ -1241,6 +1252,7 @@ fn swap_in_pull_result(
 /// that mutates them, and it does so as close to atomically as the
 /// filesystem allows.
 pub fn pull_fork_upstream_with(
+    guard: &super::write_lease::WriteLeaseGuard,
     home: &Path,
     app_data: &Path,
     name: &str,
@@ -1392,6 +1404,7 @@ pub fn pull_fork_upstream_with(
     }
 
     swap_in_pull_result(
+        guard,
         home,
         app_data,
         name,
@@ -1415,9 +1428,9 @@ pub async fn pull_fork_upstream(
     let timing_app = app.clone();
     crate::timing_log::time_command_blocking(&timing_app, "pull_fork_upstream", move || {
         let refresh_state = app.state::<SkillRefreshState>();
-        let fork_lock = app.state::<ForkMutationLock>();
-        let _guard = fork_lock.try_acquire()?;
         let home = dirs::home_dir().ok_or("Could not find home directory")?;
+        let write_lease = super::write_lease::WriteLease::default();
+        let guard = write_lease.try_acquire(&home)?;
         let app_data = app
             .path()
             .app_data_dir()
@@ -1436,7 +1449,8 @@ pub async fn pull_fork_upstream(
             "Pull upstream",
         )?;
         let (name, _) = resolve_recorded_fork_target(&resolved.snapshot, &target, &home)?;
-        let result = pull_fork_upstream_with(&home, &app_data, &name, &fetch, lookup.as_ref());
+        let result =
+            pull_fork_upstream_with(&guard, &home, &app_data, &name, &fetch, lookup.as_ref());
         skill_refresh::request_snapshot_rebuild(&app);
         result
     })
@@ -1449,6 +1463,7 @@ pub async fn pull_fork_upstream(
 
 /// `unfork_skill`'s logic, taking `home`/`app_data` and the trait directly.
 pub fn unfork_skill_with(
+    guard: &super::write_lease::WriteLeaseGuard,
     home: &Path,
     app_data: &Path,
     name: &str,
@@ -1470,7 +1485,7 @@ pub fn unfork_skill_with(
             .trials
             .remove(&deployment_trial_key(&record.deployment_id));
     }
-    write_fork_registry(home, &registry)?;
+    write_fork_registry_locked(guard, home, &registry)?;
     let _ = fs::remove_dir_all(fork_snapshot_dir(app_data, name));
     Ok(())
 }
@@ -1483,9 +1498,9 @@ pub async fn unfork_skill(
     let timing_app = app.clone();
     crate::timing_log::time_command_blocking(&timing_app, "unfork_skill", move || {
         let refresh_state = app.state::<SkillRefreshState>();
-        let fork_lock = app.state::<ForkMutationLock>();
-        let _guard = fork_lock.try_acquire()?;
         let home = dirs::home_dir().ok_or("Could not find home directory")?;
+        let write_lease = super::write_lease::WriteLease::default();
+        let guard = write_lease.try_acquire(&home)?;
         let app_data = app
             .path()
             .app_data_dir()
@@ -1498,7 +1513,7 @@ pub async fn unfork_skill(
             "Unfork",
         )?;
         let (name, _) = resolve_recorded_fork_target(&resolved.snapshot, &target, &home)?;
-        let result = unfork_skill_with(&home, &app_data, &name, &RealLedgerTool);
+        let result = unfork_skill_with(&guard, &home, &app_data, &name, &RealLedgerTool);
         skill_refresh::request_snapshot_rebuild(&app);
         result
     })
@@ -1553,8 +1568,15 @@ fn resolve_recorded_fork_target(
 
 #[cfg(test)]
 mod tests {
+    use super::super::skill_fork_registry::write_fork_registry;
     use super::*;
     use std::sync::Mutex;
+
+    fn test_guard(home: &Path) -> super::super::write_lease::WriteLeaseGuard {
+        super::super::write_lease::WriteLease::default()
+            .try_acquire(home)
+            .unwrap()
+    }
 
     /// Records every `remove`/`reinstall` call so tests can assert "called
     /// once with the right OriginTool" without shelling out to `npx`.
@@ -1694,13 +1716,18 @@ mod tests {
             read_fork_registry(home)
         }
 
-        fn write_registry(&self, home: &Path, registry: &ForkRegistry) -> Result<(), String> {
+        fn write_registry(
+            &self,
+            guard: &super::super::write_lease::WriteLeaseGuard,
+            home: &Path,
+            registry: &ForkRegistry,
+        ) -> Result<(), String> {
             let mut calls = self.registry_write_calls.lock().unwrap();
             *calls += 1;
             if self.fail_registry_write_call == Some(*calls) {
                 return Err("injected registry write failure".to_string());
             }
-            write_fork_registry(home, registry)
+            write_fork_registry_locked(guard, home, registry)
         }
     }
 
@@ -1775,6 +1802,7 @@ mod tests {
             files: vec![("SKILL.md", "---\nname: find-bugs\n---\nupstream body")],
         };
         let record = fork_skill_with(
+            &test_guard(&home),
             &home,
             &app_data,
             "find-bugs",
@@ -1844,6 +1872,7 @@ mod tests {
             files: vec![("SKILL.md", "---\nname: find-bugs\n---\nupstream body")],
         };
         fork_skill_with(
+            &test_guard(&home),
             &home,
             &app_data,
             "find-bugs",
@@ -1889,6 +1918,7 @@ mod tests {
             files: vec![("SKILL.md", "line one\nbase line\n")],
         };
         fork_skill_with(
+            &test_guard(&home),
             &home,
             &app_data,
             "find-bugs",
@@ -1915,6 +1945,7 @@ mod tests {
             files: vec![("SKILL.md", "line one\ntheirs edit\n")],
         };
         let result = pull_fork_upstream_with(
+            &test_guard(&home),
             &home,
             &app_data,
             "find-bugs",
@@ -1948,6 +1979,7 @@ mod tests {
 
         let ledger = FakeLedger::default();
         let err = fork_skill_with(
+            &test_guard(&home),
             &home,
             &app_data,
             "find-bugs",
@@ -1986,6 +2018,7 @@ mod tests {
             files: vec![("SKILL.md", "body")],
         };
         let record = fork_skill_with(
+            &test_guard(&home),
             &home,
             &app_data,
             "find-bugs",
@@ -2035,6 +2068,7 @@ mod tests {
             files: vec![("SKILL.md", "upstream body")],
         };
         fork_skill_with(
+            &test_guard(&home),
             &home,
             &app_data,
             "find-bugs",
@@ -2058,6 +2092,7 @@ mod tests {
 
         let ledger = FakeLedger::default();
         let err = fork_skill_with(
+            &test_guard(&home),
             &home,
             &app_data,
             "find-bugs",
@@ -2080,6 +2115,7 @@ mod tests {
 
         let ledger = FakeLedger::default();
         let err = fork_skill_with(
+            &test_guard(&home),
             &home,
             &app_data,
             "my-notes",
@@ -2113,6 +2149,7 @@ mod tests {
             files: vec![("SKILL.md", "upstream body")],
         };
         let err = fork_skill_with(
+            &test_guard(&home),
             &home,
             &app_data,
             "find-bugs",
@@ -2177,6 +2214,7 @@ mod tests {
             ..Default::default()
         };
         let error = fork_skill_with_storage(
+            &test_guard(&home),
             &home,
             &app_data,
             "find-bugs",
@@ -2238,6 +2276,7 @@ mod tests {
 
         let ledger = FakeLedger::default();
         let error = fork_skill_with(
+            &test_guard(&home),
             &home,
             &app_data,
             "find-bugs",
@@ -2296,6 +2335,7 @@ mod tests {
         let ledger = FakeLedger::default();
 
         let error = fork_skill_with_storage(
+            &test_guard(&home),
             &home,
             &app_data,
             "find-bugs",
@@ -2345,6 +2385,7 @@ mod tests {
         let ledger = FakeLedger::default();
 
         let error = fork_skill_with_storage(
+            &test_guard(&home),
             &home,
             &app_data,
             "find-bugs",
@@ -2400,6 +2441,7 @@ mod tests {
         let ledger = FakeLedger::default();
 
         let error = fork_skill_with_storage(
+            &test_guard(&home),
             &home,
             &app_data,
             "find-bugs",
@@ -2457,6 +2499,7 @@ mod tests {
         let ledger = FakeLedger::default();
 
         let error = fork_skill_with_storage(
+            &test_guard(&home),
             &home,
             &app_data,
             "find-bugs",
@@ -2517,6 +2560,7 @@ mod tests {
         let ledger = FakeLedger::default();
 
         let error = fork_skill_with_storage(
+            &test_guard(&home),
             &home,
             &app_data,
             "find-bugs",
@@ -2564,6 +2608,7 @@ mod tests {
         let ledger = FakeLedger::default();
 
         let error = fork_skill_with(
+            &test_guard(&home),
             &home,
             &app_data,
             "find-bugs",
@@ -2666,9 +2711,15 @@ mod tests {
         seed_update_check_latest(&app_data, "find-bugs", &commit);
 
         let fetch = FakeFetch { files: vec![] };
-        let result =
-            pull_fork_upstream_with(&home, &app_data, "find-bugs", &fetch, &NeverCalledLookup)
-                .unwrap();
+        let result = pull_fork_upstream_with(
+            &test_guard(&home),
+            &home,
+            &app_data,
+            "find-bugs",
+            &fetch,
+            &NeverCalledLookup,
+        )
+        .unwrap();
         assert_eq!(result.message.as_deref(), Some("Already up to date"));
         assert!(result.merged.is_empty() && result.conflicts.is_empty());
     }
@@ -2690,9 +2741,15 @@ mod tests {
         let fetch = FakeFetch {
             files: vec![("SKILL.md", "updated upstream body")],
         };
-        let result =
-            pull_fork_upstream_with(&home, &app_data, "find-bugs", &fetch, &NeverCalledLookup)
-                .unwrap();
+        let result = pull_fork_upstream_with(
+            &test_guard(&home),
+            &home,
+            &app_data,
+            "find-bugs",
+            &fetch,
+            &NeverCalledLookup,
+        )
+        .unwrap();
 
         assert_eq!(result.merged, vec!["SKILL.md".to_string()]);
         assert!(result.conflicts.is_empty());
@@ -2703,17 +2760,6 @@ mod tests {
             read_fork_registry(&home).unwrap().forks["find-bugs"].base_commit,
             "b".repeat(40)
         );
-    }
-
-    #[test]
-    fn fork_mutation_lock_refuses_a_concurrent_second_acquire() {
-        let lock = ForkMutationLock::default();
-        let first = lock.try_acquire().unwrap();
-        let second = lock.try_acquire();
-        assert_eq!(second.unwrap_err(), "Another fork operation is in progress");
-        drop(first);
-        // Released - a later call succeeds.
-        assert!(lock.try_acquire().is_ok());
     }
 
     #[test]
@@ -2773,9 +2819,15 @@ mod tests {
         let fetch = FakeFetch {
             files: vec![("SKILL.md", "line one\ntheirs line\n")],
         };
-        let result =
-            pull_fork_upstream_with(&home, &app_data, "find-bugs", &fetch, &NeverCalledLookup)
-                .unwrap();
+        let result = pull_fork_upstream_with(
+            &test_guard(&home),
+            &home,
+            &app_data,
+            "find-bugs",
+            &fetch,
+            &NeverCalledLookup,
+        )
+        .unwrap();
 
         assert_eq!(result.conflicts, vec!["SKILL.md".to_string()]);
         let mine = fs::read_to_string(home.join(".agents/skills/find-bugs/SKILL.md")).unwrap();
@@ -2814,9 +2866,15 @@ mod tests {
         let fetch = FakeFetch {
             files: vec![("SKILL.md", "upstream changed it")],
         };
-        let err =
-            pull_fork_upstream_with(&home, &app_data, "find-bugs", &fetch, &NeverCalledLookup)
-                .unwrap_err();
+        let err = pull_fork_upstream_with(
+            &test_guard(&home),
+            &home,
+            &app_data,
+            "find-bugs",
+            &fetch,
+            &NeverCalledLookup,
+        )
+        .unwrap_err();
         assert!(err.contains("Failed to back up the live tree"));
 
         drop(_restore); // restore write access before reading back through it
@@ -2846,9 +2904,15 @@ mod tests {
         let fetch = FakeFetch {
             files: vec![("SKILL.md", "body"), ("NEW.md", "new upstream file")],
         };
-        let result =
-            pull_fork_upstream_with(&home, &app_data, "find-bugs", &fetch, &NeverCalledLookup)
-                .unwrap();
+        let result = pull_fork_upstream_with(
+            &test_guard(&home),
+            &home,
+            &app_data,
+            "find-bugs",
+            &fetch,
+            &NeverCalledLookup,
+        )
+        .unwrap();
 
         assert_eq!(result.added, vec!["NEW.md".to_string()]);
         assert!(home.join(".agents/skills/find-bugs/NEW.md").exists());
@@ -2870,9 +2934,15 @@ mod tests {
         let fetch = FakeFetch {
             files: vec![("SKILL.md", "body")], // OLD.md gone upstream
         };
-        let result =
-            pull_fork_upstream_with(&home, &app_data, "find-bugs", &fetch, &NeverCalledLookup)
-                .unwrap();
+        let result = pull_fork_upstream_with(
+            &test_guard(&home),
+            &home,
+            &app_data,
+            "find-bugs",
+            &fetch,
+            &NeverCalledLookup,
+        )
+        .unwrap();
 
         assert_eq!(result.removed, vec!["OLD.md".to_string()]);
         assert!(!home.join(".agents/skills/find-bugs/OLD.md").exists());
@@ -2894,9 +2964,15 @@ mod tests {
         let fetch = FakeFetch {
             files: vec![("SKILL.md", "body"), ("SHARED.md", "upstream changed it")],
         };
-        let result =
-            pull_fork_upstream_with(&home, &app_data, "find-bugs", &fetch, &NeverCalledLookup)
-                .unwrap();
+        let result = pull_fork_upstream_with(
+            &test_guard(&home),
+            &home,
+            &app_data,
+            "find-bugs",
+            &fetch,
+            &NeverCalledLookup,
+        )
+        .unwrap();
 
         assert_eq!(result.conflicts, vec!["SHARED.md".to_string()]);
         assert_eq!(
@@ -2924,9 +3000,15 @@ mod tests {
         let fetch = FakeFetch {
             files: vec![("SKILL.md", "body")], // SHARED.md removed upstream
         };
-        let result =
-            pull_fork_upstream_with(&home, &app_data, "find-bugs", &fetch, &NeverCalledLookup)
-                .unwrap();
+        let result = pull_fork_upstream_with(
+            &test_guard(&home),
+            &home,
+            &app_data,
+            "find-bugs",
+            &fetch,
+            &NeverCalledLookup,
+        )
+        .unwrap();
 
         assert_eq!(result.conflicts, vec!["SHARED.md".to_string()]);
         assert_eq!(
@@ -2950,9 +3032,15 @@ mod tests {
         let fetch = FakeFetch {
             files: vec![("SKILL.md", "body")],
         };
-        let result =
-            pull_fork_upstream_with(&home, &app_data, "find-bugs", &fetch, &NeverCalledLookup)
-                .unwrap();
+        let result = pull_fork_upstream_with(
+            &test_guard(&home),
+            &home,
+            &app_data,
+            "find-bugs",
+            &fetch,
+            &NeverCalledLookup,
+        )
+        .unwrap();
 
         assert!(!result.added.contains(&"NOTES.md".to_string()));
         assert!(!result.removed.contains(&"NOTES.md".to_string()));
@@ -3020,7 +3108,7 @@ mod tests {
         );
 
         let ledger = FakeLedger::default();
-        unfork_skill_with(&home, &app_data, "find-bugs", &ledger).unwrap();
+        unfork_skill_with(&test_guard(&home), &home, &app_data, "find-bugs", &ledger).unwrap();
 
         assert!(!read_fork_registry(&home)
             .unwrap()
@@ -3072,7 +3160,7 @@ mod tests {
         write_fork_registry(&home, &registry).unwrap();
 
         let ledger = FakeLedger::default();
-        unfork_skill_with(&home, &app_data, "find-bugs", &ledger).unwrap();
+        unfork_skill_with(&test_guard(&home), &home, &app_data, "find-bugs", &ledger).unwrap();
 
         assert!(!read_fork_registry(&home)
             .unwrap()
@@ -3103,7 +3191,7 @@ mod tests {
         write_fork_registry(&home, &registry).unwrap();
 
         let ledger = FakeLedger::default();
-        unfork_skill_with(&home, &app_data, "find-bugs", &ledger).unwrap();
+        unfork_skill_with(&test_guard(&home), &home, &app_data, "find-bugs", &ledger).unwrap();
         let calls = ledger.reinstall_calls.lock().unwrap();
         assert_eq!(calls[0].0.declared_ref, None);
     }

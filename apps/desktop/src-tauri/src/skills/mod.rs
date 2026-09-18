@@ -49,6 +49,7 @@ pub mod skill_trust_policy;
 pub mod skill_update_check;
 #[cfg(test)]
 mod test_support;
+pub mod write_lease;
 
 pub use agents::*;
 pub use commands::*;

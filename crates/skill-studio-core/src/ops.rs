@@ -842,8 +842,7 @@ fn read_root_entries(fs: &dyn ScopeFs, dir: &Path) -> std::io::Result<Vec<DirEnt
     let entries = fs.read_dir(dir)?;
     let mut names: Vec<_> = entries
         .into_iter()
-        .filter(|e| matches!(e.kind, FileKind::Dir | FileKind::Symlink))
-        .filter(|e| !e.name.starts_with('.'))
+        .filter(crate::ports::is_skill_shaped_entry)
         .collect();
     names.sort_by(|a, b| a.name.cmp(&b.name));
     Ok(names)
