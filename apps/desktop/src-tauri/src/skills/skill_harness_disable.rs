@@ -1662,15 +1662,15 @@ mod tests {
         )
         .unwrap();
 
+        // `OpencodeHomeGuard` already sets `SKILL_STUDIO_FIXTURE=1` (and
+        // restores it on drop); `XDG_CONFIG_HOME` is then pointed at a
+        // real, unrelated directory to prove fixture mode ignores it below.
         let _guard = OpencodeHomeGuard::new(&home);
-        let prev_fixture = std::env::var_os("SKILL_STUDIO_FIXTURE");
         // SAFETY: `_guard` holds `OpencodeHomeGuard`'s lock, serializing
-        // every test in this module that touches these vars; this test adds
-        // `SKILL_STUDIO_FIXTURE` under the same lock.
+        // every test in this module that touches these vars.
         #[allow(unsafe_code)]
         unsafe {
             std::env::set_var("XDG_CONFIG_HOME", &real_xdg_config_home);
-            std::env::set_var("SKILL_STUDIO_FIXTURE", "1");
         }
 
         let config_dir = skill_refresh::opencode_config_root(&home);
@@ -1689,15 +1689,6 @@ mod tests {
             true,
         )
         .unwrap();
-
-        // SAFETY: same as above - still under `_guard`'s lock.
-        #[allow(unsafe_code)]
-        unsafe {
-            match prev_fixture {
-                Some(v) => std::env::set_var("SKILL_STUDIO_FIXTURE", v),
-                None => std::env::remove_var("SKILL_STUDIO_FIXTURE"),
-            }
-        }
 
         assert!(
             skill_studio_core::opencode_config::read_denied_patterns(
