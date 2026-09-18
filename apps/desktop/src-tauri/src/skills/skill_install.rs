@@ -969,13 +969,13 @@ mod tests {
         assert!(home.join(".agents/skills/third/SKILL.md").exists());
     }
 
-    /// `a_failed_skill_does_not_stop_the_rest_of_the_batch`: unchanged from
-    /// the deleted `skill_add.rs` in spirit - an already-existing destination
-    /// fails one entry while the next entry, called right after in the same
-    /// loop a real caller (`skill_add_operation.rs`'s batch worker) would
-    /// run, still installs.
+    /// `a_failed_skill_does_not_stop_the_rest_of_the_batch_or_names_the_skipped_entry`:
+    /// unchanged from the deleted `skill_add.rs` in spirit - an
+    /// already-existing destination fails one entry while the next entry,
+    /// called right after in the same loop a real caller
+    /// (`skill_add_operation.rs`'s batch worker) would run, still installs.
     #[test]
-    fn a_failed_skill_does_not_stop_the_rest_of_the_batch() {
+    fn a_failed_skill_does_not_stop_the_rest_of_the_batch_or_names_the_skipped_entry() {
         let tmp = tempfile::tempdir().unwrap();
         let home = tmp.path();
         std::fs::create_dir_all(home.join(".agents/skills/other")).unwrap();

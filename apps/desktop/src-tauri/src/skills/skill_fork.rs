@@ -1627,7 +1627,7 @@ mod tests {
     }
 
     #[test]
-    fn universal_skills_sh_uses_agent_universal_and_global() {
+    fn universal_skills_sh_uses_agent_universal_and_global_or_names_the_wrong_argv() {
         let argv =
             skills_sh_universal_add_args("o/r", Some("find-bugs"), &universal_global()).unwrap();
         assert_eq!(
@@ -1648,7 +1648,7 @@ mod tests {
     }
 
     #[test]
-    fn universal_skills_sh_may_add_claude_code_not_codex() {
+    fn universal_skills_sh_may_add_claude_code_not_codex_or_names_the_missing_agent() {
         let mut spec = universal_global();
         spec.harnesses = vec![AgentId::ClaudeCode];
         let argv = skills_sh_universal_add_args("o/r", None, &spec).unwrap();
@@ -1658,7 +1658,7 @@ mod tests {
     }
 
     #[test]
-    fn universal_skills_sh_ignores_direct_readers() {
+    fn universal_skills_sh_ignores_direct_readers_or_names_the_leaked_agent() {
         let mut spec = universal_global();
         spec.harnesses = vec![AgentId::Codex];
         let argv = skills_sh_universal_add_args("o/r", None, &spec).unwrap();
@@ -1666,7 +1666,7 @@ mod tests {
     }
 
     #[test]
-    fn project_universal_uses_cwd_not_global() {
+    fn project_universal_uses_cwd_not_global_or_names_the_wrong_scope() {
         let spec = SkillInstallSpec {
             scope: InstallScope::Project,
             destination: SkillDestination::Universal,

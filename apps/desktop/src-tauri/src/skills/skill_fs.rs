@@ -383,7 +383,7 @@ mod tests {
     // `relative_path_between` directly instead of through `add_skill_with`.
 
     #[test]
-    fn relative_path_between_walks_up_to_the_common_parent() {
+    fn relative_path_between_walks_up_to_the_common_parent_or_names_the_wrong_relative_path() {
         assert_eq!(
             relative_path_between(
                 Path::new("/h/.claude/skills"),
@@ -402,7 +402,7 @@ mod tests {
 
     #[cfg(unix)]
     #[test]
-    fn claude_code_symlink_created_only_for_a_real_directory() {
+    fn claude_code_symlink_created_only_for_a_real_directory_or_names_the_missing_link() {
         let tmp = tempfile::tempdir().unwrap();
         let home = tmp.path().to_path_buf();
         let shared = home.join(".agents/skills");
@@ -432,7 +432,8 @@ mod tests {
 
     #[cfg(unix)]
     #[test]
-    fn claude_code_symlink_skipped_when_claude_skills_is_the_whole_dir_symlink() {
+    fn claude_code_symlink_skipped_when_claude_skills_is_the_whole_dir_symlink_or_names_the_created_link(
+    ) {
         let tmp = tempfile::tempdir().unwrap();
         let home = tmp.path().to_path_buf();
         let shared = home.join(".agents/skills");
