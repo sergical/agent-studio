@@ -114,9 +114,18 @@ pub fn open(db_path: &Path) -> Result<Connection, String> {
 
 /// Owns the event store connection plus the app data dir its backups live
 /// under (`<app_data>/backups/<event-id>/`).
+///
+/// `journal` is `skill-studio-core`'s reference [`Journal`] implementation
+/// (unit 1.2), rooted at `<app_data>/journal`: this struct is the host
+/// implementation of that port, in place of a separate desktop-only
+/// concept. Nothing here reroutes the five-phase `events` table write path
+/// above through it yet - that adoption is a later slice - but a caller
+/// wiring `fsops` through `journal::journaled_*` can pass `&self.journal`
+/// straight through.
 pub struct EventStore {
     pub conn: Connection,
     pub app_data: PathBuf,
+    journal: skill_studio_core::journal::FsJournal,
 }
 
 impl EventStore {
@@ -125,10 +134,20 @@ impl EventStore {
         fs::create_dir_all(app_data)
             .map_err(|e| format!("Failed to create {}: {e}", app_data.display()))?;
         let conn = open(&app_data.join("events.sqlite3"))?;
+        let journal = skill_studio_core::journal::FsJournal::new(
+            app_data.join("journal"),
+            std::sync::Arc::new(skill_studio_host::RealFs::new()),
+        );
         Ok(Self {
             conn,
             app_data: app_data.to_path_buf(),
+            journal,
         })
+    }
+
+    /// This store's `Journal` port implementation.
+    pub fn journal(&self) -> &skill_studio_core::journal::FsJournal {
+        &self.journal
     }
 
     fn backup_dir_for(&self, id: &str) -> PathBuf {
