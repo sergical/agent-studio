@@ -2350,7 +2350,7 @@ fn classify_owner(cx: &OwnerClassifyContext) -> (LifecycleOwnerKind, Option<Owne
     }
 }
 
-fn scope_label(scope: &RootScope) -> &'static str {
+pub(crate) fn scope_label(scope: &RootScope) -> &'static str {
     match scope {
         RootScope::Global => "global",
         RootScope::Project(_) => "project",
@@ -2396,7 +2396,7 @@ fn encode_id_path(path: &str) -> String {
 /// {scope}/{slot}/{destination}/{name}/{project}/{lexical-entry}`. Matches
 /// the desktop's `deployment_id` (`skill_deployment.rs`) byte for byte, given
 /// the same inputs.
-fn deployment_id(
+pub(crate) fn deployment_id(
     name: &str,
     scope_label: &str,
     destination: SkillDestination,
@@ -4516,6 +4516,8 @@ fn find_claude_link<'a>(
     })
 }
 
+pub use crate::ops_install::{install, install_preferences};
+
 /// Moves a universal deployment's directory into the parked root.
 ///
 /// Preconditions: exclusive lease; the deployment must resolve exactly once,
@@ -4901,7 +4903,7 @@ pub fn set_harness_enabled(
 /// no `.config` at all makes a single `confine(".config/opencode")` fail
 /// before `create_dir_all` ever runs. Walking up to the first existing
 /// ancestor and confining one level at a time avoids that.
-fn ensure_dir_all(
+pub(crate) fn ensure_dir_all(
     rt: &Runtime,
     session: &crate::ports::MutationSession,
     fs: &dyn ScopeFs,

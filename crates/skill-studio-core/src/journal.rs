@@ -220,6 +220,15 @@ impl Journal for FsJournal {
                 continue;
             }
             let plan_path = plans_dir.join(&entry.name).join("plan.json");
+            // R9: `begin` writes `manifest.json` before `plan.json` (see its
+            // own doc), so a crash between the two leaves a plan dir with
+            // only a manifest. Nothing was ever `Pending` from this op's
+            // perspective - the plan row itself never landed - so skip it
+            // rather than failing every later `all()`/`reconcile` call on a
+            // dir this journal never finished creating.
+            if self.fs.symlink_metadata(&plan_path).is_err() {
+                continue;
+            }
             records.push(self.read_json::<PlanRecord>(&plan_path)?);
         }
         records.sort_by(|a, b| a.id.cmp(&b.id));
@@ -907,6 +916,50 @@ mod tests {
         );
 
         plan.finish(PlanStatus::Done).expect("finish");
+    }
+
+    /// (R9) Given a plan dir carrying only `manifest.json` - the shape a
+    /// crash between `begin`'s manifest write and its `plan.json` rename
+    /// leaves behind - when `all()` reads the journal back, then that dir is
+    /// skipped rather than failing the whole read; a normal, complete plan
+    /// alongside it is still returned. On failure the panic names the
+    /// error `all()` raised instead of skipping.
+    #[test]
+    fn all_skips_a_plan_dir_missing_plan_json_or_names_the_read_error() {
+        let fs: Arc<dyn ScopeFs> = Arc::new(FixtureBuilder::new().dir("/journal").build_fs());
+        let journal = journal_over(fs.clone());
+        let lease = FakeLease::default();
+        let g = guard(&lease);
+
+        let ok_id = PlanId("01PLAN0000000000000000002".into());
+        PlanWriter::begin(
+            &journal,
+            &g,
+            ok_id.clone(),
+            Utc::now(),
+            "complete plan",
+            PathBuf::from("/root"),
+            Vec::new(),
+        )
+        .expect("begin the complete plan");
+
+        // The crashed plan: only its manifest landed, never `plan.json`.
+        fs.fsops_create_dir(Path::new("/journal/plans/01PLAN0000000000000000000"))
+            .expect("mkdir the crashed plan's dir");
+        fs.fsops_write_new_file(
+            Path::new("/journal/plans/01PLAN0000000000000000000/manifest.json"),
+            b"[]",
+        )
+        .expect("write the crashed plan's manifest only");
+
+        let records = journal
+            .all()
+            .expect("all() must skip the manifest-only dir, not fail outright");
+        assert_eq!(
+            records.iter().map(|p| p.id.clone()).collect::<Vec<_>>(),
+            vec![ok_id],
+            "only the complete plan should be returned"
+        );
     }
 
     /// Given a plan, when it is begun and then finished, then its status

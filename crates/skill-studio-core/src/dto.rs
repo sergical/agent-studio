@@ -660,3 +660,111 @@ pub struct SetHarnessEnabledOutcome {
     /// How many paths the harness's switch needed to touch in total.
     pub total: u32,
 }
+
+/// Which of the three ways `ops::install` can put a skill's bytes on disk.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum InstallMethod {
+    /// Fetches or copies bytes and stages/swaps them into place directly -
+    /// no external CLI.
+    Copy,
+    /// `npx -y @sentry/dotagents add <source>`.
+    Dotagents,
+    /// `npx -y skills add <source>`.
+    SkillsSh,
+}
+
+/// One file `InstallMethod::Copy` stages into the new skill's folder, path
+/// relative to the folder root (for example `SKILL.md` or
+/// `scripts/run.sh`).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct InstallFile {
+    /// Path relative to the skill folder's own root.
+    pub relative_path: PathBuf,
+    /// The file's bytes.
+    pub contents: Vec<u8>,
+}
+
+/// Request to install one skill by [`InstallMethod::Copy`], `Dotagents`, or
+/// `SkillsSh`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct InstallRequest {
+    /// The folder name the skill will be installed under, both at
+    /// `.agents/skills/<name>` and, for `Dotagents`/`SkillsSh`, the name the
+    /// CLI is expected to create.
+    pub skill: SkillName,
+    /// Which method writes the bytes.
+    pub method: InstallMethod,
+    /// `Global` installs under the scope home; `Project` installs under one
+    /// project.
+    pub scope: RootScope,
+    /// Harnesses to link the new skill into right after install. Only
+    /// Claude Code has a per-skill link this build writes; other harnesses
+    /// read the universal root directly.
+    #[serde(default)]
+    pub harnesses: Vec<AgentId>,
+    /// `Copy` only: the folder's files, staged then swapped into place.
+    #[serde(default)]
+    pub files: Vec<InstallFile>,
+    /// `Dotagents`/`SkillsSh` only: the source argument passed to the CLI's
+    /// `add` command (for example `owner/repo`).
+    #[serde(default)]
+    pub source: Option<String>,
+    /// The source's normalized repository identity, for the trust check
+    /// (`None` for a source the policy never gates, like a local path).
+    #[serde(default)]
+    pub trust_identity: Option<String>,
+    /// Confirms the trust prompt for `trust_identity`. A first call with
+    /// this `false` against an untrusted identity returns
+    /// [`InstallOutcome::NeedsTrust`] instead of writing.
+    #[serde(default)]
+    pub trust_confirmed: bool,
+    /// Saves this call's method and harnesses as the preference
+    /// `install_preferences` returns for the next install. Defaults to
+    /// `true` so a caller opts out, not in.
+    #[serde(default = "default_true")]
+    pub save_as_preference: bool,
+}
+
+fn default_true() -> bool {
+    true
+}
+
+/// Result of `install`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case", tag = "kind")]
+pub enum InstallOutcome {
+    /// The skill was installed.
+    Installed {
+        /// The `install` event.
+        event_id: EventId,
+        /// The skill that was installed.
+        skill: SkillName,
+        /// Where its canonical folder now lives.
+        deployment_path: PathBuf,
+        /// Harnesses actually linked (a subset of the request's
+        /// `harnesses` - only Claude Code gets a link this build).
+        linked_harnesses: Vec<AgentId>,
+    },
+    /// `trust_identity` was set, is not yet trusted, and `trust_confirmed`
+    /// was `false`. Nothing was written; retry with `trust_confirmed: true`
+    /// once the user confirms.
+    NeedsTrust {
+        /// The normalized identity that needs confirming.
+        identity: String,
+    },
+}
+
+/// The method and harnesses the last successful install saved, or the
+/// environment default when nothing has been saved yet.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct InstallPreferences {
+    /// The saved or defaulted method.
+    pub method: InstallMethod,
+    /// The saved or defaulted harnesses.
+    pub harnesses: Vec<AgentId>,
+    /// `false` when `method`/`harnesses` are an environment default rather
+    /// than a saved preference (no install has completed on this scope
+    /// yet).
+    pub saved: bool,
+}

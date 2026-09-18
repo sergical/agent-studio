@@ -46,6 +46,8 @@ pub mod journal;
 pub mod lock_file;
 pub mod opencode_config;
 pub mod ops;
+mod ops_install;
+mod ops_install_cli;
 mod ownership;
 pub mod ports;
 pub mod registry;

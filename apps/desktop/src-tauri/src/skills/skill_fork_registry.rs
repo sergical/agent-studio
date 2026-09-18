@@ -515,6 +515,94 @@ mod tests {
         assert!(err.contains("malformed"));
     }
 
+    /// (F1) Flow: a Copy install runs through the core's `ops::install`
+    /// directly against `home`, the way `apps/cli`'s `add` subcommand and
+    /// the MCP server's install tool both will - neither goes through the
+    /// desktop's own `add_skill`. Expectation: the `copies` entry it writes
+    /// deserializes into this file's own `CopyDeploymentRecord` with a
+    /// `deployment_id` in the desktop's `dep:v1/...` shape, so the desktop's
+    /// removal/discovery code (keyed by that field) recognizes a
+    /// core-installed skill without a schema migration.
+    /// Failure: a missing/malformed `deployment_id`, or a `copies` entry
+    /// that doesn't deserialize into `CopyDeploymentRecord` at all - either
+    /// means the core and the desktop have silently drifted onto two
+    /// different `copies` shapes.
+    #[test]
+    fn a_core_copy_install_writes_a_registry_the_desktop_reads_back_or_names_the_missing_field() {
+        let tmp = tempfile::tempdir().unwrap();
+        let home = tmp.path();
+        let data_root = home.join(".skill-studio");
+
+        let ports = skill_studio_core::ports::Ports {
+            fs: std::sync::Arc::new(skill_studio_host::RealFs::new()),
+            clock: std::sync::Arc::new(skill_studio_core::testing::FakeClock::at(0)),
+            ids: std::sync::Arc::new(skill_studio_core::testing::FakeIds::default()),
+            leases: std::sync::Arc::new(skill_studio_host::FileLease::new(
+                data_root.join("leases"),
+            )),
+            // `install` records a journal event row before its first write,
+            // which `NoHistory` refuses - use a real sqlite-backed store, the
+            // same as the core's own `ops_install.rs` tests.
+            history: std::sync::Arc::new(skill_studio_host::SqliteHistoryOpener::new(
+                home.join(".history").join("events.sqlite3"),
+            )),
+            sink: std::sync::Arc::new(skill_studio_core::testing::RecordingSink::default()),
+            spawner: None,
+            discovery: None,
+            tools: None,
+            catalog: std::sync::Arc::new(skill_studio_core::harness::HarnessCatalog::builtin()),
+        };
+        let rt = skill_studio_core::ports::Runtime::new(
+            &skill_studio_core::scope::RuntimeScope::fixture(home),
+            ports,
+        )
+        .unwrap();
+
+        let req = skill_studio_core::dto::InstallRequest {
+            skill: skill_studio_core::identity::SkillName("find-bugs".to_string()),
+            method: skill_studio_core::dto::InstallMethod::Copy,
+            scope: skill_studio_core::identity::RootScope::Global,
+            harnesses: Vec::new(),
+            files: vec![skill_studio_core::dto::InstallFile {
+                relative_path: PathBuf::from("SKILL.md"),
+                contents: b"---\nname: find-bugs\ndescription: finds bugs\n---\nBody.\n".to_vec(),
+            }],
+            source: None,
+            trust_identity: None,
+            trust_confirmed: false,
+            save_as_preference: false,
+        };
+        skill_studio_core::ops::install(&rt, &skill_studio_core::testing::golden::ctx(), &req)
+            .unwrap();
+
+        let reg = read_fork_registry(home).unwrap();
+        assert_eq!(reg.copies.len(), 1, "expected exactly one copies entry");
+        // R1: the map is keyed by the deployment id, not the skill name -
+        // built the same way the core's own `copy_deployment_id` does, via
+        // this crate's own `skill_deployment::deployment_id` builder.
+        let destination = home.join(".agents").join("skills").join("find-bugs");
+        let deployment_id = crate::skills::skill_deployment::deployment_id(
+            "find-bugs",
+            "global",
+            SkillDestination::Universal,
+            "universal",
+            None,
+            &destination,
+        );
+        let record = reg.copies.get(&deployment_id).expect(
+            "the copies map must be keyed by the deployment id the core just wrote a record under",
+        );
+        assert_eq!(record.deployment_id, deployment_id);
+        assert_eq!(record.scope, InstallScope::Global);
+        assert_eq!(record.destination, SkillDestination::Universal);
+        // R2: `content_hash` must be populated, not left empty - empty is
+        // documented as legacy-only, and destructive mutations refuse it.
+        assert!(
+            !record.content_hash.is_empty(),
+            "content_hash must not be empty for a freshly installed copy"
+        );
+    }
+
     #[test]
     fn version_two_registry_reads_with_no_inferred_copy_ownership() {
         let tmp = tempfile::tempdir().unwrap();
