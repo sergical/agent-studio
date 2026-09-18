@@ -4,6 +4,11 @@
 //! concurrent CLI or MCP write on the same root serializes with the desktop
 //! too - a global in-process mutex never could.
 
+// Integration test binaries aren't covered by the lib crate's
+// `cfg_attr(test, allow(...))`: this file compiles as its own crate, so
+// the same allow needs to be declared here too.
+#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+
 use std::fs;
 use std::path::{Path, PathBuf};
 

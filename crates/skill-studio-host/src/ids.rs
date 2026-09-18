@@ -28,7 +28,12 @@ impl Default for UlidIds {
 
 impl IdSource for UlidIds {
     fn next_event_id(&self) -> EventId {
-        let mut generator = self.generator.lock().expect("ulid generator lock poisoned");
+        // A poisoned mutex still holds a usable generator; one thread's
+        // panic elsewhere shouldn't stop every other thread from minting ids.
+        let mut generator = self
+            .generator
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         loop {
             // `generate` errs only when a millisecond's 80 bits of random
             // tail are exhausted; retry on the next tick rather than fail.

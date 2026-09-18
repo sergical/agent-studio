@@ -1,8 +1,8 @@
 //! Skill-use index: parses each enabled harness's own session history for
 //! skill uses and keeps a per-source cache so a refresh only re-reads what
 //! changed. Two kinds of source exist: append-only JSONL transcripts,
-//! resumed from a byte offset (Claude Code, Codex), and SQLite databases,
-//! re-queried from a `time_updated` watermark (OpenCode). Read discipline
+//! resumed from a byte offset (Claude Code, Codex), and `SQLite` databases,
+//! re-queried from a `time_updated` watermark (`OpenCode`). Read discipline
 //! mirrors `discovery.rs`: only regular files are opened, each transcript
 //! line is capped so a pathological line can't be buffered in full, and a
 //! file/run byte budget bounds worst-case I/O per refresh.
@@ -16,7 +16,7 @@
 //!
 //! `SOURCES` is the table of harnesses this index reads from: Claude Code,
 //! pi, and Cursor each watch one transcript root; Codex watches two
-//! (`sessions`, `archived_sessions`); OpenCode reads its SQLite databases
+//! (`sessions`, `archived_sessions`); `OpenCode` reads its `SQLite` databases
 //! instead of JSONL; Grok Build watches `.grok/sessions` and only lists a
 //! session's `updates.jsonl` once its `summary.json` also exists. Adding a
 //! harness later means adding a row, not reworking `refresh`.
@@ -134,14 +134,12 @@ impl Default for DatabaseStamp {
 }
 
 fn file_size_and_mtime(path: &Path) -> (u64, SystemTime) {
-    fs::metadata(path)
-        .map(|meta| {
-            (
-                meta.len(),
-                meta.modified().unwrap_or(SystemTime::UNIX_EPOCH),
-            )
-        })
-        .unwrap_or((0, SystemTime::UNIX_EPOCH))
+    fs::metadata(path).map_or((0, SystemTime::UNIX_EPOCH), |meta| {
+        (
+            meta.len(),
+            meta.modified().unwrap_or(SystemTime::UNIX_EPOCH),
+        )
+    })
 }
 
 fn database_stamp(path: &Path) -> DatabaseStamp {
@@ -201,7 +199,7 @@ struct TranscriptFile<'a> {
 }
 
 /// How one [`UseSource`] reads its uses: an append-only transcript, resumed
-/// from a byte offset, or a SQLite database, re-queried from a watermark.
+/// from a byte offset, or a `SQLite` database, re-queried from a watermark.
 enum UseReader {
     /// Append-only JSONL transcripts, parsed incrementally from a byte
     /// offset.
@@ -209,7 +207,7 @@ enum UseReader {
         list: fn(&Path) -> SourceListing,
         parse: fn(&TranscriptFile, &str, &mut TranscriptContext) -> Vec<SkillInvocation>,
     },
-    /// SQLite databases, re-queried from a `time_updated` watermark.
+    /// `SQLite` databases, re-queried from a `time_updated` watermark.
     Databases {
         list: fn(&Path) -> Vec<PathBuf>,
         read: fn(&Path, &mut IndexedDatabase) -> bool,
@@ -249,7 +247,7 @@ fn any_path(_: &Path) -> bool {
 }
 
 /// True when `rel` (a single file name: this watch is non-recursive) is an
-/// OpenCode database file, or that database's `-wal` sidecar. `-shm` is
+/// `OpenCode` database file, or that database's `-wal` sidecar. `-shm` is
 /// excluded on purpose: a read-only reader (ours included) can touch `-shm`
 /// just by opening the database, so treating it as a use-changing event
 /// would make our own reads queue another refresh.
@@ -692,7 +690,7 @@ fn is_grok_session_file(rel: &Path) -> bool {
     rel.components().count() == 3
         && matches!(
             rel.file_name().and_then(|n| n.to_str()),
-            Some("updates.jsonl") | Some("summary.json")
+            Some("updates.jsonl" | "summary.json")
         )
 }
 
@@ -1016,17 +1014,16 @@ impl SkillInvocationIndex {
         let Ok(content) = fs::read_to_string(cache_path) else {
             return Self::default();
         };
-        match serde_json::from_str(&content) {
-            Ok(index) => index,
-            Err(_) => {
-                eprintln!("skill uses: cache corrupt");
-                let mut corrupt_path = cache_path.as_os_str().to_owned();
-                corrupt_path.push(".corrupt");
-                if let Err(e) = fs::rename(cache_path, &corrupt_path) {
-                    eprintln!("skill uses: failed to rename corrupt cache: {e}");
-                }
-                Self::default()
+        if let Ok(index) = serde_json::from_str(&content) {
+            index
+        } else {
+            eprintln!("skill uses: cache corrupt");
+            let mut corrupt_path = cache_path.as_os_str().to_owned();
+            corrupt_path.push(".corrupt");
+            if let Err(e) = fs::rename(cache_path, &corrupt_path) {
+                eprintln!("skill uses: failed to rename corrupt cache: {e}");
             }
+            Self::default()
         }
     }
 
@@ -1131,19 +1128,19 @@ impl SkillInvocationIndex {
                 }
                 Some(existing) => {
                     let current_tail = read_tail_sample(&path, existing.parsed_bytes);
-                    if current_tail != existing.tail_sample {
-                        // The bytes just before our resume point no
-                        // longer match what we parsed last time: this
-                        // wasn't a plain append, so the cached uses may
-                        // be stale.
-                        (0, Vec::new(), false, TranscriptContext::default())
-                    } else {
+                    if current_tail == existing.tail_sample {
                         (
                             existing.parsed_bytes,
                             existing.uses.clone(),
                             existing.skipping_line,
                             existing.context.clone(),
                         )
+                    } else {
+                        // The bytes just before our resume point no
+                        // longer match what we parsed last time: this
+                        // wasn't a plain append, so the cached uses may
+                        // be stale.
+                        (0, Vec::new(), false, TranscriptContext::default())
                     }
                 }
                 None => (0, Vec::new(), false, TranscriptContext::default()),
@@ -1167,8 +1164,7 @@ impl SkillInvocationIndex {
             let parsed_bytes = start_offset + consumed;
             let modified_utc = meta
                 .modified()
-                .map(DateTime::<Utc>::from)
-                .unwrap_or_else(|_| Utc::now());
+                .map_or_else(|_| Utc::now(), DateTime::<Utc>::from);
             let file = TranscriptFile {
                 home,
                 path: &path,
@@ -1441,9 +1437,8 @@ fn read_transcript_from_offset(
                 .take(chunk_cap)
                 .read_until(b'\n', &mut chunk);
             let n = match read {
-                Ok(0) => break, // true EOF
+                Ok(0) | Err(_) => break, // true EOF, or a read error treated the same way
                 Ok(n) => n as u64,
-                Err(_) => break,
             };
             remaining = remaining.saturating_sub(n);
             *run_budget = run_budget.saturating_sub(n);
@@ -1517,7 +1512,10 @@ mod tests {
     }
 
     fn known(skills: &[&str]) -> StdBTreeSet<String> {
-        skills.iter().map(|s| s.to_string()).collect()
+        skills
+            .iter()
+            .map(std::string::ToString::to_string)
+            .collect()
     }
 
     fn filter<'a>(
@@ -2413,7 +2411,10 @@ mod tests {
         }
 
         fn known(skills: &[&str]) -> StdBTreeSet<String> {
-            skills.iter().map(|s| s.to_string()).collect()
+            skills
+                .iter()
+                .map(std::string::ToString::to_string)
+                .collect()
         }
 
         #[test]
@@ -2600,7 +2601,7 @@ mod tests {
             assert_eq!(stats(&index, &known_skills, &enabled).len(), 1);
         }
 
-        /// codex_rollout_reader_resumes_from_a_byte_offset_across_archived_sessions_or_names_the_missed_use:
+        /// `codex_rollout_reader_resumes_from_a_byte_offset_across_archived_sessions_or_names_the_missed_use`:
         /// an archived rollout gets the same resume treatment as a live one -
         /// a second refresh after new lines are appended reads only the new
         /// bytes and counts only the new use, not the whole file again.
@@ -2725,7 +2726,10 @@ mod tests {
         }
 
         fn known(skills: &[&str]) -> StdBTreeSet<String> {
-            skills.iter().map(|s| s.to_string()).collect()
+            skills
+                .iter()
+                .map(std::string::ToString::to_string)
+                .collect()
         }
 
         #[test]
@@ -2861,7 +2865,10 @@ mod tests {
         }
 
         fn known(skills: &[&str]) -> StdBTreeSet<String> {
-            skills.iter().map(|s| s.to_string()).collect()
+            skills
+                .iter()
+                .map(std::string::ToString::to_string)
+                .collect()
         }
 
         #[test]
@@ -3023,7 +3030,7 @@ mod tests {
             (Utc::now() - chrono::Duration::minutes(5)).timestamp() + offset_secs
         }
 
-        fn grok_line(timestamp: i64, update: serde_json::Value) -> String {
+        fn grok_line(timestamp: i64, update: &serde_json::Value) -> String {
             serde_json::json!({
                 "timestamp": timestamp,
                 "method": "session/update",
@@ -3075,7 +3082,10 @@ mod tests {
         }
 
         fn known(skills: &[&str]) -> StdBTreeSet<String> {
-            skills.iter().map(|s| s.to_string()).collect()
+            skills
+                .iter()
+                .map(std::string::ToString::to_string)
+                .collect()
         }
 
         #[test]
@@ -3088,9 +3098,12 @@ mod tests {
             write_grok_updates(
                 &session_dir,
                 &[
-                    grok_line(recent_secs(0), read_update("tc1", "/x/skills/foo/SKILL.md")),
-                    grok_line(recent_secs(1), skill_update("tc2", "bar")),
-                    grok_line(recent_secs(2), user_chunk_update("/baz go")),
+                    grok_line(
+                        recent_secs(0),
+                        &read_update("tc1", "/x/skills/foo/SKILL.md"),
+                    ),
+                    grok_line(recent_secs(1), &skill_update("tc2", "bar")),
+                    grok_line(recent_secs(2), &user_chunk_update("/baz go")),
                 ],
             );
             write_grok_summary(&session_dir, None);
@@ -3131,9 +3144,9 @@ mod tests {
             write_grok_updates(
                 &s1,
                 &[
-                    grok_line(before, read_update("tc1", "/x/skills/foo/SKILL.md")),
-                    grok_line(before, skill_update("tc2", "bar")),
-                    grok_line(before, user_chunk_update("/baz go")),
+                    grok_line(before, &read_update("tc1", "/x/skills/foo/SKILL.md")),
+                    grok_line(before, &skill_update("tc2", "bar")),
+                    grok_line(before, &user_chunk_update("/baz go")),
                 ],
             );
             write_grok_summary(&s1, None);
@@ -3142,10 +3155,10 @@ mod tests {
             write_grok_updates(
                 &s2,
                 &[
-                    grok_line(before, read_update("tc1", "/x/skills/foo/SKILL.md")),
-                    grok_line(before, skill_update("tc2", "bar")),
-                    grok_line(before, user_chunk_update("/baz go")),
-                    grok_line(after, skill_update("tc3", "bar")),
+                    grok_line(before, &read_update("tc1", "/x/skills/foo/SKILL.md")),
+                    grok_line(before, &skill_update("tc2", "bar")),
+                    grok_line(before, &user_chunk_update("/baz go")),
+                    grok_line(after, &skill_update("tc3", "bar")),
                 ],
             );
             write_grok_summary(&s2, Some(&forked_at));
@@ -3174,7 +3187,7 @@ mod tests {
             let session_dir = home.join(GROK_SESSIONS_ROOT).join(&encoded).join("s1");
             write_grok_updates(
                 &session_dir,
-                &[grok_line(recent_secs(0), skill_update("tc1", "bar"))],
+                &[grok_line(recent_secs(0), &skill_update("tc1", "bar"))],
             );
 
             let mut index = SkillInvocationIndex::default();
@@ -3198,7 +3211,7 @@ mod tests {
             let session_dir = home.join(GROK_SESSIONS_ROOT).join(&encoded).join("s1");
             write_grok_updates(
                 &session_dir,
-                &[grok_line(recent_secs(0), skill_update("tc1", "bar"))],
+                &[grok_line(recent_secs(0), &skill_update("tc1", "bar"))],
             );
             write_grok_summary(&session_dir, None);
 
@@ -3233,7 +3246,7 @@ mod tests {
             let session_dir = home.join(GROK_SESSIONS_ROOT).join(&encoded).join("s1");
             let path = write_grok_updates(
                 &session_dir,
-                &[grok_line(recent_secs(0), skill_update("tc1", "bar"))],
+                &[grok_line(recent_secs(0), &skill_update("tc1", "bar"))],
             );
             write_grok_summary(&session_dir, None);
 
@@ -3244,7 +3257,7 @@ mod tests {
             assert_eq!(stats(&index, &known_skills, &sources)[0].total, 1);
 
             let mut content = fs::read_to_string(&path).unwrap();
-            content.push_str(&grok_line(recent_secs(1), skill_update("tc1", "bar")));
+            content.push_str(&grok_line(recent_secs(1), &skill_update("tc1", "bar")));
             content.push('\n');
             fs::write(&path, &content).unwrap();
 
@@ -3261,7 +3274,7 @@ mod tests {
             let session_dir = home.join(GROK_SESSIONS_ROOT).join(&encoded).join("s1");
             write_grok_updates(
                 &session_dir,
-                &[grok_line(recent_secs(0), skill_update("tc1", "bar"))],
+                &[grok_line(recent_secs(0), &skill_update("tc1", "bar"))],
             );
             write_grok_summary(&session_dir, None);
 
@@ -3296,7 +3309,7 @@ mod tests {
             opencode_root(home).join(name)
         }
 
-        /// A temp `home` with the OpenCode data dir created and
+        /// A temp `home` with the `OpenCode` data dir created and
         /// `opencode.db`'s path (not yet an actual database file) under it.
         fn temp_opencode_db_home() -> (tempfile::TempDir, PathBuf) {
             let tmp = tempfile::tempdir().unwrap();

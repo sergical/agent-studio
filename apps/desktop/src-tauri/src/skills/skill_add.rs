@@ -281,7 +281,7 @@ pub(crate) fn dir_entry_names(dir: &Path) -> std::collections::BTreeSet<String> 
     fs::read_dir(dir)
         .into_iter()
         .flatten()
-        .filter_map(|e| e.ok())
+        .filter_map(std::result::Result::ok)
         .filter_map(|e| e.file_name().into_string().ok())
         .collect()
 }
@@ -469,7 +469,7 @@ fn add_via_skills_sh(
         .ok_or("The skills.sh method needs a GitHub source")?;
     let skill_name = request.source.skill_name.clone();
     let spec = SkillInstallSpec {
-        scope: request.scope.clone(),
+        scope: request.scope,
         destination: request.destination,
         project_path: request.project_path.clone(),
         harnesses: request.agents.clone(),
@@ -482,7 +482,7 @@ fn add_via_skills_sh(
         skill_name.unwrap_or_else(|| repo.split('/').next_back().unwrap_or(&repo).to_string());
 
     let project = request.project_path.as_deref().map(Path::new);
-    let mut deployment_dirs = vec![universal_skills_dir(home, request.scope.clone(), project)];
+    let mut deployment_dirs = vec![universal_skills_dir(home, request.scope, project)];
     if request.agents.contains(&AgentId::ClaudeCode) {
         deployment_dirs.push(claude_skills_dir(home, request));
     }
@@ -498,9 +498,7 @@ fn add_via_skills_sh(
         .get(1)
         .map(|dir| dir.join(&result_name))
         .filter(|path| {
-            fs::symlink_metadata(path)
-                .map(|metadata| metadata.file_type().is_symlink())
-                .unwrap_or(false)
+            fs::symlink_metadata(path).is_ok_and(|metadata| metadata.file_type().is_symlink())
         });
     let warning = deployment_dirs.first().and_then(|dir| {
         maybe_record_trials(
@@ -537,13 +535,13 @@ fn derive_copy_name(source: &ParsedSkillSource) -> Result<String, String> {
             .path
             .as_deref()
             .and_then(|p| p.rsplit('/').next())
-            .map(|s| s.to_string())
+            .map(std::string::ToString::to_string)
             .or_else(|| {
                 source
                     .repo
                     .as_deref()
                     .and_then(|r| r.rsplit('/').next())
-                    .map(|s| s.to_string())
+                    .map(std::string::ToString::to_string)
             })
             .ok_or_else(|| "Could not determine a skill name".to_string()),
         ParsedSkillSourceKind::Local => source
@@ -551,7 +549,7 @@ fn derive_copy_name(source: &ParsedSkillSource) -> Result<String, String> {
             .as_deref()
             .and_then(|p| Path::new(p).file_name())
             .and_then(|s| s.to_str())
-            .map(|s| s.to_string())
+            .map(std::string::ToString::to_string)
             .ok_or_else(|| "Could not determine a skill name".to_string()),
         ParsedSkillSourceKind::Git => Err("Copy is not supported for git sources".to_string()),
     }
@@ -794,7 +792,7 @@ fn add_via_copy(
     let project = request.project_path.as_deref().map(Path::new);
     let per_harness_agents = if request.destination == SkillDestination::PerHarness {
         per_harness_copy_targets(&SkillInstallSpec {
-            scope: request.scope.clone(),
+            scope: request.scope,
             destination: request.destination,
             project_path: request.project_path.clone(),
             harnesses: request.agents.clone(),
@@ -804,7 +802,7 @@ fn add_via_copy(
     };
     let target_roots = match request.destination {
         SkillDestination::Universal => {
-            vec![universal_skills_dir(home, request.scope.clone(), project)]
+            vec![universal_skills_dir(home, request.scope, project)]
         }
         SkillDestination::PerHarness => per_harness_agents
             .iter()
@@ -843,28 +841,23 @@ fn add_via_copy(
                 let path = request.source.path.clone().unwrap_or_default();
                 // A batch install passes the snapshot it already downloaded, so
                 // the tarball is fetched once for the whole picker selection.
-                match snapshot {
-                    Some(snapshot) => {
-                        snapshot.copy_dir_controlled(&path, staging_target, control)?
-                    }
-                    None => {
-                        let commit = match &request.source.git_ref {
-                            Some(r) => r.clone(),
-                            None => lookup
-                                .latest_commit_controlled(&repo, &path, None, control)?
-                                .map(|(sha, _)| sha)
-                                .ok_or_else(|| {
-                                    format!("Could not determine {name}'s latest commit")
-                                })?,
-                        };
-                        fetch.fetch_skill_dir_controlled(
-                            &repo,
-                            &path,
-                            &commit,
-                            staging_target,
-                            control,
-                        )?;
-                    }
+                if let Some(snapshot) = snapshot {
+                    snapshot.copy_dir_controlled(&path, staging_target, control)?;
+                } else {
+                    let commit = match &request.source.git_ref {
+                        Some(r) => r.clone(),
+                        None => lookup
+                            .latest_commit_controlled(&repo, &path, None, control)?
+                            .map(|(sha, _)| sha)
+                            .ok_or_else(|| format!("Could not determine {name}'s latest commit"))?,
+                    };
+                    fetch.fetch_skill_dir_controlled(
+                        &repo,
+                        &path,
+                        &commit,
+                        staging_target,
+                        control,
+                    )?;
                 }
                 Ok(())
             }
@@ -1018,7 +1011,7 @@ fn copy_deployment_record(
         deployment_id: installed_deployment_id(request, name, path, slot),
         name: name.to_string(),
         path: path.to_path_buf(),
-        scope: request.scope.clone(),
+        scope: request.scope,
         destination: request.destination,
         slot: slot.to_string(),
         project_path: request.project_path.clone(),
@@ -1097,11 +1090,8 @@ fn apply_disabled_harnesses(
     let codex_paths = codex_visible_skill_mds(home, request, &result.deployments_created);
     let universal_root = shared_skills_dir(home, request);
     let project_path = request.project_path.as_deref().map(Path::new);
-    let claude_root = super::skill_lifecycle::claude_skills_dir_for_scope(
-        home,
-        request.scope.clone(),
-        project_path,
-    );
+    let claude_root =
+        super::skill_lifecycle::claude_skills_dir_for_scope(home, request.scope, project_path);
     let mut failures = Vec::new();
     // One `dotagents add` can create several folders, joined into `name`.
     for name in result.name.split(", ") {
@@ -1192,7 +1182,7 @@ fn request_for_entry(batch: &AddSkillsRequest, entry: &GithubSkillEntry) -> AddS
         destination: batch.destination,
         agents: batch.agents.clone(),
         disabled_harnesses: batch.disabled_harnesses.clone(),
-        scope: batch.scope.clone(),
+        scope: batch.scope,
         project_path: batch.project_path.clone(),
         trial: batch.trial,
     }
@@ -1339,22 +1329,23 @@ pub(crate) fn resolve_fetch_and_lookup(app: &tauri::AppHandle) -> Result<GithubT
         .path()
         .app_data_dir()
         .map_err(|e| format!("Could not resolve app data dir: {e}"))?;
-    Ok(match skill_update_check::resolve_gh_binary() {
-        Some(gh_bin) => (
-            Box::new(RealUpstreamFetch {
-                gh_bin: gh_bin.clone(),
-                cache_dir: app_data.join("skill-studio").join("cache"),
-            }),
-            Box::new(GhCommitLookup { gh_bin }),
-        ),
-        None => {
+    Ok(
+        if let Some(gh_bin) = skill_update_check::resolve_gh_binary() {
+            (
+                Box::new(RealUpstreamFetch {
+                    gh_bin: gh_bin.clone(),
+                    cache_dir: app_data.join("skill-studio").join("cache"),
+                }),
+                Box::new(GhCommitLookup { gh_bin }),
+            )
+        } else {
             let message = "Run Check now first".to_string();
             (
                 Box::new(Unavailable(message.clone())),
                 Box::new(Unavailable(message)),
             )
-        }
-    })
+        },
+    )
 }
 
 #[tauri::command]

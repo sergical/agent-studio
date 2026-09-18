@@ -23,6 +23,7 @@
 // recreating bytes cannot recreate the matching ownership metadata.
 // ============================================================================
 
+use std::fmt::Write as _;
 use std::fs::{self, File};
 use std::io::Write as _;
 use std::path::{Path, PathBuf};
@@ -160,8 +161,7 @@ impl EventStore {
             }
             let basename = path
                 .file_name()
-                .map(|n| n.to_string_lossy().into_owned())
-                .unwrap_or_else(|| format!("path-{i}"));
+                .map_or_else(|| format!("path-{i}"), |n| n.to_string_lossy().into_owned());
             let relative_path = format!("{i}-{basename}");
             copy_recursive(path, &dir.join(&relative_path))?;
             manifest.entries.insert(
@@ -185,14 +185,14 @@ impl EventStore {
         Ok(manifest)
     }
 
-    fn read_manifest(&self, backup_dir: &Path) -> Result<BackupManifest, String> {
+    fn read_manifest(backup_dir: &Path) -> Result<BackupManifest, String> {
         let data = fs::read(backup_dir.join("manifest.json"))
             .map_err(|e| format!("Failed to read manifest in {}: {e}", backup_dir.display()))?;
         serde_json::from_slice(&data).map_err(|e| format!("Failed to parse manifest: {e}"))
     }
 
     /// Inserts a `pending` row for `id`.
-    pub fn record(&self, id: &str, draft: EventDraft) -> Result<(), String> {
+    pub fn record(&self, id: &str, draft: &EventDraft) -> Result<(), String> {
         let ts = Utc::now().to_rfc3339();
         let payload_json = serde_json::to_string(&draft.payload)
             .map_err(|e| format!("Failed to serialize payload: {e}"))?;
@@ -262,10 +262,14 @@ impl EventStore {
         }
         .map_err(|e| format!("Failed to prepare event list query: {e}"))?;
 
+        // A caller-supplied event limit that overflows `i64` is a bug at the
+        // call site, not a corrupt row; cap it instead of wrapping so the
+        // query still runs with a saner (if too-generous) limit.
+        let limit = i64::try_from(limit).unwrap_or(i64::MAX);
         let rows = if let Some(skill) = skill {
-            stmt.query_map(params![skill, limit as i64], row_from)
+            stmt.query_map(params![skill, limit], row_from)
         } else {
-            stmt.query_map(params![limit as i64], row_from)
+            stmt.query_map(params![limit], row_from)
         }
         .map_err(|e| format!("Failed to list events: {e}"))?;
 
@@ -497,7 +501,7 @@ impl EventStore {
         };
         self.record(
             restore_id,
-            EventDraft {
+            &EventDraft {
                 kind: "restore".to_string(),
                 skill: target.skill.clone(),
                 harness: target.harness.clone(),
@@ -544,7 +548,7 @@ impl EventStore {
     }
 
     /// Replaces an already-recorded inverse. Whole-root independent copies
-    /// record intent before the per-skill link exists, then fill RecreateSymlink.
+    /// record intent before the per-skill link exists, then fill `RecreateSymlink`.
     pub(crate) fn patch_event_inverse(&self, id: &str, inverse: &Value) -> Result<(), String> {
         let json = serde_json::to_string(inverse)
             .map_err(|e| format!("Failed to serialize inverse for {id}: {e}"))?;
@@ -679,7 +683,7 @@ impl EventStore {
     /// `apply_restore_distribute`'s shared-dir restore.
     fn restore_from_backup(&self, backup_dir_rel: &str, path: &Path) -> Result<(), String> {
         let backup_dir = self.app_data.join(backup_dir_rel);
-        let manifest = self.read_manifest(&backup_dir)?;
+        let manifest = Self::read_manifest(&backup_dir)?;
         let key = path.to_string_lossy().into_owned();
         let entry = manifest
             .entries
@@ -745,7 +749,7 @@ impl EventStore {
         };
         self.record(
             restore_id,
-            EventDraft {
+            &EventDraft {
                 kind: "restore".to_string(),
                 skill: target.skill.clone(),
                 harness: target.harness.clone(),
@@ -958,7 +962,7 @@ fn hash_entry(path: &Path) -> std::io::Result<String> {
     } else if file_type.is_dir() {
         hasher.update(b"D");
         let mut entries: Vec<_> = fs::read_dir(path)?.collect::<Result<_, _>>()?;
-        entries.sort_by_key(|e| e.file_name());
+        entries.sort_by_key(std::fs::DirEntry::file_name);
         for entry in entries {
             let name_bytes = entry
                 .file_name()
@@ -978,7 +982,18 @@ fn hash_entry(path: &Path) -> std::io::Result<String> {
         hasher.update(&bytes);
     }
     let digest = hasher.finalize();
-    Ok(digest.iter().map(|b| format!("{b:02x}")).collect())
+    Ok(to_hex(&digest))
+}
+
+/// Lower-case hex, one `write!` per byte into a single pre-sized `String`
+/// rather than collecting a `Vec<String>` of two-char fragments.
+fn to_hex(bytes: &[u8]) -> String {
+    bytes
+        .iter()
+        .fold(String::with_capacity(bytes.len() * 2), |mut acc, b| {
+            let _ = write!(acc, "{b:02x}");
+            acc
+        })
 }
 
 /// Copies `src` into `dest`, preserving regular files as bytes, directories
@@ -1083,13 +1098,14 @@ pub struct EventDraft {
     pub restorable: bool,
 }
 
+#[derive(Clone, Copy)]
 pub enum EventStatus {
     Done,
     Failed,
 }
 
 impl EventStatus {
-    fn as_str(&self) -> &'static str {
+    fn as_str(self) -> &'static str {
         match self {
             EventStatus::Done => "done",
             EventStatus::Failed => "failed",
@@ -1174,8 +1190,7 @@ pub enum InverseOp {
 impl InverseOp {
     fn destination(&self) -> &Path {
         match self {
-            InverseOp::RecreateSymlink { link, .. } => link,
-            InverseOp::RemoveSymlink { link, .. } => link,
+            InverseOp::RecreateSymlink { link, .. } | InverseOp::RemoveSymlink { link, .. } => link,
             InverseOp::MoveBack { to, .. } => to,
             InverseOp::RestoreBackup { path, .. } => path,
             InverseOp::UndistributeFromShared { shared_dir, .. } => shared_dir,
@@ -1252,7 +1267,7 @@ mod tests {
         store
             .record(
                 &id1,
-                draft("install", "alpha", serde_json::json!({"n": 1}), None, None),
+                &draft("install", "alpha", serde_json::json!({"n": 1}), None, None),
             )
             .unwrap();
         store.finish(&id1, EventStatus::Done).unwrap();
@@ -1261,7 +1276,7 @@ mod tests {
         store
             .record(
                 &id2,
-                draft("remove", "alpha", serde_json::json!({"n": 2}), None, None),
+                &draft("remove", "alpha", serde_json::json!({"n": 2}), None, None),
             )
             .unwrap();
         store.finish(&id2, EventStatus::Done).unwrap();
@@ -1334,7 +1349,7 @@ mod tests {
         store
             .record(
                 &id,
-                draft(
+                &draft(
                     "remove",
                     "new",
                     serde_json::json!({}),
@@ -1378,7 +1393,7 @@ mod tests {
         store
             .record(
                 &id,
-                draft(
+                &draft(
                     "remove",
                     "my-skill",
                     serde_json::json!({}),
@@ -1418,7 +1433,7 @@ mod tests {
         store
             .record(
                 &id,
-                draft(
+                &draft(
                     "remove",
                     "beta",
                     serde_json::json!({}),
@@ -1463,7 +1478,7 @@ mod tests {
         store
             .record(
                 &repair_id,
-                draft(
+                &draft(
                     "repair_skill_frontmatter",
                     "sample",
                     serde_json::json!({}),
@@ -1520,7 +1535,7 @@ mod tests {
         store
             .record(
                 &ordinary_id,
-                draft(
+                &draft(
                     "update_notes",
                     "sample",
                     serde_json::json!({}),
@@ -1555,7 +1570,7 @@ mod tests {
         store
             .record(
                 &failed_id,
-                draft(
+                &draft(
                     "remove",
                     "gamma",
                     serde_json::json!({}),
@@ -1579,7 +1594,7 @@ mod tests {
         store
             .record(
                 &pending_id,
-                draft("remove", "gamma", serde_json::json!({}), None, None),
+                &draft("remove", "gamma", serde_json::json!({}), None, None),
             )
             .unwrap();
 
@@ -1613,7 +1628,7 @@ mod tests {
         store
             .record(
                 &id,
-                draft(
+                &draft(
                     "update",
                     "delta",
                     serde_json::json!({}),

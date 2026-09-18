@@ -408,7 +408,7 @@ mod tests {
 
         let leftover_temp_files = std::fs::read_dir(tmp.path())
             .unwrap()
-            .filter_map(|e| e.ok())
+            .filter_map(std::result::Result::ok)
             .filter(|e| {
                 e.file_name()
                     .to_string_lossy()
@@ -607,7 +607,7 @@ mod tests {
             skills: Default::default(),
         };
         let skills =
-            super::super::skill_assembly::assemble_installed_skills(core_skills.skills, &lock);
+            super::super::skill_assembly::assemble_installed_skills(&core_skills.skills, &lock);
         let mut snapshot = fixture_snapshot(home, None);
         snapshot.skills = skills;
         snapshot
@@ -1579,6 +1579,7 @@ fn restore_staged_dotagents_links(staged: &[(PathBuf, PathBuf)]) -> Result<(), S
     Ok(())
 }
 
+#[derive(Clone, Copy)]
 struct DotagentsRemovalContext<'a> {
     home: &'a Path,
     snapshot: &'a skill_refresh::SkillSnapshot,
@@ -1769,10 +1770,10 @@ pub async fn remove_skill(
         return remove_forked_skill(
             &guard,
             skill_name,
-            deployment.id,
-            deployment.path,
-            deployment.content_hash,
-            app.clone(),
+            &deployment.id,
+            &deployment.path,
+            &deployment.content_hash,
+            &app,
         );
     }
 
@@ -1819,7 +1820,7 @@ pub async fn remove_skill(
     }
     let args = match deployment.owner_kind {
         super::skill_ownership::LifecycleOwnerKind::SkillsSh => {
-            skills_sh_remove_args_for_scope(&skill_name, scope.clone())
+            skills_sh_remove_args_for_scope(&skill_name, scope)
         }
         super::skill_ownership::LifecycleOwnerKind::Dotagents => unreachable!(),
         super::skill_ownership::LifecycleOwnerKind::Copy => {
@@ -1876,14 +1877,14 @@ pub async fn remove_skill(
     }
     let output = command
         .output()
-        .map_err(|e| format!("Failed to execute npx skills: {}", e))?;
+        .map_err(|e| format!("Failed to execute npx skills: {e}"))?;
 
     let stdout = String::from_utf8_lossy(&output.stdout).to_string();
     let stderr = String::from_utf8_lossy(&output.stderr).to_string();
 
     eprintln!("[remove_skill] Exit code: {:?}", output.status.code());
-    eprintln!("[remove_skill] stdout: {}", stdout);
-    eprintln!("[remove_skill] stderr: {}", stderr);
+    eprintln!("[remove_skill] stdout: {stdout}");
+    eprintln!("[remove_skill] stderr: {stderr}");
 
     if output.status.success() {
         if let Some(home) = dirs::home_dir() {
@@ -1927,10 +1928,10 @@ pub async fn remove_skill(
 fn remove_forked_skill(
     guard: &super::write_lease::WriteLeaseGuard,
     skill_name: String,
-    deployment_id: String,
-    deployment_path: String,
-    deployment_content_hash: String,
-    app: tauri::AppHandle,
+    deployment_id: &str,
+    deployment_path: &str,
+    deployment_content_hash: &str,
+    app: &tauri::AppHandle,
 ) -> Result<InstallResult, String> {
     // Callers hold the write lease for the whole `remove_skill` call - it
     // isn't reentrant, so this function must not acquire it again.
@@ -1944,13 +1945,13 @@ fn remove_forked_skill(
         &home,
         &app_data,
         &skill_name,
-        &deployment_id,
-        Path::new(&deployment_path),
-        &deployment_content_hash,
+        deployment_id,
+        Path::new(deployment_path),
+        deployment_content_hash,
         |home, registry| skill_fork_registry::write_fork_registry_locked(guard, home, registry),
     )?;
 
-    skill_refresh::request_snapshot_rebuild(&app);
+    skill_refresh::request_snapshot_rebuild(app);
     Ok(InstallResult {
         success: true,
         skill_name,
@@ -2003,7 +2004,10 @@ fn remove_forked_skill_with(
         .join(".agents")
         .join("skills-trash")
         .join(format!(".fork-remove-{}-{stage_id}", std::process::id()));
-    std::fs::create_dir_all(backup.parent().expect("backup has a parent"))
+    let backup_parent = backup
+        .parent()
+        .ok_or_else(|| "Fork removal trash path has no parent".to_string())?;
+    std::fs::create_dir_all(backup_parent)
         .map_err(|error| format!("Failed to create fork removal trash: {error}"))?;
     std::fs::rename(skill_dir, &backup).map_err(|error| {
         format!(
@@ -2087,10 +2091,8 @@ pub(crate) fn canonicalize_skill_md(
         return Err(format!("Path is not an installed skill: {path}"));
     }
     let canonical =
-        std::fs::canonicalize(path_buf).map_err(|e| format!("Failed to open {}: {}", path, e))?;
-    let is_file = std::fs::symlink_metadata(&canonical)
-        .map(|m| m.is_file())
-        .unwrap_or(false);
+        std::fs::canonicalize(path_buf).map_err(|e| format!("Failed to open {path}: {e}"))?;
+    let is_file = std::fs::symlink_metadata(&canonical).is_ok_and(|m| m.is_file());
     if !is_file {
         return Err(format!("Path is not an installed skill: {path}"));
     }
@@ -2115,11 +2117,11 @@ pub async fn read_installed_skill_md(
         require_snapshot_owns_path(&refresh_state, &path_buf)?;
         canonicalize_skill_md(&path_buf, &path)?;
 
-        let mut file = File::open(&path).map_err(|e| format!("Failed to open {}: {}", path, e))?;
+        let mut file = File::open(&path).map_err(|e| format!("Failed to open {path}: {e}"))?;
         let mut buf = vec![0u8; MAX_SKILL_MD_BYTES];
         let n = file
             .read(&mut buf)
-            .map_err(|e| format!("Failed to read {}: {}", path, e))?;
+            .map_err(|e| format!("Failed to read {path}: {e}"))?;
         buf.truncate(n);
         Ok(String::from_utf8_lossy(&buf).into_owned())
     })
@@ -2210,6 +2212,9 @@ pub async fn write_installed_skill_md_if_unchanged(
 /// can start the login shell to read `$EDITOR` - never runs on the main
 /// thread.
 #[tauri::command(async)]
+// Tauri commands deserialize their arguments fresh per invocation, so `path`
+// and `mode` can't be borrowed from the caller - they must be owned.
+#[allow(clippy::needless_pass_by_value)]
 pub fn open_skill_path(
     path: String,
     mode: String,
@@ -2244,14 +2249,14 @@ pub fn open_skill_path(
     let output = Command::new("open")
         .args(&args)
         .output()
-        .map_err(|e| format!("Failed to open {}: {}", path, e))?;
+        .map_err(|e| format!("Failed to open {path}: {e}"))?;
 
     if !output.status.success() {
         if let Some(script) = &script_to_clean_up {
             let _ = std::fs::remove_file(script);
         }
         let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
-        return Err(format!("Failed to open {}: {}", path, stderr));
+        return Err(format!("Failed to open {path}: {stderr}"));
     }
     Ok(())
 }
@@ -2371,12 +2376,8 @@ pub async fn update_skill(
                 } else {
                     None
                 };
-                let args = dotagents_update_args(
-                    &skill_name,
-                    entry,
-                    latest_commit.as_deref(),
-                    scope.clone(),
-                )?;
+                let args =
+                    dotagents_update_args(&skill_name, entry, latest_commit.as_deref(), scope)?;
                 ("dotagents", args)
             }
             super::skill_ownership::LifecycleOwnerKind::SkillsSh => {
@@ -2396,7 +2397,7 @@ pub async fn update_skill(
         }
         let output = command
             .output()
-            .map_err(|e| format!("Failed to execute npx: {}", e))?;
+            .map_err(|e| format!("Failed to execute npx: {e}"))?;
 
         let stderr = String::from_utf8_lossy(&output.stderr).to_string();
 

@@ -165,7 +165,7 @@ fn build_listing(
     let filter = path
         .map(|p| p.trim_matches('/'))
         .filter(|p| !p.is_empty())
-        .map(|p| p.to_string());
+        .map(std::string::ToString::to_string);
 
     let mut skills: Vec<GithubSkillEntry> = tree
         .tree
@@ -198,7 +198,7 @@ fn skill_folder_of(blob_path: &str) -> Option<String> {
     }
     blob_path
         .strip_suffix("/SKILL.md")
-        .map(|folder| folder.to_string())
+        .map(std::string::ToString::to_string)
 }
 
 fn matches_filter(folder: &str, filter: Option<&str>) -> bool {

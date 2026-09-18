@@ -13,7 +13,7 @@ use super::skill_deployment::{SkillDestination, PER_HARNESS_INSTALL_TARGETS};
 use super::skill_dto::InstallScope;
 use super::skill_fork_registry::AddMethod;
 
-/// One install request used by Add by source and SkillStore.
+/// One install request used by Add by source and `SkillStore`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SkillInstallSpec {
     pub scope: InstallScope,

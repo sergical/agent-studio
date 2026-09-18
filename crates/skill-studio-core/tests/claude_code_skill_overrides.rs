@@ -1,3 +1,8 @@
+// Integration test binaries aren't covered by the lib crate's
+// `cfg_attr(test, allow(...))`: this file compiles as its own crate, so
+// the same allow needs to be declared here too.
+#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+
 //! Real-disk integration test for `harness::{read_claude_skill_overrides,
 //! write_claude_skill_overrides}`.
 //!
@@ -134,8 +139,7 @@ fn claude_code_skill_overrides_follow_claude_config_dir_or_names_the_wrong_setti
     let default_settings_path = home.join(".claude").join("settings.json");
     assert!(
         !default_settings_path.exists(),
-        "the default `~/.claude/settings.json` was written to, ignoring the override: {:?}",
-        default_settings_path
+        "the default `~/.claude/settings.json` was written to, ignoring the override: {default_settings_path:?}",
     );
 
     let after = read_claude_skill_overrides(fs, &home, Some(&config_dir));

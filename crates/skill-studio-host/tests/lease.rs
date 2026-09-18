@@ -4,6 +4,19 @@
 //! second process so the busy/takeover checks exercise real pids, not a
 //! thread id this process could fake.
 
+// Integration test binaries aren't covered by the lib crate's
+// `cfg_attr(test, allow(...))`: this file compiles as its own crate, so
+// the same allow needs to be declared here too. `print_stdout`/`print_stderr`
+// are the IPC channel the child holder process uses to signal readiness to
+// the parent, not debug output.
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::panic,
+    clippy::print_stdout,
+    clippy::print_stderr
+)]
+
 use std::io::{BufRead, BufReader, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
@@ -110,9 +123,8 @@ fn a_second_process_holding_the_lease_gets_busy_with_the_first_holders_pid_and_a
     std::thread::sleep(Duration::from_millis(20));
 
     let lease = FileLease::new(lease_root);
-    let err = match lease.acquire(&[key(&root)], LeaseMode::Exclusive, Duration::ZERO) {
-        Err(e) => e,
-        Ok(_) => panic!("a held lease must refuse a second exclusive acquire"),
+    let Err(err) = lease.acquire(&[key(&root)], LeaseMode::Exclusive, Duration::ZERO) else {
+        panic!("a held lease must refuse a second exclusive acquire")
     };
     assert_eq!(err.code, ErrorCode::ScopeBusy);
     let busy = err

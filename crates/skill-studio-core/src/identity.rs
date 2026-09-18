@@ -4,7 +4,7 @@
 //! and `owner:v1` formats stay as they are; the newtypes only stop callers
 //! from building or parsing them outside the core.
 
-use std::fmt;
+use std::fmt::{self, Write as _};
 use std::path::{Path, PathBuf};
 
 use schemars::JsonSchema;
@@ -26,9 +26,9 @@ pub struct AgentId(String);
 impl AgentId {
     /// Claude Code.
     pub const CLAUDE_CODE: &'static str = "claude-code";
-    /// OpenAI Codex CLI.
+    /// `OpenAI` Codex CLI.
     pub const CODEX: &'static str = "codex";
-    /// OpenCode.
+    /// `OpenCode`.
     pub const OPEN_CODE: &'static str = "open-code";
     /// pi coding agent.
     pub const PI: &'static str = "pi";
@@ -125,7 +125,7 @@ pub enum RootKind {
     Universal,
     /// The `.agents/skills-parked` holding root (global only).
     Parked,
-    /// A legacy directory a harness still reads (OpenCode `skill/`).
+    /// A legacy directory a harness still reads (`OpenCode` `skill/`).
     Legacy(AgentId),
     /// A plugin cache the harness ships skills in.
     PluginCache(AgentId),
@@ -233,6 +233,14 @@ impl DeploymentId {
     pub fn as_str(&self) -> &str {
         &self.0
     }
+
+    /// Builds an id from a string `ops` already assembled with
+    /// [`Self::PREFIX`], skipping the `parse` round trip for a value that
+    /// cannot fail its own invariant.
+    pub(crate) fn derived(raw: String) -> Self {
+        debug_assert!(raw.starts_with(Self::PREFIX));
+        DeploymentId(raw)
+    }
 }
 
 /// Opaque lifecycle owner id.
@@ -264,6 +272,14 @@ impl OwnerId {
     /// Returns the wire string.
     pub fn as_str(&self) -> &str {
         &self.0
+    }
+
+    /// Builds an id from a string `ops` already assembled with
+    /// [`Self::PREFIX`], skipping the `parse` round trip for a value that
+    /// cannot fail its own invariant.
+    pub(crate) fn derived(raw: String) -> Self {
+        debug_assert!(raw.starts_with(Self::PREFIX));
+        OwnerId(raw)
     }
 }
 
@@ -465,6 +481,10 @@ pub fn leaf_name(path: &Path) -> String {
 ///
 /// Implemented here so the core needs no crypto dependency. The digest must
 /// equal `shasum -a 256`; see the test below.
+// The round constants and the `a..=h` working variables are FIPS 180-4's own
+// names and hex literals; renaming or re-grouping them would make this
+// harder to check against the spec, not easier.
+#[allow(clippy::many_single_char_names, clippy::unreadable_literal)]
 pub fn sha256_hex(data: &[u8]) -> String {
     const K: [u32; 64] = [
         0x428a2f98, 0x71374491, 0xb5c0fbcf, 0xe9b5dba5, 0x3956c25b, 0x59f111f1, 0x923f82a4,
@@ -529,7 +549,7 @@ pub fn sha256_hex(data: &[u8]) -> String {
     }
     let mut out = String::with_capacity(64);
     for word in h {
-        out.push_str(&format!("{word:08x}"));
+        write!(out, "{word:08x}").ok();
     }
     out
 }

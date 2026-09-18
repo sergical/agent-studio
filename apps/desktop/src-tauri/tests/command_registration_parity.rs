@@ -1,3 +1,8 @@
+// Integration test binaries aren't covered by the lib crate's
+// `cfg_attr(test, allow(...))`: this file compiles as its own crate, so
+// the same allow needs to be declared here too.
+#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+
 //! Guards unit 4.1: no `#[tauri::command]` may be registered in
 //! `tauri::generate_handler!` without a frontend caller. Both sides are
 //! derived from the source on disk (`lib.rs`'s handler list, `skill-api.ts`'s

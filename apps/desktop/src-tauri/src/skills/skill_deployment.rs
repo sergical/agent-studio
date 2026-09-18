@@ -177,6 +177,7 @@ pub struct ParsedDeploymentId {
 }
 
 /// Identity-relevant facts from one scanned skill candidate.
+#[derive(Clone, Copy)]
 pub struct DeploymentCandidate<'a> {
     pub name: &'a str,
     pub root_label: &'a str,
@@ -242,8 +243,7 @@ fn harness_slot(root_label: &str) -> &'static str {
         "pi" => "pi",
         "Cursor" => "cursor",
         "Grok Build" => "grok-build",
-        "shared" | "universal" => "universal",
-        "parked" => "universal",
+        "shared" | "universal" | "parked" => "universal",
         _ => "other",
     }
 }

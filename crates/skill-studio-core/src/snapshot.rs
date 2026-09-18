@@ -59,8 +59,11 @@ impl<T> SnapshotCell<T> {
 
     /// Stores `value` and returns its revision.
     pub fn publish(&self, value: T) -> Revision {
-        let mut slot = self.inner.write().unwrap_or_else(|e| e.into_inner());
-        let next = Revision(slot.as_ref().map(|v| v.revision.0 + 1).unwrap_or(1));
+        let mut slot = self
+            .inner
+            .write()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let next = Revision(slot.as_ref().map_or(1, |v| v.revision.0 + 1));
         *slot = Some(Arc::new(Versioned {
             revision: next,
             value,
@@ -70,7 +73,10 @@ impl<T> SnapshotCell<T> {
 
     /// The current snapshot, if any was published.
     pub fn current(&self) -> Option<Arc<Versioned<T>>> {
-        self.inner.read().unwrap_or_else(|e| e.into_inner()).clone()
+        self.inner
+            .read()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone()
     }
 
     /// The current snapshot only when it is newer than `seen`.
