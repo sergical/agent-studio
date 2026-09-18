@@ -424,29 +424,10 @@ fn run_controlled_command_io(
     outcome
 }
 
-/// `npx` entry used by Add Skill. Stdin is always null.
-pub fn run_controlled_npx(
-    args: &[String],
-    cwd: Option<&Path>,
-    cancel: &AtomicBool,
-    timeout: Duration,
-) -> Result<(), ControlledProcessError> {
-    run_controlled_command("npx", args, cwd, cancel, timeout, MAX_PROCESS_OUTPUT_BYTES)
-}
-
-/// `npx` entry that consumes the remaining time from one Add operation.
-pub fn run_controlled_npx_with_control(
-    args: &[String],
-    cwd: Option<&Path>,
-    control: &AddOperationControl,
-) -> Result<(), ControlledProcessError> {
-    run_controlled_program_with_control("npx", args, cwd, control)
-}
-
-/// Same as [`run_controlled_npx_with_control`], for any program - used by
-/// [`CommandRunner::run`] so lifecycle actions other than Add Skill (e.g.
-/// the `claude` plugin CLI) share the same timeout/cancel and
-/// bounded-output handling.
+/// Same as `run_controlled_command`, for a caller that already holds an
+/// [`AddOperationControl`] - used by [`CommandRunner::run`] so lifecycle
+/// actions other than Add Skill (e.g. the `claude` plugin CLI) share the
+/// same timeout/cancel and bounded-output handling.
 pub fn run_controlled_program_with_control(
     program: &str,
     args: &[String],
@@ -504,21 +485,9 @@ pub struct RealCommandRunner {
 
 impl RealCommandRunner {
     /// Uncancellable runner for install/remove/import paths that are not an
-    /// Add Skill operation. Prefer `with_cancel` when the caller owns a flag.
+    /// Add Skill operation.
     pub fn new() -> Self {
         Self::default()
-    }
-
-    /// Add Skill background worker: the operation's cancel flag kills `npx`.
-    pub fn with_cancel(cancel: Arc<AtomicBool>) -> Self {
-        Self {
-            control: AddOperationControl::new(cancel, DEFAULT_ADD_PROCESS_TIMEOUT),
-        }
-    }
-
-    /// Use the context created when the queued Add operation began.
-    pub fn with_control(control: AddOperationControl) -> Self {
-        Self { control }
     }
 }
 
