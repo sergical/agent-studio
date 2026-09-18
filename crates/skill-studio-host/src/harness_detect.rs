@@ -2,19 +2,23 @@
 //! `--version` probe.
 
 use std::path::Path;
+use std::process::Stdio;
+use std::time::{Duration, Instant};
 
 use skill_studio_core::ports::{CancelToken, ProcessOutput, ProcessSpawner, ProcessSpec};
 use skill_studio_core::CoreError;
 
+/// How often [`RealProcessSpawner::run`] polls a running child for exit
+/// while waiting for `ProcessSpec::timeout_ms`'s deadline.
+const POLL_INTERVAL: Duration = Duration::from_millis(10);
+
 /// Runs a child process with `std::process::Command` and waits for it to
-/// exit.
+/// exit, killing it if it outlives `ProcessSpec::timeout_ms`.
 ///
-/// The deadline (`ProcessSpec::timeout_ms`) and cancellation are not
-/// enforced yet: a probe that hangs blocks the caller. Timing the probe out
-/// as `Unknown`, and caching the result by the executable's path, size, and
-/// mtime, are named follow-ups in
-/// `docs/action-map/harnesses/harness-detection.md`, not this type's first
-/// real implementation.
+/// Cancellation via `CancelToken` is not enforced yet: `NeverCancel` is the
+/// only token any caller passes today. Caching the result by the
+/// executable's path, size, and mtime is a named follow-up in
+/// `docs/action-map/harnesses/harness-detection.md`, not this type.
 pub struct RealProcessSpawner;
 
 impl RealProcessSpawner {
@@ -44,8 +48,37 @@ impl ProcessSpawner for RealProcessSpawner {
         for (key, value) in &spec.env {
             command.env(key, value);
         }
-        let output = command
-            .output()
+        command.stdout(Stdio::piped()).stderr(Stdio::piped());
+        let mut child = command
+            .spawn()
+            .map_err(|e| CoreError::io(Path::new(&spec.program), e))?;
+
+        let deadline = Duration::from_millis(spec.timeout_ms);
+        let start = Instant::now();
+        loop {
+            match child.try_wait() {
+                Ok(Some(_status)) => break,
+                Ok(None) if start.elapsed() >= deadline => {
+                    // The child outlived its deadline: kill and reap it so
+                    // the caller never blocks on a hung `--version` probe,
+                    // then report `timed_out` rather than guess at output
+                    // the process never finished writing.
+                    let _ = child.kill();
+                    let _ = child.wait();
+                    return Ok(ProcessOutput {
+                        status: None,
+                        stdout: String::new(),
+                        stderr: String::new(),
+                        timed_out: true,
+                    });
+                }
+                Ok(None) => std::thread::sleep(POLL_INTERVAL),
+                Err(e) => return Err(CoreError::io(Path::new(&spec.program), e)),
+            }
+        }
+
+        let output = child
+            .wait_with_output()
             .map_err(|e| CoreError::io(Path::new(&spec.program), e))?;
         Ok(ProcessOutput {
             status: output.status.code(),
@@ -75,6 +108,54 @@ mod tests {
         assert_eq!(output.status, Some(0), "echo did not exit 0");
         assert_eq!(output.stdout.trim(), "hello");
         assert!(!output.timed_out);
+    }
+
+    /// `a_hung_version_probe_times_out_and_is_killed_or_names_the_probe_that_hangs`:
+    /// a real child that records its pid and then `exec`s `sleep 30` - a
+    /// mock spawner can't prove a real OS process gets killed, so this test
+    /// pays for a real spawn - must come back as `timed_out`, and the pid it
+    /// recorded must be gone once `run` returns (`kill -0` fails), which
+    /// proves the child was killed and reaped rather than left running.
+    /// The deadline is generous so the shell has time to write its pid;
+    /// nothing asserts an elapsed-time bound, so a slow CI runner still
+    /// gets a correct verdict.
+    #[test]
+    fn a_hung_version_probe_times_out_and_is_killed_or_names_the_probe_that_hangs() {
+        let tmp = tempfile::tempdir().unwrap();
+        let pid_file = tmp.path().join("pid");
+        let spawner = RealProcessSpawner::new();
+        let spec = ProcessSpec {
+            program: "sh".into(),
+            args: vec![
+                "-c".into(),
+                format!("echo $$ > '{}'; exec sleep 30", pid_file.display()),
+            ],
+            cwd: None,
+            env: Vec::new(),
+            timeout_ms: 1_000,
+        };
+
+        let output = spawner.run(&spec, &NeverCancel).unwrap();
+
+        assert!(
+            output.timed_out,
+            "a probe past its deadline must report timed_out, got {output:?}"
+        );
+        let pid = std::fs::read_to_string(&pid_file).unwrap();
+        let pid = pid.trim();
+        assert!(
+            !pid.is_empty(),
+            "the child never recorded its pid, so the kill cannot be checked"
+        );
+        let still_alive = std::process::Command::new("kill")
+            .args(["-0", pid])
+            .status()
+            .unwrap()
+            .success();
+        assert!(
+            !still_alive,
+            "the hung probe (pid {pid}) is still running after run() returned - it was abandoned, not killed"
+        );
     }
 
     #[test]

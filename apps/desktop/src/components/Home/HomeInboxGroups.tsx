@@ -597,9 +597,14 @@ function UpdatesGroup({
                 onOpen={() => onSelectSkill(skill.name)}
                 detail={
                   <>
-                    {skill.content_hash && skill.update_commit && (
+                    {skill.content_hash && skill.update_commit && skill.update_commit_at && (
                       <span className="font-mono text-caption whitespace-nowrap text-text-tertiary">
                         {shortSha(skill.content_hash)} → {shortSha(skill.update_commit)}
+                      </span>
+                    )}
+                    {skill.update_commit && !skill.update_commit_at && (
+                      <span className="text-caption whitespace-nowrap text-text-tertiary">
+                        Update available
                       </span>
                     )}{" "}
                     <span className="font-mono text-caption whitespace-nowrap text-text-tertiary">

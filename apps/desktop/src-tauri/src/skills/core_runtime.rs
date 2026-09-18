@@ -65,6 +65,20 @@ pub(crate) fn build_runtime_write_at(home: &Path, data_root: &Path) -> Result<Ru
     Runtime::new(&scope, ports).map_err(|err| err.message)
 }
 
+/// Builds a `Runtime` for `ops::harnesses`: the only op that resolves
+/// executables and spawns `--version` probes, so it is also the only one
+/// that needs the login-shell `PATH` (`LoginShellToolLookup`) instead of the
+/// process's own, minimal `launchd` `PATH` (`PathToolLookup`, used by
+/// `build_runtime_write` for every other command). Read-only: no lease root
+/// or history store beyond what `Runtime::new` needs to normalize the scope.
+pub fn build_runtime_detect() -> Result<Runtime, String> {
+    let home = dirs::home_dir().ok_or("Could not find home directory")?;
+    let mut rt = build_runtime_write_at(&home, &data_root())?;
+    rt.ports.tools = Some(Arc::new(skill_studio_host::LoginShellToolLookup::new()));
+    rt.ports.spawner = Some(Arc::new(skill_studio_host::RealProcessSpawner::new()));
+    Ok(rt)
+}
+
 /// Unwraps a `ResultEnvelope` into the plain `Result<T, String>` every
 /// Tauri command returns. The envelope's `scope`/`timing`/`correlation_id`
 /// fields are dropped here: `skill-api.ts`'s `parkSkill`/`unparkSkill` both

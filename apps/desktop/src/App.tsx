@@ -4,10 +4,11 @@
 // installed-skill view)
 // ============================================================================
 
-import { useEffect, useRef } from "react";
+import { useEffect, useRef, useState } from "react";
 import { TooltipProvider } from "@skill-studio/ui";
 import { Toaster } from "sonner";
 import { AddSkillSheet } from "./components/AddSkill/AddSkillSheet";
+import { FirstRunGate } from "./components/FirstRun/FirstRunScreen";
 import { CommandPalette } from "./components/CommandPalette/CommandPalette";
 import { Sidebar } from "./components/Sidebar/Sidebar";
 import { SkillActivityView } from "./components/Activity/SkillActivityView";
@@ -43,6 +44,7 @@ function isListViewKind(kind: ActiveView["kind"]): kind is ListViewKind {
 function App() {
   useNativeShell();
   useAppShortcuts();
+  const [firstRunDone, setFirstRunDone] = useState(false);
   const { snapshot, emittedSnapshotRevision, isLoading, requestRescan } = useSkillSnapshot();
   const resolvedTheme = useAppStore((state) => state.resolvedTheme);
   const activeView = useAppStore((state) => state.activeView);
@@ -185,6 +187,14 @@ function App() {
       main = originKind ? renderListLayer(originKind, activeView) : renderSkillPage(activeView);
       break;
     }
+  }
+
+  if (!firstRunDone) {
+    return (
+      <TooltipProvider delay={400}>
+        <FirstRunGate onComplete={() => setFirstRunDone(true)} />
+      </TooltipProvider>
+    );
   }
 
   return (

@@ -4194,6 +4194,13 @@ mod tests {
 
         #[test]
         fn an_unreadable_database_file_reads_nothing_and_never_sets_incomplete() {
+            // `refresh` reads `OPENCODE_DB`/`XDG_DATA_HOME` via
+            // `opencode_databases` even for this non-OpenCode-shaped file, so
+            // this test races `a_custom_opencode_db_path_is_watched_...`
+            // (which sets `OPENCODE_DB` process-wide) without this lock.
+            let _guard = crate::opencode_db::xdg_env_lock()
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
             let tmp = tempfile::tempdir().unwrap();
             let home = tmp.path();
             // An existing (empty) Claude Code projects dir, so this test's

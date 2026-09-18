@@ -24,6 +24,8 @@ import type {
   FrontmatterRepairPreview,
   GithubSkillListing,
   InstalledSkill,
+  HarnessReport,
+  HarnessesChoice,
   HarnessVisibilityTarget,
   LifecycleTarget,
   InvocationPolicy,
@@ -199,6 +201,34 @@ export async function setDiscoverySource(
   enabled: boolean,
 ): Promise<DiscoverySourceSetting[]> {
   return callCommand("set_discovery_source", { harness, enabled });
+}
+
+// ============================================================================
+// First-run harness detection (unit 3.2)
+// ============================================================================
+
+/**
+ * Detects, per first-class harness, whether it exists on this machine -
+ * executable, version, install method, configured, used. Runs off the UI
+ * thread (`spawn_blocking`, see `harness_first_run.rs`).
+ */
+export async function detectHarnesses(): Promise<HarnessReport> {
+  return callCommand("detect_harnesses");
+}
+
+/**
+ * The first-run screen's saved choice, or `null` when the screen has never
+ * been completed - the signal to show it on this launch.
+ */
+export async function getHarnessesChoice(): Promise<HarnessesChoice | null> {
+  return callCommand("get_harnesses_choice");
+}
+
+/**
+ * Saves the first-run screen's choice so the next launch skips it.
+ */
+export async function saveHarnessesChoice(choice: HarnessesChoice): Promise<void> {
+  return callCommand("save_harnesses_choice", { choice });
 }
 
 /**
