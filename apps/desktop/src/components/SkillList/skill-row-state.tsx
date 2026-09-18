@@ -67,7 +67,7 @@ export function rowState(skill: InstalledSkill): RowState | null {
       level: "error",
       label: first,
       detail: second ?? null,
-      action: "Repair",
+      action: "Fix",
     };
   }
   if (rollup.level === "warning") {

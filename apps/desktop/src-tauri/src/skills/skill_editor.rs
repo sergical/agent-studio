@@ -486,9 +486,9 @@ fn terminal_launch_script_multi(paths: &[PathBuf], command: &str) -> String {
     let mut vars = String::new();
     let mut refs = String::new();
     for (index, path) in paths.iter().enumerate() {
-        let _ = write!(
+        let _ = writeln!(
             vars,
-            "T{index}='{}'\n",
+            "T{index}='{}'",
             shell_single_quote(&path.display().to_string())
         );
         // Escaped like `terminal_launch_script`'s single `\"$T\"`: this
@@ -504,7 +504,10 @@ fn terminal_launch_script_multi(paths: &[PathBuf], command: &str) -> String {
 /// Writes a uniquely named, owner-only executable `.command` script for the
 /// side-by-side terminal-editor launch.
 fn write_terminal_launch_script_multi(paths: &[PathBuf], command: &str) -> Result<PathBuf, String> {
-    write_launch_script("skill-studio-edit-multi", terminal_launch_script_multi(paths, command))
+    write_launch_script(
+        "skill-studio-edit-multi",
+        terminal_launch_script_multi(paths, command),
+    )
 }
 
 /// Writes `script` to a uniquely named, owner-only executable file in the

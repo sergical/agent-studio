@@ -121,6 +121,20 @@ export type SkillTrigger = "user" | "agent" | "file_read";
  * Where a [`ProjectFolder`] came from - decides which action the row offers.
  */
 export type ProjectFolderSource = "discovered" | "added";
+/**
+ * One repair `fix_skill` applied.
+ */
+export type FixApplied = {
+  /**
+   * Deployment written.
+   */
+  deployment_id: string;
+  /**
+   * History event.
+   */
+  event_id: string;
+  kind: "frontmatter_repair";
+};
 
 /**
  * Everything the frontend needs about installed skills, discovered
@@ -1186,4 +1200,61 @@ export interface HarnessesChoice {
    * decision in the app.
    */
   saved_at: string;
+}
+/**
+ * Result of `fix_skill`.
+ */
+export interface FixSkillOutcome {
+  /**
+   * Skill the fix ran for.
+   */
+  skill: string;
+  /**
+   * Repairs written.
+   */
+  applied: FixApplied[];
+  /**
+   * Issues named but not repaired, with their paths.
+   */
+  unrepaired: UnrepairedIssue[];
+  /**
+   * Conflicts found; the app opens both paths in the user's editor.
+   */
+  conflicts: ConflictSummary[];
+}
+/**
+ * One issue `fix_skill` found but could not repair, named with its path so
+ * the caller can show it rather than a generic toast.
+ */
+export interface UnrepairedIssue {
+  /**
+   * Path of the offending file or folder, when the issue names one.
+   */
+  path: string;
+  /**
+   * Message for a person.
+   */
+  message: string;
+}
+/**
+ * One pair of differing copies: never merged, named for the caller to open
+ * side by side in the user's editor.
+ */
+export interface ConflictSummary {
+  /**
+   * Skill the conflict belongs to.
+   */
+  skill: string;
+  /**
+   * One-line summary for a person.
+   */
+  message: string;
+  /**
+   * First copy's path.
+   */
+  path_a: string;
+  /**
+   * Second copy's path.
+   */
+  path_b: string;
 }

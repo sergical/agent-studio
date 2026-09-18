@@ -1371,8 +1371,11 @@ pub fn pull_fork_upstream_with(
         // The markers are already on disk under `mine_dir` either way; a
         // failed editor launch is surfaced as this call's error rather than
         // rolled back, since nothing here would undo the merge markers.
-        let conflict_paths: Vec<PathBuf> =
-            result.conflicts.iter().map(|rel| mine_dir.join(rel)).collect();
+        let conflict_paths: Vec<PathBuf> = result
+            .conflicts
+            .iter()
+            .map(|rel| mine_dir.join(rel))
+            .collect();
         editor.open_paths(&conflict_paths)?;
     }
 
@@ -2801,7 +2804,9 @@ mod tests {
         let merged_path = home.join(".agents/skills/find-bugs/SKILL.md");
         let mine = fs::read_to_string(&merged_path).unwrap();
         assert!(
-            mine.contains("<<<<<<< mine") && mine.contains("=======") && mine.contains(">>>>>>> theirs"),
+            mine.contains("<<<<<<< mine")
+                && mine.contains("=======")
+                && mine.contains(">>>>>>> theirs"),
             "expected conflict markers in {}: {mine}",
             merged_path.display()
         );

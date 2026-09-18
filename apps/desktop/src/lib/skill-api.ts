@@ -19,6 +19,7 @@ import type {
   DiscoverySourceSetting,
   ImportResult,
   InstallResult,
+  FixSkillOutcome,
   ForkRecord,
   FrontmatterRepairApplyMode,
   FrontmatterRepairPreview,
@@ -95,6 +96,20 @@ export async function applySkillFrontmatterRepair(
       mode,
     },
   });
+}
+
+/** Runs the same doctor invariants the CLI's `fix` subcommand and the MCP
+ * server's `fix` tool run, for one skill by name, so all three surfaces
+ * leave the same disk state. A conflict is never merged: `outcome.conflicts`
+ * names both paths for the caller to open side by side. */
+export async function fixSkill(skill: string): Promise<FixSkillOutcome> {
+  return callCommand("fix_skill", { skill });
+}
+
+/** Opens a conflict's two differing paths side by side in the user's chosen
+ * editor. Writes nothing to either path. */
+export async function openConflictPaths(paths: string[]): Promise<void> {
+  return callCommand("open_conflict_paths", { paths });
 }
 
 // ============================================================================
