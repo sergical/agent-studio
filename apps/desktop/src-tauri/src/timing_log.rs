@@ -187,7 +187,7 @@ pub(crate) fn join_result_to_err<T>(
 /// `data_folder_writable` reports a blocking message - a newer data folder
 /// `check_and_migrate` already refused to open must never receive a stray
 /// write from a command the frontend fired before the blocking screen
-/// painted (N2, review round 1).
+/// painted.
 pub fn record_command(
     app: &AppHandle,
     command: &str,
@@ -330,8 +330,13 @@ fn record_to_row(line: &str) -> Option<TimingRow> {
 /// the main thread. A line that doesn't parse into a [`TimingRow`] is kept
 /// unconditionally - there's no dated row to hand `trim_rows` a decision
 /// about, so it's left for a future line to overwrite through the normal
-/// [`ROTATE_AT_BYTES`] rotation instead of guessed away here.
+/// [`ROTATE_AT_BYTES`] rotation instead of guessed away here. Skips the
+/// rewrite when `data_folder_writable` reports a blocking message, same as
+/// [`record_command`].
 pub fn trim_on_open(app: &AppHandle) {
+    if !crate::skills::data_folder_status::data_folder_writable(app) {
+        return;
+    }
     let Ok(app_data) = app.path().app_data_dir() else {
         return;
     };
