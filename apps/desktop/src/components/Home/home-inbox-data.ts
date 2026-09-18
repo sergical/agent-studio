@@ -18,9 +18,13 @@ import type {
   HealthIssue,
   HealthIssueKind,
   InstalledSkill,
+  LifecycleTarget,
+  PullResult,
   RecentlyUsedSkill,
   SkillSnapshot,
+  UpdateAllOutcome,
 } from "@skill-studio/lib";
+import { lifecycleTargetForPark, skillUpdateOwnerTargets } from "../../lib/skill-lifecycle-target";
 
 /** How many of "Recently used" to show. */
 export const RECENTLY_USED_COUNT = 5;
@@ -62,6 +66,60 @@ export function issueActionLabel(kind: HealthIssueKind): string {
     case "lock-only":
       return "Open";
   }
+}
+
+export interface UpdateAllTally {
+  attempted: number;
+  succeeded: number;
+  failures: number;
+}
+
+/**
+ * Home's "Update all": a fork pulls upstream one at a time (no batched CLI
+ * form for that path), while every other outdated owner flattens into one
+ * `updateAllOwners` call - one IPC round trip and one rescan for the whole
+ * batch, instead of one `updateSkill` round trip and rescan per skill.
+ */
+export async function updateAllOutdatedSkills(
+  skills: Pick<
+    InstalledSkill,
+    "name" | "deployments" | "source_kind" | "update_owner_ids" | "update_owners"
+  >[],
+  pullFork: (target: LifecycleTarget) => Promise<PullResult>,
+  updateAllOwners: (targets: LifecycleTarget[]) => Promise<UpdateAllOutcome>,
+): Promise<UpdateAllTally> {
+  let attempted = 0;
+  let succeeded = 0;
+  let failures = 0;
+
+  for (const skill of skills.filter((skill) => skill.source_kind === "fork")) {
+    try {
+      // react-doctor-disable-next-line react-doctor/async-await-in-loop -- update-all runs sequentially on purpose; concurrent `npx skills update` calls race on ~/.agents/.skill-lock.json
+      await pullFork(lifecycleTargetForPark(skill));
+      attempted += 1;
+      succeeded += 1;
+    } catch {
+      attempted += 1;
+      failures += 1;
+    }
+  }
+
+  const ownerTargets = skills.flatMap((skill) =>
+    skill.source_kind === "fork" ? [] : skillUpdateOwnerTargets(skill),
+  );
+  if (ownerTargets.length > 0) {
+    attempted += ownerTargets.length;
+    try {
+      const outcome = await updateAllOwners(ownerTargets);
+      const failedCount = Object.keys(outcome.errors).length;
+      succeeded += outcome.items.length - failedCount;
+      failures += failedCount;
+    } catch {
+      failures += ownerTargets.length;
+    }
+  }
+
+  return { attempted, succeeded, failures };
 }
 
 export interface HomeGroups {
