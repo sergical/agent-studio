@@ -445,20 +445,30 @@ pub struct Reconciliation {
     pub resolved_without_steps: Vec<PlanId>,
 }
 
-/// Resolves every plan [`Journal::pending`] still reports, never deleting a
-/// row: a plan with recorded steps has each one undone, in reverse order,
-/// through `fs` - `Reversed` on success, `Interrupted` (listed with the
-/// error) the moment one step's undo fails. A plan with no recorded steps
-/// becomes `Failed` (nothing on disk needed undoing). Idempotent - a second
-/// call finds nothing left `Pending` (a `Reversed` or `Interrupted` plan is
-/// terminal either way).
+/// Resolves every plan [`Journal::pending`] still reports, newest first
+/// (LIFO), never deleting a row: a plan with recorded steps has each one
+/// undone, in reverse order, through `fs` - `Reversed` on success,
+/// `Interrupted` (listed with the error) the moment one step's undo fails.
+/// A plan with no recorded steps becomes `Failed` (nothing on disk needed
+/// undoing). Idempotent - a second call finds nothing left `Pending` (a
+/// `Reversed` or `Interrupted` plan is terminal either way).
+///
+/// Newest-first matters when two pending plans stack on the same path -
+/// plan A swaps it, left `Pending`; plan B swaps it again, over A's result,
+/// and also crashes `Pending`. Oldest-first would reverse A while B's
+/// result still sits at the path: A's landed check finds someone else's
+/// binding there, treats A as never landed, and marks it `Reversed`
+/// without restoring anything; B then reverses correctly, but onto A's
+/// (wrong) starting point, stranding what A actually replaced in A's own
+/// quarantine folder. Reversing B first before A restores each plan's own
+/// precondition in turn, the same order a stack of edits always undoes in.
 pub fn reconcile(
     journal: &dyn Journal,
     guard: &ExclusiveGuard,
     fs: &dyn ScopeFs,
 ) -> Result<Reconciliation, CoreError> {
     let mut report = Reconciliation::default();
-    for plan in journal.pending()? {
+    for plan in journal.pending()?.into_iter().rev() {
         if plan.steps.is_empty() {
             journal.finish(guard, &plan.id, PlanStatus::Failed)?;
             report.resolved_without_steps.push(plan.id);
@@ -1622,6 +1632,86 @@ mod tests {
                 .expect("the file outside the root must be untouched"),
             b"do not touch",
             "reconciliation must never touch a path outside the plan root"
+        );
+    }
+
+    /// Given two plans stacked on the same folder - plan A swaps `skill`
+    /// from `old0` to `new1` (quarantining `old0`) and is left `Pending`;
+    /// plan B then swaps `skill` again, from `new1` to `new2`
+    /// (quarantining `new1`), and also crashes `Pending` - when startup
+    /// reconciliation runs, then it reverses B before A (LIFO), restoring
+    /// `skill` to `old0` byte-for-byte; on failure the panic names the
+    /// generation `skill` was left at (oldest-first strands `old0` in A's
+    /// own quarantine folder and leaves `skill` at `new1` instead).
+    #[test]
+    fn stacked_pending_plans_reverse_newest_first_or_names_the_folder_left_at_the_wrong_generation(
+    ) {
+        let fixture = FixtureBuilder::new()
+            .dir("/journal")
+            .dir("/root")
+            .dir("/root/skill")
+            .file("/root/skill/SKILL.md", b"old0")
+            .build_fs();
+        let root_path = PathBuf::from("/root");
+        let before = tree_snapshot(&fixture, &root_path);
+
+        let journal = journal_over(Arc::new(fixture.clone()));
+        let lease = FakeLease::default();
+        let g = guard(&lease);
+        let root = Root::open(&fixture, root_path.clone()).expect("open root");
+
+        let plan_a = PlanId("01PLANSTACKA0000000000001".into());
+        let a = PlanWriter::begin(
+            &journal,
+            &g,
+            plan_a.clone(),
+            Utc::now(),
+            "plan A: old0 -> new1, left Pending",
+            root_path.clone(),
+            Vec::new(),
+        )
+        .expect("begin A");
+        let staged_a = fsops::stage(
+            &root,
+            &a,
+            &[(PathBuf::from("SKILL.md"), b"new1".to_vec())],
+        )
+        .expect("stage A");
+        fsops::swap(&root, &a, Path::new("skill"), &staged_a, Path::new(".trash-a"))
+            .expect("swap A over the pre-plan folder");
+        drop(a);
+
+        let plan_b = PlanId("01PLANSTACKB0000000000002".into());
+        let b = PlanWriter::begin(
+            &journal,
+            &g,
+            plan_b.clone(),
+            Utc::now(),
+            "plan B: new1 -> new2, then crashes",
+            root_path.clone(),
+            Vec::new(),
+        )
+        .expect("begin B");
+        let staged_b = fsops::stage(
+            &root,
+            &b,
+            &[(PathBuf::from("SKILL.md"), b"new2".to_vec())],
+        )
+        .expect("stage B");
+        fsops::swap(&root, &b, Path::new("skill"), &staged_b, Path::new(".trash-b"))
+            .expect("swap B over plan A's result");
+        drop(b);
+
+        let report = reconcile(&journal, &g, &fixture).expect("reconciliation must run");
+        assert!(
+            report.reversed.contains(&plan_a) && report.reversed.contains(&plan_b),
+            "both stacked plans must resolve as Reversed, not {report:?}"
+        );
+
+        let after = tree_snapshot(&fixture, &root_path);
+        assert_eq!(
+            after, before,
+            "reversing newest-first must restore `skill` to old0 (the true pre-plan-A snapshot), or names the folder left at the wrong generation"
         );
     }
 
