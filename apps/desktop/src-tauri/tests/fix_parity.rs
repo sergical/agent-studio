@@ -26,7 +26,7 @@
 //! comparison actually catches a conflict that writes. Reverted before
 //! committing.
 //!
-//! Coverage gap (G5, review round 2): the fixture here has no OpenCode
+//! Coverage gap (G5, review round 2): the fixture here has no `OpenCode`
 //! skills, so it never exercises the difference between
 //! `core_runtime.rs`'s `opencode_config_dir(home)` (desktop) and
 //! `scope.rs`'s `opencode_config_dir_under(home)` (CLI) - if those two
@@ -124,12 +124,11 @@ fn workspace_root() -> PathBuf {
                 return dir;
             }
         }
-        if !dir.pop() {
-            panic!(
-                "no workspace Cargo.toml found above {}",
-                env!("CARGO_MANIFEST_DIR")
-            );
-        }
+        assert!(
+            dir.pop(),
+            "no workspace Cargo.toml found above {}",
+            env!("CARGO_MANIFEST_DIR")
+        );
     }
 }
 

@@ -204,7 +204,7 @@ impl Drop for OpencodeHomeGuard {
 /// Prepends `dir` to `PATH` for the guarded test's whole body (RAII, so a
 /// panic mid-test still restores it), holding the same shared
 /// [`opencode_env_lock`] every other process-wide env mutation in this
-/// crate's tests serializes on - `PATH` and the OpenCode env vars are
+/// crate's tests serializes on - `PATH` and the `OpenCode` env vars are
 /// disjoint, but a shared lock is simpler than a second one and process
 /// env mutation is inherently crate-wide regardless of which vars a test
 /// touches.
