@@ -118,20 +118,30 @@ impl registry::RegistryDocument for RawRegistryDocument {
 }
 
 /// Reads `<scope_root>/.agents/skill-studio.json` as a JSON object, or an
-/// empty one when it is missing, unreadable, or not an object - the same
-/// "downgrade to nothing recorded" a missing registry gets elsewhere in
-/// this crate (`crate::ownership::read_home_registry`).
+/// empty one when it is missing - the same "downgrade to nothing recorded"
+/// a missing registry gets elsewhere in this crate
+/// (`crate::ownership::read_home_registry`). A file that exists but is
+/// unreadable or not a JSON object is a different failure: the write-back
+/// this seeds would otherwise wipe `added_folders`, `forks`, and the trust
+/// list, so that case fails the install before any write instead (R7).
 fn read_registry_document(
     fs: &dyn ScopeFs,
     scope_root: &Path,
-) -> serde_json::Map<String, serde_json::Value> {
+) -> Result<serde_json::Map<String, serde_json::Value>, CoreError> {
     let path = registry_path(scope_root);
-    let Ok(bytes) = fs.read_capped(&path, 8 * 1024 * 1024) else {
-        return serde_json::Map::new();
+    let bytes = match fs.read_capped(&path, 8 * 1024 * 1024) {
+        Ok(bytes) => bytes,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(serde_json::Map::new()),
+        Err(e) => return Err(CoreError::io(path, e)),
     };
     match serde_json::from_slice::<serde_json::Value>(&bytes) {
-        Ok(serde_json::Value::Object(map)) => map,
-        _ => serde_json::Map::new(),
+        Ok(serde_json::Value::Object(map)) => Ok(map),
+        Ok(_) => {
+            Err(CoreError::new(ErrorCode::Io, "skill-studio.json is not a JSON object").at(&path))
+        }
+        Err(e) => {
+            Err(CoreError::new(ErrorCode::Io, format!("corrupt registry file: {e}")).at(&path))
+        }
     }
 }
 
@@ -141,13 +151,11 @@ fn read_registry_document(
 /// this op, and every key besides the handful `install` itself touches
 /// round-trips untouched.
 fn write_registry_document(
-    rt: &Runtime,
     guard: &ExclusiveGuard,
     fs: &dyn ScopeFs,
     scope_root: &Path,
     document: serde_json::Map<String, serde_json::Value>,
 ) -> Result<(), CoreError> {
-    let _ = &rt.scope;
     let mut document = document;
     let write_version = document
         .shift_remove("write_version")
@@ -161,14 +169,21 @@ fn write_registry_document(
     registry::write_registry_document_locked(guard, fs, scope_root, &path, &mut wrapped)
 }
 
-/// Normalizes a `trust_identity` for lookup/storage: trims whitespace,
-/// drops a trailing `.git`, lowercases. Mirrors the desktop's
-/// `skill_trust_policy::normalize_confirmation_identity`, minus the
-/// multi-line/empty rejection (an empty identity is never gated by this
-/// op).
+/// Normalizes a `trust_identity` for lookup/storage: trims whitespace, drops
+/// a leading `git:` protocol tag (a `Dotagents` git-URL source's
+/// `req.source` carries one - `skill_add.rs`'s `format!("git:{url}")` - but
+/// the desktop's own stored identity never does, per
+/// `normalize_git_url_identity`), drops a trailing `/` and `.git`, lowercases.
+/// Mirrors the desktop's `skill_trust_policy::normalize_dotagents_source_identity`/
+/// `normalize_git_url_identity` byte-for-byte, minus the multi-line/empty
+/// rejection (an empty identity is never gated by this op) - a source
+/// already trusted through the desktop must not re-prompt here (R8).
 fn normalize_identity(identity: &str) -> String {
     identity
         .trim()
+        .strip_prefix("git:")
+        .unwrap_or_else(|| identity.trim())
+        .trim_end_matches('/')
         .trim_end_matches(".git")
         .to_ascii_lowercase()
 }
@@ -274,7 +289,7 @@ pub fn install_preferences(
 ) -> Result<InstallPreferences, CoreError> {
     let root = scope_root(rt, scope);
     let fs = rt.ports.fs.as_ref();
-    let document = read_registry_document(fs, &root);
+    let document = read_registry_document(fs, &root)?;
     let method = document
         .get("preferred_method")
         .and_then(serde_json::Value::as_str)
@@ -337,7 +352,20 @@ pub fn install(
 
     let fs = rt.ports.fs.as_ref();
     let root = scope_root(rt, &req.scope);
-    let mut document = read_registry_document(fs, &root);
+    let home_root = rt.scope.home.lexical.clone();
+    let mut document = read_registry_document(fs, &root)?;
+    // R1: `copies` and the trust list are always the home registry's, never
+    // a project's own `<project>/.agents/skill-studio.json` - the desktop's
+    // ownership classifier (`ownership.rs::read_home_registry`) only ever
+    // opens the home file, for either scope. `None` when this install's own
+    // scope root already *is* the home root (Global), so `document` alone
+    // stays the single copy written back - a second read+write of the same
+    // file would race its own write-version bump.
+    let mut home_document = if root == home_root {
+        None
+    } else {
+        Some(read_registry_document(fs, &home_root)?)
+    };
 
     // Trust: a `Dotagents` install's identity always comes from `req.source`
     // itself, never the caller's own `trust_identity` - a caller cannot skip
@@ -351,13 +379,14 @@ pub fn install(
         }
     };
     if let Some(identity) = &trust_identity {
-        if !req.trust_confirmed && !is_trusted(&document, identity) {
+        let home_doc = home_document.as_mut().unwrap_or(&mut document);
+        if !req.trust_confirmed && !is_trusted(home_doc, identity) {
             return Ok(InstallOutcome::NeedsTrust {
                 identity: identity.clone(),
             });
         }
         if req.trust_confirmed {
-            record_trusted(&mut document, identity);
+            record_trusted(home_doc, identity);
         }
     }
 
@@ -393,11 +422,16 @@ pub fn install(
     let manifest = session
         .store
         .backup_paths(&session.guard, &id, &backup_targets)?;
-    let inverse = serde_json::json!({
-        "op": "remove_install",
-        "path": destination,
-        "claude_link": claude_link_path,
-    });
+    // R6: the shared `restore_backup` shape every other write-then-record op
+    // uses - not a one-off `remove_install` shape nothing parses (`events.rs`
+    // only recognizes `restore_backup`/`recreate_symlink`/`remove_symlink`).
+    // `pre` is always `None` (absent): `destination` was checked above to
+    // not exist yet, so `backup_paths` already recorded it as "absent" in
+    // the manifest this inverse's `backup_dir` points at. `post` is `None`
+    // too, matching every other pre-mutation inverse in this crate
+    // (`ops.rs`'s own `restore_backup_inverse` call sites) - the bytes this
+    // write is about to produce aren't known yet at this point.
+    let inverse = crate::events::restore_backup_inverse(&destination, None, None);
     let draft = EventDraft {
         kind: EventKind::Install,
         skill: req.skill.clone(),
@@ -427,7 +461,11 @@ pub fn install(
     // registry write all share this one fallible step, so any of their
     // failures - not just the write's - marks the row `Failed` instead of
     // leaving it `Pending`.
-    match install_and_link(rt, ctx, &mut session, fs, req, &targets, document) {
+    let documents = RegistryDocuments {
+        scope: document,
+        home: home_document,
+    };
+    match install_and_link(rt, ctx, &mut session, fs, req, &targets, documents) {
         Err(e) => {
             let _ = session
                 .store
@@ -456,10 +494,20 @@ pub fn install(
     }
 }
 
+/// `install`'s two registry documents, bundled so `install_and_link` stays
+/// under clippy's argument-count lint. `scope` is `req.scope`'s own
+/// registry (preferences); `home`, when `Some`, is the scope home's, for a
+/// project install whose scope root differs from home - see `install`'s own
+/// doc on why the two can diverge (R1).
+struct RegistryDocuments {
+    scope: serde_json::Map<String, serde_json::Value>,
+    home: Option<serde_json::Map<String, serde_json::Value>>,
+}
+
 /// The write-and-link step every `install` call shares, once its journal
 /// row is already recorded: creates `targets.universal_root`, writes
 /// `req.method`'s bytes, links Claude Code when requested, and writes the
-/// registry document back - any failure here bubbles up so `install` can
+/// registry document(s) back - any failure here bubbles up so `install` can
 /// mark the row `Failed` (F9).
 fn install_and_link(
     rt: &Runtime,
@@ -468,8 +516,12 @@ fn install_and_link(
     fs: &dyn ScopeFs,
     req: &InstallRequest,
     targets: &InstallTargets,
-    mut document: serde_json::Map<String, serde_json::Value>,
+    documents: RegistryDocuments,
 ) -> Result<Vec<AgentId>, CoreError> {
+    let RegistryDocuments {
+        scope: mut document,
+        home: mut home_document,
+    } = documents;
     crate::ops::ensure_dir_all(rt, session, fs, targets.universal_root)?;
 
     match req.method {
@@ -502,14 +554,23 @@ fn install_and_link(
         );
     }
     if req.method == InstallMethod::Copy {
-        let copies = document
+        // R1: keyed by the deployment id, not the skill name - every
+        // consumer (`ops.rs::classify_owner`'s `home_registry.copies.get(cx.id)`,
+        // the desktop's `commands.rs`/`skill_harness_disable.rs`) looks this
+        // map up by id, never by name. R2: a non-empty `content_hash` - the
+        // desktop's `CopyDeploymentRecord` doc says empty is legacy-only,
+        // and destructive mutations refuse it.
+        let deployment_id = copy_deployment_id(&req.scope, &req.skill, targets.destination);
+        let content_hash = crate::ops::skill_content_hash(fs, ctx, targets.destination)?;
+        let home_doc = home_document.as_mut().unwrap_or(&mut document);
+        let copies = home_doc
             .entry("copies".to_string())
             .or_insert_with(|| serde_json::Value::Object(serde_json::Map::new()));
         if let serde_json::Value::Object(copies) = copies {
             copies.insert(
-                req.skill.0.clone(),
+                deployment_id.clone(),
                 serde_json::json!({
-                    "deployment_id": copy_deployment_id(&req.scope, &req.skill, targets.destination),
+                    "deployment_id": deployment_id,
                     "name": req.skill.0,
                     "path": targets.destination,
                     "scope": crate::ops::scope_label(&req.scope),
@@ -519,13 +580,22 @@ fn install_and_link(
                         RootScope::Global => None,
                         RootScope::Project(p) => Some(p.0.clone()),
                     },
-                    "content_hash": "",
+                    "content_hash": content_hash,
                     "disabled": false,
                 }),
             );
         }
     }
-    write_registry_document(rt, &session.guard, fs, targets.root, document)?;
+    write_registry_document(&session.guard, fs, targets.root, document)?;
+    if let Some(home_doc) = home_document {
+        // A project-scope install never otherwise touches the home root, so
+        // `<home>/.agents` may not exist yet - unlike `targets.root`, whose
+        // `.agents` parent was already brought up by the `ensure_dir_all`
+        // call above (`targets.universal_root` sits under it for `Copy`) or
+        // by `install_via_cli`'s own directory creation for the CLI methods.
+        crate::ops::ensure_dir_all(rt, session, fs, &rt.scope.home.lexical.join(".agents"))?;
+        write_registry_document(&session.guard, fs, &rt.scope.home.lexical, home_doc)?;
+    }
 
     Ok(linked)
 }
@@ -543,6 +613,18 @@ fn install_copy(
     files: &[InstallFile],
 ) -> Result<(), CoreError> {
     let fs = rt.ports.fs.clone();
+    // R1 fallout: this journal is always rooted under the scope home (see
+    // the doc on `journal_root`'s only call site in `MutationSession::begin`),
+    // never under the op's own target root - so for a project-scope install,
+    // `<home>/.agents` was never brought up by the caller's own
+    // `ensure_dir_all(targets.universal_root)`, which only reaches the
+    // *project's* `.agents`. `confine`'s own canonicalize needs its
+    // immediate parent to already exist, so this brings up `<home>/.agents`
+    // first, one level at a time, before confining the journal root itself.
+    let home_agents_dir = rt.scope.home.lexical.join(".agents");
+    let scoped_home_agents_dir = ports::confine(&rt.scope, fs.as_ref(), &home_agents_dir)?;
+    fs.create_dir_all(guard, &scoped_home_agents_dir)
+        .map_err(|e| CoreError::io(&home_agents_dir, e))?;
     let journal_root = journal_root(&rt.scope.home.lexical);
     let scoped_journal_root = ports::confine(&rt.scope, fs.as_ref(), &journal_root)?;
     fs.create_dir_all(guard, &scoped_journal_root)
@@ -695,7 +777,12 @@ fn install_via_cli(
 /// Symlinks `link_path` (`<scope>/.claude/skills/<skill>`) to `destination`,
 /// unless `.claude/skills` is already a whole-directory link into the shared
 /// root (every skill is already visible through it) - mirrors the guard in
-/// `ops::set_claude_code_switch`.
+/// `ops::set_claude_code_switch` - or `link_path` itself already exists
+/// (R3): `cli_args_and_cwd` passes `--agent claude-code` for a `SkillsSh`
+/// install that requests the Claude Code harness, so the CLI already created
+/// this exact link before this call ever runs; treating that as done rather
+/// than an `EEXIST` failure mirrors the desktop's
+/// `skill_add::maybe_claude_code_symlink`.
 fn link_claude_code(
     rt: &Runtime,
     session: &mut MutationSession,
@@ -713,8 +800,202 @@ fn link_claude_code(
         return Ok(());
     }
     crate::ops::ensure_dir_all(rt, session, fs, claude_skills_dir)?;
+    if fs.symlink_metadata(link_path).is_ok() {
+        return Ok(());
+    }
     let scoped_target = ports::confine(&rt.scope, fs, destination)?;
     let scoped_link = ports::confine(&rt.scope, fs, link_path)?;
     fs.symlink(&session.guard, &scoped_target, &scoped_link)
         .map_err(|e| CoreError::io(link_path, e))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::identity::ProjectRef;
+
+    /// `normalize_identity_strips_a_git_prefix_and_a_trailing_slash_or_names_the_mismatch`
+    /// (R8): a `git:<url>` source (the shape `req.source` carries for a
+    /// `Dotagents` git install - `skill_add.rs`'s `format!("git:{url}")`)
+    /// normalizes to the same identity the desktop already stores for it
+    /// (`normalize_git_url_identity`), so a source the desktop already
+    /// trusts does not re-prompt here.
+    #[test]
+    fn normalize_identity_strips_a_git_prefix_and_a_trailing_slash_or_names_the_mismatch() {
+        assert_eq!(
+            normalize_identity("git:https://github.com/getsentry/agent-browser.git"),
+            "https://github.com/getsentry/agent-browser"
+        );
+        assert_eq!(
+            normalize_identity("Owner/Repo/"),
+            "owner/repo",
+            "a trailing slash and case must not produce a distinct identity"
+        );
+        assert_eq!(
+            normalize_identity("  Owner/Repo.git  "),
+            "owner/repo",
+            "whitespace and a trailing .git must still be stripped, same as before R8"
+        );
+    }
+
+    /// `cli_args_and_cwd_matches_the_desktop_builders_verbatim_or_names_the_drifted_argv`
+    /// (R5): table test over {global, project} x {`SkillsSh`, `Dotagents`} x
+    /// {no harnesses, Claude Code harness} - nothing else in this crate
+    /// references `cli_args_and_cwd`, so a drift from the desktop's own
+    /// builders (`skill_install_plan.rs:36-62` for skills.sh,
+    /// `skill_add.rs:391-399` for dotagents) would otherwise go unnoticed
+    /// until a real `npx` call failed.
+    #[test]
+    fn cli_args_and_cwd_matches_the_desktop_builders_verbatim_or_names_the_drifted_argv() {
+        let skill = SkillName("alpha".to_string());
+        let none: Vec<AgentId> = Vec::new();
+        let claude_code = vec![AgentId::from(AgentId::CLAUDE_CODE)];
+        let project = RootScope::Project(ProjectRef(PathBuf::from("/proj")));
+
+        // R5's own drift check, not a domain type anything else needs -
+        // named here purely to satisfy clippy's `type_complexity`.
+        type Case<'a> = (
+            &'a str,
+            InstallMethod,
+            &'a RootScope,
+            &'a [AgentId],
+            Vec<&'a str>,
+            Option<PathBuf>,
+        );
+        let cases: Vec<Case> = vec![
+            (
+                "skills.sh global, no harnesses",
+                InstallMethod::SkillsSh,
+                &RootScope::Global,
+                &none,
+                vec![
+                    "skills",
+                    "add",
+                    "src",
+                    "--yes",
+                    "--global",
+                    "--skill",
+                    "alpha",
+                    "--agent",
+                    "universal",
+                ],
+                None,
+            ),
+            (
+                "skills.sh global, claude code",
+                InstallMethod::SkillsSh,
+                &RootScope::Global,
+                &claude_code,
+                vec![
+                    "skills",
+                    "add",
+                    "src",
+                    "--yes",
+                    "--global",
+                    "--skill",
+                    "alpha",
+                    "--agent",
+                    "universal",
+                    "--agent",
+                    "claude-code",
+                ],
+                None,
+            ),
+            (
+                "skills.sh project, no harnesses",
+                InstallMethod::SkillsSh,
+                &project,
+                &none,
+                vec![
+                    "skills",
+                    "add",
+                    "src",
+                    "--yes",
+                    "--cwd",
+                    "/proj",
+                    "--skill",
+                    "alpha",
+                    "--agent",
+                    "universal",
+                ],
+                None,
+            ),
+            (
+                "skills.sh project, claude code",
+                InstallMethod::SkillsSh,
+                &project,
+                &claude_code,
+                vec![
+                    "skills",
+                    "add",
+                    "src",
+                    "--yes",
+                    "--cwd",
+                    "/proj",
+                    "--skill",
+                    "alpha",
+                    "--agent",
+                    "universal",
+                    "--agent",
+                    "claude-code",
+                ],
+                None,
+            ),
+            (
+                "dotagents global, no harnesses",
+                InstallMethod::Dotagents,
+                &RootScope::Global,
+                &none,
+                vec!["-y", "@sentry/dotagents", "add", "src", "--name", "alpha"],
+                None,
+            ),
+            (
+                "dotagents global, claude code",
+                InstallMethod::Dotagents,
+                &RootScope::Global,
+                &claude_code,
+                vec!["-y", "@sentry/dotagents", "add", "src", "--name", "alpha"],
+                None,
+            ),
+            (
+                "dotagents project, no harnesses",
+                InstallMethod::Dotagents,
+                &project,
+                &none,
+                vec![
+                    "-y",
+                    "@sentry/dotagents",
+                    "--project",
+                    "add",
+                    "src",
+                    "--name",
+                    "alpha",
+                ],
+                Some(PathBuf::from("/proj")),
+            ),
+            (
+                "dotagents project, claude code",
+                InstallMethod::Dotagents,
+                &project,
+                &claude_code,
+                vec![
+                    "-y",
+                    "@sentry/dotagents",
+                    "--project",
+                    "add",
+                    "src",
+                    "--name",
+                    "alpha",
+                ],
+                Some(PathBuf::from("/proj")),
+            ),
+        ];
+
+        for (label, method, scope, harnesses, expected_args, expected_cwd) in cases {
+            let (args, cwd) = cli_args_and_cwd(method, "src", &skill, scope, harnesses);
+            let expected_args: Vec<String> = expected_args.into_iter().map(String::from).collect();
+            assert_eq!(args, expected_args, "{label}: argv");
+            assert_eq!(cwd, expected_cwd, "{label}: cwd");
+        }
+    }
 }
