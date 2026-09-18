@@ -84,6 +84,30 @@ mod tests {
         assert!(lease.try_acquire(&root).is_ok());
     }
 
+    /// A command holds `WriteLease` on `home` for its whole run (fork, add,
+    /// pack, trial, harness) and, inside that, writes the fork registry.
+    /// Advisory locks don't nest within one process, so a registry write
+    /// that takes its own second exclusive lease over the same root reports
+    /// the caller's own lease as busy instead of writing - see
+    /// `write_fork_registry_locked`.
+    #[test]
+    fn a_command_holding_the_root_lease_can_write_the_fork_registry_or_names_the_self_deadlock() {
+        let dir = tempfile::tempdir().unwrap();
+        let home = dir.path().join("home");
+        std::fs::create_dir_all(&home).unwrap();
+
+        let write_lease = WriteLease::default();
+        let _guard = write_lease.try_acquire(&home).unwrap();
+
+        let registry = super::super::skill_fork_registry::ForkRegistry::default();
+        let result = super::super::skill_fork_registry::write_fork_registry(&home, &registry);
+        assert!(
+            result.is_ok(),
+            "writing the fork registry while the caller holds the root's write lease must \
+             not need a second lease on the same root: {result:?}"
+        );
+    }
+
     #[test]
     fn two_different_roots_never_block_each_other() {
         let dir = tempfile::tempdir().unwrap();
