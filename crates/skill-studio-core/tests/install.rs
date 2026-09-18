@@ -10,7 +10,7 @@
 //! invocation both write real bytes a fake filesystem can't stand in for.
 
 use std::path::PathBuf;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
 use skill_studio_core::dto::{
     InstallFile, InstallMethod, InstallOutcome, InstallRequest, ListEventsRequest,
@@ -38,8 +38,28 @@ const UNIVERSAL_ROOT_RELATIVE: &str = ".agents/skills";
 /// ever sets a cwd for a `Dotagents` project-scope install - skills.sh's own
 /// builder never sets the process cwd at all (`--global`/`--cwd` carry the
 /// target instead).
+///
+/// R3: when argv carries `--agent claude-code`, also creates
+/// `<cwd or home>/.claude/skills/<skill>` as a real symlink into the
+/// universal dir it just wrote - the same double-write the real `npx
+/// skills add ... --agent claude-code` makes, which `link_claude_code`
+/// must tolerate instead of failing on `EEXIST`.
+///
+/// R5: records every call's argv and cwd (`recorded`), so a test can assert
+/// the exact shape `cli_args_and_cwd` built without duplicating its own
+/// logic to predict it.
 struct FakeNpxSpawner {
     home: PathBuf,
+    recorded: Mutex<Vec<(Vec<String>, Option<PathBuf>)>>,
+}
+
+impl FakeNpxSpawner {
+    fn new(home: PathBuf) -> Self {
+        FakeNpxSpawner {
+            home,
+            recorded: Mutex::new(Vec::new()),
+        }
+    }
 }
 
 impl ProcessSpawner for FakeNpxSpawner {
@@ -49,6 +69,10 @@ impl ProcessSpawner for FakeNpxSpawner {
         _cancel: &dyn CancelToken,
     ) -> Result<ProcessOutput, skill_studio_core::CoreError> {
         assert_eq!(spec.program, "npx");
+        self.recorded
+            .lock()
+            .unwrap()
+            .push((spec.args.clone(), spec.cwd.clone()));
         let skill = spec
             .args
             .iter()
@@ -64,6 +88,19 @@ impl ProcessSpawner for FakeNpxSpawner {
             format!("---\nname: {skill}\ndescription: installed by a fake CLI\n---\nBody.\n"),
         )
         .unwrap();
+        let has_claude_code_agent = spec
+            .args
+            .windows(2)
+            .any(|w| w[0] == "--agent" && w[1] == "claude-code");
+        if has_claude_code_agent {
+            let claude_dir = cwd.join(".claude").join("skills");
+            std::fs::create_dir_all(&claude_dir).unwrap();
+            let link_path = claude_dir.join(&skill);
+            if std::fs::symlink_metadata(&link_path).is_err() {
+                #[cfg(unix)]
+                std::os::unix::fs::symlink(&dir, &link_path).unwrap();
+            }
+        }
         Ok(ProcessOutput {
             status: Some(0),
             stdout: String::new(),
@@ -100,9 +137,7 @@ fn runtime_for(home: &std::path::Path) -> Runtime {
     runtime_with(
         home,
         Arc::new(RealFs::new()),
-        Some(Arc::new(FakeNpxSpawner {
-            home: home.to_path_buf(),
-        })),
+        Some(Arc::new(FakeNpxSpawner::new(home.to_path_buf()))),
     )
 }
 
@@ -199,7 +234,7 @@ fn install_crash_after_each_step_leaves_disk_in_the_before_or_after_state_or_nam
     let rt = runtime_with(
         &home,
         failing_fs.clone(),
-        Some(Arc::new(FakeNpxSpawner { home: home.clone() })),
+        Some(Arc::new(FakeNpxSpawner::new(home.clone()))),
     );
     let req = copy_request("beta");
 
@@ -248,6 +283,35 @@ fn install_crash_after_each_step_leaves_disk_in_the_before_or_after_state_or_nam
     // and a retry (with the filesystem working again) completes the
     // install a crash mid-swap could not.
     let session = MutationSession::begin(&rt, &ctx()).unwrap();
+
+    // (R4) `begin` alone - before any retry - must already have swept the
+    // stray stage folder: `MutationSession::begin` reconciles
+    // `ops_install::journal_root` on every call, not just a later
+    // `ops::install`. Pinning this here, separately from the retry below,
+    // is the red check for accidentally dropping that
+    // `crate::journal::reconcile(..)` call from `begin` - every other
+    // install test in this file stays green even with it removed, since
+    // they all go on to retry (which reconciles too, via its own `begin`).
+    let universal_root = home.join(UNIVERSAL_ROOT_RELATIVE);
+    if universal_root.exists() {
+        let stray: Vec<_> = std::fs::read_dir(&universal_root)
+            .unwrap()
+            .filter_map(Result::ok)
+            .map(|e| e.file_name().to_string_lossy().into_owned())
+            .filter(|name| name.starts_with(".skill-studio-stage-"))
+            .collect();
+        assert!(
+            stray.is_empty(),
+            "begin's own reconcile must sweep the stray stage folder, not just a later install's: {stray:?}"
+        );
+    }
+    let events = ops::list_events(&rt, &ctx(), &ListEventsRequest::default()).unwrap();
+    assert_eq!(events.len(), 1, "the crashed install left exactly one row");
+    assert_eq!(
+        events[0].status, "failed",
+        "begin's reconcile must resolve the interrupted plan and leave the row failed, not pending"
+    );
+
     session.finish(&rt, &ctx());
     let retry = ops::install(&rt, &ctx(), &copy_request("beta")).unwrap();
     let InstallOutcome::Installed {
@@ -406,7 +470,7 @@ fn install_crash_after_the_cli_wrote_the_folder_marks_the_row_failed_or_names_th
     let rt = runtime_with(
         &home,
         failing_fs.clone(),
-        Some(Arc::new(FakeNpxSpawner { home: home.clone() })),
+        Some(Arc::new(FakeNpxSpawner::new(home.clone()))),
     );
     let req = cli_request("eta", InstallMethod::SkillsSh);
 
@@ -425,6 +489,113 @@ fn install_crash_after_the_cli_wrote_the_folder_marks_the_row_failed_or_names_th
     assert_eq!(
         events[0].status, "failed",
         "the row must not be left pending when the registry write fails"
+    );
+    // R6: a failed row must still carry a `restore_backup`-shaped inverse
+    // events.rs can parse, not the old `remove_install` shape nothing
+    // recognized - `restore_capability` only returns `Yes` for a
+    // `Failed`/`Interrupted` row when both `backup_dir` and a parseable
+    // inverse are present.
+    assert_eq!(
+        events[0].restore,
+        skill_studio_core::dto::RestoreCapability::Yes,
+        "a failed install's row must be restorable via the shared restore_backup inverse shape"
+    );
+
+    std::fs::remove_dir_all(&home).ok();
+}
+
+/// `copy_install_under_a_project_scope_is_classified_as_owned_or_names_the_deployment_left_manual`
+/// (R1): `ops::classify_owner`'s `Copy` branch matches against
+/// `ownership::read_home_registry`, which only ever reads the *home*
+/// registry file - never a project's own `.agents/skill-studio.json`. A
+/// `Copy` install under `RootScope::Project` must therefore write its
+/// `copies` entry to the home registry too, or the deployment is left
+/// `Manual` forever, even though `install` itself reports success.
+#[test]
+fn copy_install_under_a_project_scope_is_classified_as_owned_or_names_the_deployment_left_manual() {
+    let home = unique_temp_dir("install_project_scope_ownership");
+    std::fs::create_dir_all(&home).unwrap();
+    let project = home.join("proj");
+    std::fs::create_dir_all(&project).unwrap();
+
+    let mut scope = RuntimeScope::fixture(&home);
+    scope.projects = skill_studio_core::scope::ProjectSelection::Explicit {
+        paths: vec![project.clone()],
+    };
+    let history_root = home.join(".history");
+    let ports = Ports {
+        fs: Arc::new(RealFs::new()),
+        clock: Arc::new(FakeClock::at(0)),
+        ids: Arc::new(FakeIds::default()),
+        leases: Arc::new(FileLease::new(home.join(".leases"))),
+        history: Arc::new(SqliteHistoryOpener::new(
+            history_root.join("events.sqlite3"),
+        )),
+        sink: Arc::new(RecordingSink::default()),
+        spawner: Some(Arc::new(FakeNpxSpawner::new(home.clone())) as Arc<dyn ProcessSpawner>),
+        discovery: None,
+        tools: None,
+        catalog: Arc::new(HarnessCatalog::builtin()),
+    };
+    let rt = Runtime::new(&scope, ports).unwrap();
+
+    let mut req = copy_request("iota");
+    req.scope = RootScope::Project(skill_studio_core::identity::ProjectRef(project.clone()));
+    let outcome = ops::install(&rt, &ctx(), &req).unwrap();
+    assert!(matches!(outcome, InstallOutcome::Installed { .. }));
+
+    let inventory =
+        ops::scan(&rt, &ctx(), &skill_studio_core::dto::ScanRequest::default()).unwrap();
+    let skill = inventory
+        .skills
+        .iter()
+        .find(|s| s.name.0 == "iota")
+        .expect("the installed skill must appear in the scan");
+    let deployment = skill
+        .deployments
+        .first()
+        .expect("the project-scope install must leave exactly one deployment");
+    assert_eq!(
+        deployment.owner_kind,
+        skill_studio_core::identity::LifecycleOwnerKind::Copy,
+        "a project-scope Copy install must be classified as owned, not left Manual: {:?}",
+        deployment.owner_kind
+    );
+
+    std::fs::remove_dir_all(&home).ok();
+}
+
+/// `skills_sh_install_with_claude_code_keeps_the_cli_link_or_names_the_eexist_failure`
+/// (R3): `cli_args_and_cwd` passes `--agent claude-code` for `SkillsSh`, so
+/// the CLI itself creates `.claude/skills/<skill>` as part of its own run -
+/// `link_claude_code` must treat an already-existing link at that path as
+/// success, not fail with `EEXIST`.
+#[test]
+fn skills_sh_install_with_claude_code_keeps_the_cli_link_or_names_the_eexist_failure() {
+    let home = unique_temp_dir("install_skills_sh_claude_code_link");
+    std::fs::create_dir_all(&home).unwrap();
+    let rt = runtime_for(&home);
+    let req = cli_request("theta", InstallMethod::SkillsSh);
+
+    let outcome = ops::install(&rt, &ctx(), &req).unwrap();
+    let InstallOutcome::Installed {
+        deployment_path,
+        linked_harnesses,
+        ..
+    } = outcome
+    else {
+        panic!("expected Installed, not a failure over the CLI's own pre-existing link");
+    };
+    assert_eq!(linked_harnesses, vec![AgentId::from(AgentId::CLAUDE_CODE)]);
+
+    let link = home.join(".claude").join("skills").join("theta");
+    assert!(
+        std::fs::symlink_metadata(&link).is_ok(),
+        "the CLI-created link must still be there: {link:?}"
+    );
+    assert_eq!(
+        std::fs::canonicalize(&link).unwrap(),
+        std::fs::canonicalize(&deployment_path).unwrap()
     );
 
     std::fs::remove_dir_all(&home).ok();
