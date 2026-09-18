@@ -586,6 +586,25 @@ struct Lookups<'a> {
     tree_cache: &'a TreeCache,
 }
 
+/// On a lookup failure, the previous run's `latest_commit`/`latest_commit_at`
+/// are only safe to reuse when `previous.installed_commit` still matches the
+/// candidate's current `installed_commit` - otherwise `previous` was
+/// computed against an older install (a stale generation), and pairing its
+/// `latest_commit` with today's fresh `installed_commit` can make
+/// `has_update()` true for a skill nothing actually flagged this run
+/// (`a_lookup_error_on_the_first_check_after_upgrade_never_flags_an_update_or_names_the_false_positive`).
+fn previous_metadata_if_same_generation(
+    previous: Option<&SkillUpdateState>,
+    installed_commit: Option<&str>,
+) -> (Option<String>, Option<String>) {
+    match previous {
+        Some(p) if p.installed_commit.as_deref() == installed_commit => {
+            (p.latest_commit.clone(), p.latest_commit_at.clone())
+        }
+        _ => (None, None),
+    }
+}
+
 /// Check one candidate, given the previous run's state for it (if any).
 /// Returns `None` when `stop` was already set before this candidate could be
 /// looked up at all - the caller falls back to the previous state, if any.
@@ -616,19 +635,15 @@ fn check_candidate(
                     *not_logged_in_message
                         .lock()
                         .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(e);
-                    (
-                        installed_commit.clone(),
-                        previous.and_then(|p| p.latest_commit.clone()),
-                        previous.and_then(|p| p.latest_commit_at.clone()),
-                    )
+                    let (latest_commit, latest_commit_at) =
+                        previous_metadata_if_same_generation(previous, installed_commit.as_deref());
+                    (installed_commit.clone(), latest_commit, latest_commit_at)
                 }
                 Err(e) => {
                     error = Some(e);
-                    (
-                        installed_commit.clone(),
-                        previous.and_then(|p| p.latest_commit.clone()),
-                        previous.and_then(|p| p.latest_commit_at.clone()),
-                    )
+                    let (latest_commit, latest_commit_at) =
+                        previous_metadata_if_same_generation(previous, installed_commit.as_deref());
+                    (installed_commit.clone(), latest_commit, latest_commit_at)
                 }
             }
         }
@@ -644,19 +659,19 @@ fn check_candidate(
                     *not_logged_in_message
                         .lock()
                         .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(e);
-                    (
-                        Some(skill_folder_hash.clone()),
-                        previous.and_then(|p| p.latest_commit.clone()),
-                        None,
-                    )
+                    let (latest_commit, _) = previous_metadata_if_same_generation(
+                        previous,
+                        Some(skill_folder_hash.as_str()),
+                    );
+                    (Some(skill_folder_hash.clone()), latest_commit, None)
                 }
                 Err(e) => {
                     error = Some(e);
-                    (
-                        Some(skill_folder_hash.clone()),
-                        previous.and_then(|p| p.latest_commit.clone()),
-                        None,
-                    )
+                    let (latest_commit, _) = previous_metadata_if_same_generation(
+                        previous,
+                        Some(skill_folder_hash.as_str()),
+                    );
+                    (Some(skill_folder_hash.clone()), latest_commit, None)
                 }
             }
         }
@@ -1452,6 +1467,63 @@ resolved_commit = "{commit}"
             Some(previous_latest.as_str())
         );
         assert_eq!(state.error.as_deref(), Some("network unreachable"));
+    }
+
+    /// Flow: a skill upgraded since the previous check (its `agents.lock`
+    /// `installed_commit` moved), then a lookup error on the very next
+    /// check.
+    /// Expectation: `has_update()` is false - the previous run's
+    /// `latest_commit` was computed against the old install and is not
+    /// paired with the new one, so nothing false-positives as "update
+    /// available" from a network error alone.
+    /// A failure here means `previous.latest_commit` was reused across the
+    /// generation boundary, pairing a stale "latest" with a fresh
+    /// "installed" and flagging every post-upgrade lookup failure as an
+    /// update.
+    #[test]
+    fn a_lookup_error_on_the_first_check_after_upgrade_never_flags_an_update_or_names_the_false_positive(
+    ) {
+        let tmp = tempfile::tempdir().unwrap();
+        let home = tmp.path().join("home");
+        let app_data = tmp.path().join("data");
+        let old_commit = "a".repeat(40);
+        let new_commit = "c".repeat(40);
+        write_agents_lock(
+            &home,
+            "find-bugs",
+            "getsentry/find-bugs",
+            "skills/find-bugs",
+            &new_commit,
+        );
+
+        let previous_latest = "b".repeat(40);
+        let seeded = UpdateCheckStore {
+            version: update_store_version(),
+            checked_at: Some("2026-01-01T00:00:00Z".to_string()),
+            gh_status: GhStatus::Ok,
+            owners: BTreeMap::from([(
+                "owner:v1/global/find-bugs".to_string(),
+                SkillUpdateState {
+                    repo: "getsentry/find-bugs".to_string(),
+                    path: "skills/find-bugs".to_string(),
+                    installed_commit: Some(old_commit),
+                    latest_commit: Some(previous_latest),
+                    latest_commit_at: Some("2026-01-01T00:00:00Z".to_string()),
+                    checked_at: "2026-01-01T00:00:00Z".to_string(),
+                    error: None,
+                },
+            )]),
+            legacy_skills: BTreeMap::new(),
+        };
+        write_store(&app_data, &seeded).unwrap();
+
+        let lookup = FakeLookup::with_answers(vec![Err("network unreachable".to_string())]);
+        let store = run_update_check(&home, &app_data, &lookup, &UnusedTreeLookup);
+
+        let state = store.owners.get("owner:v1/global/find-bugs").unwrap();
+        assert_eq!(state.installed_commit.as_deref(), Some(new_commit.as_str()));
+        assert_eq!(state.latest_commit, None);
+        assert!(!has_update(state));
     }
 
     #[test]
