@@ -416,6 +416,28 @@ pub fn set_skill_denied_with(
         // every rule after `name` in the user's file. `shift_remove` keeps
         // every other rule's document order.
         skill.shift_remove(name);
+
+        // Removing `name`'s own key doesn't help when an earlier glob rule
+        // (e.g. `"*": "deny"`) still matches it - reporting success here
+        // would show the skill enabled while `OpenCode` keeps denying it
+        // through that rule. Re-evaluate the v1 rules with `name`'s own key
+        // already gone, and refuse (without writing) if one still denies.
+        let remaining_v1_rules = v1_skill_rules(&Value::Object(skill.clone()));
+        if let Some(rule) = remaining_v1_rules
+            .iter()
+            .rfind(|rule| pattern_matches(&rule.pattern, name))
+            .filter(|rule| rule.effect == DENY)
+        {
+            return Err(CoreError::new(
+                ErrorCode::Unsupported,
+                format!(
+                    "still denied by permission.skill rule for \"{}\"; edit opencode.json by hand",
+                    rule.pattern
+                ),
+            )
+            .at(&path));
+        }
+
         if skill.is_empty() {
             permission.remove("skill");
         }
@@ -573,6 +595,38 @@ mod tests {
         .expect_err("epsilon reported enabled despite the surviving \"eps*\" v2 rule");
         assert!(
             err.to_string().contains("eps*"),
+            "error {err} doesn't name the blocking rule"
+        );
+    }
+
+    /// Flow: `set_skill_denied(false)` on `zeta`, starting from
+    /// `{"permission": {"skill": {"z*": "deny", "zeta": "deny"}}}` - `zeta`'s
+    /// own key is removed, but the glob `"z*"` still matches it.
+    /// Expectation: the enable is refused, naming `"z*"` as the rule still
+    /// denying it, and nothing is written.
+    /// Failure: the enable silently succeeds (or reports success) while
+    /// `OpenCode` keeps denying `zeta` through `"z*"`.
+    #[test]
+    fn enabling_a_skill_still_denied_by_a_v1_glob_rule_is_refused_or_names_the_pattern_it_ignored()
+    {
+        let fs = FixtureBuilder::new()
+            .dir("/home/.config/opencode")
+            .file(
+                "/home/.config/opencode/opencode.json",
+                br#"{"permission":{"skill":{"z*":"deny","zeta":"deny"}}}"#,
+            )
+            .build_fs();
+        let leases = crate::testing::FakeLease::default();
+        let err = set_skill_denied(
+            &leases,
+            &fs,
+            Path::new("/home/.config/opencode"),
+            "zeta",
+            false,
+        )
+        .expect_err("zeta reported enabled despite the surviving \"z*\" v1 rule");
+        assert!(
+            err.to_string().contains("z*"),
             "error {err} doesn't name the blocking rule"
         );
     }
