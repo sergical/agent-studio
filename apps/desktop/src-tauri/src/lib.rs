@@ -227,6 +227,24 @@ pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
         .setup(|app| {
+            // Unit 6.3: check the data folder's schema_version before
+            // anything else in setup - every branch below either spawns a
+            // background thread or manages state a Tauri command can read,
+            // and any of those could touch `app_data_dir` before a later
+            // check_and_migrate call would have run. Migrates forward in
+            // place when older, and names a blocking message when newer so
+            // `open_event_store` below is skipped rather than opening a
+            // folder this build doesn't understand.
+            let data_folder_message = app
+                .path()
+                .app_data_dir()
+                .ok()
+                .as_deref()
+                .and_then(skills::data_folder_status::check_and_migrate);
+            app.manage(skills::data_folder_status::DataFolderStatusState(
+                std::sync::Mutex::new(data_folder_message.clone()),
+            ));
+
             let refresh_state = skills::skill_refresh::init(app.handle());
             app.manage(refresh_state);
             app.manage(skills::skill_add_operation::AddSkillOperationState::default());
@@ -250,21 +268,6 @@ pub fn run() {
             app.manage(reporting_state);
             skills::skill_update_check::spawn_update_check_loop(app.handle().clone());
             skills::skill_trial::spawn_trial_expiry_loop(app.handle().clone());
-
-            // Unit 6.3: check the data folder's schema_version before
-            // anything opens it - migrates forward in place when older,
-            // and names a blocking message when newer so `open_event_store`
-            // below is skipped rather than opening a folder this build
-            // doesn't understand.
-            let data_folder_message = app
-                .path()
-                .app_data_dir()
-                .ok()
-                .as_deref()
-                .and_then(skills::data_folder_status::check_and_migrate);
-            app.manage(skills::data_folder_status::DataFolderStatusState(
-                std::sync::Mutex::new(data_folder_message.clone()),
-            ));
 
             let event_store = if data_folder_message.is_some() {
                 None
