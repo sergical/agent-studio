@@ -38,6 +38,7 @@ pub mod frontmatter;
 pub mod frontmatter_repair;
 pub mod fsops;
 pub mod harness;
+mod harness_switch;
 pub mod health;
 pub mod identity;
 pub mod journal;

@@ -163,6 +163,37 @@ enum Command {
         #[arg(long)]
         json: bool,
     },
+    /// Revert the most recent unreverted event.
+    Undo {
+        #[command(flatten)]
+        scope: ScopeArgs,
+        /// Proceed even if the touched paths have drifted.
+        #[arg(long)]
+        force: bool,
+        #[arg(long)]
+        json: bool,
+    },
+    /// Turn a skill's native per-harness switch on or off (Claude Code,
+    /// Codex, `OpenCode`, pi).
+    SetHarnessEnabled {
+        #[command(flatten)]
+        scope: ScopeArgs,
+        /// Skill to toggle.
+        #[arg(long)]
+        skill: String,
+        /// Harness whose switch to flip.
+        #[arg(long)]
+        harness: String,
+        /// Sets the switch to enabled; pass `--enabled=false` to disable.
+        #[arg(long, default_value_t = true)]
+        enabled: bool,
+        /// Project the targeted row is scoped to; omit for the global row.
+        /// Only Claude Code's switch (a per-scope symlink slot) reads this.
+        #[arg(long)]
+        project_path: Option<PathBuf>,
+        #[arg(long)]
+        json: bool,
+    },
     /// Write one JSON Schema file per request/result DTO.
     Schema {
         /// Directory to write schema files into.
@@ -244,6 +275,15 @@ fn main() -> ExitCode {
             force,
             json,
         } => run_restore(&scope, event_id, force, json, time),
+        Command::Undo { scope, force, json } => run_undo(&scope, force, json, time),
+        Command::SetHarnessEnabled {
+            scope,
+            skill,
+            harness,
+            enabled,
+            project_path,
+            json,
+        } => run_set_harness_enabled(&scope, skill, &harness, enabled, project_path, json, time),
         Command::Schema { out } => output::write_schemas(out),
         Command::Health { timing_log, json } => run_health(timing_log, json),
         Command::Watch { scope, since, json } => run_watch(&scope, since, json, time),
@@ -643,6 +683,134 @@ fn run_restore(
     let result = ops::restore_event(&rt, &ctx, &req);
     let envelope = ResultEnvelope::from_result(Operation::RestoreEvent, &rt.scope, &ctx, result);
     finish(&envelope, json, time, output::print_restore_outcome_table)
+}
+
+/// Reverts the newest event this scope's history still has an inverse for
+/// (`skill_studio_core::dto::RestoreCapability::Yes`), across every skill and
+/// write kind - `list_events` is already newest-first, so the first
+/// restorable row is the last journal entry standing.
+fn run_undo(scope: &ScopeArgs, force: bool, json: bool, time: bool) -> ExitCode {
+    let rt = match build_runtime_write::<skill_studio_core::dto::RestoreOutcome>(
+        scope,
+        Operation::RestoreEvent,
+        json,
+    ) {
+        Ok(rt) => rt,
+        Err(code) => return code,
+    };
+    let ctx = OpContext::uncancellable(CorrelationId(ulid::Ulid::new().to_string()));
+    // A page of all non-restorable rows must not read as "nothing to undo":
+    // page through `list_events` with `after` until a restorable row turns
+    // up or a page comes back short of the limit (the end of the history).
+    let mut after = None;
+    let event_id = loop {
+        let list_req = ListEventsRequest {
+            skill: None,
+            limit: ops::DEFAULT_EVENT_LIMIT,
+            after,
+            check_drift: false,
+        };
+        let events = match ops::list_events(&rt, &ctx, &list_req) {
+            Ok(events) => events,
+            Err(err) => {
+                let envelope =
+                    ResultEnvelope::<skill_studio_core::dto::RestoreOutcome>::from_result(
+                        Operation::RestoreEvent,
+                        &rt.scope,
+                        &ctx,
+                        Err(err),
+                    );
+                return finish(&envelope, json, time, output::print_restore_outcome_table);
+            }
+        };
+        let page_len = events.len();
+        let last_id = events.last().map(|event| event.id.clone());
+        if let Some(found) = events.into_iter().find(|event| {
+            matches!(
+                event.restore,
+                skill_studio_core::dto::RestoreCapability::Yes
+            )
+        }) {
+            break Some(found.id);
+        }
+        if (page_len as u32) < ops::DEFAULT_EVENT_LIMIT {
+            break None;
+        }
+        after = last_id;
+    };
+    let Some(event_id) = event_id else {
+        let err = skill_studio_core::CoreError::new(
+            skill_studio_core::ErrorCode::InvalidRequest,
+            "nothing to undo: no restorable event in this scope's history",
+        );
+        let envelope = ResultEnvelope::<skill_studio_core::dto::RestoreOutcome>::from_result(
+            Operation::RestoreEvent,
+            &rt.scope,
+            &ctx,
+            Err(err),
+        );
+        return finish(&envelope, json, time, output::print_restore_outcome_table);
+    };
+    let req = RestoreRequest { event_id, force };
+    let result = ops::restore_event(&rt, &ctx, &req);
+    let envelope = ResultEnvelope::from_result(Operation::RestoreEvent, &rt.scope, &ctx, result);
+    finish(&envelope, json, time, output::print_restore_outcome_table)
+}
+
+/// Turns a skill's native per-harness switch on or off, via
+/// `ops::set_harness_enabled` (Claude Code link, Codex `config.toml` rows,
+/// `OpenCode` `permission.skill`).
+fn run_set_harness_enabled(
+    scope: &ScopeArgs,
+    skill: String,
+    harness: &str,
+    enabled: bool,
+    project_path: Option<PathBuf>,
+    json: bool,
+    time: bool,
+) -> ExitCode {
+    let rt = match build_runtime_write::<skill_studio_core::dto::SetHarnessEnabledOutcome>(
+        scope,
+        Operation::SetHarnessEnabled,
+        json,
+    ) {
+        Ok(rt) => rt,
+        Err(code) => return code,
+    };
+    let ctx = OpContext::uncancellable(CorrelationId(ulid::Ulid::new().to_string()));
+    let harness = match AgentId::parse_harness(harness) {
+        Ok(harness) => harness,
+        Err(err) => {
+            let envelope =
+                ResultEnvelope::<skill_studio_core::dto::SetHarnessEnabledOutcome>::from_result(
+                    Operation::SetHarnessEnabled,
+                    &rt.scope,
+                    &ctx,
+                    Err(err),
+                );
+            return finish(
+                &envelope,
+                json,
+                time,
+                output::print_set_harness_enabled_outcome_table,
+            );
+        }
+    };
+    let req = skill_studio_core::dto::SetHarnessEnabledRequest {
+        skill: SkillName(skill),
+        harness,
+        enabled,
+        project_path,
+    };
+    let result = ops::set_harness_enabled(&rt, &ctx, &req);
+    let envelope =
+        ResultEnvelope::from_result(Operation::SetHarnessEnabled, &rt.scope, &ctx, result);
+    finish(
+        &envelope,
+        json,
+        time,
+        output::print_set_harness_enabled_outcome_table,
+    )
 }
 
 /// One `timing.jsonl` line, as written by the desktop's `timing_log`

@@ -212,7 +212,35 @@ impl EventRecord {
     }
 
     /// Whether a restore may target this row.
+    ///
+    /// A `pending` row never moved what its inverse describes, so applying
+    /// the inverse would act on live state it does not own - that status
+    /// is never restorable. A `failed`/`interrupted` row left a
+    /// `restore_backup` inverse with a `backup_dir` mid-loop (a crash, or
+    /// the desktop's own partial-write path): the backup is a real
+    /// snapshot of what was on disk before the write that failed, so
+    /// `restore_event`'s ordinary drift-checked path can still apply it
+    /// (`force` required unless the live bytes still match `post`). A
+    /// `failed`/`interrupted` row missing either - a symlink toggle whose
+    /// write never reached the filesystem, say - has nothing a restore can
+    /// apply and stays `NotCompleted`.
     pub fn restore_capability(&self) -> RestoreCapability {
+        let completed = match self.status {
+            EventStatus::Done => true,
+            EventStatus::Failed | EventStatus::Interrupted => {
+                self.backup_dir.is_some()
+                    && self
+                        .inverse
+                        .as_ref()
+                        .is_some_and(|inverse| parse_restore_backup_inverse(inverse).is_some())
+            }
+            EventStatus::Pending => false,
+        };
+        if !completed {
+            return RestoreCapability::NotCompleted {
+                status: self.status.as_str().to_string(),
+            };
+        }
         match (
             &self.reverted_by,
             self.restorable,
@@ -441,6 +469,76 @@ pub(crate) fn parse_restore_backup_inverse(
     ))
 }
 
+/// Undo shape for a symlink toggle: `recreate_symlink` (put a link with
+/// `target` back at `path`) or `remove_symlink` (take the link at `path`
+/// back out). Kept apart from `restore_backup`: that shape's restore writes
+/// raw bytes with `write_atomic`, which would turn a symlink into a regular
+/// file carrying its target's content instead of recreating the link.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum SymlinkInverse {
+    /// Recreate the link.
+    Recreate {
+        /// Where the link goes.
+        path: PathBuf,
+        /// What it points to.
+        target: PathBuf,
+    },
+    /// Remove the link.
+    Remove {
+        /// The link to remove.
+        path: PathBuf,
+        /// What the link pointed at when it was created - not used to
+        /// remove it, only to refuse the removal if the link has since been
+        /// retargeted to something the event never put there (see
+        /// `restore_symlink_event`'s drift guard). `None` for a row written
+        /// before this field existed: `restore_symlink_event` treats that
+        /// as force-only, since there is nothing recorded to compare the
+        /// live link against.
+        target: Option<PathBuf>,
+    },
+}
+
+pub(crate) fn recreate_symlink_inverse(path: &Path, target: &Path) -> serde_json::Value {
+    serde_json::json!({ "op": "recreate_symlink", "path": path, "target": target })
+}
+
+/// `target` is `None` when a target-less remove row is restored against an
+/// already-absent link; a restore of such a row needs `--force`. Kept
+/// optional so a pre-existing row without one still parses instead of
+/// losing its `restore_capability`.
+pub(crate) fn remove_symlink_inverse(path: &Path, target: Option<&Path>) -> serde_json::Value {
+    match target {
+        Some(target) => {
+            serde_json::json!({ "op": "remove_symlink", "path": path, "target": target })
+        }
+        None => serde_json::json!({ "op": "remove_symlink", "path": path }),
+    }
+}
+
+/// Reads a `recreate_symlink`/`remove_symlink` inverse payload back. Returns
+/// `None` for any other shape. A `remove_symlink` row's `target` is read as
+/// present-but-optional, not required: a row from before that field existed
+/// must still parse, so `restore_capability()` (which only checks that the
+/// row's kind is understood, not the shape underneath) keeps reporting
+/// `Yes` for it instead of silently falling to `UnknownKind`.
+pub(crate) fn parse_symlink_inverse(inverse: &serde_json::Value) -> Option<SymlinkInverse> {
+    let obj = inverse.as_object()?;
+    match obj.get("op").and_then(|v| v.as_str()) {
+        Some("recreate_symlink") => Some(SymlinkInverse::Recreate {
+            path: PathBuf::from(obj.get("path")?.as_str()?),
+            target: PathBuf::from(obj.get("target")?.as_str()?),
+        }),
+        Some("remove_symlink") => Some(SymlinkInverse::Remove {
+            path: PathBuf::from(obj.get("path")?.as_str()?),
+            target: obj
+                .get("target")
+                .and_then(|v| v.as_str())
+                .map(PathBuf::from),
+        }),
+        _ => None,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -491,5 +589,37 @@ mod tests {
             restorable: false,
         };
         assert_eq!(row.restore_capability(), RestoreCapability::NoInverse);
+    }
+
+    #[test]
+    fn pending_and_failed_rows_are_not_restorable_or_names_the_status_that_leaked_through() {
+        for status in [
+            EventStatus::Pending,
+            EventStatus::Failed,
+            EventStatus::Interrupted,
+        ] {
+            let row = EventRecord {
+                id: EventId("01J".into()),
+                ts: Utc::now(),
+                kind: EventKind::HarnessDisable.as_str().to_string(),
+                skill: SkillName("x".into()),
+                harness: None,
+                scope: None,
+                project_path: None,
+                payload: serde_json::json!({}),
+                inverse: Some(serde_json::json!({})),
+                backup_dir: None,
+                status,
+                reverted_by: None,
+                restorable: true,
+            };
+            assert_eq!(
+                row.restore_capability(),
+                RestoreCapability::NotCompleted {
+                    status: status.as_str().to_string()
+                },
+                "a {status:?} row must name its own status, not fall through to Yes"
+            );
+        }
     }
 }
