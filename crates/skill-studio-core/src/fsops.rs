@@ -15,9 +15,13 @@
 //! [`crate::journal::PlanWriter`] and record their own step against it
 //! *before* their mutation runs, with the reversal data (the staged path's
 //! identity, the previous link target, the fsynced backup) computed and
-//! made durable first - see `docs/action-map/plan.md` unit 1.2.
-//! `crates/skill-studio-core/tests/architecture.rs` pins that these four
-//! names are only ever called from this module, `journal.rs`, and tests.
+//! made durable first - see `docs/action-map/plan.md` unit 1.2. The
+//! `&PlanWriter` parameter is itself the guarantee that a caller cannot run
+//! one of these four without a plan step landing for it: there is no way to
+//! call `stage`, `swap`, `link`, or `write_file` without one in scope, and
+//! getting one in scope means a plan is already open. That is a
+//! compile-time property, not something a test needs to re-check by
+//! grepping call sites.
 
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
