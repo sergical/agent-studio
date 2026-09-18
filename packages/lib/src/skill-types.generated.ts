@@ -164,6 +164,12 @@ export interface SkillSnapshot {
    * prefixed by a display of the root it is about.
    */
   scan_observations: string[];
+  /**
+   * Roots this run could not read - the scope `rebuild_snapshot_now` folds
+   * a partial scan's carried-over deployments against. Not otherwise read
+   * by the frontend.
+   */
+  unread_roots: string[];
 }
 /**
  * Installed skill with parsed data
