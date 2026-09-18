@@ -687,7 +687,7 @@ pub fn set_harness_enabled_with(
                 )
                 .map_err(|e| e.to_string())
             } else {
-                let leases = skill_studio_host::FileLease::new(config_home.join(".leases"));
+                let leases = skill_studio_host::FileLease::new(data_root.join("leases"));
                 skill_studio_core::opencode_config::set_skill_denied(
                     &leases,
                     &real_fs,
@@ -1513,7 +1513,7 @@ mod tests {
             clock: std::sync::Arc::new(skill_studio_core::testing::FakeClock::at(0)),
             ids: std::sync::Arc::new(skill_studio_core::testing::FakeIds::default()),
             leases: std::sync::Arc::new(skill_studio_host::FileLease::new(
-                config_home.join(".leases"),
+                data_root.join("leases"),
             )),
             history: std::sync::Arc::new(skill_studio_core::testing::NoHistory),
             sink: std::sync::Arc::new(skill_studio_core::testing::RecordingSink::default()),
@@ -1546,6 +1546,14 @@ mod tests {
         assert!(
             err.contains("holds the lease") || err.contains("busy"),
             "error {err} doesn't look like a lease refusal"
+        );
+        // The fallback lease used to root itself at `config_home/.leases`,
+        // leaving a stray lock directory there on every OpenCode toggle.
+        // It now shares `data_root/leases` with every other write, so
+        // `config_home` itself must stay untouched by leasing.
+        assert!(
+            !config_home.join(".leases").exists(),
+            "a .leases directory was created under config_home; the fallback lease still isn't rooted at the shared data_root"
         );
         drop(other_guard);
     }
