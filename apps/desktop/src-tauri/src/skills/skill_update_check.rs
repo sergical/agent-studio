@@ -655,9 +655,10 @@ fn check_candidate(
         }
         CandidateKind::SkillsSh { skill_folder_hash } => {
             match tree_shas_cached(lookups.tree, lookups.tree_cache, &candidate.repo) {
-                Ok(shas) => match shas.get(&candidate.path) {
-                    Some(sha) => (Some(skill_folder_hash.clone()), Some(sha.clone()), None),
-                    None => {
+                Ok(shas) => {
+                    if let Some(sha) = shas.get(&candidate.path) {
+                        (Some(skill_folder_hash.clone()), Some(sha.clone()), None)
+                    } else {
                         // The tree call itself succeeded, so a missing path
                         // isn't a lookup failure - it means the folder this
                         // skill was installed from is gone from the repo's
@@ -675,7 +676,7 @@ fn check_candidate(
                         );
                         (Some(skill_folder_hash.clone()), latest_commit, None)
                     }
-                },
+                }
                 Err(e) if is_not_logged_in(&e) => {
                     stop.store(true, Ordering::SeqCst);
                     *not_logged_in_message
