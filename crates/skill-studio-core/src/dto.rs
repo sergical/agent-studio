@@ -258,6 +258,13 @@ pub struct Inventory {
     pub completeness: Completeness,
     /// Notes about skipped roots and other facts.
     pub observations: Vec<Observation>,
+    /// Roots this run could not read at all (a budget overrun before the
+    /// root was reached, or a `read_dir` error on the root itself) - the set
+    /// a caller merging this result into a previous one must scope a
+    /// carried-over deployment to. Does not include a root that was read but
+    /// had one unreadable skill inside it.
+    #[serde(default)]
+    pub unread_roots: Vec<PathBuf>,
     /// Phase timings.
     pub timings: Vec<Timing>,
 }

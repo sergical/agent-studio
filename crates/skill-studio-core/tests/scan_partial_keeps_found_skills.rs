@@ -78,7 +78,7 @@ fn a_scan_error_sets_scan_partial_and_scan_observations_without_dropping_a_singl
 
     let failing_root = home.join(CLAUDE_ROOT_RELATIVE).canonicalize().unwrap();
     let failing_fs = Arc::new(FailingFs::wrap(Arc::new(RealFs::new())));
-    failing_fs.fail_read_dir_for(failing_root);
+    failing_fs.fail_read_dir_for(failing_root.clone());
 
     let rt = runtime_with(&home, failing_fs);
     let inventory = ops::scan(&rt, &ctx(), &ScanRequest::default()).expect("scan must not error");
@@ -95,6 +95,11 @@ fn a_scan_error_sets_scan_partial_and_scan_observations_without_dropping_a_singl
             .any(|o| o.message.contains("could not read root")),
         "expected an observation naming the unreadable root, got {:#?}",
         inventory.observations
+    );
+    assert_eq!(
+        inventory.unread_roots,
+        vec![failing_root.clone()],
+        "unread_roots must name the root a caller should scope a carried-over merge to"
     );
 
     let names: Vec<&str> = inventory.skills.iter().map(|s| s.name.0.as_str()).collect();

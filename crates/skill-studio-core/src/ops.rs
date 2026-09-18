@@ -359,6 +359,7 @@ pub(crate) fn scan_inner(
     let mut accum = ScanAccum {
         skills: BTreeMap::new(),
         observations: Vec::new(),
+        unread_roots: Vec::new(),
         completeness: Completeness::Complete,
         // Deployment id -> canonical directory, filled in by
         // `process_entries` and consumed by
@@ -415,6 +416,7 @@ pub(crate) fn scan_inner(
     let ScanAccum {
         mut skills,
         observations,
+        unread_roots,
         completeness,
         resolved_paths,
         content_cache: _,
@@ -483,6 +485,7 @@ pub(crate) fn scan_inner(
             .collect(),
         completeness,
         observations,
+        unread_roots,
         timings,
     })
 }
@@ -525,6 +528,8 @@ impl ScanTimings {
 struct ScanAccum {
     skills: BTreeMap<String, InstalledSkillDto>,
     observations: Vec<Observation>,
+    /// Root paths this run could not read at all - see [`Inventory::unread_roots`].
+    unread_roots: Vec<PathBuf>,
     completeness: Completeness,
     /// Deployment id -> canonical directory, filled in by `process_entries`
     /// and consumed by `propagate_verified_linked_owners` once every root
@@ -566,6 +571,7 @@ fn scan_one_target(
             root: RootRef::new(target.scope.clone(), target.kind.clone()).ok(),
             message: "read budget exceeded before this root could be scanned".to_string(),
         });
+        accum.unread_roots.push(target.path.clone());
         return Ok(());
     }
 
@@ -615,6 +621,7 @@ fn scan_one_target(
                     root: RootRef::new(target.scope.clone(), target.kind.clone()).ok(),
                     message: format!("could not read root: {e}"),
                 });
+                accum.unread_roots.push(target.path.clone());
             }
         }
     }
@@ -694,6 +701,7 @@ fn scan_one_plugin_target(
             .ok(),
             message: "read budget exceeded before this root could be scanned".to_string(),
         });
+        accum.unread_roots.push(target.path.clone());
         return Ok(());
     }
     // Same existence pre-check as `scan_one_target`: most plugin cache
@@ -5193,6 +5201,7 @@ mod tests {
             projects: vec![],
             completeness: Completeness::Partial,
             observations: vec![],
+            unread_roots: vec![],
             timings: vec![],
         };
         let env = ResultEnvelope::from_result(
@@ -5223,6 +5232,7 @@ mod tests {
                 projects: vec![],
                 completeness: Completeness::Complete,
                 observations: vec![],
+                unread_roots: vec![],
                 timings: vec![],
             },
             issues: vec![issue.clone()],

@@ -29,6 +29,14 @@
         "$ref": "#/$defs/Observation"
       }
     },
+    "unread_roots": {
+      "description": "Roots this run could not read at all (a budget overrun before the\nroot was reached, or a `read_dir` error on the root itself) - the set\na caller merging this result into a previous one must scope a\ncarried-over deployment to. Does not include a root that was read but\nhad one unreadable skill inside it.",
+      "type": "array",
+      "items": {
+        "type": "string"
+      },
+      "default": []
+    },
     "timings": {
       "description": "Phase timings.",
       "type": "array",
