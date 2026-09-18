@@ -179,6 +179,10 @@ enum Command {
         /// Sets the switch to enabled; pass `--enabled=false` to disable.
         #[arg(long, default_value_t = true)]
         enabled: bool,
+        /// Project the targeted row is scoped to; omit for the global row.
+        /// Only Claude Code's switch (a per-scope symlink slot) reads this.
+        #[arg(long)]
+        project_path: Option<PathBuf>,
         #[arg(long)]
         json: bool,
     },
@@ -269,8 +273,9 @@ fn main() -> ExitCode {
             skill,
             harness,
             enabled,
+            project_path,
             json,
-        } => run_set_harness_enabled(scope, skill, harness, enabled, json, time),
+        } => run_set_harness_enabled(scope, skill, harness, enabled, project_path, json, time),
         Command::Schema { out } => output::write_schemas(out),
         Command::Health { timing_log, json } => run_health(timing_log, json),
         Command::Watch { scope, since, json } => run_watch(scope, since, json, time),
@@ -737,6 +742,7 @@ fn run_set_harness_enabled(
     skill: String,
     harness: String,
     enabled: bool,
+    project_path: Option<PathBuf>,
     json: bool,
     time: bool,
 ) -> ExitCode {
@@ -771,6 +777,7 @@ fn run_set_harness_enabled(
         skill: SkillName(skill),
         harness,
         enabled,
+        project_path,
     };
     let result = ops::set_harness_enabled(&rt, &ctx, &req);
     let envelope =

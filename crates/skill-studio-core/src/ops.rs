@@ -4450,9 +4450,17 @@ pub fn set_harness_enabled(
     };
 
     let (toggled, total) = match req.harness.as_str() {
-        AgentId::CLAUDE_CODE => {
-            set_claude_code_switch(rt, &mut session, fs, &home, &skill, &id, kind, req.enabled)?
-        }
+        AgentId::CLAUDE_CODE => set_claude_code_switch(
+            rt,
+            &mut session,
+            fs,
+            &home,
+            req.project_path.as_deref(),
+            &skill,
+            &id,
+            kind,
+            req.enabled,
+        )?,
         AgentId::CODEX => {
             set_codex_switch(rt, &mut session, fs, &home, &skill, &id, kind, req.enabled)?
         }
@@ -4515,25 +4523,35 @@ fn ensure_dir_all(
 }
 
 /// Removes or recreates Claude Code's per-skill link under
-/// `<home>/.claude/skills/<name>`. One step, so `toggled`/`total` are always
-/// `1`/`1` on success. Idempotent: if the link is already in the requested
-/// state, the journal row still records a usable inverse but no filesystem
-/// call runs.
+/// `<project>/.claude/skills/<name>` for a project-scoped row, or
+/// `<home>/.claude/skills/<name>` for a global one. One step, so
+/// `toggled`/`total` are always `1`/`1` on success. Idempotent: if the link
+/// is already in the requested state, the journal row still records a usable
+/// inverse but no filesystem call runs.
 #[allow(clippy::too_many_arguments)]
 fn set_claude_code_switch(
     rt: &Runtime,
     session: &mut crate::ports::MutationSession,
     fs: &dyn ScopeFs,
     home: &Path,
+    project_path: Option<&Path>,
     skill: &InstalledSkillDto,
     id: &EventId,
     kind: crate::events::EventKind,
     enabled: bool,
 ) -> Result<(u32, u32), CoreError> {
+    let target_scope = match project_path {
+        Some(project) => RootScope::Project(ProjectRef(project.to_path_buf())),
+        None => RootScope::Global,
+    };
     let canonical_dir = skill
         .deployments
         .iter()
-        .find(|d| d.root.kind == RootKind::Universal && d.backing == BackingRelationship::Canonical)
+        .find(|d| {
+            d.root.kind == RootKind::Universal
+                && d.backing == BackingRelationship::Canonical
+                && d.root.scope == target_scope
+        })
         .map(|d| d.path.clone())
         .ok_or_else(|| {
             CoreError::new(
@@ -4541,7 +4559,10 @@ fn set_claude_code_switch(
                 "no universal deployment to link Claude Code to",
             )
         })?;
-    let claude_skills_dir = home.join(".claude/skills");
+    let claude_skills_dir = match project_path {
+        Some(project) => project.join(".claude/skills"),
+        None => home.join(".claude/skills"),
+    };
     let link_path = claude_skills_dir.join(&skill.name.0);
 
     // `~/.claude/skills` itself can be a whole-directory symlink into the
@@ -4591,8 +4612,8 @@ fn set_claude_code_switch(
         kind,
         skill: skill.name.clone(),
         harness: Some(AgentId::from(AgentId::CLAUDE_CODE)),
-        scope: Some("global".to_string()),
-        project_path: None,
+        scope: Some(if project_path.is_some() { "project" } else { "global" }.to_string()),
+        project_path: project_path.map(Path::to_path_buf),
         payload: serde_json::json!({ "skill": skill.name.0, "harness": AgentId::CLAUDE_CODE }),
         inverse: Some(inverse),
         backup_dir: None,

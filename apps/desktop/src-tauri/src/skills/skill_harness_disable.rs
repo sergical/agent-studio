@@ -742,6 +742,7 @@ pub async fn set_harness_enabled(
                 skill: SkillName(parsed.name),
                 harness,
                 enabled,
+                project_path: parsed.project_path.map(std::path::PathBuf::from),
             },
         );
         let envelope =

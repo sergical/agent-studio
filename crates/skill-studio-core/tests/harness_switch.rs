@@ -94,6 +94,7 @@ fn each_of_the_four_harness_switch_tests_passes_against_its_fixture_home_or_name
                 skill: SkillName("gamma".into()),
                 harness: AgentId::from(AgentId::CLAUDE_CODE),
                 enabled: false,
+                project_path: None,
             },
         )
         .unwrap();
@@ -110,6 +111,7 @@ fn each_of_the_four_harness_switch_tests_passes_against_its_fixture_home_or_name
                 skill: SkillName("gamma".into()),
                 harness: AgentId::from(AgentId::CLAUDE_CODE),
                 enabled: true,
+                project_path: None,
             },
         )
         .unwrap();
@@ -134,6 +136,7 @@ fn each_of_the_four_harness_switch_tests_passes_against_its_fixture_home_or_name
                 skill: SkillName("gamma".into()),
                 harness: AgentId::from(AgentId::CODEX),
                 enabled: false,
+                project_path: None,
             },
         )
         .unwrap();
@@ -162,6 +165,7 @@ fn each_of_the_four_harness_switch_tests_passes_against_its_fixture_home_or_name
                 skill: SkillName("gamma".into()),
                 harness: AgentId::from(AgentId::OPEN_CODE),
                 enabled: false,
+                project_path: None,
             },
         )
         .unwrap();
@@ -195,6 +199,7 @@ fn each_of_the_four_harness_switch_tests_passes_against_its_fixture_home_or_name
                 skill: SkillName("gamma".into()),
                 harness: AgentId::from(AgentId::PI),
                 enabled: false,
+                project_path: None,
             },
         )
         .unwrap();
@@ -231,6 +236,7 @@ fn set_harness_enabled_writes_a_journal_row_before_the_first_path_toggles_or_nam
             skill: SkillName("gamma".into()),
             harness: AgentId::from(AgentId::PI),
             enabled: false,
+            project_path: None,
         },
     )
     .unwrap_err();
@@ -282,6 +288,7 @@ fn a_crash_mid_codex_loop_reports_n_of_m_paths_toggled_instead_of_failing_silent
             skill: SkillName("epsilon".into()),
             harness: AgentId::from(AgentId::CODEX),
             enabled: false,
+            project_path: None,
         },
     )
     .unwrap_err();
@@ -330,6 +337,7 @@ fn set_harness_enabled_accepts_opencode_and_open_code_spellings_or_names_the_rej
                 skill: SkillName("gamma".into()),
                 harness,
                 enabled,
+                project_path: None,
             },
         )
         .unwrap_or_else(|e| panic!("{spelling} should toggle OpenCode: {}", e.message));
@@ -379,6 +387,7 @@ fn claude_code_undo_of_undo_removes_the_recreated_link_or_names_the_stale_invers
             skill: SkillName("gamma".into()),
             harness: AgentId::from(AgentId::CLAUDE_CODE),
             enabled: false,
+            project_path: None,
         },
     )
     .unwrap();
@@ -476,6 +485,7 @@ fn claude_code_enable_creates_the_skills_dir_on_a_fresh_home_or_names_the_confin
             skill: SkillName("gamma".into()),
             harness: AgentId::from(AgentId::CLAUDE_CODE),
             enabled: true,
+            project_path: None,
         },
     )
     .unwrap_or_else(|e| panic!("enable on a fresh home should succeed: {}", e.message));
@@ -484,6 +494,58 @@ fn claude_code_enable_creates_the_skills_dir_on_a_fresh_home_or_names_the_confin
         std::fs::symlink_metadata(&link).is_ok(),
         "enable should have created {}",
         link.display()
+    );
+
+    std::fs::remove_dir_all(&home).ok();
+}
+
+/// project_scoped_claude_code_disable_removes_the_project_link_or_names_the_global_link_it_touched_instead:
+/// `gamma` is installed both globally and inside one project, each with its
+/// own Claude Code link. A disable scoped to the project must remove only
+/// `<project>/.claude/skills/gamma`, leaving the unrelated global link at
+/// `<home>/.claude/skills/gamma` untouched - the opposite of what the
+/// unscoped code did before, which always resolved the home slot.
+#[test]
+fn project_scoped_claude_code_disable_removes_the_project_link_or_names_the_global_link_it_touched_instead(
+) {
+    let home = unique_temp_dir("claude_project_scope");
+    install_universal_skill(&home, "gamma");
+    install_claude_link(&home, "gamma");
+    let project = home.join("proj");
+    install_project_universal_skill(&project, "gamma");
+    let project_claude_skills = project.join(CLAUDE_ROOT_RELATIVE);
+    std::fs::create_dir_all(&project_claude_skills).unwrap();
+    #[cfg(unix)]
+    std::os::unix::fs::symlink(
+        project.join(UNIVERSAL_ROOT_RELATIVE).join("gamma"),
+        project_claude_skills.join("gamma"),
+    )
+    .unwrap();
+    let rt = runtime_with(&home, vec![project.clone()], Arc::new(RealFs::new()));
+    let global_link = home.join(CLAUDE_ROOT_RELATIVE).join("gamma");
+    let project_link = project_claude_skills.join("gamma");
+
+    ops::set_harness_enabled(
+        &rt,
+        &ctx(),
+        &SetHarnessEnabledRequest {
+            skill: SkillName("gamma".into()),
+            harness: AgentId::from(AgentId::CLAUDE_CODE),
+            enabled: false,
+            project_path: Some(project.clone()),
+        },
+    )
+    .unwrap();
+
+    assert!(
+        std::fs::symlink_metadata(&project_link).is_err(),
+        "project-scoped disable should remove {}",
+        project_link.display()
+    );
+    assert!(
+        std::fs::symlink_metadata(&global_link).is_ok(),
+        "project-scoped disable must leave the global link at {} untouched, not names the wrong global slot it also removed",
+        global_link.display()
     );
 
     std::fs::remove_dir_all(&home).ok();
@@ -509,6 +571,7 @@ fn opencode_toggle_refuses_a_skill_name_installed_in_two_locations_or_names_the_
             skill: SkillName("gamma".into()),
             harness: AgentId::from(AgentId::OPEN_CODE),
             enabled: false,
+            project_path: None,
         },
     )
     .unwrap_err();
@@ -552,6 +615,7 @@ fn claude_code_toggle_marks_the_event_failed_when_the_link_write_fails_or_names_
             skill: SkillName("gamma".into()),
             harness: AgentId::from(AgentId::CLAUDE_CODE),
             enabled: true,
+            project_path: None,
         },
     )
     .unwrap_err();
@@ -595,6 +659,7 @@ fn claude_code_disable_refuses_a_real_directory_or_whole_dir_link_or_names_the_r
                 skill: SkillName("gamma".into()),
                 harness: AgentId::from(AgentId::CLAUDE_CODE),
                 enabled: false,
+                project_path: None,
             },
         )
         .unwrap_err();
@@ -631,6 +696,7 @@ fn claude_code_disable_refuses_a_real_directory_or_whole_dir_link_or_names_the_r
                 skill: SkillName("gamma".into()),
                 harness: AgentId::from(AgentId::CLAUDE_CODE),
                 enabled: false,
+                project_path: None,
             },
         )
         .unwrap_err();
@@ -675,6 +741,7 @@ fn undo_of_a_failed_recreate_restore_is_refused_or_names_the_live_link_it_would_
             skill: SkillName("gamma".into()),
             harness: AgentId::from(AgentId::CLAUDE_CODE),
             enabled: false,
+            project_path: None,
         },
     )
     .unwrap();

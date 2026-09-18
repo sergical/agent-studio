@@ -555,6 +555,13 @@ pub struct SetHarnessEnabledRequest {
     pub harness: AgentId,
     /// `true` enables the skill for this harness; `false` disables it.
     pub enabled: bool,
+    /// The project the targeted row is scoped to; `None` for the global row.
+    /// Claude Code's switch is a per-scope symlink slot
+    /// (`<project>/.claude/skills/<name>` vs `<home>/.claude/skills/<name>`),
+    /// so this picks which slot a project-scoped skill's toggle touches.
+    /// Every other harness's switch is keyed by name alone and ignores it.
+    #[serde(default)]
+    pub project_path: Option<PathBuf>,
 }
 
 /// Result of `set_harness_enabled`.
