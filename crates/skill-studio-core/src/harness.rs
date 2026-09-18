@@ -1324,7 +1324,7 @@ pub fn claude_code_skill_entries(
 }
 
 /// How `~/.claude/skills/<name>` is deployed, per the desktop's
-/// `ClaudeLinkState` (skill_harness_disable.rs:292): a whole-folder link to
+/// `ClaudeLinkState` (`skill_harness_disable.rs:292`): a whole-folder link to
 /// the universal root, a per-skill link, or nothing.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ClaudeLinkState {
@@ -1450,20 +1450,18 @@ pub fn write_claude_skill_overrides(
 ) -> Result<(), crate::error::CoreError> {
     use crate::error::CoreError;
     let path = claude_code_config_dir(home, config_dir_override).join("settings.json");
-    let mut doc = match fs.read_capped(&path, 1024 * 1024) {
+    let mut map = match fs.read_capped(&path, 1024 * 1024) {
         Ok(bytes) => serde_json::from_slice::<serde_json::Value>(&bytes)
-            .unwrap_or_else(|_| serde_json::Value::Object(serde_json::Map::new())),
-        Err(_) => serde_json::Value::Object(serde_json::Map::new()),
+            .ok()
+            .and_then(|v| v.as_object().cloned())
+            .unwrap_or_default(),
+        Err(_) => serde_json::Map::new(),
     };
-    if !doc.is_object() {
-        doc = serde_json::Value::Object(serde_json::Map::new());
-    }
-    doc.as_object_mut()
-        .expect("just normalized to an object")
-        .insert(
-            "skillOverrides".to_string(),
-            serde_json::Value::Object(overrides),
-        );
+    map.insert(
+        "skillOverrides".to_string(),
+        serde_json::Value::Object(overrides),
+    );
+    let doc = serde_json::Value::Object(map);
     let bytes = serde_json::to_vec_pretty(&doc)
         .map_err(|e| CoreError::new(crate::error::ErrorCode::Io, e.to_string()).at(&path))?;
     let scoped = crate::ports::confine(scope, fs, &path)?;
