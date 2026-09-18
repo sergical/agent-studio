@@ -63,7 +63,10 @@ describe("add skill operation phase policy", () => {
     // `CANCELLABLE_PHASES` - once the op has started its one write path
     // there is nothing left a cancel button press could still stop.
     expect(isAddSkillOperationCancellable("queued")).toBe(true);
-    expect(isAddSkillOperationCancellable("validating")).toBe(true);
+    // Review round 2 (B2): `request_cancel` refuses everything past `queued`
+    // (`skill_add_operation.rs`), including `validating` - Cancel goes
+    // disabled the moment the worker starts checking the source, not after.
+    expect(isAddSkillOperationCancellable("validating")).toBe(false);
     expect(isAddSkillOperationCancellable("installing")).toBe(false);
     expect(isAddSkillOperationCancellable("needs-trust")).toBe(false);
     expect(isAddSkillOperationCancellable("completed")).toBe(false);

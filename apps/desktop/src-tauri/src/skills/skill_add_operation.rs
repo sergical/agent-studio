@@ -229,13 +229,42 @@ impl AddSkillOperationState {
         Ok(record.event.clone())
     }
 
-    fn cancel_flag(&self, operation_id: &str) -> Result<Arc<AtomicBool>, String> {
-        let inner = self.lock()?;
-        inner
+    /// Reads `record.cancel` and publishes either `Cancelled` or `Validating`
+    /// in the same lock acquisition (review B2): before this,
+    /// `run_operation_body` read the flag and published `Validating`
+    /// separately, so a `request_cancel` landing between those two steps
+    /// still returned `Ok` (the record was still `Queued`) but was then
+    /// silently ignored - the worker had already read `false` and kept
+    /// going, ending in a completed install. `request_cancel` takes the same
+    /// lock, so whichever of the two calls gets it first is authoritative:
+    /// a cancel that lands first flips the flag before this check runs; a
+    /// check that lands first moves the phase off `Queued`, and
+    /// `request_cancel` then refuses instead of returning a stale `Ok`.
+    fn start_or_cancelled(&self, operation_id: &str) -> Result<AddSkillOperationEvent, String> {
+        let mut inner = self.lock()?;
+        let record = inner
             .records
-            .get(operation_id)
-            .map(|record| Arc::clone(&record.cancel))
-            .ok_or_else(|| format!("Add skill operation {operation_id} was not found"))
+            .get_mut(operation_id)
+            .ok_or_else(|| format!("Add skill operation {operation_id} was not found"))?;
+        if record.event.phase.is_terminal() {
+            return Ok(record.event.clone());
+        }
+        if record.cancel.load(Ordering::SeqCst) {
+            advance_locked(
+                record,
+                AddSkillOperationPhase::Cancelled,
+                "Add skill cancelled",
+                |_| {},
+            );
+        } else {
+            advance_locked(
+                record,
+                AddSkillOperationPhase::Validating,
+                "Checking source",
+                |_| {},
+            );
+        }
+        Ok(record.event.clone())
     }
 
     fn kind(&self, operation_id: &str) -> Result<AddSkillOperationKind, String> {
@@ -436,31 +465,19 @@ fn run_operation_body(
     let Ok(kind) = state.kind(operation_id) else {
         return;
     };
-    let Ok(cancel) = state.cancel_flag(operation_id) else {
+    // Only checked before any work starts - `ops::install` runs to
+    // completion once called (see the follow-up doc on cancellation). The
+    // check and the `Validating` publish below share one lock acquisition
+    // with `request_cancel` (review B2, `start_or_cancelled`'s own doc), so
+    // a `request_cancel` that returns `Ok` can never be followed by this
+    // worker completing an install anyway.
+    let Ok(started) = state.start_or_cancelled(operation_id) else {
         return;
     };
-    // Only checked before any work starts - `ops::install` runs to
-    // completion once called (see the follow-up doc on cancellation).
-    if cancel.load(Ordering::SeqCst) {
-        let _ = publish(
-            app,
-            state,
-            operation_id,
-            AddSkillOperationPhase::Cancelled,
-            "Add skill cancelled",
-            |_| {},
-        );
+    emit_status(app, &started);
+    if started.phase == AddSkillOperationPhase::Cancelled {
         return;
     }
-
-    let _ = publish(
-        app,
-        state,
-        operation_id,
-        AddSkillOperationPhase::Validating,
-        "Checking source",
-        |_| {},
-    );
 
     let rt = match build_runtime() {
         Ok(rt) => rt,
@@ -1300,6 +1317,96 @@ mod tests {
             AddSkillOperationPhase::Validating,
             "a refused cancel must not change the phase"
         );
+    }
+
+    /// `cancel_that_succeeds_before_validating_never_installs_or_names_the_installed_skill`
+    /// (review B2): `request_cancel` and `run_operation_body`'s own
+    /// cancel-check now share one record lock (`start_or_cancelled`), so
+    /// whichever call wins the race to it is authoritative - a
+    /// `request_cancel` that returns `Ok` can never be followed by a
+    /// completed install, and a worker that already claimed `Validating`
+    /// makes `request_cancel` refuse instead of silently losing the write.
+    /// Runs the two calls from real threads released together by a
+    /// `Barrier` (no sleeps), across many iterations so the two orders both
+    /// get a chance to land, and checks the one invariant that must hold no
+    /// matter which side wins: a successful cancel is never followed by the
+    /// skill actually landing on disk.
+    #[test]
+    fn cancel_that_succeeds_before_validating_never_installs_or_names_the_installed_skill() {
+        for iteration in 0..50 {
+            let tmp = tempfile::tempdir().unwrap();
+            let home = tmp.path().join("home");
+            let source_dir = tmp.path().join("source");
+            fs::create_dir_all(&home).unwrap();
+            crate::skills::test_support::write_skill(&source_dir, "race-skill");
+
+            let state = AddSkillOperationState::default();
+            let operation_id = format!("op-race-{iteration}");
+            let request = AddSkillRequest {
+                source: ParsedSkillSource {
+                    kind: ParsedSkillSourceKind::Local,
+                    repo: None,
+                    path: None,
+                    git_ref: None,
+                    skill_name: Some("race-skill".to_string()),
+                    url: None,
+                    local_path: Some(source_dir.to_string_lossy().into_owned()),
+                },
+                method: AddMethod::Copy,
+                destination: SkillDestination::Universal,
+                agents: vec![],
+                disabled_harnesses: vec![],
+                scope: InstallScope::Global,
+                project_path: None,
+                trial: false,
+            };
+            state
+                .begin(
+                    operation_id.clone(),
+                    AddSkillOperationKind::Single(request),
+                    None,
+                )
+                .unwrap();
+
+            let rt = test_runtime(&home);
+            let barrier = Arc::new(Barrier::new(2));
+
+            let canceller = {
+                let state = state.clone();
+                let operation_id = operation_id.clone();
+                let barrier = Arc::clone(&barrier);
+                thread::spawn(move || {
+                    barrier.wait();
+                    state.request_cancel(&operation_id)
+                })
+            };
+            let worker = {
+                let state = state.clone();
+                let operation_id = operation_id.clone();
+                let barrier = Arc::clone(&barrier);
+                thread::spawn(move || {
+                    barrier.wait();
+                    run_operation_body(
+                        None,
+                        &state,
+                        &operation_id,
+                        || Ok(rt),
+                        &NeverFetch,
+                        &NeverLookup,
+                    );
+                })
+            };
+
+            let cancel_result = canceller.join().unwrap();
+            worker.join().unwrap();
+
+            let installed = home.join(".agents/skills/race-skill").exists();
+            assert!(
+                !(cancel_result.is_ok() && installed),
+                "iteration {iteration}: request_cancel returned Ok but the skill was still \
+                 installed"
+            );
+        }
     }
 
     struct CountingFetch {

@@ -13,13 +13,14 @@ const TERMINAL_PHASES = new Set<AddSkillOperationPhase>([
 ]);
 
 // The worker's cancel flag is read once, before any phase past `queued` is
-// even published (`run_operation_body`'s own doc comment) - `fetching`,
-// `installing`, and `finalizing` used to sit here too, but a Cancel click
-// during any of them reached the flag only after it had already stopped
-// being read, so the button did nothing but sit disabled-looking-enabled.
-// `cancel_add_skill_operation` now refuses a record past `queued` (except
-// `needs-trust`, handled separately below) instead of silently no-op'ing.
-const CANCELLABLE_PHASES = new Set<AddSkillOperationPhase>(["queued", "validating"]);
+// even published (`run_operation_body`'s own doc comment) - `validating`,
+// `fetching`, `installing`, and `finalizing` used to sit here too, but a
+// Cancel click during any of them reached the flag only after it had already
+// stopped being read, so the button did nothing but sit
+// disabled-looking-enabled. `cancel_add_skill_operation`'s `request_cancel`
+// refuses a record past `queued` (except `needs-trust`, handled separately
+// below) instead of silently no-op'ing.
+const CANCELLABLE_PHASES = new Set<AddSkillOperationPhase>(["queued"]);
 
 /** True when the operation will not emit another phase. */
 export function isAddSkillOperationTerminal(phase: AddSkillOperationPhase): boolean {
