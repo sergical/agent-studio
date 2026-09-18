@@ -27,7 +27,7 @@ import {
   parkSkill,
   removeSkill,
   repairSkillLink,
-  setDeploymentEnabled,
+  restoreMovedDeployment,
   setHarnessEnabled,
   setPluginEnabled,
   setSkillInvocation,
@@ -41,7 +41,7 @@ import {
   updateSkillOwners,
 } from "../../lib/skill-lifecycle-target";
 import { useAppStore } from "../../store/appStore";
-import { canToggleHarness } from "./skill-location-helpers";
+import { canOfferHarnessSwitch } from "./skill-location-helpers";
 import type { InvocationFile, LocationAction } from "./skill-location-status";
 
 interface UseLocationActionsResult {
@@ -197,12 +197,16 @@ export function useLocationActions(
           setMaterializeRequest(conversion);
           return;
         }
+        // `park` is the off switch only for the Global Universal deployment - never this row's
+        // (see `canOfferHarnessSwitch`). Both the rail and the Locations card disable the
+        // control for any row that fails this check, so the rejection below is a
+        // defense-in-depth backstop, not the normal path.
         runWithErrorToast(enabled ? "Couldn't enable" : "Couldn't disable", () =>
-          deployment.disabled_by === "studio-moved" || !canToggleHarness(deployment)
-            ? setDeploymentEnabled({ deployment_id: deployment.id }, enabled)
-            : readerAgent && readerAgent !== "shared"
+          deployment.disabled_by === "studio-moved"
+            ? restoreMovedDeployment({ deployment_id: deployment.id })
+            : readerAgent && readerAgent !== "shared" && canOfferHarnessSwitch(deployment)
               ? setHarnessEnabled({ deployment_id: deployment.id }, readerAgent, enabled)
-              : Promise.reject(new Error(`${deployment.agent} is not a supported reader`)),
+              : Promise.reject(new Error("This copy has no off switch")),
         );
         return;
       }

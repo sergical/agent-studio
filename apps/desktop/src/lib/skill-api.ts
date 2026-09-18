@@ -630,17 +630,13 @@ export async function setHarnessEnabled(
 }
 
 /**
- * Enable or disable one deployment that has no native per-harness switch, by
- * renaming its directory into (or out of) a sibling `.skill-studio-disabled/`
- * holding directory in the same skills root - the universal fallback for
- * plain directory copies and project-scope symlinks. Refused for shared-root
- * and plugin-provided deployments.
+ * Restore a deployment the old (unit-4.4-removed) move-aside disable left
+ * under `.skill-studio-disabled/` - the scanner still reports those rows as
+ * `disabled_by: "studio-moved"`. Refused for a target that was not moved
+ * aside by Skill Studio.
  */
-export async function setDeploymentEnabled(
-  target: LifecycleTarget,
-  enabled: boolean,
-): Promise<void> {
-  return callCommand("set_deployment_enabled", { target, enabled });
+export async function restoreMovedDeployment(target: LifecycleTarget): Promise<void> {
+  return callCommand("restore_moved_deployment", { target });
 }
 
 /**

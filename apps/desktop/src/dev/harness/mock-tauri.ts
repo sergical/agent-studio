@@ -265,17 +265,6 @@ export function installMockTauri(initial: SkillSnapshot): HarnessControl {
     return name;
   }
 
-  function updateDeployment(
-    skillItem: InstalledSkill,
-    deploymentId: string,
-    transform: (d: Deployment) => Deployment,
-  ): InstalledSkill {
-    return {
-      ...skillItem,
-      deployments: skillItem.deployments.map((d) => (d.id === deploymentId ? transform(d) : d)),
-    };
-  }
-
   function buildAddedSkill(
     request: AddRequestLike,
     name: string,
@@ -340,6 +329,8 @@ export function installMockTauri(initial: SkillSnapshot): HarnessControl {
       switch (command) {
         case "get_skill_snapshot":
           return currentSnapshot;
+        case "get_installed_skills":
+          return currentSnapshot.skills;
         case "request_skill_rescan":
           await publish(currentSnapshot);
           return undefined;
@@ -393,6 +384,23 @@ export function installMockTauri(initial: SkillSnapshot): HarnessControl {
         }
         case "list_project_folders":
           return projectFolders();
+        case "detect_harnesses":
+          return {
+            harnesses: DISCOVERY_HARNESSES.map((id) => ({
+              id,
+              display_name: id,
+              state: discoverySources.get(id) ? "configured" : "not_found",
+              executable: null,
+              version: { value: null, evidence: { source: "mock", confidence: "unknown" } },
+              install_method: { value: null, evidence: { source: "mock", confidence: "unknown" } },
+              configured: discoverySources.get(id) ?? false,
+              used: false,
+            })),
+          };
+        case "get_harnesses_choice":
+          return null;
+        case "save_harnesses_choice":
+          return undefined;
         case "open_skill_path":
         case "restore_trashed_skill":
         case "unfork_skill":
@@ -410,6 +418,10 @@ export function installMockTauri(initial: SkillSnapshot): HarnessControl {
         case "set_preferred_editor":
           editorPreference = payload.appName == null ? null : String(payload.appName);
           return undefined;
+        case "get_error_reporting_enabled":
+          return false;
+        case "set_error_reporting_enabled":
+          return Boolean(payload.enabled);
 
         case "read_installed_skill_md": {
           const path = String(payload.path);
@@ -420,6 +432,25 @@ export function installMockTauri(initial: SkillSnapshot): HarnessControl {
           harnessSkillContent.set(String(payload.path), String(payload.content));
           return undefined;
         }
+
+        case "preview_skill_frontmatter_repair":
+          return {
+            deployment_id: "mock-deployment",
+            path: "/mock/SKILL.md",
+            scope: "global",
+            reason: "Frontmatter is missing the required `name` field.",
+            expected_content_fingerprint: "mock-fingerprint",
+            proposal_id: "mock-proposal",
+            original_content: "---\ndescription: mock\n---\n",
+            proposed_content: "---\nname: mock-skill\ndescription: mock\n---\n",
+            allowed_apply_modes: ["apply-fix"],
+          };
+        case "apply_skill_frontmatter_repair":
+          return undefined;
+        case "fix_skill":
+          return { skill: String(payload.skill ?? ""), applied: [], unrepaired: [], conflicts: [] };
+        case "open_conflict_paths":
+          return undefined;
 
         case "list_skill_events":
           return [];
@@ -438,6 +469,17 @@ export function installMockTauri(initial: SkillSnapshot): HarnessControl {
             skills: [{ name: "frontend-design", path: "frontend-design" }],
             truncated: false,
           };
+        case "install_preferences":
+          return { method: "dotagents", harnesses: ["claude-code", "codex"], saved: true };
+        case "import_skill_pack":
+          return { status: "imported", result: { bundled: [], referenced: [], errors: [] } };
+        case "confirm_skill_pack_trust":
+          return { bundled: [], referenced: [], errors: [] };
+        case "abandon_pack_import_trust":
+          return true;
+        case "set_plugin_enabled":
+        case "uninstall_plugin":
+          return undefined;
         case "search_skills":
         case "get_popular_skills":
           return { has_more: false, skills: [] };
@@ -507,17 +549,17 @@ export function installMockTauri(initial: SkillSnapshot): HarnessControl {
           }));
           return undefined;
         }
-        case "set_deployment_enabled": {
-          const { deployment_id } = z.object({ deployment_id: z.string() }).parse(payload.target);
-          const enabled = payload.enabled === true;
-          const name = skillNameForTarget({ deployment_id });
-          await updateSkill(name, (item) =>
-            updateDeployment(item, deployment_id, (d) => ({
-              ...d,
-              disabled: !enabled,
-              disabled_by: enabled ? null : "studio-moved",
-            })),
-          );
+        case "restore_moved_deployment": {
+          const { deployment_id, owner_id } = z
+            .object({ deployment_id: z.string().nullish(), owner_id: z.string().nullish() })
+            .parse(payload.target);
+          const name = skillNameForTarget({ deployment_id, owner_id });
+          await updateSkill(name, (item) => ({
+            ...item,
+            deployments: item.deployments.map((entry) =>
+              entry.id === deployment_id ? { ...entry, disabled: false, disabled_by: null } : entry,
+            ),
+          }));
           return undefined;
         }
         case "set_skill_invocation": {
