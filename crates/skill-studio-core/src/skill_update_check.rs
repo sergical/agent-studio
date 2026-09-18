@@ -129,7 +129,10 @@ pub fn outdated(
 /// Normalizes a repo slug so two spellings of the same source (a
 /// `github.com/` prefix, a trailing `.git`, or a different case) share one
 /// `tree_cache` entry and one [`SourceTreeLookup`] call, instead of one each.
-fn normalize_repo_key(repo: &str) -> String {
+/// Public so the desktop's own tree cache (`skill_update_check::tree_shas_cached`)
+/// can key off the same normalization until the F2 rewire lands (unit 3.4
+/// follow-up).
+pub fn normalize_repo_key(repo: &str) -> String {
     let lower = repo.to_ascii_lowercase();
     let stripped = lower.strip_prefix("github.com/").unwrap_or(lower.as_str());
     stripped

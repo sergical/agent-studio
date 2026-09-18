@@ -401,17 +401,24 @@ type TreeCache = Mutex<HashMap<String, Arc<OnceLock<Result<HashMap<String, Strin
 /// `gh api` round trip. Two worker threads racing the same uncached repo
 /// still make exactly one call: `OnceLock::get_or_init` blocks the second
 /// caller on the first's initialization instead of both running it.
+///
+/// The cache is keyed by `normalize_repo_key(repo)` (shared with the core
+/// crate's own tree cache) so two spellings of the same source - a
+/// different case, most often - cost one `gh api` call rather than one
+/// each; the lookup itself still receives the caller's original `repo`
+/// spelling, which the GitHub API accepts case-insensitively.
 fn tree_shas_cached(
     tree_lookup: &dyn TreeLookup,
     cache: &TreeCache,
     repo: &str,
 ) -> Result<HashMap<String, String>, String> {
+    let key = skill_studio_core::skill_update_check::normalize_repo_key(repo);
     let cell = {
         let mut guard = cache
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         guard
-            .entry(repo.to_string())
+            .entry(key)
             .or_insert_with(|| Arc::new(OnceLock::new()))
             .clone()
     };
@@ -666,15 +673,15 @@ fn check_candidate(
                         // update" (`shas.get` returning `None` used to look
                         // identical to "already current" to `has_update`)
                         // (`a_skill_folder_missing_from_the_source_tree_reports_unknown_with_the_folder_named_or_names_the_silent_row`).
+                        // `latest_commit` is dropped here rather than reused
+                        // from a same-generation previous row: a stale
+                        // "Update available" next to "not found" would read
+                        // as two contradictory signals for the same row.
                         error = Some(format!(
                             "{} not found in {}'s source tree",
                             candidate.path, candidate.repo
                         ));
-                        let (latest_commit, _) = previous_metadata_if_same_generation(
-                            previous,
-                            Some(skill_folder_hash.as_str()),
-                        );
-                        (Some(skill_folder_hash.clone()), latest_commit, None)
+                        (Some(skill_folder_hash.clone()), None, None)
                     }
                 }
                 Err(e) if is_not_logged_in(&e) => {
@@ -1318,6 +1325,15 @@ resolved_commit = "{commit}"
     /// A skill folder absent from the repo's current tree must not read as
     /// "no update" - `shas.get` returning `None` used to look identical to
     /// an up-to-date compare, silently hiding the row from the user.
+    ///
+    /// A same-generation previous row (its `skillFolderHash` unchanged) must
+    /// not leak its old `latest_commit` into this run either, even when that
+    /// previous `latest_commit` already differed from the hash: pairing a
+    /// stale "Update available" with "not found in ... source tree" reads as
+    /// two contradictory signals for one row.
+    /// A failure here means the missing-folder branch reused
+    /// `previous_metadata_if_same_generation`'s `latest_commit` instead of
+    /// dropping it, so `has_update` stayed true alongside the error.
     #[test]
     fn a_skill_folder_missing_from_the_source_tree_reports_unknown_with_the_folder_named_or_names_the_silent_row(
     ) {
@@ -1332,6 +1348,26 @@ resolved_commit = "{commit}"
             "old-hash",
         );
 
+        let seeded = UpdateCheckStore {
+            version: update_store_version(),
+            checked_at: Some("2026-01-01T00:00:00Z".to_string()),
+            gh_status: GhStatus::Ok,
+            owners: BTreeMap::from([(
+                "owner:v1/global/write-tests".to_string(),
+                SkillUpdateState {
+                    repo: "obra/write-tests".to_string(),
+                    path: "apps/skills/extra/write-tests".to_string(),
+                    installed_commit: Some("old-hash".to_string()),
+                    latest_commit: Some("stale-newer-hash".to_string()),
+                    latest_commit_at: None,
+                    checked_at: "2026-01-01T00:00:00Z".to_string(),
+                    error: None,
+                },
+            )]),
+            legacy_skills: BTreeMap::new(),
+        };
+        write_store(&app_data, &seeded).unwrap();
+
         let tree_lookup = FakeTreeLookup::with_tree(
             "obra/write-tests",
             HashMap::from([("some/other/folder".to_string(), "new-hash".to_string())]),
@@ -1339,6 +1375,7 @@ resolved_commit = "{commit}"
         let store = run_update_check(&home, &app_data, &AlwaysErrorLookup, &tree_lookup);
 
         let state = store.owners.get("owner:v1/global/write-tests").unwrap();
+        assert_eq!(state.latest_commit, None);
         assert!(!has_update(state));
         let error = state.error.as_deref().unwrap_or_default();
         assert!(
