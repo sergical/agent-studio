@@ -695,12 +695,15 @@ fn skill_studio_undo_reverses_the_last_journal_entry_for_every_write_kind_in_thi
 /// install ledger claims. `gamma` is listed in `.agents/.skill-lock.json`,
 /// so `outdated` classifies it as skills.sh-owned and `manual-only` as
 /// untracked.
-fn parkable_live_home() -> PathBuf {
+/// The `TempDir` comes back with the path: hold it for the test's
+/// lifetime and the tree goes away even when an assertion panics.
+fn parkable_live_home() -> (tempfile::TempDir, PathBuf) {
     // Canonical from the start: on macOS a temp dir is reached
     // through the `/var` -> `/private/var` symlink, and a link
     // written under the uncanonical path lies outside the scope the
     // runtime roots at the canonical one.
-    let home = tempfile::tempdir().unwrap().keep().canonicalize().unwrap();
+    let dir = tempfile::tempdir().unwrap();
+    let home = dir.path().canonicalize().unwrap();
     let gamma_dir = home.join(".agents/skills/gamma");
     std::fs::create_dir_all(&gamma_dir).unwrap();
     std::fs::write(
@@ -741,7 +744,7 @@ fn parkable_live_home() -> PathBuf {
     )
     .unwrap();
 
-    home
+    (dir, home)
 }
 
 /// The deployment id `scan` prints for `skill` in the root of `kind`
@@ -773,7 +776,7 @@ fn deployment_id_in_root(home: &Path, skill: &str, kind: &str) -> String {
 /// working CLI surface, so a parked skill can only be brought back by hand.
 #[test]
 fn unpark_puts_a_parked_skill_and_its_link_back_or_names_the_envelope() {
-    let home = parkable_live_home();
+    let (_home_dir, home) = parkable_live_home();
     let park = run(&[
         "park",
         "--home",
@@ -812,8 +815,6 @@ fn unpark_puts_a_parked_skill_and_its_link_back_or_names_the_envelope() {
         home.join(".claude/skills/gamma").symlink_metadata().is_ok(),
         "unpark did not recreate the Claude Code link park removed"
     );
-
-    std::fs::remove_dir_all(&home).ok();
 }
 
 /// Flow: `outdated` over a home holding one skills.sh-owned skill and one
@@ -826,7 +827,7 @@ fn unpark_puts_a_parked_skill_and_its_link_back_or_names_the_envelope() {
 /// that never ran as "nothing to know".
 #[test]
 fn outdated_separates_an_unknown_check_from_an_untracked_skill_or_names_the_currency() {
-    let home = parkable_live_home();
+    let (_home_dir, home) = parkable_live_home();
     let output = Command::new(bin())
         .args(["outdated", "--home", home.to_str().unwrap(), "--json"])
         .env("PATH", "")
@@ -847,8 +848,6 @@ fn outdated_separates_an_unknown_check_from_an_untracked_skill_or_names_the_curr
         json["data"]["manual-only"], "not_tracked",
         "a skill no install method claims has nothing to check: {json:?}"
     );
-
-    std::fs::remove_dir_all(&home).ok();
 }
 
 /// Builds the same `Runtime` `skill-studio --home <home>` would build for

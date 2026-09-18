@@ -550,12 +550,15 @@ async fn watch_and_a_fresh_mcp_scan_agree_after_a_cli_mutation() {
 /// install ledger claims, and a `.skill-lock.json` naming `gamma` as
 /// skills.sh-owned. Matches `apps/cli/tests/envelope.rs::parkable_live_home`
 /// so the two surfaces are driven over the same shape.
-fn live_home() -> PathBuf {
+/// The `TempDir` comes back with the path: hold it for the test's
+/// lifetime and the tree goes away even when an assertion panics.
+fn live_home() -> (tempfile::TempDir, PathBuf) {
     // Canonical from the start: on macOS a temp dir is reached
     // through the `/var` -> `/private/var` symlink, and a link
     // written under the uncanonical path lies outside the scope the
     // runtime roots at the canonical one.
-    let home = tempfile::tempdir().unwrap().keep().canonicalize().unwrap();
+    let dir = tempfile::tempdir().unwrap();
+    let home = dir.path().canonicalize().unwrap();
     let gamma_dir = home.join(".agents/skills/gamma");
     std::fs::create_dir_all(&gamma_dir).unwrap();
     std::fs::write(
@@ -595,7 +598,7 @@ fn live_home() -> PathBuf {
     )
     .unwrap();
 
-    home
+    (dir, home)
 }
 
 /// Calls one tool by name and returns its envelope, the way `call_scan`
@@ -645,7 +648,7 @@ fn deployment_id_in_root(home: &Path, skill: &str, kind: &str) -> String {
 /// agent that parks a skill over MCP has no way to bring it back.
 #[tokio::test]
 async fn the_unpark_tool_puts_a_parked_skill_and_its_link_back_or_names_the_envelope() {
-    let home = live_home();
+    let (_home_dir, home) = live_home();
     let park = run_cli(&[
         "park",
         "--home",
@@ -676,8 +679,6 @@ async fn the_unpark_tool_puts_a_parked_skill_and_its_link_back_or_names_the_enve
         home.join(".claude/skills/gamma").symlink_metadata().is_ok(),
         "unpark did not recreate the Claude Code link park removed: {envelope:?}"
     );
-
-    std::fs::remove_dir_all(&home).ok();
 }
 
 /// Flow: call the MCP `set_harness_enabled` tool twice for `gamma` - off,
@@ -689,7 +690,7 @@ async fn the_unpark_tool_puts_a_parked_skill_and_its_link_back_or_names_the_enve
 /// switch never moved, which is the whole point of the operation.
 #[tokio::test]
 async fn the_set_harness_enabled_tool_moves_the_harness_switch_or_names_the_envelope() {
-    let home = live_home();
+    let (_home_dir, home) = live_home();
     let link_path = home.join(".claude/skills/gamma");
     assert!(link_path.symlink_metadata().is_ok());
 
@@ -727,8 +728,6 @@ async fn the_set_harness_enabled_tool_moves_the_harness_switch_or_names_the_enve
         link_path.symlink_metadata().is_ok(),
         "re-enabling did not put the Claude Code link back: {enabled:?}"
     );
-
-    std::fs::remove_dir_all(&home).ok();
 }
 
 /// Flow: call the MCP `outdated` tool over a live home holding one
@@ -741,7 +740,7 @@ async fn the_set_harness_enabled_tool_moves_the_harness_switch_or_names_the_enve
 #[tokio::test]
 async fn the_outdated_tool_separates_an_unknown_check_from_an_untracked_skill_or_names_the_currency(
 ) {
-    let home = live_home();
+    let (_home_dir, home) = live_home();
 
     let (client, _) = connect(&[("SKILL_STUDIO_HOME", home.to_str().unwrap()), ("PATH", "")]).await;
     let envelope = call_tool(&client, "outdated", serde_json::json!({})).await;
@@ -757,8 +756,6 @@ async fn the_outdated_tool_separates_an_unknown_check_from_an_untracked_skill_or
         envelope["data"]["manual-only"], "not_tracked",
         "a skill no install method claims has nothing to check: {envelope:?}"
     );
-
-    std::fs::remove_dir_all(&home).ok();
 }
 
 /// An agent calls a tool with whatever the tool's schema says is required and
