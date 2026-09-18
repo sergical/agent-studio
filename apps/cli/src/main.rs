@@ -252,8 +252,12 @@ enum Command {
         /// repeatable `--project` for discovery scoping.
         #[arg(long)]
         project_path: Option<PathBuf>,
-        /// Folder name the skill is installed under; defaults to `source`'s
-        /// final path segment.
+        /// Folder name the skill is installed under. For `copy`, defaults to
+        /// `source`'s final path segment. For `dotagents`/`skills-sh`,
+        /// required: it is the skill slug the repo publishes, which the CLI
+        /// this build shells out to always writes under - a derived name
+        /// can name the wrong folder for a multi-skill or differently named
+        /// repo.
         #[arg(long)]
         name: Option<String>,
         /// Confirms the trust prompt for an untrusted dotagents source.
@@ -428,7 +432,20 @@ fn build_runtime_write<T: ops::Outcome + serde::Serialize>(
     operation: Operation,
     json: bool,
 ) -> Result<Runtime, ExitCode> {
-    let (runtime_scope, lease_root) = scope.resolve();
+    build_runtime_write_with_project::<T>(scope, operation, json, None)
+}
+
+/// Like [`build_runtime_write`], but folds `extra_project` into the scope
+/// before it resolves. Only `add --project-path` needs this: it installs
+/// into a project the scope was never otherwise told about (see
+/// [`crate::scope::ScopeArgs::resolve_with_extra_project`]).
+fn build_runtime_write_with_project<T: ops::Outcome + serde::Serialize>(
+    scope: &ScopeArgs,
+    operation: Operation,
+    json: bool,
+    extra_project: Option<&std::path::Path>,
+) -> Result<Runtime, ExitCode> {
+    let (runtime_scope, lease_root) = scope.resolve_with_extra_project(extra_project);
     let catalog = Arc::new(HarnessCatalog::builtin());
     let db_path = runtime_scope.history_root.join("events.sqlite3");
     let mut ports = skill_studio_host::default_ports_with_history(lease_root, catalog, db_path);
@@ -760,10 +777,14 @@ fn read_skill_files(dir: &std::path::Path) -> std::io::Result<Vec<InstallFile>> 
         for entry in std::fs::read_dir(dir)? {
             let entry = entry?;
             let path = entry.path();
-            let file_type = entry.file_type()?;
-            if file_type.is_dir() {
+            // `DirEntry::file_type` is `lstat`-based and reports a symlink as
+            // neither a file nor a directory, so a symlinked file would
+            // silently drop out of the copy. `std::fs::metadata` follows the
+            // link and reports what it points at.
+            let metadata = std::fs::metadata(&path)?;
+            if metadata.is_dir() {
                 walk(root, &path, out)?;
-            } else if file_type.is_file() {
+            } else if metadata.is_file() {
                 let contents = std::fs::read(&path)?;
                 let relative_path = path.strip_prefix(root).unwrap_or(&path).to_path_buf();
                 out.push(InstallFile {
@@ -779,19 +800,65 @@ fn read_skill_files(dir: &std::path::Path) -> std::io::Result<Vec<InstallFile>> 
     Ok(out)
 }
 
+/// Parses one `--harness` value, rejecting anything `catalog` does not
+/// recognize. `AgentId::parse` alone only checks the kebab-case shape, so a
+/// well-formed but unknown id (a typo, or a harness this build never
+/// shipped) would otherwise reach `ops::install` and fail there with a less
+/// specific error.
+fn parse_known_harness(
+    raw: &str,
+    catalog: &HarnessCatalog,
+) -> Result<AgentId, skill_studio_core::CoreError> {
+    let id = AgentId::parse(raw)?;
+    if catalog.get(&id).is_some() {
+        Ok(id)
+    } else {
+        let accepted = catalog
+            .facts
+            .iter()
+            .map(|f| f.id.as_str())
+            .collect::<Vec<_>>()
+            .join(", ");
+        Err(skill_studio_core::CoreError::new(
+            skill_studio_core::ErrorCode::InvalidRequest,
+            format!("`{raw}` is not a known harness; accepted values: {accepted}"),
+        ))
+    }
+}
+
 /// Installs one skill via `ops::install`, by `Copy`, `Dotagents`, or
 /// `SkillsSh`. `NeedsTrust` is printed/returned as a non-error outcome, not
 /// an exit failure - the caller retries with `--trust` once it confirms.
 fn run_add(scope: &ScopeArgs, args: AddArgs, json: bool, time: bool) -> ExitCode {
-    let rt = match build_runtime_write::<skill_studio_core::dto::InstallOutcome>(
+    let rt = match build_runtime_write_with_project::<skill_studio_core::dto::InstallOutcome>(
         scope,
         Operation::Install,
         json,
+        args.project.as_deref(),
     ) {
         Ok(rt) => rt,
         Err(code) => return code,
     };
     let ctx = OpContext::uncancellable(CorrelationId(ulid::Ulid::new().to_string()));
+    let method: InstallMethod = args.method.into();
+    // `dotagents`/`skills-sh` shell out to `npx skills add`, which always
+    // installs under the repo's own skill slug; a derived `--name` (the
+    // repo's last path segment) names the wrong folder for a multi-skill or
+    // differently named repo, so the CLI requires the caller to say the
+    // slug. `copy` has no such mismatch: its name is the folder it copies.
+    if args.name.is_none() && !matches!(method, InstallMethod::Copy) {
+        let err = skill_studio_core::CoreError::new(
+            skill_studio_core::ErrorCode::InvalidRequest,
+            "--name is required for --method dotagents or skills-sh: it is the skill slug the repo publishes",
+        );
+        let envelope = ResultEnvelope::<skill_studio_core::dto::InstallOutcome>::from_result(
+            Operation::Install,
+            &rt.scope,
+            &ctx,
+            Err(err),
+        );
+        return finish(&envelope, json, time, output::print_install_outcome_table);
+    }
     let name = args.name.clone().unwrap_or_else(|| {
         std::path::Path::new(&args.source)
             .file_name()
@@ -800,7 +867,7 @@ fn run_add(scope: &ScopeArgs, args: AddArgs, json: bool, time: bool) -> ExitCode
     let harnesses = match args
         .harnesses
         .iter()
-        .map(|h| AgentId::parse(h))
+        .map(|h| parse_known_harness(h, &rt.ports.catalog))
         .collect::<Result<Vec<_>, _>>()
     {
         Ok(harnesses) => harnesses,
@@ -814,7 +881,6 @@ fn run_add(scope: &ScopeArgs, args: AddArgs, json: bool, time: bool) -> ExitCode
             return finish(&envelope, json, time, output::print_install_outcome_table);
         }
     };
-    let method: InstallMethod = args.method.into();
     let files = if matches!(method, InstallMethod::Copy) {
         match read_skill_files(std::path::Path::new(&args.source)) {
             Ok(files) => files,

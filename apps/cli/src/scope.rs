@@ -2,7 +2,7 @@
 //! `RuntimeScope` and a lease root. The core never reads `HOME` or calls
 //! `dirs`; this module is where that happens.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use clap::Args;
 use skill_studio_core::scope::ProjectSelection;
@@ -44,11 +44,30 @@ impl ScopeArgs {
     /// `data_root()` (`$XDG_DATA_HOME/skill-studio` or
     /// `~/.local/share/skill-studio`).
     pub fn resolve(&self) -> (RuntimeScope, PathBuf) {
+        self.resolve_with_extra_project(None)
+    }
+
+    /// Like [`Self::resolve`], but folds `extra_project` into the scope's
+    /// explicit project list even when `--project` was never given.
+    /// `add --project-path` installs into a project the scope has not
+    /// otherwise been told about; without this, the runtime's `ScopeFs`
+    /// rejects the write as outside the scope ("path lies outside the
+    /// scope") because `scope.projects` never named it.
+    pub fn resolve_with_extra_project(
+        &self,
+        extra_project: Option<&Path>,
+    ) -> (RuntimeScope, PathBuf) {
+        let projects: Vec<PathBuf> = self
+            .projects
+            .iter()
+            .cloned()
+            .chain(extra_project.map(Path::to_path_buf))
+            .collect();
         let (mut scope, lease_root) = if let Some(fixture) = &self.fixture {
             let mut scope = RuntimeScope::fixture(fixture);
-            if !self.projects.is_empty() {
+            if !projects.is_empty() {
                 scope.projects = ProjectSelection::Explicit {
-                    paths: self.projects.clone(),
+                    paths: projects.clone(),
                 };
             }
             scope.opencode_config_root =
@@ -61,9 +80,9 @@ impl ScopeArgs {
             let codex_home = skill_studio_host::codex_home(home);
             let mut scope =
                 RuntimeScope::live(home.clone(), history_root).with_codex_home(codex_home);
-            if !self.projects.is_empty() {
+            if !projects.is_empty() {
                 scope.projects = ProjectSelection::Explicit {
-                    paths: self.projects.clone(),
+                    paths: projects.clone(),
                 };
             }
             scope.opencode_config_root = Some(skill_studio_host::opencode_config_dir_under(home));
@@ -76,9 +95,9 @@ impl ScopeArgs {
             let codex_home = skill_studio_host::codex_home(&home);
             let mut scope =
                 RuntimeScope::live(home.clone(), history_root).with_codex_home(codex_home);
-            if !self.projects.is_empty() {
+            if !projects.is_empty() {
                 scope.projects = ProjectSelection::Explicit {
-                    paths: self.projects.clone(),
+                    paths: projects.clone(),
                 };
             }
             scope.opencode_config_root = Some(skill_studio_host::opencode_config_dir(&home));
