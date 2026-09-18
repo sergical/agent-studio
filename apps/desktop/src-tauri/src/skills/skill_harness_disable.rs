@@ -1004,6 +1004,19 @@ mod tests {
         prev_opencode_config_dir: Option<std::ffi::OsString>,
     }
 
+    /// Sets `XDG_CONFIG_HOME` to `<home>/.config` and clears
+    /// `OPENCODE_CONFIG_DIR`, without touching the lock or saving the
+    /// previous values. Split out of `OpencodeHomeGuard::new` so a test can
+    /// re-pin the env to `home` after deliberately overwriting it while
+    /// still holding the guard's lock, instead of racing another guarded
+    /// test between the overwrite and the guard's own pin.
+    fn pin_opencode_env(home: &Path) {
+        unsafe {
+            std::env::set_var("XDG_CONFIG_HOME", home.join(".config"));
+            std::env::remove_var("OPENCODE_CONFIG_DIR");
+        }
+    }
+
     impl OpencodeHomeGuard {
         fn new(home: &Path) -> Self {
             static LOCK: std::sync::OnceLock<std::sync::Mutex<()>> = std::sync::OnceLock::new();
@@ -1013,10 +1026,7 @@ mod tests {
                 .unwrap_or_else(|p| p.into_inner());
             let prev_xdg_config_home = std::env::var_os("XDG_CONFIG_HOME");
             let prev_opencode_config_dir = std::env::var_os("OPENCODE_CONFIG_DIR");
-            unsafe {
-                std::env::set_var("XDG_CONFIG_HOME", home.join(".config"));
-                std::env::remove_var("OPENCODE_CONFIG_DIR");
-            }
+            pin_opencode_env(home);
             Self {
                 _lock: lock,
                 prev_xdg_config_home,
@@ -1355,12 +1365,14 @@ mod tests {
         assert!(home.join(".agents/skills/find-bugs/SKILL.md").is_file());
     }
 
-    /// Flow: `XDG_CONFIG_HOME` is already set to an unrelated real directory
+    /// Flow: while `OpencodeHomeGuard` already holds the lock for `home`,
+    /// something overwrites `XDG_CONFIG_HOME` to an unrelated real directory
     /// (simulating GitHub's `ubuntu-latest` runner, which exports
-    /// `XDG_CONFIG_HOME=/home/runner/.config`) before `OpencodeHomeGuard`
-    /// runs.
-    /// Expectation: the guard overrides it, so `opencode_config_dir(home)`
-    /// resolves under the fixture `home`, not the unrelated directory.
+    /// `XDG_CONFIG_HOME=/home/runner/.config`, racing in between another
+    /// guarded test's pin and its read).
+    /// Expectation: re-pinning under the same guard overrides it, so
+    /// `opencode_config_dir(home)` resolves under the fixture `home`, not
+    /// the unrelated directory.
     /// Failure here would mean every OpenCode-writing test in this module
     /// reads and writes that one shared real directory on CI instead of its
     /// own fixture, racing every other such test.
@@ -1372,22 +1384,13 @@ mod tests {
         fs::create_dir_all(&home).unwrap();
         let unrelated = tmp.path().join("unrelated-xdg-config");
 
-        let prev = std::env::var_os("XDG_CONFIG_HOME");
+        let _guard = OpencodeHomeGuard::new(&home);
         unsafe {
             std::env::set_var("XDG_CONFIG_HOME", &unrelated);
         }
+        pin_opencode_env(&home);
 
-        let resolved = {
-            let _guard = OpencodeHomeGuard::new(&home);
-            skill_studio_host::opencode_config_dir(&home)
-        };
-
-        unsafe {
-            match prev {
-                Some(v) => std::env::set_var("XDG_CONFIG_HOME", v),
-                None => std::env::remove_var("XDG_CONFIG_HOME"),
-            }
-        }
+        let resolved = skill_studio_host::opencode_config_dir(&home);
 
         assert_eq!(
             resolved,
