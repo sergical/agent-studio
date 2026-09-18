@@ -1,72 +1,73 @@
 {
   "inventory": {
-    "completeness": "complete",
-    "observations": [],
-    "projects": [],
     "skills": [
       {
+        "name": "ghost",
+        "description": null,
         "deployments": [
           {
-            "backing": "linked_to",
-            "content_fingerprint": null,
-            "content_hash": "",
-            "description_tokens": 0,
-            "destination": "universal",
-            "disabled_by": null,
-            "disabled_readers": [],
-            "file_count": 0,
-            "folder_bytes": 0,
-            "folder_truncated": false,
-            "frontmatter": null,
-            "frontmatter_fields": {},
-            "harness": "claude-code",
-            "has_spec": false,
             "id": "dep:v1/global/claude-code/universal/ghost/-/%24HOME%2F.claude%2Fskills%2Fghost",
-            "in_git_repo": false,
-            "is_symlink": true,
-            "link_target": "$HOME/.claude/skills/../../.agents/skills/missing",
-            "modified_at": "-",
-            "mutability": "read_only",
-            "owner_id": null,
-            "owner_kind": "manual",
-            "path": "$HOME/.claude/skills/ghost",
-            "plugin": null,
-            "resolved_path": null,
             "root": {
-              "kind": {
-                "harness": "claude-code",
-                "kind": "harness"
-              },
               "scope": {
                 "scope": "global"
+              },
+              "kind": {
+                "kind": "harness",
+                "harness": "claude-code"
               }
             },
+            "harness": "claude-code",
+            "path": "$HOME/.claude/skills/ghost",
+            "destination": "universal",
+            "backing": "linked_to",
+            "mutability": "read_only",
+            "link_target": "$HOME/.claude/skills/../../.agents/skills/missing",
             "shared_via_whole_dir_link": false,
-            "skill_md_tokens": 0,
-            "source_kind": "manual",
-            "spec_violations": [],
-            "studio_disabled": false,
+            "is_symlink": true,
+            "resolved_path": null,
+            "symlink_is_broken": true,
             "symlink_error": null,
-            "symlink_is_broken": true
+            "owner_kind": "manual",
+            "owner_id": null,
+            "content_fingerprint": null,
+            "disabled_by": null,
+            "disabled_readers": [],
+            "spec_violations": [],
+            "plugin": null,
+            "frontmatter": null,
+            "frontmatter_fields": {},
+            "has_spec": false,
+            "folder_bytes": 0,
+            "file_count": 0,
+            "skill_md_tokens": 0,
+            "description_tokens": 0,
+            "content_hash": "",
+            "modified_at": "-",
+            "folder_truncated": false,
+            "in_git_repo": false,
+            "studio_disabled": false,
+            "source_kind": "manual"
           }
-        ],
-        "description": null,
-        "name": "ghost"
+        ]
       }
     ],
+    "projects": [],
+    "completeness": "complete",
+    "observations": [],
+    "unread_roots": [],
     "timings": []
   },
   "issues": [
     {
-      "deployment_id": "dep:v1/global/claude-code/universal/ghost/-/%24HOME%2F.claude%2Fskills%2Fghost",
       "kind": "broken_link",
+      "severity": "error",
+      "skill": "ghost",
+      "deployment_id": "dep:v1/global/claude-code/universal/ghost/-/%24HOME%2F.claude%2Fskills%2Fghost",
       "message": "$HOME/.claude/skills/ghost links to a missing target",
       "next_action": {
         "action": "repair_link",
         "deployment_id": "dep:v1/global/claude-code/universal/ghost/-/%24HOME%2F.claude%2Fskills%2Fghost"
-      },
-      "severity": "error",
-      "skill": "ghost"
+      }
     }
   ]
 }

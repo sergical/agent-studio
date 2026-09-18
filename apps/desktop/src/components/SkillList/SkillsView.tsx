@@ -106,7 +106,12 @@ export function SkillsView({ snapshot, onSelectSkill, active }: SkillsViewProps)
         onChange={setSkillListFilter}
         onReset={resetSkillListFilter}
       />
-      {snapshot?.scan_partial && <ScanPartialBanner observations={snapshot.scan_observations} />}
+      {snapshot?.scan_partial && (
+        <ScanPartialBanner
+          observations={snapshot.scan_observations}
+          unreadLocationCount={snapshot.unread_roots.length}
+        />
+      )}
       {showCoverage ? (
         <SkillCoverageMatrix skills={rows} onSelectSkill={onSelectSkill} />
       ) : (

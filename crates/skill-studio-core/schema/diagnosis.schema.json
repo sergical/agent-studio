@@ -50,6 +50,14 @@
             "$ref": "#/$defs/Observation"
           }
         },
+        "unread_roots": {
+          "description": "Every path prefix this run could not read: a whole root (a budget\noverrun before the root was reached, or a `read_dir` error on the\nroot itself), or a single skill directory whose `SKILL.md` was\nunreadable within an otherwise-readable root - the set a caller\nmerging this result into a previous one must scope a carried-over\ndeployment to.",
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "default": []
+        },
         "timings": {
           "description": "Phase timings.",
           "type": "array",

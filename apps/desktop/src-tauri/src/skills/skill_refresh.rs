@@ -87,6 +87,12 @@ pub struct SkillSnapshot {
     /// prefixed by a display of the root it is about.
     #[serde(default)]
     pub scan_observations: Vec<String>,
+    /// Path prefixes this run could not read: whole roots, or single skill
+    /// directories whose SKILL.md was unreadable. `rebuild_snapshot_now`
+    /// folds a partial scan's carried-over deployments against them, and the
+    /// partial-scan banner counts them as locations.
+    #[serde(default)]
+    pub unread_roots: Vec<PathBuf>,
 }
 
 /// One filesystem path the background watcher should track, and whether
@@ -545,7 +551,7 @@ pub fn rebuild_snapshot_now(
     // below, so a rebuild that straddles an hour boundary doesn't record the
     // new hour against cutoffs computed for the old one.
     let now = Utc::now();
-    let (built, report) = build_snapshot(
+    let (mut built, report) = build_snapshot(
         &home,
         &mut invocation_index,
         BuildPaths {
@@ -559,6 +565,17 @@ pub fn rebuild_snapshot_now(
 
     if report.incomplete {
         state.invocations_dirty.store(true, Ordering::SeqCst);
+    }
+
+    if built.scan_partial {
+        let previous = state
+            .snapshot
+            .read()
+            .map_err(|e| format!("snapshot lock poisoned: {e}"))?
+            .clone();
+        if let Some(previous) = previous {
+            built = merge_partial_scan_snapshot(built, &previous);
+        }
     }
 
     let built = publish_skill_snapshot(app, state, built)?;
@@ -577,6 +594,92 @@ fn publish_skill_snapshot(
     app.emit(SNAPSHOT_EVENT, &built)
         .map_err(|e| format!("failed to emit {SNAPSHOT_EVENT}: {e}"))?;
     Ok(built)
+}
+
+/// A partial scan (`built.scan_partial`) keeps whatever `ops::scan` managed
+/// to read this run, but the roots it could not read contribute nothing on
+/// their own - called from `rebuild_snapshot_now`, before the freshly built
+/// snapshot is published, to fold the previous snapshot's skills back in,
+/// scoped to `built.unread_roots`, so a transient failure (a lease held
+/// elsewhere, one unreadable root) never makes the published list shrink for
+/// a root this run never looked at, while a root it did read stays a source
+/// of truth: a skill genuinely removed there disappears.
+///
+/// Deliberately not part of `store_skill_snapshot`: that function also backs
+/// `patch_snapshot_and_emit`, whose `built` is a clone of the current
+/// snapshot with a caller's edit already applied - merging there would let a
+/// stale, pre-edit row from the same clone silently resurrect what the edit
+/// just removed.
+fn merge_partial_scan_snapshot(
+    mut built: SkillSnapshot,
+    previous: &SkillSnapshot,
+) -> SkillSnapshot {
+    built.skills = merge_partial_scan_skills(built.skills, &previous.skills, &built.unread_roots);
+    // A retained row's `last_test` came from a run that never re-read it
+    // this time, so `build_snapshot`'s `skill_names`-keyed lookup has
+    // nothing for it - carry the previous run's entry across the same way
+    // its deployments were carried.
+    for skill in &built.skills {
+        if !built.last_test_by_skill.contains_key(&skill.name) {
+            if let Some(summary) = previous.last_test_by_skill.get(&skill.name) {
+                built
+                    .last_test_by_skill
+                    .insert(skill.name.clone(), summary.clone());
+            }
+        }
+    }
+    built
+}
+
+/// True when `path` sits under one of `unread_roots` (or equals one, though a
+/// root is never itself a skill directory).
+fn under_an_unread_root(path: &Path, unread_roots: &[PathBuf]) -> bool {
+    unread_roots.iter().any(|root| path.starts_with(root))
+}
+
+/// Fold `previous`'s deployments back into `built`, scoped to `unread_roots`:
+/// a previous deployment survives only when its path sits under a root this
+/// run could not read. `built`'s own rows always win for what they found -
+/// a deployment under a root this run *did* read is this run's freshest
+/// truth, dropped or kept exactly as this run found it.
+fn merge_partial_scan_skills(
+    built: Vec<InstalledSkill>,
+    previous: &[InstalledSkill],
+    unread_roots: &[PathBuf],
+) -> Vec<InstalledSkill> {
+    let mut by_name: BTreeMap<String, InstalledSkill> = built
+        .into_iter()
+        .map(|skill| (skill.name.clone(), skill))
+        .collect();
+
+    for previous_skill in previous {
+        let retained: Vec<Deployment> = previous_skill
+            .deployments
+            .iter()
+            .filter(|deployment| under_an_unread_root(Path::new(&deployment.path), unread_roots))
+            .cloned()
+            .collect();
+        if retained.is_empty() {
+            // Either a fresh row already covers this skill on its own (the
+            // usual case: this run re-read every root it deployed to), or
+            // the skill genuinely no longer exists under any root this run
+            // could read - the list converging on a real deletion.
+            continue;
+        }
+        if let Some(fresh) = by_name.get_mut(&previous_skill.name) {
+            let mut seen: BTreeSet<String> =
+                fresh.deployments.iter().map(|d| d.path.clone()).collect();
+            fresh
+                .deployments
+                .extend(retained.into_iter().filter(|d| seen.insert(d.path.clone())));
+        } else {
+            let mut row = previous_skill.clone();
+            row.deployments = retained;
+            by_name.insert(previous_skill.name.clone(), row);
+        }
+    }
+
+    by_name.into_values().collect()
 }
 
 fn store_skill_snapshot(
@@ -1451,13 +1554,23 @@ fn apply_skill_snapshot_overlays(
 /// `default_ports`) means the history store is never touched either.
 ///
 /// A scan failure (a lease held by another instance, an unreadable root)
-/// falls back to an empty list, marked `Partial` with the error as the
-/// single observation - there is no local classifier to fall back to
-/// anymore, so an empty snapshot is the only option.
+/// returns whatever `ops::scan` managed to read before the error, marked
+/// `Partial` with the error as an observation; a total failure (`Runtime`
+/// construction itself erroring) has nothing to fall back to but an empty
+/// list, also marked `Partial`. Either way, `store_skill_snapshot` folds a
+/// `Partial` result into the previously published snapshot rather than
+/// publishing it as-is, so an empty or short list here never overwrites a
+/// good one.
 pub(crate) struct CoreScanResult {
     pub skills: Vec<skill_studio_core::dto::InstalledSkillDto>,
     pub completeness: skill_studio_core::dto::Completeness,
     pub observations: Vec<skill_studio_core::dto::Observation>,
+    /// Roots this run could not read - see `Inventory::unread_roots`. On the
+    /// total-failure branch below (the `Runtime` itself failed to build, so
+    /// `ops::scan` never ran), every root under `home`, a tracked project,
+    /// `CODEX_HOME`, or the `OpenCode` config root counts as unread, since
+    /// nothing was scanned at all.
+    pub unread_roots: Vec<PathBuf>,
 }
 
 pub(crate) fn core_scan_installed_skills(
@@ -1487,7 +1600,7 @@ pub(crate) fn core_scan_installed_skills(
     scope.projects = skill_studio_core::scope::ProjectSelection::Explicit {
         paths: project_paths.to_vec(),
     };
-    scope.opencode_config_root = Some(opencode_config_root_path);
+    scope.opencode_config_root = Some(opencode_config_root_path.clone());
     // The 2s default guards stateless CLI/MCP calls; the desktop refresh
     // runs in the background and must reach every root even on a home with
     // many projects and plugin caches.
@@ -1515,9 +1628,26 @@ pub(crate) fn core_scan_installed_skills(
             skills: inventory.skills,
             completeness: inventory.completeness,
             observations: inventory.observations,
+            unread_roots: inventory.unread_roots,
         },
         Err(e) => {
             eprintln!("skill refresh: core scan failed: {e}");
+            let mut unread_roots = vec![home.to_path_buf()];
+            unread_roots.extend(project_paths.iter().cloned());
+            // The scan itself also reaches `CODEX_HOME` and the OpenCode
+            // config root, both of which can live outside `home` - a
+            // carry-over that stops at `home` would drop every previous
+            // deployment under either when the whole scan errors. A root
+            // already under a listed one is skipped so the banner counts
+            // each unread location once.
+            for extra in [
+                scope.codex_home_or_default(),
+                opencode_config_root_path.clone(),
+            ] {
+                if !unread_roots.iter().any(|root| extra.starts_with(root)) {
+                    unread_roots.push(extra);
+                }
+            }
             CoreScanResult {
                 skills: Vec::new(),
                 completeness: skill_studio_core::dto::Completeness::Partial,
@@ -1525,6 +1655,7 @@ pub(crate) fn core_scan_installed_skills(
                     root: None,
                     message: e.to_string(),
                 }],
+                unread_roots,
             }
         }
     }
@@ -1624,6 +1755,7 @@ pub fn build_snapshot(
         );
     }
     let core_skills = core_result.skills;
+    let unread_roots = core_result.unread_roots;
 
     let lock_fs = skill_studio_host::RealFs::new();
     let lock = lock_file::read_lock_file(&lock_fs, &lock_file::lock_file_path(home))
@@ -1692,6 +1824,7 @@ pub fn build_snapshot(
         ),
         scan_partial,
         scan_observations,
+        unread_roots,
     };
 
     let total_ms = total_start.elapsed().as_millis();
@@ -3188,6 +3321,7 @@ mod tests {
             opencode_config_kind: None,
             scan_partial: false,
             scan_observations: Vec::new(),
+            unread_roots: Vec::new(),
         }
     }
 
@@ -3237,6 +3371,309 @@ mod tests {
 
         assert_eq!(first.revision, 1);
         assert_eq!(second.revision, 2);
+    }
+
+    /// `merge_partial_scan_skills`: a previous skill under a root this run
+    /// couldn't reach, and a fresh skill under a root it could, must both
+    /// survive one merge. Fails if the merge drops "alpha" (the carried-over
+    /// row from the unread root) or "beta" (the row this run genuinely
+    /// found).
+    #[test]
+    fn merge_keeps_the_carried_over_skill_and_the_freshly_found_skill_or_names_the_dropped_row() {
+        let unread_root = PathBuf::from("/roots/unread");
+        let mut good = fixture_snapshot(&unread_root.join("alpha"));
+        good.skills[0].name = "alpha".to_string();
+
+        let mut partial = fixture_snapshot(Path::new("/roots/read/beta"));
+        partial.skills[0].name = "beta".to_string();
+        partial.scan_partial = true;
+        partial.scan_observations = vec!["global claude-code root: could not read root".into()];
+        partial.unread_roots = vec![unread_root];
+        let merged = merge_partial_scan_skills(partial.skills, &good.skills, &partial.unread_roots);
+
+        let names: Vec<&str> = merged.iter().map(|s| s.name.as_str()).collect();
+        assert!(
+            names.contains(&"alpha"),
+            "the last good snapshot's skill, under a root this run couldn't read, must survive a partial rescan: {names:?}"
+        );
+        assert!(
+            names.contains(&"beta"),
+            "a skill this run did find must still publish: {names:?}"
+        );
+    }
+
+    /// N2 fix: `core_scan_installed_skills`'s total-failure branch (the
+    /// `Runtime` itself failed to build) must carry over `CODEX_HOME` too,
+    /// not just `home` and tracked projects - `CODEX_HOME` can live outside
+    /// `home`. Fails if `unread_roots` omits it, which would make the
+    /// merge in `merge_partial_scan_skills` drop every previous deployment
+    /// under it. Uses `test_support::opencode_env_lock` (not a dedicated
+    /// lock) because it must also pin `SKILL_STUDIO_FIXTURE` unset for the
+    /// scan's live (non-fixture) branch to run; that var is the same one
+    /// `OpencodeHomeGuard` serializes on.
+    #[test]
+    fn a_scan_level_error_carries_over_codex_home_even_when_it_is_outside_home() {
+        let _guard = super::super::test_support::opencode_env_lock()
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let tmp = tempfile::tempdir().unwrap();
+        // `home` is never created, so `Runtime::new`'s `physical()` call on
+        // it fails to canonicalize and the total-failure branch runs.
+        let home = tmp.path().join("home");
+        let codex_home = tmp.path().join("codex-home-outside-home");
+        fs::create_dir_all(&codex_home).unwrap();
+        let prev_codex_home = std::env::var_os("CODEX_HOME");
+        let prev_skill_studio_fixture = std::env::var_os("SKILL_STUDIO_FIXTURE");
+        // SAFETY: `opencode_env_lock` above serializes every test in this
+        // process that touches `CODEX_HOME`/`SKILL_STUDIO_FIXTURE`.
+        #[allow(unsafe_code)]
+        unsafe {
+            std::env::set_var("CODEX_HOME", &codex_home);
+            std::env::remove_var("SKILL_STUDIO_FIXTURE");
+        }
+        let result =
+            core_scan_installed_skills(&home, &[], &tmp.path().join("update-check.json"), &[]);
+        // SAFETY: same as above - still under `opencode_env_lock`.
+        #[allow(unsafe_code)]
+        unsafe {
+            match prev_codex_home {
+                Some(v) => std::env::set_var("CODEX_HOME", v),
+                None => std::env::remove_var("CODEX_HOME"),
+            }
+            match prev_skill_studio_fixture {
+                Some(v) => std::env::set_var("SKILL_STUDIO_FIXTURE", v),
+                None => std::env::remove_var("SKILL_STUDIO_FIXTURE"),
+            }
+        }
+
+        assert!(
+            result.unread_roots.contains(&codex_home),
+            "CODEX_HOME must be scoped as unread on a scan-level error: {:?}",
+            result.unread_roots
+        );
+
+        // The previous deployment under it must survive a merge against
+        // this run's carry-over.
+        let mut good = fixture_snapshot(&codex_home.join("codex-skill"));
+        good.skills[0].name = "codex-skill".to_string();
+        let merged = merge_partial_scan_skills(Vec::new(), &good.skills, &result.unread_roots);
+        let names: Vec<&str> = merged.iter().map(|s| s.name.as_str()).collect();
+        assert!(
+            names.contains(&"codex-skill"),
+            "a deployment under CODEX_HOME must survive a scan-level error: {names:?}"
+        );
+    }
+
+    /// `core_scan_installed_skills`'s total-failure branch with `CODEX_HOME`
+    /// under `home` (the default layout) lists `home` once and no root nested
+    /// under it, so the partial-scan banner reports one unread location, not
+    /// three. Fails if `unread_roots` holds an entry that starts with another
+    /// entry. Same lock and env handling as the test above.
+    #[test]
+    fn a_scan_level_error_lists_each_unread_location_once_or_names_the_nested_duplicate() {
+        let _guard = super::super::test_support::opencode_env_lock()
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let tmp = tempfile::tempdir().unwrap();
+        let home = tmp.path().join("home");
+        let codex_home = home.join(".codex");
+        let prev_codex_home = std::env::var_os("CODEX_HOME");
+        let prev_skill_studio_fixture = std::env::var_os("SKILL_STUDIO_FIXTURE");
+        // SAFETY: `opencode_env_lock` above serializes every test in this
+        // process that touches `CODEX_HOME`/`SKILL_STUDIO_FIXTURE`.
+        #[allow(unsafe_code)]
+        unsafe {
+            std::env::set_var("CODEX_HOME", &codex_home);
+            std::env::remove_var("SKILL_STUDIO_FIXTURE");
+        }
+        let result =
+            core_scan_installed_skills(&home, &[], &tmp.path().join("update-check.json"), &[]);
+        // SAFETY: same as above - still under `opencode_env_lock`.
+        #[allow(unsafe_code)]
+        unsafe {
+            match prev_codex_home {
+                Some(v) => std::env::set_var("CODEX_HOME", v),
+                None => std::env::remove_var("CODEX_HOME"),
+            }
+            match prev_skill_studio_fixture {
+                Some(v) => std::env::set_var("SKILL_STUDIO_FIXTURE", v),
+                None => std::env::remove_var("SKILL_STUDIO_FIXTURE"),
+            }
+        }
+
+        assert!(
+            result.unread_roots.contains(&home),
+            "home must be scoped as unread on a scan-level error: {:?}",
+            result.unread_roots
+        );
+        let nested: Vec<&PathBuf> = result
+            .unread_roots
+            .iter()
+            .filter(|root| {
+                result
+                    .unread_roots
+                    .iter()
+                    .any(|other| other != *root && root.starts_with(other))
+            })
+            .collect();
+        assert!(
+            nested.is_empty(),
+            "an unread root nested under another listed root is counted twice by the banner: {nested:?}"
+        );
+    }
+
+    /// N1 fix: a `SKILL.md` that is unreadable under an otherwise-readable
+    /// root puts only that skill's own directory in `unread_roots` (see
+    /// `unreadable_skill_md_under_a_readable_root_scopes_unread_roots_to_that_skill_dir`
+    /// in `skill-studio-core::ops`), not the whole root. The merge must
+    /// still retain that skill's previous row under the narrower path.
+    /// Fails if the merge only ever retains a previous deployment scoped to
+    /// a whole unread root, dropping one scoped to a single skill
+    /// directory.
+    #[test]
+    fn an_unreadable_skill_mds_own_directory_in_unread_roots_keeps_that_skills_previous_row() {
+        let unreadable_skill_dir = PathBuf::from("/roots/read/epsilon");
+        let mut good = fixture_snapshot(&unreadable_skill_dir);
+        good.skills[0].name = "epsilon".to_string();
+
+        let mut partial = fixture_snapshot(Path::new("/roots/read/other"));
+        partial.skills[0].name = "other".to_string();
+        partial.scan_partial = true;
+        partial.unread_roots = vec![unreadable_skill_dir];
+        let merged = merge_partial_scan_skills(partial.skills, &good.skills, &partial.unread_roots);
+
+        let names: Vec<&str> = merged.iter().map(|s| s.name.as_str()).collect();
+        assert!(
+            names.contains(&"epsilon"),
+            "the previous row for a skill whose SKILL.md was unreadable must survive: {names:?}"
+        );
+    }
+
+    /// A freshly re-read skill's row (a frontmatter edit picked up under a
+    /// root this run *could* read) must win over the stale one from the last
+    /// good snapshot, not the other way around - the old deployment is gone
+    /// under a root this run genuinely re-read, not merely unreachable.
+    #[test]
+    fn a_partial_rescan_that_still_finds_a_known_skill_publishes_its_fresh_row_not_the_stale_one() {
+        let mut good = fixture_snapshot(Path::new("/roots/read/old-path"));
+        good.skills[0].name = "alpha".to_string();
+
+        let mut partial = fixture_snapshot(Path::new("/roots/read/new-path"));
+        partial.skills[0].name = "alpha".to_string();
+        partial.scan_partial = true;
+        // This run's failure was on an unrelated root - /roots/read (where
+        // both the previous and the fresh deployment live) was read fine.
+        partial.unread_roots = vec![PathBuf::from("/roots/unread")];
+        let merged = merge_partial_scan_skills(partial.skills, &good.skills, &partial.unread_roots);
+
+        assert_eq!(merged.len(), 1);
+        assert_eq!(merged[0].deployments.len(), 1);
+        assert_eq!(
+            merged[0].deployments[0].path,
+            Path::new("/roots/read/new-path").to_string_lossy()
+        );
+    }
+
+    /// F2 (this round's fix): a previous deployment under a root this run
+    /// *did* read must not linger just because the skill also has a fresh
+    /// row - the readable root is this run's source of truth for what lives
+    /// there, so a skill deleted under it must disappear from the published
+    /// list even though nothing here forces a full rewrite of every row.
+    #[test]
+    fn a_skill_deleted_under_a_readable_root_disappears_on_the_next_partial_scan_or_names_the_row_that_lingers(
+    ) {
+        let unread_root = PathBuf::from("/roots/unread");
+        let mut good = fixture_snapshot(Path::new("/roots/read/gamma"));
+        good.skills[0].name = "gamma".to_string();
+
+        let mut partial = fixture_snapshot(&unread_root.join("beta"));
+        partial.skills[0].name = "beta".to_string();
+        partial.scan_partial = true;
+        partial.unread_roots = vec![unread_root];
+        let merged = merge_partial_scan_skills(partial.skills, &good.skills, &partial.unread_roots);
+
+        let names: Vec<&str> = merged.iter().map(|s| s.name.as_str()).collect();
+        assert!(
+            !names.contains(&"gamma"),
+            "a skill removed under a root this run could read must not linger: {names:?}"
+        );
+    }
+
+    /// F3 (this round's fix): a skill deployed under both a root this run
+    /// read and one it couldn't must keep the unread root's deployment
+    /// alongside the fresh one - losing it would misreport that deployment
+    /// as gone when this run never actually looked there.
+    #[test]
+    fn a_skill_with_deployments_under_both_a_read_and_an_unread_root_keeps_the_unread_root_deployment_or_names_the_deployment_it_lost(
+    ) {
+        use super::super::skill_dto::Deployment;
+
+        let unread_root = PathBuf::from("/roots/unread");
+        let unread_deployment_path = unread_root.join("delta");
+        let mut good = fixture_snapshot(Path::new("/roots/read/delta"));
+        good.skills[0].name = "delta".to_string();
+        good.skills[0].deployments.push(Deployment {
+            agent: "Codex".to_string(),
+            scope: "project".to_string(),
+            path: unread_deployment_path.to_string_lossy().to_string(),
+            is_symlink: false,
+            plugin: None,
+            ..Default::default()
+        });
+
+        let mut partial = fixture_snapshot(Path::new("/roots/read/delta"));
+        partial.skills[0].name = "delta".to_string();
+        partial.scan_partial = true;
+        partial.unread_roots = vec![unread_root];
+        let merged = merge_partial_scan_skills(partial.skills, &good.skills, &partial.unread_roots);
+
+        assert_eq!(merged.len(), 1);
+        let paths: Vec<String> = merged[0]
+            .deployments
+            .iter()
+            .map(|d| d.path.clone())
+            .collect();
+        assert!(
+            paths.contains(&unread_deployment_path.to_string_lossy().to_string()),
+            "the deployment under the unread root must survive: {paths:?}"
+        );
+        assert_eq!(
+            paths.len(),
+            2,
+            "the readable root's fresh deployment must also still be present: {paths:?}"
+        );
+    }
+
+    /// Unit 3.3 fix round 1, F1: `patch_snapshot_and_emit` publishes a clone
+    /// of the current snapshot with a caller's edit already applied. If
+    /// `store_skill_snapshot` re-merged a partial snapshot against the very
+    /// state that clone came from, an edit that removed a row would come
+    /// straight back - `store_skill_snapshot` must publish exactly what it is
+    /// given. `unread_roots` is set to the removed skill's own parent so the
+    /// old by-name merge (which ignores `unread_roots` and would restore any
+    /// removed skill regardless of scope) cannot pass this test by accident.
+    #[test]
+    fn a_patch_that_removes_a_skill_from_a_partial_snapshot_keeps_it_removed_or_names_the_row_that_came_back(
+    ) {
+        let state = fixture_state();
+        let mut initial = fixture_snapshot(Path::new("/alpha"));
+        initial.skills[0].name = "alpha".to_string();
+        initial.scan_partial = true;
+        initial.unread_roots = vec![Path::new("/alpha")
+            .parent()
+            .expect("/alpha has a parent")
+            .to_path_buf()];
+        let published = store_skill_snapshot(&state, initial).unwrap();
+
+        let mut patched = published.clone();
+        patched.skills.retain(|skill| skill.name != "alpha");
+        let republished = store_skill_snapshot(&state, patched).unwrap();
+
+        let names: Vec<&str> = republished.skills.iter().map(|s| s.name.as_str()).collect();
+        assert!(
+            !names.contains(&"alpha"),
+            "a skill removed by a patch on a partial snapshot must not come back: {names:?}"
+        );
     }
 
     #[test]
