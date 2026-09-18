@@ -50,12 +50,16 @@ function App() {
   // than this build understands - checked once, before anything else that
   // reads from it, and shown in place of the normal chrome (a toast is not
   // enough: there is no snapshot, no settings, nothing behind it to toast
-  // over).
-  const [dataFolderBlockedMessage, setDataFolderBlockedMessage] = useState<string | null>(null);
+  // over). Starts `"pending"` (not `null`) so the first-run gate below can't
+  // paint before the answer lands and then get replaced by the blocking
+  // screen once it does (N4, review round 1).
+  const [dataFolderStatusState, setDataFolderStatusState] = useState<"pending" | string | null>(
+    "pending",
+  );
   useEffect(() => {
     dataFolderStatus()
-      .then(setDataFolderBlockedMessage)
-      .catch(() => undefined);
+      .then(setDataFolderStatusState)
+      .catch(() => setDataFolderStatusState(null));
   }, []);
   const { snapshot, emittedSnapshotRevision, isLoading, requestRescan } = useSkillSnapshot();
   const resolvedTheme = useAppStore((state) => state.resolvedTheme);
@@ -201,13 +205,18 @@ function App() {
     }
   }
 
-  if (dataFolderBlockedMessage != null) {
+  if (dataFolderStatusState === "pending") {
+    // Neither the blocking screen nor the first-run gate is correct yet -
+    // render nothing rather than guess and get replaced once the answer
+    // lands.
+    return null;
+  }
+
+  if (dataFolderStatusState != null) {
     return (
       <TooltipProvider delay={400}>
         <div className="flex h-screen w-screen items-center justify-center bg-bg-secondary p-8">
-          <p className="max-w-md text-center text-sm text-text-primary">
-            {dataFolderBlockedMessage}
-          </p>
+          <p className="max-w-md text-center text-sm text-text-primary">{dataFolderStatusState}</p>
         </div>
       </TooltipProvider>
     );

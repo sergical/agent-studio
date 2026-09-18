@@ -760,6 +760,10 @@ export function installMockTauri(initial: SkillSnapshot): HarnessControl {
         case "plugin:opener|open_path":
         case "plugin:shell|open":
           return undefined;
+        case "data_folder_status":
+          // The harness never runs a real data folder migration, so it is
+          // always clear - App.tsx's first-run gate must never block here.
+          return null;
 
         default:
           // eslint-disable-next-line no-console
