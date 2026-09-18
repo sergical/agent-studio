@@ -63,6 +63,7 @@ struct IndependentCopyEventData {
 
 /// Exact identity needed to detach one linked deployment without affecting
 /// another deployment with the same skill name.
+#[derive(Clone, Copy)]
 pub struct IndependentCopyRequest<'a> {
     pub home: &'a Path,
     pub skill: &'a str,
@@ -137,7 +138,7 @@ fn make_skill_independent_copy_with(
     });
     store.record(
         &id,
-        EventDraft {
+        &EventDraft {
             kind: "make_independent_copy".to_string(),
             skill: request.skill.to_string(),
             harness: Some(request.harness.to_string()),
@@ -249,7 +250,7 @@ fn run_independent_copy(
         deployment_id: copy_id.to_string(),
         name: request.skill.to_string(),
         path: request.link.to_path_buf(),
-        scope: request.scope.clone(),
+        scope: request.scope,
         destination: SkillDestination::PerHarness,
         slot: request.slot.to_string(),
         project_path: request.project_path.map(str::to_string),
@@ -336,7 +337,7 @@ fn run_independent_copy(
             let finalize = store.finish(id, EventStatus::Done);
             if let Err(error) = finalize {
                 let filesystem_rollback =
-                    rename(request.link, staging).and_then(|_| rename(saved_link, request.link));
+                    rename(request.link, staging).and_then(|()| rename(saved_link, request.link));
                 let registry_rollback = write_registry(request.home, &previous_registry);
                 let _ = store.finish(id, EventStatus::Failed);
                 return match (filesystem_rollback, registry_rollback) {
@@ -812,7 +813,7 @@ fn restore_independent_copy_with(
     };
     store.record(
         &restore_id,
-        EventDraft {
+        &EventDraft {
             kind: "restore".to_string(),
             skill: target.skill.clone(),
             harness: target.harness.clone(),

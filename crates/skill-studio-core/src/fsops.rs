@@ -380,7 +380,7 @@ pub fn swap(
     root: &Root,
     plan: &PlanWriter<'_>,
     final_name: &Path,
-    staged: Staged,
+    staged: &Staged,
     quarantine_dir: &Path,
 ) -> Result<(), FsOpsError> {
     root.revalidate()?;

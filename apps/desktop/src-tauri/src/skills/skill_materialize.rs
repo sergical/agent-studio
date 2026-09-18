@@ -130,7 +130,7 @@ pub(crate) fn explode_shared_dir_with_event_id_and_hook(
     };
     store.record(
         id,
-        EventDraft {
+        &EventDraft {
             kind: "explode_shared_dir".to_string(),
             skill: String::new(),
             harness: Some(harness.to_string()),
@@ -225,12 +225,18 @@ fn rename_directory_without_replace(from: &Path, to: &Path) -> Result<(), String
     let to_c = path_c_string(to)?;
     #[cfg(target_vendor = "apple")]
     let result = {
-        // Both pointers remain valid for this call and point to null-terminated path bytes.
-        unsafe { libc::renamex_np(from_c.as_ptr(), to_c.as_ptr(), libc::RENAME_EXCL) }
+        // SAFETY: both pointers remain valid for this call and point to
+        // null-terminated path bytes.
+        #[allow(unsafe_code)]
+        unsafe {
+            libc::renamex_np(from_c.as_ptr(), to_c.as_ptr(), libc::RENAME_EXCL)
+        }
     };
     #[cfg(any(target_os = "linux", target_os = "android"))]
     let result = {
-        // Both pointers remain valid for this call and AT_FDCWD makes each path absolute or cwd-relative.
+        // SAFETY: both pointers remain valid for this call and AT_FDCWD
+        // makes each path absolute or cwd-relative.
+        #[allow(unsafe_code)]
         unsafe {
             libc::renameat2(
                 libc::AT_FDCWD,
@@ -379,6 +385,7 @@ pub(crate) fn reconcile_connected_materialize_event_with_hook(
 }
 
 /// Exact identity for converting one whole harness root and then disabling one deployment.
+#[derive(Clone, Copy)]
 pub struct ConvertThenDisableRequest<'a> {
     pub root: &'a Path,
     pub shared_root: &'a Path,
@@ -407,7 +414,7 @@ pub(crate) fn convert_root_then_disable_with_hook(
     let materialize_event_id = allocate_id();
     store.record(
         &intent_id,
-        EventDraft {
+        &EventDraft {
             kind: "materialize_then_disable".to_string(),
             skill: request.skill.to_string(),
             harness: Some(request.harness.to_string()),
@@ -648,7 +655,7 @@ pub fn unlink_harness(
     };
     store.record(
         &id,
-        EventDraft {
+        &EventDraft {
             kind: "unlink_harness".to_string(),
             skill: skill.to_string(),
             harness: Some(harness.to_string()),
@@ -698,7 +705,7 @@ pub fn relink_harness(
     };
     store.record(
         &id,
-        EventDraft {
+        &EventDraft {
             kind: "relink_harness".to_string(),
             skill: skill.to_string(),
             harness: Some(harness.to_string()),
@@ -736,8 +743,8 @@ pub fn reconcile_materialized_root(store: &EventStore, root: &Path) -> Result<()
 
     let shared_skills: Vec<String> = fs::read_dir(&shared_root)
         .map_err(|e| format!("Failed to read {}: {e}", shared_root.display()))?
-        .filter_map(|e| e.ok())
-        .filter(|e| e.metadata().map(|m| m.is_dir()).unwrap_or(false))
+        .filter_map(std::result::Result::ok)
+        .filter(|e| e.metadata().is_ok_and(|m| m.is_dir()))
         .map(|e| e.file_name().to_string_lossy().into_owned())
         .collect();
 
@@ -795,7 +802,7 @@ fn remove_stale_link(
     };
     store.record(
         &id,
-        EventDraft {
+        &EventDraft {
             kind: "reconcile_remove_stale_link".to_string(),
             skill: skill.to_string(),
             harness: Some(harness.to_string()),
@@ -896,7 +903,7 @@ fn finish_link_event(
     }
 }
 
-/// Removes a single broken deployment symlink, for the SkillPage "Repair
+/// Removes a single broken deployment symlink, for the `SkillPage` "Repair
 /// this location" flow (see `event_commands::repair_skill_link`). Unlike
 /// `unlink_harness`, `link` is the deployment's own path directly (not
 /// `root.join(skill)`), and its target is expected to already be broken -
@@ -925,7 +932,7 @@ pub fn repair_remove_link(
     };
     store.record(
         &id,
-        EventDraft {
+        &EventDraft {
             kind: "repair_remove_link".to_string(),
             skill: skill.to_string(),
             harness: Some(harness.to_string()),
@@ -947,7 +954,7 @@ pub fn repair_remove_link(
 }
 
 /// Repoints a broken deployment symlink at a healthy copy's path, for the
-/// SkillPage "Repair this location" flow. The link's *old* (broken) target is
+/// `SkillPage` "Repair this location" flow. The link's *old* (broken) target is
 /// recorded as the inverse, so undo restores the exact prior link rather than
 /// removing the new one and leaving nothing - the same shape `unlink_harness`
 /// undoes to.
@@ -976,7 +983,7 @@ pub fn repair_relink_link(
     };
     store.record(
         &id,
-        EventDraft {
+        &EventDraft {
             kind: "repair_relink_link".to_string(),
             skill: skill.to_string(),
             harness: Some(harness.to_string()),

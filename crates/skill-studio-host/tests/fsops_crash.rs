@@ -1,3 +1,8 @@
+// Integration test binaries aren't covered by the lib crate's
+// `cfg_attr(test, allow(...))`: this file compiles as its own crate, so
+// the same allow needs to be declared here too.
+#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+
 //! Unit 1.1's crash test: kills a real child process partway through
 //! `fsops::stage`/`swap` on real disk and checks what's left behind. Lives
 //! here, not in `skill-studio-core`, because it needs `RealFs` and a real
@@ -108,7 +113,7 @@ fn run_as_crash_child_if_env_set() {
         &root,
         &plan,
         Path::new("skill"),
-        staged,
+        &staged,
         Path::new(".trash"),
     )
     .expect("swap");
@@ -163,7 +168,7 @@ fn a_crash_after_any_step_leaves_the_disk_before_the_change_or_after_it_never_be
         &root,
         &plan,
         Path::new("skill"),
-        staged,
+        &staged,
         Path::new(".trash"),
     )
     .expect("baseline swap");

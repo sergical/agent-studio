@@ -1,3 +1,8 @@
+// Integration test binaries aren't covered by the lib crate's
+// `cfg_attr(test, allow(...))`: this file compiles as its own crate, so
+// the same allow needs to be declared here too.
+#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+
 //! Unit 1.1: the four `fsops` tests that live on the in-memory `FixtureFs`,
 //! a model test comparing random sequences of primitives against a plain
 //! reference map, a root-confinement test, a swap/symlink-race test, and a
@@ -101,7 +106,7 @@ proptest! {
                     let bytes = CONTENTS[content].to_vec();
                     let staged = fsops::stage(&root, &plan, &[(PathBuf::from("SKILL.md"), bytes.clone())])
                         .unwrap_or_else(|e| panic!("step {i} (Create {name:?}): stage failed: {e}"));
-                    fsops::swap(&root, &plan, Path::new(name), staged, Path::new(".trash"))
+                    fsops::swap(&root, &plan, Path::new(name), &staged, Path::new(".trash"))
                         .unwrap_or_else(|e| panic!("step {i} (Create {name:?}): swap failed: {e}"));
                     model.insert(name, bytes);
                 }
@@ -130,20 +135,18 @@ proptest! {
                                  step, but reading it failed: {e}"
                             )
                         });
-                        if &actual != expected {
-                            panic!(
-                                "step {i} ({op:?}): {name}/SKILL.md content diverged from the \
-                                 reference model (got {actual:?}, want {expected:?})"
-                            );
-                        }
+                        assert!(
+                            &actual == expected,
+                            "step {i} ({op:?}): {name}/SKILL.md content diverged from the \
+                             reference model (got {actual:?}, want {expected:?})"
+                        );
                     }
                     None => {
-                        if fs.symlink_metadata(&path).is_ok() {
-                            panic!(
-                                "step {i} ({op:?}): {name}/SKILL.md exists on the fixture but the \
-                                 reference model has no entry for {name}"
-                            );
-                        }
+                        assert!(
+                            fs.symlink_metadata(&path).is_err(),
+                            "step {i} ({op:?}): {name}/SKILL.md exists on the fixture but the \
+                             reference model has no entry for {name}"
+                        );
                     }
                 }
             }
@@ -191,7 +194,7 @@ fn swap_refuses_a_directory_replaced_by_a_symlink_between_stage_and_swap_or_name
         &root,
         &plan,
         Path::new("gamma"),
-        staged,
+        &staged,
         Path::new(".trash"),
     )
     .expect_err("swap must refuse a target that is no longer a directory");
@@ -382,7 +385,7 @@ fn swap_prepares_the_quarantine_before_the_exchange_or_names_the_half_committed_
         &root,
         &plan,
         Path::new("gamma"),
-        staged,
+        &staged,
         Path::new(".trash"),
     )
     .expect_err("swap must refuse when the quarantine directory fails to create");
@@ -440,7 +443,7 @@ fn swap_refuses_a_quarantine_dir_that_is_a_symlink_out_of_the_root_or_names_the_
         &root,
         &plan,
         Path::new("gamma"),
-        staged,
+        &staged,
         Path::new(".trash"),
     )
     .expect_err("swap must refuse a quarantine dir that is a symlink out of the root");

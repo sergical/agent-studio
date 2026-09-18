@@ -369,7 +369,7 @@ fn record_move_aside_event(
     };
     store.record(
         &id,
-        EventDraft {
+        &EventDraft {
             kind: if enabled {
                 "move_aside_restore".to_string()
             } else {
@@ -626,10 +626,7 @@ pub fn set_harness_enabled_with(
             if codex_skill_md_paths.is_empty() {
                 return Err(format!("No Codex-visible deployment found for \"{name}\""));
             }
-            let rt = super::core_runtime::build_runtime_write_at(
-                home.to_path_buf(),
-                data_root.to_path_buf(),
-            )?;
+            let rt = super::core_runtime::build_runtime_write_at(home.to_path_buf(), data_root)?;
             let ctx = skill_studio_core::ports::OpContext::uncancellable(
                 skill_studio_core::identity::CorrelationId(ulid::Ulid::new().to_string()),
             );
@@ -1286,7 +1283,7 @@ mod tests {
         assert!(read_codex_disabled_skill_md_paths_for_test(home).is_empty());
     }
 
-    /// codex_disable_runs_under_the_shared_data_root_or_names_the_separate_lease_root:
+    /// `codex_disable_runs_under_the_shared_data_root_or_names_the_separate_lease_root`:
     /// a Codex disable's lease/journal artifacts land under the `data_root`
     /// the caller gives it - not a second `home/.skill-studio` tree built
     /// independently of `super::core_runtime::data_root()` - so Codex
@@ -1346,7 +1343,7 @@ mod tests {
         assert!(err.contains("No Codex-visible deployment"));
     }
 
-    /// codex_toggle_under_the_desktop_write_lease_succeeds_or_names_the_scope_busy_deadlock:
+    /// `codex_toggle_under_the_desktop_write_lease_succeeds_or_names_the_scope_busy_deadlock`:
     /// `set_harness_enabled`'s command already holds the root's `WriteLease`
     /// before it reaches the Codex arm - see `set_harness_enabled_with`'s
     /// `guard` parameter. Before the fix, the Codex arm acquired a second,

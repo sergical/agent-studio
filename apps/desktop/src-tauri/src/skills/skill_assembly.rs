@@ -185,7 +185,7 @@ fn deployment_from_core(dto: &DeploymentDto) -> Deployment {
     }
 }
 
-/// Build a fresh InstalledSkill, seeding metadata from the lock file entry
+/// Build a fresh `InstalledSkill`, seeding metadata from the lock file entry
 /// when one exists for this skill name, or generic "local directory"
 /// metadata otherwise.
 fn new_installed_skill(
@@ -249,22 +249,22 @@ fn new_installed_skill(
     }
 }
 
-/// Merge core's scan Inventory by name into one InstalledSkill per skill,
+/// Merge core's scan Inventory by name into one `InstalledSkill` per skill,
 /// with one Deployment per `DeploymentDto`. Every deployment-level fact
 /// (identity, destination, owner, mutability, backing, content facts) comes
-/// straight from core's `scan`; this only aggregates by name (source_kind
+/// straight from core's `scan`; this only aggregates by name (`source_kind`
 /// precedence, deduped violations/hashes, first-readable-wins aggregate
 /// facts), seeds from the lock entry, keeps lock-only skills (in the lock
-/// file, not found by scan) with empty deployments and source_kind
+/// file, not found by scan) with empty deployments and `source_kind`
 /// skills-sh, and resolves the one identity core's DTO omits: the target id
 /// of a `LinkedTo` backing relationship (see `resolve_linked_backing_ids`).
 pub fn assemble_installed_skills(
-    core_skills: Vec<InstalledSkillDto>,
+    core_skills: &[InstalledSkillDto],
     lock: &SkillLockFile,
 ) -> Vec<InstalledSkill> {
     let mut by_name: HashMap<String, InstalledSkill> = HashMap::new();
 
-    for core_skill in &core_skills {
+    for core_skill in core_skills {
         let name = &core_skill.name.0;
         for deployment_dto in &core_skill.deployments {
             let source_kind = deployment_dto.source_kind;
@@ -297,7 +297,7 @@ pub fn assemble_installed_skills(
                 record.description_tokens = deployment_dto.description_tokens;
                 record.folder_bytes = deployment_dto.folder_bytes;
                 record.file_count = deployment_dto.file_count;
-                record.content_hash = deployment_dto.content_hash.clone();
+                record.content_hash.clone_from(&deployment_dto.content_hash);
                 record.modified_at = deployment_dto.modified_at.map(|t| t.to_rfc3339());
                 record.frontmatter_fields = deployment_dto.frontmatter_fields.clone();
                 record.folder_truncated = deployment_dto.folder_truncated;
@@ -403,7 +403,7 @@ mod tests {
     use skill_studio_core::lock_file::InstalledSkillEntry;
 
     /// Global root for a desktop-style root label ("shared", "Claude Code",
-    /// "Codex", "pi", "Cursor", "Grok Build", "OpenCode"), plus the harness
+    /// "Codex", "pi", "Cursor", "Grok Build", "`OpenCode`"), plus the harness
     /// id feeding that root when it has one.
     fn root_for_label(root_label: &str) -> (RootRef, Option<CoreAgentId>) {
         if root_label == "shared" {
@@ -532,7 +532,7 @@ mod tests {
         manual.source_kind = SourceKind::Manual;
 
         let skills = assemble_installed_skills(
-            skills_from(vec![
+            &skills_from(vec![
                 ("my-skill", manual),
                 ("my-skill", plugin),
                 ("my-skill", dotagents),
@@ -555,7 +555,7 @@ mod tests {
         });
 
         let skills =
-            assemble_installed_skills(skills_from(vec![("my-skill", plugin)]), &empty_lock());
+            assemble_installed_skills(&skills_from(vec![("my-skill", plugin)]), &empty_lock());
         let deployment = &skills[0].deployments[0];
         assert!(deployment.disabled);
         assert_eq!(
@@ -575,7 +575,7 @@ mod tests {
         });
 
         let skills =
-            assemble_installed_skills(skills_from(vec![("my-skill", plugin)]), &empty_lock());
+            assemble_installed_skills(&skills_from(vec![("my-skill", plugin)]), &empty_lock());
         let deployment = &skills[0].deployments[0];
         assert!(!deployment.disabled);
         assert_eq!(deployment.disabled_by, None);
@@ -584,7 +584,7 @@ mod tests {
     #[test]
     fn assembled_skills_are_sorted_by_name() {
         let skills = assemble_installed_skills(
-            skills_from(vec![
+            &skills_from(vec![
                 ("zeta", deployment_dto("zeta", "Codex")),
                 ("alpha", deployment_dto("alpha", "Codex")),
                 ("mid", deployment_dto("mid", "pi")),
@@ -598,7 +598,7 @@ mod tests {
     #[test]
     fn merge_of_one_skill_across_three_roots_yields_three_deployments() {
         let skills = assemble_installed_skills(
-            skills_from(vec![
+            &skills_from(vec![
                 ("my-skill", deployment_dto("my-skill", "Claude Code")),
                 ("my-skill", deployment_dto("my-skill", "Codex")),
                 ("my-skill", deployment_dto("my-skill", "pi")),
@@ -617,7 +617,7 @@ mod tests {
         b.spec_violations = vec!["missing required frontmatter field: description".to_string()];
 
         let skills = assemble_installed_skills(
-            skills_from(vec![("my-skill", a), ("my-skill", b)]),
+            &skills_from(vec![("my-skill", a), ("my-skill", b)]),
             &empty_lock(),
         );
         assert_eq!(skills[0].spec_violations.len(), 1);
@@ -640,7 +640,7 @@ mod tests {
             },
         );
 
-        let skills = assemble_installed_skills(skills_from(vec![("write-tests", c)]), &lock);
+        let skills = assemble_installed_skills(&skills_from(vec![("write-tests", c)]), &lock);
         let skill = &skills[0];
         assert_eq!(skill.source, "obra/write-tests");
         assert_eq!(
@@ -666,7 +666,7 @@ mod tests {
             },
         );
 
-        let skills = assemble_installed_skills(Vec::new(), &lock);
+        let skills = assemble_installed_skills(&Vec::new(), &lock);
         assert_eq!(skills.len(), 1);
         assert!(skills[0].deployments.is_empty());
         assert_eq!(skills[0].source_kind, SourceKind::SkillsSh);
@@ -686,7 +686,7 @@ mod tests {
         valid.file_count = 3;
 
         let skills = assemble_installed_skills(
-            skills_from(vec![("my-skill", broken), ("my-skill", valid)]),
+            &skills_from(vec![("my-skill", broken), ("my-skill", valid)]),
             &empty_lock(),
         );
         assert_eq!(skills.len(), 1);
@@ -706,7 +706,7 @@ mod tests {
         project.spec_violations = vec!["missing required frontmatter field: name".to_string()];
 
         let skills = assemble_installed_skills(
-            skills_from(vec![("motion", global), ("motion", project)]),
+            &skills_from(vec![("motion", global), ("motion", project)]),
             &empty_lock(),
         );
         assert_eq!(skills.len(), 1);
@@ -735,7 +735,7 @@ mod tests {
         });
 
         let skills = assemble_installed_skills(
-            skills_from(vec![("motion", global), ("motion", project)]),
+            &skills_from(vec![("motion", global), ("motion", project)]),
             &empty_lock(),
         );
         assert_eq!(skills.len(), 1);
@@ -763,7 +763,7 @@ mod tests {
         b.content_hash = "hash-b".to_string();
 
         let skills = assemble_installed_skills(
-            skills_from(vec![("my-skill", a), ("my-skill", b)]),
+            &skills_from(vec![("my-skill", a), ("my-skill", b)]),
             &empty_lock(),
         );
         assert_eq!(skills[0].content_hashes.len(), 2);

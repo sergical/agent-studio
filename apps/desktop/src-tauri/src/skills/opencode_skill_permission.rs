@@ -24,7 +24,7 @@ pub fn opencode_jsonc_path(home: &Path) -> PathBuf {
     home.join(".config").join("opencode").join("opencode.jsonc")
 }
 
-/// Which OpenCode config format is present, so the frontend can tell the user
+/// Which `OpenCode` config format is present, so the frontend can tell the user
 /// to hand-edit a `.jsonc` file rather than silently showing no disables.
 #[derive(
     Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize, schemars::JsonSchema,
@@ -35,7 +35,7 @@ pub enum OpencodeConfigKind {
     Jsonc,
 }
 
-/// Which config file exists, if any - `None` when neither does (OpenCode
+/// Which config file exists, if any - `None` when neither does (`OpenCode`
 /// isn't configured, or uses its defaults).
 pub fn detect_config_kind(home: &Path) -> Option<OpencodeConfigKind> {
     if opencode_json_path(home).is_file() {
@@ -108,7 +108,7 @@ pub fn pattern_matches(pattern: &str, name: &str) -> bool {
 /// preserving every other key and writing back pretty-printed with 2-space
 /// indentation. Creates the file with the documented `$schema` when missing.
 /// Refuses outright when only `opencode.jsonc` exists, since Skill Studio
-/// must not silently create a `.json` sibling OpenCode would then have to
+/// must not silently create a `.json` sibling `OpenCode` would then have to
 /// merge, nor rewrite the `.jsonc` and drop its comments.
 pub fn set_skill_denied(home: &Path, name: &str, denied: bool) -> Result<(), String> {
     if opencode_jsonc_path(home).is_file() && !opencode_json_path(home).is_file() {

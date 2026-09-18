@@ -3,7 +3,7 @@
 //!
 //! The union of Codex's `~/.codex/config.toml` recent projects, the working
 //! directories in Claude Code and pi session transcripts, the folders in
-//! Cursor's workspace storage, the project worktrees OpenCode records, and
+//! Cursor's workspace storage, the project worktrees `OpenCode` records, and
 //! the working directories Grok Build names its session folders after,
 //! filtered to directories that hold a skill dir for one of the first-class
 //! agents. A harness switched off in the `discovery` section of
@@ -28,7 +28,7 @@ use crate::opencode_db::{open_opencode_database, opencode_databases, OPENCODE_DA
 /// `<home>/.codex`. This is the one place allowed to read `CODEX_HOME` - the
 /// core crate never does (`docs/action-map/harnesses/codex.md`, "Resolved by
 /// the docs on 2026-09-16": "`CODEX_HOME` overrides `~/.codex` for config,
-/// sessions, and the SQLite state; every Codex path in the app must honour
+/// sessions, and the `SQLite` state; every Codex path in the app must honour
 /// it").
 pub fn codex_home(home: &Path) -> PathBuf {
     match std::env::var_os("CODEX_HOME") {
@@ -234,12 +234,11 @@ fn cwd_from_transcript(path: &Path, limits: &mut TranscriptScanLimits) -> Option
         let line_cap = (MAX_TRANSCRIPT_LINE_BYTES as u64 + 1).min(budget);
         let read = reader.by_ref().take(line_cap).read_until(b'\n', &mut buf);
         match read {
-            Ok(0) => break, // EOF
+            Ok(0) | Err(_) => break, // EOF, or a read error treated the same way
             Ok(n) => {
                 budget = budget.saturating_sub(n as u64);
                 limits.consume_bytes(n as u64);
             }
-            Err(_) => break,
         }
         let oversized =
             buf.len() as u64 > MAX_TRANSCRIPT_LINE_BYTES as u64 && buf.last() != Some(&b'\n');
@@ -290,7 +289,7 @@ fn transcript_cwds_within(root: &Path, mut limits: TranscriptScanLimits) -> Vec<
         return Vec::new();
     };
     let mut project_dirs: Vec<_> = project_dirs.flatten().collect();
-    project_dirs.sort_by_key(|entry| entry.path());
+    project_dirs.sort_by_key(std::fs::DirEntry::path);
     for project_dir in project_dirs {
         if !limits.can_attempt_transcript() {
             break;
@@ -378,9 +377,9 @@ fn cursor_workspace_folder(path: &Path) -> Option<PathBuf> {
 /// Project rows read per database, and legacy project files read in total.
 const MAX_OPENCODE_PROJECTS: usize = 10_000;
 
-/// Worktrees of the projects OpenCode has opened, from the database of every
-/// channel and from the `storage/project/<id>.json` records that OpenCode
-/// wrote before it moved to SQLite.
+/// Worktrees of the projects `OpenCode` has opened, from the database of every
+/// channel and from the `storage/project/<id>.json` records that `OpenCode`
+/// wrote before it moved to `SQLite`.
 fn opencode_worktrees(home: &Path) -> Vec<PathBuf> {
     let root = home.join(OPENCODE_DATA_ROOT);
     let mut out = opencode_legacy_worktrees(&root.join("storage/project"));
@@ -390,7 +389,7 @@ fn opencode_worktrees(home: &Path) -> Vec<PathBuf> {
     out
 }
 
-/// `project.worktree` values from one OpenCode database.
+/// `project.worktree` values from one `OpenCode` database.
 fn opencode_database_worktrees(database: &Path) -> Vec<PathBuf> {
     let Some(conn) = open_opencode_database(database) else {
         return Vec::new();
@@ -398,9 +397,8 @@ fn opencode_database_worktrees(database: &Path) -> Vec<PathBuf> {
     let Ok(mut statement) = conn.prepare("SELECT worktree FROM project LIMIT ?1") else {
         return Vec::new();
     };
-    let Ok(rows) = statement.query_map([MAX_OPENCODE_PROJECTS as i64], |row| {
-        row.get::<_, String>(0)
-    }) else {
+    let limit = i64::try_from(MAX_OPENCODE_PROJECTS).unwrap_or(i64::MAX);
+    let Ok(rows) = statement.query_map([limit], |row| row.get::<_, String>(0)) else {
         return Vec::new();
     };
     let worktrees: Vec<PathBuf> = rows
@@ -465,7 +463,7 @@ pub(crate) fn grok_session_cwd(dir: &Path) -> Option<PathBuf> {
     read_small_file(&dir.join(".cwd")).map(|cwd| PathBuf::from(cwd.trim()))
 }
 
-/// Cursor workspace records, OpenCode project records, and Grok `.cwd` files
+/// Cursor workspace records, `OpenCode` project records, and Grok `.cwd` files
 /// each hold one path and a few fields.
 const MAX_SMALL_FILE_BYTES: u64 = 64 * 1024;
 
@@ -546,7 +544,7 @@ pub fn discover_skill_projects(home: &Path) -> Vec<PathBuf> {
 
 /// Union of every project directory nominated by an enabled harness's
 /// history (Codex config, Claude Code and pi transcripts, Cursor workspace
-/// storage, OpenCode's project records, and Grok Build's session folders),
+/// storage, `OpenCode`'s project records, and Grok Build's session folders),
 /// filtered to directories that exist and have at least one first-class
 /// agent's skill dir. Sorted and deduped.
 fn discover_skill_projects_from(home: &Path, sources: &DiscoverySources) -> Vec<PathBuf> {
@@ -1444,7 +1442,7 @@ mod tests {
         assert_eq!(opencode_worktrees(home), vec![first, second]);
     }
 
-    /// The state OpenCode leaves after a crash: WAL files on disk and no
+    /// The state `OpenCode` leaves after a crash: WAL files on disk and no
     /// connection open, so the discovery connection is the last one to close.
     #[test]
     fn leftover_opencode_wal_is_read_without_changing_the_database_or_wal() {
@@ -1582,7 +1580,7 @@ mod tests {
         [codex_only, claude_only, shared]
     }
 
-    fn write_discovery_switches(home: &Path, switches: serde_json::Value) {
+    fn write_discovery_switches(home: &Path, switches: &serde_json::Value) {
         fs::create_dir_all(home.join(".agents")).unwrap();
         fs::write(
             home.join(".agents/skill-studio.json"),
@@ -1609,18 +1607,18 @@ mod tests {
         let home = tmp.path();
         let [codex_only, claude_only, shared] = two_harness_home(home);
 
-        write_discovery_switches(home, serde_json::json!({ "codex": false }));
+        write_discovery_switches(home, &serde_json::json!({ "codex": false }));
         assert_eq!(
             discover_skill_projects(home),
             vec![claude_only.clone(), shared.clone()]
         );
 
-        write_discovery_switches(home, serde_json::json!({ "claude-code": false }));
+        write_discovery_switches(home, &serde_json::json!({ "claude-code": false }));
         assert_eq!(discover_skill_projects(home), vec![codex_only, shared]);
 
         write_discovery_switches(
             home,
-            serde_json::json!({ "claude-code": false, "codex": false }),
+            &serde_json::json!({ "claude-code": false, "codex": false }),
         );
         assert!(discover_skill_projects(home).is_empty());
     }
@@ -1632,7 +1630,7 @@ mod tests {
         let [codex_only, claude_only, shared] = two_harness_home(home);
         write_discovery_switches(
             home,
-            serde_json::json!({ "future-harness": false, "codex": true }),
+            &serde_json::json!({ "future-harness": false, "codex": true }),
         );
 
         assert_eq!(

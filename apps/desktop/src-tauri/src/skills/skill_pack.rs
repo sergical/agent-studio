@@ -22,6 +22,7 @@
 // ============================================================================
 
 use std::collections::{BTreeMap, BTreeSet, HashSet};
+use std::fmt::Write as _;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -191,7 +192,10 @@ pub(crate) fn validate_pack_name(name: &str) -> Result<&str, String> {
     if name.is_empty() || name.len() > 64 {
         return Err(format!("Invalid pack name: {name:?}"));
     }
-    let first = name.chars().next().unwrap();
+    // `name.is_empty()` already returned above, so a first char exists.
+    let Some(first) = name.chars().next() else {
+        return Err(format!("Invalid pack name: {name:?}"));
+    };
     if !(first.is_ascii_lowercase() || first.is_ascii_digit()) {
         return Err(format!(
             "Pack name must start with a lowercase letter or digit, got {name:?}"
@@ -352,9 +356,7 @@ fn classify_member(home: &Path, app_data: &Path, member: &PackMember) -> MemberK
     // symlinked `$TMPDIR` (common in tests, and on macOS's `/tmp` ->
     // `/private/tmp`) makes every shared member look like a project one.
     let shared_path = shared_skills_dir(home).join(&member.name);
-    let is_shared = fs::canonicalize(&shared_path)
-        .map(|canonical| canonical == member.path)
-        .unwrap_or(false);
+    let is_shared = fs::canonicalize(&shared_path).is_ok_and(|canonical| canonical == member.path);
     if !is_shared {
         return MemberKind::Manual;
     }
@@ -935,7 +937,7 @@ fn dir_entry_names(dir: &Path) -> BTreeSet<String> {
     fs::read_dir(dir)
         .into_iter()
         .flatten()
-        .filter_map(|e| e.ok())
+        .filter_map(std::result::Result::ok)
         .filter_map(|e| e.file_name().into_string().ok())
         .collect()
 }
@@ -978,11 +980,15 @@ fn manifest_text_hash(text: Option<&str>) -> String {
         }
         None => digest.update([0]),
     }
+    let digest = digest.finalize();
+    // One `write!` per byte into a pre-sized `String`, rather than collecting
+    // a `Vec<String>` of two-char fragments.
     digest
-        .finalize()
         .iter()
-        .map(|byte| format!("{byte:02x}"))
-        .collect()
+        .fold(String::with_capacity(digest.len() * 2), |mut acc, byte| {
+            let _ = write!(acc, "{byte:02x}");
+            acc
+        })
 }
 
 fn validate_pack_commit_sha(commit: &str) -> Result<String, String> {
@@ -1275,11 +1281,11 @@ fn execute_prepared_pack_import(
 
 fn execute_and_cleanup_pack_import(
     home: &Path,
-    prepared: PreparedPackImport,
+    prepared: &PreparedPackImport,
     agents: &[AgentId],
     runner: &dyn CommandRunner,
 ) -> Result<ImportResult, String> {
-    let result = execute_prepared_pack_import(home, &prepared, agents, runner);
+    let result = execute_prepared_pack_import(home, prepared, agents, runner);
     if let Some(snapshot) = &prepared.local_snapshot {
         cleanup_local_pack_snapshot(home, snapshot);
     }
@@ -1368,7 +1374,7 @@ pub(crate) fn import_skill_pack_with(
         cleanup_prepared_pack_import(home, &prepared);
         return Err(error);
     }
-    execute_and_cleanup_pack_import(home, prepared, agents, runner)
+    execute_and_cleanup_pack_import(home, &prepared, agents, runner)
 }
 
 fn prune_pack_trust_tokens(
@@ -1444,7 +1450,7 @@ fn preflight_pack_import_with(
             cleanup_prepared_pack_import(home, &prepared);
             return Err("Pack repository trust changed before import".to_string());
         }
-        return execute_and_cleanup_pack_import(home, prepared, &request.agents, runner)
+        return execute_and_cleanup_pack_import(home, &prepared, &request.agents, runner)
             .map(|result| PackImportPreflightResult::Imported { result });
     }
 
@@ -1456,12 +1462,9 @@ fn preflight_pack_import_with(
             return Err(error);
         }
     }
-    let mut tokens = match state.0.lock() {
-        Ok(tokens) => tokens,
-        Err(_) => {
-            cleanup_prepared_pack_import(home, &prepared);
-            return Err("Pack trust token state is unavailable".to_string());
-        }
+    let Ok(mut tokens) = state.0.lock() else {
+        cleanup_prepared_pack_import(home, &prepared);
+        return Err("Pack trust token state is unavailable".to_string());
     };
     prune_pack_trust_tokens(home, &mut tokens, Instant::now());
     tokens.insert(
@@ -1559,13 +1562,13 @@ pub fn reconcile_pack_import_staging_at_startup(home: &Path) -> Result<usize, St
 fn confirm_pack_import_trust_with(
     home: &Path,
     confirmation_token: &str,
-    request: PackImportRequest,
+    request: &PackImportRequest,
     gh: &dyn GhContentsFetch,
     runner: &dyn CommandRunner,
     state: &PackImportTrustState,
     write_lease: &super::write_lease::WriteLease,
 ) -> Result<ImportResult, String> {
-    validate_pack_import_request(&request)?;
+    validate_pack_import_request(request)?;
     let pending = {
         let mut tokens = state
             .0
@@ -1576,12 +1579,13 @@ fn confirm_pack_import_trust_with(
         let pending = tokens.get(confirmation_token).ok_or_else(|| {
             "Pack trust confirmation is invalid, expired, or already used".to_string()
         })?;
-        if pending.request != request {
+        if pending.request != *request {
             return Err("Pack trust confirmation does not match this import request".to_string());
         }
-        tokens
-            .remove(confirmation_token)
-            .expect("matching pack trust token remains while token state is locked")
+        tokens.remove(confirmation_token).ok_or_else(|| {
+            "Pack trust token vanished while its state was locked; request a new confirmation"
+                .to_string()
+        })?
     };
 
     let guard = match write_lease.try_acquire(home) {
@@ -1609,7 +1613,7 @@ fn confirm_pack_import_trust_with(
             return Err(error.to_string());
         }
     }
-    execute_and_cleanup_pack_import(home, pending.prepared, &request.agents, runner)
+    execute_and_cleanup_pack_import(home, &pending.prepared, &request.agents, runner)
 }
 
 // ============================================================================
@@ -1747,7 +1751,7 @@ pub async fn confirm_skill_pack_trust(
         let result = confirm_pack_import_trust_with(
             &home,
             &confirmation_token,
-            request,
+            &request,
             &RealGhContentsFetch { gh_bin },
             &RealCommandRunner::new(),
             &trust_state,
@@ -1855,7 +1859,7 @@ mod tests {
             self.calls
                 .lock()
                 .unwrap()
-                .push(args.iter().map(|s| s.to_string()).collect());
+                .push(args.iter().map(std::string::ToString::to_string).collect());
             if args == ["status", "--porcelain"] {
                 Ok(self.porcelain_output.clone())
             } else {
@@ -2622,7 +2626,7 @@ source = "someone/repo"
                 .unwrap(),
         );
 
-        confirm_pack_import_trust_with(tmp.path(), &token, request, &gh, &runner, &state, &lock)
+        confirm_pack_import_trust_with(tmp.path(), &token, &request, &gh, &runner, &state, &lock)
             .unwrap();
 
         assert_eq!(runner.calls.lock().unwrap().len(), 2);
@@ -2658,7 +2662,7 @@ source = "someone/repo"
                 .unwrap(),
         );
 
-        confirm_pack_import_trust_with(tmp.path(), &token, request, &gh, &runner, &state, &lock)
+        confirm_pack_import_trust_with(tmp.path(), &token, &request, &gh, &runner, &state, &lock)
             .unwrap();
 
         assert_eq!(*gh.heads.lock().unwrap(), vec!["2".repeat(40)]);
@@ -2699,7 +2703,7 @@ source = "someone/repo"
         let error = confirm_pack_import_trust_with(
             tmp.path(),
             &token,
-            request,
+            &request,
             &gh,
             &runner,
             &state,
@@ -2745,7 +2749,7 @@ source = "someone/repo"
         confirm_pack_import_trust_with(
             tmp.path(),
             &token,
-            request,
+            &request,
             &FakeGhContents { toml: None },
             &runner,
             &state,
@@ -2822,9 +2826,8 @@ source = "someone/repo"
         fs::create_dir_all(&local_pack).unwrap();
         let _listener = UnixListener::bind(local_pack.join("special.socket")).unwrap();
 
-        let error = match snapshot_local_pack(tmp.path(), &local_pack.to_string_lossy()) {
-            Ok(_) => panic!("special file snapshot unexpectedly succeeded"),
-            Err(error) => error,
+        let Err(error) = snapshot_local_pack(tmp.path(), &local_pack.to_string_lossy()) else {
+            panic!("special file snapshot unexpectedly succeeded")
         };
 
         assert!(error.contains("Refused to copy unsupported special file"));
@@ -2879,7 +2882,7 @@ source = "someone/repo"
         assert!(confirm_pack_import_trust_with(
             tmp.path(),
             &token,
-            request,
+            &request,
             &FakeGhContents { toml: None },
             &runner,
             &state,
@@ -3001,7 +3004,7 @@ source = "someone/repo"
                 confirm_pack_import_trust_with(
                     tmp.path(),
                     &token,
-                    request,
+                    &request,
                     &FakeGhContents { toml: None },
                     &runner,
                     &state,
@@ -3183,7 +3186,7 @@ source = "someone/repo"
         assert!(confirm_pack_import_trust_with(
             tmp.path(),
             &token,
-            mismatched,
+            &mismatched,
             &gh,
             &runner,
             &state,
@@ -3194,7 +3197,7 @@ source = "someone/repo"
         assert!(confirm_pack_import_trust_with(
             tmp.path(),
             &token,
-            request.clone(),
+            &request,
             &gh,
             &runner,
             &state,
@@ -3205,7 +3208,7 @@ source = "someone/repo"
         assert!(confirm_pack_import_trust_with(
             tmp.path(),
             &token,
-            request,
+            &request,
             &gh,
             &runner,
             &state,
@@ -3240,7 +3243,7 @@ source = "someone/repo"
         )
         .unwrap();
 
-        confirm_pack_import_trust_with(tmp.path(), &token, request, &gh, &runner, &state, &lock)
+        confirm_pack_import_trust_with(tmp.path(), &token, &request, &gh, &runner, &state, &lock)
             .unwrap();
 
         assert!(require_trusted_dotagents_identity(tmp.path(), "concurrent/repo").is_ok());
@@ -3271,7 +3274,7 @@ source = "someone/repo"
             assert!(confirm_pack_import_trust_with(
                 tmp.path(),
                 invalid_token,
-                request.clone(),
+                &request,
                 &gh,
                 &runner,
                 &state,
@@ -3570,9 +3573,11 @@ path = "../escape"
         };
         let mut toml_text = String::new();
         for i in 0..201 {
-            toml_text.push_str(&format!(
+            // Writing to a `String` never fails.
+            let _ = write!(
+                toml_text,
                 "\n[[skills]]\nname = \"skill-{i}\"\nsource = \"someone/skill-{i}\"\n"
-            ));
+            );
         }
         let gh = FakeGhContents {
             toml: Some(toml_text),

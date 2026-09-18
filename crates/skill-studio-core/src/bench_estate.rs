@@ -86,6 +86,9 @@ impl Rng {
         Rng(seed)
     }
 
+    // SplitMix64's own published constants; splitting them into groups
+    // would make them harder to check against the reference.
+    #[allow(clippy::unreadable_literal)]
     fn next_u64(&mut self) -> u64 {
         self.0 = self.0.wrapping_add(0x9E3779B97F4A7C15);
         let mut z = self.0;
@@ -275,7 +278,7 @@ pub fn estate(n: usize, seed: u64) -> GeneratedEstate {
     let mut description_lengths = Vec::with_capacity(n);
     for i in 0..n {
         let sign: isize = if i % 2 == 0 { 1 } else { -1 };
-        let delta = rng.range(0, 50) as isize;
+        let delta = isize::try_from(rng.range(0, 50)).unwrap_or(0);
         description_lengths.push((249 + sign * delta).max(10) as usize);
     }
     shuffle(&mut rng, &mut description_lengths);

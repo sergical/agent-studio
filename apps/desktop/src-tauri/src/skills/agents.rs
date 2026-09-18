@@ -345,7 +345,7 @@ const FIRST_CLASS_AGENTS: &[AgentId] = &[
 ];
 
 /// One directory an agent loads skills from. Label is the display name
-/// ("Claude Code", "OpenCode", "shared" for `~/.agents/skills`). Global vs.
+/// ("Claude Code", "`OpenCode`", "shared" for `~/.agents/skills`). Global vs.
 /// project scope is implied by `project_path`.
 #[derive(Debug, Clone)]
 pub struct SkillRoot {
@@ -356,9 +356,9 @@ pub struct SkillRoot {
 
 /// Every global and project skill root for the first-class agents plus the
 /// shared root: each first-class agent's own directory (from `AgentId`'s
-/// path methods, the single source of truth), OpenCode's older singular
+/// path methods, the single source of truth), `OpenCode`'s older singular
 /// `skill/` directory (kept as a fallback alongside `skills/`), and the
-/// shared `.agents/skills` root that Codex, OpenCode, pi, Cursor and Grok
+/// shared `.agents/skills` root that Codex, `OpenCode`, pi, Cursor and Grok
 /// Build all read.
 pub fn skill_roots(home: &Path, project_paths: &[PathBuf]) -> Vec<SkillRoot> {
     let mut roots = Vec::new();

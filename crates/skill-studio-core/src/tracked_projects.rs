@@ -131,7 +131,7 @@ pub fn entry_to_save(fs: &dyn ScopeFs, home: &Path, typed: &str) -> Result<PathB
     } else {
         let expanded = expand_home(typed_path, home);
         if !is_existing_dir(fs, &expanded) {
-            return Err(format!("No folder at {}.", trimmed));
+            return Err(format!("No folder at {trimmed}."));
         }
         if let (Ok(canonical_home), Ok(canonical_expanded)) =
             (fs.canonicalize(home), fs.canonicalize(&expanded))

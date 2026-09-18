@@ -19,18 +19,21 @@
     "typecheck:marketing": "npm run typecheck -w @skill-studio/marketing",
     "lint": "oxlint . --deny-warnings",
     "lint:fix": "oxlint --fix .",
-    "lint:rust": "cd apps/desktop/src-tauri && cargo clippy -- -D warnings",
+    "lint:rust": "cargo clippy --workspace --all-targets -- -D warnings",
     "format": "oxfmt .",
     "format:check": "oxfmt --check .",
     "fmt:rust": "cd apps/desktop/src-tauri && cargo fmt",
-    "test": "npm run test:anti-slop && npm run test -w skill-studio && npm run test -w @skill-studio/lib && npm run test -w @skill-studio/server && npm run test -w @skill-studio/marketing",
+    "test": "npm run test:anti-slop && npm run test:lint-set && npm run test -w skill-studio && npm run test -w @skill-studio/lib && npm run test -w @skill-studio/server && npm run test -w @skill-studio/marketing",
     "test:anti-slop": "vitest run tools/oxlint/anti-slop/shared/dictionary-types.integration.test.ts",
-    "check": "npm run typecheck && npm run lint && npm run format:check && npm run doctor && npm run test && npm run types:check -w skill-studio && cd apps/desktop/src-tauri && cargo fmt --check && cargo clippy -- -D warnings && cargo test",
+    "test:lint-set": "vitest run tools/oxlint/anti-slop/shared/lint-set-policy.integration.test.ts",
+    "knip": "knip",
+    "check": "npm run typecheck && npm run lint && npm run format:check && npm run doctor && npm run knip && npm run test && npm run types:check -w skill-studio && cargo fmt --all -- --check && cargo clippy --workspace --all-targets -- -D warnings && cargo test --workspace",
     "doctor": "react-doctor apps/desktop -y --no-score --no-supply-chain --blocking warning"
   },
   "devDependencies": {
     "@oxlint/plugins": "^1.80.0",
     "@playwright/test": "^1.63.0",
+    "knip": "^5.88.1",
     "react-doctor": "^0.9.12",
     "zod": "4.4.3"
   },
@@ -38,6 +41,7 @@
     "node": "^22.18.0 || >=24.11.0"
   },
   "allowScripts": {
+    "esbuild@0.28.1": true,
     "esbuild@0.28.2": true,
     "fsevents@2.3.3": true
   }

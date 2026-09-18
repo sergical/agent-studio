@@ -1,4 +1,4 @@
-//! Reads OpenCode's `session_message` (v2) and `part` (v1) tables into an
+//! Reads `OpenCode`'s `session_message` (v2) and `part` (v1) tables into an
 //! [`IndexedDatabase`], re-querying only the rows whose `time_updated`
 //! advanced past the cached watermark. See `discovery.rs`'s module doc for
 //! why the database is opened the way it is.

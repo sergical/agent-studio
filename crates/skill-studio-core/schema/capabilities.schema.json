@@ -129,7 +129,7 @@
           "const": "codex_skills_config"
         },
         {
-          "description": "OpenCode `opencode.json(c)` permission rule `{ action: \"skill\",\nresource, effect }` (v2) or `permission.skill` map (v1).",
+          "description": "`OpenCode` `opencode.json(c)` permission rule `{ action: \"skill\",\nresource, effect }` (v2) or `permission.skill` map (v1).",
           "type": "string",
           "const": "opencode_permission"
         },
@@ -159,7 +159,7 @@
           "const": "codex-config"
         },
         {
-          "description": "OpenCode `permission.skill` deny.",
+          "description": "`OpenCode` `permission.skill` deny.",
           "type": "string",
           "const": "opencode-permission"
         },

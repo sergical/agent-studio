@@ -2,6 +2,41 @@
 members = ["crates/*", "apps/desktop/src-tauri", "apps/cli", "apps/mcp"]
 resolver = "2"
 
+[workspace.lints.rust]
+unsafe_code = "forbid"
+
+[workspace.lints.clippy]
+all = { level = "warn", priority = -1 }
+pedantic = { level = "warn", priority = -1 }
+unwrap_used = "deny"
+expect_used = "deny"
+panic = "deny"
+todo = "deny"
+unimplemented = "deny"
+dbg_macro = "deny"
+print_stdout = "deny"
+print_stderr = "deny"
+# Pure churn with no safety or clarity gain for this workspace; allowed at
+# the workspace level per plan.md section 7.
+module_name_repetitions = "allow"
+missing_errors_doc = "allow"
+missing_panics_doc = "allow"
+must_use_candidate = "allow"
+too_many_lines = "allow"
+struct_excessive_bools = "allow"
+similar_names = "allow"
+cast_possible_truncation = "allow"
+cast_sign_loss = "allow"
+cast_precision_loss = "allow"
+# `Default::default()` inside a struct literal already names the field and
+# its type on the left of the `:`; spelling the type out again on the right
+# is pure churn repeated ~75 times across the workspace.
+default_trait_access = "allow"
+# A one-off struct declared next to the single test that deserializes into
+# it (matching another crate's on-disk shape, say) reads better right where
+# it's used than hoisted above the test's setup code.
+items_after_statements = "allow"
+
 # A debug-build scan of a real home spends most of its time inside
 # dependencies (hashing, tokenizing, regex, JSON), about 10x slower than
 # release. Optimize only dependencies so workspace crates keep fast

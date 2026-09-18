@@ -6,6 +6,7 @@
 
 use std::cell::Cell;
 use std::collections::{BTreeMap, HashMap, HashSet};
+use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
 use std::time::Duration;
@@ -258,14 +259,10 @@ impl<T: Outcome> ResultEnvelope<T> {
     /// the first error's code. Partial wins over issues.
     pub fn exit_status(&self) -> i32 {
         match self.status {
-            OpStatus::Ok if self.data.as_ref().is_some_and(|d| d.found_issues()) => 1,
+            OpStatus::Ok if self.data.as_ref().is_some_and(Outcome::found_issues) => 1,
             OpStatus::Ok => 0,
             OpStatus::Partial => ErrorCode::Incomplete.exit_status(),
-            OpStatus::Error => self
-                .errors
-                .first()
-                .map(|e| e.code.exit_status())
-                .unwrap_or(1),
+            OpStatus::Error => self.errors.first().map_or(1, |e| e.code.exit_status()),
         }
     }
 }
@@ -372,16 +369,16 @@ pub(crate) fn scan_inner(
     // Global before project, in all four loops, is the read-budget invariant
     // the module doc promises.
     let step_start = clock.monotonic();
-    for target in global_targets {
+    for target in &global_targets {
         scan_one_target(&sc, target, &mut accum)?;
     }
-    for target in global_plugin_targets {
+    for target in &global_plugin_targets {
         scan_one_plugin_target(&sc, target, &mut accum)?;
     }
-    for target in project_targets {
+    for target in &project_targets {
         scan_one_target(&sc, target, &mut accum)?;
     }
-    for target in project_plugin_targets {
+    for target in &project_plugin_targets {
         scan_one_plugin_target(&sc, target, &mut accum)?;
     }
     op_steps.push(crate::timing::step(clock, "roots_walk", step_start));
@@ -546,7 +543,7 @@ struct CachedSkillRead {
 /// The body of `scan_inner`'s former `for target in scan_targets(rt)` loop.
 fn scan_one_target(
     sc: &ScanCtx,
-    target: ScanTarget,
+    target: &ScanTarget,
     accum: &mut ScanAccum,
 ) -> Result<(), CoreError> {
     sc.ctx.checkpoint()?;
@@ -588,7 +585,7 @@ fn scan_one_target(
                     disable_sources: sc.disable_sources,
                     scope_ledgers: sc.scope_ledgers,
                     home_registry: sc.home_registry,
-                    target: &target,
+                    target,
                     base_dir: &target.path,
                     whole_dir_link,
                     forced_disabled_by: None,
@@ -609,7 +606,7 @@ fn scan_one_target(
         }
     }
 
-    scan_move_aside_dir(sc, &target, whole_dir_link, accum)
+    scan_move_aside_dir(sc, target, whole_dir_link, accum)
 }
 
 /// True when `path` cannot be listed because nothing is there:
@@ -670,7 +667,7 @@ fn scan_move_aside_dir(
 /// `for target in plugin_scan_targets(rt)` loop.
 fn scan_one_plugin_target(
     sc: &ScanCtx,
-    target: PluginCacheTarget,
+    target: &PluginCacheTarget,
     accum: &mut ScanAccum,
 ) -> Result<(), CoreError> {
     sc.ctx.checkpoint()?;
@@ -694,7 +691,7 @@ fn scan_one_plugin_target(
         return Ok(());
     }
     let walk_start = sc.rt.ports.clock.monotonic();
-    let plugin_skills = enumerate_plugin_skills(sc.fs, &target);
+    let plugin_skills = enumerate_plugin_skills(sc.fs, target);
     ScanTimings::add(
         &sc.timings.plugin_cache_walk,
         sc.rt.ports.clock.monotonic().saturating_sub(walk_start),
@@ -1441,29 +1438,17 @@ struct PluginSkillDir {
     source: PluginSourceDto,
 }
 
-/// Parses a `plugin.json`-shaped manifest leniently: only `name` is
-/// required; a missing, unreadable, or malformed manifest yields `None`
-/// rather than failing the walk. Reports "no plugin here" instead of
-/// guessing a name from the directory.
-fn read_plugin_manifest(fs: &dyn ScopeFs, plugin_dir: &Path) -> Option<Option<String>> {
-    for candidate in PLUGIN_MANIFEST_CANDIDATES {
-        let manifest_path = plugin_dir.join(candidate);
-        let Ok(bytes) = fs.read_capped(&manifest_path, SKILL_MD_MAX_BYTES) else {
-            continue;
-        };
-        let Ok(value) = serde_json::from_slice::<serde_json::Value>(&bytes) else {
-            return Some(None);
-        };
-        if value.get("name").and_then(|v| v.as_str()).is_some() {
-            let version = value
-                .get("version")
-                .and_then(|v| v.as_str())
-                .map(str::to_string);
-            return Some(version);
-        }
-        return Some(None);
-    }
-    None
+/// Reports whether `plugin_dir` holds one of [`PLUGIN_MANIFEST_CANDIDATES`],
+/// leniently: a manifest that exists but fails to parse as JSON, or parses
+/// without a `name`, still counts as "a plugin is here" rather than failing
+/// the walk. Only presence matters to the caller; the manifest's own fields
+/// (`name`, `version`) come from the path components in
+/// [`enumerate_plugin_skills`] instead.
+fn plugin_manifest_present(fs: &dyn ScopeFs, plugin_dir: &Path) -> bool {
+    PLUGIN_MANIFEST_CANDIDATES.iter().any(|candidate| {
+        fs.read_capped(&plugin_dir.join(candidate), SKILL_MD_MAX_BYTES)
+            .is_ok()
+    })
 }
 
 /// Walks a plugin cache tree up to [`PLUGIN_CACHE_MAX_DEPTH`] levels for
@@ -1533,7 +1518,7 @@ fn walk_for_plugin_roots(
             continue;
         }
         let path = dir.join(&entry.name);
-        if read_plugin_manifest(fs, &path).is_some() {
+        if plugin_manifest_present(fs, &path) {
             found.push(path);
             continue;
         }
@@ -1543,7 +1528,7 @@ fn walk_for_plugin_roots(
     }
 }
 
-/// Codex and OpenCode's own per-skill disable switches, read once per
+/// Codex and `OpenCode`'s own per-skill disable switches, read once per
 /// `scan` call (they are global config files, not per-root).
 struct DisableSources {
     /// Canonical `SKILL.md` paths Codex's `[[skills.config]] enabled =
@@ -1702,7 +1687,7 @@ fn codex_next_table_position(table: &toml_edit::Table, removed_position: isize) 
     let mut next = table
         .position()
         .filter(|position| *position > removed_position);
-    for (_, item) in table.iter() {
+    for (_, item) in table {
         let child_next = match item {
             toml_edit::Item::Table(child) => codex_next_table_position(child, removed_position),
             toml_edit::Item::ArrayOfTables(array) => array
@@ -1751,8 +1736,9 @@ fn codex_rehome_table_decor(
     if let Some(next_position) =
         removed_position.and_then(|position| codex_next_table_position(doc.as_table(), position))
     {
-        let next = codex_table_at_position_mut(doc.as_table_mut(), next_position)
-            .expect("codex_next_table_position returned an existing table");
+        let Some(next) = codex_table_at_position_mut(doc.as_table_mut(), next_position) else {
+            unreachable!("codex_next_table_position returned an existing table");
+        };
         codex_prepend_table_decor(next, text);
         return;
     }
@@ -1827,9 +1813,11 @@ fn codex_write_disabled_row(
     if !disabled {
         if let Some(idx) = existing {
             let (removed_decor, array_is_empty) = {
-                let array = doc["skills"]["config"].as_array_of_tables_mut().expect(
-                    "codex_find_row_index only returns Some when this is an array of tables",
-                );
+                let Some(array) = doc["skills"]["config"].as_array_of_tables_mut() else {
+                    unreachable!(
+                        "codex_find_row_index only returns Some when this is an array of tables"
+                    );
+                };
                 let removed = array.remove(idx);
                 let removed_decor = CodexOrphanedTableDecor {
                     position: removed.position(),
@@ -1845,9 +1833,9 @@ fn codex_write_disabled_row(
 
             let mut orphaned_decor = removed_decor.into_iter().collect::<Vec<_>>();
             let remove_skills = {
-                let skills_table = doc["skills"]
-                    .as_table_mut()
-                    .expect("skills is a table when config was");
+                let Some(skills_table) = doc["skills"].as_table_mut() else {
+                    unreachable!("skills is a table when config was");
+                };
                 if array_is_empty {
                     skills_table.remove("config");
                 }
@@ -1921,12 +1909,13 @@ pub fn codex_rewrite_skill_path(
     let Some(idx) = codex_find_row_index(&doc, old_skill_md) else {
         return Ok(());
     };
-    let rows = doc["skills"]["config"]
-        .as_array_of_tables_mut()
-        .expect("codex_find_row_index only returns Some when this is an array of tables");
-    rows.get_mut(idx)
-        .expect("codex_find_row_index returned a valid index")["path"] =
-        toml_edit::value(new_skill_md.to_string_lossy().to_string());
+    let Some(rows) = doc["skills"]["config"].as_array_of_tables_mut() else {
+        unreachable!("codex_find_row_index only returns Some when this is an array of tables");
+    };
+    let Some(row) = rows.get_mut(idx) else {
+        unreachable!("codex_find_row_index returned a valid index");
+    };
+    row["path"] = toml_edit::value(new_skill_md.to_string_lossy().to_string());
     codex_write_config_document(rt, fs, guard, codex_home, &doc)
 }
 
@@ -1938,10 +1927,10 @@ fn codex_write_config_document(
     doc: &toml_edit::DocumentMut,
 ) -> Result<(), CoreError> {
     let path = codex_config_path(codex_home);
-    let parent = path
-        .parent()
-        .expect("config.toml always has a parent")
-        .to_path_buf();
+    let Some(parent) = path.parent() else {
+        unreachable!("config.toml always has a parent");
+    };
+    let parent = parent.to_path_buf();
     let scoped_parent = crate::ports::confine(&rt.scope, fs, &parent)?;
     fs.create_dir_all(guard, &scoped_parent)
         .map_err(|e| CoreError::io(&parent, e))?;
@@ -2024,10 +2013,10 @@ pub fn set_codex_sidecar_implicit_invocation(
         }
     }
 
-    let parent = path
-        .parent()
-        .expect("openai.yaml always has a parent")
-        .to_path_buf();
+    let Some(parent) = path.parent() else {
+        unreachable!("openai.yaml always has a parent");
+    };
+    let parent = parent.to_path_buf();
     let scoped_parent = crate::ports::confine(&rt.scope, fs, &parent)?;
     fs.create_dir_all(&guard, &scoped_parent)
         .map_err(|e| CoreError::io(&parent, e))?;
@@ -2258,11 +2247,12 @@ fn classify_owner(cx: &OwnerClassifyContext) -> (LifecycleOwnerKind, Option<Owne
     // `scope_ledgers` always has an entry for both the home scope and every
     // tracked project (`scan_inner`), even when neither ledger file exists,
     // so an empty ledger and a missing one behave the same: no dotagents or
-    // skills.sh entry, fall through to `InRepo`/`Manual` below.
-    let ledger = cx
-        .scope_ledgers
-        .get(cx.scope)
-        .expect("scan_inner populates a ledger for every scope it walks");
+    // skills.sh entry, fall through to the checks below. A missing entry is
+    // therefore a caller bug, not a "no ledger" case: silently skipping the
+    // symlink and universal-root carve-outs would misclassify the skill.
+    let Some(ledger) = cx.scope_ledgers.get(cx.scope) else {
+        unreachable!("scan_inner populates a ledger for every scope it classifies")
+    };
 
     let dotagents_entry = ledger.dotagents.iter().find(|d| d.name == cx.skill_name);
     let skills_sh_entry = lock_file::is_skill_installed(&ledger.lock, cx.skill_name);
@@ -2277,10 +2267,10 @@ fn classify_owner(cx: &OwnerClassifyContext) -> (LifecycleOwnerKind, Option<Owne
             project_label(cx.scope).as_deref(),
             cx.skill_name,
         );
-        return if !entry.has_manifest_row {
-            (LifecycleOwnerKind::WildcardDotagents, Some(owner))
-        } else {
+        return if entry.has_manifest_row {
             (LifecycleOwnerKind::Dotagents, Some(owner))
+        } else {
+            (LifecycleOwnerKind::WildcardDotagents, Some(owner))
         };
     }
 
@@ -2335,7 +2325,7 @@ fn project_label(scope: &RootScope) -> Option<String> {
 
 /// The `dep:v1` id's harness/universal path segment for a root, matching the
 /// desktop's `harness_slot` (`skill_deployment.rs`): every harness's own
-/// wire id, except OpenCode, whose slot is the un-hyphenated CLI name
+/// wire id, except `OpenCode`, whose slot is the un-hyphenated CLI name
 /// `opencode`; `universal` for the shared and parked roots.
 fn harness_slot(id: &AgentId) -> String {
     if id.as_str() == AgentId::OPEN_CODE {
@@ -2386,7 +2376,7 @@ fn deployment_id(
         DeploymentId::PREFIX,
         encode_id_path(&lexical_entry.to_string_lossy())
     );
-    DeploymentId::parse(&raw).expect("well-formed deployment id")
+    DeploymentId::derived(raw)
 }
 
 /// Derives the owner id for a skills.sh-owned deployment. Matches the
@@ -2399,7 +2389,7 @@ fn owner_id(scope_label: &str, project_path: Option<&str>, skill_name: &str) -> 
         }
         _ => format!("owner:v1/project/-/{skill_name}"),
     };
-    OwnerId::parse(&raw).expect("well-formed owner id")
+    OwnerId::derived(raw)
 }
 
 /// Content fingerprint over a deployment's whole directory tree: sha256 over
@@ -2467,7 +2457,7 @@ impl SkillMdBytes<'_> {
     }
 }
 
-/// The embedded cl100k_base vocab is loaded once per process.
+/// The embedded `cl100k_base` vocab is loaded once per process.
 static TOKENIZER: OnceLock<Option<CoreBPE>> = OnceLock::new();
 
 fn tokenizer() -> Option<&'static CoreBPE> {
@@ -2476,12 +2466,10 @@ fn tokenizer() -> Option<&'static CoreBPE> {
         .as_ref()
 }
 
-/// Token count of `text`, cl100k_base. `None` tokenizer (the embedded vocab
+/// Token count of `text`, `cl100k_base`. `None` tokenizer (the embedded vocab
 /// failed to build, which should never happen) yields 0.
 fn count_tokens(text: &str, tokenizer: Option<&CoreBPE>) -> u32 {
-    tokenizer
-        .map(|bpe| bpe.encode_with_special_tokens(text).len() as u32)
-        .unwrap_or(0)
+    tokenizer.map_or(0, |bpe| bpe.encode_with_special_tokens(text).len() as u32)
 }
 
 /// True when `skill_dir` follows a symlink to an existing file or directory.
@@ -2719,11 +2707,12 @@ fn content_hash_from_walk(
             Err(_) => remaining = 0,
         }
     }
-    Ok(hasher
-        .finalize()
-        .iter()
-        .map(|b| format!("{b:02x}"))
-        .collect())
+    let digest = hasher.finalize();
+    let mut hex = String::with_capacity(digest.len() * 2);
+    for byte in digest {
+        write!(hex, "{byte:02x}").ok();
+    }
+    Ok(hex)
 }
 
 /// Every content fact about a skill folder that [`DeploymentDto`] carries,
@@ -3606,8 +3595,13 @@ pub fn apply_frontmatter_repair(
     // check and `restore_event` compare a live path against, and it is not
     // the same hash as `Fingerprint::of_bytes` over the raw text used above
     // to compare `SKILL.md` bytes against `preview.proposed_fingerprint`.
-    let post_fingerprint =
-        crate::events::fingerprint_path(fs, &path)?.expect("just wrote this path; it exists");
+    let post_fingerprint = crate::events::fingerprint_path(fs, &path)?.ok_or_else(|| {
+        CoreError::new(
+            ErrorCode::ExecutionFailed,
+            "the file just written is missing on the immediate re-read",
+        )
+        .at(&path)
+    })?;
     session.store.finish(
         &session.guard,
         &id,
@@ -3668,7 +3662,10 @@ pub fn list_events(
         after: req.after.clone(),
     };
     let rows = store.list(&filter)?;
-    let mut dtos: Vec<EventDto> = rows.iter().map(|r| r.to_dto()).collect();
+    let mut dtos: Vec<EventDto> = rows
+        .iter()
+        .map(super::events::EventRecord::to_dto)
+        .collect();
     let list_step = crate::timing::step(clock, "open_and_list", step_start);
     let step_start = clock.monotonic();
     if req.check_drift {
@@ -3693,7 +3690,9 @@ pub fn list_events(
                 continue;
             };
             let live = crate::events::fingerprint_path(fs, Path::new(path))?;
-            let live = live.as_ref().map(|f| f.bare_hex()).unwrap_or("absent");
+            let live = live
+                .as_ref()
+                .map_or("absent", super::identity::Fingerprint::bare_hex);
             dto.drift = if live == post {
                 DriftState::Clean
             } else {
@@ -3761,10 +3760,12 @@ pub fn restore_event(
         }
         crate::dto::RestoreCapability::Yes => {}
     }
-    let inverse = target
-        .inverse
-        .as_ref()
-        .expect("restore_capability() == Yes implies an inverse");
+    let inverse = target.inverse.as_ref().ok_or_else(|| {
+        CoreError::new(
+            ErrorCode::Unsupported,
+            "restore_capability() reported Yes but the event has no inverse",
+        )
+    })?;
     let (path, pre, post) =
         crate::events::parse_restore_backup_inverse(inverse).ok_or_else(|| {
             CoreError::new(
@@ -3780,8 +3781,7 @@ pub fn restore_event(
     let live_fingerprint = crate::events::fingerprint_path(fs, &path)?;
     let live = live_fingerprint
         .as_ref()
-        .map(|f| f.bare_hex())
-        .unwrap_or("absent");
+        .map_or("absent", super::identity::Fingerprint::bare_hex);
     if live != expected && !req.force {
         return Err(CoreError::new(
             ErrorCode::DriftConflict,

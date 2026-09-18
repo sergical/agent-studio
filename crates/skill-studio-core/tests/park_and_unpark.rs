@@ -1,3 +1,8 @@
+// Integration test binaries aren't covered by the lib crate's
+// `cfg_attr(test, allow(...))`: this file compiles as its own crate, so
+// the same allow needs to be declared here too.
+#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+
 //! Real-disk integration tests for `ops::park` and `ops::unpark`.
 //!
 //! Like `repair_and_restore.rs`, these use `skill-studio-host`'s real
@@ -7,7 +12,7 @@
 use std::path::Path;
 use std::sync::Arc;
 
-use skill_studio_core::dto::{ListEventsRequest, ParkRequest, UnparkRequest};
+use skill_studio_core::dto::{ListEventsRequest, ParkRequest, ScanRequest, UnparkRequest};
 use skill_studio_core::harness::HarnessCatalog;
 use skill_studio_core::identity::{BackingRelationship, RootKind};
 use skill_studio_core::ops;
@@ -63,7 +68,7 @@ fn runtime_for(home: &Path) -> Runtime {
 }
 
 fn universal_deployment_id(rt: &Runtime) -> skill_studio_core::identity::DeploymentId {
-    let inventory = ops::scan(rt, &ctx(), &Default::default()).unwrap();
+    let inventory = ops::scan(rt, &ctx(), &ScanRequest::default()).unwrap();
     let skill = inventory
         .skills
         .iter()
@@ -78,7 +83,7 @@ fn universal_deployment_id(rt: &Runtime) -> skill_studio_core::identity::Deploym
         .clone()
 }
 
-/// park_universal_skill_moves_directory_and_removes_the_claude_link: the
+/// `park_universal_skill_moves_directory_and_removes_the_claude_link`: the
 /// directory leaves `.agents/skills` for `.agents/skills-parked`, and the
 /// Claude Code per-skill link that pointed at it is gone, not left dangling.
 #[test]
@@ -101,7 +106,7 @@ fn park_universal_skill_moves_directory_and_removes_the_claude_link() {
     std::fs::remove_dir_all(&home).ok();
 }
 
-/// park_then_unpark_restores_the_universal_skill_and_the_claude_link: the
+/// `park_then_unpark_restores_the_universal_skill_and_the_claude_link`: the
 /// reverse of the above, driven by the journal row `park` wrote (this build
 /// carries no generic `inverse`; `unpark` finds its own `park` row by skill
 /// name and un-recorded `reverted_by`, per its own doc comment).
@@ -120,7 +125,7 @@ fn park_then_unpark_restores_the_universal_skill_and_the_claude_link() {
 
     let park_outcome = ops::park(&rt, &ctx(), &ParkRequest { deployment_id }).unwrap();
 
-    let inventory = ops::scan(&rt, &ctx(), &Default::default()).unwrap();
+    let inventory = ops::scan(&rt, &ctx(), &ScanRequest::default()).unwrap();
     let parked = inventory
         .skills
         .iter()
@@ -159,7 +164,7 @@ fn park_then_unpark_restores_the_universal_skill_and_the_claude_link() {
     std::fs::remove_dir_all(&home).ok();
 }
 
-/// park_journal_row_is_durable_before_the_directory_moves: `record` runs
+/// `park_journal_row_is_durable_before_the_directory_moves`: `record` runs
 /// before any filesystem step. Proven by failing the rename after `record`
 /// already ran: the row exists (and, once recovery runs, reads
 /// `interrupted`) even though the directory never moved.
@@ -211,7 +216,7 @@ fn park_journal_row_is_durable_before_the_directory_moves() {
     std::fs::remove_dir_all(&home).ok();
 }
 
-/// cli_and_direct_calls_produce_the_same_disk_state_for_park: the CLI's
+/// `cli_and_direct_calls_produce_the_same_disk_state_for_park`: the CLI's
 /// `run_park` is a thin wrapper over `ops::park` (see `apps/cli/src/main.rs`)
 /// with no logic of its own; this asserts the one thing that could still
 /// differ between two adapters calling the same op - the disk state left

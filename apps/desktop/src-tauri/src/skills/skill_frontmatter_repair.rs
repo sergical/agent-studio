@@ -4,6 +4,7 @@
 // a top-level name or description scalar.
 // ============================================================================
 
+use std::fmt::Write as _;
 use std::fs;
 use std::path::{Path, PathBuf};
 
@@ -67,7 +68,14 @@ struct FrontmatterRepairIntent {
 
 fn content_fingerprint(bytes: &[u8]) -> String {
     let digest = Sha256::digest(bytes);
-    let hex: String = digest.iter().map(|byte| format!("{byte:02x}")).collect();
+    // One `write!` per byte into a pre-sized `String`, rather than collecting
+    // a `Vec<String>` of two-char fragments.
+    let hex = digest
+        .iter()
+        .fold(String::with_capacity(digest.len() * 2), |mut acc, byte| {
+            let _ = write!(acc, "{byte:02x}");
+            acc
+        });
     format!("sha256:{hex}")
 }
 
@@ -143,7 +151,7 @@ pub fn propose_colon_scalar_repair(content: &str) -> Result<(String, String), St
     }
 
     let replacement = if *key == "description" {
-        format!("description: |-{}  {}", separator, value)
+        format!("description: |-{separator}  {value}")
     } else {
         let quoted = serde_yaml::to_string(value)
             .map_err(|error| format!("Could not quote name: {error}"))?
@@ -161,9 +169,8 @@ pub fn propose_colon_scalar_repair(content: &str) -> Result<(String, String), St
         proposed.push_str(separator);
     }
 
-    let parsed = match parse_frontmatter(&proposed) {
-        FrontmatterParseResult::Valid(parsed) => parsed,
-        _ => return Err("The proposed repair does not parse successfully".to_string()),
+    let FrontmatterParseResult::Valid(parsed) = parse_frontmatter(&proposed) else {
+        return Err("The proposed repair does not parse successfully".to_string());
     };
     let repaired_value = if *key == "description" {
         parsed.description.as_deref()
@@ -484,7 +491,7 @@ pub async fn apply_skill_frontmatter_repair(
             store.backup_paths(&event_id, std::slice::from_ref(&skill_md))?;
             store.record(
                 &event_id,
-                EventDraft {
+                &EventDraft {
                     kind: "repair_skill_frontmatter".to_string(),
                     skill: name.clone(),
                     harness: None,
@@ -633,7 +640,7 @@ mod tests {
         store
             .record(
                 event_id,
-                EventDraft {
+                &EventDraft {
                     kind: "repair_skill_frontmatter".to_string(),
                     skill: "sample".to_string(),
                     harness: None,

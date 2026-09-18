@@ -935,13 +935,22 @@ impl OpContext {
     /// Files this call's timing, replacing any timing an op it called
     /// (e.g. `scan` inside `diagnose`) filed first.
     pub fn record_timing(&self, timing: crate::timing::OpTiming) {
-        *self.timing.lock().unwrap() = Some(timing);
+        // A poisoned mutex still holds a usable `Option`; a timing record is
+        // best-effort telemetry, not worth propagating a panic for.
+        let mut guard = self
+            .timing
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        *guard = Some(timing);
     }
 
     /// Takes the timing the last op function run through this context
     /// filed, leaving `None` behind.
     pub fn take_timing(&self) -> Option<crate::timing::OpTiming> {
-        self.timing.lock().unwrap().take()
+        self.timing
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .take()
     }
 }
 
