@@ -116,6 +116,37 @@ fn opencode_deny_write_follows_a_symlinked_config_dir_or_names_the_refused_write
     assert_eq!(value["permission"]["skill"]["find-bugs"], "deny");
 }
 
+/// Flow: `set_skill_denied` writes a fresh deny for `epsilon`, and the same
+/// module's own reader reads the file back.
+/// Expectation: `read_denied_patterns` reports exactly `["epsilon"]`, and
+/// the on-disk JSON actually holds the `permission.skill.epsilon` key the
+/// write claims to have made - the reader's answer is checked against the
+/// reader itself deriving from the write, not against a hand-typed shape
+/// string.
+/// Failure here (a mismatch, or the JSON pointer missing) would mean the
+/// write and the read have silently drifted apart.
+#[test]
+fn set_skill_denied_writes_the_shape_read_denied_patterns_reads_back_or_names_the_key_it_wrote() {
+    let tmp = tempfile::tempdir().unwrap();
+    let config_dir = tmp.path();
+
+    deny(config_dir, "epsilon", true);
+
+    let content = std::fs::read_to_string(opencode_json_path(config_dir)).unwrap();
+    let value: serde_json::Value = serde_json::from_str(&content).unwrap();
+    assert_eq!(
+        value.pointer("/permission/skill/epsilon"),
+        Some(&serde_json::Value::String("deny".to_string())),
+        "the JSON pointer for the written key is missing: {value}"
+    );
+
+    let fs = RealFs::new();
+    assert_eq!(
+        read_denied_patterns(&fs, config_dir),
+        vec!["epsilon".to_string()]
+    );
+}
+
 /// Flow: only `opencode.jsonc` exists in the config directory (no `.json`
 /// sibling).
 /// Expectation: the write refuses rather than creating a `.json` file
