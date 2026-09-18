@@ -94,7 +94,6 @@ pub async fn save_harnesses_choice(
 mod tests {
     use super::*;
     use skill_studio_core::harness::HarnessState;
-    use skill_studio_core::identity::AgentId as CoreAgentId;
     use skill_studio_core::ports::{OpContext, Ports, Runtime};
     use skill_studio_core::{harness::HarnessCatalog, RuntimeScope};
     use std::sync::Arc;
@@ -137,7 +136,6 @@ mod tests {
         let inventory =
             ops::scan(&rt, &ctx, &skill_studio_core::dto::ScanRequest::default()).unwrap();
         assert!(inventory.skills.is_empty());
-        let _ = CoreAgentId::from(CoreAgentId::CLAUDE_CODE);
     }
 
     /// `detect_finds_claude_code_and_codex_and_reports_pi_and_opencode_not_found_or_names_the_wrong_row`:
