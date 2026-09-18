@@ -347,7 +347,7 @@
           "const": "codex-config"
         },
         {
-          "description": "OpenCode `permission.skill` deny.",
+          "description": "`OpenCode` `permission.skill` deny.",
           "type": "string",
           "const": "opencode-permission"
         },
@@ -566,7 +566,7 @@
           ]
         },
         {
-          "description": "A legacy directory a harness still reads (OpenCode `skill/`).",
+          "description": "A legacy directory a harness still reads (`OpenCode` `skill/`).",
           "type": "object",
           "properties": {
             "harness": {
