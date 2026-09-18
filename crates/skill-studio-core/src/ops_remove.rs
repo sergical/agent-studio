@@ -527,7 +527,10 @@ pub fn remove(
 /// startup, after its first scan, off the UI thread (unit 3.9b); other
 /// hosts may schedule it too. Same exclusive lease and [`prune_quarantine`]
 /// call `remove` uses; the triggering-skill field on the resulting journal
-/// row is a fixed sentinel since no one skill triggered this sweep.
+/// row is empty since no one skill triggered this sweep - `SkillName` has
+/// no `Option` of its own, so an empty name is the sentinel, and Activity
+/// renders the row without a skill subject when it sees one (see
+/// `SkillHistorySection.tsx`).
 pub fn sweep_quarantine(rt: &Runtime, ctx: &OpContext, scope: &RootScope) -> Result<(), CoreError> {
     ctx.checkpoint()?;
     let mut session = MutationSession::begin(rt, ctx)?;
@@ -535,8 +538,8 @@ pub fn sweep_quarantine(rt: &Runtime, ctx: &OpContext, scope: &RootScope) -> Res
     let universal_root =
         crate::ops_install::scope_root(rt, scope).join(crate::identity::UNIVERSAL_ROOT_RELATIVE);
     let quarantine_dir = universal_root.join(crate::doctor::QUARANTINE_DIR_NAME);
-    let sentinel = crate::identity::SkillName("quarantine-sweep".to_string());
-    prune_quarantine(rt, &mut session, fs, &quarantine_dir, &sentinel);
+    let no_triggering_skill = crate::identity::SkillName(String::new());
+    prune_quarantine(rt, &mut session, fs, &quarantine_dir, &no_triggering_skill);
     session.finish(rt, ctx);
     Ok(())
 }
