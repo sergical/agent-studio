@@ -274,9 +274,7 @@ mod tests {
     /// direct-deployment target), matching what `lifecycleTargetForSkill`
     /// sends for Fork, `SkillsSh` and Dotagents owners: `{ owner_id }` with
     /// `deployment_id` absent.
-    fn single_owner_target_fixture(
-        root: &Path,
-    ) -> (skill_refresh::SkillSnapshot, LifecycleTarget) {
+    fn single_owner_target_fixture(root: &Path) -> (skill_refresh::SkillSnapshot, LifecycleTarget) {
         use super::super::skill_deployment::{
             deployment_id, BackingRelationship, DeploymentMutability, SkillDestination,
         };
@@ -695,15 +693,15 @@ mod tests {
     /// owner target against a fresh snapshot and hand the runtime builder
     /// the resolved deployment's id, not reject it for lacking one.
     #[tokio::test(flavor = "current_thread")]
-    async fn remove_of_an_owner_target_resolves_the_canonical_deployment_or_names_the_missing_id()
-    {
+    async fn remove_of_an_owner_target_resolves_the_canonical_deployment_or_names_the_missing_id() {
         use std::sync::Arc;
 
         let tmp = tempfile::tempdir().unwrap();
         let (snapshot, target) = single_owner_target_fixture(tmp.path());
         let expected_id = snapshot.skills[0].deployments[0].id.clone();
 
-        let built_with_id: Arc<std::sync::Mutex<Option<String>>> = Arc::new(std::sync::Mutex::new(None));
+        let built_with_id: Arc<std::sync::Mutex<Option<String>>> =
+            Arc::new(std::sync::Mutex::new(None));
         let record_id = built_with_id.clone();
 
         let _ = remove_with_runtime(
