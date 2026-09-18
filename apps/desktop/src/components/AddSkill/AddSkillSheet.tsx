@@ -36,6 +36,7 @@ import { SkillDestinationSelector } from "../SkillStore/SkillDestinationSelector
 import { CheckboxControl } from "../ui/CheckboxControl";
 import { availableAddSkillMethods, isAddSkillFormValid } from "./add-skill-form";
 import { TrustConfirmFooter } from "./TrustConfirmFooter";
+import type { PackTrustState } from "./TrustConfirmFooter";
 import type { AddSkillSheetMethod } from "./add-skill-form";
 import {
   abandonPackImportTrust,
@@ -1067,8 +1068,6 @@ function ManualTabFields({
     </>
   );
 }
-
-type PackTrustState = { identities: string[]; confirmationToken: string; requestKey: string };
 
 /** The normal Cancel/Submit footer, with its in-progress and terminal-failure copy. */
 function SubmitFooter({

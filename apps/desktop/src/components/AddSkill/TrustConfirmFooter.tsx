@@ -7,7 +7,11 @@
 
 import { Button } from "@skill-studio/ui";
 
-type PackTrustState = { identities: string[]; confirmationToken: string; requestKey: string };
+export type PackTrustState = {
+  identities: string[];
+  confirmationToken: string;
+  requestKey: string;
+};
 
 export function TrustConfirmFooter({
   packTrust,
