@@ -29,13 +29,18 @@ use skill_studio_host::{FileLease, RealFs, SqliteHistoryOpener};
 
 const UNIVERSAL_ROOT_RELATIVE: &str = ".agents/skills";
 
-/// Stands in for `npx -y @sentry/dotagents add <source>` / `npx -y skills
-/// add <source>`: writes a minimal `SKILL.md` under
-/// `<cwd>/.agents/skills/<skill>` on the real filesystem, the same shape
-/// the real CLI leaves. Named by the request's own skill folder name
-/// (passed as the trailing arg) rather than derived from a repo slug -
-/// these tests always request the two under the same name.
-struct FakeNpxSpawner;
+/// Stands in for `npx skills add <source> ...` / `npx -y @sentry/dotagents
+/// add <source> ...`: writes a minimal `SKILL.md` under
+/// `<cwd or home>/.agents/skills/<skill>` on the real filesystem, the same
+/// shape the real CLI leaves. Named by parsing the `--skill`/`--name` flag
+/// out of argv (per F3, neither builder puts the skill name last), and
+/// falls back to `home` for the process cwd, since `install_via_cli` only
+/// ever sets a cwd for a `Dotagents` project-scope install - skills.sh's own
+/// builder never sets the process cwd at all (`--global`/`--cwd` carry the
+/// target instead).
+struct FakeNpxSpawner {
+    home: PathBuf,
+}
 
 impl ProcessSpawner for FakeNpxSpawner {
     fn run(
@@ -44,8 +49,14 @@ impl ProcessSpawner for FakeNpxSpawner {
         _cancel: &dyn CancelToken,
     ) -> Result<ProcessOutput, skill_studio_core::CoreError> {
         assert_eq!(spec.program, "npx");
-        let skill = spec.args.last().expect("add <source> arg").clone();
-        let cwd = spec.cwd.clone().expect("install_via_cli always sets cwd");
+        let skill = spec
+            .args
+            .iter()
+            .position(|a| a == "--skill" || a == "--name")
+            .and_then(|i| spec.args.get(i + 1))
+            .expect("--skill or --name flag with a value")
+            .clone();
+        let cwd = spec.cwd.clone().unwrap_or_else(|| self.home.clone());
         let dir = cwd.join(UNIVERSAL_ROOT_RELATIVE).join(&skill);
         std::fs::create_dir_all(&dir).unwrap();
         std::fs::write(
@@ -89,7 +100,9 @@ fn runtime_for(home: &std::path::Path) -> Runtime {
     runtime_with(
         home,
         Arc::new(RealFs::new()),
-        Some(Arc::new(FakeNpxSpawner)),
+        Some(Arc::new(FakeNpxSpawner {
+            home: home.to_path_buf(),
+        })),
     )
 }
 
@@ -120,7 +133,12 @@ fn cli_request(skill: &str, method: InstallMethod) -> InstallRequest {
         files: Vec::new(),
         source: Some(skill.to_string()),
         trust_identity: None,
-        trust_confirmed: false,
+        // F5: a `Dotagents` install's trust identity always comes from
+        // `source` itself, so this must set `trust_confirmed` for it to
+        // pass the gate - `trust_identity` staying `None` no longer skips
+        // the gate for `Dotagents` the way it still does for the other
+        // methods.
+        trust_confirmed: method == InstallMethod::Dotagents,
         save_as_preference: true,
     }
 }
@@ -178,7 +196,11 @@ fn install_crash_after_each_step_leaves_disk_in_the_before_or_after_state_or_nam
     let home = unique_temp_dir("install_crash_window");
     std::fs::create_dir_all(&home).unwrap();
     let failing_fs = Arc::new(FailingFs::wrap(Arc::new(RealFs::new())));
-    let rt = runtime_with(&home, failing_fs.clone(), Some(Arc::new(FakeNpxSpawner)));
+    let rt = runtime_with(
+        &home,
+        failing_fs.clone(),
+        Some(Arc::new(FakeNpxSpawner { home: home.clone() })),
+    );
     let req = copy_request("beta");
 
     // The journal's own manifest and plan writes (`begin`) and the `Stage`
@@ -307,6 +329,102 @@ fn direct_ops_call_leaves_the_disk_state_every_surface_shares() {
     assert_eq!(
         std::fs::canonicalize(&link).unwrap(),
         std::fs::canonicalize(&deployment_path).unwrap()
+    );
+
+    std::fs::remove_dir_all(&home).ok();
+}
+
+/// `install_untrusted_dotagents_source_returns_needs_trust_or_names_the_bytes_it_wrote`
+/// (F5): an unconfirmed `Dotagents` install of a source this scope has never
+/// trusted returns `NeedsTrust` and writes nothing - not even the registry's
+/// `trusted_dotagents_sources` list, since nothing was confirmed.
+#[test]
+fn install_untrusted_dotagents_source_returns_needs_trust_or_names_the_bytes_it_wrote() {
+    let home = unique_temp_dir("install_untrusted_dotagents");
+    std::fs::create_dir_all(&home).unwrap();
+    let rt = runtime_for(&home);
+    let mut req = cli_request("epsilon", InstallMethod::Dotagents);
+    req.trust_confirmed = false;
+
+    let outcome = ops::install(&rt, &ctx(), &req).unwrap();
+    let InstallOutcome::NeedsTrust { identity } = outcome else {
+        panic!("expected NeedsTrust for an unconfirmed dotagents source");
+    };
+    assert_eq!(identity, "epsilon");
+
+    let deployment = home.join(UNIVERSAL_ROOT_RELATIVE).join("epsilon");
+    assert!(
+        !deployment.exists(),
+        "NeedsTrust must not write the skill's bytes: {deployment:?}"
+    );
+    let events = ops::list_events(&rt, &ctx(), &ListEventsRequest::default()).unwrap();
+    assert!(
+        events.is_empty(),
+        "NeedsTrust must not record a journal row"
+    );
+
+    std::fs::remove_dir_all(&home).ok();
+}
+
+/// `install_confirmed_dotagents_source_records_trust_and_installs_or_names_the_missing_write`
+/// (F5): a confirmed `Dotagents` install both records the source as trusted
+/// and installs it; a second, unconfirmed install of the same source then
+/// succeeds too, since the first call already recorded it as trusted.
+#[test]
+fn install_confirmed_dotagents_source_records_trust_and_installs_or_names_the_missing_write() {
+    let home = unique_temp_dir("install_confirmed_dotagents");
+    std::fs::create_dir_all(&home).unwrap();
+    let rt = runtime_for(&home);
+    let mut req = cli_request("zeta", InstallMethod::Dotagents);
+    req.trust_confirmed = true;
+
+    let outcome = ops::install(&rt, &ctx(), &req).unwrap();
+    assert!(matches!(outcome, InstallOutcome::Installed { .. }));
+
+    let mut second = cli_request("zeta-again", InstallMethod::Dotagents);
+    second.source = Some("zeta".to_string());
+    second.trust_confirmed = false;
+    let second_outcome = ops::install(&rt, &ctx(), &second).unwrap();
+    assert!(
+        matches!(second_outcome, InstallOutcome::Installed { .. }),
+        "a source already trusted must not need re-confirmation"
+    );
+
+    std::fs::remove_dir_all(&home).ok();
+}
+
+/// `install_crash_after_the_cli_wrote_the_folder_marks_the_row_failed_or_names_the_unowned_folder`
+/// (F10): when the registry write after a `Dotagents`/`SkillsSh` CLI call
+/// fails, the journal row is marked `Failed`, not left `Pending` - F9's
+/// unified write-and-link step must cover the registry write too, not just
+/// the skill's own bytes.
+#[test]
+fn install_crash_after_the_cli_wrote_the_folder_marks_the_row_failed_or_names_the_unowned_folder() {
+    let home = unique_temp_dir("install_crash_after_cli_write");
+    std::fs::create_dir_all(&home).unwrap();
+    let failing_fs = Arc::new(FailingFs::wrap(Arc::new(RealFs::new())));
+    let rt = runtime_with(
+        &home,
+        failing_fs.clone(),
+        Some(Arc::new(FakeNpxSpawner { home: home.clone() })),
+    );
+    let req = cli_request("eta", InstallMethod::SkillsSh);
+
+    failing_fs.fail_next_write_atomic();
+    let err = ops::install(&rt, &ctx(), &req).unwrap_err();
+    assert_eq!(err.code, skill_studio_core::ErrorCode::Io);
+
+    let deployment = home.join(UNIVERSAL_ROOT_RELATIVE).join("eta");
+    assert!(
+        deployment.join("SKILL.md").exists(),
+        "the CLI's own write already landed before the registry write failed"
+    );
+
+    let events = ops::list_events(&rt, &ctx(), &ListEventsRequest::default()).unwrap();
+    assert_eq!(events.len(), 1);
+    assert_eq!(
+        events[0].status, "failed",
+        "the row must not be left pending when the registry write fails"
     );
 
     std::fs::remove_dir_all(&home).ok();
