@@ -30,6 +30,7 @@
 #![forbid(unsafe_code)]
 
 pub mod discovery_sources;
+pub mod doctor;
 pub mod dotagents_ledger;
 pub mod dto;
 pub mod error;
