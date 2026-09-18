@@ -577,19 +577,29 @@ mod tests {
 
         let reg = read_fork_registry(home).unwrap();
         assert_eq!(reg.copies.len(), 1, "expected exactly one copies entry");
-        let record = reg.copies.get("find-bugs").expect(
-            "the copies map must be keyed by the deployment id the core just wrote a record under, \
-             or by the skill name - neither key was found",
+        // R1: the map is keyed by the deployment id, not the skill name -
+        // built the same way the core's own `copy_deployment_id` does
+        // (`dep:v1/{scope}/universal/universal/{name}/{project}/{destination}`,
+        // percent-encoding `%` and `/` in the destination segment).
+        let destination = home.join(".agents").join("skills").join("find-bugs");
+        let encoded_destination = destination
+            .to_string_lossy()
+            .replace('%', "%25")
+            .replace('/', "%2F");
+        let deployment_id =
+            format!("dep:v1/global/universal/universal/find-bugs/-/{encoded_destination}");
+        let record = reg.copies.get(&deployment_id).expect(
+            "the copies map must be keyed by the deployment id the core just wrote a record under",
         );
-        assert!(
-            record
-                .deployment_id
-                .starts_with("dep:v1/global/universal/universal/find-bugs/"),
-            "unexpected deployment_id shape: {}",
-            record.deployment_id
-        );
+        assert_eq!(record.deployment_id, deployment_id);
         assert_eq!(record.scope, InstallScope::Global);
         assert_eq!(record.destination, SkillDestination::Universal);
+        // R2: `content_hash` must be populated, not left empty - empty is
+        // documented as legacy-only, and destructive mutations refuse it.
+        assert!(
+            !record.content_hash.is_empty(),
+            "content_hash must not be empty for a freshly installed copy"
+        );
     }
 
     #[test]
