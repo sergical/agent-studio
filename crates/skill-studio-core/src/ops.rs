@@ -4504,7 +4504,15 @@ pub fn set_harness_enabled(
             kind,
             req.enabled,
         )?,
-        AgentId::CODEX => set_codex_switch(rt, &mut session, fs, &skill, &id, kind, req.enabled)?,
+        AgentId::CODEX => set_codex_switch(
+            rt,
+            &mut session,
+            fs,
+            req.project_path.as_deref(),
+            &skill,
+            (&id, kind),
+            req.enabled,
+        )?,
         AgentId::OPEN_CODE => {
             set_opencode_switch(rt, &mut session, fs, &home, &skill, &id, kind, req.enabled)?
         }
@@ -4769,9 +4777,12 @@ fn set_codex_switch(
     rt: &Runtime,
     session: &mut crate::ports::MutationSession,
     fs: &dyn ScopeFs,
+    project_path: Option<&Path>,
     skill: &InstalledSkillDto,
-    id: &EventId,
-    kind: crate::events::EventKind,
+    // `id`/`kind` travel together (the journal row's identity and what kind
+    // of row it is) - bundled so adding `project_path` above didn't need a
+    // `too_many_arguments` allow.
+    (id, kind): (&EventId, crate::events::EventKind),
     enabled: bool,
 ) -> Result<(u32, u32), CoreError> {
     let paths = codex_skill_md_paths(skill);
@@ -4795,8 +4806,15 @@ fn set_codex_switch(
         kind,
         skill: skill.name.clone(),
         harness: Some(AgentId::from(AgentId::CODEX)),
-        scope: Some("global".to_string()),
-        project_path: None,
+        scope: Some(
+            if project_path.is_some() {
+                "project"
+            } else {
+                "global"
+            }
+            .to_string(),
+        ),
+        project_path: project_path.map(Path::to_path_buf),
         payload: serde_json::json!({
             "skill": skill.name.0,
             "harness": AgentId::CODEX,

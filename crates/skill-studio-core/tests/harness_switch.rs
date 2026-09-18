@@ -1499,3 +1499,52 @@ fn undo_of_a_symlink_refuses_to_delete_a_regular_file_or_names_the_file_it_remov
 
     std::fs::remove_dir_all(&home).ok();
 }
+
+/// `codex_toggle_event_names_the_project_scope_or_names_the_row_filed_as_global`:
+/// disabling a project-scoped skill for Codex must journal the row with
+/// `scope: "project"` and the project's path, the same way the Claude Code
+/// arm already does - not hardcode `"global"`/`None` regardless of which
+/// scope the write actually touched.
+#[test]
+fn codex_toggle_event_names_the_project_scope_or_names_the_row_filed_as_global() {
+    let home = unique_temp_dir("codex_project_scope_event");
+    let project = home.join("proj");
+    install_project_universal_skill(&project, "gamma");
+    let rt = runtime_with(&home, vec![project.clone()], Arc::new(RealFs::new()));
+
+    let disable = ops::set_harness_enabled(
+        &rt,
+        &ctx(),
+        &SetHarnessEnabledRequest {
+            skill: SkillName("gamma".into()),
+            harness: AgentId::from(AgentId::CODEX),
+            enabled: false,
+            project_path: Some(project.clone()),
+        },
+    )
+    .unwrap();
+
+    let events = ops::list_events(
+        &rt,
+        &ctx(),
+        &skill_studio_core::dto::ListEventsRequest::default(),
+    )
+    .unwrap();
+    let row = events
+        .iter()
+        .find(|e| e.id == disable.event_id)
+        .expect("the Codex disable's own row must be in the history");
+    assert_eq!(
+        row.scope.as_deref(),
+        Some("project"),
+        "expected the project-scoped Codex row to carry scope \"project\", not \"global\""
+    );
+    assert_eq!(
+        row.project_path.as_deref(),
+        Some(project.as_path()),
+        "expected the row to carry {}, not no project at all",
+        project.display()
+    );
+
+    std::fs::remove_dir_all(&home).ok();
+}
