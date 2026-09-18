@@ -1048,6 +1048,12 @@ fn run_refresh_loop(app: AppHandle, state: SkillRefreshState) {
     }
     reconcile_watchers_from_snapshot(&home, &state, &mut debouncer, &mut watched);
 
+    // Unit 3.9b: once, right after the first scan, on this loop's own
+    // background thread (never the UI task) - `ops::remove`'s own prune only
+    // fires as a side effect of removing a skill, so quarantine needs a
+    // schedule of its own (`issue-3.9a-followup-a.md` item 3).
+    run_startup_quarantine_sweep(super::core_runtime::build_runtime_write);
+
     let mut last_invocations_rebuild = Instant::now();
 
     loop {
@@ -1120,6 +1126,40 @@ fn run_refresh_loop(app: AppHandle, state: SkillRefreshState) {
             }
             last_invocations_rebuild = Instant::now();
         }
+    }
+}
+
+/// The startup quarantine sweep unit 3.9b's `run_refresh_loop` runs once,
+/// right after the first scan: `ops::sweep_quarantine`'s own doc explains
+/// why the schedule needs a call of its own, separate from `ops::remove`'s
+/// per-removal prune. `build_runtime` is injectable, the same shape
+/// `harness_first_run.rs`'s `detect_with_runtime` uses, so a test can record
+/// which thread it ran on without a real `tauri::AppHandle`. Global scope
+/// only - a project's own `.agents/skills` quarantine directory is swept the
+/// next time that project's own `remove` runs; sweeping every tracked
+/// project here as well is a follow-up, not part of the happy path.
+fn run_startup_quarantine_sweep(
+    build_runtime: impl FnOnce() -> Result<skill_studio_core::ports::Runtime, String>,
+) {
+    let rt = match build_runtime() {
+        Ok(rt) => rt,
+        Err(e) => {
+            eprintln!("skill refresh: startup quarantine sweep could not build a runtime: {e}");
+            return;
+        }
+    };
+    let ctx = skill_studio_core::ports::OpContext::uncancellable(
+        skill_studio_core::identity::CorrelationId(ulid::Ulid::new().to_string()),
+    );
+    if let Err(e) = skill_studio_core::ops::sweep_quarantine(
+        &rt,
+        &ctx,
+        &skill_studio_core::identity::RootScope::Global,
+    ) {
+        eprintln!(
+            "skill refresh: startup quarantine sweep failed: {}",
+            e.message
+        );
     }
 }
 
@@ -3977,6 +4017,62 @@ mod tests {
         assert_eq!(
             on_disk.unknown.get("from_the_future"),
             Some(&serde_json::json!(42))
+        );
+    }
+
+    /// `startup_prune_runs_after_the_first_scan_off_the_ui_thread_or_names_the_missing_run`:
+    /// `run_refresh_loop` calls `run_startup_quarantine_sweep` synchronously
+    /// right after its own initial `rebuild_snapshot_now` (see that call
+    /// site), and that loop only ever runs on the dedicated `std::thread`
+    /// `skill_refresh::init` spawns - never the UI task. This test proves
+    /// the sweep function itself: run from a plain background thread the
+    /// same way `run_refresh_loop`'s own thread calls it, the runtime build
+    /// (and therefore `ops::sweep_quarantine`) must happen there, not on
+    /// whichever thread called `run_startup_quarantine_sweep`. Fails (red
+    /// checked) if `run_startup_quarantine_sweep` is ever called inline on
+    /// the caller's own thread instead of from a dedicated background one.
+    #[test]
+    fn startup_prune_runs_after_the_first_scan_off_the_ui_thread_or_names_the_missing_run() {
+        use skill_studio_core::harness::HarnessCatalog;
+        use skill_studio_core::ports::{Ports, Runtime};
+        use skill_studio_core::scope::RuntimeScope as CoreRuntimeScope;
+        use std::sync::{Arc as StdArc, Mutex as StdMutex};
+
+        let tmp = tempfile::tempdir().unwrap();
+        let home = tmp.path().join("home");
+        fs::create_dir_all(&home).unwrap();
+
+        let calling_thread = std::thread::current().id();
+        let build_thread: StdArc<StdMutex<Option<std::thread::ThreadId>>> =
+            StdArc::new(StdMutex::new(None));
+        let record_build_thread = StdArc::clone(&build_thread);
+        let home_for_build = home.clone();
+
+        // Simulates `run_refresh_loop`'s own dedicated background thread
+        // calling the sweep synchronously - not `spawn_blocking`, since the
+        // loop itself is already off the UI task.
+        let handle = std::thread::spawn(move || {
+            run_startup_quarantine_sweep(move || {
+                *record_build_thread.lock().unwrap() = Some(std::thread::current().id());
+                let lease_root = home_for_build.join("leases");
+                let catalog = StdArc::new(HarnessCatalog::builtin());
+                let scope = CoreRuntimeScope::fixture(home_for_build.clone());
+                let db_path = scope.history_root.join("events.sqlite3");
+                let ports: Ports =
+                    skill_studio_host::default_ports_with_history(lease_root, catalog, db_path);
+                Runtime::new(&scope, ports).map_err(|e| e.message)
+            });
+        });
+        handle.join().unwrap();
+
+        let recorded = build_thread
+            .lock()
+            .unwrap()
+            .expect("the runtime builder never ran");
+        assert_ne!(
+            recorded, calling_thread,
+            "the startup quarantine sweep ran on the calling thread ({calling_thread:?}) \
+             instead of the refresh loop's own background thread"
         );
     }
 }
