@@ -4659,14 +4659,24 @@ pub fn restore_event(
     // Every harness link `remove` (or whichever event this reverts) took
     // down, recreated the same best-effort way - see
     // `crate::events::restore_backup_inverse_with_links`'s own doc for why
-    // this cannot go through `RestorePlan` like the entries above.
+    // this cannot go through `RestorePlan` like the entries above. The
+    // recorded `target` is the raw `read_link` text, which the real skills
+    // CLI writes relative to the link's own directory (`skills/dist/cli.mjs`
+    // calls `symlink(relativePath, linkPath)`); `confine` rejects any `..`
+    // segment, so a relative target is resolved against `link_path`'s parent
+    // first, the same lexical join `set_claude_code_switch`'s own drift
+    // check already applies to a live link's target (see its `join_lexical`
+    // call above). An escape past the scope root is caught by `confine`
+    // itself, not by this join.
     for (link_path, target) in crate::events::parse_restore_links(inverse) {
         if fs.symlink_metadata(&link_path).is_ok() {
             continue;
         }
+        let resolved_target =
+            crate::fsops::join_lexical(link_path.parent().unwrap_or(&link_path), &target);
         if let (Ok(scoped_link), Ok(scoped_target)) = (
             crate::ports::confine(&rt.scope, fs, &link_path),
-            crate::ports::confine(&rt.scope, fs, &target),
+            crate::ports::confine(&rt.scope, fs, &resolved_target),
         ) {
             let _ = fs.symlink(&session.guard, &scoped_target, &scoped_link);
         }
