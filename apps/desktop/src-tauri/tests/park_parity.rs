@@ -45,6 +45,9 @@ use skill_studio_core::OpStatus;
 use skill_studio_lib::skills::core_runtime::build_runtime_write_at;
 use skill_studio_lib::skills::skill_park::park_with_runtime;
 
+mod cli_binary;
+use cli_binary::cli_binary_path;
+
 const UNIVERSAL_ROOT_RELATIVE: &str = ".agents/skills";
 const CLAUDE_ROOT_RELATIVE: &str = ".claude/skills";
 const DATA_ROOT_RELATIVE: &str = ".skill-studio";
@@ -91,37 +94,6 @@ fn universal_deployment_id(home: &Path) -> DeploymentId {
         .expect("gamma has a universal deployment")
         .id
         .clone()
-}
-
-fn cli_binary_path() -> PathBuf {
-    let profile = if cfg!(debug_assertions) {
-        "debug"
-    } else {
-        "release"
-    };
-    let target_dir = match std::env::var_os("CARGO_TARGET_DIR") {
-        Some(dir) => PathBuf::from(dir),
-        None => workspace_root().join("target"),
-    };
-    target_dir.join(profile).join("skill-studio")
-}
-
-fn workspace_root() -> PathBuf {
-    let mut dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-    loop {
-        let candidate = dir.join("Cargo.toml");
-        if candidate.is_file() {
-            let contents = fs::read_to_string(&candidate).unwrap_or_default();
-            if contents.contains("[workspace]") {
-                return dir;
-            }
-        }
-        assert!(
-            dir.pop(),
-            "no workspace Cargo.toml found above {}",
-            env!("CARGO_MANIFEST_DIR")
-        );
-    }
 }
 
 /// Runs the real `skill-studio` CLI binary's `park` subcommand against

@@ -690,6 +690,167 @@ fn skill_studio_undo_reverses_the_last_journal_entry_for_every_write_kind_in_thi
     std::fs::remove_dir_all(&home).ok();
 }
 
+/// A live home with one universal `gamma` skill, linked from Claude Code -
+/// the shape `park` looks for - plus a second `manual-only` skill that no
+/// install ledger claims. `gamma` is listed in `.agents/.skill-lock.json`,
+/// so `outdated` classifies it as skills.sh-owned and `manual-only` as
+/// untracked.
+fn parkable_live_home() -> PathBuf {
+    // Canonical from the start: on macOS a temp dir is reached
+    // through the `/var` -> `/private/var` symlink, and a link
+    // written under the uncanonical path lies outside the scope the
+    // runtime roots at the canonical one.
+    let home = tempfile::tempdir().unwrap().keep().canonicalize().unwrap();
+    let gamma_dir = home.join(".agents/skills/gamma");
+    std::fs::create_dir_all(&gamma_dir).unwrap();
+    std::fs::write(
+        gamma_dir.join("SKILL.md"),
+        b"---\nname: gamma\ndescription: A parkable skill.\n---\nBody.\n",
+    )
+    .unwrap();
+    let claude_skills = home.join(".claude/skills");
+    std::fs::create_dir_all(&claude_skills).unwrap();
+    #[cfg(unix)]
+    std::os::unix::fs::symlink(&gamma_dir, claude_skills.join("gamma")).unwrap();
+
+    let manual_dir = claude_skills.join("manual-only");
+    std::fs::create_dir_all(&manual_dir).unwrap();
+    std::fs::write(
+        manual_dir.join("SKILL.md"),
+        b"---\nname: manual-only\ndescription: A hand-written skill.\n---\nBody.\n",
+    )
+    .unwrap();
+
+    let agents_dir = home.join(".agents");
+    std::fs::write(
+        agents_dir.join(".skill-lock.json"),
+        serde_json::to_vec(&serde_json::json!({
+            "version": 3,
+            "skills": {
+                "gamma": {
+                    "source": "owner/gamma",
+                    "sourceType": "github",
+                    "sourceUrl": "https://github.com/owner/gamma",
+                    "skillFolderHash": "deadbeef",
+                    "installedAt": "2024-01-01T00:00:00Z",
+                    "updatedAt": "2024-01-01T00:00:00Z",
+                }
+            }
+        }))
+        .unwrap(),
+    )
+    .unwrap();
+
+    home
+}
+
+/// The deployment id `scan` prints for `skill` in the root of `kind`
+/// (`universal`, `parked`), under `home`.
+fn deployment_id_in_root(home: &Path, skill: &str, kind: &str) -> String {
+    let scan = run(&["scan", "--home", home.to_str().unwrap(), "--json"]);
+    let found = scan.json["data"]["skills"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|s| s["name"] == skill)
+        .unwrap_or_else(|| panic!("{skill} missing from scan: {:?}", scan.json));
+    found["deployments"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|d| d["root"]["kind"]["kind"] == kind)
+        .unwrap_or_else(|| panic!("{skill} has no {kind} deployment: {found:?}"))["id"]
+        .as_str()
+        .unwrap()
+        .to_string()
+}
+
+/// Flow: `park` the universal `gamma` deployment through the CLI, then hand
+/// the parked deployment id `scan` now prints to `unpark`.
+/// Expectation: an `ok` envelope naming `gamma`, the directory back under
+/// `.agents/skills`, and the Claude Code link recreated.
+/// A failure here means the parked half of the park/unpark pair has no
+/// working CLI surface, so a parked skill can only be brought back by hand.
+#[test]
+fn unpark_puts_a_parked_skill_and_its_link_back_or_names_the_envelope() {
+    let home = parkable_live_home();
+    let park = run(&[
+        "park",
+        "--home",
+        home.to_str().unwrap(),
+        "--deployment-id",
+        &deployment_id_in_root(&home, "gamma", "universal"),
+        "--json",
+    ]);
+    assert_eq!(park.status, 0, "{:?}", park.json);
+    assert_eq!(park.json["status"], "ok", "{:?}", park.json);
+    assert!(!home.join(".agents/skills/gamma").exists());
+
+    let unpark = run(&[
+        "unpark",
+        "--home",
+        home.to_str().unwrap(),
+        "--deployment-id",
+        &deployment_id_in_root(&home, "gamma", "parked"),
+        "--json",
+    ]);
+
+    assert_eq!(unpark.status, 0, "{:?}", unpark.json);
+    assert_eq!(unpark.json["status"], "ok", "{:?}", unpark.json);
+    assert_eq!(unpark.json["operation"], "unpark", "{:?}", unpark.json);
+    assert_eq!(
+        unpark.json["data"]["restored_path"],
+        serde_json::Value::from(home.join(".agents/skills/gamma").to_str().unwrap()),
+        "{:?}",
+        unpark.json
+    );
+    assert!(
+        home.join(".agents/skills/gamma/SKILL.md").is_file(),
+        "unpark left gamma in the parked root"
+    );
+    assert!(
+        home.join(".claude/skills/gamma").symlink_metadata().is_ok(),
+        "unpark did not recreate the Claude Code link park removed"
+    );
+
+    std::fs::remove_dir_all(&home).ok();
+}
+
+/// Flow: `outdated` over a home holding one skills.sh-owned skill and one
+/// skill no ledger claims, with `PATH` emptied on the child so the CLI
+/// finds no `gh` and falls back to its `NoGhLookup`.
+/// Expectation: an `ok` envelope whose map says `unknown` for the tracked
+/// skill - the check could not run - and `not_tracked` for the other.
+/// Collapsing those two into one value is the failure this guards: it would
+/// either invent a currency for a skill nothing tracks, or report a lookup
+/// that never ran as "nothing to know".
+#[test]
+fn outdated_separates_an_unknown_check_from_an_untracked_skill_or_names_the_currency() {
+    let home = parkable_live_home();
+    let output = Command::new(bin())
+        .args(["outdated", "--home", home.to_str().unwrap(), "--json"])
+        .env("PATH", "")
+        .output()
+        .expect("run skill-studio outdated");
+    let stdout = String::from_utf8(output.stdout).expect("utf8 stdout");
+    let json: serde_json::Value = serde_json::from_str(stdout.trim())
+        .unwrap_or_else(|e| panic!("stdout is not one JSON document: {e}\n{stdout}"));
+
+    assert_eq!(output.status.code(), Some(0), "{json:?}");
+    assert_eq!(json["status"], "ok", "{json:?}");
+    assert_eq!(json["operation"], "outdated", "{json:?}");
+    assert_eq!(
+        json["data"]["gamma"], "unknown",
+        "a skills.sh skill whose lookup could not run is not up to date or behind: {json:?}"
+    );
+    assert_eq!(
+        json["data"]["manual-only"], "not_tracked",
+        "a skill no install method claims has nothing to check: {json:?}"
+    );
+
+    std::fs::remove_dir_all(&home).ok();
+}
+
 /// Builds the same `Runtime` `skill-studio --home <home>` would build for
 /// itself (matching `ScopeArgs::resolve`'s `--home` branch in
 /// `apps/cli/src/scope.rs`: history under `<home>/.skill-studio/history`,

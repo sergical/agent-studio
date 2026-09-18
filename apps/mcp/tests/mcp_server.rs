@@ -545,6 +545,222 @@ async fn watch_and_a_fresh_mcp_scan_agree_after_a_cli_mutation() {
     std::fs::remove_dir_all(&home).ok();
 }
 
+/// A live home (not a fixture: these tools write) with one universal
+/// `gamma` skill linked from Claude Code, one `manual-only` skill no
+/// install ledger claims, and a `.skill-lock.json` naming `gamma` as
+/// skills.sh-owned. Matches `apps/cli/tests/envelope.rs::parkable_live_home`
+/// so the two surfaces are driven over the same shape.
+fn live_home() -> PathBuf {
+    // Canonical from the start: on macOS a temp dir is reached
+    // through the `/var` -> `/private/var` symlink, and a link
+    // written under the uncanonical path lies outside the scope the
+    // runtime roots at the canonical one.
+    let home = tempfile::tempdir().unwrap().keep().canonicalize().unwrap();
+    let gamma_dir = home.join(".agents/skills/gamma");
+    std::fs::create_dir_all(&gamma_dir).unwrap();
+    std::fs::write(
+        gamma_dir.join("SKILL.md"),
+        b"---\nname: gamma\ndescription: A parkable skill.\n---\nBody.\n",
+    )
+    .unwrap();
+    let claude_skills = home.join(".claude/skills");
+    std::fs::create_dir_all(&claude_skills).unwrap();
+    #[cfg(unix)]
+    std::os::unix::fs::symlink(&gamma_dir, claude_skills.join("gamma")).unwrap();
+
+    let manual_dir = claude_skills.join("manual-only");
+    std::fs::create_dir_all(&manual_dir).unwrap();
+    std::fs::write(
+        manual_dir.join("SKILL.md"),
+        b"---\nname: manual-only\ndescription: A hand-written skill.\n---\nBody.\n",
+    )
+    .unwrap();
+
+    std::fs::write(
+        home.join(".agents/.skill-lock.json"),
+        serde_json::to_vec(&serde_json::json!({
+            "version": 3,
+            "skills": {
+                "gamma": {
+                    "source": "owner/gamma",
+                    "sourceType": "github",
+                    "sourceUrl": "https://github.com/owner/gamma",
+                    "skillFolderHash": "deadbeef",
+                    "installedAt": "2024-01-01T00:00:00Z",
+                    "updatedAt": "2024-01-01T00:00:00Z",
+                }
+            }
+        }))
+        .unwrap(),
+    )
+    .unwrap();
+
+    home
+}
+
+/// Calls one tool by name and returns its envelope, the way `call_scan`
+/// does for `scan`.
+async fn call_tool(
+    client: &RunningService<RoleClient, CountingClient>,
+    tool: &'static str,
+    arguments: serde_json::Value,
+) -> serde_json::Value {
+    let params =
+        CallToolRequestParams::new(tool).with_arguments(arguments.as_object().unwrap().clone());
+    let result = client.call_tool(params).await.unwrap_or_else(|e| {
+        panic!("call_tool({tool}) should reach the tool, not error at the transport layer: {e}")
+    });
+    result.structured_content.unwrap_or_else(|| {
+        panic!("{tool}'s CallToolResult always carries structured_content (the envelope)")
+    })
+}
+
+/// The deployment id the CLI's `scan` prints for `skill` in the root of
+/// `kind` (`universal`, `parked`) under `home`.
+fn deployment_id_in_root(home: &Path, skill: &str, kind: &str) -> String {
+    let scan = run_cli(&["scan", "--home", home.to_str().unwrap(), "--json"]);
+    let found = scan["data"]["skills"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|s| s["name"] == skill)
+        .unwrap_or_else(|| panic!("{skill} missing from scan: {scan:?}"))
+        .clone();
+    found["deployments"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|d| d["root"]["kind"]["kind"] == kind)
+        .unwrap_or_else(|| panic!("{skill} has no {kind} deployment: {found:?}"))["id"]
+        .as_str()
+        .unwrap()
+        .to_string()
+}
+
+/// Flow: park `gamma` through the CLI, then call the MCP `unpark` tool with
+/// the parked deployment id.
+/// Expectation: an `ok` envelope, `gamma` back under `.agents/skills`, and
+/// its Claude Code link recreated.
+/// A failure here means the `unpark` tool cannot undo what `park` did, so an
+/// agent that parks a skill over MCP has no way to bring it back.
+#[tokio::test]
+async fn the_unpark_tool_puts_a_parked_skill_and_its_link_back_or_names_the_envelope() {
+    let home = live_home();
+    let park = run_cli(&[
+        "park",
+        "--home",
+        home.to_str().unwrap(),
+        "--deployment-id",
+        &deployment_id_in_root(&home, "gamma", "universal"),
+        "--json",
+    ]);
+    assert_eq!(park["status"], "ok", "{park:?}");
+    let parked_id = deployment_id_in_root(&home, "gamma", "parked");
+
+    let (client, _) = connect(&[("SKILL_STUDIO_HOME", home.to_str().unwrap())]).await;
+    let envelope = call_tool(
+        &client,
+        "unpark",
+        serde_json::json!({ "deployment_id": parked_id }),
+    )
+    .await;
+    client.cancel().await.ok();
+
+    assert_eq!(envelope["status"], "ok", "{envelope:?}");
+    assert_eq!(envelope["operation"], "unpark", "{envelope:?}");
+    assert!(
+        home.join(".agents/skills/gamma/SKILL.md").is_file(),
+        "unpark left gamma in the parked root: {envelope:?}"
+    );
+    assert!(
+        home.join(".claude/skills/gamma").symlink_metadata().is_ok(),
+        "unpark did not recreate the Claude Code link park removed: {envelope:?}"
+    );
+
+    std::fs::remove_dir_all(&home).ok();
+}
+
+/// Flow: call the MCP `set_harness_enabled` tool twice for `gamma` - off,
+/// then on again - over a live home where Claude Code links the universal
+/// skill.
+/// Expectation: an `ok` envelope each time, Claude Code's link gone after
+/// the first call and back after the second.
+/// A failure here means the tool reports success while the harness's own
+/// switch never moved, which is the whole point of the operation.
+#[tokio::test]
+async fn the_set_harness_enabled_tool_moves_the_harness_switch_or_names_the_envelope() {
+    let home = live_home();
+    let link_path = home.join(".claude/skills/gamma");
+    assert!(link_path.symlink_metadata().is_ok());
+
+    let (client, _) = connect(&[("SKILL_STUDIO_HOME", home.to_str().unwrap())]).await;
+    let disabled = call_tool(
+        &client,
+        "set_harness_enabled",
+        serde_json::json!({
+            "skill": "gamma",
+            "harness": "claude-code",
+            "enabled": false,
+        }),
+    )
+    .await;
+    assert_eq!(disabled["status"], "ok", "{disabled:?}");
+    assert!(
+        link_path.symlink_metadata().is_err(),
+        "disabling left the Claude Code link in place: {disabled:?}"
+    );
+
+    let enabled = call_tool(
+        &client,
+        "set_harness_enabled",
+        serde_json::json!({
+            "skill": "gamma",
+            "harness": "claude-code",
+            "enabled": true,
+        }),
+    )
+    .await;
+    client.cancel().await.ok();
+
+    assert_eq!(enabled["status"], "ok", "{enabled:?}");
+    assert!(
+        link_path.symlink_metadata().is_ok(),
+        "re-enabling did not put the Claude Code link back: {enabled:?}"
+    );
+
+    std::fs::remove_dir_all(&home).ok();
+}
+
+/// Flow: call the MCP `outdated` tool over a live home holding one
+/// skills.sh-owned skill and one skill no ledger claims, with `PATH` emptied
+/// on the server process so it finds no `gh` and falls back to `NoGhLookup`.
+/// Expectation: an `ok` envelope saying `unknown` for the tracked skill -
+/// the check could not run - and `not_tracked` for the other.
+/// A failure here means a currency check that never ran is reported as an
+/// answer, the same failure `apps/cli/tests/envelope.rs` guards on the CLI.
+#[tokio::test]
+async fn the_outdated_tool_separates_an_unknown_check_from_an_untracked_skill_or_names_the_currency(
+) {
+    let home = live_home();
+
+    let (client, _) = connect(&[("SKILL_STUDIO_HOME", home.to_str().unwrap()), ("PATH", "")]).await;
+    let envelope = call_tool(&client, "outdated", serde_json::json!({})).await;
+    client.cancel().await.ok();
+
+    assert_eq!(envelope["status"], "ok", "{envelope:?}");
+    assert_eq!(envelope["operation"], "outdated", "{envelope:?}");
+    assert_eq!(
+        envelope["data"]["gamma"], "unknown",
+        "a skills.sh skill whose lookup could not run is not up to date or behind: {envelope:?}"
+    );
+    assert_eq!(
+        envelope["data"]["manual-only"], "not_tracked",
+        "a skill no install method claims has nothing to check: {envelope:?}"
+    );
+
+    std::fs::remove_dir_all(&home).ok();
+}
+
 /// An agent calls a tool with whatever the tool's schema says is required and
 /// nothing more. Every request field that has a sensible default must
 /// therefore be optional in the published schema, and the tool must accept an
