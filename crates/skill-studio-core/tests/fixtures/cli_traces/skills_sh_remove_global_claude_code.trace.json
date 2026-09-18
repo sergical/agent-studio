@@ -1,0 +1,19 @@
+{
+  "_comment": "Hand-built, not recorded from a real `npx skills remove` run - unit 5.4 owns recording the real trace and replacing this file. Shape: `npx skills remove <name> --yes --global`, matching `remove_cli_args_and_cwd`'s SkillsSh/global branch (apps/cli's `remove --deployment-id ...` over a global skills.sh deployment). `files` names every file that existed under `.agents/skills/<skill>` before the run, relative to that folder - the tree the CLI deletes. `lock_entry_removed` names the `.agents/.skill-lock.json` entry the CLI drops as part of the same call.",
+  "program": "npx",
+  "args": [
+    "skills",
+    "remove",
+    "owner-repo-skill",
+    "--yes",
+    "--global"
+  ],
+  "cwd": null,
+  "files": [
+    {
+      "relative_path": "SKILL.md",
+      "content": "---\nname: owner-repo-skill\ndescription: a skill installed by npx skills add\n---\nBody.\n"
+    }
+  ],
+  "lock_entry_removed": "owner-repo-skill"
+}
