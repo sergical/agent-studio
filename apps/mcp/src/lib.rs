@@ -199,6 +199,20 @@ impl skill_studio_core::skill_update_check::PluginManifestLookup for NoGhLookup 
     }
 }
 
+/// The same call the `park` tool method below makes - `build_runtime(true)`
+/// then `ops::park` - minus the `RequestContext`/progress-notification
+/// wrapping, which needs a live transport peer a test has no reason to
+/// stand up. A parity test that wants to prove the MCP server writes the
+/// same disk state as the CLI and the desktop calls this directly instead
+/// of spawning the binary over stdio.
+pub fn park_direct(
+    req: &skill_studio_core::dto::ParkRequest,
+) -> Result<skill_studio_core::dto::ParkOutcome, CoreError> {
+    let rt = build_runtime(true)?;
+    let ctx = OpContext::uncancellable(CorrelationId(ulid::Ulid::new().to_string()));
+    ops::park(&rt, &ctx, req)
+}
+
 #[tool_router]
 impl SkillStudioServer {
     #[tool(description = "Inventory every installed skill.")]

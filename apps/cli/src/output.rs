@@ -6,9 +6,9 @@ use std::process::ExitCode;
 use serde::Serialize;
 use skill_studio_core::dto::{
     CommandHealth, ConflictReport, Diagnosis, EventDto, FixApplied, FixSkillOutcome,
-    FrontmatterRepairPreview, InstallOutcome, Inventory, ParkOutcome, RemoveOutcome,
-    RepairOutcome, RestoreOutcome, ScanRequest, SetHarnessEnabledOutcome, UnparkOutcome,
-    UpdateAllOutcome, UpdateOutcome,
+    FrontmatterRepairPreview, InstallOutcome, Inventory, ParkOutcome, RemoveOutcome, RepairOutcome,
+    RestoreOutcome, ScanRequest, SetHarnessEnabledOutcome, UnparkOutcome, UpdateAllOutcome,
+    UpdateOutcome,
 };
 use skill_studio_core::harness::{Capabilities, HarnessReport};
 use skill_studio_core::ops::ResultEnvelope;

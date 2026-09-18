@@ -164,7 +164,8 @@ fn schema_and_watch_stay_cli_only_and_are_named_as_utilities_in_the_parity_test(
 
     for utility in ["Schema", "Watch"] {
         assert!(
-            cli_main.contains(&format!("{utility} {{")) || cli_main.contains(&format!("{utility},")),
+            cli_main.contains(&format!("{utility} {{"))
+                || cli_main.contains(&format!("{utility},")),
             "`{utility}` is no longer a CLI subcommand; update this test if that was deliberate"
         );
     }
