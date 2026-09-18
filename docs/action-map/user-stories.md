@@ -124,7 +124,7 @@ Root, Snapshot, Stage, Swap, Link, WriteFile, Journal, Lease, TreeHash, plus Sou
 
 **Person.** The same skill exists in `~/.agents/skills` and in a project's `.claude/skills` and they differ.
 
-**Today.** The DTO carries every distinct content hash (skill_dto.rs:333); the UI only hides the size field when they differ. "Pull upstream" on a fork runs a three-way merge and, on conflict, shows a toast that says to open the editor (skill-page-actions.ts:223). The editor picker and launcher exist (skill_editor.rs:191, 414).
+**Today.** The DTO carries every distinct content hash (skill_dto.rs:333); the UI only hides the size field when they differ. "Pull upstream" on a fork never merges: a file only one side changed is taken as-is, and a file both sides changed gets git-style conflict markers written into it and is opened in the user's editor (skill-page-actions.ts:223, skill_fork.rs:1207). The editor picker and launcher exist (skill_editor.rs:191, 414).
 
 **Target.** The app never merges by itself. It shows which files differ and a one-line summary per file, then opens both copies in the user's editor, side by side where the editor supports it. For a fork, conflict markers go in the file and the editor opens on it, as `git` does.
 

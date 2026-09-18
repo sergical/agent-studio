@@ -5,6 +5,7 @@
 // has to be made explicitly and remembered.
 // ============================================================================
 
+use std::fmt::Write as _;
 use std::io::{BufRead, BufReader};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
@@ -469,12 +470,55 @@ fn terminal_launch_script(folder: &Path, target: &str, command: &str) -> String 
 /// path "Open in editor" was given - a folder or a `SKILL.md` file.
 pub fn write_terminal_launch_script(path: &Path, command: &str) -> Result<PathBuf, String> {
     let (folder, target) = terminal_launch_target(path);
-    let script = terminal_launch_script(&folder, &target, command);
+    write_launch_script(
+        "skill-studio-edit",
+        terminal_launch_script(&folder, &target, command),
+    )
+}
+
+/// A `.command` script that hands every absolute path in `paths` to the
+/// editor in one `eval`, for the side-by-side conflict flow: unlike
+/// [`terminal_launch_script`], it never `cd`s anywhere, since two conflicting
+/// copies rarely share a parent directory. Each path gets its own
+/// single-quoted variable for the same reason `terminal_launch_script` does:
+/// a `$(...)` or backtick in a path must not expand before `eval` runs.
+fn terminal_launch_script_multi(paths: &[PathBuf], command: &str) -> String {
+    let mut vars = String::new();
+    let mut refs = String::new();
+    for (index, path) in paths.iter().enumerate() {
+        let _ = writeln!(
+            vars,
+            "T{index}='{}'",
+            shell_single_quote(&path.display().to_string())
+        );
+        // Escaped like `terminal_launch_script`'s single `\"$T\"`: this
+        // reference sits inside the outer double-quoted `eval "..."` string.
+        let _ = write!(refs, " \\\"$T{index}\\\"");
+    }
+    format!(
+        "#!/bin/sh\nrm -f -- \"$0\"\nED='{}'\n{vars}eval \"exec $ED{refs}\"\n",
+        shell_single_quote(command)
+    )
+}
+
+/// Writes a uniquely named, owner-only executable `.command` script for the
+/// side-by-side terminal-editor launch.
+fn write_terminal_launch_script_multi(paths: &[PathBuf], command: &str) -> Result<PathBuf, String> {
+    write_launch_script(
+        "skill-studio-edit-multi",
+        terminal_launch_script_multi(paths, command),
+    )
+}
+
+/// Writes `script` to a uniquely named, owner-only executable file in the
+/// temp dir under `prefix`, shared by the single-path and side-by-side
+/// launch scripts.
+fn write_launch_script(prefix: &str, script: String) -> Result<PathBuf, String> {
     let pid = std::process::id();
     let nanos = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map_or(0, |d| d.as_nanos());
-    let path = std::env::temp_dir().join(format!("skill-studio-edit-{pid}-{nanos}.command"));
+    let path = std::env::temp_dir().join(format!("{prefix}-{pid}-{nanos}.command"));
     std::fs::write(&path, script).map_err(|e| format!("Failed to write launch script: {e}"))?;
     #[cfg(unix)]
     {
@@ -483,6 +527,42 @@ pub fn write_terminal_launch_script(path: &Path, command: &str) -> Result<PathBu
             .map_err(|e| format!("Failed to make launch script executable: {e}"))?;
     }
     Ok(path)
+}
+
+/// Opens every path in `paths` side by side in the user's chosen editor -
+/// `open -a <app> path1 path2 ...` for an app, or one `eval` handed all the
+/// paths for a terminal editor - the same way `git` opens a merge conflict.
+/// Writes nothing to any of `paths` itself; used by the conflict flow after
+/// its own write (frontmatter/fork markers) is already on disk.
+pub fn open_paths_in_editor(home: &Path, paths: &[PathBuf]) -> Result<(), String> {
+    if paths.is_empty() {
+        return Err("No paths to open".to_string());
+    }
+    let mut script_to_clean_up: Option<PathBuf> = None;
+    let args: Vec<String> = match editor_launch(home) {
+        EditorLaunch::Open(mut args) => {
+            args.extend(paths.iter().map(|p| p.display().to_string()));
+            args
+        }
+        EditorLaunch::Terminal { command } => {
+            let script = write_terminal_launch_script_multi(paths, &command)?;
+            let script_arg = script.display().to_string();
+            script_to_clean_up = Some(script);
+            vec![script_arg]
+        }
+    };
+    let output = Command::new("open")
+        .args(&args)
+        .output()
+        .map_err(|e| format!("Failed to open editor: {e}"))?;
+    if !output.status.success() {
+        if let Some(script) = &script_to_clean_up {
+            let _ = std::fs::remove_file(script);
+        }
+        let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+        return Err(format!("Failed to open editor: {stderr}"));
+    }
+    Ok(())
 }
 
 #[cfg(test)]
@@ -505,6 +585,63 @@ mod tests {
         let offered = installed_editors_in(&dirs);
         assert_eq!(offered.len(), 1);
         assert_eq!(offered[0].app_name, "Zed");
+    }
+
+    /// Row F4 (unit 3.7b review round 1): `open_paths_in_editor` is the
+    /// conflict flow's side-by-side open - both differing copies must reach
+    /// the editor, and it must write to neither. Fakes `open` on `PATH`
+    /// with a script that records its argv, rather than depending on the
+    /// real macOS `open` (absent on the Linux CI runner) or on GUI
+    /// automation. `PathGuard` (review round 2, G4) holds the crate's
+    /// shared env lock and restores `PATH` in `Drop`, so a panic mid-test
+    /// still restores it and a parallel test never observes the fake `open`.
+    #[test]
+    fn two_fixture_copies_that_differ_open_in_the_chosen_editor_with_both_paths_or_names_the_missing_editor_argv(
+    ) {
+        let home = tempfile::tempdir().expect("temp home");
+        let path_a = home.path().join("a/SKILL.md");
+        let path_b = home.path().join("b/SKILL.md");
+        std::fs::create_dir_all(path_a.parent().expect("parent a")).expect("dir a");
+        std::fs::create_dir_all(path_b.parent().expect("parent b")).expect("dir b");
+        std::fs::write(&path_a, "mine\n").expect("write a");
+        std::fs::write(&path_b, "theirs\n").expect("write b");
+        let before_a = std::fs::read(&path_a).expect("read a");
+        let before_b = std::fs::read(&path_b).expect("read b");
+
+        let bin_dir = tempfile::tempdir().expect("fake bin dir");
+        let recording = bin_dir.path().join("open.log");
+        let fake_open = bin_dir.path().join("open");
+        std::fs::write(
+            &fake_open,
+            format!(
+                "#!/bin/sh\necho \"$@\" > '{}'\nexit 0\n",
+                recording.display()
+            ),
+        )
+        .expect("write fake open");
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&fake_open, std::fs::Permissions::from_mode(0o700))
+                .expect("chmod fake open");
+        }
+
+        let _path_guard = super::super::test_support::PathGuard::new(bin_dir.path());
+        let result = open_paths_in_editor(home.path(), &[path_a.clone(), path_b.clone()]);
+
+        assert!(result.is_ok(), "{result:?}");
+        let recorded = std::fs::read_to_string(&recording).expect("read recording");
+        assert!(
+            recorded.contains(&path_a.display().to_string()),
+            "{recorded}"
+        );
+        assert!(
+            recorded.contains(&path_b.display().to_string()),
+            "{recorded}"
+        );
+
+        assert_eq!(std::fs::read(&path_a).expect("reread a"), before_a);
+        assert_eq!(std::fs::read(&path_b).expect("reread b"), before_b);
     }
 
     #[test]
@@ -730,6 +867,23 @@ mod tests {
             .find(|line| line.starts_with("eval "))
             .expect("eval line");
         assert!(!eval_line.contains("$(x)"));
+    }
+
+    /// Both conflicting paths land in one `eval`, each in its own quoted
+    /// variable - so opening two copies side by side never merges their
+    /// contents into a single shell argument.
+    #[test]
+    fn terminal_launch_script_multi_hands_both_paths_to_one_eval() {
+        let paths = vec![
+            PathBuf::from("/Users/me/skills/claude-copy/SKILL.md"),
+            PathBuf::from("/Users/me/skills/codex-copy/SKILL.md"),
+        ];
+        let script = terminal_launch_script_multi(&paths, "nvim -p");
+        assert!(script.starts_with("#!/bin/sh\n"));
+        assert!(script.contains("ED='nvim -p'"));
+        assert!(script.contains("T0='/Users/me/skills/claude-copy/SKILL.md'"));
+        assert!(script.contains("T1='/Users/me/skills/codex-copy/SKILL.md'"));
+        assert!(script.contains("eval \"exec $ED \\\"$T0\\\" \\\"$T1\\\"\""));
     }
 
     #[test]
