@@ -102,6 +102,10 @@ pub enum Operation {
     FixSkill,
     /// Group 3: find differing copies of a skill without merging them.
     DiagnoseConflict,
+    /// Group 3: put one skill on disk by `Copy`, `Dotagents`, or `SkillsSh`.
+    Install,
+    /// Group 3: read the saved or defaulted install method/harnesses.
+    InstallPreferences,
 }
 
 /// Outcome status of one call.
@@ -219,6 +223,16 @@ impl Outcome for crate::dto::ConflictReport {
         !self.conflicts.is_empty()
     }
 }
+impl Outcome for crate::dto::InstallOutcome {
+    fn event_id(&self) -> Option<EventId> {
+        match self {
+            // `NeedsTrust` wrote nothing, so it records no event.
+            crate::dto::InstallOutcome::Installed { event_id, .. } => Some(event_id.clone()),
+            crate::dto::InstallOutcome::NeedsTrust { .. } => None,
+        }
+    }
+}
+impl Outcome for crate::dto::InstallPreferences {}
 
 /// The envelope every surface returns.
 ///

@@ -6,8 +6,8 @@ use std::process::ExitCode;
 use serde::Serialize;
 use skill_studio_core::dto::{
     CommandHealth, ConflictReport, Diagnosis, EventDto, FixApplied, FixSkillOutcome,
-    FrontmatterRepairPreview, Inventory, RepairOutcome, RestoreOutcome, ScanRequest,
-    SetHarnessEnabledOutcome,
+    FrontmatterRepairPreview, InstallOutcome, Inventory, RepairOutcome, RestoreOutcome,
+    ScanRequest, SetHarnessEnabledOutcome,
 };
 use skill_studio_core::harness::{Capabilities, HarnessReport};
 use skill_studio_core::ops::ResultEnvelope;
@@ -233,6 +233,30 @@ pub fn print_conflict_report_table(envelope: &ResultEnvelope<ConflictReport>) {
     }
 }
 
+/// Prints `install`'s table: what got installed, or the trust prompt.
+pub fn print_install_outcome_table(envelope: &ResultEnvelope<InstallOutcome>) {
+    print_errors(envelope);
+    let Some(outcome) = &envelope.data else {
+        return;
+    };
+    match outcome {
+        InstallOutcome::Installed {
+            skill,
+            deployment_path,
+            linked_harnesses,
+            ..
+        } => {
+            println!("installed {} at {}", skill.0, deployment_path.display());
+            for harness in linked_harnesses {
+                println!("linked {}", harness.as_str());
+            }
+        }
+        InstallOutcome::NeedsTrust { identity } => {
+            println!("needs trust: {identity} (retry with --trust to confirm)");
+        }
+    }
+}
+
 /// Prints `events`'s table: one line per event, newest first.
 pub fn print_events_table(envelope: &ResultEnvelope<Vec<EventDto>>) {
     print_errors(envelope);
@@ -351,6 +375,13 @@ pub fn write_schemas(out: Option<PathBuf>) -> ExitCode {
             schemars::schema_for!(skill_studio_core::dto::DiagnoseConflictRequest)
         }),
         ("conflict_report", || schemars::schema_for!(ConflictReport)),
+        ("install_request", || {
+            schemars::schema_for!(skill_studio_core::dto::InstallRequest)
+        }),
+        ("install_outcome", || schemars::schema_for!(InstallOutcome)),
+        ("install_preferences", || {
+            schemars::schema_for!(skill_studio_core::dto::InstallPreferences)
+        }),
     ];
     for (name, build) in schemas {
         let schema = build();
