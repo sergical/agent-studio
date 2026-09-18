@@ -487,6 +487,11 @@ pub(crate) enum SymlinkInverse {
     Remove {
         /// The link to remove.
         path: PathBuf,
+        /// What the link pointed at when it was created - not used to
+        /// remove it, only to refuse the removal if the link has since been
+        /// retargeted to something the event never put there (see
+        /// `restore_symlink_event`'s drift guard).
+        target: PathBuf,
     },
 }
 
@@ -494,8 +499,8 @@ pub(crate) fn recreate_symlink_inverse(path: &Path, target: &Path) -> serde_json
     serde_json::json!({ "op": "recreate_symlink", "path": path, "target": target })
 }
 
-pub(crate) fn remove_symlink_inverse(path: &Path) -> serde_json::Value {
-    serde_json::json!({ "op": "remove_symlink", "path": path })
+pub(crate) fn remove_symlink_inverse(path: &Path, target: &Path) -> serde_json::Value {
+    serde_json::json!({ "op": "remove_symlink", "path": path, "target": target })
 }
 
 /// Reads a `recreate_symlink`/`remove_symlink` inverse payload back. Returns
@@ -509,6 +514,7 @@ pub(crate) fn parse_symlink_inverse(inverse: &serde_json::Value) -> Option<Symli
         }),
         Some("remove_symlink") => Some(SymlinkInverse::Remove {
             path: PathBuf::from(obj.get("path")?.as_str()?),
+            target: PathBuf::from(obj.get("target")?.as_str()?),
         }),
         _ => None,
     }

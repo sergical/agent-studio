@@ -3748,8 +3748,11 @@ fn restore_symlink_event(
     mut session: crate::ports::MutationSession,
     target: &crate::events::EventRecord,
     inverse: &crate::events::SymlinkInverse,
-    op_start: Duration,
-    begin_step: crate::timing::StepTiming,
+    force: bool,
+    // `op_start`/`begin_step` travel together (the whole op's clock start
+    // and the timing of the step already run before this call) - bundled so
+    // adding `force` above didn't need a `too_many_arguments` allow.
+    (op_start, begin_step): (Duration, crate::timing::StepTiming),
 ) -> Result<RestoreOutcome, CoreError> {
     let clock = rt.ports.clock.as_ref();
     let step_start = clock.monotonic();
@@ -3757,7 +3760,7 @@ fn restore_symlink_event(
 
     let path = match inverse {
         crate::events::SymlinkInverse::Recreate { path, .. }
-        | crate::events::SymlinkInverse::Remove { path } => path.clone(),
+        | crate::events::SymlinkInverse::Remove { path, .. } => path.clone(),
     };
 
     let restore_id = rt.ports.ids.next_event_id();
@@ -3767,12 +3770,12 @@ fn restore_symlink_event(
     // applying `Remove` takes a link away (so undoing that restore must
     // recreate it, at whatever it currently points to).
     let restore_inverse = match inverse {
-        crate::events::SymlinkInverse::Recreate { path, .. } => {
-            crate::events::remove_symlink_inverse(path)
+        crate::events::SymlinkInverse::Recreate { path, target } => {
+            crate::events::remove_symlink_inverse(path, target)
         }
-        crate::events::SymlinkInverse::Remove { path } => match fs.read_link(path).ok() {
+        crate::events::SymlinkInverse::Remove { path, target } => match fs.read_link(path).ok() {
             Some(current_target) => crate::events::recreate_symlink_inverse(path, &current_target),
-            None => crate::events::remove_symlink_inverse(path),
+            None => crate::events::remove_symlink_inverse(path, target),
         },
     };
     let draft = crate::events::EventDraft {
@@ -3803,22 +3806,62 @@ fn restore_symlink_event(
         ));
     }
 
-    let mutation_result = match inverse {
+    let mutation_result: Result<(), CoreError> = match inverse {
         crate::events::SymlinkInverse::Recreate { path, target } => {
-            let scoped_target = crate::ports::confine(&rt.scope, fs, target)?;
-            let scoped_link = crate::ports::confine(&rt.scope, fs, path)?;
-            fs.symlink(&session.guard, &scoped_target, &scoped_link)
-                .map_err(|e| CoreError::io(path, e))
-        }
-        crate::events::SymlinkInverse::Remove { path } => {
-            if fs.symlink_metadata(path).is_ok() {
-                let scoped_link = crate::ports::confine(&rt.scope, fs, path)?;
-                fs.remove_file(&session.guard, &scoped_link)
-                    .map_err(|e| CoreError::io(path, e))
+            // A dangling link is never useful, so `force` does not bypass
+            // this check the way it bypasses the `restore_backup` path's
+            // fingerprint drift: there is no live state to force past, only
+            // a target that no longer exists.
+            if fs.symlink_metadata(target).is_err() {
+                Err(CoreError::new(
+                    ErrorCode::DriftConflict,
+                    format!(
+                        "{} no longer exists; undo would create a dangling link",
+                        target.display()
+                    ),
+                )
+                .at(target))
             } else {
-                Ok(())
+                let scoped_target = crate::ports::confine(&rt.scope, fs, target)?;
+                let scoped_link = crate::ports::confine(&rt.scope, fs, path)?;
+                fs.symlink(&session.guard, &scoped_target, &scoped_link)
+                    .map_err(|e| CoreError::io(path, e))
             }
         }
+        crate::events::SymlinkInverse::Remove { path, target } => match fs.symlink_metadata(path) {
+            Ok(meta) if meta.kind == FileKind::Symlink => {
+                // Unlike the target check above, a drifted *target* is
+                // survivable with `force`: the path is still a link, so
+                // removing it only takes back what this event's own undo
+                // owns, even if something retargeted it since. A non-symlink
+                // at the path is never removed, `force` or not - that would
+                // delete bytes this event never wrote.
+                if !force && fs.read_link(path).ok().as_deref() != Some(target.as_path()) {
+                    Err(CoreError::new(
+                        ErrorCode::DriftConflict,
+                        format!(
+                            "{} no longer points at {}; pass force to remove it anyway",
+                            path.display(),
+                            target.display()
+                        ),
+                    )
+                    .at(path))
+                } else {
+                    let scoped_link = crate::ports::confine(&rt.scope, fs, path)?;
+                    fs.remove_file(&session.guard, &scoped_link)
+                        .map_err(|e| CoreError::io(path, e))
+                }
+            }
+            Ok(_) => Err(CoreError::new(
+                ErrorCode::DriftConflict,
+                format!(
+                    "{} is no longer a symlink; refusing to delete it",
+                    path.display()
+                ),
+            )
+            .at(path)),
+            Err(_) => Ok(()),
+        },
     };
     if let Err(err) = mutation_result {
         // The claim was already made durable, but nothing actually moved:
@@ -3925,8 +3968,8 @@ pub fn restore_event(
             session,
             &target,
             &symlink_inverse,
-            op_start,
-            begin_step,
+            req.force,
+            (op_start, begin_step),
         );
     }
     let (path, pre, post) =
@@ -4610,7 +4653,10 @@ fn set_claude_code_switch(
     let inverse = if no_op {
         None
     } else if enabled {
-        Some(crate::events::remove_symlink_inverse(&link_path))
+        Some(crate::events::remove_symlink_inverse(
+            &link_path,
+            &canonical_dir,
+        ))
     } else {
         // Recreates whatever `link_path` actually pointed at, not the
         // current canonical deployment: a link retargeted by hand (or left

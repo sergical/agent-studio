@@ -1349,3 +1349,153 @@ fn claude_code_disable_records_the_links_real_target_or_names_the_body_undo_woul
 
     std::fs::remove_dir_all(&home).ok();
 }
+
+/// `undo_of_a_symlink_refuses_a_parked_target_or_names_the_dangling_link_it_created`:
+/// a `Recreate` inverse must refuse to run once the target it would point at
+/// is gone - parked, or moved out from under it between the disable and the
+/// undo - rather than planting a dangling link and calling it a success.
+#[test]
+fn undo_of_a_symlink_refuses_a_parked_target_or_names_the_dangling_link_it_created() {
+    let home = unique_temp_dir("undo_parked_target");
+    install_universal_skill(&home, "gamma");
+    install_claude_link(&home, "gamma");
+    let rt = runtime_for(&home);
+    let link = home.join(CLAUDE_ROOT_RELATIVE).join("gamma");
+    let canonical_dir = home.join(UNIVERSAL_ROOT_RELATIVE).join("gamma");
+
+    let disable = ops::set_harness_enabled(
+        &rt,
+        &ctx(),
+        &SetHarnessEnabledRequest {
+            skill: SkillName("gamma".into()),
+            harness: AgentId::from(AgentId::CLAUDE_CODE),
+            enabled: false,
+            project_path: None,
+        },
+    )
+    .unwrap();
+    assert!(
+        std::fs::symlink_metadata(&link).is_err(),
+        "disable should remove {}",
+        link.display()
+    );
+
+    // Park the canonical directory the disable's inverse recorded as its
+    // recreate target - simulating the skill being parked or moved between
+    // the disable and the undo.
+    let parked_dir = home.join("parked-gamma");
+    std::fs::rename(&canonical_dir, &parked_dir).unwrap();
+    assert!(
+        std::fs::symlink_metadata(&canonical_dir).is_err(),
+        "fixture setup: {} should no longer exist",
+        canonical_dir.display()
+    );
+
+    let undo_err = ops::restore_event(
+        &rt,
+        &ctx(),
+        &RestoreRequest {
+            event_id: disable.event_id.clone(),
+            force: false,
+        },
+    )
+    .unwrap_err();
+    assert_eq!(undo_err.code, skill_studio_core::ErrorCode::DriftConflict);
+    assert!(
+        std::fs::symlink_metadata(&link).is_err(),
+        "the refused undo must not plant a dangling link at {}",
+        link.display()
+    );
+
+    // `force` must not bypass this refusal either: there is no live state
+    // to force past, only a target that no longer exists.
+    let forced_err = ops::restore_event(
+        &rt,
+        &ctx(),
+        &RestoreRequest {
+            event_id: disable.event_id.clone(),
+            force: true,
+        },
+    )
+    .unwrap_err();
+    assert_eq!(forced_err.code, skill_studio_core::ErrorCode::DriftConflict);
+    assert!(
+        std::fs::symlink_metadata(&link).is_err(),
+        "force must not plant a dangling link at {} either",
+        link.display()
+    );
+
+    std::fs::remove_dir_all(&home).ok();
+}
+
+/// `undo_of_a_symlink_refuses_to_delete_a_regular_file_or_names_the_file_it_removed`:
+/// a `Remove` inverse - the undo of an enable that created a link - must
+/// refuse to delete whatever sits at the link's path once that path is no
+/// longer a symlink, even with `force`: deleting a regular file the user put
+/// there would destroy bytes this event never wrote.
+#[test]
+fn undo_of_a_symlink_refuses_to_delete_a_regular_file_or_names_the_file_it_removed() {
+    let home = unique_temp_dir("undo_refuses_regular_file");
+    install_universal_skill(&home, "gamma");
+    let rt = runtime_for(&home);
+    let link = home.join(CLAUDE_ROOT_RELATIVE).join("gamma");
+
+    let enable = ops::set_harness_enabled(
+        &rt,
+        &ctx(),
+        &SetHarnessEnabledRequest {
+            skill: SkillName("gamma".into()),
+            harness: AgentId::from(AgentId::CLAUDE_CODE),
+            enabled: true,
+            project_path: None,
+        },
+    )
+    .unwrap();
+    assert!(
+        std::fs::symlink_metadata(&link).is_ok(),
+        "enable should create {}",
+        link.display()
+    );
+
+    // Swap the link the enable created for a regular file - standing in for
+    // the user replacing it by hand between the enable and the undo.
+    std::fs::remove_file(&link).unwrap();
+    let file_bytes = b"not a symlink, do not delete me".to_vec();
+    std::fs::write(&link, &file_bytes).unwrap();
+
+    let undo_err = ops::restore_event(
+        &rt,
+        &ctx(),
+        &RestoreRequest {
+            event_id: enable.event_id.clone(),
+            force: false,
+        },
+    )
+    .unwrap_err();
+    assert_eq!(undo_err.code, skill_studio_core::ErrorCode::DriftConflict);
+    assert_eq!(
+        std::fs::read(&link).unwrap(),
+        file_bytes,
+        "the refused undo must leave the regular file's bytes untouched"
+    );
+
+    // `force` must not bypass this refusal either: a non-symlink is never
+    // removed by this inverse, force or not.
+    let forced_err = ops::restore_event(
+        &rt,
+        &ctx(),
+        &RestoreRequest {
+            event_id: enable.event_id.clone(),
+            force: true,
+        },
+    )
+    .unwrap_err();
+    assert_eq!(forced_err.code, skill_studio_core::ErrorCode::DriftConflict);
+    assert_eq!(
+        std::fs::read(&link).unwrap(),
+        file_bytes,
+        "force must leave the regular file's bytes untouched too"
+    );
+
+    std::fs::remove_dir_all(&home).ok();
+}
