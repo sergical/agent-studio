@@ -20,10 +20,9 @@ use super::agents::AgentId;
 use super::event_store::{fingerprint_path, fingerprint_path_checked};
 use super::skill_add::{maybe_claude_code_symlink, CommandRunner, RealCommandRunner};
 use super::skill_dto::LifecycleTarget;
-use super::skill_fork::ForkMutationLock;
 use super::skill_fork_registry::{
     deployment_trial_key, name_from_trial_key, read_fork_registry, trial_key, write_fork_registry,
-    AddMethod, ForkRegistry, TrialRecord, TrialScope, TrialStatus,
+    write_fork_registry_locked, AddMethod, ForkRegistry, TrialRecord, TrialScope, TrialStatus,
 };
 use super::skill_fs::copy_dir_preserving_symlinks;
 use super::skill_lifecycle::{
@@ -45,6 +44,7 @@ pub struct ExpiredTrial {
 /// `.agents/skills` folder).
 #[allow(clippy::too_many_arguments)]
 pub fn record_trial(
+    guard: &super::write_lease::WriteLeaseGuard,
     home: &Path,
     deployment_id: &str,
     scope: TrialScope,
@@ -77,13 +77,14 @@ pub fn record_trial(
             claude_link_target,
         },
     );
-    write_fork_registry(home, &registry)
+    write_fork_registry_locked(guard, home, &registry)
 }
 
 /// Drops `name`'s trial record for `scope`, if any - called by
 /// `remove_skill`, `unfork_skill`, and `fork_skill` so a removed, un-forked,
 /// or forked skill never leaves a stale trial behind it.
 pub fn drop_trial_record(
+    guard: &super::write_lease::WriteLeaseGuard,
     home: &Path,
     deployment_id: &str,
     name: &str,
@@ -102,10 +103,11 @@ pub fn drop_trial_record(
     if !removed_new && !removed_legacy {
         return Ok(());
     }
-    write_fork_registry(home, &registry)
+    write_fork_registry_locked(guard, home, &registry)
 }
 
 fn drop_recovery_trial_without_deployment(
+    guard: &super::write_lease::WriteLeaseGuard,
     home: &Path,
     deployment_id: &str,
 ) -> Result<bool, String> {
@@ -119,7 +121,7 @@ fn drop_recovery_trial_without_deployment(
         return Ok(false);
     }
     registry.trials.remove(&key);
-    write_fork_registry(home, &registry)?;
+    write_fork_registry_locked(guard, home, &registry)?;
     Ok(true)
 }
 
@@ -761,7 +763,7 @@ fn run_trial_expiry_pass_with_controls(
             if trial.method == AddMethod::Copy {
                 let restore_error = restore_copy_trial(&trial, Path::new(&trash_path)).err();
                 registry = original_registry.clone();
-                let registry_restore_error = write_fork_registry(home, &original_registry).err();
+                let registry_restore_error = write_registry(home, &original_registry).err();
                 eprintln!(
                     "[skill_trial] failed to persist expiry for {name}: {write_error}; filesystem rollback: {}; registry rollback: {}",
                     restore_error.as_deref().unwrap_or("ok"),
@@ -801,15 +803,17 @@ fn run_and_emit(app: &AppHandle) {
     };
     let runner = RealCommandRunner::new();
     let expired = {
-        let lock = app.state::<ForkMutationLock>();
-        let Ok(_guard) = lock.try_acquire() else {
+        let write_lease = super::write_lease::WriteLease::default();
+        let Ok(guard) = write_lease.try_acquire(&home) else {
             return;
         };
         let refresh_state = app.state::<SkillRefreshState>();
         let Ok(snapshot) = skill_refresh::rebuild_snapshot_now(app, &refresh_state) else {
             return;
         };
-        run_trial_expiry_pass(&home, Utc::now(), &runner, &snapshot)
+        run_trial_expiry_pass_with_writer(&home, Utc::now(), &runner, &snapshot, &mut {
+            |home, registry| write_fork_registry_locked(&guard, home, registry)
+        })
     };
     if expired.is_empty() {
         return;
@@ -844,8 +848,9 @@ pub async fn keep_skill_trial(target: LifecycleTarget, app: AppHandle) -> Result
     let timing_app = app.clone();
     crate::timing_log::time_command_blocking(&timing_app, "keep_skill_trial", move || {
         let refresh_state = app.state::<SkillRefreshState>();
-        let fork_lock = app.state::<ForkMutationLock>();
-        let _guard = fork_lock.try_acquire()?;
+        let home = dirs::home_dir().ok_or("Could not find home directory")?;
+        let write_lease = super::write_lease::WriteLease::default();
+        let guard = write_lease.try_acquire(&home)?;
         let deployment_id = target
             .deployment_id
             .as_deref()
@@ -855,11 +860,10 @@ pub async fn keep_skill_trial(target: LifecycleTarget, app: AppHandle) -> Result
         }
         let snapshot =
             super::skill_lifecycle::rebuild_fresh_lifecycle_snapshot(&app, &refresh_state)?;
-        let home = dirs::home_dir().ok_or("Could not find home directory")?;
         let (skill, deployment) = match find_deployment(&snapshot, deployment_id) {
             Ok(found) => found,
             Err(error) => {
-                if !drop_recovery_trial_without_deployment(&home, deployment_id)? {
+                if !drop_recovery_trial_without_deployment(&guard, &home, deployment_id)? {
                     return Err(error);
                 }
                 skill_refresh::request_snapshot_rebuild(&app);
@@ -878,6 +882,7 @@ pub async fn keep_skill_trial(target: LifecycleTarget, app: AppHandle) -> Result
             ));
         };
         drop_trial_record(
+            &guard,
             &home,
             deployment_id,
             &skill.name,
@@ -987,9 +992,9 @@ pub fn restore_trashed_skill_with(home: &Path, trash_path: &str) -> Result<Strin
 pub async fn restore_trashed_skill(trash_path: String, app: AppHandle) -> Result<(), String> {
     let timing_app = app.clone();
     crate::timing_log::time_command_blocking(&timing_app, "restore_trashed_skill", move || {
-        let fork_lock = app.state::<ForkMutationLock>();
-        let _guard = fork_lock.try_acquire()?;
         let home = dirs::home_dir().ok_or("Could not find home directory")?;
+        let write_lease = super::write_lease::WriteLease::default();
+        let _guard = write_lease.try_acquire(&home)?;
         restore_trashed_skill_with(&home, &trash_path)?;
         skill_refresh::request_snapshot_rebuild(&app);
         Ok(())
@@ -1005,6 +1010,12 @@ pub async fn restore_trashed_skill(trash_path: String, app: AppHandle) -> Result
 mod tests {
     use super::*;
     use std::sync::Mutex;
+
+    fn test_guard(home: &Path) -> super::super::write_lease::WriteLeaseGuard {
+        super::super::write_lease::WriteLease::default()
+            .try_acquire(home)
+            .unwrap()
+    }
 
     #[derive(Default)]
     struct FakeRunner {
@@ -1724,7 +1735,10 @@ mod tests {
         write_fork_registry(home, &registry).unwrap();
         fs::remove_dir_all(skill_dir).unwrap();
 
-        assert!(drop_recovery_trial_without_deployment(home, &deployment_id).unwrap());
+        assert!(
+            drop_recovery_trial_without_deployment(&test_guard(home), home, &deployment_id)
+                .unwrap()
+        );
         assert!(read_fork_registry(home).unwrap().trials.is_empty());
     }
 
@@ -2171,6 +2185,7 @@ mod tests {
         );
 
         drop_trial_record(
+            &test_guard(&home),
             &home,
             &project_b_id,
             "find-bugs",

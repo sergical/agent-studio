@@ -12,6 +12,9 @@ path = "src/lib.rs"
 
 [dependencies]
 skill-studio-core = { path = "../skill-studio-core" }
+# Lease takeover's liveness probe (see lease.rs). `sysinfo`, not `libc`'s
+# `kill(pid, 0)`, because this crate forbids unsafe code.
+sysinfo = { version = "0.33", default-features = false, features = ["system"] }
 ulid = { version = "1", features = ["serde"] }
 chrono = { version = "0.4", default-features = false, features = ["clock", "serde"] }
 serde = { version = "1", features = ["derive"] }

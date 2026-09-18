@@ -19,7 +19,7 @@ use serde::de::DeserializeOwned;
 use serde::Serialize;
 
 use crate::error::{CoreError, ErrorCode};
-use crate::ports::{acquire_exclusive, confine, LeaseProvider, ScopeFs};
+use crate::ports::{acquire_exclusive, confine, ExclusiveGuard, LeaseProvider, ScopeFs};
 use crate::scope::{
     HistoryBinding, NormalizedScope, ProjectSelection, RuntimeScope, ScopeKind,
     DEFAULT_READ_TIMEOUT_MS, DEFAULT_WRITE_TIMEOUT_MS,
@@ -72,10 +72,27 @@ pub fn write_registry_document<T: RegistryDocument>(
 ) -> Result<(), CoreError> {
     let scope = home_only_scope(home, fs)?;
     let guard = acquire_exclusive(leases, &scope)?;
+    write_registry_document_locked(&guard, fs, home, path, document)
+}
+
+/// Same write path as [`write_registry_document`], for a caller that already
+/// holds the exclusive lease over `home` - a command that took a `WriteLease`
+/// before calling several lease-guarded helpers, for instance. Writes under
+/// the held lease instead of taking a second, conflicting one; advisory
+/// locks don't nest within one process, so a second `acquire` on the same
+/// root would report the caller's own lease as busy.
+pub fn write_registry_document_locked<T: RegistryDocument>(
+    guard: &ExclusiveGuard,
+    fs: &dyn ScopeFs,
+    home: &Path,
+    path: &Path,
+    document: &mut T,
+) -> Result<(), CoreError> {
+    let scope = home_only_scope(home, fs)?;
 
     if let Some(parent) = path.parent() {
         let scoped_parent = confine(&scope, fs, parent)?;
-        fs.create_dir_all(&guard, &scoped_parent)
+        fs.create_dir_all(guard, &scoped_parent)
             .map_err(|e| CoreError::io(parent, e))?;
     }
 
@@ -89,6 +106,6 @@ pub fn write_registry_document<T: RegistryDocument>(
     })?;
 
     let scoped = confine(&scope, fs, path)?;
-    fs.write_atomic(&guard, &scoped, &bytes)
+    fs.write_atomic(guard, &scoped, &bytes)
         .map_err(|e| CoreError::io(path, e))
 }
