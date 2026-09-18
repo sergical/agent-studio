@@ -794,13 +794,12 @@ pub(crate) async fn remove_with_runtime(
         return Err("Remove requires a deployment id".to_string());
     }
     let joined = tauri::async_runtime::spawn_blocking(move || {
-        let deployment_id = match target.deployment_id.as_deref() {
-            Some(raw) => DeploymentId::parse(raw).map_err(|e| e.message)?,
-            None => {
-                let snapshot = resolve_snapshot()?;
-                let (_, deployment) = resolve_lifecycle_target(&snapshot, &target, "Remove")?;
-                DeploymentId::parse(&deployment.id).map_err(|e| e.message)?
-            }
+        let deployment_id = if let Some(raw) = target.deployment_id.as_deref() {
+            DeploymentId::parse(raw).map_err(|e| e.message)?
+        } else {
+            let snapshot = resolve_snapshot()?;
+            let (_, deployment) = resolve_lifecycle_target(&snapshot, &target, "Remove")?;
+            DeploymentId::parse(&deployment.id).map_err(|e| e.message)?
         };
         let rt = build_runtime(&deployment_id)?;
         let ctx = OpContext::uncancellable(CorrelationId(ulid::Ulid::new().to_string()));
