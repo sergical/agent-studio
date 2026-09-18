@@ -21,11 +21,17 @@
 //! Red check performed by hand while writing this test (not left in the
 //! tree): temporarily added `std::fs::write(a.path.join("SKILL.md"), ...)`
 //! inside `ops::conflicts_in`'s conflict branch, simulating a regression
-//! that writes on a conflict instead of only reporting it;
-//! `fix_names_and_hashes_agree_between_the_cli_binary_and_the_desktop_adapter`
+//! that writes on a conflict instead of only reporting it; the parity test
 //! below failed on a hash mismatch for `dup-skill`, confirming the checksum
 //! comparison actually catches a conflict that writes. Reverted before
 //! committing.
+//!
+//! Coverage gap (G5, review round 2): the fixture here has no OpenCode
+//! skills, so it never exercises the difference between
+//! `core_runtime.rs`'s `opencode_config_dir(home)` (desktop) and
+//! `scope.rs`'s `opencode_config_dir_under(home)` (CLI) - if those two
+//! ever resolve a different directory for the same `home`, this test
+//! would not catch it. Tracked in `issue-3.7b-followup-a.md`.
 
 use std::collections::BTreeMap;
 use std::fs;
@@ -76,13 +82,19 @@ fn desktop_runtime_at(home: &Path) -> Runtime {
     build_runtime_write_at(home, &home.join(".skill-studio")).expect("desktop runtime")
 }
 
-/// Path to the `skill-studio` CLI binary. `apps/cli` is a workspace member,
-/// not a dependency of this crate (it has no lib target, only the `[[bin]]`,
-/// so it can't be a `dev-dependency` here), so `CARGO_BIN_EXE_<name>` (which
-/// only covers binaries of the crate under test) isn't set; this derives the
-/// same `target/<profile>/` path from `CARGO_MANIFEST_DIR` instead. `cargo
-/// test --workspace` builds every member, `apps/cli` included, before
-/// running any test, so the binary exists by the time this runs; a
+/// Path to the `skill-studio` CLI binary. `env!("CARGO_BIN_EXE_skill-studio")`
+/// (G5, review round 2) isn't an option: Cargo only sets `CARGO_BIN_EXE_<name>`
+/// for binaries of the crate under test, or a foreign crate's binary pulled
+/// in as an unstable "artifact dependency" (`-Zbindeps`, nightly-only as of
+/// this workspace's toolchain) - `apps/cli` is a separate workspace member
+/// with no lib target, so it can't be an ordinary `dev-dependency` either.
+/// This derives the build output dir the same way Cargo does: `$CARGO_TARGET_DIR`
+/// when set (CI and any developer override), else the workspace root's
+/// `target/`, found by walking up from `CARGO_MANIFEST_DIR` to the directory
+/// that has the workspace `Cargo.toml`, rather than a fixed `../../../`
+/// hop that would silently point at the wrong tree if this file ever moves.
+/// `cargo test --workspace` builds every member, `apps/cli` included,
+/// before running any test, so the binary exists by the time this runs; a
 /// standalone `cargo test -p skill-studio` needs `cargo build -p
 /// skill-studio-cli` run first.
 fn cli_binary_path() -> PathBuf {
@@ -91,10 +103,31 @@ fn cli_binary_path() -> PathBuf {
     } else {
         "release"
     };
-    Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("../../../target")
-        .join(profile)
-        .join("skill-studio")
+    let target_dir = match std::env::var_os("CARGO_TARGET_DIR") {
+        Some(dir) => PathBuf::from(dir),
+        None => workspace_root().join("target"),
+    };
+    target_dir.join(profile).join("skill-studio")
+}
+
+/// Walks up from `CARGO_MANIFEST_DIR` (`apps/desktop/src-tauri`) to the
+/// nearest ancestor containing a `Cargo.toml` with `[workspace]`, so the
+/// default target-dir fallback tracks the repo layout instead of a
+/// hardcoded hop count.
+fn workspace_root() -> PathBuf {
+    let mut dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    loop {
+        let candidate = dir.join("Cargo.toml");
+        if candidate.is_file() {
+            let contents = fs::read_to_string(&candidate).unwrap_or_default();
+            if contents.contains("[workspace]") {
+                return dir;
+            }
+        }
+        if !dir.pop() {
+            panic!("no workspace Cargo.toml found above {}", env!("CARGO_MANIFEST_DIR"));
+        }
+    }
 }
 
 /// Runs the real `skill-studio` CLI binary's `fix` subcommand against
@@ -143,15 +176,19 @@ fn content_fingerprint(home: &Path) -> BTreeMap<PathBuf, Vec<u8>> {
 /// Given two byte-identical fixture homes, when `fix_skill` runs for each
 /// skill once through the real CLI binary and once through the desktop
 /// adapter's own runtime constructor, then both trees stay byte-identical
-/// to each other afterward. Failure names which fixture's hash mismatched,
-/// or which surface's outcome shape diverged.
+/// to each other afterward, or names the diverging file. `OpencodeHomeGuard`
+/// (G6, review round 2) pins `XDG_CONFIG_HOME`/`OPENCODE_CONFIG_DIR` to
+/// `home_desktop` for the whole test so it reads its own fixture rather
+/// than a real `~/.config/opencode` a CI runner might export.
 #[test]
-fn fix_names_and_hashes_agree_between_the_cli_binary_and_the_desktop_adapter() {
+fn fix_names_and_hashes_agree_between_the_cli_binary_and_the_desktop_adapter_or_names_the_diverging_file()
+{
     let home_cli = unique_temp_dir("fix-parity-cli");
     let home_desktop = unique_temp_dir("fix-parity-desktop");
     write_fixture(&home_cli);
     write_fixture(&home_desktop);
 
+    let _opencode_home = skill_studio_lib::skills::test_support::OpencodeHomeGuard::new(&home_desktop);
     let rt_desktop = desktop_runtime_at(&home_desktop);
 
     for skill in ["zeta-bad", "dup-skill"] {

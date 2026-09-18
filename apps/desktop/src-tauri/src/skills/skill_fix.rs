@@ -87,9 +87,14 @@ mod tests {
     /// repairs, so the row's "Fix" action must reach it. This proves the
     /// repair through the same runtime construction `fix_skill` (the Tauri
     /// command above) uses, not just `ops::fix_skill` in isolation.
+    /// `OpencodeHomeGuard` (G6, review round 2) pins `XDG_CONFIG_HOME` to
+    /// `home` so this reads its own fixture rather than a real
+    /// `~/.config/opencode` a CI runner might export.
     #[test]
-    fn fix_skill_on_invalid_yaml_returns_a_repaired_outcome_through_the_desktop_adapter() {
+    fn fix_skill_on_invalid_yaml_returns_a_repaired_outcome_through_the_desktop_adapter_or_names_the_unrepaired_path()
+     {
         let home = tempfile::tempdir().expect("temp home");
+        let _opencode_home = crate::skills::test_support::OpencodeHomeGuard::new(home.path());
         let skills_dir = home.path().join(".claude/skills/bad-yaml");
         std::fs::create_dir_all(&skills_dir).expect("skill dir");
         std::fs::write(
@@ -126,7 +131,7 @@ mod tests {
     /// (`commands.rs`) applies. Proves the refusal at the pure-helper level
     /// `open_conflict_paths` itself delegates to.
     #[test]
-    fn open_conflict_paths_refuses_a_path_outside_the_snapshot() {
+    fn open_conflict_paths_refuses_a_path_outside_the_snapshot_or_names_the_escaping_path() {
         let tmp = tempfile::tempdir().expect("tempdir");
         let dep_dir = tmp.path().join("foo");
         std::fs::create_dir_all(&dep_dir).expect("dep dir");
