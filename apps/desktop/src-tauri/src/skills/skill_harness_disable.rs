@@ -1500,6 +1500,21 @@ mod tests {
         assert!(fs::symlink_metadata(project_link).is_err());
     }
 
+    /// pi's `settings.json` `skills` exclusion entry format is undocumented
+    /// (docs/action-map/harnesses/pi.md, "How the app turns a skill off"),
+    /// so this stays the named refusal rather than a silent no-op that
+    /// looks like the skill was actually turned off for pi.
+    #[test]
+    fn pi_disable_without_a_confirmed_exclusion_format_still_returns_the_named_refusal_or_names_the_silent_no_op(
+    ) {
+        let tmp = tempfile::tempdir().unwrap();
+        let err = set_harness_enabled_with(tmp.path(), "find-bugs", "pi", false, &[]).unwrap_err();
+        assert!(
+            err.contains("pi has no per-skill disable"),
+            "expected the named refusal, not a silent no-op: {err}"
+        );
+    }
+
     #[test]
     fn pi_cursor_and_grok_build_refuse() {
         let tmp = tempfile::tempdir().unwrap();

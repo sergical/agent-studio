@@ -2012,6 +2012,99 @@ mod tests {
         assert_eq!(stats[0].skill, "lint-code");
     }
 
+    /// Flow: a Claude Code transcript is refreshed once, appended to, and
+    /// refreshed again (resume); then it is truncated and rewritten with
+    /// different content at the same size and refreshed a third time
+    /// (rewrite).
+    /// Expectation: the append is picked up without reparsing the first
+    /// line (`files_reparsed` stays `0` on the append pass, since the
+    /// resumed read only consumes the new bytes), and the rewrite is
+    /// detected and fully reparsed, so only the rewrite's skill remains in
+    /// the index.
+    /// Failure here (an appended use going missing, or a rewrite's stale
+    /// use surviving alongside the new one) would mean Activity shows a
+    /// Claude Code use that never happened, or drops one that did.
+    #[test]
+    fn claude_code_transcript_reader_resumes_from_a_byte_offset_and_detects_a_rewrite_or_names_the_missed_use(
+    ) {
+        let tmp = tempfile::tempdir().unwrap();
+        let home = tmp.path();
+        let session_dir = home.join(CLAUDE_PROJECTS_ROOT).join("-my-project");
+        let path = write_transcript(
+            &session_dir,
+            "session.jsonl",
+            "write-tests",
+            "2026-08-01T12:00:00Z",
+            "/my-project",
+        );
+
+        let mut index = SkillInvocationIndex::default();
+        let known_skills = known(&["write-tests", "lint-code", "run-tests"]);
+        let sources = DiscoverySources::default();
+        let first = index.refresh(home, &sources);
+        assert_eq!(first.files_reparsed, 1);
+        assert_eq!(
+            stats(&index, &known_skills, &sources)[0].skill,
+            "write-tests"
+        );
+
+        // Append: the resumed read only sees the new line, not a reparse.
+        let size_before_append = fs::metadata(&path).unwrap().len();
+        let mut file = fs::OpenOptions::new().append(true).open(&path).unwrap();
+        use std::io::Write;
+        writeln!(
+            file,
+            "{}",
+            skill_line("lint-code", "2026-08-02T12:00:00Z", "/my-project")
+        )
+        .unwrap();
+        drop(file);
+        let appended_len = fs::metadata(&path).unwrap().len() - size_before_append;
+        let appended = index.refresh(home, &sources);
+        assert_eq!(
+            appended.bytes_read, appended_len,
+            "an append must be resumed from the byte offset, not reparsed from 0"
+        );
+        let after_append: Vec<_> = stats(&index, &known_skills, &sources)
+            .into_iter()
+            .map(|s| s.skill)
+            .collect();
+        assert_eq!(
+            after_append.len(),
+            2,
+            "the appended use was missed: {after_append:?}"
+        );
+        assert!(after_append.contains(&"write-tests".to_string()));
+        assert!(after_append.contains(&"lint-code".to_string()));
+
+        // Rewrite: same byte length as the file above, different content.
+        let before_rewrite_size = fs::metadata(&path).unwrap().len();
+        let rewritten = format!(
+            "{}\n",
+            skill_line("run-tests", "2026-08-03T12:00:00Z", "/my-project")
+        );
+        let padded = format!("{:1$}", rewritten, before_rewrite_size as usize);
+        assert_eq!(padded.len() as u64, before_rewrite_size);
+        fs::write(&path, &padded).unwrap();
+        let bumped_mtime =
+            fs::metadata(&path).unwrap().modified().unwrap() + Duration::from_secs(1);
+        fs::OpenOptions::new()
+            .write(true)
+            .open(&path)
+            .unwrap()
+            .set_modified(bumped_mtime)
+            .unwrap();
+
+        index.refresh(home, &sources);
+        let after_rewrite = stats(&index, &known_skills, &sources);
+        assert_eq!(
+            after_rewrite.len(),
+            1,
+            "a rewrite must clear the stale uses from before it: {after_rewrite:?}"
+        );
+        assert_eq!(after_rewrite[0].skill, "run-tests");
+    }
+
     #[test]
     fn corrupt_cache_yields_empty_index_and_leaves_a_corrupt_file() {
         let tmp = tempfile::tempdir().unwrap();
@@ -2617,6 +2710,48 @@ mod tests {
             assert_eq!(by_skill["bar"].total, 1);
             assert_eq!(by_skill["bar"].by_trigger_30_days.file_read, 1);
             assert_eq!(by_skill["bar"].by_project_30_days.get("/proj-a"), Some(&1));
+        }
+
+        #[test]
+        fn pi_session_reader_resumes_by_offset_and_reads_the_header_once_or_names_the_reparsed_header(
+        ) {
+            let tmp = tempfile::tempdir().unwrap();
+            let home = tmp.path();
+            let path = write_session(
+                &home.join(PI_SESSIONS_ROOT).join("d"),
+                "a.jsonl",
+                &[header_line("sess-a", "/proj-a")],
+            );
+
+            let mut index = SkillInvocationIndex::default();
+            let known_skills = known(&["foo"]);
+            let sources = DiscoverySources::default();
+            index.refresh(home, &sources);
+
+            let mut content = fs::read_to_string(&path).unwrap();
+            content.push_str(&user_skill_line(
+                "2026-09-16T12:05:00Z",
+                "foo",
+                "/x/skills/foo/SKILL.md",
+            ));
+            content.push('\n');
+            let appended_len = content.len() as u64 - fs::metadata(&path).unwrap().len();
+            fs::write(&path, &content).unwrap();
+
+            let report = index.refresh(home, &sources);
+            assert_eq!(
+                report.bytes_read, appended_len,
+                "the second refresh must resume from the first refresh's offset, not reparse \
+                 the header line from 0"
+            );
+            let stats = stats(&index, &known_skills, &sources);
+            assert_eq!(stats.len(), 1);
+            assert_eq!(
+                stats[0].by_project_30_days.get("/proj-a"),
+                Some(&1),
+                "the project must come from the header the first refresh already read, since \
+                 the second refresh never sees that line again"
+            );
         }
 
         #[test]
