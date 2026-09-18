@@ -327,6 +327,22 @@ mod tests {
         assert_eq!(err.kind(), io::ErrorKind::InvalidData);
     }
 
+    /// The core's fake `read_link` mirrors this kind so the journal's
+    /// "never replace a regular file at the link path" reversal check is
+    /// exercised against the same error the real adapter raises.
+    #[test]
+    fn read_link_on_a_regular_file_reports_invalid_input_or_names_the_kind_it_returned() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("plain.txt");
+        fs::write(&file, b"x").unwrap();
+        let err = RealFs::new().read_link(&file).unwrap_err();
+        assert_eq!(
+            err.kind(),
+            io::ErrorKind::InvalidInput,
+            "read_link on a regular file must report InvalidInput, not {err:?}"
+        );
+    }
+
     #[test]
     fn symlink_metadata_reports_symlink_without_following() {
         let dir = tempfile::tempdir().unwrap();

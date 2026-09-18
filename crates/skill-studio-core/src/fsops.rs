@@ -121,6 +121,10 @@ impl<T> IoResultExt<T> for std::io::Result<T> {
 /// the same process never collide even when they land in the same second.
 static UNIQUE_COUNTER: AtomicU64 = AtomicU64::new(0);
 
+/// Mints `<pid>-<counter>`. `journal.rs`'s `is_link_restore_temp_name`
+/// parses exactly this shape to recognise temp links a crashed restore left
+/// behind; change the format there too, or the sweep silently stops
+/// matching (its tests go red on a mismatch).
 pub(crate) fn unique_suffix() -> String {
     let n = UNIQUE_COUNTER.fetch_add(1, Ordering::Relaxed);
     format!("{}-{n}", std::process::id())

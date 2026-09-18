@@ -676,6 +676,10 @@ fn reverse_steps(
                         // before the rename below. Clear every such entry
                         // first so a retry always converges instead of
                         // accumulating orphaned temp links across retries.
+                        // A temp this code minted points at
+                        // `previous_target`; one `fsops::link` minted points
+                        // at `target`. A symlink with the same name shape
+                        // but any other target is a user's own and stays.
                         for entry in fs.read_dir(&parent)? {
                             if entry.kind != FileKind::Symlink
                                 || !is_link_restore_temp_name(&entry.name, &temp_prefix)
@@ -683,6 +687,17 @@ fn reverse_steps(
                                 continue;
                             }
                             let stale = parent.join(&entry.name);
+                            let points_at_ours = match fs.read_link(&stale) {
+                                Ok(current) => current == *previous_target || current == *target,
+                                Err(e) if e.kind() == std::io::ErrorKind::NotFound => false,
+                                Err(e) => return Err(e),
+                            };
+                            if !points_at_ours {
+                                continue;
+                            }
+                            // Under the exclusive lease nothing else removes
+                            // the entry between `read_dir` and here, so the
+                            // `NotFound` arm is defensive only.
                             match fs.fsops_remove_file(&stale) {
                                 Ok(()) => {}
                                 Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
@@ -1624,16 +1639,14 @@ mod tests {
         );
     }
 
-    /// Given a link restore left mid-flight by a process that crashed
-    /// between minting its temp symlink and renaming it over `path` - the
-    /// same window as the test above - when a *fresh* process retries
-    /// reconciliation, seeded with the exact leaked temp entry a crashed
-    /// first mint (this process's own `.<leaf>-0`, or another process
-    /// reusing the same leaf) would have left, then the retry still
-    /// converges: it clears every stale entry under that leaf's temp prefix
-    /// before minting its own, rather than failing `AlreadyExists` and
-    /// leaving `path` stuck on the plan's new target; on failure the panic
-    /// names the temp link it collided with.
+    /// Given a user's own entries next to a managed link that share the
+    /// `.<leaf>-` temp prefix - a regular file with the prefix, a regular
+    /// file with the exact `<pid>-<counter>` shape, a symlink with the
+    /// prefix, and a symlink with the exact shape pointing somewhere of the
+    /// user's own - when a crashed link replacement is reconciled, then the
+    /// pre-restore sweep removes none of them (it only removes symlinks of
+    /// that shape that point at the plan's own targets); on failure the
+    /// tree diff names the user entry it deleted.
     #[test]
     fn the_pre_restore_sweep_leaves_a_users_dot_entry_that_shares_the_temp_prefix_or_names_the_entry_it_deleted(
     ) {
@@ -1642,7 +1655,9 @@ mod tests {
             .dir("/root")
             .file("/root/old.txt", b"old")
             .file("/root/new.txt", b"new")
+            .file("/root/other.txt", b"other")
             .file("/root/.skill-current-notes", b"mine")
+            .file("/root/.skill-current-123-4", b"mine too")
             .build_fs();
         let root_path = PathBuf::from("/root");
         let journal = journal_over(Arc::new(fixture.clone()));
@@ -1675,6 +1690,14 @@ mod tests {
         fixture
             .fsops_symlink(Path::new("old.txt"), Path::new("/root/.skill-current-mine"))
             .expect("seed the user's own dot-prefixed link");
+        // Exact temp-name shape, but pointing at the user's own file, not at
+        // either target the plan's steps name.
+        fixture
+            .fsops_symlink(
+                Path::new("other.txt"),
+                Path::new("/root/.skill-current-2024-01"),
+            )
+            .expect("seed the user's own link that fits the temp-name shape");
 
         let pristine = tree_snapshot(&fixture, &root_path);
 
@@ -1712,8 +1735,8 @@ mod tests {
     }
 
     #[test]
-    fn a_link_restore_retried_by_a_fresh_process_converges_or_names_the_temp_link_it_collided_with()
-    {
+    fn a_leaked_temp_link_under_the_same_prefix_is_cleared_by_a_fresh_process_retry_or_names_the_entry_it_left(
+    ) {
         let fixture = FixtureBuilder::new()
             .dir("/journal")
             .dir("/root")
@@ -1790,7 +1813,7 @@ mod tests {
         let report = reconcile(&journal, &g, &fixture).expect("reconciliation must run");
         assert!(
             report.reversed.contains(&id),
-            "a fresh process's retried reversal must still converge despite the name collision, not {report:?}"
+            "a fresh process's retried reversal must still converge and clear the leaked temp entry, not {report:?}"
         );
 
         let restored = fixture
@@ -1799,13 +1822,13 @@ mod tests {
         assert_eq!(
             restored,
             PathBuf::from("old.txt"),
-            "reconciliation must restore the previous target despite the collision, or name the temp link it collided with"
+            "reconciliation must restore the previous target, or name the leaked temp entry that blocked it"
         );
 
         let after = tree_snapshot(&fixture, &root_path);
         assert_eq!(
             after, pristine,
-            "a converged retry must leave no leaked temp entry behind, or name the temp link it collided with"
+            "a converged retry must leave no leaked temp entry behind, or name the entry it left"
         );
     }
 
