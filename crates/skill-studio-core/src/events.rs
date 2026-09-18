@@ -490,8 +490,11 @@ pub(crate) enum SymlinkInverse {
         /// What the link pointed at when it was created - not used to
         /// remove it, only to refuse the removal if the link has since been
         /// retargeted to something the event never put there (see
-        /// `restore_symlink_event`'s drift guard).
-        target: PathBuf,
+        /// `restore_symlink_event`'s drift guard). `None` for a row written
+        /// before this field existed: `restore_symlink_event` treats that
+        /// as force-only, since there is nothing recorded to compare the
+        /// live link against.
+        target: Option<PathBuf>,
     },
 }
 
@@ -499,12 +502,24 @@ pub(crate) fn recreate_symlink_inverse(path: &Path, target: &Path) -> serde_json
     serde_json::json!({ "op": "recreate_symlink", "path": path, "target": target })
 }
 
-pub(crate) fn remove_symlink_inverse(path: &Path, target: &Path) -> serde_json::Value {
-    serde_json::json!({ "op": "remove_symlink", "path": path, "target": target })
+/// `target` is `None` only for a row this build never writes (every current
+/// writer records the link's target); kept optional so a pre-existing row
+/// without one still parses instead of losing its `restore_capability`.
+pub(crate) fn remove_symlink_inverse(path: &Path, target: Option<&Path>) -> serde_json::Value {
+    match target {
+        Some(target) => {
+            serde_json::json!({ "op": "remove_symlink", "path": path, "target": target })
+        }
+        None => serde_json::json!({ "op": "remove_symlink", "path": path }),
+    }
 }
 
 /// Reads a `recreate_symlink`/`remove_symlink` inverse payload back. Returns
-/// `None` for any other shape.
+/// `None` for any other shape. A `remove_symlink` row's `target` is read as
+/// present-but-optional, not required: a row from before that field existed
+/// must still parse, so `restore_capability()` (which only checks that the
+/// row's kind is understood, not the shape underneath) keeps reporting
+/// `Yes` for it instead of silently falling to `UnknownKind`.
 pub(crate) fn parse_symlink_inverse(inverse: &serde_json::Value) -> Option<SymlinkInverse> {
     let obj = inverse.as_object()?;
     match obj.get("op").and_then(|v| v.as_str()) {
@@ -514,7 +529,10 @@ pub(crate) fn parse_symlink_inverse(inverse: &serde_json::Value) -> Option<Symli
         }),
         Some("remove_symlink") => Some(SymlinkInverse::Remove {
             path: PathBuf::from(obj.get("path")?.as_str()?),
-            target: PathBuf::from(obj.get("target")?.as_str()?),
+            target: obj
+                .get("target")
+                .and_then(|v| v.as_str())
+                .map(PathBuf::from),
         }),
         _ => None,
     }

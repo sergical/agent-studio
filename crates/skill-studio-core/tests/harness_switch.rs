@@ -550,6 +550,108 @@ fn a_pending_row_stays_unrestorable_or_names_the_crash_it_pretended_finished() {
     std::fs::remove_dir_all(&home).ok();
 }
 
+/// `a_remove_symlink_row_without_a_target_is_force_only_or_names_the_row_it_refused_to_read`:
+/// a `remove_symlink` inverse recorded before `target` existed (the shape a
+/// row written by an older build, or by some other producer, would have)
+/// must still read as `RestoreCapability::Yes`, not silently drop to
+/// `UnknownKind`; and restoring it must only ever remove the link with
+/// `force`, since there is nothing recorded to compare the live link
+/// against.
+#[test]
+fn a_remove_symlink_row_without_a_target_is_force_only_or_names_the_row_it_refused_to_read() {
+    let home = unique_temp_dir("remove_symlink_no_target");
+    std::fs::create_dir_all(&home).unwrap();
+    let rt = runtime_for(&home);
+
+    let claude_skills = home.join(CLAUDE_ROOT_RELATIVE);
+    std::fs::create_dir_all(&claude_skills).unwrap();
+    let link = claude_skills.join("epsilon");
+    let target_dir = home.join(UNIVERSAL_ROOT_RELATIVE).join("epsilon");
+    std::fs::create_dir_all(&target_dir).unwrap();
+    #[cfg(unix)]
+    std::os::unix::fs::symlink(&target_dir, &link).unwrap();
+
+    let id = rt.ports.ids.next_event_id();
+    let mut session = skill_studio_core::ports::MutationSession::begin(&rt, &ctx()).unwrap();
+    // Old row shape: a `remove_symlink` inverse with no `target` key at
+    // all, mirroring `events::remove_symlink_inverse`'s `None` branch (that
+    // function is crate-private; this integration test only has the public
+    // API).
+    let inverse = serde_json::json!({ "op": "remove_symlink", "path": &link });
+    let draft = skill_studio_core::events::EventDraft {
+        kind: skill_studio_core::events::EventKind::HarnessEnable,
+        skill: SkillName("epsilon".into()),
+        harness: Some(AgentId::from(AgentId::CLAUDE_CODE)),
+        scope: Some("global".to_string()),
+        project_path: None,
+        payload: serde_json::json!({}),
+        inverse: Some(inverse),
+        backup_dir: None,
+    };
+    session.store.record(&session.guard, &id, &draft).unwrap();
+    session
+        .store
+        .finish(
+            &session.guard,
+            &id,
+            skill_studio_core::events::EventStatus::Done,
+            None,
+        )
+        .unwrap();
+    drop(session);
+
+    let store = rt
+        .ports
+        .history
+        .open(&rt.scope, HistoryAccess::ReadIfExists)
+        .unwrap()
+        .expect("the hand-recorded row's store exists after the write above");
+    let row = store.get(&id).unwrap().unwrap();
+    assert_eq!(
+        row.restore_capability(),
+        skill_studio_core::dto::RestoreCapability::Yes,
+        "a remove_symlink row missing target must still read as restorable, not fall to UnknownKind"
+    );
+    drop(store);
+
+    let no_force_err = ops::restore_event(
+        &rt,
+        &ctx(),
+        &RestoreRequest {
+            event_id: id.clone(),
+            force: false,
+        },
+    )
+    .unwrap_err();
+    assert_eq!(
+        no_force_err.code,
+        skill_studio_core::ErrorCode::DriftConflict,
+        "restoring a target-less remove_symlink row without force must be refused, not silently no-op or panic"
+    );
+    assert!(
+        std::fs::symlink_metadata(&link).is_ok(),
+        "without force the link must still be at {}",
+        link.display()
+    );
+
+    ops::restore_event(
+        &rt,
+        &ctx(),
+        &RestoreRequest {
+            event_id: id.clone(),
+            force: true,
+        },
+    )
+    .unwrap();
+    assert!(
+        std::fs::symlink_metadata(&link).is_err(),
+        "with force the link at {} must be removed",
+        link.display()
+    );
+
+    std::fs::remove_dir_all(&home).ok();
+}
+
 /// `codex_disable_writes_rows_only_for_paths_codex_reads_or_names_the_foreign_path_it_wrote`:
 /// `gamma` has a canonical universal copy plus an independent (not linked)
 /// Claude Code copy - Codex never reads `.claude/skills`, so a Codex disable

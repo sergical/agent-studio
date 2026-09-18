@@ -3771,11 +3771,11 @@ fn restore_symlink_event(
     // recreate it, at whatever it currently points to).
     let restore_inverse = match inverse {
         crate::events::SymlinkInverse::Recreate { path, target } => {
-            crate::events::remove_symlink_inverse(path, target)
+            crate::events::remove_symlink_inverse(path, Some(target))
         }
         crate::events::SymlinkInverse::Remove { path, target } => match fs.read_link(path).ok() {
             Some(current_target) => crate::events::recreate_symlink_inverse(path, &current_target),
-            None => crate::events::remove_symlink_inverse(path, target),
+            None => crate::events::remove_symlink_inverse(path, target.as_deref()),
         },
     };
     let draft = crate::events::EventDraft {
@@ -3835,26 +3835,38 @@ fn restore_symlink_event(
                 // removing it only takes back what this event's own undo
                 // owns, even if something retargeted it since. A non-symlink
                 // at the path is never removed, `force` or not - that would
-                // delete bytes this event never wrote. `target` is always
-                // the resolved absolute form (see the recording site in
-                // `set_claude_code_switch`), so the live link is resolved
-                // the same way before the comparison: a relative link that
-                // still resolves to the recorded target must pass, not be
-                // flagged as drifted for a spelling difference alone.
-                let live_target = fs
-                    .read_link(path)
-                    .ok()
-                    .map(|raw| crate::fsops::join_lexical(path.parent().unwrap_or(path), &raw));
-                if !force && live_target.as_deref() != Some(target.as_path()) {
-                    Err(CoreError::new(
-                        ErrorCode::DriftConflict,
-                        format!(
+                // delete bytes this event never wrote. `target`, when
+                // present, is always the resolved absolute form (see the
+                // recording site in `set_claude_code_switch`), so the live
+                // link is resolved the same way before the comparison: a
+                // relative link that still resolves to the recorded target
+                // must pass, not be flagged as drifted for a spelling
+                // difference alone. A row with no recorded target (written
+                // before that field existed) has nothing to compare
+                // against, so it is force-only rather than ever passing the
+                // drift check on its own.
+                let drifted = match target {
+                    Some(target) => {
+                        let live_target = fs.read_link(path).ok().map(|raw| {
+                            crate::fsops::join_lexical(path.parent().unwrap_or(path), &raw)
+                        });
+                        live_target.as_deref() != Some(target.as_path())
+                    }
+                    None => true,
+                };
+                if !force && drifted {
+                    let reason = match target {
+                        Some(target) => format!(
                             "{} no longer points at {}; pass force to remove it anyway",
                             path.display(),
                             target.display()
                         ),
-                    )
-                    .at(path))
+                        None => format!(
+                            "{} recorded no target; pass --force to delete the link",
+                            path.display()
+                        ),
+                    };
+                    Err(CoreError::new(ErrorCode::DriftConflict, reason).at(path))
                 } else {
                     let scoped_link = crate::ports::confine(&rt.scope, fs, path)?;
                     fs.remove_file(&session.guard, &scoped_link)
@@ -4672,7 +4684,7 @@ fn set_claude_code_switch(
     } else if enabled {
         Some(crate::events::remove_symlink_inverse(
             &link_path,
-            &canonical_dir,
+            Some(&canonical_dir),
         ))
     } else {
         // Recreates whatever `link_path` actually pointed at, not the
