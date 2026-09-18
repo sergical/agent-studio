@@ -7,7 +7,7 @@ use std::path::Path;
 use std::sync::{Arc, Mutex};
 
 use skill_studio_core::discovery_sources::DiscoverySources;
-use skill_studio_core::dto::ParkRequest;
+use skill_studio_core::dto::{ParkRequest, UnparkRequest};
 use skill_studio_core::harness::HarnessCatalog;
 use skill_studio_core::identity::RootKind;
 use skill_studio_core::ops;
@@ -136,6 +136,83 @@ fn codex_park_updates_the_skills_config_row_path_or_names_the_stale_row() {
     assert!(
         config.contains(&new_skill_md.to_string_lossy().to_string()),
         "config.toml never picked up the parked path: {config}"
+    );
+
+    std::fs::remove_dir_all(&home).ok();
+}
+
+/// codex_unpark_rewrites_the_disable_row_back_to_the_live_path_or_names_the_stale_parked_path:
+/// disable, park, then unpark - the row `park` rewrote to the parked
+/// `SKILL.md` path must come back to naming the live path, or Codex still
+/// treats the restored skill as disabled at a directory that no longer
+/// exists.
+#[test]
+fn codex_unpark_rewrites_the_disable_row_back_to_the_live_path_or_names_the_stale_parked_path() {
+    let home = unique_temp_dir("codex_unpark_row");
+    let dir = home.join(UNIVERSAL_ROOT_RELATIVE).join("gamma");
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(
+        dir.join("SKILL.md"),
+        b"---\nname: gamma\ndescription: a parkable skill\n---\nBody.\n",
+    )
+    .unwrap();
+    let rt = runtime_for(&home, None);
+    let live_skill_md = dir.join("SKILL.md");
+    ops::set_codex_skill_disabled(&rt, &ctx(), &live_skill_md, true).unwrap();
+
+    let inventory = ops::scan(&rt, &ctx(), &Default::default()).unwrap();
+    let deployment_id = inventory
+        .skills
+        .iter()
+        .find(|s| s.name.0 == "gamma")
+        .unwrap()
+        .deployments
+        .iter()
+        .find(|d| d.root.kind == RootKind::Universal)
+        .unwrap()
+        .id
+        .clone();
+
+    let park_outcome = ops::park(
+        &rt,
+        &ctx(),
+        &ParkRequest {
+            deployment_id: deployment_id.clone(),
+        },
+    )
+    .unwrap();
+    let parked_skill_md = park_outcome.parked_path.join("SKILL.md");
+
+    let inventory = ops::scan(&rt, &ctx(), &Default::default()).unwrap();
+    let parked_deployment_id = inventory
+        .skills
+        .iter()
+        .find(|s| s.name.0 == "gamma")
+        .unwrap()
+        .deployments
+        .iter()
+        .find(|d| d.root.kind == RootKind::Parked)
+        .unwrap()
+        .id
+        .clone();
+
+    ops::unpark(
+        &rt,
+        &ctx(),
+        &UnparkRequest {
+            deployment_id: parked_deployment_id,
+        },
+    )
+    .unwrap();
+
+    let config = std::fs::read_to_string(home.join(".codex").join("config.toml")).unwrap();
+    assert!(
+        !config.contains(&parked_skill_md.to_string_lossy().to_string()),
+        "the stale parked path: config.toml still names it after unpark: {config}"
+    );
+    assert!(
+        config.contains(&live_skill_md.to_string_lossy().to_string()),
+        "config.toml never picked up the live path after unpark: {config}"
     );
 
     std::fs::remove_dir_all(&home).ok();

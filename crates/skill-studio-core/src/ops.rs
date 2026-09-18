@@ -1873,11 +1873,12 @@ fn codex_write_disabled_row(
 /// untouched. A no-op when no row names `old_skill_md` - not every skill
 /// Codex knows about has been explicitly disabled.
 ///
-/// `ops::park` calls this after moving a deployment's folder, so a skill
-/// that was disabled through Codex's own config stays disabled at its new
-/// path instead of leaving a stale row that no longer matches anything on
-/// disk (the bug `docs/action-map/harnesses/codex.md` names).
-pub fn park_codex_skill_path(
+/// `ops::park` and `ops::unpark` call this after moving a deployment's
+/// folder, so a skill that was disabled through Codex's own config stays
+/// disabled at its new path instead of leaving a stale row that no longer
+/// matches anything on disk (the bug `docs/action-map/harnesses/codex.md`
+/// names).
+pub fn codex_rewrite_skill_path(
     rt: &Runtime,
     ctx: &OpContext,
     guard: &ExclusiveGuard,
@@ -4026,7 +4027,7 @@ pub fn park(rt: &Runtime, ctx: &OpContext, req: &ParkRequest) -> Result<ParkOutc
     // so a `[[skills.config]]` row disabling this skill names the moved
     // path itself; without this, park would leave that row pointing at a
     // directory that no longer exists (docs/action-map/harnesses/codex.md).
-    park_codex_skill_path(
+    codex_rewrite_skill_path(
         rt,
         ctx,
         &session.guard,
@@ -4166,6 +4167,16 @@ pub fn unpark(
         fs.symlink(&session.guard, &scoped_target, &scoped_link)
             .map_err(|e| CoreError::io(link_path, e))?;
     }
+    // Symmetric with `park`'s codex_rewrite_skill_path call: a `park` may
+    // have rewritten a `[[skills.config]]` row to the parked `SKILL.md`
+    // path, so unpark rewrites it back to the live path.
+    codex_rewrite_skill_path(
+        rt,
+        ctx,
+        &session.guard,
+        &deployment.path.join("SKILL.md"),
+        &restored_dir.join("SKILL.md"),
+    )?;
 
     session
         .store
