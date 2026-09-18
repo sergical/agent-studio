@@ -4,6 +4,7 @@ version = "0.1.0"
 description = "Manage coding assistant configurations"
 authors = ["you"]
 edition = "2021"
+license = "MIT"
 # `tauri dev` runs plain `cargo run`; with two bins (this one and `schema`)
 # cargo needs to be told which one is the app.
 default-run = "skill-studio-desktop"
@@ -79,7 +80,6 @@ toml = "1.1.4"
 # introduce a second copy of the crate.
 toml_edit = "0.23.10"
 chrono = { version = "0.4.45", default-features = false, features = ["clock", "serde"] }
-notify = "6"
 notify-debouncer-mini = "0.4"
 libc = "0.2"
 # 0.37 does not exist on crates.io as of writing; 0.40.2 is the newest
