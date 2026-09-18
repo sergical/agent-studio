@@ -56,12 +56,6 @@ pub struct SkillUpdateState {
     pub latest_commit_at: Option<String>,
     pub checked_at: String,
     pub error: Option<String>,
-    /// Unused since unit 3.4 replaced the skills.sh baseline-by-`updatedAt`
-    /// lookup with a direct `skillFolderHash`-against-tree-SHA compare, which
-    /// needs no cached baseline key. Kept, always `None` going forward, so an
-    /// on-disk store written by an older build still deserializes.
-    #[serde(default)]
-    pub lock_updated_at: Option<String>,
 }
 
 /// Result of `gh api ... commits`, or why it couldn't be run.
@@ -676,7 +670,6 @@ fn check_candidate(
         latest_commit_at,
         checked_at: now.to_string(),
         error,
-        lock_updated_at: None,
     })
 }
 
@@ -1444,7 +1437,6 @@ resolved_commit = "{commit}"
                     latest_commit_at: Some("2026-01-01T00:00:00Z".to_string()),
                     checked_at: "2026-01-01T00:00:00Z".to_string(),
                     error: None,
-                    lock_updated_at: None,
                 },
             )]),
             legacy_skills: BTreeMap::new(),
