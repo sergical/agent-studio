@@ -85,6 +85,32 @@ fn clearing_the_last_denied_skill_removes_the_permission_key() {
     assert!(value.get("permission").is_none());
 }
 
+/// Flow: `~/.config/opencode` is itself a symlink to `~/dotfiles/opencode`
+/// (a dotfiles layout), and no `opencode.json` exists yet under either path.
+/// Expectation: the deny write succeeds and lands in the symlink's real
+/// target, not the symlink path - `confine`'s canonical-parent check would
+/// otherwise refuse the write, since the target sits outside
+/// `~/.config`.
+/// Failure here would mean a dotfiles user can never disable a skill for
+/// OpenCode from Skill Studio.
+#[cfg(unix)]
+#[test]
+fn opencode_deny_write_follows_a_symlinked_config_dir_or_names_the_refused_write() {
+    let tmp = tempfile::tempdir().unwrap();
+    let home = tmp.path();
+    let real_dir = home.join("dotfiles/opencode");
+    std::fs::create_dir_all(&real_dir).unwrap();
+    let config_dir = home.join(".config/opencode");
+    std::fs::create_dir_all(config_dir.parent().unwrap()).unwrap();
+    std::os::unix::fs::symlink(&real_dir, &config_dir).unwrap();
+
+    deny(&config_dir, "find-bugs", true);
+
+    let content = std::fs::read_to_string(opencode_json_path(&real_dir)).unwrap();
+    let value: serde_json::Value = serde_json::from_str(&content).unwrap();
+    assert_eq!(value["permission"]["skill"]["find-bugs"], "deny");
+}
+
 /// Flow: only `opencode.jsonc` exists in the config directory (no `.json`
 /// sibling).
 /// Expectation: the write refuses rather than creating a `.json` file

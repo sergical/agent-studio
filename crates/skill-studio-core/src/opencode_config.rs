@@ -153,6 +153,23 @@ pub fn pattern_matches(pattern: &str, name: &str) -> bool {
     true
 }
 
+/// Resolves `config_dir` to its real location before it is used to scope a
+/// write. `~/.config/opencode` can itself be a symlink (a dotfiles layout
+/// keeping the real directory under version control elsewhere); [`confine`]
+/// checks the *canonical* parent of the write path against the scope, so an
+/// unresolved symlinked `config_dir` would put the write's canonical parent
+/// outside `<config_dir>/..` and get refused even though the write is well
+/// inside the intended directory. `config_dir` not existing yet (OpenCode
+/// never configured) is not an error - there is nothing on disk to follow,
+/// so it is used as given and created fresh under its own (unresolved) path.
+fn resolve_config_dir(fs: &dyn ScopeFs, config_dir: &Path) -> Result<PathBuf, CoreError> {
+    match fs.canonicalize(config_dir) {
+        Ok(resolved) => Ok(resolved),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(config_dir.to_path_buf()),
+        Err(e) => Err(CoreError::io(config_dir, e)),
+    }
+}
+
 /// Set (`deny`) or clear `permission.skill.<name>` in `<config_dir>/opencode.json`,
 /// preserving every other key and writing back pretty-printed. Creates the
 /// file with the documented `$schema` when missing. Refuses when only
@@ -180,6 +197,7 @@ pub fn set_skill_denied(
     name: &str,
     denied: bool,
 ) -> Result<(), CoreError> {
+    let config_dir = &resolve_config_dir(fs, config_dir)?;
     let jsonc_path = opencode_jsonc_path(config_dir);
     let path = opencode_json_path(config_dir);
     if fs.symlink_metadata(&jsonc_path).is_ok() && fs.symlink_metadata(&path).is_err() {
