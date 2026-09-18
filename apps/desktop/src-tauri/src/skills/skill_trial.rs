@@ -19,16 +19,17 @@ use tauri::{AppHandle, Emitter, Manager};
 
 use super::agents::AgentId;
 use super::event_store::{fingerprint_path, fingerprint_path_checked};
-use super::skill_add::{maybe_claude_code_symlink, CommandRunner, RealCommandRunner};
 use super::skill_dto::LifecycleTarget;
 use super::skill_fork_registry::{
     deployment_trial_key, name_from_trial_key, read_fork_registry, trial_key, write_fork_registry,
     write_fork_registry_locked, AddMethod, ForkRegistry, TrialRecord, TrialScope, TrialStatus,
 };
 use super::skill_fs::copy_dir_preserving_symlinks;
+use super::skill_fs::maybe_claude_code_symlink;
 use super::skill_lifecycle::{
     find_deployment, revalidate_deployment, skills_sh_remove_args_for_scope,
 };
+use super::skill_process::{CommandRunner, RealCommandRunner};
 use super::skill_refresh::{self, SkillRefreshState};
 
 /// One trial that just expired, for the `skills://trial-expired` event.

@@ -299,7 +299,8 @@ pub fn run() {
             skills::skill_fork::pull_fork_upstream,
             skills::skill_fork::unfork_skill,
             // Add skill / trials
-            skills::skill_add::add_skill,
+            skills::skill_install::add_skill,
+            skills::skill_install::install_preferences,
             skills::skill_add_operation::start_add_skill_operation,
             skills::skill_add_operation::start_add_skills_operation,
             skills::skill_add_operation::get_add_skill_operation,

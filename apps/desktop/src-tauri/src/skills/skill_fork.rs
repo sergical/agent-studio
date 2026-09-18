@@ -19,6 +19,7 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use tauri::Manager;
 
+use super::agents::AgentId;
 use super::commands::{dotagents_add_args, dotagents_remove_args};
 use super::skill_deployment::SkillDestination;
 use super::skill_dto::InstallScope;
@@ -27,7 +28,6 @@ use super::skill_fork_registry::{
     write_fork_registry_locked, ForkRecord, ForkRegistry, OriginTool, TrialScope,
 };
 use super::skill_fs::copy_dir_all;
-use super::skill_install_plan::{skills_sh_universal_add_args, SkillInstallSpec};
 use super::skill_lifecycle::skills_sh_remove_args_for_scope;
 use super::skill_process::{
     run_controlled_command_to_file, AddOperationControl, ControlledProcessError,
@@ -127,6 +127,63 @@ pub trait RepoSnapshot {
 
 /// Real `LedgerTool`, shelling out to `npx`.
 pub struct RealLedgerTool;
+
+// ============================================================================
+// skills.sh Universal argv - moved from `skill_install_plan.rs` (unit 3.5c):
+// `skill_add.rs`'s own install path is gone, and `ops_install_cli.rs` builds
+// this argv for every new install, so this stays only for `skills_sh_unfork_add_args`
+// below, an unrelated reinstall-from-origin call `ops::install` doesn't cover.
+// ============================================================================
+
+/// One install request used by `skills_sh_unfork_add_args`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct SkillInstallSpec {
+    pub scope: InstallScope,
+    pub destination: SkillDestination,
+    pub project_path: Option<String>,
+    /// Harnesses that receive a Claude Code link (Universal). Empty
+    /// Universal still writes `.agents/skills`.
+    pub harnesses: Vec<AgentId>,
+}
+
+/// Universal skills.sh argv. Never includes Codex as a proxy for Universal.
+pub fn skills_sh_universal_add_args(
+    repo_source: &str,
+    skill_name: Option<&str>,
+    spec: &SkillInstallSpec,
+) -> Result<Vec<String>, String> {
+    if spec.destination != SkillDestination::Universal {
+        return Err("skills.sh Universal argv is only for the Universal destination".to_string());
+    }
+    let mut args = vec![
+        "skills".to_string(),
+        "add".to_string(),
+        repo_source.to_string(),
+        "--yes".to_string(),
+    ];
+    match spec.scope {
+        InstallScope::Global => args.push("--global".to_string()),
+        InstallScope::Project => {
+            let path = spec
+                .project_path
+                .as_deref()
+                .ok_or("Project scope needs a project path")?;
+            args.push("--cwd".to_string());
+            args.push(path.to_string());
+        }
+    }
+    if let Some(name) = skill_name {
+        args.push("--skill".to_string());
+        args.push(name.to_string());
+    }
+    args.push("--agent".to_string());
+    args.push("universal".to_string());
+    if spec.harnesses.contains(&AgentId::ClaudeCode) {
+        args.push("--agent".to_string());
+        args.push("claude-code".to_string());
+    }
+    Ok(args)
+}
 
 fn skills_sh_unfork_add_args(rec: &ForkRecord, name: &str) -> Result<Vec<String>, String> {
     let spec = SkillInstallSpec {
@@ -1575,6 +1632,70 @@ mod tests {
         super::super::write_lease::WriteLease::default()
             .try_acquire(home)
             .unwrap()
+    }
+
+    // Moved from `skill_install_plan.rs` (unit 3.5c) alongside
+    // `skills_sh_universal_add_args` itself.
+    fn universal_global() -> SkillInstallSpec {
+        SkillInstallSpec {
+            scope: InstallScope::Global,
+            destination: SkillDestination::Universal,
+            project_path: None,
+            harnesses: vec![],
+        }
+    }
+
+    #[test]
+    fn universal_skills_sh_uses_agent_universal_and_global() {
+        let argv =
+            skills_sh_universal_add_args("o/r", Some("find-bugs"), &universal_global()).unwrap();
+        assert_eq!(
+            argv,
+            vec![
+                "skills",
+                "add",
+                "o/r",
+                "--yes",
+                "--global",
+                "--skill",
+                "find-bugs",
+                "--agent",
+                "universal",
+            ]
+        );
+        assert!(!argv.iter().any(|a| a == "codex"));
+    }
+
+    #[test]
+    fn universal_skills_sh_may_add_claude_code_not_codex() {
+        let mut spec = universal_global();
+        spec.harnesses = vec![AgentId::ClaudeCode];
+        let argv = skills_sh_universal_add_args("o/r", None, &spec).unwrap();
+        assert!(argv.windows(2).any(|w| w == ["--agent", "universal"]));
+        assert!(argv.windows(2).any(|w| w == ["--agent", "claude-code"]));
+        assert!(!argv.iter().any(|a| a == "codex"));
+    }
+
+    #[test]
+    fn universal_skills_sh_ignores_direct_readers() {
+        let mut spec = universal_global();
+        spec.harnesses = vec![AgentId::Codex];
+        let argv = skills_sh_universal_add_args("o/r", None, &spec).unwrap();
+        assert!(!argv.iter().any(|arg| arg == "codex"));
+    }
+
+    #[test]
+    fn project_universal_uses_cwd_not_global() {
+        let spec = SkillInstallSpec {
+            scope: InstallScope::Project,
+            destination: SkillDestination::Universal,
+            project_path: Some("/work/app".to_string()),
+            harnesses: vec![],
+        };
+        let argv = skills_sh_universal_add_args("o/r", None, &spec).unwrap();
+        assert!(argv.contains(&"--cwd".to_string()));
+        assert!(argv.contains(&"/work/app".to_string()));
+        assert!(!argv.contains(&"--global".to_string()));
     }
 
     /// Records every `remove`/`reinstall` call so tests can assert "called
