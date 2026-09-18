@@ -51,7 +51,7 @@
           }
         },
         "unread_roots": {
-          "description": "Roots this run could not read at all (a budget overrun before the\nroot was reached, or a `read_dir` error on the root itself) - the set\na caller merging this result into a previous one must scope a\ncarried-over deployment to. Does not include a root that was read but\nhad one unreadable skill inside it.",
+          "description": "Every path prefix this run could not read: a whole root (a budget\noverrun before the root was reached, or a `read_dir` error on the\nroot itself), or a single skill directory whose `SKILL.md` was\nunreadable within an otherwise-readable root - the set a caller\nmerging this result into a previous one must scope a carried-over\ndeployment to.",
           "type": "array",
           "items": {
             "type": "string"
