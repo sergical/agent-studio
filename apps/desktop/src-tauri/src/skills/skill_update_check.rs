@@ -649,11 +649,27 @@ fn check_candidate(
         }
         CandidateKind::SkillsSh { skill_folder_hash } => {
             match tree_shas_cached(lookups.tree, lookups.tree_cache, &candidate.repo) {
-                Ok(shas) => (
-                    Some(skill_folder_hash.clone()),
-                    shas.get(&candidate.path).cloned(),
-                    None,
-                ),
+                Ok(shas) => match shas.get(&candidate.path) {
+                    Some(sha) => (Some(skill_folder_hash.clone()), Some(sha.clone()), None),
+                    None => {
+                        // The tree call itself succeeded, so a missing path
+                        // isn't a lookup failure - it means the folder this
+                        // skill was installed from is gone from the repo's
+                        // current tree. Name it rather than read as "no
+                        // update" (`shas.get` returning `None` used to look
+                        // identical to "already current" to `has_update`)
+                        // (`a_skill_folder_missing_from_the_source_tree_reports_unknown_with_the_folder_named_or_names_the_silent_row`).
+                        error = Some(format!(
+                            "{} not found in {}'s source tree",
+                            candidate.path, candidate.repo
+                        ));
+                        let (latest_commit, _) = previous_metadata_if_same_generation(
+                            previous,
+                            Some(skill_folder_hash.as_str()),
+                        );
+                        (Some(skill_folder_hash.clone()), latest_commit, None)
+                    }
+                },
                 Err(e) if is_not_logged_in(&e) => {
                     stop.store(true, Ordering::SeqCst);
                     *not_logged_in_message
@@ -1290,6 +1306,38 @@ resolved_commit = "{commit}"
 
         let state = store.owners.get("owner:v1/global/write-tests").unwrap();
         assert!(!has_update(state));
+    }
+
+    /// A skill folder absent from the repo's current tree must not read as
+    /// "no update" - `shas.get` returning `None` used to look identical to
+    /// an up-to-date compare, silently hiding the row from the user.
+    #[test]
+    fn a_skill_folder_missing_from_the_source_tree_reports_unknown_with_the_folder_named_or_names_the_silent_row(
+    ) {
+        let tmp = tempfile::tempdir().unwrap();
+        let home = tmp.path().join("home");
+        let app_data = tmp.path().join("data");
+        write_skill_lock(
+            &home,
+            "write-tests",
+            "obra/write-tests",
+            "apps/skills/extra/write-tests/SKILL.md",
+            "old-hash",
+        );
+
+        let tree_lookup = FakeTreeLookup::with_tree(
+            "obra/write-tests",
+            HashMap::from([("some/other/folder".to_string(), "new-hash".to_string())]),
+        );
+        let store = run_update_check(&home, &app_data, &AlwaysErrorLookup, &tree_lookup);
+
+        let state = store.owners.get("owner:v1/global/write-tests").unwrap();
+        assert!(!has_update(state));
+        let error = state.error.as_deref().unwrap_or_default();
+        assert!(
+            error.contains("apps/skills/extra/write-tests") && error.contains("obra/write-tests"),
+            "expected the error to name the missing folder and repo, got {error:?}"
+        );
     }
 
     /// Three skills.sh skills from the same source repo must cost exactly
