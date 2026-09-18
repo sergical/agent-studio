@@ -4,7 +4,11 @@
 
 import { describe, expect, it } from "vitest";
 import type { SkillEvent } from "@skill-studio/lib";
-import { canRestoreSkillEvent, shouldOfferForceRestore } from "./skill-history-restore-policy";
+import {
+  canRestoreSkillEvent,
+  kindLabel,
+  shouldOfferForceRestore,
+} from "./skill-history-restore-policy";
 
 function event(forceRestorable: boolean): SkillEvent {
   return {
@@ -37,5 +41,11 @@ describe("canRestoreSkillEvent", () => {
     expect(canRestoreSkillEvent({ ...event(false), kind: "restore", restorable: false })).toBe(
       false,
     );
+  });
+});
+
+describe("kindLabel", () => {
+  it("the_quarantine_prune_event_reads_quarantine_pruned_not_quarantine_prune", () => {
+    expect(kindLabel("quarantine_prune")).toBe("Quarantine pruned");
   });
 });
