@@ -545,7 +545,7 @@ pub fn rebuild_snapshot_now(
     // below, so a rebuild that straddles an hour boundary doesn't record the
     // new hour against cutoffs computed for the old one.
     let now = Utc::now();
-    let (built, report) = build_snapshot(
+    let (mut built, report) = build_snapshot(
         &home,
         &mut invocation_index,
         BuildPaths {
@@ -559,6 +559,17 @@ pub fn rebuild_snapshot_now(
 
     if report.incomplete {
         state.invocations_dirty.store(true, Ordering::SeqCst);
+    }
+
+    if built.scan_partial {
+        let previous = state
+            .snapshot
+            .read()
+            .map_err(|e| format!("snapshot lock poisoned: {e}"))?
+            .clone();
+        if let Some(previous) = previous {
+            built.skills = merge_partial_scan_skills(built.skills, &previous.skills);
+        }
     }
 
     let built = publish_skill_snapshot(app, state, built)?;
@@ -581,10 +592,17 @@ fn publish_skill_snapshot(
 
 /// A partial scan (`built.scan_partial`) keeps whatever `ops::scan` managed
 /// to read this run, but the roots it could not read contribute nothing -
-/// `store_skill_snapshot` folds in the previous snapshot's skills so a
-/// transient failure (a lease held elsewhere, one unreadable root) never
-/// makes the published list shrink. `built`'s own rows win on a name
-/// collision: they are this run's freshest read of that skill.
+/// called from `rebuild_snapshot_now`, before the freshly built snapshot is
+/// published, to fold in the previous snapshot's skills so a transient
+/// failure (a lease held elsewhere, one unreadable root) never makes the
+/// published list shrink. `built`'s own rows win on a name collision: they
+/// are this run's freshest read of that skill.
+///
+/// Deliberately not part of `store_skill_snapshot`: that function also backs
+/// `patch_snapshot_and_emit`, whose `built` is a clone of the current
+/// snapshot with a caller's edit already applied - merging there would let a
+/// stale, pre-edit row from the same clone silently resurrect what the edit
+/// just removed.
 fn merge_partial_scan_skills(
     built: Vec<InstalledSkill>,
     previous: &[InstalledSkill],
@@ -608,11 +626,6 @@ fn store_skill_snapshot(
         .snapshot
         .write()
         .map_err(|e| format!("snapshot lock poisoned: {e}"))?;
-    if built.scan_partial {
-        if let Some(current) = guard.as_ref() {
-            built.skills = merge_partial_scan_skills(built.skills, &current.skills);
-        }
-    }
     built.revision = match guard.as_ref() {
         Some(current) => current
             .revision
@@ -3278,24 +3291,22 @@ mod tests {
     /// a user if the desktop layer doesn't then throw it away. A good
     /// snapshot publishes "alpha"; the next rebuild hits a mid-scan error
     /// and only finds "beta" before giving up, so `build_snapshot` marks it
-    /// `scan_partial`. `store_skill_snapshot` must publish both - not drop
+    /// `scan_partial`. `merge_partial_scan_skills` must keep both - not drop
     /// "alpha" just because this run's scan didn't reach it again, and not
     /// drop "beta" either, since that is a skill this run genuinely found.
     #[test]
     fn a_scan_error_sets_scan_partial_and_scan_observations_without_dropping_a_single_installed_skill(
     ) {
-        let state = fixture_state();
         let mut good = fixture_snapshot(Path::new("/alpha"));
         good.skills[0].name = "alpha".to_string();
-        store_skill_snapshot(&state, good).unwrap();
 
         let mut partial = fixture_snapshot(Path::new("/beta"));
         partial.skills[0].name = "beta".to_string();
         partial.scan_partial = true;
         partial.scan_observations = vec!["global claude-code root: could not read root".into()];
-        let published = store_skill_snapshot(&state, partial).unwrap();
+        let merged = merge_partial_scan_skills(partial.skills, &good.skills);
 
-        let names: Vec<&str> = published.skills.iter().map(|s| s.name.as_str()).collect();
+        let names: Vec<&str> = merged.iter().map(|s| s.name.as_str()).collect();
         assert!(
             names.contains(&"alpha"),
             "the last good snapshot's skill must survive a partial rescan: {names:?}"
@@ -3304,11 +3315,6 @@ mod tests {
             names.contains(&"beta"),
             "a skill this run did find must still publish: {names:?}"
         );
-        assert!(published.scan_partial);
-        assert_eq!(
-            published.scan_observations,
-            vec!["global claude-code root: could not read root".to_string()]
-        );
     }
 
     /// A freshly re-read skill's row (a frontmatter edit picked up before the
@@ -3316,20 +3322,44 @@ mod tests {
     /// good snapshot, not the other way around.
     #[test]
     fn a_partial_rescan_that_still_finds_a_known_skill_publishes_its_fresh_row_not_the_stale_one() {
-        let state = fixture_state();
         let mut good = fixture_snapshot(Path::new("/old-path"));
         good.skills[0].name = "alpha".to_string();
-        store_skill_snapshot(&state, good).unwrap();
 
         let mut partial = fixture_snapshot(Path::new("/new-path"));
         partial.skills[0].name = "alpha".to_string();
         partial.scan_partial = true;
-        let published = store_skill_snapshot(&state, partial).unwrap();
+        let merged = merge_partial_scan_skills(partial.skills, &good.skills);
 
-        assert_eq!(published.skills.len(), 1);
+        assert_eq!(merged.len(), 1);
         assert_eq!(
-            published.skills[0].deployments[0].path,
+            merged[0].deployments[0].path,
             Path::new("/new-path").to_string_lossy()
+        );
+    }
+
+    /// Unit 3.3 fix round 1, F1: `patch_snapshot_and_emit` publishes a clone
+    /// of the current snapshot with a caller's edit already applied. If
+    /// `store_skill_snapshot` re-merged a partial snapshot against the very
+    /// state that clone came from, an edit that removed a row would come
+    /// straight back - `store_skill_snapshot` must publish exactly what it is
+    /// given.
+    #[test]
+    fn a_patch_that_removes_a_skill_from_a_partial_snapshot_keeps_it_removed_or_names_the_row_that_came_back(
+    ) {
+        let state = fixture_state();
+        let mut initial = fixture_snapshot(Path::new("/alpha"));
+        initial.skills[0].name = "alpha".to_string();
+        initial.scan_partial = true;
+        let published = store_skill_snapshot(&state, initial).unwrap();
+
+        let mut patched = published.clone();
+        patched.skills.retain(|skill| skill.name != "alpha");
+        let republished = store_skill_snapshot(&state, patched).unwrap();
+
+        let names: Vec<&str> = republished.skills.iter().map(|s| s.name.as_str()).collect();
+        assert!(
+            !names.contains(&"alpha"),
+            "a skill removed by a patch on a partial snapshot must not come back: {names:?}"
         );
     }
 
