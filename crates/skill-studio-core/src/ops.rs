@@ -4612,9 +4612,19 @@ fn set_claude_code_switch(
     } else if enabled {
         Some(crate::events::remove_symlink_inverse(&link_path))
     } else {
+        // Recreates whatever `link_path` actually pointed at, not the
+        // current canonical deployment: a link retargeted by hand (or left
+        // over from a moved skill) must undo back to its own real target,
+        // not silently point the undo at wherever the universal directory
+        // happens to be now. `confine` refuses a target outside the
+        // runtime's scope the same way every other cross-boundary link does.
+        let real_target = fs
+            .read_link(&link_path)
+            .map_err(|e| CoreError::io(&link_path, e))?;
+        crate::ports::confine(&rt.scope, fs, &real_target)?;
         Some(crate::events::recreate_symlink_inverse(
             &link_path,
-            &canonical_dir,
+            &real_target,
         ))
     };
     let draft = crate::events::EventDraft {

@@ -1250,3 +1250,102 @@ fn codex_switch_writes_the_config_under_codex_home_or_names_the_file_it_wrote_in
     std::fs::remove_dir_all(&home).ok();
     std::fs::remove_dir_all(&codex_home).ok();
 }
+
+/// `claude_code_disable_records_the_links_real_target_or_names_the_body_undo_would_relink`:
+/// a per-skill link retargeted by hand - pointing somewhere other than the
+/// canonical universal deployment - must have its disable inverse recreate
+/// *that* target, not the universal directory. Recording the canonical
+/// directory instead would make undo relink the body at whatever the
+/// universal directory holds now, not what the link pointed at before the
+/// disable.
+#[test]
+fn claude_code_disable_records_the_links_real_target_or_names_the_body_undo_would_relink() {
+    let home = unique_temp_dir("claude_disable_real_target");
+    install_universal_skill(&home, "gamma");
+    let canonical_dir = home.join(UNIVERSAL_ROOT_RELATIVE).join("gamma");
+
+    // A body the link points at instead of the canonical universal
+    // deployment - standing in for a link retargeted by hand or left over
+    // from a moved skill.
+    let foreign_dir = home.join("foreign-target");
+    std::fs::create_dir_all(&foreign_dir).unwrap();
+    std::fs::write(foreign_dir.join("marker.txt"), "foreign body").unwrap();
+
+    let claude_skills = home.join(CLAUDE_ROOT_RELATIVE);
+    std::fs::create_dir_all(&claude_skills).unwrap();
+    let link = claude_skills.join("gamma");
+    #[cfg(unix)]
+    std::os::unix::fs::symlink(&foreign_dir, &link).unwrap();
+
+    let rt = runtime_for(&home);
+    let disable = ops::set_harness_enabled(
+        &rt,
+        &ctx(),
+        &SetHarnessEnabledRequest {
+            skill: SkillName("gamma".into()),
+            harness: AgentId::from(AgentId::CLAUDE_CODE),
+            enabled: false,
+            project_path: None,
+        },
+    )
+    .unwrap();
+    assert!(
+        std::fs::symlink_metadata(&link).is_err(),
+        "disable should remove {}",
+        link.display()
+    );
+
+    let store = rt
+        .ports
+        .history
+        .open(&rt.scope, HistoryAccess::ReadIfExists)
+        .unwrap()
+        .expect("the store exists after the write above");
+    let row = store.get(&disable.event_id).unwrap().unwrap();
+    let recorded_target = row
+        .inverse
+        .as_ref()
+        .and_then(|v| v.get("target"))
+        .and_then(|v| v.as_str())
+        .map(std::path::PathBuf::from)
+        .expect("a recreate_symlink inverse must carry a target");
+    assert_eq!(
+        recorded_target,
+        foreign_dir,
+        "the inverse should recreate the link's real target {}, not the canonical dir {}",
+        foreign_dir.display(),
+        canonical_dir.display()
+    );
+    assert_ne!(
+        recorded_target, canonical_dir,
+        "recording the canonical dir would relink undo to the wrong body"
+    );
+
+    let undo = ops::restore_event(
+        &rt,
+        &ctx(),
+        &RestoreRequest {
+            event_id: disable.event_id.clone(),
+            force: false,
+        },
+    )
+    .unwrap();
+    assert!(
+        std::fs::symlink_metadata(&link).is_ok(),
+        "undo should recreate {}",
+        link.display()
+    );
+    let _ = undo;
+    #[cfg(unix)]
+    {
+        let relinked_target = std::fs::read_link(&link).unwrap();
+        assert_eq!(
+            relinked_target,
+            foreign_dir,
+            "undo should relink to the recorded real target {}, not the canonical dir",
+            foreign_dir.display()
+        );
+    }
+
+    std::fs::remove_dir_all(&home).ok();
+}
