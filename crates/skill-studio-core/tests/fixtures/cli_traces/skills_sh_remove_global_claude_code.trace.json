@@ -1,5 +1,5 @@
 {
-  "_comment": "Hand-built, not recorded from a real `npx skills remove` run - unit 5.4 owns recording the real trace and replacing this file. Shape: `npx skills remove <name> --yes --global`, matching `remove_cli_args_and_cwd`'s SkillsSh/global branch (apps/cli's `remove --deployment-id ...` over a global skills.sh deployment). `files` names every file that existed under `.agents/skills/<skill>` before the run, relative to that folder - the tree the CLI deletes. `lock_entry_removed` names the `.agents/.skill-lock.json` entry the CLI drops as part of the same call.",
+  "_comment": "Hand-built, not recorded from a real `npx skills remove` run - unit 5.4 owns recording the real trace and replacing this file. Shape: `npx skills remove <name> --yes --global`, matching `remove_cli_args_and_cwd`'s SkillsSh/global branch (apps/cli's `remove --deployment-id ...` over a global skills.sh deployment). `files` names every file that existed under `.agents/skills/<skill>` before the run, relative to that folder - the tree the CLI deletes. `claude_code_link` is the pre-existing `.claude/skills/<skill>` link the CLI also removes, since a real `npx skills remove` with no `--agent` given acts on every detected agent, not just skills.sh's own tree (skills CLI v1.5.23 `dist/cli.mjs:6217-6263`; round 2, N1/B1). `lock_before` is the full `.agents/.skill-lock.json` document before the run; `lock_entry_removed` names the entry the CLI drops from it as part of the same call - the parity test diffs `lock_before` minus that entry against the lock file the fake CLI actually leaves, byte for byte apart from timestamps (`docs/action-map/definition-of-done.md` check 4).",
   "program": "npx",
   "args": [
     "skills",
@@ -15,5 +15,19 @@
       "content": "---\nname: owner-repo-skill\ndescription: a skill installed by npx skills add\n---\nBody.\n"
     }
   ],
+  "claude_code_link": true,
+  "lock_before": {
+    "version": 3,
+    "skills": {
+      "owner-repo-skill": {
+        "source": "owner/owner-repo-skill",
+        "sourceType": "github",
+        "sourceUrl": "https://github.com/owner/owner-repo-skill",
+        "skillFolderHash": "deadbeef",
+        "installedAt": "2024-01-01T00:00:00Z",
+        "updatedAt": "2024-01-01T00:00:00Z"
+      }
+    }
+  },
   "lock_entry_removed": "owner-repo-skill"
 }

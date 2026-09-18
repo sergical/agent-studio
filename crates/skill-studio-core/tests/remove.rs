@@ -23,7 +23,7 @@ use skill_studio_core::dto::{
 };
 use skill_studio_core::harness::HarnessCatalog;
 use skill_studio_core::identity::{
-    DeploymentId, LifecycleOwnerKind, RootKind, RootScope, SkillName,
+    AgentId, DeploymentId, LifecycleOwnerKind, RootKind, RootScope, SkillName,
 };
 use skill_studio_core::ops;
 use skill_studio_core::ports::{
@@ -37,6 +37,7 @@ use skill_studio_host::{FileLease, RealFs, SqliteHistoryOpener};
 
 const UNIVERSAL_ROOT_RELATIVE: &str = ".agents/skills";
 const QUARANTINE_DIR_NAME: &str = ".skill-studio-quarantine";
+const CLAUDE_ROOT_RELATIVE: &str = ".claude/skills";
 
 /// Stands in for `npx skills add|remove <name> ...` / `npx -y
 /// @sentry/dotagents add|remove <name> ...`: `add` writes a minimal
@@ -97,6 +98,13 @@ impl ProcessSpawner for FakeNpxSpawner {
             let name = spec.args[idx + 1].clone();
             let dir = cwd.join(UNIVERSAL_ROOT_RELATIVE).join(&name);
             std::fs::remove_dir_all(&dir).ok();
+            // The real CLI removes every detected agent's link when no
+            // `--agent` is given (skills CLI v1.5.23 `dist/cli.mjs:6217-
+            // 6263`), not just the tree - `remove_and_link`'s own link loop
+            // (round 2, B1) must treat a link this already deleted as
+            // already-removed rather than an error.
+            let claude_link = cwd.join(CLAUDE_ROOT_RELATIVE).join(&name);
+            std::fs::remove_file(&claude_link).ok();
             let lock_path = cwd.join(".agents").join(".skill-lock.json");
             if let Ok(bytes) = std::fs::read(&lock_path) {
                 if let Ok(mut doc) = serde_json::from_slice::<serde_json::Value>(&bytes) {
@@ -136,12 +144,24 @@ fn runtime_with(
     fs: Arc<dyn skill_studio_core::ports::ScopeFs>,
     spawner: Option<Arc<dyn ProcessSpawner>>,
 ) -> Runtime {
+    runtime_with_clock(home, fs, spawner, Arc::new(FakeClock::at(0)))
+}
+
+/// [`runtime_with`], with the clock a caller supplies instead of a fresh
+/// `FakeClock` at the epoch - round 2, N4: the age-cap test needs to
+/// advance a clock it still holds a handle to after the runtime is built.
+fn runtime_with_clock(
+    home: &std::path::Path,
+    fs: Arc<dyn skill_studio_core::ports::ScopeFs>,
+    spawner: Option<Arc<dyn ProcessSpawner>>,
+    clock: Arc<FakeClock>,
+) -> Runtime {
     let history_root = home.join(".history");
     let db_path = history_root.join("events.sqlite3");
     let scope = RuntimeScope::fixture(home);
     let ports = Ports {
         fs,
-        clock: Arc::new(FakeClock::at(0)),
+        clock,
         ids: Arc::new(FakeIds::default()),
         leases: Arc::new(FileLease::new(home.join(".leases"))),
         history: Arc::new(SqliteHistoryOpener::new(db_path)),
@@ -317,6 +337,39 @@ fn setup_owner_kind(
     }
 }
 
+/// [`setup_owner_kind`], plus a Claude Code per-skill link
+/// (`.claude/skills/<skill>`) pointing at the universal deployment - round
+/// 2, B1: the undo and crash loops need a real harness link in play so
+/// `remove_and_link`'s link-removal step, and its `NotFound` tolerance, are
+/// actually exercised for every owner kind, not skipped because
+/// `find_all_links` found nothing. `Copy` gets its link the real way, by
+/// asking `ops::install` for `claude-code`; the other three kinds never go
+/// through `ops::install` (see [`write_manual_universal_skill`]'s own doc),
+/// so their link is hand-made, matching a real `npx ... --agent
+/// claude-code` run's own side effect.
+fn setup_owner_kind_with_claude_link(
+    rt: &Runtime,
+    home: &std::path::Path,
+    kind: LifecycleOwnerKind,
+    skill: &str,
+) -> DeploymentId {
+    if kind == LifecycleOwnerKind::Copy {
+        let mut req = copy_request(skill);
+        req.harnesses = vec![AgentId::parse(AgentId::CLAUDE_CODE).unwrap()];
+        let InstallOutcome::Installed { .. } = ops::install(rt, &ctx(), &req).unwrap() else {
+            panic!("expected Installed");
+        };
+        return resolve_deployment_id(rt, skill);
+    }
+    let deployment_id = setup_owner_kind(rt, home, kind, skill);
+    let claude_dir = home.join(CLAUDE_ROOT_RELATIVE);
+    std::fs::create_dir_all(&claude_dir).unwrap();
+    let target = home.join(UNIVERSAL_ROOT_RELATIVE).join(skill);
+    #[cfg(unix)]
+    std::os::unix::fs::symlink(&target, claude_dir.join(skill)).unwrap();
+    deployment_id
+}
+
 /// Every owner kind `remove` treats as mutable - the loop body for the
 /// undo and crash tests below.
 const MUTABLE_OWNER_KINDS: [LifecycleOwnerKind; 4] = [
@@ -442,9 +495,14 @@ fn undo_after_remove_brings_the_tree_back_with_the_same_tree_hash_or_names_the_d
         std::fs::create_dir_all(&home).unwrap();
         let rt = runtime_for(&home);
         let skill = format!("undo-{kind:?}").to_lowercase();
-        let deployment_id = setup_owner_kind(&rt, &home, kind, &skill);
+        let deployment_id = setup_owner_kind_with_claude_link(&rt, &home, kind, &skill);
+        let claude_link = home.join(CLAUDE_ROOT_RELATIVE).join(&skill);
 
         let outcome = ops::remove(&rt, &ctx(), &RemoveRequest { deployment_id }).unwrap();
+        assert!(
+            std::fs::symlink_metadata(&claude_link).is_err(),
+            "{kind:?}: remove must take the Claude Code link down too"
+        );
         let restored = ops::restore_event(
             &rt,
             &ctx(),
@@ -475,75 +533,252 @@ fn undo_after_remove_brings_the_tree_back_with_the_same_tree_hash_or_names_the_d
     }
 }
 
+/// `undo_after_remove_restores_the_links_and_the_provenance_row_or_names_the_missing_path`
+/// (round 2, N3): the tree-hash guarantee the test above checks, joined by
+/// two more - the Claude Code link `remove` took down comes back pointing
+/// at the restored tree, and for `Copy`/`Fork` (the two kinds with their own
+/// registry row) that row is back too. `Dotagents`/`SkillsSh` have no
+/// registry row of `remove`'s own to lose (see `CrashPoint`'s own doc), so
+/// only the link assertion runs for them.
+#[test]
+fn undo_after_remove_restores_the_links_and_the_provenance_row_or_names_the_missing_path() {
+    for kind in MUTABLE_OWNER_KINDS {
+        let home = unique_temp_dir(&format!("remove_undo_links_{kind:?}"));
+        std::fs::create_dir_all(&home).unwrap();
+        let rt = runtime_for(&home);
+        let skill = format!("undo-links-{kind:?}").to_lowercase();
+        let deployment_id = setup_owner_kind_with_claude_link(&rt, &home, kind, &skill);
+        let claude_link = home.join(CLAUDE_ROOT_RELATIVE).join(&skill);
+        let universal_path = home.join(UNIVERSAL_ROOT_RELATIVE).join(&skill);
+
+        let outcome = ops::remove(&rt, &ctx(), &RemoveRequest { deployment_id }).unwrap();
+        ops::restore_event(
+            &rt,
+            &ctx(),
+            &RestoreRequest {
+                event_id: outcome.event_id,
+                force: false,
+            },
+        )
+        .unwrap();
+
+        let restored_target = std::fs::read_link(&claude_link).unwrap_or_else(|e| {
+            panic!("{kind:?}: the Claude Code link must be back after restore: {e}")
+        });
+        assert_eq!(
+            restored_target, universal_path,
+            "{kind:?}: the restored link must point at the restored tree"
+        );
+
+        if matches!(kind, LifecycleOwnerKind::Copy | LifecycleOwnerKind::Fork) {
+            let registry =
+                std::fs::read_to_string(home.join(".agents").join("skill-studio.json")).unwrap();
+            let registry: serde_json::Value = serde_json::from_str(&registry).unwrap();
+            let map_key = if kind == LifecycleOwnerKind::Copy {
+                "copies"
+            } else {
+                "forks"
+            };
+            let has_row = registry
+                .get(map_key)
+                .and_then(serde_json::Value::as_object)
+                .is_some_and(|map| {
+                    map.keys().any(|k| k == &skill)
+                        || map
+                            .values()
+                            .any(|v| v.get("name").and_then(|n| n.as_str()) == Some(skill.as_str()))
+                });
+            assert!(
+                has_row,
+                "{kind:?}: the {map_key} registry row must be back after restore"
+            );
+        }
+    }
+}
+
+/// Which step [`remove_crash_mid_rename_leaves_disk_in_the_before_or_after_state_or_names_the_stray_folder`]
+/// (round 2, N2) injects a failure into - the tree step every kind has, or
+/// the registry write / link removal that follow it for `Copy`/`Fork`.
+/// `Dotagents`/`SkillsSh` get `Tree` only: their registry bookkeeping is the
+/// CLI's own (no `drop_registry_entry` write of this op's own to fail), and
+/// the real CLI already deletes the Claude Code link itself before this op
+/// ever reaches its own link loop (see [`FakeNpxSpawner`]'s `remove` branch
+/// and B1's `NotFound` tolerance in `remove_and_link`), so there is no
+/// `remove_file` call left for `fail_next_remove_file` to catch.
+#[derive(Debug, Clone, Copy)]
+enum CrashPoint {
+    Tree,
+    Registry,
+    Link,
+}
+
 /// `remove_crash_mid_rename_leaves_disk_in_the_before_or_after_state_or_names_the_stray_folder`
 /// (the red check, extended in coordinator round 2 to all four owner
-/// kinds): failing the single write `Copy`/`Fork`'s removal makes (a
-/// rename) or `Dotagents`/`SkillsSh`'s removal makes (an `npx` call) must
-/// never leave the deployment half-moved - either it is still at the
-/// universal root (the before state) or, for `Copy`/`Fork`, it already
-/// landed, complete, in quarantine (the after state; `Dotagents`/`SkillsSh`
-/// have no "after" state to land in, since the CLI's own crash is injected
-/// before it touches disk at all).
+/// kinds, and to the registry-write and link-removal steps, N2): failing
+/// any one write `remove` makes must never leave the deployment
+/// half-moved - either it is still at the universal root (the before
+/// state) or, for `Copy`/`Fork`, it already landed, complete, in
+/// quarantine (the after state; `Dotagents`/`SkillsSh` have no "after"
+/// state to land in for a `Tree` crash, since the CLI's own crash is
+/// injected before it touches disk at all). A `Registry`/`Link` crash
+/// happens after the tree step already landed, so the tree-then-links
+/// order (module doc on `remove_and_link`) puts the link still standing
+/// for a `Link` crash - proof the link step never runs before the tree
+/// step, not after it silently skips.
 #[test]
 fn remove_crash_mid_rename_leaves_disk_in_the_before_or_after_state_or_names_the_stray_folder() {
     for kind in MUTABLE_OWNER_KINDS {
-        let home = unique_temp_dir(&format!("remove_crash_window_{kind:?}"));
-        std::fs::create_dir_all(&home).unwrap();
-        // One runtime for both the setup and the crashed remove -
-        // `park_and_unpark.rs`'s own crash tests follow the same shape. Two
-        // separate runtimes would each carry their own `FakeIds` counter
-        // starting from zero, and the second call's event id would collide
-        // with the first (both writing to the same `events.sqlite3`).
-        let failing_fs = Arc::new(FailingFs::wrap(Arc::new(RealFs::new())));
-        let spawner = Arc::new(FakeNpxSpawner::new(home.clone()));
-        let rt = runtime_with(&home, failing_fs.clone(), Some(spawner.clone()));
-        let skill = format!("crash-{kind:?}").to_lowercase();
-        let deployment_id = setup_owner_kind(&rt, &home, kind, &skill);
-
-        match kind {
-            LifecycleOwnerKind::Copy | LifecycleOwnerKind::Fork => failing_fs.fail_next_rename(),
-            LifecycleOwnerKind::Dotagents | LifecycleOwnerKind::SkillsSh => {
-                spawner.fail_next_call();
+        let points: &[CrashPoint] = match kind {
+            LifecycleOwnerKind::Copy | LifecycleOwnerKind::Fork => {
+                &[CrashPoint::Tree, CrashPoint::Registry, CrashPoint::Link]
             }
+            LifecycleOwnerKind::Dotagents | LifecycleOwnerKind::SkillsSh => &[CrashPoint::Tree],
             other => panic!("unsupported owner kind: {other:?}"),
-        }
-        let err = ops::remove(&rt, &ctx(), &RemoveRequest { deployment_id }).unwrap_err();
-        assert_eq!(err.code, skill_studio_core::ErrorCode::Io, "{kind:?}");
+        };
+        for point in points {
+            let home = unique_temp_dir(&format!("remove_crash_window_{kind:?}_{point:?}"));
+            std::fs::create_dir_all(&home).unwrap();
+            // One runtime for both the setup and the crashed remove -
+            // `park_and_unpark.rs`'s own crash tests follow the same shape.
+            // Two separate runtimes would each carry their own `FakeIds`
+            // counter starting from zero, and the second call's event id
+            // would collide with the first (both writing to the same
+            // `events.sqlite3`).
+            let failing_fs = Arc::new(FailingFs::wrap(Arc::new(RealFs::new())));
+            let spawner = Arc::new(FakeNpxSpawner::new(home.clone()));
+            let rt = runtime_with(&home, failing_fs.clone(), Some(spawner.clone()));
+            let skill = format!("crash-{kind:?}-{point:?}").to_lowercase();
+            let deployment_id = setup_owner_kind_with_claude_link(&rt, &home, kind, &skill);
+            let claude_link = home.join(CLAUDE_ROOT_RELATIVE).join(&skill);
 
-        let original = home.join(UNIVERSAL_ROOT_RELATIVE).join(&skill);
-        let quarantine_dir = home.join(UNIVERSAL_ROOT_RELATIVE).join(QUARANTINE_DIR_NAME);
-        let landed = std::fs::read_dir(&quarantine_dir)
-            .map(|mut d| d.next().is_some())
-            .unwrap_or(false);
+            match point {
+                CrashPoint::Tree => match kind {
+                    LifecycleOwnerKind::Copy | LifecycleOwnerKind::Fork => {
+                        failing_fs.fail_next_rename();
+                    }
+                    LifecycleOwnerKind::Dotagents | LifecycleOwnerKind::SkillsSh => {
+                        spawner.fail_next_call();
+                    }
+                    other => panic!("unsupported owner kind: {other:?}"),
+                },
+                CrashPoint::Registry => failing_fs.fail_next_write_atomic(),
+                CrashPoint::Link => failing_fs.fail_next_remove_file(),
+            }
+            let err = ops::remove(&rt, &ctx(), &RemoveRequest { deployment_id }).unwrap_err();
+            assert_eq!(
+                err.code,
+                skill_studio_core::ErrorCode::Io,
+                "{kind:?} {point:?}"
+            );
+
+            let original = home.join(UNIVERSAL_ROOT_RELATIVE).join(&skill);
+            let quarantine_dir = home.join(UNIVERSAL_ROOT_RELATIVE).join(QUARANTINE_DIR_NAME);
+            let landed = std::fs::read_dir(&quarantine_dir)
+                .map(|mut d| d.next().is_some())
+                .unwrap_or(false);
+            let tree_state_ok = match point {
+                CrashPoint::Tree => original.join("SKILL.md").exists() != landed,
+                // The tree step already succeeded for these two crash
+                // points: `Copy`/`Fork` are already in quarantine, and the
+                // universal-root copy is gone either way.
+                CrashPoint::Registry | CrashPoint::Link => {
+                    !original.join("SKILL.md").exists() && landed
+                }
+            };
+            assert!(
+                tree_state_ok,
+                "{kind:?} {point:?}: the deployment must be exactly one of: still at the universal root, or fully in quarantine - never neither or both"
+            );
+            if landed {
+                let entry = std::fs::read_dir(&quarantine_dir)
+                    .unwrap()
+                    .next()
+                    .unwrap()
+                    .unwrap();
+                assert!(entry.path().join("SKILL.md").exists(), "{kind:?} {point:?}");
+            }
+            if matches!(point, CrashPoint::Tree | CrashPoint::Registry) {
+                // The link step never ran (a `Tree` crash never reaches it;
+                // a `Registry` crash fails before it) - the link must still
+                // stand exactly as setup left it.
+                assert!(
+                    std::fs::symlink_metadata(&claude_link).is_ok(),
+                    "{kind:?} {point:?}: the link must still stand - the link step never ran"
+                );
+            } else if matches!(point, CrashPoint::Link) {
+                // The tree-then-links order (module doc): the tree already
+                // moved, and the link removal itself is what crashed, so
+                // the link is left stray rather than the tree never moving.
+                assert!(
+                    std::fs::symlink_metadata(&claude_link).is_ok(),
+                    "{kind:?} {point:?}: a crashed link removal must leave the link, not the tree, stray"
+                );
+            }
+
+            // Round 1, Q3: the row itself must record the crash, not just
+            // leave the tree in a valid state - a `failed` `remove` row
+            // with its `backup_dir` set, so a later prune (Q2) and a
+            // manual retry both have something to find.
+            let events = ops::list_events(&rt, &ctx(), &ListEventsRequest::default()).unwrap();
+            let remove_row = events
+                .iter()
+                .find(|e| e.kind == "remove")
+                .expect("the crashed remove must still have written its own row");
+            assert_eq!(
+                remove_row.status, "failed",
+                "{kind:?} {point:?}: a crashed remove must mark the row failed"
+            );
+            assert!(
+                remove_row.backup_dir.is_some(),
+                "{kind:?} {point:?}: a failed remove must still have an archival backup_dir"
+            );
+        }
+    }
+}
+
+/// `skills_sh_remove_succeeds_when_the_cli_already_deleted_the_harness_links_or_names_the_failed_row`
+/// (round 2, B1): the real `npx skills remove`/`npx -y @sentry/dotagents
+/// remove` (no `--agent` given) already deletes every per-agent link
+/// itself before this op ever reaches its own link loop - so a link that is
+/// already gone by the time `remove_and_link` gets to it must not fail the
+/// row. Without B1's fix, `remove_and_link`'s unconditional `fs.remove_file`
+/// hit `NotFound` on the already-deleted Claude Code link and the whole call
+/// returned `Io`, even though the deployment, links, and lock entry were
+/// all correctly gone.
+#[test]
+fn skills_sh_remove_succeeds_when_the_cli_already_deleted_the_harness_links_or_names_the_failed_row(
+) {
+    for kind in [LifecycleOwnerKind::SkillsSh, LifecycleOwnerKind::Dotagents] {
+        let home = unique_temp_dir(&format!("remove_cli_already_deleted_link_{kind:?}"));
+        std::fs::create_dir_all(&home).unwrap();
+        let rt = runtime_for(&home);
+        let skill = format!("preremoved-{kind:?}").to_lowercase();
+        let deployment_id = setup_owner_kind(&rt, &home, kind, &skill);
+        let claude_dir = home.join(CLAUDE_ROOT_RELATIVE);
+        std::fs::create_dir_all(&claude_dir).unwrap();
+        let target = home.join(UNIVERSAL_ROOT_RELATIVE).join(&skill);
+        let link_path = claude_dir.join(&skill);
+        #[cfg(unix)]
+        std::os::unix::fs::symlink(&target, &link_path).unwrap();
+
+        // `FakeNpxSpawner`'s own `remove` branch matches the real CLI: it
+        // deletes the tree and the Claude Code link together, so by the
+        // time `remove_and_link`'s link loop runs, `link_path` is already
+        // gone.
+        ops::remove(&rt, &ctx(), &RemoveRequest { deployment_id }).unwrap();
+
         assert!(
-            original.join("SKILL.md").exists() != landed,
-            "{kind:?}: the deployment must be exactly one of: still at the universal root, or fully in quarantine - never neither or both"
+            std::fs::symlink_metadata(&link_path).is_err(),
+            "{kind:?}: the link must be gone"
         );
-        if landed {
-            let entry = std::fs::read_dir(&quarantine_dir)
-                .unwrap()
-                .next()
-                .unwrap()
-                .unwrap();
-            assert!(entry.path().join("SKILL.md").exists(), "{kind:?}");
-        }
-
-        // Round 1, Q3: the row itself must record the crash, not just leave
-        // the tree in a valid state - a `failed` `remove` row with its
-        // `backup_dir` set, so a later prune (Q2) and a manual retry both
-        // have something to find.
         let events = ops::list_events(&rt, &ctx(), &ListEventsRequest::default()).unwrap();
         let remove_row = events
             .iter()
             .find(|e| e.kind == "remove")
-            .expect("the crashed remove must still have written its own row");
+            .expect("the remove row must exist");
         assert_eq!(
-            remove_row.status, "failed",
-            "{kind:?}: a crashed remove must mark the row failed"
-        );
-        assert!(
-            remove_row.backup_dir.is_some(),
-            "{kind:?}: a failed remove must still have an archival backup_dir"
+            remove_row.status, "done",
+            "{kind:?}: a link the CLI already deleted must not fail the row"
         );
     }
 }
@@ -642,20 +877,82 @@ fn quarantine_stays_within_the_retention_cap_and_prunes_the_oldest_entries_or_na
         !remaining.contains(&"old-0000".to_string()),
         "the oldest pre-existing entry must be the one pruned: {remaining:?}"
     );
+
+    // Round 2, N4: the prune itself is journaled, not a silent sweep - see
+    // `prune_quarantine`'s own doc.
+    let events = ops::list_events(&rt, &ctx(), &ListEventsRequest::default()).unwrap();
+    assert!(
+        events.iter().any(|e| e.kind == "quarantine_prune"),
+        "a prune that drops at least one entry must record its own quarantine_prune row: {events:?}"
+    );
+}
+
+/// `quarantine_prune_drops_entries_older_than_the_age_cap_or_names_the_kept_entry`
+/// (round 2, N4): an entry past `QUARANTINE_AGE_CAP` is pruned even while
+/// the directory is well under `QUARANTINE_RETENTION_CAP`, so an idle
+/// install does not carry a removed tree forever. `FakeIds`' own fake event
+/// ids are not real ulids with a meaningful embedded timestamp (see
+/// `crate::testing::FakeIds`), so the aged entry's name is hand-built from a
+/// real `ulid::Ulid` timestamped at the Unix epoch instead of one this test
+/// drives through `remove` itself.
+#[test]
+fn quarantine_prune_drops_entries_older_than_the_age_cap_or_names_the_kept_entry() {
+    let home = unique_temp_dir("remove_quarantine_age_cap");
+    std::fs::create_dir_all(&home).unwrap();
+    let quarantine_dir = home.join(UNIVERSAL_ROOT_RELATIVE).join(QUARANTINE_DIR_NAME);
+    std::fs::create_dir_all(&quarantine_dir).unwrap();
+
+    let old_ulid = ulid::Ulid::from_datetime(std::time::UNIX_EPOCH);
+    let old_name = format!("old-{old_ulid}");
+    let old_dir = quarantine_dir.join(&old_name);
+    std::fs::create_dir_all(&old_dir).unwrap();
+    std::fs::write(old_dir.join("SKILL.md"), b"---\nname: old\n---\n").unwrap();
+
+    // Well under `QUARANTINE_RETENTION_CAP`, so only the age cap - not the
+    // count cap - can be what prunes `old_name`.
+    let clock = Arc::new(FakeClock::at(0));
+    clock.advance(std::time::Duration::from_secs(60 * 24 * 60 * 60));
+    let rt = runtime_with_clock(
+        &home,
+        Arc::new(RealFs::new()),
+        Some(Arc::new(FakeNpxSpawner::new(home.clone()))),
+        clock,
+    );
+    let deployment_id = install_and_resolve(&rt, "fresh");
+
+    ops::remove(&rt, &ctx(), &RemoveRequest { deployment_id }).unwrap();
+
+    let remaining: Vec<String> = std::fs::read_dir(&quarantine_dir)
+        .unwrap()
+        .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+        .collect();
+    assert!(
+        !remaining.contains(&old_name),
+        "the entry older than the age cap must be pruned, not kept: {remaining:?}"
+    );
 }
 
 /// One recorded (here, hand-built) `npx skills remove` call's shape: the
-/// argv, the tree it deletes, and the lock entry it drops. Mirrors
-/// `install.rs`'s own `CliTrace`, plus `lock_entry_removed`, which that
+/// argv, the tree it deletes, the harness link it also deletes, and the
+/// lock entry it drops. Mirrors `install.rs`'s own `CliTrace`, plus
+/// `claude_code_link`/`lock_before`/`lock_entry_removed`, which that
 /// fixture has no counterpart for since `add` never touches the lock file
 /// itself (that's `npx skills add`'s job, upstream of what `FakeNpxSpawner`
-/// stands in for).
+/// stands in for) and never has a pre-existing link to remove.
 #[derive(serde::Deserialize)]
 struct RemoveCliTrace {
     program: String,
     args: Vec<String>,
     cwd: Option<PathBuf>,
     files: Vec<CliTraceFile>,
+    /// Round 2, N1: whether the fixture's before state includes a Claude
+    /// Code per-skill link the CLI also removes - `find_all_links`
+    /// (`ops.rs:4670`) was exercised by no test before this.
+    claude_code_link: bool,
+    /// Round 2, N1: the full `.agents/.skill-lock.json` document before the
+    /// run, so the parity test can diff the whole file, not just the one
+    /// entry's presence.
+    lock_before: serde_json::Value,
     lock_entry_removed: String,
 }
 
@@ -674,8 +971,11 @@ struct CliTraceFile {
 /// (`issue-3.9a-followup-a.md`). Seeds the fixture's pre-existing tree and a
 /// matching `.skill-lock.json` entry directly on disk (not through
 /// `FakeNpxSpawner`, which only ever writes what a real `add` call would),
-/// then asserts `remove_via_cli`'s own argv/cwd match the trace exactly and
-/// that both the tree and the lock entry are gone afterward.
+/// then asserts `remove_via_cli`'s own argv/cwd match the trace exactly,
+/// that the tree, the Claude Code link, and the lock entry are gone
+/// afterward, and that the lock file's remaining bytes match `lock_before`
+/// with only that entry removed - `docs/action-map/definition-of-done.md`
+/// check 4's "lockfile entry matches ... byte for byte" (round 2, N1).
 #[test]
 fn cli_remove_matches_the_npx_skills_remove_trace_byte_for_byte_apart_from_timestamps_or_names_the_diverging_file(
 ) {
@@ -700,7 +1000,18 @@ fn cli_remove_matches_the_npx_skills_remove_trace_byte_for_byte_apart_from_times
         std::fs::create_dir_all(path.parent().unwrap()).unwrap();
         std::fs::write(&path, &file.content).unwrap();
     }
-    mark_skills_sh(&home, skill);
+    let agents_dir = home.join(".agents");
+    std::fs::create_dir_all(&agents_dir).unwrap();
+    let lock_path = agents_dir.join(".skill-lock.json");
+    std::fs::write(&lock_path, serde_json::to_vec(&trace.lock_before).unwrap()).unwrap();
+
+    let claude_link = home.join(CLAUDE_ROOT_RELATIVE).join(skill);
+    if trace.claude_code_link {
+        let claude_dir = home.join(CLAUDE_ROOT_RELATIVE);
+        std::fs::create_dir_all(&claude_dir).unwrap();
+        #[cfg(unix)]
+        std::os::unix::fs::symlink(&skill_dir, &claude_link).unwrap();
+    }
 
     let spawner = Arc::new(FakeNpxSpawner::new(home.clone()));
     let rt = runtime_with(&home, Arc::new(RealFs::new()), Some(spawner.clone()));
@@ -728,11 +1039,22 @@ fn cli_remove_matches_the_npx_skills_remove_trace_byte_for_byte_apart_from_times
         !skill_dir.exists(),
         "the CLI's remove call must take the deployment off disk"
     );
+    if trace.claude_code_link {
+        assert!(
+            std::fs::symlink_metadata(&claude_link).is_err(),
+            "the CLI's remove call must take the Claude Code link down too"
+        );
+    }
 
-    let lock_bytes = std::fs::read(home.join(".agents").join(".skill-lock.json")).unwrap();
-    let lock: serde_json::Value = serde_json::from_slice(&lock_bytes).unwrap();
-    assert!(
-        lock.get("skills").and_then(|s| s.get(skill)).is_none(),
-        "the CLI's remove call must drop the lock entry named {skill:?}"
+    let mut expected_lock = trace.lock_before.clone();
+    expected_lock
+        .get_mut("skills")
+        .and_then(|s| s.as_object_mut())
+        .and_then(|m| m.shift_remove(skill));
+    let expected_bytes = serde_json::to_vec(&expected_lock).unwrap();
+    let lock_bytes = std::fs::read(&lock_path).unwrap();
+    assert_eq!(
+        lock_bytes, expected_bytes,
+        "the lock file's remaining bytes must match lock_before with only {skill:?} removed"
     );
 }
