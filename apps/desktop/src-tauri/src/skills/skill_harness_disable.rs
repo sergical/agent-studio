@@ -1296,5 +1296,4 @@ mod tests {
             assert!(err.contains("no per-skill disable"), "{agent}: {err}");
         }
     }
-
 }
