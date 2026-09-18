@@ -22,14 +22,14 @@ import {
 } from "@skill-studio/ui";
 import { formatTokens } from "@skill-studio/lib";
 import type { AgentId, InstalledSkill, InvocationPolicy } from "@skill-studio/lib";
-import { parkSkill, setHarnessEnabled, unparkSkill } from "../../lib/skill-api";
+import { restoreMovedDeployment, setHarnessEnabled } from "../../lib/skill-api";
 import { useAppStore } from "../../store/appStore";
 import { HarnessStack } from "../SkillList/HarnessStack";
 import { DEFAULT_HARNESS_LIST, whereFacts } from "../SkillList/skill-row-state";
 import { SwitchControl } from "../ui/SwitchControl";
 import { buildInstalledSkillSourceLedgerModel } from "./installed-skill-source-ledger-model";
 import { setInvocationForFile } from "./skill-location-actions";
-import { canToggleHarness } from "./skill-location-helpers";
+import { canOfferHarnessSwitch as canOfferHarnessSwitchForDeployment } from "./skill-location-helpers";
 import {
   buildInvocationFiles,
   buildScopeGroups,
@@ -78,6 +78,25 @@ function showLocations() {
   heading?.focus();
 }
 
+/** Shown on a disabled Harnesses switch that has no way to turn the row off - see `canOfferHarnessSwitch`. */
+const NO_OFF_SWITCH_TITLE = "This copy has no off switch; park the skill from the header instead";
+
+/**
+ * Whether the Harnesses popover's switch should be interactive for `row`.
+ * `park` is the off switch only for the Global Universal deployment - which
+ * never reaches this popover, since `allRows` above filters out `"shared"`
+ * rows - so a row here offers a switch only when its harness has a native
+ * per-skill mechanism (`canToggleHarness`), or the row is a legacy
+ * `.skill-studio-disabled/` copy that can still be switched back on via
+ * `restoreMovedDeployment`. Every other row (a project-scope copy, pi,
+ * Cursor, Grok Build) has no off switch at all.
+ */
+function canOfferHarnessSwitch(row: AgentLocationRow): boolean {
+  if (row.kind === "reader") return row.hasSwitch;
+  if (!row.deployment) return false;
+  return canOfferHarnessSwitchForDeployment(row.deployment);
+}
+
 export function SkillPropertiesRail({ skill, updateAction }: SkillPropertiesRailProps) {
   const addToast = useAppStore((state) => state.addToast);
   const [announcement, setAnnouncement] = useState<{
@@ -110,21 +129,12 @@ export function SkillPropertiesRail({ skill, updateAction }: SkillPropertiesRail
 
   const toggleHarness = async (harness: AgentId, row: AgentLocationRow, enabled: boolean) => {
     setPendingHarness(harness);
-    // Hoisted out of the try below - the compiler can't optimize a logical expression computed
-    // inside a try/catch statement.
-    const useDeploymentToggle =
-      row.deployment != null &&
-      (row.deployment.disabled_by === "studio-moved" || !canToggleHarness(row.deployment));
     try {
       if (row.kind === "reader") {
         await setHarnessEnabled(row.lifecycleTarget, harness, enabled);
       } else if (row.deployment) {
-        if (useDeploymentToggle) {
-          if (enabled) {
-            await unparkSkill({ deployment_id: row.deployment.id });
-          } else {
-            await parkSkill({ deployment_id: row.deployment.id });
-          }
+        if (row.deployment.disabled_by === "studio-moved") {
+          await restoreMovedDeployment({ deployment_id: row.deployment.id });
         } else {
           await setHarnessEnabled({ deployment_id: row.deployment.id }, harness, enabled);
         }
@@ -203,14 +213,16 @@ export function SkillPropertiesRail({ skill, updateAction }: SkillPropertiesRail
               ) : (
                 reachedHarnesses.map((h) => {
                   const row = rowForHarness(h.harness);
+                  const offerSwitch = row != null && canOfferHarnessSwitch(row);
                   return (
                     <div key={h.harness} className="flex h-7 items-center justify-between gap-2">
                       <span className="truncate text-small text-text-secondary">{h.label}</span>
                       <SwitchControl
                         checked={row?.switchOn ?? true}
-                        disabled={!row?.hasSwitch || pendingHarness === h.harness}
+                        disabled={!offerSwitch || pendingHarness === h.harness}
                         onCheckedChange={(next) => row && toggleHarness(h.harness, row, next)}
                         ariaLabel={`Enabled for ${h.label}`}
+                        title={offerSwitch ? undefined : NO_OFF_SWITCH_TITLE}
                       />
                     </div>
                   );

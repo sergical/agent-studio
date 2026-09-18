@@ -4,7 +4,7 @@
 
 import { describe, expect, it } from "vitest";
 import type { Deployment, InstalledSkill } from "@skill-studio/lib";
-import { sharedFolderSwitchPolicy } from "./skill-location-helpers";
+import { canOfferHarnessSwitch, sharedFolderSwitchPolicy } from "./skill-location-helpers";
 import { buildScopeGroups, rowMenu } from "./skill-location-status";
 
 function sharedDeployment(overrides: Partial<Deployment> = {}): Deployment {
@@ -96,5 +96,41 @@ describe("sharedFolderSwitchPolicy", () => {
         (entry) => entry.action.kind,
       ),
     ).not.toContain("park");
+  });
+});
+
+describe("canOfferHarnessSwitch", () => {
+  it("harness_rail_toggle_is_disabled_for_a_copy_that_cannot_park_or_names_the_row", () => {
+    const projectCopy = sharedDeployment({
+      id: "dep:v1/project/claude-code/find-bugs",
+      agent: "Claude Code",
+      scope: "project",
+      project_path: "/repo",
+      path: "/repo/.claude/skills/find-bugs",
+      is_symlink: false,
+      backing: { kind: "independent" },
+      disabled: false,
+      disabled_by: null,
+    });
+
+    // A project-scope copy has no native per-skill disable and was never
+    // moved aside, so the Harnesses rail must not offer a switch for it -
+    // `park`/`unpark` only ever target the Global Universal deployment.
+    expect(canOfferHarnessSwitch(projectCopy)).toBe(false);
+  });
+
+  it("restores a studio-moved row's switch even though it has no native per-skill disable", () => {
+    const movedCopy = sharedDeployment({
+      id: "dep:v1/project/pi/find-bugs",
+      agent: "pi",
+      scope: "project",
+      project_path: "/repo",
+      path: "/repo/.pi/skills/find-bugs",
+      backing: { kind: "independent" },
+      disabled: true,
+      disabled_by: "studio-moved",
+    });
+
+    expect(canOfferHarnessSwitch(movedCopy)).toBe(true);
   });
 });

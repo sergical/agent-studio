@@ -35,6 +35,19 @@ export function canToggleHarness(deployment: Deployment): boolean {
   return id !== "claude-code" || deployment.is_symlink;
 }
 
+/**
+ * Whether a per-harness row's Enabled switch has anywhere to send a
+ * toggle-off. `park`/`unpark` are the Global Universal deployment's off
+ * switch only (see `ops::park` in the core crate) - never this row's. A
+ * `studio-moved` row is the one legacy exception with a way back in
+ * (`restore_moved_deployment`); every other row with no native per-harness
+ * disable has no off switch at all, and the caller must disable the control
+ * instead of offering it.
+ */
+export function canOfferHarnessSwitch(deployment: Deployment): boolean {
+  return deployment.disabled_by === "studio-moved" || canToggleHarness(deployment);
+}
+
 /** Keep Project Universal visibility read-only; only the Global switch may park or unpark. */
 export function sharedFolderSwitchPolicy(group: ScopeGroup): SharedFolderSwitchPolicy {
   return {
