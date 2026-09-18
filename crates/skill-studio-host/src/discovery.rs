@@ -1140,7 +1140,7 @@ mod tests {
     fn pi_nested_walk_budget_bounds_the_last_depth_fan_out_or_names_the_unbounded_scan() {
         let tmp = tempfile::tempdir().unwrap();
         let home = tmp.path();
-        let deepest = home.join("a/b/c/d/e");
+        let deepest = home.join("a/b/c/d/e/f");
         for i in 0..20 {
             fs::create_dir_all(deepest.join(format!("child-{i}/.pi/skills"))).unwrap();
         }
