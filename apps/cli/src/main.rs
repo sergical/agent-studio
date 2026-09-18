@@ -347,14 +347,16 @@ fn main() -> ExitCode {
             ref_pin,
             json,
         } => run_update(
-            &scope,
-            skills,
-            &method,
-            project_path.as_ref(),
-            source_dir.as_ref(),
-            source.as_ref(),
-            ref_pin.as_ref(),
-            json,
+            UpdateArgs {
+                scope: &scope,
+                skills,
+                method,
+                project_path,
+                source_dir,
+                source,
+                ref_pin,
+                json,
+            },
             time,
         ),
         Command::Schema { out } => output::write_schemas(out),
@@ -788,18 +790,33 @@ fn parse_install_method(method: &str) -> InstallMethod {
     }
 }
 
-#[allow(clippy::too_many_arguments)]
-fn run_update(
-    scope: &ScopeArgs,
+/// `Command::Update`'s own clap fields, carried as one value (U6): the
+/// command has more of its own inputs than `clippy::too_many_arguments`
+/// allows as separate parameters, and every one of them already comes from
+/// a single clap variant, so a struct names the grouping the flags already
+/// have instead of suppressing the lint.
+struct UpdateArgs<'a> {
+    scope: &'a ScopeArgs,
     skills: Vec<String>,
-    method: &str,
-    project_path: Option<&PathBuf>,
-    source_dir: Option<&PathBuf>,
-    source: Option<&String>,
-    ref_pin: Option<&String>,
+    method: String,
+    project_path: Option<PathBuf>,
+    source_dir: Option<PathBuf>,
+    source: Option<String>,
+    ref_pin: Option<String>,
     json: bool,
-    time: bool,
-) -> ExitCode {
+}
+
+fn run_update(args: UpdateArgs<'_>, time: bool) -> ExitCode {
+    let UpdateArgs {
+        scope,
+        skills,
+        method,
+        project_path,
+        source_dir,
+        source,
+        ref_pin,
+        json,
+    } = args;
     let operation = if skills.len() > 1 {
         Operation::UpdateAll
     } else {
@@ -812,8 +829,8 @@ fn run_update(
         Err(code) => return code,
     };
     let ctx = OpContext::uncancellable(CorrelationId(ulid::Ulid::new().to_string()));
-    let method = parse_install_method(method);
-    let files = match (method, source_dir) {
+    let method = parse_install_method(&method);
+    let files = match (method, source_dir.as_ref()) {
         (InstallMethod::Copy, Some(dir)) => match read_install_files(dir) {
             Ok(files) => files,
             Err(err) => {
@@ -863,8 +880,8 @@ fn run_update(
             method,
             scope: scope_field.clone(),
             files: files.clone(),
-            source: source.cloned(),
-            ref_pin: ref_pin.cloned(),
+            source: source.clone(),
+            ref_pin: ref_pin.clone(),
         })
         .collect();
     if requests.len() == 1 {
