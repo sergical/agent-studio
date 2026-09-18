@@ -1043,16 +1043,21 @@ fn run_refresh_loop(app: AppHandle, state: SkillRefreshState) {
         &desired_watch_paths(&home, &initial_projects),
     );
 
-    if let Err(e) = rebuild_snapshot_now(&app, &state) {
-        eprintln!("skill refresh: initial rebuild failed: {e}");
-    }
-    reconcile_watchers_from_snapshot(&home, &state, &mut debouncer, &mut watched);
-
-    // Unit 3.9b: once, right after the first scan, on this loop's own
-    // background thread (never the UI task) - `ops::remove`'s own prune only
-    // fires as a side effect of removing a skill, so quarantine needs a
-    // schedule of its own (`issue-3.9a-followup-a.md` item 3).
-    run_startup_quarantine_sweep(super::core_runtime::build_runtime_write);
+    // Unit 3.9b: the sweep runs once, right after the first scan, on this
+    // loop's own background thread (never the UI task) - `ops::remove`'s own
+    // prune only fires as a side effect of removing a skill, so quarantine
+    // needs a schedule of its own (`issue-3.9a-followup-a.md` item 3).
+    // Routed through `first_scan_then_sweep` so a test can pin both the
+    // order and the thread without re-implementing this loop's scaffold.
+    first_scan_then_sweep(
+        || {
+            if let Err(e) = rebuild_snapshot_now(&app, &state) {
+                eprintln!("skill refresh: initial rebuild failed: {e}");
+            }
+            reconcile_watchers_from_snapshot(&home, &state, &mut debouncer, &mut watched);
+        },
+        || run_startup_quarantine_sweep(super::core_runtime::build_runtime_write),
+    );
 
     let mut last_invocations_rebuild = Instant::now();
 
@@ -1127,6 +1132,17 @@ fn run_refresh_loop(app: AppHandle, state: SkillRefreshState) {
             last_invocations_rebuild = Instant::now();
         }
     }
+}
+
+/// Runs `run_refresh_loop`'s first-iteration sequence - the initial
+/// snapshot rebuild, then the startup quarantine sweep, in that order, both
+/// on whichever thread the caller runs on. Extracted from the loop body so
+/// a test can pin the order and the thread through the same function
+/// production calls, instead of a scaffold that would stay green even if
+/// the loop stopped calling the sweep or reordered the two steps.
+fn first_scan_then_sweep(rebuild: impl FnOnce(), sweep: impl FnOnce()) {
+    rebuild();
+    sweep();
 }
 
 /// The startup quarantine sweep unit 3.9b's `run_refresh_loop` runs once,
@@ -4021,58 +4037,59 @@ mod tests {
     }
 
     /// `startup_prune_runs_after_the_first_scan_off_the_ui_thread_or_names_the_missing_run`:
-    /// `run_refresh_loop` calls `run_startup_quarantine_sweep` synchronously
-    /// right after its own initial `rebuild_snapshot_now` (see that call
-    /// site), and that loop only ever runs on the dedicated `std::thread`
-    /// `skill_refresh::init` spawns - never the UI task. This test proves
-    /// the sweep function itself: run from a plain background thread the
-    /// same way `run_refresh_loop`'s own thread calls it, the runtime build
-    /// (and therefore `ops::sweep_quarantine`) must happen there, not on
-    /// whichever thread called `run_startup_quarantine_sweep`. Fails (red
-    /// checked) if `run_startup_quarantine_sweep` is ever called inline on
-    /// the caller's own thread instead of from a dedicated background one.
+    /// `run_refresh_loop`'s first iteration runs through
+    /// `first_scan_then_sweep` - the same function this test calls - so a
+    /// deleted or reordered sweep call, or a sweep left on the calling
+    /// thread, shows up here rather than only in a test-owned scaffold. The
+    /// thread hop itself is `run_refresh_loop`'s own dedicated
+    /// `std::thread` (see `skill_refresh::init`); this test stands in for
+    /// that thread the way `run_refresh_loop`'s own thread calls
+    /// `first_scan_then_sweep` synchronously, never through
+    /// `spawn_blocking`.
     #[test]
     fn startup_prune_runs_after_the_first_scan_off_the_ui_thread_or_names_the_missing_run() {
-        use skill_studio_core::harness::HarnessCatalog;
-        use skill_studio_core::ports::{Ports, Runtime};
-        use skill_studio_core::scope::RuntimeScope as CoreRuntimeScope;
         use std::sync::{Arc as StdArc, Mutex as StdMutex};
 
-        let tmp = tempfile::tempdir().unwrap();
-        let home = tmp.path().join("home");
-        fs::create_dir_all(&home).unwrap();
-
         let calling_thread = std::thread::current().id();
-        let build_thread: StdArc<StdMutex<Option<std::thread::ThreadId>>> =
-            StdArc::new(StdMutex::new(None));
-        let record_build_thread = StdArc::clone(&build_thread);
-        let home_for_build = home.clone();
+        let log: StdArc<StdMutex<Vec<(&'static str, std::thread::ThreadId)>>> =
+            StdArc::new(StdMutex::new(Vec::new()));
+        let scan_log = StdArc::clone(&log);
+        let sweep_log = StdArc::clone(&log);
 
-        // Simulates `run_refresh_loop`'s own dedicated background thread
-        // calling the sweep synchronously - not `spawn_blocking`, since the
-        // loop itself is already off the UI task.
         let handle = std::thread::spawn(move || {
-            run_startup_quarantine_sweep(move || {
-                *record_build_thread.lock().unwrap() = Some(std::thread::current().id());
-                let lease_root = home_for_build.join("leases");
-                let catalog = StdArc::new(HarnessCatalog::builtin());
-                let scope = CoreRuntimeScope::fixture(home_for_build.clone());
-                let db_path = scope.history_root.join("events.sqlite3");
-                let ports: Ports =
-                    skill_studio_host::default_ports_with_history(lease_root, catalog, db_path);
-                Runtime::new(&scope, ports).map_err(|e| e.message)
-            });
+            first_scan_then_sweep(
+                move || {
+                    scan_log
+                        .lock()
+                        .unwrap()
+                        .push(("scan", std::thread::current().id()));
+                },
+                move || {
+                    sweep_log
+                        .lock()
+                        .unwrap()
+                        .push(("sweep", std::thread::current().id()));
+                },
+            );
         });
         handle.join().unwrap();
 
-        let recorded = build_thread
-            .lock()
-            .unwrap()
-            .expect("the runtime builder never ran");
+        let recorded = log.lock().unwrap().clone();
+        let sweep_thread = recorded
+            .iter()
+            .find(|(step, _)| *step == "sweep")
+            .map(|(_, t)| *t)
+            .expect("the sweep never ran");
+        assert_eq!(
+            recorded,
+            vec![("scan", sweep_thread), ("sweep", sweep_thread)],
+            "run_refresh_loop's first iteration must run the scan then the sweep, in that \
+             order and on the same background thread"
+        );
         assert_ne!(
-            recorded, calling_thread,
-            "the startup quarantine sweep ran on the calling thread ({calling_thread:?}) \
-             instead of the refresh loop's own background thread"
+            sweep_thread, calling_thread,
+            "first_scan_then_sweep ran on the calling thread ({calling_thread:?}) instead of \
+             the refresh loop's own background thread"
         );
     }
 }
