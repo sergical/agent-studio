@@ -4631,26 +4631,32 @@ fn set_claude_code_switch(
     };
     session.store.record(&session.guard, id, &draft)?;
 
-    if enabled && !already_linked {
-        ensure_dir_all(rt, session, fs, &claude_skills_dir)?;
-        let scoped_target = crate::ports::confine(&rt.scope, fs, &canonical_dir)?;
-        let scoped_link = crate::ports::confine(&rt.scope, fs, &link_path)?;
-        if let Err(e) = fs.symlink(&session.guard, &scoped_target, &scoped_link) {
-            let _ =
-                session
-                    .store
-                    .finish(&session.guard, id, crate::events::EventStatus::Failed, None);
-            return Err(CoreError::io(&link_path, e));
+    // Every fallible step after `record` runs inside this closure so a
+    // failure anywhere in it - not just the final `symlink`/`remove_file`
+    // call - reaches the `finish(Failed)` below. `?` on a step before this
+    // closure existed (e.g. `ensure_dir_all`, `confine`) would return
+    // straight out of the function and leave the row `pending` forever,
+    // which `recover_interrupted` would later treat as an interrupted crash
+    // rather than a plain, retryable failure.
+    let mutate: Result<(), CoreError> = (|| {
+        if enabled && !already_linked {
+            ensure_dir_all(rt, session, fs, &claude_skills_dir)?;
+            let scoped_target = crate::ports::confine(&rt.scope, fs, &canonical_dir)?;
+            let scoped_link = crate::ports::confine(&rt.scope, fs, &link_path)?;
+            fs.symlink(&session.guard, &scoped_target, &scoped_link)
+                .map_err(|e| CoreError::io(&link_path, e))?;
+        } else if !enabled && already_linked {
+            let scoped_link = crate::ports::confine(&rt.scope, fs, &link_path)?;
+            fs.remove_file(&session.guard, &scoped_link)
+                .map_err(|e| CoreError::io(&link_path, e))?;
         }
-    } else if !enabled && already_linked {
-        let scoped_link = crate::ports::confine(&rt.scope, fs, &link_path)?;
-        if let Err(e) = fs.remove_file(&session.guard, &scoped_link) {
-            let _ =
-                session
-                    .store
-                    .finish(&session.guard, id, crate::events::EventStatus::Failed, None);
-            return Err(CoreError::io(&link_path, e));
-        }
+        Ok(())
+    })();
+    if let Err(e) = mutate {
+        let _ = session
+            .store
+            .finish(&session.guard, id, crate::events::EventStatus::Failed, None);
+        return Err(e);
     }
     session
         .store
@@ -4723,49 +4729,64 @@ fn set_codex_switch(
     };
     session.store.record(&session.guard, id, &draft)?;
 
-    let config_parent = config_path.parent().unwrap_or(&config_path).to_path_buf();
-    ensure_dir_all(rt, session, fs, &config_parent)?;
-    let scoped_config = crate::ports::confine(&rt.scope, fs, &config_path)?;
-    let mut toggled: u32 = 0;
-    for path in &paths {
-        let existing = match fs.read_capped(
-            &config_path,
-            crate::harness_switch::HARNESS_CONFIG_MAX_BYTES,
-        ) {
-            Ok(bytes) => Some(
-                String::from_utf8(bytes)
-                    .map_err(|e| CoreError::new(ErrorCode::Io, e.to_string()).at(&config_path))?,
-            ),
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => None,
-            Err(e) => return Err(CoreError::io(&config_path, e)),
-        };
-        let new_text =
-            crate::harness_switch::codex_toggle_row(existing.as_deref(), path, !enabled)?;
-        if let Err(e) = fs.write_atomic(&session.guard, &scoped_config, new_text.as_bytes()) {
-            let _ =
-                session
-                    .store
-                    .finish(&session.guard, id, crate::events::EventStatus::Failed, None);
-            return Err(CoreError::new(
-                ErrorCode::Incomplete,
-                format!(
-                    "{toggled} of {total} Codex paths toggled for {}: {e}",
-                    skill.name
-                ),
-            )
-            .at(&config_path));
+    // See `set_claude_code_switch`'s matching comment: everything after
+    // `record` that can fail - `ensure_dir_all`, `confine`, each loop
+    // iteration's `read_capped`/`write_atomic`, the final
+    // `fingerprint_path` - runs inside this closure so every error path
+    // reaches `finish(Failed)` below, not just the write that used to be the
+    // last statement in this function.
+    let mutate: Result<(u32, Option<Fingerprint>), CoreError> = (|| {
+        let config_parent = config_path.parent().unwrap_or(&config_path).to_path_buf();
+        ensure_dir_all(rt, session, fs, &config_parent)?;
+        let scoped_config = crate::ports::confine(&rt.scope, fs, &config_path)?;
+        let mut toggled: u32 = 0;
+        for path in &paths {
+            let existing = match fs.read_capped(
+                &config_path,
+                crate::harness_switch::HARNESS_CONFIG_MAX_BYTES,
+            ) {
+                Ok(bytes) => Some(String::from_utf8(bytes).map_err(|e| {
+                    CoreError::new(ErrorCode::Io, e.to_string()).at(&config_path)
+                })?),
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => None,
+                Err(e) => return Err(CoreError::io(&config_path, e)),
+            };
+            let new_text =
+                crate::harness_switch::codex_toggle_row(existing.as_deref(), path, !enabled)?;
+            fs.write_atomic(&session.guard, &scoped_config, new_text.as_bytes())
+                .map_err(|e| {
+                    CoreError::new(
+                        ErrorCode::Incomplete,
+                        format!(
+                            "{toggled} of {total} Codex paths toggled for {}: {e}",
+                            skill.name
+                        ),
+                    )
+                    .at(&config_path)
+                })?;
+            toggled += 1;
         }
-        toggled += 1;
-    }
+        let post_fingerprint = crate::events::fingerprint_path(fs, &config_path)?;
+        Ok((toggled, post_fingerprint))
+    })();
 
-    let post_fingerprint = crate::events::fingerprint_path(fs, &config_path)?;
-    session.store.finish(
-        &session.guard,
-        id,
-        crate::events::EventStatus::Done,
-        post_fingerprint,
-    )?;
-    Ok((toggled, total))
+    match mutate {
+        Ok((toggled, post_fingerprint)) => {
+            session.store.finish(
+                &session.guard,
+                id,
+                crate::events::EventStatus::Done,
+                post_fingerprint,
+            )?;
+            Ok((toggled, total))
+        }
+        Err(e) => {
+            let _ = session
+                .store
+                .finish(&session.guard, id, crate::events::EventStatus::Failed, None);
+            Err(e)
+        }
+    }
 }
 
 /// True when `kind` is a root OpenCode reads: the shared universal root, or
@@ -4863,37 +4884,48 @@ fn set_opencode_switch(
     };
     session.store.record(&session.guard, id, &draft)?;
 
-    let existing = match fs.read_capped(
-        &config_path,
-        crate::harness_switch::HARNESS_CONFIG_MAX_BYTES,
-    ) {
-        Ok(bytes) => Some(
-            String::from_utf8(bytes)
-                .map_err(|e| CoreError::new(ErrorCode::Io, e.to_string()).at(&config_path))?,
-        ),
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => None,
-        Err(e) => return Err(CoreError::io(&config_path, e)),
-    };
-    let new_text =
-        crate::harness_switch::opencode_toggle(existing.as_deref(), &skill.name.0, !enabled)?;
-    let config_parent = config_path.parent().unwrap_or(&config_path).to_path_buf();
-    ensure_dir_all(rt, session, fs, &config_parent)?;
-    let scoped_config = crate::ports::confine(&rt.scope, fs, &config_path)?;
-    if let Err(e) = fs.write_atomic(&session.guard, &scoped_config, new_text.as_bytes()) {
-        let _ = session
-            .store
-            .finish(&session.guard, id, crate::events::EventStatus::Failed, None);
-        return Err(CoreError::io(&config_path, e));
-    }
+    // See `set_claude_code_switch`'s matching comment: every fallible step
+    // after `record` runs inside this closure so it reaches `finish(Failed)`
+    // below, not just the final `write_atomic` call.
+    let mutate: Result<Option<Fingerprint>, CoreError> = (|| {
+        let existing = match fs.read_capped(
+            &config_path,
+            crate::harness_switch::HARNESS_CONFIG_MAX_BYTES,
+        ) {
+            Ok(bytes) => Some(
+                String::from_utf8(bytes)
+                    .map_err(|e| CoreError::new(ErrorCode::Io, e.to_string()).at(&config_path))?,
+            ),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => None,
+            Err(e) => return Err(CoreError::io(&config_path, e)),
+        };
+        let new_text =
+            crate::harness_switch::opencode_toggle(existing.as_deref(), &skill.name.0, !enabled)?;
+        let config_parent = config_path.parent().unwrap_or(&config_path).to_path_buf();
+        ensure_dir_all(rt, session, fs, &config_parent)?;
+        let scoped_config = crate::ports::confine(&rt.scope, fs, &config_path)?;
+        fs.write_atomic(&session.guard, &scoped_config, new_text.as_bytes())
+            .map_err(|e| CoreError::io(&config_path, e))?;
+        crate::events::fingerprint_path(fs, &config_path)
+    })();
 
-    let post_fingerprint = crate::events::fingerprint_path(fs, &config_path)?;
-    session.store.finish(
-        &session.guard,
-        id,
-        crate::events::EventStatus::Done,
-        post_fingerprint,
-    )?;
-    Ok((1, 1))
+    match mutate {
+        Ok(post_fingerprint) => {
+            session.store.finish(
+                &session.guard,
+                id,
+                crate::events::EventStatus::Done,
+                post_fingerprint,
+            )?;
+            Ok((1, 1))
+        }
+        Err(e) => {
+            let _ = session
+                .store
+                .finish(&session.guard, id, crate::events::EventStatus::Failed, None);
+            Err(e)
+        }
+    }
 }
 
 /// pi has no native per-skill switch; this build stands one up as a
@@ -4932,36 +4964,48 @@ fn set_pi_switch(
     };
     session.store.record(&session.guard, id, &draft)?;
 
-    let existing = match fs.read_capped(
-        &config_path,
-        crate::harness_switch::HARNESS_CONFIG_MAX_BYTES,
-    ) {
-        Ok(bytes) => Some(
-            String::from_utf8(bytes)
-                .map_err(|e| CoreError::new(ErrorCode::Io, e.to_string()).at(&config_path))?,
-        ),
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => None,
-        Err(e) => return Err(CoreError::io(&config_path, e)),
-    };
-    let new_text = crate::harness_switch::pi_toggle(existing.as_deref(), &skill.name.0, !enabled)?;
-    let config_parent = config_path.parent().unwrap_or(&config_path).to_path_buf();
-    ensure_dir_all(rt, session, fs, &config_parent)?;
-    let scoped_config = crate::ports::confine(&rt.scope, fs, &config_path)?;
-    if let Err(e) = fs.write_atomic(&session.guard, &scoped_config, new_text.as_bytes()) {
-        let _ = session
-            .store
-            .finish(&session.guard, id, crate::events::EventStatus::Failed, None);
-        return Err(CoreError::io(&config_path, e));
-    }
+    // See `set_claude_code_switch`'s matching comment: every fallible step
+    // after `record` runs inside this closure so it reaches `finish(Failed)`
+    // below, not just the final `write_atomic` call.
+    let mutate: Result<Option<Fingerprint>, CoreError> = (|| {
+        let existing = match fs.read_capped(
+            &config_path,
+            crate::harness_switch::HARNESS_CONFIG_MAX_BYTES,
+        ) {
+            Ok(bytes) => Some(
+                String::from_utf8(bytes)
+                    .map_err(|e| CoreError::new(ErrorCode::Io, e.to_string()).at(&config_path))?,
+            ),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => None,
+            Err(e) => return Err(CoreError::io(&config_path, e)),
+        };
+        let new_text =
+            crate::harness_switch::pi_toggle(existing.as_deref(), &skill.name.0, !enabled)?;
+        let config_parent = config_path.parent().unwrap_or(&config_path).to_path_buf();
+        ensure_dir_all(rt, session, fs, &config_parent)?;
+        let scoped_config = crate::ports::confine(&rt.scope, fs, &config_path)?;
+        fs.write_atomic(&session.guard, &scoped_config, new_text.as_bytes())
+            .map_err(|e| CoreError::io(&config_path, e))?;
+        crate::events::fingerprint_path(fs, &config_path)
+    })();
 
-    let post_fingerprint = crate::events::fingerprint_path(fs, &config_path)?;
-    session.store.finish(
-        &session.guard,
-        id,
-        crate::events::EventStatus::Done,
-        post_fingerprint,
-    )?;
-    Ok((1, 1))
+    match mutate {
+        Ok(post_fingerprint) => {
+            session.store.finish(
+                &session.guard,
+                id,
+                crate::events::EventStatus::Done,
+                post_fingerprint,
+            )?;
+            Ok((1, 1))
+        }
+        Err(e) => {
+            let _ = session
+                .store
+                .finish(&session.guard, id, crate::events::EventStatus::Failed, None);
+            Err(e)
+        }
+    }
 }
 
 #[cfg(test)]

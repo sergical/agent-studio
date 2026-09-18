@@ -809,6 +809,8 @@ pub struct FailingFs {
     write_atomic_budget: AtomicI64,
     fail_next_create_dir: AtomicBool,
     fail_next_symlink: AtomicBool,
+    fail_next_create_dir_all: AtomicBool,
+    fail_next_read_capped: AtomicBool,
 }
 
 impl FailingFs {
@@ -821,6 +823,8 @@ impl FailingFs {
             write_atomic_budget: AtomicI64::new(-1),
             fail_next_create_dir: AtomicBool::new(false),
             fail_next_symlink: AtomicBool::new(false),
+            fail_next_create_dir_all: AtomicBool::new(false),
+            fail_next_read_capped: AtomicBool::new(false),
         }
     }
 
@@ -862,6 +866,23 @@ impl FailingFs {
     pub fn fail_next_symlink(&self) {
         self.fail_next_symlink.store(true, Ordering::SeqCst);
     }
+
+    /// The next `create_dir_all` call returns an error instead of reaching
+    /// `inner`; later calls delegate normally again. Distinct from
+    /// [`Self::fail_next_create_dir`], which targets `fsops_create_dir` (the
+    /// `fsops::swap` quarantine step) rather than the `ensure_dir_all` helper
+    /// a harness switch calls to create its config file's parent directory.
+    pub fn fail_next_create_dir_all(&self) {
+        self.fail_next_create_dir_all.store(true, Ordering::SeqCst);
+    }
+
+    /// The next `read_capped` call returns an error instead of reaching
+    /// `inner`; later calls delegate normally again. Lets a test simulate a
+    /// harness switch's read of its own config file failing after the
+    /// journal row for the toggle has already been recorded.
+    pub fn fail_next_read_capped(&self) {
+        self.fail_next_read_capped.store(true, Ordering::SeqCst);
+    }
 }
 
 impl ScopeFs for FailingFs {
@@ -881,6 +902,11 @@ impl ScopeFs for FailingFs {
         self.inner.read_dir(path)
     }
     fn read_capped(&self, path: &Path, max_bytes: u64) -> std::io::Result<Vec<u8>> {
+        if self.fail_next_read_capped.swap(false, Ordering::SeqCst) {
+            return Err(std::io::Error::other(
+                "FailingFs: injected read_capped failure",
+            ));
+        }
         self.inner.read_capped(path, max_bytes)
     }
     fn read_prefix(&self, path: &Path, limit: u64) -> std::io::Result<(Vec<u8>, bool)> {
@@ -923,6 +949,11 @@ impl ScopeFs for FailingFs {
         self.inner.remove_file(guard, path)
     }
     fn create_dir_all(&self, guard: &ExclusiveGuard, path: &ScopedPath) -> std::io::Result<()> {
+        if self.fail_next_create_dir_all.swap(false, Ordering::SeqCst) {
+            return Err(std::io::Error::other(
+                "FailingFs: injected create_dir_all failure",
+            ));
+        }
         self.inner.create_dir_all(guard, path)
     }
     fn symlink(

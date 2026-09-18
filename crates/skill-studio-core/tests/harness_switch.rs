@@ -256,6 +256,48 @@ fn set_harness_enabled_writes_a_journal_row_before_the_first_path_toggles_or_nam
     assert_eq!(events[0].kind, "harness_disable");
 }
 
+/// any_error_after_the_event_is_recorded_marks_it_failed_or_names_the_row_left_pending:
+/// pi's `ensure_dir_all`, called after the journal row is recorded to create
+/// `~/.pi/agent` on a fresh home but before `write_atomic`, fails. That row
+/// must finish `failed`, not stay `pending` - `recover_interrupted` would
+/// later read a `pending` row as a crash mid-write rather than a plain,
+/// retryable failure the caller already saw returned as an error.
+#[test]
+fn any_error_after_the_event_is_recorded_marks_it_failed_or_names_the_row_left_pending() {
+    let home = unique_temp_dir("switch_post_record_failure");
+    install_universal_skill(&home, "gamma");
+    let failing_fs = Arc::new(FailingFs::wrap(Arc::new(RealFs::new())));
+    let rt = runtime_with(&home, Vec::new(), failing_fs.clone());
+
+    failing_fs.fail_next_create_dir_all();
+    let err = ops::set_harness_enabled(
+        &rt,
+        &ctx(),
+        &SetHarnessEnabledRequest {
+            skill: SkillName("gamma".into()),
+            harness: AgentId::from(AgentId::PI),
+            enabled: false,
+            project_path: None,
+        },
+    )
+    .unwrap_err();
+    assert_eq!(err.code, skill_studio_core::ErrorCode::Io);
+
+    let events = ops::list_events(
+        &rt,
+        &ctx(),
+        &skill_studio_core::dto::ListEventsRequest::default(),
+    )
+    .unwrap();
+    assert_eq!(events.len(), 1);
+    assert_eq!(
+        events[0].status, "failed",
+        "an error after the journal row was recorded must leave it failed, not pending"
+    );
+
+    std::fs::remove_dir_all(&home).ok();
+}
+
 /// a_crash_mid_codex_loop_reports_n_of_m_paths_toggled_instead_of_failing_silently:
 /// five projects each own a `.codex/skills/epsilon` copy; the fourth
 /// `write_atomic` call fails, so the loop stops having toggled 3 of 5.
