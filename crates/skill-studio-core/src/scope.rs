@@ -134,6 +134,7 @@ impl RuntimeScope {
     /// Overrides Codex's own directory, in place of `home_root/.codex`. The
     /// adapter calls this after reading `CODEX_HOME` itself - the core never
     /// reads it.
+    #[must_use]
     pub fn with_codex_home(mut self, codex_home: impl Into<PathBuf>) -> Self {
         self.codex_home = Some(codex_home.into());
         self

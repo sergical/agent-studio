@@ -2601,7 +2601,7 @@ mod tests {
             assert_eq!(stats(&index, &known_skills, &enabled).len(), 1);
         }
 
-        /// codex_rollout_reader_resumes_from_a_byte_offset_across_archived_sessions_or_names_the_missed_use:
+        /// `codex_rollout_reader_resumes_from_a_byte_offset_across_archived_sessions_or_names_the_missed_use`:
         /// an archived rollout gets the same resume treatment as a live one -
         /// a second refresh after new lines are appended reads only the new
         /// bytes and counts only the new use, not the whole file again.

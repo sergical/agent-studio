@@ -1687,7 +1687,7 @@ fn codex_next_table_position(table: &toml_edit::Table, removed_position: isize) 
     let mut next = table
         .position()
         .filter(|position| *position > removed_position);
-    for (_, item) in table.iter() {
+    for (_, item) in table {
         let child_next = match item {
             toml_edit::Item::Table(child) => codex_next_table_position(child, removed_position),
             toml_edit::Item::ArrayOfTables(array) => array
@@ -1736,8 +1736,9 @@ fn codex_rehome_table_decor(
     if let Some(next_position) =
         removed_position.and_then(|position| codex_next_table_position(doc.as_table(), position))
     {
-        let next = codex_table_at_position_mut(doc.as_table_mut(), next_position)
-            .expect("codex_next_table_position returned an existing table");
+        let Some(next) = codex_table_at_position_mut(doc.as_table_mut(), next_position) else {
+            unreachable!("codex_next_table_position returned an existing table");
+        };
         codex_prepend_table_decor(next, text);
         return;
     }
@@ -1812,9 +1813,11 @@ fn codex_write_disabled_row(
     if !disabled {
         if let Some(idx) = existing {
             let (removed_decor, array_is_empty) = {
-                let array = doc["skills"]["config"].as_array_of_tables_mut().expect(
-                    "codex_find_row_index only returns Some when this is an array of tables",
-                );
+                let Some(array) = doc["skills"]["config"].as_array_of_tables_mut() else {
+                    unreachable!(
+                        "codex_find_row_index only returns Some when this is an array of tables"
+                    );
+                };
                 let removed = array.remove(idx);
                 let removed_decor = CodexOrphanedTableDecor {
                     position: removed.position(),
@@ -1830,9 +1833,9 @@ fn codex_write_disabled_row(
 
             let mut orphaned_decor = removed_decor.into_iter().collect::<Vec<_>>();
             let remove_skills = {
-                let skills_table = doc["skills"]
-                    .as_table_mut()
-                    .expect("skills is a table when config was");
+                let Some(skills_table) = doc["skills"].as_table_mut() else {
+                    unreachable!("skills is a table when config was");
+                };
                 if array_is_empty {
                     skills_table.remove("config");
                 }
@@ -1906,12 +1909,13 @@ pub fn codex_rewrite_skill_path(
     let Some(idx) = codex_find_row_index(&doc, old_skill_md) else {
         return Ok(());
     };
-    let rows = doc["skills"]["config"]
-        .as_array_of_tables_mut()
-        .expect("codex_find_row_index only returns Some when this is an array of tables");
-    rows.get_mut(idx)
-        .expect("codex_find_row_index returned a valid index")["path"] =
-        toml_edit::value(new_skill_md.to_string_lossy().to_string());
+    let Some(rows) = doc["skills"]["config"].as_array_of_tables_mut() else {
+        unreachable!("codex_find_row_index only returns Some when this is an array of tables");
+    };
+    let Some(row) = rows.get_mut(idx) else {
+        unreachable!("codex_find_row_index returned a valid index");
+    };
+    row["path"] = toml_edit::value(new_skill_md.to_string_lossy().to_string());
     codex_write_config_document(rt, fs, guard, codex_home, &doc)
 }
 
@@ -1923,10 +1927,10 @@ fn codex_write_config_document(
     doc: &toml_edit::DocumentMut,
 ) -> Result<(), CoreError> {
     let path = codex_config_path(codex_home);
-    let parent = path
-        .parent()
-        .expect("config.toml always has a parent")
-        .to_path_buf();
+    let Some(parent) = path.parent() else {
+        unreachable!("config.toml always has a parent");
+    };
+    let parent = parent.to_path_buf();
     let scoped_parent = crate::ports::confine(&rt.scope, fs, &parent)?;
     fs.create_dir_all(guard, &scoped_parent)
         .map_err(|e| CoreError::io(&parent, e))?;
@@ -2009,10 +2013,10 @@ pub fn set_codex_sidecar_implicit_invocation(
         }
     }
 
-    let parent = path
-        .parent()
-        .expect("openai.yaml always has a parent")
-        .to_path_buf();
+    let Some(parent) = path.parent() else {
+        unreachable!("openai.yaml always has a parent");
+    };
+    let parent = parent.to_path_buf();
     let scoped_parent = crate::ports::confine(&rt.scope, fs, &parent)?;
     fs.create_dir_all(&guard, &scoped_parent)
         .map_err(|e| CoreError::io(&parent, e))?;

@@ -1536,10 +1536,10 @@ mod tests {
         assert_eq!(pi.skips_hidden_entries, Support::Unknown);
     }
 
-    /// codex_skills_root_is_never_offered_as_a_default_install_target_or_names_the_offered_path:
+    /// `codex_skills_root_is_never_offered_as_a_default_install_target_or_names_the_offered_path`:
     /// `.codex/skills` is still a discovery root (Codex reads skills
     /// installed there), but the catalog only has it from a GitHub issue
-    /// thread, not from OpenAI's own docs - an install picker offering it as
+    /// thread, not from `OpenAI`'s own docs - an install picker offering it as
     /// a destination would be guessing where Codex actually looks.
     #[test]
     fn codex_skills_root_is_never_offered_as_a_default_install_target_or_names_the_offered_path() {

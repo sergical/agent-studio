@@ -28,7 +28,7 @@ use crate::opencode_db::{open_opencode_database, opencode_databases, OPENCODE_DA
 /// `<home>/.codex`. This is the one place allowed to read `CODEX_HOME` - the
 /// core crate never does (`docs/action-map/harnesses/codex.md`, "Resolved by
 /// the docs on 2026-09-16": "`CODEX_HOME` overrides `~/.codex` for config,
-/// sessions, and the SQLite state; every Codex path in the app must honour
+/// sessions, and the `SQLite` state; every Codex path in the app must honour
 /// it").
 pub fn codex_home(home: &Path) -> PathBuf {
     match std::env::var_os("CODEX_HOME") {

@@ -7,7 +7,7 @@
 // `ops` function decides the result for all three.
 // ============================================================================
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use skill_studio_core::harness::HarnessCatalog;
@@ -40,7 +40,7 @@ pub(crate) fn data_root() -> PathBuf {
 /// takes its `Runtime` from here.
 pub fn build_runtime_write() -> Result<Runtime, String> {
     let home = dirs::home_dir().ok_or("Could not find home directory")?;
-    build_runtime_write_at(home, data_root())
+    build_runtime_write_at(home, &data_root())
 }
 
 /// [`build_runtime_write`], but rooted at `home` and `data_root` given
@@ -50,7 +50,7 @@ pub fn build_runtime_write() -> Result<Runtime, String> {
 /// `ops::set_codex_skill_disabled` - the real command still calls
 /// `build_runtime_write` above, which resolves `home` and `data_root` from
 /// the host exactly as it did before this function existed.
-pub(crate) fn build_runtime_write_at(home: PathBuf, data_root: PathBuf) -> Result<Runtime, String> {
+pub(crate) fn build_runtime_write_at(home: PathBuf, data_root: &Path) -> Result<Runtime, String> {
     let history_root = data_root.join("history");
     let codex_home = skill_studio_host::codex_home(&home);
     let scope = RuntimeScope::live(home, history_root).with_codex_home(codex_home);
