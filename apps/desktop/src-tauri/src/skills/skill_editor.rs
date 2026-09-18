@@ -587,6 +587,80 @@ mod tests {
         assert_eq!(offered[0].app_name, "Zed");
     }
 
+    /// Row F4 (unit 3.7b review round 1): `open_paths_in_editor` is the
+    /// conflict flow's side-by-side open - both differing copies must reach
+    /// the editor, and it must write to neither. Fakes `open` on `PATH`
+    /// with a script that records its argv, rather than depending on the
+    /// real macOS `open` (absent on the Linux CI runner) or on GUI
+    /// automation.
+    #[test]
+    fn two_fixture_copies_that_differ_open_in_the_chosen_editor_with_both_paths_and_the_file_on_disk_is_unchanged(
+    ) {
+        let home = tempfile::tempdir().expect("temp home");
+        let path_a = home.path().join("a/SKILL.md");
+        let path_b = home.path().join("b/SKILL.md");
+        std::fs::create_dir_all(path_a.parent().expect("parent a")).expect("dir a");
+        std::fs::create_dir_all(path_b.parent().expect("parent b")).expect("dir b");
+        std::fs::write(&path_a, "mine\n").expect("write a");
+        std::fs::write(&path_b, "theirs\n").expect("write b");
+        let before_a = std::fs::read(&path_a).expect("read a");
+        let before_b = std::fs::read(&path_b).expect("read b");
+
+        let bin_dir = tempfile::tempdir().expect("fake bin dir");
+        let recording = bin_dir.path().join("open.log");
+        let fake_open = bin_dir.path().join("open");
+        std::fs::write(
+            &fake_open,
+            format!(
+                "#!/bin/sh\necho \"$@\" > '{}'\nexit 0\n",
+                recording.display()
+            ),
+        )
+        .expect("write fake open");
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&fake_open, std::fs::Permissions::from_mode(0o700))
+                .expect("chmod fake open");
+        }
+
+        let prev_path = std::env::var_os("PATH");
+        let new_path = match &prev_path {
+            Some(p) => format!("{}:{}", bin_dir.path().display(), p.to_string_lossy()),
+            None => bin_dir.path().display().to_string(),
+        };
+        // SAFETY: no other test in this crate reads or writes `PATH`, so
+        // nothing else can observe it between the set below and the
+        // restore right after `open_paths_in_editor` returns.
+        #[allow(unsafe_code)]
+        unsafe {
+            std::env::set_var("PATH", new_path);
+        }
+        let result = open_paths_in_editor(home.path(), &[path_a.clone(), path_b.clone()]);
+        // SAFETY: restoring exactly what this test itself overrode above.
+        #[allow(unsafe_code)]
+        unsafe {
+            match prev_path {
+                Some(p) => std::env::set_var("PATH", p),
+                None => std::env::remove_var("PATH"),
+            }
+        }
+
+        assert!(result.is_ok(), "{result:?}");
+        let recorded = std::fs::read_to_string(&recording).expect("read recording");
+        assert!(
+            recorded.contains(&path_a.display().to_string()),
+            "{recorded}"
+        );
+        assert!(
+            recorded.contains(&path_b.display().to_string()),
+            "{recorded}"
+        );
+
+        assert_eq!(std::fs::read(&path_a).expect("reread a"), before_a);
+        assert_eq!(std::fs::read(&path_b).expect("reread b"), before_b);
+    }
+
     #[test]
     fn an_uninstalled_editor_is_refused_rather_than_saved() {
         let home = tempfile::tempdir().expect("temp home");
