@@ -115,6 +115,8 @@ pub enum Operation {
     Install,
     /// Group 3: read the saved or defaulted install method/harnesses.
     InstallPreferences,
+    /// Unit 3.4: per-install-method currency ("update available").
+    Outdated,
 }
 
 /// Outcome status of one call.
@@ -267,6 +269,10 @@ impl Outcome for crate::dto::InstallOutcome {
     }
 }
 impl Outcome for crate::dto::InstallPreferences {}
+/// `outdated`'s per-skill currency map carries no event and is never
+/// partial - a lookup failure resolves the affected skill to `Unknown`
+/// rather than raising.
+impl Outcome for std::collections::BTreeMap<String, crate::skill_update_check::Currency> {}
 
 /// The envelope every surface returns.
 ///
@@ -2007,7 +2013,7 @@ fn codex_write_disabled_row(
 /// disabled at its new path instead of leaving a stale row that no longer
 /// matches anything on disk (the bug `docs/action-map/harnesses/codex.md`
 /// names).
-pub fn codex_rewrite_skill_path(
+pub(crate) fn codex_rewrite_skill_path(
     rt: &Runtime,
     ctx: &OpContext,
     guard: &ExclusiveGuard,

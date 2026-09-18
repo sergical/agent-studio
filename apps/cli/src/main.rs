@@ -24,8 +24,8 @@ use std::sync::Arc;
 use clap::{Parser, Subcommand};
 use skill_studio_core::dto::{
     CapabilitiesRequest, HarnessesRequest, InstallFile, InstallMethod, InstallRequest, Inventory,
-    ListEventsRequest, RepairApplyMode, RepairApplyRequest, RepairPreviewRequest, RestoreRequest,
-    ScanRequest, UpdateRequest,
+    ListEventsRequest, ParkRequest, RepairApplyMode, RepairApplyRequest, RepairPreviewRequest,
+    RestoreRequest, ScanRequest, UnparkRequest, UpdateRequest,
 };
 use skill_studio_core::harness::HarnessCatalog;
 use skill_studio_core::health::{self, Outcome, TimingRow};
@@ -285,6 +285,39 @@ enum Command {
         #[arg(long)]
         json: bool,
     },
+    /// Move a universal deployment's directory to the parked root and
+    /// remove its Claude Code link, if any.
+    Park {
+        #[command(flatten)]
+        scope: ScopeArgs,
+        /// Universal deployment to park, as printed by `scan`.
+        #[arg(long)]
+        deployment_id: String,
+        #[arg(long)]
+        json: bool,
+    },
+    /// Move a parked deployment's directory back to the universal root and
+    /// recreate its Claude Code link, if it had one.
+    Unpark {
+        #[command(flatten)]
+        scope: ScopeArgs,
+        /// Parked deployment to restore, as printed by `scan`.
+        #[arg(long)]
+        deployment_id: String,
+        #[arg(long)]
+        json: bool,
+    },
+    /// Report per-skill currency ("update available") for every install
+    /// method that tracks one: skills.sh by tree SHA, dotagents by pinned
+    /// commit, plugin by marketplace manifest version.
+    Outdated {
+        #[command(flatten)]
+        scope: ScopeArgs,
+        #[arg(long = "skill")]
+        skills: Vec<String>,
+        #[arg(long)]
+        json: bool,
+    },
     /// Refresh one or more already-installed skills in place.
     Update {
         #[command(flatten)]
@@ -441,6 +474,21 @@ fn main() -> ExitCode {
             deployment_id,
             json,
         } => run_remove(&scope, &deployment_id, json, time),
+        Command::Park {
+            scope,
+            deployment_id,
+            json,
+        } => run_park(&scope, &deployment_id, json, time),
+        Command::Unpark {
+            scope,
+            deployment_id,
+            json,
+        } => run_unpark(&scope, &deployment_id, json, time),
+        Command::Outdated {
+            scope,
+            skills,
+            json,
+        } => run_outdated(&scope, skills, json, time),
         Command::Update {
             scope,
             skills,
@@ -1394,6 +1442,141 @@ fn run_remove(scope: &ScopeArgs, deployment_id: &str, json: bool, time: bool) ->
     let result = ops::remove(&rt, &ctx, &req);
     let envelope = ResultEnvelope::from_result(Operation::Remove, &rt.scope, &ctx, result);
     finish(&envelope, json, time, output::print_remove_outcome_table)
+}
+
+/// Moves a universal deployment to the parked root, via `ops::park`.
+fn run_park(scope: &ScopeArgs, deployment_id: &str, json: bool, time: bool) -> ExitCode {
+    let rt = match build_runtime_write::<skill_studio_core::dto::ParkOutcome>(
+        scope,
+        Operation::Park,
+        json,
+    ) {
+        Ok(rt) => rt,
+        Err(code) => return code,
+    };
+    let ctx = OpContext::uncancellable(CorrelationId(ulid::Ulid::new().to_string()));
+    let deployment_id = match DeploymentId::parse(deployment_id) {
+        Ok(id) => id,
+        Err(err) => {
+            let envelope = ResultEnvelope::<skill_studio_core::dto::ParkOutcome>::from_result(
+                Operation::Park,
+                &rt.scope,
+                &ctx,
+                Err(err),
+            );
+            return finish(&envelope, json, time, output::print_park_outcome_table);
+        }
+    };
+    let req = ParkRequest { deployment_id };
+    let result = ops::park(&rt, &ctx, &req);
+    let envelope = ResultEnvelope::from_result(Operation::Park, &rt.scope, &ctx, result);
+    finish(&envelope, json, time, output::print_park_outcome_table)
+}
+
+/// Moves a parked deployment back to the universal root, via `ops::unpark`.
+fn run_unpark(scope: &ScopeArgs, deployment_id: &str, json: bool, time: bool) -> ExitCode {
+    let rt = match build_runtime_write::<skill_studio_core::dto::UnparkOutcome>(
+        scope,
+        Operation::Unpark,
+        json,
+    ) {
+        Ok(rt) => rt,
+        Err(code) => return code,
+    };
+    let ctx = OpContext::uncancellable(CorrelationId(ulid::Ulid::new().to_string()));
+    let deployment_id = match DeploymentId::parse(deployment_id) {
+        Ok(id) => id,
+        Err(err) => {
+            let envelope = ResultEnvelope::<skill_studio_core::dto::UnparkOutcome>::from_result(
+                Operation::Unpark,
+                &rt.scope,
+                &ctx,
+                Err(err),
+            );
+            return finish(&envelope, json, time, output::print_unpark_outcome_table);
+        }
+    };
+    let req = UnparkRequest { deployment_id };
+    let result = ops::unpark(&rt, &ctx, &req);
+    let envelope = ResultEnvelope::from_result(Operation::Unpark, &rt.scope, &ctx, result);
+    finish(&envelope, json, time, output::print_unpark_outcome_table)
+}
+
+/// A [`skill_studio_core::skill_update_check::SourceTreeLookup`],
+/// [`skill_studio_core::skill_update_check::CommitLookup`], and
+/// [`skill_studio_core::skill_update_check::PluginManifestLookup`] all in
+/// one: when `gh` is not on `PATH`, every lookup a currency check makes
+/// fails, which `ops::outdated` already turns into `Currency::Unknown` per
+/// skill rather than a hard error - matching the desktop's own fallback for
+/// an unresolved `gh` binary.
+struct NoGhLookup;
+
+impl skill_studio_core::skill_update_check::SourceTreeLookup for NoGhLookup {
+    fn tree_shas_at_head(
+        &self,
+        _repo: &str,
+    ) -> Result<std::collections::HashMap<String, String>, skill_studio_core::CoreError> {
+        Err(skill_studio_core::CoreError::new(
+            skill_studio_core::ErrorCode::Unsupported,
+            "gh is not on PATH",
+        ))
+    }
+}
+
+impl skill_studio_core::skill_update_check::CommitLookup for NoGhLookup {
+    fn latest_commit(
+        &self,
+        _repo: &str,
+        _path: &str,
+    ) -> Result<Option<String>, skill_studio_core::CoreError> {
+        Err(skill_studio_core::CoreError::new(
+            skill_studio_core::ErrorCode::Unsupported,
+            "gh is not on PATH",
+        ))
+    }
+}
+
+impl skill_studio_core::skill_update_check::PluginManifestLookup for NoGhLookup {
+    fn marketplace_version(
+        &self,
+        _marketplace: &str,
+        _plugin: &str,
+    ) -> Result<Option<String>, skill_studio_core::CoreError> {
+        Ok(None)
+    }
+}
+
+/// Reports per-skill currency, via `ops::outdated`. Resolves `gh` off
+/// `rt.ports.tools` the same way other CLI surfaces resolve external
+/// binaries; a machine with no `gh` still returns a result, with every
+/// skills.sh/dotagents skill's currency `Unknown` rather than an error.
+fn run_outdated(scope: &ScopeArgs, skills: Vec<String>, json: bool, time: bool) -> ExitCode {
+    let rt = match build_runtime_write::<
+        std::collections::BTreeMap<String, skill_studio_core::skill_update_check::Currency>,
+    >(scope, Operation::Outdated, json)
+    {
+        Ok(rt) => rt,
+        Err(code) => return code,
+    };
+    let ctx = OpContext::uncancellable(CorrelationId(ulid::Ulid::new().to_string()));
+    let req = ScanRequest {
+        skills: skills.into_iter().map(SkillName).collect(),
+        timings: false,
+    };
+    let gh_bin = rt.ports.tools.as_ref().and_then(|t| t.find_binary("gh"));
+    let result = match gh_bin {
+        Some(gh_bin) => ops::outdated(
+            &rt,
+            &ctx,
+            &req,
+            &skill_studio_host::GhSourceTreeLookup::new(gh_bin.clone()),
+            &skill_studio_host::GhCommitLookup::new(gh_bin),
+            &skill_studio_host::GhPluginManifestLookup,
+        ),
+        None => ops::outdated(&rt, &ctx, &req, &NoGhLookup, &NoGhLookup, &NoGhLookup),
+    };
+    let envelope = ResultEnvelope::from_result(Operation::Outdated, &rt.scope, &ctx, result);
+    finish(&envelope, json, time, output::print_outdated_table)
 }
 
 /// One `timing.jsonl` line, as written by the desktop's `timing_log`

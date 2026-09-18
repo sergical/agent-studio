@@ -6,11 +6,14 @@ use std::process::ExitCode;
 use serde::Serialize;
 use skill_studio_core::dto::{
     CommandHealth, ConflictReport, Diagnosis, EventDto, FixApplied, FixSkillOutcome,
-    FrontmatterRepairPreview, InstallOutcome, Inventory, RemoveOutcome, RepairOutcome,
-    RestoreOutcome, ScanRequest, SetHarnessEnabledOutcome, UpdateAllOutcome, UpdateOutcome,
+    FrontmatterRepairPreview, InstallOutcome, Inventory, ParkOutcome, RemoveOutcome,
+    RepairOutcome, RestoreOutcome, ScanRequest, SetHarnessEnabledOutcome, UnparkOutcome,
+    UpdateAllOutcome, UpdateOutcome,
 };
 use skill_studio_core::harness::{Capabilities, HarnessReport};
 use skill_studio_core::ops::ResultEnvelope;
+use skill_studio_core::skill_update_check::Currency;
+use std::collections::BTreeMap;
 
 /// Prints one envelope as a single JSON document with a trailing newline.
 /// `println!` supplies the newline; the document itself is compact, so a
@@ -357,6 +360,50 @@ pub fn print_remove_outcome_table(envelope: &ResultEnvelope<RemoveOutcome>) {
             path.display()
         ),
         None => println!("removed {}", outcome.skill.0),
+    }
+}
+
+/// Prints `park`'s table: the deployment and where its directory now lives.
+pub fn print_park_outcome_table(envelope: &ResultEnvelope<ParkOutcome>) {
+    print_errors(envelope);
+    let Some(outcome) = &envelope.data else {
+        return;
+    };
+    println!(
+        "{} parked -> {}",
+        outcome.deployment_id.as_str(),
+        outcome.parked_path.display()
+    );
+}
+
+/// Prints `unpark`'s table: the deployment and where its directory now lives.
+pub fn print_unpark_outcome_table(envelope: &ResultEnvelope<UnparkOutcome>) {
+    print_errors(envelope);
+    let Some(outcome) = &envelope.data else {
+        return;
+    };
+    println!(
+        "{} restored -> {}",
+        outcome.deployment_id.as_str(),
+        outcome.restored_path.display()
+    );
+}
+
+/// Prints `outdated`'s table: one `NAME CURRENCY` row per skill, sorted by
+/// name (`outdated`'s result is already a `BTreeMap`, so this is free).
+pub fn print_outdated_table(envelope: &ResultEnvelope<BTreeMap<String, Currency>>) {
+    print_errors(envelope);
+    let Some(outcome) = &envelope.data else {
+        return;
+    };
+    for (name, currency) in outcome {
+        let label = match currency {
+            Currency::UpToDate => "up_to_date",
+            Currency::UpdateAvailable => "update_available",
+            Currency::NotTracked => "not_tracked",
+            Currency::Unknown => "unknown",
+        };
+        println!("{name}\t{label}");
     }
 }
 
