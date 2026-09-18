@@ -1237,6 +1237,10 @@ export interface UnrepairedIssue {
    * Message for a person.
    */
   message: string;
+  /**
+   * Stable category a caller can branch on instead of `message`.
+   */
+  kind: "link" | "frontmatter" | "conflict" | "other";
 }
 /**
  * One pair of differing copies: never merged, named for the caller to open

@@ -3,22 +3,15 @@
 // Fix act on the deployment target `HomeView` uses, every other fix (Fix
 // link, Compare, Convert, Keep, Pull latest) opens the skill's own detail,
 // since those flows live there. Fix now covers the repairable spec
-// violations too (invalid YAML frontmatter); a link issue `fix_skill`
-// leaves unrepaired falls through to the detail page's own repair card,
-// the same place a link issue was already fixed from.
+// violations too (invalid YAML frontmatter); any issue `fix_skill` leaves
+// unrepaired falls through to the detail page, which has its own card for
+// a link issue and shows the raw message otherwise.
 // ============================================================================
 
 import { useAppStore } from "../../store/appStore";
 import { fixSkill, openConflictPaths, parkSkill, unparkSkill } from "../../lib/skill-api";
 import { lifecycleTargetForPark } from "../../lib/skill-lifecycle-target";
 import type { InstalledSkill, Toast } from "@skill-studio/lib";
-
-/** `true` when an unrepaired issue is the dangling-symlink one
- * `fix_skill` names but leaves for the desktop's journaled
- * `repair_skill_link` - see `broken_or_unreadable_link_issue` (Rust). */
-function isLinkIssue(message: string): boolean {
-  return message.includes("links to");
-}
 
 /** The two IPC calls `reportFixOutcome` makes, as a real interface rather
  * than an import a test would have to mock: production code gets the
@@ -32,9 +25,13 @@ export interface FixSkillDeps {
 const defaultFixSkillDeps: FixSkillDeps = { fixSkill, openConflictPaths };
 
 /** Reports what `fix_skill` actually did as a toast, and opens the skill's
- * detail page when the only unrepaired issue is a link the detail page's
- * `SkillRepairCard` already knows how to fix. A conflict opens the editor
- * rather than writing anything, so it gets its own message. */
+ * detail page whenever an issue is left unrepaired: a link issue lands on
+ * the `SkillRepairCard` that already knows how to fix it, and every other
+ * unrepaired issue (a spec violation `fix_skill` has no repair for, a
+ * frontmatter repair that failed to apply) lands on the same page so the
+ * user can edit the file directly instead of getting a dead-end toast. A
+ * conflict opens the editor rather than writing anything, so it gets its
+ * own message. */
 export async function reportFixOutcome(
   skill: InstalledSkill,
   addToast: (toast: Omit<Toast, "id">) => string,
@@ -56,15 +53,14 @@ export async function reportFixOutcome(
     addToast({ type: "success", title: `Fixed ${skill.name}` });
     return;
   }
-  const [first] = outcome.unrepaired;
-  if (first && isLinkIssue(first.message)) {
+  if (outcome.unrepaired.length > 0) {
     openDetail();
     return;
   }
   addToast({
     type: "error",
     title: `Couldn't fix ${skill.name}`,
-    message: first?.message ?? "Nothing to repair.",
+    message: "Nothing to repair.",
   });
 }
 

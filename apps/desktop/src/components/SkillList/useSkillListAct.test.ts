@@ -78,6 +78,34 @@ describe("reportFixOutcome", () => {
         {
           path: "/home/.claude/skills/find-bugs",
           message: "/home/.claude/skills/find-bugs links to a missing target",
+          kind: "link",
+        },
+      ],
+      conflicts: [],
+    });
+    const openConflictPaths = vi.fn();
+    const addToast = vi.fn();
+    const openDetail = vi.fn();
+    const deps: FixSkillDeps = { fixSkill, openConflictPaths };
+
+    await reportFixOutcome(skill, addToast, openDetail, deps);
+
+    expect(openDetail).toHaveBeenCalledOnce();
+    expect(addToast).not.toHaveBeenCalled();
+  });
+
+  it("falls through to the detail page and shows no error toast when the only unrepaired issue is a missing description, or names the toast that would have stranded the user", async () => {
+    const skill = fixtureSkill({
+      spec_violations: ["missing required frontmatter field: description"],
+    });
+    const fixSkill = vi.fn().mockResolvedValue({
+      skill: skill.name,
+      applied: [],
+      unrepaired: [
+        {
+          path: "/home/.claude/skills/find-bugs/SKILL.md",
+          message: "missing required frontmatter field: description",
+          kind: "frontmatter",
         },
       ],
       conflicts: [],
