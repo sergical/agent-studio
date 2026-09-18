@@ -3746,6 +3746,9 @@ mod tests {
 
         #[test]
         fn cache_round_trip_keeps_database_uses_and_a_files_only_cache_still_loads() {
+            let _guard = crate::opencode_db::xdg_env_lock()
+                .lock()
+                .unwrap_or_else(|p| p.into_inner());
             let (tmp, db_path) = temp_opencode_db_home();
             let home = tmp.path();
             {

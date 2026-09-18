@@ -98,7 +98,7 @@ export type ProjectFolderSource = "discovered" | "added";
  */
 export type HarnessId = "claude-code" | "codex" | "open-code" | "pi";
 /**
- * Which OpenCode config format is present, so the frontend can tell the user
+ * Which OpenCode config format is present, so a caller can tell the user
  * to hand-edit a `.jsonc` file rather than silently showing no disables.
  */
 export type OpencodeConfigKind = "json" | "jsonc";
@@ -581,7 +581,7 @@ export interface SkillSnapshot {
    * Which OpenCode config format is present, if any - `None` when
    * OpenCode isn't configured, `Some(Jsonc)` when Skill Studio can only
    * read (not write) its per-skill disables. See
-   * `opencode_skill_permission::detect_config_kind`.
+   * `skill_studio_core::opencode_config::detect_config_kind`.
    */
   opencode_config_kind: OpencodeConfigKind | null;
   projects: string[];
