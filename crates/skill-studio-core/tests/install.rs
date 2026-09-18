@@ -541,8 +541,19 @@ fn copy_install_under_a_project_scope_is_classified_as_owned_or_names_the_deploy
 
     let mut req = copy_request("iota");
     req.scope = RootScope::Project(skill_studio_core::identity::ProjectRef(project.clone()));
+    // Nothing in this install ever touches the project's own registry
+    // document (its `copies` entry lands in the *home* registry, per this
+    // test's own doc, and `save_as_preference` is the only other write that
+    // ever reaches it) - so the scope write must be skipped entirely rather
+    // than creating `<project>/.agents/skill-studio.json` holding nothing
+    // but a bumped `write_version`.
+    req.save_as_preference = false;
     let outcome = ops::install(&rt, &ctx(), &req).unwrap();
     assert!(matches!(outcome, InstallOutcome::Installed { .. }));
+    assert!(
+        !project.join(".agents").join("skill-studio.json").exists(),
+        "an unchanged project-scope registry document must not be written at all"
+    );
 
     let inventory =
         ops::scan(&rt, &ctx(), &skill_studio_core::dto::ScanRequest::default()).unwrap();
