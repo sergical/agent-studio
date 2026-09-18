@@ -674,7 +674,8 @@ fn reverse_steps(
                                 Err(e) => return Err(e),
                             }
                         }
-                        let tmp_path = parent.join(format!("{temp_prefix}{}", fsops::unique_suffix()));
+                        let tmp_path =
+                            parent.join(format!("{temp_prefix}{}", fsops::unique_suffix()));
                         fs.fsops_symlink(previous_target, &tmp_path)?;
                         fs.fsops_rename(&tmp_path, path)?;
                     }
@@ -1619,8 +1620,8 @@ mod tests {
     /// leaving `path` stuck on the plan's new target; on failure the panic
     /// names the temp link it collided with.
     #[test]
-    fn a_link_restore_retried_by_a_fresh_process_converges_or_names_the_temp_link_it_collided_with(
-    ) {
+    fn a_link_restore_retried_by_a_fresh_process_converges_or_names_the_temp_link_it_collided_with()
+    {
         let fixture = FixtureBuilder::new()
             .dir("/journal")
             .dir("/root")
@@ -1727,8 +1728,8 @@ mod tests {
     /// file's bytes never move; on failure the panic names the file it
     /// overwrote.
     #[test]
-    fn link_reversal_never_replaces_a_regular_file_at_the_link_path_or_names_the_file_it_overwrote(
-    ) {
+    fn link_reversal_never_replaces_a_regular_file_at_the_link_path_or_names_the_file_it_overwrote()
+    {
         let fixture = FixtureBuilder::new()
             .dir("/journal")
             .dir("/root")
