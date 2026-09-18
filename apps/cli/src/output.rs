@@ -528,6 +528,9 @@ pub fn write_schemas(out: Option<PathBuf>) -> ExitCode {
             "outdated_result",
             || schemars::schema_for!(BTreeMap<String, Currency>),
         ),
+        ("sweep_quarantine_request", || {
+            schemars::schema_for!(skill_studio_core::dto::SweepQuarantineRequest)
+        }),
     ];
     for (name, build) in schemas {
         let schema = build();
