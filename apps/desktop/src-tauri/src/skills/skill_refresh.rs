@@ -199,14 +199,23 @@ fn hour_key(now: DateTime<Utc>) -> (NaiveDate, u32) {
 }
 
 /// Start the background refresh thread and return the state to register
-/// with `tauri::Builder::manage`.
+/// with `tauri::Builder::manage`. When the data folder is blocked
+/// (`data_folder_writable` is false), skips the legacy-cache cleanup, the
+/// cache load, and the loop itself - every one of those touches
+/// `app_data_dir`, and the blocking screen means nothing reads
+/// `state.snapshot` in a way that matters.
 pub fn init(app: &AppHandle) -> SkillRefreshState {
+    let writable = super::data_folder_status::data_folder_writable(app);
     let cache_path = invocation_cache_path(app);
-    // Best-effort cleanup of the pre-rename cache file this replaced; a
-    // fresh index is rebuilt from the transcripts either way, so a failure
-    // here (e.g. it never existed) is not worth surfacing.
-    let _ = std::fs::remove_file(cache_path.with_file_name("skill-invocations.json"));
-    let invocation_index = SkillInvocationIndex::load_or_empty(&cache_path);
+    let invocation_index = if writable {
+        // Best-effort cleanup of the pre-rename cache file this replaced; a
+        // fresh index is rebuilt from the transcripts either way, so a
+        // failure here (e.g. it never existed) is not worth surfacing.
+        let _ = std::fs::remove_file(cache_path.with_file_name("skill-invocations.json"));
+        SkillInvocationIndex::load_or_empty(&cache_path)
+    } else {
+        SkillInvocationIndex::default()
+    };
 
     let state = SkillRefreshState {
         snapshot: Arc::new(RwLock::new(None)),
@@ -229,9 +238,11 @@ pub fn init(app: &AppHandle) -> SkillRefreshState {
         ),
     };
 
-    let app_handle = app.clone();
-    let loop_state = state.clone();
-    std::thread::spawn(move || run_refresh_loop(app_handle, loop_state));
+    if writable {
+        let app_handle = app.clone();
+        let loop_state = state.clone();
+        std::thread::spawn(move || run_refresh_loop(app_handle, loop_state));
+    }
 
     state
 }

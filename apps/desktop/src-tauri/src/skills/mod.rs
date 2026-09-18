@@ -10,6 +10,7 @@ pub mod app_version;
 pub mod commands;
 pub mod core_content_hash;
 pub mod core_runtime;
+pub mod data_folder_status;
 pub mod error_reporting;
 pub mod event_commands;
 pub mod event_store;
