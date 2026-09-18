@@ -7,10 +7,10 @@
     "skills": {
       "description": "Restrict to these skill names; empty means all.",
       "type": "array",
-      "default": [],
       "items": {
         "$ref": "#/$defs/SkillName"
-      }
+      },
+      "default": []
     },
     "timings": {
       "description": "Include per-phase timings.",

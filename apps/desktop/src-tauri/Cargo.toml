@@ -21,6 +21,12 @@ path = "src/main.rs"
 name = "skill_studio_lib"
 crate-type = ["staticlib", "cdylib", "rlib"]
 
+[features]
+# Exposes test_support (pin_opencode_env, OpencodeHomeGuard) to
+# tests/core_scan_parity.rs, an integration test crate that links this
+# package's lib as an ordinary dependency rather than with `cfg(test)`.
+testing = []
+
 [build-dependencies]
 tauri-build = { version = "2", features = [] }
 
@@ -66,7 +72,7 @@ items_after_statements = "allow"
 tauri = { version = "2", features = [] }
 tauri-plugin-dialog = "2"
 serde = { version = "1", features = ["derive"] }
-serde_json = "1"
+serde_json = { workspace = true }
 serde_yaml = "0.9"
 dirs = "5"
 tokio = { version = "1", features = ["full"] }
@@ -89,4 +95,5 @@ schemars = { version = "1", features = ["chrono04"] }
 [dev-dependencies]
 tempfile = "3"
 skill-studio-core = { path = "../../../crates/skill-studio-core", features = ["testing"] }
+skill-studio = { path = ".", features = ["testing"] }
 similar = "2"

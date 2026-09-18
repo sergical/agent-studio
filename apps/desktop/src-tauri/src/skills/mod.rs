@@ -16,7 +16,6 @@ pub mod event_store;
 pub mod frontmatter;
 pub mod gh_cli;
 pub mod github_skill_listing;
-pub mod opencode_skill_permission;
 pub mod skill_add;
 pub mod skill_add_operation;
 pub mod skill_agent_runner;
@@ -47,8 +46,8 @@ pub mod skill_run_target;
 pub mod skill_trial;
 pub mod skill_trust_policy;
 pub mod skill_update_check;
-#[cfg(test)]
-mod test_support;
+#[cfg(any(test, feature = "testing"))]
+pub mod test_support;
 pub mod write_lease;
 
 pub use agents::*;

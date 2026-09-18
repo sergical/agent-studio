@@ -125,8 +125,11 @@ pub enum DisableMechanism {
     ClaudeSkillOverrides,
     /// Codex `config.toml` `[[skills.config]]`.
     CodexSkillsConfig,
-    /// `OpenCode` `opencode.json(c)` permission rule `{ action: "skill",
-    /// resource, effect }` (v2) or `permission.skill` map (v1).
+    /// `OpenCode` reads V1 `permission.skill` and V2 `permissions[]` skill
+    /// rules; Skill Studio writes the V1 `permission.skill.<name> = "deny"`
+    /// key (`opencode_config.rs`'s module doc comment has the source
+    /// citation for both shapes). `opencode.jsonc` is detected but never
+    /// written.
     OpencodePermission,
     /// pi `settings.json` `skills` exclusions (`!pattern`, `-path`), also
     /// written by `pi config`.
@@ -465,6 +468,7 @@ const PI_TRANSCRIPT_READER: &str = "crates/skill-studio-core/src/skill_uses/pi.r
 const CURSOR_TRANSCRIPT_READER: &str = "crates/skill-studio-core/src/skill_uses/cursor.rs";
 const GROK_TRANSCRIPT_READER: &str = "crates/skill-studio-core/src/skill_uses/grok.rs";
 const OPENCODE_USE_READER: &str = "crates/skill-studio-core/src/skill_uses/opencode.rs";
+const OPENCODE_CONFIG_WRITER: &str = "crates/skill-studio-core/src/opencode_config.rs";
 const ONE_LEVEL_READER: &str =
     "one-level readers never reach <root>/.skill-studio-disabled/<skill>/SKILL.md";
 
@@ -703,9 +707,14 @@ fn open_code() -> HarnessFacts {
         native_disable: Some(NativeDisableSpec {
             mechanism: DisableMechanism::OpencodePermission,
             scopes: vec![ScopeLevel::Global, ScopeLevel::Project],
-            writable: Support::Partial(Evidence::inferred(
-                "opencode.jsonc is detected but never written",
-            )),
+            // `opencode_config` reads V1 `permission.skill` and V2
+            // `permissions[]` skill rules; it writes the V1 key.
+            // `set_skill_denied` refuses (rather than silently no-oping)
+            // when only `opencode.jsonc` exists, so writable stays
+            // `Partial` until the jsonc case has its own handling
+            // (`opencode_jsonc_sibling_is_reported_not_silently_ignored_or_names_the_swallowed_write`,
+            // a follow-up).
+            writable: Support::Partial(Evidence::inferred(OPENCODE_CONFIG_WRITER)),
             disabled_by: DisabledBy::OpencodePermission,
             evidence: ev(),
         }),
@@ -725,6 +734,10 @@ fn open_code() -> HarnessFacts {
         },
         usage_source: UsageSourceSpec {
             shape: Support::Yes(Evidence::inferred(OPENCODE_USE_READER)),
+            // Default only: `XDG_DATA_HOME` moves this to
+            // `$XDG_DATA_HOME/opencode`, and `OPENCODE_DB` can point at a
+            // specific database file outright
+            // (`skill-studio-host::opencode_db::opencode_databases`).
             relative_path: Some(".local/share/opencode".into()),
         },
         runner: RunnerSpec {

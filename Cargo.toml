@@ -2,6 +2,18 @@
 members = ["crates/*", "apps/desktop/src-tauri", "apps/cli", "apps/mcp"]
 resolver = "2"
 
+# `preserve_order` swaps `serde_json::Map`'s backing store for an
+# `indexmap::IndexMap`, so a parsed JSON object round-trips through this
+# workspace in the document's own key order instead of sorted (`BTreeMap`)
+# order. `opencode_config.rs`'s v1 `permission.skill` rules are
+# last-match-wins in that document order (`OpenCode`'s own `Object.entries`
+# + `findLast`), so a sorted `Map` silently reordered rules under it and
+# could flip which one won. Set once, workspace-wide, so every crate that
+# touches user-owned JSON (not just this one) gets the same order-preserving
+# behavior rather than each crate deciding separately.
+[workspace.dependencies]
+serde_json = { version = "1", features = ["preserve_order"] }
+
 [workspace.lints.rust]
 unsafe_code = "forbid"
 

@@ -51,6 +51,8 @@ impl ScopeArgs {
                     paths: self.projects.clone(),
                 };
             }
+            scope.opencode_config_root =
+                Some(skill_studio_host::opencode_config_dir_under(fixture));
             let lease_root = fixture.join(".history").join("leases");
             (scope, lease_root)
         } else if let Some(home) = &self.home {
@@ -64,6 +66,7 @@ impl ScopeArgs {
                     paths: self.projects.clone(),
                 };
             }
+            scope.opencode_config_root = Some(skill_studio_host::opencode_config_dir_under(home));
             let lease_root = data_root.join("leases");
             (scope, lease_root)
         } else {
@@ -71,12 +74,14 @@ impl ScopeArgs {
             let data_root = data_root();
             let history_root = data_root.join("history");
             let codex_home = skill_studio_host::codex_home(&home);
-            let mut scope = RuntimeScope::live(home, history_root).with_codex_home(codex_home);
+            let mut scope =
+                RuntimeScope::live(home.clone(), history_root).with_codex_home(codex_home);
             if !self.projects.is_empty() {
                 scope.projects = ProjectSelection::Explicit {
                     paths: self.projects.clone(),
                 };
             }
+            scope.opencode_config_root = Some(skill_studio_host::opencode_config_dir(&home));
             let lease_root = data_root.join("leases");
             (scope, lease_root)
         };

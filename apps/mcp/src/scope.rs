@@ -24,6 +24,7 @@ pub fn resolve() -> (RuntimeScope, PathBuf) {
         if !projects.is_empty() {
             scope.projects = ProjectSelection::Explicit { paths: projects };
         }
+        scope.opencode_config_root = Some(skill_studio_host::opencode_config_dir_under(&fixture));
         let lease_root = fixture.join(".history").join("leases");
         return (scope, lease_root);
     }
@@ -33,10 +34,11 @@ pub fn resolve() -> (RuntimeScope, PathBuf) {
         let data_root = home.join(".skill-studio");
         let history_root = data_root.join("history");
         let codex_home = skill_studio_host::codex_home(&home);
-        let mut scope = RuntimeScope::live(home, history_root).with_codex_home(codex_home);
+        let mut scope = RuntimeScope::live(home.clone(), history_root).with_codex_home(codex_home);
         if !projects.is_empty() {
             scope.projects = ProjectSelection::Explicit { paths: projects };
         }
+        scope.opencode_config_root = Some(skill_studio_host::opencode_config_dir_under(&home));
         let lease_root = data_root.join("leases");
         return (scope, lease_root);
     }
@@ -45,10 +47,11 @@ pub fn resolve() -> (RuntimeScope, PathBuf) {
     let data_root = data_root();
     let history_root = data_root.join("history");
     let codex_home = skill_studio_host::codex_home(&home);
-    let mut scope = RuntimeScope::live(home, history_root).with_codex_home(codex_home);
+    let mut scope = RuntimeScope::live(home.clone(), history_root).with_codex_home(codex_home);
     if !projects.is_empty() {
         scope.projects = ProjectSelection::Explicit { paths: projects };
     }
+    scope.opencode_config_root = Some(skill_studio_host::opencode_config_dir(&home));
     let lease_root = data_root.join("leases");
     (scope, lease_root)
 }

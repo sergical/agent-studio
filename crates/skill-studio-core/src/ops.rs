@@ -315,7 +315,12 @@ pub(crate) fn scan_inner(
     let home = &rt.scope.home.lexical;
 
     let step_start = clock.monotonic();
-    let disable_sources = DisableSources::read(fs, home, &rt.scope.codex_home);
+    let disable_sources = DisableSources::read(
+        fs,
+        home,
+        rt.scope.raw.opencode_config_root.as_deref(),
+        &rt.scope.codex_home,
+    );
 
     // Full ownership classification needs the dotagents and skills.sh
     // ledgers for every scope this scan covers (the home's `.agents` plus
@@ -1543,21 +1548,31 @@ struct DisableSources {
     /// false` rows name. Mirrors `codex_skill_config.rs`
     /// `read_disabled_skill_md_paths`.
     codex_disabled_skill_md: Vec<PathBuf>,
-    /// Skill names `permission.skill.<name> = "deny"` denies in
-    /// `opencode.json`. Mirrors `opencode_skill_permission.rs`
-    /// `read_denied_patterns`; the core matches names exactly and does not
-    /// implement that function's `*` glob support.
-    opencode_denied_skills: Vec<String>,
+    /// `permission.skill` (v1) and `permissions[]` (v2) skill rules
+    /// `opencode.json` holds, from [`crate::opencode_config::read_skill_rules`]
+    /// - the same read the write path and every adapter use, so a scan and
+    ///   a deny write always agree on what "denied" means.
+    opencode_skill_rules: crate::opencode_config::OpencodeSkillRules,
     /// Claude Code `settings.json` `enabledPlugins["<plugin>@<marketplace>"]`,
     /// keyed by that same `<plugin>@<marketplace>` id.
     claude_enabled_plugins: HashMap<String, bool>,
 }
 
 impl DisableSources {
-    fn read(fs: &dyn ScopeFs, home: &Path, codex_home: &Path) -> Self {
+    fn read(
+        fs: &dyn ScopeFs,
+        home: &Path,
+        opencode_config_root: Option<&Path>,
+        codex_home: &Path,
+    ) -> Self {
+        let opencode_config_dir = opencode_config_root
+            .map_or_else(|| home.join(".config").join("opencode"), Path::to_path_buf);
         DisableSources {
             codex_disabled_skill_md: read_codex_disabled_skill_md_paths(fs, codex_home),
-            opencode_denied_skills: read_opencode_denied_skills(fs, home),
+            opencode_skill_rules: crate::opencode_config::read_skill_rules(
+                fs,
+                &opencode_config_dir,
+            ),
             claude_enabled_plugins: read_claude_enabled_plugins(fs, home),
         }
     }
@@ -2040,28 +2055,6 @@ pub fn set_codex_sidecar_implicit_invocation(
         .map_err(|e| CoreError::io(&path, e))
 }
 
-fn read_opencode_denied_skills(fs: &dyn ScopeFs, home: &Path) -> Vec<String> {
-    let path = home.join(".config").join("opencode").join("opencode.json");
-    let Ok(bytes) = fs.read_capped(&path, SKILL_MD_MAX_BYTES) else {
-        return Vec::new();
-    };
-    let Ok(value) = serde_json::from_slice::<serde_json::Value>(&bytes) else {
-        return Vec::new();
-    };
-    let Some(skill) = value
-        .get("permission")
-        .and_then(|p| p.get("skill"))
-        .and_then(|s| s.as_object())
-    else {
-        return Vec::new();
-    };
-    skill
-        .iter()
-        .filter(|(_, v)| v.as_str() == Some("deny"))
-        .map(|(name, _)| name.clone())
-        .collect()
-}
-
 /// Reads Claude Code's global `enabledPlugins` map, keyed
 /// `<plugin>@<marketplace>`. A missing or malformed `settings.json` yields
 /// an empty map, so every lookup falls back to `None`.
@@ -2111,9 +2104,8 @@ fn native_disabled_by(
             .then_some(DisabledBy::CodexConfig),
         RootKind::Harness(id) | RootKind::Legacy(id) if id.as_str() == AgentId::OPEN_CODE => {
             sources
-                .opencode_denied_skills
-                .iter()
-                .any(|n| n == name)
+                .opencode_skill_rules
+                .is_denied(name)
                 .then_some(DisabledBy::OpencodePermission)
         }
         _ => None,

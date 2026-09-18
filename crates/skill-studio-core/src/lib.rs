@@ -43,6 +43,7 @@ pub mod health;
 pub mod identity;
 pub mod journal;
 pub mod lock_file;
+pub mod opencode_config;
 pub mod ops;
 mod ownership;
 pub mod ports;

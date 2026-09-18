@@ -75,9 +75,9 @@ pub struct SkillSnapshot {
     /// Which `OpenCode` config format is present, if any - `None` when
     /// `OpenCode` isn't configured, `Some(Jsonc)` when Skill Studio can only
     /// read (not write) its per-skill disables. See
-    /// `opencode_skill_permission::detect_config_kind`.
+    /// `skill_studio_core::opencode_config::detect_config_kind`.
     #[serde(default)]
-    pub opencode_config_kind: Option<super::opencode_skill_permission::OpencodeConfigKind>,
+    pub opencode_config_kind: Option<skill_studio_core::opencode_config::OpencodeConfigKind>,
     /// True when the core scan's read budget was exceeded before every root
     /// could be reached - `skills`/`projects` may be missing entries from
     /// the roots named in `scan_observations`. See `core_scan_installed_skills`.
@@ -950,8 +950,19 @@ fn run_refresh_loop(app: AppHandle, state: SkillRefreshState) {
     loop {
         match rx.recv_timeout(POLL_INTERVAL) {
             Ok(Ok(events)) => {
+                // Computed once per batch, not per event: `opencode_databases`
+                // derives from `home` alone, so recomputing it inside
+                // `classify_watch_event` for every event in a debounced batch
+                // re-walks the same `OpenCode` data directory once per event
+                // instead of once per batch.
+                let opencode_databases = skill_studio_host::opencode_databases(&home);
                 for event in events {
-                    match classify_watch_event(&event.path, &home, &claude_projects_dir) {
+                    match classify_watch_event(
+                        &event.path,
+                        &home,
+                        &claude_projects_dir,
+                        &opencode_databases,
+                    ) {
                         WatchEventKind::Skills => {
                             // Logged once per rebuild cycle so an unexpected
                             // rescan can be traced to the path that caused it.
@@ -1118,6 +1129,20 @@ fn snapshot_owner_ids(skills: &[InstalledSkill]) -> Vec<String> {
         .flat_map(|skill| skill.deployments.iter())
         .filter_map(|deployment| deployment.owner_id.clone())
         .collect()
+}
+
+/// `OpenCode`'s config directory, resolved the same way for every reader
+/// and writer in the desktop app - the deny overlay, `detect_config_kind`,
+/// the core-scan arm, and the disable command's write - so fixture runs
+/// (`SKILL_STUDIO_FIXTURE` set) never leak a read or write to the real
+/// user's `~/.config/opencode` just because one call site forgot the
+/// fixture check. Mirrors `core_scan_installed_skills`'s own branch below.
+pub(crate) fn opencode_config_root(home: &Path) -> PathBuf {
+    if std::env::var_os("SKILL_STUDIO_FIXTURE").is_some() {
+        skill_studio_host::opencode_config_dir_under(home)
+    } else {
+        skill_studio_host::opencode_config_dir(home)
+    }
 }
 
 /// Every canonical `SKILL.md` path Codex's own config disables, read from
@@ -1341,10 +1366,10 @@ fn apply_skill_snapshot_overlays(
     let codex_disabled_paths: BTreeSet<PathBuf> = read_codex_disabled_skill_md_paths(home)
         .into_iter()
         .collect();
-    let opencode_denied: BTreeSet<String> =
-        super::opencode_skill_permission::read_denied_patterns(home)
-            .into_iter()
-            .collect();
+    let opencode_fs = skill_studio_host::RealFs::new();
+    let opencode_config_dir = opencode_config_root(home);
+    let opencode_rules =
+        skill_studio_core::opencode_config::read_skill_rules(&opencode_fs, &opencode_config_dir);
     for skill in skills.iter_mut() {
         let open_code_deployment_count = skill
             .deployments
@@ -1367,11 +1392,7 @@ fn apply_skill_snapshot_overlays(
                 deployment.codex_implicit_invocation =
                     read_codex_allow_implicit_invocation(&PathBuf::from(&deployment.path));
             } else if deployment.agent == "OpenCode" {
-                if open_code_deployment_count == 1
-                    && opencode_denied.iter().any(|pattern| {
-                        super::opencode_skill_permission::pattern_matches(pattern, &skill.name)
-                    })
-                {
+                if open_code_deployment_count == 1 && opencode_rules.is_denied(&skill.name) {
                     deployment.disabled = true;
                     deployment.disabled_by = Some(super::skill_dto::DisabledBy::OpencodePermission);
                 }
@@ -1393,9 +1414,7 @@ fn apply_skill_snapshot_overlays(
                 if codex_disabled_paths.contains(&canonical) {
                     deployment.disabled_readers.push("codex".to_string());
                 }
-                if opencode_denied.iter().any(|pattern| {
-                    super::opencode_skill_permission::pattern_matches(pattern, &skill.name)
-                }) {
+                if opencode_rules.is_denied(&skill.name) {
                     deployment.disabled_readers.push("open-code".to_string());
                 }
             }
@@ -1453,6 +1472,12 @@ pub(crate) fn core_scan_installed_skills(
     let lease_root = data_dir.join("core-leases");
     let history_root = data_dir.join("core-history");
 
+    // Fixture mode: `home` is the fixture root (see
+    // `apply_fixture_home_override`), so the config root must stay under it
+    // even when the ambient `XDG_CONFIG_HOME`/`OPENCODE_CONFIG_DIR` point
+    // somewhere else, or a checklist run silently reads/writes the real
+    // user's OpenCode config - see `opencode_config_root`.
+    let opencode_config_root_path = opencode_config_root(home);
     let mut scope = if std::env::var_os("SKILL_STUDIO_FIXTURE").is_some() {
         skill_studio_core::scope::RuntimeScope::fixture(home)
     } else {
@@ -1462,6 +1487,7 @@ pub(crate) fn core_scan_installed_skills(
     scope.projects = skill_studio_core::scope::ProjectSelection::Explicit {
         paths: project_paths.to_vec(),
     };
+    scope.opencode_config_root = Some(opencode_config_root_path);
     // The 2s default guards stateless CLI/MCP calls; the desktop refresh
     // runs in the background and must reach every root even on a home with
     // many projects and plugin caches.
@@ -1660,7 +1686,10 @@ pub fn build_snapshot(
         scanned_at: now.to_rfc3339(),
         last_test_by_skill,
         update_check,
-        opencode_config_kind: super::opencode_skill_permission::detect_config_kind(home),
+        opencode_config_kind: skill_studio_core::opencode_config::detect_config_kind(
+            &skill_studio_host::RealFs::new(),
+            &opencode_config_root(home),
+        ),
         scan_partial,
         scan_observations,
     };
@@ -1760,8 +1789,14 @@ pub fn classify_watch_event(
     path: &Path,
     home: &Path,
     claude_projects_dir: &Path,
+    opencode_databases: &[PathBuf],
 ) -> WatchEventKind {
-    if skill_studio_host::skill_use_watch_paths(home)
+    // `skill_use_watch_paths` and `is_skill_use_change` each derive an
+    // OpenCode database list from `home`; this function calls both per
+    // classified path, so the caller computes `opencode_databases` once per
+    // watch batch (a debounced batch can hold many events) rather than this
+    // function walking `home`'s OpenCode data directory again for each one.
+    if skill_studio_host::skill_use_watch_paths_with_databases(home, opencode_databases)
         .iter()
         .any(|watch| watch.path == path)
     {
@@ -1776,7 +1811,7 @@ pub fn classify_watch_event(
         };
     }
 
-    if skill_studio_host::is_skill_use_change(home, path) {
+    if skill_studio_host::is_skill_use_change_with_databases(home, path, opencode_databases) {
         return WatchEventKind::Invocations;
     }
 
@@ -1979,9 +2014,10 @@ mod tests {
     fn classify_watch_event_outside_claude_projects_is_skills() {
         let home = PathBuf::from("/home/tester");
         let claude_projects = home.join(".claude/projects");
+        let opencode_databases = skill_studio_host::opencode_databases(&home);
         let path = home.join(".claude/skills/foo/SKILL.md");
         assert_eq!(
-            classify_watch_event(&path, &home, &claude_projects),
+            classify_watch_event(&path, &home, &claude_projects, &opencode_databases),
             WatchEventKind::Skills
         );
     }
@@ -1990,9 +2026,10 @@ mod tests {
     fn classify_watch_event_transcript_is_invocations() {
         let home = PathBuf::from("/home/tester");
         let claude_projects = home.join(".claude/projects");
+        let opencode_databases = skill_studio_host::opencode_databases(&home);
         let path = claude_projects.join("-my-project/agent-abc.jsonl");
         assert_eq!(
-            classify_watch_event(&path, &home, &claude_projects),
+            classify_watch_event(&path, &home, &claude_projects, &opencode_databases),
             WatchEventKind::Invocations
         );
     }
@@ -2001,9 +2038,10 @@ mod tests {
     fn classify_watch_event_claude_settings_is_skills() {
         let home = PathBuf::from("/home/tester");
         let claude_projects = home.join(".claude/projects");
+        let opencode_databases = skill_studio_host::opencode_databases(&home);
         let path = home.join(".claude/settings.json");
         assert_eq!(
-            classify_watch_event(&path, &home, &claude_projects),
+            classify_watch_event(&path, &home, &claude_projects, &opencode_databases),
             WatchEventKind::Skills
         );
     }
@@ -2012,9 +2050,10 @@ mod tests {
     fn classify_watch_event_project_dir_is_skills() {
         let home = PathBuf::from("/home/tester");
         let claude_projects = home.join(".claude/projects");
+        let opencode_databases = skill_studio_host::opencode_databases(&home);
         let path = claude_projects.join("-my-new-project");
         assert_eq!(
-            classify_watch_event(&path, &home, &claude_projects),
+            classify_watch_event(&path, &home, &claude_projects, &opencode_databases),
             WatchEventKind::Skills
         );
     }
@@ -2023,9 +2062,10 @@ mod tests {
     fn classify_watch_event_worktree_build_output_is_ignored() {
         let home = PathBuf::from("/home/tester");
         let claude_projects = home.join(".claude/projects");
+        let opencode_databases = skill_studio_host::opencode_databases(&home);
         let path = PathBuf::from("/work/my-project/.claude/worktrees/x/target/debug/foo.o");
         assert_eq!(
-            classify_watch_event(&path, &home, &claude_projects),
+            classify_watch_event(&path, &home, &claude_projects, &opencode_databases),
             WatchEventKind::Ignored
         );
     }
@@ -2034,9 +2074,10 @@ mod tests {
     fn classify_watch_event_project_skill_file_is_skills() {
         let home = PathBuf::from("/home/tester");
         let claude_projects = home.join(".claude/projects");
+        let opencode_databases = skill_studio_host::opencode_databases(&home);
         let path = PathBuf::from("/work/my-project/.claude/skills/foo/SKILL.md");
         assert_eq!(
-            classify_watch_event(&path, &home, &claude_projects),
+            classify_watch_event(&path, &home, &claude_projects, &opencode_databases),
             WatchEventKind::Skills
         );
     }
@@ -2045,9 +2086,10 @@ mod tests {
     fn classify_watch_event_skill_lock_file_is_skills() {
         let home = PathBuf::from("/home/tester");
         let claude_projects = home.join(".claude/projects");
+        let opencode_databases = skill_studio_host::opencode_databases(&home);
         let path = home.join(".agents/.skill-lock.json");
         assert_eq!(
-            classify_watch_event(&path, &home, &claude_projects),
+            classify_watch_event(&path, &home, &claude_projects, &opencode_databases),
             WatchEventKind::Skills
         );
     }
@@ -2056,9 +2098,10 @@ mod tests {
     fn classify_watch_event_codex_config_is_skills() {
         let home = PathBuf::from("/home/tester");
         let claude_projects = home.join(".claude/projects");
+        let opencode_databases = skill_studio_host::opencode_databases(&home);
         let path = home.join(".codex/config.toml");
         assert_eq!(
-            classify_watch_event(&path, &home, &claude_projects),
+            classify_watch_event(&path, &home, &claude_projects, &opencode_databases),
             WatchEventKind::Skills
         );
     }
@@ -2067,9 +2110,10 @@ mod tests {
     fn classify_watch_event_plugin_cache_is_skills() {
         let home = PathBuf::from("/home/tester");
         let claude_projects = home.join(".claude/projects");
+        let opencode_databases = skill_studio_host::opencode_databases(&home);
         let path = home.join(".claude/plugins/cache/a/b/skills/c/SKILL.md");
         assert_eq!(
-            classify_watch_event(&path, &home, &claude_projects),
+            classify_watch_event(&path, &home, &claude_projects, &opencode_databases),
             WatchEventKind::Skills
         );
     }
@@ -2078,9 +2122,10 @@ mod tests {
     fn classify_watch_event_harness_dir_itself_is_skills() {
         let home = PathBuf::from("/home/tester");
         let claude_projects = home.join(".claude/projects");
+        let opencode_databases = skill_studio_host::opencode_databases(&home);
         let path = PathBuf::from("/work/my-project/.claude");
         assert_eq!(
-            classify_watch_event(&path, &home, &claude_projects),
+            classify_watch_event(&path, &home, &claude_projects, &opencode_databases),
             WatchEventKind::Skills
         );
     }
@@ -2089,9 +2134,10 @@ mod tests {
     fn classify_watch_event_parked_skill_is_skills() {
         let home = PathBuf::from("/home/tester");
         let claude_projects = home.join(".claude/projects");
+        let opencode_databases = skill_studio_host::opencode_databases(&home);
         let path = home.join(".agents/skills-parked/foo/SKILL.md");
         assert_eq!(
-            classify_watch_event(&path, &home, &claude_projects),
+            classify_watch_event(&path, &home, &claude_projects, &opencode_databases),
             WatchEventKind::Skills
         );
     }
@@ -2100,16 +2146,23 @@ mod tests {
     fn classify_watch_event_opencode_database_is_invocations() {
         let home = PathBuf::from("/home/tester");
         let claude_projects = home.join(".claude/projects");
+        let opencode_databases = skill_studio_host::opencode_databases(&home);
         let opencode_dir = home.join(".local/share/opencode");
         assert_eq!(
-            classify_watch_event(&opencode_dir.join("opencode.db"), &home, &claude_projects),
+            classify_watch_event(
+                &opencode_dir.join("opencode.db"),
+                &home,
+                &claude_projects,
+                &opencode_databases
+            ),
             WatchEventKind::Invocations
         );
         assert_eq!(
             classify_watch_event(
                 &opencode_dir.join("opencode-next.db-wal"),
                 &home,
-                &claude_projects
+                &claude_projects,
+                &opencode_databases
             ),
             WatchEventKind::Invocations
         );
@@ -2117,7 +2170,8 @@ mod tests {
             classify_watch_event(
                 &opencode_dir.join("opencode.db-shm"),
                 &home,
-                &claude_projects
+                &claude_projects,
+                &opencode_databases
             ),
             WatchEventKind::Ignored
         );
@@ -2125,7 +2179,8 @@ mod tests {
             classify_watch_event(
                 &opencode_dir.join("storage/session/x.json"),
                 &home,
-                &claude_projects
+                &claude_projects,
+                &opencode_databases
             ),
             WatchEventKind::Ignored
         );
@@ -2135,16 +2190,23 @@ mod tests {
     fn classify_watch_event_codex_rollout_is_invocations() {
         let home = PathBuf::from("/home/tester");
         let claude_projects = home.join(".claude/projects");
+        let opencode_databases = skill_studio_host::opencode_databases(&home);
         assert_eq!(
             classify_watch_event(
                 &home.join(".codex/sessions/2026/09/16/rollout-x.jsonl"),
                 &home,
-                &claude_projects
+                &claude_projects,
+                &opencode_databases
             ),
             WatchEventKind::Invocations
         );
         assert_eq!(
-            classify_watch_event(&home.join(".codex/config.toml"), &home, &claude_projects),
+            classify_watch_event(
+                &home.join(".codex/config.toml"),
+                &home,
+                &claude_projects,
+                &opencode_databases
+            ),
             WatchEventKind::Skills
         );
     }
@@ -2153,11 +2215,13 @@ mod tests {
     fn classify_watch_event_pi_session_is_invocations() {
         let home = PathBuf::from("/home/tester");
         let claude_projects = home.join(".claude/projects");
+        let opencode_databases = skill_studio_host::opencode_databases(&home);
         assert_eq!(
             classify_watch_event(
                 &home.join(".pi/agent/sessions/d/f.jsonl"),
                 &home,
-                &claude_projects
+                &claude_projects,
+                &opencode_databases
             ),
             WatchEventKind::Invocations
         );
@@ -2167,11 +2231,13 @@ mod tests {
     fn classify_watch_event_cursor_transcript_is_invocations_and_terminal_output_is_ignored() {
         let home = PathBuf::from("/home/tester");
         let claude_projects = home.join(".claude/projects");
+        let opencode_databases = skill_studio_host::opencode_databases(&home);
         assert_eq!(
             classify_watch_event(
                 &home.join(".cursor/projects/p/agent-transcripts/s/s.jsonl"),
                 &home,
-                &claude_projects
+                &claude_projects,
+                &opencode_databases
             ),
             WatchEventKind::Invocations
         );
@@ -2179,7 +2245,8 @@ mod tests {
             classify_watch_event(
                 &home.join(".cursor/projects/p/terminals/1.txt"),
                 &home,
-                &claude_projects
+                &claude_projects,
+                &opencode_databases
             ),
             WatchEventKind::Ignored
         );
@@ -2189,11 +2256,13 @@ mod tests {
     fn classify_watch_event_grok_session_is_invocations_and_image_is_ignored() {
         let home = PathBuf::from("/home/tester");
         let claude_projects = home.join(".claude/projects");
+        let opencode_databases = skill_studio_host::opencode_databases(&home);
         assert_eq!(
             classify_watch_event(
                 &home.join(".grok/sessions/p/s/updates.jsonl"),
                 &home,
-                &claude_projects
+                &claude_projects,
+                &opencode_databases
             ),
             WatchEventKind::Invocations
         );
@@ -2201,7 +2270,8 @@ mod tests {
             classify_watch_event(
                 &home.join(".grok/sessions/p/s/summary.json"),
                 &home,
-                &claude_projects
+                &claude_projects,
+                &opencode_databases
             ),
             WatchEventKind::Invocations
         );
@@ -2209,7 +2279,8 @@ mod tests {
             classify_watch_event(
                 &home.join(".grok/sessions/p/s/images/a.png"),
                 &home,
-                &claude_projects
+                &claude_projects,
+                &opencode_databases
             ),
             WatchEventKind::Ignored
         );
@@ -2219,19 +2290,31 @@ mod tests {
     fn classify_watch_event_watch_dir_itself_created_or_removed_is_skills() {
         let home = PathBuf::from("/home/tester");
         let claude_projects = home.join(".claude/projects");
+        let opencode_databases = skill_studio_host::opencode_databases(&home);
         assert_eq!(
-            classify_watch_event(&claude_projects, &home, &claude_projects),
+            classify_watch_event(
+                &claude_projects,
+                &home,
+                &claude_projects,
+                &opencode_databases
+            ),
             WatchEventKind::Skills
         );
         assert_eq!(
-            classify_watch_event(&home.join(".local/share/opencode"), &home, &claude_projects),
+            classify_watch_event(
+                &home.join(".local/share/opencode"),
+                &home,
+                &claude_projects,
+                &opencode_databases
+            ),
             WatchEventKind::Skills
         );
         assert_eq!(
             classify_watch_event(
                 &home.join(".local/share/other-app/x.db"),
                 &home,
-                &claude_projects
+                &claude_projects,
+                &opencode_databases
             ),
             WatchEventKind::Ignored
         );

@@ -42,8 +42,10 @@ pub trait RegistryDocument: Serialize + DeserializeOwned {
 
 /// Builds the narrowest [`NormalizedScope`] that covers `home` and nothing
 /// else - a registry write never touches a project, so it needs no
-/// discovery port, just a home that exists.
-fn home_only_scope(home: &Path, fs: &dyn ScopeFs) -> Result<NormalizedScope, CoreError> {
+/// discovery port, just a home that exists. `pub(crate)` so other
+/// home-only, lease-guarded JSON writers (e.g. [`crate::opencode_config`])
+/// can share it instead of re-deriving the same scope.
+pub(crate) fn home_only_scope(home: &Path, fs: &dyn ScopeFs) -> Result<NormalizedScope, CoreError> {
     let raw = RuntimeScope {
         kind: ScopeKind::Live,
         home_root: home.to_path_buf(),
@@ -54,6 +56,7 @@ fn home_only_scope(home: &Path, fs: &dyn ScopeFs) -> Result<NormalizedScope, Cor
         history_binding: HistoryBinding::Default,
         cache_root: None,
         data_root: None,
+        opencode_config_root: None,
         codex_home: None,
         read_timeout_ms: DEFAULT_READ_TIMEOUT_MS,
         write_timeout_ms: DEFAULT_WRITE_TIMEOUT_MS,

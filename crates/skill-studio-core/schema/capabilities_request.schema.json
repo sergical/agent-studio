@@ -7,10 +7,10 @@
     "harnesses": {
       "description": "Restrict to these harnesses; empty means all. A name without a\ncatalog row is `invalid_request`.",
       "type": "array",
-      "default": [],
       "items": {
         "$ref": "#/$defs/AgentId"
-      }
+      },
+      "default": []
     },
     "observe": {
       "description": "Also probe the machine (config presence, runner binary).",
@@ -20,10 +20,10 @@
     "tools": {
       "description": "Executables to look up on `PATH` (`npx`, `dotagents`, `gh`). Needs\nthe `ToolLookup` port; without it a non-empty list is `unsupported`.",
       "type": "array",
-      "default": [],
       "items": {
         "type": "string"
-      }
+      },
+      "default": []
     }
   },
   "$defs": {

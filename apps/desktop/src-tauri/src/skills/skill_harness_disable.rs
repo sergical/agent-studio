@@ -3,9 +3,11 @@
 // Per-harness disable, distinct from `skill_park` (which disables a skill
 // everywhere by moving its shared folder aside). Three native mechanisms,
 // one per harness that has one, plus a universal fallback for the rest:
-//   - Codex: `~/.codex/config.toml` `[[skills.config]] enabled = false`.
-//   - OpenCode: `~/.config/opencode/opencode.json` `permission.skill.<name>
-//     = "deny"`.
+//   - Codex: `~/.codex/config.toml` `[[skills.config]] enabled = false`,
+//     written through `skill_studio_core::ops::set_codex_skill_disabled`.
+//   - OpenCode: `~/.config/opencode/opencode.json` (or its `XDG_CONFIG_HOME`/
+//     `OPENCODE_CONFIG_DIR` override) `permission.skill.<name> = "deny"`,
+//     via `skill_studio_core::opencode_config`.
 //   - Claude Code: no native per-skill switch, so this removes/recreates the
 //     per-skill symlink under `~/.claude/skills/<name>`.
 //   - Every other deployment (plain directory copies, project-scope
@@ -40,7 +42,6 @@ use skill_studio_core::ports::OpContext;
 
 use super::event_commands::EventStoreState;
 use super::event_store::{fingerprint_path, EventDraft, EventStatus, InverseOp};
-use super::opencode_skill_permission;
 use super::skill_agent_runner::validate_skill_dir_name;
 use super::skill_dto::{DisabledBy, HarnessVisibilityTarget, LifecycleTarget};
 use super::skill_fork_registry::{
@@ -559,7 +560,7 @@ pub fn set_harness_enabled_with(
             if codex_skill_md_paths.is_empty() {
                 return Err(format!("No Codex-visible deployment found for \"{name}\""));
             }
-            let rt = super::core_runtime::build_runtime_write_at(home.to_path_buf(), data_root)?;
+            let rt = super::core_runtime::build_runtime_write_at(home, data_root)?;
             let ctx = skill_studio_core::ports::OpContext::uncancellable(
                 skill_studio_core::identity::CorrelationId(ulid::Ulid::new().to_string()),
             );
@@ -577,7 +578,59 @@ pub fn set_harness_enabled_with(
         }
         // The frontend's AgentId spells it "open-code"; the CLI name is "opencode".
         "opencode" | "open-code" => {
-            opencode_skill_permission::set_skill_denied(home, name, !enabled)
+            let config_dir = skill_refresh::opencode_config_root(home);
+            // Core's scope normalization canonicalizes the write's home
+            // (`config_dir`'s parent), which requires it to already exist -
+            // same bootstrapping gap `write_fork_registry` has for a
+            // never-before-seen `~/.agents`. `$XDG_CONFIG_HOME/opencode`'s
+            // default, `~/.config/opencode`, is commonly two levels deeper
+            // than `home` on a fresh install, so create the whole chain
+            // here rather than just one level.
+            fs::create_dir_all(&config_dir)
+                .map_err(|e| format!("Failed to create {}: {e}", config_dir.display()))?;
+            let real_fs = skill_studio_host::RealFs::new();
+            // `set_skill_denied_with` trusts its caller to already hold the
+            // exclusive lease it needs - `config_dir`'s canonical parent -
+            // and `guard` here is keyed to `home` instead, which is the
+            // same root only when `OPENCODE_CONFIG_DIR`/`XDG_CONFIG_HOME`
+            // happens to point `config_dir` directly under `home`. Reuse
+            // `guard` only when its keys actually cover that root; fall
+            // back to `set_skill_denied`, which acquires its own
+            // correctly-scoped `FileLease`, otherwise.
+            let config_home = config_dir.parent().ok_or_else(|| {
+                format!(
+                    "{} has no parent to scope the write to",
+                    config_dir.display()
+                )
+            })?;
+            let canonical_config_home = config_home
+                .canonicalize()
+                .map_err(|e| format!("Failed to canonicalize {}: {e}", config_home.display()))?;
+            let covered_by_guard = guard
+                .as_exclusive_guard()
+                .keys()
+                .iter()
+                .any(|key| key.canonical_root == canonical_config_home);
+            if covered_by_guard {
+                skill_studio_core::opencode_config::set_skill_denied_with(
+                    &real_fs,
+                    guard.as_exclusive_guard(),
+                    &config_dir,
+                    name,
+                    !enabled,
+                )
+                .map_err(|e| e.to_string())
+            } else {
+                let leases = skill_studio_host::FileLease::new(data_root.join("leases"));
+                skill_studio_core::opencode_config::set_skill_denied(
+                    &leases,
+                    &real_fs,
+                    &config_dir,
+                    name,
+                    !enabled,
+                )
+                .map_err(|e| e.to_string())
+            }
         }
         "claude-code" => Err("Claude Code visibility needs an exact deployment target".to_string()),
         "pi" | "cursor" | "grok-build" => Err(format!(
@@ -915,7 +968,17 @@ mod tests {
     use crate::skills::skill_ownership::LifecycleOwnerKind;
     use std::fs;
 
-    use super::super::test_support::write_skill;
+    use super::super::test_support::{pin_opencode_env, write_skill, OpencodeHomeGuard};
+
+    /// Test-only stand-in for the old `opencode_skill_permission::read_denied_patterns(home)`:
+    /// resolves the config directory the same way `set_harness_enabled_with`
+    /// now does, so a test still reads back the file the "opencode" branch
+    /// just wrote.
+    fn opencode_denies(home: &Path, name: &str) -> bool {
+        let fs = skill_studio_host::RealFs::new();
+        let config_dir = skill_studio_host::opencode_config_dir(home);
+        skill_studio_core::opencode_config::read_skill_rules(&fs, &config_dir).is_denied(name)
+    }
 
     /// Reads every `path` a Codex `[[skills.config]] enabled = false` row
     /// names, uncanonicalized - matches what `ops::set_codex_skill_disabled`
@@ -1088,6 +1151,7 @@ mod tests {
     fn opencode_disable_and_reenable_round_trip() {
         let tmp = tempfile::tempdir().unwrap();
         let home = tmp.path();
+        let _guard = OpencodeHomeGuard::new(home);
         let data_root = home.join(".skill-studio");
 
         set_harness_enabled_with(
@@ -1100,10 +1164,7 @@ mod tests {
             &test_guard(home),
         )
         .unwrap();
-        assert_eq!(
-            opencode_skill_permission::read_denied_patterns(home),
-            vec!["find-bugs".to_string()]
-        );
+        assert!(opencode_denies(home, "find-bugs"));
 
         set_harness_enabled_with(
             home,
@@ -1115,13 +1176,89 @@ mod tests {
             &test_guard(home),
         )
         .unwrap();
-        assert!(opencode_skill_permission::read_denied_patterns(home).is_empty());
+        assert!(!opencode_denies(home, "find-bugs"));
+    }
+
+    /// Flow: the default layout - `XDG_CONFIG_HOME` pinned under `home` by
+    /// `OpencodeHomeGuard`, so `config_dir`'s parent (`home/.config`) is a
+    /// *different* root than `home` itself, the root the desktop's
+    /// `WriteLease` (`test_guard(home)`) is keyed to. Another writer (e.g. a
+    /// concurrent CLI run) already holds the exclusive lease scoped to that
+    /// exact root - the same root `set_skill_denied`'s own
+    /// `home_only_scope` acquires.
+    /// Expectation: `set_harness_enabled_with`'s `OpenCode` arm refuses
+    /// (busy) rather than writing, because it acquires its own lease on
+    /// `config_dir`'s parent instead of only trusting the caller's
+    /// `home`-rooted guard.
+    /// Failure: the write proceeds anyway - which would mean the desktop's
+    /// `home` guard was reused (or coverage skipped) for a root it doesn't
+    /// actually cover, racing the other writer.
+    #[test]
+    fn opencode_disable_refuses_a_writer_already_holding_the_config_dirs_own_lease_or_writes_past_it(
+    ) {
+        let tmp = tempfile::tempdir().unwrap();
+        let home = tmp.path();
+        let _opencode_guard = OpencodeHomeGuard::new(home);
+        let data_root = home.join(".skill-studio");
+        let config_dir = skill_studio_host::opencode_config_dir(home);
+        let config_home = config_dir.parent().unwrap();
+        std::fs::create_dir_all(config_home).unwrap();
+
+        let ports = skill_studio_core::ports::Ports {
+            fs: std::sync::Arc::new(skill_studio_host::RealFs::new()),
+            clock: std::sync::Arc::new(skill_studio_core::testing::FakeClock::at(0)),
+            ids: std::sync::Arc::new(skill_studio_core::testing::FakeIds::default()),
+            leases: std::sync::Arc::new(skill_studio_host::FileLease::new(
+                data_root.join("leases"),
+            )),
+            history: std::sync::Arc::new(skill_studio_core::testing::NoHistory),
+            sink: std::sync::Arc::new(skill_studio_core::testing::RecordingSink::default()),
+            spawner: None,
+            discovery: None,
+            tools: None,
+            catalog: std::sync::Arc::new(skill_studio_core::harness::HarnessCatalog::builtin()),
+        };
+        let rt = skill_studio_core::ports::Runtime::new(
+            &skill_studio_core::scope::RuntimeScope::fixture(config_home),
+            ports,
+        )
+        .unwrap();
+        let other_guard =
+            skill_studio_core::ports::acquire_exclusive(rt.ports.leases.as_ref(), &rt.scope)
+                .unwrap();
+
+        let err = set_harness_enabled_with(
+            home,
+            &data_root,
+            "find-bugs",
+            "opencode",
+            false,
+            &[],
+            &test_guard(home),
+        )
+        .expect_err(
+            "the OpenCode write proceeded despite another writer already holding config_dir's own lease",
+        );
+        assert!(
+            err.contains("holds the lease") || err.contains("busy"),
+            "error {err} doesn't look like a lease refusal"
+        );
+        // The fallback lease used to root itself at `config_home/.leases`,
+        // leaving a stray lock directory there on every OpenCode toggle.
+        // It now shares `data_root/leases` with every other write, so
+        // `config_home` itself must stay untouched by leasing.
+        assert!(
+            !config_home.join(".leases").exists(),
+            "a .leases directory was created under config_home; the fallback lease still isn't rooted at the shared data_root"
+        );
+        drop(other_guard);
     }
 
     #[test]
     fn new_project_opencode_disable_refuses_a_global_same_name_deployment() {
         let tmp = tempfile::tempdir().unwrap();
         let home = tmp.path().join("home");
+        let _guard = OpencodeHomeGuard::new(&home);
         let project = tmp.path().join("project");
         write_skill(&home.join(".agents/skills/find-bugs"), "find-bugs");
         let project_skill = project.join(".agents/skills/find-bugs");
@@ -1156,8 +1293,122 @@ mod tests {
             error.contains("more than one OpenCode deployment"),
             "{error}"
         );
-        assert!(opencode_skill_permission::read_denied_patterns(&home).is_empty());
+        assert!(!opencode_denies(&home, "find-bugs"));
         assert!(home.join(".agents/skills/find-bugs/SKILL.md").is_file());
+    }
+
+    /// Flow: while `OpencodeHomeGuard` already holds the lock for `home`,
+    /// something overwrites `XDG_CONFIG_HOME` to an unrelated real directory
+    /// (simulating GitHub's `ubuntu-latest` runner, which exports
+    /// `XDG_CONFIG_HOME=/home/runner/.config`, racing in between another
+    /// guarded test's pin and its read).
+    /// Expectation: re-pinning under the same guard overrides it, so
+    /// `opencode_config_dir(home)` resolves under the fixture `home`, not
+    /// the unrelated directory.
+    /// Failure here would mean every OpenCode-writing test in this module
+    /// reads and writes that one shared real directory on CI instead of its
+    /// own fixture, racing every other such test.
+    #[test]
+    fn opencode_desktop_tests_read_the_temp_home_config_under_xdg_config_home_or_names_the_shared_real_directory(
+    ) {
+        let tmp = tempfile::tempdir().unwrap();
+        let home = tmp.path().join("home");
+        fs::create_dir_all(&home).unwrap();
+        let unrelated = tmp.path().join("unrelated-xdg-config");
+
+        let _guard = OpencodeHomeGuard::new(&home);
+        // SAFETY: `_guard` holds `OpencodeHomeGuard`'s lock, serializing
+        // every test in this module that touches this var.
+        #[allow(unsafe_code)]
+        unsafe {
+            std::env::set_var("XDG_CONFIG_HOME", &unrelated);
+        }
+        pin_opencode_env(&home);
+
+        let resolved = skill_studio_host::opencode_config_dir(&home);
+
+        assert_eq!(
+            resolved,
+            home.join(".config/opencode"),
+            "opencode_config_dir resolved the ambient XDG_CONFIG_HOME ({}) instead of the guarded home",
+            unrelated.display()
+        );
+    }
+
+    /// Flow: `SKILL_STUDIO_FIXTURE` is set (a checklist/fixture run) and
+    /// `XDG_CONFIG_HOME` points at a real, unrelated `opencode.json` that
+    /// already denies `real-file-marker` - the same shape a developer's own
+    /// `~/.config/opencode/opencode.json` could take. A skill is then denied
+    /// through `skill_refresh::opencode_config_root(home)`.
+    /// Expectation: the write lands under the fixture `home`
+    /// (`home/.config/opencode/opencode.json`), and the real, unrelated file
+    /// under `XDG_CONFIG_HOME` is never read or written - it still denies
+    /// only `real-file-marker`, not the skill this test disabled.
+    /// Failure: either the write lands under the real `XDG_CONFIG_HOME`
+    /// directory instead of the fixture, or the real file's own deny rule
+    /// changes - either would mean a fixture/checklist run can touch a
+    /// developer's real `OpenCode` config.
+    #[test]
+    fn fixture_mode_reads_and_writes_opencode_config_under_the_fixture_or_names_the_real_file_it_touched(
+    ) {
+        let tmp = tempfile::tempdir().unwrap();
+        let home = tmp.path().join("home");
+        fs::create_dir_all(home.join(".config")).unwrap();
+        let real_xdg_config_home = tmp.path().join("real-xdg-config");
+        let real_opencode_dir = real_xdg_config_home.join("opencode");
+        fs::create_dir_all(&real_opencode_dir).unwrap();
+        fs::write(
+            real_opencode_dir.join("opencode.json"),
+            r#"{"permission": {"skill": {"real-file-marker": "deny"}}}"#,
+        )
+        .unwrap();
+
+        // `OpencodeHomeGuard` already sets `SKILL_STUDIO_FIXTURE=1` (and
+        // restores it on drop); `XDG_CONFIG_HOME` is then pointed at a
+        // real, unrelated directory to prove fixture mode ignores it below.
+        let _guard = OpencodeHomeGuard::new(&home);
+        // SAFETY: `_guard` holds `OpencodeHomeGuard`'s lock, serializing
+        // every test in this module that touches these vars.
+        #[allow(unsafe_code)]
+        unsafe {
+            std::env::set_var("XDG_CONFIG_HOME", &real_xdg_config_home);
+        }
+
+        let config_dir = skill_refresh::opencode_config_root(&home);
+        assert_eq!(
+            config_dir,
+            skill_studio_host::opencode_config_dir_under(&home),
+            "fixture mode resolved a config dir outside the fixture home"
+        );
+        let fs_port = skill_studio_host::RealFs::new();
+        let leases = skill_studio_host::FileLease::new(home.join(".leases"));
+        skill_studio_core::opencode_config::set_skill_denied(
+            &leases,
+            &fs_port,
+            &config_dir,
+            "epsilon",
+            true,
+        )
+        .unwrap();
+
+        assert!(
+            skill_studio_core::opencode_config::read_skill_rules(
+                &fs_port,
+                &home.join(".config/opencode")
+            )
+            .is_denied("epsilon"),
+            "the deny write did not land under the fixture home"
+        );
+        let real_rules =
+            skill_studio_core::opencode_config::read_skill_rules(&fs_port, &real_opencode_dir);
+        assert!(
+            real_rules.is_denied("real-file-marker"),
+            "the real, unrelated opencode.json under XDG_CONFIG_HOME lost its own rule"
+        );
+        assert!(
+            !real_rules.is_denied("epsilon"),
+            "the real, unrelated opencode.json under XDG_CONFIG_HOME was touched"
+        );
     }
 
     #[test]

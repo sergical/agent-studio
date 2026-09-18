@@ -30,13 +30,52 @@ pub(crate) fn is_opencode_database_name(name: &str) -> bool {
         || (name.starts_with("opencode-") && Path::new(name).extension() == Some("db".as_ref()))
 }
 
-/// Lists `<home>/.local/share/opencode/opencode.db` and
-/// `opencode-*.db`, regular files only, sorted, capped at
-/// `MAX_OPENCODE_DATABASES`. An empty `Vec` when the directory can't be
-/// listed (missing, or not readable).
-pub(crate) fn opencode_databases(home: &Path) -> Vec<PathBuf> {
-    let root = home.join(OPENCODE_DATA_ROOT);
-    let Ok(entries) = fs::read_dir(&root) else {
+/// `OpenCode`'s data directory: `$XDG_DATA_HOME/opencode` when
+/// `XDG_DATA_HOME` is set and non-empty, else `<home>/.local/share/opencode`.
+/// Matches `packages/core/src/global.ts` (`anomalyco/opencode`, commit
+/// `83452558f70207ddaeaffce68b36ebac77019fae` on `dev`): `Global.Path.data`
+/// joins the `xdg-basedir` package's `xdgData` (which itself falls back to
+/// `~/.local/share`) with `"opencode"`.
+///
+/// The single resolver every `OpenCode` data-dir reader shares: the database
+/// lookup (`opencode_databases`), the project-worktree scan
+/// (`discovery::opencode_worktrees`), and the skill-use reader's root and
+/// disk watch (`skill_uses::opencode_root`, `SOURCES`'s `OPEN_CODE` watch).
+pub(crate) fn opencode_data_dir(home: &Path) -> PathBuf {
+    match std::env::var_os("XDG_DATA_HOME") {
+        Some(dir) if !dir.is_empty() => PathBuf::from(dir).join("opencode"),
+        _ => home.join(OPENCODE_DATA_ROOT),
+    }
+}
+
+/// Lists the database(s) to read: `OPENCODE_DB` (an absolute path, or a
+/// filename joined onto the data dir) names exactly one file outright and
+/// skips the directory listing entirely; `:memory:` never exists on disk, so
+/// it yields nothing to read. Otherwise every `opencode.db` and
+/// `opencode-*.db` under the data dir (honouring `XDG_DATA_HOME`), regular
+/// files only, sorted, capped at `MAX_OPENCODE_DATABASES`. Source:
+/// `packages/core/src/database/database.ts` `path()`, same commit as
+/// [`opencode_data_dir`].
+pub fn opencode_databases(home: &Path) -> Vec<PathBuf> {
+    let data_dir = opencode_data_dir(home);
+    if let Some(over) = std::env::var_os("OPENCODE_DB") {
+        if over.is_empty() || over == ":memory:" {
+            return Vec::new();
+        }
+        let path = Path::new(&over);
+        let path = if path.is_absolute() {
+            path.to_path_buf()
+        } else {
+            data_dir.join(path)
+        };
+        return if is_regular_file(&path) {
+            vec![path]
+        } else {
+            Vec::new()
+        };
+    }
+
+    let Ok(entries) = fs::read_dir(&data_dir) else {
         return Vec::new();
     };
     let mut databases: Vec<PathBuf> = entries
@@ -97,12 +136,33 @@ pub(crate) fn table_exists(conn: &Connection, table: &str) -> rusqlite::Result<b
     .map(|found| found.is_some())
 }
 
+/// Serializes every test in the crate that touches `XDG_DATA_HOME` or
+/// `XDG_CONFIG_HOME`: both are process-global and cargo runs tests on
+/// multiple threads, so without this an unrelated test's
+/// `opencode_databases(home)`/`opencode_config_dir(home)` call can read the
+/// override set by a mutating test and look at the wrong directory. Mirrors
+/// `core_scan_parity.rs`'s `home_env_lock` for `HOME`. Shared across
+/// `discovery.rs` and `skill_uses.rs` so every `OpenCode` XDG test in the
+/// crate serializes on the same lock.
+#[cfg(test)]
+pub(crate) fn xdg_env_lock() -> &'static std::sync::Mutex<()> {
+    static LOCK: std::sync::OnceLock<std::sync::Mutex<()>> = std::sync::OnceLock::new();
+    LOCK.get_or_init(|| std::sync::Mutex::new(()))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
+    /// Flow: a database closed after a WAL write (no live `-wal`/`-shm`
+    /// sidecars) is opened read-only by the adapter.
+    /// Expectation: the immutable open reads it correctly and creates no
+    /// `-wal` or `-shm` sidecar.
+    /// Failure here would mean Skill Studio writes next to a database
+    /// `OpenCode` itself might still open, corrupting or confusing it.
     #[test]
-    fn open_read_only_creates_no_sidecar_files() {
+    fn opencode_sqlite_reader_creates_no_wal_or_shm_sidecar_on_a_closed_database_or_names_the_created_file(
+    ) {
         let tmp = tempfile::tempdir().unwrap();
         let database = tmp.path().join("opencode.db");
         {

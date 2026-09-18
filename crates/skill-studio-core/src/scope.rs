@@ -80,6 +80,13 @@ pub struct RuntimeScope {
     /// cache. `None` means the operations that need it fail with
     /// [`ErrorCode::InvalidScope`]. Phase 1 and 2 operations never read it.
     pub data_root: Option<PathBuf>,
+    /// Directory `OpenCode`'s own `opencode.json`/`opencode.jsonc` lives in.
+    /// `None` means the plain default, `<home_root>/.config/opencode`: an
+    /// adapter that wants `XDG_CONFIG_HOME`/`OPENCODE_CONFIG_DIR` honored
+    /// resolves them itself (see the host's `opencode_config_dir`) and sets
+    /// this field, since the core reads no environment variable. Read by
+    /// [`crate::ops::scan`] for `OpenCode`'s native per-skill deny switch.
+    pub opencode_config_root: Option<PathBuf>,
     /// Codex's own directory, in place of `home_root/.codex`. `None` keeps
     /// the default. The adapter is the one place allowed to read
     /// `CODEX_HOME`; the core only ever sees the resolved path here (see
@@ -105,6 +112,7 @@ impl RuntimeScope {
             history_binding: HistoryBinding::Default,
             cache_root: None,
             data_root: None,
+            opencode_config_root: None,
             codex_home: None,
             read_timeout_ms: DEFAULT_READ_TIMEOUT_MS,
             write_timeout_ms: DEFAULT_WRITE_TIMEOUT_MS,
@@ -125,6 +133,7 @@ impl RuntimeScope {
             history_binding: HistoryBinding::Override,
             cache_root: None,
             data_root: Some(data_root),
+            opencode_config_root: None,
             codex_home: None,
             read_timeout_ms: DEFAULT_READ_TIMEOUT_MS,
             write_timeout_ms: DEFAULT_WRITE_TIMEOUT_MS,

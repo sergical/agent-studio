@@ -250,6 +250,12 @@ fn home_env_lock() -> &'static std::sync::Mutex<()> {
     LOCK.get_or_init(|| std::sync::Mutex::new(()))
 }
 
+/// Runs the desktop's assembly path. The caller must already hold
+/// [`home_env_lock`]: this swaps the process-global `HOME` var (see the
+/// lock's own doc), and the lock is not reentrant - a caller that also
+/// wants to set another process-global var (e.g. `XDG_CONFIG_HOME`) around
+/// this same call takes the one lock once, rather than this function
+/// taking it again itself.
 fn run_desktop(name: &str, home: &Path) -> BTreeMap<String, Vec<Value>> {
     if name == "project" {
         let mut registry = read_fork_registry(home).unwrap();
@@ -265,9 +271,6 @@ fn run_desktop(name: &str, home: &Path) -> BTreeMap<String, Vec<Value>> {
     let mut invocation_index = SkillInvocationIndex::default();
     let paths = BuildPaths::new(&cache_path, &runs_root, &update_check_path);
 
-    let _guard = home_env_lock()
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner);
     let previous_home = std::env::var("HOME").ok();
     // SAFETY: `home_env_lock` above serializes every test in this file that
     // touches `HOME`, so nothing else reads or writes it concurrently here.
@@ -294,7 +297,22 @@ fn run_desktop(name: &str, home: &Path) -> BTreeMap<String, Vec<Value>> {
 /// assert on more than `owner_kind` (mutability, `source_kind`, `owner_id`,
 /// `id`) via [`deployment_at`], where the flattened JSON rows `run_core`
 /// produces don't carry every field.
-fn core_scan(home: &Path, projects: &[PathBuf]) -> skill_studio_core::dto::Inventory {
+/// `opencode_config_root` is normally left `None`, which resolves to
+/// `skill_studio_host::opencode_config_dir_under(home)` - deterministic,
+/// ignoring `XDG_CONFIG_HOME`/`OPENCODE_CONFIG_DIR` entirely. Reading those
+/// env vars here (the way `skill_studio_host::opencode_config_dir` does)
+/// would race every other test in this file that mutates them under
+/// [`home_env_lock`]: unlike `run_desktop`, this function is called by the
+/// parity loop test *outside* that lock, so a concurrent env mutation could
+/// leak into this scan. A caller that specifically wants to pin an
+/// `XDG_CONFIG_HOME`-relative directory (the one legitimate reason to read
+/// that override) passes it explicitly instead - see
+/// `opencode_config_dir_resolves_the_same_on_linux_and_macos_rules_or_names_the_diverging_scan`.
+fn core_scan(
+    home: &Path,
+    projects: &[PathBuf],
+    opencode_config_root: Option<&Path>,
+) -> skill_studio_core::dto::Inventory {
     let ports = Ports {
         fs: Arc::new(RealFs::new()),
         clock: Arc::new(FakeClock::at(0)),
@@ -309,6 +327,10 @@ fn core_scan(home: &Path, projects: &[PathBuf]) -> skill_studio_core::dto::Inven
     };
     let mut scope = RuntimeScope::fixture(home);
     scope.read_timeout_ms = 10_000;
+    scope.opencode_config_root = Some(opencode_config_root.map_or_else(
+        || skill_studio_host::opencode_config_dir_under(home),
+        Path::to_path_buf,
+    ));
     if !projects.is_empty() {
         scope.projects = ProjectSelection::Explicit {
             paths: projects.to_vec(),
@@ -320,12 +342,23 @@ fn core_scan(home: &Path, projects: &[PathBuf]) -> skill_studio_core::dto::Inven
 }
 
 fn run_core(name: &str, home: &Path) -> BTreeMap<String, Vec<Value>> {
+    run_core_with_opencode_root(name, home, None)
+}
+
+/// Same as [`run_core`], but with an explicit `opencode_config_root` - see
+/// [`core_scan`]'s doc for why the plain path can't just read the env
+/// override itself.
+fn run_core_with_opencode_root(
+    name: &str,
+    home: &Path,
+    opencode_config_root: Option<&Path>,
+) -> BTreeMap<String, Vec<Value>> {
     let projects: Vec<PathBuf> = if name == "project" {
         vec![home.join("proj")]
     } else {
         Vec::new()
     };
-    project_core(&core_scan(home, &projects), home)
+    project_core(&core_scan(home, &projects, opencode_config_root), home)
 }
 
 /// A minimal spec-valid `SKILL.md`, matching
@@ -461,7 +494,7 @@ path = "skills/docs-writer"
     )
     .unwrap();
 
-    let inventory = core_scan(&home, &[]);
+    let inventory = core_scan(&home, &[], None);
 
     let docs_row = deployment_at(&inventory, "docs-writer", &home, &docs_writer);
     assert_eq!(docs_row.owner_kind, LifecycleOwnerKind::Dotagents);
@@ -642,6 +675,13 @@ fn fork_record_owns_the_fork() {
     std::fs::remove_dir_all(&dir).ok();
 }
 
+/// `OpencodeHomeGuard` sets `SKILL_STUDIO_FIXTURE`, which routes the
+/// desktop side's `core_scan_installed_skills` through
+/// `RuntimeScope::fixture(home)` (`skill_refresh.rs:1481-1486`) rather than
+/// `RuntimeScope::live(...)`. This test's parity check therefore only
+/// covers the `fixture(...)` branch; `live(...)` (real `XDG_CONFIG_HOME`,
+/// Codex home resolution, the 2s vs. 60s read timeout split) is not
+/// exercised here.
 #[test]
 fn desktop_assembly_matches_core_scan_for_every_fixture() {
     for (name, builder) in fixtures::all() {
@@ -652,7 +692,24 @@ fn desktop_assembly_matches_core_scan_for_every_fixture() {
             .materialize(&home)
             .unwrap_or_else(|e| panic!("materialize {name}: {e}"));
 
-        let desktop = run_desktop(name, &home);
+        let desktop = {
+            let _guard = home_env_lock()
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            // Pins the desktop side's `OpenCode` config resolution to this
+            // fixture `home` (`SKILL_STUDIO_FIXTURE`, `XDG_CONFIG_HOME`),
+            // matching `core_scan`'s own `None` default
+            // (`opencode_config_dir_under(home)`) below. Without this, a
+            // real `XDG_CONFIG_HOME`/`OPENCODE_CONFIG_DIR` in the ambient
+            // environment (set on every GitHub `ubuntu-latest` runner) made
+            // the desktop side read the real user's `opencode.json` while
+            // core read the fixture's, so the "disabled" fixture's
+            // `OpencodePermission` deny disagreed between the two sides on
+            // Linux CI even though both machines ran the identical fixture.
+            let _opencode_guard =
+                skill_studio_lib::skills::test_support::OpencodeHomeGuard::new(&home);
+            run_desktop(name, &home)
+        };
         let core = run_core(name, &home);
 
         if desktop != core {
@@ -667,6 +724,87 @@ fn desktop_assembly_matches_core_scan_for_every_fixture() {
 
         std::fs::remove_dir_all(&dir).ok();
     }
+}
+
+/// Flow: `disabled`'s `opencode.json` deny rule lives under a custom
+/// `XDG_CONFIG_HOME`, not the plain `home/.config` default - the condition
+/// that moves `OpenCode`'s config directory on a Linux desktop, where
+/// `XDG_CONFIG_HOME` is far more often already set than on a developer's
+/// macOS machine. Before `RuntimeScope::opencode_config_root` existed,
+/// `ops::scan` resolved `OpenCode`'s config at the hard-coded
+/// `home/.config/opencode` regardless of `XDG_CONFIG_HOME`, while the
+/// desktop's assembly overlay already resolved it through the
+/// override-aware `skill_studio_host::opencode_config_dir`. `core_scan`
+/// itself never reads `XDG_CONFIG_HOME` - this test pins `run_core`'s side
+/// to the same moved directory explicitly, via
+/// `run_core_with_opencode_root`'s `opencode_config_root` argument, rather
+/// than having `core` read the override itself. Unlike
+/// `desktop_assembly_matches_core_scan_for_every_fixture`, this test does
+/// not use `OpencodeHomeGuard`/`SKILL_STUDIO_FIXTURE`: it sets
+/// `XDG_CONFIG_HOME` directly and deliberately exercises the desktop's
+/// real, override-aware resolver.
+/// Expectation: `run_core` and `run_desktop` agree, and both see the skill
+/// disabled - neither silently misses the override and falls back to the
+/// (here, empty) default directory.
+/// Failure here would mean one side finds the deny rule and the other
+/// doesn't, exactly the divergence `desktop_assembly_matches_core_scan_for_every_fixture`
+/// caught on Linux CI.
+#[test]
+fn opencode_config_dir_resolves_the_same_on_linux_and_macos_rules_or_names_the_diverging_scan() {
+    let dir = unique_temp_dir("opencode-xdg-config-home");
+    std::fs::create_dir_all(&dir).unwrap();
+    let home = dir.canonicalize().unwrap();
+    let (_, builder) = fixtures::all()
+        .into_iter()
+        .find(|(name, _)| *name == "disabled")
+        .expect("disabled fixture");
+    builder
+        .materialize(&home)
+        .unwrap_or_else(|e| panic!("materialize: {e}"));
+    // Move the fixture's own `opencode.json` out from under the default
+    // `home/.config/opencode` and into the `XDG_CONFIG_HOME` location, so a
+    // scan that ignores the override finds nothing there.
+    let xdg_config_home = dir.join("xdg-config");
+    let xdg_opencode_dir = xdg_config_home.join("opencode");
+    std::fs::create_dir_all(&xdg_opencode_dir).unwrap();
+    std::fs::rename(
+        home.join(".config/opencode/opencode.json"),
+        xdg_opencode_dir.join("opencode.json"),
+    )
+    .unwrap();
+
+    let _guard = home_env_lock()
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let previous = std::env::var("XDG_CONFIG_HOME").ok();
+    // SAFETY: `home_env_lock` above serializes every test in this file that
+    // touches this var.
+    #[allow(unsafe_code)]
+    unsafe {
+        std::env::set_var("XDG_CONFIG_HOME", &xdg_config_home);
+    }
+    let desktop = run_desktop("disabled", &home);
+    let core = run_core_with_opencode_root("disabled", &home, Some(&xdg_opencode_dir));
+    // SAFETY: same as above - still under `home_env_lock`.
+    #[allow(unsafe_code)]
+    unsafe {
+        match &previous {
+            Some(v) => std::env::set_var("XDG_CONFIG_HOME", v),
+            None => std::env::remove_var("XDG_CONFIG_HOME"),
+        }
+    }
+
+    assert_eq!(
+        desktop, core,
+        "desktop and core disagree once opencode.json moves under XDG_CONFIG_HOME"
+    );
+    let epsilon_deployment = &core["epsilon"][0];
+    assert_eq!(
+        epsilon_deployment["disabled_by"],
+        json!(["OpencodePermission"])
+    );
+
+    std::fs::remove_dir_all(&dir).ok();
 }
 
 /// Proves the first of the desktop's two `Ambiguous` carve-outs: a universal
@@ -814,7 +952,7 @@ fn skills_sh_lock_only_matches_same_agents_root() {
     let project_skill = write_universal_skill(&project, "find-bugs");
     write_skills_sh_lock(&home, "find-bugs");
 
-    let inventory = core_scan(&home, std::slice::from_ref(&project));
+    let inventory = core_scan(&home, std::slice::from_ref(&project), None);
 
     let global = deployment_at(&inventory, "find-bugs", &home, &global_skill);
     assert_eq!(global.owner_kind, LifecycleOwnerKind::SkillsSh);
@@ -846,7 +984,7 @@ fn exact_project_dual_ledger_owner_is_ambiguous_and_read_only() {
     write_dotagents_ledger(&project.join(".agents"), "find-bugs");
     write_skills_sh_lock(&project, "find-bugs");
 
-    let inventory = core_scan(&home, std::slice::from_ref(&project));
+    let inventory = core_scan(&home, std::slice::from_ref(&project), None);
     let row = deployment_at(&inventory, "find-bugs", &home, &skill_dir);
 
     assert_eq!(row.owner_kind, LifecycleOwnerKind::Ambiguous);
@@ -877,7 +1015,7 @@ fn frontmatter_name_cannot_claim_a_skills_sh_owner() {
     .unwrap();
     write_skills_sh_lock(&home, "bar");
 
-    let inventory = core_scan(&home, &[]);
+    let inventory = core_scan(&home, &[], None);
     let row = deployment_at(&inventory, "foo", &home, &skill_dir);
 
     assert_eq!(row.owner_kind, LifecycleOwnerKind::Manual);
@@ -911,7 +1049,7 @@ fn frontmatter_name_cannot_claim_a_dotagents_owner() {
     .unwrap();
     write_dotagents_ledger(&home.join(".agents"), "bar");
 
-    let inventory = core_scan(&home, &[]);
+    let inventory = core_scan(&home, &[], None);
     let row = deployment_at(&inventory, "foo", &home, &skill_dir);
 
     assert_eq!(row.owner_kind, LifecycleOwnerKind::Ambiguous);
@@ -946,7 +1084,7 @@ fn unrecorded_first_class_per_harness_folders_remain_manual_despite_universal_lo
         .map(|(label, root)| (*label, write_skill_at(&home.join(root), "find-bugs")))
         .collect();
 
-    let inventory = core_scan(&home, &[]);
+    let inventory = core_scan(&home, &[], None);
     for (label, skill_dir) in skill_dirs {
         let row = deployment_at(&inventory, "find-bugs", &home, &skill_dir);
         assert_eq!(row.owner_kind, LifecycleOwnerKind::Manual, "{label}");
@@ -973,7 +1111,7 @@ fn copy_ownership_requires_an_exact_recorded_deployment_identity() {
     let skill_dir = home.join(".codex/skills/find-bugs");
     write_skill_content(&skill_dir, "original content");
 
-    let before = core_scan(&home, &[]);
+    let before = core_scan(&home, &[], None);
     let content_hash = bare_fingerprint(&before, "find-bugs", &home, &skill_dir);
 
     let deployment_id = skill_studio_lib::skill_deployment::deployment_id(
@@ -997,7 +1135,7 @@ fn copy_ownership_requires_an_exact_recorded_deployment_identity() {
     );
     skill_studio_lib::skill_fork_registry::write_fork_registry(&home, &registry).unwrap();
 
-    let matched = core_scan(&home, &[]);
+    let matched = core_scan(&home, &[], None);
     assert_eq!(
         deployment_at(&matched, "find-bugs", &home, &skill_dir).owner_kind,
         LifecycleOwnerKind::Copy
@@ -1012,7 +1150,7 @@ fn copy_ownership_requires_an_exact_recorded_deployment_identity() {
     skill_studio_lib::skill_fork_registry::write_fork_registry(&home, &mismatched_registry)
         .unwrap();
 
-    let mismatched = core_scan(&home, &[]);
+    let mismatched = core_scan(&home, &[], None);
     assert_eq!(
         deployment_at(&mismatched, "find-bugs", &home, &skill_dir).owner_kind,
         LifecycleOwnerKind::Manual
@@ -1034,7 +1172,7 @@ fn copy_ownership_rejects_edited_content() {
     let skill_dir = home.join(".codex/skills/find-bugs");
     write_skill_content(&skill_dir, "original content");
 
-    let before = core_scan(&home, &[]);
+    let before = core_scan(&home, &[], None);
     let content_hash = bare_fingerprint(&before, "find-bugs", &home, &skill_dir);
     let deployment_id = skill_studio_lib::skill_deployment::deployment_id(
         "find-bugs",
@@ -1053,7 +1191,7 @@ fn copy_ownership_rejects_edited_content() {
 
     write_skill_content(&skill_dir, "edited content");
 
-    let after = core_scan(&home, &[]);
+    let after = core_scan(&home, &[], None);
     let row = deployment_at(&after, "find-bugs", &home, &skill_dir);
     assert_eq!(row.owner_kind, LifecycleOwnerKind::Manual);
     assert_eq!(row.mutability, DeploymentMutability::ReadOnly);
@@ -1090,7 +1228,7 @@ fn copy_ownership_rejects_an_empty_legacy_content_hash() {
     );
     skill_studio_lib::skill_fork_registry::write_fork_registry(&home, &registry).unwrap();
 
-    let inventory = core_scan(&home, &[]);
+    let inventory = core_scan(&home, &[], None);
     let row = deployment_at(&inventory, "find-bugs", &home, &skill_dir);
     assert_eq!(row.owner_kind, LifecycleOwnerKind::Manual);
     assert_eq!(row.mutability, DeploymentMutability::ReadOnly);
@@ -1111,7 +1249,7 @@ fn named_dotagents_row_is_mutable_dotagents() {
     let skill_dir = write_universal_skill(&home, "find-bugs");
     write_dotagents_ledger(&home.join(".agents"), "find-bugs");
 
-    let inventory = core_scan(&home, &[]);
+    let inventory = core_scan(&home, &[], None);
     let row = deployment_at(&inventory, "find-bugs", &home, &skill_dir);
 
     assert_eq!(row.owner_kind, LifecycleOwnerKind::Dotagents);
