@@ -343,6 +343,60 @@ describe("buildScopeGroups", () => {
     expect(folderReaders(project)).toHaveLength(0);
     expect(siblingRows(project)).toHaveLength(1);
   });
+
+  it("locations_card_switch_is_disabled_for_a_copy_that_cannot_park_or_names_the_row", () => {
+    const shared = fixtureDeployment();
+    const projectClaudeCopy = fixtureDeployment({
+      id: "dep:v1/project/claude-code/find-bugs",
+      agent: "Claude Code",
+      scope: "project",
+      project_path: "/repo",
+      is_symlink: false,
+      path: "/repo/.claude/skills/find-bugs",
+    });
+    const globalCodex = fixtureDeployment({
+      id: "dep:v1/global/codex/find-bugs",
+      agent: "Codex",
+      scope: "global",
+      is_symlink: false,
+      path: "/home/.codex/skills/find-bugs",
+    });
+    const skill = fixtureSkill({ deployments: [shared, projectClaudeCopy, globalCodex] });
+    const groups = buildScopeGroups(skill);
+    const global = groups.find((g) => g.isGlobal)!;
+    const project = groups.find((g) => !g.isGlobal)!;
+
+    // A project-scope Claude Code copy has no native per-skill disable and is
+    // not the Global Universal deployment, so the card must not offer a
+    // switch that only ends in the "This copy has no off switch" toast.
+    const copyRow = project.rows.find((row) => row.harness === "claude-code")!;
+    expect(copyRow.hasSwitch).toBe(false);
+    expect(copyRow.switchDisabledReason).toBe(
+      "This copy has no off switch; park the skill from the header instead",
+    );
+
+    // A harness with a native per-skill disable (Codex, global scope) keeps
+    // its live switch.
+    const nativeRow = global.rows.find((row) => row.harness === "codex")!;
+    expect(nativeRow.hasSwitch).toBe(true);
+    expect(nativeRow.switchDisabledReason).toBeUndefined();
+
+    const markup = renderToStaticMarkup(
+      createElement(
+        TooltipProvider,
+        null,
+        createElement(SkillLocationRow, {
+          row: copyRow,
+          scopeLabel: project.label,
+          onAction: () => undefined,
+        }),
+      ),
+    );
+    expect(markup).toContain("disabled=");
+    expect(markup).toContain(
+      'aria-label="This copy has no off switch; park the skill from the header instead"',
+    );
+  });
 });
 
 describe("skillRollup", () => {

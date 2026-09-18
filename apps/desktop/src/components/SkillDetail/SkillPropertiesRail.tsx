@@ -29,7 +29,7 @@ import { DEFAULT_HARNESS_LIST, whereFacts } from "../SkillList/skill-row-state";
 import { SwitchControl } from "../ui/SwitchControl";
 import { buildInstalledSkillSourceLedgerModel } from "./installed-skill-source-ledger-model";
 import { setInvocationForFile } from "./skill-location-actions";
-import { canOfferHarnessSwitch as canOfferHarnessSwitchForDeployment } from "./skill-location-helpers";
+import { canOfferHarnessSwitchForRow, NO_OFF_SWITCH_TITLE } from "./skill-location-helpers";
 import {
   buildInvocationFiles,
   buildScopeGroups,
@@ -76,25 +76,6 @@ function showLocations() {
   const heading = document.getElementById("skill-locations-heading");
   heading?.scrollIntoView({ block: "start" });
   heading?.focus();
-}
-
-/** Shown on a disabled Harnesses switch that has no way to turn the row off - see `canOfferHarnessSwitch`. */
-const NO_OFF_SWITCH_TITLE = "This copy has no off switch; park the skill from the header instead";
-
-/**
- * Whether the Harnesses popover's switch should be interactive for `row`.
- * `park` is the off switch only for the Global Universal deployment - which
- * never reaches this popover, since `allRows` above filters out `"shared"`
- * rows - so a row here offers a switch only when its harness has a native
- * per-skill mechanism (`canToggleHarness`), or the row is a legacy
- * `.skill-studio-disabled/` copy that can still be switched back on via
- * `restoreMovedDeployment`. Every other row (a project-scope copy, pi,
- * Cursor, Grok Build) has no off switch at all.
- */
-function canOfferHarnessSwitch(row: AgentLocationRow): boolean {
-  if (row.kind === "reader") return row.hasSwitch;
-  if (!row.deployment) return false;
-  return canOfferHarnessSwitchForDeployment(row.deployment);
 }
 
 export function SkillPropertiesRail({ skill, updateAction }: SkillPropertiesRailProps) {
@@ -213,7 +194,7 @@ export function SkillPropertiesRail({ skill, updateAction }: SkillPropertiesRail
               ) : (
                 reachedHarnesses.map((h) => {
                   const row = rowForHarness(h.harness);
-                  const offerSwitch = row != null && canOfferHarnessSwitch(row);
+                  const offerSwitch = row != null && canOfferHarnessSwitchForRow(row);
                   return (
                     <div key={h.harness} className="flex h-7 items-center justify-between gap-2">
                       <span className="truncate text-small text-text-secondary">{h.label}</span>

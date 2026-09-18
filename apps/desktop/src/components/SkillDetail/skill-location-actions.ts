@@ -198,8 +198,9 @@ export function useLocationActions(
           return;
         }
         // `park` is the off switch only for the Global Universal deployment - never this row's
-        // (see `canOfferHarnessSwitch`). The rail disables the control for any row that fails
-        // this check, so the rejection below is a defense-in-depth backstop, not the normal path.
+        // (see `canOfferHarnessSwitch`). Both the rail and the Locations card disable the
+        // control for any row that fails this check, so the rejection below is a
+        // defense-in-depth backstop, not the normal path.
         runWithErrorToast(enabled ? "Couldn't enable" : "Couldn't disable", () =>
           deployment.disabled_by === "studio-moved"
             ? restoreMovedDeployment({ deployment_id: deployment.id })

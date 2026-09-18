@@ -2,10 +2,19 @@
 // Skill Studio - skill location helper tests
 // ============================================================================
 
+import { createElement } from "react";
+import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it } from "vitest";
 import type { Deployment, InstalledSkill } from "@skill-studio/lib";
-import { canOfferHarnessSwitch, sharedFolderSwitchPolicy } from "./skill-location-helpers";
+import { SwitchControl } from "../ui/SwitchControl";
+import {
+  canOfferHarnessSwitch,
+  canOfferHarnessSwitchForRow,
+  NO_OFF_SWITCH_TITLE,
+  sharedFolderSwitchPolicy,
+} from "./skill-location-helpers";
 import { buildScopeGroups, rowMenu } from "./skill-location-status";
+import type { AgentLocationRow } from "./skill-location-status";
 
 function sharedDeployment(overrides: Partial<Deployment> = {}): Deployment {
   return {
@@ -119,7 +128,7 @@ describe("canOfferHarnessSwitch", () => {
     expect(canOfferHarnessSwitch(projectCopy)).toBe(false);
   });
 
-  it("restores a studio-moved row's switch even though it has no native per-skill disable", () => {
+  it("studio_moved_row_keeps_its_switch_or_names_the_missing_native_disable", () => {
     const movedCopy = sharedDeployment({
       id: "dep:v1/project/pi/find-bugs",
       agent: "pi",
@@ -132,5 +141,50 @@ describe("canOfferHarnessSwitch", () => {
     });
 
     expect(canOfferHarnessSwitch(movedCopy)).toBe(true);
+  });
+});
+
+// `SkillPropertiesRail`'s Harnesses popover renders `SwitchControl` inline
+// (no standalone row component to import), so this exercises the rail's
+// exact disabled/title wiring - `canOfferHarnessSwitchForRow` +
+// `NO_OFF_SWITCH_TITLE` - against the same `SwitchControl` it renders.
+describe("harness rail switch (canOfferHarnessSwitchForRow + NO_OFF_SWITCH_TITLE)", () => {
+  it("harness_rail_switch_is_disabled_for_a_copy_that_cannot_park_or_names_the_row", () => {
+    const deployment = sharedDeployment({
+      id: "dep:v1/project/claude-code/find-bugs",
+      agent: "Claude Code",
+      scope: "project",
+      project_path: "/repo",
+      path: "/repo/.claude/skills/find-bugs",
+      backing: { kind: "independent" },
+    });
+    const row: AgentLocationRow = {
+      kind: "copy",
+      harness: "claude-code",
+      harnessLabel: "Claude Code",
+      path: deployment.path,
+      caption: "",
+      conditions: [],
+      level: null,
+      deployment,
+      lifecycleTarget: { deployment_id: deployment.id },
+      hasSwitch: false,
+      switchOn: false,
+      invocation: null,
+    };
+    const offerSwitch = canOfferHarnessSwitchForRow(row);
+    expect(offerSwitch).toBe(false);
+
+    const markup = renderToStaticMarkup(
+      createElement(SwitchControl, {
+        checked: row.switchOn,
+        disabled: !offerSwitch,
+        onCheckedChange: () => undefined,
+        ariaLabel: "Enabled for Claude Code",
+        title: offerSwitch ? undefined : NO_OFF_SWITCH_TITLE,
+      }),
+    );
+    expect(markup).toContain(`title="${NO_OFF_SWITCH_TITLE}"`);
+    expect(markup).toContain("disabled=");
   });
 });

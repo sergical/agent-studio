@@ -25,6 +25,7 @@ import type {
   LifecycleTarget,
 } from "@skill-studio/lib";
 import type { TooltipLine } from "../ui/TooltipControl";
+import { canOfferHarnessSwitch } from "./skill-location-helpers";
 
 export type StatusLevel = "error" | "warning" | "off";
 
@@ -35,6 +36,18 @@ export interface RollupResult {
 }
 
 const RANK = { error: 3, warning: 2, off: 1 } satisfies Record<StatusLevel, number>;
+
+/**
+ * The Locations card's own copy of `SkillPropertiesRail`'s off-switch
+ * explanation. Only mentions the header's park control when this scope group
+ * actually has a Global Universal deployment to park - a skill with none has
+ * no header park action to point at.
+ */
+function offSwitchReason(hasGlobalUniversal: boolean): string {
+  return hasGlobalUniversal
+    ? "This copy has no off switch; park the skill from the header instead"
+    : "This copy has no off switch";
+}
 
 /** The two readers with a per-skill off switch in their own config - see `skill_harness_disable.rs`. */
 const READERS_WITH_A_SWITCH: AgentId[] = ["codex", "open-code"];
@@ -105,6 +118,8 @@ interface BaseLocationRow {
   lifecycleTarget: LifecycleTarget;
   hasSwitch: boolean;
   switchOn: boolean;
+  /** Set when `hasSwitch` is false because the row has no off switch at all - see `canOfferHarnessSwitch`. */
+  switchDisabledReason?: string;
   invocation: InvocationPolicy | null;
 }
 
@@ -556,6 +571,11 @@ export function buildScopeGroups(skill: InstalledSkill): ScopeGroup[] {
       const caption = d.plugin
         ? `${d.plugin.name}${d.plugin.version ? ` v${d.plugin.version}` : ""}`
         : "";
+      // A broken symlink or a plugin row never gets a switch at all (separate
+      // rendering paths cover those); every other row needs an off switch to
+      // reach for - `canOfferHarnessSwitch` is the same gate the rail uses.
+      const offersSwitch = !d.symlink_is_broken && kind !== "plugin";
+      const canToggle = offersSwitch && canOfferHarnessSwitch(d);
       return {
         kind,
         // SAFETY: every deployment Skill Studio scans comes from a
@@ -570,8 +590,10 @@ export function buildScopeGroups(skill: InstalledSkill): ScopeGroup[] {
         level: topLevel(conditions),
         deployment: d,
         lifecycleTarget: { deployment_id: d.id },
-        hasSwitch: !d.symlink_is_broken && kind !== "plugin",
+        hasSwitch: canToggle,
         switchOn: !d.disabled && !parkedScope,
+        switchDisabledReason:
+          offersSwitch && !canToggle ? offSwitchReason(ctx.anyShared) : undefined,
         invocation: d.invocation ?? skill.invocation,
       };
     });
