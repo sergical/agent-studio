@@ -400,6 +400,14 @@ impl<'a> PlanWriter<'a> {
 /// `relative` under the plan's own backup directory - the leaf name plus a
 /// counter, so two `write_file` steps against files with the same leaf
 /// name never collide.
+/// A counter-based suffix unique within this process, for a reversal step's
+/// own temp filenames - the same purpose `fsops`'s private `unique_suffix`
+/// serves for its primitives, kept separate since that one is not `pub`.
+fn unique_temp_suffix() -> u64 {
+    static COUNTER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+}
+
 fn backup_relative_name(path: &Path) -> String {
     static COUNTER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
     let n = COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
@@ -530,7 +538,13 @@ fn confine_to_root(root: &Root, plan_root: &Path, path: &Path) -> std::io::Resul
 ///   exchange - a rename/exchange preserves identity across the name
 ///   change, so this holds regardless of whether the follow-up move into
 ///   `quarantined` also landed).
-/// - `Link`: landed iff `path` is currently a symlink pointing at `target`.
+/// - `Link`: landed iff `path` is currently a symlink pointing at `target`,
+///   or `path` is absent and `previous_target` is `Some` (a previous
+///   reversal attempt that crashed mid-restore, back when the restore was
+///   remove-then-create rather than the rename below). Restoring
+///   `previous_target` itself goes through the same temp-name-then-rename
+///   shape `fsops::link` uses, so `path` only ever shows a complete link -
+///   never briefly absent - and a crash mid-restore is simply retried.
 /// - `WriteFile`: landed iff the live bytes at `path` no longer match the
 ///   backup (the backup was fsynced durable before the rename that would
 ///   have changed them).
@@ -607,17 +621,36 @@ fn reverse_steps(
             } => {
                 let landed = match fs.read_link(path) {
                     Ok(current) => current == *target,
-                    // Only a missing path means the rename never landed -
-                    // any other error leaves whether it landed unknown.
-                    Err(e) if e.kind() == std::io::ErrorKind::NotFound => false,
+                    // A missing path is still "landed" when a previous
+                    // reversal attempt got as far as removing the link but
+                    // crashed before restoring `previous_target` - back
+                    // when that was two separate calls with no link at
+                    // `path` in between. Any other error leaves whether it
+                    // landed unknown.
+                    Err(e) if e.kind() == std::io::ErrorKind::NotFound => previous_target.is_some(),
                     Err(e) => return Err(e),
                 };
                 if !landed {
                     continue;
                 }
-                fs.fsops_remove_file(path)?;
-                if let Some(target) = previous_target {
-                    fs.fsops_symlink(target, path)?;
+                match previous_target {
+                    Some(previous_target) => {
+                        // Same temp-name-then-rename shape `fsops::link`
+                        // itself uses (fsops.rs): `path` only ever shows a
+                        // complete link, so a crash mid-restore leaves the
+                        // step still `landed` (still pointing at `target`,
+                        // or already absent - both retried above) rather
+                        // than losing the link entirely.
+                        let parent = path.parent().unwrap_or(Path::new("/")).to_path_buf();
+                        let leaf = path
+                            .file_name()
+                            .and_then(|s| s.to_str())
+                            .unwrap_or("link");
+                        let tmp_path = parent.join(format!(".{leaf}-{}", unique_temp_suffix()));
+                        fs.fsops_symlink(previous_target, &tmp_path)?;
+                        fs.fsops_rename(&tmp_path, path)?;
+                    }
+                    None => fs.fsops_remove_file(path)?,
                 }
             }
             PlanStep::WriteFile { path, backup } => match backup {
@@ -1353,6 +1386,114 @@ mod tests {
         assert_eq!(
             after, before,
             "reconciliation must restore the previous link target, or name the target it forgot"
+        );
+    }
+
+    /// Given an existing symlink whose target reconciliation is replacing -
+    /// the same seeded-link setup as the test above - when the *reversal's
+    /// own restore* is what crashes (the temp-symlink-then-rename that
+    /// swaps `path` onto `previous_target`), then the plan row stays
+    /// `Pending` on disk (the crash landed before reconciliation's own
+    /// `finish` call - the exact window `reconcile` already protects for a
+    /// forward mutation), `path` never shows an absent link in between, and
+    /// the next full reconciliation - with a healthy filesystem - retries
+    /// and fully restores `previous_target`; on failure the panic names the
+    /// target it lost.
+    #[test]
+    fn a_crash_inside_link_reversal_restores_the_previous_target_on_the_next_reconcile_or_names_the_target_it_lost(
+    ) {
+        let fixture = FixtureBuilder::new()
+            .dir("/journal")
+            .dir("/root")
+            .file("/root/old.txt", b"old")
+            .file("/root/new.txt", b"new")
+            .build_fs();
+        let root_path = PathBuf::from("/root");
+        let journal = journal_over(Arc::new(fixture.clone()));
+        let lease = FakeLease::default();
+        let g = guard(&lease);
+
+        // Seed an existing link pointing at `old.txt`, fully committed.
+        let seed_root = Root::open(&fixture, root_path.clone()).expect("open root");
+        let seed_id = PlanId("01PLANLINKATOMSEED00000001".into());
+        let seed_plan = PlanWriter::begin(
+            &journal,
+            &g,
+            seed_id,
+            Utc::now(),
+            "seed the existing link",
+            root_path.clone(),
+            Vec::new(),
+        )
+        .expect("begin seed plan");
+        fsops::link(
+            &seed_root,
+            &seed_plan,
+            Path::new("skill-current"),
+            Path::new("old.txt"),
+        )
+        .expect("seed link");
+        seed_plan
+            .finish(PlanStatus::Done)
+            .expect("finish seed plan");
+
+        // A second plan replaces the link with one pointing at `new.txt`,
+        // fully landing (no crash in the forward direction), then is left
+        // Pending - the ordinary "crash before finish" case.
+        let root = Root::open(&fixture, root_path.clone()).expect("open root");
+        let id = PlanId("01PLANLINKATOM0000000001".into());
+        let plan = PlanWriter::begin(
+            &journal,
+            &g,
+            id.clone(),
+            Utc::now(),
+            "replace the link, then crash before finish",
+            root_path.clone(),
+            Vec::new(),
+        )
+        .expect("begin");
+        fsops::link(&root, &plan, Path::new("skill-current"), Path::new("new.txt"))
+            .expect("link");
+        drop(plan);
+
+        // Simulates the reversal itself crashing partway through its own
+        // restore - calling `reverse_steps` directly, the way `reconcile`
+        // does internally, so the row's status is never written either
+        // way: still `Pending` on disk, same as a real process death.
+        let record = journal
+            .all()
+            .expect("read")
+            .into_iter()
+            .find(|p| p.id == id)
+            .expect("the plan begun above");
+        let failing = FailingFs::wrap(Arc::new(fixture.clone()));
+        failing.fail_next_fsops_rename();
+        reverse_steps(&journal, &record, &failing).expect_err(
+            "the rename inside the atomic link restore must fail, or this test proves nothing about a crash mid-restore",
+        );
+
+        let after_first_attempt = fixture
+            .read_link(Path::new("/root/skill-current"))
+            .expect("a crash mid-restore must never leave `path` without any link at all");
+        assert_eq!(
+            after_first_attempt,
+            PathBuf::from("new.txt"),
+            "the temp-then-rename shape must leave `path` showing its pre-restore link until the rename lands, or names the target it lost"
+        );
+
+        let report = reconcile(&journal, &g, &fixture).expect("reconciliation must run");
+        assert!(
+            report.reversed.contains(&id),
+            "the retried reconciliation must fully reverse the link step, not {report:?}"
+        );
+
+        let restored = fixture
+            .read_link(Path::new("/root/skill-current"))
+            .expect("read the restored link");
+        assert_eq!(
+            restored,
+            PathBuf::from("old.txt"),
+            "reconciliation must restore the previous target, or name the target it lost"
         );
     }
 
