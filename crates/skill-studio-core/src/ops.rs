@@ -1793,7 +1793,7 @@ pub fn set_codex_skill_disabled(
     let codex_home = &rt.scope.codex_home;
     let mut doc = read_codex_config_document(fs, codex_home)?;
     codex_write_disabled_row(&mut doc, skill_md_path, disabled)
-        .map_err(|e| e.at(&codex_config_path(codex_home)))?;
+        .map_err(|e| e.at(codex_config_path(codex_home)))?;
     codex_write_config_document(rt, fs, &guard, codex_home, &doc)
 }
 
