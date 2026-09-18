@@ -1519,7 +1519,7 @@ mod tests {
     }
 
     #[test]
-    fn refuse_registry_copy_restore_passes_through_a_manual_row() {
+    fn manual_row_restores_or_names_the_registry_copy_refusal() {
         let manual = Deployment {
             owner_kind: LifecycleOwnerKind::Manual,
             path: "/home/.claude/skills/find-bugs".to_string(),
