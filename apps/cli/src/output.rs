@@ -17,11 +17,16 @@ use skill_studio_core::ops::ResultEnvelope;
 pub fn print_json<T: Serialize>(envelope: &ResultEnvelope<T>) {
     // Every field on a `ResultEnvelope` is one of our own DTOs; the only way
     // `to_string` errs is a non-string map key or a NaN/infinite float,
-    // neither of which this envelope ever holds.
-    let line = serde_json::to_string(envelope).unwrap_or_else(|e| {
-        format!(r#"{{"error":"failed to serialize the result envelope: {e}"}}"#)
-    });
-    println!("{line}");
+    // neither of which this envelope ever holds. If it ever does, stdout must
+    // stay empty rather than carry a document that is not a `ResultEnvelope`,
+    // and the process must not exit as if the command succeeded: EX_SOFTWARE.
+    match serde_json::to_string(envelope) {
+        Ok(line) => println!("{line}"),
+        Err(err) => {
+            eprintln!("failed to serialize the result envelope: {err}");
+            std::process::exit(70);
+        }
+    }
 }
 
 fn print_errors(envelope: &ResultEnvelope<impl Serialize>) {

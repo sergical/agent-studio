@@ -2247,15 +2247,11 @@ fn classify_owner(cx: &OwnerClassifyContext) -> (LifecycleOwnerKind, Option<Owne
     // `scope_ledgers` always has an entry for both the home scope and every
     // tracked project (`scan_inner`), even when neither ledger file exists,
     // so an empty ledger and a missing one behave the same: no dotagents or
-    // skills.sh entry, fall through to `InRepo`/`Manual` below. A missing
-    // entry here would be that same "no ledger" case, so it takes the same
-    // fallback rather than panicking.
+    // skills.sh entry, fall through to the checks below. A missing entry is
+    // therefore a caller bug, not a "no ledger" case: silently skipping the
+    // symlink and universal-root carve-outs would misclassify the skill.
     let Some(ledger) = cx.scope_ledgers.get(cx.scope) else {
-        return if cx.in_git_repo {
-            (LifecycleOwnerKind::InRepo, None)
-        } else {
-            (LifecycleOwnerKind::Manual, None)
-        };
+        unreachable!("scan_inner populates a ledger for every scope it classifies")
     };
 
     let dotagents_entry = ledger.dotagents.iter().find(|d| d.name == cx.skill_name);

@@ -1583,7 +1583,8 @@ fn confirm_pack_import_trust_with(
             return Err("Pack trust confirmation does not match this import request".to_string());
         }
         tokens.remove(confirmation_token).ok_or_else(|| {
-            "Pack trust confirmation is invalid, expired, or already used".to_string()
+            "Pack trust token vanished while its state was locked; request a new confirmation"
+                .to_string()
         })?
     };
 

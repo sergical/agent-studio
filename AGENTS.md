@@ -80,7 +80,7 @@ npm run format:check
 # React health check (react-doctor)
 npm run doctor
 
-# Full gate: typecheck + lint + format:check + doctor + cargo fmt --check + clippy -D warnings + cargo test
+# Full gate: typecheck + lint + format:check + doctor + knip + test + types:check + cargo fmt --all --check + clippy --workspace --all-targets -D warnings + cargo test --workspace (CI also runs cargo machete and cargo deny check)
 npm run check
 ```
 

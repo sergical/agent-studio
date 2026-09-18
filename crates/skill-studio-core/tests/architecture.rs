@@ -123,7 +123,7 @@ fn core_crate_cargo_toml_has_no_tauri_rusqlite_tokio_or_reqwest_dependency_or_na
 /// itself in the root `Cargo.toml`, so a future edit that loosens it fails
 /// here instead of silently letting `.unwrap()` back into core.
 #[test]
-fn workspace_lints_deny_unwrap_expect_panic_todo_unimplemented_dbg_print_in_core_or_names_the_call_site(
+fn workspace_lints_deny_unwrap_expect_panic_todo_unimplemented_dbg_print_in_core_or_names_the_missing_lint(
 ) {
     let manifest_path = workspace_root().join("Cargo.toml");
     let manifest = fs::read_to_string(&manifest_path).expect("read root Cargo.toml");
@@ -172,7 +172,8 @@ fn workspace_lints_deny_unwrap_expect_panic_todo_unimplemented_dbg_print_in_core
 /// (the policy `cargo deny check` reads) is in place - dropping either from
 /// `rust.yml` fails here by naming the missing step.
 #[test]
-fn cargo_machete_and_cargo_deny_run_in_ci_with_zero_findings_or_name_the_finding() {
+fn rust_ci_workflow_runs_cargo_machete_and_cargo_deny_against_deny_toml_or_names_the_missing_step()
+{
     let workspace_root = workspace_root();
     let workflow_path = workspace_root.join(".github/workflows/rust.yml");
     let workflow = fs::read_to_string(&workflow_path).expect("read .github/workflows/rust.yml");

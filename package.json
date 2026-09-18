@@ -19,7 +19,7 @@
     "typecheck:marketing": "npm run typecheck -w @skill-studio/marketing",
     "lint": "oxlint . --deny-warnings",
     "lint:fix": "oxlint --fix .",
-    "lint:rust": "cd apps/desktop/src-tauri && cargo clippy -- -D warnings",
+    "lint:rust": "cargo clippy --workspace --all-targets -- -D warnings",
     "format": "oxfmt .",
     "format:check": "oxfmt --check .",
     "fmt:rust": "cd apps/desktop/src-tauri && cargo fmt",
@@ -27,7 +27,7 @@
     "test:anti-slop": "vitest run tools/oxlint/anti-slop/shared/dictionary-types.integration.test.ts",
     "test:lint-set": "vitest run tools/oxlint/anti-slop/shared/lint-set-policy.integration.test.ts",
     "knip": "knip",
-    "check": "npm run typecheck && npm run lint && npm run format:check && npm run doctor && npm run knip && npm run test && npm run types:check -w skill-studio && cd apps/desktop/src-tauri && cargo fmt --check && cargo clippy -- -D warnings && cargo test",
+    "check": "npm run typecheck && npm run lint && npm run format:check && npm run doctor && npm run knip && npm run test && npm run types:check -w skill-studio && cargo fmt --all -- --check && cargo clippy --workspace --all-targets -- -D warnings && cargo test --workspace",
     "doctor": "react-doctor apps/desktop -y --no-score --no-supply-chain --blocking warning"
   },
   "devDependencies": {
