@@ -389,8 +389,9 @@ pub trait TreeLookup: Sync {
     fn tree_shas_at_head_uncached(&self, repo: &str) -> Result<HashMap<String, String>, String>;
 }
 
-/// Per-run cache of `TreeLookup` results, keyed by repo. Each repo gets its
-/// own `OnceLock` so two different repos' `gh api` calls run in parallel;
+/// Per-run cache of `TreeLookup` results, keyed by the normalised repo name
+/// (`normalize_repo_key`). Each repo gets its own `OnceLock` so two different
+/// repos' `gh api` calls run in parallel;
 /// only two threads racing the *same* repo serialize, on that repo's cell.
 type TreeCache = Mutex<HashMap<String, Arc<OnceLock<Result<HashMap<String, String>, String>>>>>;
 
