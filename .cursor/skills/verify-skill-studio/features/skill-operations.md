@@ -9,7 +9,7 @@ Core operations for managing skills: install, update, remove, fork, unfork, pull
 - **Remove** - Uninstall skill from global or project scope
 - **Fork** - Detach dotagents/skills-sh skill from ledger to allow local edits
 - **Unfork** - Discard fork, reinstall from origin
-- **Pull upstream** - Three-way merge fork's snapshot + disk + fresh upstream
+- **Pull upstream** - Compare fork's snapshot + disk + fresh upstream, write conflict markers and open the editor (no auto-merge)
 - **Park** - Move shared-folder deployment to `~/.agents/skills-parked/<name>` (global disable)
 - **Unpark** - Restore from parked to `~/.agents/skills/<name>`
 - **Enable/disable per-harness** - Toggle harness's own view of skill (Codex `config.toml`, OpenCode `opencode.json`, Claude Code symlink)
@@ -86,7 +86,7 @@ Selectors:
 
 ## Gotchas
 
-- **Update tool varies** - dotagents uses `dotagents sync`, skills-sh uses `npx skills update`, forks use three-way merge
+- **Update tool varies** - dotagents uses `dotagents sync`, skills-sh uses `npx skills update`, forks write conflict markers and open the editor (no auto-merge)
 - **Remove confirmation** - Native dialog (Tauri `ask()`), not dismissible via Playwright
 - **Fork restrictions** - Only dotagents/skills-sh skills can fork (manual/plugin/forked skills show no fork button)
 - **Park restrictions** - Only skills deployed to shared folder (not project-scoped, plugin, or already parked)
