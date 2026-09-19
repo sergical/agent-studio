@@ -106,6 +106,20 @@ pub struct UpdateEngine<U: UpdaterPort> {
     checking: Mutex<bool>,
 }
 
+/// Resets `checking` back to `false` on drop, so it never stays stuck
+/// `true` regardless of how `run_check` exits - the normal end of the
+/// function, a panic, or the future itself being dropped mid-await (a
+/// cancelled command).
+struct CheckingGuard<'a> {
+    checking: &'a Mutex<bool>,
+}
+
+impl Drop for CheckingGuard<'_> {
+    fn drop(&mut self) {
+        *self.checking.lock().unwrap_or_else(PoisonError::into_inner) = false;
+    }
+}
+
 impl<U: UpdaterPort> UpdateEngine<U> {
     pub fn new(updater: U) -> Self {
         Self {
@@ -126,6 +140,23 @@ impl<U: UpdaterPort> UpdateEngine<U> {
     fn set_status(&self, status: &UpdateStatus, on_change: &mut impl FnMut(&UpdateStatus)) {
         *self.status.lock().unwrap_or_else(PoisonError::into_inner) = status.clone();
         on_change(status);
+    }
+
+    /// Marks `checking` back `false` on drop - a plain reset at the tail of
+    /// `run_check` would skip on a panic or on the future being dropped
+    /// before it completes (a cancelled command), leaving the flag stuck
+    /// `true` and the Settings button disabled until relaunch (round C item
+    /// 2). Held for the rest of `run_check` once acquired, so every exit
+    /// path - the normal end, an early `return`, a panic - releases it.
+    fn begin_checking(&self) -> Option<CheckingGuard<'_>> {
+        let mut checking = self.checking.lock().unwrap_or_else(PoisonError::into_inner);
+        if *checking {
+            return None;
+        }
+        *checking = true;
+        Some(CheckingGuard {
+            checking: &self.checking,
+        })
     }
 
     /// Runs one check-download pass: `Checking` -> (`UpToDate` or
@@ -152,13 +183,9 @@ impl<U: UpdaterPort> UpdateEngine<U> {
         ) {
             return;
         }
-        {
-            let mut checking = self.checking.lock().unwrap_or_else(PoisonError::into_inner);
-            if *checking {
-                return;
-            }
-            *checking = true;
-        }
+        let Some(_guard) = self.begin_checking() else {
+            return;
+        };
 
         self.set_status(&UpdateStatus::Checking, &mut on_change);
         match self.updater.check().await {
@@ -196,8 +223,6 @@ impl<U: UpdaterPort> UpdateEngine<U> {
                 }
             },
         }
-
-        *self.checking.lock().unwrap_or_else(PoisonError::into_inner) = false;
     }
 
     /// Installs the update `run_check` already downloaded. Refused - naming
@@ -610,6 +635,21 @@ mod tests {
         }
     }
 
+    /// A port with no update available, but that counts every `check()`
+    /// call - lets a test prove two sequential `run_check` passes both
+    /// reach the port (round C item 2): a `checking` flag that never
+    /// resets after the first pass would silently no-op the second.
+    struct CountingUpdaterPort {
+        check_calls: Arc<AtomicU32>,
+    }
+
+    impl UpdaterPort for CountingUpdaterPort {
+        fn check(&self) -> BoxFuture<'_, Result<Option<Box<dyn PendingUpdate>>, String>> {
+            self.check_calls.fetch_add(1, Ordering::SeqCst);
+            Box::pin(async { Ok(None) })
+        }
+    }
+
     /// A pending update whose `download()` yields once (via
     /// `tokio::task::yield_now`) before completing, so two concurrently
     /// polled `run_check` calls (`tokio::join!`) genuinely interleave: the
@@ -833,6 +873,31 @@ mod tests {
             UpdateStatus::ReadyToInstall {
                 version: "3.0.0".to_string()
             }
+        );
+    }
+
+    /// Flow: two complete, sequential `run_check` passes (check, finish,
+    /// check again) - not overlapping, unlike the test above.
+    /// Expectation: the port sees two `check()` calls - `checking` must
+    /// reset once a pass finishes, or the second pass silently no-ops.
+    /// A failure here (`check_calls` stuck at 1) means the very first
+    /// check after launch would disable every later check - manual or
+    /// scheduled - until the app restarts.
+    #[tokio::test]
+    async fn sequential_run_check_passes_both_reach_the_port() {
+        let check_calls = Arc::new(AtomicU32::new(0));
+        let port = CountingUpdaterPort {
+            check_calls: check_calls.clone(),
+        };
+        let engine = UpdateEngine::new(port);
+
+        engine.run_check(CheckTrigger::Manual, |_| {}).await;
+        engine.run_check(CheckTrigger::Manual, |_| {}).await;
+
+        assert_eq!(
+            check_calls.load(Ordering::SeqCst),
+            2,
+            "checking must reset after each pass so the next run_check is not silently skipped"
         );
     }
 

@@ -26,6 +26,10 @@ jobs:
       # uploaded state and clobber it. One leg at a time keeps that merge
       # race-free.
       max-parallel: 1
+      # A failure on one architecture must not cancel the other leg still
+      # running - each leg uploads its own artifacts to the same release,
+      # so the surviving leg's build is still worth finishing and shipping.
+      fail-fast: false
       matrix:
         target: [aarch64-apple-darwin, x86_64-apple-darwin]
     steps:
@@ -143,14 +147,17 @@ jobs:
           includeUpdaterJson: true
 
       # The workspace's [profile.release] sets split-debuginfo = "packed", so
-      # cargo writes the app binary's .dSYM beside the binary in
-      # target/<triple>/release/ (not under bundle/macos, which only holds the
-      # .app and DMG). Zip it so it survives upload as a plain file and stays
-      # paired with its DMG by name.
+      # cargo writes the app binary's .dSYM beside the binary in the root
+      # cargo workspace's target/<triple>/release/ (apps/desktop/src-tauri is
+      # a workspace member, not its own workspace - see the root Cargo.toml's
+      # [workspace] members - so there is no apps/desktop/src-tauri/target),
+      # not under bundle/macos, which only holds the .app and DMG. Zip it so
+      # it survives upload as a plain file and stays paired with its DMG by
+      # name.
       - name: Package debug symbols
         run: |
           set -euo pipefail
-          release_dir="apps/desktop/src-tauri/target/${{ matrix.target }}/release"
+          release_dir="target/${{ matrix.target }}/release"
           dsym_path="$(find "$release_dir" -maxdepth 1 -name '*.dSYM' -print -quit)"
           if [[ -z "$dsym_path" ]]; then
             echo "no .dSYM found under $release_dir; check [profile.release] in Cargo.toml" >&2

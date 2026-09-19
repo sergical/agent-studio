@@ -227,7 +227,6 @@ pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_updater::Builder::new().build())
-        .plugin(tauri_plugin_process::init())
         .setup(|app| {
             // Unit 6.3: check the data folder's schema_version before
             // anything else in setup - every branch below either spawns a
