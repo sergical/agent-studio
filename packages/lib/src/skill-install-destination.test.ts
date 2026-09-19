@@ -1,10 +1,8 @@
 import { describe, expect, it } from "vitest";
 import {
   installDestinationError,
-  installTrialError,
   normalizeInstallHarnesses,
   perHarnessDestinationPath,
-  trialSelectionForDestination,
   universalDestinationPath,
 } from "./skill-install-destination";
 
@@ -40,18 +38,5 @@ describe("skill install destination", () => {
     expect(installDestinationError("per-harness", [])).toBe("Select at least one harness.");
     expect(installDestinationError("per-harness", ["codex"])).toBeNull();
     expect(installDestinationError("universal", [])).toBeNull();
-  });
-
-  it("rejects a trial instead of discarding it for Per harness installs", () => {
-    expect(installTrialError("per-harness", true)).toBe(
-      "24-hour trials are available only for Universal installs.",
-    );
-    expect(installTrialError("per-harness", false)).toBeNull();
-    expect(installTrialError("universal", true)).toBeNull();
-  });
-
-  it("clears trial selection when Destination changes to Per harness", () => {
-    expect(trialSelectionForDestination("per-harness", true)).toBe(false);
-    expect(trialSelectionForDestination("universal", true)).toBe(true);
   });
 });

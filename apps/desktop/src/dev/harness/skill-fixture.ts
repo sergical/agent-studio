@@ -4,7 +4,7 @@
 // with the same `deployment()`/`skill()` factories the marketing capture
 // scenes used to define inline. Every Stack row state (universal/linked/own/
 // broken, disabled, parked, drift, spec violations, plugin/manual source,
-// updates, trials, invocations) appears on at least one skill here so an
+// updates, invocations) appears on at least one skill here so an
 // agent can screenshot every row treatment without a real disk scan.
 // ============================================================================
 
@@ -77,8 +77,6 @@ export function skill(
     folder_truncated: false,
     parked: false,
     parked_at: null,
-    trial: null,
-    trials: [],
     fork: null,
     skill_path: null,
     invocation: "both",
@@ -631,41 +629,6 @@ const updateAvailableSkillB = updateAvailableSkill(
     updated_at: "2026-09-10T00:00:00.000Z",
   },
 );
-
-const trialSkill = skill({
-  name: "frontend-design",
-  source: "anthropics/skills",
-  source_url: "https://github.com/anthropics/skills",
-  description: "Build distinctive, production-grade frontend interfaces with strong visual craft.",
-  deployments: [
-    projectUniversal("frontend-design", HARNESS_PROJECT, "frontend-v1"),
-    projectLinked("frontend-design", "Claude Code", ".claude", HARNESS_PROJECT, "frontend-v1"),
-  ],
-  skill_md_tokens: 1_780,
-  description_tokens: 12,
-  folder_bytes: 130_000,
-  file_count: 10,
-  installed_at: "2026-09-25T08:00:00.000Z",
-  updated_at: "2026-10-09T12:30:00.000Z",
-  trial: {
-    deployment_id: `harness:${HARNESS_PROJECT}/.agents/skills/frontend-design`,
-    expires_at: new Date(CAPTURE_NOW + 20 * 60 * 60_000).toISOString(),
-    method: "dotagents",
-    scope: "project",
-    project_path: HARNESS_PROJECT,
-    status: "active",
-  },
-  trials: [
-    {
-      deployment_id: `harness:${HARNESS_PROJECT}/.agents/skills/frontend-design`,
-      expires_at: new Date(CAPTURE_NOW + 20 * 60 * 60_000).toISOString(),
-      method: "dotagents",
-      scope: "project",
-      project_path: HARNESS_PROJECT,
-      status: "active",
-    },
-  ],
-});
 
 function specViolationSkill(
   name: string,
@@ -1303,7 +1266,6 @@ const allSkills: InstalledSkill[] = [
   brokenLinkSkillB,
   updateAvailableSkillA,
   updateAvailableSkillB,
-  trialSkill,
   specViolationSkillA,
   specViolationSkillB,
   pluginSkillA,

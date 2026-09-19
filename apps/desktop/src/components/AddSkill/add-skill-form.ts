@@ -2,7 +2,7 @@
 // Skill Studio - Add Skill form domain logic
 // ============================================================================
 
-import { installDestinationError, installTrialError } from "@skill-studio/lib";
+import { installDestinationError } from "@skill-studio/lib";
 import type {
   AddMethod,
   AddMethodDefaults,
@@ -44,25 +44,15 @@ export function isAddSkillFormValid(input: {
   agents: readonly AgentId[];
   scope: InstallScope;
   projectPath: string | null;
-  trial: boolean;
   githubEntries: readonly GithubSkillEntry[] | null;
 }): boolean {
-  const {
-    parsed,
-    noMethodsAvailable,
-    destination,
-    agents,
-    scope,
-    projectPath,
-    trial,
-    githubEntries,
-  } = input;
+  const { parsed, noMethodsAvailable, destination, agents, scope, projectPath, githubEntries } =
+    input;
   return (
     !("error" in parsed) &&
     !noMethodsAvailable &&
     (scope !== "project" || !!projectPath) &&
     installDestinationError(destination, agents) === null &&
-    installTrialError(destination, trial) === null &&
     (githubEntries === null || githubEntries.length > 0)
   );
 }

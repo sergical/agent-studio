@@ -22,17 +22,6 @@ export type DisabledBy =
  */
 export type OriginTool = "dotagents" | "skills-sh";
 /**
- * How `add_skill` installed a skill - shared by `AddSkillRequest.method` and
- * `TrialRecord.method`, since a trial's expiry step needs to know which tool
- * (if any) owns the skill it's about to remove.
- */
-export type AddMethod = "dotagents" | "skills-sh" | "copy";
-/**
- * Durable state for trial expiry. `Expiring` prevents an interrupted CLI
- * removal from matching a later installation at the same path.
- */
-export type TrialStatus = "active" | "expiring" | "recovery-required";
-/**
  * One of the four first-class agents a skill run can target.
  */
 export type HarnessId = "claude-code" | "codex" | "open-code" | "pi";
@@ -89,6 +78,10 @@ export type AgentId =
   | "sweep"
   | "grok-build";
 export type ParsedSkillSourceKind = "github" | "git" | "local";
+/**
+ * How `add_skill` installed a skill.
+ */
+export type AddMethod = "dotagents" | "skills-sh" | "copy";
 /**
  * Where a skill is installed relative to harness folders. Universal owns
  * `.agents/skills`; Per harness owns an independent copy in one harness dir
@@ -298,16 +291,6 @@ export interface InstalledSkill {
    */
   fork: ForkInfo | null;
   /**
-   * Set when this skill is a "Try for 24 hours" install still within its
-   * window - see `skill_fork_registry::TrialRecord` and `skill_trial`.
-   */
-  trial: TrialInfo | null;
-  /**
-   * Every active trial keyed by its exact deployment. `trial` remains for
-   * old clients and is populated only when there is one active trial.
-   */
-  trials: TrialInfo[];
-  /**
    * True when this skill is parked (disabled globally) - see
    * `skill_park`. Parked skills are excluded from coverage/dashboard
    * totals and shown in their own sidebar group instead.
@@ -502,22 +485,6 @@ export interface ForkInfo {
   repo: string;
   base_commit: string;
   forked_at: string;
-}
-/**
- * A trial's remaining-time projection, read-only for the frontend - see
- * `skill_fork_registry::TrialRecord`, which this is a projection of.
- */
-export interface TrialInfo {
-  deployment_id: string;
-  expires_at: string;
-  method: AddMethod;
-  status: TrialStatus;
-  /**
-   * The trial's scope - needed so `keep_skill_trial`/expiry can key back
-   * into `trials` (`"global/<name>"` or `"project/<name>"`) correctly.
-   */
-  scope: "global" | "project";
-  project_path: string | null;
 }
 /**
  * Per-skill use summary sent to the frontend.
@@ -769,7 +736,6 @@ export interface AddSkillRequest {
   disabled_harnesses: AgentId[];
   scope: InstallScope;
   project_path: string | null;
-  trial: boolean;
 }
 /**
  * A parsed "Source" field from the add-skill sheet - see
@@ -805,7 +771,6 @@ export interface AddSkillsRequest {
   disabled_harnesses: AgentId[];
   scope: InstallScope;
   project_path: string | null;
-  trial: boolean;
 }
 /**
  * One skill folder inside a repo: `path` is repo-relative and `""` for a
@@ -833,11 +798,11 @@ export interface AddSkillResult {
   command: string;
   deployments_created: string[];
   /**
-   * Set when the install itself succeeded but a follow-up step (recording
-   * the 24 h trial, or turning the skill off for a `disabled_harnesses`
-   * entry) failed - the skill is on disk and usable, it just
-   * isn't tracked for auto-expiry. The sheet shows this as a warning
-   * toast rather than treating the whole request as failed.
+   * Set when the install itself succeeded but a follow-up step (turning
+   * the skill off for a `disabled_harnesses` entry) failed - the skill is
+   * on disk and usable, it just isn't disabled where it was asked to be.
+   * The sheet shows this as a warning toast rather than treating the
+   * whole request as failed.
    */
   warning: string | null;
 }

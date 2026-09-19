@@ -439,7 +439,7 @@ export async function abandonPackImportTrust(confirmationToken: string): Promise
 }
 
 // ============================================================================
-// Add Skill / Trials API
+// Add Skill API
 // ============================================================================
 
 /**
@@ -542,48 +542,6 @@ export async function installPreferences(
   projectPath?: string,
 ): Promise<InstallPreferences> {
   return callCommand("install_preferences", { scope, projectPath });
-}
-
-/**
- * Drop the selected deployment's trial record so the expiry loop leaves it alone.
- */
-export async function keepSkillTrial(target: LifecycleTarget): Promise<void> {
-  return callCommand("keep_skill_trial", { target });
-}
-
-/**
- * Copy a trashed skill (from a `skills://trial-expired` event's
- * `trash_path`) back into `~/.agents/skills/<name>` as an untracked skill.
- */
-export async function restoreTrashedSkill(trashPath: string): Promise<void> {
-  return callCommand("restore_trashed_skill", { trashPath });
-}
-
-/**
- * Subscribe to `skills://trial-expired`, emitted once per skill the trial
- * expiry loop just moved to `~/.agents/skills-trash`. Returns an unlisten
- * function.
- */
-export function onTrialExpired(
-  cb: (payload: { name: string; trash_path: string }) => void,
-): () => void {
-  let unlisten: (() => void) | undefined;
-  let cancelled = false;
-
-  listen<{ name: string; trash_path: string }>("skills://trial-expired", (event) => {
-    cb(event.payload);
-  }).then((fn) => {
-    if (cancelled) {
-      fn();
-    } else {
-      unlisten = fn;
-    }
-  });
-
-  return () => {
-    cancelled = true;
-    unlisten?.();
-  };
 }
 
 // ============================================================================

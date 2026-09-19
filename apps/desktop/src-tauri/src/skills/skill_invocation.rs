@@ -441,8 +441,6 @@ mod tests {
                 frontmatter_fields: Default::default(),
                 folder_truncated: false,
                 fork: None,
-                trial: None,
-                trials: Vec::new(),
                 parked: false,
                 parked_at: None,
                 invocation: InvocationPolicy::Both,

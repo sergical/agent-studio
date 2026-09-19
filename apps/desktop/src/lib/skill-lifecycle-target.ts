@@ -1,11 +1,5 @@
 import { agentIdFromDeploymentLabel, parentDirectory } from "@skill-studio/lib";
-import type {
-  Deployment,
-  InstalledSkill,
-  InstallScope,
-  LifecycleTarget,
-  TrialInfo,
-} from "@skill-studio/lib";
+import type { Deployment, InstalledSkill, InstallScope, LifecycleTarget } from "@skill-studio/lib";
 
 type SkillLifecycleView = Pick<InstalledSkill, "name" | "deployments" | "source_kind">;
 
@@ -307,24 +301,4 @@ export function lifecycleTargetForPark(skill: SkillLifecycleView): LifecycleTarg
     );
   }
   return { deployment_id: canonical.id };
-}
-
-/** Resolve the exact deployment owned by one trial, with legacy scope fallback. */
-export function lifecycleTargetForTrial(
-  skill: SkillLifecycleView,
-  trial: TrialInfo,
-): LifecycleTarget {
-  if (trial.deployment_id) return { deployment_id: trial.deployment_id };
-  const { scope, project_path: projectPath } = trial;
-  const candidates = skill.deployments.filter(
-    (deployment) =>
-      deployment.mutability === "mutable" &&
-      ((scope === "global" && deployment.scope === "parked") ||
-        (deployment.scope === scope &&
-          (scope === "global" || deployment.project_path === projectPath))),
-  );
-  const canonical = candidates.find((deployment) => deployment.backing.kind === "canonical");
-  if (canonical) return lifecycleTargetForDeployment(canonical);
-  if (candidates.length === 1) return lifecycleTargetForDeployment(candidates[0]);
-  throw new Error(`${skill.name} has no unambiguous trial deployment`);
 }

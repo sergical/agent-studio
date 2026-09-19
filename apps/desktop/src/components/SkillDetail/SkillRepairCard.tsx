@@ -108,7 +108,6 @@ export function SkillRepairCard({ skill, deployment }: SkillRepairCardProps) {
           agents: reinstallAgent === "claude-code" ? ["claude-code"] : [],
           disabled_harnesses: [],
           project_path: (scope === "project" ? deployment.project_path : undefined) ?? null,
-          trial: false,
         });
         if (result.warning) {
           addToast({

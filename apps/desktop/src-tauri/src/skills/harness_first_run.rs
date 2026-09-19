@@ -97,7 +97,7 @@ pub async fn get_harnesses_choice(
 /// writing it, so this read-modify-write can't lose a concurrent writer's
 /// change the way an unguarded read followed by a locked write could -
 /// matching every other registry mutation in this module family (see
-/// `skill_trial.rs`, `skill_harness_disable.rs`).
+/// `skill_harness_disable.rs`).
 #[tauri::command]
 pub async fn save_harnesses_choice(
     choice: HarnessesChoice,

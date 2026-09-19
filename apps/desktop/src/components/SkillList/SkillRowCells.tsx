@@ -10,7 +10,6 @@ import {
   CircleArrowDown,
   CirclePause,
   Ellipsis,
-  Hourglass,
   OctagonAlert,
   Sparkles,
   TriangleAlert,
@@ -50,8 +49,6 @@ function glyphFor(state: RowState, size = 14): ReactNode {
       ) : (
         <TriangleAlert size={size} aria-hidden />
       );
-    case "trial":
-      return <Hourglass size={size} aria-hidden />;
     case "update":
       return <CircleArrowDown size={size} aria-hidden />;
     case "parked":

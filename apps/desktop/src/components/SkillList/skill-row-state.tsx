@@ -10,7 +10,6 @@ import {
   isBlockingSpecViolation,
   locationSummary,
   parentDirectory,
-  trialHoursLeft,
 } from "@skill-studio/lib";
 import type { AgentId, Deployment, InstalledSkill } from "@skill-studio/lib";
 import { buildScopeGroups, skillRollup } from "../SkillDetail/skill-location-status";
@@ -18,7 +17,7 @@ import { harnessIdFromLabel } from "../ui/HarnessIcon";
 
 export type RowLevel = "error" | "warning" | "info" | "muted";
 /** Which ladder rung produced the state; picks the glyph in SkillRowCells. */
-type RowKind = "violation" | "rollup" | "trial" | "update" | "parked";
+type RowKind = "violation" | "rollup" | "update" | "parked";
 
 export interface RowState {
   kind: RowKind;
@@ -36,16 +35,8 @@ function parkedChipLabel(parkedAt: string | null | undefined): string {
   return `Parked · ${date.toLocaleDateString(undefined, { month: "short", day: "numeric", year: "numeric" })}`;
 }
 
-/** "Trial · 17 h" / "Trial · <1 h" / "Trial · expired" — copied from InstalledSkillHeader's chip. */
-function trialChipLabel(expiresAt: string): string {
-  const hours = trialHoursLeft(expiresAt);
-  if (hours < 0) return "Trial · expired";
-  if (hours < 1) return "Trial · <1 h";
-  return `Trial · ${hours} h`;
-}
-
 /** The one thing this row most needs to say, in ladder order: blocking spec
- * violation, then the folder rollup, then a trial, an update, or parked.
+ * violation, then the folder rollup, then an update or parked.
  * `null` when the skill is unremarkable. */
 export function rowState(skill: InstalledSkill): RowState | null {
   const blocking = skill.spec_violations.filter(isBlockingSpecViolation);
@@ -81,16 +72,6 @@ export function rowState(skill: InstalledSkill): RowState | null {
     };
   }
 
-  const [trial] = skill.trials;
-  if (trial) {
-    return {
-      kind: "trial",
-      level: "info",
-      label: trialChipLabel(trial.expires_at),
-      detail: null,
-      action: "Keep",
-    };
-  }
   if (skill.update_owner_ids.length > 0) {
     return {
       kind: "update",
@@ -326,8 +307,6 @@ export function fixesFor(state: RowState): string[] {
       return ["Fix"];
     case "rollup":
       return state.level === "error" ? ["Fix link"] : [state.action ?? "Compare", "Convert"];
-    case "trial":
-      return ["Keep"];
     case "update":
       return ["Pull latest"];
     case "parked":

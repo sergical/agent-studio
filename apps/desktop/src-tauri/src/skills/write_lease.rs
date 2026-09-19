@@ -1,8 +1,8 @@
 // ============================================================================
 // Skill Studio - write_lease
 // Replaces the desktop's old process-wide mutation mutex (fork, park,
-// unpark, trial, harness-disable, add, and frontmatter-repair writes all
-// used to serialize on it). `WriteLease` is a `FileLease` keyed to the root
+// unpark, harness-disable, add, and frontmatter-repair writes all used to
+// serialize on it). `WriteLease` is a `FileLease` keyed to the root
 // the write touches (`home` for every one of today's call sites), so a
 // concurrent CLI or MCP write on the same root serializes with the desktop
 // too - a global in-process mutex never could.
@@ -96,7 +96,7 @@ mod tests {
     }
 
     /// A command holds `WriteLease` on `home` for its whole run (fork, add,
-    /// pack, trial, harness) and, inside that, writes the fork registry.
+    /// pack, harness) and, inside that, writes the fork registry.
     /// Advisory locks don't nest within one process, so a registry write
     /// that takes its own second exclusive lease over the same root reports
     /// the caller's own lease as busy instead of writing - see

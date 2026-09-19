@@ -57,8 +57,6 @@ function fixtureSkill(overrides: Partial<InstalledSkill> = {}): InstalledSkill {
     parked_at: null,
     skill_path: null,
     source_url: null,
-    trial: null,
-    trials: [],
     update_commit: null,
     update_commit_at: null,
     updated_at: null,

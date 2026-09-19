@@ -25,7 +25,6 @@ export type {
   HarnessId,
   OpencodeConfigKind,
   DisabledBy,
-  TrialStatus,
   AddMethodDefaults,
   AddSkillOutcome,
   AddSkillResult,
@@ -67,7 +66,6 @@ export type {
   Deployment,
   PluginInfo,
   ForkInfo,
-  TrialInfo,
   OwnerUpdateInfo,
   UpdateCheckSummary,
   SkillsShAccessInfo,
@@ -124,7 +122,7 @@ export interface Toast {
   title: string;
   message?: string;
   duration?: number;
-  /** A secondary button, e.g. trial-expiry's "Restore" - see `ToastContainer`. */
+  /** A secondary button - see `ToastContainer`. */
   action?: { label: string; onClick: () => void };
 }
 
@@ -152,14 +150,6 @@ export const SOURCE_KIND_LABELS = {
   manual: "manual",
   fork: "fork",
 } as const satisfies Record<SkillSourceKind, string>;
-
-/**
- * Hours left until `expiresAt`, rounded down, for the trial chip - see
- * `TrialInfo`. Negative once expired.
- */
-export function trialHoursLeft(expiresAt: string): number {
-  return Math.floor((new Date(expiresAt).getTime() - Date.now()) / (60 * 60 * 1000));
-}
 
 /**
  * Skill store filter state

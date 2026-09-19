@@ -85,8 +85,6 @@ pub(crate) fn fixture_snapshot_owning(dep_dir: &Path) -> SkillSnapshot {
             frontmatter_fields: BTreeMap::new(),
             folder_truncated: false,
             fork: None,
-            trial: None,
-            trials: Vec::new(),
             parked: false,
             parked_at: None,
             invocation: InvocationPolicy::Both,

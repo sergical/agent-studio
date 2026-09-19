@@ -36,14 +36,14 @@ use skill_studio_core::ports::{OpContext, Runtime};
 
 use super::agents::AgentId;
 use super::github_skill_listing::GithubSkillEntry;
-use super::skill_deployment::{deployment_id, SkillDestination};
+#[cfg(test)]
+use super::skill_deployment::SkillDestination;
 use super::skill_dto::{
     AddSkillRequest, AddSkillResult, AddSkillsRequest, InstallScope, ParsedSkillSource,
     ParsedSkillSourceKind,
 };
 use super::skill_fork::{RepoSnapshot, UpstreamFetch};
-use super::skill_fork_registry::{AddMethod, TrialScope};
-use super::skill_trial;
+use super::skill_fork_registry::AddMethod;
 use super::skill_trust_policy::{
     normalize_dotagents_source_identity, UNTRUSTED_DOTAGENTS_SOURCE_MESSAGE,
     UNTRUSTED_DOTAGENTS_SOURCE_PREFIX,
@@ -267,7 +267,6 @@ pub(crate) fn request_for_entry(
         disabled_harnesses: batch.disabled_harnesses.clone(),
         scope: batch.scope,
         project_path: batch.project_path.clone(),
-        trial: batch.trial,
     }
 }
 
@@ -410,11 +409,11 @@ pub(crate) fn needs_trust_message(identity: &str) -> String {
 }
 
 /// Turns the op's outcome into the sheet's `AddSkillResult`, running the
-/// `trial`/`disabled_harnesses` follow-ups `ops::install` does not own
-/// (decision 2, `launch-3-5c.md`): both run after the op's own write
-/// succeeds, inside the same `spawn_blocking` task as the install itself.
-/// A follow-up failure becomes `warning`, not an error - the install already
-/// succeeded and the skill is on disk and usable.
+/// `disabled_harnesses` follow-up `ops::install` does not own (decision 2,
+/// `launch-3-5c.md`): it runs after the op's own write succeeds, inside the
+/// same `spawn_blocking` task as the install itself. A follow-up failure
+/// becomes `warning`, not an error - the install already succeeded and the
+/// skill is on disk and usable.
 ///
 /// `pub(crate)`: shared with `skill_add_operation.rs`'s batch worker.
 pub(crate) fn finish_install(
@@ -452,43 +451,6 @@ pub(crate) fn finish_install(
     }
 
     let mut warnings = Vec::new();
-    let home = rt.scope.home.lexical.clone();
-    if request.trial {
-        let deployment_id = deployment_id(
-            &skill.0,
-            match request.scope {
-                InstallScope::Global => "global",
-                InstallScope::Project => "project",
-            },
-            SkillDestination::Universal,
-            "universal",
-            request.project_path.as_deref(),
-            &deployment_path,
-        );
-        let scope = match request.scope {
-            InstallScope::Global => TrialScope::Global,
-            InstallScope::Project => TrialScope::Project,
-        };
-        let write_lease = super::write_lease::WriteLease::default();
-        match write_lease.try_acquire(&home) {
-            Ok(guard) => {
-                if let Err(e) = skill_trial::record_trial(
-                    &guard,
-                    &home,
-                    &deployment_id,
-                    scope,
-                    request.project_path.as_deref(),
-                    request.method,
-                    deployment_path.clone(),
-                    claude_link_path.clone(),
-                    chrono::Utc::now(),
-                ) {
-                    warnings.push(format!("trial: {e}"));
-                }
-            }
-            Err(e) => warnings.push(format!("trial: {e}")),
-        }
-    }
     for agent in &request.disabled_harnesses {
         if let Err(e) = disable_harness(rt, &skill.0, *agent, request.project_path.as_deref()) {
             warnings.push(format!("{}: {e}", agent.cli_name()));
@@ -784,7 +746,6 @@ mod tests {
             disabled_harnesses: vec![],
             scope: InstallScope::Global,
             project_path: None,
-            trial: false,
         }
     }
 
@@ -811,7 +772,6 @@ mod tests {
             disabled_harnesses: vec![],
             scope: InstallScope::Global,
             project_path: None,
-            trial: false,
         }
     }
 
@@ -910,7 +870,6 @@ mod tests {
             disabled_harnesses: vec![],
             scope: InstallScope::Global,
             project_path: None,
-            trial: false,
         }
     }
 
@@ -1215,44 +1174,6 @@ mod tests {
             "claude-code should end disabled, but {} still exists",
             link.display()
         );
-    }
-
-    /// `trial_recording_failure_surfaces_as_a_warning_and_keeps_the_install`
-    /// (review item 5): re-added from the deleted `skill_add.rs`, adapted to
-    /// this crate's write lease instead of a directory-shaped registry file
-    /// - `ops::install` now writes that same registry document itself
-    /// (`ops_install.rs`'s `<scope>/.agents/skill-studio.json`), so making
-    /// it unwritable would fail the install, not just `finish_install`'s
-    /// trial follow-up. Holding `write_lease.rs`'s own lease on `home`
-    /// before the install starts hits only `record_trial`'s
-    /// `try_acquire`, which is exactly the conflict this test needs:
-    /// `finish_install` runs the trial follow-up after `ops::install`
-    /// already wrote the skill, so a failure there must not undo the
-    /// install, only warn.
-    #[tokio::test]
-    async fn trial_recording_failure_surfaces_as_a_warning_and_keeps_the_install() {
-        let tmp = tempfile::tempdir().unwrap();
-        let home = tmp.path().join("home");
-        let source_dir = tmp.path().join("source");
-        std::fs::create_dir_all(&home).unwrap();
-        super::super::test_support::write_skill(&source_dir, "find-bugs");
-
-        let write_lease = super::super::write_lease::WriteLease::default();
-        let _held = write_lease
-            .try_acquire(&home)
-            .expect("test should be the first writer on this fresh tempdir");
-
-        let rt = test_runtime(&home);
-        let mut request = copy_request(&source_dir, "find-bugs");
-        request.trial = true;
-
-        let result = add_skill_with_runtime(move || Ok(rt), request, never_github())
-            .await
-            .unwrap();
-
-        assert!(home.join(".agents/skills/find-bugs").exists());
-        let warning = result.warning.expect("expected a trial warning");
-        assert!(warning.starts_with("trial:"), "{warning}");
     }
 
     /// `a_harness_that_cannot_be_disabled_becomes_a_warning_not_a_failed_install`
