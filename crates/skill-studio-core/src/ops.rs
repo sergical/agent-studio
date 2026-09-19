@@ -281,7 +281,7 @@ impl Outcome for crate::dto::InstallPreferences {}
 /// `outdated`'s per-skill currency map carries no event and is never
 /// partial - a lookup failure resolves the affected skill to `Unknown`
 /// rather than raising.
-impl Outcome for std::collections::BTreeMap<String, crate::skill_update_check::Currency> {}
+impl Outcome for std::collections::BTreeMap<String, crate::skill_update_check::OutdatedRecord> {}
 /// `sweep_quarantine` has no outcome payload of its own - it either prunes
 /// the cap or returns an error - so it wraps in an envelope over `()`,
 /// taking every `Outcome` default (always `Ok`, no event).
@@ -3252,7 +3252,7 @@ pub fn outdated(
     tree_lookup: &dyn crate::skill_update_check::SourceTreeLookup,
     commit_lookup: &dyn crate::skill_update_check::CommitLookup,
     plugin_lookup: &dyn crate::skill_update_check::PluginManifestLookup,
-) -> Result<BTreeMap<String, crate::skill_update_check::Currency>, CoreError> {
+) -> Result<BTreeMap<String, crate::skill_update_check::OutdatedRecord>, CoreError> {
     let inventory = scan(rt, ctx, req)?;
     let targets: Vec<crate::skill_update_check::OutdatedTarget> = inventory
         .skills

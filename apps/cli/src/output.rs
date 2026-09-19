@@ -12,7 +12,7 @@ use skill_studio_core::dto::{
 };
 use skill_studio_core::harness::{Capabilities, HarnessReport};
 use skill_studio_core::ops::ResultEnvelope;
-use skill_studio_core::skill_update_check::Currency;
+use skill_studio_core::skill_update_check::{Currency, OutdatedRecord};
 use std::collections::BTreeMap;
 
 /// Prints one envelope as a single JSON document with a trailing newline.
@@ -447,21 +447,28 @@ pub fn print_unpark_outcome_table(envelope: &ResultEnvelope<UnparkOutcome>) {
     );
 }
 
-/// Prints `outdated`'s table: one `NAME CURRENCY` row per skill, sorted by
-/// name (`outdated`'s result is already a `BTreeMap`, so this is free).
-pub fn print_outdated_table(envelope: &ResultEnvelope<BTreeMap<String, Currency>>) {
+/// Prints `outdated`'s table: one `NAME CURRENCY LATEST_SHA` row per skill,
+/// sorted by name (`outdated`'s result is already a `BTreeMap`, so this is
+/// free). `LATEST_SHA` is the first 7 characters of `latest_commit` - a
+/// dotagents commit SHA or a skills.sh tree SHA - or `-` when the check
+/// never resolved one.
+pub fn print_outdated_table(envelope: &ResultEnvelope<BTreeMap<String, OutdatedRecord>>) {
     print_errors(envelope);
     let Some(outcome) = &envelope.data else {
         return;
     };
-    for (name, currency) in outcome {
-        let label = match currency {
+    for (name, record) in outcome {
+        let label = match record.currency {
             Currency::UpToDate => "up_to_date",
             Currency::UpdateAvailable => "update_available",
             Currency::NotTracked => "not_tracked",
             Currency::Unknown => "unknown",
         };
-        println!("{name}\t{label}");
+        let latest_sha = record
+            .latest_commit
+            .as_deref()
+            .map_or("-".to_string(), |sha| sha.chars().take(7).collect());
+        println!("{name}\t{label}\t{latest_sha}");
     }
 }
 
@@ -591,7 +598,7 @@ pub fn write_schemas(out: Option<PathBuf>) -> ExitCode {
         }),
         (
             "outdated_result",
-            || schemars::schema_for!(BTreeMap<String, Currency>),
+            || schemars::schema_for!(BTreeMap<String, OutdatedRecord>),
         ),
         ("sweep_quarantine_request", || {
             schemars::schema_for!(skill_studio_core::dto::SweepQuarantineRequest)
