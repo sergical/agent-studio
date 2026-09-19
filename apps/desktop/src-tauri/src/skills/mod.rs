@@ -22,6 +22,7 @@ pub mod skill_add_operation;
 pub mod skill_agent_runner;
 pub mod skill_assembly;
 pub mod skill_deployment;
+pub mod skill_doctor;
 pub mod skill_dto;
 pub mod skill_editor;
 pub mod skill_fix;

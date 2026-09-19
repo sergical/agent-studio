@@ -1107,6 +1107,7 @@ fn run_refresh_loop(app: AppHandle, state: SkillRefreshState) {
         },
         super::core_runtime::build_runtime_write,
     );
+    run_startup_doctor_pass(&app);
 
     let mut last_invocations_rebuild = Instant::now();
 
@@ -1238,6 +1239,67 @@ fn run_startup_quarantine_sweep(
             e.message
         );
     }
+}
+
+/// Unit 5.3: one doctor pass over every lifecycle invariant, run once after
+/// the first scan (and the quarantine sweep) on this loop's own background
+/// thread (`init` starts it via `std::thread::spawn`, never Tauri's main or
+/// async-worker threads), so a stale-from-a-crash journal plan or a
+/// doubly-parked skill surfaces without the user having to open Settings and
+/// ask for it. Logs one `timing.jsonl` line under the `"doctor"` command name
+/// (`record_command` directly, not `time_command`/`time_command_blocking`,
+/// since this call site is neither a `#[tauri::command]` body nor already
+/// inside `spawn_blocking`) and emits the report on `DOCTOR_EVENT` for a
+/// Settings card that's already open; a failure is logged to stderr like
+/// every other step in this loop, not retried.
+fn run_startup_doctor_pass(app: &AppHandle) {
+    let app_for_result = app.clone();
+    run_startup_doctor_pass_with(
+        super::core_runtime::build_runtime_write,
+        |result, elapsed| {
+            let (outcome, error) = match &result {
+                Ok(_) => ("ok", None),
+                Err(e) => ("error", Some(e.clone())),
+            };
+            crate::timing_log::record_command(
+                &app_for_result,
+                "doctor",
+                elapsed.as_millis() as u64,
+                &[],
+                "worker",
+                outcome,
+                error,
+            );
+            match result {
+                Ok(report) => {
+                    if let Err(e) = app_for_result.emit(super::skill_doctor::DOCTOR_EVENT, &report)
+                    {
+                        eprintln!(
+                            "skill refresh: failed to emit {}: {e}",
+                            super::skill_doctor::DOCTOR_EVENT
+                        );
+                    }
+                }
+                Err(e) => eprintln!("skill refresh: startup doctor pass failed: {e}"),
+            }
+        },
+    );
+}
+
+/// The startup doctor sweep's body, split from [`run_startup_doctor_pass`] so
+/// a test can drive it without a real `AppHandle` (which only a running
+/// Tauri app can construct) - the same split `harness_first_run::detect_with_runtime`
+/// and `run_startup_quarantine_sweep` use. `build_runtime` and `on_result`
+/// are both parameters rather than fixed to the real adapters, so a test can
+/// record which thread built the runtime and confirm it isn't the test's own
+/// thread.
+fn run_startup_doctor_pass_with(
+    build_runtime: impl FnOnce() -> Result<skill_studio_core::ports::Runtime, String>,
+    on_result: impl FnOnce(Result<skill_studio_core::dto::DoctorReport, String>, std::time::Duration),
+) {
+    let start = Instant::now();
+    let result = build_runtime().and_then(|rt| super::skill_doctor::run_doctor(&rt));
+    on_result(result, start.elapsed());
 }
 
 /// Reconcile the watch set against the paths implied by the current
@@ -3987,6 +4049,66 @@ mod tests {
             sweep_thread, calling_thread,
             "first_scan_then_sweep ran on the calling thread ({calling_thread:?}) instead of \
              the thread the test drove it from"
+        );
+    }
+
+    /// `doctor_runs_at_startup_and_delivers_its_report_to_the_callback_or_names_the_missing_run`:
+    /// drives `run_startup_doctor_pass_with` - the seam
+    /// `run_startup_doctor_pass` (called once from `run_refresh_loop` right
+    /// after `first_scan_then_sweep`) delegates to, the same split
+    /// `harness_first_run::detect_with_runtime` uses so a test doesn't need a
+    /// real `tauri::AppHandle`. Unlike `detect_with_runtime`, this call site
+    /// has no `tauri::async_runtime::spawn_blocking` boundary of its own to
+    /// assert a thread crossed - `run_refresh_loop` already runs on its own
+    /// `std::thread::spawn` thread (started by `init`, proved by every other
+    /// test in this file exercising that loop's callees off the Tokio
+    /// runtime already), so what this test pins instead is that the seam
+    /// actually calls the runtime builder and delivers `ops::doctor`'s report
+    /// to its callback - the fact a caller could silently drop by wiring
+    /// `run_startup_doctor_pass` to a no-op instead. Fails if the startup
+    /// sweep stops building a runtime or stops forwarding `run_doctor`'s
+    /// result to `on_result`.
+    #[test]
+    fn doctor_runs_at_startup_and_delivers_its_report_to_the_callback_or_names_the_missing_run() {
+        let tmp = tempfile::tempdir().unwrap();
+        let home = tmp.path().join("home");
+        let universal_root = home.join(".agents/skills");
+        fs::create_dir_all(&universal_root).unwrap();
+        fs::write(
+            home.join(".agents/skill-studio.json"),
+            format!(
+                r#"{{"copies":{{"stale-copy":{{"name":"stale-copy","path":{:?},"scope":"global","destination":"universal"}}}}}}"#,
+                universal_root.join("stale-copy").display()
+            ),
+        )
+        .unwrap();
+
+        let home_for_builder = home.clone();
+        let build_runtime = move || {
+            crate::skills::core_runtime::build_runtime_write_at(
+                &home_for_builder,
+                &home_for_builder.join(".skill-studio"),
+            )
+        };
+
+        let result_slot: Arc<Mutex<Option<Result<skill_studio_core::dto::DoctorReport, String>>>> =
+            Arc::new(Mutex::new(None));
+        let record_slot = result_slot.clone();
+        run_startup_doctor_pass_with(build_runtime, move |result, _elapsed| {
+            *record_slot.lock().unwrap() = Some(result);
+        });
+
+        let report = result_slot
+            .lock()
+            .unwrap()
+            .take()
+            .expect("on_result never ran")
+            .expect("run_doctor failed");
+        assert!(
+            report.violations.iter().any(|v| v.invariant
+                == skill_studio_core::doctor::DoctorInvariant::RegistryEntryHasFolder),
+            "the startup sweep did not deliver ops::doctor's violation to on_result: {:?}",
+            report.violations
         );
     }
 }

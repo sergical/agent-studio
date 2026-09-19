@@ -1381,3 +1381,50 @@ export interface UpdateAllItem {
    */
   outcome: UpdateOutcome | null;
 }
+/**
+ * Result of `doctor`: one pass over every lifecycle invariant in
+ * `docs/action-map/lifecycle-states.md`'s Invariants section, over the
+ * whole scope (every root `scan` knows, every registry and lockfile
+ * entry, the quarantine dirs, the journal), independent of any single
+ * command's own rollback logic.
+ */
+export interface DoctorReport {
+  /**
+   * Every violation found; empty means a healthy scope.
+   */
+  violations: DoctorViolation[];
+  /**
+   * Skills the pass examined for invariants 1-4 (link, registry,
+   * lockfile, two-states); invariants 5 (quarantine) and 6 (journal)
+   * check one directory and one journal each regardless of skill count,
+   * so this does not add them in.
+   */
+  checked: number;
+}
+/**
+ * One violation of a [`crate::doctor::DoctorInvariant`] found by `doctor`,
+ * projected from `crate::doctor::DoctorViolation` into a serializable
+ * shape: `skill` folds into `detail`'s message text rather than a
+ * separate field, since every existing violation message already names
+ * the skill when it has one (see each `doctor::check_*` function).
+ */
+export interface DoctorViolation {
+  /**
+   * Which invariant is violated.
+   */
+  invariant:
+    | "link_resolves_in_root"
+    | "registry_entry_has_folder"
+    | "lockfile_entry_has_folder"
+    | "no_folder_in_two_states"
+    | "quarantine_within_cap"
+    | "journal_has_no_open_plan";
+  /**
+   * Path of the offending entry, when the invariant names one.
+   */
+  path: string;
+  /**
+   * Message for a person.
+   */
+  detail: string;
+}

@@ -5,7 +5,7 @@ use std::process::ExitCode;
 
 use serde::Serialize;
 use skill_studio_core::dto::{
-    CommandHealth, ConflictReport, Diagnosis, EventDto, FixApplied, FixSkillOutcome,
+    CommandHealth, ConflictReport, Diagnosis, DoctorReport, EventDto, FixApplied, FixSkillOutcome,
     FrontmatterRepairPreview, InstallOutcome, InstallPreferences, Inventory, ParkOutcome,
     RemoveOutcome, RepairOutcome, RestoreOutcome, ScanRequest, SetHarnessEnabledOutcome,
     UnparkOutcome, UpdateAllOutcome, UpdateOutcome,
@@ -232,6 +232,27 @@ pub fn print_conflict_report_table(envelope: &ResultEnvelope<ConflictReport>) {
             conflict.path_a.display(),
             conflict.path_b.display(),
             conflict.message
+        );
+    }
+}
+
+/// Prints `doctor`'s table: every violation found, one line each, or a
+/// healthy-home confirmation naming how many skills were checked.
+pub fn print_doctor_report_table(envelope: &ResultEnvelope<DoctorReport>) {
+    print_errors(envelope);
+    let Some(report) = &envelope.data else {
+        return;
+    };
+    if report.violations.is_empty() {
+        println!("no violations ({} skills checked)", report.checked);
+        return;
+    }
+    for violation in &report.violations {
+        println!(
+            "{:?}: {} ({})",
+            violation.invariant,
+            violation.path.display(),
+            violation.detail
         );
     }
 }
@@ -546,6 +567,10 @@ pub fn write_schemas(out: Option<PathBuf>) -> ExitCode {
         ("install_preferences", || {
             schemars::schema_for!(skill_studio_core::dto::InstallPreferences)
         }),
+        ("doctor_request", || {
+            schemars::schema_for!(skill_studio_core::dto::DoctorRequest)
+        }),
+        ("doctor_report", || schemars::schema_for!(DoctorReport)),
         ("park_request", || {
             schemars::schema_for!(skill_studio_core::dto::ParkRequest)
         }),
