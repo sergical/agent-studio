@@ -708,8 +708,6 @@ mod tests {
                 frontmatter_fields: BTreeMap::new(),
                 folder_truncated: false,
                 fork: None,
-                trial: None,
-                trials: Vec::new(),
                 parked: false,
                 parked_at: None,
                 invocation: super::super::frontmatter::InvocationPolicy::Both,

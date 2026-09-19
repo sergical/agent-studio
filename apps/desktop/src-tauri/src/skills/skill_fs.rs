@@ -2,8 +2,8 @@
 // Skills Module - skill_fs
 // One shared directory-copy routine, reused everywhere a skill's files need
 // to become a second, independent copy: `skill_fork`'s fork/pull snapshots,
-// `skill_add`'s "Copy" method, `skill_trial`'s trash copy, and
-// `skill_pack`'s bundling of manual/fork skills into a pack directory.
+// `skill_add`'s "Copy" method, and `skill_pack`'s bundling of manual/fork
+// skills into a pack directory.
 // ============================================================================
 
 use std::fs;
@@ -141,8 +141,8 @@ fn create_symlink(target: &Path, link: &Path) -> Result<(), String> {
 // ============================================================================
 // Claude Code symlink rule - moved from `skill_add.rs` (unit 3.5c).
 // `ops::install` now creates this link itself for every method it owns, but
-// `skill_pack`'s import and `skill_trial`'s trash/restore still call this
-// directly for their own, unrelated writes.
+// `skill_pack`'s import still calls this directly for its own, unrelated
+// writes.
 // ============================================================================
 
 /// `~/.claude/skills/<name>` -> `../../.agents/skills/<name>`, relative -

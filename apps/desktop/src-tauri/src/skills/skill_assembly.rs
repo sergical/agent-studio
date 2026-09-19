@@ -241,8 +241,6 @@ fn new_installed_skill(
         frontmatter_fields: std::collections::BTreeMap::new(),
         folder_truncated: false,
         fork: None,
-        trial: None,
-        trials: Vec::new(),
         parked: false,
         parked_at: None,
         invocation: crate::skills::frontmatter::InvocationPolicy::Both,

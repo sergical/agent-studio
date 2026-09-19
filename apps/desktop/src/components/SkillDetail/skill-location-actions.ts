@@ -236,7 +236,6 @@ export function useLocationActions(
             disabled_harnesses: [],
             scope: "global",
             project_path: null,
-            trial: false,
           });
           addToast({
             type: "success",
@@ -292,7 +291,6 @@ export function useLocationActions(
             agents: [],
             disabled_harnesses: [],
             project_path: null,
-            trial: false,
           });
         });
         return;

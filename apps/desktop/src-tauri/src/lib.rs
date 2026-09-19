@@ -268,7 +268,6 @@ pub fn run() {
             skills::error_reporting::set_global_state(reporting_state.clone());
             app.manage(reporting_state);
             skills::skill_update_check::spawn_update_check_loop(app.handle().clone());
-            skills::skill_trial::spawn_trial_expiry_loop(app.handle().clone());
             // Unit 6.2: in-app update through tauri-plugin-updater. The
             // engine is managed state so the launch check below, the
             // four-hour loop, and the manual "Check for updates" command
@@ -344,7 +343,7 @@ pub fn run() {
             skills::skill_fork::fork_skill,
             skills::skill_fork::pull_fork_upstream,
             skills::skill_fork::unfork_skill,
-            // Add skill / trials
+            // Add skill
             skills::skill_install::add_skill,
             skills::skill_install::install_preferences,
             skills::skill_add_operation::start_add_skill_operation,
@@ -353,8 +352,6 @@ pub fn run() {
             skills::skill_add_operation::cancel_add_skill_operation,
             skills::skill_add_operation::confirm_add_skill_trust,
             skills::github_skill_listing::list_github_skills,
-            skills::skill_trial::keep_skill_trial,
-            skills::skill_trial::restore_trashed_skill,
             // Park (disable globally) / per-harness disable / invocation policy
             skills::skill_park::park_skill,
             skills::skill_park::unpark_skill,

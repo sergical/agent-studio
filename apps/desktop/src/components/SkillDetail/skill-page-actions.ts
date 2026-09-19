@@ -10,7 +10,6 @@ import { useState } from "react";
 import { ask } from "@tauri-apps/plugin-dialog";
 import {
   forkSkill,
-  keepSkillTrial,
   openSkillPath,
   parkSkill,
   pullForkUpstream,
@@ -23,11 +22,10 @@ import {
   lifecycleTargetForDeployment,
   lifecycleTargetForPark,
   lifecycleTargetForSkill,
-  lifecycleTargetForTrial,
   skillGlobalRemovalTarget,
   updateSkillOwners,
 } from "../../lib/skill-lifecycle-target";
-import type { InstalledSkill, PullResult, Toast, TrialInfo } from "@skill-studio/lib";
+import type { InstalledSkill, PullResult, Toast } from "@skill-studio/lib";
 import { useAppStore } from "../../store/appStore";
 
 /**
@@ -126,7 +124,6 @@ export interface SkillPageActions {
   forkAction: SkillPageAction | null;
   /** Global-only removal, present only when an exact mutable lifecycle target exists. */
   removeAction: SkillPageAction | null;
-  keepTrial: (trial: TrialInfo) => SkillPageAction;
 }
 
 /**
@@ -148,7 +145,6 @@ export function useSkillPageActions(
   const addToast = useAppStore((state) => state.addToast);
   const [copied, setCopied] = useState(false);
   const [isParking, setIsParking] = useState(false);
-  const [isKeeping, setIsKeeping] = useState(false);
   const [isForking, setIsForking] = useState(false);
   const [isPulling, setIsPulling] = useState(false);
   const [isUnforking, setIsUnforking] = useState(false);
@@ -166,7 +162,6 @@ export function useSkillPageActions(
       parkAction: { label: "Park", run: () => undefined, busy: false },
       forkAction: null,
       removeAction: null,
-      keepTrial: () => ({ label: "Keep", run: () => undefined, busy: false }),
     };
   }
 
@@ -219,12 +214,6 @@ export function useSkillPageActions(
         }
       },
     );
-
-  const keepTrial = (trial: TrialInfo) => () =>
-    runAction(addToast, setIsKeeping, "Couldn't keep skill", async () => {
-      await keepSkillTrial(lifecycleTargetForTrial(skill, trial));
-      addToast({ type: "success", title: `Kept ${skill.name}` });
-    });
 
   const forkDeployment = sharedFolderDeployment(skill);
 
@@ -329,6 +318,5 @@ export function useSkillPageActions(
     },
     forkAction,
     removeAction,
-    keepTrial: (trial) => ({ label: "Keep", run: keepTrial(trial), busy: isKeeping }),
   };
 }

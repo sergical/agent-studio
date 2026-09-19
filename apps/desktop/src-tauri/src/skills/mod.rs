@@ -46,7 +46,6 @@ pub mod skill_project_folders;
 pub mod skill_refresh;
 pub mod skill_run_history;
 pub mod skill_run_target;
-pub mod skill_trial;
 pub mod skill_trust_policy;
 pub mod skill_update;
 pub mod skill_update_check;

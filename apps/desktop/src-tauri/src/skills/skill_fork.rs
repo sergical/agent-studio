@@ -26,8 +26,8 @@ use super::commands::{dotagents_add_args, dotagents_remove_args};
 use super::skill_deployment::SkillDestination;
 use super::skill_dto::InstallScope;
 use super::skill_fork_registry::{
-    deployment_trial_key, fork_snapshot_dir, read_fork_registry, trial_key,
-    write_fork_registry_locked, ForkRecord, ForkRegistry, OriginTool, TrialScope,
+    fork_snapshot_dir, read_fork_registry, write_fork_registry_locked, ForkRecord, ForkRegistry,
+    OriginTool,
 };
 use super::skill_fs::copy_dir_all;
 use super::skill_lifecycle::skills_sh_remove_args_for_scope;
@@ -949,14 +949,6 @@ fn fork_skill_with_storage(
     };
     let mut registry = registry_before.clone();
     registry.forks.insert(name.to_string(), record.clone());
-    // A forked skill is no longer the same "add" that started a trial - drop
-    // any trial record for it so forking doesn't leave a stale one behind.
-    // Forking only ever applies to the shared (global) `.agents/skills`
-    // root, so only the global-scoped key needs clearing.
-    registry.trials.remove(&trial_key(TrialScope::Global, name));
-    registry
-        .trials
-        .remove(&deployment_trial_key(&record.deployment_id));
     if let Err(error) = storage.write_registry(guard, home, &registry) {
         return Err(rollback_fork_before_detach(
             storage,
@@ -1517,12 +1509,6 @@ pub fn unfork_skill_with(
     ledger.reinstall(&record, name)?;
 
     registry.forks.remove(name);
-    registry.trials.remove(&trial_key(TrialScope::Global, name));
-    if !record.deployment_id.is_empty() {
-        registry
-            .trials
-            .remove(&deployment_trial_key(&record.deployment_id));
-    }
     write_fork_registry_locked(guard, home, &registry)?;
     let _ = fs::remove_dir_all(fork_snapshot_dir(app_data, name));
     Ok(())
@@ -1964,64 +1950,6 @@ mod tests {
 
         let registry = read_fork_registry(&home).unwrap();
         assert!(registry.forks.contains_key("find-bugs"));
-    }
-
-    #[test]
-    fn fork_drops_a_stale_trial_record() {
-        let tmp = tempfile::tempdir().unwrap();
-        let home = tmp.path().join("home");
-        let app_data = tmp.path().join("data");
-        seed_dotagents_ledger(
-            &home,
-            "find-bugs",
-            "getsentry/find-bugs",
-            "skills/find-bugs",
-            &"a".repeat(40),
-        );
-        write_file(
-            &home.join(".agents/skills/find-bugs/SKILL.md"),
-            "---\nname: find-bugs\n---\nbody",
-        );
-        let now = chrono::Utc::now();
-        let mut registry = read_fork_registry(&home).unwrap();
-        registry.trials.insert(
-            trial_key(TrialScope::Global, "find-bugs"),
-            super::super::skill_fork_registry::TrialRecord {
-                deployment_id: String::new(),
-                started_at: now.to_rfc3339(),
-                expires_at: (now + chrono::Duration::hours(24)).to_rfc3339(),
-                status: super::super::skill_fork_registry::TrialStatus::Active,
-                method: super::super::skill_fork_registry::AddMethod::Dotagents,
-                scope: super::super::skill_fork_registry::TrialScope::Global,
-                project_path: None,
-                skill_dir: home.join(".agents/skills/find-bugs"),
-                deployment_fingerprint: String::new(),
-                claude_link: None,
-                claude_link_target: None,
-            },
-        );
-        write_fork_registry(&home, &registry).unwrap();
-
-        let ledger = FakeLedger::default();
-        let fetch = FakeFetch {
-            files: vec![("SKILL.md", "---\nname: find-bugs\n---\nupstream body")],
-        };
-        fork_skill_with(
-            &test_guard(&home),
-            &home,
-            &app_data,
-            "find-bugs",
-            &home.join(".agents/skills/find-bugs"),
-            &ledger,
-            &fetch,
-            &NeverCalledLookup,
-        )
-        .unwrap();
-
-        assert!(!read_fork_registry(&home)
-            .unwrap()
-            .trials
-            .contains_key(&trial_key(TrialScope::Global, "find-bugs")));
     }
 
     /// Finding 1: the base snapshot must be the upstream tree fetched at
@@ -3367,54 +3295,6 @@ mod tests {
         let calls = ledger.reinstall_calls.lock().unwrap();
         assert_eq!(calls.len(), 1);
         assert_eq!(calls[0].0.declared_ref.as_deref(), Some("v1.2.3"));
-    }
-
-    #[test]
-    fn unfork_drops_a_stale_trial_record() {
-        let tmp = tempfile::tempdir().unwrap();
-        let home = tmp.path().join("home");
-        let app_data = tmp.path().join("data");
-        let mut registry = read_fork_registry(&home).unwrap();
-        registry.forks.insert(
-            "find-bugs".to_string(),
-            ForkRecord {
-                deployment_id: String::new(),
-                skill_dir: PathBuf::new(),
-                forked_at: "2026-01-01T00:00:00Z".to_string(),
-                origin_tool: OriginTool::Dotagents,
-                origin_source: "getsentry/find-bugs".to_string(),
-                repo: "getsentry/find-bugs".to_string(),
-                path: "skills/find-bugs".to_string(),
-                declared_ref: None,
-                base_commit: "a".repeat(40),
-            },
-        );
-        let now = chrono::Utc::now();
-        registry.trials.insert(
-            trial_key(TrialScope::Global, "find-bugs"),
-            super::super::skill_fork_registry::TrialRecord {
-                deployment_id: String::new(),
-                started_at: now.to_rfc3339(),
-                expires_at: (now + chrono::Duration::hours(24)).to_rfc3339(),
-                status: super::super::skill_fork_registry::TrialStatus::Active,
-                method: super::super::skill_fork_registry::AddMethod::Copy,
-                scope: super::super::skill_fork_registry::TrialScope::Global,
-                project_path: None,
-                skill_dir: home.join(".agents/skills/find-bugs"),
-                deployment_fingerprint: String::new(),
-                claude_link: None,
-                claude_link_target: None,
-            },
-        );
-        write_fork_registry(&home, &registry).unwrap();
-
-        let ledger = FakeLedger::default();
-        unfork_skill_with(&test_guard(&home), &home, &app_data, "find-bugs", &ledger).unwrap();
-
-        assert!(!read_fork_registry(&home)
-            .unwrap()
-            .trials
-            .contains_key(&trial_key(TrialScope::Global, "find-bugs")));
     }
 
     #[test]

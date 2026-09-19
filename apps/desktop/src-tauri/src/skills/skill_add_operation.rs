@@ -1023,7 +1023,6 @@ mod tests {
             disabled_harnesses: vec![],
             scope: InstallScope::Global,
             project_path: None,
-            trial: false,
         }
     }
 
@@ -1358,7 +1357,6 @@ mod tests {
                 disabled_harnesses: vec![],
                 scope: InstallScope::Global,
                 project_path: None,
-                trial: false,
             };
             state
                 .begin(
@@ -1464,7 +1462,6 @@ mod tests {
             disabled_harnesses: vec![],
             scope: InstallScope::Global,
             project_path: None,
-            trial: false,
         };
         state
             .begin(

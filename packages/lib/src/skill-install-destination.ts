@@ -74,18 +74,3 @@ export function installDestinationError(
     ? "Select at least one harness."
     : null;
 }
-
-/** Trials require one Universal deployment and cannot target independent harness copies. */
-export function installTrialError(destination: SkillDestination, trial: boolean): string | null {
-  return destination === "per-harness" && trial
-    ? "24-hour trials are available only for Universal installs."
-    : null;
-}
-
-/** Clear a selected trial when the user changes Destination to Per harness. */
-export function trialSelectionForDestination(
-  destination: SkillDestination,
-  selected: boolean,
-): boolean {
-  return destination === "universal" && selected;
-}

@@ -15,7 +15,7 @@ use serde::{Deserialize, Serialize};
 use super::frontmatter::InvocationPolicy;
 use super::github_skill_listing::GithubSkillEntry;
 use super::skill_deployment::{BackingRelationship, DeploymentMutability, SkillDestination};
-use super::skill_fork_registry::{AddMethod, OriginTool, TrialScope};
+use super::skill_fork_registry::{AddMethod, OriginTool};
 use super::skill_ownership::LifecycleOwnerKind;
 use super::SourceKind;
 
@@ -348,14 +348,6 @@ pub struct InstalledSkill {
     /// Set when `source_kind` is `Fork` - see `skill_fork_registry`.
     #[serde(default)]
     pub fork: Option<ForkInfo>,
-    /// Set when this skill is a "Try for 24 hours" install still within its
-    /// window - see `skill_fork_registry::TrialRecord` and `skill_trial`.
-    #[serde(default)]
-    pub trial: Option<TrialInfo>,
-    /// Every active trial keyed by its exact deployment. `trial` remains for
-    /// old clients and is populated only when there is one active trial.
-    #[serde(default)]
-    pub trials: Vec<TrialInfo>,
     /// True when this skill is parked (disabled globally) - see
     /// `skill_park`. Parked skills are excluded from coverage/dashboard
     /// totals and shown in their own sidebar group instead.
@@ -384,22 +376,6 @@ fn default_owner_kind() -> LifecycleOwnerKind {
 
 fn default_backing() -> BackingRelationship {
     BackingRelationship::Independent
-}
-
-/// A trial's remaining-time projection, read-only for the frontend - see
-/// `skill_fork_registry::TrialRecord`, which this is a projection of.
-#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
-pub struct TrialInfo {
-    #[serde(default)]
-    pub deployment_id: String,
-    pub expires_at: String,
-    pub method: AddMethod,
-    pub status: super::skill_fork_registry::TrialStatus,
-    /// The trial's scope - needed so `keep_skill_trial`/expiry can key back
-    /// into `trials` (`"global/<name>"` or `"project/<name>"`) correctly.
-    pub scope: TrialScope,
-    #[serde(default)]
-    pub project_path: Option<String>,
 }
 
 /// Persisted update state for one exact lifecycle owner.
@@ -455,7 +431,6 @@ pub struct AddSkillRequest {
     pub disabled_harnesses: Vec<super::agents::AgentId>,
     pub scope: InstallScope,
     pub project_path: Option<String>,
-    pub trial: bool,
 }
 
 /// `add_skills`' request: one source, and the skill folders picked out of it
@@ -475,7 +450,6 @@ pub struct AddSkillsRequest {
     pub disabled_harnesses: Vec<super::agents::AgentId>,
     pub scope: InstallScope,
     pub project_path: Option<String>,
-    pub trial: bool,
 }
 
 /// One skill's outcome in an `add_skills` batch. A failure never stops the
@@ -494,11 +468,11 @@ pub struct AddSkillResult {
     pub tool: String,
     pub command: String,
     pub deployments_created: Vec<String>,
-    /// Set when the install itself succeeded but a follow-up step (recording
-    /// the 24 h trial, or turning the skill off for a `disabled_harnesses`
-    /// entry) failed - the skill is on disk and usable, it just
-    /// isn't tracked for auto-expiry. The sheet shows this as a warning
-    /// toast rather than treating the whole request as failed.
+    /// Set when the install itself succeeded but a follow-up step (turning
+    /// the skill off for a `disabled_harnesses` entry) failed - the skill is
+    /// on disk and usable, it just isn't disabled where it was asked to be.
+    /// The sheet shows this as a warning toast rather than treating the
+    /// whole request as failed.
     #[serde(default)]
     pub warning: Option<String>,
 }

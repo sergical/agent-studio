@@ -3,7 +3,6 @@ import {
   lifecycleTargetForDeployment,
   lifecycleTargetForHarnessRoot,
   lifecycleTargetForSkill,
-  lifecycleTargetForTrial,
   skillGlobalRemovalTarget,
   skillLifecycleScopeSelection,
   skillMutableLifecycleScopes,
@@ -127,57 +126,6 @@ describe("lifecycleTargetForSkill", () => {
     expect(lifecycleTargetForHarnessRoot(skill, "claude-code", "/home/.claude/skills")).toEqual({
       deployment_id: "claude-link",
     });
-  });
-
-  it("targets the canonical deployment for the aggregate trial chip", () => {
-    const linked = {
-      ...deployment("linked", "owner:x"),
-      backing: { kind: "linked-to", deployment_id: "canonical" } as const,
-    };
-    const skill = {
-      name: "x",
-      source_kind: "skills-sh",
-      deployments: [linked, deployment("canonical", "owner:x")],
-      trial: {
-        deployment_id: "",
-        expires_at: "2026-09-06T00:00:00Z",
-        method: "skills-sh",
-        scope: "global",
-        project_path: null,
-        status: "active",
-      },
-    } satisfies Pick<InstalledSkill, "name" | "deployments" | "source_kind" | "trial">;
-    expect(lifecycleTargetForTrial(skill, skill.trial)).toEqual({ deployment_id: "canonical" });
-  });
-
-  it("targets simultaneous Global and Project trials by exact deployment id", () => {
-    const skill = {
-      name: "x",
-      source_kind: "skills-sh",
-      deployments: [
-        deployment("global-copy", "owner:global"),
-        deployment("project-copy", "owner:project", "/work/project"),
-      ],
-    } satisfies Pick<InstalledSkill, "name" | "deployments" | "source_kind">;
-    const globalTrial = {
-      deployment_id: "global-copy",
-      expires_at: "2026-09-06T00:00:00Z",
-      method: "skills-sh" as const,
-      scope: "global" as const,
-      project_path: null,
-      status: "active" as const,
-    };
-    const projectTrial = {
-      deployment_id: "project-copy",
-      expires_at: "2026-09-06T01:00:00Z",
-      method: "skills-sh" as const,
-      scope: "project" as const,
-      project_path: "/work/project",
-      status: "active" as const,
-    };
-
-    expect(lifecycleTargetForTrial(skill, globalTrial)).toEqual({ deployment_id: "global-copy" });
-    expect(lifecycleTargetForTrial(skill, projectTrial)).toEqual({ deployment_id: "project-copy" });
   });
 
   it("selects the only mutable installed scope", () => {

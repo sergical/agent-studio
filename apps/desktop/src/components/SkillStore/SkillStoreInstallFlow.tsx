@@ -232,7 +232,6 @@ export function SkillStoreInstallFlow({
             claudeLink,
           ),
           project_path: installScope === "project" ? (selectedProject ?? null) : null,
-          trial: false,
         },
         { start: startAddSkillOperation, getOperation: getAddSkillOperation },
       );

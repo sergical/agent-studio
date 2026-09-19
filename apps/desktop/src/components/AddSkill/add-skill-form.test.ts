@@ -30,7 +30,6 @@ describe("Add Skill form validation", () => {
         agents: [],
         scope: "global",
         projectPath: null,
-        trial: false,
         githubEntries: null,
       }),
     ).toBe(false);
@@ -52,7 +51,6 @@ describe("Add Skill form validation", () => {
         agents: [],
         scope: "global",
         projectPath: null,
-        trial: false,
         githubEntries: null,
       }),
     ).toBe(true);
