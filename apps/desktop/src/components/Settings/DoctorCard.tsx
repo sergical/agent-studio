@@ -13,6 +13,7 @@ import { Button } from "@skill-studio/ui";
 import type { DoctorViolation } from "@skill-studio/lib";
 import { useDoctor } from "../../hooks/useDoctor";
 import { useAppStore } from "../../store/appStore";
+import { keyDoctorViolations } from "./doctor-violation-keys";
 import { SettingsCard } from "./SettingsCard";
 
 function ViolationRow({ violation }: { violation: DoctorViolation }) {
@@ -55,8 +56,8 @@ export function DoctorCard() {
         </p>
       ) : (
         <div className="flex flex-col">
-          {report.violations.map((violation) => (
-            <ViolationRow key={`${violation.invariant}:${violation.path}`} violation={violation} />
+          {keyDoctorViolations(report.violations).map(({ key, violation }) => (
+            <ViolationRow key={key} violation={violation} />
           ))}
         </div>
       )}

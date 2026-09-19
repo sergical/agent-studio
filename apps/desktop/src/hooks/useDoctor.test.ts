@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { startDoctorReportSubscription } from "./useDoctor";
+import { createDoctorReportHandlers, startDoctorReportSubscription } from "./useDoctor";
 import type { DoctorReport } from "@skill-studio/lib";
 
 function report(checked: number): DoctorReport {
@@ -82,17 +82,25 @@ describe("startDoctorReportSubscription", () => {
     expect(fallbackCalls).toBe(1);
   });
 
-  it("skips the fallback when a report already landed before the listener settled", async () => {
+  it("skips the fallback when createDoctorReportHandlers already recorded a report, or names the extra run", async () => {
     let fallbackCalls = 0;
+    const hasReportRef = { current: false };
+    const handlers = createDoctorReportHandlers(
+      hasReportRef,
+      () => undefined,
+      () => undefined,
+      () => {
+        fallbackCalls += 1;
+      },
+    );
+    // A report already landed (e.g. the startup pass fired before this
+    // listener finished registering) - onReport ran and flipped the ref.
+    handlers.onReport(report(1));
 
     await startDoctorReportSubscription({
       isCancelled: () => false,
       listen: async () => () => undefined,
-      onReport: () => undefined,
-      hasReport: () => true,
-      runFallback: () => {
-        fallbackCalls += 1;
-      },
+      ...handlers,
     });
 
     expect(fallbackCalls).toBe(0);
@@ -114,28 +122,42 @@ describe("startDoctorReportSubscription", () => {
     expect(fallbackCalls).toBe(1);
   });
 
-  it("clears a stale error when a report event arrives, or names the surviving error", async () => {
-    let listener: ((report: DoctorReport) => void) | undefined;
+  it("clears a stale error and stores the report through createDoctorReportHandlers, or names the surviving error", () => {
     let error: string | null = "a previous manual run failed";
-    let received: DoctorReport | null = null;
-
-    await startDoctorReportSubscription({
-      isCancelled: () => false,
-      listen: async (registeredListener) => {
-        listener = registeredListener;
-        return () => undefined;
+    let stored: DoctorReport | null = null;
+    const hasReportRef = { current: false };
+    const handlers = createDoctorReportHandlers(
+      hasReportRef,
+      (nextError) => {
+        error = nextError;
       },
-      onReport: (candidate) => {
-        error = null;
-        received = candidate;
+      (nextReport) => {
+        stored = nextReport;
       },
-      hasReport: () => received !== null,
-      runFallback: () => undefined,
-    });
+      () => undefined,
+    );
 
-    listener?.(report(5));
+    handlers.onReport(report(5));
 
     expect(error).toBeNull();
-    expect(received).toEqual(report(5));
+    expect(stored).toEqual(report(5));
+    expect(hasReportRef.current).toBe(true);
+  });
+
+  it("flips hasReportRef synchronously inside onReport, or names the race with the mount fallback", () => {
+    const hasReportRef = { current: false };
+    const handlers = createDoctorReportHandlers(
+      hasReportRef,
+      () => undefined,
+      () => undefined,
+      () => undefined,
+    );
+
+    expect(handlers.hasReport()).toBe(false);
+    handlers.onReport(report(1));
+    // No render/effect cycle runs between these two lines - if the ref only
+    // flipped through a `report`-keyed effect, this assertion would still see
+    // `false` here.
+    expect(handlers.hasReport()).toBe(true);
   });
 });

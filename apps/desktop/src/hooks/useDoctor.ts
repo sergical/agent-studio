@@ -55,6 +55,38 @@ export async function startDoctorReportSubscription({
   }
 }
 
+interface DoctorReportHandlers {
+  onReport: (report: DoctorReport) => void;
+  hasReport: () => boolean;
+  runFallback: () => void;
+}
+
+/** Builds the `onReport`/`hasReport`/`runFallback` trio `useDoctor` hands to
+ * [`startDoctorReportSubscription`]. Pulled out so a test can drive the
+ * exact wiring the hook uses - a stale error cleared the moment a report
+ * lands, `hasReportRef` flipped in the same callback rather than through a
+ * `report`-keyed effect (an effect only runs after the next render commits,
+ * which can land after the mount fallback below has already read the ref
+ * and decided to fire) - without rendering the hook itself. */
+export function createDoctorReportHandlers(
+  hasReportRef: { current: boolean },
+  setError: (error: string | null) => void,
+  setReport: (report: DoctorReport) => void,
+  run: () => void,
+): DoctorReportHandlers {
+  return {
+    onReport: (candidate) => {
+      hasReportRef.current = true;
+      // A report resolves any earlier failed manual run - a stale error
+      // must not outlive the report that answers it.
+      setError(null);
+      setReport(candidate);
+    },
+    hasReport: () => hasReportRef.current,
+    runFallback: run,
+  };
+}
+
 interface UseDoctorResult {
   /** `null` before any pass (startup or on demand) has reported back. */
   report: DoctorReport | null;
@@ -75,17 +107,27 @@ export function useDoctor(): UseDoctorResult {
   const [error, setError] = useState<string | null>(null);
   const [running, setRunning] = useState(false);
   const hasReportRef = useRef(false);
+  const mountedRef = useRef(true);
+
   useEffect(() => {
-    hasReportRef.current = report !== null;
-  }, [report]);
+    return () => {
+      mountedRef.current = false;
+    };
+  }, []);
 
   function run() {
     setRunning(true);
     setError(null);
     runDoctor()
-      .then(setReport)
-      .catch((cause: unknown) => setError(invokeErrorMessage(cause)))
-      .finally(() => setRunning(false));
+      .then((result) => {
+        if (mountedRef.current) setReport(result);
+      })
+      .catch((cause: unknown) => {
+        if (mountedRef.current) setError(invokeErrorMessage(cause));
+      })
+      .finally(() => {
+        if (mountedRef.current) setRunning(false);
+      });
   }
 
   useEffect(() => {
@@ -95,14 +137,7 @@ export function useDoctor(): UseDoctorResult {
     void startDoctorReportSubscription({
       isCancelled: () => cancelled,
       listen: onDoctorReport,
-      onReport: (candidate) => {
-        // A report resolves any earlier failed manual run - a stale error
-        // must not outlive the report that answers it.
-        setError(null);
-        setReport(candidate);
-      },
-      hasReport: () => hasReportRef.current,
-      runFallback: run,
+      ...createDoctorReportHandlers(hasReportRef, setError, setReport, run),
     }).then((registeredUnlisten) => {
       if (cancelled) registeredUnlisten?.();
       else unlisten = registeredUnlisten;
