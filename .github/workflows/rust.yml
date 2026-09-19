@@ -4,11 +4,6 @@ on:
   push:
     branches: [main]
   pull_request:
-  # Weekly full mutation run (unit 5.2); workflow_dispatch lets a human
-  # trigger the same run between Mondays without waiting for the cron.
-  schedule:
-    - cron: "0 6 * * 1"
-  workflow_dispatch:
 
 jobs:
   test:
@@ -52,14 +47,17 @@ jobs:
 
   # Report-only for now: uploads the survivor list as an artifact and writes
   # a per-module score to the job summary, but never fails the PR. The
-  # weekly job below has not produced a clean baseline yet, so a blocking
-  # gate here would block every open PR on pre-existing gaps (unit 5.2).
+  # weekly job (.github/workflows/mutants.yml) has not produced a clean
+  # baseline yet, so a blocking gate here would block every open PR on
+  # pre-existing gaps (unit 5.2). `continue-on-error: true` at the job level
+  # means no step in this job, including the toolchain setup, can turn the
+  # PR red.
   mutants-changed:
     if: github.event_name == 'pull_request'
     runs-on: ubuntu-latest
-    # Bounds a job that scales with diff size instead of crate size; a diff
-    # this job can't finish in time is a job to split, not a longer timeout.
-    timeout-minutes: 30
+    continue-on-error: true
+    env:
+      BASE_REF: ${{ github.base_ref }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -71,7 +69,7 @@ jobs:
       - name: Diff the PR against its base, scoped to the two mutated crates
         id: diff
         run: |
-          git diff "origin/${{ github.base_ref }}...HEAD" -- crates/skill-studio-core crates/skill-studio-host > mutants-diff.txt
+          git diff "origin/$BASE_REF...HEAD" -- crates/skill-studio-core crates/skill-studio-host > mutants-diff.txt
           if [ -s mutants-diff.txt ]; then
             echo "has_changes=true" >> "$GITHUB_OUTPUT"
           else
@@ -82,10 +80,13 @@ jobs:
         with:
           tool: cargo-mutants
       # Non-zero exit means "found a missed mutant", not "job broke"; a
-      # report-only job records that instead of failing on it.
+      # report-only job records that instead of failing on it. The timeout
+      # sits on this step, not the job, so a diff too large to finish in
+      # time still gets a summary instead of hanging the job's other steps.
       - name: Run cargo mutants on the changed lines
         if: steps.diff.outputs.has_changes == 'true'
         continue-on-error: true
+        timeout-minutes: 30
         run: cargo mutants --in-diff mutants-diff.txt -p skill-studio-core -p skill-studio-host --all-features --no-shuffle
       - name: Mutation score per file, or note nothing ran
         if: always()
@@ -98,70 +99,20 @@ jobs:
               echo "| module | caught | missed | unviable |"
               echo "| --- | --- | --- | --- |"
               while IFS= read -r f; do
-                c=$(grep -c "^$f:" mutants.out/caught.txt 2>/dev/null || echo 0)
-                m=$(grep -c "^$f:" mutants.out/missed.txt 2>/dev/null || echo 0)
-                u=$(grep -c "^$f:" mutants.out/unviable.txt 2>/dev/null || echo 0)
-                echo "| $f | $c | $m | $u |"
+                c=$(grep -c "^$f:" mutants.out/caught.txt 2>/dev/null || true)
+                m=$(grep -c "^$f:" mutants.out/missed.txt 2>/dev/null || true)
+                u=$(grep -c "^$f:" mutants.out/unviable.txt 2>/dev/null || true)
+                echo "| $f | ${c:-0} | ${m:-0} | ${u:-0} |"
               done < <(cat mutants.out/caught.txt mutants.out/missed.txt mutants.out/unviable.txt 2>/dev/null | cut -d: -f1 | sort -u)
               echo ""
               echo "Report-only: missed mutants above do not fail this job. See the \`mutants-changed-report\` artifact for the diffs cargo-mutants tried."
             else
-              echo "The diff touched the mutated crates, but cargo-mutants produced no report; see the run step's log for the missing wiring."
+              echo "The diff touched the mutated crates, but cargo-mutants produced no report (or timed out); see the run step's log for the missing wiring."
             fi
           } >> "$GITHUB_STEP_SUMMARY"
       - uses: actions/upload-artifact@v4
         if: always()
         with:
           name: mutants-changed-report
-          path: mutants.out
-          if-no-files-found: ignore
-
-  # Full crate run, once a week (see the `schedule` trigger above) or on
-  # demand. Sharded so each job stays inside the 6-hour GitHub Actions cap;
-  # increase SHARD_COUNT and the matrix together if a crate outgrows this.
-  mutants-weekly:
-    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
-    runs-on: ubuntu-latest
-    timeout-minutes: 350
-    strategy:
-      fail-fast: false
-      matrix:
-        shard: [1, 2, 3, 4]
-    env:
-      SHARD_COUNT: 4
-    steps:
-      - uses: actions/checkout@v4
-      - run: sudo apt-get update && sudo apt-get install -y libwebkit2gtk-4.1-dev libgtk-3-dev libayatana-appindicator3-dev librsvg2-dev libxdo-dev libssl-dev
-      - uses: dtolnay/rust-toolchain@1.92.0
-      - uses: Swatinem/rust-cache@v2
-      - uses: taiki-e/install-action@v2
-        with:
-          tool: cargo-mutants
-      - run: mkdir -p apps/desktop/dist
-      - name: Run cargo mutants, full crate, this shard
-        continue-on-error: true
-        run: cargo mutants -p skill-studio-core -p skill-studio-host --all-features --no-shuffle --shard ${{ matrix.shard }}/${{ env.SHARD_COUNT }}
-      - name: Mutation score per file, this shard
-        if: always()
-        run: |
-          {
-            echo "### cargo-mutants weekly, shard ${{ matrix.shard }}/${{ env.SHARD_COUNT }}"
-            if [ -f mutants.out/outcomes.json ]; then
-              echo "| module | caught | missed | unviable |"
-              echo "| --- | --- | --- | --- |"
-              while IFS= read -r f; do
-                c=$(grep -c "^$f:" mutants.out/caught.txt 2>/dev/null || echo 0)
-                m=$(grep -c "^$f:" mutants.out/missed.txt 2>/dev/null || echo 0)
-                u=$(grep -c "^$f:" mutants.out/unviable.txt 2>/dev/null || echo 0)
-                echo "| $f | $c | $m | $u |"
-              done < <(cat mutants.out/caught.txt mutants.out/missed.txt mutants.out/unviable.txt 2>/dev/null | cut -d: -f1 | sort -u)
-            else
-              echo "cargo-mutants produced no report for this shard; see the run step's log for the missing wiring."
-            fi
-          } >> "$GITHUB_STEP_SUMMARY"
-      - uses: actions/upload-artifact@v4
-        if: always()
-        with:
-          name: mutants-weekly-shard-${{ matrix.shard }}
           path: mutants.out
           if-no-files-found: ignore

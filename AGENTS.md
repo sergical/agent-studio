@@ -67,8 +67,9 @@ cd apps/desktop/src-tauri && cargo clippy
 
 CI runs `cargo mutants` on `crates/skill-studio-core` and `crates/skill-studio-host`
 only: `--in-diff` against the PR's changed lines on every pull request
-(report-only for now — see `.github/workflows/rust.yml`), and a full,
-sharded run of both crates weekly (`schedule` + `workflow_dispatch`).
+(report-only for now, `.github/workflows/rust.yml`'s `mutants-changed` job),
+and a full, sharded run of both crates weekly
+(`.github/workflows/mutants.yml`, `schedule` + `workflow_dispatch`).
 Excludes live in `.cargo/mutants.toml`.
 
 A full run is slow; do not run it locally. To check one file before pushing:
