@@ -1972,7 +1972,7 @@ mod tests {
         let sink: EventSink = Box::new(move |event| {
             events_clone
                 .lock()
-                .unwrap_or_else(|e| e.into_inner())
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
                 .push(event);
         });
 
@@ -2001,7 +2001,10 @@ mod tests {
         handle.cancel.notify_one();
         run_task.await.unwrap();
 
-        let evs = events.lock().unwrap_or_else(|e| e.into_inner()).clone();
+        let evs = events
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone();
         assert!(
             evs.iter()
                 .any(|e| matches!(e.kind, SkillAgentEventKind::Started { .. })),
