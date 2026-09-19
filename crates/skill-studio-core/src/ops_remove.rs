@@ -448,11 +448,26 @@ pub fn remove(
         .entries
         .first()
         .and_then(|e| e.fingerprint.as_ref());
-    let inverse = crate::events::restore_backup_inverse_with_links(
+    // `SkillsSh` is the only owner kind whose CLI-owned row `remove_via_cli`
+    // is about to drop lives in `.skill-lock.json` - `Dotagents` tracks its
+    // own row in `agents.lock`/`agents.toml` instead (a TOML array, not this
+    // JSON map), which this op never reads or writes today, so there is
+    // nothing here for it to save. Read before `remove_and_link` runs: after
+    // it, the real CLI has already deleted the row.
+    let lock_entry = if deployment.owner_kind == LifecycleOwnerKind::SkillsSh {
+        let lock_path = crate::lock_file::lock_file_path(&rt.scope.home.lexical);
+        crate::lock_file::read_lock_entry_value(fs, &lock_path, &skill.name.0)?
+    } else {
+        None
+    };
+    let inverse = crate::events::restore_backup_inverse_with_links_and_lock(
         &deployment.path,
         pre_fingerprint,
         None,
         &link_targets,
+        lock_entry
+            .as_ref()
+            .map(|entry| (skill.name.0.as_str(), entry)),
     );
     let backup_dir = Some(manifest.backup_dir);
 

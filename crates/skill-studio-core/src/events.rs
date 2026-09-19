@@ -510,6 +510,40 @@ pub(crate) fn restore_backup_inverse_with_links(
     value
 }
 
+/// [`restore_backup_inverse_with_links`] plus a `"lock_entry"` object: the
+/// exact `.skill-lock.json` row `ops::remove` read back before letting `npx
+/// skills remove` drop it (see `ops_remove`'s own capture site), for
+/// `restore_event` to write back under the same key on undo. Additive like
+/// `"links"` - an old reader that does not know `"lock_entry"` still
+/// restores `path` correctly, and a `remove` with no saved row (an old
+/// event, or an owner kind that never wrote one) simply passes `None` here,
+/// so `restore_event` writes no lock entry rather than inventing one.
+pub(crate) fn restore_backup_inverse_with_links_and_lock(
+    path: &Path,
+    pre: Option<&Fingerprint>,
+    post: Option<&Fingerprint>,
+    links: &[(PathBuf, PathBuf)],
+    lock_entry: Option<(&str, &serde_json::Value)>,
+) -> serde_json::Value {
+    let mut value = restore_backup_inverse_with_links(path, pre, post, links);
+    if let Some((skill_name, entry)) = lock_entry {
+        value["lock_entry"] = serde_json::json!({ "skill": skill_name, "value": entry });
+    }
+    value
+}
+
+/// Reads back the `"lock_entry"` object [`restore_backup_inverse_with_links_and_lock`]
+/// adds, or `None` for an inverse that has none - either no row was saved at
+/// remove time, or the row predates this field.
+pub(crate) fn parse_restore_lock_entry(
+    inverse: &serde_json::Value,
+) -> Option<(String, serde_json::Value)> {
+    let obj = inverse.get("lock_entry")?.as_object()?;
+    let skill_name = obj.get("skill")?.as_str()?.to_string();
+    let value = obj.get("value")?.clone();
+    Some((skill_name, value))
+}
+
 /// Reads back the `"links"` array [`restore_backup_inverse_with_links`]
 /// adds, or an empty list for an inverse that has none (including every
 /// `restore_backup` recorded before this field existed).
