@@ -135,6 +135,13 @@ impl SqliteHistoryStore {
         let conn = Connection::open(db_path).map_err(sql_err)?;
         conn.pragma_update(None, "journal_mode", "WAL")
             .map_err(sql_err)?;
+        // The desktop's `EventStore` opens this same file from a second
+        // connection (`core_runtime::history_db_path`); WAL lets both read
+        // concurrently, but a `busy_timeout` keeps a losing writer waiting
+        // instead of failing immediately with `SQLITE_BUSY` - matches the
+        // desktop's `event_store::open`.
+        conn.busy_timeout(std::time::Duration::from_secs(5))
+            .map_err(sql_err)?;
         // `reverted_by` is claimed before the restore row that references it
         // exists (see `claim_revert`), so foreign key enforcement on that
         // column must stay off - matches the desktop's `event_store::open`.

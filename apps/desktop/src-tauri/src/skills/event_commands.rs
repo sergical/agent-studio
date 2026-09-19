@@ -31,7 +31,10 @@ fn locked_store(
         .map_err(|e| format!("event store lock poisoned: {e}"))
 }
 
-fn dto_from_row(store: &EventStore, home: &Path, row: EventRow) -> SkillEventDto {
+/// `pub` (not `pub(crate)`) so `tests/undo_activity_history.rs` can check
+/// exactly what `list_skill_events` would hand the renderer for a row,
+/// without a `tauri::AppHandle`.
+pub fn dto_from_row(store: &EventStore, home: &Path, row: EventRow) -> SkillEventDto {
     let restorable = row.restorable
         && row.inverse.is_some()
         && row.reverted_by.is_none()
@@ -82,9 +85,147 @@ pub async fn list_skill_events(
     .await
 }
 
-/// Undoes one event. Refuses an `explode_shared_dir` restore while any of
-/// its skills are individually disabled (`restore_guard_for_explode`), and
-/// unregisters the materialized root once such a restore succeeds.
+/// Event kinds whose inverse only the desktop's own `EventStore::restore`
+/// can apply: their `InverseOp::RecreateSymlink`/`RemoveSymlink` uses the
+/// field name `"link"`, which the core's `events::parse_symlink_inverse`
+/// (field `"path"`) does not recognize, and `make_independent_copy` has its
+/// own bespoke restore path below. Everything else - including the
+/// genuinely ambiguous `"repair_skill_frontmatter"`, which both sides write
+/// in the core's own `restore_backup` shape - is routed to
+/// `ops::restore_event`, per the "prefer the core" rule.
+const DESKTOP_OWNED_KINDS: &[&str] = &[
+    "unlink_harness",
+    "relink_harness",
+    "explode_shared_dir",
+    "materialize_then_disable",
+    "reconcile_remove_stale_link",
+    "repair_remove_link",
+    "repair_relink_link",
+    "make_independent_copy",
+    "move_aside_disable",
+    "move_aside_restore",
+];
+
+/// Walks a chain of `restore` rows back to the kind that actually owns the
+/// inverse shape. A `restore` row's own `kind` is always `"restore"`
+/// regardless of which store wrote the event it reverted, so dispatch has to
+/// follow `payload.target_event` to the original mutation to decide which
+/// side understands it. Falls back to the chain's last-seen kind (itself
+/// `"restore"` for a broken chain, which the core's own `EventKind::Restore`
+/// writer covers) rather than erroring, since a restore-of-a-restore is
+/// still something one side or the other successfully wrote.
+fn owning_restore_kind(store: &EventStore, row: &EventRow) -> String {
+    let mut current = row.clone();
+    // Bounds an otherwise-unbounded walk against a corrupt or cyclic
+    // `target_event` chain; no real restore chain nests this deep.
+    for _ in 0..64 {
+        if current.kind != "restore" {
+            break;
+        }
+        let Some(target_id) = current.payload.get("target_event").and_then(|v| v.as_str()) else {
+            break;
+        };
+        match store.get(target_id) {
+            Ok(Some(next)) => current = next,
+            _ => break,
+        }
+    }
+    current.kind
+}
+
+/// Undoes one core-owned event through `skill_studio_core::ops::restore_event`,
+/// resolving its own `Runtime`/lease at `home`/`data_root` independently of
+/// the desktop's `EventStore` mutex - callers must not hold `write_lease`
+/// while calling this, since `ops::restore_event`'s own `MutationSession`
+/// acquires that same lease file internally (advisory locks don't nest
+/// within one process; see `write_lease.rs`). Takes `home`/`data_root`
+/// explicitly, like `core_runtime::build_runtime_write_at`, so tests can
+/// point it at a tempdir instead of the real machine.
+fn core_restore_event_at(
+    home: &Path,
+    data_root: &Path,
+    event_id: &str,
+    force: bool,
+) -> Result<(), String> {
+    let rt = super::core_runtime::build_runtime_write_at(home, data_root)?;
+    let ctx = skill_studio_core::ports::OpContext::uncancellable(
+        skill_studio_core::identity::CorrelationId(ulid::Ulid::new().to_string()),
+    );
+    let result = skill_studio_core::ops::restore_event(
+        &rt,
+        &ctx,
+        &skill_studio_core::dto::RestoreRequest {
+            event_id: skill_studio_core::identity::EventId(event_id.to_string()),
+            force,
+        },
+    );
+    let envelope = skill_studio_core::ops::ResultEnvelope::from_result(
+        skill_studio_core::ops::Operation::RestoreEvent,
+        &rt.scope,
+        &ctx,
+        result,
+    );
+    super::core_runtime::to_command_result(envelope).map(|_outcome| ())
+}
+
+/// Undoes one event against `store`, rooted at `home`/`data_root`. Dispatches
+/// by the kind that actually owns the event's inverse shape
+/// (`owning_restore_kind`): desktop-written kinds go through
+/// `EventStore::restore` under the desktop's own `write_lease`; every other
+/// kind goes through the core's `ops::restore_event`, which manages its own
+/// lease and must not be called while `write_lease` is held. Refuses an
+/// `explode_shared_dir` restore while any of its skills are individually
+/// disabled (`restore_guard_for_explode`), and unregisters the materialized
+/// root once such a restore succeeds.
+///
+/// Free of `tauri::AppHandle` so both the real command below and tests can
+/// call it directly against a tempdir-backed `EventStore` and `home`,
+/// mirroring the `_with_runtime` seam `park_with_runtime` established. `pub`
+/// (not `pub(crate)`) so `tests/undo_activity_history.rs` can drive it the
+/// same way `tests/park_parity.rs` drives `park_with_runtime`.
+pub fn restore_event_with_runtime(
+    store: &EventStore,
+    home: &Path,
+    data_root: &Path,
+    event_id: &str,
+    force: bool,
+) -> Result<(), String> {
+    let target = store
+        .get(event_id)?
+        .ok_or_else(|| format!("Event {event_id} not found"))?;
+    skill_materialize::restore_guard_for_explode(store, &target, home)?;
+    if target.kind == "make_independent_copy" {
+        if force {
+            return Err(
+                "An independent copy cannot be force-restored because that could delete local edits"
+                    .to_string(),
+            );
+        }
+        let write_lease = super::write_lease::WriteLease::default();
+        let _guard = write_lease.try_acquire(home)?;
+        return super::skill_independent_copy::restore_independent_copy(store, home, &target)
+            .map(|_| ());
+    }
+
+    if !DESKTOP_OWNED_KINDS.contains(&owning_restore_kind(store, &target).as_str()) {
+        // `ops::restore_event` manages its own lease; holding `write_lease`
+        // across this call would self-deadlock (see
+        // `core_restore_event_at`'s doc comment).
+        return core_restore_event_at(home, data_root, event_id, force);
+    }
+
+    let write_lease = super::write_lease::WriteLease::default();
+    let _guard = write_lease.try_acquire(home)?;
+    store.restore(event_id, force)?;
+    if target.kind == "explode_shared_dir" {
+        if let Some(root) = target.payload.get("root").and_then(|v| v.as_str()) {
+            store.unregister_materialized_root(Path::new(root))?;
+        }
+    }
+    Ok(())
+}
+
+/// See [`restore_event_with_runtime`] for the dispatch this wraps.
 #[tauri::command]
 pub async fn restore_skill_event(
     event_id: String,
@@ -95,33 +236,10 @@ pub async fn restore_skill_event(
     crate::timing_log::time_command_blocking(&timing_app, "restore_skill_event", move || {
         let event_store = app.state::<EventStoreState>();
         let home = dirs::home_dir().ok_or("Could not find home directory")?;
-        let write_lease = super::write_lease::WriteLease::default();
-        let _guard = write_lease.try_acquire(&home)?;
+        let data_root = super::core_runtime::data_root();
         let guard = locked_store(&event_store)?;
         let store = guard.as_ref().ok_or("Event store is unavailable")?;
-
-        let target = store
-            .get(&event_id)?
-            .ok_or_else(|| format!("Event {event_id} not found"))?;
-        skill_materialize::restore_guard_for_explode(store, &target, &home)?;
-        if target.kind == "make_independent_copy" {
-            if force {
-                return Err(
-                "An independent copy cannot be force-restored because that could delete local edits"
-                    .to_string(),
-            );
-            }
-            super::skill_independent_copy::restore_independent_copy(store, &home, &target)?;
-            drop(guard);
-            skill_refresh::request_snapshot_rebuild(&app);
-            return Ok(());
-        }
-        store.restore(&event_id, force)?;
-        if target.kind == "explode_shared_dir" {
-            if let Some(root) = target.payload.get("root").and_then(|v| v.as_str()) {
-                store.unregister_materialized_root(Path::new(root))?;
-            }
-        }
+        restore_event_with_runtime(store, &home, &data_root, &event_id, force)?;
         drop(guard);
 
         skill_refresh::request_snapshot_rebuild(&app);

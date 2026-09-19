@@ -23,12 +23,23 @@ use tauri::Manager;
 
 pub use skills::*;
 
-/// Opens the event store at `app`'s data dir (docs/spec-event-store.md) - not
-/// `~/.agents`, which stays reserved for `skill-studio.json`. Reconciliation
-/// is a separate step - see [`reconcile_event_store_at_startup`] - so `run()`
-/// can run it off the UI thread. A failure opening the store returns `None`
-/// rather than aborting startup; every event command surfaces that as an
-/// ordinary `Err`.
+/// Opens the event store against the core's shared history database
+/// (`core_runtime::history_db_path`, under `core_runtime::data_root()`) while
+/// still keeping backups and the journal under `app`'s own data dir
+/// (docs/spec-event-store.md) - not `~/.agents`, which stays reserved for
+/// `skill-studio.json`. Every desktop command that mutates through
+/// `skill-studio-core`'s `ops` (park, unpark, install, etc.) writes its
+/// history there too, so Activity and Undo see those events alongside the
+/// desktop's own direct writes.
+///
+/// Also imports the desktop's pre-migration event log (its own
+/// `events.sqlite3`, from before this shared file existed) once: a failed
+/// or corrupt import only logs, so a bad legacy file never blocks startup.
+///
+/// Reconciliation is a separate step - see
+/// [`reconcile_event_store_at_startup`] - so `run()` can run it off the UI
+/// thread. A failure opening the store returns `None` rather than aborting
+/// startup; every event command surfaces that as an ordinary `Err`.
 ///
 /// Never called when [`skills::data_folder_status::check_and_migrate`]
 /// (unit 6.3) already refused the folder as newer than this build - `run()`
@@ -40,9 +51,16 @@ fn open_event_store(app: &tauri::App) -> Option<skills::event_store::EventStore>
         .app_data_dir()
         .map_err(|e| eprintln!("[event_store] could not resolve app data dir: {e}"))
         .ok()?;
-    skills::event_store::EventStore::open(&app_data)
+    let db_path = skills::core_runtime::history_db_path(&skills::core_runtime::data_root());
+    let store = skills::event_store::EventStore::open_with_db(&app_data, &db_path)
         .map_err(|e| eprintln!("[event_store] failed to open: {e}"))
-        .ok()
+        .ok()?;
+    match store.import_legacy_events() {
+        Ok(0) => {}
+        Ok(imported) => eprintln!("[event_store] imported {imported} legacy event(s)"),
+        Err(e) => eprintln!("[event_store] failed to import legacy events: {e}"),
+    }
+    Some(store)
 }
 
 /// Reconciles any row `store` was left holding `pending` by a crash (unit
