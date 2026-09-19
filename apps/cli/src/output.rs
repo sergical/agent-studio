@@ -300,9 +300,16 @@ pub fn print_events_table(envelope: &ResultEnvelope<Vec<EventDto>>) {
         println!("No events.");
     }
     for event in events {
+        // A sweep-only row (e.g. `quarantine_prune`) has no skill of its
+        // own; print a placeholder instead of leaving the column blank.
+        let skill = if event.skill.0.is_empty() {
+            "-"
+        } else {
+            &event.skill.0
+        };
         println!(
             "{}  {}  {}  {}  {:?}",
-            event.id.0, event.ts, event.kind, event.skill.0, event.drift
+            event.id.0, event.ts, event.kind, skill, event.drift
         );
     }
 }
