@@ -50,20 +50,31 @@ jobs:
           # Developer ID Application certificate, exported as a .p12 and
           # base64-encoded, plus the credentials tauri-action needs to
           # unlock it and to submit the build to Apple for notarization.
+          # Left unset for an unsigned rehearsal build (see unit 6.2): with
+          # no APPLE_SIGNING_IDENTITY, tauri-action bundles and publishes
+          # without ever trying to import a certificate or notarize.
           APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE_P12_BASE64 }}
           APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
-          APPLE_SIGNING_IDENTITY: "Developer ID Application"
+          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_CERTIFICATE_P12_BASE64 != '' && 'Developer ID Application' || '' }}
           KEYCHAIN_PASSWORD: ${{ secrets.APPLE_KEYCHAIN_PASSWORD }}
           APPLE_ID: ${{ secrets.APPLE_ID }}
           APPLE_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
           APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+          # Minisign key pair for the in-app updater (unit 6.2): the public
+          # half is committed in tauri.conf.json; the private half signs
+          # every updater artifact tauri-action builds here.
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
         with:
           projectPath: apps/desktop
           args: --target ${{ matrix.target }}
           tagName: ${{ github.ref_name }}
           releaseName: "Skill Studio ${{ github.ref_name }}"
           releaseDraft: false
-          includeUpdaterJson: false
+          # A tag with a pre-release suffix (e.g. v0.1.0-rc.1) publishes as a
+          # GitHub pre-release; a plain vX.Y.Z tag publishes normally.
+          prerelease: ${{ contains(github.ref_name, '-') }}
+          includeUpdaterJson: true
 
       # The workspace's [profile.release] sets split-debuginfo = "packed", so
       # cargo writes the app binary's .dSYM beside the binary in

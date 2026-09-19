@@ -43,6 +43,7 @@ import type {
   TrackedProjects,
   UpdateAllOutcome,
   UpdateOutcome,
+  UpdateStatus,
 } from "@skill-studio/lib";
 
 let ipcCallSeq = 0;
@@ -777,6 +778,47 @@ export function onSkillSnapshot(cb: (snapshot: SkillSnapshot) => void): Promise<
  */
 export async function appVersion(): Promise<AppVersion> {
   return callCommand("app_version");
+}
+
+// ============================================================================
+// In-app Update API (unit 6.2)
+// ============================================================================
+
+/**
+ * Runs one check-download pass against the GitHub release manifest and
+ * returns the resulting state - used by the Settings "Check for updates"
+ * button. The launch check and the four-hour background loop run the same
+ * pass on the Rust side and report through `onUpdateStatus` instead, since
+ * nothing here is awaiting their response.
+ */
+export async function checkForUpdate(): Promise<UpdateStatus> {
+  return callCommand("check_for_update");
+}
+
+/** Catch-up read for the Settings "Version" card on mount or remount. */
+export async function getUpdateStatus(): Promise<UpdateStatus> {
+  return callCommand("get_update_status");
+}
+
+/**
+ * Installs the update a previous check already downloaded and restarts the
+ * app. Refused unless a download already reached `ready-to-install` - the
+ * "Restart to update" button is the only caller, so this is also the only
+ * path that ever installs an update.
+ */
+export async function installUpdate(): Promise<void> {
+  return callCommand("install_update");
+}
+
+/**
+ * Subscribe to `skills://update-status`, emitted on every state change from
+ * the launch check, the four-hour loop, and the manual check - not just the
+ * caller's own `checkForUpdate` call. Returns an unlisten function.
+ */
+export function onUpdateStatus(cb: (status: UpdateStatus) => void): Promise<() => void> {
+  return listen<UpdateStatus>("skills://update-status", (event) => {
+    cb(event.payload);
+  });
 }
 
 // ============================================================================
