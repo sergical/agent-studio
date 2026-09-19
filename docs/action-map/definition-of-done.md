@@ -45,7 +45,7 @@ Scope note, 2026-09-17: assistant runs (Ask, Audit, Test) and packs are deferred
 
 - What it proves: a read-only pass over a real home directory finds every invariant violation before any change lands, so we know the starting state.
 - How it runs: a CLI subcommand or test binary, for example `cargo run -p skill-studio-cli -- doctor --home <path>`, exit code non-zero on any violation.
-- What exists today: nothing. No file in `crates/skill-studio-core` or `apps/desktop/src-tauri/src` matches "doctor".
+- What exists today: `crates/skill-studio-core/src/doctor.rs` checks the six invariants from `lifecycle-states.md`; `ops::fix_skill` wires invariants 1-5 (6 stays startup-only). No `skill-studio doctor` CLI subcommand runs the pass on its own yet.
 - Pass condition: the pass completes without a panic and reports zero unexplained violations against a known-good home.
 
 CI runs clippy with default and all features, and runs tests in parallel. No single-thread flag on any of the six checks above.

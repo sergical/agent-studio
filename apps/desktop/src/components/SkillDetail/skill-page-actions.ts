@@ -289,8 +289,8 @@ export function useSkillPageActions(
     if (!confirmed) return;
     await runAction(addToast, setIsRemoving, "Remove failed", async () => {
       await removeSkill(globalRemovalTarget);
-      addToast(removeSuccessToast(skill.name));
       onRemoveComplete();
+      addToast(removeSuccessToast(skill.name));
     });
   };
 

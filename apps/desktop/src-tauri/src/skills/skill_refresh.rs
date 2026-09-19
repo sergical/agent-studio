@@ -1746,7 +1746,7 @@ pub(crate) fn apply_skill_snapshot_overlays(
 /// returns whatever `ops::scan` managed to read before the error, marked
 /// `Partial` with the error as an observation; a total failure (`Runtime`
 /// construction itself erroring) has nothing to fall back to but an empty
-/// list, also marked `Partial`. Either way, `store_skill_snapshot` folds a
+/// list, also marked `Partial`. Either way, `rebuild_snapshot_now` folds a
 /// `Partial` result into the previously published snapshot rather than
 /// publishing it as-is, so an empty or short list here never overwrites a
 /// good one.
