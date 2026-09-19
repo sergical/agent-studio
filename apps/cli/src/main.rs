@@ -288,6 +288,16 @@ enum Command {
         #[arg(long)]
         json: bool,
     },
+    /// Run every lifecycle invariant in `docs/action-map/lifecycle-states.md`
+    /// over the whole scope; writes nothing. Exit code 0 with an empty
+    /// violation list on a healthy home, 1 when any violation is found
+    /// (the same "found something" code `scan`/`diagnose`/`fix` use).
+    Doctor {
+        #[command(flatten)]
+        scope: ScopeArgs,
+        #[arg(long)]
+        json: bool,
+    },
     /// Take a mutable deployment off disk. `Copy`/`Fork` land intact in
     /// quarantine; `Dotagents`/`SkillsSh` are removed by their own CLI.
     Remove {
@@ -497,6 +507,7 @@ fn main() -> ExitCode {
             json,
         } => run_install_preferences(&scope, project_path, json, time),
         Command::Conflicts { scope, json } => run_diagnose_conflict(&scope, json, time),
+        Command::Doctor { scope, json } => run_doctor(&scope, json, time),
         Command::Remove {
             scope,
             deployment_id,
@@ -1134,6 +1145,19 @@ fn run_diagnose_conflict(scope: &ScopeArgs, json: bool, time: bool) -> ExitCode 
     let envelope =
         ResultEnvelope::from_result(Operation::DiagnoseConflict, &rt.scope, &ctx, result);
     finish(&envelope, json, time, output::print_conflict_report_table)
+}
+
+fn run_doctor(scope: &ScopeArgs, json: bool, time: bool) -> ExitCode {
+    let rt =
+        match build_runtime::<skill_studio_core::dto::DoctorReport>(scope, Operation::Doctor, json)
+        {
+            Ok(rt) => rt,
+            Err(code) => return code,
+        };
+    let ctx = OpContext::uncancellable(CorrelationId(ulid::Ulid::new().to_string()));
+    let result = ops::doctor(&rt, &ctx, &skill_studio_core::dto::DoctorRequest::default());
+    let envelope = ResultEnvelope::from_result(Operation::Doctor, &rt.scope, &ctx, result);
+    finish(&envelope, json, time, output::print_doctor_report_table)
 }
 
 /// Reads every regular file under `dir` (recursively) into an

@@ -31,7 +31,7 @@ use rmcp::model::{CallToolResult, ProgressNotificationParam, ServerCapabilities,
 use rmcp::service::RequestContext;
 use rmcp::{tool, tool_handler, tool_router, RoleServer, ServerHandler};
 use skill_studio_core::dto::{
-    CapabilitiesRequest, DiagnoseConflictRequest, FixSkillRequest, HarnessesRequest,
+    CapabilitiesRequest, DiagnoseConflictRequest, DoctorRequest, FixSkillRequest, HarnessesRequest,
     InstallPreferencesRequest, InstallRequest, ListEventsRequest, ParkRequest, RemoveRequest,
     RepairApplyRequest, RepairPreviewRequest, RestoreRequest, ScanRequest,
     SetHarnessEnabledRequest, SweepQuarantineRequest, UnparkRequest, UpdateAllRequest,
@@ -342,6 +342,20 @@ impl SkillStudioServer {
     ) -> CallToolResult {
         run_op(Operation::DiagnoseConflict, false, &context, |rt, ctx| {
             ops::diagnose_conflict(rt, ctx, &req)
+        })
+        .await
+    }
+
+    #[tool(
+        description = "Run every lifecycle invariant over the whole scope; writes nothing. Empty violations means a healthy scope."
+    )]
+    async fn doctor(
+        &self,
+        Parameters(req): Parameters<DoctorRequest>,
+        context: RequestContext<RoleServer>,
+    ) -> CallToolResult {
+        run_op(Operation::Doctor, false, &context, |rt, ctx| {
+            ops::doctor(rt, ctx, &req)
         })
         .await
     }
