@@ -8,7 +8,9 @@ use std::path::PathBuf;
 use std::process::{Command, Output};
 
 use skill_studio_core::error::{CoreError, ErrorCode};
-use skill_studio_core::skill_update_check::{CommitLookup, PluginManifestLookup, SourceTreeLookup};
+use skill_studio_core::skill_update_check::{
+    CommitInfo, CommitLookup, PluginManifestLookup, SourceTreeLookup,
+};
 
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -143,20 +145,43 @@ impl GhCommitLookup {
 }
 
 impl CommitLookup for GhCommitLookup {
-    fn latest_commit(&self, repo: &str, path: &str) -> Result<Option<String>, CoreError> {
+    fn latest_commit(&self, repo: &str, path: &str) -> Result<Option<CommitInfo>, CoreError> {
         let api_path = format!(
             "repos/{repo}/commits?path={}&per_page=1",
             percent_encoding::utf8_percent_encode(path, percent_encoding::NON_ALPHANUMERIC)
         );
+        // `@tsv` over `[.sha, .commit.committer.date]`, the same query the
+        // desktop's own `GhCommitLookup` used before this ported it: one
+        // call gets both the sha and the date, rather than a second lookup
+        // just for "as of <date>".
         let stdout = run_gh(
             self.runner.as_ref(),
-            &["api", &api_path, "--jq", ".[0].sha"],
+            &[
+                "api",
+                &api_path,
+                "--jq",
+                ".[0] | [.sha, .commit.committer.date] | @tsv",
+            ],
         )?;
-        let sha = String::from_utf8_lossy(&stdout).trim().to_string();
-        if sha.is_empty() || sha == "null" {
+        let stdout = String::from_utf8_lossy(&stdout);
+        // Only the trailing newline `gh` appends is stripped here, not a
+        // full `trim()`: an empty sha with a date still present (`.[0]` had
+        // no `sha` but did have a `commit.committer.date`, an edge case
+        // `gh`'s `--jq` can produce) leaves a leading tab that `splitn`
+        // below relies on to land the date in the second field rather than
+        // the first - a plain `trim()` would eat that tab too and shift the
+        // date into the sha slot, reporting a bogus "update available".
+        let line = stdout.trim_end_matches(['\n', '\r']);
+        if line.is_empty() {
+            return Ok(None);
+        }
+        let mut parts = line.splitn(2, '\t');
+        let sha = parts.next().unwrap_or_default().to_string();
+        let committed_at = parts.next().map(str::to_string);
+        if sha.is_empty() {
             Ok(None)
         } else {
-            Ok(Some(sha))
+            Ok(Some(CommitInfo { sha, committed_at }))
         }
     }
 }
@@ -265,18 +290,56 @@ mod tests {
     }
 
     /// Flow: `GhCommitLookup` against a path with no commits, where `gh`'s
-    /// `--jq ".[0].sha"` renders the missing element as the literal text
-    /// `"null"`.
-    /// Expectation: `Ok(None)`, not `Ok(Some("null".to_string()))`.
-    /// A failure here means the `"null"` sentinel was treated as a real SHA.
+    /// `@tsv` rendering of `[null, null]` is an empty (tab-only) line.
+    /// Expectation: `Ok(None)`, not `Ok(Some(CommitInfo { sha: "", .. }))`.
+    /// A failure here means an empty sha was treated as a real commit.
     #[test]
-    fn commit_lookup_null_sentinel_reads_as_no_commits_or_names_the_fake_sha() {
-        let runner = ScriptedGhRunner::new(vec![output(0, "null\n", "")]);
+    fn commit_lookup_empty_sha_reads_as_no_commits_or_names_the_fake_sha() {
+        let runner = ScriptedGhRunner::new(vec![output(0, "\t\n", "")]);
         let lookup = GhCommitLookup::with_runner(Arc::new(runner));
         let result = lookup
             .latest_commit("obra/write-tests", "skills/x")
             .unwrap();
         assert_eq!(result, None);
+    }
+
+    /// Flow: `gh`'s `@tsv` rendering of `[null, "<date>"]` - an empty sha
+    /// column followed by a populated date column, the shape `.[0]` produces
+    /// when a commit exists for the date field alone but `sha` came back
+    /// null (an edge case a plain `trim()` mishandles: it would eat the
+    /// leading tab along with the trailing newline, leaving one token that
+    /// `splitn` reads as a non-empty sha).
+    /// Expectation: `Ok(None)` - the same "no commits" result as an
+    /// all-empty line, not `Ok(Some(CommitInfo { sha: "<date>", .. }))`.
+    /// A failure here means the date shifted into the sha slot, which
+    /// `dotagents_currency`/`fork_currency` would then compare against the
+    /// installed commit and report a false "update available".
+    #[test]
+    fn commit_lookup_empty_sha_with_a_date_reads_as_no_commits_or_names_the_shifted_date() {
+        let runner = ScriptedGhRunner::new(vec![output(0, "\t2026-02-01T00:00:00Z\n", "")]);
+        let lookup = GhCommitLookup::with_runner(Arc::new(runner));
+        let result = lookup
+            .latest_commit("obra/write-tests", "skills/x")
+            .unwrap();
+        assert_eq!(result, None);
+    }
+
+    /// Flow: `GhCommitLookup` against a path with a real commit - `gh`'s
+    /// `@tsv` line carries the sha and the committer date.
+    /// Expectation: `Ok(Some(CommitInfo { sha, committed_at: Some(date) }))` -
+    /// the date travels with the sha in one call, not a second lookup.
+    /// A failure here means the date column was dropped or swapped with the
+    /// sha.
+    #[test]
+    fn commit_lookup_reads_sha_and_committer_date_from_one_tsv_line() {
+        let runner = ScriptedGhRunner::new(vec![output(0, "abc123\t2026-02-01T00:00:00Z\n", "")]);
+        let lookup = GhCommitLookup::with_runner(Arc::new(runner));
+        let result = lookup
+            .latest_commit("obra/write-tests", "skills/x")
+            .unwrap()
+            .unwrap();
+        assert_eq!(result.sha, "abc123");
+        assert_eq!(result.committed_at.as_deref(), Some("2026-02-01T00:00:00Z"));
     }
 
     /// Flow: the tree endpoint's real JSON shape, `tree[]` entries plus a

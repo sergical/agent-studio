@@ -1614,7 +1614,10 @@ impl skill_studio_core::skill_update_check::CommitLookup for NoGhLookup {
         &self,
         _repo: &str,
         _path: &str,
-    ) -> Result<Option<String>, skill_studio_core::CoreError> {
+    ) -> Result<
+        Option<skill_studio_core::skill_update_check::CommitInfo>,
+        skill_studio_core::CoreError,
+    > {
         Err(skill_studio_core::CoreError::new(
             skill_studio_core::ErrorCode::Unsupported,
             "gh is not on PATH",
@@ -1638,7 +1641,7 @@ impl skill_studio_core::skill_update_check::PluginManifestLookup for NoGhLookup 
 /// skills.sh/dotagents skill's currency `Unknown` rather than an error.
 fn run_outdated(scope: &ScopeArgs, skills: Vec<String>, json: bool, time: bool) -> ExitCode {
     let rt = match build_runtime_write::<
-        std::collections::BTreeMap<String, skill_studio_core::skill_update_check::Currency>,
+        std::collections::BTreeMap<String, skill_studio_core::skill_update_check::OutdatedRecord>,
     >(scope, Operation::Outdated, json)
     {
         Ok(rt) => rt,

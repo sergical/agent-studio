@@ -196,7 +196,11 @@ impl skill_studio_core::skill_update_check::SourceTreeLookup for NoGhLookup {
 }
 
 impl skill_studio_core::skill_update_check::CommitLookup for NoGhLookup {
-    fn latest_commit(&self, _repo: &str, _path: &str) -> Result<Option<String>, CoreError> {
+    fn latest_commit(
+        &self,
+        _repo: &str,
+        _path: &str,
+    ) -> Result<Option<skill_studio_core::skill_update_check::CommitInfo>, CoreError> {
         Err(CoreError::new(
             skill_studio_core::ErrorCode::Unsupported,
             "gh is not on PATH",

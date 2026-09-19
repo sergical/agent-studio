@@ -749,11 +749,11 @@ async fn the_outdated_tool_separates_an_unknown_check_from_an_untracked_skill_or
     assert_eq!(envelope["status"], "ok", "{envelope:?}");
     assert_eq!(envelope["operation"], "outdated", "{envelope:?}");
     assert_eq!(
-        envelope["data"]["gamma"], "unknown",
+        envelope["data"]["gamma"]["currency"], "unknown",
         "a skills.sh skill whose lookup could not run is not up to date or behind: {envelope:?}"
     );
     assert_eq!(
-        envelope["data"]["manual-only"], "not_tracked",
+        envelope["data"]["manual-only"]["currency"], "not_tracked",
         "a skill no install method claims has nothing to check: {envelope:?}"
     );
 }

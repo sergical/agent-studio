@@ -1,11 +1,52 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "title": "Map_of_Currency",
+  "title": "Map_of_OutdatedRecord",
   "type": "object",
   "additionalProperties": {
-    "$ref": "#/$defs/Currency"
+    "$ref": "#/$defs/OutdatedRecord"
   },
   "$defs": {
+    "OutdatedRecord": {
+      "description": "One skill's full currency result, keyed by name in [`outdated`]'s result.\nWire-visible: `ops::outdated`'s CLI subcommand and MCP tool return this\nmap directly. Carries the compared pair alongside [`Currency`] so a\ncaller can show what changed, not just that it did.",
+      "type": "object",
+      "properties": {
+        "currency": {
+          "description": "The currency rule's verdict.",
+          "$ref": "#/$defs/Currency"
+        },
+        "installed_commit": {
+          "description": "The installed side: a dotagents pinned commit SHA, or a skills.sh\n`skillFolderHash`. `None` when the currency rule never resolved an\ninstalled side (`NotTracked`, or `Unknown` before the lock/ledger\nentry was found).",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "latest_commit": {
+          "description": "The newest side: a dotagents commit SHA, or a skills.sh tree SHA for\nthat folder. `None` on the same conditions as `installed_commit`, or\nwhen the lookup failed.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "latest_commit_at": {
+          "description": "The newest commit's date, dotagents only - `None` for skills.sh\n(tree SHAs carry no date) and whenever `latest_commit` is `None`.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "error": {
+          "description": "Why the lookup could not confirm currency, when `currency` is\n[`Currency::Unknown`] because of a lookup failure rather than a\nmissing lock/ledger entry. `None` otherwise.",
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "currency"
+      ]
+    },
     "Currency": {
       "description": "One skill's currency, keyed by name in [`outdated`]'s result. Wire-visible:\n`ops::outdated`'s CLI subcommand and MCP tool return this map directly.",
       "oneOf": [
@@ -20,7 +61,7 @@
           "const": "update_available"
         },
         {
-          "description": "No install method claims this skill: manual, in-repo, a fork, or an\nambiguous owner. Never shown as \"update available\".",
+          "description": "No install method claims this skill: manual, in-repo, an ambiguous\nowner, or a fork with no registry row (or no recorded upstream).\nNever shown as \"update available\".",
           "type": "string",
           "const": "not_tracked"
         },
