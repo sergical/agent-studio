@@ -57,7 +57,6 @@ interface SkillRow {
   uses: number;
   tokens: string;
   status?: "Update";
-  trial?: boolean;
 }
 
 interface DetailState {
@@ -764,13 +763,11 @@ function AddSkillDrawer({
   onInstall: (skill: SkillRow) => void;
 }) {
   const [source, setSource] = useState("");
-  const [trial, setTrial] = useState(false);
   const [scope, setScope] = useState<"Global" | "Project">("Global");
   const [selectedAgents, setSelectedAgents] = useState<AgentId[]>(["claude", ...installAgents]);
 
   const toggleAgent = (agent: AgentId) => {
     if (agent === "codex") {
-      setTrial(false);
       setSelectedAgents((current) =>
         current.includes("codex")
           ? current.filter((item) => item === "claude")
@@ -793,7 +790,6 @@ function AddSkillDrawer({
       agents: selectedAgents,
       uses: 0,
       tokens: "1.4k",
-      trial,
     });
   };
 
@@ -947,22 +943,6 @@ function AddSkillDrawer({
               </button>
             </div>
           </div>
-
-          <label {...stylex.props(styles.trialOption)}>
-            <input
-              type="checkbox"
-              checked={trial}
-              disabled={!selectedAgents.includes("codex")}
-              onChange={(event) => setTrial(event.target.checked)}
-              {...stylex.props(styles.trialCheckbox)}
-            />
-            <span {...stylex.props(styles.trialCopy)}>
-              Try for 24 hours
-              <small {...stylex.props(styles.trialHelp)}>
-                Removed automatically after 24 h unless you keep it.
-              </small>
-            </span>
-          </label>
         </div>
       </div>
       <footer {...stylex.props(styles.addSkillFooter)}>
@@ -1090,7 +1070,6 @@ function CompareDialog({ skillName, onClose }: { skillName: string; onClose: () 
 function DetailScreen({ detail, onBack }: { detail: DetailState; onBack: () => void }) {
   const [invocation, setInvocation] = useState<InvocationPolicy>("Both");
   const [locationExpanded, setLocationExpanded] = useState(false);
-  const [trial, setTrial] = useState(detail.skill.trial ?? false);
   const location = detail.skill.location;
   const skillPath = `${location === "Global" ? "~/" : "agent-studio/"}.agents/skills/${detail.skill.name}`;
   const backLabel = productMockDetailBackLabel(detail.from);
@@ -1120,18 +1099,6 @@ function DetailScreen({ detail, onBack }: { detail: DetailState; onBack: () => v
         <p {...stylex.props(styles.detailDescription)}>{detail.skill.description}</p>
         <div {...stylex.props(styles.chips)}>
           <span {...stylex.props(styles.chip)}>dotagents</span>
-          {trial && (
-            <span {...stylex.props(styles.chip, styles.accent)}>
-              Trial · 24h left
-              <button
-                type="button"
-                onClick={() => setTrial(false)}
-                {...stylex.props(styles.keepTrial)}
-              >
-                Keep
-              </button>
-            </span>
-          )}
           {detail.skill.status && (
             <span {...stylex.props(styles.chip, styles.accent)}>Update available</span>
           )}
@@ -1857,16 +1824,6 @@ const styles = stylex.create({
     width: 14,
   },
   installSwitchKnobActive: { transform: "translateX(12px)" },
-  trialOption: {
-    alignItems: "flex-start",
-    color: tokens.text,
-    display: "flex",
-    fontSize: 12,
-    gap: 8,
-  },
-  trialCheckbox: { margin: "2px 0 0" },
-  trialCopy: { display: "flex", flexDirection: "column", gap: 4 },
-  trialHelp: { color: tokens.faint, fontSize: 10 },
   addSkillFooter: {
     borderTopColor: tokens.border,
     borderTopStyle: "solid",
@@ -2389,16 +2346,6 @@ const styles = stylex.create({
     overflow: "hidden",
     textOverflow: "ellipsis",
     whiteSpace: "nowrap",
-  },
-  keepTrial: {
-    backgroundColor: tokens.background,
-    borderWidth: 0,
-    borderRadius: 3,
-    color: "inherit",
-    fontSize: 11,
-    fontWeight: 600,
-    marginLeft: 6,
-    padding: "2px 6px",
   },
   locationPath: { color: tokens.muted, fontSize: 12, margin: "0 0 14px", overflowWrap: "anywhere" },
   detailHeader: { display: "flex", flexDirection: "column", gap: 8 },
