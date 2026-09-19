@@ -6,7 +6,7 @@
 // directly).
 // ============================================================================
 
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import type { DoctorReport } from "@skill-studio/lib";
 import { invokeErrorMessage, onDoctorReport, runDoctor } from "../lib/skill-api";
 
@@ -14,6 +14,15 @@ interface DoctorReportSubscription {
   isCancelled: () => boolean;
   listen: typeof onDoctorReport;
   onReport: (report: DoctorReport) => void;
+  /** Whether a report (startup or on-demand) has already landed by the time
+   * the listener finishes registering. */
+  hasReport: () => boolean;
+  /** Runs an on-demand pass. Called once, only if `hasReport()` is still
+   * false once the listener has settled (registered, or given up because
+   * there is no live event backend) - a startup pass that emitted before
+   * this listener registered, or no startup pass at all, must not leave the
+   * card reading "Not run yet" forever. */
+  runFallback: () => void;
 }
 
 /** Register the `skills://doctor` listener, then dispose it immediately if
@@ -25,6 +34,8 @@ export async function startDoctorReportSubscription({
   isCancelled,
   listen,
   onReport,
+  hasReport,
+  runFallback,
 }: DoctorReportSubscription): Promise<(() => void) | undefined> {
   try {
     const unlisten = await listen((candidate) => {
@@ -34,9 +45,12 @@ export async function startDoctorReportSubscription({
       unlisten();
       return undefined;
     }
+    if (!hasReport()) runFallback();
     return unlisten;
   } catch {
-    // No live event backend (e.g. the dev harness) - `run` still works.
+    // No live event backend (e.g. the dev harness) - fall back to an
+    // on-demand run so the card still gets a report.
+    if (!isCancelled() && !hasReport()) runFallback();
     return undefined;
   }
 }
@@ -51,30 +65,19 @@ interface UseDoctorResult {
 
 /** Subscribes to the automatic startup pass on mount, and exposes `run` for
  * the card's "Run doctor" button - both land in the same `report`/`error`
- * state, so the card shows whichever pass finished most recently. */
+ * state, so the card shows whichever pass finished most recently. Falls
+ * back to an on-demand run if no report has landed once the subscription
+ * settles (Settings mounted after the startup pass already emitted its
+ * event, or there is no live event backend at all), so the card never
+ * reads "Not run yet" when a report already exists or is one call away. */
 export function useDoctor(): UseDoctorResult {
   const [report, setReport] = useState<DoctorReport | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [running, setRunning] = useState(false);
-
+  const hasReportRef = useRef(false);
   useEffect(() => {
-    let cancelled = false;
-    let unlisten: (() => void) | undefined;
-
-    void startDoctorReportSubscription({
-      isCancelled: () => cancelled,
-      listen: onDoctorReport,
-      onReport: setReport,
-    }).then((registeredUnlisten) => {
-      if (cancelled) registeredUnlisten?.();
-      else unlisten = registeredUnlisten;
-    });
-
-    return () => {
-      cancelled = true;
-      unlisten?.();
-    };
-  }, []);
+    hasReportRef.current = report !== null;
+  }, [report]);
 
   function run() {
     setRunning(true);
@@ -84,6 +87,33 @@ export function useDoctor(): UseDoctorResult {
       .catch((cause: unknown) => setError(invokeErrorMessage(cause)))
       .finally(() => setRunning(false));
   }
+
+  useEffect(() => {
+    let cancelled = false;
+    let unlisten: (() => void) | undefined;
+
+    void startDoctorReportSubscription({
+      isCancelled: () => cancelled,
+      listen: onDoctorReport,
+      onReport: (candidate) => {
+        // A report resolves any earlier failed manual run - a stale error
+        // must not outlive the report that answers it.
+        setError(null);
+        setReport(candidate);
+      },
+      hasReport: () => hasReportRef.current,
+      runFallback: run,
+    }).then((registeredUnlisten) => {
+      if (cancelled) registeredUnlisten?.();
+      else unlisten = registeredUnlisten;
+    });
+
+    return () => {
+      cancelled = true;
+      unlisten?.();
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- mount-only: registers once, and `run`/`hasReportRef` read current state through refs and setters that do not need to retrigger this effect.
+  }, []);
 
   return { report, error, running, run };
 }

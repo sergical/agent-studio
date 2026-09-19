@@ -20,7 +20,6 @@
 //! those two is `ops::fix_skill`'s deferred follow-up; this module still
 //! detects and names them.
 
-use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
 use crate::dto::{Diagnosis, Inventory, IssueKind};
@@ -175,10 +174,23 @@ pub fn check_lockfile_entry_has_folder(
     home: &Path,
     inventory: &Inventory,
 ) -> Vec<DoctorViolation> {
-    let lock: SkillLockFile = read_lock_file(fs, &lock_file_path(home)).unwrap_or(SkillLockFile {
-        version: 3,
-        skills: HashMap::new(),
-    });
+    // `read_lock_file` already turns a missing file (a fresh home with no
+    // lockfile yet) into `Ok(empty_lock_file())`, so an `Err` here only ever
+    // means the file exists but could not be read or parsed - a corrupt
+    // lockfile silently treated as "no entries" would hide every stale row
+    // it names, so it is reported as its own violation instead.
+    let lock: SkillLockFile = match read_lock_file(fs, &lock_file_path(home)) {
+        Ok(lock) => lock,
+        Err(e) => {
+            let path = lock_file_path(home);
+            return vec![DoctorViolation {
+                invariant: DoctorInvariant::LockfileEntryHasFolder,
+                skill: None,
+                path: path.clone(),
+                message: format!("lockfile at {} could not be read: {e}", path.display()),
+            }];
+        }
+    };
     lock.skills
         .into_keys()
         .filter(|name| {
@@ -432,6 +444,49 @@ mod tests {
         .unwrap();
         assert!(
             check_lockfile_entry_has_folder(fs.as_ref(), &home(), &inventory_for(&fs)).is_empty()
+        );
+    }
+
+    /// A corrupt lockfile (unparseable JSON) must not silently read back as
+    /// "no entries" - a healthy report from a document nobody could
+    /// actually read would hide every stale row it names.
+    #[test]
+    fn corrupt_lockfile_is_reported_rather_than_read_as_healthy_or_names_the_swallowed_error() {
+        let fs: Arc<dyn ScopeFs> = Arc::new(
+            FixtureBuilder::new()
+                .dir(&format!("{HOME}/{UNIVERSAL_SKILLS_RELATIVE}"))
+                .file(
+                    &format!("{HOME}/.agents/.skill-lock.json"),
+                    b"{ this is not valid json",
+                )
+                .build_fs(),
+        );
+
+        let violations = check_lockfile_entry_has_folder(fs.as_ref(), &home(), &inventory_for(&fs));
+        assert!(
+            !violations.is_empty(),
+            "a corrupt lockfile must not read back as a healthy, entry-free one"
+        );
+        assert_eq!(
+            violations[0].invariant,
+            DoctorInvariant::LockfileEntryHasFolder
+        );
+    }
+
+    /// A missing lockfile (a fresh home that never installed anything) is a
+    /// legitimately absent document, not a corrupt one, so it must stay
+    /// healthy.
+    #[test]
+    fn missing_lockfile_on_a_fresh_home_stays_healthy_or_names_the_false_positive() {
+        let fs: Arc<dyn ScopeFs> = Arc::new(
+            FixtureBuilder::new()
+                .dir(&format!("{HOME}/{UNIVERSAL_SKILLS_RELATIVE}"))
+                .build_fs(),
+        );
+
+        assert!(
+            check_lockfile_entry_has_folder(fs.as_ref(), &home(), &inventory_for(&fs)).is_empty(),
+            "a fresh home with no lockfile at all must not be flagged as corrupt"
         );
     }
 

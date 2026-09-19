@@ -4248,7 +4248,7 @@ mod tests {
         );
     }
 
-    /// `doctor_runs_at_startup_after_the_first_scan_on_a_blocking_thread_or_names_the_missing_run`:
+    /// `doctor_runs_at_startup_and_delivers_its_report_to_the_callback_or_names_the_missing_run`:
     /// drives `run_startup_doctor_pass_with` - the seam
     /// `run_startup_doctor_pass` (called once from `run_refresh_loop` right
     /// after `first_scan_then_sweep`) delegates to, the same split
@@ -4265,7 +4265,7 @@ mod tests {
     /// sweep stops building a runtime or stops forwarding `run_doctor`'s
     /// result to `on_result`.
     #[test]
-    fn doctor_runs_at_startup_after_the_first_scan_on_a_blocking_thread_or_names_the_missing_run() {
+    fn doctor_runs_at_startup_and_delivers_its_report_to_the_callback_or_names_the_missing_run() {
         let tmp = tempfile::tempdir().unwrap();
         let home = tmp.path().join("home");
         let universal_root = home.join(".agents/skills");

@@ -101,7 +101,7 @@ fn doctor_reports_zero_violations_on_a_healthy_fixture_home_or_names_the_false_p
 /// `unrepairable_home` fixture uses; reused, not re-derived, by
 /// `doctor::check_link_resolves_in_root` (see that function's own doc).
 #[test]
-fn doctor_finds_a_link_that_escapes_its_root_or_names_the_check_that_missed_it() {
+fn doctor_finds_a_dangling_link_inside_its_root_or_names_the_check_that_missed_it() {
     let fs: Arc<dyn ScopeFs> = Arc::new(
         FixtureBuilder::new()
             .dir(&format!("{HOME}/{UNIVERSAL_ROOT_RELATIVE}"))

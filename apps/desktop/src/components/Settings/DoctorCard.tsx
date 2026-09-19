@@ -55,9 +55,8 @@ export function DoctorCard() {
         </p>
       ) : (
         <div className="flex flex-col">
-          {report.violations.map((violation, index) => (
-            // eslint-disable-next-line react/no-array-index-key -- violations have no stable id
-            <ViolationRow key={index} violation={violation} />
+          {report.violations.map((violation) => (
+            <ViolationRow key={`${violation.invariant}:${violation.path}`} violation={violation} />
           ))}
         </div>
       )}
