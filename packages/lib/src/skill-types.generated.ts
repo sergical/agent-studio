@@ -1297,6 +1297,40 @@ export interface ConflictSummary {
   path_b: string;
 }
 /**
+ * Result of `park`.
+ */
+export interface ParkOutcome {
+  /**
+   * The `park` event.
+   */
+  event_id: string;
+  /**
+   * The deployment that was parked.
+   */
+  deployment_id: string;
+  /**
+   * Where the directory now lives, under the parked root.
+   */
+  parked_path: string;
+}
+/**
+ * Result of `unpark`.
+ */
+export interface UnparkOutcome {
+  /**
+   * The `unpark` event.
+   */
+  event_id: string;
+  /**
+   * The deployment that was restored.
+   */
+  deployment_id: string;
+  /**
+   * Where the directory now lives, under the universal root.
+   */
+  restored_path: string;
+}
+/**
  * Result of `remove`.
  */
 export interface RemoveOutcome {
