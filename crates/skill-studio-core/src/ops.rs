@@ -4625,14 +4625,25 @@ pub fn restore_event(
     // here and writes nothing.
     if let Some((skill_name, entry)) = crate::events::parse_restore_lock_entry(inverse) {
         let lock_path = crate::lock_file::lock_file_path(&rt.scope.home.lexical);
-        let _ = crate::lock_file::restore_lock_entry(
+        if let Err(error) = crate::lock_file::restore_lock_entry(
             &session.guard,
             fs,
             &rt.scope,
             &lock_path,
             &skill_name,
             &entry,
-        );
+        ) {
+            // Best-effort, same as the harness links above: the restore
+            // itself still succeeds (the file it undoes is already back),
+            // but the failure is not silently dropped - it lands on the
+            // restore event's own payload so Activity can surface it,
+            // instead of only ever existing as a discarded `Result`.
+            let _ = session.store.patch_payload(
+                &session.guard,
+                &restore_id,
+                serde_json::json!({ "lock_entry_restore_error": error.message }),
+            );
+        }
     }
 
     let restored_fingerprint = crate::events::fingerprint_path(fs, &path)?;

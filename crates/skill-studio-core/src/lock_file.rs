@@ -170,9 +170,15 @@ pub fn restore_lock_entry(
         return Ok(());
     }
     skills.insert(skill_name.to_string(), entry.clone());
-    let bytes = serde_json::to_vec(&doc).map_err(|e| {
+    // The `npx skills` CLI itself always writes this file pretty-printed
+    // (`JSON.stringify(doc, null, 2) + "\n"` - checked against its packed
+    // `dist/cli.mjs`), so restoring a row compactly would leave the file in
+    // a shape that CLI never produces, even though both parse identically.
+    // `to_vec_pretty`'s default indent is the same two spaces.
+    let mut bytes = serde_json::to_vec_pretty(&doc).map_err(|e| {
         CoreError::new(ErrorCode::Io, format!("failed to serialize lock file: {e}")).at(path)
     })?;
+    bytes.push(b'\n');
     if let Some(parent) = path.parent() {
         let scoped_parent = confine(scope, fs, parent)?;
         fs.create_dir_all(guard, &scoped_parent)

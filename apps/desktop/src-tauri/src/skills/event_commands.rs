@@ -31,18 +31,50 @@ fn locked_store(
         .map_err(|e| format!("event store lock poisoned: {e}"))
 }
 
+/// `backup_dir` is written by both stores as the same relative shape
+/// (`"backups/<id>"`), but resolved under different roots - the desktop's
+/// `app_data` and the core's `<data_root>/history` - and a row's `kind`
+/// alone cannot say which side wrote it (`repair_skill_frontmatter` has
+/// live writers on both sides). Probing which root actually has the
+/// manifest is the only reliable way to tell; `app_data` is checked first
+/// since it is the common case (most backup-bearing kinds are desktop-only).
+/// Returns `None` (as `backup_path`/dispatch-to-core fallback) when neither
+/// root has the manifest, e.g. a stale or hand-edited row.
+fn backup_root_for(app_data: &Path, data_root: &Path, backup_dir: &str) -> Option<PathBuf> {
+    let desktop_root = app_data.join(backup_dir);
+    if desktop_root.join("manifest.json").exists() {
+        return Some(desktop_root);
+    }
+    let core_root = data_root.join("history").join(backup_dir);
+    if core_root.join("manifest.json").exists() {
+        return Some(core_root);
+    }
+    None
+}
+
 /// `pub` (not `pub(crate)`) so `tests/undo_activity_history.rs` can check
 /// exactly what `list_skill_events` would hand the renderer for a row,
 /// without a `tauri::AppHandle`.
-pub fn dto_from_row(store: &EventStore, home: &Path, row: EventRow) -> SkillEventDto {
+pub fn dto_from_row(
+    store: &EventStore,
+    home: &Path,
+    data_root: &Path,
+    row: EventRow,
+) -> SkillEventDto {
     let restorable = row.restorable
         && row.inverse.is_some()
         && row.reverted_by.is_none()
         && matches!(row.status.as_str(), "done" | "failed" | "interrupted");
-    let backup_path = row
-        .backup_dir
-        .as_ref()
-        .map(|dir| store.app_data.join(dir).to_string_lossy().into_owned());
+    let backup_path = row.backup_dir.as_ref().map(|dir| {
+        backup_root_for(&store.app_data, data_root, dir)
+            // Neither root has a manifest yet (e.g. a `pending`/`interrupted`
+            // row whose backup write raced this read): fall back to the
+            // desktop root, matching the old always-`app_data` behavior,
+            // rather than surfacing a path that resolves nowhere.
+            .unwrap_or_else(|| store.app_data.join(dir))
+            .to_string_lossy()
+            .into_owned()
+    });
     let force_restorable = restorable
         && row.kind != "make_independent_copy"
         && (row.kind != "explode_shared_dir"
@@ -76,23 +108,31 @@ pub async fn list_skill_events(
         let guard = locked_store(&event_store)?;
         let store = guard.as_ref().ok_or("Event store is unavailable")?;
         let home = dirs::home_dir().ok_or("Could not find home directory")?;
+        let data_root = super::core_runtime::data_root();
         let rows = store.list(limit.unwrap_or(200), skill.as_deref())?;
         Ok(rows
             .into_iter()
-            .map(|row| dto_from_row(store, &home, row))
+            .map(|row| dto_from_row(store, &home, &data_root, row))
             .collect())
     })
     .await
 }
 
 /// Event kinds whose inverse only the desktop's own `EventStore::restore`
-/// can apply: their `InverseOp::RecreateSymlink`/`RemoveSymlink` uses the
-/// field name `"link"`, which the core's `events::parse_symlink_inverse`
-/// (field `"path"`) does not recognize, and `make_independent_copy` has its
-/// own bespoke restore path below. Everything else - including the
-/// genuinely ambiguous `"repair_skill_frontmatter"`, which both sides write
-/// in the core's own `restore_backup` shape - is routed to
-/// `ops::restore_event`, per the "prefer the core" rule.
+/// can apply, and which never carry a `backup_dir`: their
+/// `InverseOp::RecreateSymlink`/`RemoveSymlink` uses the field name `"link"`,
+/// which the core's `events::parse_symlink_inverse` (field `"path"`) does not
+/// recognize, and `make_independent_copy` has its own bespoke restore path
+/// below. `distribute_from_shared` is here for legacy rows only - the
+/// desktop no longer writes it, but old rows still show Undo and
+/// `EventStore::apply_restore_distribute` still handles it.
+///
+/// Kinds that *do* carry a `backup_dir` (e.g. `repair_skill_frontmatter`,
+/// which both the desktop's `apply_skill_frontmatter_repair` and the core's
+/// `ops::fix_skill` write) are ambiguous by kind alone, since both sides
+/// write the same `restore_backup` inverse shape - dispatch for those goes
+/// by which root actually has the row's backup manifest (`backup_root_for`
+/// in `restore_event_with_runtime`), not by this list.
 const DESKTOP_OWNED_KINDS: &[&str] = &[
     "unlink_harness",
     "relink_harness",
@@ -102,8 +142,7 @@ const DESKTOP_OWNED_KINDS: &[&str] = &[
     "repair_remove_link",
     "repair_relink_link",
     "make_independent_copy",
-    "move_aside_disable",
-    "move_aside_restore",
+    "distribute_from_shared",
 ];
 
 /// Walks a chain of `restore` rows back to the kind that actually owns the
@@ -207,7 +246,19 @@ pub fn restore_event_with_runtime(
             .map(|_| ());
     }
 
-    if !DESKTOP_OWNED_KINDS.contains(&owning_restore_kind(store, &target).as_str()) {
+    // A row with a `backup_dir` is dispatched by which root actually has its
+    // manifest (see `backup_root_for`'s doc comment): the kind string alone
+    // cannot tell a desktop-written `repair_skill_frontmatter` row from a
+    // core-written one, since both sides write the same `restore_backup`
+    // inverse shape under it. Only when the row carries no `backup_dir` (a
+    // pure symlink-inverse kind) does the static `DESKTOP_OWNED_KINDS` list
+    // decide.
+    let desktop_owns = match target.backup_dir.as_deref() {
+        Some(dir) => backup_root_for(&store.app_data, data_root, dir)
+            .is_some_and(|root| root.starts_with(&store.app_data)),
+        None => DESKTOP_OWNED_KINDS.contains(&owning_restore_kind(store, &target).as_str()),
+    };
+    if !desktop_owns {
         // `ops::restore_event` manages its own lease; holding `write_lease`
         // across this call would self-deadlock (see
         // `core_restore_event_at`'s doc comment).
@@ -769,7 +820,7 @@ mod tests {
         store.finish(&id, EventStatus::Done).unwrap();
 
         let row = store.get(&id).unwrap().unwrap();
-        let dto = dto_from_row(&store, temp.path(), row);
+        let dto = dto_from_row(&store, temp.path(), &temp.path().join("data-root"), row);
         assert!(!dto.restorable);
     }
 

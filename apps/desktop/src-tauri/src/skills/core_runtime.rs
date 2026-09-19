@@ -38,9 +38,12 @@ pub(crate) fn data_root() -> PathBuf {
 /// history through. Also the file `lib.rs`'s `open_event_store` opens for
 /// the desktop's own `EventStore`, so Activity/Undo see every core mutation
 /// alongside the desktop's own (`docs/action-map/events-and-history.md`);
-/// `pub(crate)` so `lib.rs` can share this instead of hand-deriving the same
-/// path a second way.
-pub(crate) fn history_db_path(data_root: &Path) -> PathBuf {
+/// `pub` (not `pub(crate)`) so `lib.rs` can share this instead of
+/// hand-deriving the same path a second way, and so
+/// `tests/undo_activity_history.rs` can point its own fixture `Runtime` and
+/// `EventStore` at exactly the path the real app computes, instead of a
+/// second, hand-restated copy that could silently drift from it.
+pub fn history_db_path(data_root: &Path) -> PathBuf {
     data_root.join("history").join("events.sqlite3")
 }
 

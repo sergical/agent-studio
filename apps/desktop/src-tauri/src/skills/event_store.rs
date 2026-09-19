@@ -390,15 +390,20 @@ impl EventStore {
             .map_err(|e| format!("Failed to query event {id}: {e}"))
     }
 
-    /// Lists events newest-first (by insertion order - two ULIDs allocated
-    /// in the same millisecond don't reliably sort, so `rowid` is the order).
+    /// Lists events newest-first by `ts`, with `rowid` only as a tiebreaker
+    /// for two ULIDs allocated in the same millisecond (which don't reliably
+    /// sort). `rowid` alone is not enough: `import_legacy_events` appends
+    /// imported rows at the end of the table regardless of their original
+    /// `ts`, so a legacy row imported today would otherwise sort above
+    /// events the core wrote just now.
     pub fn list(&self, limit: usize, skill: Option<&str>) -> Result<Vec<EventRow>, String> {
         let mut stmt = if skill.is_some() {
-            self.conn
-                .prepare("SELECT * FROM events WHERE skill = ?1 ORDER BY rowid DESC LIMIT ?2")
+            self.conn.prepare(
+                "SELECT * FROM events WHERE skill = ?1 ORDER BY ts DESC, rowid DESC LIMIT ?2",
+            )
         } else {
             self.conn
-                .prepare("SELECT * FROM events ORDER BY rowid DESC LIMIT ?1")
+                .prepare("SELECT * FROM events ORDER BY ts DESC, rowid DESC LIMIT ?1")
         }
         .map_err(|e| format!("Failed to prepare event list query: {e}"))?;
 
@@ -473,13 +478,20 @@ impl EventStore {
     }
 
     /// Interrupted deterministic frontmatter repairs that startup can finish
-    /// from their backend-generated, fingerprint-bound intent.
+    /// from their backend-generated, fingerprint-bound intent. Both the
+    /// desktop's `apply_skill_frontmatter_repair` and the core's
+    /// `ops::fix_skill` write `kind = 'repair_skill_frontmatter'`, but only
+    /// the desktop's payload carries `proposed_content_fingerprint` - the
+    /// core's `fix_skill` payload shape is not something this recovery loop
+    /// (desktop-only, driven by `lib.rs`) knows how to parse, so a core row
+    /// here would fail rather than recover.
     pub fn interrupted_frontmatter_repair_events(&self) -> Result<Vec<EventRow>, String> {
         let mut stmt = self
             .conn
             .prepare(
                 "SELECT * FROM events
                  WHERE status = 'interrupted' AND kind = 'repair_skill_frontmatter'
+                   AND json_extract(payload, '$.proposed_content_fingerprint') IS NOT NULL
                  ORDER BY rowid ASC",
             )
             .map_err(|e| format!("Failed to prepare frontmatter repair recovery query: {e}"))?;

@@ -564,6 +564,21 @@ pub trait HistoryStore: Send {
         backup_dir: &str,
         relative: &str,
     ) -> Result<Vec<(PathBuf, Vec<u8>)>, CoreError>;
+    /// Merges `patch`'s top-level keys into an already-recorded event's
+    /// payload, leaving every other key as-is. For best-effort follow-up
+    /// work a mutation performs after its own row already exists (e.g.
+    /// `restore_event` recording that putting back a `.skill-lock.json` row
+    /// failed) that must not turn an otherwise-successful mutation into a
+    /// failure just to report it. The default no-op is fine for a host that
+    /// never calls it.
+    fn patch_payload(
+        &mut self,
+        _guard: &ExclusiveGuard,
+        _id: &EventId,
+        _patch: serde_json::Value,
+    ) -> Result<(), CoreError> {
+        Ok(())
+    }
 }
 
 /// Lifecycle state of one journal plan.

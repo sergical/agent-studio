@@ -24,7 +24,7 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
 use skill_studio_core::dto::{
-    InstallFile, InstallMethod, InstallOutcome, InstallRequest, ScanRequest,
+    FixSkillRequest, InstallFile, InstallMethod, InstallOutcome, InstallRequest, ScanRequest,
     SetHarnessEnabledRequest, UnparkRequest,
 };
 use skill_studio_core::harness::HarnessCatalog;
@@ -41,22 +41,19 @@ use skill_studio_core::testing::{FakeClock, FakeIds, RecordingSink};
 
 use skill_studio_host::{FileLease, RealFs, SqliteHistoryOpener};
 
-use skill_studio_lib::skills::core_runtime::{build_runtime_write_at, to_command_result};
+use skill_studio_lib::open_event_store_at;
+use skill_studio_lib::skills::core_runtime::{
+    build_runtime_write_at, history_db_path, to_command_result,
+};
 use skill_studio_lib::skills::event_commands::{dto_from_row, restore_event_with_runtime};
-use skill_studio_lib::skills::event_store::EventStore;
+use skill_studio_lib::skills::event_store::{
+    allocate_id, fingerprint_path, EventDraft, EventStatus, EventStore, InverseOp,
+};
 use skill_studio_lib::skills::skill_materialize::repair_remove_link;
 use skill_studio_lib::skills::skill_park::park_with_runtime;
 
 const UNIVERSAL_ROOT_RELATIVE: &str = ".agents/skills";
 const CLAUDE_ROOT_RELATIVE: &str = ".claude/skills";
-
-/// `<data_root>/history/events.sqlite3` - matches `core_runtime::
-/// history_db_path`, restated here (rather than importing a `pub(crate)`
-/// item across the crate boundary) the same way `tests/park_parity.rs`
-/// restates `DATA_ROOT_RELATIVE` instead of reaching into private helpers.
-fn history_db_path(data_root: &Path) -> PathBuf {
-    data_root.join("history").join("events.sqlite3")
-}
 
 fn data_root_for(home: &Path) -> PathBuf {
     home.join(".skill-studio")
@@ -266,7 +263,7 @@ fn desktop_remove_of_a_skills_sh_skill_appears_in_history_and_undo_restores_fold
         .iter()
         .find(|r| r.kind == "remove")
         .expect("the core's remove event must be visible through the desktop's EventStore");
-    let dto = dto_from_row(&store, &home, row.clone());
+    let dto = dto_from_row(&store, &home, &data_root, row.clone());
     assert!(dto.restorable, "a fresh remove event must be restorable");
 
     // Undo: dispatches to the core (remove's inverse is core-owned), and
@@ -454,7 +451,7 @@ fn a_desktop_written_repair_event_still_appears_in_history_and_still_undoes() {
         .iter()
         .find(|r| r.kind == "repair_remove_link")
         .expect("the desktop-written event must still be visible");
-    let dto = dto_from_row(&store, &home, row.clone());
+    let dto = dto_from_row(&store, &home, &data_root, row.clone());
     assert!(dto.restorable);
 
     restore_event_with_runtime(&store, &home, &data_root, &row.id, false).unwrap();
@@ -599,6 +596,514 @@ fn startup_reconciliation_leaves_a_completed_core_event_untouched() {
     assert_eq!(
         after.status, "done",
         "a completed core event's status must survive startup reconciliation"
+    );
+
+    std::fs::remove_dir_all(&home).ok();
+}
+
+// ---------------------------------------------------------------------
+// (f) `repair_skill_frontmatter` has two live writers (the desktop's
+// `apply_skill_frontmatter_repair` and the core's `ops::fix_skill`) that
+// write the same kind string over the same `restore_backup` inverse shape,
+// under `backup_dir`s resolved against different roots - dispatch must
+// probe which root actually has the row's manifest, not just its kind.
+// ---------------------------------------------------------------------
+
+/// Simulates exactly what `apply_skill_frontmatter_repair` writes (backup
+/// under the desktop's own `app_data`, then a `repair_skill_frontmatter`
+/// event pointing at it) without needing a `tauri::AppHandle` - the same
+/// "record the write shape directly" approach the legacy-import test above
+/// uses for a pre-migration row.
+#[test]
+fn a_desktop_written_frontmatter_repair_undoes_through_the_desktop_and_restores_skill_md() {
+    let home = unique_temp_dir("undo_desktop_frontmatter_repair");
+    std::fs::create_dir_all(&home).unwrap();
+    let data_root = data_root_for(&home);
+    let skill = "kappa-repair";
+    write_manual_universal_skill(&home, skill);
+    let skill_md = home
+        .join(UNIVERSAL_ROOT_RELATIVE)
+        .join(skill)
+        .join("SKILL.md");
+    let original = std::fs::read(&skill_md).unwrap();
+
+    let store = desktop_store(&home, &data_root);
+    let event_id = allocate_id();
+    let pre_fingerprint = fingerprint_path(&skill_md);
+    store
+        .backup_paths(&event_id, std::slice::from_ref(&skill_md))
+        .unwrap();
+    store
+        .record(
+            &event_id,
+            &EventDraft {
+                kind: "repair_skill_frontmatter".to_string(),
+                skill: skill.to_string(),
+                harness: None,
+                scope: Some("global".to_string()),
+                project_path: None,
+                payload: serde_json::json!({}),
+                inverse: Some(
+                    serde_json::to_value(InverseOp::RestoreBackup {
+                        path: skill_md.clone(),
+                        pre_fingerprint,
+                        post_fingerprint: None,
+                    })
+                    .unwrap(),
+                ),
+                backup_dir: Some(format!("backups/{event_id}")),
+                restorable: true,
+            },
+        )
+        .unwrap();
+    store.finish(&event_id, EventStatus::Done).unwrap();
+
+    // The "repair" itself: overwrite SKILL.md, as apply_skill_frontmatter_repair
+    // would once its own record() call above lands.
+    std::fs::write(
+        &skill_md,
+        b"---\nname: kappa-repair\ndescription: fixed\n---\nBody.\n",
+    )
+    .unwrap();
+
+    restore_event_with_runtime(&store, &home, &data_root, &event_id, false).unwrap();
+    assert_eq!(
+        std::fs::read(&skill_md).unwrap(),
+        original,
+        "undo of a desktop-written repair must restore SKILL.md from the desktop's own backup"
+    );
+
+    std::fs::remove_dir_all(&home).ok();
+}
+
+/// A malformed-frontmatter fixture, matching `tests/fix_parity.rs`'s own
+/// `write_fixture`: an unquoted `: ` in `description` is the one repair
+/// `propose_colon_scalar_repair` (and so `ops::fix_skill`) applies.
+fn write_malformed_frontmatter_skill(home: &Path, skill: &str) {
+    let dir = home.join(".claude/skills").join(skill);
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(
+        dir.join("SKILL.md"),
+        format!("---\nname: {skill}\ndescription: Use this: when needed\n---\nBody.\n"),
+    )
+    .unwrap();
+}
+
+#[test]
+fn a_core_written_frontmatter_repair_via_fix_skill_undoes_through_the_core() {
+    let home = unique_temp_dir("undo_core_frontmatter_repair");
+    std::fs::create_dir_all(&home).unwrap();
+    let data_root = data_root_for(&home);
+    let skill = "lambda-bad";
+    write_malformed_frontmatter_skill(&home, skill);
+    let skill_md = home.join(".claude/skills").join(skill).join("SKILL.md");
+    let original = std::fs::read(&skill_md).unwrap();
+
+    let rt = build_runtime_write_at(&home, &data_root).unwrap();
+    let outcome = ops::fix_skill(
+        &rt,
+        &ctx(),
+        &FixSkillRequest {
+            skill: SkillName(skill.to_string()),
+        },
+    )
+    .unwrap();
+    let skill_studio_core::dto::FixApplied::FrontmatterRepair { event_id, .. } = outcome
+        .applied
+        .into_iter()
+        .next()
+        .expect("fix_skill must have applied the colon-scalar repair");
+    assert_ne!(
+        std::fs::read(&skill_md).unwrap(),
+        original,
+        "fix_skill must actually have rewritten SKILL.md"
+    );
+
+    let store = desktop_store(&home, &data_root);
+    let row = store
+        .get(&event_id.0)
+        .unwrap()
+        .expect("the core's fix_skill event must be visible through the desktop's EventStore");
+    assert_eq!(row.kind, "repair_skill_frontmatter");
+
+    restore_event_with_runtime(&store, &home, &data_root, &row.id, false).unwrap();
+    assert_eq!(
+        std::fs::read(&skill_md).unwrap(),
+        original,
+        "undo of a core-written repair must restore SKILL.md from the core's own backup"
+    );
+
+    std::fs::remove_dir_all(&home).ok();
+}
+
+#[test]
+fn backup_path_of_a_core_remove_row_points_at_an_existing_folder() {
+    let home = unique_temp_dir("undo_backup_path_core_root");
+    std::fs::create_dir_all(&home).unwrap();
+    let data_root = data_root_for(&home);
+    let skill = "mu-backup-path";
+    write_manual_universal_skill(&home, skill);
+    mark_skills_sh(&home, skill);
+
+    let rt = runtime_with_fake_spawner(&home, &data_root);
+    let deployment_id = resolve_universal_deployment_id(&rt, skill);
+    ops::remove(
+        &rt,
+        &ctx(),
+        &skill_studio_core::dto::RemoveRequest { deployment_id },
+    )
+    .unwrap();
+
+    let store = desktop_store(&home, &data_root);
+    let rows = store.list(50, Some(skill)).unwrap();
+    let row = rows
+        .iter()
+        .find(|r| r.kind == "remove")
+        .expect("the core's remove event must exist")
+        .clone();
+    let dto = dto_from_row(&store, &home, &data_root, row);
+    let backup_path = dto
+        .backup_path
+        .expect("a remove event must carry a backup_dir");
+    assert!(
+        Path::new(&backup_path).is_dir(),
+        "backup_path must resolve to the core's own backup root ({backup_path}), not a \
+         nonexistent path under the desktop's app_data"
+    );
+
+    std::fs::remove_dir_all(&home).ok();
+}
+
+// ---------------------------------------------------------------------
+// (g) `EventStore::list` sorts by `ts DESC, rowid DESC`: an imported legacy
+// row gets appended at the end of the table (highest `rowid`) regardless of
+// its original `ts`, so `rowid` alone would sort it above events the core
+// wrote just now.
+// ---------------------------------------------------------------------
+
+#[test]
+fn list_orders_an_imported_old_row_below_a_newer_native_row() {
+    let home = unique_temp_dir("undo_list_order");
+    std::fs::create_dir_all(&home).unwrap();
+    let data_root = data_root_for(&home);
+    let app_data = home.join("app_data");
+    std::fs::create_dir_all(&app_data).unwrap();
+
+    let legacy_path = app_data.join("events.sqlite3");
+    {
+        let legacy_store = EventStore::open_with_db(&app_data, &legacy_path).unwrap();
+        legacy_store
+            .record(
+                "legacy-old-event",
+                &EventDraft {
+                    kind: "repair_remove_link".to_string(),
+                    skill: "nu-old".to_string(),
+                    harness: None,
+                    scope: None,
+                    project_path: None,
+                    payload: serde_json::json!({}),
+                    inverse: None,
+                    backup_dir: None,
+                    restorable: false,
+                },
+            )
+            .unwrap();
+        legacy_store
+            .finish("legacy-old-event", EventStatus::Done)
+            .unwrap();
+        // Force `ts` far in the past - the timestamp `import_legacy_events`
+        // carries over unchanged, unlike the `rowid` the shared table
+        // reassigns on import.
+        legacy_store
+            .conn
+            .execute(
+                "UPDATE events SET ts = '2000-01-01T00:00:00+00:00' WHERE id = ?1",
+                rusqlite::params!["legacy-old-event"],
+            )
+            .unwrap();
+    }
+
+    let shared_store = EventStore::open_with_db(&app_data, &history_db_path(&data_root)).unwrap();
+    // A native row, written after the import, so it gets both a later `ts`
+    // and (via `import_legacy_events` appending) not necessarily a later
+    // `rowid` than the about-to-be-imported legacy row.
+    shared_store
+        .record(
+            "native-new-event",
+            &EventDraft {
+                kind: "repair_remove_link".to_string(),
+                skill: "xi-new".to_string(),
+                harness: None,
+                scope: None,
+                project_path: None,
+                payload: serde_json::json!({}),
+                inverse: None,
+                backup_dir: None,
+                restorable: false,
+            },
+        )
+        .unwrap();
+    shared_store
+        .finish("native-new-event", EventStatus::Done)
+        .unwrap();
+    shared_store.import_legacy_events().unwrap();
+
+    let rows = shared_store.list(50, None).unwrap();
+    let native_idx = rows
+        .iter()
+        .position(|r| r.id == "native-new-event")
+        .expect("native row must be listed");
+    let legacy_idx = rows
+        .iter()
+        .position(|r| r.id == "legacy-old-event")
+        .expect("imported legacy row must be listed");
+    assert!(
+        native_idx < legacy_idx,
+        "the newer native row must sort above the older imported row, regardless of rowid order"
+    );
+
+    std::fs::remove_dir_all(&home).ok();
+}
+
+// ---------------------------------------------------------------------
+// (h) `lib.rs::open_event_store_at` is the seam that fixed issue #263's
+// original bug (opening a desktop-only `events.sqlite3` instead of the
+// core's shared history database); this test goes through it, not a
+// hand-built `EventStore::open_with_db`, so reverting that seam back to
+// `EventStore::open(&app_data)` turns it red - proven by hand while writing
+// this test (temporarily changed `open_event_store_at`'s body to
+// `skills::event_store::EventStore::open(app_data_dir).ok()`, ignoring
+// `data_root`, and re-ran this test: it failed because the core-written
+// event was invisible; reverted before committing).
+// ---------------------------------------------------------------------
+
+#[test]
+fn open_event_store_at_reads_the_shared_core_history_database() {
+    let home = unique_temp_dir("undo_open_event_store_seam");
+    std::fs::create_dir_all(&home).unwrap();
+    let data_root = data_root_for(&home);
+    let app_data = home.join("app_data");
+    std::fs::create_dir_all(&app_data).unwrap();
+    let skill = "omicron-seam";
+    write_manual_universal_skill(&home, skill);
+    mark_skills_sh(&home, skill);
+
+    let rt = runtime_with_fake_spawner(&home, &data_root);
+    let deployment_id = resolve_universal_deployment_id(&rt, skill);
+    ops::remove(
+        &rt,
+        &ctx(),
+        &skill_studio_core::dto::RemoveRequest { deployment_id },
+    )
+    .unwrap();
+
+    let store = open_event_store_at(&app_data, &data_root)
+        .expect("open_event_store_at must open successfully");
+    let rows = store.list(50, Some(skill)).unwrap();
+    assert!(
+        rows.iter().any(|r| r.kind == "remove"),
+        "open_event_store_at must open the same shared database core ops writes through, \
+         not a separate desktop-only events.sqlite3"
+    );
+
+    std::fs::remove_dir_all(&home).ok();
+}
+
+// ---------------------------------------------------------------------
+// (i) Legacy import is idempotent under an id collision and safe to retry
+// after a failed rename.
+// ---------------------------------------------------------------------
+
+#[test]
+fn legacy_import_keeps_the_shared_rows_copy_on_an_id_collision() {
+    let home = unique_temp_dir("undo_legacy_import_collision");
+    std::fs::create_dir_all(&home).unwrap();
+    let data_root = data_root_for(&home);
+    let app_data = home.join("app_data");
+    std::fs::create_dir_all(&app_data).unwrap();
+
+    let legacy_path = app_data.join("events.sqlite3");
+    {
+        let legacy_store = EventStore::open_with_db(&app_data, &legacy_path).unwrap();
+        legacy_store
+            .record(
+                "colliding-id",
+                &EventDraft {
+                    kind: "repair_remove_link".to_string(),
+                    skill: "pi-legacy".to_string(),
+                    harness: None,
+                    scope: None,
+                    project_path: None,
+                    payload: serde_json::json!({}),
+                    inverse: None,
+                    backup_dir: None,
+                    restorable: false,
+                },
+            )
+            .unwrap();
+        legacy_store
+            .finish("colliding-id", EventStatus::Done)
+            .unwrap();
+    }
+
+    // The shared store already has a row with the same id, written natively
+    // (e.g. an earlier partial import, or an id somehow reused) - `INSERT OR
+    // IGNORE` must keep this one, not overwrite it with the legacy copy.
+    let shared_store = EventStore::open_with_db(&app_data, &history_db_path(&data_root)).unwrap();
+    shared_store
+        .record(
+            "colliding-id",
+            &EventDraft {
+                kind: "install".to_string(),
+                skill: "pi-shared".to_string(),
+                harness: None,
+                scope: None,
+                project_path: None,
+                payload: serde_json::json!({}),
+                inverse: None,
+                backup_dir: None,
+                restorable: false,
+            },
+        )
+        .unwrap();
+    shared_store
+        .finish("colliding-id", EventStatus::Done)
+        .unwrap();
+
+    shared_store.import_legacy_events().unwrap();
+    let row = shared_store.get("colliding-id").unwrap().unwrap();
+    assert_eq!(
+        row.skill, "pi-shared",
+        "INSERT OR IGNORE must keep the shared store's own row over the legacy import"
+    );
+    assert_eq!(row.kind, "install");
+
+    std::fs::remove_dir_all(&home).ok();
+}
+
+#[test]
+fn legacy_import_retries_without_duplicates_after_a_failed_rename() {
+    let home = unique_temp_dir("undo_legacy_import_rename_retry");
+    std::fs::create_dir_all(&home).unwrap();
+    let data_root = data_root_for(&home);
+    let app_data = home.join("app_data");
+    std::fs::create_dir_all(&app_data).unwrap();
+
+    let legacy_path = app_data.join("events.sqlite3");
+    {
+        let legacy_store = EventStore::open_with_db(&app_data, &legacy_path).unwrap();
+        legacy_store
+            .record(
+                "rho-retry-event",
+                &EventDraft {
+                    kind: "repair_remove_link".to_string(),
+                    skill: "rho-retry".to_string(),
+                    harness: None,
+                    scope: None,
+                    project_path: None,
+                    payload: serde_json::json!({}),
+                    inverse: None,
+                    backup_dir: None,
+                    restorable: false,
+                },
+            )
+            .unwrap();
+        legacy_store
+            .finish("rho-retry-event", EventStatus::Done)
+            .unwrap();
+    }
+
+    let shared_store = EventStore::open_with_db(&app_data, &history_db_path(&data_root)).unwrap();
+
+    // Simulate "commit succeeded, rename failed": import once, then put the
+    // legacy file straight back (as if the `fs::rename` inside
+    // `import_legacy_events` had failed and left the original file in
+    // place) rather than where `.migrated` would leave it.
+    let imported_first = shared_store.import_legacy_events().unwrap();
+    assert_eq!(imported_first, 1);
+    std::fs::rename(app_data.join("events.sqlite3.migrated"), &legacy_path).unwrap();
+
+    let imported_second = shared_store.import_legacy_events().unwrap();
+    assert_eq!(
+        imported_second, 0,
+        "retrying after a simulated failed rename must import nothing new"
+    );
+
+    let rows = shared_store.list(50, Some("rho-retry")).unwrap();
+    assert_eq!(
+        rows.len(),
+        1,
+        "the retried import must not have duplicated the row"
+    );
+
+    std::fs::remove_dir_all(&home).ok();
+}
+
+// ---------------------------------------------------------------------
+// (j) Startup reconciliation flips every `pending` row to `interrupted`,
+// not just the first one it finds, and never touches a `done` row.
+// ---------------------------------------------------------------------
+
+#[test]
+fn reconcile_at_startup_interrupts_every_pending_row_and_leaves_done_rows_alone() {
+    let home = unique_temp_dir("undo_reconcile_two_pending");
+    std::fs::create_dir_all(&home).unwrap();
+    let data_root = data_root_for(&home);
+    let store = desktop_store(&home, &data_root);
+
+    for id in ["sigma-pending-1", "sigma-pending-2"] {
+        store
+            .record(
+                id,
+                &EventDraft {
+                    kind: "repair_remove_link".to_string(),
+                    skill: id.to_string(),
+                    harness: None,
+                    scope: None,
+                    project_path: None,
+                    payload: serde_json::json!({}),
+                    inverse: None,
+                    backup_dir: None,
+                    restorable: false,
+                },
+            )
+            .unwrap();
+        // Left `pending` deliberately - `record` never calls `finish`.
+    }
+    store
+        .record(
+            "sigma-done",
+            &EventDraft {
+                kind: "repair_remove_link".to_string(),
+                skill: "sigma-done".to_string(),
+                harness: None,
+                scope: None,
+                project_path: None,
+                payload: serde_json::json!({}),
+                inverse: None,
+                backup_dir: None,
+                restorable: false,
+            },
+        )
+        .unwrap();
+    store.finish("sigma-done", EventStatus::Done).unwrap();
+
+    let flipped = store.reconcile_at_startup().unwrap();
+    let flipped_ids: Vec<&str> = flipped.iter().map(|r| r.id.as_str()).collect();
+    assert!(flipped_ids.contains(&"sigma-pending-1"));
+    assert!(flipped_ids.contains(&"sigma-pending-2"));
+    assert_eq!(
+        store.get("sigma-pending-1").unwrap().unwrap().status,
+        "interrupted"
+    );
+    assert_eq!(
+        store.get("sigma-pending-2").unwrap().unwrap().status,
+        "interrupted"
+    );
+    assert_eq!(
+        store.get("sigma-done").unwrap().unwrap().status,
+        "done",
+        "reconcile must not touch an already-completed row"
     );
 
     std::fs::remove_dir_all(&home).ok();

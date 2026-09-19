@@ -19,6 +19,8 @@
 pub mod skills;
 pub mod timing_log;
 
+use std::path::Path;
+
 use tauri::Manager;
 
 pub use skills::*;
@@ -51,8 +53,22 @@ fn open_event_store(app: &tauri::App) -> Option<skills::event_store::EventStore>
         .app_data_dir()
         .map_err(|e| eprintln!("[event_store] could not resolve app data dir: {e}"))
         .ok()?;
-    let db_path = skills::core_runtime::history_db_path(&skills::core_runtime::data_root());
-    let store = skills::event_store::EventStore::open_with_db(&app_data, &db_path)
+    open_event_store_at(&app_data, &skills::core_runtime::data_root())
+}
+
+/// [`open_event_store`], but taking `app_data_dir`/`data_root` directly
+/// rather than reading them from a live `tauri::App` - the seam
+/// `tests/undo_activity_history.rs` opens its own `EventStore` through, so
+/// reverting this function to the desktop-only-file bug it fixed
+/// (`EventStore::open(&app_data)`, ignoring the core's shared history
+/// database entirely) turns that test red instead of only the production
+/// code path nothing exercises directly.
+pub fn open_event_store_at(
+    app_data_dir: &Path,
+    data_root: &Path,
+) -> Option<skills::event_store::EventStore> {
+    let db_path = skills::core_runtime::history_db_path(data_root);
+    let store = skills::event_store::EventStore::open_with_db(app_data_dir, &db_path)
         .map_err(|e| eprintln!("[event_store] failed to open: {e}"))
         .ok()?;
     match store.import_legacy_events() {
@@ -70,7 +86,27 @@ fn open_event_store(app: &tauri::App) -> Option<skills::event_store::EventStore>
 /// repairers over whatever that reconciliation left `interrupted`. Called
 /// from inside `tauri::async_runtime::spawn_blocking` in `run()`, so this
 /// filesystem work never runs on the UI thread.
+///
+/// The events table is now shared with any CLI or MCP process
+/// (`core_runtime::history_db_path`), so a `pending` row here might belong to
+/// a mutation a still-running sibling process owns, not a crash - flipping it
+/// to `interrupted` (or a recovery loop touching it) out from under that
+/// process would race it. Takes the same root write lease every mutating
+/// command takes; when another process already holds it, this whole pass is
+/// skipped rather than blocking startup, and retried on the next launch.
 fn reconcile_event_store_at_startup(store: &skills::event_store::EventStore) {
+    let Some(home) = dirs::home_dir() else {
+        eprintln!("[event_store] could not resolve home dir for startup reconcile");
+        return;
+    };
+    let write_lease = skills::write_lease::WriteLease::default();
+    let _guard = match write_lease.try_acquire(&home) {
+        Ok(guard) => guard,
+        Err(e) => {
+            eprintln!("[event_store] skipped startup reconcile: {e}");
+            return;
+        }
+    };
     match store.reconcile_at_startup() {
         Ok(flipped) => {
             for row in &flipped {
