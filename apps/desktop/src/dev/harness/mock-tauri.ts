@@ -401,6 +401,11 @@ export function installMockTauri(initial: SkillSnapshot): HarnessControl {
             commit: "dev",
             notes: "### Added\n\n- The dev harness mock for `app_version`.",
           };
+        case "check_for_update":
+        case "get_update_status":
+          return { status: "up-to-date" };
+        case "install_update":
+          return undefined;
         case "get_editor_choices":
           return editorChoices();
         case "command_health":

@@ -241,6 +241,10 @@ const EXPECTED_WRAPPER_COMMANDS = {
   },
   onSkillSnapshot: { kind: "event", event: "skills://snapshot" },
   appVersion: { kind: "command", command: "app_version", registeredInLibRs: true },
+  checkForUpdate: { kind: "command", command: "check_for_update", registeredInLibRs: true },
+  getUpdateStatus: { kind: "command", command: "get_update_status", registeredInLibRs: true },
+  installUpdate: { kind: "command", command: "install_update", registeredInLibRs: true },
+  onUpdateStatus: { kind: "event", event: "skills://update-status" },
 } satisfies Record<string, WrapperEntry>;
 
 /** Every `export (async )?function <name>` in `skill-api.ts`, source-order - the wrapper set the

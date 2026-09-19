@@ -193,3 +193,17 @@ export interface AppVersion {
   commit: string;
   notes: string | null;
 }
+
+/**
+ * Settings' "Version" card update state (unit 6.2) - see the Rust
+ * `skill_update::UpdateStatus`. `"error"` names the failure but is not
+ * itself an install failure: no update ever installs without
+ * `installUpdate`, which the card's "Restart to update" button is the only
+ * caller of.
+ */
+export type UpdateStatus =
+  | { status: "up-to-date" }
+  | { status: "checking" }
+  | { status: "downloading"; version: string }
+  | { status: "ready-to-install"; version: string }
+  | { status: "error"; message: string };

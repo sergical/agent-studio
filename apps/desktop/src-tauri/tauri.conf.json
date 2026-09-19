@@ -45,5 +45,11 @@
     "macOS": {
       "hardenedRuntime": true
     }
+  },
+  "plugins": {
+    "updater": {
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDFEMjg3Njk0OTk0NDk0MUQKUldRZGxFU1psSFlvSFZNajRpRGdVcDUrY3hNTFFVK2pqMzFxeDVmZ1BxaTRRVjB0TDZvRS9SZ0MK",
+      "endpoints": ["https://github.com/sergical/agent-studio/releases/latest/download/latest.json"]
+    }
   }
 }

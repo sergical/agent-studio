@@ -226,6 +226,7 @@ pub fn run() {
     skills::error_reporting::install_panic_hook();
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
+        .plugin(tauri_plugin_updater::Builder::new().build())
         .setup(|app| {
             // Unit 6.3: check the data folder's schema_version before
             // anything else in setup - every branch below either spawns a
@@ -267,6 +268,16 @@ pub fn run() {
             skills::error_reporting::set_global_state(reporting_state.clone());
             app.manage(reporting_state);
             skills::skill_update_check::spawn_update_check_loop(app.handle().clone());
+            // Unit 6.2: in-app update through tauri-plugin-updater. The
+            // engine is managed state so the launch check below, the
+            // four-hour loop, and the manual "Check for updates" command
+            // all share one `ready`-to-install slot.
+            app.manage(skills::skill_update::UpdateEngineState(
+                std::sync::Arc::new(skills::skill_update::UpdateEngine::new(
+                    skills::skill_update::TauriUpdaterPort::new(app.handle().clone()),
+                )),
+            ));
+            skills::skill_update::spawn_update_check_loop(app.handle().clone());
 
             let event_store = if data_folder_message.is_some() {
                 None
@@ -303,6 +314,10 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             skills::app_version::app_version,
             skills::data_folder_status::data_folder_status,
+            // In-app update (unit 6.2)
+            skills::skill_update::check_for_update,
+            skills::skill_update::get_update_status,
+            skills::skill_update::install_update,
             skills::add_method_defaults::get_add_method_defaults,
             // Skills.sh integration
             skills::commands::search_skills,

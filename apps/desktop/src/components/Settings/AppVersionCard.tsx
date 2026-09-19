@@ -8,15 +8,41 @@
 import { useEffect, useState } from "react";
 import { Info } from "lucide-react";
 import { Button } from "@skill-studio/ui";
-import type { AppVersion } from "@skill-studio/lib";
-import { appVersion, invokeErrorMessage } from "../../lib/skill-api";
+import type { AppVersion, UpdateStatus } from "@skill-studio/lib";
+import {
+  appVersion,
+  checkForUpdate,
+  getUpdateStatus,
+  installUpdate,
+  invokeErrorMessage,
+  onUpdateStatus,
+} from "../../lib/skill-api";
 import { useAppStore } from "../../store/appStore";
 import { SettingsCard } from "./SettingsCard";
+
+/** Settings' own label for each `UpdateStatus` - kept here rather than in `skill-types.ts` since
+ * it's UI copy, not part of the wire shape. */
+function updateStatusLabel(status: UpdateStatus): string {
+  switch (status.status) {
+    case "up-to-date":
+      return "Up to date";
+    case "checking":
+      return "Checking for updates…";
+    case "downloading":
+      return `Downloading v${status.version}…`;
+    case "ready-to-install":
+      return `v${status.version} ready to install`;
+    case "error":
+      return status.message;
+  }
+}
 
 export function AppVersionCard() {
   const addToast = useAppStore((state) => state.addToast);
   const [info, setInfo] = useState<AppVersion | null>(null);
   const [showNotes, setShowNotes] = useState(false);
+  const [updateStatus, setUpdateStatus] = useState<UpdateStatus>({ status: "up-to-date" });
+  const [installing, setInstalling] = useState(false);
 
   useEffect(() => {
     let cancelled = false;
@@ -36,9 +62,46 @@ export function AppVersionCard() {
     };
   }, [addToast]);
 
+  useEffect(() => {
+    let cancelled = false;
+    getUpdateStatus().then((result) => {
+      if (!cancelled) setUpdateStatus(result);
+    });
+    const unlisten = onUpdateStatus((status) => {
+      if (!cancelled) setUpdateStatus(status);
+    });
+    return () => {
+      cancelled = true;
+      unlisten.then((fn) => fn());
+    };
+  }, []);
+
+  const handleCheckForUpdate = () => {
+    checkForUpdate().catch((err) => {
+      addToast({
+        type: "error",
+        title: "Couldn't check for updates",
+        message: invokeErrorMessage(err),
+      });
+    });
+  };
+
+  const handleRestartToUpdate = () => {
+    setInstalling(true);
+    installUpdate().catch((err) => {
+      setInstalling(false);
+      addToast({
+        type: "error",
+        title: "Couldn't install the update",
+        message: invokeErrorMessage(err),
+      });
+    });
+  };
+
   if (!info) return null;
 
   const shortCommit = info.commit === "dev" ? "dev" : info.commit.slice(0, 7);
+  const checking = updateStatus.status === "checking" || updateStatus.status === "downloading";
 
   return (
     <SettingsCard
@@ -61,6 +124,25 @@ export function AppVersionCard() {
           {info.notes}
         </div>
       )}
+      <div className="flex items-center gap-2">
+        <p
+          className={`m-0 flex-1 text-body ${updateStatus.status === "error" ? "text-error" : "text-text-secondary"}`}
+        >
+          {checking && (
+            <span className="mr-2 inline-block size-3 animate-spin rounded-full border-2 border-current border-t-transparent align-middle" />
+          )}
+          {updateStatusLabel(updateStatus)}
+        </p>
+        {updateStatus.status === "ready-to-install" ? (
+          <Button variant="secondary" onClick={handleRestartToUpdate} disabled={installing}>
+            {installing ? "Restarting…" : "Restart to update"}
+          </Button>
+        ) : (
+          <Button variant="ghost" onClick={handleCheckForUpdate} disabled={checking}>
+            Check for updates
+          </Button>
+        )}
+      </div>
     </SettingsCard>
   );
 }
