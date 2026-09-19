@@ -149,12 +149,16 @@ pub struct SkillInstallSpec {
     pub harnesses: Vec<AgentId>,
 }
 
-/// Universal skills.sh argv. Never includes Codex as a proxy for Universal.
+/// Universal skills.sh argv, and the process cwd to run it in. Never
+/// includes Codex as a proxy for Universal. `skills@1.7.0` has no `--cwd`
+/// flag (PR #101 / `fix/project-install-runs-in-project-dir`), so a project
+/// scope returns the project path as the process cwd instead of an argv
+/// token - the same fix as `ops_install_cli.rs`'s `cli_args_and_cwd`.
 pub fn skills_sh_universal_add_args(
     repo_source: &str,
     skill_name: Option<&str>,
     spec: &SkillInstallSpec,
-) -> Result<Vec<String>, String> {
+) -> Result<(Vec<String>, Option<PathBuf>), String> {
     if spec.destination != SkillDestination::Universal {
         return Err("skills.sh Universal argv is only for the Universal destination".to_string());
     }
@@ -164,17 +168,19 @@ pub fn skills_sh_universal_add_args(
         repo_source.to_string(),
         "--yes".to_string(),
     ];
-    match spec.scope {
-        InstallScope::Global => args.push("--global".to_string()),
+    let cwd = match spec.scope {
+        InstallScope::Global => {
+            args.push("--global".to_string());
+            None
+        }
         InstallScope::Project => {
             let path = spec
                 .project_path
                 .as_deref()
                 .ok_or("Project scope needs a project path")?;
-            args.push("--cwd".to_string());
-            args.push(path.to_string());
+            Some(PathBuf::from(path))
         }
-    }
+    };
     if let Some(name) = skill_name {
         args.push("--skill".to_string());
         args.push(name.to_string());
@@ -185,17 +191,21 @@ pub fn skills_sh_universal_add_args(
         args.push("--agent".to_string());
         args.push("claude-code".to_string());
     }
-    Ok(args)
+    Ok((args, cwd))
 }
 
 fn skills_sh_unfork_add_args(rec: &ForkRecord, name: &str) -> Result<Vec<String>, String> {
+    // Fork only ever applies to a global-scope skill (see
+    // `skill_refresh::build_snapshot`), so this reinstall is always global
+    // and the cwd `skills_sh_universal_add_args` returns is always `None`.
     let spec = SkillInstallSpec {
         scope: InstallScope::Global,
         destination: SkillDestination::Universal,
         project_path: None,
         harnesses: vec![],
     };
-    skills_sh_universal_add_args(&rec.origin_source, Some(name), &spec)
+    let (args, _cwd) = skills_sh_universal_add_args(&rec.origin_source, Some(name), &spec)?;
+    Ok(args)
 }
 
 fn run_npx(args: &[String]) -> Result<(), String> {
@@ -1615,7 +1625,7 @@ mod tests {
 
     #[test]
     fn universal_skills_sh_uses_agent_universal_and_global_or_names_the_wrong_argv() {
-        let argv =
+        let (argv, cwd) =
             skills_sh_universal_add_args("o/r", Some("find-bugs"), &universal_global()).unwrap();
         assert_eq!(
             argv,
@@ -1632,13 +1642,14 @@ mod tests {
             ]
         );
         assert!(!argv.iter().any(|a| a == "codex"));
+        assert_eq!(cwd, None);
     }
 
     #[test]
     fn universal_skills_sh_may_add_claude_code_not_codex_or_names_the_missing_agent() {
         let mut spec = universal_global();
         spec.harnesses = vec![AgentId::ClaudeCode];
-        let argv = skills_sh_universal_add_args("o/r", None, &spec).unwrap();
+        let (argv, _cwd) = skills_sh_universal_add_args("o/r", None, &spec).unwrap();
         assert!(argv.windows(2).any(|w| w == ["--agent", "universal"]));
         assert!(argv.windows(2).any(|w| w == ["--agent", "claude-code"]));
         assert!(!argv.iter().any(|a| a == "codex"));
@@ -1648,22 +1659,26 @@ mod tests {
     fn universal_skills_sh_ignores_direct_readers_or_names_the_leaked_agent() {
         let mut spec = universal_global();
         spec.harnesses = vec![AgentId::Codex];
-        let argv = skills_sh_universal_add_args("o/r", None, &spec).unwrap();
+        let (argv, _cwd) = skills_sh_universal_add_args("o/r", None, &spec).unwrap();
         assert!(!argv.iter().any(|arg| arg == "codex"));
     }
 
+    /// `skills@1.7.0` has no `--cwd` flag: a project scope must carry the
+    /// project path as the process cwd, not as an argv token, or the CLI
+    /// writes into whatever directory the process happened to start in.
     #[test]
-    fn project_universal_uses_cwd_not_global_or_names_the_wrong_scope() {
+    fn project_universal_runs_in_project_dir_not_via_cwd_flag_or_names_the_wrong_scope() {
         let spec = SkillInstallSpec {
             scope: InstallScope::Project,
             destination: SkillDestination::Universal,
             project_path: Some("/work/app".to_string()),
             harnesses: vec![],
         };
-        let argv = skills_sh_universal_add_args("o/r", None, &spec).unwrap();
-        assert!(argv.contains(&"--cwd".to_string()));
-        assert!(argv.contains(&"/work/app".to_string()));
+        let (argv, cwd) = skills_sh_universal_add_args("o/r", None, &spec).unwrap();
+        assert!(!argv.contains(&"--cwd".to_string()));
+        assert!(!argv.contains(&"/work/app".to_string()));
         assert!(!argv.contains(&"--global".to_string()));
+        assert_eq!(cwd, Some(PathBuf::from("/work/app")));
     }
 
     /// Records every `remove`/`reinstall` call so tests can assert "called
