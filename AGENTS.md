@@ -63,6 +63,27 @@ cd apps/desktop/src-tauri && cargo fmt
 cd apps/desktop/src-tauri && cargo clippy
 ```
 
+### Mutation Testing (`cargo mutants`)
+
+CI runs `cargo mutants` on `crates/skill-studio-core` and `crates/skill-studio-host`
+only: `--in-diff` against the PR's changed lines on every pull request
+(report-only for now — see `.github/workflows/rust.yml`), and a full,
+sharded run of both crates weekly (`schedule` + `workflow_dispatch`).
+Excludes live in `.cargo/mutants.toml`.
+
+A full run is slow; do not run it locally. To check one file before pushing:
+
+```bash
+# Install once
+cargo install cargo-mutants --locked
+
+# Mutate a single module (swap the path and -p for the crate you touched)
+cargo mutants -p skill-studio-core --all-features --file crates/skill-studio-core/src/registry.rs
+
+# Read the survivors this run found
+cat mutants.out/missed.txt
+```
+
 ### Frontend Commands
 
 ```bash

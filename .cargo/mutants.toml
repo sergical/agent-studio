@@ -1,0 +1,24 @@
+# Config for `cargo mutants`, read by both the PR (`--in-diff`) and the
+# weekly full-crate jobs. See .github/workflows/rust.yml and
+# docs/action-map/plan.md unit 5.2.
+#
+# Kept short on purpose: every entry below is either pure `derive` output, a
+# manual `Debug`/`Display` impl with no branching for a mutant to flip, or a
+# host adapter that only compiles under `#[cfg(target_os = "macos")]` and so
+# cannot be exercised by the ubuntu-latest runner that runs this workflow.
+
+exclude_globs = [
+    # DTOs: every type derives `Serialize`/`Deserialize`/`JsonSchema`: no
+    # hand-written logic for a mutant to change (see the file's own header
+    # comment: "nothing is hand-written").
+    "crates/skill-studio-core/src/dto.rs",
+]
+
+# Regexes are matched against the mutant's function name as printed by
+# `cargo mutants --list`, so one entry covers a `Display` impl in any file.
+exclude_re = [
+    # `Display for AgentId`/`SkillName`/`MigrationError`: string formatting
+    # only, no decision a mutant can flip that a snapshot test would not
+    # already need to change to notice.
+    "::fmt$",
+]
