@@ -1,0 +1,17 @@
+npx
+skills@1.7.0
+skills
+add
+anthropics/skills
+--yes
+--global
+--skill
+brand-guidelines
+--agent
+universal
+--agent
+claude-code
+--agent
+cursor
+--cwd--
+GLOBAL

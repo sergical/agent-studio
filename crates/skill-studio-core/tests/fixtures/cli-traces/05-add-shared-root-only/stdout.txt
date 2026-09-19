@@ -1,0 +1,33 @@
+
+│
+●   claude-code_2-1-277_agent  Agent detected — installing non-interactively
+│
+●  Selected 1 skill: web-artifacts-builder
+
+│
+◇  Installation Summary ───────────────────╮
+│                                          │
+│                                          │
+│  Example Skills                          │
+│                                          │
+│  ~/.agents/skills/web-artifacts-builder  │
+│    copy → Universal                      │
+│                                          │
+├──────────────────────────────────────────╯
+
+[
+  {
+    "name": "web-artifacts-builder",
+    "status": "installed",
+    "source": "anthropics/skills",
+    "ref": null,
+    "hash": "d52d422ead3fa26859a6af129609841a8536b230a2d649f86e61771d063e05e2",
+    "path": "$HOME/.agents/skills/web-artifacts-builder",
+    "scope": "global",
+    "agents": [
+      "Universal"
+    ],
+    "mode": "copy",
+    "security": null
+  }
+]

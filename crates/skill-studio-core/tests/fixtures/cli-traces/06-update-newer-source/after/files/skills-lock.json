@@ -1,0 +1,10 @@
+{
+  "version": 1,
+  "skills": {
+    "my-update-skill": {
+      "source": "../../../../../../../var/folders/dy/7zjx205j41g_gt94sgrlshv40000gn/T/tmp.O5g4RjiO5J/my-skill",
+      "sourceType": "local",
+      "computedHash": "e772dfe3cfe59a18a7ecbe105e457b5ef4bbf090466cd7c2284a026b25589d30"
+    }
+  }
+}

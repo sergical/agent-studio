@@ -1,0 +1,35 @@
+
+│
+●   claude-code_2-1-277_agent  Agent detected — installing non-interactively
+│
+●  Selected 1 skill: academy-guide
+
+│
+◇  Installation Summary ───────────╮
+│                                  │
+│                                  │
+│  Academy Guide                   │
+│                                  │
+│  ~/.agents/skills/academy-guide  │
+│    universal: Universal          │
+│    symlink → Claude Code         │
+│                                  │
+├──────────────────────────────────╯
+
+[
+  {
+    "name": "academy-guide",
+    "status": "installed",
+    "source": "anthropics/skills",
+    "ref": null,
+    "hash": "07075be5acc7c54fd6b06a1e7636608fa195b83eb98cbddb02e61b9ac1356889",
+    "path": "$HOME/.agents/skills/academy-guide",
+    "scope": "global",
+    "agents": [
+      "Universal",
+      "Claude Code"
+    ],
+    "mode": "symlink",
+    "security": null
+  }
+]

@@ -1,0 +1,7 @@
+npx
+skills@1.7.0
+skills
+update
+my-current-skill
+--cwd--
+$PROJECT

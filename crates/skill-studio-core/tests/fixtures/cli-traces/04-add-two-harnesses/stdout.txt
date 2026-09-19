@@ -1,0 +1,36 @@
+
+│
+●   claude-code_2-1-277_agent  Agent detected — installing non-interactively
+│
+●  Selected 1 skill: brand-guidelines
+
+│
+◇  Installation Summary ──────────────╮
+│                                     │
+│                                     │
+│  Example Skills                     │
+│                                     │
+│  ~/.agents/skills/brand-guidelines  │
+│    universal: Universal, Cursor     │
+│    symlink → Claude Code            │
+│                                     │
+├─────────────────────────────────────╯
+
+[
+  {
+    "name": "brand-guidelines",
+    "status": "installed",
+    "source": "anthropics/skills",
+    "ref": null,
+    "hash": "e48840db6ea772ceecdb68b4e50f8cc77e2534b7580aeaf4a6fe6ee7bd845d7d",
+    "path": "$HOME/.agents/skills/brand-guidelines",
+    "scope": "global",
+    "agents": [
+      "Universal",
+      "Claude Code",
+      "Cursor"
+    ],
+    "mode": "symlink",
+    "security": null
+  }
+]

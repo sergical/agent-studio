@@ -1,0 +1,6 @@
+{
+  "cli_version": "skills@1.7.0",
+  "source_repo": "anthropics/skills",
+  "source_commit": "unknown",
+  "notes": "InstallMethod::SkillsSh, global scope, requested harnesses = [claude-code]."
+}

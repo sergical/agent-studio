@@ -31,7 +31,7 @@ Scope note, 2026-09-17: assistant runs (Ask, Audit, Test) and packs are deferred
 
 - What it proves: our own install, update, and remove code produces the same folders, links, and lockfile entry as `npx skills` for the same input.
 - How it runs: `cargo test -p skill-studio-core cli_parity`, one test per trace, replaying the recorded trace against our core and diffing the result tree against the CLI's recorded result tree.
-- What exists today: nothing recorded yet. `apps/desktop/src-tauri/tests/core_scan_parity.rs`, `restore_parity.rs`, `fingerprint_parity.rs`, and `content_facts_parity.rs` check scan and read parity today, not install, update, or remove parity, and no trace file exists on disk.
+- What exists today: `crates/skill-studio-core/tests/cli_parity.rs` (9 tests, one per trace) replays the nine traces recorded under `crates/skill-studio-core/tests/fixtures/cli-traces/` against `ops::install`/`update`/`remove` through a fake `ProcessSpawner`, with 3 named divergences (see `KNOWN_DIVERGENCES` in that file). `apps/desktop/src-tauri/tests/core_scan_parity.rs`, `restore_parity.rs`, `fingerprint_parity.rs`, and `content_facts_parity.rs` still cover scan and read parity separately.
 - Pass condition: for each of the nine traces, our result tree and lockfile entry match the CLI's byte for byte, apart from timestamps.
 
 ### 5. Golden snapshots

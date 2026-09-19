@@ -1,0 +1,11 @@
+│
+●   claude-code_2-1-277_agent  Agent detected — removing non-interactively
+│
+◇  Found 1 unique installed skill(s)
+│
+◇  Removal process complete
+│
+◆  Successfully removed 1 skill(s)
+
+│
+└  Done!

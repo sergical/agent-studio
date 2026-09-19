@@ -1,0 +1,6 @@
+{
+  "cli_version": "skills@1.7.0",
+  "source_repo": "vercel-labs/agent-skills",
+  "source_slug": "web-design-guidelines",
+  "notes": "InstallMethod::SkillsSh, global scope, requested harnesses = [] (universal root only)."
+}

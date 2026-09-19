@@ -1,0 +1,5 @@
+{
+  "cli_version": "skills@1.7.0",
+  "source": "local folder, unchanged between add and update",
+  "notes": "InstallMethod::SkillsSh, project scope. Proves an update call is a no-op on disk (apart from the lock file's updatedAt) when nothing changed."
+}

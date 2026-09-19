@@ -1,0 +1,14 @@
+[
+  {
+    "path": ".agents/skills/my-current-skill/SKILL.md",
+    "kind": "file",
+    "len": 113,
+    "sha256": "7bb00889305636058c37652e81064db57ec22077dbd089098820efc422785f7b"
+  },
+  {
+    "path": "skills-lock.json",
+    "kind": "file",
+    "len": 300,
+    "sha256": "b5e7283ed51e43ec81ed0acf7438c5945aafebe7f8cb975bc270ceac5f34c303"
+  }
+]

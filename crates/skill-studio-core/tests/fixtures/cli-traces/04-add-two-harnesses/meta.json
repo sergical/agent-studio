@@ -1,0 +1,5 @@
+{
+  "cli_version": "skills@1.7.0",
+  "source_repo": "anthropics/skills",
+  "notes": "InstallMethod::SkillsSh, global scope, requested harnesses = [claude-code, cursor]. cli_args_and_cwd only ever appends --agent claude-code, silently dropping cursor - a KNOWN_DIVERGENCE."
+}

@@ -1,0 +1,10 @@
+{
+  "version": 1,
+  "skills": {
+    "my-current-skill": {
+      "source": "../../../../../../../var/folders/dy/7zjx205j41g_gt94sgrlshv40000gn/T/tmp.TUkU9onfxW/my-skill",
+      "sourceType": "local",
+      "computedHash": "d4b6d19b63c9356fd6850768bd02c39f476d553918f34e8cf41617193cf127a5"
+    }
+  }
+}

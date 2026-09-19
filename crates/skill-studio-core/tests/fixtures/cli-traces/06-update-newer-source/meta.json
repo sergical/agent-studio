@@ -1,0 +1,5 @@
+{
+  "cli_version": "skills@1.7.0",
+  "source": "local folder, edited between add and update",
+  "notes": "InstallMethod::SkillsSh, project scope. update_cli_args_and_cwd's SkillsSh branch never passes -y for update - skills@1.7.0's own agent-detection ran non-interactively anyway (see stdout.txt); recorded as-is."
+}

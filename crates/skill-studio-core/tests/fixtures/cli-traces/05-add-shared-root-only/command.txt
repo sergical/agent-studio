@@ -1,0 +1,13 @@
+npx
+skills@1.7.0
+skills
+add
+anthropics/skills
+--yes
+--global
+--skill
+web-artifacts-builder
+--agent
+universal
+--cwd--
+GLOBAL

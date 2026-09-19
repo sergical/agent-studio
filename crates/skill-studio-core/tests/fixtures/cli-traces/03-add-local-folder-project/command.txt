@@ -1,0 +1,14 @@
+npx
+skills@1.7.0
+skills
+add
+$LOCAL_SKILL_DIR
+--yes
+--cwd
+$PROJECT
+--skill
+my-local-skill
+--agent
+universal
+--cwd--
+$PROJECT

@@ -1,0 +1,13 @@
+npx
+skills@1.7.0
+skills
+add
+vercel-labs/agent-skills@web-design-guidelines
+--yes
+--global
+--skill
+web-design-guidelines
+--agent
+universal
+--cwd--
+GLOBAL

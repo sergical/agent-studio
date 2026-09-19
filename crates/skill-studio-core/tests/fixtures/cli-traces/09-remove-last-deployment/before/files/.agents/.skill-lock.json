@@ -1,0 +1,16 @@
+{
+  "version": 3,
+  "skills": {
+    "academy-guide": {
+      "source": "anthropics/skills",
+      "sourceType": "github",
+      "sourceUrl": "https://github.com/anthropics/skills.git",
+      "skillPath": "skills/academy-guide/SKILL.md",
+      "skillFolderHash": "baddb91c315ea384f9191615054ba8026eb57ba2",
+      "pluginName": "academy-guide",
+      "installedAt": "2026-09-19T22:48:42.759Z",
+      "updatedAt": "2026-09-19T22:48:42.759Z"
+    }
+  },
+  "dismissed": {}
+}

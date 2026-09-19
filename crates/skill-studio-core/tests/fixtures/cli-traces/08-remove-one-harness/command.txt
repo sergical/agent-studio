@@ -1,0 +1,9 @@
+npx
+skills@1.7.0
+skills
+remove
+academy-guide
+--yes
+--global
+--cwd--
+GLOBAL

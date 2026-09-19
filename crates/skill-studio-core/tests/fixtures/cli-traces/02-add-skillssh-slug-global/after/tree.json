@@ -1,0 +1,14 @@
+[
+  {
+    "path": ".agents/.skill-lock.json",
+    "kind": "file",
+    "len": 461,
+    "sha256": "3ac73d80d08e3bd3d2715c25426caa182665a7482e25b523f9ac7e7f97da6166"
+  },
+  {
+    "path": ".agents/skills/web-design-guidelines/SKILL.md",
+    "kind": "file",
+    "len": 1231,
+    "sha256": "f4647ca866a3accf763777f83e7682954f0187cd6bea7eea0399796652414e8f"
+  }
+]

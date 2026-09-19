@@ -1,0 +1,5 @@
+{
+  "cli_version": "skills@1.7.0",
+  "source_repo": "anthropics/skills",
+  "notes": "InstallMethod::SkillsSh, global scope, requested harnesses = [] (shared universal root only, no per-harness link)."
+}
