@@ -17,6 +17,7 @@ import type {
   CommandHealth,
   Deployment,
   DiscoverySourceSetting,
+  DoctorReport,
   InstalledSkill,
   ProjectFolder,
   RemoveOutcome,
@@ -401,6 +402,8 @@ export function installMockTauri(initial: SkillSnapshot): HarnessControl {
           return null;
         case "save_harnesses_choice":
           return undefined;
+        case "doctor":
+          return { violations: [], checked: currentSnapshot.skills.length } satisfies DoctorReport;
         case "open_skill_path":
         case "restore_trashed_skill":
         case "unfork_skill":

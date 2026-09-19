@@ -31,9 +31,9 @@ use rmcp::model::{CallToolResult, ProgressNotificationParam, ServerCapabilities,
 use rmcp::service::RequestContext;
 use rmcp::{tool, tool_handler, tool_router, RoleServer, ServerHandler};
 use skill_studio_core::dto::{
-    CapabilitiesRequest, DiagnoseConflictRequest, DoctorRequest, FixSkillRequest,
-    HarnessesRequest, InstallPreferencesRequest, InstallRequest, ListEventsRequest, ParkRequest,
-    RemoveRequest, RepairApplyRequest, RepairPreviewRequest, RestoreRequest, ScanRequest,
+    CapabilitiesRequest, DiagnoseConflictRequest, DoctorRequest, FixSkillRequest, HarnessesRequest,
+    InstallPreferencesRequest, InstallRequest, ListEventsRequest, ParkRequest, RemoveRequest,
+    RepairApplyRequest, RepairPreviewRequest, RestoreRequest, ScanRequest,
     SetHarnessEnabledRequest, SweepQuarantineRequest, UnparkRequest, UpdateAllRequest,
     UpdateRequest,
 };

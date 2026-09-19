@@ -36,7 +36,11 @@ use crate::ports::{OpContext, Runtime};
 /// released by [`diagnose`]'s own [`crate::ops::scan`] call - matching
 /// `ops::fix_skill`, this op reads `fs` directly afterward rather than
 /// holding a second lease of its own, since nothing here writes).
-pub fn doctor(rt: &Runtime, ctx: &OpContext, _req: &DoctorRequest) -> Result<DoctorReport, CoreError> {
+pub fn doctor(
+    rt: &Runtime,
+    ctx: &OpContext,
+    _req: &DoctorRequest,
+) -> Result<DoctorReport, CoreError> {
     ctx.checkpoint()?;
     let diagnosis = diagnose(rt, ctx, &ScanRequest::default())?;
 

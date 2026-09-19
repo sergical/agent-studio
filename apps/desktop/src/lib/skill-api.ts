@@ -17,6 +17,7 @@ import type {
   AppVersion,
   CommandHealth,
   DiscoverySourceSetting,
+  DoctorReport,
   ImportResult,
   InstallPreferences,
   InstallScope,
@@ -248,6 +249,30 @@ export async function getHarnessesChoice(): Promise<HarnessesChoice | null> {
  */
 export async function saveHarnessesChoice(choice: HarnessesChoice): Promise<void> {
   return callCommand("save_harnesses_choice", { choice });
+}
+
+// ============================================================================
+// Doctor: every lifecycle invariant, over the whole scope (unit 5.3)
+// ============================================================================
+
+/**
+ * Runs `ops::doctor` off the UI thread (`spawn_blocking`, see
+ * `skill_doctor.rs`) and returns every invariant violation found.
+ */
+export async function runDoctor(): Promise<DoctorReport> {
+  return callCommand("doctor");
+}
+
+/**
+ * Subscribe to `skills://doctor`, emitted once after the app's first scan
+ * finishes (the automatic startup pass, not `runDoctor`'s on-demand calls) -
+ * the way a Settings card that was already open sees that pass's result
+ * without asking the backend to rerun it. Returns an unlisten function.
+ */
+export function onDoctorReport(cb: (report: DoctorReport) => void): Promise<() => void> {
+  return listen<DoctorReport>("skills://doctor", (event) => {
+    cb(event.payload);
+  });
 }
 
 /**

@@ -10,8 +10,8 @@
 use schemars::generate::SchemaSettings;
 use schemars::JsonSchema;
 use skill_studio_core::dto::{
-    CommandHealth, FixSkillOutcome, InstallPreferences, RemoveOutcome, UpdateAllOutcome,
-    UpdateOutcome,
+    CommandHealth, DoctorReport, FixSkillOutcome, InstallPreferences, RemoveOutcome,
+    UpdateAllOutcome, UpdateOutcome,
 };
 use skill_studio_core::harness::HarnessReport;
 use skill_studio_core::skill_uses::{InvocationHeatmap, SkillInvocation, SkillTrigger};
@@ -76,6 +76,7 @@ struct WireTypes {
     remove_outcome: RemoveOutcome,
     update_outcome: UpdateOutcome,
     update_all_outcome: UpdateAllOutcome,
+    doctor_report: DoctorReport,
 }
 
 // This bin's entire job is writing the generated schema JSON to stdout for

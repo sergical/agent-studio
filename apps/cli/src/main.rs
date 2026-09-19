@@ -1148,14 +1148,12 @@ fn run_diagnose_conflict(scope: &ScopeArgs, json: bool, time: bool) -> ExitCode 
 }
 
 fn run_doctor(scope: &ScopeArgs, json: bool, time: bool) -> ExitCode {
-    let rt = match build_runtime::<skill_studio_core::dto::DoctorReport>(
-        scope,
-        Operation::Doctor,
-        json,
-    ) {
-        Ok(rt) => rt,
-        Err(code) => return code,
-    };
+    let rt =
+        match build_runtime::<skill_studio_core::dto::DoctorReport>(scope, Operation::Doctor, json)
+        {
+            Ok(rt) => rt,
+            Err(code) => return code,
+        };
     let ctx = OpContext::uncancellable(CorrelationId(ulid::Ulid::new().to_string()));
     let result = ops::doctor(&rt, &ctx, &skill_studio_core::dto::DoctorRequest::default());
     let envelope = ResultEnvelope::from_result(Operation::Doctor, &rt.scope, &ctx, result);

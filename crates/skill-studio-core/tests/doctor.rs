@@ -134,7 +134,10 @@ fn doctor_finds_a_registry_entry_with_no_folder_or_names_the_check_that_missed_i
     let fs: Arc<dyn ScopeFs> = Arc::new(
         FixtureBuilder::new()
             .dir(&format!("{HOME}/{UNIVERSAL_ROOT_RELATIVE}"))
-            .file(&format!("{HOME}/.agents/skill-studio.json"), registry.as_bytes())
+            .file(
+                &format!("{HOME}/.agents/skill-studio.json"),
+                registry.as_bytes(),
+            )
             .build_fs(),
     );
 
@@ -217,7 +220,7 @@ fn doctor_finds_a_folder_in_two_states_at_once_or_names_the_check_that_missed_it
 fn doctor_finds_a_quarantine_folder_past_its_retention_cap_or_names_the_check_that_missed_it() {
     let mut builder = FixtureBuilder::new().dir(&format!("{HOME}/{UNIVERSAL_ROOT_RELATIVE}"));
     let cap = skill_studio_core::doctor::QUARANTINE_RETENTION_CAP;
-    for i in 0..(cap + 1) {
+    for i in 0..=cap {
         builder = builder.file(
             &format!(
                 "{HOME}/{UNIVERSAL_ROOT_RELATIVE}/.skill-studio-quarantine/{i:04}-quarantined/SKILL.md"
@@ -283,7 +286,7 @@ fn doctor_finds_an_open_plan_at_rest_in_the_journal_or_names_the_check_that_miss
 
 /// Unit 2.7 (captured real homes) is deferred, so this stands in with the
 /// largest fixture `FixtureBuilder` can express: every harness (Claude
-/// Code, Codex, legacy and current OpenCode), a project root, a parked
+/// Code, Codex, legacy and current `OpenCode`), a project root, a parked
 /// skill, a quarantined entry, a disabled-per-harness (move-aside) skill,
 /// a lockfile, and a journal with one finished plan. Follow-up: swap in
 /// the 2.7 capture once it exists.

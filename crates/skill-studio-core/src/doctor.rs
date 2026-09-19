@@ -47,7 +47,17 @@ pub const QUARANTINE_RETENTION_CAP: usize = 20;
 /// detect-only module) because `ops::doctor`'s [`crate::dto::DoctorReport`]
 /// crosses the CLI/desktop/MCP boundary and needs to name which invariant a
 /// violation is.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize, schemars::JsonSchema)]
+#[derive(
+    Debug,
+    Clone,
+    Copy,
+    PartialEq,
+    Eq,
+    Hash,
+    serde::Serialize,
+    serde::Deserialize,
+    schemars::JsonSchema,
+)]
 #[serde(rename_all = "snake_case")]
 pub enum DoctorInvariant {
     /// 1. Every link resolves inside its root.
