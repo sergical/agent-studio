@@ -158,12 +158,16 @@ jobs:
         run: |
           set -euo pipefail
           release_dir="target/${{ matrix.target }}/release"
-          dsym_path="$(find "$release_dir" -maxdepth 1 -name '*.dSYM' -print -quit)"
-          if [[ -z "$dsym_path" ]]; then
-            echo "no .dSYM found under $release_dir; check [profile.release] in Cargo.toml" >&2
+          # mainBinaryName in tauri.conf.json is the app binary; cargo names
+          # its .dSYM after that binary file name, not the package name.
+          dsym_path="$release_dir/skill-studio-desktop.dSYM"
+          if [[ ! -d "$dsym_path" ]]; then
+            echo "no skill-studio-desktop.dSYM found under $release_dir; check [profile.release] in Cargo.toml" >&2
+            echo "found instead:" >&2
+            ls -d "$release_dir"/*.dSYM >&2 || true
             exit 1
           fi
-          zip_path="$release_dir/$(basename "$dsym_path" .dSYM)-${{ matrix.target }}.dSYM.zip"
+          zip_path="$release_dir/skill-studio-${{ matrix.target }}.dSYM.zip"
           ditto -c -k --sequesterRsrc "$dsym_path" "$zip_path"
           echo "dsym_zip=$zip_path" >> "$GITHUB_ENV"
 
