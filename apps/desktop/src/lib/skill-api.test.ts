@@ -21,13 +21,11 @@ import libRsSource from "../../src-tauri/src/lib.rs?raw";
  * - "none": not IPC at all (`invokeErrorMessage` is a pure string helper).
  *
  * `registeredInLibRs: false` marks a wrapper whose command is NOT in
- * `generate_handler!` today - a pre-existing gap from unit 4.3 (#200), which
- * unregistered every pack command while `AddSkillSheet`'s "Pack" add method
- * still calls `importSkillPack`/`confirmSkillPackTrust`/`abandonPackImportTrust`.
- * Fixing that is out of unit 4.4's scope (no Rust change beyond removing
- * `set_deployment_enabled`, no component change beyond the two Harnesses
- * rail callers); recorded here so the map stays honest either way - flip it
- * to `true` the day someone re-registers the three pack commands.
+ * `generate_handler!` today - a pre-existing gap from unit 4.3 (#200). The
+ * UI no longer offers the "Pack" add method (see `availableAddSkillMethods`
+ * in `add-skill-form.ts`), so `importSkillPack`/`confirmSkillPackTrust`/
+ * `abandonPackImportTrust` are unreachable, but the wrappers stay for when
+ * the three pack commands are re-registered; flip this to `true` then.
  */
 type WrapperEntry =
   | { kind: "command"; command: string; registeredInLibRs: boolean }
